@@ -9,7 +9,7 @@ description = "Proximity-based Interaction Network analysis for Tissue Organizat
 repository = "https://github.com/causalpathlab/pinto-rs"
 homepage = "https://github.com/causalpathlab/pinto-rs"
 readme = "README.md"
-keywords = ["genomics", "spatial-transcriptomics", "single-cell", "link-community"]
+keywords = ["genomics", "spatial", "single-cell", "link-community"]
 categories = ["science", "command-line-utilities"]
 exclude = [
     "**/.claude/**",
