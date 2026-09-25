@@ -1,0 +1,64 @@
+[package]
+name = "pinto-rs"
+version = "0.10.6"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
+description = "Proximity-based Interaction Network analysis for Tissue Organization"
+repository = "https://github.com/causalpathlab/pinto-rs"
+homepage = "https://github.com/causalpathlab/pinto-rs"
+readme = "README.md"
+keywords = ["genomics", "spatial-transcriptomics", "single-cell", "link-community"]
+categories = ["science", "command-line-utilities"]
+exclude = [
+    "**/.claude/**",
+    "**/.DS_Store",
+    "temp*/**",
+]
+
+[[bin]]
+name = "pinto"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = [
+    "legume-numeric/cuda",
+    "data-beans/cuda",
+    "graph-embedding-util/cuda",
+]
+metal = [
+    "legume-numeric/metal",
+    "data-beans/metal",
+    "graph-embedding-util/metal",
+]
+hdf5 = ["data-beans/hdf5"]
+
+[dependencies]
+cnv = { version = "0.2.1", package = "mung-cnv" }
+data-beans = { version = "0.6.12", features = ["aux", "alg"] }
+legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle", "mcmc"] }
+graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
+parquet = "59"
+regex = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+dashmap = { version = "6.1.0", features = ["rayon"] }
+anyhow = "1.0"
+clap = { version = "4.5.20", features = ["derive"] }
+rayon = "1.10.0"
+tempfile = "3.2"
+rand = "0.10.1"
+ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
+rand_distr = "0.6"
+nalgebra = "0.34"
+nalgebra-sparse = "0.11"
+wide = "0.7"
+
+special = "0.13"
+indicatif = { version = "^0.18", features = ["rayon"] }
+log = "0.4"
+colored = "3"
+rustc-hash = "2.1"
