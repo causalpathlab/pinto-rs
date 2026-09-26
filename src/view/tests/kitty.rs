@@ -8,6 +8,7 @@ fn frame(w: usize, h: usize) -> Frame {
         w,
         h,
         rgba: vec![7; w * h * 4],
+        background: crate::view::color::Theme::Dark.background(),
     }
 }
 

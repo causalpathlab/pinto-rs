@@ -140,18 +140,17 @@ pub struct Cells {
 impl Cells {
     /// Fit `frame` to `cols × rows` cells of `glyphs`, each `ppc` frame
     /// pixels ([`Glyphs::pixels_per_cell`]); past the frame's edge reads as
-    /// `background`.
+    /// its background.
     pub fn fit(
         frame: &Frame,
         glyphs: Glyphs,
         ppc: (usize, usize),
         (cols, rows): (usize, usize),
-        background: Rgb,
     ) -> Self {
         let cells = (0..rows * cols)
             .into_par_iter()
             .map(|i| {
-                let px = sample(frame, glyphs, ppc, (i % cols, i / cols), background);
+                let px = sample(frame, glyphs, ppc, (i % cols, i / cols));
                 fit(&px, glyphs)
             })
             .collect();
@@ -185,7 +184,6 @@ fn sample(
     glyphs: Glyphs,
     (pw, ph): (usize, usize),
     (c, r): (usize, usize),
-    background: Rgb,
 ) -> Vec<[f32; 3]> {
     let (gw, gh) = glyphs.grid();
     let (x0, y0) = (c * pw, r * ph);
@@ -203,7 +201,7 @@ fn sample(
                         let o = frame.offset(x, y);
                         [frame.rgba[o], frame.rgba[o + 1], frame.rgba[o + 2]]
                     } else {
-                        background
+                        frame.background
                     };
                     for ch in 0..3 {
                         sum[ch] += color::linear(p[ch]);

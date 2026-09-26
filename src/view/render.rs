@@ -161,6 +161,9 @@ pub struct Frame {
     pub w: usize,
     pub h: usize,
     pub rgba: Vec<u8>,
+    /// The colour the frame was cleared to: what anything drawn over it
+    /// (scale bar, text-mode edges) must read against.
+    pub background: Rgb,
 }
 
 impl Frame {
@@ -372,13 +375,14 @@ pub fn mode(scene: &Scene, vp: &Viewport) -> Mode {
 
 pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> Frame {
     let paint = Paint::new(style, palette);
+    let background = style.theme.background();
     let mut frame = Frame {
         w: vp.w,
         h: vp.h,
         rgba: vec![0u8; vp.w * vp.h * 4],
+        background,
     };
     let spacing_px = scene.spacing / vp.upp;
-    let background = style.theme.background();
     match mode(scene, vp) {
         Mode::Points => {
             let edges = scene

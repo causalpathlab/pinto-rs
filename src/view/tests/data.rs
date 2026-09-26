@@ -67,12 +67,10 @@ fn propensity_joins_by_name_and_reports_gaps() {
 #[test]
 fn edges_map_names_to_rows() {
     let geom = Geometry::from_cells(synth_cells(4, 1));
-    let pairs: Vec<(Box<str>, Box<str>)> = vec![
-        ("c0".into(), "c1".into()),
-        ("c2".into(), "ghost".into()),
-        ("c3".into(), "c2".into()),
-    ];
-    let edges = Edges::join(&geom, &pairs, &[4, 5, -1]);
+    let mut edges = Edges::default();
+    for (l, r, c) in [("c0", "c1", 4), ("c2", "ghost", 5), ("c3", "c2", -1)] {
+        edges.push(&geom, l, r, c);
+    }
     assert_eq!(edges.len(), 2);
     assert_eq!(edges.n_unmatched, 1);
     assert_eq!((edges.a[0], edges.b[0], edges.community[0]), (0, 1, 4));

@@ -5,8 +5,8 @@
 //! - `{lc_prefix}.coord_pairs.parquet` — per-edge (left_batch, right_batch) when multi-batch.
 //! - `{lr_pairs}` — two-column TSV/CSV of directional (ligand, receptor) gene names.
 
-use crate::util::parquet_io::row_label;
 use crate::util::common::*;
+use crate::util::parquet_io::row_label;
 use legume_numeric::matrix::common_io::{read_lines_of_words_delim, ReadLinesOut};
 use legume_numeric::matrix::membership::detect_delimiter;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;

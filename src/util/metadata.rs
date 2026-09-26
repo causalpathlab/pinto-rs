@@ -331,6 +331,7 @@ impl PintoMetadata {
         Ok(meta)
     }
 
+    #[cfg(feature = "view")]
     /// The run's levels. Manifests from before `levels` name one
     /// propensity table; that is the only level, `final`.
     pub fn level_list(&self) -> Vec<LevelInfo> {
@@ -352,6 +353,7 @@ impl PintoMetadata {
         }
     }
 
+    #[cfg(feature = "view")]
     /// Rebuild what the manifest of a run without one would list, from the
     /// `{prefix}.…` files that exist: `coord_pairs`, a level per
     /// `L{n}.propensity` and `final` for the bare `propensity`, named by the

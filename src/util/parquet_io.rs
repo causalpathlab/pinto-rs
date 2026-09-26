@@ -51,11 +51,6 @@ fn stringify_numeric(v: f64) -> Box<str> {
     }
 }
 
-/// Read a numeric column as `f32`, accepting FLOAT or DOUBLE.
-///
-/// `pinto svd --coord` writes coordinates as FLOAT; coord_pairs files
-/// produced by other paths (R/data.table) come in as DOUBLE. The plot
-/// pipeline is single-precision throughout, so we narrow on read.
 /// Read a column that holds a small integer code, whatever width the writer
 /// chose for it.
 ///
@@ -77,16 +72,6 @@ pub(crate) fn row_int_like(row: &Row, idx: usize) -> anyhow::Result<i64> {
         return Ok(v as i64);
     }
     anyhow::bail!("column {idx} is not an integer-like type")
-}
-
-fn row_f32(row: &Row, idx: usize) -> anyhow::Result<f32> {
-    if let Ok(v) = row.get_float(idx) {
-        return Ok(v);
-    }
-    if let Ok(v) = row.get_double(idx) {
-        return Ok(v as f32);
-    }
-    anyhow::bail!("column {idx} is not a numeric type")
 }
 
 /// Named columns of a parquet file, read column-wise through Arrow: each as
@@ -120,77 +105,110 @@ fn read_named_columns(path: &Path, names: &[&str]) -> anyhow::Result<Vec<Vec<Arr
     Ok(out)
 }
 
-/// A column as labels: strings as they are, numbers written as
-/// [`row_label`] writes them.
-fn labels(chunks: &[ArrayRef]) -> anyhow::Result<Vec<Box<str>>> {
-    let mut out = Vec::new();
+/// A column's values as labels, borrowed from the Arrow arrays when they
+/// are strings (no string per value), written as [`row_label`] writes them
+/// when they are numbers.
+enum LabelColumn<'a> {
+    Borrowed(Vec<&'a str>),
+    Owned(Vec<Box<str>>),
+}
+
+impl LabelColumn<'_> {
+    fn get(&self, i: usize) -> &str {
+        match self {
+            LabelColumn::Borrowed(v) => v[i],
+            LabelColumn::Owned(v) => &v[i],
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            LabelColumn::Borrowed(v) => v.len(),
+            LabelColumn::Owned(v) => v.len(),
+        }
+    }
+}
+
+fn label_column(chunks: &[ArrayRef]) -> anyhow::Result<LabelColumn<'_>> {
+    let mut borrowed = Vec::new();
     for a in chunks {
         if let Some(s) = a.as_string_opt::<i32>() {
-            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+            borrowed.extend(s.iter().map(Option::unwrap_or_default));
         } else if let Some(s) = a.as_string_opt::<i64>() {
-            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+            borrowed.extend(s.iter().map(Option::unwrap_or_default));
         } else if let Some(s) = a.as_string_view_opt() {
-            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+            borrowed.extend(s.iter().map(Option::unwrap_or_default));
         } else {
-            out.extend(numbers(a)?.into_iter().map(stringify_numeric));
+            let owned = numeric(chunks, stringify_numeric)?;
+            return Ok(LabelColumn::Owned(owned));
+        }
+    }
+    Ok(LabelColumn::Borrowed(borrowed))
+}
+
+/// A column as owned labels.
+fn labels(chunks: &[ArrayRef]) -> anyhow::Result<Vec<Box<str>>> {
+    let col = label_column(chunks)?;
+    Ok((0..col.len()).map(|i| Box::from(col.get(i))).collect())
+}
+
+/// A numeric column, whichever width it was stored in, as `T`.
+fn numeric<T>(chunks: &[ArrayRef], cast: impl Fn(f64) -> T) -> anyhow::Result<Vec<T>> {
+    use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
+    let mut out = Vec::new();
+    for a in chunks {
+        if let Some(v) = a.as_primitive_opt::<Float32Type>() {
+            out.extend(v.values().iter().map(|&x| cast(x as f64)));
+        } else if let Some(v) = a.as_primitive_opt::<Float64Type>() {
+            out.extend(v.values().iter().map(|&x| cast(x)));
+        } else if let Some(v) = a.as_primitive_opt::<Int32Type>() {
+            out.extend(v.values().iter().map(|&x| cast(x as f64)));
+        } else if let Some(v) = a.as_primitive_opt::<Int64Type>() {
+            out.extend(v.values().iter().map(|&x| cast(x as f64)));
+        } else {
+            anyhow::bail!("column of type {} is not numeric", a.data_type())
         }
     }
     Ok(out)
 }
 
-/// A numeric column as f64, whichever width it was stored in.
-fn numbers(a: &ArrayRef) -> anyhow::Result<Vec<f64>> {
-    use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
-    Ok(if let Some(v) = a.as_primitive_opt::<Float32Type>() {
-        v.values().iter().map(|&x| x as f64).collect()
-    } else if let Some(v) = a.as_primitive_opt::<Float64Type>() {
-        v.values().to_vec()
-    } else if let Some(v) = a.as_primitive_opt::<Int32Type>() {
-        v.values().iter().map(|&x| x as f64).collect()
-    } else if let Some(v) = a.as_primitive_opt::<Int64Type>() {
-        v.values().iter().map(|&x| x as f64).collect()
-    } else {
-        anyhow::bail!("column of type {} is not numeric", a.data_type())
-    })
+fn floats(chunks: &[ArrayRef]) -> anyhow::Result<Vec<f32>> {
+    numeric(chunks, |v| v as f32)
+}
+
+fn ints(chunks: &[ArrayRef]) -> anyhow::Result<Vec<i64>> {
+    numeric(chunks, |v| v as i64)
+}
+
+/// Column names of a parquet file.
+fn field_names(path: &Path) -> anyhow::Result<Vec<Box<str>>> {
+    peek_parquet_field_names(
+        path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
+    )
 }
 
 /// A table whose first column labels the rows and whose other columns are
 /// numbers, read column-wise: what `Mat::from_parquet` reads, faster.
 pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<Mat>> {
-    let fields = peek_parquet_field_names(
-        path.to_str()
-            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
-    )?;
+    let fields = field_names(path)?;
     anyhow::ensure!(!fields.is_empty(), "{path:?}: no columns");
     let names: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
     let cols = read_named_columns(path, &names)?;
     let rows = labels(&cols[0])?;
-    let values = cols[1..]
-        .iter()
-        .map(|chunks| floats(chunks))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let mat = Mat::from_fn(rows.len(), values.len(), |i, j| values[j][i]);
+    // Columns one after another are the column-major layout `Mat` keeps.
+    let mut flat = Vec::with_capacity(rows.len() * (cols.len() - 1));
+    for chunks in &cols[1..] {
+        let column = floats(chunks)?;
+        anyhow::ensure!(column.len() == rows.len(), "{path:?}: ragged columns");
+        flat.extend(column);
+    }
+    let mat = Mat::from_vec(rows.len(), cols.len() - 1, flat);
     Ok(MatWithNames {
         rows,
         cols: fields[1..].to_vec(),
         mat,
     })
-}
-
-fn floats(chunks: &[ArrayRef]) -> anyhow::Result<Vec<f32>> {
-    let mut out = Vec::new();
-    for a in chunks {
-        out.extend(numbers(a)?.into_iter().map(|v| v as f32));
-    }
-    Ok(out)
-}
-
-fn ints(chunks: &[ArrayRef]) -> anyhow::Result<Vec<i64>> {
-    let mut out = Vec::new();
-    for a in chunks {
-        out.extend(numbers(a)?.into_iter().map(|v| v as i64));
-    }
-    Ok(out)
 }
 
 /// One row per cell. `batch` is `None` if the fit was single-batch
@@ -285,7 +303,9 @@ pub fn read_cells_from_coord_pairs(
         wanted.extend(["left_batch", "right_batch"]);
     }
     let cols = read_named_columns(path, &wanted)?;
-    let (left, right) = (labels(&cols[0])?, labels(&cols[1])?);
+    // Borrowed from the Arrow arrays: a string is made only per new cell,
+    // not per edge endpoint.
+    let (left, right) = (label_column(&cols[0])?, label_column(&cols[1])?);
     let (lx, ly, rx, ry) = (
         floats(&cols[2])?,
         floats(&cols[3])?,
@@ -293,7 +313,7 @@ pub fn read_cells_from_coord_pairs(
         floats(&cols[5])?,
     );
     let (lb, rb) = if has_batch {
-        (Some(labels(&cols[6])?), Some(labels(&cols[7])?))
+        (Some(label_column(&cols[6])?), Some(label_column(&cols[7])?))
     } else {
         (None, None)
     };
@@ -304,18 +324,17 @@ pub fn read_cells_from_coord_pairs(
     let mut batches: Vec<Box<str>> = Vec::new();
 
     for e in 0..left.len() {
-        for (name, x, y, b) in [
-            (&left[e], lx[e], ly[e], &lb),
-            (&right[e], rx[e], ry[e], &rb),
-        ] {
+        for (col, x, y, b) in [(&left, lx[e], ly[e], &lb), (&right, rx[e], ry[e], &rb)] {
+            let name = col.get(e);
             if index.contains_key(name) {
                 continue;
             }
+            let name: Box<str> = name.into();
             index.insert(name.clone(), names.len());
-            names.push(name.clone());
+            names.push(name);
             coords.push((x, y));
             if let Some(b) = b {
-                batches.push(b[e].clone());
+                batches.push(b.get(e).into());
             }
         }
     }
@@ -498,30 +517,28 @@ pub type EdgePair = (Box<str>, Box<str>);
 /// that zips this table against `{prefix}.latent.parquet` positionally needs all of
 /// them, because that file has one row per pair regardless of edge kind.
 pub fn read_link_community_labels(path: &Path) -> anyhow::Result<Vec<i64>> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?;
-    let file = File::open(path_str)?;
-    let reader = SerializedFileReader::new(file)?;
-    let ci = reader
-        .metadata()
-        .file_metadata()
-        .schema()
-        .get_fields()
-        .iter()
-        .position(|f| f.name() == "community")
-        .ok_or_else(|| anyhow::anyhow!("{path:?}: missing community column"))?;
-    reader
-        .get_row_iter(None)?
-        .map(|row| row_int_like(&row?, ci))
-        .collect()
+    ints(&read_named_columns(path, &["community"])?[0])
 }
 
 pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i64>, Vec<usize>)> {
-    let fields = peek_parquet_field_names(
-        path.to_str()
-            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
-    )?;
+    let mut pairs: Vec<EdgePair> = Vec::new();
+    let mut community: Vec<i64> = Vec::new();
+    let total_counts = visit_link_community(path, |l, r, c| {
+        pairs.push((l.into(), r.into()));
+        community.push(c);
+    })?;
+    Ok((pairs, community, total_counts))
+}
+
+/// Call `visit(left, right, community)` for every ADJACENT pair of a
+/// link_community table, the cell names borrowed from the file's columns;
+/// returns each community's edge count over every pair (see
+/// [`read_link_community`]).
+pub(crate) fn visit_link_community(
+    path: &Path,
+    mut visit: impl FnMut(&str, &str, i64),
+) -> anyhow::Result<Vec<usize>> {
+    let fields = field_names(path)?;
     let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
     for n in ["left_cell", "right_cell", "community"] {
         anyhow::ensure!(has(n), "{path:?}: missing {n}");
@@ -540,19 +557,17 @@ pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i6
         wanted.push("edge_kind");
     }
     let cols = read_named_columns(path, &wanted)?;
-    let (left, right, all_community) = (labels(&cols[0])?, labels(&cols[1])?, ints(&cols[2])?);
+    let (left, right) = (label_column(&cols[0])?, label_column(&cols[1])?);
+    let community = ints(&cols[2])?;
     let kind = if has("edge_kind") {
         Some(ints(&cols[3])?)
     } else {
         None
     };
 
-    let mut pairs: Vec<(Box<str>, Box<str>)> = Vec::new();
-    let mut community: Vec<i64> = Vec::new();
     let mut total_counts: Vec<usize> = Vec::new();
     let mut n_dropped = 0usize;
-    for (e, (l, r)) in left.into_iter().zip(right).enumerate() {
-        let c = all_community[e];
+    for (e, &c) in community.iter().enumerate() {
         if c >= 0 {
             let cu = c as usize;
             if cu >= total_counts.len() {
@@ -560,24 +575,24 @@ pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i6
             }
             total_counts[cu] += 1;
         }
-        if let Some(kind) = kind.as_ref() {
-            if kind[e] != crate::util::cell_pairs::EDGE_KIND_SPATIAL as i64 {
-                n_dropped += 1;
-                continue;
-            }
+        if kind
+            .as_ref()
+            .is_some_and(|k| k[e] != crate::util::cell_pairs::EDGE_KIND_SPATIAL as i64)
+        {
+            n_dropped += 1;
+            continue;
         }
-        pairs.push((l, r));
-        community.push(c);
+        visit(left.get(e), right.get(e), c);
     }
     if n_dropped > 0 {
         log::info!(
             "{}: showing {} adjacent pairs, hiding {} expression-similar ones",
             path.display(),
-            pairs.len(),
+            community.len() - n_dropped,
             n_dropped
         );
     }
-    Ok((pairs, community, total_counts))
+    Ok(total_counts)
 }
 
 /// Feature-community column names, current first, then the names older runs

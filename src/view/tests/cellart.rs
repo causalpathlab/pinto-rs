@@ -28,14 +28,7 @@ fn symbol(px: &[[u8; 3]; 64]) -> (char, [u8; 3], [u8; 3]) {
 
 /// Cells of 1:2 terminal characters.
 fn fit_cells(frame: &Frame, glyphs: Glyphs, cols: usize, rows: usize) -> Cells {
-    let background = crate::view::color::Theme::Dark.background();
-    Cells::fit(
-        frame,
-        glyphs,
-        glyphs.pixels_per_cell(2.),
-        (cols, rows),
-        background,
-    )
+    Cells::fit(frame, glyphs, glyphs.pixels_per_cell(2.), (cols, rows))
 }
 
 #[test]
@@ -72,7 +65,12 @@ fn quadrant_cells_cover_twice_the_width_of_half_blocks() {
             rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
         }
     }
-    let frame = Frame { w: 4, h: 4, rgba };
+    let frame = Frame {
+        w: 4,
+        h: 4,
+        rgba,
+        background: crate::view::color::Theme::Dark.background(),
+    };
     let area = Rect::new(0, 0, 2, 1);
     let mut buf = Buffer::empty(area);
     (&fit_cells(&frame, Glyphs::Quadrants, 2, 1)).render(area, &mut buf);
@@ -92,7 +90,12 @@ fn quadrant_pixels_average_the_two_frame_rows_they_cover() {
             rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
         }
     }
-    let frame = Frame { w: 2, h: 4, rgba };
+    let frame = Frame {
+        w: 2,
+        h: 4,
+        rgba,
+        background: crate::view::color::Theme::Dark.background(),
+    };
     let area = Rect::new(0, 0, 1, 1);
     let mut buf = Buffer::empty(area);
     (&fit_cells(&frame, Glyphs::Quadrants, 1, 1)).render(area, &mut buf);
