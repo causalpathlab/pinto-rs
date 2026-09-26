@@ -1,0 +1,262 @@
+//! Spatial index and summary pyramid.
+//!
+//! [`Grid`] buckets cells into square bins (CSR: offsets + cell ids), so a
+//! viewport touches only the cells inside it. [`Pyramid`] summarizes those
+//! bins at successively coarser 2×2 merges: when a screen pixel covers many
+//! cells, the renderer reads one bin instead of every cell under it.
+
+use super::data::{Communities, Edges, Rect, NO_CLUSTER};
+use crate::util::common::*;
+
+/// Square bins over the world bounds, cells stored bin by bin.
+pub struct Grid {
+    pub origin: (f32, f32),
+    /// Bin side, world units.
+    pub bin: f32,
+    pub nx: usize,
+    pub ny: usize,
+    start: Vec<u32>,
+    ids: Vec<u32>,
+}
+
+impl Grid {
+    /// Size bins for about `per_bin` cells each on average over `bounds`.
+    pub fn build(x: &[f32], y: &[f32], bounds: Rect, per_bin: f32) -> Self {
+        let n = x.len().max(1) as f32;
+        let area = (bounds.width() * bounds.height()).max(f32::MIN_POSITIVE);
+        let mut bin = (area * per_bin / n).sqrt();
+        if !bin.is_finite() || bin <= 0. {
+            bin = bounds.width().max(bounds.height()).max(1.);
+        }
+        let nx = ((bounds.width() / bin).floor() as usize + 1).max(1);
+        let ny = ((bounds.height() / bin).floor() as usize + 1).max(1);
+
+        let mut grid = Grid {
+            origin: (bounds.x0, bounds.y0),
+            bin,
+            nx,
+            ny,
+            start: Vec::new(),
+            ids: Vec::new(),
+        };
+
+        let bins: Vec<u32> = x
+            .iter()
+            .zip(y)
+            .map(|(&xi, &yi)| grid.bin_id(xi, yi))
+            .collect();
+        let (start, ids) = bucket(&bins, nx * ny);
+        grid.start = start;
+        grid.ids = ids;
+        grid
+    }
+
+    /// Bin holding world point `(x, y)`, clamped to the grid.
+    pub fn bin_of(&self, x: f32, y: f32) -> (usize, usize) {
+        let ix = ((x - self.origin.0) / self.bin).floor().max(0.) as usize;
+        let iy = ((y - self.origin.1) / self.bin).floor().max(0.) as usize;
+        (ix.min(self.nx - 1), iy.min(self.ny - 1))
+    }
+
+    fn bin_id(&self, x: f32, y: f32) -> u32 {
+        let (ix, iy) = self.bin_of(x, y);
+        (iy * self.nx + ix) as u32
+    }
+
+    /// Cells in bin `(ix, iy)`.
+    pub fn cells(&self, ix: usize, iy: usize) -> &[u32] {
+        let b = iy * self.nx + ix;
+        &self.ids[self.start[b] as usize..self.start[b + 1] as usize]
+    }
+}
+
+/// Counting sort of items by bin: CSR offsets (`n_bins + 1`) and item ids.
+fn bucket(bins: &[u32], n_bins: usize) -> (Vec<u32>, Vec<u32>) {
+    let mut start = vec![0u32; n_bins + 1];
+    for &b in bins {
+        start[b as usize + 1] += 1;
+    }
+    for i in 0..n_bins {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut ids = vec![0u32; bins.len()];
+    for (i, &b) in bins.iter().enumerate() {
+        let slot = &mut fill[b as usize];
+        ids[*slot as usize] = i as u32;
+        *slot += 1;
+    }
+    (start, ids)
+}
+
+/// Edges bucketed by the grid bin of their first endpoint. A view reads the
+/// bins it covers, widened by `max_len`, the longest edge.
+pub struct EdgeIndex {
+    nx: usize,
+    start: Vec<u32>,
+    ids: Vec<u32>,
+    pub max_len: f32,
+}
+
+impl EdgeIndex {
+    pub fn build(grid: &Grid, x: &[f32], y: &[f32], edges: &Edges) -> Self {
+        let bins: Vec<u32> = edges
+            .a
+            .iter()
+            .map(|&a| grid.bin_id(x[a as usize], y[a as usize]))
+            .collect();
+        let (start, ids) = bucket(&bins, grid.nx * grid.ny);
+        let max_len = edges
+            .a
+            .iter()
+            .zip(&edges.b)
+            .map(|(&a, &b)| {
+                let (a, b) = (a as usize, b as usize);
+                (x[a] - x[b]).hypot(y[a] - y[b])
+            })
+            .fold(0f32, f32::max);
+        EdgeIndex {
+            nx: grid.nx,
+            start,
+            ids,
+            max_len,
+        }
+    }
+
+    /// Edges whose first endpoint is in bin `(ix, iy)`.
+    pub fn edges(&self, ix: usize, iy: usize) -> &[u32] {
+        let b = iy * self.nx + ix;
+        &self.ids[self.start[b] as usize..self.start[b + 1] as usize]
+    }
+}
+
+/// One pyramid level: `nx × ny` bins of side `bin`.
+pub struct PyramidLevel {
+    pub nx: usize,
+    pub ny: usize,
+    pub bin: f32,
+    pub count: Vec<u32>,
+    /// Summed propensity, `nx·ny × k`.
+    pub prop: Vec<f32>,
+    /// Summed normalized entropy (0 when the level has none).
+    pub entropy: Vec<f32>,
+    /// Community with the largest summed propensity, [`NO_CLUSTER`] if empty.
+    pub top: Vec<u16>,
+}
+
+impl PyramidLevel {
+    fn empty(nx: usize, ny: usize, bin: f32, k: usize) -> Self {
+        let nb = nx * ny;
+        PyramidLevel {
+            nx,
+            ny,
+            bin,
+            count: vec![0; nb],
+            prop: vec![0.; nb * k],
+            entropy: vec![0.; nb],
+            top: vec![NO_CLUSTER; nb],
+        }
+    }
+
+    fn set_top(&mut self, k: usize) {
+        let prop = &self.prop;
+        self.top.par_iter_mut().enumerate().for_each(|(b, top)| {
+            *top = argmax(&prop[b * k..(b + 1) * k]);
+        });
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.count.len() * 4 + self.prop.len() * 4 + self.entropy.len() * 4 + self.top.len() * 2
+    }
+}
+
+fn argmax(v: &[f32]) -> u16 {
+    let mut best = NO_CLUSTER;
+    let mut best_v = 0f32;
+    for (c, &p) in v.iter().enumerate() {
+        if p > best_v {
+            best_v = p;
+            best = c as u16;
+        }
+    }
+    best
+}
+
+/// Level 0 is the [`Grid`] itself; each next level merges 2×2 bins, down
+/// to a single bin.
+pub struct Pyramid {
+    pub levels: Vec<PyramidLevel>,
+}
+
+impl Pyramid {
+    pub fn build(grid: &Grid, comm: &Communities) -> Self {
+        let k = comm.k;
+        let mut base = PyramidLevel::empty(grid.nx, grid.ny, grid.bin, k);
+        let nx = grid.nx;
+
+        base.prop
+            .par_chunks_mut(k.max(1))
+            .zip(base.count.par_iter_mut())
+            .zip(base.entropy.par_iter_mut())
+            .enumerate()
+            .for_each(|(b, ((prop, count), ent))| {
+                let cells = grid.cells(b % nx, b / nx);
+                *count = cells.len() as u32;
+                for &i in cells {
+                    let i = i as usize;
+                    let row = &comm.prop[i * k..(i + 1) * k];
+                    for (acc, &q) in prop.iter_mut().zip(row) {
+                        *acc += q as f32 / 255.;
+                    }
+                    if let Some(h) = comm.entropy.as_ref() {
+                        *ent += h[i] as f32 / 255.;
+                    }
+                }
+            });
+        base.set_top(k);
+
+        let mut levels = vec![base];
+        loop {
+            let prev = levels.last().expect("non-empty");
+            if prev.nx == 1 && prev.ny == 1 {
+                break;
+            }
+            let next = coarsen(prev, k);
+            levels.push(next);
+        }
+        Pyramid { levels }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.levels.iter().map(PyramidLevel::bytes).sum()
+    }
+}
+
+fn coarsen(prev: &PyramidLevel, k: usize) -> PyramidLevel {
+    let nx = prev.nx.div_ceil(2);
+    let ny = prev.ny.div_ceil(2);
+    let mut next = PyramidLevel::empty(nx, ny, prev.bin * 2., k);
+
+    next.prop
+        .par_chunks_mut(k.max(1))
+        .zip(next.count.par_iter_mut())
+        .zip(next.entropy.par_iter_mut())
+        .enumerate()
+        .for_each(|(b, ((prop, count), ent))| {
+            let (bx, by) = (b % nx, b / nx);
+            for (cx, cy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let (px, py) = (2 * bx + cx, 2 * by + cy);
+                if px >= prev.nx || py >= prev.ny {
+                    continue;
+                }
+                let pb = py * prev.nx + px;
+                *count += prev.count[pb];
+                *ent += prev.entropy[pb];
+                for (acc, &p) in prop.iter_mut().zip(&prev.prop[pb * k..(pb + 1) * k]) {
+                    *acc += p;
+                }
+            }
+        });
+    next.set_top(k);
+    next
+}

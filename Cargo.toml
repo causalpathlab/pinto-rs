@@ -22,7 +22,9 @@ name = "pinto"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["view"]
+# `pinto view`: multi-resolution viewer for pinto outputs.
+view = ["dep:png"]
 cuda = [
     "legume-numeric/cuda",
     "data-beans/cuda",
@@ -62,3 +64,4 @@ indicatif = { version = "^0.18", features = ["rayon"] }
 log = "0.4"
 colored = "3"
 rustc-hash = "2.1"
+png = { version = "0.18", optional = true }
