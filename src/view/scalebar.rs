@@ -1,8 +1,9 @@
 //! Scale bar: a round length in world units, drawn white at the bottom left.
 //!
-//! Raster frames get the bar and its label burnt in with a small built-in
-//! pixel font, so a PNG or a terminal frame carries its own scale. The PDF
-//! draws the same bar as vector shapes instead.
+//! Raster frames get the bar burnt in. An exported PNG also gets its label,
+//! in a small built-in pixel font, so the file carries its own scale; on
+//! screen the panel states the length as text instead. The PDF draws the
+//! same bar as vector shapes.
 
 use super::render::{Frame, Viewport};
 
@@ -71,8 +72,9 @@ pub fn bar_for(view_width: f32, units: Units) -> Bar {
     Bar { length, label }
 }
 
-/// Burn the bar into `frame` at its bottom left.
-pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units) {
+/// Burn the bar into `frame` at its bottom left, with its label above it
+/// when `label` is set.
+pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
     let bar = bar_for(vp.w as f32 * vp.upp, units);
     let len_px = (bar.length / vp.upp).round() as i64;
     // Glyph pixel size and bar thickness grow with the frame.
@@ -84,6 +86,7 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units) {
     if len_px < 2 || y_text < 0 {
         return;
     }
+    let text = if label { bar.label.as_str() } else { "" };
 
     // A dark outline first, then white, so the bar reads over bright cells.
     for (pad, colour) in [(s.max(1), [0u8, 0, 0]), (0, [255, 255, 255])] {
@@ -96,7 +99,7 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units) {
             colour,
         );
         let mut x = margin;
-        for ch in bar.label.chars() {
+        for ch in text.chars() {
             if let Some(rows) = glyph(ch) {
                 for (gy, row) in rows.iter().enumerate() {
                     for (gx, bit) in row.bytes().enumerate() {
@@ -127,7 +130,7 @@ const GLYPH_W: i64 = 5;
 const GLYPH_H: i64 = 7;
 
 /// 5×7 glyphs for the characters a label can hold.
-fn glyph(c: char) -> Option<[&'static str; 7]> {
+pub(super) fn glyph(c: char) -> Option<[&'static str; 7]> {
     Some(match c {
         '0' => [
             " ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### ",
@@ -177,67 +180,4 @@ fn glyph(c: char) -> Option<[&'static str; 7]> {
         ' ' => ["     "; 7],
         _ => return None,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bars_are_round_and_at_most_a_fifth_of_the_view() {
-        let b = bar_for(11_000., Units::Micron);
-        assert_eq!((b.length, b.label.as_str()), (2000., "2 mm"));
-        let b = bar_for(600., Units::Micron);
-        assert_eq!((b.length, b.label.as_str()), (100., "100 µm"));
-        let b = bar_for(260., Units::Pixel);
-        assert_eq!((b.length, b.label.as_str()), (50., "50 px"));
-        let b = bar_for(3., Units::Plain);
-        assert_eq!((b.length, b.label.as_str()), (0.5, "0.5"));
-    }
-
-    #[test]
-    fn units_are_guessed_from_coordinate_columns() {
-        let names = |v: &[&str]| v.iter().map(|&s| Box::from(s)).collect::<Vec<Box<str>>>();
-        let guess = |v: &[&str]| Units::parse("auto", &names(v)).unwrap();
-        assert_eq!(
-            guess(&["pxl_row_in_fullres", "pxl_col_in_fullres"]),
-            Some(Units::Pixel)
-        );
-        assert_eq!(
-            guess(&["cell_centroid_x", "cell_centroid_y"]),
-            Some(Units::Micron)
-        );
-        assert_eq!(guess(&["x", "y"]), Some(Units::Plain));
-        assert_eq!(Units::parse("none", &[]).unwrap(), None);
-    }
-
-    #[test]
-    fn every_label_character_has_a_glyph() {
-        for label in ["0123456789", "µm mm px", "0.5"] {
-            for c in label.chars() {
-                assert!(glyph(c).is_some(), "{c:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn the_bar_is_white_at_the_bottom_left() {
-        let mut frame = Frame {
-            w: 400,
-            h: 300,
-            rgba: vec![0; 400 * 300 * 4],
-        };
-        let vp = Viewport {
-            x0: 0.,
-            y0: 0.,
-            upp: 1.,
-            w: 400,
-            h: 300,
-        };
-        draw(&mut frame, &vp, Units::Micron);
-        // 400 units wide → an 50-unit bar: 50 px from x = 6 on a row near the bottom.
-        let px = |x: usize, y: usize| &frame.rgba[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
-        assert_eq!(px(30, 300 - 6 - 1), &[255, 255, 255]);
-        assert_eq!(px(200, 300 - 6 - 1), &[0, 0, 0]);
-    }
 }

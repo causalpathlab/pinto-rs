@@ -517,18 +517,21 @@ pub fn read_feature_community(path: &Path) -> anyhow::Result<(Mat, Vec<Box<str>>
     // lc writes long format: (feature, community, mean) triples. cage /
     // cage-mcmc write `feature_dictionary.parquet` in wide format:
     // one row per feature, one column per cluster. Dispatch on schema.
-    // The row-name column is `feature`; older files wrote `gene`.
+    // The row-name column is `feature`; older files wrote `gene`. Likewise
+    // `community` was `topic` in older `{prefix}.gene_topic.parquet` files.
     let name_col = ["feature", "gene"]
         .into_iter()
         .find(|c| name_to_idx.contains_key(*c));
-    let has_long = name_col.is_some()
-        && name_to_idx.contains_key("community")
-        && name_to_idx.contains_key("mean");
-    if !has_long {
+    let community_col = ["community", "topic"]
+        .into_iter()
+        .find(|c| name_to_idx.contains_key(*c));
+    let (Some(name_col), Some(community_col), true) =
+        (name_col, community_col, name_to_idx.contains_key("mean"))
+    else {
         return read_feature_community_wide(path, &reader, &name_to_idx);
-    }
-    let feature_idx = name_to_idx[&Box::<str>::from(name_col.unwrap_or("feature"))];
-    let community_idx = name_to_idx[&Box::<str>::from("community")];
+    };
+    let feature_idx = name_to_idx[&Box::<str>::from(name_col)];
+    let community_idx = name_to_idx[&Box::<str>::from(community_col)];
     let mean_idx = name_to_idx[&Box::<str>::from("mean")];
 
     let mut feature_pos: HashMap<Box<str>, usize> = HashMap::default();

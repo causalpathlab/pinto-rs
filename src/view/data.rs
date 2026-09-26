@@ -7,7 +7,7 @@
 
 use super::markers::FeatureRates;
 use crate::util::common::*;
-use crate::util::metadata::{LevelInfo, PintoMetadata};
+use crate::util::metadata::{LevelInfo, OutputFiles, PintoMetadata};
 use crate::util::parquet_io::{
     read_cells_from_coord_pairs, read_feature_community, read_link_community, read_propensity,
     CellTable, PropensityRead,
@@ -64,21 +64,30 @@ impl Rect {
     }
 }
 
-/// A pinto run on disk, located through its `.pinto.json`.
+/// A pinto run on disk, located through its `.pinto.json`, or, for a run
+/// without one, through the `{prefix}.*.parquet` file names it wrote.
 pub struct Run {
+    /// `{prefix}.pinto.json`; it need not exist when `inferred`.
     pub manifest: PathBuf,
     pub meta: PintoMetadata,
+    /// No manifest: outputs were found by file name.
+    pub inferred: bool,
     /// Community levels, coarse cascade levels first and `final` last.
     pub levels: Vec<LevelInfo>,
 }
 
 impl Run {
     /// Open `{prefix}.pinto.json`, or the manifest itself when given one.
+    /// A prefix without a manifest falls back to [`Run::infer`].
     pub fn open(prefix_or_manifest: &str) -> anyhow::Result<Self> {
         let manifest = if prefix_or_manifest.ends_with(".pinto.json") {
             PathBuf::from(prefix_or_manifest)
         } else {
-            PathBuf::from(format!("{prefix_or_manifest}.pinto.json"))
+            let manifest = PathBuf::from(format!("{prefix_or_manifest}.pinto.json"));
+            if !manifest.exists() {
+                return Self::infer(prefix_or_manifest);
+            }
+            manifest
         };
         let meta = PintoMetadata::read(&manifest)
             .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", manifest.display()))?;
@@ -105,6 +114,89 @@ impl Run {
         Ok(Run {
             manifest,
             meta,
+            inferred: false,
+            levels,
+        })
+    }
+
+    /// A run without a manifest, from the files named `{prefix}.…`:
+    /// `coord_pairs`, then one level per `L{n}.propensity` in `n` order and
+    /// `final` for the bare `propensity`, each with its `link_community` and
+    /// `feature_community` (`gene_topic` in older runs) when present.
+    pub fn infer(prefix: &str) -> anyhow::Result<Self> {
+        let named = |stem: &str, what: &str| -> Option<String> {
+            let path = format!("{stem}.{what}.parquet");
+            Path::new(&path).exists().then_some(path)
+        };
+        let coord_pairs = named(prefix, "coord_pairs").ok_or_else(|| {
+            anyhow::anyhow!("neither {prefix}.pinto.json nor {prefix}.coord_pairs.parquet exists")
+        })?;
+
+        let path = Path::new(prefix);
+        let dir = match path.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => Path::new("."),
+        };
+        let base = path.file_name().map(|n| n.to_string_lossy().to_string());
+        let mut cascade: Vec<usize> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let rest = name.strip_prefix(&format!("{}.L", base.as_deref()?))?;
+                rest.strip_suffix(".propensity.parquet")?.parse().ok()
+            })
+            .collect();
+        cascade.sort_unstable();
+
+        let level = |tag: String, stem: String, index: usize| -> Option<LevelInfo> {
+            Some(LevelInfo {
+                tag,
+                level_index: index,
+                propensity: named(&stem, "propensity")?,
+                link_community: named(&stem, "link_community"),
+                feature_community: named(&stem, "feature_community")
+                    .or_else(|| named(&stem, "gene_topic")),
+                entropy_present: None,
+            })
+        };
+        let mut levels: Vec<LevelInfo> = cascade
+            .iter()
+            .filter_map(|&l| level(format!("L{l}"), format!("{prefix}.L{l}"), l))
+            .collect();
+        let tail = cascade.last().map_or(0, |l| l + 1);
+        levels.extend(level("final".into(), prefix.to_string(), tail));
+        anyhow::ensure!(
+            !levels.is_empty(),
+            "{prefix}: no .pinto.json and no {prefix}.propensity.parquet or L<n> levels"
+        );
+
+        let last = levels.last().expect("non-empty");
+        let meta = PintoMetadata {
+            command: "?".into(),
+            version: "?".into(),
+            timestamp: String::new(),
+            prefix: prefix.to_string(),
+            data_files: None,
+            coord_file: None,
+            n_cells: 0,
+            n_features: 0,
+            n_edges: None,
+            n_communities: None,
+            graph: None,
+            splice: None,
+            outputs: OutputFiles {
+                coord_pairs: Some(coord_pairs),
+                propensity: Some(last.propensity.clone()),
+                link_community: last.link_community.clone(),
+                feature_community: last.feature_community.clone(),
+                ..Default::default()
+            },
+            levels: Some(levels.clone()),
+        };
+        Ok(Run {
+            manifest: PathBuf::from(format!("{prefix}.pinto.json")),
+            meta,
+            inferred: true,
             levels,
         })
     }
