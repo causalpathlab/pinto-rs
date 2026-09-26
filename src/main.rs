@@ -8,6 +8,8 @@ mod predict;
 mod propensity;
 mod svd;
 mod util;
+#[cfg(feature = "view")]
+mod view;
 
 #[cfg(test)]
 mod test_support;
@@ -63,6 +65,8 @@ fn print_logo() {
                   \x20       SVD on pseudobulk co-expression.\n\n\
                   \x20 prop  Propensity (standalone)\n\
                   \x20       Re-cut a cage/dsvd edge latent at a different K.\n\n\
+                  \x20 view  Viewer (multi-resolution)\n\
+                  \x20       Zoomable map of a run's communities, in the terminal.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -475,7 +479,6 @@ enum Commands {
     )]
     Impute(ImputeArgs),
 
-
     #[command(
         aliases = ["lra", "test-lr"],
         about = "Posthoc ligand-receptor co-activity test per link community",
@@ -624,6 +627,22 @@ enum Commands {
                       \x20 Freeze them alongside any analysis of these scores."
     )]
     LrActivity(SrtLrActivityArgs),
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "View a run's communities on the tissue (multi-resolution)",
+        long_about = "View a pinto run's cells and communities on the tissue.\n\n\
+                      Reads {prefix}.pinto.json and the parquet files it lists:\n\
+                      \x20 coord_pairs      cell coordinates (and batch labels)\n\
+                      \x20 propensity       per-cell community mixture, per level\n\
+                      \x20 link_community   per-edge community labels\n\n\
+                      Batches share one coordinate frame, so they are tiled\n\
+                      side by side rather than drawn on top of each other.\n\n\
+                      Examples:\n\
+                      \x20 pinto view results --summary\n\
+                      \x20 pinto view results.pinto.json --level L2 --summary"
+    )]
+    View(view::ViewArgs),
 }
 
 /// Expand `pinto lra --from <.pinto.json>` into the full positional /
@@ -768,6 +787,10 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::LrActivity(args) => {
             fit_srt_lr_activity(args)?;
+        }
+        #[cfg(feature = "view")]
+        Commands::View(args) => {
+            view::run_view(args)?;
         }
     }
 
