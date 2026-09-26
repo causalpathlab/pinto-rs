@@ -18,7 +18,6 @@
 use super::color::{self, Ramp, Rgb, BACKGROUND, DIMMED, NO_COMMUNITY};
 use super::data::{Communities, Edges, Geometry, Rect};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
-use super::scalebar::{self, Units};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
 use std::ops::RangeInclusive;
@@ -182,9 +181,6 @@ pub struct Style<'f> {
     /// Communities to show, one flag per community; the rest are dimmed and
     /// their edges hidden. `None` shows every community.
     pub focus: Option<&'f [bool]>,
-    /// Burn a scale bar in these units into the frame, without its label:
-    /// the terminal panel states the length as text.
-    pub scale_bar: Option<Units>,
 }
 
 /// Colours for one layer, shared by the point, average and bin paths.
@@ -410,9 +406,6 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
                 },
             );
         }
-    }
-    if let Some(units) = style.scale_bar {
-        scalebar::draw(&mut frame, vp, units, false);
     }
     frame
 }

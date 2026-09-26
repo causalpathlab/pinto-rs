@@ -102,7 +102,7 @@ fn a_run_without_a_manifest_is_found_by_file_name() {
     }
 
     let run = Run::open(&prefix).unwrap();
-    assert!(run.inferred);
+    assert!(run.manifest.is_none());
     let tags: Vec<&str> = run.levels.iter().map(|l| l.tag.as_str()).collect();
     assert_eq!(tags, ["L2", "L10", "final"]);
     let l2 = &run.levels[0];

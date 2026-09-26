@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PintoMetadata {
     pub command: String,
     pub version: String,
@@ -329,6 +329,92 @@ impl PintoMetadata {
         let json = std::fs::read_to_string(path)?;
         let meta: PintoMetadata = serde_json::from_str(&json)?;
         Ok(meta)
+    }
+
+    /// The run's levels. Manifests from before `levels` name one
+    /// propensity table; that is the only level, `final`.
+    pub fn level_list(&self) -> Vec<LevelInfo> {
+        match &self.levels {
+            Some(levels) if !levels.is_empty() => levels.clone(),
+            _ => self
+                .outputs
+                .propensity
+                .iter()
+                .map(|propensity| LevelInfo {
+                    tag: "final".to_string(),
+                    level_index: 0,
+                    propensity: propensity.clone(),
+                    link_community: self.outputs.link_community.clone(),
+                    feature_community: self.outputs.feature_community.clone(),
+                    entropy_present: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Rebuild what the manifest of a run without one would list, from the
+    /// `{prefix}.…` files that exist: `coord_pairs`, a level per
+    /// `L{n}.propensity` and `final` for the bare `propensity`, named by the
+    /// same rules the writers use ([`lc_level_info`], [`final_level_info`]).
+    /// Older runs wrote `gene_topic` for `feature_community`.
+    pub fn discover(prefix: &str) -> anyhow::Result<Self> {
+        let exists = |p: &str| Path::new(p).exists();
+        let coord_pairs = format!("{prefix}.coord_pairs.parquet");
+        anyhow::ensure!(
+            exists(&coord_pairs),
+            "neither {prefix}.pinto.json nor {coord_pairs} exists"
+        );
+
+        let path = Path::new(prefix);
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let cascade_head = format!(
+            "{}.L",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let mut cascade: Vec<usize> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let rest = name.strip_prefix(&cascade_head)?;
+                rest.strip_suffix(".propensity.parquet")?.parse().ok()
+            })
+            .collect();
+        cascade.sort_unstable();
+        let tail = cascade.last().map_or(0, |l| l + 1);
+
+        let keep = |p: Option<String>| p.filter(|p| exists(p));
+        let levels: Vec<LevelInfo> = cascade
+            .iter()
+            .map(|&l| lc_level_info(prefix, l))
+            .chain(std::iter::once(final_level_info(prefix, tail)))
+            .filter(|l| exists(&l.propensity))
+            .map(|l| LevelInfo {
+                link_community: keep(l.link_community),
+                feature_community: keep(l.feature_community).or_else(|| {
+                    let stem = l.propensity.strip_suffix(".propensity.parquet")?;
+                    keep(Some(format!("{stem}.gene_topic.parquet")))
+                }),
+                entropy_present: None,
+                ..l
+            })
+            .collect();
+        anyhow::ensure!(
+            !levels.is_empty(),
+            "{prefix}: no .pinto.json, and no propensity levels"
+        );
+
+        Ok(PintoMetadata {
+            prefix: prefix.to_string(),
+            outputs: OutputFiles {
+                coord_pairs: Some(coord_pairs),
+                ..Default::default()
+            },
+            levels: Some(levels),
+            ..Default::default()
+        })
     }
 }
 

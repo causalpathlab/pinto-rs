@@ -1,3 +1,4 @@
+mod cellart;
 mod color;
 mod data;
 mod fixture;

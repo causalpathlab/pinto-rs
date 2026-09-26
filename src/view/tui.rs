@@ -2,12 +2,13 @@
 //!
 //! The map is drawn by [`render`] at the pixel size of its cells and shown
 //! through the terminal's graphics protocol: our own kitty transport
-//! ([`kitty`]), ratatui-image for sixel/iTerm2, or half-block characters
-//! (two pixels per cell) anywhere else.
+//! ([`kitty`]), ratatui-image for sixel/iTerm2, or coloured block characters
+//! ([`cellart`], 2×2 pixels per cell) anywhere else.
 //!
 //! Input is drained before each redraw, so a burst of scroll or drag events
 //! costs one frame, not one per event.
 
+use super::cellart::{rgb, Cells, Glyphs};
 use super::color::{Ramp, Rgb, DIMMED};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
@@ -15,9 +16,9 @@ use super::kitty::{Kitty, Transport};
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::scalebar;
 use super::{
-    focused, ids, legend_line, markers, thousands, write_outputs, Base, Level, ViewArgs, FIT_MARGIN,
+    focused, ids, legend_line, markers, thousands, write_outputs, Base, Graphics, Level, ViewArgs,
+    FIT_MARGIN,
 };
-use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -26,7 +27,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style as TStyle};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
@@ -47,7 +48,7 @@ pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
 
     let mut terminal = ratatui::init();
     let result = (|| {
-        let gfx = Gfx::pick(&args.graphics)?;
+        let gfx = Gfx::pick(args.graphics);
         execute!(std::io::stdout(), EnableMouseCapture)?;
         let mut app = App::new(&base, level, args, gfx);
         app.run(&mut terminal)
@@ -62,40 +63,40 @@ enum Gfx {
     Kitty(Kitty),
     /// Sixel or iTerm2 through ratatui-image.
     Picker(Picker, Option<Protocol>),
-    /// Half-block characters.
-    Blocks(Option<Frame>),
+    /// Coloured block characters, fitted once per map change.
+    Cells(Glyphs, Option<Cells>),
 }
 
 impl Gfx {
-    fn pick(choice: &str) -> anyhow::Result<(Self, (f32, f32))> {
+    /// The drawing method for `choice`, and its frame pixels per cell.
+    fn pick(choice: Graphics) -> (Self, (f32, f32)) {
         let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
         let font = picker.font_size();
-        let px = (font.width.max(1) as f32, font.height.max(1) as f32);
-        let detected = picker.protocol_type();
-        let kind = match choice {
-            "auto" => detected,
-            "kitty" | "kitty-inline" => ProtocolType::Kitty,
-            "sixel" => ProtocolType::Sixel,
-            "iterm2" => ProtocolType::Iterm2,
-            "blocks" => ProtocolType::Halfblocks,
-            other => anyhow::bail!("unknown --graphics {other:?}"),
+        let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
+        let kitty = |transport| (Gfx::Kitty(Kitty::new(transport)), (fw, fh));
+        let cells = |glyphs: Glyphs| {
+            let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
+            (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
         };
-        Ok(match kind {
-            ProtocolType::Kitty => {
-                let transport = if choice == "kitty-inline" {
-                    Transport::Direct
-                } else {
-                    Transport::detect()
-                };
-                (Gfx::Kitty(Kitty::new(transport)), px)
-            }
-            ProtocolType::Halfblocks => (Gfx::Blocks(None), (1., 2.)),
-            other => {
-                let mut picker = picker;
-                picker.set_protocol_type(other);
-                (Gfx::Picker(picker, None), px)
-            }
-        })
+        let via_picker = |kind| {
+            let mut picker = picker.clone();
+            picker.set_protocol_type(kind);
+            (Gfx::Picker(picker, None), (fw, fh))
+        };
+        match choice {
+            Graphics::Kitty => kitty(Transport::detect()),
+            Graphics::KittyInline => kitty(Transport::Direct),
+            Graphics::Sixel => via_picker(ProtocolType::Sixel),
+            Graphics::Iterm2 => via_picker(ProtocolType::Iterm2),
+            Graphics::Quadrants => cells(Glyphs::Quadrants),
+            Graphics::Symbols => cells(Glyphs::Symbols),
+            Graphics::Blocks => cells(Glyphs::HalfBlocks),
+            Graphics::Auto => match picker.protocol_type() {
+                ProtocolType::Kitty => kitty(Transport::detect()),
+                ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
+                other => via_picker(other),
+            },
+        }
     }
 
     fn name(&self) -> String {
@@ -105,7 +106,7 @@ impl Gfx {
                 Transport::Direct => "kitty (inline)".into(),
             },
             Gfx::Picker(p, _) => format!("{:?}", p.protocol_type()).to_lowercase(),
-            Gfx::Blocks(_) => "half-blocks".into(),
+            Gfx::Cells(glyphs, _) => glyphs.name().into(),
         }
     }
 }
@@ -576,14 +577,10 @@ impl<'a> App<'a> {
         // the redraw repeats this arithmetic and matches pixel for pixel.
         let window = vp.window();
         let hi = Viewport::fit(window, w, h);
-        let style = Style {
-            scale_bar: None,
-            ..self.style()
-        };
         write_outputs(
             self.base,
             self.level(),
-            &style,
+            &self.style(),
             &hi,
             Some(png.as_ref()),
             Some(pdf.as_ref()),
@@ -627,7 +624,7 @@ impl<'a> App<'a> {
         writeln!(out, "# pinto view export").ok();
         writeln!(out, "image    {png} ({}×{}), {pdf}", vp.w, vp.h).ok();
         writeln!(out, "redraw   {cmd}").ok();
-        writeln!(out, "run      {}", self.base.run.manifest.display()).ok();
+        writeln!(out, "run      {}", self.base.run.source()).ok();
         writeln!(out, "level    {} (K={})", comm.tag, comm.k).ok();
         writeln!(out, "layer    {}", self.layer).ok();
         writeln!(out, "scale    {:.4} units/px", vp.upp).ok();
@@ -663,7 +660,6 @@ impl<'a> App<'a> {
             layer: self.layer,
             edges: self.edges,
             focus: self.focus(),
-            scale_bar: self.base.units,
         }
     }
 
@@ -679,14 +675,24 @@ impl<'a> App<'a> {
             let level = self.level();
             let scene = self.base.scene(level);
             let t = Instant::now();
-            let frame = render::render(&scene, &vp, &self.style(), &level.palette);
+            let mut frame = render::render(&scene, &vp, &self.style(), &level.palette);
+            // Unlabelled: the panel states the bar's length as text.
+            if let Some(units) = self.base.units {
+                scalebar::draw(&mut frame, &vp, units, false);
+            }
             let took = t.elapsed();
             let mode = render::mode(&scene, &vp);
             self.render_time = took;
             self.mode = mode;
             match &mut self.gfx {
                 Gfx::Kitty(_) => fresh = Some(frame),
-                Gfx::Blocks(slot) => *slot = Some(frame),
+                Gfx::Cells(glyphs, slot) => {
+                    let t = Instant::now();
+                    let (cols, rows) = (self.map.width as usize, self.map.height as usize);
+                    let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
+                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, cols, rows));
+                    self.send_time = t.elapsed();
+                }
                 Gfx::Picker(picker, proto) => {
                     let t = Instant::now();
                     let img =
@@ -713,7 +719,7 @@ impl<'a> App<'a> {
             f.render_widget(Paragraph::new(panel), side);
             match gfx {
                 Gfx::Picker(_, Some(proto)) => f.render_widget(Image::new(proto), map),
-                Gfx::Blocks(Some(frame)) => f.render_widget(HalfBlocks(frame), map),
+                Gfx::Cells(_, Some(cells)) => f.render_widget(cells, map),
                 _ => {}
             }
         })?;
@@ -972,34 +978,6 @@ fn help_lines(full: bool) -> Vec<Line<'static>> {
     text.iter().map(|t| Line::styled(*t, dim)).collect()
 }
 
-fn rgb(c: Rgb) -> Color {
-    Color::Rgb(c[0], c[1], c[2])
-}
-
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
-}
-
-/// A frame as `▀` cells: foreground is the upper pixel, background the lower.
-struct HalfBlocks<'f>(&'f Frame);
-
-impl Widget for HalfBlocks<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let f = self.0;
-        let px = |x: usize, y: usize| -> Color {
-            if x >= f.w || y >= f.h {
-                return Color::Reset;
-            }
-            let o = f.offset(x, y);
-            Color::Rgb(f.rgba[o], f.rgba[o + 1], f.rgba[o + 2])
-        };
-        for r in 0..area.height {
-            for c in 0..area.width {
-                if let Some(cell) = buf.cell_mut(Position::new(area.x + c, area.y + r)) {
-                    let (x, y) = (c as usize, 2 * r as usize);
-                    cell.set_char('▀').set_fg(px(x, y)).set_bg(px(x, y + 1));
-                }
-            }
-        }
-    }
 }

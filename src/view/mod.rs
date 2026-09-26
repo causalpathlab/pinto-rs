@@ -5,6 +5,7 @@
 //! [`render`] draws a viewport from them, so a frame costs about the number
 //! of screen pixels, not the number of cells.
 
+mod cellart;
 mod color;
 mod data;
 mod index;
@@ -160,19 +161,37 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        value_enum,
         default_value = "auto",
-        value_parser = ["auto", "kitty", "kitty-inline", "sixel", "iterm2", "blocks"],
         help = "How the map is drawn in the terminal",
         long_help = "How the map is drawn in the terminal:\n\
-                     \x20 auto          ask the terminal (default)\n\
+                     \x20 auto          ask the terminal (default); quadrants when it\n\
+                     \x20               has no graphics protocol\n\
                      \x20 kitty         kitty graphics; pixels go through a temp file,\n\
                      \x20               or inline when over ssh (kitty, Ghostty, WezTerm)\n\
                      \x20 kitty-inline  kitty graphics, always inline\n\
                      \x20 sixel         sixel graphics (iTerm2, WezTerm, foot, xterm)\n\
                      \x20 iterm2        iTerm2 inline images\n\
-                     \x20 blocks        coloured half-block characters, any terminal"
+                     \x20 quadrants     block characters, 2×2 pixels per character;\n\
+                     \x20               any terminal\n\
+                     \x20 symbols       block characters with boundaries at eighths of a\n\
+                     \x20               character: finer shapes, mixed colours averaged\n\
+                     \x20 blocks        half-blocks, 1×2 pixels per character"
     )]
-    pub graphics: String,
+    pub graphics: Graphics,
+}
+
+/// How the map reaches the terminal (`--graphics`).
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum Graphics {
+    Auto,
+    Kitty,
+    KittyInline,
+    Sixel,
+    Iterm2,
+    Quadrants,
+    Symbols,
+    Blocks,
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
@@ -320,7 +339,6 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         layer: args.layer,
         edges: args.edges,
         focus: focus.as_deref(),
-        scale_bar: None,
     };
 
     let t = Instant::now();
@@ -477,20 +495,12 @@ fn parse_focus(given: &[Box<str>], k: usize) -> anyhow::Result<Vec<bool>> {
 fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
     let run = Run::open(&args.prefix)?;
     let meta = &run.meta;
-    if run.inferred {
+    println!("run      {}", run.source());
+    if run.manifest.is_some() {
         println!(
-            "run      {} (no .pinto.json; outputs found by file name)",
-            meta.prefix
-        );
-    } else {
-        println!(
-            "run      {} ({} v{})",
-            run.manifest.display(),
+            "manifest {} v{}: {} cells, {} features, {} edges",
             meta.command,
-            meta.version
-        );
-        println!(
-            "manifest {} cells, {} features, {} edges",
+            meta.version,
             meta.n_cells,
             meta.n_features,
             meta.n_edges.map_or("?".to_string(), |e| e.to_string())

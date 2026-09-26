@@ -492,6 +492,19 @@ pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i6
     Ok((pairs, community, total_counts))
 }
 
+/// Feature-community column names, current first, then the names older runs
+/// wrote (`{prefix}.gene_topic.parquet` had `gene` and `topic`).
+const FEATURE_NAME_COLS: [&str; 2] = ["feature", "gene"];
+const COMMUNITY_COLS: [&str; 2] = ["community", "topic"];
+
+/// The first of `names` the schema has.
+fn first_present(
+    names: &[&'static str],
+    schema: &HashMap<Box<str>, usize>,
+) -> Option<&'static str> {
+    names.iter().copied().find(|c| schema.contains_key(*c))
+}
+
 /// Read a feature_community parquet: G × K. Returns (mat, feature_names).
 ///
 /// `pinto lc` writes this file in *melted* form (one row per
@@ -517,14 +530,8 @@ pub fn read_feature_community(path: &Path) -> anyhow::Result<(Mat, Vec<Box<str>>
     // lc writes long format: (feature, community, mean) triples. cage /
     // cage-mcmc write `feature_dictionary.parquet` in wide format:
     // one row per feature, one column per cluster. Dispatch on schema.
-    // The row-name column is `feature`; older files wrote `gene`. Likewise
-    // `community` was `topic` in older `{prefix}.gene_topic.parquet` files.
-    let name_col = ["feature", "gene"]
-        .into_iter()
-        .find(|c| name_to_idx.contains_key(*c));
-    let community_col = ["community", "topic"]
-        .into_iter()
-        .find(|c| name_to_idx.contains_key(*c));
+    let name_col = first_present(&FEATURE_NAME_COLS, &name_to_idx);
+    let community_col = first_present(&COMMUNITY_COLS, &name_to_idx);
     let (Some(name_col), Some(community_col), true) =
         (name_col, community_col, name_to_idx.contains_key("mean"))
     else {
@@ -624,17 +631,13 @@ fn read_feature_community_wide(
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let path_str = path.to_str().unwrap_or("<non-utf8>");
 
-    // Row-name column: `feature`, or `gene` from an older run.
-    let name_col_label: Box<str> = if name_to_idx.contains_key(&Box::<str>::from("feature")) {
-        "feature".into()
-    } else if name_to_idx.contains_key(&Box::<str>::from("gene")) {
-        "gene".into()
-    } else {
+    let Some(name_col) = first_present(&FEATURE_NAME_COLS, name_to_idx) else {
         anyhow::bail!(
             "{path_str}: feature dictionary is missing the row-name column \
              (expected `feature` or `gene`)"
         );
     };
+    let name_col_label: Box<str> = name_col.into();
     let name_idx = name_to_idx[&name_col_label];
 
     let mut col_to_community: Vec<(usize, i64)> = Vec::new();
