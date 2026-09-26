@@ -60,3 +60,16 @@ fn frames_alternate_ids_and_delete_the_previous_one() {
     assert!(second.contains(&format!("i={}", IDS[1])));
     assert!(second.contains(&format!("a=d,d=I,i={}", IDS[0])));
 }
+
+#[test]
+fn inside_tmux_commands_are_wrapped_with_escapes_doubled() {
+    let f = frame(2, 2);
+    let mut out = Vec::new();
+    let mut k = Kitty::new(Transport::Direct).through_tmux(true);
+    k.show(&mut out, &f, (0, 0), (1, 1)).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("\x1bPtmux;\x1b\x1b_G"));
+    assert!(text.contains("\x1b\x1b\\\x1b\\"));
+    // No graphics command escapes tmux unwrapped.
+    assert!(!text.replace("\x1b\x1b_G", "").contains("\x1b_G"));
+}

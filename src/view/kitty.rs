@@ -9,6 +9,12 @@
 //! of escape codes. Over ssh the terminal cannot read our files, so pixels are
 //! sent inline, zlib-compressed (`o=z`) and base64 encoded in 4 KB chunks.
 //! Every command carries `q=2` so kitty never answers into our input stream.
+//!
+//! Inside tmux, each command is wrapped in tmux's passthrough (`ESC P tmux;
+//! … ESC \`, inner escapes doubled), which tmux forwards to the terminal when
+//! its `allow-passthrough` option is on. tmux does not know about the image,
+//! so this is best effort; the viewer only uses it when asked for kitty
+//! explicitly.
 
 use super::render::Frame;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -45,6 +51,8 @@ impl Transport {
 
 pub struct Kitty {
     transport: Transport,
+    /// Wrap commands for tmux's passthrough.
+    tmux: bool,
     /// Index into `IDS` of the image on screen.
     shown: Option<usize>,
     /// Bytes written for the last frame.
@@ -55,6 +63,7 @@ impl Kitty {
     pub fn new(transport: Transport) -> Self {
         Kitty {
             transport,
+            tmux: false,
             shown: None,
             last_bytes: 0,
         }
@@ -62,6 +71,37 @@ impl Kitty {
 
     pub fn transport(&self) -> Transport {
         self.transport
+    }
+
+    /// Wrap commands for tmux's passthrough, or not.
+    pub fn through_tmux(mut self, on: bool) -> Self {
+        self.tmux = on;
+        self
+    }
+
+    /// Whether commands go through tmux's passthrough.
+    pub fn via_tmux(&self) -> bool {
+        self.tmux
+    }
+
+    /// Write one graphics command, `ESC _ G {body} ESC \`.
+    fn command(&self, out: &mut impl Write, body: &[u8]) -> std::io::Result<()> {
+        if self.tmux {
+            out.write_all(b"\x1bPtmux;\x1b\x1b_G")?;
+            // Escapes inside the passthrough are doubled.
+            for &b in body {
+                if b == 0x1b {
+                    out.write_all(b"\x1b\x1b")?;
+                } else {
+                    out.write_all(&[b])?;
+                }
+            }
+            out.write_all(b"\x1b\x1b\\\x1b\\")
+        } else {
+            out.write_all(b"\x1b_G")?;
+            out.write_all(body)?;
+            out.write_all(b"\x1b\\")
+        }
     }
 
     /// Place `frame` with its top-left at cell `(col, row)`, scaled to
@@ -86,7 +126,7 @@ impl Kitty {
                 let path = temp_path(slot);
                 std::fs::write(&path, &frame.rgba)?;
                 let payload = B64.encode(path.to_string_lossy().as_bytes());
-                write!(out, "\x1b_G{keys},t=t;{payload}\x1b\\")?;
+                self.command(out, format!("{keys},t=t;{payload}").as_bytes())?;
                 frame.rgba.len()
             }
             Transport::Direct => {
@@ -99,19 +139,18 @@ impl Kitty {
                 let chunks: Vec<&[u8]> = payload.as_bytes().chunks(CHUNK).collect();
                 for (i, chunk) in chunks.iter().enumerate() {
                     let more = u8::from(i + 1 < chunks.len());
-                    if i == 0 {
-                        write!(out, "\x1b_G{keys},t=d,o=z,m={more};")?;
+                    let head = if i == 0 {
+                        format!("{keys},t=d,o=z,m={more};")
                     } else {
-                        write!(out, "\x1b_Gm={more};")?;
-                    }
-                    out.write_all(chunk)?;
-                    out.write_all(b"\x1b\\")?;
+                        format!("m={more};")
+                    };
+                    self.command(out, &[head.as_bytes(), chunk].concat())?;
                 }
                 payload.len()
             }
         };
         if let Some(old) = self.shown {
-            write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", IDS[old])?;
+            self.command(out, format!("a=d,d=I,i={},q=2", IDS[old]).as_bytes())?;
         }
         // Restore the cursor saved above.
         write!(out, "\x1b8")?;
@@ -123,7 +162,7 @@ impl Kitty {
     /// Remove our images from the screen and free them.
     pub fn clear(&mut self, out: &mut impl Write) -> std::io::Result<()> {
         for id in IDS {
-            write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+            self.command(out, format!("a=d,d=I,i={id},q=2").as_bytes())?;
         }
         self.shown = None;
         out.flush()?;
@@ -134,6 +173,11 @@ impl Kitty {
         }
         Ok(())
     }
+}
+
+/// Running inside tmux.
+pub fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
 }
 
 /// Kitty only deletes files whose name says they are for it.

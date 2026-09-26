@@ -7,6 +7,7 @@
 
 use super::markers::FeatureRates;
 use crate::util::common::*;
+use crate::util::input::read_one_coord_file;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
 use crate::util::parquet_io::{
     read_cells_from_coord_pairs, read_feature_community, read_link_community, read_propensity,
@@ -173,11 +174,48 @@ impl Run {
                 self.source()
             )
         })?;
-        let cells = read_cells_from_coord_pairs(
+        let mut cells = read_cells_from_coord_pairs(
             &self.resolve(pairs),
             self.meta.outputs.coord_columns.as_deref(),
         )?;
+        self.add_cells_without_edges(&mut cells);
         Ok(Geometry::from_cells(cells))
+    }
+
+    /// `coord_pairs` only names cells with an edge. The coordinate file the
+    /// run was fit with has every cell; add the rest from it. Only for a
+    /// single batch: the file does not say which batch a lone cell is in.
+    fn add_cells_without_edges(&self, cells: &mut CellTable) {
+        let Some(file) = self.meta.coord_file.as_deref() else {
+            return;
+        };
+        if cells.batches.is_some() || file.contains(',') {
+            return;
+        }
+        let path = self.resolve(file);
+        let read = read_one_coord_file(&path.to_string_lossy(), &[], &cells.coord_col_names, None);
+        let coords = match read {
+            Ok(coords) if coords.mat.ncols() >= 2 => coords,
+            Ok(_) => return,
+            Err(e) => {
+                log::warn!("{}: {e}; cells without edges are left out", path.display());
+                return;
+            }
+        };
+        let before = cells.names.len();
+        for (r, name) in coords.rows.iter().enumerate() {
+            if !cells.index.contains_key(name) {
+                cells.index.insert(name.clone(), cells.names.len());
+                cells.names.push(name.clone());
+                cells.coords.push((coords.mat[(r, 0)], coords.mat[(r, 1)]));
+            }
+        }
+        log::info!(
+            "{} cells outside the graph (dropped by QC, or without neighbours) \
+             added from {}",
+            cells.names.len() - before,
+            path.display()
+        );
     }
 
     pub fn load_communities(

@@ -13,7 +13,7 @@ use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::{Kitty, Transport};
+use super::kitty::{self, Kitty, Transport};
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::scalebar;
 use super::{
@@ -95,7 +95,10 @@ impl Gfx {
         });
         let font = picker.font_size();
         let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
-        let kitty = |transport| (Gfx::Kitty(Kitty::new(transport)), (fw, fh));
+        let kitty = |transport| {
+            let kitty = Kitty::new(transport).through_tmux(kitty::in_tmux());
+            (Gfx::Kitty(kitty), (fw, fh))
+        };
         let cells = |glyphs: Glyphs| {
             let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
             (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
@@ -113,6 +116,9 @@ impl Gfx {
             Graphics::Quadrants => cells(Glyphs::Quadrants),
             Graphics::Symbols => cells(Glyphs::Symbols),
             Graphics::Blocks => cells(Glyphs::HalfBlocks),
+            // tmux passes kitty graphics through only with allow-passthrough,
+            // and then only as best effort: block characters always work.
+            Graphics::Auto if kitty::in_tmux() => cells(Glyphs::Quadrants),
             Graphics::Auto => match picker.protocol_type() {
                 ProtocolType::Kitty => kitty(Transport::detect()),
                 ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
@@ -124,10 +130,14 @@ impl Gfx {
 
     fn name(&self) -> String {
         match self {
-            Gfx::Kitty(k) => match k.transport() {
-                Transport::File => "kitty (file)".into(),
-                Transport::Direct => "kitty (inline)".into(),
-            },
+            Gfx::Kitty(k) => {
+                let how = match k.transport() {
+                    Transport::File => "file",
+                    Transport::Direct => "inline",
+                };
+                let tmux = if k.via_tmux() { ", tmux" } else { "" };
+                format!("kitty ({how}{tmux})")
+            }
             Gfx::Picker(p, _) => format!("{:?}", p.protocol_type()).to_lowercase(),
             Gfx::Cells(glyphs, _) => glyphs.name().into(),
         }

@@ -214,10 +214,11 @@ pub struct ViewArgs {
         help = "How the map is drawn in the terminal",
         long_help = "How the map is drawn in the terminal:\n\
                      \x20 auto          ask the terminal (default); quadrants when it\n\
-                     \x20               has no graphics protocol\n\
+                     \x20               has no graphics protocol, and inside tmux\n\
                      \x20 kitty         kitty graphics; pixels go through a temp file,\n\
                      \x20               or inline when over ssh (kitty, Ghostty, WezTerm)\n\
                      \x20 kitty-inline  kitty graphics, always inline\n\
+                     \x20               (in tmux, kitty needs `set -g allow-passthrough on`)\n\
                      \x20 sixel         sixel graphics (iTerm2, WezTerm, foot, xterm)\n\
                      \x20 iterm2        iTerm2 inline images\n\
                      \x20 quadrants     block characters, 2×2 pixels per character;\n\

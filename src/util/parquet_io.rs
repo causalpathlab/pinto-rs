@@ -6,9 +6,13 @@
 //! optional batch)`.
 
 use crate::util::common::*;
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef};
 use data_beans::hdf5_io::strip_backend_suffix;
 use legume_numeric::matrix::common_io::basename;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ProjectionMask;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::{Row, RowAccessor};
 use std::fs::File;
@@ -83,6 +87,110 @@ fn row_f32(row: &Row, idx: usize) -> anyhow::Result<f32> {
         return Ok(v as f32);
     }
     anyhow::bail!("column {idx} is not a numeric type")
+}
+
+/// Named columns of a parquet file, read column-wise through Arrow: each as
+/// the chunks (record batches) it came in, in the order of `names`.
+fn read_named_columns(path: &Path, names: &[&str]) -> anyhow::Result<Vec<Vec<ArrayRef>>> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let schema = builder.parquet_schema();
+    let leaves = names
+        .iter()
+        .map(|n| {
+            (0..schema.num_columns())
+                .find(|&i| schema.column(i).name() == *n)
+                .ok_or_else(|| anyhow::anyhow!("column {n} missing in {path:?}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mask = ProjectionMask::leaves(schema, leaves);
+    let reader = builder
+        .with_projection(mask)
+        .with_batch_size(1 << 16)
+        .build()?;
+    let mut out = vec![Vec::new(); names.len()];
+    for batch in reader {
+        let batch = batch?;
+        for (k, n) in names.iter().enumerate() {
+            let col = batch
+                .column_by_name(n)
+                .ok_or_else(|| anyhow::anyhow!("column {n} missing in {path:?}"))?;
+            out[k].push(col.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// A column as labels: strings as they are, numbers written as
+/// [`row_label`] writes them.
+fn labels(chunks: &[ArrayRef]) -> anyhow::Result<Vec<Box<str>>> {
+    let mut out = Vec::new();
+    for a in chunks {
+        if let Some(s) = a.as_string_opt::<i32>() {
+            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+        } else if let Some(s) = a.as_string_opt::<i64>() {
+            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+        } else if let Some(s) = a.as_string_view_opt() {
+            out.extend(s.iter().map(|v| Box::from(v.unwrap_or_default())));
+        } else {
+            out.extend(numbers(a)?.into_iter().map(stringify_numeric));
+        }
+    }
+    Ok(out)
+}
+
+/// A numeric column as f64, whichever width it was stored in.
+fn numbers(a: &ArrayRef) -> anyhow::Result<Vec<f64>> {
+    use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
+    Ok(if let Some(v) = a.as_primitive_opt::<Float32Type>() {
+        v.values().iter().map(|&x| x as f64).collect()
+    } else if let Some(v) = a.as_primitive_opt::<Float64Type>() {
+        v.values().to_vec()
+    } else if let Some(v) = a.as_primitive_opt::<Int32Type>() {
+        v.values().iter().map(|&x| x as f64).collect()
+    } else if let Some(v) = a.as_primitive_opt::<Int64Type>() {
+        v.values().iter().map(|&x| x as f64).collect()
+    } else {
+        anyhow::bail!("column of type {} is not numeric", a.data_type())
+    })
+}
+
+/// A table whose first column labels the rows and whose other columns are
+/// numbers, read column-wise: what `Mat::from_parquet` reads, faster.
+pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<Mat>> {
+    let fields = peek_parquet_field_names(
+        path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
+    )?;
+    anyhow::ensure!(!fields.is_empty(), "{path:?}: no columns");
+    let names: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+    let cols = read_named_columns(path, &names)?;
+    let rows = labels(&cols[0])?;
+    let values = cols[1..]
+        .iter()
+        .map(|chunks| floats(chunks))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mat = Mat::from_fn(rows.len(), values.len(), |i, j| values[j][i]);
+    Ok(MatWithNames {
+        rows,
+        cols: fields[1..].to_vec(),
+        mat,
+    })
+}
+
+fn floats(chunks: &[ArrayRef]) -> anyhow::Result<Vec<f32>> {
+    let mut out = Vec::new();
+    for a in chunks {
+        out.extend(numbers(a)?.into_iter().map(|v| v as f32));
+    }
+    Ok(out)
+}
+
+fn ints(chunks: &[ArrayRef]) -> anyhow::Result<Vec<i64>> {
+    let mut out = Vec::new();
+    for a in chunks {
+        out.extend(numbers(a)?.into_iter().map(|v| v as i64));
+    }
+    Ok(out)
 }
 
 /// One row per cell. `batch` is `None` if the fit was single-batch
@@ -163,33 +271,29 @@ pub fn read_cells_from_coord_pairs(
     let has_batch = fields.iter().any(|f| f.as_ref() == "left_batch")
         && fields.iter().any(|f| f.as_ref() == "right_batch");
 
-    // Read row-by-row: small enough (at most ~few million edges) and
-    // avoids teaching `Mat::from_parquet` about mixed string+float.
-    let file = File::open(path)?;
-    let reader = SerializedFileReader::new(file)?;
-    let schema = reader.metadata().file_metadata().schema();
-    let name_to_idx: HashMap<Box<str>, usize> = schema
-        .get_fields()
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name().to_string().into_boxed_str(), i))
-        .collect();
-
-    let fetch = |n: &str| -> anyhow::Result<usize> {
-        name_to_idx
-            .get(n)
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("column {n} missing in {path:?}"))
-    };
-
-    let li_cell = fetch("left_cell")?;
-    let ri_cell = fetch("right_cell")?;
-    let li_x = fetch(&x_col_left)?;
-    let li_y = fetch(&y_col_left)?;
-    let ri_x = fetch(&x_col_right)?;
-    let ri_y = fetch(&y_col_right)?;
-    let (li_b, ri_b) = if has_batch {
-        (Some(fetch("left_batch")?), Some(fetch("right_batch")?))
+    // Column-wise: millions of pairs read in a fraction of the time the
+    // row iterator takes.
+    let mut wanted = vec![
+        "left_cell",
+        "right_cell",
+        &*x_col_left,
+        &*y_col_left,
+        &*x_col_right,
+        &*y_col_right,
+    ];
+    if has_batch {
+        wanted.extend(["left_batch", "right_batch"]);
+    }
+    let cols = read_named_columns(path, &wanted)?;
+    let (left, right) = (labels(&cols[0])?, labels(&cols[1])?);
+    let (lx, ly, rx, ry) = (
+        floats(&cols[2])?,
+        floats(&cols[3])?,
+        floats(&cols[4])?,
+        floats(&cols[5])?,
+    );
+    let (lb, rb) = if has_batch {
+        (Some(labels(&cols[6])?), Some(labels(&cols[7])?))
     } else {
         (None, None)
     };
@@ -199,25 +303,19 @@ pub fn read_cells_from_coord_pairs(
     let mut coords: Vec<(f32, f32)> = Vec::new();
     let mut batches: Vec<Box<str>> = Vec::new();
 
-    let row_iter = reader.get_row_iter(None)?;
-    for record in row_iter {
-        let row = record?;
-        for (ic, ix, iy, ib) in [(li_cell, li_x, li_y, li_b), (ri_cell, ri_x, ri_y, ri_b)] {
-            let name = row_label(&row, ic)?;
-            if index.contains_key(&name) {
+    for e in 0..left.len() {
+        for (name, x, y, b) in [
+            (&left[e], lx[e], ly[e], &lb),
+            (&right[e], rx[e], ry[e], &rb),
+        ] {
+            if index.contains_key(name) {
                 continue;
             }
-            let x = row_f32(&row, ix)?;
-            let y = row_f32(&row, iy)?;
-            let batch = match ib {
-                Some(b) => Some(row_label(&row, b)?),
-                None => None,
-            };
             index.insert(name.clone(), names.len());
-            names.push(name);
+            names.push(name.clone());
             coords.push((x, y));
-            if let Some(b) = batch {
-                batches.push(b);
+            if let Some(b) = b {
+                batches.push(b[e].clone());
             }
         }
     }
@@ -256,10 +354,7 @@ pub fn read_propensity(
     path: &Path,
     exclude_cols: &HashSet<Box<str>>,
 ) -> anyhow::Result<PropensityRead> {
-    let MatWithNames { rows, cols, mat } = Mat::from_parquet(
-        path.to_str()
-            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
-    )?;
+    let MatWithNames { rows, cols, mat } = read_labelled_matrix(path)?;
 
     // Pull propensity columns by NAME. The current writer emits
     // `C{c}` (e.g. "C0","C1",…,"C{K-1}") so the column name itself
@@ -423,28 +518,14 @@ pub fn read_link_community_labels(path: &Path) -> anyhow::Result<Vec<i64>> {
 }
 
 pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i64>, Vec<usize>)> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?;
-    let file = File::open(path_str)?;
-    let reader = SerializedFileReader::new(file)?;
-    let schema = reader.metadata().file_metadata().schema();
-    let name_to_idx: HashMap<Box<str>, usize> = schema
-        .get_fields()
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name().to_string().into_boxed_str(), i))
-        .collect();
-
-    let li = *name_to_idx
-        .get("left_cell")
-        .ok_or_else(|| anyhow::anyhow!("{path:?}: missing left_cell"))?;
-    let ri = *name_to_idx
-        .get("right_cell")
-        .ok_or_else(|| anyhow::anyhow!("{path:?}: missing right_cell"))?;
-    let ci = *name_to_idx
-        .get("community")
-        .ok_or_else(|| anyhow::anyhow!("{path:?}: missing community column"))?;
+    let fields = peek_parquet_field_names(
+        path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
+    )?;
+    let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
+    for n in ["left_cell", "right_cell", "community"] {
+        anyhow::ensure!(has(n), "{path:?}: missing {n}");
+    }
     // Expression-similar pairs are dropped here, once, rather than at each
     // consumer. Every plot that reads this list is asking about ADJACENCY: the
     // mesh draws the pair as a line between two cells, the interface mode
@@ -454,15 +535,24 @@ pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i6
     // "1-hop" mean nothing.
     //
     // Absent on a run that did not augment, where every pair is adjacent.
-    let ki = name_to_idx.get("edge_kind").copied();
+    let mut wanted = vec!["left_cell", "right_cell", "community"];
+    if has("edge_kind") {
+        wanted.push("edge_kind");
+    }
+    let cols = read_named_columns(path, &wanted)?;
+    let (left, right, all_community) = (labels(&cols[0])?, labels(&cols[1])?, ints(&cols[2])?);
+    let kind = if has("edge_kind") {
+        Some(ints(&cols[3])?)
+    } else {
+        None
+    };
 
     let mut pairs: Vec<(Box<str>, Box<str>)> = Vec::new();
     let mut community: Vec<i64> = Vec::new();
     let mut total_counts: Vec<usize> = Vec::new();
     let mut n_dropped = 0usize;
-    for record in reader.get_row_iter(None)? {
-        let row = record?;
-        let c: i64 = row_int_like(&row, ci)?;
+    for (e, (l, r)) in left.into_iter().zip(right).enumerate() {
+        let c = all_community[e];
         if c >= 0 {
             let cu = c as usize;
             if cu >= total_counts.len() {
@@ -470,14 +560,12 @@ pub fn read_link_community(path: &Path) -> anyhow::Result<(Vec<EdgePair>, Vec<i6
             }
             total_counts[cu] += 1;
         }
-        if let Some(k) = ki {
-            if row_int_like(&row, k)? != crate::util::cell_pairs::EDGE_KIND_SPATIAL as i64 {
+        if let Some(kind) = kind.as_ref() {
+            if kind[e] != crate::util::cell_pairs::EDGE_KIND_SPATIAL as i64 {
                 n_dropped += 1;
                 continue;
             }
         }
-        let l = row_label(&row, li)?;
-        let r = row_label(&row, ri)?;
         pairs.push((l, r));
         community.push(c);
     }
