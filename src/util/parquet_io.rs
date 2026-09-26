@@ -362,7 +362,7 @@ pub fn read_propensity(
 /// (`"5"`, older `pinto lc`) and `propensity_{c}` (older `pinto propensity`)
 /// — so existing parquets on disk still load. Returns `None` for anything
 /// else (e.g. `"entropy"`, coord names, malformed labels).
-fn parse_community_col_name(name: &str) -> Option<i64> {
+pub(crate) fn parse_community_col_name(name: &str) -> Option<i64> {
     if let Some(rest) = name.strip_prefix('C') {
         return rest.parse::<i64>().ok();
     }

@@ -43,8 +43,30 @@ pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 
 ### `cage` / `predict` / `impute` / `lr-activity`
 
-See `pinto --help` and per-subcommand `--help`. Visualization (`pinto plot`)
-is not shipped in this package; plot outputs separately if needed.
+See `pinto --help` and per-subcommand `--help`.
+
+### `view`
+
+Zoomable map of a run's communities, in the terminal. Pan and zoom from the
+whole section down to single cells and their edges; switch between argmax,
+soft mixture, entropy and single-community layers, and between levels.
+
+```sh
+pinto view out                 # interactive; ? lists the keys
+pinto view out --summary       # what the run holds
+pinto view out --png map.png --layer soft --width 3000
+pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
+pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
+                                                # legend, focused markers
+```
+
+In the viewer, click a cell or legend entry to show one community (with its
+marker features); `s` exports the current view as PNG, PDF, and a `.txt` with
+the command that redraws it. The scale bar's units are guessed from the
+coordinate columns (`--units um|px|none` to override).
+
+Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
+WezTerm) or sixel; elsewhere the map is drawn with coloured half-blocks.
 
 ## Input data
 

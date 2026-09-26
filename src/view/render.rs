@@ -15,13 +15,17 @@
 //! Rows are split into bands drawn in parallel; each band reads only the
 //! grid rows it overlaps.
 
-use super::color::{self, Ramp, Rgb, BACKGROUND, NO_COMMUNITY};
-use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
+use super::color::{self, Ramp, Rgb, BACKGROUND, DIMMED, NO_COMMUNITY};
+use super::data::{Communities, Edges, Geometry, Rect};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
+use super::scalebar::{self, Units};
 use crate::util::common::*;
+use crate::util::parquet_io::parse_community_col_name;
+use std::ops::RangeInclusive;
 
-/// Rows per parallel band.
-const BAND: usize = 16;
+/// Rows per parallel band. Tall enough that grid rows shared by two bands
+/// (read by both) stay a small part of each band's work.
+const BAND: usize = 64;
 
 /// Edges are drawn only once the typical edge spans this many pixels.
 const MIN_EDGE_PX: f32 = 4.;
@@ -50,13 +54,44 @@ impl std::str::FromStr for Layer {
             "argmax" => Ok(Layer::Argmax),
             "soft" => Ok(Layer::Soft),
             "entropy" => Ok(Layer::Entropy),
-            _ => s
-                .strip_prefix(['C', 'c'])
-                .and_then(|k| k.parse().ok())
-                .map(Layer::Community)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("unknown layer {s:?}: use argmax, soft, entropy or C<k>")
-                }),
+            _ => community_id(s).map(Layer::Community).ok_or_else(|| {
+                anyhow::anyhow!("unknown layer {s:?}: use argmax, soft, entropy or C<k>")
+            }),
+        }
+    }
+}
+
+/// `C7`, `c7` or `7` → 7, by the same rule that names propensity columns.
+pub fn community_id(s: &str) -> Option<usize> {
+    let upper = s.strip_prefix('c').map(|rest| format!("C{rest}"));
+    parse_community_col_name(upper.as_deref().unwrap_or(s)).and_then(|c| usize::try_from(c).ok())
+}
+
+impl Layer {
+    /// The colour ramp of a continuous layer (magma for the ones without).
+    pub fn ramp(&self) -> &'static Ramp {
+        match self {
+            Layer::Entropy => color::viridis(),
+            _ => color::magma(),
+        }
+    }
+
+    /// Legend title of a continuous layer.
+    pub fn legend_title(&self) -> String {
+        match self {
+            Layer::Community(c) => format!("C{c} propensity"),
+            _ => "entropy / ln K".into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Layer::Argmax => write!(f, "argmax"),
+            Layer::Soft => write!(f, "soft"),
+            Layer::Entropy => write!(f, "entropy"),
+            Layer::Community(c) => write!(f, "C{c}"),
         }
     }
 }
@@ -84,12 +119,12 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    /// Fit `r` in a `w × h` frame with a small margin, centred.
+    /// Fit `r` in a `w × h` frame, centred, filling the tighter axis
+    /// exactly. Callers wanting a margin pad `r` first.
     pub fn fit(r: Rect, w: usize, h: usize) -> Self {
         let upp = (r.width() / w as f32)
             .max(r.height() / h as f32)
-            .max(f32::MIN_POSITIVE)
-            * 1.02;
+            .max(f32::MIN_POSITIVE);
         let cx = 0.5 * (r.x0 + r.x1);
         let cy = 0.5 * (r.y0 + r.y1);
         Viewport {
@@ -104,8 +139,19 @@ impl Viewport {
     fn to_px(self, x: f32, y: f32) -> (f32, f32) {
         ((x - self.x0) / self.upp, (y - self.y0) / self.upp)
     }
+
+    /// The world window the frame covers.
+    pub fn window(&self) -> Rect {
+        Rect {
+            x0: self.x0,
+            y0: self.y0,
+            x1: self.x0 + self.w as f32 * self.upp,
+            y1: self.y0 + self.h as f32 * self.upp,
+        }
+    }
 }
 
+#[derive(Clone)]
 pub struct Frame {
     pub w: usize,
     pub h: usize,
@@ -113,6 +159,11 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Byte offset of pixel `(x, y)`.
+    pub fn offset(&self, x: usize, y: usize) -> usize {
+        (y * self.w + x) * 4
+    }
+
     pub fn write_png(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut enc = png::Encoder::new(file, self.w as u32, self.h as u32);
@@ -125,158 +176,267 @@ impl Frame {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Style {
+pub struct Style<'f> {
     pub layer: Layer,
     pub edges: bool,
+    /// Communities to show, one flag per community; the rest are dimmed and
+    /// their edges hidden. `None` shows every community.
+    pub focus: Option<&'f [bool]>,
+    /// Burn a scale bar in these units into the frame.
+    pub scale_bar: Option<Units>,
 }
 
-/// Colours for one layer, shared by the point and bin paths.
+/// Colours for one layer, shared by the point, average and bin paths.
 struct Paint<'a> {
     layer: Layer,
-    k: usize,
+    focus: Option<&'a [bool]>,
+    /// One colour per community.
     palette: &'a [Rgb],
     /// Palette in linear light, for mixing.
     linear: Vec<[f32; 3]>,
-    ramp: Ramp,
-    /// sRGB byte → linear light.
-    lut: [f32; 256],
+    ramp: &'static Ramp,
 }
 
 impl<'a> Paint<'a> {
-    fn new(layer: Layer, k: usize, palette: &'a [Rgb]) -> Self {
-        let linear = palette.iter().map(|c| c.map(color::decode)).collect();
-        let ramp = match layer {
-            Layer::Entropy => Ramp::viridis(),
-            _ => Ramp::magma(),
-        };
+    fn new(style: &Style<'a>, palette: &'a [Rgb]) -> Self {
         Paint {
-            layer,
-            k,
+            layer: style.layer,
+            focus: style.focus,
             palette,
-            linear,
-            ramp,
-            lut: std::array::from_fn(|v| color::decode(v as u8)),
+            linear: palette.iter().map(|c| c.map(color::linear)).collect(),
+            ramp: style.layer.ramp(),
         }
+    }
+
+    fn k(&self) -> usize {
+        self.palette.len()
     }
 
     fn community(&self, c: u16) -> Rgb {
-        if c == NO_CLUSTER {
-            NO_COMMUNITY
-        } else {
-            self.palette[c as usize % self.palette.len()]
-        }
+        self.palette
+            .get(c as usize)
+            .copied()
+            .unwrap_or(NO_COMMUNITY)
     }
 
-    /// Weighted mix of community colours; weights need not sum to one.
-    fn mix(&self, weights: impl Iterator<Item = f32>) -> Rgb {
+    /// Weighted mix of community colours in linear light; `None` when the
+    /// weights are all zero.
+    fn mix_linear(&self, weights: impl Iterator<Item = f32>) -> Option<[f32; 3]> {
         let mut acc = [0f32; 3];
         let mut total = 0f32;
         for (w, lin) in weights.zip(&self.linear) {
             total += w;
-            for c in 0..3 {
-                acc[c] += w * lin[c];
+            for (a, &l) in acc.iter_mut().zip(lin) {
+                *a += w * l;
             }
         }
-        if total <= 0. {
-            return NO_COMMUNITY;
+        (total > 0.).then(|| acc.map(|v| v / total))
+    }
+
+    fn mix(&self, weights: impl Iterator<Item = f32>) -> Rgb {
+        self.mix_linear(weights)
+            .map_or(NO_COMMUNITY, |c| c.map(color::encode_fast))
+    }
+
+    fn in_focus(&self, c: u16) -> bool {
+        self.focus
+            .is_none_or(|f| f.get(c as usize).copied().unwrap_or(false))
+    }
+
+    /// Share of `weights` on focused communities; 1 with no focus.
+    fn focused_share(&self, weights: impl Iterator<Item = f32>) -> f32 {
+        let Some(focus) = self.focus else { return 1. };
+        let (mut on, mut all) = (0f32, 0f32);
+        for (w, &f) in weights.zip(focus) {
+            all += w;
+            if f {
+                on += w;
+            }
         }
-        acc.map(|v| color::encode(v / total))
+        if all > 0. {
+            on / all
+        } else {
+            0.
+        }
+    }
+
+    /// Fade `c` toward the dimmed colour by the unfocused share.
+    fn dim(c: Rgb, share: f32) -> Rgb {
+        if share >= 1. {
+            return c;
+        }
+        [0, 1, 2].map(|ch| {
+            let d = DIMMED[ch] as f32;
+            (d + share * (c[ch] as f32 - d)).round() as u8
+        })
+    }
+
+    fn row<'c>(&self, comm: &'c Communities, i: usize) -> &'c [u8] {
+        &comm.prop[i * self.k()..(i + 1) * self.k()]
     }
 
     fn cell(&self, comm: &Communities, i: usize) -> Rgb {
-        let k = self.k;
+        let c = self.cell_colour(comm, i);
+        if self.focus.is_none() {
+            return c;
+        }
+        let share = match self.layer {
+            Layer::Soft => self.focused_share(self.row(comm, i).iter().map(|&q| q as f32)),
+            _ => f32::from(u8::from(self.in_focus(comm.cluster[i]))),
+        };
+        Self::dim(c, share)
+    }
+
+    /// [`Self::cell`] in linear light, for averaging. The unfocused soft mix
+    /// stays linear instead of going to a byte and back.
+    fn cell_linear(&self, comm: &Communities, i: usize) -> [f32; 3] {
+        if self.layer == Layer::Soft && self.focus.is_none() {
+            if let Some(c) = self.mix_linear(self.row(comm, i).iter().map(|&q| q as f32)) {
+                return c;
+            }
+        }
+        self.cell(comm, i).map(color::linear)
+    }
+
+    fn cell_colour(&self, comm: &Communities, i: usize) -> Rgb {
         match self.layer {
             Layer::Argmax => self.community(comm.cluster[i]),
-            Layer::Soft => self.mix(comm.prop[i * k..(i + 1) * k].iter().map(|&q| q as f32)),
+            Layer::Soft => self.mix(self.row(comm, i).iter().map(|&q| q as f32)),
             Layer::Entropy => match comm.entropy.as_ref() {
                 Some(h) => self.ramp.at_u8(h[i]),
                 None => NO_COMMUNITY,
             },
             Layer::Community(c) => self
                 .ramp
-                .at_u8(comm.prop.get(i * k + c).copied().unwrap_or(0)),
+                .at_u8(self.row(comm, i).get(c).copied().unwrap_or(0)),
         }
     }
 
     fn bin(&self, level: &PyramidLevel, b: usize) -> Rgb {
-        let k = self.k;
+        let k = self.k();
+        let sums = &level.prop[b * k..(b + 1) * k];
         let n = level.count[b] as f32;
-        match self.layer {
+        let c = match self.layer {
             Layer::Argmax => self.community(level.top[b]),
-            Layer::Soft => self.mix(level.prop[b * k..(b + 1) * k].iter().copied()),
+            Layer::Soft => self.mix(sums.iter().copied()),
             Layer::Entropy => self.ramp.at(level.entropy[b] / n),
-            Layer::Community(c) => self
-                .ramp
-                .at(level.prop.get(b * k + c).map_or(0., |p| p / n)),
+            Layer::Community(c) => self.ramp.at(sums.get(c).map_or(0., |p| p / n)),
+        };
+        Self::dim(c, self.focused_share(sums.iter().copied()))
+    }
+}
+
+/// How a viewport is drawn; see the module docs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    Points,
+    Average,
+    /// Pyramid level drawn.
+    Bins(usize),
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mode::Points => write!(f, "points"),
+            Mode::Average => write!(f, "average"),
+            Mode::Bins(l) => write!(f, "bins L{l}"),
         }
     }
 }
 
-pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> Frame {
-    let paint = Paint::new(style.layer, scene.comm.k, palette);
-    let mut rgba = vec![255u8; vp.w * vp.h * 4];
-    for px in rgba.chunks_exact_mut(4) {
-        px[..3].copy_from_slice(&BACKGROUND);
-    }
-
-    let row_bytes = vp.w * 4;
-    let spacing_px = scene.spacing / vp.upp;
-    if spacing_px >= MIN_POINT_PX {
-        let edges = scene
-            .edges
-            .filter(|_| style.edges && spacing_px >= MIN_EDGE_PX);
-        // Smaller discs when edges show, so the lines between them read.
-        let fill = if edges.is_some() { 0.28 } else { 0.45 };
-        let radius = (fill * spacing_px).max(0.5);
-        let line = (0.06 * spacing_px).clamp(1., 3.);
-        rgba.par_chunks_mut(BAND * row_bytes)
-            .enumerate()
-            .for_each(|(band, buf)| {
-                let r0 = band * BAND;
-                let r1 = r0 + buf.len() / row_bytes;
-                let mut canvas = Canvas {
-                    buf,
-                    w: vp.w,
-                    r0,
-                    r1,
-                };
-                if let Some((edges, index)) = edges {
-                    draw_edges(&mut canvas, scene, vp, &paint, edges, index, line);
-                }
-                draw_points(&mut canvas, scene, vp, &paint, radius);
-            });
+pub fn mode(scene: &Scene, vp: &Viewport) -> Mode {
+    if scene.spacing / vp.upp >= MIN_POINT_PX {
+        Mode::Points
     } else if vp.upp <= scene.grid.bin {
-        // Half the expected cells per pixel counts as fully covered, so
-        // sparse pixels at the tissue edge fade instead of speckling.
-        let full = 0.5 / (spacing_px * spacing_px);
-        rgba.par_chunks_mut(BAND * row_bytes)
-            .enumerate()
-            .for_each(|(band, buf)| {
-                let r0 = band * BAND;
-                let r1 = r0 + buf.len() / row_bytes;
-                let mut canvas = Canvas {
-                    buf,
-                    w: vp.w,
-                    r0,
-                    r1,
-                };
-                draw_average(&mut canvas, scene, vp, &paint, full);
-            });
+        Mode::Average
     } else {
-        let level = scene
-            .pyramid
-            .levels
-            .iter()
-            .find(|l| l.bin >= vp.upp)
-            .unwrap_or_else(|| scene.pyramid.levels.last().expect("non-empty"));
-        draw_bins(&mut rgba, scene, vp, &paint, level);
+        let levels = &scene.pyramid.levels;
+        Mode::Bins(
+            levels
+                .iter()
+                .position(|l| l.bin >= vp.upp)
+                .unwrap_or(levels.len() - 1),
+        )
     }
+}
 
-    Frame {
+pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> Frame {
+    let paint = Paint::new(style, palette);
+    let mut frame = Frame {
         w: vp.w,
         h: vp.h,
-        rgba,
+        rgba: vec![0u8; vp.w * vp.h * 4],
+    };
+    let spacing_px = scene.spacing / vp.upp;
+    match mode(scene, vp) {
+        Mode::Points => {
+            let edges = scene
+                .edges
+                .filter(|_| style.edges && spacing_px >= MIN_EDGE_PX);
+            // Smaller discs when edges show, so the lines between them read.
+            let fill = if edges.is_some() { 0.28 } else { 0.45 };
+            let radius = (fill * spacing_px).max(0.5);
+            // Line offsets across its minor axis, for thickness.
+            let width = (0.06 * spacing_px).clamp(1., 3.).round() as i64;
+            let across: Vec<i64> = (0..width).map(|o| o - width / 2).collect();
+            for_bands(
+                &mut frame,
+                || (),
+                |_, canvas| {
+                    if let Some((edges, index)) = edges {
+                        draw_edges(canvas, scene, vp, &paint, edges, index, &across);
+                    }
+                    draw_points(canvas, scene, vp, &paint, radius);
+                },
+            );
+        }
+        Mode::Average => {
+            // Half the expected cells per pixel counts as fully covered, so
+            // sparse pixels at the tissue edge fade instead of speckling.
+            let full = 0.5 / (spacing_px * spacing_px);
+            for_bands(&mut frame, Vec::new, |acc, canvas| {
+                draw_average(canvas, scene, vp, &paint, full, acc);
+            });
+        }
+        Mode::Bins(l) => {
+            let level = &scene.pyramid.levels[l];
+            for_bands(
+                &mut frame,
+                || (),
+                |_, canvas| {
+                    draw_bins(canvas, scene, vp, &paint, level);
+                },
+            );
+        }
     }
+    if let Some(units) = style.scale_bar {
+        scalebar::draw(&mut frame, vp, units);
+    }
+    frame
+}
+
+/// Split the frame into bands of rows, clear each to the background and
+/// draw it in parallel. `init` makes per-thread scratch state, reused
+/// across the bands that thread draws.
+fn for_bands<T>(
+    frame: &mut Frame,
+    init: impl Fn() -> T + Sync + Send,
+    draw: impl Fn(&mut T, &mut Canvas) + Sync + Send,
+) {
+    let w = frame.w;
+    frame
+        .rgba
+        .par_chunks_mut(BAND * w * 4)
+        .enumerate()
+        .for_each_init(init, |state, (band, buf)| {
+            for px in buf.chunks_exact_mut(4) {
+                px.copy_from_slice(&[BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 255]);
+            }
+            let r0 = band * BAND;
+            let r1 = r0 + buf.len() / (w * 4);
+            draw(state, &mut Canvas { buf, w, r0, r1 });
+        });
 }
 
 /// One band of the frame: rows `r0..r1`.
@@ -288,20 +448,38 @@ struct Canvas<'b> {
 }
 
 impl Canvas<'_> {
+    /// Byte offset of pixel `(x, y)`, if it lies in this band.
+    fn at(&self, x: i64, y: i64) -> Option<usize> {
+        let inside = x >= 0 && x < self.w as i64 && y >= self.r0 as i64 && y < self.r1 as i64;
+        inside.then(|| ((y as usize - self.r0) * self.w + x as usize) * 4)
+    }
+
     fn put(&mut self, x: i64, y: i64, c: Rgb) {
-        if x < 0 || x >= self.w as i64 || y < self.r0 as i64 || y >= self.r1 as i64 {
-            return;
+        if let Some(o) = self.at(x, y) {
+            self.buf[o..o + 3].copy_from_slice(&c);
         }
-        let o = ((y as usize - self.r0) * self.w + x as usize) * 4;
-        self.buf[o..o + 3].copy_from_slice(&c);
     }
 
     fn blend(&mut self, x: i64, y: i64, c: Rgb, alpha: f32) {
-        if x < 0 || x >= self.w as i64 || y < self.r0 as i64 || y >= self.r1 as i64 {
-            return;
+        if let Some(o) = self.at(x, y) {
+            blend(&mut self.buf[o..o + 3], c, alpha);
         }
-        let o = ((y as usize - self.r0) * self.w + x as usize) * 4;
-        blend(&mut self.buf[o..o + 3], c, alpha);
+    }
+
+    /// Grid bin columns and rows under this band, widened by `pad` world
+    /// units on every side.
+    fn bins(
+        &self,
+        grid: &Grid,
+        vp: &Viewport,
+        pad: f32,
+    ) -> (RangeInclusive<usize>, RangeInclusive<usize>) {
+        let (ix0, iy0) = grid.bin_of(vp.x0 - pad, vp.y0 + self.r0 as f32 * vp.upp - pad);
+        let (ix1, iy1) = grid.bin_of(
+            vp.x0 + vp.w as f32 * vp.upp + pad,
+            vp.y0 + self.r1 as f32 * vp.upp + pad,
+        );
+        (ix0..=ix1, iy0..=iy1)
     }
 }
 
@@ -313,26 +491,12 @@ fn blend(dst: &mut [u8], c: Rgb, alpha: f32) {
     }
 }
 
-/// Grid bins overlapping world rows `y0..y1` and columns `x0..x1`.
-fn bins_in(grid: &Grid, x0: f32, y0: f32, x1: f32, y1: f32) -> (usize, usize, usize, usize) {
-    let (ix0, iy0) = grid.bin_of(x0, y0);
-    let (ix1, iy1) = grid.bin_of(x1, y1);
-    (ix0, iy0, ix1, iy1)
-}
-
 fn draw_points(canvas: &mut Canvas, scene: &Scene, vp: &Viewport, paint: &Paint, radius: f32) {
-    let pad = radius * vp.upp;
-    let (ix0, iy0, ix1, iy1) = bins_in(
-        scene.grid,
-        vp.x0 - pad,
-        vp.y0 + canvas.r0 as f32 * vp.upp - pad,
-        vp.x0 + vp.w as f32 * vp.upp + pad,
-        vp.y0 + canvas.r1 as f32 * vp.upp + pad,
-    );
+    let (xs, ys) = canvas.bins(scene.grid, vp, radius * vp.upp);
     let reach = radius.ceil() as i64;
     let r2 = radius * radius;
-    for iy in iy0..=iy1 {
-        for ix in ix0..=ix1 {
+    for iy in ys {
+        for ix in xs.clone() {
             for &i in scene.grid.cells(ix, iy) {
                 let i = i as usize;
                 let (px, py) = vp.to_px(scene.geom.x[i], scene.geom.y[i]);
@@ -354,44 +518,41 @@ fn draw_points(canvas: &mut Canvas, scene: &Scene, vp: &Viewport, paint: &Paint,
     }
 }
 
-fn draw_average(canvas: &mut Canvas, scene: &Scene, vp: &Viewport, paint: &Paint, full: f32) {
-    let (ix0, iy0, ix1, iy1) = bins_in(
-        scene.grid,
-        vp.x0,
-        vp.y0 + canvas.r0 as f32 * vp.upp,
-        vp.x0 + vp.w as f32 * vp.upp,
-        vp.y0 + canvas.r1 as f32 * vp.upp,
-    );
-    let rows = canvas.r1 - canvas.r0;
-    // Linear RGB sums and a count per pixel.
-    let mut acc = vec![[0f32; 4]; rows * canvas.w];
-    for iy in iy0..=iy1 {
-        for ix in ix0..=ix1 {
+/// `acc` is per-thread scratch: linear RGB sums and a count per pixel.
+fn draw_average(
+    canvas: &mut Canvas,
+    scene: &Scene,
+    vp: &Viewport,
+    paint: &Paint,
+    full: f32,
+    acc: &mut Vec<[f32; 4]>,
+) {
+    let (w, r0, r1) = (canvas.w, canvas.r0, canvas.r1);
+    acc.clear();
+    acc.resize((r1 - r0) * w, [0.; 4]);
+    let (xs, ys) = canvas.bins(scene.grid, vp, 0.);
+    for iy in ys {
+        for ix in xs.clone() {
             for &i in scene.grid.cells(ix, iy) {
                 let i = i as usize;
                 let (px, py) = vp.to_px(scene.geom.x[i], scene.geom.y[i]);
                 let (px, py) = (px.floor(), py.floor());
-                if px < 0.
-                    || px >= canvas.w as f32
-                    || py < canvas.r0 as f32
-                    || py >= canvas.r1 as f32
-                {
+                if px < 0. || px >= w as f32 || py < r0 as f32 || py >= r1 as f32 {
                     continue;
                 }
-                let a = &mut acc[(py as usize - canvas.r0) * canvas.w + px as usize];
-                let c = paint.cell(scene.comm, i);
+                let a = &mut acc[(py as usize - r0) * w + px as usize];
+                let c = paint.cell_linear(scene.comm, i);
                 for ch in 0..3 {
-                    a[ch] += paint.lut[c[ch] as usize];
+                    a[ch] += c[ch];
                 }
                 a[3] += 1.;
             }
         }
     }
-    for (p, a) in acc.iter().enumerate() {
+    for (a, px) in acc.iter().zip(canvas.buf.chunks_exact_mut(4)) {
         if a[3] > 0. {
-            let c = [0, 1, 2].map(|ch| color::encode(a[ch] / a[3]));
-            let (x, y) = (p % canvas.w, canvas.r0 + p / canvas.w);
-            canvas.blend(x as i64, y as i64, c, (a[3] / full).min(1.));
+            let c = [0, 1, 2].map(|ch| color::encode_fast(a[ch] / a[3]));
+            blend(&mut px[..3], c, (a[3] / full).min(1.));
         }
     }
 }
@@ -403,19 +564,12 @@ fn draw_edges(
     paint: &Paint,
     edges: &Edges,
     index: &EdgeIndex,
-    width: f32,
+    across: &[i64],
 ) {
-    let pad = index.max_len;
-    let (ix0, iy0, ix1, iy1) = bins_in(
-        scene.grid,
-        vp.x0 - pad,
-        vp.y0 + canvas.r0 as f32 * vp.upp - pad,
-        vp.x0 + vp.w as f32 * vp.upp + pad,
-        vp.y0 + canvas.r1 as f32 * vp.upp + pad,
-    );
+    let (xs, ys) = canvas.bins(scene.grid, vp, index.max_len);
     let (x, y) = (&scene.geom.x, &scene.geom.y);
-    for iy in iy0..=iy1 {
-        for ix in ix0..=ix1 {
+    for iy in ys {
+        for ix in xs.clone() {
             for &e in index.edges(ix, iy) {
                 let e = e as usize;
                 let (a, b) = (edges.a[e] as usize, edges.b[e] as usize);
@@ -424,18 +578,18 @@ fn draw_edges(
                 if ay.max(by) < canvas.r0 as f32 || ay.min(by) >= canvas.r1 as f32 {
                     continue;
                 }
-                let c = paint.community(edges.community[e]);
+                let community = edges.community[e];
+                if !paint.in_focus(community) {
+                    continue;
+                }
+                let c = paint.community(community);
                 let steps = (bx - ax).abs().max((by - ay).abs()).ceil().max(1.) as usize;
-                // Thicken across the line's minor axis.
-                let across: Vec<i64> = (0..width.round() as i64)
-                    .map(|o| o - (width as i64) / 2)
-                    .collect();
                 let steep = (by - ay).abs() > (bx - ax).abs();
                 for s in 0..=steps {
                     let t = s as f32 / steps as f32;
                     let (px, py) = (ax + t * (bx - ax), ay + t * (by - ay));
                     let (px, py) = (px.floor() as i64, py.floor() as i64);
-                    for &o in &across {
+                    for &o in across {
                         let (qx, qy) = if steep { (px + o, py) } else { (px, py + o) };
                         canvas.blend(qx, qy, c, 0.85);
                     }
@@ -445,40 +599,47 @@ fn draw_edges(
     }
 }
 
-fn draw_bins(rgba: &mut [u8], scene: &Scene, vp: &Viewport, paint: &Paint, level: &PyramidLevel) {
-    // Bins at the tissue edge hold few cells; fade them in up to half the
-    // mean occupancy so the outline reads as an outline, not a hard block.
-    let (filled, total) = level
-        .count
-        .iter()
-        .filter(|&&c| c > 0)
-        .fold((0usize, 0u64), |(n, s), &c| (n + 1, s + c as u64));
-    let full = 0.5 * total as f32 / filled.max(1) as f32;
+fn draw_bins(
+    canvas: &mut Canvas,
+    scene: &Scene,
+    vp: &Viewport,
+    paint: &Paint,
+    level: &PyramidLevel,
+) {
     let (ox, oy) = scene.grid.origin;
-
-    rgba.par_chunks_mut(vp.w * 4)
-        .enumerate()
-        .for_each(|(row, line)| {
-            let wy = vp.y0 + (row as f32 + 0.5) * vp.upp;
-            let by = ((wy - oy) / level.bin).floor();
-            if by < 0. || by >= level.ny as f32 {
-                return;
+    let w = canvas.w;
+    for (r, line) in canvas.buf.chunks_exact_mut(w * 4).enumerate() {
+        let wy = vp.y0 + ((canvas.r0 + r) as f32 + 0.5) * vp.upp;
+        let by = ((wy - oy) / level.bin).floor();
+        if by < 0. || by >= level.ny as f32 {
+            continue;
+        }
+        let by = by as usize;
+        // Neighbouring pixels usually share a bin; colour each bin once.
+        let mut last: Option<(usize, Rgb)> = None;
+        for col in 0..w {
+            let wx = vp.x0 + (col as f32 + 0.5) * vp.upp;
+            let bx = ((wx - ox) / level.bin).floor();
+            if bx < 0. || bx >= level.nx as f32 {
+                continue;
             }
-            let by = by as usize;
-            for col in 0..vp.w {
-                let wx = vp.x0 + (col as f32 + 0.5) * vp.upp;
-                let bx = ((wx - ox) / level.bin).floor();
-                if bx < 0. || bx >= level.nx as f32 {
-                    continue;
-                }
-                let b = by * level.nx + bx as usize;
-                let n = level.count[b];
-                if n == 0 {
-                    continue;
-                }
-                let alpha = (n as f32 / full).min(1.);
-                let c = paint.bin(level, b);
-                blend(&mut line[col * 4..col * 4 + 3], c, alpha);
+            let b = by * level.nx + bx as usize;
+            let n = level.count[b];
+            if n == 0 {
+                continue;
             }
-        });
+            let c = match last {
+                Some((lb, c)) if lb == b => c,
+                _ => {
+                    let c = paint.bin(level, b);
+                    last = Some((b, c));
+                    c
+                }
+            };
+            // Bins at the tissue edge hold few cells; they fade in up to
+            // half the mean occupancy so the outline reads as an outline.
+            let alpha = (n as f32 / level.full).min(1.);
+            blend(&mut line[col * 4..col * 4 + 3], c, alpha);
+        }
+    }
 }
