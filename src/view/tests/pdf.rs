@@ -9,6 +9,7 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
         w: 40,
         h: 30,
         rgba: vec![128; 40 * 30 * 4],
+        background: Theme::Dark.background(),
     };
     let fig = Figure {
         frame: &frame,
@@ -33,7 +34,6 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
             colour: [200, 10, 10],
             genes: vec![("CD3E".into(), 55.2)],
         }],
-        theme: Theme::Dark,
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fig.pdf");

@@ -66,10 +66,13 @@ impl Theme {
     /// Ramp for one community's propensity: from the background's side up
     /// to the strongest colour, so low values fade into the page.
     pub fn magma(self) -> &'static Ramp {
+        // Magma run backwards from near-white, without its black and its
+        // pale ends.
         static LIGHT: LazyLock<Ramp> = LazyLock::new(|| {
-            Ramp::from_stops(&[
-                0xf4f4f0, 0xfec287, 0xfb8761, 0xe55064, 0xb5367a, 0x812581, 0x4f127b, 0x1c1044,
-            ])
+            let stops: Vec<u32> = std::iter::once(0xf4f4f0)
+                .chain(MAGMA[1..MAGMA.len() - 1].iter().rev().copied())
+                .collect();
+            Ramp::from_stops(&stops)
         });
         match self {
             Theme::Dark => magma(),
@@ -171,13 +174,13 @@ pub fn viridis() -> &'static Ramp {
     &RAMP
 }
 
+/// Magma's stops, black to pale yellow.
+const MAGMA: [u32; 9] = [
+    0x000004, 0x1c1044, 0x4f127b, 0x812581, 0xb5367a, 0xe55064, 0xfb8761, 0xfec287, 0xfcfdbf,
+];
+
 pub fn magma() -> &'static Ramp {
-    static RAMP: LazyLock<Ramp> = LazyLock::new(|| {
-        Ramp::from_stops(&[
-            0x000004, 0x1c1044, 0x4f127b, 0x812581, 0xb5367a, 0xe55064, 0xfb8761, 0xfec287,
-            0xfcfdbf,
-        ])
-    });
+    static RAMP: LazyLock<Ramp> = LazyLock::new(|| Ramp::from_stops(&MAGMA));
     &RAMP
 }
 

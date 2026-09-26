@@ -10,7 +10,7 @@ use crate::util::common::*;
 use crate::util::input::read_one_coord_file;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
 use crate::util::parquet_io::{
-    read_cells_from_coord_pairs, read_feature_community, read_link_community, read_propensity,
+    read_cells_from_coord_pairs, read_feature_community, read_propensity, visit_link_community,
     CellTable, PropensityRead,
 };
 use std::path::{Path, PathBuf};
@@ -241,8 +241,9 @@ impl Run {
             .link_community
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("level {} has no link_community output", level.tag))?;
-        let (pairs, community, _) = read_link_community(&self.resolve(path))?;
-        Ok(Edges::join(geom, &pairs, &community))
+        let mut edges = Edges::default();
+        visit_link_community(&self.resolve(path), |l, r, c| edges.push(geom, l, r, c))?;
+        Ok(edges)
     }
 }
 
@@ -470,9 +471,7 @@ impl Communities {
             n_unmatched,
         }
     }
-}
 
-impl Communities {
     /// One pseudo-community holding `values` (already scaled to `u8`) for
     /// every cell, so per-cell values draw like a community's propensity.
     pub fn single(tag: &str, values: Vec<u8>) -> Self {
@@ -505,6 +504,7 @@ fn quantize(v: f32) -> u8 {
 }
 
 /// Adjacent cell pairs of one level, as geometry row indices.
+#[derive(Default)]
 pub struct Edges {
     pub a: Vec<u32>,
     pub b: Vec<u32>,
@@ -514,26 +514,15 @@ pub struct Edges {
 }
 
 impl Edges {
-    pub fn join(geom: &Geometry, pairs: &[(Box<str>, Box<str>)], community: &[i64]) -> Self {
-        let mut a = Vec::with_capacity(pairs.len());
-        let mut b = Vec::with_capacity(pairs.len());
-        let mut comm = Vec::with_capacity(pairs.len());
-        let mut n_unmatched = 0usize;
-        for ((l, r), &c) in pairs.iter().zip(community) {
-            match (geom.index.get(l), geom.index.get(r)) {
-                (Some(&i), Some(&j)) => {
-                    a.push(i as u32);
-                    b.push(j as u32);
-                    comm.push(cluster_id(c));
-                }
-                _ => n_unmatched += 1,
+    /// Add the pair `l`–`r` of `community`, if both cells are on the map.
+    pub fn push(&mut self, geom: &Geometry, l: &str, r: &str, community: i64) {
+        match (geom.index.get(l), geom.index.get(r)) {
+            (Some(&i), Some(&j)) => {
+                self.a.push(i as u32);
+                self.b.push(j as u32);
+                self.community.push(cluster_id(community));
             }
-        }
-        Edges {
-            a,
-            b,
-            community: comm,
-            n_unmatched,
+            _ => self.n_unmatched += 1,
         }
     }
 

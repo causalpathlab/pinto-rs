@@ -22,7 +22,6 @@ pub struct Figure<'a> {
     pub units: Option<Units>,
     pub legend: Legend,
     pub markers: Vec<MarkerBlock>,
-    pub theme: Theme,
 }
 
 pub enum Legend {
@@ -238,7 +237,7 @@ fn scale_bar(c: &mut Content, fig: &Figure, units: Units, (mx, my): (f32, f32), 
     let bar = scalebar::bar_for(fig.vp.w as f32 * fig.vp.upp, units);
     let len = bar.length / fig.vp.upp * pt_per_px;
     let (x, y) = (mx + 8., my + 8.);
-    let (fill, edge) = fig.theme.bar();
+    let (fill, edge) = Theme::for_background(fig.frame.background).bar();
     let (fill, edge) = (fill.map(unit), edge.map(unit));
     c.set_fill_rgb(fill[0], fill[1], fill[2]);
     c.set_stroke_rgb(edge[0], edge[1], edge[2]);

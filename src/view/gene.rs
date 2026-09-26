@@ -24,6 +24,22 @@ pub enum Source {
     Expected,
 }
 
+impl Source {
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Observed => "observed",
+            Source::Expected => "expected",
+        }
+    }
+
+    pub fn other(self) -> Source {
+        match self {
+            Source::Observed => Source::Expected,
+            Source::Expected => Source::Observed,
+        }
+    }
+}
+
 /// A feature's values on the map.
 pub struct GeneMap {
     /// Feature name as the data or rates table spell it.
@@ -105,6 +121,12 @@ impl GeneMap {
         }
     }
 
+    /// Whether this map fell back to the model because observed counts were
+    /// asked for and the run has no data file.
+    pub fn fell_back(&self, asked: Source) -> bool {
+        asked == Source::Observed && self.source == Source::Expected
+    }
+
     /// Legend title: the feature's symbol and what the ramp measures.
     pub fn title(&self) -> String {
         let what = match self.source {
@@ -126,7 +148,8 @@ pub fn significant(v: f32, digits: i32) -> String {
 
 /// The `clip` percentile of the positive values: a sparse feature's few
 /// extreme cells should not push every other cell to the bottom of the
-/// ramp. 100 is the maximum.
+/// ramp. 100 is the maximum. (A selection, not the full sort that
+/// `legume_numeric`'s `quantiles` does: it runs on every gene switch.)
 fn top_of(values: &[f32], clip: f32) -> f32 {
     let mut positive: Vec<f32> = values.iter().copied().filter(|&v| v > 0.).collect();
     if positive.is_empty() {

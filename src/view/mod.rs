@@ -36,13 +36,16 @@ use std::time::{Duration, Instant};
 const CELLS_PER_BIN: f32 = 6.;
 
 /// A gene map draws as its single pseudo-community's level, every cell shown.
-fn gene_style(theme: Theme) -> Style<'static> {
-    Style {
-        layer: Layer::Gene,
-        edges: false,
-        focus: None,
-        theme,
-    }
+/// Community `c`'s legend swatch, and whether it is shown: its colour, or
+/// the dimmed tissue colour when other communities are focused.
+fn legend_swatch(
+    c: usize,
+    palette: &[color::Rgb],
+    focus: Option<&[bool]>,
+    theme: Theme,
+) -> (color::Rgb, bool) {
+    let on = focus.is_none_or(|f| f[c]);
+    (if on { palette[c] } else { theme.dimmed() }, on)
 }
 
 /// Margin around the whole tissue when a view fits it, per side, as a
@@ -218,7 +221,8 @@ pub struct ViewArgs {
                      \x20 kitty         kitty graphics; pixels go through a temp file,\n\
                      \x20               or inline when over ssh (kitty, Ghostty, WezTerm)\n\
                      \x20 kitty-inline  kitty graphics, always inline\n\
-                     \x20               (in tmux, kitty needs `set -g allow-passthrough on`)\n\
+                     \x20               (in tmux, through passthrough, switched on for the\n\
+                     \x20               viewer's pane; best effort)\n\
                      \x20 sixel         sixel graphics (iTerm2, WezTerm, foot, xterm)\n\
                      \x20 iterm2        iTerm2 inline images\n\
                      \x20 quadrants     block characters, 2×2 pixels per character;\n\
@@ -346,15 +350,21 @@ impl Base {
     fn render(&self, level: &Level, style: &Style, gene: Option<&GeneMap>, vp: &Viewport) -> Frame {
         match gene {
             Some(g) => {
+                // The gene map's values in place of the level's communities,
+                // every cell shown.
                 let scene = Scene {
-                    geom: &self.geom,
                     comm: &g.comm,
-                    grid: &self.grid,
                     pyramid: &g.pyramid,
                     edges: None,
-                    spacing: self.spacing,
+                    ..self.scene(level)
                 };
-                render::render(&scene, vp, &gene_style(self.theme), &[[255; 3]])
+                let style = Style {
+                    layer: Layer::Gene,
+                    edges: false,
+                    focus: None,
+                    theme: self.theme,
+                };
+                render::render(&scene, vp, &style, &[[255; 3]])
             }
             None => render::render(&self.scene(level), vp, style, &level.palette),
         }
@@ -473,7 +483,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
                 Source::Observed
             };
             let g = base.gene(&mut level, feature, source, args.clip)?;
-            if source == Source::Observed && g.source == Source::Expected {
+            if g.fell_back(source) {
                 eprintln!("no data file found for this run; showing the model-expected level");
             }
             Some(g)
@@ -525,7 +535,7 @@ fn write_outputs(
     }
     if let Some(path) = png {
         if let Some(units) = base.units {
-            scalebar::draw(&mut frame, vp, units, true, base.theme);
+            scalebar::draw(&mut frame, vp, units, true);
         }
         frame.write_png(path)?;
     }
@@ -584,15 +594,14 @@ fn figure<'a>(
         (None, Layer::Argmax | Layer::Soft) => pdf::Legend::Communities(
             comm.by_size
                 .iter()
-                .map(|&c| pdf::Entry {
-                    label: format!("C{c}"),
-                    count: comm.sizes[c],
-                    colour: if style.focus.is_none_or(|f| f[c]) {
-                        level.palette[c]
-                    } else {
-                        base.theme.dimmed()
-                    },
-                    on: style.focus.is_none_or(|f| f[c]),
+                .map(|&c| {
+                    let (colour, on) = legend_swatch(c, &level.palette, style.focus, base.theme);
+                    pdf::Entry {
+                        label: format!("C{c}"),
+                        count: comm.sizes[c],
+                        colour,
+                        on,
+                    }
                 })
                 .collect(),
         ),
@@ -619,15 +628,14 @@ fn figure<'a>(
     pdf::Figure {
         frame,
         vp: *vp,
-        title: match gene {
-            Some(g) => format!("{} · {} · {}", base.run.name(), comm.tag, g.title()),
-            None => format!("{} · {} · {}", base.run.name(), comm.tag, style.layer),
+        title: {
+            let what = gene.map_or_else(|| style.layer.to_string(), GeneMap::title);
+            format!("{} · {} · {what}", base.run.name(), comm.tag)
         },
         subtitle,
         units: base.units,
         legend,
         markers,
-        theme: base.theme,
     }
 }
 

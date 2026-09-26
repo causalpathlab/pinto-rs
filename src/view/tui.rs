@@ -13,13 +13,14 @@ use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::{self, Kitty, Transport};
+use super::kitty::{Kitty, Transport};
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::scalebar;
 use super::{
-    focused, ids, legend_line, markers, thousands, write_outputs, Base, Graphics, Level, ViewArgs,
-    FIT_MARGIN,
+    focused, ids, legend_line, legend_swatch, markers, thousands, write_outputs, Base, Graphics,
+    Level, ViewArgs, FIT_MARGIN,
 };
+use clap::ValueEnum;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -79,7 +80,6 @@ enum Gfx {
 }
 
 impl Gfx {
-    /// The drawing method for `choice`, and its frame pixels per cell.
     /// The drawing method for `choice`, its frame pixels per cell, and the
     /// terminal's background colour when it reports one.
     fn pick(choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
@@ -95,8 +95,9 @@ impl Gfx {
         });
         let font = picker.font_size();
         let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
+        let tmux = picker.tmux_detected();
         let kitty = |transport| {
-            let kitty = Kitty::new(transport).through_tmux(kitty::in_tmux());
+            let kitty = Kitty::new(transport).through_tmux(tmux);
             (Gfx::Kitty(kitty), (fw, fh))
         };
         let cells = |glyphs: Glyphs| {
@@ -118,7 +119,7 @@ impl Gfx {
             Graphics::Blocks => cells(Glyphs::HalfBlocks),
             // tmux passes kitty graphics through only with allow-passthrough,
             // and then only as best effort: block characters always work.
-            Graphics::Auto if kitty::in_tmux() => cells(Glyphs::Quadrants),
+            Graphics::Auto if tmux => cells(Glyphs::Quadrants),
             Graphics::Auto => match picker.protocol_type() {
                 ProtocolType::Kitty => kitty(Transport::detect()),
                 ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
@@ -149,6 +150,8 @@ struct App<'a> {
     args: &'a ViewArgs,
     levels: Vec<Option<Level>>,
     cur: usize,
+    /// The level the viewer opened on, for `r`.
+    home: usize,
     gfx: Gfx,
     /// Image pixels per terminal cell.
     px_per_cell: (f32, f32),
@@ -214,6 +217,7 @@ impl<'a> App<'a> {
             args,
             levels,
             cur,
+            home: cur,
             gfx: gfx.0,
             px_per_cell: gfx.1,
             center: (0., 0.),
@@ -390,6 +394,7 @@ impl<'a> App<'a> {
                 self.tile = None;
                 self.fit(self.base.geom.bounds());
             }
+            KeyCode::Char('r') | KeyCode::Home => self.reset(),
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
             KeyCode::Char('2') => self.set_layer(Layer::Soft),
             KeyCode::Char('3') => self.set_layer(Layer::Entropy),
@@ -547,17 +552,17 @@ impl<'a> App<'a> {
         };
         if self.gene.as_ref().is_some_and(|g| g.feature == feature) {
             self.gene = None;
+            self.need_map = true;
         } else {
             self.show_gene(&feature);
         }
-        self.need_map = true;
     }
 
     fn show_gene(&mut self, feature: &str) {
         let (base, source, clip) = (self.base, self.source, self.clip);
         match base.gene(self.level_mut(), feature, source, clip) {
             Ok(g) => {
-                if source == Source::Observed && g.source == Source::Expected {
+                if g.fell_back(source) {
                     self.status = "no data file: model-expected level".into();
                 }
                 self.gene = Some(g);
@@ -592,17 +597,17 @@ impl<'a> App<'a> {
     fn toggle_clip(&mut self) {
         self.clip = if self.clip > 95. { 95. } else { 99. };
         self.status = format!("gene ramp tops at p{}", self.clip);
-        if let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) {
-            self.show_gene(&feature);
-        }
+        self.refresh_gene();
     }
 
     /// Switch between observed counts and the model-expected level.
     fn toggle_source(&mut self) {
-        self.source = match self.source {
-            Source::Observed => Source::Expected,
-            Source::Expected => Source::Observed,
-        };
+        self.source = self.source.other();
+        self.refresh_gene();
+    }
+
+    /// Draw the shown gene again after its source or clip changed.
+    fn refresh_gene(&mut self) {
         if let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) {
             self.show_gene(&feature);
         }
@@ -625,6 +630,29 @@ impl<'a> App<'a> {
         }
         self.community = (self.community as isize + by).rem_euclid(k) as usize;
         self.set_layer(Layer::Community(self.community));
+    }
+
+    /// Back to the view the viewer opened on: the whole tissue, the starting
+    /// level and layer, edges as asked, nothing selected.
+    fn reset(&mut self) {
+        self.cur = self.home;
+        let k = self.level().comm.k;
+        self.focus = vec![false; k];
+        self.shown = None;
+        self.markers.clear();
+        self.gene = None;
+        self.picked = None;
+        self.source = Source::Observed;
+        self.clip = self.args.clip;
+        self.layer = self.args.layer;
+        self.community = match self.args.layer {
+            Layer::Community(c) => c.min(k.saturating_sub(1)),
+            _ => 0,
+        };
+        self.edges = self.args.edges;
+        self.tile = None;
+        self.fit(self.base.geom.bounds());
+        self.status = "back to the start".into();
     }
 
     fn step_level(&mut self, by: isize, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -743,11 +771,12 @@ impl<'a> App<'a> {
         if self.edges {
             cmd.push_str(" --edges");
         }
-        let theme = match self.base.theme {
-            Theme::Dark => "dark",
-            Theme::Light => "light",
-        };
-        write!(cmd, " --theme {theme}").ok();
+        let theme = self
+            .base
+            .theme
+            .to_possible_value()
+            .expect("no skipped variants");
+        write!(cmd, " --theme {}", theme.get_name()).ok();
         if let Some(g) = &self.gene {
             write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
             if g.source == Source::Expected {
@@ -819,7 +848,7 @@ impl<'a> App<'a> {
                 .render(level, &self.style(), self.gene.as_ref(), &vp);
             // Unlabelled: the panel states the bar's length as text.
             if let Some(units) = self.base.units {
-                scalebar::draw(&mut frame, &vp, units, false, self.base.theme);
+                scalebar::draw(&mut frame, &vp, units, false);
             }
             let took = t.elapsed();
             let mode = render::mode(&scene, &vp);
@@ -831,8 +860,7 @@ impl<'a> App<'a> {
                     let t = Instant::now();
                     let (cols, rows) = (self.map.width as usize, self.map.height as usize);
                     let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
-                    let background = self.base.theme.background();
-                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows), background));
+                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows)));
                     self.send_time = t.elapsed();
                 }
                 Gfx::Picker(picker, proto) => {
@@ -902,11 +930,7 @@ impl<'a> App<'a> {
             match &self.gene {
                 Some(g) => row(
                     "gene",
-                    format!(
-                        "{}  o: {}",
-                        markers::symbol(&g.feature),
-                        source_name(g.source)
-                    ),
+                    format!("{}  o: {}", markers::symbol(&g.feature), g.source.name()),
                 ),
                 None => row("layer", format!("{}  1-4", self.layer)),
             },
@@ -1076,17 +1100,13 @@ impl<'a> App<'a> {
                 let mut out: Vec<(Line, Option<Pick>)> = order[..shown]
                     .iter()
                     .map(|&c| {
-                        let on = focus.is_none_or(|f| f[c]);
+                        let (colour, on) = legend_swatch(c, &level.palette, focus, self.base.theme);
                         let text =
                             TStyle::default().fg(if on { Color::Reset } else { Color::DarkGray });
                         let mark = if focus.is_some() && on { "▸" } else { " " };
                         let line = Line::from(vec![
                             Span::raw(mark),
-                            if on {
-                                swatch(level.palette[c])
-                            } else {
-                                swatch(self.base.theme.dimmed())
-                            },
+                            swatch(colour),
                             Span::styled(format!(" C{c:<3} {:>9}", thousands(sizes[c])), text),
                         ]);
                         (line, Some(Pick::Community(c)))
@@ -1138,13 +1158,6 @@ enum Pick {
     Gene(usize),
 }
 
-fn source_name(source: Source) -> &'static str {
-    match source {
-        Source::Observed => "observed",
-        Source::Expected => "expected",
-    }
-}
-
 /// A colour ramp from 0 to `top`, under `title`.
 fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
     let bar: Vec<Span> = (0..24)
@@ -1162,7 +1175,8 @@ fn help_lines(full: bool) -> Vec<Line<'static>> {
         &[
             " hjkl/arrows/drag  pan (shift: far)",
             " +/- or wheel      zoom",
-            " 0 fit   b next batch",
+            " 0 fit   r back to the start",
+            " b next batch",
             " 1 argmax 2 soft 3 entropy 4 Ck",
             " c/C  next/prev community",
             " [ ]  prev/next level (L1 .. final)",
@@ -1176,7 +1190,10 @@ fn help_lines(full: bool) -> Vec<Line<'static>> {
             " s export view (PNG, PDF, .txt)",
         ]
     } else {
-        &[" s export view (PNG, PDF, .txt)", " ? keys   q quit"]
+        &[
+            " s export view (PNG, PDF, .txt)",
+            " r start over  ? keys  q quit",
+        ]
     };
     text.iter().map(|t| Line::styled(*t, dim)).collect()
 }

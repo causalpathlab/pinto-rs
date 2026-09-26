@@ -48,6 +48,7 @@ fn the_bar_is_white_at_the_bottom_left() {
         w: 400,
         h: 300,
         rgba: vec![0; 400 * 300 * 4],
+        background: Theme::Dark.background(),
     };
     let vp = Viewport {
         x0: 0.,
@@ -56,7 +57,7 @@ fn the_bar_is_white_at_the_bottom_left() {
         w: 400,
         h: 300,
     };
-    draw(&mut frame, &vp, Units::Micron, true, Theme::Dark);
+    draw(&mut frame, &vp, Units::Micron, true);
     // 400 units wide → an 50-unit bar: 50 px from x = 6 on a row near the bottom.
     let px = |x: usize, y: usize| &frame.rgba[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
     assert_eq!(px(30, 300 - 6 - 1), &[255, 255, 255]);
@@ -70,6 +71,7 @@ fn without_a_label_only_the_bar_is_drawn() {
             w: 400,
             h: 300,
             rgba: vec![0; 400 * 300 * 4],
+            background: Theme::Dark.background(),
         };
         let vp = Viewport {
             x0: 0.,
@@ -78,7 +80,7 @@ fn without_a_label_only_the_bar_is_drawn() {
             w: 400,
             h: 300,
         };
-        draw(&mut frame, &vp, Units::Micron, label, Theme::Dark);
+        draw(&mut frame, &vp, Units::Micron, label);
         // Anything lit above the bar's outline is label text.
         frame.rgba[..(300 - 6 - 2 - 2) * 400 * 4]
             .iter()
@@ -86,4 +88,24 @@ fn without_a_label_only_the_bar_is_drawn() {
     };
     assert!(blank(false));
     assert!(!blank(true));
+}
+
+#[test]
+fn on_a_light_frame_the_bar_is_black() {
+    let mut frame = Frame {
+        w: 400,
+        h: 300,
+        rgba: vec![250; 400 * 300 * 4],
+        background: Theme::Light.background(),
+    };
+    let vp = Viewport {
+        x0: 0.,
+        y0: 0.,
+        upp: 1.,
+        w: 400,
+        h: 300,
+    };
+    draw(&mut frame, &vp, Units::Micron, false);
+    let o = ((300 - 6 - 1) * 400 + 30) * 4;
+    assert_eq!(&frame.rgba[o..o + 3], &[0, 0, 0]);
 }

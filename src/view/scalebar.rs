@@ -82,7 +82,7 @@ pub fn bar_for(view_width: f32, units: Units) -> Bar {
 
 /// Burn the bar into `frame` at its bottom left, with its label above it
 /// when `label` is set.
-pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool, theme: Theme) {
+pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
     let bar = bar_for(vp.w as f32 * vp.upp, units);
     let len_px = (bar.length / vp.upp).round() as i64;
     // Glyph pixel size and bar thickness grow with the frame.
@@ -96,9 +96,8 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool, theme: 
     }
     let text = if label { bar.label.as_str() } else { "" };
 
-    // A dark outline first, then white, so the bar reads over bright cells.
     // The outline first, then the fill, so the bar reads over any cells.
-    let (fill_colour, edge) = theme.bar();
+    let (fill_colour, edge) = Theme::for_background(frame.background).bar();
     for (pad, colour) in [(s, edge), (0, fill_colour)] {
         fill(
             frame,
