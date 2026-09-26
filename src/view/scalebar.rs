@@ -27,10 +27,17 @@ impl Units {
             "px" | "pixel" => Some(Units::Pixel),
             "none" => None,
             "auto" => {
-                let any = |pat: &str| coord_names.iter().any(|c| c.contains(pat));
-                Some(if any("pxl") || any("pixel") {
+                // Whole words of the column names (`pxl_row_in_fullres` →
+                // pxl, row, in, fullres), so `um` never matches `column`.
+                let any = |words: &[&str]| {
+                    coord_names.iter().any(|c| {
+                        c.split(|ch: char| !ch.is_ascii_alphanumeric())
+                            .any(|w| words.contains(&w.to_ascii_lowercase().as_str()))
+                    })
+                };
+                Some(if any(&["pxl", "px", "pixel", "pixels"]) {
                     Units::Pixel
-                } else if any("centroid") || any("um") || any("micron") {
+                } else if any(&["centroid", "um", "µm", "micron", "microns"]) {
                     Units::Micron
                 } else {
                     Units::Plain

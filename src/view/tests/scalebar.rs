@@ -27,6 +27,9 @@ fn units_are_guessed_from_coordinate_columns() {
         Some(Units::Micron)
     );
     assert_eq!(guess(&["x", "y"]), Some(Units::Plain));
+    // Whole words only: `um` inside another word is not a unit.
+    assert_eq!(guess(&["column_x", "num_y"]), Some(Units::Plain));
+    assert_eq!(guess(&["x_um", "y_um"]), Some(Units::Micron));
     assert_eq!(Units::parse("none", &[]).unwrap(), None);
 }
 

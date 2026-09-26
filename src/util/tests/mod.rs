@@ -6,3 +6,4 @@ mod graph_dc_poisson_refine;
 mod graph_refine;
 mod knn_resolution;
 mod metadata;
+mod parquet_io;

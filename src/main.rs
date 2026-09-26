@@ -748,6 +748,14 @@ fn expand_lra_from_metadata(mut args: Vec<String>) -> anyhow::Result<Vec<String>
 }
 
 fn main() -> anyhow::Result<()> {
+    // Rust ignores SIGPIPE, so printing into a closed pipe (`pinto … | head`)
+    // panics. Take the default back: the process just ends, as other
+    // command-line tools do.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
     }
