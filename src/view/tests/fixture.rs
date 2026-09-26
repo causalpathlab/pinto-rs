@@ -30,6 +30,7 @@ pub(super) fn synth_cells(n: usize, n_batches: usize) -> CellTable {
         coords,
         batches,
         index,
+        in_graph: None,
         coord_col_names: vec!["x".into(), "y".into()],
     }
 }

@@ -11,6 +11,7 @@ use arrow_array::{Array, ArrayRef};
 use data_beans::hdf5_io::strip_backend_suffix;
 use legume_numeric::matrix::common_io::basename;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
+use legume_numeric::matrix::parquet::{write_named_table, Column};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -99,6 +100,13 @@ fn read_named_columns(path: &Path, names: &[&str]) -> anyhow::Result<Vec<Vec<Arr
             let col = batch
                 .column_by_name(n)
                 .ok_or_else(|| anyhow::anyhow!("column {n} missing in {path:?}"))?;
+            // The row readers these replace refused missing values; so do
+            // these, rather than read them as 0 or "".
+            anyhow::ensure!(
+                col.null_count() == 0,
+                "column {n} in {path:?} has {} missing values",
+                col.null_count()
+            );
             out[k].push(col.clone());
         }
     }
@@ -211,6 +219,117 @@ pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<M
     })
 }
 
+/// Write `{prefix}.cells.parquet`: every cell the run read, before QC, with
+/// its coordinates (the internal `batch` offset column left out, as in
+/// `coord_pairs`), its batch label when there is more than one, and
+/// `in_graph` (1 if the cell became a graph node, 0 if QC dropped it).
+///
+/// `coord_pairs` only names cells that have an edge; this table is the
+/// run's own record of where every cell is.
+pub fn write_cells_table(
+    prefix: &str,
+    names: &[Box<str>],
+    coords: &Mat,
+    coord_names: &[Box<str>],
+    batches: &[Box<str>],
+    in_graph: &[bool],
+) -> anyhow::Result<()> {
+    let n = names.len();
+    anyhow::ensure!(
+        coords.nrows() == n && batches.len() == n && in_graph.len() == n,
+        "cells table: {n} names, {} coordinate rows, {} batch labels, {} flags",
+        coords.nrows(),
+        batches.len(),
+        in_graph.len()
+    );
+    let coord_cols: Vec<(usize, Box<str>)> = coord_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_ref() != "batch")
+        .map(|(j, name)| (j, name.clone()))
+        .collect();
+    let values: Vec<Vec<f32>> = coord_cols
+        .iter()
+        .map(|&(j, _)| coords.column(j).iter().copied().collect())
+        .collect();
+    let flags: Vec<i32> = in_graph.iter().map(|&k| i32::from(k)).collect();
+
+    let mut columns: Vec<(Box<str>, Column<'_>)> = coord_cols
+        .iter()
+        .zip(&values)
+        .map(|((_, name), v)| (name.clone(), Column::F32(v)))
+        .collect();
+    let distinct: HashSet<&str> = batches.iter().map(|b| b.as_ref()).collect();
+    if distinct.len() > 1 {
+        columns.push(("batch".into(), Column::Str(batches)));
+    }
+    columns.push(("in_graph".into(), Column::I32(&flags)));
+    write_named_table(&cells_table_path(prefix), "cell", names, &columns)
+}
+
+/// Where [`write_cells_table`] writes for `prefix`.
+pub fn cells_table_path(prefix: &str) -> String {
+    format!("{prefix}.cells.parquet")
+}
+
+/// Read a table written by [`write_cells_table`]. `coord_columns` names the
+/// `[x, y]` columns (from the manifest); without it, the first two numeric
+/// columns other than `in_graph`.
+pub fn read_cells_table(
+    path: &Path,
+    coord_columns: Option<&[String]>,
+) -> anyhow::Result<CellTable> {
+    let fields = field_names(path)?;
+    anyhow::ensure!(
+        fields.len() >= 3,
+        "{path:?}: expected a cell column and two coordinates"
+    );
+    let (x, y) = match coord_columns {
+        Some(cols) if cols.len() >= 2 => (cols[0].clone(), cols[1].clone()),
+        _ => {
+            let coords: Vec<&str> = fields[1..]
+                .iter()
+                .map(|f| f.as_ref())
+                .filter(|f| !matches!(*f, "batch" | "in_graph"))
+                .collect();
+            anyhow::ensure!(
+                coords.len() >= 2,
+                "{path:?}: fewer than two coordinate columns"
+            );
+            (coords[0].to_string(), coords[1].to_string())
+        }
+    };
+    let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
+    let mut wanted = vec![fields[0].as_ref(), x.as_str(), y.as_str()];
+    for extra in ["batch", "in_graph"] {
+        if has(extra) {
+            wanted.push(extra);
+        }
+    }
+    let cols = read_named_columns(path, &wanted)?;
+    let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
+    let names = labels(&cols[0])?;
+    let (xs, ys) = (floats(&cols[1])?, floats(&cols[2])?);
+    let batches = column("batch").map(|c| labels(c)).transpose()?;
+    let in_graph = column("in_graph")
+        .map(|c| ints(c).map(|v| v.into_iter().map(|k| k != 0).collect::<Vec<_>>()))
+        .transpose()?
+        .filter(|v| v.iter().any(|&k| !k));
+    let index = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), i))
+        .collect();
+    Ok(CellTable {
+        names,
+        coords: xs.into_iter().zip(ys).collect(),
+        batches,
+        index,
+        in_graph,
+        coord_col_names: vec![x.into_boxed_str(), y.into_boxed_str()],
+    })
+}
+
 /// One row per cell. `batch` is `None` if the fit was single-batch
 /// (i.e. `coord_pairs.parquet` lacks a `left_batch` column).
 pub struct CellTable {
@@ -222,6 +341,9 @@ pub struct CellTable {
     pub batches: Option<Vec<Box<str>>>,
     /// `name → index into names/coords/batches`
     pub index: HashMap<Box<str>, usize>,
+    /// Whether each cell became a graph node (`false`: QC dropped it, or it
+    /// has no neighbours); `None` when every cell did.
+    pub in_graph: Option<Vec<bool>>,
     /// Bare coordinate column names (without `left_`/`right_` prefix).
     /// Pass-through from `coord_pairs.parquet` so downstream readers
     /// (e.g. `read_propensity`) can exclude coord trailers that
@@ -346,6 +468,7 @@ pub fn read_cells_from_coord_pairs(
         coords,
         batches,
         index,
+        in_graph: None,
         coord_col_names,
     })
 }

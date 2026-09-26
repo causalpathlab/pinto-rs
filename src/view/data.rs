@@ -10,8 +10,8 @@ use crate::util::common::*;
 use crate::util::input::read_one_coord_file;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
 use crate::util::parquet_io::{
-    read_cells_from_coord_pairs, read_feature_community, read_propensity, visit_link_community,
-    CellTable, PropensityRead,
+    read_cells_from_coord_pairs, read_cells_table, read_feature_community, read_propensity,
+    visit_link_community, CellTable, PropensityRead,
 };
 use std::path::{Path, PathBuf};
 
@@ -167,23 +167,34 @@ impl Run {
         }
     }
 
+    /// Every cell's position: from the run's cells table when it wrote one;
+    /// for older runs, from the cells `coord_pairs` names plus the rest from
+    /// the coordinate file the run was fit with.
     pub fn load_geometry(&self) -> anyhow::Result<Geometry> {
+        let coord_columns = self.meta.outputs.coord_columns.as_deref();
+        if let Some(table) = self.meta.outputs.cells.as_deref() {
+            let path = self.resolve(table);
+            if path.exists() {
+                match read_cells_table(&path, coord_columns) {
+                    Ok(cells) => return Ok(Geometry::from_cells(cells)),
+                    Err(e) => log::warn!("{}: {e}; reading coord_pairs instead", path.display()),
+                }
+            }
+        }
         let pairs = self.meta.outputs.coord_pairs.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
                 "{}: no coord_pairs output listed; was the run fit with --coord?",
                 self.source()
             )
         })?;
-        let mut cells = read_cells_from_coord_pairs(
-            &self.resolve(pairs),
-            self.meta.outputs.coord_columns.as_deref(),
-        )?;
+        let mut cells = read_cells_from_coord_pairs(&self.resolve(pairs), coord_columns)?;
         self.add_cells_without_edges(&mut cells);
         Ok(Geometry::from_cells(cells))
     }
 
-    /// `coord_pairs` only names cells with an edge. The coordinate file the
-    /// run was fit with has every cell; add the rest from it. Only for a
+    /// For runs written before the cells table: `coord_pairs` only names
+    /// cells with an edge, and the coordinate file the run was fit with has
+    /// every cell; add the rest from it. Only for a
     /// single batch: the file does not say which batch a lone cell is in.
     fn add_cells_without_edges(&self, cells: &mut CellTable) {
         let Some(file) = self.meta.coord_file.as_deref() else {
@@ -203,13 +214,16 @@ impl Run {
             }
         };
         let before = cells.names.len();
+        let mut in_graph = cells.in_graph.take().unwrap_or_else(|| vec![true; before]);
         for (r, name) in coords.rows.iter().enumerate() {
             if !cells.index.contains_key(name) {
                 cells.index.insert(name.clone(), cells.names.len());
                 cells.names.push(name.clone());
                 cells.coords.push((coords.mat[(r, 0)], coords.mat[(r, 1)]));
+                in_graph.push(false);
             }
         }
+        cells.in_graph = Some(in_graph);
         log::info!(
             "{} cells outside the graph (dropped by QC, or without neighbours) \
              added from {}",
@@ -271,6 +285,9 @@ pub struct Geometry {
     pub tiles: Vec<Tile>,
     /// Coordinate column names, `[x, y]`.
     pub coord_names: Vec<Box<str>>,
+    /// Whether each cell became a graph node; `None` when every cell did.
+    /// The others (dropped by QC, or without neighbours) have no community.
+    pub in_graph: Option<Vec<bool>>,
 }
 
 impl Geometry {
@@ -280,6 +297,7 @@ impl Geometry {
             coords,
             batches,
             index,
+            in_graph,
             coord_col_names,
         } = cells;
         let mut x: Vec<f32> = coords.iter().map(|c| c.0).collect();
@@ -297,7 +315,15 @@ impl Geometry {
             batch,
             tiles,
             coord_names: coord_col_names,
+            in_graph,
         }
+    }
+
+    /// Cells that are not graph nodes.
+    pub fn n_outside_graph(&self) -> usize {
+        self.in_graph
+            .as_ref()
+            .map_or(0, |g| g.iter().filter(|&&k| !k).count())
     }
 
     pub fn n(&self) -> usize {
@@ -442,10 +468,15 @@ impl Communities {
                 out[i] = quantize(h[r] / ln_k);
             }
         }
-        let n_missing = n - (rows.len() - n_unmatched);
+        // Cells outside the graph have no community by design; only graph
+        // nodes without a propensity row are a mismatch.
+        let in_graph = |i: usize| geom.in_graph.as_ref().is_none_or(|g| g[i]);
+        let n_missing = (0..n)
+            .filter(|&i| cluster[i] == NO_CLUSTER && in_graph(i))
+            .count();
         if n_missing > 0 || n_unmatched > 0 {
             warn!(
-                "level {tag}: {n_missing} cells have no propensity, \
+                "level {tag}: {n_missing} graph cells have no propensity, \
                  {n_unmatched} propensity rows match no cell"
             );
         }
