@@ -36,7 +36,6 @@ fn draw_focused(w: usize, window: Rect, focus: Option<&[bool]>) -> Frame {
         layer: Layer::Argmax,
         edges: false,
         focus,
-        scale_bar: None,
     };
     render(&scene, &Viewport::fit(window, w, w), &style, &palette(4))
 }

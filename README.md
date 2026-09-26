@@ -66,7 +66,9 @@ the command that redraws it. The scale bar's units are guessed from the
 coordinate columns (`--units um|px|none` to override).
 
 Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
-WezTerm) or sixel; elsewhere the map is drawn with coloured half-blocks.
+WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,
+2×2 pixels per character (`--graphics symbols` for boundaries at eighths of a
+character, `blocks` for half-blocks).
 
 ## Input data
 
