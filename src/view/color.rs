@@ -1,11 +1,15 @@
 //! Colours: a categorical palette for communities and 256-entry lookup
 //! tables for continuous values.
 
+use std::sync::LazyLock;
+
 pub type Rgb = [u8; 3];
 
 /// Background and "no community" colours.
 pub const BACKGROUND: Rgb = [17, 17, 20];
 pub const NO_COMMUNITY: Rgb = [70, 70, 76];
+/// Cells outside the focused communities: visible as tissue, not as colour.
+pub const DIMMED: Rgb = [40, 40, 46];
 
 /// `k` distinct colours: golden-angle hues in OKLCH at a few lightness
 /// steps, so neighbouring ids never share a hue or a lightness.
@@ -43,8 +47,48 @@ pub fn encode(c: f32) -> u8 {
     (v * 255.).round() as u8
 }
 
+/// Steps of the linear-light table behind [`encode_fast`]: finer than a byte
+/// of sRGB needs anywhere but the darkest few codes.
+const ENCODE_STEPS: usize = 4096;
+
+/// [`encode`] by table lookup, for per-pixel use.
+pub fn encode_fast(c: f32) -> u8 {
+    static TABLE: LazyLock<Vec<u8>> = LazyLock::new(|| {
+        (0..=ENCODE_STEPS)
+            .map(|i| encode(i as f32 / ENCODE_STEPS as f32))
+            .collect()
+    });
+    TABLE[(c.clamp(0., 1.) * ENCODE_STEPS as f32).round() as usize]
+}
+
+/// [`decode`] by table lookup, for per-pixel use.
+pub fn linear(v: u8) -> f32 {
+    static TABLE: LazyLock<[f32; 256]> = LazyLock::new(|| std::array::from_fn(|v| decode(v as u8)));
+    TABLE[v as usize]
+}
+
+pub fn viridis() -> &'static Ramp {
+    static RAMP: LazyLock<Ramp> = LazyLock::new(|| {
+        Ramp::from_stops(&[
+            0x440154, 0x472d7b, 0x3b528b, 0x2c728e, 0x21918c, 0x28ae80, 0x5ec962, 0xaddc30,
+            0xfde725,
+        ])
+    });
+    &RAMP
+}
+
+pub fn magma() -> &'static Ramp {
+    static RAMP: LazyLock<Ramp> = LazyLock::new(|| {
+        Ramp::from_stops(&[
+            0x000004, 0x1c1044, 0x4f127b, 0x812581, 0xb5367a, 0xe55064, 0xfb8761, 0xfec287,
+            0xfcfdbf,
+        ])
+    });
+    &RAMP
+}
+
 /// sRGB byte → linear light.
-pub fn decode(v: u8) -> f32 {
+fn decode(v: u8) -> f32 {
     let c = v as f32 / 255.;
     if c <= 0.040_45 {
         c / 12.92
@@ -57,20 +101,6 @@ pub fn decode(v: u8) -> f32 {
 pub struct Ramp(Vec<Rgb>);
 
 impl Ramp {
-    pub fn viridis() -> Self {
-        Self::from_stops(&[
-            0x440154, 0x472d7b, 0x3b528b, 0x2c728e, 0x21918c, 0x28ae80, 0x5ec962, 0xaddc30,
-            0xfde725,
-        ])
-    }
-
-    pub fn magma() -> Self {
-        Self::from_stops(&[
-            0x000004, 0x1c1044, 0x4f127b, 0x812581, 0xb5367a, 0xe55064, 0xfb8761, 0xfec287,
-            0xfcfdbf,
-        ])
-    }
-
     /// Evenly spaced stops, interpolated in sRGB.
     fn from_stops(stops: &[u32]) -> Self {
         let rgb = |h: u32| {
@@ -125,8 +155,16 @@ mod tests {
     }
 
     #[test]
+    fn table_encoder_matches_the_formula_within_one_step() {
+        for i in 0..=1000 {
+            let c = i as f32 / 1000.;
+            assert!((encode_fast(c) as i32 - encode(c) as i32).abs() <= 1, "{c}");
+        }
+    }
+
+    #[test]
     fn ramp_ends_are_the_first_and_last_stops() {
-        let v = Ramp::viridis();
+        let v = viridis();
         assert_eq!(v.at(0.), [0x44, 0x01, 0x54]);
         assert_eq!(v.at(1.), [0xfd, 0xe7, 0x25]);
     }

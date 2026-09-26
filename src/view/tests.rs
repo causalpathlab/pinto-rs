@@ -197,6 +197,10 @@ mod render {
     }
 
     fn draw(w: usize, window: Rect) -> crate::view::render::Frame {
+        draw_focused(w, window, None)
+    }
+
+    fn draw_focused(w: usize, window: Rect, focus: Option<&[bool]>) -> crate::view::render::Frame {
         let (geom, comm, grid, pyramid) = fixture();
         let scene = Scene {
             geom: &geom,
@@ -209,6 +213,8 @@ mod render {
         let style = Style {
             layer: Layer::Argmax,
             edges: false,
+            focus,
+            scale_bar: None,
         };
         render(&scene, &Viewport::fit(window, w, w), &style, &palette(4))
     }
@@ -235,6 +241,28 @@ mod render {
     }
 
     #[test]
+    fn focus_dims_other_communities() {
+        let (geom, comm, ..) = fixture();
+        let i = 2 * 40 + 2;
+        let (x, y) = (geom.x[i], geom.y[i]);
+        let window = Rect {
+            x0: x - 1.,
+            y0: y - 1.,
+            x1: x + 1.,
+            y1: y + 1.,
+        };
+        let c = comm.cluster[i] as usize;
+        let mut focus = vec![false; 4];
+        focus[(c + 1) % 4] = true;
+        let dimmed = draw_focused(64, window, Some(&focus));
+        assert_eq!(pixel(&dimmed, 32, 32), crate::view::color::DIMMED);
+
+        focus[c] = true;
+        let shown = draw_focused(64, window, Some(&focus));
+        assert_eq!(pixel(&shown, 32, 32), palette(4)[c]);
+    }
+
+    #[test]
     fn bins_cover_the_tissue_and_leave_the_outside_empty() {
         // 8 pixels for 40 units: 5 units per pixel, well past point mode.
         let frame = draw(
@@ -258,4 +286,14 @@ mod render {
         assert_eq!("c0".parse::<Layer>().unwrap(), Layer::Community(0));
         assert!("blue".parse::<Layer>().is_err());
     }
+}
+
+#[test]
+fn thousands_groups_digits() {
+    use super::thousands;
+    assert_eq!(thousands(0), "0");
+    assert_eq!(thousands(999), "999");
+    assert_eq!(thousands(1000), "1,000");
+    assert_eq!(thousands(814243), "814,243");
+    assert_eq!(thousands(1234567), "1,234,567");
 }

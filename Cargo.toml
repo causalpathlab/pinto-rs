@@ -24,7 +24,15 @@ path = "src/main.rs"
 [features]
 default = ["view"]
 # `pinto view`: multi-resolution viewer for pinto outputs.
-view = ["dep:png"]
+view = [
+    "dep:png",
+    "dep:ratatui",
+    "dep:ratatui-image",
+    "dep:image",
+    "dep:flate2",
+    "dep:base64",
+    "dep:pdf-writer",
+]
 cuda = [
     "legume-numeric/cuda",
     "data-beans/cuda",
@@ -65,3 +73,9 @@ log = "0.4"
 colored = "3"
 rustc-hash = "2.1"
 png = { version = "0.18", optional = true }
+ratatui = { version = "0.30", optional = true }
+ratatui-image = { version = "11.1", optional = true, default-features = false, features = ["crossterm"] }
+image = { version = "0.25", optional = true, default-features = false }
+flate2 = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+pdf-writer = { version = "0.15", optional = true }

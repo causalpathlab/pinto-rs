@@ -8,7 +8,12 @@
 mod color;
 mod data;
 mod index;
+mod kitty;
+mod markers;
+mod pdf;
 mod render;
+mod scalebar;
+mod tui;
 
 #[cfg(test)]
 mod tests;
@@ -16,11 +21,18 @@ mod tests;
 use clap::Args;
 use data::{Communities, Edges, Geometry, Rect, Run};
 use index::{EdgeIndex, Grid, Pyramid};
-use render::{Layer, Scene, Style, Viewport};
+use markers::FeatureRates;
+use render::{Frame, Layer, Scene, Style, Viewport};
+use scalebar::Units;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Average cells per finest grid bin.
 const CELLS_PER_BIN: f32 = 6.;
+
+/// Margin around the whole tissue when a view fits it, per side, as a
+/// fraction of its larger extent. An explicit `--bbox` gets none.
+const FIT_MARGIN: f32 = 0.01;
 
 #[derive(Args, Debug)]
 pub struct ViewArgs {
@@ -52,12 +64,35 @@ pub struct ViewArgs {
     )]
     pub png: Option<Box<str>>,
 
-    #[arg(long, default_value_t = 2400, help = "PNG width in pixels")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Draw one view to a PDF figure and exit",
+        long_help = "Draw one view to a one-page PDF figure and exit: the map as an\n\
+                     image, with title, scale bar, legend and (with --focus) the\n\
+                     focused communities' markers as vector text. Combines with --png."
+    )]
+    pub pdf: Option<Box<str>>,
+
+    #[arg(
+        long,
+        default_value = "auto",
+        help = "Coordinate units for the scale bar: auto, um, px, or none",
+        long_help = "Coordinate units for the scale bar:\n\
+                     \x20 auto  px for Space Ranger pxl_* columns, µm for Xenium\n\
+                     \x20       centroids, otherwise a bare number\n\
+                     \x20 um    micrometres (1000 µm shows as 1 mm)\n\
+                     \x20 px    image pixels\n\
+                     \x20 none  no scale bar"
+    )]
+    pub units: Box<str>,
+
+    #[arg(long, default_value_t = 2400, help = "Image width in pixels")]
     pub width: usize,
 
     #[arg(
         long,
-        help = "PNG height in pixels [default: from the view's aspect ratio]"
+        help = "Image height in pixels [default: from the view's aspect ratio]"
     )]
     pub height: Option<usize>,
 
@@ -90,87 +125,171 @@ pub struct ViewArgs {
                      for an edge to span a few pixels."
     )]
     pub edges: bool,
+
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "C1,C7,...",
+        help = "Show only these communities; dim the rest (--png)",
+        long_help = "Show only these communities, comma separated (C7 or 7);\n\
+                     other cells are dimmed and their edges hidden.\n\
+                     In the terminal, click a cell or a legend entry instead."
+    )]
+    pub focus: Option<Vec<Box<str>>>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        num_args = 0..=1,
+        default_missing_value = "8",
+        help = "With --summary, list each community's top N marker features",
+        long_help = "With --summary, list each community's top N marker\n\
+                     features [default N: 8]. A feature's fold is its rate in\n\
+                     the community over its mean rate in the other ones,\n\
+                     among features at or above the community's median rate."
+    )]
+    pub markers: Option<usize>,
+
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_name = "N",
+        help = "In the terminal, `s` exports the view at N × screen resolution"
+    )]
+    pub export_scale: usize,
+
+    #[arg(
+        long,
+        default_value = "auto",
+        value_parser = ["auto", "kitty", "kitty-inline", "sixel", "iterm2", "blocks"],
+        help = "How the map is drawn in the terminal",
+        long_help = "How the map is drawn in the terminal:\n\
+                     \x20 auto          ask the terminal (default)\n\
+                     \x20 kitty         kitty graphics; pixels go through a temp file,\n\
+                     \x20               or inline when over ssh (kitty, Ghostty, WezTerm)\n\
+                     \x20 kitty-inline  kitty graphics, always inline\n\
+                     \x20 sixel         sixel graphics (iTerm2, WezTerm, foot, xterm)\n\
+                     \x20 iterm2        iTerm2 inline images\n\
+                     \x20 blocks        coloured half-block characters, any terminal"
+    )]
+    pub graphics: String,
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     if args.summary {
         return summarize(args);
     }
-    match args.png.as_deref() {
-        Some(out) => write_png(args, out),
-        None => {
-            anyhow::bail!("the interactive viewer is not built yet; use --summary or --png FILE")
-        }
+    if args.png.is_some() || args.pdf.is_some() {
+        write_still(args)
+    } else {
+        tui::run(args)
     }
 }
 
-/// A run loaded and indexed at one level.
-struct Loaded {
+/// A run's cell geometry and grid, shared by every level.
+struct Base {
+    run: Run,
     geom: Geometry,
-    comm: Communities,
-    edges: Option<(Edges, EdgeIndex)>,
     grid: Grid,
-    pyramid: Pyramid,
+    /// Scale bar units; `None` draws no bar.
+    units: Option<Units>,
+    /// Typical distance between neighbouring cells, world units.
     spacing: f32,
 }
 
-impl Loaded {
-    fn load(run: &Run, level: Option<&str>, with_edges: bool) -> anyhow::Result<Self> {
-        let level = run.level(level)?;
+impl Base {
+    fn load(prefix: &str, units: &str) -> anyhow::Result<Self> {
+        let run = Run::open(prefix)?;
         let t = Instant::now();
         let geom = run.load_geometry()?;
+        let units = Units::parse(units, &geom.coord_names)?;
         log::info!("cells: {} in {:.2?}", geom.n(), t.elapsed());
-
-        let t = Instant::now();
-        let comm = run.load_communities(&geom, level)?;
-        log::info!("level {}: K={} in {:.2?}", comm.tag, comm.k, t.elapsed());
-
         let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), CELLS_PER_BIN);
-        let pyramid = Pyramid::build(&grid, &comm);
-
-        let edges = if with_edges {
-            let t = Instant::now();
-            let edges = run.load_edges(&geom, level)?;
-            let index = EdgeIndex::build(&grid, &geom.x, &geom.y, &edges);
-            log::info!("edges: {} in {:.2?}", edges.len(), t.elapsed());
-            Some((edges, index))
-        } else {
-            None
-        };
 
         // Spacing over occupied bins only: the bounding box of a tissue
         // section is mostly empty around the edges.
-        let occupied = pyramid.levels[0].count.iter().filter(|&&c| c > 0).count();
-        let area = occupied as f32 * grid.bin * grid.bin;
+        let area = grid.occupied_bins() as f32 * grid.bin * grid.bin;
         let spacing = (area / geom.n().max(1) as f32).sqrt();
-
-        Ok(Loaded {
+        Ok(Base {
+            run,
             geom,
-            comm,
-            edges,
             grid,
-            pyramid,
+            units,
             spacing,
         })
     }
 
-    fn scene(&self) -> Scene<'_> {
+    /// Load level `i` of `run.levels`, with its edges when asked.
+    fn level(&self, i: usize, with_edges: bool) -> anyhow::Result<Level> {
+        let info = &self.run.levels[i];
+        let t = Instant::now();
+        let comm = self.run.load_communities(&self.geom, info)?;
+        log::info!("level {}: K={} in {:.2?}", comm.tag, comm.k, t.elapsed());
+        let pyramid = Pyramid::build(&self.grid, &comm);
+        let palette = color::palette(comm.k);
+        let mut level = Level {
+            index: i,
+            comm,
+            pyramid,
+            palette,
+            edges: None,
+            features: None,
+        };
+        if with_edges {
+            self.load_edges(&mut level)?;
+        }
+        Ok(level)
+    }
+
+    fn load_edges(&self, level: &mut Level) -> anyhow::Result<()> {
+        if level.edges.is_none() {
+            let t = Instant::now();
+            let edges = self
+                .run
+                .load_edges(&self.geom, &self.run.levels[level.index])?;
+            let index = EdgeIndex::build(&self.grid, &self.geom.x, &self.geom.y, &edges);
+            log::info!("edges: {} in {:.2?}", edges.len(), t.elapsed());
+            level.edges = Some((edges, index));
+        }
+        Ok(())
+    }
+
+    fn load_features(&self, level: &mut Level) -> anyhow::Result<()> {
+        if level.features.is_none() {
+            level.features = Some(self.run.load_feature_rates(&self.run.levels[level.index])?);
+        }
+        Ok(())
+    }
+
+    fn scene<'a>(&'a self, level: &'a Level) -> Scene<'a> {
         Scene {
             geom: &self.geom,
-            comm: &self.comm,
+            comm: &level.comm,
             grid: &self.grid,
-            pyramid: &self.pyramid,
-            edges: self.edges.as_ref().map(|(e, i)| (e, i)),
+            pyramid: &level.pyramid,
+            edges: level.edges.as_ref().map(|(e, i)| (e, i)),
             spacing: self.spacing,
         }
     }
 }
 
-fn write_png(args: &ViewArgs, out: &str) -> anyhow::Result<()> {
-    let run = Run::open(&args.prefix)?;
-    let loaded = Loaded::load(&run, args.level.as_deref(), args.edges)?;
+/// One community level, loaded on demand.
+struct Level {
+    /// Position in `run.levels`.
+    index: usize,
+    comm: Communities,
+    pyramid: Pyramid,
+    palette: Vec<color::Rgb>,
+    edges: Option<(Edges, EdgeIndex)>,
+    /// Feature rates per community, loaded when markers are first asked for.
+    features: Option<FeatureRates>,
+}
+
+fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
+    let base = Base::load(&args.prefix, &args.units)?;
+    let mut level = base.level(base.run.level_index(args.level.as_deref())?, args.edges)?;
     if let Layer::Community(c) = args.layer {
-        anyhow::ensure!(c < loaded.comm.k, "C{c}: level has K={}", loaded.comm.k);
+        anyhow::ensure!(c < level.comm.k, "C{c}: level has K={}", level.comm.k);
     }
 
     let window = match args.bbox.as_deref() {
@@ -181,7 +300,7 @@ fn write_png(args: &ViewArgs, out: &str) -> anyhow::Result<()> {
             y1: y0.max(y1),
         },
         Some(v) => anyhow::bail!("--bbox takes 4 numbers X0,Y0,X1,Y1, got {}", v.len()),
-        None => loaded.geom.bounds(),
+        None => base.geom.bounds().pad(FIT_MARGIN),
     };
     let w = args.width.max(1);
     let h = args.height.unwrap_or_else(|| {
@@ -189,33 +308,170 @@ fn write_png(args: &ViewArgs, out: &str) -> anyhow::Result<()> {
             .max(1)
     });
     let vp = Viewport::fit(window, w, h);
-    let palette = color::palette(loaded.comm.k);
+    let focus = args
+        .focus
+        .as_deref()
+        .map(|ids| parse_focus(ids, level.comm.k))
+        .transpose()?;
+    if focus.is_some() && args.pdf.is_some() {
+        base.load_features(&mut level)?;
+    }
     let style = Style {
         layer: args.layer,
         edges: args.edges,
+        focus: focus.as_deref(),
+        scale_bar: None,
     };
 
     let t = Instant::now();
-    let frame = render::render(&loaded.scene(), &vp, &style, &palette);
+    write_outputs(
+        &base,
+        &level,
+        &style,
+        &vp,
+        args.png.as_deref().map(Path::new),
+        args.pdf.as_deref().map(Path::new),
+    )?;
     let took = t.elapsed();
-    frame.write_png(std::path::Path::new(out))?;
-    println!(
-        "wrote {out}: {w}×{h}, {:.3} units/px, rendered in {took:.2?}",
-        vp.upp
-    );
+    for out in [args.png.as_deref(), args.pdf.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        println!("wrote {out}");
+    }
+    println!("{w}×{h}, {:.3} units/px, in {took:.2?}", vp.upp);
     if matches!(args.layer, Layer::Argmax | Layer::Soft) {
-        print_legend(&loaded.comm, &palette);
+        for &c in &level.comm.by_size {
+            println!("{}", legend_line(c, level.palette[c], level.comm.sizes[c]));
+        }
     }
     Ok(())
 }
 
-fn print_legend(comm: &Communities, palette: &[color::Rgb]) {
-    let sizes = comm.sizes();
-    for (c, &[r, g, b]) in palette.iter().enumerate() {
-        if sizes[c] > 0 {
-            println!("  C{c:<3} #{r:02x}{g:02x}{b:02x} {:>9} cells", sizes[c]);
-        }
+/// Render `vp` once and write it as a PDF figure and/or a PNG. The PDF
+/// takes the map clean and draws its own vector scale bar; the PNG gets the
+/// bar burnt in afterwards, on the same buffer.
+fn write_outputs(
+    base: &Base,
+    level: &Level,
+    style: &Style,
+    vp: &Viewport,
+    png: Option<&Path>,
+    pdf_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let mut frame = render::render(&base.scene(level), vp, style, &level.palette);
+    if let Some(path) = pdf_path {
+        pdf::write(&figure(base, level, style, vp, &frame), path)?;
     }
+    if let Some(path) = png {
+        if let Some(units) = base.units {
+            scalebar::draw(&mut frame, vp, units);
+        }
+        frame.write_png(path)?;
+    }
+    Ok(())
+}
+
+/// Communities whose focus flag is set; empty with no focus.
+fn focused(focus: Option<&[bool]>) -> Vec<usize> {
+    focus.map_or_else(Vec::new, |f| (0..f.len()).filter(|&c| f[c]).collect())
+}
+
+/// `[3, 17]` → `C3{sep}C17`.
+fn ids(cs: &[usize], sep: &str) -> String {
+    cs.iter()
+        .map(|c| format!("C{c}"))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// One legend row: id, hex colour, cell count.
+fn legend_line(c: usize, [r, g, b]: color::Rgb, n: usize) -> String {
+    format!("  C{c:<3} #{r:02x}{g:02x}{b:02x} {n:>9} cells")
+}
+
+/// The PDF page for a rendered view: title, legend for the layer, and the
+/// markers of each focused community.
+fn figure<'a>(
+    base: &Base,
+    level: &Level,
+    style: &Style,
+    vp: &Viewport,
+    frame: &'a Frame,
+) -> pdf::Figure<'a> {
+    let comm = &level.comm;
+    let focused = focused(style.focus);
+    let mut subtitle = format!(
+        "{} cells · K={} · {:.3} units/px",
+        thousands(base.geom.n()),
+        comm.k,
+        vp.upp
+    );
+    if !focused.is_empty() {
+        subtitle.push_str(&format!(" · focus {}", ids(&focused, " ")));
+    }
+
+    let legend = match style.layer {
+        Layer::Argmax | Layer::Soft => pdf::Legend::Communities(
+            comm.by_size
+                .iter()
+                .map(|&c| pdf::Entry {
+                    label: format!("C{c}"),
+                    count: comm.sizes[c],
+                    colour: level.palette[c],
+                    on: style.focus.is_none_or(|f| f[c]),
+                })
+                .collect(),
+        ),
+        layer => pdf::Legend::Ramp {
+            title: layer.legend_title(),
+            stops: (0..64).map(|i| layer.ramp().at(i as f32 / 63.)).collect(),
+        },
+    };
+
+    let markers = match level.features.as_ref() {
+        Some(rates) => focused
+            .iter()
+            .take(4)
+            .map(|&c| pdf::MarkerBlock {
+                title: format!("C{c} markers"),
+                colour: level.palette[c],
+                genes: rates
+                    .top(c, 12)
+                    .into_iter()
+                    .map(|m| (markers::symbol(&m.name).to_string(), m.fold))
+                    .collect(),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    pdf::Figure {
+        frame,
+        vp: *vp,
+        title: format!("{} · {} · {}", base.run.name(), comm.tag, style.layer),
+        subtitle,
+        units: base.units,
+        legend,
+        markers,
+    }
+}
+
+/// `814243` → `814,243`.
+fn thousands(n: usize) -> String {
+    indicatif::HumanCount(n as u64).to_string()
+}
+
+/// `["C7", "3"]` → one flag per community.
+fn parse_focus(given: &[Box<str>], k: usize) -> anyhow::Result<Vec<bool>> {
+    let mut focus = vec![false; k];
+    for id in given {
+        let c = render::community_id(id)
+            .ok_or_else(|| anyhow::anyhow!("--focus: {id:?} is not a community (C7 or 7)"))?;
+        anyhow::ensure!(c < k, "--focus: C{c}, but the level has K={k}");
+        focus[c] = true;
+    }
+    Ok(focus)
 }
 
 fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
@@ -257,11 +513,18 @@ fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
         }
     }
 
-    let level = run.level(args.level.as_deref())?;
+    let level = &run.levels[run.level_index(args.level.as_deref())?];
     let t = Instant::now();
     let comm = run.load_communities(&geom, level)?;
     let t_comm = t.elapsed();
     print_communities(&comm, t_comm);
+    if let Some(n) = args.markers {
+        let rates = run.load_feature_rates(level)?;
+        println!("markers  (fold over the other communities)");
+        for &c in &comm.by_size {
+            println!("  C{c:<3} {}", rates.summary(c, n));
+        }
+    }
 
     let t = Instant::now();
     match run.load_edges(&geom, level) {
@@ -293,13 +556,11 @@ fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
 }
 
 fn print_communities(comm: &Communities, took: Duration) {
-    let sizes = comm.sizes();
-    let used = sizes.iter().filter(|&&s| s > 0).count();
     println!(
         "level    {}: K={} ({} non-empty), entropy {}, loaded in {:.2?}",
         comm.tag,
         comm.k,
-        used,
+        comm.by_size.len(),
         if comm.entropy.is_some() { "yes" } else { "no" },
         took
     );
@@ -309,13 +570,11 @@ fn print_communities(comm: &Communities, took: Duration) {
             comm.n_missing, comm.n_unmatched
         );
     }
-    let mut order: Vec<usize> = (0..comm.k).collect();
-    order.sort_by_key(|&c| std::cmp::Reverse(sizes[c]));
-    let top: Vec<String> = order
+    let top: Vec<String> = comm
+        .by_size
         .iter()
         .take(8)
-        .filter(|&&c| sizes[c] > 0)
-        .map(|&c| format!("C{c}:{}", sizes[c]))
+        .map(|&c| format!("C{c}:{}", comm.sizes[c]))
         .collect();
     println!("largest  {}", top.join(" "));
 }

@@ -5,10 +5,12 @@
 //! labels, `propensity` for the per-cell community mixture (one per level),
 //! and `link_community` for the per-edge labels.
 
+use super::markers::FeatureRates;
 use crate::util::common::*;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
 use crate::util::parquet_io::{
-    read_cells_from_coord_pairs, read_link_community, read_propensity, CellTable, PropensityRead,
+    read_cells_from_coord_pairs, read_feature_community, read_link_community, read_propensity,
+    CellTable, PropensityRead,
 };
 use std::path::{Path, PathBuf};
 
@@ -26,19 +28,22 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Bounding box of the points; a unit box at the origin when empty.
-    pub fn of_points(x: &[f32], y: &[f32]) -> Self {
-        if x.is_empty() {
-            return Rect {
-                x0: 0.,
-                y0: 0.,
-                x1: 1.,
-                y1: 1.,
-            };
+    pub const UNIT: Rect = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 1.,
+        y1: 1.,
+    };
+
+    /// Grown by `frac` of its larger side on every edge.
+    pub fn pad(&self, frac: f32) -> Rect {
+        let m = frac * self.width().max(self.height());
+        Rect {
+            x0: self.x0 - m,
+            y0: self.y0 - m,
+            x1: self.x1 + m,
+            y1: self.y1 + m,
         }
-        let (x0, x1) = min_max(x);
-        let (y0, y1) = min_max(y);
-        Rect { x0, y0, x1, y1 }
     }
 
     pub fn width(&self) -> f32 {
@@ -57,13 +62,6 @@ impl Rect {
             y1: self.y1.max(o.y1),
         }
     }
-}
-
-fn min_max(v: &[f32]) -> (f32, f32) {
-    v.iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &a| {
-            (lo.min(a), hi.max(a))
-        })
 }
 
 /// A pinto run on disk, located through its `.pinto.json`.
@@ -98,7 +96,7 @@ impl Run {
                     level_index: 0,
                     propensity,
                     link_community: meta.outputs.link_community.clone(),
-                    feature_community: None,
+                    feature_community: meta.outputs.feature_community.clone(),
                     entropy_present: None,
                 }]
             }
@@ -125,11 +123,19 @@ impl Run {
         }
     }
 
-    /// The level tagged `tag` (e.g. `L2`, `final`); the last level if `None`.
-    pub fn level(&self, tag: Option<&str>) -> anyhow::Result<&LevelInfo> {
+    /// The run's name: its manifest file name without `.pinto.json`.
+    pub fn name(&self) -> String {
+        self.manifest.file_name().map_or_else(String::new, |n| {
+            n.to_string_lossy().replace(".pinto.json", "")
+        })
+    }
+
+    /// Position of the level tagged `tag` (e.g. `L2`, `final`); the last
+    /// level if `None`.
+    pub fn level_index(&self, tag: Option<&str>) -> anyhow::Result<usize> {
         match tag {
-            None => Ok(self.levels.last().expect("levels is never empty")),
-            Some(t) => self.levels.iter().find(|l| l.tag == t).ok_or_else(|| {
+            None => Ok(self.levels.len() - 1),
+            Some(t) => self.levels.iter().position(|l| l.tag == t).ok_or_else(|| {
                 let tags: Vec<&str> = self.levels.iter().map(|l| l.tag.as_str()).collect();
                 anyhow::anyhow!("no level {t:?}; this run has {tags:?}")
             }),
@@ -158,6 +164,14 @@ impl Run {
         let exclude: HashSet<Box<str>> = geom.coord_names.iter().cloned().collect();
         let read = read_propensity(&self.resolve(&level.propensity), &exclude)?;
         Ok(Communities::join(geom, &level.tag, read))
+    }
+
+    pub fn load_feature_rates(&self, level: &LevelInfo) -> anyhow::Result<FeatureRates> {
+        let path = level.feature_community.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("level {} has no feature_community output", level.tag)
+        })?;
+        let (rates, names) = read_feature_community(&self.resolve(path))?;
+        Ok(FeatureRates { names, rates })
     }
 
     pub fn load_edges(&self, geom: &Geometry, level: &LevelInfo) -> anyhow::Result<Edges> {
@@ -232,7 +246,7 @@ impl Geometry {
             .iter()
             .map(|t| t.bounds)
             .reduce(|a, b| a.union(&b))
-            .unwrap_or_else(|| Rect::of_points(&[], &[]))
+            .unwrap_or(Rect::UNIT)
     }
 }
 
@@ -278,8 +292,12 @@ fn tile_batches(x: &mut [f32], y: &mut [f32], batch: &[u16], names: Vec<Box<str>
     let gutter = 0.05 * slot_w.max(slot_h);
     let cols = (nb as f64).sqrt().ceil().max(1.) as usize;
 
+    // A single batch stays in its own frame.
     let offsets: Vec<(f32, f32)> = (0..nb)
         .map(|b| {
+            if nb == 1 {
+                return (0., 0.);
+            }
             let (col, row) = (b % cols, b / cols);
             let ox = col as f32 * (slot_w + gutter) - bounds[b].x0;
             let oy = row as f32 * (slot_h + gutter) - bounds[b].y0;
@@ -287,12 +305,10 @@ fn tile_batches(x: &mut [f32], y: &mut [f32], batch: &[u16], names: Vec<Box<str>
         })
         .collect();
 
-    if nb > 1 {
-        for i in 0..x.len() {
-            let (ox, oy) = offsets[batch[i] as usize];
-            x[i] += ox;
-            y[i] += oy;
-        }
+    for i in 0..x.len() {
+        let (ox, oy) = offsets[batch[i] as usize];
+        x[i] += ox;
+        y[i] += oy;
     }
 
     names
@@ -300,7 +316,7 @@ fn tile_batches(x: &mut [f32], y: &mut [f32], batch: &[u16], names: Vec<Box<str>
         .enumerate()
         .map(|(b, name)| {
             let r = bounds[b];
-            let (ox, oy) = if nb > 1 { offsets[b] } else { (0., 0.) };
+            let (ox, oy) = offsets[b];
             Tile {
                 name,
                 bounds: Rect {
@@ -328,6 +344,10 @@ pub struct Communities {
     pub cluster: Vec<u16>,
     /// Entropy / ln K, quantized to `u8`.
     pub entropy: Option<Vec<u8>>,
+    /// Cells per community, argmax assignment.
+    pub sizes: Vec<usize>,
+    /// Non-empty communities, largest first.
+    pub by_size: Vec<usize>,
     /// Geometry cells with no propensity row.
     pub n_missing: usize,
     /// Propensity rows naming no known cell.
@@ -354,12 +374,7 @@ impl Communities {
             for c in 0..k {
                 prop[i * k + c] = quantize(prop_mat[(r, c)]);
             }
-            let c = cluster_in[r];
-            cluster[i] = if (0..NO_CLUSTER as i64).contains(&c) {
-                c as u16
-            } else {
-                NO_CLUSTER
-            };
+            cluster[i] = cluster_id(cluster_in[r]);
             if let (Some(out), Some(h)) = (entropy.as_mut(), entropy_in.as_ref()) {
                 out[i] = quantize(h[r] / ln_k);
             }
@@ -372,26 +387,35 @@ impl Communities {
             );
         }
 
+        let mut sizes = vec![0usize; k];
+        for &c in &cluster {
+            if let Some(s) = sizes.get_mut(c as usize) {
+                *s += 1;
+            }
+        }
+        let mut by_size: Vec<usize> = (0..k).filter(|&c| sizes[c] > 0).collect();
+        by_size.sort_by_key(|&c| std::cmp::Reverse(sizes[c]));
+
         Communities {
             tag: tag.to_string(),
             k,
             prop,
             cluster,
             entropy,
+            sizes,
+            by_size,
             n_missing,
             n_unmatched,
         }
     }
+}
 
-    /// Cells per community, argmax assignment.
-    pub fn sizes(&self) -> Vec<usize> {
-        let mut sizes = vec![0usize; self.k];
-        for &c in &self.cluster {
-            if let Some(s) = sizes.get_mut(c as usize) {
-                *s += 1;
-            }
-        }
-        sizes
+/// A community id as stored, [`NO_CLUSTER`] when out of range (e.g. -1).
+fn cluster_id(c: i64) -> u16 {
+    if (0..NO_CLUSTER as i64).contains(&c) {
+        c as u16
+    } else {
+        NO_CLUSTER
     }
 }
 
@@ -419,11 +443,7 @@ impl Edges {
                 (Some(&i), Some(&j)) => {
                     a.push(i as u32);
                     b.push(j as u32);
-                    comm.push(if (0..NO_CLUSTER as i64).contains(&c) {
-                        c as u16
-                    } else {
-                        NO_CLUSTER
-                    });
+                    comm.push(cluster_id(c));
                 }
                 _ => n_unmatched += 1,
             }
