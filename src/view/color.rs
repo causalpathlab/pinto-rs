@@ -5,25 +5,119 @@ use std::sync::LazyLock;
 
 pub type Rgb = [u8; 3];
 
-/// Background and "no community" colours.
-pub const BACKGROUND: Rgb = [17, 17, 20];
-pub const NO_COMMUNITY: Rgb = [70, 70, 76];
-/// Cells outside the focused communities: visible as tissue, not as colour.
-pub const DIMMED: Rgb = [40, 40, 46];
+/// The map's colours on a dark or a light background.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Theme {
+    Dark,
+    Light,
+}
 
-/// `k` distinct colours: golden-angle hues in OKLCH at a few lightness
-/// steps, so neighbouring ids never share a hue or a lightness.
-pub fn palette(k: usize) -> Vec<Rgb> {
-    const LIGHTNESS: [f32; 3] = [0.72, 0.60, 0.82];
-    const CHROMA: [f32; 3] = [0.13, 0.13, 0.10];
-    (0..k)
-        .map(|i| {
-            let hue = (i as f32 * 137.507_76 + 20.).to_radians();
-            let step = i % LIGHTNESS.len();
-            let (l, c) = (LIGHTNESS[step], CHROMA[step]);
-            oklab_to_srgb(l, c * hue.cos(), c * hue.sin())
-        })
-        .collect()
+impl Theme {
+    pub fn background(self) -> Rgb {
+        match self {
+            Theme::Dark => [17, 17, 20],
+            Theme::Light => [250, 250, 248],
+        }
+    }
+
+    /// Cells outside the focused communities: visible as tissue, not as
+    /// colour.
+    pub fn dimmed(self) -> Rgb {
+        match self {
+            Theme::Dark => [40, 40, 46],
+            Theme::Light => [222, 222, 226],
+        }
+    }
+
+    /// Cells with no community.
+    pub fn no_community(self) -> Rgb {
+        match self {
+            Theme::Dark => [70, 70, 76],
+            Theme::Light => [175, 175, 181],
+        }
+    }
+
+    /// Scale bar fill and the outline that keeps it readable over cells.
+    pub fn bar(self) -> (Rgb, Rgb) {
+        match self {
+            Theme::Dark => ([255; 3], [0; 3]),
+            Theme::Light => ([0; 3], [255; 3]),
+        }
+    }
+
+    /// `k` distinct colours: golden-angle hues in OKLCH at a few lightness
+    /// steps, so neighbouring ids never share a hue or a lightness. On a
+    /// light background the steps are darker and a little more saturated.
+    pub fn palette(self, k: usize) -> Vec<Rgb> {
+        let (lightness, chroma) = match self {
+            Theme::Dark => ([0.72, 0.60, 0.82], [0.13, 0.13, 0.10]),
+            Theme::Light => ([0.58, 0.47, 0.68], [0.15, 0.14, 0.14]),
+        };
+        (0..k)
+            .map(|i| {
+                let hue = (i as f32 * 137.507_76 + 20.).to_radians();
+                let step = i % lightness.len();
+                let (l, c) = (lightness[step], chroma[step]);
+                oklab_to_srgb(l, c * hue.cos(), c * hue.sin())
+            })
+            .collect()
+    }
+
+    /// Ramp for one community's propensity: from the background's side up
+    /// to the strongest colour, so low values fade into the page.
+    pub fn magma(self) -> &'static Ramp {
+        static LIGHT: LazyLock<Ramp> = LazyLock::new(|| {
+            Ramp::from_stops(&[
+                0xf4f4f0, 0xfec287, 0xfb8761, 0xe55064, 0xb5367a, 0x812581, 0x4f127b, 0x1c1044,
+            ])
+        });
+        match self {
+            Theme::Dark => magma(),
+            Theme::Light => &LIGHT,
+        }
+    }
+
+    /// Ramp for feature levels: from the dimmed tissue grey at zero, so
+    /// cells without the feature still show the tissue, to the colour
+    /// furthest from the background.
+    pub fn expression(self) -> &'static Ramp {
+        fn hex([r, g, b]: Rgb) -> u32 {
+            (r as u32) << 16 | (g as u32) << 8 | b as u32
+        }
+        static DARK: LazyLock<Ramp> = LazyLock::new(|| {
+            Ramp::from_stops(&[
+                hex(Theme::Dark.dimmed()),
+                0x4f127b,
+                0xb5367a,
+                0xfb8761,
+                0xfcfdbf,
+            ])
+        });
+        static LIGHT: LazyLock<Ramp> = LazyLock::new(|| {
+            Ramp::from_stops(&[
+                hex(Theme::Light.dimmed()),
+                0xfb8761,
+                0xe55064,
+                0x812581,
+                0x1c1044,
+            ])
+        });
+        match self {
+            Theme::Dark => &DARK,
+            Theme::Light => &LIGHT,
+        }
+    }
+
+    /// The theme for a background colour: light when its luminance is above
+    /// middle grey (18% in linear light).
+    pub fn for_background([r, g, b]: Rgb) -> Theme {
+        let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+        if luminance > 0.18 {
+            Theme::Light
+        } else {
+            Theme::Dark
+        }
+    }
 }
 
 fn oklab_to_srgb(l: f32, a: f32, b: f32) -> Rgb {

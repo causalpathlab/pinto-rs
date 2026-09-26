@@ -5,6 +5,7 @@
 //! screen the panel states the length as text instead. The PDF draws the
 //! same bar as vector shapes.
 
+use super::color::Theme;
 use super::render::{Frame, Viewport};
 
 /// What one world unit is.
@@ -74,7 +75,7 @@ pub fn bar_for(view_width: f32, units: Units) -> Bar {
 
 /// Burn the bar into `frame` at its bottom left, with its label above it
 /// when `label` is set.
-pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
+pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool, theme: Theme) {
     let bar = bar_for(vp.w as f32 * vp.upp, units);
     let len_px = (bar.length / vp.upp).round() as i64;
     // Glyph pixel size and bar thickness grow with the frame.
@@ -89,7 +90,9 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
     let text = if label { bar.label.as_str() } else { "" };
 
     // A dark outline first, then white, so the bar reads over bright cells.
-    for (pad, colour) in [(s.max(1), [0u8, 0, 0]), (0, [255, 255, 255])] {
+    // The outline first, then the fill, so the bar reads over any cells.
+    let (fill_colour, edge) = theme.bar();
+    for (pad, colour) in [(s, edge), (0, fill_colour)] {
         fill(
             frame,
             margin - pad,

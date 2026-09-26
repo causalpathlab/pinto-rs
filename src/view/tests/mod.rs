@@ -2,6 +2,7 @@ mod cellart;
 mod color;
 mod data;
 mod fixture;
+mod gene;
 mod helpers;
 mod index;
 mod kitty;

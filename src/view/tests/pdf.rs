@@ -1,3 +1,4 @@
+use crate::view::color::Theme;
 use crate::view::pdf::*;
 use crate::view::render::{Frame, Viewport};
 use crate::view::scalebar::Units;
@@ -32,6 +33,7 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
             colour: [200, 10, 10],
             genes: vec![("CD3E".into(), 55.2)],
         }],
+        theme: Theme::Dark,
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fig.pdf");

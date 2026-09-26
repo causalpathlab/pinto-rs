@@ -8,6 +8,7 @@
 mod cellart;
 mod color;
 mod data;
+mod gene;
 mod index;
 mod kitty;
 mod markers;
@@ -20,16 +21,29 @@ mod tui;
 mod tests;
 
 use clap::Args;
+use color::Theme;
 use data::{Communities, Edges, Geometry, Rect, Run};
+use gene::{Expression, GeneMap, Source};
 use index::{EdgeIndex, Grid, Pyramid};
 use markers::FeatureRates;
 use render::{Frame, Layer, Scene, Style, Viewport};
 use scalebar::Units;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Average cells per finest grid bin.
 const CELLS_PER_BIN: f32 = 6.;
+
+/// A gene map draws as its single pseudo-community's level, every cell shown.
+fn gene_style(theme: Theme) -> Style<'static> {
+    Style {
+        layer: Layer::Gene,
+        edges: false,
+        focus: None,
+        theme,
+    }
+}
 
 /// Margin around the whole tissue when a view fits it, per side, as a
 /// fraction of its larger extent. An explicit `--bbox` gets none.
@@ -88,6 +102,37 @@ pub struct ViewArgs {
     )]
     pub units: Box<str>,
 
+    #[arg(
+        long,
+        value_name = "FEATURE",
+        help = "Colour cells by one feature, e.g. CD3E (--png/--pdf)",
+        long_help = "Colour cells by one feature instead of communities: its symbol\n\
+                     (CD3E) or full name (ENSG00000198851_CD3E). Shows the observed\n\
+                     ln(1+count) from the run's data files, or, with --expected or\n\
+                     when no data file is found, the community model's expected level.\n\
+                     In the terminal, click a marker in the panel instead."
+    )]
+    pub gene: Option<Box<str>>,
+
+    #[arg(
+        long,
+        help = "With --gene, show the model-expected level, not observed counts"
+    )]
+    pub expected: bool,
+
+    #[arg(
+        long,
+        default_value_t = 99.,
+        value_name = "PERCENTILE",
+        value_parser = parse_clip,
+        help = "Top of a gene's colour ramp: this percentile of its positive values",
+        long_help = "Top of a gene's colour ramp, as a percentile of its positive\n\
+                     values; cells above it show the top colour, so a few extreme\n\
+                     cells do not darken the rest. 95 clips harder, 100 is the maximum.\n\
+                     In the terminal, p switches between 99 and 95."
+    )]
+    pub clip: f32,
+
     #[arg(long, default_value_t = 2400, help = "Image width in pixels")]
     pub width: usize,
 
@@ -114,7 +159,10 @@ pub struct ViewArgs {
         value_delimiter = ',',
         allow_negative_numbers = true,
         value_name = "X0,Y0,X1,Y1",
-        help = "World window to draw (tiled coordinates; see --summary)"
+        help = "World window to draw (tiled coordinates; see --summary)",
+        long_help = "World window to draw, in the tiled coordinates --summary reports.\n\
+                     Write --bbox=X0,Y0,X1,Y1 when X0 is negative, so it is not\n\
+                     read as a flag."
     )]
     pub bbox: Option<Vec<f32>>,
 
@@ -179,6 +227,17 @@ pub struct ViewArgs {
                      \x20 blocks        half-blocks, 1×2 pixels per character"
     )]
     pub graphics: Graphics,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Map colours for a dark or light background [default: the terminal's]",
+        long_help = "Map colours for a dark or a light background: background,\n\
+                     dimmed tissue, palette, ramps and scale bar. The terminal viewer\n\
+                     defaults to the terminal's own background; --png and --pdf\n\
+                     default to dark."
+    )]
+    pub theme: Option<Theme>,
 }
 
 /// How the map reaches the terminal (`--graphics`).
@@ -214,10 +273,14 @@ struct Base {
     units: Option<Units>,
     /// Typical distance between neighbouring cells, world units.
     spacing: f32,
+    /// The run's expression data, opened on the first observed gene.
+    expression: OnceLock<Result<Option<Expression>, String>>,
+    /// Colours of every frame and palette drawn from this run.
+    theme: Theme,
 }
 
 impl Base {
-    fn load(prefix: &str, units: &str) -> anyhow::Result<Self> {
+    fn load(prefix: &str, units: &str, theme: Theme) -> anyhow::Result<Self> {
         let run = Run::open(prefix)?;
         let t = Instant::now();
         let geom = run.load_geometry()?;
@@ -235,7 +298,65 @@ impl Base {
             grid,
             units,
             spacing,
+            expression: OnceLock::new(),
+            theme,
         })
+    }
+
+    /// The expression data, opened once; `None` when the run names no data
+    /// file and none sits next to its outputs.
+    fn expression(&self) -> anyhow::Result<Option<&Expression>> {
+        let opened = self.expression.get_or_init(|| {
+            let files = self.run.data_files();
+            if files.is_empty() {
+                return Ok(None);
+            }
+            let t = Instant::now();
+            let expr = Expression::open(&files, &self.geom).map_err(|e| e.to_string())?;
+            log::info!("data: {} in {:.2?}", files.join(", "), t.elapsed());
+            Ok(Some(expr))
+        });
+        opened
+            .as_ref()
+            .map(Option::as_ref)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// `feature` on the map, observed when asked and the data files are
+    /// there, model-expected otherwise; the map says which it is.
+    fn gene(
+        &self,
+        level: &mut Level,
+        feature: &str,
+        source: Source,
+        clip: f32,
+    ) -> anyhow::Result<GeneMap> {
+        if source == Source::Observed {
+            if let Some(expr) = self.expression()? {
+                return expr.observed(feature, &self.geom, clip, &self.grid);
+            }
+        }
+        self.load_features(level)?;
+        let rates = level.features.as_ref().expect("just loaded");
+        GeneMap::expected(feature, rates, &level.comm, clip, &self.grid)
+    }
+
+    /// Render `vp`: the level's communities in `style`, or `gene`.
+    fn render(&self, level: &Level, style: &Style, gene: Option<&GeneMap>, vp: &Viewport) -> Frame {
+        match gene {
+            Some(g) => {
+                let scene = Scene {
+                    geom: &self.geom,
+                    comm: &g.comm,
+                    grid: &self.grid,
+                    pyramid: &g.pyramid,
+                    edges: None,
+                    spacing: self.spacing,
+                };
+                render::render(&scene, vp, &gene_style(self.theme), &[[255; 3]])
+            }
+            None => render::render(&self.scene(level), vp, style, &level.palette),
+        }
     }
 
     /// Load level `i` of `run.levels`, with its edges when asked.
@@ -245,7 +366,7 @@ impl Base {
         let comm = self.run.load_communities(&self.geom, info)?;
         log::info!("level {}: K={} in {:.2?}", comm.tag, comm.k, t.elapsed());
         let pyramid = Pyramid::build(&self.grid, &comm);
-        let palette = color::palette(comm.k);
+        let palette = self.theme.palette(comm.k);
         let mut level = Level {
             index: i,
             comm,
@@ -305,7 +426,9 @@ struct Level {
 }
 
 fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
-    let base = Base::load(&args.prefix, &args.units)?;
+    // Without a terminal to ask, `auto` means dark.
+    let theme = args.theme.unwrap_or(Theme::Dark);
+    let base = Base::load(&args.prefix, &args.units, theme)?;
     let mut level = base.level(base.run.level_index(args.level.as_deref())?, args.edges)?;
     if let Layer::Community(c) = args.layer {
         anyhow::ensure!(c < level.comm.k, "C{c}: level has K={}", level.comm.k);
@@ -339,6 +462,22 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         layer: args.layer,
         edges: args.edges,
         focus: focus.as_deref(),
+        theme,
+    };
+    let gene = match args.gene.as_deref() {
+        Some(feature) => {
+            let source = if args.expected {
+                Source::Expected
+            } else {
+                Source::Observed
+            };
+            let g = base.gene(&mut level, feature, source, args.clip)?;
+            if source == Source::Observed && g.source == Source::Expected {
+                eprintln!("no data file found for this run; showing the model-expected level");
+            }
+            Some(g)
+        }
+        None => None,
     };
 
     let t = Instant::now();
@@ -346,6 +485,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         &base,
         &level,
         &style,
+        gene.as_ref(),
         &vp,
         args.png.as_deref().map(Path::new),
         args.pdf.as_deref().map(Path::new),
@@ -373,17 +513,18 @@ fn write_outputs(
     base: &Base,
     level: &Level,
     style: &Style,
+    gene: Option<&GeneMap>,
     vp: &Viewport,
     png: Option<&Path>,
     pdf_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let mut frame = render::render(&base.scene(level), vp, style, &level.palette);
+    let mut frame = base.render(level, style, gene, vp);
     if let Some(path) = pdf_path {
-        pdf::write(&figure(base, level, style, vp, &frame), path)?;
+        pdf::write(&figure(base, level, style, gene, vp, &frame), path)?;
     }
     if let Some(path) = png {
         if let Some(units) = base.units {
-            scalebar::draw(&mut frame, vp, units, true);
+            scalebar::draw(&mut frame, vp, units, true, base.theme);
         }
         frame.write_png(path)?;
     }
@@ -408,12 +549,13 @@ fn legend_line(c: usize, [r, g, b]: color::Rgb, n: usize) -> String {
     format!("  C{c:<3} #{r:02x}{g:02x}{b:02x} {n:>9} cells")
 }
 
-/// The PDF page for a rendered view: title, legend for the layer, and the
-/// markers of each focused community.
+/// The PDF page for a rendered view: title, legend for the layer (or the
+/// gene), and the markers of each focused community.
 fn figure<'a>(
     base: &Base,
     level: &Level,
     style: &Style,
+    gene: Option<&GeneMap>,
     vp: &Viewport,
     frame: &'a Frame,
 ) -> pdf::Figure<'a> {
@@ -429,22 +571,31 @@ fn figure<'a>(
         subtitle.push_str(&format!(" · focus {}", ids(&focused, " ")));
     }
 
-    let legend = match style.layer {
-        Layer::Argmax | Layer::Soft => pdf::Legend::Communities(
+    let ramp = |title: String, layer: Layer, top: String| pdf::Legend::Ramp {
+        title,
+        stops: (0..64)
+            .map(|i| layer.ramp(base.theme).at(i as f32 / 63.))
+            .collect(),
+        top,
+    };
+    let legend = match (gene, style.layer) {
+        (Some(g), _) => ramp(g.title(), Layer::Gene, g.top_label()),
+        (None, Layer::Argmax | Layer::Soft) => pdf::Legend::Communities(
             comm.by_size
                 .iter()
                 .map(|&c| pdf::Entry {
                     label: format!("C{c}"),
                     count: comm.sizes[c],
-                    colour: level.palette[c],
+                    colour: if style.focus.is_none_or(|f| f[c]) {
+                        level.palette[c]
+                    } else {
+                        base.theme.dimmed()
+                    },
                     on: style.focus.is_none_or(|f| f[c]),
                 })
                 .collect(),
         ),
-        layer => pdf::Legend::Ramp {
-            title: layer.legend_title(),
-            stops: (0..64).map(|i| layer.ramp().at(i as f32 / 63.)).collect(),
-        },
+        (None, layer) => ramp(layer.legend_title(), layer, "1".into()),
     };
 
     let markers = match level.features.as_ref() {
@@ -467,17 +618,28 @@ fn figure<'a>(
     pdf::Figure {
         frame,
         vp: *vp,
-        title: format!("{} · {} · {}", base.run.name(), comm.tag, style.layer),
+        title: match gene {
+            Some(g) => format!("{} · {} · {}", base.run.name(), comm.tag, g.title()),
+            None => format!("{} · {} · {}", base.run.name(), comm.tag, style.layer),
+        },
         subtitle,
         units: base.units,
         legend,
         markers,
+        theme: base.theme,
     }
 }
 
 /// `814243` → `814,243`.
 fn thousands(n: usize) -> String {
     indicatif::HumanCount(n as u64).to_string()
+}
+
+fn parse_clip(s: &str) -> Result<f32, String> {
+    match s.parse::<f32>() {
+        Ok(p) if (50. ..=100.).contains(&p) => Ok(p),
+        _ => Err(format!("{s:?}: a percentile from 50 to 100")),
+    }
 }
 
 /// `["C7", "3"]` → one flag per community.

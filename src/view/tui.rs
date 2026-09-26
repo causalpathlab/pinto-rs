@@ -9,9 +9,10 @@
 //! costs one frame, not one per event.
 
 use super::cellart::{rgb, Cells, Glyphs};
-use super::color::{Ramp, Rgb, DIMMED};
+use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
+use super::gene::{GeneMap, Source};
 use super::kitty::{Kitty, Transport};
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::scalebar;
@@ -29,7 +30,8 @@ use ratatui::style::{Color, Modifier, Style as TStyle};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
+use ratatui_image::picker::{Capability, Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use std::time::{Duration, Instant};
@@ -41,16 +43,25 @@ const PANEL: u16 = 34;
 const ZOOM: f32 = 1.25;
 
 pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
-    eprintln!("loading {} ...", args.prefix);
-    let base = Base::load(&args.prefix, &args.units)?;
-    let first = base.run.level_index(args.level.as_deref())?;
-    let level = base.level(first, args.edges)?;
-
     let mut terminal = ratatui::init();
     let result = (|| {
-        let gfx = Gfx::pick(args.graphics);
+        // The terminal is asked first: its background picks the theme the
+        // palette is built in.
+        let (gfx, px, background) = Gfx::pick(args.graphics);
+        let theme = args
+            .theme
+            .or(background.map(Theme::for_background))
+            .unwrap_or(Theme::Dark);
+        terminal.draw(|f| {
+            let msg = format!(" loading {} ...", args.prefix);
+            f.render_widget(Paragraph::new(msg), f.area());
+        })?;
+        let base = Base::load(&args.prefix, &args.units, theme)?;
+        let first = base.run.level_index(args.level.as_deref())?;
+        let level = base.level(first, args.edges)?;
+
         execute!(std::io::stdout(), EnableMouseCapture)?;
-        let mut app = App::new(&base, level, args, gfx);
+        let mut app = App::new(&base, level, args, (gfx, px));
         app.run(&mut terminal)
     })();
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
@@ -69,8 +80,19 @@ enum Gfx {
 
 impl Gfx {
     /// The drawing method for `choice`, and its frame pixels per cell.
-    fn pick(choice: Graphics) -> (Self, (f32, f32)) {
-        let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    /// The drawing method for `choice`, its frame pixels per cell, and the
+    /// terminal's background colour when it reports one.
+    fn pick(choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
+        let options = QueryStdioOptions {
+            terminal_background_color_osc: true,
+            ..Default::default()
+        };
+        let picker =
+            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks());
+        let background = picker.capabilities().iter().find_map(|c| match c {
+            Capability::Background(r, g, b) => Some([*r, *g, *b]),
+            _ => None,
+        });
         let font = picker.font_size();
         let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
         let kitty = |transport| (Gfx::Kitty(Kitty::new(transport)), (fw, fh));
@@ -83,7 +105,7 @@ impl Gfx {
             picker.set_protocol_type(kind);
             (Gfx::Picker(picker, None), (fw, fh))
         };
-        match choice {
+        let (gfx, px) = match choice {
             Graphics::Kitty => kitty(Transport::detect()),
             Graphics::KittyInline => kitty(Transport::Direct),
             Graphics::Sixel => via_picker(ProtocolType::Sixel),
@@ -96,7 +118,8 @@ impl Gfx {
                 ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
                 other => via_picker(other),
             },
-        }
+        };
+        (gfx, px, background)
     }
 
     fn name(&self) -> String {
@@ -131,16 +154,22 @@ struct App<'a> {
 
     /// Communities shown in colour, one flag each; all false shows every one.
     focus: Vec<bool>,
-    /// Community whose markers the panel lists, and those markers.
+    /// Community whose markers the panel lists, and those markers:
+    /// feature name, symbol, fold.
     shown: Option<usize>,
-    markers: Vec<(String, f32)>,
+    markers: Vec<(Box<str>, String, f32)>,
+    /// A feature drawn instead of communities, and which source to prefer.
+    gene: Option<GeneMap>,
+    source: Source,
+    /// Percentile the gene ramp tops out at.
+    clip: f32,
     /// Cell last clicked.
     picked: Option<usize>,
 
     map: Rect,
     side: Rect,
-    /// Panel row of each legend entry, for clicks.
-    legend_rows: Vec<(u16, usize)>,
+    /// Panel rows that respond to clicks.
+    clickable: Vec<(u16, Pick)>,
     cursor: Option<(u16, u16)>,
     drag: Option<(u16, u16)>,
     /// Whether the mouse moved since the button went down.
@@ -186,10 +215,13 @@ impl<'a> App<'a> {
             focus: vec![false; k],
             shown: None,
             markers: Vec::new(),
+            gene: None,
+            source: Source::Observed,
+            clip: args.clip,
             picked: None,
             map: Rect::default(),
             side: Rect::default(),
-            legend_rows: Vec::new(),
+            clickable: Vec::new(),
             cursor: None,
             drag: None,
             dragged: false,
@@ -360,6 +392,10 @@ impl<'a> App<'a> {
             KeyCode::Char('b') => self.next_tile(),
             KeyCode::Char('s') => self.export()?,
             KeyCode::Char('x') => self.clear_focus(),
+            KeyCode::Char('g') => self.step_gene(1),
+            KeyCode::Char('G') => self.step_gene(-1),
+            KeyCode::Char('o') => self.toggle_source(),
+            KeyCode::Char('p') => self.toggle_clip(),
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
         }
@@ -385,8 +421,10 @@ impl<'a> App<'a> {
             }
             MouseEventKind::Down(button) if self.side.contains(Position::new(col, row)) => {
                 let add = button == MouseButton::Right || adds(m.modifiers);
-                if let Some(&(_, c)) = self.legend_rows.iter().find(|(r, _)| *r == row) {
-                    self.select(c, add);
+                match self.clickable.iter().find(|(r, _)| *r == row) {
+                    Some(&(_, Pick::Community(c))) => self.select(c, add),
+                    Some(&(_, Pick::Gene(i))) => self.pick_gene(i),
+                    None => {}
                 }
             }
             MouseEventKind::Down(MouseButton::Right) if self.in_map(col, row) => {
@@ -466,7 +504,10 @@ impl<'a> App<'a> {
                     self.markers = rates
                         .top(shown, 12)
                         .into_iter()
-                        .map(|m| (markers::symbol(&m.name).to_string(), m.fold))
+                        .map(|m| {
+                            let symbol = markers::symbol(&m.name).to_string();
+                            (m.name, symbol, m.fold)
+                        })
                         .collect();
                 }
                 Err(e) => self.status = format!("no markers: {e}"),
@@ -479,6 +520,7 @@ impl<'a> App<'a> {
         self.focus.fill(false);
         self.shown = None;
         self.markers.clear();
+        self.gene = None;
         self.picked = None;
         self.need_map = true;
     }
@@ -487,7 +529,77 @@ impl<'a> App<'a> {
         self.focus.iter().any(|&f| f).then_some(&self.focus[..])
     }
 
+    /// Draw marker `i` of the shown community; picking the drawn one again
+    /// goes back to communities.
+    fn pick_gene(&mut self, i: usize) {
+        let Some((feature, ..)) = self.markers.get(i).cloned() else {
+            return;
+        };
+        if self.gene.as_ref().is_some_and(|g| g.feature == feature) {
+            self.gene = None;
+        } else {
+            self.show_gene(&feature);
+        }
+        self.need_map = true;
+    }
+
+    fn show_gene(&mut self, feature: &str) {
+        let (base, source, clip) = (self.base, self.source, self.clip);
+        match base.gene(self.level_mut(), feature, source, clip) {
+            Ok(g) => {
+                if source == Source::Observed && g.source == Source::Expected {
+                    self.status = "no data file: model-expected level".into();
+                }
+                self.gene = Some(g);
+            }
+            Err(e) => self.status = format!("{e}"),
+        }
+        self.need_map = true;
+    }
+
+    /// The next (`by` = 1) or previous marker gene.
+    fn step_gene(&mut self, by: isize) {
+        let n = self.markers.len() as isize;
+        if n == 0 {
+            self.status = "select a community first".into();
+            return;
+        }
+        let at = self.gene.as_ref().and_then(|g| {
+            self.markers
+                .iter()
+                .position(|(feature, ..)| *feature == g.feature)
+        });
+        let next = match at {
+            Some(i) => (i as isize + by).rem_euclid(n),
+            None if by > 0 => 0,
+            None => n - 1,
+        };
+        let feature = self.markers[next as usize].0.clone();
+        self.show_gene(&feature);
+    }
+
+    /// Switch the gene ramp's top between the 99th and 95th percentile.
+    fn toggle_clip(&mut self) {
+        self.clip = if self.clip > 95. { 95. } else { 99. };
+        self.status = format!("gene ramp tops at p{}", self.clip);
+        if let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) {
+            self.show_gene(&feature);
+        }
+    }
+
+    /// Switch between observed counts and the model-expected level.
+    fn toggle_source(&mut self) {
+        self.source = match self.source {
+            Source::Observed => Source::Expected,
+            Source::Expected => Source::Observed,
+        };
+        if let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) {
+            self.show_gene(&feature);
+        }
+    }
+
     fn set_layer(&mut self, layer: Layer) {
+        self.gene = None;
         if layer == Layer::Entropy && self.level().comm.entropy.is_none() {
             self.status = "this level has no entropy".into();
             return;
@@ -523,6 +635,7 @@ impl<'a> App<'a> {
         self.focus = vec![false; k];
         self.shown = None;
         self.markers.clear();
+        self.gene = None;
         self.community = self.community.min(k.saturating_sub(1));
         if let Layer::Community(_) = self.layer {
             self.layer = Layer::Community(self.community);
@@ -581,6 +694,7 @@ impl<'a> App<'a> {
             self.base,
             self.level(),
             &self.style(),
+            self.gene.as_ref(),
             &hi,
             Some(png.as_ref()),
             Some(pdf.as_ref()),
@@ -601,7 +715,7 @@ impl<'a> App<'a> {
         let mut cmd = format!(
             // `{}` prints the shortest text that parses back to the same f32.
             "pinto view {} --png {png} --pdf {pdf} --units {} --width {} --height {} \
-             --bbox {},{},{},{} --level {} --layer {}",
+             --bbox={},{},{},{} --level {} --layer {}",
             self.args.prefix,
             self.args.units,
             vp.w,
@@ -619,6 +733,17 @@ impl<'a> App<'a> {
         if self.edges {
             cmd.push_str(" --edges");
         }
+        let theme = match self.base.theme {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+        };
+        write!(cmd, " --theme {theme}").ok();
+        if let Some(g) = &self.gene {
+            write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
+            if g.source == Source::Expected {
+                cmd.push_str(" --expected");
+            }
+        }
 
         let mut out = String::new();
         writeln!(out, "# pinto view export").ok();
@@ -630,6 +755,9 @@ impl<'a> App<'a> {
         writeln!(out, "scale    {:.4} units/px", vp.upp).ok();
         if !focused.is_empty() {
             writeln!(out, "focus    {}", ids(&focused, " ")).ok();
+        }
+        if let Some(g) = &self.gene {
+            writeln!(out, "gene     {}, ramp 0..{}", g.title(), g.top_label()).ok();
         }
 
         writeln!(out, "\nlegend").ok();
@@ -660,6 +788,7 @@ impl<'a> App<'a> {
             layer: self.layer,
             edges: self.edges,
             focus: self.focus(),
+            theme: self.base.theme,
         }
     }
 
@@ -675,10 +804,12 @@ impl<'a> App<'a> {
             let level = self.level();
             let scene = self.base.scene(level);
             let t = Instant::now();
-            let mut frame = render::render(&scene, &vp, &self.style(), &level.palette);
+            let mut frame = self
+                .base
+                .render(level, &self.style(), self.gene.as_ref(), &vp);
             // Unlabelled: the panel states the bar's length as text.
             if let Some(units) = self.base.units {
-                scalebar::draw(&mut frame, &vp, units, false);
+                scalebar::draw(&mut frame, &vp, units, false, self.base.theme);
             }
             let took = t.elapsed();
             let mode = render::mode(&scene, &vp);
@@ -690,7 +821,8 @@ impl<'a> App<'a> {
                     let t = Instant::now();
                     let (cols, rows) = (self.map.width as usize, self.map.height as usize);
                     let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
-                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, cols, rows));
+                    let background = self.base.theme.background();
+                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows), background));
                     self.send_time = t.elapsed();
                 }
                 Gfx::Picker(picker, proto) => {
@@ -708,10 +840,10 @@ impl<'a> App<'a> {
             }
         }
 
-        let (panel, legend_rows) = self.panel(side.height);
-        self.legend_rows = legend_rows
+        let (panel, clickable) = self.panel(side.height);
+        self.clickable = clickable
             .into_iter()
-            .map(|(line, c)| (side.y + line as u16, c))
+            .map(|(line, pick)| (side.y + line as u16, pick))
             .collect();
         let map = self.map;
         let gfx = &self.gfx;
@@ -738,8 +870,8 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    /// Panel lines, and which of them are legend entries for which community.
-    fn panel(&self, height: u16) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    /// Panel lines, and which of them respond to clicks.
+    fn panel(&self, height: u16) -> (Vec<Line<'static>>, Vec<(usize, Pick)>) {
         let level = self.level();
         let comm = &level.comm;
         let dim = TStyle::default().fg(Color::DarkGray);
@@ -757,7 +889,17 @@ impl<'a> App<'a> {
                 "level",
                 format!("{} ({}/{})  [ ]", comm.tag, self.cur + 1, self.levels.len()),
             ),
-            row("layer", format!("{}  1-4", self.layer)),
+            match &self.gene {
+                Some(g) => row(
+                    "gene",
+                    format!(
+                        "{}  o: {}",
+                        markers::symbol(&g.feature),
+                        source_name(g.source)
+                    ),
+                ),
+                None => row("layer", format!("{}  1-4", self.layer)),
+            },
             row(
                 "cells",
                 format!("{}  K={}", thousands(self.base.geom.n()), comm.k),
@@ -805,28 +947,34 @@ impl<'a> App<'a> {
         }
         lines.push(Line::styled(
             format!(" {}", self.status),
-            TStyle::default().fg(Color::Yellow),
+            // Bold in the terminal's own text colour reads on any background.
+            TStyle::default().add_modifier(Modifier::BOLD),
         ));
 
         let help = help_lines(self.help);
         let free = (height as usize).saturating_sub(lines.len() + help.len() + 1);
+        let mut clickable = Vec::new();
         if let Some(c) = self.shown {
             // Leave the legend at least a few rows.
-            lines.extend(self.marker_lines(c, free.saturating_sub(6).min(12)));
+            for (line, pick) in self.marker_lines(c, free.saturating_sub(6).min(12)) {
+                if let Some(pick) = pick {
+                    clickable.push((lines.len(), pick));
+                }
+                lines.push(line);
+            }
         }
         let room = (height as usize).saturating_sub(lines.len() + help.len() + 1);
         lines.push(Line::raw(""));
-        let mut legend_rows = Vec::new();
-        for (line, c) in self.legend(room) {
-            if let Some(c) = c {
-                legend_rows.push((lines.len(), c));
+        for (line, pick) in self.legend(room) {
+            if let Some(pick) = pick {
+                clickable.push((lines.len(), pick));
             }
             lines.push(line);
         }
         let pad = (height as usize).saturating_sub(lines.len() + help.len());
         lines.extend(std::iter::repeat_n(Line::raw(""), pad));
         lines.extend(help);
-        (lines, legend_rows)
+        (lines, clickable)
     }
 
     /// The picked cell: name, then its strongest communities and entropy.
@@ -856,8 +1004,8 @@ impl<'a> App<'a> {
         ]
     }
 
-    /// Up to `n` of the shown community `c`'s markers.
-    fn marker_lines(&self, c: usize, n: usize) -> Vec<Line<'static>> {
+    /// Up to `n` of the shown community `c`'s markers, each clickable.
+    fn marker_lines(&self, c: usize, n: usize) -> Vec<(Line<'static>, Option<Pick>)> {
         let level = self.level();
         if self.markers.is_empty() {
             return Vec::new();
@@ -865,33 +1013,57 @@ impl<'a> App<'a> {
         let bold = TStyle::default().add_modifier(Modifier::BOLD);
         let dim = TStyle::default().fg(Color::DarkGray);
         let mut out = vec![
-            Line::raw(""),
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled("██", TStyle::default().fg(rgb(level.palette[c]))),
-                Span::styled(format!(" C{c} markers"), bold),
-                Span::styled("  fold", dim),
-            ]),
+            (Line::raw(""), None),
+            (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("██", TStyle::default().fg(rgb(level.palette[c]))),
+                    Span::styled(format!(" C{c} markers"), bold),
+                    Span::styled("  fold  g/G", dim),
+                ]),
+                None,
+            ),
         ];
-        out.extend(self.markers.iter().take(n).map(|(gene, fold)| {
-            let name: String = gene.chars().take(20).collect();
-            Line::raw(format!("   {name:<20} ×{fold:<6.1}"))
-        }));
+        let drawn = self.gene.as_ref().map(|g| g.feature.as_ref());
+        out.extend(
+            self.markers
+                .iter()
+                .take(n)
+                .enumerate()
+                .map(|(i, (feature, symbol, fold))| {
+                    let on = drawn == Some(feature.as_ref());
+                    let mark = if on { " ▸ " } else { "   " };
+                    let name: String = symbol.chars().take(20).collect();
+                    let style = if on { bold } else { TStyle::default() };
+                    let line = Line::from(vec![
+                        Span::raw(mark),
+                        Span::styled(format!("{name:<20} ×{fold:<6.1}"), style),
+                    ]);
+                    (line, Some(Pick::Gene(i)))
+                }),
+        );
         out
     }
 
     /// Legend lines, each tagged with its community when it names one.
-    fn legend(&self, room: usize) -> Vec<(Line<'static>, Option<usize>)> {
+    fn legend(&self, room: usize) -> Vec<(Line<'static>, Option<Pick>)> {
         let level = self.level();
         let comm = &level.comm;
         let swatch = |c: Rgb| Span::styled("██", TStyle::default().fg(rgb(c)));
         let untagged = |lines: Vec<Line<'static>>| lines.into_iter().map(|l| (l, None)).collect();
+        if let Some(g) = &self.gene {
+            return untagged(ramp_legend(
+                Layer::Gene.ramp(self.base.theme),
+                &format!("{}  o p", g.title()),
+                &g.top_label(),
+            ));
+        }
         match self.layer {
             Layer::Argmax | Layer::Soft => {
                 let (order, sizes) = (&comm.by_size, &comm.sizes);
                 let focus = self.focus();
                 let shown = order.len().min(room);
-                let mut out: Vec<(Line, Option<usize>)> = order[..shown]
+                let mut out: Vec<(Line, Option<Pick>)> = order[..shown]
                     .iter()
                     .map(|&c| {
                         let on = focus.is_none_or(|f| f[c]);
@@ -903,11 +1075,11 @@ impl<'a> App<'a> {
                             if on {
                                 swatch(level.palette[c])
                             } else {
-                                swatch(DIMMED)
+                                swatch(self.base.theme.dimmed())
                             },
                             Span::styled(format!(" C{c:<3} {:>9}", thousands(sizes[c])), text),
                         ]);
-                        (line, Some(c))
+                        (line, Some(Pick::Community(c)))
                     })
                     .collect();
                 if shown < order.len() {
@@ -920,9 +1092,16 @@ impl<'a> App<'a> {
                 }
                 out
             }
-            Layer::Entropy => untagged(ramp_legend(self.layer)),
+            Layer::Entropy => untagged(ramp_legend(
+                self.layer.ramp(self.base.theme),
+                &self.layer.legend_title(),
+                "1",
+            )),
+            // Drawn through `self.gene`, handled above.
+            Layer::Gene => Vec::new(),
             Layer::Community(c) => {
-                let mut out = ramp_legend(self.layer);
+                let title = format!("{}  c/C", self.layer.legend_title());
+                let mut out = ramp_legend(self.layer.ramp(self.base.theme), &title, "1");
                 let size = comm.sizes.get(c).copied().unwrap_or(0);
                 out.push(Line::from(vec![
                     Span::raw(" "),
@@ -941,18 +1120,29 @@ fn adds(modifiers: KeyModifiers) -> bool {
     modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
-fn ramp_legend(layer: Layer) -> Vec<Line<'static>> {
-    let ramp: &Ramp = layer.ramp();
-    let mut title = layer.legend_title();
-    if let Layer::Community(_) = layer {
-        title.push_str("  c/C");
+/// What a click in the panel picks.
+#[derive(Clone, Copy, Debug)]
+enum Pick {
+    Community(usize),
+    /// Index into the shown community's markers.
+    Gene(usize),
+}
+
+fn source_name(source: Source) -> &'static str {
+    match source {
+        Source::Observed => "observed",
+        Source::Expected => "expected",
     }
+}
+
+/// A colour ramp from 0 to `top`, under `title`.
+fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
     let bar: Vec<Span> = (0..24)
         .map(|i| Span::styled("█", TStyle::default().fg(rgb(ramp.at(i as f32 / 23.)))))
         .collect();
     let mut first = vec![Span::raw(" 0 ")];
     first.extend(bar);
-    first.push(Span::raw(" 1"));
+    first.push(Span::raw(format!(" {top}")));
     vec![Line::raw(format!(" {title}")), Line::from(first)]
 }
 
@@ -969,6 +1159,9 @@ fn help_lines(full: bool) -> Vec<Line<'static>> {
             " click cell/legend  show community",
             " right/ctrl-click   add to shown",
             " x  show all",
+            " click marker / g G  map a gene",
+            " o  observed / model-expected",
+            " p  gene ramp top: p99 / p95",
             " e edges  q quit",
             " s export view (PNG, PDF, .txt)",
         ]

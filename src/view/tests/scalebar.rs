@@ -1,3 +1,4 @@
+use crate::view::color::Theme;
 use crate::view::render::{Frame, Viewport};
 use crate::view::scalebar::*;
 
@@ -52,7 +53,7 @@ fn the_bar_is_white_at_the_bottom_left() {
         w: 400,
         h: 300,
     };
-    draw(&mut frame, &vp, Units::Micron, true);
+    draw(&mut frame, &vp, Units::Micron, true, Theme::Dark);
     // 400 units wide → an 50-unit bar: 50 px from x = 6 on a row near the bottom.
     let px = |x: usize, y: usize| &frame.rgba[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
     assert_eq!(px(30, 300 - 6 - 1), &[255, 255, 255]);
@@ -74,7 +75,7 @@ fn without_a_label_only_the_bar_is_drawn() {
             w: 400,
             h: 300,
         };
-        draw(&mut frame, &vp, Units::Micron, label);
+        draw(&mut frame, &vp, Units::Micron, label, Theme::Dark);
         // Anything lit above the bar's outline is label text.
         frame.rgba[..(300 - 6 - 2 - 2) * 400 * 4]
             .iter()

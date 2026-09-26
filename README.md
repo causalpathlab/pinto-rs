@@ -58,12 +58,16 @@ pinto view out --png map.png --layer soft --width 3000
 pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
 pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
+pinto view out --png cd3e.png --gene CD3E       # one gene: observed ln(1+count)
+pinto view out --png cd3e.png --gene CD3E --expected --clip 95
 ```
 
 In the viewer, click a cell or legend entry to show one community (with its
-marker features); `s` exports the current view as PNG, PDF, and a `.txt` with
+marker features), then click a marker to map that gene (`g`/`G` step through
+them, `o` switches observed/model-expected, `p` the ramp top p99/p95); `s` exports the current view as PNG, PDF, and a `.txt` with
 the command that redraws it. The scale bar's units are guessed from the
-coordinate columns (`--units um|px|none` to override).
+coordinate columns (`--units um|px|none` to override). Map colours follow the
+terminal's background (`--theme light|dark` to choose; images default to dark).
 
 Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
 WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,
