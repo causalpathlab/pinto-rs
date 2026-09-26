@@ -145,7 +145,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     //////////////////////////////////////
     // 2. Parse LR pairs, resolve genes //
     //////////////////////////////////////
-    info!("Reading LR pairs from {}...", &args.lr_pairs);
+    info!("Reading LR pairs from {}...", args.lr_pairs);
     let raw_pairs = read_lr_pairs(&args.lr_pairs)?;
     let mut resolved_pairs: Vec<(Box<str>, Box<str>, usize, usize)> = Vec::new();
     let mut missing = 0usize;
@@ -176,11 +176,11 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     ///////////////////////////////////////////////////////
     // 3. Read edges + batches from prior `pinto lc` run //
     ///////////////////////////////////////////////////////
-    let lc_edges_path = format!("{}.link_community.parquet", &args.lc_prefix);
-    let coord_pairs_path = format!("{}.coord_pairs.parquet", &args.lc_prefix);
-    info!("Reading edge assignments from {}", &lc_edges_path);
+    let lc_edges_path = format!("{}.link_community.parquet", args.lc_prefix);
+    let coord_pairs_path = format!("{}.coord_pairs.parquet", args.lc_prefix);
+    info!("Reading edge assignments from {}", lc_edges_path);
     let mut edge_records = read_link_community(&lc_edges_path)?;
-    info!("Attaching per-edge batch from {}", &coord_pairs_path);
+    info!("Attaching per-edge batch from {}", coord_pairs_path);
     attach_batch_from_coord_pairs(&mut edge_records, &coord_pairs_path)?;
 
     // Two lists with different jobs. `anchor_edges` is everything, and fixes
@@ -380,14 +380,14 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
                 score_rows.len()
             );
         }
-        let out_path = format!("{}.lr_scores.parquet", &c.out);
+        let out_path = format!("{}.lr_scores.parquet", c.out);
         write_edge_scores(&c.out, &score_rows)?;
         info!("Wrote {} score rows to {}", score_rows.len(), out_path);
 
         // Back-fill the upstream manifest, the way the test path does for
         // its JSON sidecar, so a downstream reader can find this table
         // from the prefix alone rather than guessing the name.
-        let upstream_meta_path = format!("{}.pinto.json", &args.lc_prefix);
+        let upstream_meta_path = format!("{}.pinto.json", args.lc_prefix);
         crate::util::metadata::PintoMetadata::backfill_output(
             std::path::Path::new(&upstream_meta_path),
             |o| o.lr_scores = Some(out_path.clone()),
@@ -608,13 +608,13 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     //////////////////////
     // 11. Write output //
     //////////////////////
-    let out_path = format!("{}.lr_activity.parquet", &c.out);
+    let out_path = format!("{}.lr_activity.parquet", c.out);
     info!("Writing {} rows to {}", rows.len(), out_path);
     write_lr_activity(&out_path, &rows)?;
 
     if args.emit_json {
-        let json_path = format!("{}.lr_activity.json", &c.out);
-        let upstream_meta_path = format!("{}.pinto.json", &args.lc_prefix);
+        let json_path = format!("{}.lr_activity.json", c.out);
+        let upstream_meta_path = format!("{}.pinto.json", args.lc_prefix);
         let upstream_meta =
             crate::util::metadata::PintoMetadata::read(std::path::Path::new(&upstream_meta_path))
                 .ok();

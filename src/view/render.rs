@@ -444,7 +444,7 @@ fn for_bands<T>(
         .par_chunks_mut(BAND * w * 4)
         .enumerate()
         .for_each_init(init, |state, (band, buf)| {
-            for px in buf.chunks_exact_mut(4) {
+            for px in buf.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&[background[0], background[1], background[2], 255]);
             }
             let r0 = band * BAND;
@@ -563,7 +563,7 @@ fn draw_average(
             }
         }
     }
-    for (a, px) in acc.iter().zip(canvas.buf.chunks_exact_mut(4)) {
+    for (a, px) in acc.iter().zip(canvas.buf.as_chunks_mut::<4>().0) {
         if a[3] > 0. {
             let c = [0, 1, 2].map(|ch| color::encode_fast(a[ch] / a[3]));
             blend(&mut px[..3], c, (a[3] / full).min(1.));
