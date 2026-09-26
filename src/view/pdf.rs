@@ -195,7 +195,9 @@ pub fn write(fig: &Figure, path: &std::path::Path) -> anyhow::Result<()> {
     let rgb: Vec<u8> = fig
         .frame
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|px| [px[0], px[1], px[2]])
         .collect();
     let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());

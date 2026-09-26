@@ -700,7 +700,7 @@ pub fn graph_coarsen_multilevel(
         .enumerate()
         .map(|(i, &nc)| (nc, i))
         .collect();
-    sorted.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // descending n_clusters
+    sorted.sort_unstable_by_key(|a| std::cmp::Reverse(a.0)); // descending n_clusters
 
     let mut uf = UnionFind::new(n_coarsen);
     let mut merge_idx = 0usize;

@@ -186,7 +186,7 @@ pub fn link_community_histogram(membership: &[usize], k: usize, max_width: usize
         .into_iter()
         .map(|(id, &s)| (id, s))
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     let max_size = ranked.first().map(|&(_, s)| s).unwrap_or(1);
     let min_edges = n / 100; // 1% threshold
