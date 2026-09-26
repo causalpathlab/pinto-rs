@@ -365,7 +365,7 @@ fn write_outputs(
     }
     if let Some(path) = png {
         if let Some(units) = base.units {
-            scalebar::draw(&mut frame, vp, units);
+            scalebar::draw(&mut frame, vp, units, true);
         }
         frame.write_png(path)?;
     }
@@ -477,18 +477,25 @@ fn parse_focus(given: &[Box<str>], k: usize) -> anyhow::Result<Vec<bool>> {
 fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
     let run = Run::open(&args.prefix)?;
     let meta = &run.meta;
-    println!(
-        "run      {} ({} v{})",
-        run.manifest.display(),
-        meta.command,
-        meta.version
-    );
-    println!(
-        "manifest {} cells, {} features, {} edges",
-        meta.n_cells,
-        meta.n_features,
-        meta.n_edges.map_or("?".to_string(), |e| e.to_string())
-    );
+    if run.inferred {
+        println!(
+            "run      {} (no .pinto.json; outputs found by file name)",
+            meta.prefix
+        );
+    } else {
+        println!(
+            "run      {} ({} v{})",
+            run.manifest.display(),
+            meta.command,
+            meta.version
+        );
+        println!(
+            "manifest {} cells, {} features, {} edges",
+            meta.n_cells,
+            meta.n_features,
+            meta.n_edges.map_or("?".to_string(), |e| e.to_string())
+        );
+    }
     let tags: Vec<&str> = run.levels.iter().map(|l| l.tag.as_str()).collect();
     println!("levels   {}", tags.join(" "));
 

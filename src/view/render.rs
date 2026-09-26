@@ -182,7 +182,8 @@ pub struct Style<'f> {
     /// Communities to show, one flag per community; the rest are dimmed and
     /// their edges hidden. `None` shows every community.
     pub focus: Option<&'f [bool]>,
-    /// Burn a scale bar in these units into the frame.
+    /// Burn a scale bar in these units into the frame, without its label:
+    /// the terminal panel states the length as text.
     pub scale_bar: Option<Units>,
 }
 
@@ -411,7 +412,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
         }
     }
     if let Some(units) = style.scale_bar {
-        scalebar::draw(&mut frame, vp, units);
+        scalebar::draw(&mut frame, vp, units, false);
     }
     frame
 }
