@@ -6,6 +6,7 @@
 //! - Data statistics (n_cells, n_edges, n_communities, etc.)
 //! - Hierarchical level information
 
+use crate::util::parquet_io::cells_table_path;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -168,6 +169,13 @@ pub struct OutputFiles {
     /// back to auto-discovery in that case.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coord_columns: Option<Vec<String>>,
+
+    /// Every cell the run read, before QC: coordinates, batch, and whether it
+    /// became a graph node (`{prefix}.cells.parquet`). `coord_pairs` only
+    /// names cells with an edge. Absent on expression-only runs and on runs
+    /// written before this table existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cells: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub propensity: Option<String>,
@@ -410,6 +418,8 @@ impl PintoMetadata {
 
         Ok(PintoMetadata {
             prefix: prefix.to_string(),
+            // No cells table: runs without a manifest predate it, and a
+            // leftover file under the same prefix could be another run's.
             outputs: OutputFiles {
                 coord_pairs: Some(coord_pairs),
                 ..Default::default()
@@ -527,6 +537,7 @@ pub fn create_lc_metadata(
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
+            cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
@@ -568,6 +579,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
+            cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
             batch_effects: Some(format!("{prefix}.delta.parquet")),
@@ -614,6 +626,7 @@ pub fn create_cage_metadata(
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
+            cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),

@@ -187,6 +187,17 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         read_data_without_coordinates(c.to_read_args_with_kind(kind))?
     };
 
+    // The per-cell table written at the end names every cell read, so the
+    // cells QC drops are set aside here (the kept ones are still in hand at
+    // the end). Its batch column is the sample a cell was READ from, not an
+    // `--auto-batch` component: components of one section share its
+    // coordinate frame, and only samples overlap and need telling apart.
+    let multi_sample = {
+        let first = batch_membership.first();
+        batch_membership.iter().any(|b| Some(b) != first)
+    };
+    let mut dropped: Option<DroppedCells> = None;
+
     // Optional shared cell QC — applied before the KNN graph is built so
     // dropped cells never become graph nodes. MAD outliers are dropped from
     // the working set; coordinates + batch labels are filtered in lockstep.
@@ -195,9 +206,15 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     if let Some(qc_cfg) = c.qc.to_config() {
         let report = data_beans::qc_lib::compute_qc(&data_vec, &qc_cfg, c.block_size)?;
         // Before masking: the report is indexed by the ORIGINAL cell order, so
-        // the names have to be read while they still line up.
-        if let Some(path) = c.qc.qc_report.as_deref() {
-            data_beans::qc_lib::write_qc_report(path, &data_vec.column_names()?, &report)?;
+        // the names have to be read while they still line up. Read once, for
+        // the report and for the cells set aside below.
+        let names = if c.qc.qc_report.is_some() || (has_coords && report.n_cells_dropped > 0) {
+            Some(data_vec.column_names()?)
+        } else {
+            None
+        };
+        if let (Some(path), Some(names)) = (c.qc.qc_report.as_deref(), names.as_ref()) {
+            data_beans::qc_lib::write_qc_report(path, names, &report)?;
             info!("Wrote QC report to {}", path);
         }
         let n_near_empty = report.near_empty.iter().filter(|&&e| e).count();
@@ -208,6 +225,17 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             n_near_empty,
         );
         if report.n_cells_dropped > 0 {
+            if let (true, Some(names)) = (has_coords, names) {
+                let rows: Vec<usize> = (0..report.train_keep.len())
+                    .filter(|&i| !report.train_keep[i])
+                    .collect();
+                dropped = Some(DroppedCells {
+                    names: rows.iter().map(|&i| names[i].clone()).collect(),
+                    coordinates: coordinates.select_rows(rows.iter()),
+                    coordinate_names: coordinate_names.clone(),
+                    batches: rows.iter().map(|&i| batch_membership[i].clone()).collect(),
+                });
+            }
             let kept: Vec<usize> = report
                 .train_keep
                 .iter()
@@ -234,6 +262,9 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 data_beans::qc_lib::filter_by_keep(&batch_membership, &report.train_keep);
         }
     }
+
+    // The kept cells' read-time labels, before `--auto-batch` relabels them.
+    let read_batches = (has_coords && multi_sample).then(|| batch_membership.clone());
 
     let n_rows = data_vec.num_rows();
     let n_cells = data_vec.num_columns();
@@ -430,6 +461,17 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         }
     }
 
+    if has_coords {
+        write_cells_table(
+            &c.out,
+            &data_vec.column_names()?,
+            &coordinates,
+            &coordinate_names,
+            read_batches.as_deref(),
+            dropped.as_ref(),
+        )?;
+    }
+
     Ok(SrtPreprocessed {
         data_vec,
         coordinates,
@@ -462,4 +504,77 @@ fn log_weights(label: &str, w: &[f32]) {
         w.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
         w.len(),
     );
+}
+
+/// Cells QC dropped before the graph was built, with what they were read with.
+struct DroppedCells {
+    names: Vec<Box<str>>,
+    coordinates: Mat,
+    coordinate_names: Vec<Box<str>>,
+    batches: Vec<Box<str>>,
+}
+
+/// `{prefix}.cells.parquet`: the kept cells as they stand, then the ones QC
+/// dropped, their coordinates matched by column name (the `batch` offset
+/// column is left out by the writer). `read_batches` is the kept cells'
+/// read-time sample labels, `None` for a single sample.
+fn write_cells_table(
+    prefix: &str,
+    kept: &[Box<str>],
+    coordinates: &Mat,
+    coordinate_names: &[Box<str>],
+    read_batches: Option<&[Box<str>]>,
+    dropped: Option<&DroppedCells>,
+) -> anyhow::Result<()> {
+    let n_kept = kept.len();
+    anyhow::ensure!(
+        coordinates.nrows() == n_kept,
+        "cells table: {n_kept} cells but {} coordinate rows",
+        coordinates.nrows()
+    );
+    let n_dropped = dropped.map_or(0, |d| d.names.len());
+    let mut names = kept.to_vec();
+    let mut batches: Vec<Box<str>> = match read_batches {
+        Some(b) => {
+            anyhow::ensure!(
+                b.len() == n_kept,
+                "cells table: {} batch labels for {n_kept} cells",
+                b.len()
+            );
+            b.to_vec()
+        }
+        None => vec![Box::from(""); n_kept],
+    };
+    // Each dropped cell's value in every final coordinate column, by name.
+    let dropped_column = |name: &str| -> Option<Vec<f32>> {
+        let d = dropped?;
+        let j = d.coordinate_names.iter().position(|n| n.as_ref() == name)?;
+        Some(d.coordinates.column(j).iter().copied().collect())
+    };
+    let columns: Vec<Vec<f32>> = coordinate_names
+        .iter()
+        .enumerate()
+        .map(|(j, name)| {
+            let mut col: Vec<f32> = coordinates.column(j).iter().copied().collect();
+            col.extend(dropped_column(name).unwrap_or_else(|| vec![f32::NAN; n_dropped]));
+            col
+        })
+        .collect();
+    if let Some(d) = dropped {
+        names.extend(d.names.iter().cloned());
+        match read_batches {
+            Some(_) => batches.extend(d.batches.iter().cloned()),
+            None => batches.extend(std::iter::repeat_n(Box::from(""), n_dropped)),
+        }
+    }
+    let all = Mat::from_fn(n_kept + n_dropped, columns.len(), |i, j| columns[j][i]);
+    let in_graph: Vec<bool> = (0..n_kept + n_dropped).map(|i| i < n_kept).collect();
+    crate::util::parquet_io::write_cells_table(
+        prefix,
+        &names,
+        &all,
+        coordinate_names,
+        &batches,
+        &in_graph,
+    )
 }

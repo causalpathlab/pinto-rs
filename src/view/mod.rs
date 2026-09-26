@@ -694,6 +694,10 @@ fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
         b.y0,
         b.y1
     );
+    let outside = geom.n_outside_graph();
+    if outside > 0 {
+        println!("         {outside} outside the graph (dropped by QC, or without neighbours)");
+    }
     if geom.tiles.len() > 1 {
         println!("batches  {} (tiled):", geom.tiles.len());
         for tile in &geom.tiles {
@@ -754,7 +758,7 @@ fn print_communities(comm: &Communities, took: Duration) {
     );
     if comm.n_missing > 0 || comm.n_unmatched > 0 {
         println!(
-            "         {} cells without propensity, {} rows matching no cell",
+            "         {} graph cells without propensity, {} rows matching no cell",
             comm.n_missing, comm.n_unmatched
         );
     }

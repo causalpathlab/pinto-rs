@@ -148,8 +148,9 @@ pub fn significant(v: f32, digits: i32) -> String {
 
 /// The `clip` percentile of the positive values: a sparse feature's few
 /// extreme cells should not push every other cell to the bottom of the
-/// ramp. 100 is the maximum. (A selection, not the full sort that
-/// `legume_numeric`'s `quantiles` does: it runs on every gene switch.)
+/// ramp. 100 is the maximum. A linear-time selection rather than
+/// `legume_numeric`'s `quantiles` (a full sort of a copy): it runs on every
+/// gene switch.
 fn top_of(values: &[f32], clip: f32) -> f32 {
     let mut positive: Vec<f32> = values.iter().copied().filter(|&v| v > 0.).collect();
     if positive.is_empty() {
