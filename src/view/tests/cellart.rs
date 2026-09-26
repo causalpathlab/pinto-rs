@@ -28,7 +28,14 @@ fn symbol(px: &[[u8; 3]; 64]) -> (char, [u8; 3], [u8; 3]) {
 
 /// Cells of 1:2 terminal characters.
 fn fit_cells(frame: &Frame, glyphs: Glyphs, cols: usize, rows: usize) -> Cells {
-    Cells::fit(frame, glyphs, glyphs.pixels_per_cell(2.), cols, rows)
+    let background = crate::view::color::Theme::Dark.background();
+    Cells::fit(
+        frame,
+        glyphs,
+        glyphs.pixels_per_cell(2.),
+        (cols, rows),
+        background,
+    )
 }
 
 #[test]

@@ -15,7 +15,7 @@
 //! Rows are split into bands drawn in parallel; each band reads only the
 //! grid rows it overlaps.
 
-use super::color::{self, Ramp, Rgb, BACKGROUND, DIMMED, NO_COMMUNITY};
+use super::color::{self, Ramp, Rgb, Theme};
 use super::data::{Communities, Edges, Geometry, Rect};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
@@ -43,6 +43,8 @@ pub enum Layer {
     Entropy,
     /// One community's propensity.
     Community(usize),
+    /// A feature's level, held as the single community of a gene map.
+    Gene,
 }
 
 impl std::str::FromStr for Layer {
@@ -67,11 +69,13 @@ pub fn community_id(s: &str) -> Option<usize> {
 }
 
 impl Layer {
-    /// The colour ramp of a continuous layer (magma for the ones without).
-    pub fn ramp(&self) -> &'static Ramp {
+    /// The colour ramp of a continuous layer in `theme` (the community
+    /// ramp for the layers without one).
+    pub fn ramp(&self, theme: Theme) -> &'static Ramp {
         match self {
             Layer::Entropy => color::viridis(),
-            _ => color::magma(),
+            Layer::Gene => theme.expression(),
+            _ => theme.magma(),
         }
     }
 
@@ -79,6 +83,7 @@ impl Layer {
     pub fn legend_title(&self) -> String {
         match self {
             Layer::Community(c) => format!("C{c} propensity"),
+            Layer::Gene => "feature level".into(),
             _ => "entropy / ln K".into(),
         }
     }
@@ -91,6 +96,7 @@ impl std::fmt::Display for Layer {
             Layer::Soft => write!(f, "soft"),
             Layer::Entropy => write!(f, "entropy"),
             Layer::Community(c) => write!(f, "C{c}"),
+            Layer::Gene => write!(f, "gene"),
         }
     }
 }
@@ -181,12 +187,14 @@ pub struct Style<'f> {
     /// Communities to show, one flag per community; the rest are dimmed and
     /// their edges hidden. `None` shows every community.
     pub focus: Option<&'f [bool]>,
+    pub theme: Theme,
 }
 
 /// Colours for one layer, shared by the point, average and bin paths.
 struct Paint<'a> {
     layer: Layer,
     focus: Option<&'a [bool]>,
+    theme: Theme,
     /// One colour per community.
     palette: &'a [Rgb],
     /// Palette in linear light, for mixing.
@@ -199,9 +207,10 @@ impl<'a> Paint<'a> {
         Paint {
             layer: style.layer,
             focus: style.focus,
+            theme: style.theme,
             palette,
             linear: palette.iter().map(|c| c.map(color::linear)).collect(),
-            ramp: style.layer.ramp(),
+            ramp: style.layer.ramp(style.theme),
         }
     }
 
@@ -213,7 +222,7 @@ impl<'a> Paint<'a> {
         self.palette
             .get(c as usize)
             .copied()
-            .unwrap_or(NO_COMMUNITY)
+            .unwrap_or(self.theme.no_community())
     }
 
     /// Weighted mix of community colours in linear light; `None` when the
@@ -232,7 +241,7 @@ impl<'a> Paint<'a> {
 
     fn mix(&self, weights: impl Iterator<Item = f32>) -> Rgb {
         self.mix_linear(weights)
-            .map_or(NO_COMMUNITY, |c| c.map(color::encode_fast))
+            .map_or(self.theme.no_community(), |c| c.map(color::encode_fast))
     }
 
     fn in_focus(&self, c: u16) -> bool {
@@ -258,12 +267,13 @@ impl<'a> Paint<'a> {
     }
 
     /// Fade `c` toward the dimmed colour by the unfocused share.
-    fn dim(c: Rgb, share: f32) -> Rgb {
+    fn dim(&self, c: Rgb, share: f32) -> Rgb {
         if share >= 1. {
             return c;
         }
+        let dimmed = self.theme.dimmed();
         [0, 1, 2].map(|ch| {
-            let d = DIMMED[ch] as f32;
+            let d = dimmed[ch] as f32;
             (d + share * (c[ch] as f32 - d)).round() as u8
         })
     }
@@ -281,7 +291,7 @@ impl<'a> Paint<'a> {
             Layer::Soft => self.focused_share(self.row(comm, i).iter().map(|&q| q as f32)),
             _ => f32::from(u8::from(self.in_focus(comm.cluster[i]))),
         };
-        Self::dim(c, share)
+        self.dim(c, share)
     }
 
     /// [`Self::cell`] in linear light, for averaging. The unfocused soft mix
@@ -301,11 +311,12 @@ impl<'a> Paint<'a> {
             Layer::Soft => self.mix(self.row(comm, i).iter().map(|&q| q as f32)),
             Layer::Entropy => match comm.entropy.as_ref() {
                 Some(h) => self.ramp.at_u8(h[i]),
-                None => NO_COMMUNITY,
+                None => self.theme.no_community(),
             },
             Layer::Community(c) => self
                 .ramp
                 .at_u8(self.row(comm, i).get(c).copied().unwrap_or(0)),
+            Layer::Gene => self.ramp.at_u8(self.row(comm, i)[0]),
         }
     }
 
@@ -318,8 +329,9 @@ impl<'a> Paint<'a> {
             Layer::Soft => self.mix(sums.iter().copied()),
             Layer::Entropy => self.ramp.at(level.entropy[b] / n),
             Layer::Community(c) => self.ramp.at(sums.get(c).map_or(0., |p| p / n)),
+            Layer::Gene => self.ramp.at(sums[0] / n),
         };
-        Self::dim(c, self.focused_share(sums.iter().copied()))
+        self.dim(c, self.focused_share(sums.iter().copied()))
     }
 }
 
@@ -366,6 +378,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
         rgba: vec![0u8; vp.w * vp.h * 4],
     };
     let spacing_px = scene.spacing / vp.upp;
+    let background = style.theme.background();
     match mode(scene, vp) {
         Mode::Points => {
             let edges = scene
@@ -379,6 +392,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
             let across: Vec<i64> = (0..width).map(|o| o - width / 2).collect();
             for_bands(
                 &mut frame,
+                background,
                 || (),
                 |_, canvas| {
                     if let Some((edges, index)) = edges {
@@ -392,7 +406,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
             // Half the expected cells per pixel counts as fully covered, so
             // sparse pixels at the tissue edge fade instead of speckling.
             let full = 0.5 / (spacing_px * spacing_px);
-            for_bands(&mut frame, Vec::new, |acc, canvas| {
+            for_bands(&mut frame, background, Vec::new, |acc, canvas| {
                 draw_average(canvas, scene, vp, &paint, full, acc);
             });
         }
@@ -400,6 +414,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
             let level = &scene.pyramid.levels[l];
             for_bands(
                 &mut frame,
+                background,
                 || (),
                 |_, canvas| {
                     draw_bins(canvas, scene, vp, &paint, level);
@@ -415,6 +430,7 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
 /// across the bands that thread draws.
 fn for_bands<T>(
     frame: &mut Frame,
+    background: Rgb,
     init: impl Fn() -> T + Sync + Send,
     draw: impl Fn(&mut T, &mut Canvas) + Sync + Send,
 ) {
@@ -425,7 +441,7 @@ fn for_bands<T>(
         .enumerate()
         .for_each_init(init, |state, (band, buf)| {
             for px in buf.chunks_exact_mut(4) {
-                px.copy_from_slice(&[BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 255]);
+                px.copy_from_slice(&[background[0], background[1], background[2], 255]);
             }
             let r0 = band * BAND;
             let r1 = r0 + buf.len() / (w * 4);

@@ -105,6 +105,23 @@ impl Run {
         })
     }
 
+    /// The run's expression data files: those the manifest lists, else
+    /// `{prefix}.zarr.zip`, `.zarr` or `.h5` next to the outputs.
+    pub fn data_files(&self) -> Vec<Box<str>> {
+        match self.meta.data_files.as_deref() {
+            Some(files) if !files.is_empty() => files
+                .iter()
+                .map(|f| self.resolve(f).to_string_lossy().into())
+                .collect(),
+            _ => ["zarr.zip", "zarr", "h5"]
+                .iter()
+                .map(|ext| format!("{}.{ext}", self.prefix))
+                .find(|p| Path::new(p).exists())
+                .map(|p| vec![p.into_boxed_str()])
+                .unwrap_or_default(),
+        }
+    }
+
     /// Where the run was read from, for messages.
     pub fn source(&self) -> String {
         match &self.manifest {
@@ -413,6 +430,25 @@ impl Communities {
             by_size,
             n_missing,
             n_unmatched,
+        }
+    }
+}
+
+impl Communities {
+    /// One pseudo-community holding `values` (already scaled to `u8`) for
+    /// every cell, so per-cell values draw like a community's propensity.
+    pub fn single(tag: &str, values: Vec<u8>) -> Self {
+        let n = values.len();
+        Communities {
+            tag: tag.to_string(),
+            k: 1,
+            prop: values,
+            cluster: vec![0; n],
+            entropy: None,
+            sizes: vec![n],
+            by_size: vec![0],
+            n_missing: 0,
+            n_unmatched: 0,
         }
     }
 }

@@ -1,5 +1,11 @@
 use super::fixture::{synth_cells, synth_communities};
-use crate::view::color::{palette, BACKGROUND, DIMMED};
+use crate::view::color::Theme;
+
+const DARK: Theme = Theme::Dark;
+
+fn palette(k: usize) -> Vec<[u8; 3]> {
+    DARK.palette(k)
+}
 use crate::view::data::{Communities, Geometry, Rect};
 use crate::view::index::{Grid, Pyramid};
 use crate::view::render::{render, Frame, Layer, Scene, Style, Viewport};
@@ -36,6 +42,7 @@ fn draw_focused(w: usize, window: Rect, focus: Option<&[bool]>) -> Frame {
         layer: Layer::Argmax,
         edges: false,
         focus,
+        theme: DARK,
     };
     render(&scene, &Viewport::fit(window, w, w), &style, &palette(4))
 }
@@ -74,7 +81,7 @@ fn focus_dims_other_communities() {
     let mut focus = vec![false; 4];
     focus[(c + 1) % 4] = true;
     let dimmed = draw_focused(64, window, Some(&focus));
-    assert_eq!(pixel(&dimmed, 32, 32), DIMMED);
+    assert_eq!(pixel(&dimmed, 32, 32), DARK.dimmed());
 
     focus[c] = true;
     let shown = draw_focused(64, window, Some(&focus));
@@ -94,8 +101,8 @@ fn bins_cover_the_tissue_and_leave_the_outside_empty() {
         },
     );
     let inside = pixel(&frame, 1, 1);
-    assert_ne!(inside, BACKGROUND);
-    assert_eq!(pixel(&frame, 7, 7), BACKGROUND);
+    assert_ne!(inside, DARK.background());
+    assert_eq!(pixel(&frame, 7, 7), DARK.background());
 }
 
 #[test]

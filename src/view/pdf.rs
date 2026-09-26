@@ -6,7 +6,7 @@
 //! Text uses Helvetica, one of the fonts every PDF reader carries, so
 //! nothing is embedded but the image.
 
-use super::color::Rgb;
+use super::color::{Rgb, Theme};
 use super::render::{Frame, Viewport};
 use super::scalebar::{self, Units};
 use super::thousands;
@@ -22,20 +22,24 @@ pub struct Figure<'a> {
     pub units: Option<Units>,
     pub legend: Legend,
     pub markers: Vec<MarkerBlock>,
+    pub theme: Theme,
 }
 
 pub enum Legend {
     Communities(Vec<Entry>),
-    /// A continuous layer: its title and colours from 0 to 1.
+    /// A continuous layer: its title, colours from 0 up, and the label of
+    /// the top of the ramp.
     Ramp {
         title: String,
         stops: Vec<Rgb>,
+        top: String,
     },
 }
 
 pub struct Entry {
     pub label: String,
     pub count: usize,
+    /// The swatch, dimmed already when another community is focused.
     pub colour: Rgb,
     /// False when another community is focused and this one is dimmed.
     pub on: bool,
@@ -103,11 +107,7 @@ pub fn write(fig: &Figure, path: &std::path::Path) -> anyhow::Result<()> {
     match &fig.legend {
         Legend::Communities(entries) => {
             for e in entries {
-                let (colour, ink) = if e.on {
-                    (e.colour, [0.1; 3])
-                } else {
-                    (super::color::DIMMED, [0.6; 3])
-                };
+                let (colour, ink) = (e.colour, if e.on { [0.1; 3] } else { [0.6; 3] });
                 swatch(&mut c, (x, y - 1.), colour);
                 text(&mut c, REGULAR, 8.5, (x + 13., y), ink, &e.label);
                 let n = thousands(e.count);
@@ -116,7 +116,7 @@ pub fn write(fig: &Figure, path: &std::path::Path) -> anyhow::Result<()> {
                 y -= LINE;
             }
         }
-        Legend::Ramp { title, stops } => {
+        Legend::Ramp { title, stops, top } => {
             text(&mut c, BOLD, 8.5, (x, y), [0.1; 3], title);
             y -= LINE + 2.;
             let bar_w = COLUMN - 20.;
@@ -133,9 +133,9 @@ pub fn write(fig: &Figure, path: &std::path::Path) -> anyhow::Result<()> {
                 &mut c,
                 REGULAR,
                 8.,
-                (x + bar_w - width("1", 8.), y - 1.),
+                (x + bar_w - width(top, 8.), y - 1.),
                 [0.3; 3],
-                "1",
+                top,
             );
             y -= LINE;
         }
@@ -233,21 +233,23 @@ fn column_height(fig: &Figure) -> f32 {
     legend + markers + 12.
 }
 
-/// White bar with a thin dark edge, bottom left of the map.
+/// The theme's bar colour with a thin outline, bottom left of the map.
 fn scale_bar(c: &mut Content, fig: &Figure, units: Units, (mx, my): (f32, f32), pt_per_px: f32) {
     let bar = scalebar::bar_for(fig.vp.w as f32 * fig.vp.upp, units);
     let len = bar.length / fig.vp.upp * pt_per_px;
     let (x, y) = (mx + 8., my + 8.);
-    c.set_fill_rgb(1., 1., 1.);
-    c.set_stroke_rgb(0., 0., 0.);
+    let (fill, edge) = fig.theme.bar();
+    let (fill, edge) = (fill.map(unit), edge.map(unit));
+    c.set_fill_rgb(fill[0], fill[1], fill[2]);
+    c.set_stroke_rgb(edge[0], edge[1], edge[2]);
     c.set_line_width(0.5);
     c.rect(x, y, len, 2.5);
     c.fill_nonzero_and_stroke();
-    // Dark halo under white text.
+    // A halo in the outline colour under the label.
     for (dx, dy) in [(-0.5, 0.), (0.5, 0.), (0., -0.5), (0., 0.5)] {
-        text(c, BOLD, 8., (x + dx, y + 5. + dy), [0.; 3], &bar.label);
+        text(c, BOLD, 8., (x + dx, y + 5. + dy), edge, &bar.label);
     }
-    text(c, BOLD, 8., (x, y + 5.), [1.; 3], &bar.label);
+    text(c, BOLD, 8., (x, y + 5.), fill, &bar.label);
 }
 
 fn swatch(c: &mut Content, (x, y): (f32, f32), colour: Rgb) {
