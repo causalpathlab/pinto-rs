@@ -1,6 +1,6 @@
 //! Plots of the grouping on screen: a structure plot of the cells'
-//! community mixtures under the map (`t`), and a heatmap of the top genes ×
-//! groups in place of it (`h`).
+//! community mixtures under the map, and a heatmap of the top genes ×
+//! groups in place of it; `H` steps map → structure → heatmap → map.
 //!
 //! Both follow what the map groups by (`a`): the level's communities, or a
 //! lupin round's cell types or clusters. The structure plot's bars are
@@ -70,9 +70,21 @@ fn heat_key() -> Line<'static> {
         ));
     }
     spans.push(Span::raw(format!(
-        " +{clip}   +/- genes  click a gene: map"
+        " +{clip}   + - genes  click a gene: map"
     )));
     Line::from(spans)
+}
+
+/// Whether the heatmap takes `key`: its own keys (`H`, grouping, genes per
+/// group) and the viewer's (save, saved figures, help, quit, back).
+pub fn chart_key(key: ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        || matches!(
+            key.code,
+            KeyCode::Esc
+                | KeyCode::Char('H' | 'c' | 'C' | '+' | '=' | '-' | '_' | 's' | 'f' | '?' | 'q')
+        )
 }
 
 /// Heatmap rows above the genes: title, key, names, swatches.
@@ -82,28 +94,21 @@ const HEAT_HEAD: usize = 4;
 const NAME_ROWS: usize = 8;
 
 impl App<'_> {
-    /// `h`: the heatmap in place of the map, or the map again.
-    pub(super) fn toggle_view(&mut self, view: View) {
-        self.view = if self.view == view { View::Map } else { view };
-        self.status = match self.view {
-            View::Map => "map".into(),
-            View::Heatmap => "heatmap: +/- genes, click one to map it (h or Esc: map)".into(),
-        };
-        self.need_map = true;
-    }
-
-    /// `t`: the structure plot under the map, or not.
-    pub(super) fn toggle_structure(&mut self) {
-        self.structure = !self.structure;
-        self.view = View::Map;
-        if !self.structure {
+    /// `H`: map → map with the structure plot under it → heatmap → map.
+    pub(super) fn cycle_chart(&mut self) {
+        if self.view == View::Heatmap {
+            self.view = View::Map;
+            self.structure = false;
+            self.status = "map".into();
+        } else if self.structure {
+            self.view = View::Heatmap;
             self.bar_focus = None;
-        }
-        self.status = if self.structure {
-            "structure plot: click a community to see where it is (t hides)".into()
+            self.status = "heatmap: + - genes per group, click one to map it; H or esc: map".into();
         } else {
-            "structure plot hidden (t)".into()
-        };
+            self.structure = true;
+            self.status =
+                "structure plot: click a community to see where it lies; H: heatmap".into();
+        }
         self.need_map = true;
     }
 
@@ -525,7 +530,6 @@ impl App<'_> {
         else {
             return;
         };
-        self.view = View::Map;
         self.show_gene(&feature);
         self.need_map = true;
     }

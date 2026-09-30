@@ -484,6 +484,10 @@ impl<'a> App<'a> {
         if self.modal.is_some() {
             return self.modal_key(key, terminal);
         }
+        if self.view == plots::View::Heatmap && !plots::chart_key(key) {
+            self.status = "on a chart: H next chart or back to the map · esc the map".into();
+            return Ok(());
+        }
         if self.relabel.is_some() && self.relabel_key(key, terminal)? {
             return Ok(());
         }
@@ -499,11 +503,10 @@ impl<'a> App<'a> {
             KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(-1),
             KeyCode::Char('+' | '=') => self.zoom(1. / ZOOM, None),
             KeyCode::Char('-' | '_') => self.zoom(ZOOM, None),
-            // Zoom keys that mean the same in every view and mode.
+            // Zoom keys that mean the same in every mode.
             KeyCode::Char('z') => self.zoom(1. / ZOOM, None),
             KeyCode::Char('Z') => self.zoom(ZOOM, None),
-            KeyCode::Char('t') => self.toggle_structure(),
-            KeyCode::Char('h' | 'H') => self.toggle_view(plots::View::Heatmap),
+            KeyCode::Char('H') => self.cycle_chart(),
             KeyCode::Char('f') => self.toggle_saved(),
             KeyCode::Char('0') => {
                 self.tile = None;
@@ -513,11 +516,14 @@ impl<'a> App<'a> {
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
             KeyCode::Char('2') => self.set_layer(Layer::Soft),
             KeyCode::Char('3') => self.set_layer(Layer::Entropy),
-            KeyCode::Char('4') => self.set_layer(Layer::Community(self.community)),
-            KeyCode::Char('c') => self.step_community(1),
-            KeyCode::Char('C') => self.step_community(-1),
-            KeyCode::Char(']') => self.step_level(1, terminal)?,
-            KeyCode::Char('[') => self.step_level(-1, terminal)?,
+            KeyCode::Char('4') => {
+                self.community = self.shown.unwrap_or(self.community);
+                self.set_layer(Layer::Community(self.community))
+            }
+            KeyCode::Char(']') => self.step_focus(1),
+            KeyCode::Char('[') => self.step_focus(-1),
+            KeyCode::Char('l') => self.step_level(1, terminal)?,
+            KeyCode::Char('L') => self.step_level(-1, terminal)?,
             KeyCode::Char('e') => self.toggle_edges(terminal)?,
             KeyCode::Char('b') => self.next_tile(),
             KeyCode::Char('s') => self.export()?,
@@ -527,11 +533,12 @@ impl<'a> App<'a> {
             KeyCode::Char('o') => self.toggle_source(),
             KeyCode::Char('p') => self.toggle_clip(),
             KeyCode::Char('?') => self.help = !self.help,
-            KeyCode::Char('a') => self.step_show(terminal)?,
+            KeyCode::Char('c') => self.step_show(1, terminal)?,
+            KeyCode::Char('C') => self.step_show(-1, terminal)?,
             KeyCode::Char('A') => self.ask_markers(),
             KeyCode::Char('R') => self.toggle_relabel(terminal)?,
-            KeyCode::Char('n') => self.next_round(1, terminal)?,
-            KeyCode::Char('N') => self.next_round(-1, terminal)?,
+            KeyCode::Char('.') => self.next_round(1, terminal)?,
+            KeyCode::Char(',') => self.next_round(-1, terminal)?,
             _ => {}
         }
         Ok(())
@@ -691,6 +698,7 @@ impl<'a> App<'a> {
             self.need_map = true;
         } else if self.view != plots::View::Map {
             self.view = plots::View::Map;
+            self.structure = false;
             self.need_map = true;
         } else if self.gene.is_some() {
             self.gene = None;
@@ -729,7 +737,9 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Map `feature`, on the map (a plot in place of it steps aside).
     fn show_gene(&mut self, feature: &str) {
+        self.view = plots::View::Map;
         let (base, source, clip) = (self.base, self.source, self.clip);
         match base.gene(self.level_mut(), feature, source, clip) {
             Ok(g) => {
@@ -794,13 +804,32 @@ impl<'a> App<'a> {
         self.need_map = true;
     }
 
-    fn step_community(&mut self, by: isize) {
-        let k = self.level().comm.k as isize;
-        if k == 0 {
+    /// `]`/`[`: focus the next (`by` = 1) or previous group, largest first;
+    /// a map of one community's propensity follows it.
+    fn step_focus(&mut self, by: isize) {
+        let order = self.level().comm.by_size.clone();
+        let n = order.len() as isize;
+        if n == 0 {
             return;
         }
-        self.community = (self.community as isize + by).rem_euclid(k) as usize;
-        self.set_layer(Layer::Community(self.community));
+        let at = self.shown.and_then(|c| order.iter().position(|&x| x == c));
+        let next = match at {
+            Some(i) => (i as isize + by).rem_euclid(n),
+            None if by > 0 => 0,
+            None => n - 1,
+        };
+        let c = order[next as usize];
+        self.focus.fill(false);
+        self.focus[c] = true;
+        self.shown = Some(c);
+        self.gene = None;
+        self.list_markers();
+        if let Layer::Community(_) = self.layer {
+            self.community = c;
+            self.layer = Layer::Community(c);
+        }
+        self.status = format!("{}  ] [ next/prev", self.level().comm.name(c));
+        self.need_map = true;
     }
 
     /// Back to the view the viewer opened on: the whole tissue, the starting
@@ -1200,7 +1229,7 @@ impl<'a> App<'a> {
             row(
                 "level",
                 format!(
-                    "{} ({}/{})  [ ]",
+                    "{} ({}/{})  l L",
                     self.base.run.levels[self.cur].tag,
                     self.cur + 1,
                     self.levels.len()
@@ -1361,7 +1390,7 @@ impl<'a> App<'a> {
                     Span::raw(" "),
                     Span::styled("██", TStyle::default().fg(rgb(level.palette[c]))),
                     Span::styled(format!(" {} markers", level.comm.name(c)), bold),
-                    Span::styled("  fold  g/G", dim),
+                    Span::styled("  fold  g G", dim),
                 ]),
                 None,
             ),
@@ -1521,38 +1550,31 @@ fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
 
 fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
     let dim = TStyle::default().fg(Color::DarkGray);
-    let text: &[&str] = if relabel {
+    let text: &[&str] = if relabel && !full {
         annotate::RELABEL_HELP
     } else if full {
         &[
             " arrows/drag  pan (shift: far)",
             " z/Z +/- or wheel  zoom",
             " 0 fit   r back to the start",
-            " b next batch",
-            " 1 argmax 2 soft 3 entropy 4 Ck",
-            " c/C  next/prev community",
-            " [ ]  prev/next level (L1 .. final)",
-            " click cell/legend  show community",
+            " b next batch  e edges",
+            " 1 argmax 2 soft 3 entropy 4 focused",
+            " ] [  focus next/prev group",
+            " l/L  next/prev level (L1 .. final)",
+            " click cell/legend  show group",
             " right/ctrl-click   add to shown",
-            " Esc  back (plot, gene, selection)",
+            " Esc or x  back (chart, gene, focus)",
             " click marker / g G  map a gene",
             " o  observed / model-expected",
             " p  gene ramp top: p99 / p95",
-            " e edges  q quit",
-            " s export view (PNG, PDF, .txt)",
-            " a communities / cell types / clusters",
-            " t structure plot (click a community)",
-            " h gene heatmap",
-            " f saved figures (.pinto-view/)",
-            " A annotate with lupin (marker panel)",
-            " R relabel/merge clusters",
-            " n/N  next/prev lupin round",
+            " c/C  communities / types / clusters",
+            " , .  prev/next lupin round",
+            " H  structure plot → heatmap → map",
+            " s save  f saved figures  q quit",
+            " A annotate (lupin)  R relabel",
         ]
     } else {
-        &[
-            " s export view (PNG, PDF, .txt)",
-            " r start over  ? keys  q quit",
-        ]
+        &[" s save view  r start over", " Esc back  ? keys  q quit"]
     };
     text.iter().map(|t| Line::styled(*t, dim)).collect()
 }

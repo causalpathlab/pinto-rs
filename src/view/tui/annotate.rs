@@ -21,14 +21,14 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const RELABEL_HELP: &[&str] = &[
-    " [ ]  prev/next cluster  click: pick one",
-    " click marker / g G  map a gene",
-    " + -  add/drop it from the target's markers",
-    " Tab  next target type",
-    " L label  K keep  u take back",
-    " M merge: click or [ ] space adds; Enter",
+    " → ← or ] [  next/prev cluster",
+    " ↑ ↓ or click  choose a gene",
+    " y marker of the working type",
+    " n drop it  space clear  Tab type",
+    " L label  K keep  M merge  u undo",
     " P preview  S apply (writes a round)",
-    " Esc leave (the draft is kept)",
+    " z/Z zoom  s save  ? all keys",
+    " R or Esc leave (the draft is kept)",
 ];
 
 /// Relabelling a round's clusters.
@@ -101,7 +101,7 @@ impl App<'_> {
                 }
             }
         } else if let Some(r) = self.rounds.first() {
-            self.status = format!("lupin round {}: a shows it", round_name(r));
+            self.status = format!("lupin round {}: c shows it", round_name(r));
         }
     }
 
@@ -114,12 +114,12 @@ impl App<'_> {
     /// The panel's `show` row.
     pub(super) fn show_line(&self) -> String {
         match (&self.round, self.show) {
-            (Some(_), Show::Types) => "cell types  a".into(),
-            (Some(_), Show::Clusters) => "clusters  a  R: relabel".into(),
+            (Some(_), Show::Types) => "cell types  c".into(),
+            (Some(_), Show::Clusters) => "clusters  c  R: relabel".into(),
             (_, _) if self.job.is_some() => "communities  (lupin running)".into(),
-            (Some(_), _) => "communities  a: round".into(),
+            (Some(_), _) => "communities  c: round".into(),
             (None, _) if self.rounds.is_empty() => "communities  A: annotate".into(),
-            (None, _) => "communities  a: round".into(),
+            (None, _) => "communities  c: round".into(),
         }
     }
 
@@ -135,7 +135,10 @@ impl App<'_> {
             .into_iter()
             .rev()
             .collect();
-        Some(format!("{name} ({})  n", self.base.run.levels[r.level].tag))
+        Some(format!(
+            "{name} ({})  , .",
+            self.base.run.levels[r.level].tag
+        ))
     }
 
     /// Draw `show`, with nothing selected.
@@ -158,8 +161,13 @@ impl App<'_> {
         self.need_map = true;
     }
 
-    /// `a`: communities → cell types → clusters.
-    pub(super) fn step_show(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    /// `c`/`C`: the next (`by` = 1) or previous grouping, communities →
+    /// cell types → clusters, loading the newest round when none is.
+    pub(super) fn step_show(
+        &mut self,
+        by: isize,
+        terminal: &mut DefaultTerminal,
+    ) -> anyhow::Result<()> {
         if self.round.is_none() {
             let Some(path) = self.rounds.first().cloned() else {
                 self.status = "no lupin round yet: A annotates this level".into();
@@ -171,16 +179,13 @@ impl App<'_> {
                 return Ok(());
             }
         }
-        let next = match self.show {
-            Show::Communities => Show::Types,
-            Show::Types => Show::Clusters,
-            Show::Clusters => Show::Communities,
-        };
-        self.set_show(next);
+        const ORDER: [Show; 3] = [Show::Communities, Show::Types, Show::Clusters];
+        let at = ORDER.iter().position(|&s| s == self.show).unwrap_or(0) as isize;
+        self.set_show(ORDER[(at + by).rem_euclid(3) as usize]);
         Ok(())
     }
 
-    /// `n`/`N`: the next (`by` = 1) or previous chain's newest round.
+    /// `.`/`,`: the next (`by` = 1) or previous chain's newest round.
     pub(super) fn next_round(
         &mut self,
         by: isize,
@@ -321,7 +326,7 @@ impl App<'_> {
             }
             (JobKind::Next(_), Err(e)) => {
                 self.status = if e.contains("not the latest round") {
-                    format!("{e}; n steps to it (this draft stays with its round)")
+                    format!("{e}; , . step to it (this draft stays with its round)")
                 } else {
                     format!("lupin relabel: {e}")
                 };
@@ -519,7 +524,7 @@ impl App<'_> {
             return Ok(());
         }
         if self.round.is_none() {
-            self.step_show(terminal)?;
+            self.step_show(1, terminal)?;
             if self.round.is_none() {
                 return Ok(());
             }
@@ -562,7 +567,7 @@ impl App<'_> {
         self.status = if staged > 0 {
             format!("relabelling; {staged} decisions staged earlier")
         } else {
-            "relabelling: [ ] clusters, L label, M merge".into()
+            "relabelling: → ← clusters, ↑ ↓ genes, y/n marks, L label".into()
         };
         Ok(())
     }
@@ -632,49 +637,32 @@ impl App<'_> {
         }
     }
 
-    /// Keys while relabelling; `false` passes a key on to the map.
+    /// Keys while relabelling; `false` passes a key on to the map (zoom,
+    /// save, help, quit and the looks).
     pub(super) fn relabel_key(
         &mut self,
         key: KeyEvent,
         _terminal: &mut DefaultTerminal,
     ) -> anyhow::Result<bool> {
         let r = self.relabel.as_ref().expect("relabelling");
-        let (at, n, merging) = (r.at, r.order.len(), r.merge.is_some());
+        if r.merge.is_some() {
+            return Ok(self.merge_key(key));
+        }
+        let (at, n) = (r.at, r.order.len());
         match key.code {
-            KeyCode::Esc | KeyCode::Char('R') if merging => {
-                self.relabel.as_mut().expect("relabelling").merge = None;
-                self.visit(at);
-                self.status = "merge cancelled".into();
-            }
             KeyCode::Esc | KeyCode::Char('R') => self.leave_relabel(),
-            KeyCode::Char(']' | '[') if merging => {
-                let by = if key.code == KeyCode::Char(']') {
-                    1
-                } else {
-                    n - 1
-                };
-                let r = self.relabel.as_mut().expect("relabelling");
-                r.cursor = (r.cursor + by) % n;
-                self.visit(at);
-            }
-            KeyCode::Char(' ') if merging => {
-                let r = self.relabel.as_ref().expect("relabelling");
-                let id = r.order[r.cursor];
-                if let Some(g) = self.round.as_ref().and_then(|round| round.group(id)) {
-                    self.visit_group(g);
-                }
-            }
-            KeyCode::Char(']') => self.visit((at + 1) % n),
-            KeyCode::Char('[') => self.visit((at + n - 1) % n),
+            KeyCode::Right | KeyCode::Char(']') => self.visit((at + 1) % n),
+            KeyCode::Left | KeyCode::Char('[') => self.visit((at + n - 1) % n),
+            KeyCode::Down => self.step_gene(1),
+            KeyCode::Up => self.step_gene(-1),
             KeyCode::Tab => self.step_target(1),
             KeyCode::BackTab => self.step_target(-1),
-            KeyCode::Char('+' | '=') => self.mark(true),
-            KeyCode::Char('-' | '_') => self.mark(false),
+            KeyCode::Char('y') => self.mark(true),
+            KeyCode::Char('n') => self.mark(false),
+            KeyCode::Char(' ') => self.clear_mark(),
             KeyCode::Char('L') => self.ask(false),
             KeyCode::Char('K') => self.ask(true),
-            KeyCode::Char('M') if merging => self.ask_merge(),
             KeyCode::Char('M') => self.begin_merge(),
-            KeyCode::Enter if merging => self.ask_merge(),
             KeyCode::Char('u') => self.unstage(),
             KeyCode::Char('P') => self.send_draft(true),
             KeyCode::Char('S') => self.confirm_draft(),
@@ -682,12 +670,47 @@ impl App<'_> {
                 self.gene = None;
                 self.need_map = true;
             }
-            KeyCode::Char('a' | 'A' | 'n' | 'N' | 'c' | 'C' | '4') => {
-                self.status = "leave relabelling first (Esc)".into();
+            KeyCode::Char('l' | 'k' | 'm') => {
+                self.status = "decisions are uppercase: L labels, K keeps, M merges".into();
+            }
+            KeyCode::Char('c' | 'C' | ',' | '.' | 'H' | 'A' | 'r' | '4') | KeyCode::Home => {
+                self.status = "leave relabel mode first (R)".into();
             }
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Keys while choosing clusters to merge: ↑ ↓ move, space chooses,
+    /// Enter names, Esc or `M` cancels; `q` and `?` pass, the rest is refused.
+    fn merge_key(&mut self, key: KeyEvent) -> bool {
+        let r = self.relabel.as_mut().expect("relabelling");
+        let (at, n) = (r.at, r.order.len());
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('M') => {
+                r.merge = None;
+                self.visit(at);
+                self.status = "merge cancelled".into();
+            }
+            KeyCode::Down | KeyCode::Up => {
+                let by = if key.code == KeyCode::Down { 1 } else { n - 1 };
+                r.cursor = (r.cursor + by) % n;
+                self.visit(at);
+            }
+            KeyCode::Char(' ') => {
+                let id = r.order[r.cursor];
+                if let Some(g) = self.round.as_ref().and_then(|round| round.group(id)) {
+                    self.visit_group(g);
+                }
+            }
+            KeyCode::Enter => self.ask_merge(),
+            KeyCode::Char('q' | '?') => return false,
+            _ => {
+                self.status =
+                    "in merge mode: ↑ ↓ move, space chooses, enter names, esc cancels".into();
+            }
+        }
+        true
     }
 
     /// Candidate types for cluster `id`: staged, current, called, panel.
@@ -742,71 +765,90 @@ impl App<'_> {
             None => 0,
         };
         let target = options[next].clone();
-        self.status = format!("+/- now edit {target}'s markers");
+        self.status = format!("working type: {target} (y adds its markers)");
         self.relabel.as_mut().expect("relabelling").target = Some(target);
     }
 
-    /// `+`/`-`: add the gene on the map to the target's markers, or drop it.
+    /// `y`: the gene on the map becomes a marker of the working type.
+    /// `n`: it is dropped from the type that lists it (the working type
+    /// when that one does). Either moves on to the next gene.
     fn mark(&mut self, add: bool) {
         let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) else {
-            self.status = "map a marker first: click one, or g".into();
+            self.status = "choose a gene first: ↑ ↓ or a click".into();
             return;
         };
         let gene = markers::symbol(&feature).to_string();
         let (Some(r), Some(round)) = (self.relabel.as_mut(), self.round.as_ref()) else {
             return;
         };
-        let Some(target) = r.target.clone() else {
-            self.status = "no target type: Tab picks one".into();
+        let Some(working) = r.target.clone() else {
+            self.status = "no working type: Tab picks one".into();
             return;
         };
-        let listed = round
-            .panel
-            .as_ref()
-            .and_then(|p| p.genes(&target))
-            .is_some_and(|g| g.iter().any(|x| x.eq_ignore_ascii_case(&gene)));
-        let staged = r
-            .draft
-            .mark_of(&gene)
-            .filter(|m| lupin::label_key(&m.label) == lupin::label_key(&target));
-        let undo = staged.is_some_and(|m| m.add == add);
-        if !undo && staged.is_none() {
-            if add && listed {
-                self.status = format!("{gene} is already one of {target}'s markers");
-                return;
+        let lists = |t: &str| {
+            round
+                .panel
+                .as_ref()
+                .and_then(|p| p.genes(t))
+                .is_some_and(|g| g.iter().any(|x| x.eq_ignore_ascii_case(&gene)))
+        };
+        // The type the edit is about: the working type to add to; for a
+        // drop, the working type if it lists the gene, else the one that does.
+        let label = if add || lists(&working) {
+            working
+        } else {
+            let others = round
+                .panel
+                .as_ref()
+                .map(|p| p.types_of(&gene))
+                .unwrap_or_default();
+            match others.first() {
+                Some(t) => t.to_string(),
+                None => {
+                    self.status = format!("{gene} is no type's marker");
+                    return;
+                }
             }
-            if !add && !listed {
-                let others = round
-                    .panel
-                    .as_ref()
-                    .map(|p| p.types_of(&gene))
-                    .unwrap_or_default();
-                self.status = if others.is_empty() {
-                    format!("{gene} is no type's marker")
-                } else {
-                    format!(
-                        "{gene} is not {target}'s marker (it is {}'s)",
-                        others.join(", ")
-                    )
-                };
-                return;
-            }
+        };
+        let staged = r.draft.mark_of(&gene).is_some_and(|m| {
+            lupin::label_key(&m.label) == lupin::label_key(&label) && m.add == add
+        });
+        if add && lists(&label) && !staged {
+            self.status = format!("{gene} is already one of {label}'s markers");
+            return;
         }
         let now = r.draft.toggle_mark(Mark {
-            label: target.clone(),
+            label: label.clone(),
             feature: gene.clone(),
             add,
         });
         let verb = if add { "add to" } else { "drop from" };
         self.status = if now {
-            format!("{gene}: {verb} {target}'s markers")
+            format!("{gene}: {verb} {label}'s markers")
         } else {
-            format!("{gene}: {target}'s markers left as they were")
+            format!("{gene}: {label}'s markers left as they were")
         };
         self.save_draft();
-        if now {
-            self.step_gene(1);
-        }
+        self.step_gene(1);
+    }
+
+    /// Space: take back the mark on the gene on the map, and move on.
+    fn clear_mark(&mut self) {
+        let Some(feature) = self.gene.as_ref().map(|g| g.feature.clone()) else {
+            self.status = "choose a gene first: ↑ ↓ or a click".into();
+            return;
+        };
+        let gene = markers::symbol(&feature).to_string();
+        let Some(r) = self.relabel.as_mut() else {
+            return;
+        };
+        self.status = if r.draft.clear_mark(&gene) {
+            format!("{gene}: no mark")
+        } else {
+            format!("{gene} has no mark")
+        };
+        self.save_draft();
+        self.step_gene(1);
     }
 
     /// `L` (or `K` to keep the label): ask for a label and a rationale.
@@ -862,7 +904,7 @@ impl App<'_> {
         }
         r.merge = Some(BTreeSet::new());
         r.cursor = r.at;
-        self.status = format!("merge K{id} with: click clusters, or [ ] and space; Enter");
+        self.status = format!("merge K{id} with: ↑ ↓ and space (or clicks), enter names");
     }
 
     fn ask_merge(&mut self) {
@@ -992,7 +1034,7 @@ impl App<'_> {
             return;
         };
         if r.draft.is_empty() {
-            self.status = "nothing staged: L, K, M or +/- first".into();
+            self.status = "nothing staged: L, K, M or y/n first".into();
             return;
         }
         if self.job.is_some() {
@@ -1009,7 +1051,7 @@ impl App<'_> {
             return;
         };
         if r.draft.is_empty() {
-            self.status = "nothing staged: L, K, M or +/- first".into();
+            self.status = "nothing staged: L, K, M or y/n first".into();
             return;
         }
         if self.job.is_some() {
@@ -1112,7 +1154,7 @@ impl App<'_> {
             ));
         }
         let target = r.target.clone().unwrap_or_else(|| "–".into());
-        out.push(row("target", format!("{}  Tab", short(&target, 26))));
+        out.push(row("working", format!("{}  Tab", short(&target, 26))));
 
         // Markers: • listed for the target, +/- staged edits.
         let panel_genes: Vec<String> = round
@@ -1126,7 +1168,7 @@ impl App<'_> {
             out.push((
                 Line::from(vec![
                     Span::styled("   markers", bold),
-                    Span::styled("  fold  • in target  g/G +/-", dim),
+                    Span::styled("  fold  • listed  ↑↓ y n", dim),
                 ]),
                 None,
             ));

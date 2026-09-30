@@ -113,3 +113,16 @@ fn a_draft_is_kept_beside_its_round_and_only_for_it() {
     d.discard();
     assert!(!Draft::path_for(&round).exists());
 }
+
+#[test]
+fn space_clears_a_genes_mark_whatever_type_it_names() {
+    let mut d = draft();
+    d.toggle_mark(Mark {
+        label: "T_cell".into(),
+        feature: "CD3E".into(),
+        add: false,
+    });
+    assert!(d.clear_mark("cd3e"));
+    assert!(d.marks.is_empty());
+    assert!(!d.clear_mark("CD3E"));
+}
