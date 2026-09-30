@@ -193,8 +193,6 @@ impl Expression {
         group: &[u16],
         k: usize,
     ) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
-        let rows: Vec<Option<usize>> = features.iter().map(|f| find(&self.features, f)).collect();
-        let wanted: Vec<usize> = rows.iter().flatten().copied().collect();
         // Cells per group, among the data's columns on the map.
         let mut n = vec![0f32; k];
         for &i in self.cell_of.iter().flatten() {
@@ -202,28 +200,28 @@ impl Expression {
                 *c += 1.;
             }
         }
-        let csr = self.data.read_rows_csr(wanted.iter().copied())?;
-        let mut sums = vec![vec![0f32; k]; wanted.len()];
-        for (r, sum) in sums.iter_mut().enumerate() {
-            let row = csr.row(r);
-            for (&col, &count) in row.col_indices().iter().zip(row.values()) {
-                if let Some(i) = self.cell_of[col] {
-                    if let Some(s) = sum.get_mut(group[i as usize] as usize) {
+        // One row per read: data-beans 0.6.12 reading many rows of a
+        // `.zarr.zip` at once sometimes returns corrupt indices or values;
+        // single rows read back the same every time.
+        features
+            .iter()
+            .map(|f| {
+                let Some(g) = find(&self.features, f) else {
+                    return Ok(None);
+                };
+                let row = self.data.read_rows_csr(std::iter::once(g))?;
+                let mut sum = vec![0f32; k];
+                for (_, col, &count) in row.triplet_iter() {
+                    let cell = self.cell_of.get(col).copied().flatten();
+                    if let Some(s) = cell.and_then(|i| sum.get_mut(group[i as usize] as usize)) {
                         *s += count.ln_1p();
                     }
                 }
-            }
-        }
-        let mut sums = sums.into_iter();
-        Ok(rows
-            .iter()
-            .map(|r| {
-                r.map(|_| {
-                    let s = sums.next().expect("one per found feature");
-                    s.iter().zip(&n).map(|(s, n)| s / n.max(1.)).collect()
-                })
+                Ok(Some(
+                    sum.iter().zip(&n).map(|(s, n)| s / n.max(1.)).collect(),
+                ))
             })
-            .collect())
+            .collect()
     }
 
     /// Observed `ln(1 + count)` of `feature` in every cell on the map.

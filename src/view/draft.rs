@@ -115,6 +115,14 @@ impl Draft {
         }
     }
 
+    /// Take back any marker edit staged for `feature`; whether there was one.
+    pub fn clear_mark(&mut self, feature: &str) -> bool {
+        let before = self.marks.len();
+        self.marks
+            .retain(|m| !m.feature.eq_ignore_ascii_case(feature));
+        self.marks.len() != before
+    }
+
     /// The marker edit staged for `feature`, if any.
     pub fn mark_of(&self, feature: &str) -> Option<&Mark> {
         self.marks

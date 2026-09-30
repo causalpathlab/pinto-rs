@@ -62,10 +62,14 @@ pinto view out --png cd3e.png --gene CD3E       # one gene: observed ln(1+count)
 pinto view out --png cd3e.png --gene CD3E --expected --clip 95
 ```
 
-In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, and `Esc`
-steps back (plot, gene, selection); `q` quits. Click a cell or legend entry to show one community (with its
-marker features), then click a marker to map that gene (`g`/`G` step through
-them, `o` switches observed/model-expected, `p` the ramp top p99/p95); `s` exports the current view as PNG, PDF, and a `.txt` with
+In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `l`/`L` step
+through levels, and `Esc` steps back (chart, gene, focus); `q` quits. Keys
+follow one rule: lowercase looks, uppercase decides or writes (and enters a
+mode), Shift reverses, and a mode refuses keys it doesn't use. Click a cell
+or legend entry (or step with `]`/`[`) to show one group with its marker
+features, then click a marker to map that gene (`g`/`G` step through them,
+`o` switches observed/model-expected, `p` the ramp top p99/p95); `s` exports
+the current view as PNG, PDF, and a `.txt` with
 the command that redraws it. The scale bar's units are guessed from the
 coordinate columns (`--units um|px|none` to override). Map colours follow the
 terminal's background (`--theme light|dark` to choose; images default to dark).
@@ -82,14 +86,16 @@ writes labels itself.
 - `A` picks a marker panel (`gene<TAB>type` lines) and annotates the level
   on screen with `lupin annotate --level … --method enrichment`, writing a
   round `{prefix}.{level}.a{k}.lupin.json`.
-- `a` steps the map through communities → the round's cell types → its
-  clusters; `n`/`N` step through the rounds made from the run.
-- `R` relabels the round's clusters, one at a time (`[ ]`, or click):
-  `L` labels, `K` keeps the label, `M` merges (click or `[ ]`/space to add,
-  Enter to label), and `+`/`-` add or drop the mapped gene from the target
-  type's markers (Tab picks the type). Each needs a rationale. Decisions stay
-  in a draft beside the round until `S` sends them to `lupin relabel --next`,
-  after a confirmation; `P` previews what they would change.
+- `c`/`C` step the map through communities → the round's cell types → its
+  clusters; `.`/`,` step through the rounds made from the run.
+- `R` relabels the round's clusters, one at a time (`→`/`←`, or click):
+  `↑`/`↓` choose a gene, `y` makes it a marker of the working type (`Tab`
+  picks the type), `n` drops it from its type, space clears the mark;
+  `L` labels, `K` keeps the label, `M` merges (`↑`/`↓` and space, or clicks,
+  choose the clusters; Enter names them), `u` takes a decision back. Each
+  needs a rationale. Decisions stay in a draft beside the round until `S`
+  sends them to `lupin relabel --next`, after a confirmation; `P` previews
+  what they would change.
 
 ```sh
 pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
@@ -97,9 +103,10 @@ pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
 
 #### Structure plot and heatmap
 
-`t` adds a structure plot under the map and `h` shows a gene heatmap in place
-of it (press again, or `Esc`, for the map); both follow the grouping on
-screen (communities, or with `a` the round's cell types or clusters):
+`H` steps through the charts: the map with a structure plot under it, then a
+gene heatmap in place of the map, then the map again (`Esc` goes straight
+back). Both follow the grouping on screen (communities, or with `c` the
+round's cell types or clusters):
 
 - **structure plot**: each cell's community propensities (the share of its
   edges in each link community) as a stacked bar, communities in order of
@@ -112,8 +119,8 @@ screen (communities, or with `a` the round's cell types or clusters):
   group, so each row peaks in its own column: the model proposes candidates,
   and the groups' mean observed ln(1 + count) chooses among them (the model's
   rates alone when there are no data files). Values are z-scored per gene and
-  clipped to ±2.5. `+`/`-` change the genes per
-  group; clicking a gene maps it.
+  clipped to ±2.5. `+`/`-` change the genes per group; clicking a gene maps
+  it. The heatmap takes only its own keys, `c`, `s`, `f`, `?` and `q`.
 
 `s` saves the view: the map as PNG, PDF and `.txt`, the structure plot as a
 PNG, the heatmap as a table. Saved files are listed with thumbnails on the
