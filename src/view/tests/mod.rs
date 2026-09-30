@@ -1,12 +1,17 @@
 mod cellart;
 mod color;
 mod data;
+mod draft;
 mod fixture;
 mod gene;
+mod heatmap;
 mod helpers;
 mod index;
 mod kitty;
+mod lupin;
 mod markers;
 mod pdf;
 mod render;
+mod saved;
 mod scalebar;
+mod structure;

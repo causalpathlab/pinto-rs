@@ -219,6 +219,20 @@ pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<M
     })
 }
 
+/// One numeric column of a table keyed by its first column: row names and
+/// the values (e.g. a lupin round's `cell`, `cluster`, with NaN for none).
+pub fn read_keyed_column(path: &Path, column: &str) -> anyhow::Result<(Vec<Box<str>>, Vec<f32>)> {
+    let fields = field_names(path)?;
+    let key = fields
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("{path:?}: no columns"))?;
+    let cols = read_named_columns(path, &[key.as_ref(), column])?;
+    let rows = labels(&cols[0])?;
+    let values = floats(&cols[1])?;
+    anyhow::ensure!(rows.len() == values.len(), "{path:?}: ragged columns");
+    Ok((rows, values))
+}
+
 /// Write `{prefix}.cells.parquet`: every cell the run read, before QC, with
 /// its coordinates (the internal `batch` offset column left out, as in
 /// `coord_pairs`), its batch label when there is more than one, and

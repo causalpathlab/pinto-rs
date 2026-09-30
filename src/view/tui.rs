@@ -8,17 +8,26 @@
 //! Input is drained before each redraw, so a burst of scroll or drag events
 //! costs one frame, not one per event.
 
+mod annotate;
+mod browse;
+mod gallery;
+mod plots;
+
+pub use browse::pick_run;
+
 use super::cellart::{rgb, Cells, Glyphs};
 use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
 use super::kitty::{Kitty, Transport};
+use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
+use super::round::Round;
 use super::scalebar;
 use super::{
-    focused, ids, legend_line, legend_swatch, markers, thousands, write_outputs, Base, Graphics,
-    Level, ViewArgs, FIT_MARGIN,
+    focus_name, focused, ids, legend_line, legend_swatch, markers, thousands, write_outputs, Base,
+    Graphics, Level, Show, ViewArgs, FIT_MARGIN,
 };
 use clap::ValueEnum;
 use ratatui::crossterm::event::{
@@ -35,15 +44,22 @@ use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Side panel width, cells.
 const PANEL: u16 = 34;
 
+/// Side panel width while relabelling or in a dialog, cells.
+const WIDE_PANEL: u16 = 46;
+
 /// Zoom step per key press or wheel notch.
 const ZOOM: f32 = 1.25;
 
 pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
+    // Log lines would land over the screen: off while it is ours.
+    let logging = log::max_level();
+    log::set_max_level(log::LevelFilter::Off);
     let mut terminal = ratatui::init();
     let result = (|| {
         // The terminal is asked first: its background picks the theme the
@@ -54,19 +70,21 @@ pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
             .or(background.map(Theme::for_background))
             .unwrap_or(Theme::Dark);
         terminal.draw(|f| {
-            let msg = format!(" loading {} ...", args.prefix);
+            let msg = format!(" loading {} ...", args.prefix());
             f.render_widget(Paragraph::new(msg), f.area());
         })?;
-        let base = Base::load(&args.prefix, &args.units, theme)?;
+        let base = Base::load(args.prefix(), &args.units, theme)?;
         let first = base.run.level_index(args.level.as_deref())?;
         let level = base.level(first, args.edges)?;
 
         execute!(std::io::stdout(), EnableMouseCapture)?;
         let mut app = App::new(&base, level, args, (gfx, px));
+        app.open_rounds(args.round.as_deref().map(PathBuf::from));
         app.run(&mut terminal)
     })();
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
+    log::set_max_level(logging);
     result
 }
 
@@ -195,6 +213,38 @@ struct App<'a> {
     send_time: Duration,
     send_bytes: usize,
 
+    /// What groups the cells: the level's communities or the round's.
+    show: Show,
+    /// The lupin round `a` shows, loaded on first use.
+    round: Option<Round>,
+    /// The newest round of each chain made from this run, newest first;
+    /// `n`/`N` step through them.
+    rounds: Vec<PathBuf>,
+    /// A lupin subprocess running in the background.
+    job: Option<Job>,
+    /// What the main area shows: the map, a structure plot, a heatmap.
+    view: plots::View,
+    /// The structure plot under the map (`t`), its panel names under it,
+    /// and the community clicked in it while the map shows a round.
+    structure: bool,
+    bars: Rect,
+    below: Rect,
+    bar_focus: Option<usize>,
+    /// The map and the structure plot, sent as one image.
+    canvas: Rect,
+    /// Plots kept until what they show changes.
+    plots: plots::Cache,
+    /// Figures saved in this directory, this session and before.
+    gallery: super::saved::Gallery,
+    show_saved: bool,
+    /// Where the saved figures go, left of the map; empty when hidden.
+    strip: Rect,
+    thumbs: gallery::Thumbs,
+    /// Relabelling the round's clusters (`R`).
+    relabel: Option<annotate::Relabel>,
+    /// A dialog that takes the keys: file browser, prompt, confirmation.
+    modal: Option<annotate::Modal>,
+
     /// The map must be rendered again.
     need_map: bool,
     /// The panel must be drawn again (always, when the map is).
@@ -245,22 +295,48 @@ impl<'a> App<'a> {
             render_time: Duration::ZERO,
             send_time: Duration::ZERO,
             send_bytes: 0,
+            show: Show::Communities,
+            round: None,
+            rounds: Vec::new(),
+            job: None,
+            relabel: None,
+            modal: None,
+            view: plots::View::Map,
+            structure: false,
+            bars: Rect::default(),
+            below: Rect::default(),
+            bar_focus: None,
+            canvas: Rect::default(),
+            plots: plots::Cache::default(),
+            gallery: super::saved::Gallery::here(),
+            show_saved: true,
+            strip: Rect::default(),
+            thumbs: Default::default(),
             need_map: true,
             need_panel: true,
             quit: false,
         }
     }
 
+    /// What the map draws: the current level, or a grouping of the round.
     fn level(&self) -> &Level {
-        self.levels[self.cur]
-            .as_ref()
-            .expect("current level is loaded")
+        match (self.show, &self.round) {
+            (Show::Types, Some(r)) => &r.types,
+            (Show::Clusters, Some(r)) => &r.clusters,
+            _ => self.levels[self.cur]
+                .as_ref()
+                .expect("current level is loaded"),
+        }
     }
 
     fn level_mut(&mut self) -> &mut Level {
-        self.levels[self.cur]
-            .as_mut()
-            .expect("current level is loaded")
+        match (self.show, &mut self.round) {
+            (Show::Types, Some(r)) => &mut r.types,
+            (Show::Clusters, Some(r)) => &mut r.clusters,
+            _ => self.levels[self.cur]
+                .as_mut()
+                .expect("current level is loaded"),
+        }
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -270,6 +346,7 @@ impl<'a> App<'a> {
             if self.need_map || self.need_panel {
                 self.redraw(terminal)?;
             }
+            self.poll_job(terminal)?;
             if event::poll(Duration::from_millis(250))? {
                 self.handle(event::read()?, terminal)?;
                 while !self.quit && event::poll(Duration::ZERO)? {
@@ -288,11 +365,34 @@ impl<'a> App<'a> {
     fn layout(&mut self, terminal: &DefaultTerminal) -> anyhow::Result<Rect> {
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        let panel = PANEL.min(area.width / 2);
-        let [map, side] =
+        let wide = self.relabel.is_some() || self.modal.is_some();
+        let panel = if wide { WIDE_PANEL } else { PANEL }.min(area.width / 2);
+        let [mut map, side] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(panel)]).areas(area);
-        if map != self.map {
+        // Saved figures on the left.
+        self.strip = Rect::default();
+        if self.strip_shows(map.width) {
+            self.strip = Rect::new(map.x, map.y, gallery::SAVED_WIDTH, map.height);
+            map.x += gallery::SAVED_WIDTH;
+            map.width -= gallery::SAVED_WIDTH;
+        }
+        // The structure plot under the map, a quarter of its height, and
+        // two rows of panel names under that.
+        self.bars = Rect::default();
+        self.below = Rect::default();
+        if self.structure && self.view == plots::View::Map && map.height >= 16 {
+            let (h, names) = ((map.height / 4).max(6), 2);
+            self.below = Rect::new(map.x, map.bottom() - names, map.width, names);
+            self.bars = Rect::new(map.x, map.bottom() - names - h, map.width, h);
+            map.height -= h + names;
+        }
+        let canvas = Rect {
+            height: map.height + self.bars.height,
+            ..map
+        };
+        if map != self.map || canvas != self.canvas {
             self.map = map;
+            self.canvas = canvas;
             self.need_map = true;
         }
         self.side = side;
@@ -381,15 +481,30 @@ impl<'a> App<'a> {
         let big = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if big { 0.5 } else { 0.125 };
         self.status.clear();
+        if self.modal.is_some() {
+            return self.modal_key(key, terminal);
+        }
+        if self.relabel.is_some() && self.relabel_key(key, terminal)? {
+            return Ok(());
+        }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Esc => self.back(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('h' | 'H') | KeyCode::Left => self.pan(-step, 0.),
-            KeyCode::Char('l' | 'L') | KeyCode::Right => self.pan(step, 0.),
-            KeyCode::Char('k' | 'K') | KeyCode::Up => self.pan(0., -step),
-            KeyCode::Char('j' | 'J') | KeyCode::Down => self.pan(0., step),
+            KeyCode::Left => self.pan(-step, 0.),
+            KeyCode::Right => self.pan(step, 0.),
+            KeyCode::Up => self.pan(0., -step),
+            KeyCode::Down => self.pan(0., step),
+            KeyCode::Char('+' | '=') if self.view == plots::View::Heatmap => self.more_genes(1),
+            KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(-1),
             KeyCode::Char('+' | '=') => self.zoom(1. / ZOOM, None),
             KeyCode::Char('-' | '_') => self.zoom(ZOOM, None),
+            // Zoom keys that mean the same in every view and mode.
+            KeyCode::Char('z') => self.zoom(1. / ZOOM, None),
+            KeyCode::Char('Z') => self.zoom(ZOOM, None),
+            KeyCode::Char('t') => self.toggle_structure(),
+            KeyCode::Char('h' | 'H') => self.toggle_view(plots::View::Heatmap),
+            KeyCode::Char('f') => self.toggle_saved(),
             KeyCode::Char('0') => {
                 self.tile = None;
                 self.fit(self.base.geom.bounds());
@@ -412,6 +527,11 @@ impl<'a> App<'a> {
             KeyCode::Char('o') => self.toggle_source(),
             KeyCode::Char('p') => self.toggle_clip(),
             KeyCode::Char('?') => self.help = !self.help,
+            KeyCode::Char('a') => self.step_show(terminal)?,
+            KeyCode::Char('A') => self.ask_markers(),
+            KeyCode::Char('R') => self.toggle_relabel(terminal)?,
+            KeyCode::Char('n') => self.next_round(1, terminal)?,
+            KeyCode::Char('N') => self.next_round(-1, terminal)?,
             _ => {}
         }
         Ok(())
@@ -419,6 +539,27 @@ impl<'a> App<'a> {
 
     fn mouse(&mut self, m: MouseEvent) {
         let (col, row) = (m.column, m.row);
+        // The structure plot: a click picks a community; nothing pans it.
+        if self.bars.contains(Position::new(col, row)) {
+            match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => self.bar_click(col, row),
+                MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                }
+                _ => {}
+            }
+            if !matches!(m.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_)) {
+                return;
+            }
+        }
+        if self.view != plots::View::Map
+            && (self.in_map(col, row) || self.below.contains(Position::new(col, row)))
+        {
+            self.cursor = None;
+            if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                self.plot_click(row);
+            }
+            return;
+        }
 
         match m.kind {
             MouseEventKind::Moved => {
@@ -437,8 +578,10 @@ impl<'a> App<'a> {
             MouseEventKind::Down(button) if self.side.contains(Position::new(col, row)) => {
                 let add = button == MouseButton::Right || adds(m.modifiers);
                 match self.clickable.iter().find(|(r, _)| *r == row) {
+                    Some(&(_, Pick::Community(c))) if self.relabel.is_some() => self.visit_group(c),
                     Some(&(_, Pick::Community(c))) => self.select(c, add),
                     Some(&(_, Pick::Gene(i))) => self.pick_gene(i),
+                    Some(&(_, Pick::Bar(c))) => self.focus_bar(c),
                     None => {}
                 }
             }
@@ -479,7 +622,11 @@ impl<'a> App<'a> {
                 self.picked = Some(i);
                 let c = self.level().comm.cluster[i];
                 if c != NO_CLUSTER {
-                    self.select(c as usize, add);
+                    if self.relabel.is_some() {
+                        self.visit_group(c as usize);
+                    } else {
+                        self.select(c as usize, add);
+                    }
                 }
             }
             None => {
@@ -509,26 +656,50 @@ impl<'a> App<'a> {
         } else {
             self.focus.iter().position(|&f| f)
         };
-        self.markers.clear();
-        if let Some(shown) = self.shown {
-            let base = self.base;
-            let level = self.level_mut();
-            match base.load_features(level) {
-                Ok(()) => {
-                    let rates = level.features.as_ref().expect("just loaded");
-                    self.markers = rates
-                        .top(shown, 12)
-                        .into_iter()
-                        .map(|m| {
-                            let symbol = markers::symbol(&m.name).to_string();
-                            (m.name, symbol, m.fold)
-                        })
-                        .collect();
-                }
-                Err(e) => self.status = format!("no markers: {e}"),
-            }
-        }
+        self.list_markers();
         self.need_map = true;
+    }
+
+    /// Fill the panel's marker list for the shown community.
+    fn list_markers(&mut self) {
+        self.markers.clear();
+        let Some(shown) = self.shown else {
+            return;
+        };
+        let base = self.base;
+        let level = self.level_mut();
+        match base.load_features(level) {
+            Ok(()) => {
+                let rates = level.features.as_ref().expect("just loaded");
+                self.markers = rates
+                    .top(shown, 12)
+                    .into_iter()
+                    .map(|m| {
+                        let symbol = markers::symbol(&m.name).to_string();
+                        (m.name, symbol, m.fold)
+                    })
+                    .collect();
+            }
+            Err(e) => self.status = format!("no markers: {e}"),
+        }
+    }
+
+    /// `Esc`: one step back, never out of the viewer. A plot goes back to
+    /// the map, then the mapped gene goes, then the selection.
+    fn back(&mut self) {
+        if self.bar_focus.take().is_some() {
+            self.need_map = true;
+        } else if self.view != plots::View::Map {
+            self.view = plots::View::Map;
+            self.need_map = true;
+        } else if self.gene.is_some() {
+            self.gene = None;
+            self.need_map = true;
+        } else if self.focus().is_some() || self.picked.is_some() {
+            self.clear_focus();
+        } else {
+            self.status = "q quits".into();
+        }
     }
 
     fn clear_focus(&mut self) {
@@ -635,7 +806,10 @@ impl<'a> App<'a> {
     /// Back to the view the viewer opened on: the whole tissue, the starting
     /// level and layer, edges as asked, nothing selected.
     fn reset(&mut self) {
+        self.leave_relabel();
         self.cur = self.home;
+        self.show = Show::Communities;
+        self.bar_focus = None;
         let k = self.level().comm.k;
         self.focus = vec![false; k];
         self.shown = None;
@@ -658,9 +832,11 @@ impl<'a> App<'a> {
     fn step_level(&mut self, by: isize, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         let n = self.levels.len() as isize;
         let next = (self.cur as isize + by).clamp(0, n - 1) as usize;
-        if next == self.cur {
+        if next == self.cur && self.show == Show::Communities {
             return Ok(());
         }
+        self.show = Show::Communities;
+        self.bar_focus = None;
         if self.levels[next].is_none() {
             self.busy(
                 terminal,
@@ -683,6 +859,10 @@ impl<'a> App<'a> {
     }
 
     fn toggle_edges(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        if self.level().grouping {
+            self.status = "edges belong to communities: a to show them".into();
+            return Ok(());
+        }
         self.edges = !self.edges;
         if self.edges && self.level().edges.is_none() {
             self.busy(terminal, "loading edges ...".into())?;
@@ -711,6 +891,9 @@ impl<'a> App<'a> {
     /// screen resolution, and a `.txt` with the command that redraws them,
     /// the legend and the shown communities' markers.
     fn export(&mut self) -> anyhow::Result<()> {
+        if self.view != plots::View::Map {
+            return self.export_plot();
+        }
         let stem = (1..)
             .map(|n| format!("pinto-view-{n:03}"))
             .find(|s| !std::path::Path::new(&format!("{s}.png")).exists())
@@ -728,33 +911,55 @@ impl<'a> App<'a> {
         // the redraw repeats this arithmetic and matches pixel for pixel.
         let window = vp.window();
         let hi = Viewport::fit(window, w, h);
+        let (level, style) = self.drawn();
         write_outputs(
             self.base,
-            self.level(),
-            &self.style(),
+            level,
+            &style,
             self.gene.as_ref(),
             &hi,
             Some(png.as_ref()),
             Some(pdf.as_ref()),
         )?;
         std::fs::write(&txt, self.export_notes(&png, &pdf, &hi, window))?;
-        self.status = format!("saved {stem}.png .pdf .txt");
+        // A small render of the same window for the saved figures.
+        let (tw, th) = (
+            super::saved::THUMB_WIDTH,
+            super::saved::THUMB_WIDTH * vp.h / vp.w.max(1),
+        );
+        let small = Viewport::fit(window, tw, th.max(1));
+        let (level, style) = self.drawn();
+        let thumb = self.base.render(level, &style, self.gene.as_ref(), &small);
+        let what = match &self.gene {
+            Some(g) => format!("map · {}", markers::symbol(&g.feature)),
+            None => format!("map · {} · {}", level.comm.tag, style.layer),
+        };
+        let listed = self.remember(&pdf, &what, &thumb);
+        let bars = if self.bars.height > 0 {
+            self.export_structure()?
+        } else {
+            String::new()
+        };
+        self.status = format!("saved {stem}.png .pdf .txt{listed}{bars}");
         Ok(())
     }
 
     /// `window` is the `--bbox` that `vp` was fitted from.
     fn export_notes(&self, png: &str, pdf: &str, vp: &Viewport, window: WorldRect) -> String {
         use std::fmt::Write as _;
-        let level = self.level();
+        let (level, style) = self.drawn();
         let comm = &level.comm;
-        let focused = focused(self.focus());
+        let focused = focused(style.focus);
+        // The run's level, also under a round's grouping, whose own tag
+        // (`cell types`) is no level `--level` knows.
+        let tag = &self.base.run.levels[level.index].tag;
 
         let win = window;
         let mut cmd = format!(
             // `{}` prints the shortest text that parses back to the same f32.
             "pinto view {} --png {png} --pdf {pdf} --units {} --width {} --height {} \
              --bbox={},{},{},{} --level {} --layer {}",
-            self.args.prefix,
+            self.args.prefix(),
             self.args.units,
             vp.w,
             vp.h,
@@ -762,13 +967,13 @@ impl<'a> App<'a> {
             win.y0,
             win.x1,
             win.y1,
-            comm.tag,
-            self.layer,
+            tag,
+            style.layer,
         );
         if !focused.is_empty() {
-            write!(cmd, " --focus {}", ids(&focused, ",")).ok();
+            write!(cmd, " --focus {}", ids(comm, &focused, ",")).ok();
         }
-        if self.edges {
+        if style.edges {
             cmd.push_str(" --edges");
         }
         let theme = self
@@ -777,6 +982,17 @@ impl<'a> App<'a> {
             .to_possible_value()
             .expect("no skipped variants");
         write!(cmd, " --theme {}", theme.get_name()).ok();
+        let round_drawn = self.show != Show::Communities && self.bar_focus_level().is_none();
+        if let (Some(round), true) = (&self.round, round_drawn) {
+            let show = self.show.to_possible_value().expect("no skipped variants");
+            write!(
+                cmd,
+                " --round {} --show {}",
+                round.path.display(),
+                show.get_name()
+            )
+            .ok();
+        }
         if let Some(g) = &self.gene {
             write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
             if g.source == Source::Expected {
@@ -789,11 +1005,11 @@ impl<'a> App<'a> {
         writeln!(out, "image    {png} ({}×{}), {pdf}", vp.w, vp.h).ok();
         writeln!(out, "redraw   {cmd}").ok();
         writeln!(out, "run      {}", self.base.run.source()).ok();
-        writeln!(out, "level    {} (K={})", comm.tag, comm.k).ok();
-        writeln!(out, "layer    {}", self.layer).ok();
+        writeln!(out, "level    {tag} (K={})", comm.k).ok();
+        writeln!(out, "layer    {}", style.layer).ok();
         writeln!(out, "scale    {:.4} units/px", vp.upp).ok();
         if !focused.is_empty() {
-            writeln!(out, "focus    {}", ids(&focused, " ")).ok();
+            writeln!(out, "focus    {}", ids(comm, &focused, " ")).ok();
         }
         if let Some(g) = &self.gene {
             writeln!(out, "gene     {}, ramp 0..{}", g.title(), g.top_label()).ok();
@@ -801,12 +1017,12 @@ impl<'a> App<'a> {
 
         writeln!(out, "\nlegend").ok();
         for &c in &comm.by_size {
-            writeln!(out, "{}", legend_line(c, level.palette[c], comm.sizes[c])).ok();
+            writeln!(out, "{}", legend_line(comm, c, level.palette[c])).ok();
         }
         if let (Some(rates), false) = (level.features.as_ref(), focused.is_empty()) {
             writeln!(out, "\nmarkers (fold over the other communities)").ok();
             for &c in &focused {
-                writeln!(out, "  C{c:<3} {}", rates.summary(c, 20)).ok();
+                writeln!(out, "  {:<5} {}", comm.name(c), rates.summary(c, 20)).ok();
             }
         }
         out
@@ -822,10 +1038,28 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// What the map draws: the level and style on screen, or, for a
+    /// community picked in the structure plot on a map of a round's groups,
+    /// its level and propensity.
+    fn drawn(&self) -> (&Level, Style<'_>) {
+        match self.bar_focus_level() {
+            Some((level, c)) => (
+                level,
+                Style {
+                    layer: Layer::Community(c),
+                    edges: false,
+                    focus: None,
+                    theme: self.base.theme,
+                },
+            ),
+            None => (self.level(), self.style()),
+        }
+    }
+
     fn style(&self) -> Style<'_> {
         Style {
             layer: self.layer,
-            edges: self.edges,
+            edges: self.edges && !self.level().grouping,
             focus: self.focus(),
             theme: self.base.theme,
         }
@@ -837,28 +1071,86 @@ impl<'a> App<'a> {
         self.need_panel = false;
         let side = self.layout(terminal)?;
         let mut fresh: Option<Frame> = None;
+        if self.need_map && self.view != plots::View::Map {
+            self.need_map = false;
+            self.clear_frame()?;
+        }
         if self.need_map {
             self.need_map = false;
             let vp = self.viewport();
-            let level = self.level();
-            let scene = self.base.scene(level);
             let t = Instant::now();
-            let mut frame = self
-                .base
-                .render(level, &self.style(), self.gene.as_ref(), &vp);
+            let (level, style) = self.drawn();
+            let scene = self.base.scene(level);
+            let mut frame = self.base.render(level, &style, self.gene.as_ref(), &vp);
             // Unlabelled: the panel states the bar's length as text.
             if let Some(units) = self.base.units {
                 scalebar::draw(&mut frame, &vp, units, false);
             }
-            let took = t.elapsed();
             let mode = render::mode(&scene, &vp);
-            self.render_time = took;
+            if self.bars.height > 0 {
+                frame = self.with_structure(frame);
+            }
+            self.render_time = t.elapsed();
             self.mode = mode;
+            self.send_frame(frame, &mut fresh)?;
+        }
+
+        let (panel, clickable) = self.panel(side.height);
+        self.clickable = clickable
+            .into_iter()
+            .map(|(line, pick)| (side.y + line as u16, pick))
+            .collect();
+        let map = self.map;
+        let canvas = self.canvas;
+        let below = self.below;
+        let text = self.plot_text();
+        let names = self.plot_names();
+        self.prepare_thumbs();
+        let strip = self.strip;
+        let app = &*self;
+        let gfx = &self.gfx;
+        terminal.draw(|f| {
+            f.render_widget(Paragraph::new(panel), side);
+            if strip.width > 0 {
+                app.draw_saved(f, strip);
+            }
+            if let Some(text) = text {
+                f.render_widget(Paragraph::new(text), map);
+                return;
+            }
+            match gfx {
+                Gfx::Picker(_, Some(proto)) => f.render_widget(Image::new(proto), canvas),
+                Gfx::Cells(_, Some(cells)) => f.render_widget(cells, canvas),
+                _ => {}
+            }
+            if let Some(names) = names {
+                f.render_widget(Paragraph::new(names), below);
+            }
+        })?;
+
+        if let (Gfx::Kitty(kitty), Some(frame)) = (&mut self.gfx, fresh) {
+            let t = Instant::now();
+            kitty.show(
+                &mut std::io::stdout(),
+                &frame,
+                (canvas.x, canvas.y),
+                (canvas.width, canvas.height),
+            )?;
+            self.send_time = t.elapsed();
+            self.send_bytes = kitty.last_bytes;
+        }
+        Ok(())
+    }
+
+    /// Hand a rendered frame to the terminal's drawing method; kitty's is
+    /// sent after the text, through `fresh`.
+    fn send_frame(&mut self, frame: Frame, fresh: &mut Option<Frame>) -> anyhow::Result<()> {
+        {
             match &mut self.gfx {
-                Gfx::Kitty(_) => fresh = Some(frame),
+                Gfx::Kitty(_) => *fresh = Some(frame),
                 Gfx::Cells(glyphs, slot) => {
                     let t = Instant::now();
-                    let (cols, rows) = (self.map.width as usize, self.map.height as usize);
+                    let (cols, rows) = (self.canvas.width as usize, self.canvas.height as usize);
                     let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
                     *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows)));
                     self.send_time = t.elapsed();
@@ -870,40 +1162,22 @@ impl<'a> App<'a> {
                             .expect("frame buffer matches its size");
                     *proto = Some(picker.new_protocol(
                         image::DynamicImage::ImageRgba8(img),
-                        self.map.as_size(),
+                        self.canvas.as_size(),
                         Resize::Fit(None),
                     )?);
                     self.send_time = t.elapsed();
                 }
             }
         }
+        Ok(())
+    }
 
-        let (panel, clickable) = self.panel(side.height);
-        self.clickable = clickable
-            .into_iter()
-            .map(|(line, pick)| (side.y + line as u16, pick))
-            .collect();
-        let map = self.map;
-        let gfx = &self.gfx;
-        terminal.draw(|f| {
-            f.render_widget(Paragraph::new(panel), side);
-            match gfx {
-                Gfx::Picker(_, Some(proto)) => f.render_widget(Image::new(proto), map),
-                Gfx::Cells(_, Some(cells)) => f.render_widget(cells, map),
-                _ => {}
-            }
-        })?;
-
-        if let (Gfx::Kitty(kitty), Some(frame)) = (&mut self.gfx, fresh) {
-            let t = Instant::now();
-            kitty.show(
-                &mut std::io::stdout(),
-                &frame,
-                (map.x, map.y),
-                (map.width, map.height),
-            )?;
-            self.send_time = t.elapsed();
-            self.send_bytes = kitty.last_bytes;
+    /// Take the image off the screen, for a view drawn as text.
+    fn clear_frame(&mut self) -> anyhow::Result<()> {
+        match &mut self.gfx {
+            Gfx::Kitty(k) => k.clear(&mut std::io::stdout())?,
+            Gfx::Cells(_, slot) => *slot = None,
+            Gfx::Picker(_, proto) => *proto = None,
         }
         Ok(())
     }
@@ -925,7 +1199,12 @@ impl<'a> App<'a> {
             )),
             row(
                 "level",
-                format!("{} ({}/{})  [ ]", comm.tag, self.cur + 1, self.levels.len()),
+                format!(
+                    "{} ({}/{})  [ ]",
+                    self.base.run.levels[self.cur].tag,
+                    self.cur + 1,
+                    self.levels.len()
+                ),
             ),
             match &self.gene {
                 Some(g) => row(
@@ -938,6 +1217,7 @@ impl<'a> App<'a> {
                 "cells",
                 format!("{}  K={}", thousands(self.base.geom.n()), comm.k),
             ),
+            row("show", self.show_line()),
             row("scale", format!("{:.3} /px  {}", self.upp, self.mode)),
             row(
                 "bar",
@@ -959,6 +1239,9 @@ impl<'a> App<'a> {
             ),
             row("screen", self.gfx.name()),
         ];
+        if let Some(r) = self.round_line() {
+            lines.insert(5, row("round", r));
+        }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(
                 "sent",
@@ -985,9 +1268,27 @@ impl<'a> App<'a> {
             TStyle::default().add_modifier(Modifier::BOLD),
         ));
 
-        let help = help_lines(self.help);
-        let free = (height as usize).saturating_sub(lines.len() + help.len() + 1);
+        let help = help_lines(self.help, self.relabel.is_some());
         let mut clickable = Vec::new();
+        if let Some(modal) = &self.modal {
+            let room = (height as usize).saturating_sub(lines.len());
+            lines.extend(self.modal_lines(modal, room));
+            return (lines, clickable);
+        }
+        if self.relabel.is_some() {
+            let room = (height as usize).saturating_sub(lines.len() + help.len());
+            for (line, pick) in self.relabel_lines(room) {
+                if let Some(pick) = pick {
+                    clickable.push((lines.len(), pick));
+                }
+                lines.push(line);
+            }
+            let pad = (height as usize).saturating_sub(lines.len() + help.len());
+            lines.extend(std::iter::repeat_n(Line::raw(""), pad));
+            lines.extend(help);
+            return (lines, clickable);
+        }
+        let free = (height as usize).saturating_sub(lines.len() + help.len() + 1);
         if let Some(c) = self.shown {
             // Leave the legend at least a few rows.
             for (line, pick) in self.marker_lines(c, free.saturating_sub(6).min(12)) {
@@ -999,7 +1300,14 @@ impl<'a> App<'a> {
         }
         let room = (height as usize).saturating_sub(lines.len() + help.len() + 1);
         lines.push(Line::raw(""));
-        for (line, pick) in self.legend(room) {
+        let mut legend = self.legend(room);
+        // On a round's map the structure plot's colours are other groups:
+        // its communities get a list of their own, to pick one from.
+        if self.bars.height > 0 && self.show != Show::Communities {
+            let left = room.saturating_sub(legend.len() + 1);
+            legend.extend(self.bars_legend(left));
+        }
+        for (line, pick) in legend {
             if let Some(pick) = pick {
                 clickable.push((lines.len(), pick));
             }
@@ -1022,7 +1330,7 @@ impl<'a> App<'a> {
             .iter()
             .take(3)
             .filter(|&&(_, q)| q > 0)
-            .map(|&(c, q)| format!("C{c} {:.2}", q as f32 / 255.))
+            .map(|&(c, q)| format!("{} {:.2}", comm.name(c), q as f32 / 255.))
             .collect();
         if let Some(h) = comm.entropy.as_ref() {
             mix.push(format!("H {:.2}", h[i] as f32 / 255.));
@@ -1052,7 +1360,7 @@ impl<'a> App<'a> {
                 Line::from(vec![
                     Span::raw(" "),
                     Span::styled("██", TStyle::default().fg(rgb(level.palette[c]))),
-                    Span::styled(format!(" C{c} markers"), bold),
+                    Span::styled(format!(" {} markers", level.comm.name(c)), bold),
                     Span::styled("  fold  g/G", dim),
                 ]),
                 None,
@@ -1065,7 +1373,9 @@ impl<'a> App<'a> {
                 .take(n)
                 .enumerate()
                 .map(|(i, (feature, symbol, fold))| {
-                    let on = drawn == Some(feature.as_ref());
+                    let on = drawn.is_some_and(|d| {
+                        d == feature.as_ref() || markers::symbol(d) == symbol.as_str()
+                    });
                     let mark = if on { " ▸ " } else { "   " };
                     let name: String = symbol.chars().take(20).collect();
                     let style = if on { bold } else { TStyle::default() };
@@ -1081,6 +1391,14 @@ impl<'a> App<'a> {
 
     /// Legend lines, each tagged with its community when it names one.
     fn legend(&self, room: usize) -> Vec<(Line<'static>, Option<Pick>)> {
+        // A community picked in the structure plot, drawn as its propensity.
+        if let Some((level, c)) = self.bar_focus_level() {
+            let title = format!("{} propensity  Esc", level.comm.name(c));
+            return ramp_legend(Layer::Community(c).ramp(self.base.theme), &title, "1")
+                .into_iter()
+                .map(|l| (l, None))
+                .collect();
+        }
         let level = self.level();
         let comm = &level.comm;
         let swatch = |c: Rgb| Span::styled("██", TStyle::default().fg(rgb(c)));
@@ -1107,7 +1425,7 @@ impl<'a> App<'a> {
                         let line = Line::from(vec![
                             Span::raw(mark),
                             swatch(colour),
-                            Span::styled(format!(" C{c:<3} {:>9}", thousands(sizes[c])), text),
+                            Span::styled(legend_text(comm, c, sizes[c]), text),
                         ]);
                         (line, Some(Pick::Community(c)))
                     })
@@ -1144,6 +1462,36 @@ impl<'a> App<'a> {
     }
 }
 
+/// At most `n` characters, `…` marking a cut.
+fn short(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// The last `n` characters of `s`, `…` marking a cut.
+fn tail(s: &str, n: usize) -> String {
+    let len = s.chars().count();
+    if len <= n {
+        s.to_string()
+    } else {
+        let mut out = String::from("…");
+        out.extend(s.chars().skip(len - n + 1));
+        out
+    }
+}
+
+/// A legend row's text: the name and cell count, fitted to the panel.
+fn legend_text(comm: &super::data::Communities, c: usize, n: usize) -> String {
+    let name: String = comm.name(c).chars().take(17).collect();
+    let width = if comm.names.is_some() { 17 } else { 4 };
+    format!(" {name:<width$} {:>9}", thousands(n))
+}
+
 /// Right-click or a held Ctrl/Alt adds to the selection instead of
 /// replacing it. (Shift-click is kept by terminals for text selection.)
 fn adds(modifiers: KeyModifiers) -> bool {
@@ -1156,6 +1504,8 @@ enum Pick {
     Community(usize),
     /// Index into the shown community's markers.
     Gene(usize),
+    /// A community of the structure plot's bars.
+    Bar(usize),
 }
 
 /// A colour ramp from 0 to `top`, under `title`.
@@ -1169,12 +1519,14 @@ fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
     vec![Line::raw(format!(" {title}")), Line::from(first)]
 }
 
-fn help_lines(full: bool) -> Vec<Line<'static>> {
+fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
     let dim = TStyle::default().fg(Color::DarkGray);
-    let text: &[&str] = if full {
+    let text: &[&str] = if relabel {
+        annotate::RELABEL_HELP
+    } else if full {
         &[
-            " hjkl/arrows/drag  pan (shift: far)",
-            " +/- or wheel      zoom",
+            " arrows/drag  pan (shift: far)",
+            " z/Z +/- or wheel  zoom",
             " 0 fit   r back to the start",
             " b next batch",
             " 1 argmax 2 soft 3 entropy 4 Ck",
@@ -1182,12 +1534,19 @@ fn help_lines(full: bool) -> Vec<Line<'static>> {
             " [ ]  prev/next level (L1 .. final)",
             " click cell/legend  show community",
             " right/ctrl-click   add to shown",
-            " x  show all",
+            " Esc  back (plot, gene, selection)",
             " click marker / g G  map a gene",
             " o  observed / model-expected",
             " p  gene ramp top: p99 / p95",
             " e edges  q quit",
             " s export view (PNG, PDF, .txt)",
+            " a communities / cell types / clusters",
+            " t structure plot (click a community)",
+            " h gene heatmap",
+            " f saved figures (.pinto-view/)",
+            " A annotate with lupin (marker panel)",
+            " R relabel/merge clusters",
+            " n/N  next/prev lupin round",
         ]
     } else {
         &[

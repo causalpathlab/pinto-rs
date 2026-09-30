@@ -184,6 +184,48 @@ impl Expression {
         })
     }
 
+    /// Mean observed `ln(1 + count)` of each of `features` over each of `k`
+    /// groups' cells (`group`, one per map cell; `NO_CLUSTER` for none):
+    /// features × groups, row-major. `None` for a feature not in the data.
+    pub fn group_means(
+        &self,
+        features: &[&str],
+        group: &[u16],
+        k: usize,
+    ) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
+        let rows: Vec<Option<usize>> = features.iter().map(|f| find(&self.features, f)).collect();
+        let wanted: Vec<usize> = rows.iter().flatten().copied().collect();
+        // Cells per group, among the data's columns on the map.
+        let mut n = vec![0f32; k];
+        for &i in self.cell_of.iter().flatten() {
+            if let Some(c) = n.get_mut(group[i as usize] as usize) {
+                *c += 1.;
+            }
+        }
+        let csr = self.data.read_rows_csr(wanted.iter().copied())?;
+        let mut sums = vec![vec![0f32; k]; wanted.len()];
+        for (r, sum) in sums.iter_mut().enumerate() {
+            let row = csr.row(r);
+            for (&col, &count) in row.col_indices().iter().zip(row.values()) {
+                if let Some(i) = self.cell_of[col] {
+                    if let Some(s) = sum.get_mut(group[i as usize] as usize) {
+                        *s += count.ln_1p();
+                    }
+                }
+            }
+        }
+        let mut sums = sums.into_iter();
+        Ok(rows
+            .iter()
+            .map(|r| {
+                r.map(|_| {
+                    let s = sums.next().expect("one per found feature");
+                    s.iter().zip(&n).map(|(s, n)| s / n.max(1.)).collect()
+                })
+            })
+            .collect())
+    }
+
     /// Observed `ln(1 + count)` of `feature` in every cell on the map.
     pub fn observed(
         &self,

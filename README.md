@@ -62,12 +62,63 @@ pinto view out --png cd3e.png --gene CD3E       # one gene: observed ln(1+count)
 pinto view out --png cd3e.png --gene CD3E --expected --clip 95
 ```
 
-In the viewer, click a cell or legend entry to show one community (with its
+In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, and `Esc`
+steps back (plot, gene, selection); `q` quits. Click a cell or legend entry to show one community (with its
 marker features), then click a marker to map that gene (`g`/`G` step through
 them, `o` switches observed/model-expected, `p` the ramp top p99/p95); `s` exports the current view as PNG, PDF, and a `.txt` with
 the command that redraws it. The scale bar's units are guessed from the
 coordinate columns (`--units um|px|none` to override). Map colours follow the
 terminal's background (`--theme light|dark` to choose; images default to dark).
+
+Without a run, `pinto view` opens a browser to pick a `*.pinto.json` (↑↓,
+Enter, ← up, type to narrow, `~` home).
+
+#### Annotation with lupin
+
+Cell types come from [lupin](https://crates.io/crates/lupin-rs) (0.2.1 or
+later, on the `PATH` or at `$PINTO_LUPIN`); the viewer runs it and never
+writes labels itself.
+
+- `A` picks a marker panel (`gene<TAB>type` lines) and annotates the level
+  on screen with `lupin annotate --level … --method enrichment`, writing a
+  round `{prefix}.{level}.a{k}.lupin.json`.
+- `a` steps the map through communities → the round's cell types → its
+  clusters; `n`/`N` step through the rounds made from the run.
+- `R` relabels the round's clusters, one at a time (`[ ]`, or click):
+  `L` labels, `K` keeps the label, `M` merges (click or `[ ]`/space to add,
+  Enter to label), and `+`/`-` add or drop the mapped gene from the target
+  type's markers (Tab picks the type). Each needs a rationale. Decisions stay
+  in a draft beside the round until `S` sends them to `lupin relabel --next`,
+  after a confirmation; `P` previews what they would change.
+
+```sh
+pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
+```
+
+#### Structure plot and heatmap
+
+`t` adds a structure plot under the map and `h` shows a gene heatmap in place
+of it (press again, or `Esc`, for the map); both follow the grouping on
+screen (communities, or with `a` the round's cell types or clusters):
+
+- **structure plot**: each cell's community propensities (the share of its
+  edges in each link community) as a stacked bar, communities in order of
+  overall prevalence, cells in panels by group (or batch) and within a panel
+  by dominant community, then its share. Click a community in it (or in the
+  side panel's list) to see where it lies: on a map of communities it is
+  focused as a legend click would; on a map of a round's groups the map
+  shows its propensity. Click again or `Esc` to let go;
+- **heatmap**: each group's top genes by their margin over the next highest
+  group, so each row peaks in its own column: the model proposes candidates,
+  and the groups' mean observed ln(1 + count) chooses among them (the model's
+  rates alone when there are no data files). Values are z-scored per gene and
+  clipped to ±2.5. `+`/`-` change the genes per
+  group; clicking a gene maps it.
+
+`s` saves the view: the map as PNG, PDF and `.txt`, the structure plot as a
+PNG, the heatmap as a table. Saved files are listed with thumbnails on the
+left of the map, kept in `.pinto-view/` in the working directory (`f` hides
+them).
 
 Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
 WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,
