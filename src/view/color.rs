@@ -123,6 +123,15 @@ impl Theme {
     }
 }
 
+/// A diverging colour for `t` in -1..1: blue below 0, near-white at 0,
+/// red above, equally light at equal distances (OKLCH, hues 255° and 27°).
+pub fn diverging(t: f32) -> Rgb {
+    let t = if t.is_finite() { t.clamp(-1., 1.) } else { 0. };
+    let (l, c) = (0.97 - 0.45 * t.abs(), 0.16 * t.abs());
+    let hue = if t < 0. { 255f32 } else { 27f32 }.to_radians();
+    oklab_to_srgb(l, c * hue.cos(), c * hue.sin())
+}
+
 fn oklab_to_srgb(l: f32, a: f32, b: f32) -> Rgb {
     let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
     let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);

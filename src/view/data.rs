@@ -136,15 +136,23 @@ impl Run {
 
     /// Output paths are `{prefix}.…` as typed at fit time, so they are
     /// relative to wherever pinto ran. Use one as-is when it exists, else
-    /// look for the same file name next to the prefix.
+    /// the same path under the prefix's directory (the run opened from
+    /// elsewhere), else the same file name next to the prefix.
     pub fn resolve(&self, path: &str) -> PathBuf {
         let p = Path::new(path);
         if p.exists() {
             return p.to_path_buf();
         }
-        match (Path::new(&self.prefix).parent(), p.file_name()) {
-            (Some(dir), Some(name)) => dir.join(name),
-            _ => p.to_path_buf(),
+        let Some(dir) = Path::new(&self.prefix).parent() else {
+            return p.to_path_buf();
+        };
+        let under = dir.join(p);
+        if p.is_relative() && under.exists() {
+            return under;
+        }
+        match p.file_name() {
+            Some(name) => dir.join(name),
+            None => p.to_path_buf(),
         }
     }
 
@@ -441,6 +449,12 @@ pub struct Communities {
     pub n_missing: usize,
     /// Propensity rows naming no known cell.
     pub n_unmatched: usize,
+    /// A name per community, for groupings that are not pinto's own
+    /// (a lupin round's clusters or cell types); `None` names them `C{c}`.
+    pub names: Option<Vec<Box<str>>>,
+    /// Short ids `--focus` takes, when the names are longer (a round's
+    /// cluster `K3`, named `K3 T_cell`); `None` uses the names.
+    pub ids: Option<Vec<Box<str>>>,
 }
 
 impl Communities {
@@ -500,6 +514,8 @@ impl Communities {
             by_size,
             n_missing,
             n_unmatched,
+            names: None,
+            ids: None,
         }
     }
 
@@ -517,6 +533,54 @@ impl Communities {
             by_size: vec![0],
             n_missing: 0,
             n_unmatched: 0,
+            names: None,
+            ids: None,
+        }
+    }
+
+    /// A hard grouping as communities: cell `i` belongs wholly to group
+    /// `group[i]` ([`NO_CLUSTER`] for none), named `names`. Propensities are
+    /// one-hot, so every layer draws it as it draws pinto's own levels.
+    pub fn from_groups(tag: &str, group: Vec<u16>, names: Vec<Box<str>>) -> Self {
+        let k = names.len();
+        let mut prop = vec![0u8; group.len() * k];
+        let mut sizes = vec![0usize; k];
+        for (i, &g) in group.iter().enumerate() {
+            if let Some(s) = sizes.get_mut(g as usize) {
+                *s += 1;
+                prop[i * k + g as usize] = 255;
+            }
+        }
+        let mut by_size: Vec<usize> = (0..k).filter(|&c| sizes[c] > 0).collect();
+        by_size.sort_by_key(|&c| std::cmp::Reverse(sizes[c]));
+        Communities {
+            tag: tag.to_string(),
+            k,
+            prop,
+            cluster: group,
+            entropy: None,
+            sizes,
+            by_size,
+            n_missing: 0,
+            n_unmatched: 0,
+            names: Some(names),
+            ids: None,
+        }
+    }
+
+    /// The same groups, known by `ids` on the command line.
+    pub fn with_ids(self, ids: Vec<Box<str>>) -> Self {
+        Communities {
+            ids: Some(ids),
+            ..self
+        }
+    }
+
+    /// Community `c`'s name: its given name, else `C{c}`.
+    pub fn name(&self, c: usize) -> String {
+        match self.names.as_ref().and_then(|n| n.get(c)) {
+            Some(name) => name.to_string(),
+            None => format!("C{c}"),
         }
     }
 }

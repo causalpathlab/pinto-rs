@@ -8,13 +8,19 @@
 mod cellart;
 mod color;
 mod data;
+mod draft;
 mod gene;
+mod heatmap;
 mod index;
 mod kitty;
+mod lupin;
 mod markers;
 mod pdf;
 mod render;
+mod round;
+mod saved;
 mod scalebar;
+mod structure;
 mod tui;
 
 #[cfg(test)]
@@ -52,14 +58,15 @@ fn legend_swatch(
 /// fraction of its larger extent. An explicit `--bbox` gets none.
 const FIT_MARGIN: f32 = 0.01;
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct ViewArgs {
     #[arg(
-        help = "Run prefix (as given to -o) or its .pinto.json",
+        help = "Run prefix (as given to -o) or its .pinto.json [default: browse]",
         long_help = "Output prefix of a pinto run (the -o it was fit with),\n\
-                     or the path of its {prefix}.pinto.json manifest."
+                     or the path of its {prefix}.pinto.json manifest. Without it,\n\
+                     the terminal viewer opens a browser to pick a run."
     )]
-    pub prefix: Box<str>,
+    pub prefix: Option<Box<str>>,
 
     #[arg(
         long,
@@ -235,6 +242,28 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        value_name = "FILE",
+        help = "Open this lupin round ({out}.lupin.json) [default: the newest]",
+        long_help = "Open this lupin annotation round ({out}.lupin.json). Without it\n\
+                     the terminal viewer finds the newest round made from this run\n\
+                     (press a to show it); --png/--pdf need it to draw one."
+    )]
+    pub round: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "communities",
+        help = "What groups cells: communities, types or clusters (--round)",
+        long_help = "What groups cells:\n\
+                     \x20 communities  the level's communities\n\
+                     \x20 types        the lupin round's cell types\n\
+                     \x20 clusters     the lupin round's clusters (merges applied)"
+    )]
+    pub show: Show,
+
+    #[arg(
+        long,
         value_enum,
         help = "Map colours for a dark or light background [default: the terminal's]",
         long_help = "Map colours for a dark or a light background: background,\n\
@@ -243,6 +272,24 @@ pub struct ViewArgs {
                      default to dark."
     )]
     pub theme: Option<Theme>,
+}
+
+/// What groups the cells on the map (`--show`).
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum Show {
+    /// The level's communities.
+    Communities,
+    /// A lupin round's cell types.
+    Types,
+    /// A lupin round's clusters.
+    Clusters,
+}
+
+impl ViewArgs {
+    /// The run, once [`run_view`] has made sure there is one.
+    pub fn prefix(&self) -> &str {
+        self.prefix.as_deref().expect("run_view picks a run first")
+    }
 }
 
 /// How the map reaches the terminal (`--graphics`).
@@ -259,6 +306,18 @@ pub enum Graphics {
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
+    if args.prefix.is_none() {
+        anyhow::ensure!(
+            !args.summary && args.png.is_none() && args.pdf.is_none(),
+            "--summary, --png and --pdf need the run: pinto view <prefix>"
+        );
+        let Some(path) = tui::pick_run()? else {
+            return Ok(());
+        };
+        let mut args = args.clone();
+        args.prefix = Some(path.to_string_lossy().into());
+        return run_view(&args);
+    }
     if args.summary {
         return summarize(args);
     }
@@ -385,6 +444,7 @@ impl Base {
             palette,
             edges: None,
             features: None,
+            grouping: false,
         };
         if with_edges {
             self.load_edges(&mut level)?;
@@ -393,7 +453,7 @@ impl Base {
     }
 
     fn load_edges(&self, level: &mut Level) -> anyhow::Result<()> {
-        if level.edges.is_none() {
+        if level.edges.is_none() && !level.grouping {
             let t = Instant::now();
             let edges = self
                 .run
@@ -410,6 +470,45 @@ impl Base {
             level.features = Some(self.run.load_feature_rates(&self.run.levels[level.index])?);
         }
         Ok(())
+    }
+
+    /// The lupin round at `path`, on the level it annotated.
+    fn round(&self, path: &Path) -> anyhow::Result<round::Round> {
+        let tags: Vec<&str> = self.run.levels.iter().map(|l| l.tag.as_str()).collect();
+        let level = lupin::round_level(path, &tags)
+            .and_then(|t| tags.iter().position(|&x| x == t))
+            .unwrap_or(tags.len() - 1);
+        let t = Instant::now();
+        let round = round::Round::load(path, level, self)?;
+        log::info!(
+            "round {}: {} clusters in {:.2?}",
+            path.display(),
+            round.ids.len(),
+            t.elapsed()
+        );
+        Ok(round)
+    }
+
+    /// A grouping that is not one of pinto's levels (a lupin round's cell
+    /// types or clusters) as a level drawn like the others. `index` is the
+    /// level it was made from; its marker rates come with it, never from
+    /// the level's own files.
+    fn grouping(&self, index: usize, comm: Communities, rates: Option<FeatureRates>) -> Level {
+        let pyramid = Pyramid::build(&self.grid, &comm);
+        let palette = self.theme.palette(comm.k);
+        let features = rates.unwrap_or_else(|| FeatureRates {
+            names: Vec::new(),
+            rates: crate::util::common::Mat::zeros(0, comm.k),
+        });
+        Level {
+            index,
+            comm,
+            pyramid,
+            palette,
+            edges: None,
+            features: Some(features),
+            grouping: true,
+        }
     }
 
     fn scene<'a>(&'a self, level: &'a Level) -> Scene<'a> {
@@ -434,13 +533,31 @@ struct Level {
     edges: Option<(Edges, EdgeIndex)>,
     /// Feature rates per community, loaded when markers are first asked for.
     features: Option<FeatureRates>,
+    /// A lupin round's grouping rather than the level's communities: it
+    /// has no edges of its own.
+    grouping: bool,
 }
 
 fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     // Without a terminal to ask, `auto` means dark.
     let theme = args.theme.unwrap_or(Theme::Dark);
-    let base = Base::load(&args.prefix, &args.units, theme)?;
-    let mut level = base.level(base.run.level_index(args.level.as_deref())?, args.edges)?;
+    let base = Base::load(args.prefix(), &args.units, theme)?;
+    let mut level = match args.show {
+        Show::Communities => {
+            base.level(base.run.level_index(args.level.as_deref())?, args.edges)?
+        }
+        show => {
+            let path = args.round.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--show {show:?} needs --round FILE (a lupin round)")
+            })?;
+            let round = base.round(std::path::Path::new(path))?;
+            if show == Show::Types {
+                round.types
+            } else {
+                round.clusters
+            }
+        }
+    };
     if let Layer::Community(c) = args.layer {
         anyhow::ensure!(c < level.comm.k, "C{c}: level has K={}", level.comm.k);
     }
@@ -464,7 +581,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     let focus = args
         .focus
         .as_deref()
-        .map(|ids| parse_focus(ids, level.comm.k))
+        .map(|ids| parse_focus(ids, &level.comm))
         .transpose()?;
     if focus.is_some() && args.pdf.is_some() {
         base.load_features(&mut level)?;
@@ -511,7 +628,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     println!("{w}×{h}, {:.3} units/px, in {took:.2?}", vp.upp);
     if matches!(args.layer, Layer::Argmax | Layer::Soft) {
         for &c in &level.comm.by_size {
-            println!("{}", legend_line(c, level.palette[c], level.comm.sizes[c]));
+            println!("{}", legend_line(&level.comm, c, level.palette[c]));
         }
     }
     Ok(())
@@ -547,17 +664,27 @@ fn focused(focus: Option<&[bool]>) -> Vec<usize> {
     focus.map_or_else(Vec::new, |f| (0..f.len()).filter(|&c| f[c]).collect())
 }
 
-/// `[3, 17]` → `C3{sep}C17`.
-fn ids(cs: &[usize], sep: &str) -> String {
+/// `[3, 17]` → `C3{sep}C17`; a round's groups by their `--focus` names
+/// (`K3`, or the cell type).
+fn ids(comm: &Communities, cs: &[usize], sep: &str) -> String {
     cs.iter()
-        .map(|c| format!("C{c}"))
+        .map(|&c| focus_name(comm, c))
         .collect::<Vec<_>>()
         .join(sep)
 }
 
-/// One legend row: id, hex colour, cell count.
-fn legend_line(c: usize, [r, g, b]: color::Rgb, n: usize) -> String {
-    format!("  C{c:<3} #{r:02x}{g:02x}{b:02x} {n:>9} cells")
+/// How `--focus` names group `c`: `C3`, a round cluster's `K3`, a type.
+fn focus_name(comm: &Communities, c: usize) -> String {
+    match comm.ids.as_ref().and_then(|ids| ids.get(c)) {
+        Some(id) => id.to_string(),
+        None => comm.name(c),
+    }
+}
+
+/// One legend row: name, hex colour, cell count.
+fn legend_line(comm: &Communities, c: usize, [r, g, b]: color::Rgb) -> String {
+    let n = comm.sizes[c];
+    format!("  {:<5} #{r:02x}{g:02x}{b:02x} {n:>9} cells", comm.name(c))
 }
 
 /// The PDF page for a rendered view: title, legend for the layer (or the
@@ -579,7 +706,7 @@ fn figure<'a>(
         vp.upp
     );
     if !focused.is_empty() {
-        subtitle.push_str(&format!(" · focus {}", ids(&focused, " ")));
+        subtitle.push_str(&format!(" · focus {}", ids(comm, &focused, " ")));
     }
 
     let ramp = |title: String, layer: Layer, top: String| pdf::Legend::Ramp {
@@ -597,7 +724,7 @@ fn figure<'a>(
                 .map(|&c| {
                     let (colour, on) = legend_swatch(c, &level.palette, style.focus, base.theme);
                     pdf::Entry {
-                        label: format!("C{c}"),
+                        label: comm.name(c),
                         count: comm.sizes[c],
                         colour,
                         on,
@@ -613,7 +740,7 @@ fn figure<'a>(
             .iter()
             .take(4)
             .map(|&c| pdf::MarkerBlock {
-                title: format!("C{c} markers"),
+                title: format!("{} markers", comm.name(c)),
                 colour: level.palette[c],
                 genes: rates
                     .top(c, 12)
@@ -651,20 +778,29 @@ fn parse_clip(s: &str) -> Result<f32, String> {
     }
 }
 
-/// `["C7", "3"]` → one flag per community.
-fn parse_focus(given: &[Box<str>], k: usize) -> anyhow::Result<Vec<bool>> {
+/// `["C7", "3"]` → one flag per community; a round's groups by name
+/// (`K3`, a cell type).
+fn parse_focus(given: &[Box<str>], comm: &Communities) -> anyhow::Result<Vec<bool>> {
+    let k = comm.k;
     let mut focus = vec![false; k];
     for id in given {
-        let c = render::community_id(id)
-            .ok_or_else(|| anyhow::anyhow!("--focus: {id:?} is not a community (C7 or 7)"))?;
-        anyhow::ensure!(c < k, "--focus: C{c}, but the level has K={k}");
+        let c = if comm.names.is_some() {
+            (0..k)
+                .find(|&c| focus_name(comm, c) == id.as_ref())
+                .ok_or_else(|| anyhow::anyhow!("--focus: no group {id:?} in this round"))?
+        } else {
+            let c = render::community_id(id)
+                .ok_or_else(|| anyhow::anyhow!("--focus: {id:?} is not a community (C7 or 7)"))?;
+            anyhow::ensure!(c < k, "--focus: C{c}, but the level has K={k}");
+            c
+        };
         focus[c] = true;
     }
     Ok(focus)
 }
 
 fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
-    let run = Run::open(&args.prefix)?;
+    let run = Run::open(args.prefix())?;
     let meta = &run.meta;
     println!("run      {}", run.source());
     if run.manifest.is_some() {
