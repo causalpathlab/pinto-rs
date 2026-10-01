@@ -618,3 +618,21 @@ fn a_hand_typed_out_keeps_through_header_changes_until_cleared() {
     assert!(!a.rows[lc].typed);
     assert_eq!(a.rows[lc].out, "exp1_lc");
 }
+
+#[test]
+fn esc_on_a_later_header_edit_keeps_the_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.screen = Screen::Methods;
+    key(&mut a, KeyCode::Char('O'));
+    a.editor.as_mut().unwrap().text = "exp1".into();
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('O'));
+    a.editor.as_mut().unwrap().text = "other".into();
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.header, "exp1");
+    assert!(a
+        .rows
+        .iter()
+        .all(|r| r.out == format!("exp1_{}", r.form.name)));
+}

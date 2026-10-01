@@ -48,8 +48,15 @@ impl App {
             popup(f, area, self.label_lines(rows), 80);
         }
         if let Some(e) = &self.editor {
+            let mut help = Vec::new();
             let what = match &e.target {
-                Target::Header => return popup(f, area, header_lines(&e.text), 90),
+                Target::Header => {
+                    help = vec![
+                        " exp1 → exp1_lc, exp1_cage, …   results/ → results/lc, …",
+                        " O on Methods changes it later; o names one --out by hand",
+                    ];
+                    " Output header: what every result of this run is named after".to_string()
+                }
                 Target::Out(i) => format!(
                     " --out for {} (empty: back under the output header)",
                     self.rows[*i].form.name
@@ -64,11 +71,19 @@ impl App {
                     format!(" new name for label “{label}” (empty: keep it)")
                 }
             };
-            let lines = vec![
-                Line::from(Span::styled(what, bold())),
-                Line::from(format!(" {}▏", e.text)),
-                Line::from(Span::styled(" enter keep   esc cancel", dim())),
-            ];
+            // At the start there is no header yet: esc goes on without one.
+            let esc = if e.target == Target::Header && self.header.is_empty() {
+                "esc no header"
+            } else {
+                "esc cancel"
+            };
+            let mut lines = vec![Line::from(Span::styled(what, bold()))];
+            lines.extend(help.into_iter().map(|h| Line::from(Span::styled(h, dim()))));
+            lines.push(Line::from(format!(" {}▏", e.text)));
+            lines.push(Line::from(Span::styled(
+                format!(" enter keep   {esc}"),
+                dim(),
+            )));
             popup(f, area, lines, 90);
         }
     }
@@ -326,17 +341,20 @@ impl App {
         ];
         let w = usize::from(area.width);
         // A hand-typed --out is marked ✎.
-        let shown_out = |r: &super::Row| {
-            if r.typed {
-                format!("{} ✎", r.out)
-            } else {
-                r.out.clone()
-            }
-        };
-        let out_w = self
+        let outs: Vec<String> = self
             .rows
             .iter()
-            .map(|r| shown_out(r).chars().count())
+            .map(|r| {
+                if r.typed {
+                    format!("{} ✎", r.out)
+                } else {
+                    r.out.clone()
+                }
+            })
+            .collect();
+        let out_w = outs
+            .iter()
+            .map(|o| o.chars().count())
             .max()
             .unwrap_or(0)
             .min(32);
@@ -346,7 +364,7 @@ impl App {
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
                 if r.on { "x" } else { " " },
                 r.form.name,
-                fit(&shown_out(r), out_w),
+                fit(&outs[i], out_w),
                 if changed == 0 {
                     "defaults".to_string()
                 } else {
@@ -623,24 +641,4 @@ fn wrap(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
             Line::from(Span::styled(row, style))
         })
         .collect()
-}
-
-/// The output header popup: what it is for, with examples.
-fn header_lines(text: &str) -> Vec<Line<'static>> {
-    vec![
-        Line::from(Span::styled(
-            " Output header: what every result of this run is named after",
-            bold(),
-        )),
-        Line::from(Span::styled(
-            " exp1 → exp1_lc, exp1_cage, …   results/ → results/lc, …",
-            dim(),
-        )),
-        Line::from(Span::styled(
-            " O on Methods changes it later; o names one --out by hand",
-            dim(),
-        )),
-        Line::from(format!(" {text}▏")),
-        Line::from(Span::styled(" enter keep   esc no header", dim())),
-    ]
 }

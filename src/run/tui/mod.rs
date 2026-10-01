@@ -366,17 +366,9 @@ impl App {
         };
         match k.code {
             KeyCode::Esc => {
-                match e.target {
-                    Target::Filter => {
-                        self.filter.clear();
-                        self.field_row = 0;
-                    }
-                    // No header: each --out is the method's name.
-                    Target::Header => {
-                        self.header.clear();
-                        self.refresh_outs();
-                    }
-                    _ => {}
+                if e.target == Target::Filter {
+                    self.filter.clear();
+                    self.field_row = 0;
                 }
                 self.editor = None;
             }
@@ -389,12 +381,14 @@ impl App {
                     }
                     Target::Out(i) => {
                         let t = text.trim();
-                        // Cleared: back under the header.
-                        self.rows[i].typed = !t.is_empty();
+                        let r = &mut self.rows[i];
                         if t.is_empty() {
-                            self.refresh_outs();
+                            // Cleared: back under the header.
+                            r.typed = false;
+                            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
                         } else {
-                            self.rows[i].out = t.to_string();
+                            r.typed = true;
+                            r.out = t.to_string();
                         }
                     }
                     Target::Field(m, f) => {
@@ -886,7 +880,7 @@ impl App {
                 ))
             } else if outs.contains(&dir.join(&out)) {
                 Some("another queued method writes the same --out".to_string())
-            } else if dir.exists() && !dir.is_dir() {
+            } else if std::fs::metadata(&dir).is_ok_and(|m| !m.is_dir()) {
                 // A folder not there yet is made when the fit starts.
                 Some(format!("{} is not a folder", shown(&dir)))
             } else {
@@ -1018,11 +1012,7 @@ impl App {
                 } else {
                     let to =
                         script::quote(&script::relative(&p.job.dir, &self.here).to_string_lossy());
-                    if p.job.dir.is_dir() {
-                        format!("(cd {to} && {cmd})")
-                    } else {
-                        format!("(mkdir -p {to} && cd {to} && {cmd})")
-                    }
+                    format!("(mkdir -p {to} && cd {to} && {cmd})")
                 }
             })
             .collect::<Vec<_>>()

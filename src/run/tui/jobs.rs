@@ -177,13 +177,11 @@ fn run_job(
         return State::Failed(format!("cannot make {}: {e}", job.dir.display()));
     }
     if !job.made.is_empty() {
-        let written = std::fs::create_dir(job.batches())
-            .map_err(anyhow::Error::from)
-            .and_then(|()| {
-                job.made
-                    .iter()
-                    .try_for_each(|(path, what)| super::batch::write(path, what))
-            });
+        let written = mkdir(&job.batches().to_string_lossy()).and_then(|()| {
+            job.made
+                .iter()
+                .try_for_each(|(path, what)| super::batch::write(path, what))
+        });
         if let Err(e) = written {
             return State::Failed(format!("cannot write the batch files: {e}"));
         }
