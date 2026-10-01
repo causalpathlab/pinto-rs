@@ -10,7 +10,6 @@ use super::style::{bold, dim, first_row, selected, tail};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -31,16 +30,9 @@ pub(crate) trait Wanted {
         None
     }
 
-    /// One line about a file.
-    fn describe<'a>(&self, about: &'a Self::About) -> Cow<'a, str>;
-
-    /// A file's row: its name padded to `name_w`, then what is said of it.
-    fn row(&self, name: &str, about: &Self::About, name_w: usize) -> String {
-        match self.describe(about) {
-            d if d.is_empty() => name.to_string(),
-            d => format!("{name:<name_w$}  {d}"),
-        }
-    }
+    /// A file's row, given the widest name shown (`name_w`): most callers
+    /// want [`name_then`].
+    fn row(&self, name: &str, about: &Self::About, name_w: usize) -> String;
 
     /// The file to start on among those listed in `dir`.
     fn best(&self, _dir: &Path, _files: &[(&str, &Self::About)]) -> Option<String> {
@@ -50,6 +42,17 @@ pub(crate) trait Wanted {
     /// Whether space marks several files to take together.
     fn many(&self) -> bool {
         false
+    }
+}
+
+/// A row of the name padded to `name_w`, then `about`; just the name when
+/// there is nothing to say.
+#[must_use]
+pub fn name_then(name: &str, about: &str, name_w: usize) -> String {
+    if about.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name:<name_w$}  {about}")
     }
 }
 
@@ -166,7 +169,7 @@ impl<W: Wanted> Browser<W> {
     /// listed, else to the best file, else to the first entry after `..`.
     pub fn read(&mut self, select: Option<&str>) {
         self.hidden = false;
-        self.entries = list_dir(&self.dir, &self.want, false);
+        self.entries = list_dir(&self.dir, &self.want, Read::Visible);
         let files: Vec<(&str, &W::About)> = self
             .entries
             .iter()
@@ -217,12 +220,20 @@ impl<W: Wanted> Browser<W> {
         Some(self.dir.join(e.name()))
     }
 
-    /// Take the file under the cursor.
-    fn take_here(&self) -> Outcome {
-        match self.file_here() {
-            Some(path) => Outcome::Chosen(Chosen::one(path)),
-            None => Outcome::Ignored,
-        }
+    /// Enter on a file: take the marked files, or this one when none is
+    /// (only a browser of [`Wanted::many`] marks any).
+    fn take_here(&mut self) -> Outcome {
+        let Some(here) = self.file_here() else {
+            return Outcome::Ignored;
+        };
+        let mut marked = std::mem::take(&mut self.marked).into_iter();
+        Outcome::Chosen(match marked.next() {
+            Some(first) => Chosen {
+                first,
+                rest: marked.collect(),
+            },
+            None => Chosen::one(here),
+        })
     }
 
     /// A key: move, open a folder, narrow, mark, cancel, or choose.
@@ -271,7 +282,9 @@ impl<W: Wanted> Browser<W> {
                 self.filter.push(c);
                 if self.filter.starts_with('.') && !self.hidden {
                     self.hidden = true;
-                    self.entries = list_dir(&self.dir, &self.want, true);
+                    let hidden = list_dir(&self.dir, &self.want, Read::HiddenFiles);
+                    self.entries.extend(hidden);
+                    sort_entries(&mut self.entries);
                 }
                 let shown = self.shown();
                 // Stay where the cursor was if it still shows, else on the
@@ -314,17 +327,6 @@ impl<W: Wanted> Browser<W> {
                     .collect();
                 self.marked.extend(files);
                 Some(Outcome::Moved)
-            }
-            KeyCode::Enter => {
-                self.current().filter(|e| e.is_file())?;
-                let mut marked = std::mem::take(&mut self.marked).into_iter();
-                Some(match marked.next() {
-                    Some(first) => Outcome::Chosen(Chosen {
-                        first,
-                        rest: marked.collect(),
-                    }),
-                    None => self.take_here(),
-                })
             }
             _ => None,
         }
@@ -443,36 +445,58 @@ pub(crate) fn size_of(path: &Path) -> String {
     }
 }
 
-/// Folders (not a `.zarr` store) and the wanted files, `..` first, folders
-/// before files, each group by name. Hidden folders are kept (`shown`
-/// lists them only on request); hidden files are looked at only with
-/// `hidden`.
-pub(crate) fn list_dir<W: Wanted>(dir: &Path, want: &W, hidden: bool) -> Vec<Entry<W::About>> {
-    let mut dirs = Vec::new();
-    let mut found = Vec::new();
+/// Which entries [`list_dir`] reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Read {
+    /// Every folder and every wanted file not hidden. Hidden folders are
+    /// kept (`shown` lists them only on request): naming them costs
+    /// nothing, while a hidden file would be opened to describe it.
+    Visible,
+    /// Only the hidden files, once the filter asks for them.
+    HiddenFiles,
+}
+
+/// The entries of `dir` that `read` asks for: `..` first (unless only
+/// hidden files are read), folders (not a `.zarr` store) before wanted
+/// files, each group by name.
+pub(crate) fn list_dir<W: Wanted>(dir: &Path, want: &W, read: Read) -> Vec<Entry<W::About>> {
+    let mut out = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
         let is_dir = path.is_dir();
-        if !hidden && name.starts_with('.') && (!is_dir || name.ends_with(".zarr")) {
+        let file = !is_dir || name.ends_with(".zarr");
+        if file && (name.starts_with('.') != (read == Read::HiddenFiles)) {
             continue;
         }
-        let about = if !is_dir {
-            want.file(&path, &name)
-        } else if name.ends_with(".zarr") {
+        if !file {
+            if read == Read::Visible {
+                out.push(Entry::Dir(name));
+            }
+            continue;
+        }
+        let about = if is_dir {
             want.store(&path, &name)
         } else {
-            dirs.push(Entry::Dir(name));
-            continue;
+            want.file(&path, &name)
         };
-        found.extend(about.map(|a| Entry::File(name, a)));
+        out.extend(about.map(|a| Entry::File(name, a)));
     }
-    dirs.sort_by(|a, b| a.name().cmp(b.name()));
-    found.sort_by(|a, b| a.name().cmp(b.name()));
-    let mut out = vec![Entry::Up];
-    out.extend(dirs);
-    out.extend(found);
+    if read == Read::Visible {
+        out.push(Entry::Up);
+    }
+    sort_entries(&mut out);
     out
+}
+
+/// `..` first, then folders, then files, each group by name.
+fn sort_entries<A>(entries: &mut [Entry<A>]) {
+    let rank = |e: &Entry<A>| match e {
+        Entry::Up => 0,
+        Entry::Dir(_) => 1,
+        Entry::File(..) => 2,
+    };
+    entries.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.name().cmp(b.name())));
 }
 
 #[cfg(test)]

@@ -8,8 +8,8 @@ fn paths(v: &[&str]) -> Vec<PathBuf> {
     v.iter().map(PathBuf::from).collect()
 }
 
-fn sides(pairs: &[Pair], pick: Pick) -> Vec<Option<PathBuf>> {
-    pairs.iter().map(|p| p.side(pick).cloned()).collect()
+fn sides(pairs: &[Pair], side: Side) -> Vec<Option<PathBuf>> {
+    pairs.iter().map(|p| p.side(side).cloned()).collect()
 }
 
 fn touch(dir: &Path, name: &str) -> PathBuf {
@@ -32,21 +32,21 @@ fn files_pair_by_name_whatever_their_order() {
     let got = assign(
         &mut pairs,
         &paths(&["d/s2_batch.tsv", "d/s1_batch.tsv"]),
-        Pick::Batch,
+        Side::Batch,
     );
     assert_eq!(got, Paired::ByName(2));
     assert_eq!(
-        sides(&pairs, Pick::Batch),
+        sides(&pairs, Side::Batch),
         [Some("d/s1_batch.tsv".into()), Some("d/s2_batch.tsv".into())]
     );
     let got = assign(
         &mut pairs,
         &paths(&["d/S2.positions.csv", "d/s1-coord.csv"]),
-        Pick::Coord,
+        Side::Coord,
     );
     assert_eq!(got, Paired::ByName(2));
     assert_eq!(
-        sides(&pairs, Pick::Coord),
+        sides(&pairs, Side::Coord),
         [
             Some("d/s1-coord.csv".into()),
             Some("d/S2.positions.csv".into())
@@ -63,11 +63,11 @@ fn names_alike_only_in_their_start_are_not_crossed() {
     let got = assign(
         &mut pairs,
         &paths(&["rep_batch_1.txt", "rep_batch_2.txt"]),
-        Pick::Batch,
+        Side::Batch,
     );
     assert_eq!(got, Paired::ByName(2));
     assert_eq!(
-        sides(&pairs, Pick::Batch),
+        sides(&pairs, Side::Batch),
         [
             Some("rep_batch_2.txt".into()),
             Some("rep_batch_1.txt".into())
@@ -81,11 +81,11 @@ fn a_number_that_runs_on_is_another_sample() {
     let got = assign(
         &mut pairs,
         &paths(&["s10_coords.csv", "s2_coords.csv"]),
-        Pick::Coord,
+        Side::Coord,
     );
     assert_eq!(got, Paired::Partly(1));
     assert_eq!(
-        sides(&pairs, Pick::Coord),
+        sides(&pairs, Side::Coord),
         [None, Some("s2_coords.csv".into())]
     );
 }
@@ -94,26 +94,26 @@ fn a_number_that_runs_on_is_another_sample() {
 fn unrelated_names_go_in_order_only_when_nothing_matches() {
     let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
     assert_eq!(
-        assign(&mut pairs, &paths(&["x.tsv", "y.tsv"]), Pick::Batch),
+        assign(&mut pairs, &paths(&["x.tsv", "y.tsv"]), Side::Batch),
         Paired::InOrder
     );
     assert_eq!(
-        sides(&pairs, Pick::Batch),
+        sides(&pairs, Side::Batch),
         [Some("x.tsv".into()), Some("y.tsv".into())]
     );
     let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
     assert_eq!(
-        assign(&mut pairs, &paths(&["x.tsv"]), Pick::Batch),
+        assign(&mut pairs, &paths(&["x.tsv"]), Side::Batch),
         Paired::Partly(0)
     );
-    assert_eq!(sides(&pairs, Pick::Batch), [None, None]);
+    assert_eq!(sides(&pairs, Side::Batch), [None, None]);
 }
 
 #[test]
 fn a_label_file_beside_the_data_is_found() {
     let dir = tempfile::tempdir().unwrap();
     let d = touch(dir.path(), "s1.zarr.zip");
-    let near = || side_files_in(dir.path(), Pick::Batch);
+    let near = || side_files_in(dir.path(), Side::Batch);
     assert_eq!(beside(&[d.as_path()], &near(), true)[0], None);
     touch(dir.path(), "s10_batch.txt");
     assert_eq!(
@@ -143,11 +143,11 @@ fn coordinates_and_labels_are_told_apart_by_their_words() {
     touch(dir.path(), "s1_spatial_labels.csv");
     touch(dir.path(), "notes.csv");
     assert_eq!(
-        side_files_in(dir.path(), Pick::Coord),
+        side_files_in(dir.path(), Side::Coord),
         [dir.path().join("s1_coords.csv")]
     );
     assert_eq!(
-        side_files_in(dir.path(), Pick::Batch),
+        side_files_in(dir.path(), Side::Batch),
         [dir.path().join("s1_batch.csv")]
     );
 }
@@ -158,7 +158,7 @@ fn a_generic_positions_file_goes_to_the_only_data_file_beside_it() {
     let d = touch(dir.path(), "filtered.h5");
     std::fs::create_dir(dir.path().join("spatial")).unwrap();
     let pos = touch(&dir.path().join("spatial"), "tissue_positions.csv");
-    let near = side_files_in(dir.path(), Pick::Coord);
+    let near = side_files_in(dir.path(), Side::Coord);
     assert_eq!(near, std::slice::from_ref(&pos));
     assert_eq!(beside(&[d.as_path()], &near, true)[0], Some(pos));
     // With other data beside it, whose it is cannot be told.

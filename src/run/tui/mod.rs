@@ -10,8 +10,9 @@ mod jobs;
 mod script;
 
 use crate::tui::browse::{Browser, Outcome};
+use crate::tui::shown;
 use data::Pair;
-use data::Pick;
+use data::{Pick, Side};
 use form::{Field, Kind, Method};
 use jobs::{Job, Queue};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -184,37 +185,15 @@ type Blame = (usize, Vec<String>, Option<String>);
 /// method's flags and the check of every command line.
 pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
     let mut app = App::new(cli, start)?;
-    let level = log::max_level();
-    log::set_max_level(log::LevelFilter::Off);
-    let mut terminal = ratatui::init();
-    let result = (|| -> anyhow::Result<()> {
-        while !app.quit {
-            app.poll();
-            terminal.draw(|f| app.draw(f))?;
-            // Redraw often only while something changes on its own.
-            let wait = if app.running() || app.describing > 0 {
-                Duration::from_millis(200)
-            } else {
-                Duration::from_secs(60)
-            };
-            if event::poll(wait)? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind != KeyEventKind::Release {
-                        app.key(k);
-                    }
-                }
-            }
+    crate::tui::with_terminal(|terminal| {
+        let result = app.screens_loop(terminal);
+        if let Some(q) = &app.queue {
+            // Wait for the worker, so no fit it was starting outlives us.
+            q.stop();
+            q.join();
         }
-        Ok(())
-    })();
-    if let Some(q) = &app.queue {
-        // Wait for the worker, so no fit it was starting outlives us.
-        q.stop();
-        q.join();
-    }
-    ratatui::restore();
-    log::set_max_level(level);
-    result?;
+        result
+    })?;
     for line in app.summary() {
         println!("{line}");
     }
@@ -222,13 +201,35 @@ pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
         let exe = std::env::current_exe()?;
         std::process::Command::new(exe)
             .arg("view")
-            .arg(app.shown(manifest))
+            .arg(shown(manifest))
             .status()?;
     }
     Ok(())
 }
 
 impl App {
+    /// Draw and take keys until the user quits.
+    fn screens_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+        while !self.quit {
+            self.poll();
+            terminal.draw(|f| self.draw(f))?;
+            // Redraw often only while something changes on its own.
+            let wait = if self.running() || self.describing > 0 {
+                Duration::from_millis(200)
+            } else {
+                Duration::from_secs(60)
+            };
+            if event::poll(wait)? {
+                if let Event::Key(k) = event::read()? {
+                    if k.kind != KeyEventKind::Release {
+                        self.key(k);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn new(cli: clap::Command, start: PathBuf) -> anyhow::Result<Self> {
         let here = std::env::current_dir()?;
         // `..` resolved, symlinks kept: the folders as the user knows them.
@@ -311,13 +312,8 @@ impl App {
                 Screen::Run => self.run_key(k),
             }
         }
-        // However the parameters screen was reached, it shows a method its
-        // strip lists.
-        if !self.param_methods().contains(&self.param_method) {
-            self.param_method = self.param_methods()[0];
-            self.field_row = 0;
-        }
-        // A reset can drop the row under the cursor from the list.
+        // A reset, an edit or the filter can drop the row under the cursor
+        // from the flags listed.
         self.field_row = self.field_row.min(self.visible().len().saturating_sub(1));
     }
 
@@ -446,10 +442,9 @@ impl App {
         let Some(b) = self.browser.take() else { return };
         self.browse_dir = b.dir;
         let Some(paths) = chosen else { return };
-        if b.want == Pick::Data {
-            self.take_data(paths);
-        } else {
-            self.take_sides(&paths, b.want);
+        match b.want.side() {
+            None => self.take_data(paths),
+            Some(side) => self.take_sides(&paths, side),
         }
     }
 
@@ -477,44 +472,44 @@ impl App {
             let data: Vec<PathBuf> = here.iter().map(|&i| self.pairs[i].data.clone()).collect();
             let data: Vec<&Path> = data.iter().map(PathBuf::as_path).collect();
             let alone = data::data_in(&dir) <= 1;
-            for pick in [Pick::Coord, Pick::Batch] {
-                let files = data::side_files_in(&dir, pick);
+            for side in [Side::Coord, Side::Batch] {
+                let files = data::side_files_in(&dir, side);
                 for (&i, file) in here.iter().zip(data::beside(&data, &files, alone)) {
                     if i >= first_new {
-                        self.pairs[i].set(pick, file);
+                        self.pairs[i].set(side, file);
                     }
                 }
             }
         }
         self.pair_row = self.pairs.len().saturating_sub(1);
-        let with = |pick| self.pairs.iter().filter(|p| p.side(pick).is_some()).count();
+        let with = |side| self.pairs.iter().filter(|p| p.side(side).is_some()).count();
         self.message = Some(format!(
             "{added} data file{} added; of {}, {} with coordinates, {} with batch labels",
             if added == 1 { "" } else { "s" },
             self.pairs.len(),
-            with(Pick::Coord),
-            with(Pick::Batch),
+            with(Side::Coord),
+            with(Side::Batch),
         ));
     }
 
     /// One coordinate or batch file goes to the data row under the cursor;
     /// several are paired with all rows by name.
-    fn take_sides(&mut self, paths: &[PathBuf], pick: Pick) {
+    fn take_sides(&mut self, paths: &[PathBuf], side: Side) {
         if let [one] = paths {
             if let Some(p) = self.pairs.get_mut(self.pair_row) {
-                p.set(pick, Some(one.clone()));
+                p.set(side, Some(one.clone()));
             }
             return;
         }
         for p in &mut self.pairs {
-            p.set(pick, None);
+            p.set(side, None);
         }
         let n = self.pairs.len();
-        let (what, key) = match pick {
-            Pick::Coord => ("coordinate", 'c'),
-            _ => ("batch", 'b'),
+        let (what, key) = match side {
+            Side::Coord => ("coordinate", 'c'),
+            Side::Batch => ("batch", 'b'),
         };
-        self.message = Some(match data::assign(&mut self.pairs, paths, pick) {
+        self.message = Some(match data::assign(&mut self.pairs, paths, side) {
             data::Paired::ByName(_) => format!("{n} {what} files paired by name"),
             data::Paired::InOrder => format!(
                 "no names match: {n} {what} files paired in the order listed; check them"
@@ -574,9 +569,7 @@ impl App {
             return;
         };
         let n = self.pairs[l.row]
-            .labels
-            .as_ref()
-            .and_then(|r| r.as_ref().ok())
+            .label_counts()
             .map_or(0, std::collections::BTreeMap::len);
         match k.code {
             KeyCode::Esc | KeyCode::Char('q' | 'e') => self.labels = None,
@@ -672,6 +665,11 @@ impl App {
             KeyCode::Char(' ') => {
                 let r = &mut self.rows[self.method_row];
                 r.on = !r.on;
+                // The parameters screen shows a method its strip lists.
+                if !self.param_methods().contains(&self.param_method) {
+                    self.param_method = self.param_methods()[0];
+                    self.field_row = 0;
+                }
             }
             KeyCode::Char('o') => {
                 let out = self.rows[self.method_row].out.clone();
@@ -849,18 +847,18 @@ impl App {
                 Some(p.clone())
             } else if let Err(why) = &batch_args {
                 Some(why.clone())
-            } else if let Some(there) = [job.manifest(), job.script(), job.batches()]
+            } else if let Some(there) = jobs::outputs(&job.dir, &job.out)
                 .into_iter()
                 .find(|p| p.exists())
             {
                 Some(format!(
                     "{} exists: change --out (o on Methods)",
-                    self.shown(&there)
+                    shown(&there)
                 ))
             } else if outs.contains(&dir.join(&out)) {
                 Some("another queued method writes the same --out".to_string())
             } else if !dir.is_dir() {
-                Some(format!("{} is not a folder", self.shown(&dir)))
+                Some(format!("{} is not a folder", shown(&dir)))
             } else {
                 form::check(&self.cli, &job.argv).err().inspect(|why| {
                     blamed = form::blamed(why, &r.form.fields).map(str::to_string);
@@ -1007,13 +1005,8 @@ impl App {
         }
     }
 
-    /// A path as shown: relative to where pinto run started when under it.
-    fn shown(&self, p: &Path) -> String {
-        crate::tui::relative_to(p, &self.here)
-            .to_string_lossy()
-            .into_owned()
-    }
-
+    /// What is printed once the terminal is given back: how each run
+    /// ended, and its script.
     fn summary(&self) -> Vec<String> {
         let Some(q) = &self.queue else {
             return Vec::new();
@@ -1030,11 +1023,7 @@ impl App {
                     jobs::State::Waiting | jobs::State::Running => "not finished".to_string(),
                 };
                 if script.exists() {
-                    format!(
-                        "{} {what}; again with: bash {}",
-                        j.method,
-                        self.shown(&script)
-                    )
+                    format!("{} {what}; again with: bash {}", j.method, shown(&script))
                 } else {
                     format!("{} {what}", j.method)
                 }
@@ -1046,11 +1035,7 @@ impl App {
 /// `{method}`, or `{method}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, method: &str) -> String {
-    let taken = |p: &str| {
-        ["pinto.json", "cmd.sh", "batches"]
-            .iter()
-            .any(|end| dir.join(format!("{p}.{end}")).exists())
-    };
+    let taken = |p: &str| jobs::outputs(dir, p).iter().any(|f| f.exists());
     if !taken(method) {
         return method.to_string();
     }
@@ -1090,5 +1075,5 @@ mod tests;
 
 /// The label at `i` of a data row's batch file, in the order listed.
 fn label_at(p: &Pair, i: usize) -> Option<String> {
-    p.labels.as_ref()?.as_ref().ok()?.keys().nth(i).cloned()
+    p.label_counts()?.keys().nth(i).cloned()
 }

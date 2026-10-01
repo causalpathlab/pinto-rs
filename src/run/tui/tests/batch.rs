@@ -135,12 +135,12 @@ fn a_new_batch_file_forgets_the_old_names_and_a_cleared_row_is_its_own_again() {
     let mut p = pair("d/s1.zarr", Some(3));
     p.name = Some("b1".into());
     p.set(
-        super::super::data::Pick::Batch,
+        super::super::data::Side::Batch,
         Some("d/s1_batch.txt".into()),
     );
     assert_eq!(kind(&p), Kind::Labels(Path::new("d/s1_batch.txt")));
     p.renames.insert("A".into(), "b1".into());
-    p.set(super::super::data::Pick::Batch, Some("d/other.txt".into()));
+    p.set(super::super::data::Side::Batch, Some("d/other.txt".into()));
     assert!(p.renames.is_empty() && p.labels.is_none());
     p.clear_batch();
     assert_eq!(kind(&p), Kind::File);

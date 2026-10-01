@@ -57,6 +57,19 @@ pub fn tail(s: &str, n: usize) -> String {
     }
 }
 
+/// `s` in pieces of at most `first` characters, then `rest` for each
+/// piece after the first; none for an empty `s`.
+#[must_use]
+pub fn wrap(s: &str, first: usize, rest: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let (head, tail) = chars.split_at(first.max(1).min(chars.len()));
+    std::iter::once(head)
+        .filter(|h| !h.is_empty())
+        .chain(tail.chunks(rest.max(1)))
+        .map(|c| c.iter().collect())
+        .collect()
+}
+
 /// A bordered popup of `lines` in the middle of `area`, at most `max_w`
 /// columns wide and as tall as its lines.
 pub fn popup(f: &mut ratatui::Frame, area: Rect, lines: Vec<Line<'_>>, max_w: u16) {

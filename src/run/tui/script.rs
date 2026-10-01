@@ -75,15 +75,6 @@ pub fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// `p` as a path from `base`, both absolute and normalized.
-fn relative_to(p: &Path, base: &Path) -> PathBuf {
-    let (pc, bc): (Vec<_>, Vec<_>) = (p.components().collect(), base.components().collect());
-    let common = pc.iter().zip(&bc).take_while(|(a, b)| a == b).count();
-    let mut out: PathBuf = bc[common..].iter().map(|_| "..").collect();
-    out.extend(&pc[common..]);
-    out
-}
-
 /// More `..` than this and a path is written whole: from far away a
 /// climb up to the root and back down only hides where the file is.
 const MAX_UP: usize = 2;
@@ -93,16 +84,14 @@ const MAX_UP: usize = 2;
 #[must_use]
 pub fn relative(path: &Path, base: &Path) -> PathBuf {
     let (real, base) = (normalize(path), normalize(base));
-    let common = real
-        .components()
-        .zip(base.components())
-        .take_while(|(x, y)| x == y)
-        .count();
-    if base.components().count() - common > MAX_UP {
+    let (pc, bc): (Vec<_>, Vec<_>) = (real.components().collect(), base.components().collect());
+    let common = pc.iter().zip(&bc).take_while(|(a, b)| a == b).count();
+    if bc.len() - common > MAX_UP {
         // Whole, as the user reached it, not through its symlinks.
         return lexical(path);
     }
-    let out = relative_to(&real, &base);
+    let mut out: PathBuf = bc[common..].iter().map(|_| "..").collect();
+    out.extend(&pc[common..]);
     if out.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
@@ -165,18 +154,23 @@ pub fn text(argv: &[String], out: &str) -> String {
 
 /// Write the script for `argv` to `path`, never over an existing file.
 pub fn write(path: &Path, out: &str, argv: &[String]) -> anyhow::Result<()> {
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    f.write_all(text(argv, out).as_bytes())?;
+    write_new(path, text(argv, out).as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
+}
+
+/// Write `bytes` to a new file at `path`, never over an existing one.
+pub fn write_new(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]

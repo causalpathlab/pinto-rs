@@ -3,7 +3,7 @@
 //! same command, its log kept for the screen.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -27,21 +27,28 @@ pub struct Job {
     pub made: Vec<(PathBuf, super::batch::Made)>,
 }
 
+/// What a run with `--out` prefix `out` writes in `dir` that a new run
+/// must not write over: its manifest, its script, and its batch files.
+#[must_use]
+pub fn outputs(dir: &Path, out: &str) -> [PathBuf; 3] {
+    ["pinto.json", "cmd.sh", "batches"].map(|end| dir.join(format!("{out}.{end}")))
+}
+
 impl Job {
     #[must_use]
     pub fn manifest(&self) -> PathBuf {
-        self.dir.join(format!("{}.pinto.json", self.out))
+        outputs(&self.dir, &self.out)[0].clone()
     }
 
     #[must_use]
     pub fn script(&self) -> PathBuf {
-        self.dir.join(format!("{}.cmd.sh", self.out))
+        outputs(&self.dir, &self.out)[1].clone()
     }
 
     /// Where the batch label files written for the run go.
     #[must_use]
     pub fn batches(&self) -> PathBuf {
-        self.dir.join(format!("{}.batches", self.out))
+        outputs(&self.dir, &self.out)[2].clone()
     }
 }
 
@@ -188,7 +195,7 @@ fn run_job(
     match run_one(command, stopper, |line| say(s, i, line.to_string())) {
         Ok(()) => State::Done,
         Err(Failed::Stopped) => State::Stopped,
-        Err(Failed::Start(why) | Failed::Exit(why)) => State::Failed(why),
+        Err(Failed::Error(why)) => State::Failed(why),
     }
 }
 

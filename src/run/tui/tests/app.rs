@@ -287,7 +287,7 @@ fn batch_files_are_described_as_paired() {
     a.pairs = data(dir.path(), &["s1.zarr", "s2.zarr"]);
     a.take_sides(
         &[dir.path().join("x.tsv"), dir.path().join("y.tsv")],
-        Pick::Batch,
+        Side::Batch,
     );
     assert!(a
         .message
@@ -322,7 +322,7 @@ fn data_taken_find_their_coordinates_and_labels_beside_them() {
     assert_eq!(a.pairs.len(), 2);
     // One coordinate file goes to the row under the cursor.
     a.pair_row = 1;
-    a.take_sides(&[d.join("s1_coords.csv")], Pick::Coord);
+    a.take_sides(&[d.join("s1_coords.csv")], Side::Coord);
     assert_eq!(a.pairs[1].coord, Some(d.join("s1_coords.csv")));
     key(&mut a, KeyCode::Char('x'));
     assert_eq!(
@@ -441,7 +441,7 @@ fn labels_read_in_the_background_are_renamed_from_their_list() {
     a.pairs = data(dir.path(), &["s1.zarr"]);
     let labels = dir.path().join("s1_batch.txt");
     std::fs::write(&labels, "A\nB\nA\n").unwrap();
-    a.take_sides(std::slice::from_ref(&labels), Pick::Batch);
+    a.take_sides(std::slice::from_ref(&labels), Side::Batch);
     a.screen = Screen::Data;
     while a.pairs[0].labels.is_none() {
         a.poll();

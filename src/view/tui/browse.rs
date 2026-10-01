@@ -3,11 +3,10 @@
 //! [`crate::tui::browse`].
 
 use super::super::lupin::{self, Panel};
-use crate::tui::browse::{Browser, Header, Outcome, Wanted};
+use crate::tui::browse::{name_then, Browser, Header, Outcome, Wanted};
 use crate::util::metadata::PintoMetadata;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Paragraph;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -32,8 +31,8 @@ impl Wanted for Runs {
         name.ends_with(".pinto.json").then(|| describe_run(path))
     }
 
-    fn describe<'a>(&self, about: &'a String) -> Cow<'a, str> {
-        Cow::Borrowed(about)
+    fn row(&self, name: &str, about: &String, name_w: usize) -> String {
+        name_then(name, about, name_w)
     }
 
     fn best(&self, dir: &Path, files: &[(&str, &String)]) -> Option<String> {
@@ -74,10 +73,6 @@ impl Wanted for Panels {
 
     fn file(&self, path: &Path, _name: &str) -> Option<Counts> {
         read_panel(path, &self.known)
-    }
-
-    fn describe<'a>(&self, &(types, genes, found): &'a Counts) -> Cow<'a, str> {
-        format!("{types} types, {genes} genes, {found} in run").into()
     }
 
     fn row(&self, name: &str, &(types, genes, found): &Counts, _name_w: usize) -> String {
@@ -180,33 +175,26 @@ fn read_panel(path: &Path, known: &HashSet<String>) -> Option<(usize, usize, usi
 /// cancelled.
 pub fn pick_run() -> anyhow::Result<Option<PathBuf>> {
     let mut b = Browser::open(lupin::canonical(&std::env::current_dir()?), Runs, None);
-    let logging = log::max_level();
-    log::set_max_level(log::LevelFilter::Off);
-    let mut terminal = ratatui::init();
-    let picked = (|| -> anyhow::Result<Option<PathBuf>> {
-        loop {
-            terminal.draw(|f| {
-                let area = f.area();
-                let width = usize::from(area.width).min(110);
-                let lines = b.lines(usize::from(area.height), width);
-                f.render_widget(Paragraph::new(lines), area);
-            })?;
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Release {
-                    continue;
-                }
-                if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                    return Ok(None);
-                }
-                match b.key(k) {
-                    Outcome::Cancelled => return Ok(None),
-                    Outcome::Chosen(c) => return Ok(Some(c.file())),
-                    Outcome::Ignored | Outcome::Moved => {}
-                }
+    let picked = crate::tui::with_terminal(|terminal| loop {
+        terminal.draw(|f| {
+            let area = f.area();
+            let width = usize::from(area.width).min(110);
+            let lines = b.lines(usize::from(area.height), width);
+            f.render_widget(Paragraph::new(lines), area);
+        })?;
+        if let Event::Key(k) = event::read()? {
+            if k.kind == KeyEventKind::Release {
+                continue;
+            }
+            if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(None);
+            }
+            match b.key(k) {
+                Outcome::Cancelled => return Ok(None),
+                Outcome::Chosen(c) => return Ok(Some(c.file())),
+                Outcome::Ignored | Outcome::Moved => {}
             }
         }
-    })();
-    ratatui::restore();
-    log::set_max_level(logging);
-    Ok(picked?.map(|p| crate::tui::relative(&p)))
+    })?;
+    Ok(picked.map(|p| crate::tui::relative(&p)))
 }

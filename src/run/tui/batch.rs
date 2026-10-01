@@ -10,7 +10,6 @@
 
 use super::data::{stem, Pair};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// What a data file's cells count as.
@@ -31,6 +30,13 @@ pub fn kind(p: &Pair) -> Kind<'_> {
         (None, Some(f)) => Kind::Labels(f),
         (None, None) => Kind::File,
     }
+}
+
+/// Whether every file is left to pinto's rule: then no batch file is
+/// passed at all.
+#[must_use]
+pub fn all_own(pairs: &[Pair]) -> bool {
+    pairs.iter().all(|p| kind(p) == Kind::File)
 }
 
 /// What a label file written for a run holds.
@@ -55,7 +61,7 @@ pub enum Arg {
 /// The label file of each of `pairs`, none when every file is left to
 /// pinto's rule; why they cannot be made yet otherwise.
 pub fn args(pairs: &[Pair]) -> Result<Option<Vec<Arg>>, String> {
-    if pairs.iter().all(|p| kind(p) == Kind::File) {
+    if all_own(pairs) {
         return Ok(None);
     }
     let mut taken: Vec<String> = Vec::new();
@@ -112,23 +118,25 @@ pub fn write(path: &Path, made: &Made) -> anyhow::Result<()> {
             text
         }
     };
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    f.write_all(text.as_bytes())?;
-    Ok(())
+    super::script::write_new(path, text.as_bytes())
 }
 
 /// A label file's distinct labels with their cell counts, read as pinto
 /// reads it: a label per line, gzipped or not.
 pub fn label_counts(path: &Path) -> Result<BTreeMap<String, usize>, String> {
-    let lines =
-        crate::util::common::read_lines(&path.to_string_lossy()).map_err(|e| e.to_string())?;
-    let mut counts = BTreeMap::new();
-    for l in lines {
-        *counts.entry(l.into_string()).or_insert(0) += 1;
+    use std::io::BufRead;
+    let text = legume_numeric::matrix::common_io::open_buf_reader(&path.to_string_lossy())
+        .map_err(|e| e.to_string())?;
+    // Streamed: a label per cell, but only tens of labels kept.
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        match counts.get_mut(&line) {
+            Some(n) => *n += 1,
+            None => {
+                counts.insert(line, 1);
+            }
+        }
     }
     Ok(counts)
 }
@@ -154,7 +162,7 @@ pub fn summary(pairs: &[Pair]) -> (Vec<Batch>, Vec<String>) {
         e.0.insert(i);
         e.1 = e.1.zip(cells).map(|(a, b)| a + b);
     };
-    let own = pairs.iter().all(|p| kind(p) == Kind::File);
+    let own = all_own(pairs);
     for (i, p) in pairs.iter().enumerate() {
         match kind(p) {
             // pinto numbers the files' batches in order.

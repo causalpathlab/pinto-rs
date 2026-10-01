@@ -1,8 +1,7 @@
 //! The data files a session fits, with the coordinate and batch files of
 //! each.
 
-use crate::tui::browse::{is_data, size_of, Header, Wanted};
-use std::borrow::Cow;
+use crate::tui::browse::{is_data, name_then, size_of, Header, Wanted};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +12,25 @@ pub enum Pick {
     Data,
     Coord,
     Batch,
+}
+
+/// What a data file has beside it, one per data file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Coord,
+    Batch,
+}
+
+impl Pick {
+    /// The side file this browses for; `None` for the data files.
+    #[must_use]
+    pub fn side(self) -> Option<Side> {
+        match self {
+            Pick::Data => None,
+            Pick::Coord => Some(Side::Coord),
+            Pick::Batch => Some(Side::Batch),
+        }
+    }
 }
 
 impl Wanted for Pick {
@@ -53,8 +71,8 @@ impl Wanted for Pick {
         (*self != Pick::Batch).then(String::new)
     }
 
-    fn describe<'a>(&self, size: &'a String) -> Cow<'a, str> {
-        Cow::Borrowed(size)
+    fn row(&self, name: &str, size: &String, name_w: usize) -> String {
+        name_then(name, size, name_w)
     }
 
     fn many(&self) -> bool {
@@ -65,25 +83,21 @@ impl Wanted for Pick {
 /// Endings of batch label files: plain or gzipped text.
 const BATCH_ENDINGS: &[&str] = &[".txt", ".tsv", ".csv", ".txt.gz", ".tsv.gz", ".csv.gz"];
 
-/// Endings of coordinate files: text tables, parquet, or a zarr store.
-const COORD_ENDINGS: &[&str] = &[
-    ".txt",
-    ".tsv",
-    ".csv",
-    ".txt.gz",
-    ".tsv.gz",
-    ".csv.gz",
-    ".parquet",
-    ".zarr.zip",
-    ".zarr",
-];
+/// Endings of coordinate files besides the text ones labels have:
+/// parquet, or a zarr store.
+const COORD_ONLY_ENDINGS: &[&str] = &[".parquet", ".zarr.zip", ".zarr"];
+
+/// Every ending a coordinate file can have.
+fn coord_endings() -> impl Iterator<Item = &'static str> {
+    BATCH_ENDINGS.iter().chain(COORD_ONLY_ENDINGS).copied()
+}
 
 fn is_batch(name: &str) -> bool {
     BATCH_ENDINGS.iter().any(|e| name.ends_with(e))
 }
 
 fn is_coord(name: &str) -> bool {
-    COORD_ENDINGS.iter().any(|e| name.ends_with(e))
+    coord_endings().any(|e| name.ends_with(e))
 }
 
 /// A data file with its coordinates and batch labels.
@@ -122,20 +136,19 @@ impl Pair {
     }
 
     /// The coordinate or batch file of this data file.
-    pub fn side(&self, pick: Pick) -> Option<&PathBuf> {
-        match pick {
-            Pick::Coord => self.coord.as_ref(),
-            Pick::Batch => self.batch.as_ref(),
-            Pick::Data => Some(&self.data),
+    pub fn side(&self, side: Side) -> Option<&PathBuf> {
+        match side {
+            Side::Coord => self.coord.as_ref(),
+            Side::Batch => self.batch.as_ref(),
         }
     }
 
     /// Set the coordinate or batch file; the data file stays. A batch file
     /// replaces a typed batch name, and its labels are read again.
-    pub fn set(&mut self, pick: Pick, file: Option<PathBuf>) {
-        match pick {
-            Pick::Coord => self.coord = file,
-            Pick::Batch => {
+    pub fn set(&mut self, side: Side, file: Option<PathBuf>) {
+        match side {
+            Side::Coord => self.coord = file,
+            Side::Batch => {
                 if file != self.batch {
                     self.renames.clear();
                     self.labels = None;
@@ -145,13 +158,18 @@ impl Pair {
                 }
                 self.batch = file;
             }
-            Pick::Data => {}
         }
+    }
+
+    /// `batch`'s labels and their cell counts, once read.
+    #[must_use]
+    pub fn label_counts(&self) -> Option<&BTreeMap<String, usize>> {
+        self.labels.as_ref()?.as_ref().ok()
     }
 
     /// Back to pinto's own rule: the file is its own batch.
     pub fn clear_batch(&mut self) {
-        self.set(Pick::Batch, None);
+        self.set(Side::Batch, None);
         self.name = None;
     }
 }
@@ -174,9 +192,8 @@ pub fn describe(path: &Path) -> (String, Option<usize>) {
 pub fn stem(path: &Path) -> String {
     let name = crate::tui::name(path);
     let mut name = data_beans::hdf5_io::strip_backend_suffix(&name).to_string();
-    while let Some(end) = COORD_ENDINGS
-        .iter()
-        .filter(|e| name.ends_with(*e))
+    while let Some(end) = coord_endings()
+        .filter(|e| name.ends_with(e))
         .max_by_key(|e| e.len())
     {
         name.truncate(name.len() - end.len());
@@ -289,10 +306,10 @@ pub enum Paired {
     Partly(usize),
 }
 
-/// Give each pair the one coordinate or batch file (`pick`) named for its
+/// Give each pair the one coordinate or batch file (`side`) named for its
 /// sample ([`pair_up`]). When no name matches at all and the counts
 /// agree, files go in the order listed, and the caller says so.
-pub fn assign(pairs: &mut [Pair], files: &[PathBuf], pick: Pick) -> Paired {
+pub fn assign(pairs: &mut [Pair], files: &[PathBuf], side: Side) -> Paired {
     let data: Vec<&Path> = pairs.iter().map(|p| p.data.as_path()).collect();
     let none_fit = data
         .iter()
@@ -301,7 +318,7 @@ pub fn assign(pairs: &mut [Pair], files: &[PathBuf], pick: Pick) -> Paired {
     let mut matched = 0;
     for (p, c) in pairs.iter_mut().zip(chosen) {
         if let Some(j) = c {
-            p.set(pick, Some(files[j].clone()));
+            p.set(side, Some(files[j].clone()));
             matched += 1;
         }
     }
@@ -309,7 +326,7 @@ pub fn assign(pairs: &mut [Pair], files: &[PathBuf], pick: Pick) -> Paired {
         Paired::ByName(matched)
     } else if none_fit && files.len() == pairs.len() {
         for (p, f) in pairs.iter_mut().zip(files) {
-            p.set(pick, Some(f.clone()));
+            p.set(side, Some(f.clone()));
         }
         Paired::InOrder
     } else {
@@ -318,14 +335,13 @@ pub fn assign(pairs: &mut [Pair], files: &[PathBuf], pick: Pick) -> Paired {
 }
 
 /// Files in `dir`, and in its `spatial/` folder, that say they hold what
-/// `pick` wants: its ending, and one of its words in the name but none of
+/// `side` wants: its ending, and one of its words in the name but none of
 /// the other kind's.
 #[must_use]
-pub fn side_files_in(dir: &Path, pick: Pick) -> Vec<PathBuf> {
-    let (ending, mine, theirs): (fn(&str) -> bool, _, _) = match pick {
-        Pick::Coord => (is_coord, COORD_WORDS, LABEL_WORDS),
-        Pick::Batch => (is_batch, LABEL_WORDS, COORD_WORDS),
-        Pick::Data => return Vec::new(),
+pub fn side_files_in(dir: &Path, side: Side) -> Vec<PathBuf> {
+    let (ending, mine, theirs): (fn(&str) -> bool, _, _) = match side {
+        Side::Coord => (is_coord, COORD_WORDS, LABEL_WORDS),
+        Side::Batch => (is_batch, LABEL_WORDS, COORD_WORDS),
     };
     let mut found: Vec<PathBuf> = [dir.to_path_buf(), dir.join("spatial")]
         .iter()

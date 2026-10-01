@@ -30,7 +30,7 @@ use crate::link_community::gibbs::{ComponentGibbsArgs, IncidenceConfig, LinkGibb
 use crate::link_community::incidence::{fit_log_incidence, pack_propensity_row_major};
 use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
 use crate::link_community::outputs::{
-    link_community_histogram, move_partition_outputs, write_dict_cut, write_dict_merges,
+    fit_partition, link_community_histogram, write_dict_cut, write_dict_merges, write_partition,
     write_partition_outputs, write_score_trace, ScoreEntry,
 };
 use crate::link_community::profiles::*;
@@ -467,24 +467,40 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     ////////////////////////////////////////
     // 9. Extract and write final outputs //
     ////////////////////////////////////////
+    // The draft is written once the merge has decided where: as the final
+    // result at `{out}.*` when nothing collapses, else at `{out}.draft.*`
+    // beside the merged one.
     let draft_prefix = format!("{}.draft", c.out);
-    info!(
-        "Writing draft outputs (propensity, feature_community, link_community) → {}.*",
-        draft_prefix
-    );
-    let (_draft_propensity, draft_feature_community) = write_partition_outputs(
-        &draft_prefix,
+    let draft = fit_partition(
         edges,
         &final_membership,
         n_cells,
         k,
-        &cell_names,
         &data_vec,
         Some(&feature_weights),
         &feature_axis,
         c.block_size,
-        edge_kind,
     )?;
+    let write_draft = |prefix: &str| {
+        info!(
+            "Writing {} outputs (propensity, feature_community, link_community) → {}.*",
+            if prefix == c.out.as_ref() {
+                "final"
+            } else {
+                "draft"
+            },
+            prefix
+        );
+        write_partition(
+            prefix,
+            &draft,
+            edges,
+            &final_membership,
+            &cell_names,
+            &feature_axis,
+            edge_kind,
+        )
+    };
 
     info!("Writing score trace...");
     write_score_trace(&(c.out.to_string() + ".scores.parquet"), &score_trace)?;
@@ -539,9 +555,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         if n_keep < k {
             warn!(
                 "only {} feature(s) are detected in >= {} cells, fewer than the {} communities; \
-                 skipping the dictionary merge, so the draft outputs at {}.* are the final \
-                 result (moved to {}.*). Lower --merge-min-nnz to score more features.",
-                n_keep, min_nnz, k, draft_prefix, c.out
+                 skipping the dictionary merge, so the draft partition is the final result. \
+                 Lower --merge-min-nnz to score more features.",
+                n_keep, min_nnz, k
             );
         } else {
             info!(
@@ -549,7 +565,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 k
             );
             let merges = cosine_merge(
-                draft_feature_community.posterior_log_mean(),
+                draft.feature_community.posterior_log_mean(),
                 Some(&keep_features),
             );
             write_dict_merges(&(c.out.to_string() + ".dict_merges.parquet"), &merges)?;
@@ -580,6 +596,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                         lab as usize
                     })
                     .collect();
+                write_draft(&draft_prefix)?;
                 info!(
                     "Writing final outputs (propensity, feature_community, link_community) → {}.*",
                     c.out
@@ -601,8 +618,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             } else {
                 info!(
                     "Dictionary merge produced no collapses at cosine ≥ {:.3}; \
-                     draft outputs at {}.* are the final result (moved to {}.*)",
-                    args.merge_cut, draft_prefix, c.out
+                     the draft partition is the final result",
+                    args.merge_cut
                 );
             }
             if merge_present_with_consensus {
@@ -614,9 +631,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         }
     }
     if !merge_present_with_consensus {
-        // The draft is the final partition: the manifest's final level names
-        // `{out}.*`, so those files must hold it.
-        move_partition_outputs(&draft_prefix, &c.out)?;
+        // The manifest's final level names `{out}.*`: the draft is it.
+        write_draft(&c.out)?;
     }
 
     ///////////////////////////////////////////////////

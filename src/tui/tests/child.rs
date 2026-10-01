@@ -19,7 +19,7 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
     c.args(["-c", "echo one >&2; echo 'Error: it broke' >&2; exit 3"]);
     assert_eq!(
         run_one(c, &Stopper::default(), |_| {}),
-        Err(Failed::Exit("it broke".into()))
+        Err(Failed::Error("it broke".into()))
     );
 
     // A child killed while it worked says how it ended, not that its last
@@ -28,7 +28,7 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
     c.args(["-c", "echo '[t INFO x] writing outputs' >&2; kill -9 $$"]);
     assert_eq!(
         run_one(c, &Stopper::default(), |_| {}),
-        Err(Failed::Exit(
+        Err(Failed::Error(
             "signal: 9 (SIGKILL), after: writing outputs".into()
         ))
     );
@@ -36,7 +36,7 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
     c.args(["-c", "exit 2"]);
     assert_eq!(
         run_one(c, &Stopper::default(), |_| {}),
-        Err(Failed::Exit("exit status: 2".into()))
+        Err(Failed::Error("exit status: 2".into()))
     );
 
     let stopper = Stopper::default();
@@ -48,6 +48,6 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
     let c = Command::new("/no/such/program");
     assert!(matches!(
         run_one(c, &Stopper::default(), |_| {}),
-        Err(Failed::Start(why)) if why.starts_with("cannot run program:")
+        Err(Failed::Error(why)) if why.starts_with("cannot run program:")
     ));
 }

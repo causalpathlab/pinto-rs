@@ -32,10 +32,8 @@ impl Stopper {
 pub(crate) enum Failed {
     /// `stopper` was stopped.
     Stopped,
-    /// The command did not start.
-    Start(String),
-    /// It ended badly: the reason it gave last.
-    Exit(String),
+    /// It did not start, or ended badly: why.
+    Error(String),
 }
 
 /// Run `command` to its end where `stopper` can kill it, each line of its
@@ -52,7 +50,7 @@ pub(crate) fn run_one(
         .spawn()
         .map_err(|e| {
             let program = super::name(std::path::Path::new(command.get_program()));
-            Failed::Start(format!("cannot run {program}: {e}"))
+            Failed::Error(format!("cannot run {program}: {e}"))
         })?;
     let log = child.stderr.take();
     // Where `stop` can reach it; stopped meanwhile, it goes at once.
@@ -74,9 +72,9 @@ pub(crate) fn run_one(
     }
     match status {
         Some(Ok(s)) if s.success() => Ok(()),
-        Some(Err(e)) => Err(Failed::Exit(e.to_string())),
-        Some(Ok(s)) => Err(Failed::Exit(reason(&last, &s.to_string()))),
-        None => Err(Failed::Exit(reason(&last, "ended"))),
+        Some(Err(e)) => Err(Failed::Error(e.to_string())),
+        Some(Ok(s)) => Err(Failed::Error(reason(&last, &s.to_string()))),
+        None => Err(Failed::Error(reason(&last, "ended"))),
     }
 }
 

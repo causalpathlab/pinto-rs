@@ -4,6 +4,7 @@
 use super::batch;
 use super::jobs::State;
 use super::{App, Kind, Screen, Target};
+use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -134,26 +135,22 @@ impl App {
         let name_w = self
             .pairs
             .iter()
-            .map(|p| self.shown(&p.data).chars().count())
+            .map(|p| shown(&p.data).chars().count())
             .max()
             .unwrap_or(0)
             .min(w / 2);
         for (i, p) in self.pairs.iter().enumerate() {
-            let text = format!(
-                " {:<name_w$}  {}",
-                fit(&self.shown(&p.data), name_w),
-                p.info
-            );
+            let text = format!(" {:<name_w$}  {}", fit(&shown(&p.data), name_w), p.info);
             let coords = p
                 .coord
                 .as_ref()
-                .map_or_else(|| "none".to_string(), |f| self.shown(f));
+                .map_or_else(|| "none".to_string(), |f| shown(f));
             let batch = match batch::kind(p) {
                 batch::Kind::File => "its own".to_string(),
                 batch::Kind::Named(n) => format!("“{n}” for every cell"),
-                batch::Kind::Labels(f) if p.renames.is_empty() => self.shown(f),
+                batch::Kind::Labels(f) if p.renames.is_empty() => shown(f),
                 batch::Kind::Labels(f) => {
-                    format!("{} ({} renamed)", self.shown(f), p.renames.len())
+                    format!("{} ({} renamed)", shown(f), p.renames.len())
                 }
             };
             let more = format!("   coordinates {coords}  ·  batch {batch}");
@@ -183,10 +180,7 @@ impl App {
     /// The batches the data make, each with its files and cells.
     fn batch_lines(&self, w: usize) -> Vec<Line<'static>> {
         let (batches, notes) = batch::summary(&self.pairs);
-        let own = self
-            .pairs
-            .iter()
-            .all(|p| batch::kind(p) == batch::Kind::File);
+        let own = batch::all_own(&self.pairs);
         let mut lines = vec![Line::from(Span::styled(
             if own {
                 format!("Batches: each file its own ({} in all)", batches.len())
@@ -226,12 +220,8 @@ impl App {
             return Vec::new();
         };
         let p = &self.pairs[l.row];
-        let counts = p
-            .labels
-            .as_ref()
-            .and_then(|r| r.as_ref().ok())
-            .cloned()
-            .unwrap_or_default();
+        let empty = std::collections::BTreeMap::new();
+        let counts = p.label_counts().unwrap_or(&empty);
         let mut out = vec![
             Line::from(Span::styled(
                 format!(
@@ -479,7 +469,7 @@ impl App {
             let text = format!(
                 " {:<13} {:<24} {said}",
                 j.method,
-                fit(&self.shown(&j.manifest()), 24)
+                fit(&shown(&j.manifest()), 24)
             );
             let style = if i == self.job_row { selected() } else { style };
             lines.push(Line::from(Span::styled(fit(&text, w), style)));
@@ -503,11 +493,7 @@ impl App {
         let mut body: Vec<Line<'static>> = Vec::new();
         for p in planned {
             body.extend(wrap(
-                format!(
-                    " {}   recorded in {}",
-                    p.job.method,
-                    self.shown(&p.job.script())
-                ),
+                format!(" {}   recorded in {}", p.job.method, shown(&p.job.script())),
                 bold(),
             ));
             let lines = super::script::command_lines(&p.job.argv);
@@ -565,16 +551,16 @@ impl App {
 /// first.
 fn wrap(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
     const INDENT: &str = "       ";
-    let chars: Vec<char> = text.chars().collect();
-    let first = width.max(1);
-    let rest = width.saturating_sub(INDENT.len()).max(1);
-    let mut out = vec![Line::from(Span::styled(
-        chars.iter().take(first).collect::<String>(),
-        style,
-    ))];
-    for chunk in chars.get(first..).unwrap_or_default().chunks(rest) {
-        let row: String = INDENT.chars().chain(chunk.iter().copied()).collect();
-        out.push(Line::from(Span::styled(row, style)));
-    }
-    out
+    crate::tui::style::wrap(text, width, width.saturating_sub(INDENT.len()))
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let row = if i == 0 {
+                row
+            } else {
+                format!("{INDENT}{row}")
+            };
+            Line::from(Span::styled(row, style))
+        })
+        .collect()
 }

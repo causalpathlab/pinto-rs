@@ -59,35 +59,34 @@ const WIDE_PANEL: u16 = 46;
 const ZOOM: f32 = 1.25;
 
 pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
-    // Log lines would land over the screen: off while it is ours.
-    let logging = log::max_level();
-    log::set_max_level(log::LevelFilter::Off);
-    let mut terminal = ratatui::init();
-    let result = (|| {
-        // The terminal is asked first: its background picks the theme the
-        // palette is built in.
-        let (gfx, px, background) = Gfx::pick(args.graphics);
-        let theme = args
-            .theme
-            .or(background.map(Theme::for_background))
-            .unwrap_or(Theme::Dark);
-        terminal.draw(|f| {
-            let msg = format!(" loading {} ...", args.prefix());
-            f.render_widget(Paragraph::new(msg), f.area());
-        })?;
-        let base = Base::load(args.prefix(), &args.units, theme)?;
-        let first = base.run.level_index(args.level.as_deref())?;
-        let level = base.level(first, args.edges)?;
+    crate::tui::with_terminal(|terminal| {
+        let result = show(args, terminal);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        result
+    })
+}
 
-        execute!(std::io::stdout(), EnableMouseCapture)?;
-        let mut app = App::new(&base, level, args, (gfx, px));
-        app.open_rounds(args.round.as_deref().map(PathBuf::from));
-        app.run(&mut terminal)
-    })();
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
-    log::set_max_level(logging);
-    result
+/// Load the run and show it until the user quits.
+fn show(args: &ViewArgs, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    // The terminal is asked first: its background picks the theme the
+    // palette is built in.
+    let (gfx, px, background) = Gfx::pick(args.graphics);
+    let theme = args
+        .theme
+        .or(background.map(Theme::for_background))
+        .unwrap_or(Theme::Dark);
+    terminal.draw(|f| {
+        let msg = format!(" loading {} ...", args.prefix());
+        f.render_widget(Paragraph::new(msg), f.area());
+    })?;
+    let base = Base::load(args.prefix(), &args.units, theme)?;
+    let first = base.run.level_index(args.level.as_deref())?;
+    let level = base.level(first, args.edges)?;
+
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let mut app = App::new(&base, level, args, (gfx, px));
+    app.open_rounds(args.round.as_deref().map(PathBuf::from));
+    app.run(terminal)
 }
 
 /// How the map reaches the screen.

@@ -26,8 +26,8 @@ impl Wanted for Txt {
         Some(String::new())
     }
 
-    fn describe<'a>(&self, about: &'a String) -> std::borrow::Cow<'a, str> {
-        std::borrow::Cow::Borrowed(about)
+    fn row(&self, name: &str, about: &String, name_w: usize) -> String {
+        name_then(name, about, name_w)
     }
 
     fn many(&self) -> bool {
@@ -147,9 +147,6 @@ fn lines_fit_their_width_and_a_caller_lays_out_its_rows() {
         fn file(&self, _path: &Path, name: &str) -> Option<usize> {
             name.ends_with(".txt").then_some(name.len())
         }
-        fn describe<'a>(&self, n: &'a usize) -> std::borrow::Cow<'a, str> {
-            n.to_string().into()
-        }
         fn row(&self, name: &str, n: &usize, _name_w: usize) -> String {
             format!("{n:>5}  {name}")
         }
@@ -198,8 +195,8 @@ impl Wanted for Counting {
         name.ends_with(".txt").then_some(())
     }
 
-    fn describe<'a>(&self, (): &'a ()) -> std::borrow::Cow<'a, str> {
-        "".into()
+    fn row(&self, name: &str, (): &(), _name_w: usize) -> String {
+        name.to_string()
     }
 
     fn best(&self, _dir: &Path, files: &[(&str, &())]) -> Option<String> {

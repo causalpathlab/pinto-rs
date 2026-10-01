@@ -4,8 +4,8 @@
 //! tests pin the schema at lc's writer and the tie rule at the shared
 //! helper both writers derive their `cluster` column from.
 
-use crate::link_community::outputs::write_propensity_parquet;
-use crate::link_community::profiles::dominant_cluster_rows;
+use crate::link_community::outputs::write_propensity_matrix;
+use crate::link_community::profiles::{compute_node_membership, dominant_cluster_rows};
 use crate::util::common::*;
 use legume_numeric::matrix::traits::MatWithNames;
 
@@ -38,8 +38,8 @@ fn propensity_parquet_carries_the_shared_schema() {
     let fine_labels = vec![0usize, 1, 1, 0];
     let cell_names: Vec<Box<str>> = (0..4).map(|i| format!("c{i}").into()).collect();
 
-    let propensity =
-        write_propensity_parquet(&prefix, &edges, &fine_labels, 4, 2, &cell_names).unwrap();
+    let propensity = compute_node_membership(&edges, &fine_labels, 4, 2);
+    write_propensity_matrix(&prefix, &propensity, &cell_names).unwrap();
 
     let MatWithNames { rows, cols, mat } =
         Mat::from_parquet(&format!("{prefix}.propensity.parquet")).unwrap();
@@ -61,30 +61,4 @@ fn propensity_parquet_carries_the_shared_schema() {
         };
         assert_eq!(mat[(i, 2)], expect, "cell {i} cluster is the row argmax");
     }
-}
-
-/// With no collapse the draft is the final result: its three files move
-/// to the final names the manifest lists, over any stale ones.
-#[test]
-fn draft_outputs_become_the_final_ones() {
-    use crate::link_community::outputs::{move_partition_outputs, PARTITION_SUFFIXES};
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("run").to_string_lossy().into_owned();
-    let draft = format!("{out}.draft");
-    for s in PARTITION_SUFFIXES {
-        std::fs::write(format!("{draft}.{s}"), format!("draft {s}")).unwrap();
-    }
-    std::fs::write(format!("{out}.propensity.parquet"), "stale").unwrap();
-    move_partition_outputs(&draft, &out).unwrap();
-    for s in PARTITION_SUFFIXES {
-        assert_eq!(
-            std::fs::read_to_string(format!("{out}.{s}")).unwrap(),
-            format!("draft {s}")
-        );
-        assert!(!std::path::Path::new(&format!("{draft}.{s}")).exists());
-    }
-    let err = move_partition_outputs(&draft, &out)
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("draft.link_community.parquet"), "{err}");
 }

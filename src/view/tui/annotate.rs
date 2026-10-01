@@ -1210,9 +1210,7 @@ impl App<'_> {
             None,
         ));
         let rows = room.saturating_sub(out.len()).max(1);
-        let first =
-            r.at.saturating_sub(rows / 2)
-                .min(r.order.len().saturating_sub(rows));
+        let first = style::first_row(r.at, rows, r.order.len());
         for (i, &c) in r.order.iter().enumerate().skip(first).take(rows) {
             let d = &round.reviewed[&c].digest;
             let g = round.group(c);
@@ -1351,6 +1349,5 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// `s` in lines of at most `n` characters.
 fn wrap(s: &str, n: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    chars.chunks(n.max(1)).map(|c| c.iter().collect()).collect()
+    style::wrap(s, n, n)
 }
