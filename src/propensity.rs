@@ -87,7 +87,7 @@ pub struct SrtPropensityArgs {
         long_help = "Output file prefix. Generates: {out}.propensity.parquet,\n\
                      {out}.link_community.parquet"
     )]
-    out: Box<str>,
+    pub out: Box<str>,
 }
 
 pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {

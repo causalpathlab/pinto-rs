@@ -387,8 +387,13 @@ impl App {
                             r.typed = false;
                             r.out = free_out(&self.here, &under(&self.header, &r.form.name));
                         } else {
+                            // A folder: the method's name in it.
                             r.typed = true;
-                            r.out = t.to_string();
+                            r.out = if t.ends_with('/') {
+                                under(t, &r.form.name)
+                            } else {
+                                t.to_string()
+                            };
                         }
                     }
                     Target::Field(m, f) => {

@@ -62,7 +62,9 @@ It first asks for an output header, what every result of the run is named
 after: `exp1` gives `exp1_lc`, `exp1_cage`, …, and `results/` gives
 `results/lc`, … (the folder is made when the fit starts). Esc leaves each
 `--out` as the method's name. `O` on the Methods screen changes the header
-later, and `o` names one `--out` by hand.
+later, and `o` names one `--out` by hand. Anywhere in pinto, an `--out`
+ending in `/` is a folder: `pinto lc … --out res/` writes `res/lc.*`, and the
+folder is made as needed.
 
 Each data file is its own batch unless you say otherwise: `n` puts all its
 cells in one named batch (two files given one name are one batch), `b` takes

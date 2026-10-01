@@ -636,3 +636,22 @@ fn esc_on_a_later_header_edit_keeps_the_header() {
         .iter()
         .all(|r| r.out == format!("exp1_{}", r.form.name)));
 }
+
+#[test]
+fn a_hand_typed_folder_out_names_the_method_in_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.pairs = data(dir.path(), &["d.zarr"]);
+    a.screen = Screen::Methods;
+    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
+    a.method_row = lc;
+    a.rows[lc].on = true;
+    key(&mut a, KeyCode::Char('o'));
+    a.editor.as_mut().unwrap().text = "res/sub/".into();
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.rows[lc].out, "res/sub/lc");
+    // Not there yet: no problem, the run makes it.
+    let p = &a.plan()[0];
+    assert_eq!(p.problem, None);
+    assert_eq!(p.job.dir, script::normalize(&dir.path().join("res/sub")));
+}
