@@ -113,6 +113,45 @@ fn feature_matching_goes_through_the_canonicalizer() -> anyhow::Result<()> {
 }
 
 #[test]
+fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (profiles, _) = disjoint_profiles();
+    // Model keys as training writes them: `chr` dropped, case kept.
+    let features: Vec<Box<str>> = ["X_0_1000", "X_2000_3000", "1_0_1000", "1_2000_3000"]
+        .map(Into::into)
+        .to_vec();
+    // Two files read the way impute reads them, so the loader aligns
+    // their rows as loci.
+    let peaks = [
+        "chrX:0-1000",
+        "chrX:2000-3000",
+        "chr1:0-1000",
+        "chr1:2000-3000",
+    ];
+    let mut files: Vec<Box<str>> = Vec::new();
+    for name in ["a.zarr", "b.zarr"] {
+        make_data(&dir, name, &peaks, &[(0, 0, 5.0), (1, 0, 3.0)], 1)?;
+        files.push(dir.path().join(name).to_string_lossy().into());
+    }
+    let data = open_backends("test", &files, false)?;
+    let prop = project_profile_propensity(
+        &data,
+        &profiles,
+        &features,
+        &data_beans::aux::feature_names::FeatureNameKind::Locus {
+            merge_overlapping: false,
+        },
+        100,
+        None,
+        "test",
+    )?;
+    for c in 0..2 {
+        assert!(prop[(c, 0)] > 0.99, "chrX peaks matched: {}", prop[(c, 0)]);
+    }
+    Ok(())
+}
+
+#[test]
 fn a_cell_off_the_model_axis_keeps_a_zero_row() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let (profiles, features) = disjoint_profiles();

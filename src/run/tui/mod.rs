@@ -49,14 +49,18 @@ impl Screen {
 struct Row {
     form: Method,
     on: bool,
-    /// The `--out` prefix as typed: relative to where pinto run started,
-    /// or absolute.
+    /// The `--out` prefix: relative to where pinto run started, or
+    /// absolute.
     out: String,
+    /// Whether `out` was typed by hand, so the output header leaves it.
+    typed: bool,
 }
 
 /// What a line being typed will become.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
+    /// What every result of the run is named after.
+    Header,
     Out(usize),
     /// Method row, field index.
     Field(usize, usize),
@@ -97,6 +101,8 @@ pub(crate) struct App {
     /// Where the browser opens next.
     browse_dir: PathBuf,
     rows: Vec<Row>,
+    /// What every `--out` not typed by hand is named after: see [`under`].
+    header: String,
     method_row: usize,
     /// The method whose flags the parameters screen shows.
     param_method: usize,
@@ -240,6 +246,7 @@ impl App {
                     form: Method::new(&cli, m)?,
                     on: false,
                     out: free_out(&here, m),
+                    typed: false,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -253,12 +260,17 @@ impl App {
             browser: Some(Browser::open(start.clone(), Pick::Data, None)),
             browse_dir: start,
             rows,
+            header: String::new(),
             method_row: 0,
             param_method: 0,
             field_row: 0,
             advanced: false,
             filter: String::new(),
-            editor: None,
+            // Asked first, over the file browser.
+            editor: Some(Editor {
+                target: Target::Header,
+                text: String::new(),
+            }),
             confirm: None,
             confirm_scroll: 0,
             confirm_max: std::cell::Cell::new(0),
@@ -363,12 +375,25 @@ impl App {
             KeyCode::Enter => {
                 let Editor { target, text } = self.editor.take().unwrap();
                 match target {
+                    Target::Header => {
+                        self.header = text.trim().to_string();
+                        self.refresh_outs();
+                    }
                     Target::Out(i) => {
                         let t = text.trim();
+                        let r = &mut self.rows[i];
                         if t.is_empty() {
-                            self.message = Some("--out cannot be empty".into());
+                            // Cleared: back under the header.
+                            r.typed = false;
+                            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
                         } else {
-                            self.rows[i].out = t.to_string();
+                            // A folder: the method's name in it.
+                            r.typed = true;
+                            r.out = if t.ends_with('/') {
+                                under(t, &r.form.name)
+                            } else {
+                                t.to_string()
+                            };
                         }
                     }
                     Target::Field(m, f) => {
@@ -677,6 +702,7 @@ impl App {
                 let out = self.rows[self.method_row].out.clone();
                 self.edit(Target::Out(self.method_row), out);
             }
+            KeyCode::Char('O') => self.edit(Target::Header, self.header.clone()),
             KeyCode::Enter | KeyCode::Right => {
                 self.rows[self.method_row].on = true;
                 self.show_params(self.method_row);
@@ -859,7 +885,8 @@ impl App {
                 ))
             } else if outs.contains(&dir.join(&out)) {
                 Some("another queued method writes the same --out".to_string())
-            } else if !dir.is_dir() {
+            } else if std::fs::metadata(&dir).is_ok_and(|m| !m.is_dir()) {
+                // A folder not there yet is made when the fit starts.
                 Some(format!("{} is not a folder", shown(&dir)))
             } else {
                 form::check(&self.cli, &job.argv).err().inspect(|why| {
@@ -942,14 +969,19 @@ impl App {
         }
     }
 
-    /// Give each queued method whose `--out` is a default one the next
-    /// free name, so `g` again does not aim at the runs just started. A
-    /// name the user typed is left as it is.
+    /// Give each queued method whose `--out` was not typed by hand the
+    /// next free name, so `g` again does not aim at the runs just started.
     fn move_outs_on(&mut self) {
-        for r in self.rows.iter_mut().filter(|r| r.on) {
-            if default_out(&r.out, &r.form.name) {
-                r.out = next_out(&self.here, &r.form.name, Some(&r.out));
-            }
+        for r in self.rows.iter_mut().filter(|r| r.on && !r.typed) {
+            r.out = next_out(&self.here, &under(&self.header, &r.form.name), Some(&r.out));
+        }
+    }
+
+    /// Name every `--out` not typed by hand after the header, each the
+    /// first free one.
+    fn refresh_outs(&mut self) {
+        for r in self.rows.iter_mut().filter(|r| !r.typed) {
+            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
         }
     }
 
@@ -983,8 +1015,9 @@ impl App {
                 if p.job.dir == self.here {
                     cmd
                 } else {
-                    let to = script::relative(&p.job.dir, &self.here);
-                    format!("(cd {} && {cmd})", script::quote(&to.to_string_lossy()))
+                    let to =
+                        script::quote(&script::relative(&p.job.dir, &self.here).to_string_lossy());
+                    format!("(mkdir -p {to} && cd {to} && {cmd})")
                 }
             })
             .collect::<Vec<_>>()
@@ -1042,16 +1075,29 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
         .collect()
 }
 
-/// `{method}`, or `{method}-2`, … : the first prefix in `dir` with no
-/// manifest or script yet.
-fn free_out(dir: &Path, method: &str) -> String {
-    next_out(dir, method, None)
+/// `stem` named after the output `header`: the stem alone when there is
+/// none, `{header}{stem}` when it ends in `/` (a folder), `_`, `-` or
+/// `.`, else `{header}_{stem}`.
+fn under(header: &str, stem: &str) -> String {
+    if header.is_empty() {
+        stem.to_string()
+    } else if header.ends_with(['/', '_', '-', '.']) {
+        format!("{header}{stem}")
+    } else {
+        format!("{header}_{stem}")
+    }
 }
 
-/// The first of `{method}`, `{method}-2`, … in `dir` with no manifest or
+/// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no
+/// manifest or script yet.
+fn free_out(dir: &Path, base: &str) -> String {
+    next_out(dir, base, None)
+}
+
+/// The first of `{base}`, `{base}-2`, … in `dir` with no manifest or
 /// script yet, and not `used` (a run started, its files not written yet).
-fn next_out(dir: &Path, method: &str, used: Option<&str>) -> String {
-    first_free(method, |p| {
+fn next_out(dir: &Path, base: &str, used: Option<&str>) -> String {
+    first_free(base, |p| {
         Some(p) == used || jobs::outputs(dir, p).iter().any(|f| f.exists())
     })
 }
@@ -1062,16 +1108,6 @@ pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .chain((2..).map(|k| format!("{base}-{k}")))
         .find(|p| !taken(p))
         .unwrap_or_else(|| base.to_string())
-}
-
-/// Whether `out` is one [`free_out`] would give `method`: `{method}` or
-/// `{method}-{k}`.
-fn default_out(out: &str, method: &str) -> bool {
-    out == method
-        || out
-            .strip_prefix(method)
-            .and_then(|r| r.strip_prefix('-'))
-            .is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Put `text` on the clipboard: `pbcopy` where there is one, else the

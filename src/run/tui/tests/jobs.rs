@@ -105,3 +105,23 @@ fn batch_files_made_for_a_run_are_written_before_it_starts() {
     );
     assert!(dir.path().join("r.cmd.sh").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_new_out_folder_is_made_before_the_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let at = dir.path().join("res").join("sub");
+    let job = Job {
+        method: "lc".into(),
+        dir: at.clone(),
+        out: "r".into(),
+        argv: vec!["lc".into(), "--out".into(), "r".into()],
+        made: Vec::new(),
+    };
+    let q = Queue::start(vec![job], PathBuf::from("true"));
+    while !q.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(q.shared.lock().unwrap().states[0], State::Done);
+    assert!(at.join("r.cmd.sh").exists());
+}

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use crate::tui::child::{run_one, Failed, Stopper};
+use legume_numeric::matrix::common_io::mkdir;
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
@@ -43,12 +44,6 @@ impl Job {
     #[must_use]
     pub fn script(&self) -> PathBuf {
         outputs(&self.dir, &self.out)[1].clone()
-    }
-
-    /// Where the batch label files written for the run go.
-    #[must_use]
-    pub fn batches(&self) -> PathBuf {
-        outputs(&self.dir, &self.out)[2].clone()
     }
 }
 
@@ -172,14 +167,14 @@ fn run_job(
     if job.manifest().exists() {
         return State::Failed(format!("{} exists", job.manifest().display()));
     }
+    if let Err(e) = mkdir(&job.dir.to_string_lossy()) {
+        return State::Failed(format!("cannot make {}: {e}", job.dir.display()));
+    }
     if !job.made.is_empty() {
-        let written = std::fs::create_dir(job.batches())
-            .map_err(anyhow::Error::from)
-            .and_then(|()| {
-                job.made
-                    .iter()
-                    .try_for_each(|(path, what)| super::batch::write(path, what))
-            });
+        let written = job
+            .made
+            .iter()
+            .try_for_each(|(path, what)| super::batch::write(path, what));
         if let Err(e) = written {
             return State::Failed(format!("cannot write the batch files: {e}"));
         }

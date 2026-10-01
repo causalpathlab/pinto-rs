@@ -1,3 +1,4 @@
+mod batch_effects;
 mod cell_pairs;
 mod edge_clustering;
 mod graph_augmentation;

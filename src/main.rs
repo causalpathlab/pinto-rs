@@ -775,6 +775,33 @@ fn expand_lra_from_metadata(mut args: Vec<String>) -> anyhow::Result<Vec<String>
     Ok(args)
 }
 
+impl Commands {
+    /// A fit's `--out`, and the name its files take in a folder `--out`.
+    fn out_mut(&mut self) -> Option<(&mut Box<str>, &'static str)> {
+        Some(match self {
+            Commands::Propensity(a) => (&mut a.out, "prop"),
+            Commands::DeltaSvd(a) => (&mut a.common.out, "dsvd"),
+            Commands::LinkCommunity(a) => (&mut a.common.out, "lc"),
+            Commands::Cage(a) => (&mut a.common.out, "cage"),
+            Commands::Predict(a) => (&mut a.common.out, "predict"),
+            Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
+            Commands::LrActivity(a) => (&mut a.out, "lra"),
+            _ => return None,
+        })
+    }
+}
+
+/// An `--out` ending in `/` is a folder: the fit writes `{folder}/{name}.*`
+/// (`--out res/` on `lc` gives `res/lc`), and makes the folder as it makes
+/// any `--out`'s parent.
+fn name_folder_out(commands: &mut Commands) {
+    if let Some((out, name)) = commands.out_mut() {
+        if out.ends_with('/') {
+            *out = format!("{out}{name}").into();
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Rust ignores SIGPIPE, so printing into a closed pipe (`pinto … | head`)
     // panics. Take the default back: the process just ends, as other
@@ -789,7 +816,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let argv = expand_lra_from_metadata(std::env::args().collect())?;
-    let cli = Cli::parse_from(argv);
+    let mut cli = Cli::parse_from(argv);
+    name_folder_out(&mut cli.commands);
 
     crate::util::common::init_logger(cli.verbose);
 
@@ -839,3 +867,7 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/main.rs"]
+mod tests;

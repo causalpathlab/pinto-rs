@@ -48,8 +48,19 @@ impl App {
             popup(f, area, self.label_lines(rows), 80);
         }
         if let Some(e) = &self.editor {
+            let mut help = Vec::new();
             let what = match &e.target {
-                Target::Out(i) => format!(" --out for {}", self.rows[*i].form.name),
+                Target::Header => {
+                    help = vec![
+                        " exp1 → exp1_lc, exp1_cage, …   results/ → results/lc, …",
+                        " O on Methods changes it later; o names one --out by hand",
+                    ];
+                    " Output header: what every result of this run is named after".to_string()
+                }
+                Target::Out(i) => format!(
+                    " --out for {} (empty: back under the output header)",
+                    self.rows[*i].form.name
+                ),
                 Target::Field(m, i) => format!(" --{}", self.rows[*m].form.fields[*i].long),
                 Target::Filter => " flags containing".to_string(),
                 Target::Name(i) => format!(
@@ -60,11 +71,19 @@ impl App {
                     format!(" new name for label “{label}” (empty: keep it)")
                 }
             };
-            let lines = vec![
-                Line::from(Span::styled(what, bold())),
-                Line::from(format!(" {}▏", e.text)),
-                Line::from(Span::styled(" enter keep   esc cancel", dim())),
-            ];
+            // At the start there is no header yet: esc goes on without one.
+            let esc = if e.target == Target::Header && self.header.is_empty() {
+                "esc no header"
+            } else {
+                "esc cancel"
+            };
+            let mut lines = vec![Line::from(Span::styled(what, bold()))];
+            lines.extend(help.into_iter().map(|h| Line::from(Span::styled(h, dim()))));
+            lines.push(Line::from(format!(" {}▏", e.text)));
+            lines.push(Line::from(Span::styled(
+                format!(" enter keep   {esc}"),
+                dim(),
+            )));
             popup(f, area, lines, 90);
         }
     }
@@ -118,7 +137,8 @@ impl App {
             Screen::Methods => &[
                 "space queue",
                 "enter / → queue and show flags",
-                "o change --out",
+                "o name one --out by hand",
+                "O output header",
             ],
             Screen::Params => &[
                 "space / enter change",
@@ -309,13 +329,32 @@ impl App {
                 "Methods to fit on these data, each to its own --out",
                 bold(),
             )),
+            Line::from(vec![
+                Span::styled(" output header ", dim()),
+                Span::raw(if self.header.is_empty() {
+                    "none".to_string()
+                } else {
+                    self.header.clone()
+                }),
+            ]),
             Line::from(""),
         ];
         let w = usize::from(area.width);
-        let out_w = self
+        // A hand-typed --out is marked ✎.
+        let outs: Vec<String> = self
             .rows
             .iter()
-            .map(|r| r.out.chars().count())
+            .map(|r| {
+                if r.typed {
+                    format!("{} ✎", r.out)
+                } else {
+                    r.out.clone()
+                }
+            })
+            .collect();
+        let out_w = outs
+            .iter()
+            .map(|o| o.chars().count())
             .max()
             .unwrap_or(0)
             .min(32);
@@ -325,7 +364,7 @@ impl App {
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
                 if r.on { "x" } else { " " },
                 r.form.name,
-                fit(&r.out, out_w),
+                fit(&outs[i], out_w),
                 if changed == 0 {
                     "defaults".to_string()
                 } else {
