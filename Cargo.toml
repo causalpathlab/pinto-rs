@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -47,7 +47,7 @@ hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
 cnv = { version = "0.2.1", package = "mung-cnv" }
-data-beans = { version = "0.6.12", features = ["aux", "alg"] }
+data-beans = { version = "0.6.21", features = ["aux", "alg"] }
 legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 parquet = "59"
