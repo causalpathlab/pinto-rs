@@ -8,7 +8,7 @@ fn palette(k: usize) -> Vec<[u8; 3]> {
 }
 use crate::view::data::{Communities, Geometry, Rect};
 use crate::view::index::{Grid, Pyramid};
-use crate::view::render::{render, Frame, Layer, Scene, Style, Viewport};
+use crate::view::render::{mode, render, Frame, Layer, Mode, Scene, Style, Viewport};
 
 /// A 40×40 lattice filling x,y in 0..40, one community per 10-wide stripe.
 fn fixture() -> (Geometry, Communities, Grid, Pyramid) {
@@ -29,6 +29,10 @@ fn draw(w: usize, window: Rect) -> Frame {
 }
 
 fn draw_focused(w: usize, window: Rect, focus: Option<&[bool]>) -> Frame {
+    draw_styled(w, window, focus, 1.)
+}
+
+fn draw_styled(w: usize, window: Rect, focus: Option<&[bool]>, point: f32) -> Frame {
     let (geom, comm, grid, pyramid) = fixture();
     let scene = Scene {
         geom: &geom,
@@ -43,6 +47,7 @@ fn draw_focused(w: usize, window: Rect, focus: Option<&[bool]>) -> Frame {
         edges: false,
         focus,
         theme: DARK,
+        point,
     };
     render(&scene, &Viewport::fit(window, w, w), &style, &palette(4))
 }
@@ -111,4 +116,45 @@ fn layer_names_parse() {
     assert_eq!("C7".parse::<Layer>().unwrap(), Layer::Community(7));
     assert_eq!("c0".parse::<Layer>().unwrap(), Layer::Community(0));
     assert!("blue".parse::<Layer>().is_err());
+}
+
+/// Pixels not in the background colour.
+fn painted(frame: &Frame) -> usize {
+    (0..frame.h)
+        .flat_map(|y| (0..frame.w).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(frame, x, y) != frame.background)
+        .count()
+}
+
+#[test]
+fn larger_points_cover_more_of_the_frame() {
+    // A corner of the lattice, a few pixels per cell: points either way.
+    let window = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 8.,
+        y1: 8.,
+    };
+    let small = painted(&draw_styled(64, window, None, 0.5));
+    let normal = painted(&draw_styled(64, window, None, 1.));
+    let large = painted(&draw_styled(64, window, None, 2.));
+    assert!(small < normal && normal < large, "{small} {normal} {large}");
+}
+
+#[test]
+fn larger_points_are_drawn_from_further_out() {
+    let (geom, comm, grid, pyramid) = fixture();
+    let scene = Scene {
+        geom: &geom,
+        comm: &comm,
+        grid: &grid,
+        pyramid: &pyramid,
+        edges: None,
+        spacing: 1.,
+    };
+    // About 1.6 pixels per cell: averaged at the default size.
+    let vp = Viewport::fit(geom.bounds(), 64, 64);
+    assert_ne!(mode(&scene, &vp, 1.), Mode::Points);
+    assert_ne!(mode(&scene, &vp, 0.5), Mode::Points);
+    assert_eq!(mode(&scene, &vp, 2.), Mode::Points);
 }

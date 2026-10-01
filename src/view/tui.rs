@@ -11,6 +11,7 @@
 mod annotate;
 mod browse;
 mod gallery;
+pub(super) mod grid;
 mod plots;
 
 pub use browse::pick_run;
@@ -57,6 +58,9 @@ const WIDE_PANEL: u16 = 46;
 
 /// Zoom step per key press or wheel notch.
 const ZOOM: f32 = 1.25;
+
+/// Point size step per `<` or `>`.
+const POINT_STEP: f32 = 1.25;
 
 pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
     crate::tui::with_terminal(|terminal| {
@@ -181,8 +185,12 @@ struct App<'a> {
     layer: Layer,
     community: usize,
     edges: bool,
+    /// Cell disc size, × the default (`<`/`>`).
+    point: f32,
     /// Batch tile last jumped to.
     tile: Option<usize>,
+    /// Every batch side by side (`w`).
+    grid: grid::Grid,
 
     /// Communities shown in colour, one flag each; all false shows every one.
     focus: Vec<bool>,
@@ -276,7 +284,9 @@ impl<'a> App<'a> {
             layer: args.layer,
             community,
             edges: args.edges,
+            point: args.point_size,
             tile: None,
+            grid: grid::Grid::default(),
             focus: vec![false; k],
             shown: None,
             markers: Vec::new(),
@@ -381,7 +391,8 @@ impl<'a> App<'a> {
         // two rows of panel names under that.
         self.bars = Rect::default();
         self.below = Rect::default();
-        if self.structure && self.view == plots::View::Map && map.height >= 16 {
+        if self.structure && self.view == plots::View::Map && !self.grid_shows() && map.height >= 16
+        {
             let (h, names) = ((map.height / 4).max(6), 2);
             self.below = Rect::new(map.x, map.bottom() - names, map.width, names);
             self.bars = Rect::new(map.x, map.bottom() - names - h, map.width, h);
@@ -409,13 +420,20 @@ impl<'a> App<'a> {
 
     fn viewport(&self) -> Viewport {
         let (w, h) = self.image_size();
-        Viewport {
-            x0: self.center.0 - 0.5 * w as f32 * self.upp,
-            y0: self.center.1 - 0.5 * h as f32 * self.upp,
-            upp: self.upp,
-            w,
-            h,
-        }
+        Viewport::at(self.center, self.upp, w, h)
+    }
+
+    /// Show `vp`'s window on the map.
+    fn set_view(&mut self, vp: &Viewport) {
+        self.upp = vp.upp;
+        self.center = vp.centre();
+        self.need_map = true;
+    }
+
+    /// The zoom limits, in world units per pixel, for a `w × h` frame
+    /// that fits `r`: down to single cells, out to 8× the fit.
+    fn zoom_limits(&self, r: WorldRect, (w, h): (usize, usize)) -> (f32, f32) {
+        (self.base.spacing / 80., Viewport::fit(r, w, h).upp * 8.)
     }
 
     /// Fit `r`, with a small margin, to the map.
@@ -428,11 +446,18 @@ impl<'a> App<'a> {
         self.need_map = true;
     }
 
+    /// Pixel under terminal cell `(col, row)`, in an image placed at `r`.
+    fn px_in(&self, r: Rect, col: u16, row: u16) -> (f32, f32) {
+        (
+            (col.saturating_sub(r.x) as f32 + 0.5) * self.px_per_cell.0,
+            (row.saturating_sub(r.y) as f32 + 0.5) * self.px_per_cell.1,
+        )
+    }
+
     /// World point under terminal cell `(col, row)`.
     fn world_at(&self, col: u16, row: u16) -> (f32, f32) {
         let vp = self.viewport();
-        let px = (col.saturating_sub(self.map.x) as f32 + 0.5) * self.px_per_cell.0;
-        let py = (row.saturating_sub(self.map.y) as f32 + 0.5) * self.px_per_cell.1;
+        let (px, py) = self.px_in(self.map, col, row);
         (vp.x0 + px * vp.upp, vp.y0 + py * vp.upp)
     }
 
@@ -442,16 +467,10 @@ impl<'a> App<'a> {
 
     /// Scale by `f` (> 1 zooms out) keeping `anchor` fixed on screen.
     fn zoom(&mut self, f: f32, anchor: Option<(u16, u16)>) {
-        let b = self.base.geom.bounds();
-        let (w, h) = self.image_size();
-        let max = Viewport::fit(b, w, h).upp * 8.;
-        let min = self.base.spacing / 80.;
-        let upp = (self.upp * f).clamp(min, max);
-        let f = upp / self.upp;
-        let (ax, ay) = anchor.map_or(self.center, |(c, r)| self.world_at(c, r));
-        self.center = (ax + (self.center.0 - ax) * f, ay + (self.center.1 - ay) * f);
-        self.upp = upp;
-        self.need_map = true;
+        let limits = self.zoom_limits(self.base.geom.bounds(), self.image_size());
+        let anchor = anchor.map(|(c, r)| self.px_in(self.map, c, r));
+        let vp = self.viewport().zoomed(f, anchor, limits);
+        self.set_view(&vp);
     }
 
     /// Pan by a fraction of the view.
@@ -492,6 +511,9 @@ impl<'a> App<'a> {
         if self.relabel.is_some() && self.relabel_key(key, terminal)? {
             return Ok(());
         }
+        if self.grid_shows() && self.grid_key(key) {
+            return Ok(());
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Esc => self.back(),
@@ -509,10 +531,7 @@ impl<'a> App<'a> {
             KeyCode::Char('Z') => self.zoom(ZOOM, None),
             KeyCode::Char('H') => self.cycle_chart(),
             KeyCode::Char('f') => self.toggle_saved(),
-            KeyCode::Char('0') => {
-                self.tile = None;
-                self.fit(self.base.geom.bounds());
-            }
+            KeyCode::Char('0') => self.fit_all(),
             KeyCode::Char('r') | KeyCode::Home => self.reset(),
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
             KeyCode::Char('2') => self.set_layer(Layer::Soft),
@@ -527,6 +546,7 @@ impl<'a> App<'a> {
             KeyCode::Char('L') => self.step_level(-1, terminal)?,
             KeyCode::Char('e') => self.toggle_edges(terminal)?,
             KeyCode::Char('b') => self.next_tile(),
+            KeyCode::Char('w') => self.toggle_grid(),
             KeyCode::Char('s') => self.export()?,
             KeyCode::Char('x') => self.clear_focus(),
             KeyCode::Char('g') => self.step_gene(1),
@@ -538,6 +558,8 @@ impl<'a> App<'a> {
             KeyCode::Char('C') => self.step_show(-1, terminal)?,
             KeyCode::Char('A') => self.ask_markers(),
             KeyCode::Char('R') => self.toggle_relabel(terminal)?,
+            KeyCode::Char('<') => self.scale_points(1. / POINT_STEP),
+            KeyCode::Char('>') => self.scale_points(POINT_STEP),
             KeyCode::Char('.') => self.next_round(1, terminal)?,
             KeyCode::Char(',') => self.next_round(-1, terminal)?,
             _ => {}
@@ -547,6 +569,9 @@ impl<'a> App<'a> {
 
     fn mouse(&mut self, m: MouseEvent) {
         let (col, row) = (m.column, m.row);
+        if self.grid_shows() {
+            return self.grid_mouse(m);
+        }
         // The structure plot: a click picks a community; nothing pans it.
         if self.bars.contains(Position::new(col, row)) {
             match m.kind {
@@ -701,6 +726,8 @@ impl<'a> App<'a> {
             self.view = plots::View::Map;
             self.structure = false;
             self.need_map = true;
+        } else if self.grid_shows() {
+            self.toggle_grid();
         } else if self.gene.is_some() {
             self.gene = None;
             self.need_map = true;
@@ -854,8 +881,9 @@ impl<'a> App<'a> {
             _ => 0,
         };
         self.edges = self.args.edges;
-        self.tile = None;
-        self.fit(self.base.geom.bounds());
+        self.point = self.args.point_size;
+        self.leave_grid();
+        self.fit_all();
         self.status = "back to the start".into();
     }
 
@@ -900,7 +928,8 @@ impl<'a> App<'a> {
             base.load_edges(self.level_mut())?;
         }
         if self.edges
-            && render::mode(&self.base.scene(self.level()), &self.viewport()) != Mode::Points
+            && render::mode(&self.base.scene(self.level()), &self.viewport(), self.point)
+                != Mode::Points
         {
             self.status = "edges show once zoomed in".into();
         }
@@ -908,7 +937,22 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// `<`/`>`: smaller or larger cell discs, on every map.
+    fn scale_points(&mut self, by: f32) {
+        self.point = step_point(self.point, by);
+        self.status = format!("point size ×{:.2}  < >", self.point);
+        self.need_map = true;
+    }
+
+    /// `0`: every batch fitted, the whole tissue on the map.
+    fn fit_all(&mut self) {
+        self.grid.forget_own();
+        self.tile = None;
+        self.fit(self.base.geom.bounds());
+    }
+
     fn next_tile(&mut self) {
+        self.leave_grid();
         let tiles = &self.base.geom.tiles;
         let next = self.tile.map_or(0, |t| (t + 1) % tiles.len());
         self.tile = Some(next);
@@ -924,10 +968,10 @@ impl<'a> App<'a> {
         if self.view != plots::View::Map {
             return self.export_plot();
         }
-        let stem = (1..)
-            .map(|n| format!("pinto-view-{n:03}"))
-            .find(|s| !std::path::Path::new(&format!("{s}.png")).exists())
-            .expect("unbounded");
+        if self.grid_shows() {
+            return self.export_grid();
+        }
+        let stem = free_stem("pinto-view", "png");
         let (png, pdf, txt) = (
             format!("{stem}.png"),
             format!("{stem}.pdf"),
@@ -1006,6 +1050,9 @@ impl<'a> App<'a> {
         if style.edges {
             cmd.push_str(" --edges");
         }
+        if style.point != 1. {
+            write!(cmd, " --point-size {}", style.point).ok();
+        }
         let theme = self
             .base
             .theme
@@ -1080,6 +1127,7 @@ impl<'a> App<'a> {
                     edges: false,
                     focus: None,
                     theme: self.base.theme,
+                    point: self.point,
                 },
             ),
             None => (self.level(), self.style()),
@@ -1092,6 +1140,7 @@ impl<'a> App<'a> {
             edges: self.edges && !self.level().grouping,
             focus: self.focus(),
             theme: self.base.theme,
+            point: self.point,
         }
     }
 
@@ -1105,6 +1154,14 @@ impl<'a> App<'a> {
             self.need_map = false;
             self.clear_frame()?;
         }
+        if self.need_map && self.grid_shows() {
+            self.need_map = false;
+            let t = Instant::now();
+            let (w, h) = self.image_size();
+            let frame = self.grid_frame((w, h), true);
+            self.render_time = t.elapsed();
+            self.send_frame(frame, &mut fresh)?;
+        }
         if self.need_map {
             self.need_map = false;
             let vp = self.viewport();
@@ -1116,7 +1173,7 @@ impl<'a> App<'a> {
             if let Some(units) = self.base.units {
                 scalebar::draw(&mut frame, &vp, units, false);
             }
-            let mode = render::mode(&scene, &vp);
+            let mode = render::mode(&scene, &vp, self.point);
             if self.bars.height > 0 {
                 frame = self.with_structure(frame);
             }
@@ -1249,6 +1306,7 @@ impl<'a> App<'a> {
             ),
             row("show", self.show_line()),
             row("scale", format!("{:.3} /px  {}", self.upp, self.mode)),
+            row("point", format!("×{:.2}  < >", self.point)),
             row(
                 "bar",
                 match self.base.units {
@@ -1283,6 +1341,7 @@ impl<'a> App<'a> {
             lines.push(row("edges", format!("{} (e)", thousands(n))));
         }
         match self.cursor {
+            _ if self.grid_shows() => lines.push(row("grid", self.grid_line())),
             Some((c, r)) => {
                 let (x, y) = self.world_at(c, r);
                 lines.push(row("at", format!("{x:.1}, {y:.1}")));
@@ -1333,7 +1392,7 @@ impl<'a> App<'a> {
         let mut legend = self.legend(room);
         // On a round's map the structure plot's colours are other groups:
         // its communities get a list of their own, to pick one from.
-        if self.bars.height > 0 && self.show != Show::Communities {
+        if self.bars_shown() && self.show != Show::Communities {
             let left = room.saturating_sub(legend.len() + 1);
             legend.extend(self.bars_legend(left));
         }
@@ -1533,8 +1592,11 @@ fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
         &[
             " arrows/drag  pan (shift: far)",
             " z/Z +/- or wheel  zoom",
+            " < >  smaller/larger points",
             " 0 fit   r back to the start",
-            " b next batch  e edges",
+            " b next batch  w every batch  e edges",
+            " grid: drag or shift+arrows move",
+            " grid: zoom, < > one batch; alt all",
             " 1 argmax 2 soft 3 entropy 4 focused",
             " ] [  focus next/prev group",
             " l/L  next/prev level (L1 .. final)",
@@ -1554,6 +1616,25 @@ fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
         &[" s save view  r start over", " Esc back  ? keys  q quit"]
     };
     text.iter().map(|t| Line::styled(*t, dim)).collect()
+}
+
+/// `x` stepped by the factor `by`, within `--point-size`'s range, snapped
+/// to 1 on the way through so the default is one key away.
+fn step_point(x: f32, by: f32) -> f32 {
+    let next = (x * by).clamp(*super::POINT_SIZES.start(), *super::POINT_SIZES.end());
+    if (next - 1.).abs() < 0.05 {
+        1.
+    } else {
+        next
+    }
+}
+
+/// The first `{prefix}-NNN` without a `.{ext}` file yet.
+fn free_stem(prefix: &str, ext: &str) -> String {
+    (1..)
+        .map(|n| format!("{prefix}-{n:03}"))
+        .find(|s| !std::path::Path::new(&format!("{s}.{ext}")).exists())
+        .expect("unbounded")
 }
 
 fn ms(d: Duration) -> f64 {

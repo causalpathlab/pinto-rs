@@ -130,18 +130,45 @@ impl Viewport {
         let upp = (r.width() / w as f32)
             .max(r.height() / h as f32)
             .max(f32::MIN_POSITIVE);
-        let cx = 0.5 * (r.x0 + r.x1);
-        let cy = 0.5 * (r.y0 + r.y1);
+        Viewport::at((0.5 * (r.x0 + r.x1), 0.5 * (r.y0 + r.y1)), upp, w, h)
+    }
+
+    /// The `w × h` frame centred on `centre` at `upp` world units a pixel.
+    pub fn at(centre: (f32, f32), upp: f32, w: usize, h: usize) -> Self {
         Viewport {
-            x0: cx - 0.5 * w as f32 * upp,
-            y0: cy - 0.5 * h as f32 * upp,
+            x0: centre.0 - 0.5 * w as f32 * upp,
+            y0: centre.1 - 0.5 * h as f32 * upp,
             upp,
             w,
             h,
         }
     }
 
-    fn to_px(self, x: f32, y: f32) -> (f32, f32) {
+    /// The world point at the frame's centre.
+    pub fn centre(&self) -> (f32, f32) {
+        (
+            self.x0 + 0.5 * self.w as f32 * self.upp,
+            self.y0 + 0.5 * self.h as f32 * self.upp,
+        )
+    }
+
+    /// Scaled by `f` (> 1 zooms out), `upp` kept within `limits`, with the
+    /// world point under pixel `anchor` (the centre without one) staying
+    /// under it.
+    pub fn zoomed(&self, f: f32, anchor: Option<(f32, f32)>, (min, max): (f32, f32)) -> Self {
+        let upp = (self.upp * f).clamp(min, max);
+        let f = upp / self.upp;
+        let (ax, ay) = anchor.unwrap_or((0.5 * self.w as f32, 0.5 * self.h as f32));
+        let (wx, wy) = (self.x0 + ax * self.upp, self.y0 + ay * self.upp);
+        Viewport {
+            x0: wx - (wx - self.x0) * f,
+            y0: wy - (wy - self.y0) * f,
+            upp,
+            ..*self
+        }
+    }
+
+    pub fn to_px(self, x: f32, y: f32) -> (f32, f32) {
         ((x - self.x0) / self.upp, (y - self.y0) / self.upp)
     }
 
@@ -167,6 +194,17 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// A `w × h` frame cleared to `background`.
+    pub fn blank(w: usize, h: usize, background: Rgb) -> Self {
+        let [r, g, b] = background;
+        Frame {
+            w,
+            h,
+            rgba: [r, g, b, 255].repeat(w * h),
+            background,
+        }
+    }
+
     /// Byte offset of pixel `(x, y)`.
     pub fn offset(&self, x: usize, y: usize) -> usize {
         (y * self.w + x) * 4
@@ -191,6 +229,9 @@ pub struct Style<'f> {
     /// their edges hidden. `None` shows every community.
     pub focus: Option<&'f [bool]>,
     pub theme: Theme,
+    /// Disc size, × the default. Above 1, discs are also drawn from
+    /// further out, where cells would otherwise be averaged.
+    pub point: f32,
 }
 
 /// Colours for one layer, shared by the point, average and bin paths.
@@ -357,8 +398,9 @@ impl std::fmt::Display for Mode {
     }
 }
 
-pub fn mode(scene: &Scene, vp: &Viewport) -> Mode {
-    if scene.spacing / vp.upp >= MIN_POINT_PX {
+/// `point` is [`Style::point`].
+pub fn mode(scene: &Scene, vp: &Viewport, point: f32) -> Mode {
+    if scene.spacing / vp.upp * point.max(1.) >= MIN_POINT_PX {
         Mode::Points
     } else if vp.upp <= scene.grid.bin {
         Mode::Average
@@ -383,14 +425,14 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
         background,
     };
     let spacing_px = scene.spacing / vp.upp;
-    match mode(scene, vp) {
+    match mode(scene, vp, style.point) {
         Mode::Points => {
             let edges = scene
                 .edges
                 .filter(|_| style.edges && spacing_px >= MIN_EDGE_PX);
             // Smaller discs when edges show, so the lines between them read.
             let fill = if edges.is_some() { 0.28 } else { 0.45 };
-            let radius = (fill * spacing_px).max(0.5);
+            let radius = (fill * spacing_px * style.point).max(0.5);
             // Line offsets across its minor axis, for thickness.
             let width = (0.06 * spacing_px).clamp(1., 3.).round() as i64;
             let across: Vec<i64> = (0..width).map(|o| o - width / 2).collect();

@@ -107,20 +107,35 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
             thick + 2 * pad,
             colour,
         );
-        let mut x = margin;
-        for ch in text.chars() {
-            if let Some(rows) = glyph(ch) {
-                for (gy, row) in rows.iter().enumerate() {
-                    for (gx, bit) in row.bytes().enumerate() {
-                        if bit == b'#' {
-                            let (px, py) = (x + gx as i64 * s, y_text + gy as i64 * s);
-                            fill(frame, px - pad, py - pad, s + 2 * pad, s + 2 * pad, colour);
-                        }
+        write(frame, (margin, y_text), s, pad, colour, text);
+    }
+}
+
+/// Burn `text` into `frame` with its top left at pixel `(x, y)`, each
+/// glyph pixel `s` frame pixels, outlined so it reads over any cells.
+/// Characters without a glyph are left as gaps.
+pub fn label(frame: &mut Frame, (x, y): (i64, i64), s: i64, text: &str) {
+    let (fill_colour, edge) = Theme::for_background(frame.background).bar();
+    for (pad, colour) in [(s, edge), (0, fill_colour)] {
+        write(frame, (x, y), s, pad, colour, text);
+    }
+}
+
+/// One pass of `text`: each glyph pixel grown by `pad` on every side.
+fn write(frame: &mut Frame, (x0, y): (i64, i64), s: i64, pad: i64, colour: [u8; 3], text: &str) {
+    let mut x = x0;
+    for ch in text.chars() {
+        if let Some(rows) = glyph(ch) {
+            for (gy, row) in rows.iter().enumerate() {
+                for (gx, bit) in row.bytes().enumerate() {
+                    if bit == b'#' {
+                        let (px, py) = (x + gx as i64 * s, y + gy as i64 * s);
+                        fill(frame, px - pad, py - pad, s + 2 * pad, s + 2 * pad, colour);
                     }
                 }
             }
-            x += (GLYPH_W + 1) * s;
         }
+        x += (GLYPH_W + 1) * s;
     }
 }
 

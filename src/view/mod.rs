@@ -187,6 +187,19 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        default_value_t = 1.,
+        value_name = "X",
+        value_parser = parse_point_size,
+        help = "Cell disc size, × the default",
+        long_help = "Cell disc size, as a multiple of the default (half the typical\n\
+                     cell spacing across). Above 1, discs are also drawn from further\n\
+                     out, where cells would otherwise be averaged per pixel.\n\
+                     In the terminal, < and > change it."
+    )]
+    pub point_size: f32,
+
+    #[arg(
+        long,
         value_delimiter = ',',
         value_name = "C1,C7,...",
         help = "Show only these communities; dim the rest (--png)",
@@ -422,6 +435,7 @@ impl Base {
                     edges: false,
                     focus: None,
                     theme: self.theme,
+                    point: style.point,
                 };
                 render::render(&scene, vp, &style, &[[255; 3]])
             }
@@ -591,6 +605,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         edges: args.edges,
         focus: focus.as_deref(),
         theme,
+        point: args.point_size,
     };
     let gene = match args.gene.as_deref() {
         Some(feature) => {
@@ -775,6 +790,20 @@ fn parse_clip(s: &str) -> Result<f32, String> {
     match s.parse::<f32>() {
         Ok(p) if (50. ..=100.).contains(&p) => Ok(p),
         _ => Err(format!("{s:?}: a percentile from 50 to 100")),
+    }
+}
+
+/// Smallest and largest `--point-size`.
+const POINT_SIZES: std::ops::RangeInclusive<f32> = 0.25..=8.;
+
+fn parse_point_size(s: &str) -> Result<f32, String> {
+    match s.parse::<f32>() {
+        Ok(x) if POINT_SIZES.contains(&x) => Ok(x),
+        _ => Err(format!(
+            "{s:?}: a size from {} to {}",
+            POINT_SIZES.start(),
+            POINT_SIZES.end()
+        )),
     }
 }
 

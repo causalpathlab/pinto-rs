@@ -104,6 +104,21 @@ impl Structure {
         Structure { panels, stack }
     }
 
+    /// Each panel as a plot of its own, by name, on the same stack.
+    pub fn into_panels(self) -> Vec<(String, Structure)> {
+        let stack = self.stack;
+        self.panels
+            .into_iter()
+            .map(|(name, cells)| {
+                let one = Structure {
+                    panels: vec![(name.clone(), cells)],
+                    stack: stack.clone(),
+                };
+                (name, one)
+            })
+            .collect()
+    }
+
     pub fn n_cells(&self) -> usize {
         self.panels.iter().map(|(_, c)| c.len()).sum()
     }
@@ -156,17 +171,7 @@ impl Structure {
         focus: Option<&[bool]>,
         theme: Theme,
     ) -> Drawn {
-        let bg = theme.background();
-        let mut rgba = Vec::with_capacity(w * h * 4);
-        for _ in 0..w * h {
-            rgba.extend_from_slice(&[bg[0], bg[1], bg[2], 255]);
-        }
-        let mut frame = Frame {
-            w,
-            h,
-            rgba,
-            background: bg,
-        };
+        let mut frame = Frame::blank(w, h, theme.background());
         let k = comm.k;
         let mut community = vec![NO_CLUSTER; w * h];
         let colour = |c: usize| match focus {
