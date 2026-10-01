@@ -5,6 +5,7 @@
 
 use super::color;
 use super::render::Frame;
+use legume_numeric::matrix::common_io::mkdir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -97,7 +98,7 @@ impl Gallery {
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
         let thumbs = self.dir.join("thumbs");
-        std::fs::create_dir_all(&thumbs)?;
+        mkdir(&thumbs.to_string_lossy())?;
         let thumb = format!("{}.png", now.as_nanos());
         shrink(picture, THUMB_WIDTH).write_png(&thumbs.join(&thumb))?;
         self.entries.insert(
