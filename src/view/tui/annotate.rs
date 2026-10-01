@@ -11,10 +11,12 @@ use super::super::draft::{Draft, Mark, Merge, Verdict};
 use super::super::lupin::{self, JobKind};
 use super::super::markers;
 use super::super::round::round_name;
-use super::browse::{Browser, Outcome, Want};
-use super::{rgb, short, tail, App, Pick, Show};
+use super::browse::Panels;
+use super::{rgb, App, Pick, Show};
+use crate::tui::browse::{Browser, Outcome};
+use crate::tui::style::{self, short, tail};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::style::{Color, Modifier, Style as TStyle};
+use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use ratatui::DefaultTerminal;
 use std::collections::{BTreeSet, HashSet};
@@ -56,7 +58,7 @@ impl Relabel {
 /// A dialog that takes the keys.
 pub enum Modal {
     /// Choosing a marker panel for `lupin annotate`.
-    Browse(Browser),
+    Browse(Browser<Panels>),
     Prompt(Prompt),
     /// The staged decisions, before they are sent.
     Confirm(Vec<String>),
@@ -269,7 +271,10 @@ impl App<'_> {
     }
 
     fn open_browser(&mut self, dir: PathBuf, known: HashSet<String>) {
-        self.modal = Some(Modal::Browse(Browser::open(dir, Want::Panels(known))));
+        let tag = self.base.run.levels[self.cur].tag.clone();
+        let want = Panels { known, tag };
+        let dir = lupin::canonical(&dir);
+        self.modal = Some(Modal::Browse(Browser::open(dir, want, None)));
         self.need_map = true;
     }
 
@@ -378,8 +383,8 @@ impl App<'_> {
         match modal {
             Modal::Browse(mut b) => match b.key(key) {
                 Outcome::Cancelled => self.status = "annotation cancelled".into(),
-                Outcome::Chosen(panel) => self.start_annotate(&panel),
-                Outcome::Moved => self.modal = Some(Modal::Browse(b)),
+                Outcome::Chosen(c) => self.start_annotate(&c.file()),
+                Outcome::Ignored | Outcome::Moved => self.modal = Some(Modal::Browse(b)),
             },
             Modal::Prompt(mut p) => {
                 match key.code {
@@ -435,14 +440,12 @@ impl App<'_> {
     }
 
     pub(super) fn modal_lines(&self, modal: &Modal, room: usize) -> Vec<Line<'static>> {
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
-        let dim = TStyle::default().fg(Color::DarkGray);
+        let bold = style::bold();
+        let dim = style::dim();
         let mut out = vec![Line::raw("")];
         match modal {
             Modal::Browse(b) => {
-                let tag = &self.base.run.levels[self.cur].tag;
-                let title = format!("marker panel for level {tag}");
-                out.extend(b.lines(&title, room.saturating_sub(10).max(3), 45));
+                out.extend(b.lines(room.saturating_sub(1), 45));
             }
             Modal::Prompt(p) => {
                 let title = match &p.what {
@@ -1071,8 +1074,8 @@ impl App<'_> {
         let (Some(r), Some(round)) = (self.relabel.as_ref(), self.round.as_ref()) else {
             return Vec::new();
         };
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
-        let dim = TStyle::default().fg(Color::DarkGray);
+        let bold = style::bold();
+        let dim = style::dim();
         let level = self.level();
         let id = r.id();
         let g = round.group(id);
@@ -1207,9 +1210,7 @@ impl App<'_> {
             None,
         ));
         let rows = room.saturating_sub(out.len()).max(1);
-        let first =
-            r.at.saturating_sub(rows / 2)
-                .min(r.order.len().saturating_sub(rows));
+        let first = style::first_row(r.at, rows, r.order.len());
         for (i, &c) in r.order.iter().enumerate().skip(first).take(rows) {
             let d = &round.reviewed[&c].digest;
             let g = round.group(c);
@@ -1348,6 +1349,5 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// `s` in lines of at most `n` characters.
 fn wrap(s: &str, n: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    chars.chunks(n.max(1)).map(|c| c.iter().collect()).collect()
+    style::wrap(s, n, n)
 }

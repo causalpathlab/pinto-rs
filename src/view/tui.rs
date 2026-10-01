@@ -15,6 +15,8 @@ mod plots;
 
 pub use browse::pick_run;
 
+use crate::tui::style;
+
 use super::cellart::{rgb, Cells, Glyphs};
 use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
@@ -36,7 +38,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style as TStyle};
+use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
@@ -57,35 +59,34 @@ const WIDE_PANEL: u16 = 46;
 const ZOOM: f32 = 1.25;
 
 pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
-    // Log lines would land over the screen: off while it is ours.
-    let logging = log::max_level();
-    log::set_max_level(log::LevelFilter::Off);
-    let mut terminal = ratatui::init();
-    let result = (|| {
-        // The terminal is asked first: its background picks the theme the
-        // palette is built in.
-        let (gfx, px, background) = Gfx::pick(args.graphics);
-        let theme = args
-            .theme
-            .or(background.map(Theme::for_background))
-            .unwrap_or(Theme::Dark);
-        terminal.draw(|f| {
-            let msg = format!(" loading {} ...", args.prefix());
-            f.render_widget(Paragraph::new(msg), f.area());
-        })?;
-        let base = Base::load(args.prefix(), &args.units, theme)?;
-        let first = base.run.level_index(args.level.as_deref())?;
-        let level = base.level(first, args.edges)?;
+    crate::tui::with_terminal(|terminal| {
+        let result = show(args, terminal);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        result
+    })
+}
 
-        execute!(std::io::stdout(), EnableMouseCapture)?;
-        let mut app = App::new(&base, level, args, (gfx, px));
-        app.open_rounds(args.round.as_deref().map(PathBuf::from));
-        app.run(&mut terminal)
-    })();
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
-    log::set_max_level(logging);
-    result
+/// Load the run and show it until the user quits.
+fn show(args: &ViewArgs, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    // The terminal is asked first: its background picks the theme the
+    // palette is built in.
+    let (gfx, px, background) = Gfx::pick(args.graphics);
+    let theme = args
+        .theme
+        .or(background.map(Theme::for_background))
+        .unwrap_or(Theme::Dark);
+    terminal.draw(|f| {
+        let msg = format!(" loading {} ...", args.prefix());
+        f.render_widget(Paragraph::new(msg), f.area());
+    })?;
+    let base = Base::load(args.prefix(), &args.units, theme)?;
+    let first = base.run.level_index(args.level.as_deref())?;
+    let level = base.level(first, args.edges)?;
+
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let mut app = App::new(&base, level, args, (gfx, px));
+    app.open_rounds(args.round.as_deref().map(PathBuf::from));
+    app.run(terminal)
 }
 
 /// How the map reaches the screen.
@@ -1215,8 +1216,8 @@ impl<'a> App<'a> {
     fn panel(&self, height: u16) -> (Vec<Line<'static>>, Vec<(usize, Pick)>) {
         let level = self.level();
         let comm = &level.comm;
-        let dim = TStyle::default().fg(Color::DarkGray);
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
+        let dim = style::dim();
+        let bold = style::bold();
         let row = |k: &str, v: String| {
             Line::from(vec![Span::styled(format!(" {k:<7}"), dim), Span::raw(v)])
         };
@@ -1294,7 +1295,7 @@ impl<'a> App<'a> {
         lines.push(Line::styled(
             format!(" {}", self.status),
             // Bold in the terminal's own text colour reads on any background.
-            TStyle::default().add_modifier(Modifier::BOLD),
+            style::bold(),
         ));
 
         let help = help_lines(self.help, self.relabel.is_some());
@@ -1351,7 +1352,7 @@ impl<'a> App<'a> {
     /// The picked cell: name, then its strongest communities and entropy.
     fn cell_lines(&self, i: usize) -> Vec<Line<'static>> {
         let comm = &self.level().comm;
-        let dim = TStyle::default().fg(Color::DarkGray);
+        let dim = style::dim();
         let k = comm.k;
         let mut top: Vec<(usize, u8)> = (0..k).map(|c| (c, comm.prop[i * k + c])).collect();
         top.sort_by_key(|&(_, q)| std::cmp::Reverse(q));
@@ -1381,8 +1382,8 @@ impl<'a> App<'a> {
         if self.markers.is_empty() {
             return Vec::new();
         }
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
-        let dim = TStyle::default().fg(Color::DarkGray);
+        let bold = style::bold();
+        let dim = style::dim();
         let mut out = vec![
             (Line::raw(""), None),
             (
@@ -1448,8 +1449,7 @@ impl<'a> App<'a> {
                     .iter()
                     .map(|&c| {
                         let (colour, on) = legend_swatch(c, &level.palette, focus, self.base.theme);
-                        let text =
-                            TStyle::default().fg(if on { Color::Reset } else { Color::DarkGray });
+                        let text = if on { TStyle::default() } else { style::dim() };
                         let mark = if focus.is_some() && on { "▸" } else { " " };
                         let line = Line::from(vec![
                             Span::raw(mark),
@@ -1491,29 +1491,6 @@ impl<'a> App<'a> {
     }
 }
 
-/// At most `n` characters, `…` marking a cut.
-fn short(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
-}
-
-/// The last `n` characters of `s`, `…` marking a cut.
-fn tail(s: &str, n: usize) -> String {
-    let len = s.chars().count();
-    if len <= n {
-        s.to_string()
-    } else {
-        let mut out = String::from("…");
-        out.extend(s.chars().skip(len - n + 1));
-        out
-    }
-}
-
 /// A legend row's text: the name and cell count, fitted to the panel.
 fn legend_text(comm: &super::data::Communities, c: usize, n: usize) -> String {
     let name: String = comm.name(c).chars().take(17).collect();
@@ -1549,7 +1526,7 @@ fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
 }
 
 fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
-    let dim = TStyle::default().fg(Color::DarkGray);
+    let dim = style::dim();
     let text: &[&str] = if relabel && !full {
         annotate::RELABEL_HELP
     } else if full {

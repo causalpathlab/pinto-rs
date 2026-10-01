@@ -4,8 +4,8 @@
 //! tests pin the schema at lc's writer and the tie rule at the shared
 //! helper both writers derive their `cluster` column from.
 
-use crate::link_community::outputs::write_propensity_parquet;
-use crate::link_community::profiles::dominant_cluster_rows;
+use crate::link_community::outputs::write_propensity_matrix;
+use crate::link_community::profiles::{compute_node_membership, dominant_cluster_rows};
 use crate::util::common::*;
 use legume_numeric::matrix::traits::MatWithNames;
 
@@ -38,8 +38,8 @@ fn propensity_parquet_carries_the_shared_schema() {
     let fine_labels = vec![0usize, 1, 1, 0];
     let cell_names: Vec<Box<str>> = (0..4).map(|i| format!("c{i}").into()).collect();
 
-    let propensity =
-        write_propensity_parquet(&prefix, &edges, &fine_labels, 4, 2, &cell_names).unwrap();
+    let propensity = compute_node_membership(&edges, &fine_labels, 4, 2);
+    write_propensity_matrix(&prefix, &propensity, &cell_names).unwrap();
 
     let MatWithNames { rows, cols, mat } =
         Mat::from_parquet(&format!("{prefix}.propensity.parquet")).unwrap();

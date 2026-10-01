@@ -233,25 +233,10 @@ pub fn link_community_histogram(membership: &[usize], k: usize, max_width: usize
 // imports keep working.
 pub use crate::util::score_trace::{write_score_trace, ScoreEntry};
 
-/// Write `<prefix>.propensity.parquet` from cell-edge labels and return
-/// the propensity matrix (reused to compute feature-community stats).
-pub fn write_propensity_parquet(
-    prefix: &str,
-    edges: &[(usize, usize)],
-    fine_labels: &[usize],
-    n_cells: usize,
-    k: usize,
-    cell_names: &[Box<str>],
-) -> anyhow::Result<Mat> {
-    let propensity = compute_node_membership(edges, fine_labels, n_cells, k);
-    write_propensity_matrix(prefix, &propensity, cell_names)?;
-    Ok(propensity)
-}
-
 /// Write an already-computed `[N × K]` propensity under the shared schema.
 ///
-/// Split out of [`write_propensity_parquet`] for callers whose propensity
-/// does not come from an edge partition (e.g. the profile-projected
+/// Used for an edge partition's propensity ([`write_partition`]) and for
+/// one that does not come from a partition (e.g. the profile-projected
 /// propensity `pinto impute` computes for a new sample).
 pub fn write_propensity_matrix(
     prefix: &str,
@@ -286,11 +271,65 @@ pub fn write_propensity_matrix(
     Ok(())
 }
 
-/// Write the full per-partition output triple (link community edges,
-/// cell propensity, feature×community stats) under a shared prefix. Returns the
-/// propensity matrix and the fitted feature-community posterior so callers can
-/// reuse them (e.g. the dictionary-merge step needs the posterior to
-/// compute pairwise community cosine without re-reading the parquet).
+/// A partition fitted in memory: the cells' propensity and the
+/// feature-community posterior, before anything is written.
+pub struct Partition {
+    pub propensity: Mat,
+    pub feature_community: GammaMatrix,
+}
+
+/// Fit the propensity and feature-community stats of an edge partition.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_partition(
+    edges: &[(usize, usize)],
+    fine_labels: &[usize],
+    n_cells: usize,
+    k: usize,
+    data_vec: &SparseIoVec,
+    feature_weights: Option<&[f32]>,
+    axis: &FeatureAxis,
+    block_size: Option<usize>,
+) -> anyhow::Result<Partition> {
+    let propensity = compute_node_membership(edges, fine_labels, n_cells, k);
+    let feature_community = fit_feature_community_param(
+        &propensity,
+        data_vec,
+        feature_weights,
+        Some(axis),
+        block_size,
+    )?;
+    Ok(Partition {
+        propensity,
+        feature_community,
+    })
+}
+
+/// Write a fitted partition's output triple (link community edges, cell
+/// propensity, feature×community stats) under `prefix`.
+pub fn write_partition(
+    prefix: &str,
+    part: &Partition,
+    edges: &[(usize, usize)],
+    fine_labels: &[usize],
+    cell_names: &[Box<str>],
+    axis: &FeatureAxis,
+    edge_kind: Option<&[i32]>,
+) -> anyhow::Result<()> {
+    write_link_communities(
+        &format!("{}.link_community.parquet", prefix),
+        edges,
+        fine_labels,
+        cell_names,
+        edge_kind,
+    )?;
+    write_propensity_matrix(prefix, &part.propensity, cell_names)?;
+    write_feature_community_param(&part.feature_community, axis.feature_names(), prefix)
+}
+
+/// Fit and write the full per-partition output triple under a shared
+/// prefix ([`fit_partition`], then [`write_partition`]). Returns the
+/// propensity matrix and the fitted feature-community posterior so callers
+/// can reuse them.
 #[allow(clippy::too_many_arguments)]
 pub fn write_partition_outputs(
     prefix: &str,
@@ -305,23 +344,26 @@ pub fn write_partition_outputs(
     block_size: Option<usize>,
     edge_kind: Option<&[i32]>,
 ) -> anyhow::Result<(Mat, GammaMatrix)> {
-    write_link_communities(
-        &format!("{}.link_community.parquet", prefix),
+    let part = fit_partition(
+        edges,
+        fine_labels,
+        n_cells,
+        k,
+        data_vec,
+        feature_weights,
+        axis,
+        block_size,
+    )?;
+    write_partition(
+        prefix,
+        &part,
         edges,
         fine_labels,
         cell_names,
+        axis,
         edge_kind,
     )?;
-    let propensity = write_propensity_parquet(prefix, edges, fine_labels, n_cells, k, cell_names)?;
-    let feature_community = fit_feature_community_param(
-        &propensity,
-        data_vec,
-        feature_weights,
-        Some(axis),
-        block_size,
-    )?;
-    write_feature_community_param(&feature_community, axis.feature_names(), prefix)?;
-    Ok((propensity, feature_community))
+    Ok((part.propensity, part.feature_community))
 }
 
 /// Write one cascade level's outputs: `.L{l}.link_community.parquet`,

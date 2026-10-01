@@ -15,7 +15,8 @@ use super::super::render::Frame;
 use super::super::structure::{Drawn, Structure};
 use super::super::Level;
 use super::{legend_text, rgb, App, Pick, Show};
-use ratatui::style::{Modifier, Style as TStyle};
+use crate::tui::style;
+use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use std::path::PathBuf;
 
@@ -272,7 +273,7 @@ impl App<'_> {
             return Vec::new();
         }
         let comm = &level.comm;
-        let dim = TStyle::default().fg(ratatui::style::Color::DarkGray);
+        let dim = style::dim();
         let mut out = vec![
             (Line::raw(""), None),
             (
@@ -378,8 +379,8 @@ impl App<'_> {
         let (_, heat) = self.plots.heatmap.as_ref().expect("built");
         let level = self.level();
         let comm = &level.comm;
-        let dim = TStyle::default().fg(ratatui::style::Color::DarkGray);
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
+        let dim = style::dim();
+        let bold = style::bold();
         let label_w = 11usize;
         let cols = heat.groups.len();
         let cw = if label_w + 2 * cols <= self.map.width as usize {

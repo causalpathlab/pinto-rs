@@ -7,8 +7,8 @@ use super::super::cellart::{Cells, Glyphs};
 use super::super::render::Frame;
 use super::super::saved::{ago, read_thumb};
 use super::App;
+use crate::tui::style;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style as TStyle};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::path::PathBuf;
@@ -108,18 +108,18 @@ impl App<'_> {
     pub(super) fn draw_saved(&self, f: &mut ratatui::Frame, strip: Rect) {
         let block = Block::new()
             .borders(Borders::RIGHT)
-            .border_style(TStyle::default().fg(Color::DarkGray))
+            .border_style(style::dim())
             .title(Span::styled(
                 format!(" saved ({}) · f hides", self.gallery.entries().len()),
-                TStyle::default().add_modifier(Modifier::BOLD),
+                style::bold(),
             ));
         let inner = block.inner(strip);
         f.render_widget(block, strip);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let dim = TStyle::default().fg(Color::DarkGray);
-        let bold = TStyle::default().add_modifier(Modifier::BOLD);
+        let dim = style::dim();
+        let bold = style::bold();
         let cols = strip.width.saturating_sub(2);
         let mut y = inner.y + 1;
         for e in self.gallery.entries() {

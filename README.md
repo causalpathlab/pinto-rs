@@ -45,6 +45,29 @@ pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 
 See `pinto --help` and per-subcommand `--help`.
 
+### `run`
+
+Set up fits in the terminal and run them. Pick data files (coordinate and
+batch files beside them are paired by sample name), queue `lc`, `cage` and
+`dsvd`, and change any flag; each method's form is read from its own
+`--help`. `g` shows the exact commands, checked as pinto would parse them,
+and runs them in turn with their log on screen.
+
+```sh
+pinto run data/        # the file browser starts in data/
+bash lc.cmd.sh         # each run is saved as {out}.cmd.sh to run again
+```
+
+Each data file is its own batch unless you say otherwise: `n` puts all its
+cells in one named batch (two files given one name are one batch), `b` takes
+a label file, and `e` renames its labels. The Data screen lists the batches
+this makes. Label files the run needs beyond the ones given are written to
+`{out}.batches/`.
+
+A saved script refuses to run over an existing `{out}.pinto.json`, and
+`pinto run` never writes over a script. `v` opens a finished run in
+`pinto view`.
+
 ### `view`
 
 Zoomable map of a run's communities, in the terminal. Pan and zoom from the
