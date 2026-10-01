@@ -33,7 +33,6 @@ impl Wanted for Pick {
         };
         Header {
             title: title.into(),
-            notes: Vec::new(),
             what,
             star: None,
             verb: "take",

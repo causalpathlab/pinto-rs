@@ -84,8 +84,6 @@ struct Planned {
     problem: Option<String>,
     /// The flag clap blamed, to mark its row.
     blamed: Option<String>,
-    /// Worth knowing, not blocking.
-    warning: Option<String>,
 }
 
 pub(crate) struct App {
@@ -111,8 +109,10 @@ pub(crate) struct App {
     confirm_max: std::cell::Cell<usize>,
     /// The method, command line and flag clap blamed, as last checked.
     blame: std::cell::RefCell<Option<Blame>>,
-    /// Data and label files read on worker threads.
-    described: (Sender<Found>, Receiver<Found>),
+    /// Files for the workers to read.
+    tasks: Sender<Task>,
+    /// What the workers found.
+    found: Receiver<Found>,
     /// Files still being read.
     describing: usize,
     /// Label files being read.
@@ -126,6 +126,44 @@ pub(crate) struct App {
     quit: bool,
     /// The manifest to open in `pinto view` once the terminal is given back.
     view: Option<PathBuf>,
+}
+
+/// A file for a worker to read.
+enum Task {
+    Data(PathBuf),
+    Labels(PathBuf),
+}
+
+/// Workers reading files at once: enough to hide a slow one, few enough
+/// that taking hundreds of files does not open them all together.
+const WORKERS: usize = 4;
+
+/// Start the workers; they end when the returned sender is dropped.
+fn workers() -> (Sender<Task>, Receiver<Found>) {
+    let (tasks, todo) = std::sync::mpsc::channel::<Task>();
+    let (tell, found) = std::sync::mpsc::channel();
+    let todo = std::sync::Arc::new(std::sync::Mutex::new(todo));
+    for _ in 0..WORKERS {
+        let (todo, tell) = (todo.clone(), tell.clone());
+        std::thread::spawn(move || loop {
+            let next = todo.lock().ok().and_then(|t| t.recv().ok());
+            let Some(task) = next else { break };
+            let out = match task {
+                Task::Data(path) => {
+                    let (info, cells) = data::describe(&path);
+                    Found::Data(path, info, cells)
+                }
+                Task::Labels(path) => {
+                    let counts = batch::label_counts(&path);
+                    Found::Labels(path, counts)
+                }
+            };
+            if tell.send(out).is_err() {
+                break;
+            }
+        });
+    }
+    (tasks, found)
 }
 
 /// What a worker found out about a file.
@@ -205,6 +243,7 @@ impl App {
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let (tasks, found) = workers();
         Ok(App {
             cli,
             here,
@@ -224,7 +263,8 @@ impl App {
             confirm_scroll: 0,
             confirm_max: std::cell::Cell::new(0),
             blame: std::cell::RefCell::new(None),
-            described: std::sync::mpsc::channel(),
+            tasks,
+            found,
             describing: 0,
             reading: std::collections::BTreeSet::new(),
             labels: None,
@@ -420,12 +460,7 @@ impl App {
                 continue;
             }
             // Opening a large backend takes a while: not here.
-            let (tx, path) = (self.described.0.clone(), p.clone());
-            std::thread::spawn(move || {
-                let (info, cells) = data::describe(&path);
-                let _ = tx.send(Found::Data(path, info, cells));
-            });
-            self.describing += 1;
+            self.read(Task::Data(p.clone()));
             self.pairs.push(Pair::pending(p));
         }
         let added = self.pairs.len() - first_new;
@@ -493,7 +528,7 @@ impl App {
     /// Take in what the workers found out, and start reading the label
     /// files not read yet.
     fn poll(&mut self) {
-        while let Ok(found) = self.described.1.try_recv() {
+        while let Ok(found) = self.found.try_recv() {
             self.describing = self.describing.saturating_sub(1);
             match found {
                 Found::Data(path, info, cells) => {
@@ -520,13 +555,15 @@ impl App {
             .filter(|f| !self.reading.contains(f))
             .collect();
         for path in unread {
-            let tx = self.described.0.clone();
             self.reading.insert(path.clone());
+            self.read(Task::Labels(path));
+        }
+    }
+
+    /// Hand `task` to the workers.
+    fn read(&mut self, task: Task) {
+        if self.tasks.send(task).is_ok() {
             self.describing += 1;
-            std::thread::spawn(move || {
-                let counts = batch::label_counts(&path);
-                let _ = tx.send(Found::Labels(path, counts));
-            });
         }
     }
 
@@ -831,7 +868,6 @@ impl App {
             };
             outs.push(dir.join(&out));
             planned.push(Planned {
-                warning: self.coord_warning(),
                 job,
                 problem,
                 blamed,

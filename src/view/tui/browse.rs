@@ -21,7 +21,6 @@ impl Wanted for Runs {
     fn header(&self) -> Header {
         Header {
             title: "pinto view: run to open".into(),
-            notes: Vec::new(),
             what: "runs (*.pinto.json)",
             star: None,
             verb: "open",
@@ -66,7 +65,6 @@ impl Wanted for Panels {
     fn header(&self) -> Header {
         Header {
             title: format!("marker panel for level {}", self.tag),
-            notes: Vec::new(),
             what: "marker panels (gene<TAB>type)",
             star: Some("covers the most of this run's genes"),
             verb: "annotate",

@@ -42,11 +42,6 @@ pub(crate) trait Wanted {
         }
     }
 
-    /// Why file `name` cannot be taken, though it is listed.
-    fn refuse(&self, _name: &str, _about: &Self::About) -> Option<String> {
-        None
-    }
-
     /// The file to start on among those listed in `dir`.
     fn best(&self, _dir: &Path, _files: &[(&str, &Self::About)]) -> Option<String> {
         None
@@ -61,8 +56,6 @@ pub(crate) trait Wanted {
 /// What the popup says about what is wanted.
 pub(crate) struct Header {
     pub title: String,
-    /// Lines under the title.
-    pub notes: Vec<String>,
     /// The files wanted, as in "no {what} here".
     pub what: &'static str,
     /// What a star by the starting file means; no star without it.
@@ -148,8 +141,6 @@ pub(crate) struct Browser<W: Wanted> {
     best: Option<String>,
     /// Files marked with space, in any folder.
     pub marked: BTreeSet<PathBuf>,
-    /// Why the file just chosen was refused.
-    pub refused: Option<String>,
     /// Whether hidden files were read: only once the filter asks for them,
     /// so a folder's dotfiles are not opened on every visit.
     hidden: bool,
@@ -165,7 +156,6 @@ impl<W: Wanted> Browser<W> {
             row: 0,
             best: None,
             marked: BTreeSet::new(),
-            refused: None,
             hidden: false,
         };
         b.read(select);
@@ -227,39 +217,16 @@ impl<W: Wanted> Browser<W> {
         Some(self.dir.join(e.name()))
     }
 
-    /// Why `e` cannot be taken, if it is a file the caller refuses.
-    fn refusal(&self, e: &Entry<W::About>) -> Option<String> {
-        match e {
-            Entry::File(name, about) => self.want.refuse(name, about),
-            _ => None,
+    /// Take the file under the cursor.
+    fn take_here(&self) -> Outcome {
+        match self.file_here() {
+            Some(path) => Outcome::Chosen(Chosen::one(path)),
+            None => Outcome::Ignored,
         }
-    }
-
-    /// Take the file under the cursor, unless the caller refuses it: then
-    /// say why and stay.
-    fn take_here(&mut self) -> Outcome {
-        let Some(Entry::File(name, about)) = self.current() else {
-            return Outcome::Ignored;
-        };
-        if let Some(why) = self.want.refuse(name, about) {
-            self.refused = Some(why);
-            return Outcome::Moved;
-        }
-        Outcome::Chosen(Chosen::one(self.dir.join(name)))
     }
 
     /// A key: move, open a folder, narrow, mark, cancel, or choose.
     pub fn key(&mut self, k: KeyEvent) -> Outcome {
-        // A refusal stays on screen until a key changes something.
-        let said = self.refused.take();
-        let out = self.handle(k);
-        if out == Outcome::Ignored && self.refused.is_none() {
-            self.refused = said;
-        }
-        out
-    }
-
-    fn handle(&mut self, k: KeyEvent) -> Outcome {
         if self.want.many() {
             if let Some(o) = self.mark_key(k) {
                 return o;
@@ -330,9 +297,7 @@ impl<W: Wanted> Browser<W> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
             KeyCode::Char(' ') => {
-                if let Some(why) = self.current().and_then(|e| self.refusal(e)) {
-                    self.refused = Some(why);
-                } else if let Some(path) = self.file_here() {
+                if let Some(path) = self.file_here() {
                     if !self.marked.remove(&path) {
                         self.marked.insert(path);
                     }
@@ -341,21 +306,12 @@ impl<W: Wanted> Browser<W> {
                 Some(Outcome::Moved)
             }
             KeyCode::Char('a') if ctrl => {
-                // Refused files are left unmarked, the first reason shown.
-                let mut files = Vec::new();
-                let mut refused = Vec::new();
-                for e in self.shown().into_iter().filter(|e| e.is_file()) {
-                    match self.refusal(e) {
-                        Some(why) => refused.push(why),
-                        None => files.push(self.dir.join(e.name())),
-                    }
-                }
-                if let Some(first) = refused.first() {
-                    self.refused = Some(match refused.len() {
-                        1 => first.clone(),
-                        n => format!("{n} files not marked; {first}"),
-                    });
-                }
+                let files: Vec<PathBuf> = self
+                    .shown()
+                    .iter()
+                    .filter(|e| e.is_file())
+                    .map(|e| self.dir.join(e.name()))
+                    .collect();
                 self.marked.extend(files);
                 Some(Outcome::Moved)
             }
@@ -382,7 +338,6 @@ impl<W: Wanted> Browser<W> {
         let fit = |s: String| -> String { s.chars().take(width).collect() };
         let line = |s: String, style: Style| Line::from(Span::styled(fit(s), style));
         let mut head = vec![line(format!(" {}", h.title), bold())];
-        head.extend(h.notes.iter().map(|n| line(format!(" {n}"), dim())));
         head.push(line(
             format!(
                 " {}",
@@ -407,9 +362,6 @@ impl<W: Wanted> Browser<W> {
             foot.push(line(format!("  no {} here", h.what), dim()));
         }
         foot.push(Line::from(""));
-        if let Some(why) = &self.refused {
-            foot.push(line(format!(" {why}"), bold()));
-        }
         if let (Some(s), Some(_)) = (h.star, &self.best) {
             foot.push(line(format!(" * {s}"), dim()));
         }

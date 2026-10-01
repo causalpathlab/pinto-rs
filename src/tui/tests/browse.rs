@@ -5,36 +5,12 @@ struct Txt {
     many: bool,
 }
 
-/// Text files, refusing any named `no.txt`.
-struct Picky;
-
-impl Wanted for Picky {
-    type About = ();
-
-    fn header(&self) -> Header {
-        Txt { many: false }.header()
-    }
-
-    fn file(&self, _path: &Path, name: &str) -> Option<()> {
-        name.ends_with(".txt").then_some(())
-    }
-
-    fn describe<'a>(&self, (): &'a ()) -> std::borrow::Cow<'a, str> {
-        "".into()
-    }
-
-    fn refuse(&self, name: &str, (): &()) -> Option<String> {
-        (name == "no.txt").then(|| format!("{name} will not do"))
-    }
-}
-
 impl Wanted for Txt {
     type About = String;
 
     fn header(&self) -> Header {
         Header {
             title: "Text".into(),
-            notes: Vec::new(),
             what: "text files",
             star: None,
             verb: "take",
@@ -155,26 +131,6 @@ fn sizes_read_in_their_unit() {
 }
 
 #[test]
-fn a_refused_file_is_not_taken_and_the_popup_says_why() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "no.txt");
-    write(dir.path(), "yes.txt");
-    let mut b = Browser::open(dir.path().to_path_buf(), Picky, Some("no.txt"));
-    assert_eq!(b.key(key(KeyCode::Enter)), Outcome::Moved);
-    let said: Vec<String> = b.lines(20, 80).iter().map(ToString::to_string).collect();
-    assert!(
-        said.iter().any(|l| l.contains("no.txt will not do")),
-        "{said:?}"
-    );
-    b.key(key(KeyCode::Down));
-    assert!(b.refused.is_none());
-    assert_eq!(
-        taken(b.key(key(KeyCode::Enter))),
-        [dir.path().join("yes.txt")]
-    );
-}
-
-#[test]
 fn lines_fit_their_width_and_a_caller_lays_out_its_rows() {
     struct Counted;
     impl Wanted for Counted {
@@ -182,7 +138,6 @@ fn lines_fit_their_width_and_a_caller_lays_out_its_rows() {
         fn header(&self) -> Header {
             Header {
                 title: "a title much longer than the panel it is drawn in".into(),
-                notes: Vec::new(),
                 what: "files",
                 star: Some("the best one"),
                 verb: "take",
@@ -214,61 +169,6 @@ fn lines_fit_their_width_and_a_caller_lays_out_its_rows() {
     assert!(said.iter().all(|l| l.chars().count() <= 30), "{said:?}");
     assert!(said.contains(&"*   10  longer.txt".to_string()), "{said:?}");
     assert!(said.contains(&"     n  name".to_string()), "{said:?}");
-}
-
-/// Text files that can be taken several at once, refusing `no.txt`.
-struct PickyMany;
-
-impl Wanted for PickyMany {
-    type About = ();
-
-    fn header(&self) -> Header {
-        Picky.header()
-    }
-
-    fn file(&self, path: &Path, name: &str) -> Option<()> {
-        Picky.file(path, name)
-    }
-
-    fn describe<'a>(&self, (): &'a ()) -> std::borrow::Cow<'a, str> {
-        "".into()
-    }
-
-    fn refuse(&self, name: &str, (): &()) -> Option<String> {
-        Picky.refuse(name, &())
-    }
-
-    fn many(&self) -> bool {
-        true
-    }
-}
-
-#[test]
-fn refused_files_are_never_marked() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "no.txt");
-    write(dir.path(), "yes.txt");
-    let mut b = Browser::open(dir.path().to_path_buf(), PickyMany, Some("no.txt"));
-    b.key(key(KeyCode::Char(' ')));
-    assert!(b.marked.is_empty());
-    assert_eq!(b.refused.as_deref(), Some("no.txt will not do"));
-    b.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
-    assert_eq!(
-        b.marked.iter().collect::<Vec<_>>(),
-        [&dir.path().join("yes.txt")]
-    );
-    assert!(b.refused.is_some(), "the refused one is named");
-}
-
-#[test]
-fn a_refusal_stays_through_keys_that_do_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "no.txt");
-    let mut b = Browser::open(dir.path().to_path_buf(), Picky, Some("no.txt"));
-    b.key(key(KeyCode::Enter));
-    assert!(b.refused.is_some());
-    assert_eq!(b.key(key(KeyCode::Tab)), Outcome::Ignored);
-    assert!(b.refused.is_some());
 }
 
 #[test]

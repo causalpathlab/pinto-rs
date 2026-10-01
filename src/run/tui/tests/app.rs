@@ -121,7 +121,7 @@ fn what_would_overwrite_or_misparse_is_stopped_before_running() {
         .unwrap()
         .contains("coordinates"));
     a.pairs[1].coord = None;
-    assert!(a.plan()[0].warning.as_ref().unwrap().contains("expression"));
+    assert!(a.coord_warning().unwrap().contains("expression"));
 
     std::fs::write(dir.path().join("lc.pinto.json"), "{}").unwrap();
     assert!(a.plan()[0].problem.as_ref().unwrap().contains("exists"));
@@ -460,4 +460,48 @@ fn labels_read_in_the_background_are_renamed_from_their_list() {
     let (batches, _) = batch::summary(&a.pairs);
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].cells, Some(3));
+}
+
+#[test]
+fn the_confirm_popup_wraps_long_commands_and_keeps_its_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let deep = dir.path().join("a".repeat(60)).join("b".repeat(60));
+    std::fs::create_dir_all(&deep).unwrap();
+    let mut a = app(dir.path());
+    a.pairs = data(&deep, &["d1.zarr", "d2.zarr"]);
+    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
+    a.rows[lc].on = true;
+    a.confirm = Some(a.plan());
+    let lines: Vec<String> = a
+        .confirm_lines(12, 40)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(lines.len() <= 12, "{lines:?}");
+    assert!(lines.iter().all(|l| l.chars().count() <= 40), "{lines:?}");
+    assert!(lines.last().unwrap().contains("esc back"), "{lines:?}");
+    // Scrolling reaches the last wrapped row.
+    assert!(a.confirm_max.get() > 0);
+}
+
+#[test]
+fn many_data_files_are_all_described_by_the_few_workers() {
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..20).map(|i| format!("s{i}.zarr")).collect();
+    let paths: Vec<PathBuf> = names
+        .iter()
+        .map(|n| {
+            let p = dir.path().join(n);
+            std::fs::write(&p, "").unwrap();
+            p
+        })
+        .collect();
+    let mut a = app(dir.path());
+    a.take_data(paths);
+    assert_eq!(a.describing, 20);
+    while a.describing > 0 {
+        a.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(a.pairs.iter().all(|p| p.info != "reading…"));
 }

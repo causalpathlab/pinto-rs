@@ -39,7 +39,8 @@ impl App {
             popup(f, area, lines, 110);
         } else if self.confirm.is_some() {
             let rows = usize::from(area.height).saturating_sub(4);
-            popup(f, area, self.confirm_lines(rows), 120);
+            let width = usize::from(area.width.min(120)).saturating_sub(2);
+            popup(f, area, self.confirm_lines(rows, width), 120);
         } else if self.labels.is_some() {
             let rows = usize::from(area.height).saturating_sub(10).max(3);
             popup(f, area, self.label_lines(rows), 80);
@@ -491,66 +492,89 @@ impl App {
         f.render_widget(Paragraph::new(lines), area);
     }
 
-    fn confirm_lines(&self, rows: usize) -> Vec<Line<'static>> {
+    /// The confirm popup's lines, at most `rows` tall and each at most
+    /// `width` wide: long command lines are wrapped here, so the scroll and
+    /// the keys below count every row on screen.
+    pub(super) fn confirm_lines(&self, rows: usize, width: usize) -> Vec<Line<'static>> {
         let Some(planned) = &self.confirm else {
             return Vec::new();
         };
+        let wrap = |text: String, style: Style| wrap(&text, style, width);
         let mut body: Vec<Line<'static>> = Vec::new();
         for p in planned {
-            body.push(Line::from(vec![
-                Span::styled(format!(" {}", p.job.method), bold()),
-                Span::styled(
-                    format!("   recorded in {}", self.shown(&p.job.script())),
-                    dim(),
+            body.extend(wrap(
+                format!(
+                    " {}   recorded in {}",
+                    p.job.method,
+                    self.shown(&p.job.script())
                 ),
-            ]));
+                bold(),
+            ));
             let lines = super::script::command_lines(&p.job.argv);
             let n = lines.len();
-            body.extend(lines.into_iter().enumerate().map(|(k, l)| {
+            for (k, l) in lines.into_iter().enumerate() {
                 let indent = if k == 0 { "   " } else { "     " };
                 let more = if k + 1 < n { " \\" } else { "" };
-                Line::from(format!("{indent}{l}{more}"))
-            }));
-            if let Some(why) = &p.problem {
-                body.push(Line::from(Span::styled(format!("   ✗ {why}"), bold())));
+                body.extend(wrap(format!("{indent}{l}{more}"), Style::default()));
             }
-            if let Some(w) = &p.warning {
-                body.push(Line::from(Span::styled(format!("   note: {w}"), dim())));
+            if let Some(why) = &p.problem {
+                body.extend(wrap(format!("   ✗ {why}"), bold()));
             }
             body.push(Line::from(""));
         }
         let blocked = planned.iter().any(|p| p.problem.is_some());
-        let mut out = vec![
-            Line::from(Span::styled(
-                format!(
-                    " Run {} fit{} in turn",
-                    planned.len(),
-                    if planned.len() == 1 { "" } else { "s" }
-                ),
-                bold(),
-            )),
-            Line::from(Span::styled(
-                " each command is saved as its {out}.cmd.sh, which will not run over a result",
-                dim(),
-            )),
-            Line::from(""),
-        ];
-        let room = rows.saturating_sub(out.len() + 3);
-        let max = body.len().saturating_sub(room);
-        self.confirm_max.set(max);
-        let skip = self.confirm_scroll.min(max);
-        out.extend(body.into_iter().skip(skip).take(room));
-        out.push(Line::from(Span::styled(
+        let mut out = wrap(
+            format!(
+                " Run {} fit{} in turn",
+                planned.len(),
+                if planned.len() == 1 { "" } else { "s" }
+            ),
+            bold(),
+        );
+        out.extend(wrap(
+            " each command is saved as its {out}.cmd.sh, which will not run over a result".into(),
+            dim(),
+        ));
+        if let Some(note) = self.coord_warning() {
+            out.extend(wrap(format!(" note: {note}"), dim()));
+        }
+        out.push(Line::from(""));
+        let mut foot = wrap(
             if blocked {
                 " enter go to the problem   c copy   ↑ ↓ scroll   esc back"
             } else {
                 " enter run   c copy the commands   ↑ ↓ scroll   esc back"
-            },
+            }
+            .into(),
             dim(),
-        )));
+        );
         if let Some(m) = &self.message {
-            out.push(Line::from(Span::styled(format!(" {m}"), bold())));
+            foot.extend(wrap(format!(" {m}"), bold()));
         }
+        let room = rows.saturating_sub(out.len() + foot.len());
+        let max = body.len().saturating_sub(room);
+        self.confirm_max.set(max);
+        let skip = self.confirm_scroll.min(max);
+        out.extend(body.into_iter().skip(skip).take(room));
+        out.extend(foot);
         out
     }
+}
+
+/// `text` in rows at most `width` wide, the later ones indented under the
+/// first.
+fn wrap(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
+    const INDENT: &str = "       ";
+    let chars: Vec<char> = text.chars().collect();
+    let first = width.max(1);
+    let rest = width.saturating_sub(INDENT.len()).max(1);
+    let mut out = vec![Line::from(Span::styled(
+        chars.iter().take(first).collect::<String>(),
+        style,
+    ))];
+    for chunk in chars.get(first..).unwrap_or_default().chunks(rest) {
+        let row: String = INDENT.chars().chain(chunk.iter().copied()).collect();
+        out.push(Line::from(Span::styled(row, style)));
+    }
+    out
 }
