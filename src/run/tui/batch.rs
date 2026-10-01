@@ -9,6 +9,7 @@
 //! passed as it is, else one written for the run under `{out}.batches/`.
 
 use super::data::{stem, Pair};
+use legume_numeric::matrix::common_io::mkdir_parent;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -109,6 +110,7 @@ pub fn write(path: &Path, made: &Made) -> anyhow::Result<()> {
             text
         }
     };
+    mkdir_parent(&path.to_string_lossy())?;
     super::script::write_new(path, text.as_bytes())
 }
 

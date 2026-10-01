@@ -45,12 +45,6 @@ impl Job {
     pub fn script(&self) -> PathBuf {
         outputs(&self.dir, &self.out)[1].clone()
     }
-
-    /// Where the batch label files written for the run go.
-    #[must_use]
-    pub fn batches(&self) -> PathBuf {
-        outputs(&self.dir, &self.out)[2].clone()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,11 +171,10 @@ fn run_job(
         return State::Failed(format!("cannot make {}: {e}", job.dir.display()));
     }
     if !job.made.is_empty() {
-        let written = mkdir(&job.batches().to_string_lossy()).and_then(|()| {
-            job.made
-                .iter()
-                .try_for_each(|(path, what)| super::batch::write(path, what))
-        });
+        let written = job
+            .made
+            .iter()
+            .try_for_each(|(path, what)| super::batch::write(path, what));
         if let Err(e) = written {
             return State::Failed(format!("cannot write the batch files: {e}"));
         }
