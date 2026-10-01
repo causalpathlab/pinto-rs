@@ -4,6 +4,7 @@ mod data;
 mod draft;
 mod fixture;
 mod gene;
+mod grid;
 mod heatmap;
 mod helpers;
 mod index;

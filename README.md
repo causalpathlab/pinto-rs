@@ -79,13 +79,15 @@ pinto view out                 # interactive; ? lists the keys
 pinto view out --summary       # what the run holds
 pinto view out --png map.png --layer soft --width 3000
 pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
+pinto view out --png big.png --point-size 2     # larger cell discs
 pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
 pinto view out --png cd3e.png --gene CD3E       # one gene: observed ln(1+count)
 pinto view out --png cd3e.png --gene CD3E --expected --clip 95
 ```
 
-In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `l`/`L` step
+In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
+shrink or grow the cell discs (`--point-size` for images), `l`/`L` step
 through levels, and `Esc` steps back (chart, gene, focus); `q` quits. Keys
 follow one rule: lowercase looks, uppercase decides or writes (and enters a
 mode), Shift reverses, and a mode refuses keys it doesn't use. Click a cell
@@ -123,6 +125,24 @@ writes labels itself.
 ```sh
 pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
 ```
+
+#### Batches side by side
+
+A run of several batches lays them out in one tiled map; `b` jumps from one
+to the next. `w` shows every batch in a grid instead, each fitted to its own
+tile and numbered, so a small section is drawn as large as a big one. Point
+at a tile (or choose with the arrows) and click it or press Enter to open
+that batch; `w` or `Esc` goes back to the map. Drag a tile onto another
+place (or Shift and an arrow) to rearrange the batches. Once a batch is
+open, the grid keeps the map's zoom and pan: every tile shows its own batch
+the way the map shows that one. In the grid, the wheel (around the pointer),
+`z`/`Z` and `<`/`>` change only the batch pointed at, which then keeps its
+own zoom and point size (the side panel shows them); hold Alt to change
+every batch together. `0` fits every batch again and drops their own
+settings, and opening a batch opens it at its tile's zoom. With the structure plot on
+(`H`), each tile has its own batch's bars under it, on one stack order across
+batches; click a community in them to see where it lies. `s` saves the grid
+as a PNG with a `.txt` listing the batches by tile number.
 
 #### Structure plot and heatmap
 

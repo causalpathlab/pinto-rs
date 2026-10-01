@@ -38,7 +38,11 @@ impl Rect {
 
     /// Grown by `frac` of its larger side on every edge.
     pub fn pad(&self, frac: f32) -> Rect {
-        let m = frac * self.width().max(self.height());
+        self.grow(frac * self.width().max(self.height()))
+    }
+
+    /// Grown by `m` on every side.
+    pub fn grow(&self, m: f32) -> Rect {
         Rect {
             x0: self.x0 - m,
             y0: self.y0 - m,

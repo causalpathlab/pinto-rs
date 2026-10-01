@@ -135,7 +135,7 @@ impl App<'_> {
     /// round's groups, with its level: the map draws its propensity.
     pub(super) fn bar_focus_level(&self) -> Option<(&Level, usize)> {
         let c = self.bar_focus?;
-        if self.show == Show::Communities || self.gene.is_some() || self.bars.height == 0 {
+        if self.show == Show::Communities || self.gene.is_some() || !self.bars_shown() {
             return None;
         }
         Some((self.levels[self.bars()].as_ref()?, c))
@@ -143,7 +143,7 @@ impl App<'_> {
 
     /// Which of the bars' communities are in colour: the map's focus on a
     /// map of communities, else the one picked; `None` for all.
-    fn bars_focus(&self) -> Option<Vec<bool>> {
+    pub(super) fn bars_focus(&self) -> Option<Vec<bool>> {
         if self.show == Show::Communities {
             return self.focus().map(<[bool]>::to_vec);
         }
@@ -176,8 +176,7 @@ impl App<'_> {
 
     /// A click on the structure plot: the community under it.
     pub(super) fn bar_click(&mut self, col: u16, row: u16) {
-        let x = (col.saturating_sub(self.bars.x) as f32 + 0.5) * self.px_per_cell.0;
-        let y = (row.saturating_sub(self.bars.y) as f32 + 0.5) * self.px_per_cell.1;
+        let (x, y) = self.px_in(self.bars, col, row);
         let hit = self
             .plots
             .drawn
@@ -208,16 +207,7 @@ impl App<'_> {
     /// The structure plot at `w × h`, kept for clicks; `None` when its
     /// level does not load.
     fn structure_frame(&mut self, w: usize, h: usize) -> Option<Frame> {
-        let bars = self.bars();
-        if self.levels[bars].is_none() {
-            match self.base.level(bars, false) {
-                Ok(level) => self.levels[bars] = Some(level),
-                Err(e) => {
-                    self.status = format!("{e}");
-                    return None;
-                }
-            }
-        }
+        let bars = self.load_bars()?;
         let key = self.plot_key(bars);
         if self.plots.structure.as_ref().map(|(k, _)| k) != Some(&key) {
             let structure = self.build_structure(bars);
@@ -229,6 +219,28 @@ impl App<'_> {
             self.plots.drawn_for = wanted;
         }
         self.plots.drawn.as_ref().map(|d| d.frame.clone())
+    }
+
+    /// Load the level whose communities make the bars, and give its
+    /// index; `None` when it does not load.
+    pub(super) fn load_bars(&mut self) -> Option<usize> {
+        let bars = self.bars();
+        if self.levels[bars].is_none() {
+            match self.base.level(bars, false) {
+                Ok(level) => self.levels[bars] = Some(level),
+                Err(e) => {
+                    self.status = format!("{e}");
+                    return None;
+                }
+            }
+        }
+        Some(bars)
+    }
+
+    /// Whether structure bars are on screen: under the map, or under
+    /// each batch of the grid.
+    pub(super) fn bars_shown(&self) -> bool {
+        self.bars.height > 0 || (self.grid_shows() && self.structure)
     }
 
     fn render_structure(&self, w: usize, h: usize) -> Drawn {
@@ -255,12 +267,19 @@ impl App<'_> {
             return Structure::build(comm, &g.cluster, &names, &g.by_size);
         }
         if geom.tiles.len() > 1 {
-            let names: Vec<String> = geom.tiles.iter().map(|t| t.name.to_string()).collect();
-            let order: Vec<usize> = (0..names.len()).collect();
-            return Structure::build(comm, &geom.batch, &names, &order);
+            return self.by_batch(bars);
         }
         let one = vec![0u16; geom.n()];
         Structure::build(comm, &one, &["all cells".into()], &[0])
+    }
+
+    /// Bars from level `bars` (loaded), a panel per batch.
+    pub(super) fn by_batch(&self, bars: usize) -> Structure {
+        let comm = &self.levels[bars].as_ref().expect("loaded").comm;
+        let geom = &self.base.geom;
+        let names: Vec<String> = geom.tiles.iter().map(|t| t.name.to_string()).collect();
+        let order: Vec<usize> = (0..names.len()).collect();
+        Structure::build(comm, &geom.batch, &names, &order)
     }
 
     /// The bars' communities, to pick one from, when the map shows a
@@ -542,10 +561,7 @@ impl App<'_> {
         if self.plots.structure.is_none() {
             return Ok(String::new());
         }
-        let stem = (1..)
-            .map(|n| format!("pinto-structure-{n:03}"))
-            .find(|s| !std::path::Path::new(&format!("{s}.png")).exists())
-            .expect("unbounded");
+        let stem = super::free_stem("pinto-structure", "png");
         let scale = self.args.export_scale.max(1);
         let w = (self.bars.width as f32 * self.px_per_cell.0) as usize * scale;
         let h = (self.bars.height as f32 * self.px_per_cell.1) as usize * scale;
@@ -594,10 +610,7 @@ impl App<'_> {
     /// `s` in the heatmap: its values as a table, with a note.
     pub(super) fn export_plot(&mut self) -> anyhow::Result<()> {
         use std::fmt::Write as _;
-        let stem = (1..)
-            .map(|n| format!("pinto-heatmap-{n:03}"))
-            .find(|s| !std::path::Path::new(&format!("{s}.tsv")).exists())
-            .expect("unbounded");
+        let stem = super::free_stem("pinto-heatmap", "tsv");
         let Some((_, heat)) = self.plots.heatmap.as_ref() else {
             self.status = "nothing drawn yet".into();
             return Ok(());
