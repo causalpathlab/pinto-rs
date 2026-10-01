@@ -185,17 +185,16 @@ type Blame = (usize, Vec<String>, Option<String>);
 /// method's flags and the check of every command line.
 pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
     let mut app = App::new(cli, start)?;
-    crate::tui::with_terminal(|terminal| {
+    let ended = crate::tui::with_terminal(|terminal| {
         let result = app.screens_loop(terminal);
-        if let Some(q) = &app.queue {
-            // Wait for the worker, so no fit it was starting outlives us.
-            q.stop();
-            q.join();
-        }
-        result
+        // Wait for the worker, so no fit it was starting outlives us.
+        let ended = app.queue.take().map(Queue::finish);
+        result.map(|()| ended)
     })?;
-    for line in app.summary() {
-        println!("{line}");
+    if let Some((jobs, states)) = ended {
+        for line in summary(&jobs, &states) {
+            println!("{line}");
+        }
     }
     if let Some(manifest) = &app.view {
         let exe = std::env::current_exe()?;
@@ -469,10 +468,10 @@ impl App {
                 .collect();
             let data: Vec<PathBuf> = here.iter().map(|&i| self.pairs[i].data.clone()).collect();
             let data: Vec<&Path> = data.iter().map(PathBuf::as_path).collect();
-            let alone = data::data_in(&dir) <= 1;
-            for side in [Side::Coord, Side::Batch] {
-                let files = data::side_files_in(&dir, side);
-                for (&i, file) in here.iter().zip(data::beside(&data, &files, alone)) {
+            let near = data::near(&dir);
+            let alone = near.data <= 1;
+            for (side, files) in [(Side::Coord, &near.coords), (Side::Batch, &near.batches)] {
+                for (&i, file) in here.iter().zip(data::beside(&data, files, alone)) {
                     if i >= first_new {
                         self.pairs[i].set(side, file);
                     }
@@ -1019,32 +1018,28 @@ impl App {
             _ => {}
         }
     }
+}
 
-    /// What is printed once the terminal is given back: how each run
-    /// ended, and its script.
-    fn summary(&self) -> Vec<String> {
-        let Some(q) = &self.queue else {
-            return Vec::new();
-        };
-        q.jobs
-            .iter()
-            .zip(q.states())
-            .map(|(j, s)| {
-                let script = j.script();
-                let what = match s {
-                    jobs::State::Done => "done".to_string(),
-                    jobs::State::Failed(why) => format!("failed: {why}"),
-                    jobs::State::Stopped => "stopped".to_string(),
-                    jobs::State::Waiting | jobs::State::Running => "not finished".to_string(),
-                };
-                if script.exists() {
-                    format!("{} {what}; again with: bash {}", j.method, shown(&script))
-                } else {
-                    format!("{} {what}", j.method)
-                }
-            })
-            .collect()
-    }
+/// What is printed once the terminal is given back: how each run ended,
+/// and its script.
+fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
+    jobs.iter()
+        .zip(states)
+        .map(|(j, s)| {
+            let script = j.script();
+            let what = match s {
+                jobs::State::Done => "done".to_string(),
+                jobs::State::Failed(why) => format!("failed: {why}"),
+                jobs::State::Stopped => "stopped".to_string(),
+                jobs::State::Waiting | jobs::State::Running => "not finished".to_string(),
+            };
+            if script.exists() {
+                format!("{} {what}; again with: bash {}", j.method, shown(&script))
+            } else {
+                format!("{} {what}", j.method)
+            }
+        })
+        .collect()
 }
 
 /// `{method}`, or `{method}-2`, … : the first prefix in `dir` with no
@@ -1056,11 +1051,17 @@ fn free_out(dir: &Path, method: &str) -> String {
 /// The first of `{method}`, `{method}-2`, … in `dir` with no manifest or
 /// script yet, and not `used` (a run started, its files not written yet).
 fn next_out(dir: &Path, method: &str, used: Option<&str>) -> String {
-    let taken = |p: &str| Some(p) == used || jobs::outputs(dir, p).iter().any(|f| f.exists());
-    std::iter::once(method.to_string())
-        .chain((2..).map(|k| format!("{method}-{k}")))
+    first_free(method, |p| {
+        Some(p) == used || jobs::outputs(dir, p).iter().any(|f| f.exists())
+    })
+}
+
+/// `base`, else `base-2`, `base-3`, …: the first that is not `taken`.
+pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    std::iter::once(base.to_string())
+        .chain((2..).map(|k| format!("{base}-{k}")))
         .find(|p| !taken(p))
-        .unwrap_or_else(|| method.to_string())
+        .unwrap_or_else(|| base.to_string())
 }
 
 /// Whether `out` is one [`free_out`] would give `method`: `{method}` or

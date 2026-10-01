@@ -113,7 +113,7 @@ fn unrelated_names_go_in_order_only_when_nothing_matches() {
 fn a_label_file_beside_the_data_is_found() {
     let dir = tempfile::tempdir().unwrap();
     let d = touch(dir.path(), "s1.zarr.zip");
-    let near = || side_files_in(dir.path(), Side::Batch);
+    let near = || near(dir.path()).batches;
     assert_eq!(beside(&[d.as_path()], &near(), true)[0], None);
     touch(dir.path(), "s10_batch.txt");
     assert_eq!(
@@ -142,14 +142,8 @@ fn coordinates_and_labels_are_told_apart_by_their_words() {
     touch(dir.path(), "s1_batch.csv");
     touch(dir.path(), "s1_spatial_labels.csv");
     touch(dir.path(), "notes.csv");
-    assert_eq!(
-        side_files_in(dir.path(), Side::Coord),
-        [dir.path().join("s1_coords.csv")]
-    );
-    assert_eq!(
-        side_files_in(dir.path(), Side::Batch),
-        [dir.path().join("s1_batch.csv")]
-    );
+    assert_eq!(near(dir.path()).coords, [dir.path().join("s1_coords.csv")]);
+    assert_eq!(near(dir.path()).batches, [dir.path().join("s1_batch.csv")]);
 }
 
 #[test]
@@ -158,13 +152,13 @@ fn a_generic_positions_file_goes_to_the_only_data_file_beside_it() {
     let d = touch(dir.path(), "filtered.h5");
     std::fs::create_dir(dir.path().join("spatial")).unwrap();
     let pos = touch(&dir.path().join("spatial"), "tissue_positions.csv");
-    let near = side_files_in(dir.path(), Side::Coord);
+    let near = near(dir.path()).coords;
     assert_eq!(near, std::slice::from_ref(&pos));
     assert_eq!(beside(&[d.as_path()], &near, true)[0], Some(pos));
     // With other data beside it, whose it is cannot be told.
     assert_eq!(beside(&[d.as_path()], &near, false)[0], None);
     touch(dir.path(), "other.h5");
-    assert_eq!(data_in(dir.path()), 2);
+    assert_eq!(super::near(dir.path()).data, 2);
 }
 
 #[test]

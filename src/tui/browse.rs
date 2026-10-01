@@ -380,7 +380,10 @@ impl<W: Wanted> Browser<W> {
                 dim(),
             ));
         }
-        foot.push(line(format!(" ↑↓ choose  Enter {}  ← up", h.verb), dim()));
+        foot.push(line(
+            format!(" ↑↓ choose  Enter {}  → open  ← up", h.verb),
+            dim(),
+        ));
         foot.push(line(" type to narrow  ~ home  Esc cancel".into(), dim()));
 
         let rows = height.saturating_sub(head.len() + foot.len()).max(3);

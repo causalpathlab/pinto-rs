@@ -66,17 +66,8 @@ pub fn args(pairs: &[Pair]) -> Result<Option<Vec<Arg>>, String> {
     }
     let mut taken: Vec<String> = Vec::new();
     let mut file_name = |p: &Pair| {
-        let s = stem(&p.data);
-        let name = (1..)
-            .map(|k| {
-                if k == 1 {
-                    format!("{s}.txt")
-                } else {
-                    format!("{s}-{k}.txt")
-                }
-            })
-            .find(|n| !taken.contains(n))
-            .unwrap_or_default();
+        let name = super::first_free(&stem(&p.data), |s| taken.contains(&format!("{s}.txt")));
+        let name = format!("{name}.txt");
         taken.push(name.clone());
         name
     };

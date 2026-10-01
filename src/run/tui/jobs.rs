@@ -76,7 +76,7 @@ pub struct Queue {
     pub jobs: Vec<Job>,
     pub shared: Arc<Mutex<Shared>>,
     stopper: Arc<Stopper>,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    worker: std::thread::JoinHandle<()>,
 }
 
 impl Queue {
@@ -107,7 +107,7 @@ impl Queue {
             jobs,
             shared,
             stopper,
-            worker: Mutex::new(Some(worker)),
+            worker,
         }
     }
 
@@ -116,13 +116,19 @@ impl Queue {
         self.stopper.stop();
     }
 
-    /// Wait for the worker to finish: after [`Queue::stop`], until the fit
-    /// it may have been starting is killed too.
-    pub fn join(&self) {
-        let worker = self.worker.lock().ok().and_then(|mut w| w.take());
-        if let Some(w) = worker {
-            let _ = w.join();
-        }
+    /// Stop, and wait for the worker until the fit it may have been
+    /// starting is killed too: the jobs and how each ended.
+    pub fn finish(self) -> (Vec<Job>, Vec<State>) {
+        self.stop();
+        let Queue {
+            jobs,
+            shared,
+            worker,
+            ..
+        } = self;
+        let _ = worker.join();
+        let states = shared.lock().map(|s| s.states.clone()).unwrap_or_default();
+        (jobs, states)
     }
 
     #[must_use]

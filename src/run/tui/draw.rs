@@ -117,7 +117,7 @@ impl App {
             ],
             Screen::Methods => &[
                 "space queue",
-                "enter queue and show flags",
+                "enter / → queue and show flags",
                 "o change --out",
             ],
             Screen::Params => &[
@@ -139,7 +139,11 @@ impl App {
             format!(" {}", self.message.clone().unwrap_or_default()),
             bold(),
         ))];
-        let all = ["tab / 1-4 screens", "g review and run", "q quit"];
+        let all = [
+            "tab / shift-tab / 1-4 screens",
+            "g review and run",
+            "q quit",
+        ];
         for group in [keys, &all[..]] {
             let mut row = String::new();
             for k in group {

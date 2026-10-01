@@ -75,14 +75,9 @@ fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
     }
     std::thread::sleep(std::time::Duration::from_millis(50));
     let t = std::time::Instant::now();
-    q.stop();
-    q.join();
+    let (_, states) = q.finish();
     assert!(t.elapsed() < std::time::Duration::from_secs(5));
-    assert!(q.finished());
-    assert_eq!(
-        q.shared.lock().unwrap().states,
-        [State::Stopped, State::Stopped]
-    );
+    assert_eq!(states, [State::Stopped, State::Stopped]);
     assert!(!dir.path().join("b.cmd.sh").exists(), "b never started");
 }
 

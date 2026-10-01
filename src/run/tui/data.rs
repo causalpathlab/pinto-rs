@@ -334,32 +334,48 @@ pub fn assign(pairs: &mut [Pair], files: &[PathBuf], side: Side) -> Paired {
     }
 }
 
-/// Files in `dir`, and in its `spatial/` folder, that say they hold what
-/// `side` wants: its ending, and one of its words in the name but none of
-/// the other kind's.
+/// What a folder holds for its data files: how many data files, and the
+/// coordinate and label files in it and its `spatial/` folder. One read
+/// of each folder.
+pub struct Near {
+    pub data: usize,
+    pub coords: Vec<PathBuf>,
+    pub batches: Vec<PathBuf>,
+}
+
+/// What `dir` holds for its data files ([`Near`]). A coordinate or label
+/// file has its ending and one of its words in the name but none of the
+/// other kind's.
 #[must_use]
-pub fn side_files_in(dir: &Path, side: Side) -> Vec<PathBuf> {
-    let (ending, mine, theirs): (fn(&str) -> bool, _, _) = match side {
-        Side::Coord => (is_coord, COORD_WORDS, LABEL_WORDS),
-        Side::Batch => (is_batch, LABEL_WORDS, COORD_WORDS),
+pub fn near(dir: &Path) -> Near {
+    let mut out = Near {
+        data: 0,
+        coords: Vec::new(),
+        batches: Vec::new(),
     };
-    let mut found: Vec<PathBuf> = [dir.to_path_buf(), dir.join("spatial")]
-        .iter()
-        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
-        .filter(|e| {
+    for (in_dir, d) in [(true, dir.to_path_buf()), (false, dir.join("spatial"))] {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
             let n = e.file_name().to_string_lossy().to_lowercase();
+            if in_dir && is_data(&n) {
+                out.data += 1;
+            }
+            // Only a `.zarr` store may be a folder.
+            if !(n.ends_with(".zarr") || e.file_type().is_ok_and(|t| !t.is_dir())) {
+                continue;
+            }
             let w = words(&n);
             let has = |list: &[&str]| w.iter().any(|x| list.contains(&x.as_str()));
-            // Only a `.zarr` store may be a folder.
-            ending(&n)
-                && has(mine)
-                && !has(theirs)
-                && (n.ends_with(".zarr") || e.file_type().is_ok_and(|t| !t.is_dir()))
-        })
-        .map(|e| e.path())
-        .collect();
-    found.sort();
-    found
+            let (coord, label) = (has(COORD_WORDS), has(LABEL_WORDS));
+            if is_coord(&n) && coord && !label {
+                out.coords.push(e.path());
+            } else if is_batch(&n) && label && !coord {
+                out.batches.push(e.path());
+            }
+        }
+    }
+    out.coords.sort();
+    out.batches.sort();
+    out
 }
 
 /// The file among `files` of each of `data`, all in one folder: the one
@@ -378,17 +394,6 @@ pub fn beside(data: &[&Path], files: &[PathBuf], alone: bool) -> Vec<Option<Path
         }
     }
     out
-}
-
-/// How many count backends `dir` holds.
-#[must_use]
-pub fn data_in(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| is_data(&e.file_name().to_string_lossy()))
-        .count()
 }
 
 /// Why the coordinate files as given cannot be passed: pinto wants one per
