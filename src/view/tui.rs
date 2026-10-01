@@ -2,8 +2,8 @@
 //!
 //! The map is drawn by [`render`] at the pixel size of its cells and shown
 //! through the terminal's graphics protocol: our own kitty transport
-//! ([`kitty`]), ratatui-image for sixel/iTerm2, or coloured block characters
-//! ([`cellart`], 2×2 pixels per cell) anywhere else.
+//! (`kitty`), ratatui-image for sixel/iTerm2, or coloured block characters
+//! (`cellart`, 2×2 pixels per cell) anywhere else.
 //!
 //! Input is drained before each redraw, so a burst of scroll or drag events
 //! costs one frame, not one per event.

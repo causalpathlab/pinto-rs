@@ -9,16 +9,22 @@
 //!
 //! The cached value is the proper variational-Bayes expected log:
 //!
-//!     E_q[log B[k, k']] = ψ(a + S[k, k']) − log(b + W[k'])
+//! ```text
+//! E_q[log B[k, k']] = ψ(a + S[k, k']) − log(b + W[k'])
+//! ```
 //!
 //! (digamma minus log of rate), where
 //!
-//!     S[k, k'] = Σ_{e: z_e=k} (θ_L[k'] + θ_R[k'])
-//!     W[k']    = Σ_e          (θ_L[k'] + θ_R[k'])     (k-independent)
+//! ```text
+//! S[k, k'] = Σ_{e: z_e=k} (θ_L[k'] + θ_R[k'])
+//! W[k']    = Σ_e          (θ_L[k'] + θ_R[k'])     (k-independent)
+//! ```
 //!
 //! The score gains an additive term
 //!
-//!     Σ_{k'} (θ_L(e)[k'] + θ_R(e)[k']) · E_q[log B[k, k']]
+//! ```text
+//! Σ_{k'} (θ_L(e)[k'] + θ_R(e)[k']) · E_q[log B[k, k']]
+//! ```
 //!
 //! computed by `add_incidence_to_log_probs`. There is no per-move
 //! bookkeeping: `B` is a global read-only weight table, exactly the

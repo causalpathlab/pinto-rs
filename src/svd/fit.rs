@@ -464,9 +464,12 @@ struct NystromPairInput {
 /// Nystrom projection visitor: project each pair onto the split basis.
 ///
 /// For each pair and each feature present in either cell:
-///   shared = log1p(x_left) + log1p(x_right)
-///   diff   = |log1p(x_left) - log1p(x_right)|
-///   proj  += shared * basis_shared[feature] + diff * basis_diff[feature]
+///
+/// ```text
+/// shared = log1p(x_left) + log1p(x_right)
+/// diff   = |log1p(x_left) - log1p(x_right)|
+/// proj  += shared * basis_shared[feature] + diff * basis_diff[feature]
+/// ```
 fn nystrom_pair_delta_visitor(
     bound: (usize, usize),
     data: &CellPairs,

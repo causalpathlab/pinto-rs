@@ -44,7 +44,7 @@ pub struct LevelPseudobulk {
     /// This level's SUPER-EDGES: distinct `(min, max)` pairs of DIFFERENT
     /// super-cells, i.e. the coarsened cell-graph adjacency.
     ///
-    /// Louvain / METIS semantics, matching [`build_super_graph`]'s `si != sj`
+    /// Louvain / METIS semantics, matching `build_super_graph`'s `si != sj`
     /// rule. An intra-group fine edge is NOT an edge of the coarse graph — it
     /// folds into the super-NODE, and here that has already happened: `counts`
     /// aggregates the member cells.
