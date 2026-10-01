@@ -172,7 +172,7 @@ impl Round {
 
 /// A round's name: its manifest's file name without `.lupin.json`.
 pub fn round_name(path: &Path) -> String {
-    lupin::file_name(path)
+    crate::tui::name(path)
         .trim_end_matches(".lupin.json")
         .to_string()
 }

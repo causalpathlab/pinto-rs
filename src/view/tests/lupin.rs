@@ -55,7 +55,7 @@ fn the_newest_round_of_each_chain_is_found_and_its_level_read() {
 
     let mut tips: Vec<String> = latest_rounds(&d.join("run.pinto.json"))
         .iter()
-        .map(|p| file_name(p))
+        .map(|p| crate::tui::name(p))
         .collect();
     tips.sort();
     assert_eq!(tips, ["run.L2.a1.r1.lupin.json", "run.final.a1.lupin.json"]);

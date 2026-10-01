@@ -6,7 +6,11 @@ mod link_community;
 mod lr_activity;
 mod predict;
 mod propensity;
+#[cfg(feature = "view")]
+mod run;
 mod svd;
+#[cfg(feature = "view")]
+mod tui;
 mod util;
 #[cfg(feature = "view")]
 mod view;
@@ -67,6 +71,8 @@ fn print_logo() {
                   \x20       Re-cut a cage/dsvd edge latent at a different K.\n\n\
                   \x20 view  Viewer (multi-resolution)\n\
                   \x20       Zoomable map of a run's communities, in the terminal.\n\n\
+                  \x20 run   Set up fits in the terminal\n\
+                  \x20       Choose data, methods and flags, then run them.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -644,6 +650,23 @@ enum Commands {
                       \x20 pinto view results.pinto.json --level L2 --summary"
     )]
     View(view::ViewArgs),
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "Set up fits in the terminal and run them",
+        long_about = "Set up pinto fits in the terminal and run them.\n\n\
+                      Pick the data files with the coordinate and batch files of\n\
+                      each, queue one or more of lc, cage and dsvd, and change\n\
+                      their flags. Every flag a method has is listed with its help;\n\
+                      hidden ones under `a`.\n\n\
+                      `g` shows the exact commands, checked as pinto would parse\n\
+                      them, and runs them in turn with their log on screen.\n\
+                      Each is saved first as `{out}.cmd.sh`: run it again with\n\
+                      `bash {out}.cmd.sh`. The script refuses to run over an\n\
+                      existing `{out}.pinto.json`, and pinto run never writes over\n\
+                      a script. When the fits finish, `v` opens one in `pinto view`."
+    )]
+    Run(run::RunArgs),
 }
 
 /// Expand `pinto lra --from <.pinto.json>` into the full positional /
@@ -800,6 +823,13 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature = "view")]
         Commands::View(args) => {
             view::run_view(args)?;
+        }
+        #[cfg(feature = "view")]
+        Commands::Run(args) => {
+            use clap::CommandFactory;
+            let mut cli = Cli::command();
+            cli.build();
+            run::tui::run(cli, args.dir.clone())?;
         }
     }
 

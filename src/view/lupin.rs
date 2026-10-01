@@ -11,7 +11,7 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -104,20 +104,12 @@ fn run(
         let _ = out_pipe.read_to_string(&mut s);
         s
     });
-    let mut last = String::new();
-    for line in BufReader::new(child.stderr.take().expect("piped"))
-        .lines()
-        .map_while(Result::ok)
-    {
-        let line = strip_log_prefix(&line).trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
+    let last = crate::tui::child::follow_log(child.stderr.take(), |line| {
         if let Ok(mut p) = progress.lock() {
-            p.clone_from(&line);
+            p.clear();
+            p.push_str(line);
         }
-        last = line;
-    }
+    });
     let status = child.wait().map_err(|e| e.to_string())?;
     let stdout = out.join().unwrap_or_default();
     if status.success() {
@@ -126,14 +118,6 @@ fn run(
         Err(format!("lupin failed ({status})"))
     } else {
         Err(last)
-    }
-}
-
-/// `[2026-09-30T19:03:26Z INFO  lupin::annotate] text` → `text`.
-fn strip_log_prefix(line: &str) -> &str {
-    match (line.starts_with('['), line.find("] ")) {
-        (true, Some(i)) => &line[i + 2..],
-        _ => line,
     }
 }
 
@@ -223,7 +207,7 @@ pub fn round_level(round: &Path, tags: &[&str]) -> Option<String> {
         let source = resolve(&at, a.get("source")?.as_str()?);
         if !source.to_string_lossy().ends_with(".lupin.json") {
             // `at` is the chain's first round.
-            let stem = file_name(&at);
+            let stem = crate::tui::name(&at);
             return tags
                 .iter()
                 .find(|t| stem.contains(&format!(".{t}.a")))
@@ -245,7 +229,7 @@ pub fn latest_rounds(manifest: &Path) -> Vec<PathBuf> {
     let mut source: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         let path = entry.path();
-        if !file_name(&path).ends_with(".lupin.json") {
+        if !crate::tui::name(&path).ends_with(".lupin.json") {
             continue;
         }
         let from = read_json(&path)
@@ -290,12 +274,6 @@ fn dir_or_cwd(p: &Path) -> PathBuf {
 /// `p` resolved through links, or as given when it does not resolve.
 pub fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-}
-
-pub fn file_name(p: &Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
 }
 
 pub fn read_json(path: &Path) -> Option<serde_json::Value> {
@@ -366,7 +344,7 @@ pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
             .rev()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("");
-        anyhow::bail!("lupin review: {}", strip_log_prefix(last));
+        anyhow::bail!("lupin review: {}", crate::tui::child::log_line(last));
     }
     let map: BTreeMap<String, Reviewed> = serde_json::from_slice(&out.stdout)?;
     Ok(map
@@ -436,7 +414,7 @@ impl Panel {
     pub fn read(path: &Path) -> anyhow::Result<Panel> {
         let file = std::fs::File::open(path)?;
         let mut text = String::new();
-        if file_name(path).ends_with(".gz") {
+        if crate::tui::name(path).ends_with(".gz") {
             flate2::read::MultiGzDecoder::new(file).read_to_string(&mut text)?;
         } else {
             BufReader::new(file).read_to_string(&mut text)?;

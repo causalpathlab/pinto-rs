@@ -46,7 +46,7 @@ pub struct Draft {
 
 impl Draft {
     pub fn path_for(round: &Path) -> PathBuf {
-        let name = super::lupin::file_name(round);
+        let name = crate::tui::name(round);
         let stem = name.trim_end_matches(".lupin.json");
         round.with_file_name(format!("{stem}.relabel_draft.json"))
     }

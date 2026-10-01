@@ -1,0 +1,177 @@
+use super::*;
+
+fn pair(name: &str) -> Pair {
+    Pair::pending(PathBuf::from(name))
+}
+
+fn paths(v: &[&str]) -> Vec<PathBuf> {
+    v.iter().map(PathBuf::from).collect()
+}
+
+fn sides(pairs: &[Pair], pick: Pick) -> Vec<Option<PathBuf>> {
+    pairs.iter().map(|p| p.side(pick).cloned()).collect()
+}
+
+fn touch(dir: &Path, name: &str) -> PathBuf {
+    let p = dir.join(name);
+    std::fs::write(&p, "").unwrap();
+    p
+}
+
+#[test]
+fn stems_drop_data_coordinate_and_label_endings() {
+    assert_eq!(stem(Path::new("/d/s1.zarr.zip")), "s1");
+    assert_eq!(stem(Path::new("s1_batch.tsv.gz")), "s1_batch");
+    assert_eq!(stem(Path::new("s1.h5")), "s1");
+    assert_eq!(stem(Path::new("s1_coords.parquet")), "s1_coords");
+}
+
+#[test]
+fn files_pair_by_name_whatever_their_order() {
+    let mut pairs = vec![pair("d/s1.zarr.zip"), pair("d/s2.zarr.zip")];
+    let got = assign(
+        &mut pairs,
+        &paths(&["d/s2_batch.tsv", "d/s1_batch.tsv"]),
+        Pick::Batch,
+    );
+    assert_eq!(got, Paired::ByName(2));
+    assert_eq!(
+        sides(&pairs, Pick::Batch),
+        [Some("d/s1_batch.tsv".into()), Some("d/s2_batch.tsv".into())]
+    );
+    let got = assign(
+        &mut pairs,
+        &paths(&["d/S2.positions.csv", "d/s1-coord.csv"]),
+        Pick::Coord,
+    );
+    assert_eq!(got, Paired::ByName(2));
+    assert_eq!(
+        sides(&pairs, Pick::Coord),
+        [
+            Some("d/s1-coord.csv".into()),
+            Some("d/S2.positions.csv".into())
+        ]
+    );
+    // The batch files stay as they were.
+    assert_eq!(pairs[0].batch, Some("d/s1_batch.tsv".into()));
+}
+
+#[test]
+fn names_alike_only_in_their_start_are_not_crossed() {
+    // Data listed rep2 first: a shared `rep` start must not decide.
+    let mut pairs = vec![pair("rep2.zarr"), pair("rep1.zarr")];
+    let got = assign(
+        &mut pairs,
+        &paths(&["rep_batch_1.txt", "rep_batch_2.txt"]),
+        Pick::Batch,
+    );
+    assert_eq!(got, Paired::ByName(2));
+    assert_eq!(
+        sides(&pairs, Pick::Batch),
+        [
+            Some("rep_batch_2.txt".into()),
+            Some("rep_batch_1.txt".into())
+        ]
+    );
+}
+
+#[test]
+fn a_number_that_runs_on_is_another_sample() {
+    let mut pairs = vec![pair("s1.zarr"), pair("s2.zarr")];
+    let got = assign(
+        &mut pairs,
+        &paths(&["s10_coords.csv", "s2_coords.csv"]),
+        Pick::Coord,
+    );
+    assert_eq!(got, Paired::Partly(1));
+    assert_eq!(
+        sides(&pairs, Pick::Coord),
+        [None, Some("s2_coords.csv".into())]
+    );
+}
+
+#[test]
+fn unrelated_names_go_in_order_only_when_nothing_matches() {
+    let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
+    assert_eq!(
+        assign(&mut pairs, &paths(&["x.tsv", "y.tsv"]), Pick::Batch),
+        Paired::InOrder
+    );
+    assert_eq!(
+        sides(&pairs, Pick::Batch),
+        [Some("x.tsv".into()), Some("y.tsv".into())]
+    );
+    let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
+    assert_eq!(
+        assign(&mut pairs, &paths(&["x.tsv"]), Pick::Batch),
+        Paired::Partly(0)
+    );
+    assert_eq!(sides(&pairs, Pick::Batch), [None, None]);
+}
+
+#[test]
+fn a_label_file_beside_the_data_is_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = touch(dir.path(), "s1.zarr.zip");
+    let near = || side_files_in(dir.path(), Pick::Batch);
+    assert_eq!(beside(&d, &near(), true), None);
+    touch(dir.path(), "s10_batch.txt");
+    assert_eq!(beside(&d, &near(), true), None, "s10's labels are not s1's");
+    touch(dir.path(), "s1.batch.tsv");
+    touch(dir.path(), "s2.batch.tsv");
+    assert_eq!(
+        beside(&d, &near(), true),
+        Some(dir.path().join("s1.batch.tsv"))
+    );
+    touch(dir.path(), "s1_batch.txt");
+    assert_eq!(
+        beside(&d, &near(), true),
+        None,
+        "two candidates: none is guessed"
+    );
+}
+
+#[test]
+fn coordinates_and_labels_are_told_apart_by_their_words() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "s1_coords.csv");
+    touch(dir.path(), "s1_batch.csv");
+    touch(dir.path(), "s1_spatial_labels.csv");
+    touch(dir.path(), "notes.csv");
+    assert_eq!(
+        side_files_in(dir.path(), Pick::Coord),
+        [dir.path().join("s1_coords.csv")]
+    );
+    assert_eq!(
+        side_files_in(dir.path(), Pick::Batch),
+        [dir.path().join("s1_batch.csv")]
+    );
+}
+
+#[test]
+fn a_generic_positions_file_goes_to_the_only_data_file_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = touch(dir.path(), "filtered.h5");
+    std::fs::create_dir(dir.path().join("spatial")).unwrap();
+    let pos = touch(&dir.path().join("spatial"), "tissue_positions.csv");
+    let near = side_files_in(dir.path(), Pick::Coord);
+    assert_eq!(near, std::slice::from_ref(&pos));
+    assert_eq!(beside(&d, &near, true), Some(pos));
+    // With other data beside it, whose it is cannot be told.
+    assert_eq!(beside(&d, &near, false), None);
+    touch(dir.path(), "other.h5");
+    assert_eq!(data_in(dir.path()), 2);
+}
+
+#[test]
+fn side_files_are_all_or_none() {
+    let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
+    assert_eq!(side_problem(&pairs, Pick::Batch), None);
+    pairs[0].batch = Some("a.tsv".into());
+    assert!(side_problem(&pairs, Pick::Batch).is_some());
+    assert_eq!(side_problem(&pairs, Pick::Coord), None);
+    pairs[1].batch = Some("b.tsv".into());
+    assert_eq!(side_problem(&pairs, Pick::Batch), None);
+    pairs[1].coord = Some("b.csv".into());
+    assert!(side_problem(&pairs, Pick::Coord).is_some_and(|w| w.contains("coordinates")));
+}
