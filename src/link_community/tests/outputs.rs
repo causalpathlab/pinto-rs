@@ -62,3 +62,29 @@ fn propensity_parquet_carries_the_shared_schema() {
         assert_eq!(mat[(i, 2)], expect, "cell {i} cluster is the row argmax");
     }
 }
+
+/// With no collapse the draft is the final result: its three files are
+/// copied to the final names the manifest lists, over any stale ones.
+#[test]
+fn draft_outputs_become_the_final_ones() {
+    use crate::link_community::outputs::{copy_partition_outputs, PARTITION_SUFFIXES};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("run").to_string_lossy().into_owned();
+    let draft = format!("{out}.draft");
+    for s in PARTITION_SUFFIXES {
+        std::fs::write(format!("{draft}.{s}"), format!("draft {s}")).unwrap();
+    }
+    std::fs::write(format!("{out}.propensity.parquet"), "stale").unwrap();
+    copy_partition_outputs(&draft, &out).unwrap();
+    for s in PARTITION_SUFFIXES {
+        assert_eq!(
+            std::fs::read_to_string(format!("{out}.{s}")).unwrap(),
+            format!("draft {s}")
+        );
+    }
+    std::fs::remove_file(format!("{draft}.propensity.parquet")).unwrap();
+    let err = copy_partition_outputs(&draft, &out)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("draft.propensity.parquet"), "{err}");
+}

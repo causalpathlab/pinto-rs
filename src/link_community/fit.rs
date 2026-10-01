@@ -30,8 +30,8 @@ use crate::link_community::gibbs::{ComponentGibbsArgs, IncidenceConfig, LinkGibb
 use crate::link_community::incidence::{fit_log_incidence, pack_propensity_row_major};
 use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
 use crate::link_community::outputs::{
-    link_community_histogram, write_dict_cut, write_dict_merges, write_partition_outputs,
-    write_score_trace, ScoreEntry,
+    copy_partition_outputs, link_community_histogram, write_dict_cut, write_dict_merges,
+    write_partition_outputs, write_score_trace, ScoreEntry,
 };
 use crate::link_community::profiles::*;
 use crate::util::cell_pairs::*;
@@ -540,8 +540,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             warn!(
                 "only {} feature(s) are detected in >= {} cells, fewer than the {} communities; \
                  skipping the dictionary merge, so the draft outputs at {}.* are the final \
-                 result. Lower --merge-min-nnz to score more features.",
-                n_keep, min_nnz, k, draft_prefix
+                 result (copied to {}.*). Lower --merge-min-nnz to score more features.",
+                n_keep, min_nnz, k, draft_prefix, c.out
             );
         } else {
             info!(
@@ -601,8 +601,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             } else {
                 info!(
                     "Dictionary merge produced no collapses at cosine ≥ {:.3}; \
-                     draft outputs at {}.* are the final result",
-                    args.merge_cut, draft_prefix
+                     draft outputs at {}.* are the final result (copied to {}.*)",
+                    args.merge_cut, draft_prefix, c.out
                 );
             }
             if merge_present_with_consensus {
@@ -612,6 +612,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 });
             }
         }
+    }
+    if !merge_present_with_consensus {
+        // The draft is the final partition: the manifest's final level names
+        // `{out}.*`, so those files must hold it.
+        copy_partition_outputs(&draft_prefix, &c.out)?;
     }
 
     ///////////////////////////////////////////////////

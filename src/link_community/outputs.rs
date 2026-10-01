@@ -286,6 +286,25 @@ pub fn write_propensity_matrix(
     Ok(())
 }
 
+/// The files [`write_partition_outputs`] writes under its prefix.
+pub const PARTITION_SUFFIXES: [&str; 3] = [
+    "link_community.parquet",
+    "propensity.parquet",
+    "feature_community.parquet",
+];
+
+/// Copy the partition outputs written under `from` to `to`: the draft as
+/// the final result when the dictionary merge collapsed nothing, so the
+/// final level the manifest lists is there (and not a stale one from an
+/// earlier run with the same prefix).
+pub fn copy_partition_outputs(from: &str, to: &str) -> anyhow::Result<()> {
+    for suffix in PARTITION_SUFFIXES {
+        let (src, dst) = (format!("{from}.{suffix}"), format!("{to}.{suffix}"));
+        std::fs::copy(&src, &dst).map_err(|e| anyhow::anyhow!("copying {src} to {dst}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Write the full per-partition output triple (link community edges,
 /// cell propensity, feature×community stats) under a shared prefix. Returns the
 /// propensity matrix and the fitted feature-community posterior so callers can
