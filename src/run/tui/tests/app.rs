@@ -36,6 +36,7 @@ fn app(dir: &Path) -> App {
         ..App::new(cli(), dir.to_path_buf()).unwrap()
     };
     a.browser = None;
+    a.editor = None;
     for m in &mut a.rows {
         m.out = free_out(dir, &m.form.name);
     }
@@ -126,12 +127,14 @@ fn what_would_overwrite_or_misparse_is_stopped_before_running() {
     std::fs::write(dir.path().join("lc.pinto.json"), "{}").unwrap();
     assert!(a.plan()[0].problem.as_ref().unwrap().contains("exists"));
     a.rows[lc].out = "sub/r".into();
+    std::fs::write(dir.path().join("sub"), "").unwrap();
     assert!(a.plan()[0]
         .problem
         .as_ref()
         .unwrap()
         .contains("not a folder"));
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::remove_file(dir.path().join("sub")).unwrap();
+    // Not there yet: made when the fit starts.
     let p = &a.plan()[0];
     assert_eq!(p.problem, None);
     assert_eq!(p.job.dir, script::normalize(&dir.path().join("sub")));
@@ -531,8 +534,6 @@ fn keys_that_need_data_say_so_without_it() {
 
 #[test]
 fn a_started_queue_moves_default_outs_on_so_g_again_is_not_blocked() {
-    assert!(default_out("lc", "lc") && default_out("lc-12", "lc"));
-    assert!(!default_out("lc-x", "lc") && !default_out("lcx", "lc") && !default_out("lc-", "lc"));
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(next_out(dir.path(), "lc", Some("lc")), "lc-2");
     let mut a = app(dir.path());
@@ -540,7 +541,9 @@ fn a_started_queue_moves_default_outs_on_so_g_again_is_not_blocked() {
     let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
     a.rows[lc].on = true;
     a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].on = true;
-    a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].out = "mine".into();
+    let cage = METHODS.iter().position(|m| *m == "cage").unwrap();
+    a.rows[cage].out = "mine".into();
+    a.rows[cage].typed = true;
     a.move_outs_on();
     assert_eq!(a.rows[lc].out, "lc-2");
     assert_eq!(
@@ -548,4 +551,70 @@ fn a_started_queue_moves_default_outs_on_so_g_again_is_not_blocked() {
         "mine",
         "a name the user typed is theirs"
     );
+}
+
+#[test]
+fn the_output_header_names_every_out() {
+    assert_eq!(under("", "lc"), "lc");
+    assert_eq!(under("exp1", "lc"), "exp1_lc");
+    for h in ["results/", "exp1_", "exp1-", "exp1."] {
+        assert_eq!(under(h, "lc"), format!("{h}lc"));
+    }
+}
+
+#[test]
+fn the_header_is_asked_first_over_the_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = App {
+        here: dir.path().to_path_buf(),
+        ..App::new(cli(), dir.path().to_path_buf()).unwrap()
+    };
+    assert!(a.browser.is_some());
+    assert_eq!(a.editor.as_ref().map(|e| &e.target), Some(&Target::Header));
+    for c in "res/".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(a.editor.is_none() && a.browser.is_some());
+    assert_eq!(a.header, "res/");
+    assert!(a
+        .rows
+        .iter()
+        .all(|r| r.out == format!("res/{}", r.form.name)));
+
+    // Esc: no header.
+    let mut a = App {
+        here: dir.path().to_path_buf(),
+        ..App::new(cli(), dir.path().to_path_buf()).unwrap()
+    };
+    key(&mut a, KeyCode::Esc);
+    assert!(a.editor.is_none() && a.header.is_empty());
+    assert!(a.rows.iter().all(|r| r.out == r.form.name));
+}
+
+#[test]
+fn a_hand_typed_out_keeps_through_header_changes_until_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.screen = Screen::Methods;
+    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
+    a.method_row = lc;
+    key(&mut a, KeyCode::Char('o'));
+    a.editor.as_mut().unwrap().text = "mine".into();
+    key(&mut a, KeyCode::Enter);
+    assert!(a.rows[lc].typed);
+
+    std::fs::write(dir.path().join("exp1_cage.pinto.json"), "{}").unwrap();
+    key(&mut a, KeyCode::Char('O'));
+    a.editor.as_mut().unwrap().text = "exp1".into();
+    key(&mut a, KeyCode::Enter);
+    let cage = METHODS.iter().position(|m| *m == "cage").unwrap();
+    assert_eq!(a.rows[lc].out, "mine");
+    assert_eq!(a.rows[cage].out, "exp1_cage-2", "made unique");
+
+    key(&mut a, KeyCode::Char('o'));
+    a.editor.as_mut().unwrap().text.clear();
+    key(&mut a, KeyCode::Enter);
+    assert!(!a.rows[lc].typed);
+    assert_eq!(a.rows[lc].out, "exp1_lc");
 }

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use crate::tui::child::{run_one, Failed, Stopper};
+use legume_numeric::matrix::common_io::mkdir;
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
@@ -171,6 +172,9 @@ fn run_job(
 ) -> State {
     if job.manifest().exists() {
         return State::Failed(format!("{} exists", job.manifest().display()));
+    }
+    if let Err(e) = mkdir(&job.dir.to_string_lossy()) {
+        return State::Failed(format!("cannot make {}: {e}", job.dir.display()));
     }
     if !job.made.is_empty() {
         let written = std::fs::create_dir(job.batches())

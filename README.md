@@ -58,6 +58,12 @@ pinto run data/        # the file browser starts in data/
 bash lc.cmd.sh         # each run is saved as {out}.cmd.sh to run again
 ```
 
+It first asks for an output header, what every result of the run is named
+after: `exp1` gives `exp1_lc`, `exp1_cage`, …, and `results/` gives
+`results/lc`, … (the folder is made when the fit starts). Esc leaves each
+`--out` as the method's name. `O` on the Methods screen changes the header
+later, and `o` names one `--out` by hand.
+
 Each data file is its own batch unless you say otherwise: `n` puts all its
 cells in one named batch (two files given one name are one batch), `b` takes
 a label file, and `e` renames its labels. The Data screen lists the batches

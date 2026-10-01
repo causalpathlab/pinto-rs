@@ -49,7 +49,11 @@ impl App {
         }
         if let Some(e) = &self.editor {
             let what = match &e.target {
-                Target::Out(i) => format!(" --out for {}", self.rows[*i].form.name),
+                Target::Header => return popup(f, area, header_lines(&e.text), 90),
+                Target::Out(i) => format!(
+                    " --out for {} (empty: back under the output header)",
+                    self.rows[*i].form.name
+                ),
                 Target::Field(m, i) => format!(" --{}", self.rows[*m].form.fields[*i].long),
                 Target::Filter => " flags containing".to_string(),
                 Target::Name(i) => format!(
@@ -118,7 +122,8 @@ impl App {
             Screen::Methods => &[
                 "space queue",
                 "enter / → queue and show flags",
-                "o change --out",
+                "o name one --out by hand",
+                "O output header",
             ],
             Screen::Params => &[
                 "space / enter change",
@@ -309,13 +314,29 @@ impl App {
                 "Methods to fit on these data, each to its own --out",
                 bold(),
             )),
+            Line::from(vec![
+                Span::styled(" output header ", dim()),
+                Span::raw(if self.header.is_empty() {
+                    "none".to_string()
+                } else {
+                    self.header.clone()
+                }),
+            ]),
             Line::from(""),
         ];
         let w = usize::from(area.width);
+        // A hand-typed --out is marked ✎.
+        let shown_out = |r: &super::Row| {
+            if r.typed {
+                format!("{} ✎", r.out)
+            } else {
+                r.out.clone()
+            }
+        };
         let out_w = self
             .rows
             .iter()
-            .map(|r| r.out.chars().count())
+            .map(|r| shown_out(r).chars().count())
             .max()
             .unwrap_or(0)
             .min(32);
@@ -325,7 +346,7 @@ impl App {
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
                 if r.on { "x" } else { " " },
                 r.form.name,
-                fit(&r.out, out_w),
+                fit(&shown_out(r), out_w),
                 if changed == 0 {
                     "defaults".to_string()
                 } else {
@@ -602,4 +623,24 @@ fn wrap(text: &str, style: Style, width: usize) -> Vec<Line<'static>> {
             Line::from(Span::styled(row, style))
         })
         .collect()
+}
+
+/// The output header popup: what it is for, with examples.
+fn header_lines(text: &str) -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            " Output header: what every result of this run is named after",
+            bold(),
+        )),
+        Line::from(Span::styled(
+            " exp1 → exp1_lc, exp1_cage, …   results/ → results/lc, …",
+            dim(),
+        )),
+        Line::from(Span::styled(
+            " O on Methods changes it later; o names one --out by hand",
+            dim(),
+        )),
+        Line::from(format!(" {text}▏")),
+        Line::from(Span::styled(" enter keep   esc no header", dim())),
+    ]
 }
