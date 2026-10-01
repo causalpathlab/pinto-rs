@@ -282,3 +282,43 @@ fn the_key_hints_fit_however_short_the_panel() {
     assert!(lines.len() <= 20, "{}", lines.len());
     assert!(lines.last().unwrap().to_string().contains("Esc cancel"));
 }
+
+/// Counts the files it is asked about.
+struct Counting(std::cell::Cell<usize>);
+
+impl Wanted for Counting {
+    type About = ();
+
+    fn header(&self) -> Header {
+        Txt { many: false }.header()
+    }
+
+    fn file(&self, _path: &Path, name: &str) -> Option<()> {
+        self.0.set(self.0.get() + 1);
+        name.ends_with(".txt").then_some(())
+    }
+
+    fn describe<'a>(&self, (): &'a ()) -> std::borrow::Cow<'a, str> {
+        "".into()
+    }
+
+    fn best(&self, _dir: &Path, files: &[(&str, &())]) -> Option<String> {
+        files.first().map(|(n, _)| n.to_string())
+    }
+}
+
+#[test]
+fn hidden_files_are_read_only_when_asked_for_and_never_start_the_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".a.txt");
+    write(dir.path(), "b.txt");
+    let mut b = Browser::open(dir.path().to_path_buf(), Counting(0.into()), None);
+    assert_eq!(b.want.0.get(), 1, "the dotfile is not opened");
+    assert_eq!(b.current().map(Entry::name), Some("b.txt"));
+    b.key(key(KeyCode::Char('.')));
+    b.key(key(KeyCode::Char('a')));
+    assert_eq!(names(&b), ["..", ".a.txt"]);
+    b.key(key(KeyCode::Backspace));
+    b.key(key(KeyCode::Backspace));
+    assert_eq!(names(&b), ["..", "b.txt"]);
+}

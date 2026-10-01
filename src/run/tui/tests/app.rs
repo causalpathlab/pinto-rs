@@ -370,3 +370,17 @@ fn only_a_finished_fit_opens_in_the_viewer() {
     assert!(a.quit);
     assert_eq!(a.view, Some(dir.path().join("good.pinto.json")));
 }
+
+#[test]
+fn the_parameters_screen_shows_a_queued_method_however_it_is_reached() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    let cage = METHODS.iter().position(|m| *m == "cage").unwrap();
+    a.screen = Screen::Methods;
+    a.method_row = cage;
+    key(&mut a, KeyCode::Char(' '));
+    // Tab, not enter: the screen must not keep showing the first method.
+    key(&mut a, KeyCode::Tab);
+    assert_eq!(a.screen, Screen::Params);
+    assert_eq!(a.param_method, cage);
+}

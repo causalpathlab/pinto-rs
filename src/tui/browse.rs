@@ -150,6 +150,9 @@ pub(crate) struct Browser<W: Wanted> {
     pub marked: BTreeSet<PathBuf>,
     /// Why the file just chosen was refused.
     pub refused: Option<String>,
+    /// Whether hidden files were read: only once the filter asks for them,
+    /// so a folder's dotfiles are not opened on every visit.
+    hidden: bool,
 }
 
 impl<W: Wanted> Browser<W> {
@@ -163,6 +166,7 @@ impl<W: Wanted> Browser<W> {
             best: None,
             marked: BTreeSet::new(),
             refused: None,
+            hidden: false,
         };
         b.read(select);
         b
@@ -171,7 +175,8 @@ impl<W: Wanted> Browser<W> {
     /// Read the current folder; the cursor goes to `select` if it is
     /// listed, else to the best file, else to the first entry after `..`.
     pub fn read(&mut self, select: Option<&str>) {
-        self.entries = list_dir(&self.dir, &self.want);
+        self.hidden = false;
+        self.entries = list_dir(&self.dir, &self.want, false);
         let files: Vec<(&str, &W::About)> = self
             .entries
             .iter()
@@ -297,6 +302,10 @@ impl<W: Wanted> Browser<W> {
             KeyCode::Char(c) => {
                 let on = self.current().map(|e| e.name().to_string());
                 self.filter.push(c);
+                if self.filter.starts_with('.') && !self.hidden {
+                    self.hidden = true;
+                    self.entries = list_dir(&self.dir, &self.want, true);
+                }
                 let shown = self.shown();
                 // Stay where the cursor was if it still shows, else on the
                 // best file, else on the first entry after `..`.
@@ -483,15 +492,20 @@ pub(crate) fn size_of(path: &Path) -> String {
 }
 
 /// Folders (not a `.zarr` store) and the wanted files, `..` first, folders
-/// before files, each group by name. Hidden entries are kept; `shown`
-/// lists them only on request.
-pub(crate) fn list_dir<W: Wanted>(dir: &Path, want: &W) -> Vec<Entry<W::About>> {
+/// before files, each group by name. Hidden folders are kept (`shown`
+/// lists them only on request); hidden files are looked at only with
+/// `hidden`.
+pub(crate) fn list_dir<W: Wanted>(dir: &Path, want: &W, hidden: bool) -> Vec<Entry<W::About>> {
     let mut dirs = Vec::new();
     let mut found = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
-        let about = if !path.is_dir() {
+        let is_dir = path.is_dir();
+        if !hidden && name.starts_with('.') && (!is_dir || name.ends_with(".zarr")) {
+            continue;
+        }
+        let about = if !is_dir {
             want.file(&path, &name)
         } else if name.ends_with(".zarr") {
             want.store(&path, &name)

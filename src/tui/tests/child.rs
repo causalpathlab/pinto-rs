@@ -22,6 +22,23 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
         Err(Failed::Exit("it broke".into()))
     );
 
+    // A child killed while it worked says how it ended, not that its last
+    // progress line was the error.
+    let mut c = Command::new("sh");
+    c.args(["-c", "echo '[t INFO x] writing outputs' >&2; kill -9 $$"]);
+    assert_eq!(
+        run_one(c, &Stopper::default(), |_| {}),
+        Err(Failed::Exit(
+            "signal: 9 (SIGKILL), after: writing outputs".into()
+        ))
+    );
+    let mut c = Command::new("sh");
+    c.args(["-c", "exit 2"]);
+    assert_eq!(
+        run_one(c, &Stopper::default(), |_| {}),
+        Err(Failed::Exit("exit status: 2".into()))
+    );
+
     let stopper = Stopper::default();
     stopper.stop();
     let mut c = Command::new("sh");

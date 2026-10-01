@@ -14,7 +14,6 @@ use data::Pick;
 use form::{Field, Kind, Method};
 use jobs::{Job, Queue};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -119,10 +118,6 @@ type Described = (PathBuf, String);
 
 /// A method row, its command line, and the flag clap blamed in it.
 type Blame = (usize, Vec<String>, Option<String>);
-
-/// A folder's coordinate files, label files, and how many data files it
-/// holds.
-type Near = (Vec<PathBuf>, Vec<PathBuf>, usize);
 
 /// Run the screens; `cli` is pinto's built command, the source of every
 /// method's flags and the check of every command line.
@@ -249,6 +244,14 @@ impl App {
                 Screen::Run => self.run_key(k),
             }
         }
+        // However the parameters screen was reached, it shows a method its
+        // strip lists.
+        if !self.param_methods().contains(&self.param_method) {
+            self.param_method = self.param_methods()[0];
+            self.field_row = 0;
+        }
+        // A reset can drop the row under the cursor from the list.
+        self.field_row = self.field_row.min(self.visible().len().saturating_sub(1));
     }
 
     /// Keys every screen shares. Returns whether `k` was one.
@@ -365,35 +368,42 @@ impl App {
     }
 
     fn take_data(&mut self, paths: Vec<PathBuf>) {
-        let mut added = 0;
-        // Each folder's coordinate and label files and its count of data
-        // files, read once for all its data.
-        let mut near: HashMap<PathBuf, Near> = HashMap::new();
+        let first_new = self.pairs.len();
         for p in paths {
             if self.pairs.iter().any(|q| q.data == p) {
                 continue;
             }
-            let mut pair = Pair::pending(p);
-            let dir = pair.data.parent().unwrap_or(Path::new(".")).to_path_buf();
-            let (coords, batches, n) = near.entry(dir).or_insert_with_key(|d| {
-                (
-                    data::side_files_in(d, Pick::Coord),
-                    data::side_files_in(d, Pick::Batch),
-                    data::data_in(d),
-                )
-            });
-            let alone = *n <= 1;
-            pair.coord = data::beside(&pair.data, coords, alone);
-            pair.batch = data::beside(&pair.data, batches, alone);
             // Opening a large backend takes a while: not here.
-            let (tx, path) = (self.described.0.clone(), pair.data.clone());
+            let (tx, path) = (self.described.0.clone(), p.clone());
             std::thread::spawn(move || {
                 let info = data::describe(&path);
                 let _ = tx.send((path, info));
             });
             self.describing += 1;
-            self.pairs.push(pair);
-            added += 1;
+            self.pairs.push(Pair::pending(p));
+        }
+        let added = self.pairs.len() - first_new;
+        // Each folder's coordinate and label files go to its data by name,
+        // the data taken before counted too, so a file named for one of
+        // them goes to no new one.
+        let folder = |p: &Pair| p.data.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let dirs: std::collections::BTreeSet<PathBuf> =
+            self.pairs[first_new..].iter().map(folder).collect();
+        for dir in dirs {
+            let here: Vec<usize> = (0..self.pairs.len())
+                .filter(|&i| folder(&self.pairs[i]) == dir)
+                .collect();
+            let data: Vec<PathBuf> = here.iter().map(|&i| self.pairs[i].data.clone()).collect();
+            let data: Vec<&Path> = data.iter().map(PathBuf::as_path).collect();
+            let alone = data::data_in(&dir) <= 1;
+            for pick in [Pick::Coord, Pick::Batch] {
+                let files = data::side_files_in(&dir, pick);
+                for (&i, file) in here.iter().zip(data::beside(&data, &files, alone)) {
+                    if i >= first_new {
+                        self.pairs[i].set(pick, file);
+                    }
+                }
+            }
         }
         self.pair_row = self.pairs.len().saturating_sub(1);
         let with = |pick| self.pairs.iter().filter(|p| p.side(pick).is_some()).count();
@@ -616,11 +626,7 @@ impl App {
         let dir = abs
             .parent()
             .map_or_else(|| self.here.clone(), script::normalize);
-        let name = abs
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        (dir, name)
+        (dir, crate::tui::name(&abs))
     }
 
     /// The queued fits, each checked.
@@ -817,10 +823,7 @@ impl App {
 
     /// A path as shown: relative to where pinto run started when under it.
     fn shown(&self, p: &Path) -> String {
-        p.strip_prefix(&self.here)
-            .ok()
-            .filter(|r| !r.as_os_str().is_empty())
-            .unwrap_or(p)
+        crate::tui::relative_to(p, &self.here)
             .to_string_lossy()
             .into_owned()
     }

@@ -75,9 +75,23 @@ pub(crate) fn run_one(
     match status {
         Some(Ok(s)) if s.success() => Ok(()),
         Some(Err(e)) => Err(Failed::Exit(e.to_string())),
-        _ => Err(Failed::Exit(
-            last.strip_prefix("Error: ").unwrap_or(&last).to_string(),
-        )),
+        Some(Ok(s)) => Err(Failed::Exit(reason(&last, &s.to_string()))),
+        None => Err(Failed::Exit(reason(&last, "ended"))),
+    }
+}
+
+/// Why a child that ended badly did: its error line when its last line
+/// is one, else how it ended (`exit status: 1`, `signal: 9 (SIGKILL)`)
+/// and what it was doing then.
+fn reason(last: &str, ended: &str) -> String {
+    if let Some(why) = last.strip_prefix("Error: ") {
+        why.to_string()
+    } else if last.starts_with("error") || last.contains("panicked") {
+        last.to_string()
+    } else if last.is_empty() {
+        ended.to_string()
+    } else {
+        format!("{ended}, after: {last}")
     }
 }
 

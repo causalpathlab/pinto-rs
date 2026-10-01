@@ -183,38 +183,68 @@ fn words(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// A name reduced to what identifies its sample: lower case, label and
-/// coordinate words and separators dropped. `s1_batch` and `S1` both give
-/// `s1`.
-fn key(name: &str) -> String {
+/// A name reduced to the words that identify its sample: lower case,
+/// label and coordinate words dropped. `s1_batch` and `S1` both give
+/// `[s1]`.
+fn key(name: &str) -> Vec<String> {
     words(name)
         .into_iter()
         .filter(|w| !LABEL_WORDS.contains(&w.as_str()) && !COORD_WORDS.contains(&w.as_str()))
         .collect()
 }
 
-/// Whether a file's name says it belongs to a data file's: the same key.
-/// A longer one that extends it at a word boundary counts too (`s1` and
-/// `s1_cells_batch`), never one whose number runs on (`s1` and `s10`).
-fn same_sample(data: &Path, file: &Path) -> bool {
-    let (d, b) = (key(&stem(data)), key(&stem(file)));
-    if d.is_empty() || b.is_empty() {
-        return false;
+/// How a file's name fits a data file's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Fit {
+    /// One name's words start the other's: `s1` and `s1_cells_batch`.
+    /// Never `s1` and `s10`, or `s1` and `s1b`: words are whole.
+    Extends,
+    /// The same words, separators aside: `rep2` and `rep_batch_2`.
+    Same,
+}
+
+fn fit(data: &Path, file: &Path) -> Option<Fit> {
+    let (d, f) = (key(&stem(data)), key(&stem(file)));
+    if d.is_empty() || f.is_empty() {
+        return None;
     }
-    if d == b {
-        return true;
+    if d.concat() == f.concat() {
+        return Some(Fit::Same);
     }
-    let (short, long) = if d.len() < b.len() {
-        (&d, &b)
+    let (short, long) = if d.len() < f.len() {
+        (&d, &f)
     } else {
-        (&b, &d)
+        (&f, &d)
     };
-    let runs_on = |a: Option<char>, b: Option<char>| {
-        a.zip(b)
-            .is_some_and(|(a, b)| a.is_ascii_digit() == b.is_ascii_digit())
-    };
-    long.starts_with(short.as_str())
-        && !runs_on(short.chars().last(), long[short.len()..].chars().next())
+    long.starts_with(short).then_some(Fit::Extends)
+}
+
+/// Each of `data`'s file among `files`, by name: the one that fits it
+/// best, if only one does. A file named exactly for one data file goes to
+/// no other, and a file two data files would take goes to neither.
+fn pair_up(data: &[&Path], files: &[PathBuf]) -> Vec<Option<usize>> {
+    let fits: Vec<Vec<Option<Fit>>> = data
+        .iter()
+        .map(|d| files.iter().map(|f| fit(d, f)).collect())
+        .collect();
+    let exact_for_some = |j: usize| fits.iter().any(|row| row[j] == Some(Fit::Same));
+    let chosen: Vec<Option<usize>> = fits
+        .iter()
+        .map(|row| {
+            let best = row.iter().flatten().max()?;
+            let cands: Vec<usize> = (0..files.len())
+                .filter(|&j| row[j] == Some(*best) && (*best == Fit::Same || !exact_for_some(j)))
+                .collect();
+            match cands[..] {
+                [j] => Some(j),
+                _ => None,
+            }
+        })
+        .collect();
+    chosen
+        .iter()
+        .map(|c| c.filter(|j| chosen.iter().filter(|o| **o == Some(*j)).count() == 1))
+        .collect()
 }
 
 /// How [`assign`] paired the files.
@@ -229,31 +259,24 @@ pub enum Paired {
 }
 
 /// Give each pair the one coordinate or batch file (`pick`) named for its
-/// sample. When no name matches at all and the counts agree, files go in
-/// the order listed, and the caller says so. A data file that two files
-/// fit, or that shares its one match with another, is left without one.
+/// sample ([`pair_up`]). When no name matches at all and the counts
+/// agree, files go in the order listed, and the caller says so.
 pub fn assign(pairs: &mut [Pair], files: &[PathBuf], pick: Pick) -> Paired {
-    let fits: Vec<Vec<usize>> = pairs
+    let data: Vec<&Path> = pairs.iter().map(|p| p.data.as_path()).collect();
+    let none_fit = data
         .iter()
-        .map(|p| {
-            (0..files.len())
-                .filter(|&j| same_sample(&p.data, &files[j]))
-                .collect()
-        })
-        .collect();
+        .all(|d| files.iter().all(|f| fit(d, f).is_none()));
+    let chosen = pair_up(&data, files);
     let mut matched = 0;
-    for (i, f) in fits.iter().enumerate() {
-        let shared = |j: usize| fits.iter().filter(|g| g.contains(&j)).count() > 1;
-        if let [j] = f[..] {
-            if !shared(j) {
-                pairs[i].set(pick, Some(files[j].clone()));
-                matched += 1;
-            }
+    for (p, c) in pairs.iter_mut().zip(chosen) {
+        if let Some(j) = c {
+            p.set(pick, Some(files[j].clone()));
+            matched += 1;
         }
     }
     if matched == pairs.len() {
         Paired::ByName(matched)
-    } else if fits.iter().all(Vec::is_empty) && files.len() == pairs.len() {
+    } else if none_fit && files.len() == pairs.len() {
         for (p, f) in pairs.iter_mut().zip(files) {
             p.set(pick, Some(f.clone()));
         }
@@ -292,24 +315,22 @@ pub fn side_files_in(dir: &Path, pick: Pick) -> Vec<PathBuf> {
     found
 }
 
-/// The one of `files` named for `data`'s sample; none unless exactly one
-/// fits. When none is named for any sample and `alone` (the only data file
-/// in its folder), a single file with a generic name (`tissue_positions`)
-/// is its.
+/// The file among `files` of each of `data`, all in one folder: the one
+/// named for it ([`pair_up`]). When the folder holds only one data file
+/// (`alone`) and no name fits, a single file with a generic name
+/// (`tissue_positions`) is its.
 #[must_use]
-pub fn beside(data: &Path, files: &[PathBuf], alone: bool) -> Option<PathBuf> {
-    match files
-        .iter()
-        .filter(|l| same_sample(data, l))
-        .collect::<Vec<_>>()[..]
-    {
-        [one] => Some(one.clone()),
-        [] if alone => match files {
-            [one] if key(&stem(one)).is_empty() => Some(one.clone()),
-            _ => None,
-        },
-        _ => None,
+pub fn beside(data: &[&Path], files: &[PathBuf], alone: bool) -> Vec<Option<PathBuf>> {
+    let mut out: Vec<Option<PathBuf>> = pair_up(data, files)
+        .into_iter()
+        .map(|c| c.map(|j| files[j].clone()))
+        .collect();
+    if let ([d], [one], [None]) = (data, files, &out[..]) {
+        if alone && fit(d, one).is_none() && key(&stem(one)).is_empty() {
+            out[0] = Some(one.clone());
+        }
     }
+    out
 }
 
 /// How many count backends `dir` holds.

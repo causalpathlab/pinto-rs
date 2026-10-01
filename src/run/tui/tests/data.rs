@@ -114,18 +114,22 @@ fn a_label_file_beside_the_data_is_found() {
     let dir = tempfile::tempdir().unwrap();
     let d = touch(dir.path(), "s1.zarr.zip");
     let near = || side_files_in(dir.path(), Pick::Batch);
-    assert_eq!(beside(&d, &near(), true), None);
+    assert_eq!(beside(&[d.as_path()], &near(), true)[0], None);
     touch(dir.path(), "s10_batch.txt");
-    assert_eq!(beside(&d, &near(), true), None, "s10's labels are not s1's");
+    assert_eq!(
+        beside(&[d.as_path()], &near(), true)[0],
+        None,
+        "s10's labels are not s1's"
+    );
     touch(dir.path(), "s1.batch.tsv");
     touch(dir.path(), "s2.batch.tsv");
     assert_eq!(
-        beside(&d, &near(), true),
+        beside(&[d.as_path()], &near(), true)[0],
         Some(dir.path().join("s1.batch.tsv"))
     );
     touch(dir.path(), "s1_batch.txt");
     assert_eq!(
-        beside(&d, &near(), true),
+        beside(&[d.as_path()], &near(), true)[0],
         None,
         "two candidates: none is guessed"
     );
@@ -156,9 +160,9 @@ fn a_generic_positions_file_goes_to_the_only_data_file_beside_it() {
     let pos = touch(&dir.path().join("spatial"), "tissue_positions.csv");
     let near = side_files_in(dir.path(), Pick::Coord);
     assert_eq!(near, std::slice::from_ref(&pos));
-    assert_eq!(beside(&d, &near, true), Some(pos));
+    assert_eq!(beside(&[d.as_path()], &near, true)[0], Some(pos));
     // With other data beside it, whose it is cannot be told.
-    assert_eq!(beside(&d, &near, false), None);
+    assert_eq!(beside(&[d.as_path()], &near, false)[0], None);
     touch(dir.path(), "other.h5");
     assert_eq!(data_in(dir.path()), 2);
 }
@@ -174,4 +178,42 @@ fn side_files_are_all_or_none() {
     assert_eq!(side_problem(&pairs, Pick::Batch), None);
     pairs[1].coord = Some("b.csv".into());
     assert!(side_problem(&pairs, Pick::Coord).is_some_and(|w| w.contains("coordinates")));
+}
+
+#[test]
+fn an_exact_name_wins_and_a_file_goes_to_one_data_file() {
+    let d = |n: &str| PathBuf::from(n);
+    let (s1, rep) = (d("s1.zarr"), d("s1_rep.zarr"));
+    let data = [s1.as_path(), rep.as_path()];
+    // `s1_coords` is named for s1 exactly: s1_rep, which it only
+    // extends, does not take it too.
+    assert_eq!(
+        beside(&data, &paths(&["s1_coords.csv"]), false),
+        [Some(d("s1_coords.csv")), None]
+    );
+    // With both, each takes its own; the exact match beats the longer one.
+    assert_eq!(
+        beside(
+            &data,
+            &paths(&["s1_coords.csv", "s1_rep_coords.csv"]),
+            false
+        ),
+        [Some(d("s1_coords.csv")), Some(d("s1_rep_coords.csv"))]
+    );
+    // Words are whole: `s1b` is not `s1` extended.
+    let s1b = d("s1b.zarr");
+    assert_eq!(
+        beside(&[s1b.as_path()], &paths(&["s1_coords.csv"]), false),
+        [None]
+    );
+    // A file two data files would take only by extending them goes to neither.
+    let (a, b) = (d("s1_a.zarr"), d("s1_b.zarr"));
+    assert_eq!(
+        beside(
+            &[a.as_path(), b.as_path()],
+            &paths(&["s1_coords.csv"]),
+            false
+        ),
+        [None, None]
+    );
 }
