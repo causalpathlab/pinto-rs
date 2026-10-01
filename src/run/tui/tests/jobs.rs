@@ -17,6 +17,7 @@ fn jobs_run_in_turn_and_leave_their_scripts() {
         dir: dir.path().to_path_buf(),
         out: m.into(),
         argv: vec![m.into(), "d.zarr".into(), "--out".into(), m.into()],
+        made: Vec::new(),
     };
     let q = Queue::start(vec![job("lc"), job("cage")], fake);
     while !q.finished() {
@@ -40,6 +41,7 @@ fn a_job_whose_result_exists_does_not_run() {
         dir: dir.path().to_path_buf(),
         out: "r".into(),
         argv: vec!["lc".into(), "--out".into(), "r".into()],
+        made: Vec::new(),
     };
     let q = Queue::start(vec![job], PathBuf::from("/bin/false"));
     while !q.finished() {
@@ -65,6 +67,7 @@ fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
         dir: dir.path().to_path_buf(),
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
+        made: Vec::new(),
     };
     let q = Queue::start(vec![job("a"), job("b")], slow);
     while q.shared.lock().unwrap().states[0] != State::Running {
@@ -81,4 +84,29 @@ fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
         [State::Stopped, State::Stopped]
     );
     assert!(!dir.path().join("b.cmd.sh").exists(), "b never started");
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_files_made_for_a_run_are_written_before_it_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = Job {
+        method: "lc".into(),
+        dir: dir.path().to_path_buf(),
+        out: "r".into(),
+        argv: vec!["lc".into(), "--out".into(), "r".into()],
+        made: vec![(
+            dir.path().join("r.batches/s1.txt"),
+            crate::run::tui::batch::Made::Repeat("b1".into(), 2),
+        )],
+    };
+    let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
+    while !q.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("r.batches/s1.txt")).unwrap(),
+        "b1\nb1\n"
+    );
+    assert!(dir.path().join("r.cmd.sh").exists());
 }

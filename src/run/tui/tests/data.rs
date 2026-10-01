@@ -168,16 +168,16 @@ fn a_generic_positions_file_goes_to_the_only_data_file_beside_it() {
 }
 
 #[test]
-fn side_files_are_all_or_none() {
+fn coordinate_files_are_all_or_none() {
     let mut pairs = vec![pair("a.zarr"), pair("b.zarr")];
-    assert_eq!(side_problem(&pairs, Pick::Batch), None);
-    pairs[0].batch = Some("a.tsv".into());
-    assert!(side_problem(&pairs, Pick::Batch).is_some());
-    assert_eq!(side_problem(&pairs, Pick::Coord), None);
-    pairs[1].batch = Some("b.tsv".into());
-    assert_eq!(side_problem(&pairs, Pick::Batch), None);
+    assert_eq!(coord_problem(&pairs), None);
+    pairs[0].coord = Some("a.csv".into());
+    assert!(coord_problem(&pairs).is_some_and(|w| w.contains("coordinates")));
     pairs[1].coord = Some("b.csv".into());
-    assert!(side_problem(&pairs, Pick::Coord).is_some_and(|w| w.contains("coordinates")));
+    assert_eq!(coord_problem(&pairs), None);
+    // Batch files may be mixed: the run writes the rest.
+    pairs[0].batch = Some("a.tsv".into());
+    assert_eq!(coord_problem(&pairs), None);
 }
 
 #[test]

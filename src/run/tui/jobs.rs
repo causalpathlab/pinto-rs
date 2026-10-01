@@ -23,6 +23,8 @@ pub struct Job {
     pub out: String,
     /// The command line without the program, paths relative to `dir`.
     pub argv: Vec<String>,
+    /// Batch label files written for the run, before its script.
+    pub made: Vec<(PathBuf, super::batch::Made)>,
 }
 
 impl Job {
@@ -34,6 +36,12 @@ impl Job {
     #[must_use]
     pub fn script(&self) -> PathBuf {
         self.dir.join(format!("{}.cmd.sh", self.out))
+    }
+
+    /// Where the batch label files written for the run go.
+    #[must_use]
+    pub fn batches(&self) -> PathBuf {
+        self.dir.join(format!("{}.batches", self.out))
     }
 }
 
@@ -150,6 +158,18 @@ fn run_job(
 ) -> State {
     if job.manifest().exists() {
         return State::Failed(format!("{} exists", job.manifest().display()));
+    }
+    if !job.made.is_empty() {
+        let written = std::fs::create_dir(job.batches())
+            .map_err(anyhow::Error::from)
+            .and_then(|()| {
+                job.made
+                    .iter()
+                    .try_for_each(|(path, what)| super::batch::write(path, what))
+            });
+        if let Err(e) = written {
+            return State::Failed(format!("cannot write the batch files: {e}"));
+        }
     }
     if let Err(e) = script::write(&job.script(), &job.out, &job.argv) {
         return State::Failed(format!("cannot write the script: {e}"));

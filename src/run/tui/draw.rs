@@ -1,7 +1,7 @@
 //! Drawing `pinto run`: a tab line, the screen, a message and the keys.
 //! Same look as `pinto view`.
 
-use super::data::Pick;
+use super::batch;
 use super::jobs::State;
 use super::{App, Kind, Screen, Target};
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
@@ -9,7 +9,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::path::PathBuf;
 
 impl App {
     pub(super) fn draw(&self, f: &mut ratatui::Frame) {
@@ -41,12 +40,23 @@ impl App {
         } else if self.confirm.is_some() {
             let rows = usize::from(area.height).saturating_sub(4);
             popup(f, area, self.confirm_lines(rows), 120);
+        } else if self.labels.is_some() {
+            let rows = usize::from(area.height).saturating_sub(10).max(3);
+            popup(f, area, self.label_lines(rows), 80);
         }
         if let Some(e) = &self.editor {
             let what = match e.target {
                 Target::Out(i) => format!(" --out for {}", self.rows[i].form.name),
                 Target::Field(m, i) => format!(" --{}", self.rows[m].form.fields[i].long),
                 Target::Filter => " flags containing".to_string(),
+                Target::Name(i) => format!(
+                    " one batch for every cell of {} (empty: the file is its own batch)",
+                    crate::tui::name(&self.pairs[i].data)
+                ),
+                Target::Rename(i, l) => format!(
+                    " new name for label “{}” (empty: keep it)",
+                    super::label_at(&self.pairs[i], l).unwrap_or_default()
+                ),
             };
             let lines = vec![
                 Line::from(Span::styled(what, bold())),
@@ -89,7 +99,7 @@ impl App {
 
     fn status(&self) -> Vec<Line<'static>> {
         let keys = match self.screen {
-            Screen::Data => "a add data   c coordinates   b batch labels (several: paired by name)   x clear both   X clear all   d remove   J K reorder   enter methods",
+            Screen::Data => "a add data   c coordinates   b batch label file (several: paired by name)   n name its batch   e rename its labels   x clear   X clear all   d remove   J K reorder",
             Screen::Methods => "space queue   enter flags   o change --out",
             Screen::Params => "space / enter change   ← → choices   r reset   R reset all   a advanced   / filter   [ ] method",
             Screen::Run => "↑ ↓ choose   s stop   v open the one chosen in pinto view",
@@ -127,19 +137,25 @@ impl App {
             .max()
             .unwrap_or(0)
             .min(w / 2);
-        let side =
-            |file: Option<&PathBuf>| file.map_or_else(|| "none".to_string(), |f| self.shown(f));
         for (i, p) in self.pairs.iter().enumerate() {
             let text = format!(
                 " {:<name_w$}  {}",
                 fit(&self.shown(&p.data), name_w),
                 p.info
             );
-            let more = format!(
-                "   coordinates {}  ·  batch {}",
-                side(p.coord.as_ref()),
-                side(p.batch.as_ref())
-            );
+            let coords = p
+                .coord
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |f| self.shown(f));
+            let batch = match batch::kind(p) {
+                batch::Kind::File => "its own".to_string(),
+                batch::Kind::Named(n) => format!("“{n}” for every cell"),
+                batch::Kind::Labels(f) if p.renames.is_empty() => self.shown(f),
+                batch::Kind::Labels(f) => {
+                    format!("{} ({} renamed)", self.shown(f), p.renames.len())
+                }
+            };
+            let more = format!("   coordinates {coords}  ·  batch {batch}");
             let style = if i == self.pair_row {
                 selected()
             } else {
@@ -148,17 +164,113 @@ impl App {
             lines.push(Line::from(Span::styled(fit(&text, w), style)));
             lines.push(Line::from(Span::styled(fit(&more, w), dim())));
         }
-        for pick in [Pick::Coord, Pick::Batch] {
-            if let Some(why) = super::data::side_problem(&self.pairs, pick) {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(why, bold())));
-            }
+        if let Some(why) = super::data::coord_problem(&self.pairs) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(why, bold())));
+        }
+        if !self.pairs.is_empty() {
+            lines.push(Line::from(""));
+            lines.extend(self.batch_lines(w));
         }
         if let Some(note) = self.coord_warning() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(note, dim())));
         }
         f.render_widget(Paragraph::new(lines), area);
+    }
+
+    /// The batches the data make, each with its files and cells.
+    fn batch_lines(&self, w: usize) -> Vec<Line<'static>> {
+        let (batches, notes) = batch::summary(&self.pairs);
+        let own = self
+            .pairs
+            .iter()
+            .all(|p| batch::kind(p) == batch::Kind::File);
+        let mut lines = vec![Line::from(Span::styled(
+            if own {
+                format!("Batches: each file its own ({} in all)", batches.len())
+            } else {
+                format!("Batches: {}", batches.len())
+            },
+            bold(),
+        ))];
+        let name_w = batches
+            .iter()
+            .map(|b| b.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(32);
+        for b in &batches {
+            let cells = b.cells.map_or_else(
+                || "cells not known yet".to_string(),
+                |n| format!("{n} cells"),
+            );
+            let files = if b.files == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", b.files)
+            };
+            let text = format!("  {:<name_w$}  {files:<8}  {cells}", fit(&b.name, name_w));
+            lines.push(Line::from(Span::styled(fit(&text, w), Style::default())));
+        }
+        for n in notes {
+            lines.push(Line::from(Span::styled(fit(&format!("  {n}"), w), dim())));
+        }
+        lines
+    }
+
+    /// The label list of a data row's batch file.
+    fn label_lines(&self, rows: usize) -> Vec<Line<'static>> {
+        let Some(l) = &self.labels else {
+            return Vec::new();
+        };
+        let p = &self.pairs[l.row];
+        let counts = p
+            .labels
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned()
+            .unwrap_or_default();
+        let mut out = vec![
+            Line::from(Span::styled(
+                format!(
+                    " Labels of {}",
+                    p.batch.as_deref().map(crate::tui::name).unwrap_or_default()
+                ),
+                bold(),
+            )),
+            Line::from(""),
+        ];
+        let name_w = counts
+            .keys()
+            .map(|k| k.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(24);
+        for (i, (label, n)) in counts
+            .iter()
+            .enumerate()
+            .skip(first_row(l.cursor, rows, counts.len()))
+            .take(rows)
+        {
+            let to = p
+                .renames
+                .get(label)
+                .map_or_else(String::new, |t| format!("→ {t}"));
+            let text = format!(" {:<name_w$}  {n:>9} cells  {to}", fit(label, name_w));
+            let style = if i == l.cursor {
+                selected()
+            } else {
+                Style::default()
+            };
+            out.push(Line::from(Span::styled(text, style)));
+        }
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(
+            " ↑ ↓ choose   enter rename   esc back",
+            dim(),
+        )));
+        out
     }
 
     fn draw_methods(&self, f: &mut ratatui::Frame, area: Rect) {

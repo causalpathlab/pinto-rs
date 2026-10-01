@@ -3,6 +3,7 @@
 
 use crate::tui::browse::{is_data, size_of, Header, Wanted};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// What `pinto run` browses for: count backends to fit, their coordinate
@@ -91,9 +92,19 @@ fn is_coord(name: &str) -> bool {
 pub struct Pair {
     pub data: PathBuf,
     pub coord: Option<PathBuf>,
+    /// The batch label file: one label per cell.
     pub batch: Option<PathBuf>,
+    /// The one batch every cell is in, as typed; wins over `batch`.
+    pub name: Option<String>,
+    /// Labels of `batch` renamed: old to new.
+    pub renames: BTreeMap<String, String>,
+    /// `batch`'s distinct labels with their cell counts, once read; why
+    /// it did not read otherwise.
+    pub labels: Option<Result<BTreeMap<String, usize>, String>>,
     /// Features × cells, or why the file does not open.
     pub info: String,
+    /// The file's cell count, once known.
+    pub cells: Option<usize>,
 }
 
 impl Pair {
@@ -103,7 +114,11 @@ impl Pair {
             data,
             coord: None,
             batch: None,
+            name: None,
+            renames: BTreeMap::new(),
+            labels: None,
             info: "reading…".into(),
+            cells: None,
         }
     }
 
@@ -116,25 +131,42 @@ impl Pair {
         }
     }
 
-    /// Set the coordinate or batch file; the data file stays.
+    /// Set the coordinate or batch file; the data file stays. A batch file
+    /// replaces a typed batch name, and its labels are read again.
     pub fn set(&mut self, pick: Pick, file: Option<PathBuf>) {
         match pick {
             Pick::Coord => self.coord = file,
-            Pick::Batch => self.batch = file,
+            Pick::Batch => {
+                if file != self.batch {
+                    self.renames.clear();
+                    self.labels = None;
+                }
+                if file.is_some() {
+                    self.name = None;
+                }
+                self.batch = file;
+            }
             Pick::Data => {}
         }
     }
+
+    /// Back to pinto's own rule: the file is its own batch.
+    pub fn clear_batch(&mut self) {
+        self.set(Pick::Batch, None);
+        self.name = None;
+    }
 }
 
-/// `2000 features × 5000 cells`, or why the file does not open.
-pub fn describe(path: &Path) -> String {
+/// `2000 features × 5000 cells` and the cell count, or why the file does
+/// not open.
+pub fn describe(path: &Path) -> (String, Option<usize>) {
     use data_beans::sparse_io::open_sparse_matrix_by_path;
     match open_sparse_matrix_by_path(&path.to_string_lossy()) {
         Ok(m) => match (m.num_rows(), m.num_columns()) {
-            (Some(r), Some(c)) => format!("{r} features × {c} cells"),
-            _ => "opens".to_string(),
+            (Some(r), Some(c)) => (format!("{r} features × {c} cells"), Some(c)),
+            _ => ("opens".to_string(), None),
         },
-        Err(e) => format!("does not open: {e}"),
+        Err(e) => (format!("does not open: {e}"), None),
     }
 }
 
@@ -344,18 +376,14 @@ pub fn data_in(dir: &Path) -> usize {
         .count()
 }
 
-/// Why the coordinate or batch files (`pick`) as given cannot be passed:
-/// pinto wants one per data file, or none.
+/// Why the coordinate files as given cannot be passed: pinto wants one per
+/// data file, or none. (Batches can be mixed: see [`super::batch`].)
 #[must_use]
-pub fn side_problem(pairs: &[Pair], pick: Pick) -> Option<String> {
-    let with = pairs.iter().filter(|p| p.side(pick).is_some()).count();
-    let what = match pick {
-        Pick::Coord => "coordinates",
-        _ => "batch labels",
-    };
+pub fn coord_problem(pairs: &[Pair]) -> Option<String> {
+    let with = pairs.iter().filter(|p| p.coord.is_some()).count();
     (with > 0 && with < pairs.len()).then(|| {
         format!(
-            "{with} of {} data files have {what}; give each one, or clear them all",
+            "{with} of {} data files have coordinates; give each one, or clear them all",
             pairs.len()
         )
     })

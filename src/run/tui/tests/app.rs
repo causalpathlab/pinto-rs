@@ -346,6 +346,7 @@ fn only_a_finished_fit_opens_in_the_viewer() {
         dir: dir.path().to_path_buf(),
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
+        made: Vec::new(),
     };
     // A stand-in pinto that writes the manifest its --out names, or fails.
     let fake = dir.path().join("fake-pinto");
@@ -383,4 +384,80 @@ fn the_parameters_screen_shows_a_queued_method_however_it_is_reached() {
     key(&mut a, KeyCode::Tab);
     assert_eq!(a.screen, Screen::Params);
     assert_eq!(a.param_method, cage);
+}
+
+#[test]
+fn named_batches_reach_the_command_line_as_files_written_for_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.pairs = data(dir.path(), &["d1.zarr", "d2.zarr"]);
+    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
+    a.rows[lc].on = true;
+    a.screen = Screen::Data;
+    a.pair_row = 1;
+    key(&mut a, KeyCode::Char('n'));
+    for c in "b1".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.pairs[1].name.as_deref(), Some("b1"));
+    // Its cell count is not known yet: blocked.
+    assert!(a.plan()[0].problem.as_ref().unwrap().contains("cell count"));
+    a.pairs[0].cells = Some(3);
+    a.pairs[1].cells = Some(2);
+    let p = &a.plan()[0];
+    assert_eq!(p.problem, None);
+    let at = p
+        .job
+        .argv
+        .iter()
+        .position(|w| w == "--batch-files")
+        .unwrap();
+    assert_eq!(p.job.argv[at + 1], "lc.batches/d1.txt,lc.batches/d2.txt");
+    assert_eq!(
+        p.job.made[1],
+        (
+            script::normalize(dir.path()).join("lc.batches/d2.txt"),
+            batch::Made::Repeat("b1".into(), 2)
+        )
+    );
+    std::fs::create_dir(dir.path().join("lc.batches")).unwrap();
+    assert!(a.plan()[0].problem.as_ref().unwrap().contains("exists"));
+    // Clearing the row's name back to empty: every file its own again.
+    std::fs::remove_dir(dir.path().join("lc.batches")).unwrap();
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Enter);
+    let p = &a.plan()[0];
+    assert!(!p.job.argv.contains(&"--batch-files".to_string()));
+    assert!(p.job.made.is_empty());
+}
+
+#[test]
+fn labels_read_in_the_background_are_renamed_from_their_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.pairs = data(dir.path(), &["s1.zarr"]);
+    let labels = dir.path().join("s1_batch.txt");
+    std::fs::write(&labels, "A\nB\nA\n").unwrap();
+    a.take_sides(std::slice::from_ref(&labels), Pick::Batch);
+    a.screen = Screen::Data;
+    while a.pairs[0].labels.is_none() {
+        a.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    key(&mut a, KeyCode::Char('e'));
+    assert!(a.labels.is_some());
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.pairs[0].renames.get("B").map(String::as_str), Some("A"));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.labels.is_none());
+    let (batches, _) = batch::summary(&a.pairs);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].cells, Some(3));
 }
