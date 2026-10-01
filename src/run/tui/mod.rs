@@ -55,7 +55,7 @@ struct Row {
 }
 
 /// What a line being typed will become.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
     Out(usize),
     /// Method row, field index.
@@ -64,7 +64,7 @@ enum Target {
     /// The one batch of a data row's cells.
     Name(usize),
     /// A new name for a label of a data row's batch file.
-    Rename(usize, usize),
+    Rename(usize, String),
 }
 
 /// The labels of a data row's batch file, listed to rename them.
@@ -394,15 +394,13 @@ impl App {
                             p.name = Some(t.to_string());
                         }
                     }
-                    Target::Rename(i, l) => {
+                    Target::Rename(i, label) => {
                         let p = &mut self.pairs[i];
-                        if let Some(label) = label_at(p, l) {
-                            let t = text.trim();
-                            if t.is_empty() || t == label {
-                                p.renames.remove(&label);
-                            } else {
-                                p.renames.insert(label, t.to_string());
-                            }
+                        let t = text.trim();
+                        if t.is_empty() || t == label {
+                            p.renames.remove(&label);
+                        } else {
+                            p.renames.insert(label, t.to_string());
                         }
                     }
                 }
@@ -534,6 +532,8 @@ impl App {
                 }
                 Found::Labels(path, counts) => {
                     self.reading.remove(&path);
+                    // One map for every row sharing the file.
+                    let counts = counts.map(std::sync::Arc::new);
                     for p in &mut self.pairs {
                         if p.batch.as_ref() == Some(&path) && p.labels.is_none() {
                             p.labels = Some(counts.clone());
@@ -585,7 +585,7 @@ impl App {
                         .get(&label)
                         .unwrap_or(&label)
                         .clone();
-                    self.edit(Target::Rename(row, cursor), now);
+                    self.edit(Target::Rename(row, label), now);
                 }
             }
             _ => {}

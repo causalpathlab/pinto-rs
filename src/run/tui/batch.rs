@@ -171,7 +171,7 @@ pub fn summary(pairs: &[Pair]) -> (Vec<Batch>, Vec<String>) {
             Kind::Named(n) => add(n.to_string(), i, p.cells),
             Kind::Labels(f) => match &p.labels {
                 Some(Ok(counts)) => {
-                    for (label, n) in counts {
+                    for (label, n) in counts.iter() {
                         let name = p.renames.get(label).unwrap_or(label);
                         add(name.clone(), i, Some(*n));
                     }

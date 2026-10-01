@@ -464,7 +464,12 @@ pub(crate) fn list_dir<W: Wanted>(dir: &Path, want: &W, read: Read) -> Vec<Entry
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
-        let is_dir = path.is_dir();
+        // The entry's own type costs no call; a link is followed to see
+        // whether it leads to a folder.
+        let is_dir = match e.file_type() {
+            Ok(t) if !t.is_symlink() => t.is_dir(),
+            _ => path.is_dir(),
+        };
         let file = !is_dir || name.ends_with(".zarr");
         if file && (name.starts_with('.') != (read == Read::HiddenFiles)) {
             continue;

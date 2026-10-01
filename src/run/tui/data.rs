@@ -113,7 +113,7 @@ pub struct Pair {
     pub renames: BTreeMap<String, String>,
     /// `batch`'s distinct labels with their cell counts, once read; why
     /// it did not read otherwise.
-    pub labels: Option<Result<BTreeMap<String, usize>, String>>,
+    pub labels: Option<Result<std::sync::Arc<BTreeMap<String, usize>>, String>>,
     /// Features × cells, or why the file does not open.
     pub info: String,
     /// The file's cell count, once known.
@@ -164,7 +164,7 @@ impl Pair {
     /// `batch`'s labels and their cell counts, once read.
     #[must_use]
     pub fn label_counts(&self) -> Option<&BTreeMap<String, usize>> {
-        self.labels.as_ref()?.as_ref().ok()
+        self.labels.as_ref()?.as_deref().ok()
     }
 
     /// Back to pinto's own rule: the file is its own batch.

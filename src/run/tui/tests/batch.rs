@@ -114,7 +114,10 @@ fn renamed_labels_are_written_line_for_line_and_never_over_a_file() {
 fn renamed_labels_merge_in_the_summary_and_unread_ones_are_noted() {
     let mut pairs = [pair("d/s1.zarr", Some(3)), pair("d/s2.zarr", Some(2))];
     pairs[0].batch = Some("d/s1_batch.txt".into());
-    pairs[0].labels = Some(Ok(BTreeMap::from([("A".into(), 2), ("B".into(), 1)])));
+    pairs[0].labels = Some(Ok(std::sync::Arc::new(BTreeMap::from([
+        ("A".into(), 2),
+        ("B".into(), 1),
+    ]))));
     pairs[0].renames.insert("B".into(), "A".into());
     pairs[1].batch = Some("d/s2_batch.txt".into());
     let (batches, notes) = summary(&pairs);

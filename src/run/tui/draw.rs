@@ -47,18 +47,17 @@ impl App {
             popup(f, area, self.label_lines(rows), 80);
         }
         if let Some(e) = &self.editor {
-            let what = match e.target {
-                Target::Out(i) => format!(" --out for {}", self.rows[i].form.name),
-                Target::Field(m, i) => format!(" --{}", self.rows[m].form.fields[i].long),
+            let what = match &e.target {
+                Target::Out(i) => format!(" --out for {}", self.rows[*i].form.name),
+                Target::Field(m, i) => format!(" --{}", self.rows[*m].form.fields[*i].long),
                 Target::Filter => " flags containing".to_string(),
                 Target::Name(i) => format!(
                     " one batch for every cell of {} (empty: the file is its own batch)",
-                    crate::tui::name(&self.pairs[i].data)
+                    crate::tui::name(&self.pairs[*i].data)
                 ),
-                Target::Rename(i, l) => format!(
-                    " new name for label “{}” (empty: keep it)",
-                    super::label_at(&self.pairs[i], l).unwrap_or_default()
-                ),
+                Target::Rename(_, label) => {
+                    format!(" new name for label “{label}” (empty: keep it)")
+                }
             };
             let lines = vec![
                 Line::from(Span::styled(what, bold())),
