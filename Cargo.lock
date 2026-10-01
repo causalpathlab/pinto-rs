@@ -2641,9 +2641,9 @@ dependencies = [
 
 [[package]]
 name = "legume-numeric"
-version = "0.8.10"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81e12fb8c29bcb88850ea7c6d2842001da466760cff1dfe110857ff787e0d9c5"
+checksum = "80ece5ddba84db43f818b4e42a42343dc29db4106a356b11eb5beb9c40e0ae93"
 dependencies = [
  "anyhow",
  "approx",
