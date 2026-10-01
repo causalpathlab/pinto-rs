@@ -505,3 +505,47 @@ fn many_data_files_are_all_described_by_the_few_workers() {
     }
     assert!(a.pairs.iter().all(|p| p.info != "reading…"));
 }
+
+#[test]
+fn the_keys_wrap_at_whole_hints_and_name_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = app(dir.path());
+    let lines: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
+    assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("enter methods")),
+        "{lines:?}"
+    );
+    assert!(lines.last().unwrap().contains("q quit"));
+}
+
+#[test]
+fn keys_that_need_data_say_so_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.screen = Screen::Data;
+    key(&mut a, KeyCode::Char('n'));
+    assert!(a.editor.is_none());
+    assert!(a.message.as_deref().unwrap().contains("a adds"));
+}
+
+#[test]
+fn a_started_queue_moves_default_outs_on_so_g_again_is_not_blocked() {
+    assert!(default_out("lc", "lc") && default_out("lc-12", "lc"));
+    assert!(!default_out("lc-x", "lc") && !default_out("lcx", "lc") && !default_out("lc-", "lc"));
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(next_out(dir.path(), "lc", Some("lc")), "lc-2");
+    let mut a = app(dir.path());
+    a.pairs = data(dir.path(), &["d.zarr"]);
+    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
+    a.rows[lc].on = true;
+    a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].on = true;
+    a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].out = "mine".into();
+    a.move_outs_on();
+    assert_eq!(a.rows[lc].out, "lc-2");
+    assert_eq!(
+        a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].out,
+        "mine",
+        "a name the user typed is theirs"
+    );
+}

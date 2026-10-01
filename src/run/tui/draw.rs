@@ -14,10 +14,11 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 impl App {
     pub(super) fn draw(&self, f: &mut ratatui::Frame) {
         let area = f.area();
+        let status_lines = self.status(usize::from(area.width));
         let [top, body, status] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(status_lines.len() as u16),
         ])
         .areas(area);
         f.render_widget(Paragraph::new(self.tabs()), top);
@@ -32,7 +33,7 @@ impl App {
             Screen::Params => self.draw_params(f, inner),
             Screen::Run => self.draw_run(f, inner),
         }
-        f.render_widget(Paragraph::new(self.status()), status);
+        f.render_widget(Paragraph::new(status_lines), status);
         if let Some(b) = &self.browser {
             // Inside the popup's border.
             let width = usize::from(area.width.min(110)).saturating_sub(2);
@@ -98,24 +99,59 @@ impl App {
         vec![Line::from(spans), Line::from("")]
     }
 
-    fn status(&self) -> Vec<Line<'static>> {
-        let keys = match self.screen {
-            Screen::Data => "a add data   c coordinates   b batch label file (several: paired by name)   n name its batch   e rename its labels   x clear   X clear all   d remove   J K reorder",
-            Screen::Methods => "space queue   enter flags   o change --out",
-            Screen::Params => "space / enter change   ← → choices   r reset   R reset all   a advanced   / filter   [ ] method",
-            Screen::Run => "↑ ↓ choose   s stop   v open the one chosen in pinto view",
+    /// The message and the keys, the keys wrapped at whole hints to
+    /// `width` columns so none is cut off.
+    pub(super) fn status(&self, width: usize) -> Vec<Line<'static>> {
+        let keys: &[&str] = match self.screen {
+            Screen::Data => &[
+                "a add data",
+                "c coordinates",
+                "b batch label file (several: paired by name)",
+                "n name its batch",
+                "e rename its labels",
+                "x clear",
+                "X clear all",
+                "d remove",
+                "J K reorder",
+                "enter methods",
+            ],
+            Screen::Methods => &[
+                "space queue",
+                "enter queue and show flags",
+                "o change --out",
+            ],
+            Screen::Params => &[
+                "space / enter change",
+                "← → choices",
+                "r reset",
+                "R reset all",
+                "a advanced",
+                "/ filter (esc clears it)",
+                "[ ] method",
+            ],
+            Screen::Run => &[
+                "↑ ↓ choose",
+                "s stop",
+                "v open the one chosen in pinto view",
+            ],
         };
-        vec![
-            Line::from(Span::styled(
-                format!(" {}", self.message.clone().unwrap_or_default()),
-                bold(),
-            )),
-            Line::from(Span::styled(format!(" {keys}"), dim())),
-            Line::from(Span::styled(
-                " tab / 1-4 screens   g review and run   q quit",
-                dim(),
-            )),
-        ]
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" {}", self.message.clone().unwrap_or_default()),
+            bold(),
+        ))];
+        let all = ["tab / 1-4 screens", "g review and run", "q quit"];
+        for group in [keys, &all[..]] {
+            let mut row = String::new();
+            for k in group {
+                if !row.is_empty() && row.chars().count() + 3 + k.chars().count() > width {
+                    lines.push(Line::from(Span::styled(std::mem::take(&mut row), dim())));
+                }
+                row.push_str(if row.is_empty() { " " } else { "   " });
+                row.push_str(k);
+            }
+            lines.push(Line::from(Span::styled(row, dim())));
+        }
+        lines
     }
 
     fn draw_data(&self, f: &mut ratatui::Frame, area: Rect) {

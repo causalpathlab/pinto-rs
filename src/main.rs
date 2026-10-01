@@ -659,6 +659,10 @@ enum Commands {
                       each, queue one or more of lc, cage and dsvd, and change\n\
                       their flags. Every flag a method has is listed with its help;\n\
                       hidden ones under `a`.\n\n\
+                      Each data file is its own batch unless `n` names one batch for\n\
+                      all its cells (files given one name are one batch) or `b` takes\n\
+                      a label file, whose labels `e` renames. Label files the run\n\
+                      needs beyond those given are written to `{out}.batches/`.\n\n\
                       `g` shows the exact commands, checked as pinto would parse\n\
                       them, and runs them in turn with their log on screen.\n\
                       Each is saved first as `{out}.cmd.sh`: run it again with\n\

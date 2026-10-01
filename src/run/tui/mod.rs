@@ -621,9 +621,12 @@ impl App {
             KeyCode::Up => self.pair_row = self.pair_row.saturating_sub(1),
             KeyCode::Down => self.pair_row = (self.pair_row + 1).min(last),
             KeyCode::Char('a') => self.browse(Pick::Data),
-            KeyCode::Char('c') if !self.pairs.is_empty() => self.browse(Pick::Coord),
-            KeyCode::Char('b') if !self.pairs.is_empty() => self.browse(Pick::Batch),
-            KeyCode::Char('n') if !self.pairs.is_empty() => {
+            KeyCode::Char('c' | 'b' | 'n' | 'e' | 'x' | 'X' | 'd') if self.pairs.is_empty() => {
+                self.message = Some("no data files yet: a adds some".into());
+            }
+            KeyCode::Char('c') => self.browse(Pick::Coord),
+            KeyCode::Char('b') => self.browse(Pick::Batch),
+            KeyCode::Char('n') => {
                 let now = self.pairs[self.pair_row].name.clone().unwrap_or_default();
                 self.edit(Target::Name(self.pair_row), now);
             }
@@ -931,11 +934,23 @@ impl App {
                         self.queue = Some(Queue::start(jobs, exe));
                         self.job_row = 0;
                         self.screen = Screen::Run;
+                        self.move_outs_on();
                     }
                     Err(e) => self.message = Some(format!("cannot find pinto: {e}")),
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Give each queued method whose `--out` is a default one the next
+    /// free name, so `g` again does not aim at the runs just started. A
+    /// name the user typed is left as it is.
+    fn move_outs_on(&mut self) {
+        for r in self.rows.iter_mut().filter(|r| r.on) {
+            if default_out(&r.out, &r.form.name) {
+                r.out = next_out(&self.here, &r.form.name, Some(&r.out));
+            }
         }
     }
 
@@ -1035,14 +1050,27 @@ impl App {
 /// `{method}`, or `{method}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, method: &str) -> String {
-    let taken = |p: &str| jobs::outputs(dir, p).iter().any(|f| f.exists());
-    if !taken(method) {
-        return method.to_string();
-    }
-    (2..)
-        .map(|k| format!("{method}-{k}"))
+    next_out(dir, method, None)
+}
+
+/// The first of `{method}`, `{method}-2`, … in `dir` with no manifest or
+/// script yet, and not `used` (a run started, its files not written yet).
+fn next_out(dir: &Path, method: &str, used: Option<&str>) -> String {
+    let taken = |p: &str| Some(p) == used || jobs::outputs(dir, p).iter().any(|f| f.exists());
+    std::iter::once(method.to_string())
+        .chain((2..).map(|k| format!("{method}-{k}")))
         .find(|p| !taken(p))
         .unwrap_or_else(|| method.to_string())
+}
+
+/// Whether `out` is one [`free_out`] would give `method`: `{method}` or
+/// `{method}-{k}`.
+fn default_out(out: &str, method: &str) -> bool {
+    out == method
+        || out
+            .strip_prefix(method)
+            .and_then(|r| r.strip_prefix('-'))
+            .is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Put `text` on the clipboard: `pbcopy` where there is one, else the
