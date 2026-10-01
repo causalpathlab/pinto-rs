@@ -96,7 +96,7 @@ impl PairDictionary {
         self.score_local(&self.to_local(obs), theta, axis)
     }
 
-    /// [`Self::score`] for a profile already on active-list positions.
+    /// `Self::score` for a profile already on active-list positions.
     #[must_use]
     pub(super) fn score_local(
         &self,

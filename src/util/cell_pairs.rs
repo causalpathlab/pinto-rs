@@ -21,7 +21,7 @@ pub const EDGE_KIND_EXPRESSION: i32 = 1;
 
 /// How a pair reads in the per-edge outputs.
 ///
-/// [`EdgeSource::Both`] is deliberately spatial: such a pair is physically
+/// `EdgeSource::Both` is deliberately spatial: such a pair is physically
 /// adjacent as well as expression-similar, and a consumer filtering on
 /// spatial is asking about adjacency.
 pub fn edge_kind_code(source: legume_numeric::matrix::knn_graph::EdgeSource) -> i32 {

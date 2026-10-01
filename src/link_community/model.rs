@@ -13,7 +13,7 @@
 //!   ℓ = Σ_kg f(D_{kg}) − Σ_k f(V_k),   f(x) = x · ln x
 //! (equivalently −Σ_k V_k · H(p_k), where p_k = D_{k·}/V_k).
 //!
-//! where log_rate[k, g] = log_feature[k, g] + log_size_offset[k] is factored
+//! where `log_rate[k, g] = log_feature[k, g] + log_size_offset[k]` is factored
 //! into per-feature and per-community-size parts for cheap incremental updates.
 //!
 //! Profiles are stored in CSR: for each edge, `(indptr[e]..indptr[e+1])`

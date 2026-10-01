@@ -16,7 +16,7 @@
 //!   saved per-row NB precisions, `dsvd`'s two stacked channels.
 //!
 //! The NB-Fisher weights need BOTH, and they are the reason
-//! [`Self::broadcast_to_rows`] exists: the weight is a function of abundance
+//! `Self::broadcast_to_rows` exists: the weight is a function of abundance
 //! and mean and is not additive, so it is evaluated once per feature on folded
 //! statistics and then spread back over that feature's rows. Folding the weights
 //! afterwards would hand a feature a precision no measurement supports.

@@ -360,7 +360,7 @@ pub fn build_super_edge_projection_profiles(
 
 /// Map fine edges to canonical super-edges defined by cell cluster labels.
 ///
-/// Each edge (i, j) is mapped to (min(label[i], label[j]), max(...)).
+/// Each edge (i, j) is mapped to `(min(label[i], label[j]), max(...))`.
 /// Returns (super_edges list, fine_to_super mapping).
 pub fn build_super_edges(
     edges: &[(usize, usize)],
@@ -382,7 +382,7 @@ pub fn transfer_labels(fine_to_super: &[usize], super_membership: &[usize]) -> V
 
 /// Extract cell-level soft membership from link community assignments.
 ///
-/// For each cell i, membership[i][k] = (# edges of i assigned to k) / (# edges of i).
+/// For each cell i, `membership[i][k] = (# edges of i assigned to k) / (# edges of i)`.
 /// Returns [n_cells × k] matrix.
 pub fn compute_node_membership(
     edges: &[(usize, usize)],
@@ -433,7 +433,7 @@ pub fn dominant_cluster_rows(propensity: &Mat) -> Vec<f32> {
         .collect()
 }
 
-/// Row-wise Shannon entropy in nats: H(i) = -Σ_k p[i,k] · ln p[i,k].
+/// Row-wise Shannon entropy in nats: `H(i) = -Σ_k p[i,k] · ln p[i,k]`.
 ///
 /// Treats `0 · ln 0 = 0`. Rows that sum to ~0 (zero-degree vertices, or
 /// rows that never received any edge mass) are returned as `NaN` so

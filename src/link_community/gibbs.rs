@@ -32,7 +32,7 @@ pub struct ComponentGibbsArgs<'a> {
     pub incidence: Option<IncidenceConfig<'a>>,
 }
 
-/// Frozen incidence configuration consumed by [`run_components`]. Both
+/// Frozen incidence configuration consumed by `run_components`. Both
 /// `propensity` (`[n_cells × k]` row-major soft propensity, equivalently
 /// the variational `q(c_v)`) and `log_incidence` (`[k × k]` row-major
 /// `E_q[log B[k, k']]` under a `Gamma(a, b)` posterior) are computed once
@@ -119,7 +119,7 @@ impl LinkGibbsSampler {
         self.run_parallel_with_observer(stats, profiles, num_sweeps, alpha, |_, _| {})
     }
 
-    /// [`Self::run_parallel`] with a per-sweep observer closure called after
+    /// `Self::run_parallel` with a per-sweep observer closure called after
     /// each sweep's stats are patched. The observer receives `(sweep_idx,
     /// &stats)` — use it to record score / MI / whatever per-sweep diagnostic
     /// is useful. Called zero-cost when the closure is a no-op.
@@ -217,7 +217,7 @@ impl LinkGibbsSampler {
         self.run_greedy_plain_with_observer(stats, profiles, max_sweeps, alpha, |_, _| {})
     }
 
-    /// [`Self::run_greedy_plain`] with a per-sweep observer closure called
+    /// `Self::run_greedy_plain` with a per-sweep observer closure called
     /// after each sweep; the observer fires even on the final converged
     /// sweep so the caller sees the end state of the early-exit.
     pub fn run_greedy_plain_with_observer<F>(

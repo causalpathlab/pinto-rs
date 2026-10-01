@@ -722,7 +722,7 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
 
 /// Per-feature totals from the training half, on this sample's feature axis.
 ///
-/// The training data gets its own [`FeatureAxis`], so a channelized training matrix
+/// The training data gets its own `FeatureAxis`, so a channelized training matrix
 /// pools the same way this one does before the two are matched by name. A feature
 /// the training half never saw keeps a zero total, which `PairDictionary` reads
 /// as "not on the partition axis" and drops -- the same treatment a feature with no
