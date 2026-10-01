@@ -47,9 +47,11 @@
 use crate::util::common::*;
 use data_beans::alg::collapse_data::*;
 use data_beans::alg::random_projection::*;
+use legume_numeric::matrix::parquet::read_table_columns;
 use legume_numeric::param::dmatrix_gamma::GammaMatrix;
 use legume_numeric::param::io::ParamIo;
 use legume_numeric::param::traits::Inference;
+use rustc_hash::FxHashMap;
 
 pub struct EstimateBatchArgs {
     pub proj_dim: usize,
@@ -70,9 +72,7 @@ pub fn load_cnv_cell_strata(
     clones_path: &str,
     data_vec: &SparseIoVec,
 ) -> anyhow::Result<Vec<usize>> {
-    let table = cnv::clone_call::read_clone_table(clones_path)?;
-    let names = data_vec.column_names()?;
-    let cell_to_stratum = cnv::clone_call::align_strata_to_cells(&table, &names)?;
+    let cell_to_stratum = strata_of(clones_path, &data_vec.column_names()?)?;
     let n_kept = cell_to_stratum.iter().filter(|&&s| s > 0).count();
     info!(
         "CNV strata from {clones_path}: {} / {} cells in donor-private clones",
@@ -80,6 +80,44 @@ pub fn load_cnv_cell_strata(
         cell_to_stratum.len()
     );
     Ok(cell_to_stratum)
+}
+
+/// Each of `cells`' stratum in the clone table at `path` (its `cell` and
+/// `stratum` columns; the file is the whole contract with mung). Cells it
+/// does not list go to stratum 0, with a warning.
+pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<usize>> {
+    let (strs, nums) = read_table_columns(path, &["cell"], &["stratum"])?;
+    let cell = strs.into_iter().next().unwrap_or_default();
+    let stratum = nums.into_iter().next().unwrap_or_default();
+    anyhow::ensure!(
+        cell.len() == stratum.len(),
+        "{path}: columns of different lengths"
+    );
+    let mut by_cell: FxHashMap<&str, usize> = FxHashMap::default();
+    for (i, (c, &s)) in cell.iter().zip(&stratum).enumerate() {
+        anyhow::ensure!(
+            s >= 0.0 && s.fract() == 0.0,
+            "{path}: row {i}: stratum {s} is not a count"
+        );
+        by_cell.insert(c, s as usize);
+    }
+    let mut missing = 0usize;
+    let out: Vec<usize> = cells
+        .iter()
+        .map(|c| {
+            by_cell.get(c.as_ref()).copied().unwrap_or_else(|| {
+                missing += 1;
+                0
+            })
+        })
+        .collect();
+    if missing > 0 {
+        warn!(
+            "{missing} / {} cells missing from the clone table; treating as stratum 0",
+            cells.len()
+        );
+    }
+    Ok(out)
 }
 
 /// Estimate per-feature batch effect multipliers (δ) via hierarchical
