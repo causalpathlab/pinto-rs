@@ -7,6 +7,9 @@ fn cuts_keep_the_end_or_the_start_and_say_so() {
     assert_eq!(tail("abcdef", 4), "…def");
     assert_eq!(tail("abc", 4), "abc");
     assert_eq!(tail("abcdef", 4).chars().count(), 4);
+    assert_eq!(middle("abcdefgh", 5), "ab…gh");
+    assert_eq!(middle("abcdefgh", 6), "abc…gh");
+    assert_eq!(middle("abc", 4), "abc");
 }
 
 #[test]
