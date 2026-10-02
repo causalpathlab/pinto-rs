@@ -42,10 +42,8 @@ pub struct SrtLrActivityArgs {
     #[arg(
         long,
         default_value_t = false,
-        help = "Preload all sparse data into memory",
-        long_help = "Preload all sparse column data into memory up front.\n\
-                     Faster when the data fits in RAM.\n\
-                     Some parallel access patterns require it. It raises peak memory usage."
+        help = crate::util::input::PRELOAD_HELP,
+        long_help = crate::util::input::PRELOAD_LONG_HELP
     )]
     pub preload_data: bool,
 

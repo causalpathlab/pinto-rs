@@ -10,6 +10,7 @@ mod jobs;
 mod script;
 
 use crate::tui::browse::{Browser, Outcome};
+use crate::tui::field::Field as TextField;
 use crate::tui::shown;
 use data::Pair;
 use data::{Pick, Side};
@@ -81,7 +82,7 @@ struct Labels {
 
 struct Editor {
     target: Target,
-    text: String,
+    text: TextField,
 }
 
 /// One queued fit as the confirm popup shows it.
@@ -278,7 +279,7 @@ impl App {
             // Asked first, over the file browser.
             editor: Some(Editor {
                 target: Target::Header,
-                text: String::new(),
+                text: TextField::new(""),
             }),
             confirm: None,
             confirm_scroll: 0,
@@ -368,7 +369,14 @@ impl App {
 
     // ───────────── typing a line ─────────────
 
+    /// Edit `text` for `target`, all of it selected so typing replaces
+    /// it; the filter instead goes on narrowing from what it has.
     fn edit(&mut self, target: Target, text: String) {
+        let text = if target == Target::Filter {
+            TextField::unselected(text)
+        } else {
+            TextField::new(text)
+        };
         self.editor = Some(Editor { target, text });
     }
 
@@ -386,6 +394,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let Editor { target, text } = self.editor.take().unwrap();
+                let text = text.text;
                 match target {
                     Target::Header => {
                         self.header = text.trim().to_string();
@@ -441,19 +450,13 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace | KeyCode::Char(_) => {
-                if let KeyCode::Char(c) = k.code {
-                    e.text.push(c);
-                } else {
-                    e.text.pop();
-                }
+            _ => {
                 // The filter narrows the flags as it is typed.
-                if e.target == Target::Filter {
-                    self.filter.clone_from(&e.text);
+                if e.text.key(k) && e.target == Target::Filter {
+                    self.filter.clone_from(&e.text.text);
                     self.field_row = 0;
                 }
             }
-            _ => {}
         }
     }
 

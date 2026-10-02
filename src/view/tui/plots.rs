@@ -49,6 +49,18 @@ pub struct Cache {
     rows: Vec<(u16, Box<str>)>,
 }
 
+impl Cache {
+    /// Whether a heatmap is drawn, for `s` to save.
+    pub fn has_heatmap(&self) -> bool {
+        self.heatmap.is_some()
+    }
+
+    /// Whether a structure plot is built, for `s` to save beside the map.
+    pub fn has_structure(&self) -> bool {
+        self.structure.is_some()
+    }
+}
+
 /// A heatmap cell's colour: its clipped z on the diverging scale; a gene
 /// missing from the data in the dimmed tissue colour.
 fn z_colour(z: f32, theme: super::super::color::Theme) -> [u8; 3] {
@@ -556,12 +568,11 @@ impl App<'_> {
 
     /// The structure plot as a PNG at the export scale, its panels and
     /// stack listed beside it; with the map's export (`s`).
-    pub(super) fn export_structure(&mut self) -> anyhow::Result<String> {
+    pub(super) fn export_structure(&mut self, stem: &str) -> anyhow::Result<String> {
         use std::fmt::Write as _;
         if self.plots.structure.is_none() {
             return Ok(String::new());
         }
-        let stem = super::free_stem("pinto-structure", "png");
         let scale = self.args.export_scale.max(1);
         let w = (self.bars.width as f32 * self.px_per_cell.0) as usize * scale;
         let h = (self.bars.height as f32 * self.px_per_cell.1) as usize * scale;
@@ -608,9 +619,8 @@ impl App<'_> {
     }
 
     /// `s` in the heatmap: its values as a table, with a note.
-    pub(super) fn export_plot(&mut self) -> anyhow::Result<()> {
+    pub(super) fn export_plot(&mut self, stem: &str) -> anyhow::Result<()> {
         use std::fmt::Write as _;
-        let stem = super::free_stem("pinto-heatmap", "tsv");
         let Some((_, heat)) = self.plots.heatmap.as_ref() else {
             self.status = "nothing drawn yet".into();
             return Ok(());

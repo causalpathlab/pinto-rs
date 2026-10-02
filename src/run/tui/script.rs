@@ -7,20 +7,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// `word` as one shell word: as it is when nothing in it is special, else
-/// in single quotes.
-#[must_use]
-pub fn quote(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    if plain {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
-}
+pub use crate::tui::quote;
 
 /// A command line as one shell line.
 #[must_use]

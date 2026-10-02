@@ -134,10 +134,8 @@ pub struct SrtInputArgs {
     #[arg(
         long,
         default_value_t = false,
-        help = "Preload all sparse data into memory",
-        long_help = "Preload all sparse column data into memory up front.\n\
-                     Faster when the data fits in RAM.\n\
-                     Some parallel access patterns require it. It raises peak memory usage."
+        help = PRELOAD_HELP,
+        long_help = PRELOAD_LONG_HELP
     )]
     pub preload_data: bool,
 
@@ -626,6 +624,33 @@ pub struct SRTData {
     pub batches: Vec<Box<str>>,
 }
 
+/// Help for `--preload-data`, shared by every command that takes it.
+pub const PRELOAD_HELP: &str = "Preload sparse data even with LEGUME_AUTO_PRELOAD=off";
+pub const PRELOAD_LONG_HELP: &str = "Sparse column data is preloaded into memory by default\n\
+     whenever it fits in half the memory free at the first preload.\n\
+     That half is shared by every file the command preloads.\n\
+     Data over it, or files without a stored nonzero count, are read from disk.\n\
+     LEGUME_AUTO_PRELOAD=off reads from disk unless this flag is given.\n\
+     The flag also preloads files without a stored count.\n\
+     LEGUME_PRELOAD_BUDGET_BYTES sets the limit for each file instead.";
+
+/// Open `data_file`, its columns preloaded when asked or, by default,
+/// whenever data-beans' memory budget allows; the budget is shared by the
+/// whole process and given back when the data is dropped. data-beans checks
+/// it only for a backend that knows its nonzero count, so one that does not
+/// is preloaded only when asked.
+pub fn open_sparse(
+    data_file: &str,
+    preload: bool,
+) -> anyhow::Result<Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>> {
+    let mut data = try_open_or_convert(data_file)?;
+    let auto = data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some();
+    if preload || auto {
+        data.preload_columns()?;
+    }
+    Ok(data)
+}
+
 pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     if data_files.is_empty() {
         return Err(anyhow::anyhow!("empty data files"));
@@ -664,12 +689,8 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
     for data_file in args.data_files.iter() {
         info!("Importing data file: {}", data_file);
 
-        let mut data = try_open_or_convert(data_file)?;
+        let data = open_sparse(data_file, args.preload_data)?;
         let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
-
-        if args.preload_data {
-            data.preload_columns()?;
-        }
 
         data_vec.push(Arc::from(data), data_name)?;
     }
@@ -825,12 +846,8 @@ pub fn read_data_without_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTDat
     for data_file in args.data_files.iter() {
         info!("Importing data file: {}", data_file);
 
-        let mut data = try_open_or_convert(data_file)?;
+        let data = open_sparse(data_file, args.preload_data)?;
         let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
-
-        if args.preload_data {
-            data.preload_columns()?;
-        }
 
         data_vec.push(Arc::from(data), data_name)?;
     }
