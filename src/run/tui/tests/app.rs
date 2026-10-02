@@ -47,6 +47,27 @@ fn key(a: &mut App, c: KeyCode) {
     a.key(KeyEvent::new(c, KeyModifiers::NONE));
 }
 
+/// A fit of method `m` in `dir`, writing to `--out m`.
+fn job(dir: &Path, m: &str) -> jobs::Job {
+    jobs::Job {
+        method: m.into(),
+        dir: dir.to_path_buf(),
+        out: m.into(),
+        argv: vec![m.into(), "--out".into(), m.into()],
+        ..jobs::Job::default()
+    }
+}
+
+/// A stand-in pinto in `dir`: the shell script `body`.
+#[cfg(unix)]
+fn fake_pinto(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let fake = dir.join("fake-pinto");
+    std::fs::write(&fake, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake
+}
+
 fn data(dir: &Path, names: &[&str]) -> Vec<Pair> {
     names
         .iter()
@@ -160,7 +181,7 @@ fn enter_on_a_problem_goes_to_the_flag_clap_blamed() {
     let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
     a.rows[lc].on = true;
     a.rows[lc].form.fields[0].value = "many".into();
-    key(&mut a, KeyCode::Char('g'));
+    key(&mut a, KeyCode::Char('G'));
     assert!(a.confirm.is_some());
     key(&mut a, KeyCode::Enter);
     assert!(a.confirm.is_none() && a.queue.is_none());
@@ -344,22 +365,12 @@ fn data_taken_find_their_coordinates_and_labels_beside_them() {
 fn only_a_finished_fit_opens_in_the_viewer() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = app(dir.path());
-    let job = |m: &str| jobs::Job {
-        method: m.into(),
-        dir: dir.path().to_path_buf(),
-        out: m.into(),
-        argv: vec![m.into(), "--out".into(), m.into()],
-        made: Vec::new(),
-    };
     // A stand-in pinto that writes the manifest its --out names, or fails.
-    let fake = dir.path().join("fake-pinto");
-    std::fs::write(
-        &fake,
-        "#!/bin/sh\n[ \"$1\" = bad ] && exit 1\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let fake = fake_pinto(
+        dir.path(),
+        "[ \"$1\" = bad ] && exit 1\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done",
+    );
+    let job = |m| job(dir.path(), m);
     a.queue = Some(Queue::start(vec![job("good"), job("bad")], fake));
     a.screen = Screen::Run;
     while a.running() {
@@ -510,15 +521,18 @@ fn many_data_files_are_all_described_by_the_few_workers() {
 }
 
 #[test]
-fn the_keys_wrap_at_whole_hints_and_name_enter() {
+fn the_keys_wrap_at_whole_hints_and_name_shift_enter() {
     let dir = tempfile::tempdir().unwrap();
-    let a = app(dir.path());
+    let mut a = app(dir.path());
+    let plain: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
+    assert!(
+        !plain.iter().any(|l| l.contains("shift-enter")),
+        "not named where the terminal cannot tell it: {plain:?}"
+    );
+    a.shift_enter = true;
     let lines: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
     assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
-    assert!(
-        lines.iter().any(|l| l.contains("enter methods")),
-        "{lines:?}"
-    );
+    assert!(lines.iter().any(|l| l.contains("shift-enter")), "{lines:?}");
     assert!(lines.last().unwrap().contains("q quit"));
 }
 
@@ -533,24 +547,10 @@ fn keys_that_need_data_say_so_without_it() {
 }
 
 #[test]
-fn a_started_queue_moves_default_outs_on_so_g_again_is_not_blocked() {
+fn an_out_a_run_wrote_to_is_not_offered_again() {
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(next_out(dir.path(), "lc", Some("lc")), "lc-2");
-    let mut a = app(dir.path());
-    a.pairs = data(dir.path(), &["d.zarr"]);
-    let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
-    a.rows[lc].on = true;
-    a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].on = true;
-    let cage = METHODS.iter().position(|m| *m == "cage").unwrap();
-    a.rows[cage].out = "mine".into();
-    a.rows[cage].typed = true;
-    a.move_outs_on();
-    assert_eq!(a.rows[lc].out, "lc-2");
-    assert_eq!(
-        a.rows[METHODS.iter().position(|m| *m == "cage").unwrap()].out,
-        "mine",
-        "a name the user typed is theirs"
-    );
+    std::fs::write(dir.path().join("lc.cmd.sh"), "").unwrap();
+    assert_eq!(free_out(dir.path(), "lc"), "lc-2");
 }
 
 #[test]
@@ -654,4 +654,73 @@ fn a_hand_typed_folder_out_names_the_method_in_it() {
     let p = &a.plan()[0];
     assert_eq!(p.problem, None);
     assert_eq!(p.job.dir, script::normalize(&dir.path().join("res/sub")));
+}
+
+#[test]
+fn shift_enter_moves_to_the_next_screen_and_enter_on_data_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.screen = Screen::Data;
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.screen, Screen::Data);
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert_eq!(a.screen, Screen::Methods);
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert_eq!(a.screen, Screen::Params);
+    assert!(!a.rows.iter().any(|r| r.on), "moving on queues nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    let (lc, cage) = (0, 1);
+    a.pairs = data(dir.path(), &["d.zarr"]);
+    a.rows[lc].on = true;
+    a.rows[cage].on = true;
+    // A stand-in pinto that finishes the first method and fails the next.
+    let fake = fake_pinto(dir.path(), &format!("[ \"$1\" = {} ]", METHODS[lc]));
+    // In the folder as the plan resolves it.
+    let at = a.out_of(lc).0;
+    let job = |row: usize| jobs::Job {
+        row,
+        ..job(&at, METHODS[row])
+    };
+    a.queue = Some(Queue::start(vec![job(lc), job(cage)], fake));
+    while a.running() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    a.poll();
+    assert!(!a.rows[lc].on && a.rows[lc].done);
+    assert!(a.rows[cage].on && !a.rows[cage].done);
+    assert!(a.message.as_deref().unwrap().contains("G runs the rest"));
+    // The finished one moves on; the failed one keeps its --out, its
+    // script there cleared when it runs again.
+    assert_eq!(a.rows[lc].out, format!("{}-2", METHODS[lc]));
+    assert_eq!(a.rows[cage].out, METHODS[cage]);
+    assert!(dir
+        .path()
+        .join(format!("{}.cmd.sh", METHODS[cage]))
+        .exists());
+    let p = a.plan();
+    assert_eq!(p.len(), 1);
+    assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
+    assert!(p[0].job.clear);
+    // An --out typed anew clears nothing.
+    a.rows[cage].out = "mine".into();
+    assert!(!a.plan()[0].job.clear);
+    a.rows[cage].out = METHODS[cage].into();
+    // r on the Run screen reviews what is left.
+    a.screen = Screen::Run;
+    key(&mut a, KeyCode::Char('r'));
+    assert_eq!(a.confirm.as_ref().map(Vec::len), Some(1));
+    key(&mut a, KeyCode::Esc);
+    // Queued again by hand, it stays queued.
+    a.screen = Screen::Methods;
+    a.method_row = lc;
+    key(&mut a, KeyCode::Char(' '));
+    a.poll();
+    assert!(a.rows[lc].on);
+    assert!(a.rows[lc].done, "finished before: the review says so");
 }

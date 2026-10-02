@@ -663,8 +663,11 @@ enum Commands {
                       all its cells (files given one name are one batch) or `b` takes\n\
                       a label file, whose labels `e` renames. Label files the run\n\
                       needs beyond those given are written to `{out}.batches/`.\n\n\
-                      `g` shows the exact commands, checked as pinto would parse\n\
-                      them, and runs them in turn with their log on screen.\n\
+                      `G` shows the exact commands, checked as pinto would parse\n\
+                      them, and runs them in turn with their log on screen; the\n\
+                      methods a run finished are then unqueued, so `G` again (or\n\
+                      `r` on the Run screen) runs only the rest, each at the --out\n\
+                      it had. Tab or shift-enter moves to the next screen.\n\
                       Each is saved first as `{out}.cmd.sh`: run it again with\n\
                       `bash {out}.cmd.sh`. The script refuses to run over an\n\
                       existing `{out}.pinto.json`, and pinto run never writes over\n\

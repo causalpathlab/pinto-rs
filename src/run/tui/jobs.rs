@@ -9,15 +9,17 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use crate::tui::child::{run_one, Failed, Stopper};
-use legume_numeric::matrix::common_io::mkdir;
+use legume_numeric::matrix::common_io::{mkdir, remove_file};
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
 
 /// One fit to run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Job {
     pub method: String,
+    /// Its row on the Methods screen.
+    pub row: usize,
     /// Where it runs and the script goes.
     pub dir: PathBuf,
     /// The `--out` prefix, a name in `dir`.
@@ -26,6 +28,9 @@ pub struct Job {
     pub argv: Vec<String>,
     /// Batch label files written for the run, before its script.
     pub made: Vec<(PathBuf, super::batch::Made)>,
+    /// Whether to clear the script and batch files a run at the same
+    /// `--out` left unfinished.
+    pub clear: bool,
 }
 
 /// What a run with `--out` prefix `out` writes in `dir` that a new run
@@ -44,6 +49,13 @@ impl Job {
     #[must_use]
     pub fn script(&self) -> PathBuf {
         outputs(&self.dir, &self.out)[1].clone()
+    }
+
+    /// What a run that did not finish leaves: its script and batch files.
+    #[must_use]
+    pub fn leftovers(&self) -> [PathBuf; 2] {
+        let [_, script, batches] = outputs(&self.dir, &self.out);
+        [script, batches]
     }
 }
 
@@ -64,6 +76,8 @@ pub struct Shared {
     /// The last line each job wrote.
     pub last: Vec<String>,
     pub finished: bool,
+    /// Whether the end was taken in: see [`Queue::take_end`].
+    pub seen: bool,
 }
 
 /// The queue, running.
@@ -131,6 +145,16 @@ impl Queue {
         self.shared.lock().map_or(true, |s| s.finished)
     }
 
+    /// Whether the queue has ended, true only the first time it is asked
+    /// after that.
+    pub fn take_end(&self) -> bool {
+        self.shared.lock().is_ok_and(|mut s| {
+            let new = s.finished && !s.seen;
+            s.seen |= s.finished;
+            new
+        })
+    }
+
     /// Each job's state now.
     #[must_use]
     pub fn states(&self) -> Vec<State> {
@@ -166,6 +190,15 @@ fn run_job(
 ) -> State {
     if job.manifest().exists() {
         return State::Failed(format!("{} exists", job.manifest().display()));
+    }
+    if job.clear {
+        if let Err(e) = job
+            .leftovers()
+            .iter()
+            .try_for_each(|p| remove_file(&p.to_string_lossy()))
+        {
+            return State::Failed(format!("cannot clear the unfinished run: {e}"));
+        }
     }
     if let Err(e) = mkdir(&job.dir.to_string_lossy()) {
         return State::Failed(format!("cannot make {}: {e}", job.dir.display()));

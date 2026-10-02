@@ -132,13 +132,13 @@ impl App {
                 "X clear all",
                 "d remove",
                 "J K reorder",
-                "enter methods",
             ],
             Screen::Methods => &[
                 "space queue",
                 "enter / → queue and show flags",
                 "o name one --out by hand",
                 "O output header",
+                "✓ done in the last run",
             ],
             Screen::Params => &[
                 "space / enter change",
@@ -152,6 +152,7 @@ impl App {
             Screen::Run => &[
                 "↑ ↓ choose",
                 "s stop",
+                "r run again what did not finish",
                 "v open the one chosen in pinto view",
             ],
         };
@@ -160,8 +161,12 @@ impl App {
             bold(),
         ))];
         let all = [
-            "tab / shift-tab / 1-4 screens",
-            "g review and run",
+            if self.shift_enter {
+                "tab / shift-tab / shift-enter / 1-4 screens"
+            } else {
+                "tab / shift-tab / 1-4 screens"
+            },
+            "G review and run",
             "q quit",
         ];
         for group in [keys, &all[..]] {
@@ -362,7 +367,13 @@ impl App {
             let changed = r.form.changed();
             let text = format!(
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
-                if r.on { "x" } else { " " },
+                if r.on {
+                    "x"
+                } else if r.done {
+                    "✓"
+                } else {
+                    " "
+                },
                 r.form.name,
                 fit(&outs[i], out_w),
                 if changed == 0 {
@@ -580,6 +591,20 @@ impl App {
                 let indent = if k == 0 { "   " } else { "     " };
                 let more = if k + 1 < n { " \\" } else { "" };
                 body.extend(wrap(format!("{indent}{l}{more}"), Style::default()));
+            }
+            for (on, note) in [
+                (
+                    self.rows[p.job.row].done,
+                    "✓ finished earlier in this session: it runs again",
+                ),
+                (
+                    p.job.clear,
+                    "↻ the unfinished run's script and batch files here are cleared first",
+                ),
+            ] {
+                if on {
+                    body.extend(wrap(format!("   {note}"), dim()));
+                }
             }
             if let Some(why) = &p.problem {
                 body.extend(wrap(format!("   ✗ {why}"), bold()));

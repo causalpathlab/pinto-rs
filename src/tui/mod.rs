@@ -8,6 +8,38 @@ pub(crate) mod style;
 
 use std::path::Path;
 
+/// The terminal reporting modifiers on enter, so shift-enter is told
+/// apart from enter, until dropped.
+pub struct EnhancedKeys;
+
+impl EnhancedKeys {
+    /// Ask for it; `None` where the terminal cannot. The terminal is asked
+    /// and answers first, so call it once something is on screen.
+    pub fn push() -> Option<Self> {
+        use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+        use ratatui::crossterm::{execute, terminal::supports_keyboard_enhancement};
+        let flags =
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
+        (supports_keyboard_enhancement().unwrap_or(false)
+            && execute!(std::io::stdout(), flags).is_ok())
+        .then_some(EnhancedKeys)
+    }
+}
+
+impl Drop for EnhancedKeys {
+    fn drop(&mut self) {
+        use ratatui::crossterm::{event::PopKeyboardEnhancementFlags, execute};
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
+/// Whether `k` is shift-enter.
+#[must_use]
+pub fn shift_enter(k: &ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT)
+}
+
 /// Run `f` on the whole terminal and give the terminal back however it
 /// ends. Logging is off meanwhile: log lines would land over the screen.
 pub fn with_terminal<T>(
@@ -44,3 +76,7 @@ pub fn relative(p: &Path) -> std::path::PathBuf {
 pub fn shown(p: &Path) -> String {
     relative(p).to_string_lossy().into_owned()
 }
+
+#[cfg(test)]
+#[path = "tests/mod.rs"]
+mod tests;

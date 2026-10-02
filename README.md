@@ -50,8 +50,13 @@ See `pinto --help` and per-subcommand `--help`.
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
 `dsvd`, and change any flag; each method's form is read from its own
-`--help`. `g` shows the exact commands, checked as pinto would parse them,
-and runs them in turn with their log on screen.
+`--help`. `G` shows the exact commands, checked as pinto would parse them,
+and runs them in turn with their log on screen. Tab or shift-enter moves to
+the next screen (shift-enter where the terminal tells it from enter). Once a
+run ends, the methods it finished are unqueued (marked ✓), so `G` again, or
+`r` on the Run screen, runs only the ones stopped, failed or not reached;
+space queues one again. Each runs again at the `--out` it had, the script and
+batch files its unfinished run left there cleared first.
 
 ```sh
 pinto run data/        # the file browser starts in data/
@@ -154,7 +159,8 @@ as a PNG with a `.txt` listing the batches by tile number.
 
 #### Structure plot and heatmap
 
-`H` steps through the charts: the map with a structure plot under it, then a
+`H` (or shift-enter, where the terminal tells it from enter) steps through
+the charts: the map with a structure plot under it, then a
 gene heatmap in place of the map, then the map again (`Esc` goes straight
 back). Both follow the grouping on screen (communities, or with `c` the
 round's cell types or clusters):
