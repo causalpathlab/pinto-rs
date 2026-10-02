@@ -6,7 +6,7 @@
 //! and draws. A `.zarr` store is a folder on disk but a file here: it is
 //! never opened, only offered when the caller takes stores.
 
-use super::style::{bold, dim, first_row, selected, tail};
+use super::style::{bold, dim, first_row, middle, selected, tail, wrap};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -386,13 +386,52 @@ impl<W: Wanted> Browser<W> {
         ));
         foot.push(line(" type to narrow  ~ home  Esc cancel".into(), dim()));
 
-        let rows = height.saturating_sub(head.len() + foot.len()).max(3);
         let name_w = shown
             .iter()
             .map(|e| e.name().chars().count() + 1)
             .max()
             .unwrap_or(0)
             .min(36);
+        // A row with `n` for its name.
+        let row_as = |e: &Entry<W::About>, n: &str| match e {
+            Entry::Up => " ../".to_string(),
+            Entry::Dir(_) => format!(" {n}/"),
+            Entry::File(file, about) => {
+                let mark = if many && self.marked.contains(&self.dir.join(file)) {
+                    "●"
+                } else if h.star.is_some() && self.best.as_deref() == Some(file) {
+                    "*"
+                } else {
+                    " "
+                };
+                format!("{mark}{}", self.want.row(n, about, name_w))
+            }
+        };
+        // A row too wide for the panel has its name cut in the middle,
+        // keeping its end, so names sharing a start still differ.
+        let text = |e: &Entry<W::About>| {
+            let full = row_as(e, e.name());
+            let over = full.chars().count().saturating_sub(width);
+            let room = e.name().chars().count().saturating_sub(over);
+            if over == 0 || room < 6 {
+                full
+            } else {
+                row_as(e, &middle(e.name(), room))
+            }
+        };
+        // The name under the cursor in full when its row cuts it.
+        if let Some(e) = shown
+            .get(self.row)
+            .filter(|e| !fit(text(e)).contains(e.name()))
+        {
+            let full = wrap(e.name(), width.saturating_sub(3), width.saturating_sub(3));
+            for (k, piece) in full.into_iter().enumerate().rev() {
+                let lead = if k == 0 { " ▸ " } else { "   " };
+                foot.insert(0, line(format!("{lead}{piece}"), bold()));
+            }
+        }
+
+        let rows = height.saturating_sub(head.len() + foot.len()).max(3);
         let mut out = head;
         for (i, e) in shown
             .iter()
@@ -400,20 +439,7 @@ impl<W: Wanted> Browser<W> {
             .skip(first_row(self.row, rows, shown.len()))
             .take(rows)
         {
-            let text = match e {
-                Entry::Up => " ../".to_string(),
-                Entry::Dir(n) => format!(" {n}/"),
-                Entry::File(n, about) => {
-                    let mark = if many && self.marked.contains(&self.dir.join(n)) {
-                        "●"
-                    } else if h.star.is_some() && self.best.as_deref() == Some(n) {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    format!("{mark}{}", self.want.row(n, about, name_w))
-                }
-            };
+            let text = text(e);
             let style = if i == self.row {
                 selected()
             } else if e.is_file() {

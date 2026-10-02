@@ -111,6 +111,9 @@ the current view as PNG, PDF, and a `.txt` with
 the command that redraws it. The scale bar's units are guessed from the
 coordinate columns (`--units um|px|none` to override). Map colours follow the
 terminal's background (`--theme light|dark` to choose; images default to dark).
+Drag the side panel's left edge to widen or narrow it (the annotation panel
+keeps a width of its own). Errors, such as a lupin run that fails, open in a
+popup over the map until a key or click.
 
 Without a run, `pinto view` opens a browser to pick a `*.pinto.json` (↑↓,
 Enter, ← up, type to narrow, `~` home).
@@ -119,7 +122,8 @@ Enter, ← up, type to narrow, `~` home).
 
 Cell types come from [lupin](https://crates.io/crates/lupin-rs) (0.2.1 or
 later, on the `PATH` or at `$PINTO_LUPIN`); the viewer runs it and never
-writes labels itself.
+writes labels itself. lupin re-reads the run's data files, so for `.h5` data
+install it with HDF5 as pinto was: `cargo install lupin-rs --features hdf5`.
 
 - `A` picks a marker panel (`gene<TAB>type` lines) and annotates the level
   on screen with `lupin annotate --level … --method enrichment`, writing a

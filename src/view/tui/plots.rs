@@ -229,7 +229,7 @@ impl App<'_> {
             match self.base.level(bars, false) {
                 Ok(level) => self.levels[bars] = Some(level),
                 Err(e) => {
-                    self.status = format!("{e}");
+                    self.fail(format!("{e}"));
                     return None;
                 }
             }

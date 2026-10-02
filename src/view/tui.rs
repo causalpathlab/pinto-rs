@@ -56,6 +56,13 @@ const PANEL: u16 = 34;
 /// Side panel width while relabelling or in a dialog, cells.
 const WIDE_PANEL: u16 = 46;
 
+/// Narrowest the side panel is dragged to, and the map left beside it.
+const MIN_PANEL: u16 = 24;
+const MIN_MAP: u16 = 20;
+
+/// Most side panel rows a status message wraps to.
+const STATUS_ROWS: usize = 6;
+
 /// Zoom step per key press or wheel notch.
 const ZOOM: f32 = 1.25;
 
@@ -221,6 +228,13 @@ struct App<'a> {
     /// Whether the terminal tells shift-enter from enter.
     shift_enter: bool,
     status: String,
+    /// An error shown in a popup over the map until a key or click.
+    error: Option<String>,
+    /// Side panel widths dragged by hand: the usual panel, then the wide
+    /// one for annotation and dialogs.
+    panel_w: [Option<u16>; 2],
+    /// Whether the panel's left edge is being dragged.
+    resizing: bool,
 
     mode: Mode,
     render_time: Duration,
@@ -308,6 +322,9 @@ impl<'a> App<'a> {
             help: false,
             shift_enter: false,
             status: String::new(),
+            error: None,
+            panel_w: [None; 2],
+            resizing: false,
             mode: Mode::Points,
             render_time: Duration::ZERO,
             send_time: Duration::ZERO,
@@ -379,11 +396,36 @@ impl<'a> App<'a> {
 
     // ── geometry ────────────────────────────────────────────────────────
 
+    /// Drag the side panel's left edge to widen or narrow it. Returns
+    /// whether `m` was taken for that.
+    fn resize_panel(&mut self, m: MouseEvent) -> bool {
+        let col = m.column;
+        let on_edge =
+            self.side.width > 0 && (self.side.x.saturating_sub(1)..=self.side.x).contains(&col);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if on_edge => self.resizing = true,
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => {
+                let w = self.side.right().saturating_sub(col);
+                self.panel_w[usize::from(self.wide())] = Some(w);
+                self.need_map = true;
+                self.need_panel = true;
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.resizing => self.resizing = false,
+            _ => return false,
+        }
+        true
+    }
+
     fn layout(&mut self, terminal: &DefaultTerminal) -> anyhow::Result<Rect> {
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        let wide = self.relabel.is_some() || self.modal.is_some();
-        let panel = if wide { WIDE_PANEL } else { PANEL }.min(area.width / 2);
+        let wide = self.wide();
+        let base = if wide { WIDE_PANEL } else { PANEL };
+        // Dragged as wide as leaves the map a strip; else half the screen.
+        let most = area.width.saturating_sub(MIN_MAP).max(area.width / 2);
+        let panel = self.panel_w[usize::from(wide)].map_or(base.min(area.width / 2), |w| {
+            w.clamp(MIN_PANEL.min(most), most)
+        });
         let [mut map, side] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(panel)]).areas(area);
         // Saved figures on the left.
@@ -415,6 +457,23 @@ impl<'a> App<'a> {
         }
         self.side = side;
         Ok(side)
+    }
+
+    /// Whether the side panel is the wide one, for annotation or a dialog.
+    fn wide(&self) -> bool {
+        self.relabel.is_some() || self.modal.is_some()
+    }
+
+    /// Columns the wide panel has beyond its usual width, for its text.
+    pub(super) fn more(&self) -> usize {
+        usize::from(self.side.width.saturating_sub(WIDE_PANEL))
+    }
+
+    /// Show `msg` in a popup over the map until a key or click.
+    pub(super) fn fail(&mut self, msg: String) {
+        self.error = Some(msg);
+        self.need_map = true;
+        self.need_panel = true;
     }
 
     fn image_size(&self) -> (usize, usize) {
@@ -504,6 +563,12 @@ impl<'a> App<'a> {
     }
 
     fn key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        if self.error.take().is_some() {
+            // Any key closes the popup, and does nothing else.
+            self.need_map = true;
+            self.need_panel = true;
+            return Ok(());
+        }
         let big = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if big { 0.5 } else { 0.125 };
         self.status.clear();
@@ -581,6 +646,17 @@ impl<'a> App<'a> {
 
     fn mouse(&mut self, m: MouseEvent) {
         let (col, row) = (m.column, m.row);
+        if self.error.is_some() {
+            if let MouseEventKind::Down(_) = m.kind {
+                self.error = None;
+                self.need_map = true;
+                self.need_panel = true;
+            }
+            return;
+        }
+        if self.resize_panel(m) {
+            return;
+        }
         if self.grid_shows() {
             return self.grid_mouse(m);
         }
@@ -725,7 +801,7 @@ impl<'a> App<'a> {
                     })
                     .collect();
             }
-            Err(e) => self.status = format!("no markers: {e}"),
+            Err(e) => self.fail(format!("no markers: {e}")),
         }
     }
 
@@ -788,7 +864,7 @@ impl<'a> App<'a> {
                 }
                 self.gene = Some(g);
             }
-            Err(e) => self.status = format!("{e}"),
+            Err(e) => self.fail(format!("{e}")),
         }
         self.need_map = true;
     }
@@ -1162,7 +1238,7 @@ impl<'a> App<'a> {
         self.need_panel = false;
         let side = self.layout(terminal)?;
         let mut fresh: Option<Frame> = None;
-        if self.need_map && self.view != plots::View::Map {
+        if self.need_map && (self.view != plots::View::Map || self.error.is_some()) {
             self.need_map = false;
             self.clear_frame()?;
         }
@@ -1212,6 +1288,11 @@ impl<'a> App<'a> {
             f.render_widget(Paragraph::new(panel), side);
             if strip.width > 0 {
                 app.draw_saved(f, strip);
+            }
+            if let Some(e) = &app.error {
+                // The map image is cleared meanwhile, so nothing covers it.
+                style::popup(f, map, error_lines(e, map.width.min(ERROR_W)), ERROR_W);
+                return;
             }
             if let Some(text) = text {
                 f.render_widget(Paragraph::new(text), map);
@@ -1363,11 +1444,19 @@ impl<'a> App<'a> {
         if let Some(i) = self.picked {
             lines.extend(self.cell_lines(i));
         }
-        lines.push(Line::styled(
-            format!(" {}", self.status),
-            // Bold in the terminal's own text colour reads on any background.
-            style::bold(),
-        ));
+        // Wrapped, so a long message (a lupin error, a path) reads in full;
+        // bold in the terminal's own text colour reads on any background.
+        let w = usize::from(self.side.width).saturating_sub(2).max(10);
+        let status = style::wrap(&self.status, w, w);
+        lines.extend(
+            status
+                .iter()
+                .take(STATUS_ROWS)
+                .map(|s| Line::styled(format!(" {s}"), style::bold())),
+        );
+        if status.is_empty() {
+            lines.push(Line::raw(""));
+        }
 
         let help = help_lines(self.help, self.relabel.is_some(), self.shift_enter);
         let mut clickable = Vec::new();
@@ -1596,6 +1685,26 @@ fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
     vec![Line::raw(format!(" {title}")), Line::from(first)]
 }
 
+/// Widest the error popup is drawn.
+const ERROR_W: u16 = 72;
+
+/// The error popup's lines for a popup `width` columns wide, wrapped here
+/// so the popup is as tall as they are.
+fn error_lines(msg: &str, width: u16) -> Vec<Line<'static>> {
+    let w = usize::from(width).saturating_sub(4).max(10);
+    let mut out = vec![Line::styled(" ✗ error", style::bold()), Line::raw("")];
+    for part in msg.lines() {
+        out.extend(
+            style::wrap(part, w, w)
+                .into_iter()
+                .map(|l| Line::raw(format!(" {l}"))),
+        );
+    }
+    out.push(Line::raw(""));
+    out.push(Line::styled(" any key or click closes this", style::dim()));
+    out
+}
+
 fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>> {
     let dim = style::dim();
     let text: &[&str] = if relabel && !full {
@@ -1625,6 +1734,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
             } else {
                 " H  structure plot → heatmap → map"
             },
+            " drag the panel's left edge: width",
             " s save  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
         ]
@@ -1656,3 +1766,7 @@ fn free_stem(prefix: &str, ext: &str) -> String {
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
 }
+
+#[cfg(test)]
+#[path = "tui/tests.rs"]
+mod tests;

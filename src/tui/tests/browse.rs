@@ -219,3 +219,46 @@ fn hidden_files_are_read_only_when_asked_for_and_never_start_the_cursor() {
     b.key(key(KeyCode::Backspace));
     assert_eq!(names(&b), ["..", "b.txt"]);
 }
+
+#[test]
+fn a_name_its_row_cuts_is_shown_in_full_under_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "panel_with_a_name_much_longer_than_the_panel.txt";
+    write(dir.path(), long);
+    write(dir.path(), "a.txt");
+    let mut b = Browser::open(dir.path().to_path_buf(), Txt { many: false }, None);
+    let said = |b: &Browser<Txt>| -> Vec<String> {
+        b.lines(30, 24).iter().map(ToString::to_string).collect()
+    };
+    while b.current().map(Entry::name) != Some(long) {
+        assert_eq!(b.key(KeyEvent::from(KeyCode::Down)), Outcome::Moved);
+    }
+    let lines = said(&b);
+    assert!(lines.iter().all(|l| l.chars().count() <= 24), "{lines:?}");
+    let full: String = lines
+        .iter()
+        .filter_map(|l| l.strip_prefix(" ▸ ").or_else(|| l.strip_prefix("   ")))
+        .filter(|l| !l.is_empty() && !l.contains(' '))
+        .collect();
+    assert_eq!(full, long, "{lines:?}");
+    // A name that fits is not repeated.
+    b.key(KeyEvent::from(KeyCode::Up));
+    assert!(!said(&b).iter().any(|l| l.starts_with(" ▸ ")));
+}
+
+#[test]
+fn names_sharing_a_start_keep_their_ends_when_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    for end in ["tsv.gz", "removed.tsv"] {
+        write(dir.path(), &format!("a_long_shared_name_start.{end}.txt"));
+    }
+    let b = Browser::open(dir.path().to_path_buf(), Txt { many: false }, None);
+    let lines: Vec<String> = b.lines(30, 30).iter().map(ToString::to_string).collect();
+    assert!(lines.iter().all(|l| l.chars().count() <= 30), "{lines:?}");
+    for end in ["gz.txt", "tsv.txt"] {
+        assert!(
+            lines.iter().any(|l| l.contains('…') && l.contains(end)),
+            "{lines:?}"
+        );
+    }
+}

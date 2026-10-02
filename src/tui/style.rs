@@ -44,6 +44,22 @@ pub fn short(s: &str, n: usize) -> String {
     }
 }
 
+/// `s` in at most `n` characters, `…` marking a cut in the middle: the
+/// start and the end kept, so names sharing a prefix still differ.
+#[must_use]
+pub fn middle(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= n {
+        return s.to_string();
+    }
+    let end = n.saturating_sub(1) / 2;
+    let start = n.saturating_sub(1) - end;
+    let mut out: String = chars[..start].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - end..]);
+    out
+}
+
 /// The last `n` characters of `s`, `…` marking a cut at the start.
 #[must_use]
 pub fn tail(s: &str, n: usize) -> String {

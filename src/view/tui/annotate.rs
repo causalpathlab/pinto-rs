@@ -99,7 +99,7 @@ impl App<'_> {
                 match self.load_round(&path) {
                     Ok(()) if self.args.show != Show::Communities => self.set_show(self.args.show),
                     Ok(()) => {}
-                    Err(e) => self.status = format!("{e}"),
+                    Err(e) => self.fail(format!("{e}")),
                 }
             }
         } else if let Some(r) = self.rounds.first() {
@@ -177,7 +177,7 @@ impl App<'_> {
             };
             self.busy(terminal, format!("loading {} ...", round_name(&path)))?;
             if let Err(e) = self.load_round(&path) {
-                self.status = format!("{e}");
+                self.fail(format!("{e}"));
                 return Ok(());
             }
         }
@@ -218,7 +218,7 @@ impl App<'_> {
                 self.set_show(show);
                 self.status = format!("round {}", round_name(&next));
             }
-            Err(e) => self.status = format!("{e}"),
+            Err(e) => self.fail(format!("{e}")),
         }
         Ok(())
     }
@@ -236,7 +236,7 @@ impl App<'_> {
             return;
         };
         if let Err(e) = lupin::check() {
-            self.status = e;
+            self.fail(e);
             return;
         }
         // The run's genes, to count each panel's matches.
@@ -309,7 +309,7 @@ impl App<'_> {
                 self.rounds.insert(0, path.clone());
                 self.open_new_round(terminal, &path, "annotated")?;
             }
-            (JobKind::Annotate(_), Err(e)) => self.status = format!("lupin annotate: {e}"),
+            (JobKind::Annotate(_), Err(e)) => self.fail(format!("lupin annotate: {e}")),
             (JobKind::Next(from), Ok(stdout)) => {
                 let Some(next) = stdout.lines().rev().find(|l| !l.trim().is_empty()) else {
                     self.status = "lupin relabel printed no round".into();
@@ -330,11 +330,11 @@ impl App<'_> {
                 self.open_new_round(terminal, &next, &what)?;
             }
             (JobKind::Next(_), Err(e)) => {
-                self.status = if e.contains("not the latest round") {
+                self.fail(if e.contains("not the latest round") {
                     format!("{e}; , . step to it (this draft stays with its round)")
                 } else {
                     format!("lupin relabel: {e}")
-                };
+                });
             }
             (JobKind::Preview, Ok(stdout)) => match serde_json::from_str(&stdout) {
                 Ok(v) => {
@@ -344,9 +344,9 @@ impl App<'_> {
                     }
                     self.status = changed;
                 }
-                Err(e) => self.status = format!("lupin preview: {e}"),
+                Err(e) => self.fail(format!("lupin preview: {e}")),
             },
-            (JobKind::Preview, Err(e)) => self.status = format!("lupin preview: {e}"),
+            (JobKind::Preview, Err(e)) => self.fail(format!("lupin preview: {e}")),
         }
         Ok(())
     }
@@ -364,7 +364,7 @@ impl App<'_> {
                 let k = self.level().comm.by_size.len();
                 self.status = format!("{}: {what}, {k} cell types", round_name(path));
             }
-            Err(e) => self.status = format!("{e}"),
+            Err(e) => self.fail(format!("{e}")),
         }
         Ok(())
     }
@@ -440,12 +440,13 @@ impl App<'_> {
     }
 
     pub(super) fn modal_lines(&self, modal: &Modal, room: usize) -> Vec<Line<'static>> {
+        let more = self.more();
         let bold = style::bold();
         let dim = style::dim();
         let mut out = vec![Line::raw("")];
         match modal {
             Modal::Browse(b) => {
-                out.extend(b.lines(room.saturating_sub(1), 45));
+                out.extend(b.lines(room.saturating_sub(1), 45 + more));
             }
             Modal::Prompt(p) => {
                 let title = match &p.what {
@@ -471,7 +472,7 @@ impl App<'_> {
                     ])
                 };
                 out.push(field("label", &p.label, p.field == 0));
-                let lines = wrap(&p.rationale, 32);
+                let lines = wrap(&p.rationale, 32 + more);
                 for (i, line) in lines.iter().enumerate() {
                     let name = if i == 0 { "rationale" } else { "" };
                     out.push(field(name, line, p.field == 1 && i + 1 == lines.len()));
@@ -482,7 +483,7 @@ impl App<'_> {
                 out.push(Line::raw(""));
                 if p.field == 0 {
                     let known: Vec<&str> = p.options.iter().take(12).map(String::as_str).collect();
-                    for chunk in wrap(&known.join("  "), 42) {
+                    for chunk in wrap(&known.join("  "), 42 + more) {
                         out.push(Line::styled(format!(" {chunk}"), dim));
                     }
                     out.push(Line::styled(" Tab complete  Enter next  Esc cancel", dim));
@@ -502,7 +503,7 @@ impl App<'_> {
                 out.push(Line::raw(""));
                 let rows = room.saturating_sub(out.len() + 3);
                 for l in lines.iter().take(rows) {
-                    out.push(Line::raw(format!("  {}", tail(l, 43))));
+                    out.push(Line::raw(format!("  {}", tail(l, 43 + more))));
                 }
                 if lines.len() > rows {
                     out.push(Line::raw(format!("  … {} more", lines.len() - rows)));
@@ -533,7 +534,7 @@ impl App<'_> {
             }
         }
         if let Err(e) = lupin::check() {
-            self.status = e;
+            self.fail(e);
             return Ok(());
         }
         self.set_show(Show::Clusters);
@@ -579,7 +580,7 @@ impl App<'_> {
     pub(super) fn leave_relabel(&mut self) {
         if let Some(r) = self.relabel.take() {
             if let Err(e) = r.draft.save() {
-                self.status = format!("draft not saved: {e}");
+                self.fail(format!("draft not saved: {e}"));
             } else if !r.draft.is_empty() {
                 self.status = format!("{} decisions kept for later (R)", r.draft.len());
             }
@@ -1027,7 +1028,7 @@ impl App<'_> {
     fn save_draft(&mut self) {
         if let Some(r) = self.relabel.as_ref() {
             if let Err(e) = r.draft.save() {
-                self.status = format!("draft not saved: {e}");
+                self.fail(format!("draft not saved: {e}"));
             }
         }
     }
@@ -1071,6 +1072,8 @@ impl App<'_> {
 
     /// The relabelling panel: the visited cluster, its markers, the list.
     pub(super) fn relabel_lines(&self, room: usize) -> Vec<(Line<'static>, Option<Pick>)> {
+        // Labels and names take what the panel has beyond its usual width.
+        let more = self.more();
         let (Some(r), Some(round)) = (self.relabel.as_ref(), self.round.as_ref()) else {
             return Vec::new();
         };
@@ -1113,7 +1116,13 @@ impl App<'_> {
             .iter()
             .filter(|c| c.q.is_some_and(|q| q < round.alpha))
             .take(3)
-            .map(|c| format!("{} {:.3}", short(&c.label, 14), c.q.unwrap_or(1.)))
+            .map(|c| {
+                format!(
+                    "{} {:.3}",
+                    short(&c.label, 14 + more / 3),
+                    c.q.unwrap_or(1.)
+                )
+            })
             .collect();
         out.push(row(
             "calls q",
@@ -1143,9 +1152,9 @@ impl App<'_> {
             ));
         }
         if let Some(h) = round.reviewed[&id].history.last() {
-            out.push(row("before", short(&history_line(h), 34)));
+            out.push(row("before", short(&history_line(h), 34 + more)));
         }
-        if let Some(p) = preview_of(r.preview.as_ref(), id) {
+        if let Some(p) = preview_of(r.preview.as_ref(), id, more) {
             out.push(row("preview", p));
         }
         if let Some(set) = &r.merge {
@@ -1157,7 +1166,10 @@ impl App<'_> {
             ));
         }
         let target = r.target.clone().unwrap_or_else(|| "–".into());
-        out.push(row("working", format!("{}  Tab", short(&target, 26))));
+        out.push(row(
+            "working",
+            format!("{}  Tab", short(&target, 26 + more)),
+        ));
 
         // Markers: • listed for the target, +/- staged edits.
         let panel_genes: Vec<String> = round
@@ -1227,7 +1239,9 @@ impl App<'_> {
             };
             let disputed = d.evidence.as_ref().and_then(|e| e.agrees) == Some(false);
             let state = match (r.draft.verdicts.get(&c), r.draft.merge_of(c)) {
-                (Some(Verdict::Label { label, .. }), _) => format!("→{}", short(label, 10)),
+                (Some(Verdict::Label { label, .. }), _) => {
+                    format!("→{}", short(label, 10 + more / 2))
+                }
                 (Some(Verdict::Keep { .. }), _) => "✓".into(),
                 (None, Some(_)) => "merge".into(),
                 (None, None) if d.label.is_none() => "?".into(),
@@ -1235,13 +1249,14 @@ impl App<'_> {
                 (None, None) => String::new(),
             };
             let label = d.label.as_deref().unwrap_or("–");
+            let w = 14 + more / 2;
             let line = Line::from(vec![
                 Span::raw(mark),
                 swatch(g),
                 Span::styled(
                     format!(
-                        " K{c:<3} {:<14} {:>8} {state}",
-                        short(label, 14),
+                        " K{c:<3} {:<w$} {:>8} {state}",
+                        short(label, w),
                         super::thousands(d.size)
                     ),
                     if i == r.at { bold } else { TStyle::default() },
@@ -1326,8 +1341,9 @@ fn preview_changed(v: &serde_json::Value) -> String {
 }
 
 /// What the preview says about cluster `id`: its label after, and its
-/// top call once marker edits are rescored.
-fn preview_of(v: Option<&serde_json::Value>, id: i64) -> Option<String> {
+/// top call once marker edits are rescored; labels take `more` columns
+/// beyond their usual width.
+fn preview_of(v: Option<&serde_json::Value>, id: i64, more: usize) -> Option<String> {
     let c = v?.get("clusters")?.get(id.to_string())?;
     let after = c.get("label_after").and_then(|l| l.as_str()).unwrap_or("–");
     let top = c
@@ -1337,10 +1353,10 @@ fn preview_of(v: Option<&serde_json::Value>, id: i64) -> Option<String> {
         .and_then(|call| {
             let label = call.get("label")?.as_str()?;
             let q = call.get("q")?.as_f64()?;
-            Some(format!("  top {} {q:.3}", short(label, 12)))
+            Some(format!("  top {} {q:.3}", short(label, 12 + more / 2)))
         })
         .unwrap_or_default();
-    Some(format!("→ {}{top}", short(after, 14)))
+    Some(format!("→ {}{top}", short(after, 14 + more / 2)))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
