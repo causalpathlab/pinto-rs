@@ -152,6 +152,7 @@ impl App {
             Screen::Run => &[
                 "↑ ↓ choose",
                 "s stop",
+                "r run again what did not finish",
                 "v open the one chosen in pinto view",
             ],
         };
@@ -160,7 +161,11 @@ impl App {
             bold(),
         ))];
         let all = [
-            "tab / shift-tab / shift-enter / 1-4 screens",
+            if self.shift_enter {
+                "tab / shift-tab / shift-enter / 1-4 screens"
+            } else {
+                "tab / shift-tab / 1-4 screens"
+            },
             "G review and run",
             "q quit",
         ];
@@ -584,6 +589,19 @@ impl App {
                 let indent = if k == 0 { "   " } else { "     " };
                 let more = if k + 1 < n { " \\" } else { "" };
                 body.extend(wrap(format!("{indent}{l}{more}"), Style::default()));
+            }
+            if p.again {
+                body.extend(wrap(
+                    "   ✓ finished earlier in this session: it runs again".into(),
+                    dim(),
+                ));
+            }
+            if p.job.clear {
+                body.extend(wrap(
+                    "   ↻ the unfinished run's script and batch files here are cleared first"
+                        .into(),
+                    dim(),
+                ));
             }
             if let Some(why) = &p.problem {
                 body.extend(wrap(format!("   ✗ {why}"), bold()));

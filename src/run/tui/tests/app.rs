@@ -350,6 +350,7 @@ fn only_a_finished_fit_opens_in_the_viewer() {
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
         made: Vec::new(),
+        clear: false,
     };
     // A stand-in pinto that writes the manifest its --out names, or fails.
     let fake = dir.path().join("fake-pinto");
@@ -512,7 +513,13 @@ fn many_data_files_are_all_described_by_the_few_workers() {
 #[test]
 fn the_keys_wrap_at_whole_hints_and_name_shift_enter() {
     let dir = tempfile::tempdir().unwrap();
-    let a = app(dir.path());
+    let mut a = app(dir.path());
+    let plain: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
+    assert!(
+        !plain.iter().any(|l| l.contains("shift-enter")),
+        "not named where the terminal cannot tell it: {plain:?}"
+    );
+    a.shift_enter = true;
     let lines: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
     assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("shift-enter")), "{lines:?}");
@@ -673,14 +680,22 @@ fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = app(dir.path());
     let (lc, cage) = (0, 1);
+    a.pairs = data(dir.path(), &["d.zarr"]);
     a.rows[lc].on = true;
     a.rows[cage].on = true;
+    // As a started queue leaves them: each run's --out kept, the rows
+    // moved on.
+    for r in &mut a.rows {
+        r.last = Some(r.out.clone());
+        r.out = format!("{}-2", r.out);
+    }
     let job = |m: &str| jobs::Job {
         method: m.into(),
         dir: dir.path().to_path_buf(),
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
         made: Vec::new(),
+        clear: false,
     };
     // A stand-in pinto that finishes the first method and fails the next.
     let fake = dir.path().join("fake-pinto");
@@ -698,10 +713,31 @@ fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
     assert!(!a.rows[lc].on && a.rows[lc].done);
     assert!(a.rows[cage].on && !a.rows[cage].done);
     assert!(a.message.as_deref().unwrap().contains("G runs the rest"));
+    // The failed one goes back to its --out, its script there cleared
+    // when it runs again.
+    assert_eq!(a.rows[cage].out, METHODS[cage]);
+    assert!(dir
+        .path()
+        .join(format!("{}.cmd.sh", METHODS[cage]))
+        .exists());
+    let p = a.plan();
+    assert_eq!(p.len(), 1);
+    assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
+    assert!(p[0].job.clear && !p[0].again);
+    // An --out typed anew clears nothing.
+    a.rows[cage].out = "mine".into();
+    assert!(!a.plan()[0].job.clear);
+    a.rows[cage].out = METHODS[cage].into();
+    // r on the Run screen reviews what is left.
+    a.screen = Screen::Run;
+    key(&mut a, KeyCode::Char('r'));
+    assert_eq!(a.confirm.as_ref().map(Vec::len), Some(1));
+    key(&mut a, KeyCode::Esc);
     // Queued again by hand, it stays queued.
     a.screen = Screen::Methods;
     a.method_row = lc;
     key(&mut a, KeyCode::Char(' '));
     a.poll();
     assert!(a.rows[lc].on);
+    assert!(a.plan().iter().any(|p| p.again), "finished before: said so");
 }

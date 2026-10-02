@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use crate::tui::child::{run_one, Failed, Stopper};
-use legume_numeric::matrix::common_io::mkdir;
+use legume_numeric::matrix::common_io::{mkdir, remove_file};
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
@@ -26,6 +26,9 @@ pub struct Job {
     pub argv: Vec<String>,
     /// Batch label files written for the run, before its script.
     pub made: Vec<(PathBuf, super::batch::Made)>,
+    /// Whether to clear the script and batch files a run at the same
+    /// `--out` left unfinished.
+    pub clear: bool,
 }
 
 /// What a run with `--out` prefix `out` writes in `dir` that a new run
@@ -166,6 +169,15 @@ fn run_job(
 ) -> State {
     if job.manifest().exists() {
         return State::Failed(format!("{} exists", job.manifest().display()));
+    }
+    if job.clear {
+        let left = outputs(&job.dir, &job.out);
+        if let Err(e) = left[1..]
+            .iter()
+            .try_for_each(|p| remove_file(&p.to_string_lossy()))
+        {
+            return State::Failed(format!("cannot clear the unfinished run: {e}"));
+        }
     }
     if let Err(e) = mkdir(&job.dir.to_string_lossy()) {
         return State::Failed(format!("cannot make {}: {e}", job.dir.display()));

@@ -53,8 +53,10 @@ batch files beside them are paired by sample name), queue `lc`, `cage` and
 `--help`. `G` shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen. Tab or shift-enter moves to
 the next screen (shift-enter where the terminal tells it from enter). Once a
-run ends, the methods it finished are unqueued (marked ✓), so `G` again runs
-only the ones stopped, failed or not reached; space queues one again.
+run ends, the methods it finished are unqueued (marked ✓), so `G` again, or
+`r` on the Run screen, runs only the ones stopped, failed or not reached;
+space queues one again. Each runs again at the `--out` it had, the script and
+batch files its unfinished run left there cleared first.
 
 ```sh
 pinto run data/        # the file browser starts in data/

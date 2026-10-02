@@ -56,6 +56,18 @@ struct Row {
     typed: bool,
     /// Whether it finished in the last run it was in.
     done: bool,
+    /// The `out` of the last run it was in.
+    last: Option<String>,
+    /// An `out` whose script and batch files a run that did not finish
+    /// left: a new run there clears them first.
+    leftover: Option<String>,
+}
+
+impl Row {
+    /// Whether a run at `out` clears what an unfinished one left there.
+    fn clears(&self) -> bool {
+        self.leftover.as_deref() == Some(self.out.as_str())
+    }
 }
 
 /// What a line being typed will become.
@@ -91,6 +103,8 @@ struct Planned {
     problem: Option<String>,
     /// The flag clap blamed, to mark its row.
     blamed: Option<String>,
+    /// Whether the method already finished earlier in this session.
+    again: bool,
 }
 
 pub(crate) struct App {
@@ -131,6 +145,8 @@ pub(crate) struct App {
     queue: Option<Queue>,
     /// Whether the end of the queue was taken in: see [`App::settle`].
     settled: bool,
+    /// Whether the terminal tells shift-enter from enter.
+    shift_enter: bool,
     /// The fit under the cursor on the run screen.
     job_row: usize,
     message: Option<String>,
@@ -197,9 +213,9 @@ pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
     let mut app = App::new(cli, start)?;
     let ended = crate::tui::with_terminal(|terminal| {
         // Shift-enter told apart from enter, where the terminal can.
-        let shift_enter = enhance_keys(true);
+        app.shift_enter = enhance_keys(true);
         let result = app.screens_loop(terminal);
-        if shift_enter {
+        if app.shift_enter {
             enhance_keys(false);
         }
         // Wait for the worker, so no fit it was starting outlives us.
@@ -257,6 +273,8 @@ impl App {
                     out: free_out(&here, m),
                     typed: false,
                     done: false,
+                    last: None,
+                    leftover: None,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -292,6 +310,7 @@ impl App {
             labels: None,
             queue: None,
             settled: false,
+            shift_enter: false,
             job_row: 0,
             message: None,
             quit: false,
@@ -881,7 +900,11 @@ impl App {
                 out: out.clone(),
                 argv,
                 made,
+                clear: r.clears(),
             };
+            // What an unfinished run left is cleared, so only its manifest
+            // would be written over.
+            let kept = if job.clear { 1 } else { 3 };
             let mut blamed = None;
             let problem = if self.pairs.is_empty() {
                 Some("no data files: add some on the Data screen".to_string())
@@ -891,6 +914,7 @@ impl App {
                 Some(why.clone())
             } else if let Some(there) = jobs::outputs(&job.dir, &job.out)
                 .into_iter()
+                .take(kept)
                 .find(|p| p.exists())
             {
                 Some(format!(
@@ -912,6 +936,7 @@ impl App {
                 job,
                 problem,
                 blamed,
+                again: r.done,
             });
         }
         planned
@@ -973,6 +998,9 @@ impl App {
                     Ok(exe) => {
                         self.queue = Some(Queue::start(jobs, exe));
                         self.settled = false;
+                        for r in self.rows.iter_mut().filter(|r| r.on) {
+                            r.last = Some(r.out.clone());
+                        }
                         self.job_row = 0;
                         self.screen = Screen::Run;
                         self.move_outs_on();
@@ -985,7 +1013,8 @@ impl App {
     }
 
     /// Once the queue has ended, unqueue the methods it finished, so `G`
-    /// again runs only those stopped, failed or not reached.
+    /// again runs only those stopped, failed or not reached, each at the
+    /// `--out` it had.
     fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
         if self.settled || !q.finished() {
@@ -999,11 +1028,21 @@ impl App {
                 continue;
             };
             r.done = state == jobs::State::Done;
+            r.leftover = None;
             if r.done {
                 r.on = false;
                 done.push(job.method.clone());
             } else {
                 left = true;
+                // Back to the same --out, what the run left cleared then.
+                if !job.manifest().exists() {
+                    if let Some(last) = r.last.clone() {
+                        if !r.typed {
+                            r.out.clone_from(&last);
+                        }
+                        r.leftover = Some(last);
+                    }
+                }
             }
         }
         if !self.param_methods().contains(&self.param_method) {
@@ -1084,6 +1123,16 @@ impl App {
             KeyCode::Char('s') => {
                 q.stop();
                 self.message = Some("stopping".into());
+            }
+            KeyCode::Char('r') => {
+                if self.running() {
+                    self.message = Some("fits are still running".into());
+                } else if self.rows.iter().any(|r| r.on) {
+                    self.open_confirm();
+                } else {
+                    self.message =
+                        Some("every method finished: space on Methods queues one again".into());
+                }
             }
             KeyCode::Char('v') => {
                 let job = &q.jobs[self.job_row.min(last)];

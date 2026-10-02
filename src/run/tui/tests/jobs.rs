@@ -18,6 +18,7 @@ fn jobs_run_in_turn_and_leave_their_scripts() {
         out: m.into(),
         argv: vec![m.into(), "d.zarr".into(), "--out".into(), m.into()],
         made: Vec::new(),
+        clear: false,
     };
     let q = Queue::start(vec![job("lc"), job("cage")], fake);
     while !q.finished() {
@@ -42,6 +43,7 @@ fn a_job_whose_result_exists_does_not_run() {
         out: "r".into(),
         argv: vec!["lc".into(), "--out".into(), "r".into()],
         made: Vec::new(),
+        clear: false,
     };
     let q = Queue::start(vec![job], PathBuf::from("/bin/false"));
     while !q.finished() {
@@ -68,6 +70,7 @@ fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
         made: Vec::new(),
+        clear: false,
     };
     let q = Queue::start(vec![job("a"), job("b")], slow);
     while q.shared.lock().unwrap().states[0] != State::Running {
@@ -94,6 +97,7 @@ fn batch_files_made_for_a_run_are_written_before_it_starts() {
             dir.path().join("r.batches/s1.txt"),
             crate::run::tui::batch::Made::Repeat("b1".into(), 2),
         )],
+        clear: false,
     };
     let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
     while !q.finished() {
@@ -117,6 +121,7 @@ fn a_new_out_folder_is_made_before_the_script() {
         out: "r".into(),
         argv: vec!["lc".into(), "--out".into(), "r".into()],
         made: Vec::new(),
+        clear: false,
     };
     let q = Queue::start(vec![job], PathBuf::from("true"));
     while !q.finished() {
@@ -124,4 +129,31 @@ fn a_new_out_folder_is_made_before_the_script() {
     }
     assert_eq!(q.shared.lock().unwrap().states[0], State::Done);
     assert!(at.join("r.cmd.sh").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_run_where_one_did_not_finish_clears_its_script_and_batch_files_first() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("r.cmd.sh"), "old").unwrap();
+    std::fs::create_dir(dir.path().join("r.batches")).unwrap();
+    std::fs::write(dir.path().join("r.batches/old.txt"), "x\n").unwrap();
+    let job = Job {
+        method: "lc".into(),
+        dir: dir.path().to_path_buf(),
+        out: "r".into(),
+        argv: vec!["lc".into(), "--out".into(), "r".into()],
+        made: Vec::new(),
+        clear: true,
+    };
+    let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
+    while !q.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(q.states(), vec![State::Done]);
+    assert_ne!(
+        std::fs::read_to_string(dir.path().join("r.cmd.sh")).unwrap(),
+        "old"
+    );
+    assert!(!dir.path().join("r.batches").exists());
 }
