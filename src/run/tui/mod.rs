@@ -54,6 +54,8 @@ struct Row {
     out: String,
     /// Whether `out` was typed by hand, so the output header leaves it.
     typed: bool,
+    /// Whether it finished in the last run it was in.
+    done: bool,
 }
 
 /// What a line being typed will become.
@@ -127,6 +129,8 @@ pub(crate) struct App {
     /// The label list open over the data screen.
     labels: Option<Labels>,
     queue: Option<Queue>,
+    /// Whether the end of the queue was taken in: see [`App::settle`].
+    settled: bool,
     /// The fit under the cursor on the run screen.
     job_row: usize,
     message: Option<String>,
@@ -192,7 +196,12 @@ type Blame = (usize, Vec<String>, Option<String>);
 pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
     let mut app = App::new(cli, start)?;
     let ended = crate::tui::with_terminal(|terminal| {
+        // Shift-enter told apart from enter, where the terminal can.
+        let shift_enter = enhance_keys(true);
         let result = app.screens_loop(terminal);
+        if shift_enter {
+            enhance_keys(false);
+        }
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
@@ -247,6 +256,7 @@ impl App {
                     on: false,
                     out: free_out(&here, m),
                     typed: false,
+                    done: false,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -281,6 +291,7 @@ impl App {
             reading: std::collections::BTreeSet::new(),
             labels: None,
             queue: None,
+            settled: false,
             job_row: 0,
             message: None,
             quit: false,
@@ -335,12 +346,15 @@ impl App {
         match k.code {
             KeyCode::Tab => self.screen = screens[(at + 1) % screens.len()],
             KeyCode::BackTab => self.screen = screens[(at + screens.len() - 1) % screens.len()],
+            KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.screen = screens[(at + 1) % screens.len()];
+            }
             KeyCode::Char(c @ '1'..='4') => {
                 if let Some(s) = screens.get(c as usize - '1' as usize) {
                     self.screen = *s;
                 }
             }
-            KeyCode::Char('g') => self.open_confirm(),
+            KeyCode::Char('G') => self.open_confirm(),
             KeyCode::Char('q') => {
                 if self.running() {
                     self.message =
@@ -545,6 +559,7 @@ impl App {
     /// Take in what the workers found out, and start reading the label
     /// files not read yet.
     fn poll(&mut self) {
+        self.settle();
         while let Ok(found) = self.found.try_recv() {
             self.describing = self.describing.saturating_sub(1);
             match found {
@@ -677,7 +692,6 @@ impl App {
                 self.pairs.swap(self.pair_row, self.pair_row + 1);
                 self.pair_row += 1;
             }
-            KeyCode::Enter => self.screen = Screen::Methods,
             _ => {}
         }
     }
@@ -958,6 +972,7 @@ impl App {
                 match std::env::current_exe() {
                     Ok(exe) => {
                         self.queue = Some(Queue::start(jobs, exe));
+                        self.settled = false;
                         self.job_row = 0;
                         self.screen = Screen::Run;
                         self.move_outs_on();
@@ -969,8 +984,42 @@ impl App {
         }
     }
 
+    /// Once the queue has ended, unqueue the methods it finished, so `G`
+    /// again runs only those stopped, failed or not reached.
+    fn settle(&mut self) {
+        let Some(q) = &self.queue else { return };
+        if self.settled || !q.finished() {
+            return;
+        }
+        self.settled = true;
+        let mut done = Vec::new();
+        let mut left = false;
+        for (job, state) in q.jobs.iter().zip(q.states()) {
+            let Some(r) = self.rows.iter_mut().find(|r| r.form.name == job.method) else {
+                continue;
+            };
+            r.done = state == jobs::State::Done;
+            if r.done {
+                r.on = false;
+                done.push(job.method.clone());
+            } else {
+                left = true;
+            }
+        }
+        if !self.param_methods().contains(&self.param_method) {
+            self.param_method = self.param_methods()[0];
+            self.field_row = 0;
+        }
+        if left && !done.is_empty() {
+            self.message = Some(format!(
+                "{} done and unqueued: G runs the rest (space queues one again)",
+                done.join(", ")
+            ));
+        }
+    }
+
     /// Give each queued method whose `--out` was not typed by hand the
-    /// next free name, so `g` again does not aim at the runs just started.
+    /// next free name, so `G` again does not aim at the runs just started.
     fn move_outs_on(&mut self) {
         for r in self.rows.iter_mut().filter(|r| r.on && !r.typed) {
             r.out = next_out(&self.here, &under(&self.header, &r.form.name), Some(&r.out));
@@ -1051,6 +1100,25 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Ask the terminal to report modifiers on enter (`on`), or stop asking.
+/// Returns whether it can.
+fn enhance_keys(on: bool) -> bool {
+    use ratatui::crossterm::event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    use ratatui::crossterm::{execute, terminal::supports_keyboard_enhancement};
+    let mut out = std::io::stdout();
+    if !on {
+        return execute!(out, PopKeyboardEnhancementFlags).is_ok();
+    }
+    supports_keyboard_enhancement().unwrap_or(false)
+        && execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok()
 }
 
 /// What is printed once the terminal is given back: how each run ended,

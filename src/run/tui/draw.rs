@@ -132,13 +132,13 @@ impl App {
                 "X clear all",
                 "d remove",
                 "J K reorder",
-                "enter methods",
             ],
             Screen::Methods => &[
                 "space queue",
                 "enter / → queue and show flags",
                 "o name one --out by hand",
                 "O output header",
+                "✓ done in the last run",
             ],
             Screen::Params => &[
                 "space / enter change",
@@ -160,8 +160,8 @@ impl App {
             bold(),
         ))];
         let all = [
-            "tab / shift-tab / 1-4 screens",
-            "g review and run",
+            "tab / shift-tab / shift-enter / 1-4 screens",
+            "G review and run",
             "q quit",
         ];
         for group in [keys, &all[..]] {
@@ -362,7 +362,11 @@ impl App {
             let changed = r.form.changed();
             let text = format!(
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
-                if r.on { "x" } else { " " },
+                match (r.on, r.done) {
+                    (true, _) => "x",
+                    (false, true) => "✓",
+                    (false, false) => " ",
+                },
                 r.form.name,
                 fit(&outs[i], out_w),
                 if changed == 0 {

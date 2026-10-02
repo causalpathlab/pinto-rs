@@ -160,7 +160,7 @@ fn enter_on_a_problem_goes_to_the_flag_clap_blamed() {
     let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
     a.rows[lc].on = true;
     a.rows[lc].form.fields[0].value = "many".into();
-    key(&mut a, KeyCode::Char('g'));
+    key(&mut a, KeyCode::Char('G'));
     assert!(a.confirm.is_some());
     key(&mut a, KeyCode::Enter);
     assert!(a.confirm.is_none() && a.queue.is_none());
@@ -510,15 +510,12 @@ fn many_data_files_are_all_described_by_the_few_workers() {
 }
 
 #[test]
-fn the_keys_wrap_at_whole_hints_and_name_enter() {
+fn the_keys_wrap_at_whole_hints_and_name_shift_enter() {
     let dir = tempfile::tempdir().unwrap();
     let a = app(dir.path());
     let lines: Vec<String> = a.status(60).iter().map(ToString::to_string).collect();
     assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
-    assert!(
-        lines.iter().any(|l| l.contains("enter methods")),
-        "{lines:?}"
-    );
+    assert!(lines.iter().any(|l| l.contains("shift-enter")), "{lines:?}");
     assert!(lines.last().unwrap().contains("q quit"));
 }
 
@@ -654,4 +651,57 @@ fn a_hand_typed_folder_out_names_the_method_in_it() {
     let p = &a.plan()[0];
     assert_eq!(p.problem, None);
     assert_eq!(p.job.dir, script::normalize(&dir.path().join("res/sub")));
+}
+
+#[test]
+fn shift_enter_moves_to_the_next_screen_and_enter_on_data_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    a.screen = Screen::Data;
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.screen, Screen::Data);
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert_eq!(a.screen, Screen::Methods);
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert_eq!(a.screen, Screen::Params);
+    assert!(!a.rows.iter().any(|r| r.on), "moving on queues nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    let (lc, cage) = (0, 1);
+    a.rows[lc].on = true;
+    a.rows[cage].on = true;
+    let job = |m: &str| jobs::Job {
+        method: m.into(),
+        dir: dir.path().to_path_buf(),
+        out: m.into(),
+        argv: vec![m.into(), "--out".into(), m.into()],
+        made: Vec::new(),
+    };
+    // A stand-in pinto that finishes the first method and fails the next.
+    let fake = dir.path().join("fake-pinto");
+    std::fs::write(&fake, format!("#!/bin/sh\n[ \"$1\" = {} ]\n", METHODS[lc])).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    a.queue = Some(Queue::start(
+        vec![job(METHODS[lc]), job(METHODS[cage])],
+        fake,
+    ));
+    while a.running() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    a.poll();
+    assert!(!a.rows[lc].on && a.rows[lc].done);
+    assert!(a.rows[cage].on && !a.rows[cage].done);
+    assert!(a.message.as_deref().unwrap().contains("G runs the rest"));
+    // Queued again by hand, it stays queued.
+    a.screen = Screen::Methods;
+    a.method_row = lc;
+    key(&mut a, KeyCode::Char(' '));
+    a.poll();
+    assert!(a.rows[lc].on);
 }

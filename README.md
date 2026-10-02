@@ -50,8 +50,11 @@ See `pinto --help` and per-subcommand `--help`.
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
 `dsvd`, and change any flag; each method's form is read from its own
-`--help`. `g` shows the exact commands, checked as pinto would parse them,
-and runs them in turn with their log on screen.
+`--help`. `G` shows the exact commands, checked as pinto would parse them,
+and runs them in turn with their log on screen. Tab or shift-enter moves to
+the next screen (shift-enter where the terminal tells it from enter). Once a
+run ends, the methods it finished are unqueued (marked ✓), so `G` again runs
+only the ones stopped, failed or not reached; space queues one again.
 
 ```sh
 pinto run data/        # the file browser starts in data/
