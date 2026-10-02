@@ -746,6 +746,8 @@ fn training_feature_totals(
     }
     for f in files {
         let mut data = data_beans::convert::try_open_or_convert(f)?;
+        // Read once, for the totals: preloaded only when asked, so the
+        // process-wide preload budget stays for the data read many times.
         if common.preload_data {
             data.preload_columns()?;
         }

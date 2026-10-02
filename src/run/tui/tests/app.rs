@@ -600,20 +600,20 @@ fn a_hand_typed_out_keeps_through_header_changes_until_cleared() {
     let lc = METHODS.iter().position(|m| *m == "lc").unwrap();
     a.method_row = lc;
     key(&mut a, KeyCode::Char('o'));
-    a.editor.as_mut().unwrap().text = "mine".into();
+    a.editor.as_mut().unwrap().text.text = "mine".into();
     key(&mut a, KeyCode::Enter);
     assert!(a.rows[lc].typed);
 
     std::fs::write(dir.path().join("exp1_cage.pinto.json"), "{}").unwrap();
     key(&mut a, KeyCode::Char('O'));
-    a.editor.as_mut().unwrap().text = "exp1".into();
+    a.editor.as_mut().unwrap().text.text = "exp1".into();
     key(&mut a, KeyCode::Enter);
     let cage = METHODS.iter().position(|m| *m == "cage").unwrap();
     assert_eq!(a.rows[lc].out, "mine");
     assert_eq!(a.rows[cage].out, "exp1_cage-2", "made unique");
 
     key(&mut a, KeyCode::Char('o'));
-    a.editor.as_mut().unwrap().text.clear();
+    a.editor.as_mut().unwrap().text.text.clear();
     key(&mut a, KeyCode::Enter);
     assert!(!a.rows[lc].typed);
     assert_eq!(a.rows[lc].out, "exp1_lc");
@@ -625,10 +625,10 @@ fn esc_on_a_later_header_edit_keeps_the_header() {
     let mut a = app(dir.path());
     a.screen = Screen::Methods;
     key(&mut a, KeyCode::Char('O'));
-    a.editor.as_mut().unwrap().text = "exp1".into();
+    a.editor.as_mut().unwrap().text.text = "exp1".into();
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('O'));
-    a.editor.as_mut().unwrap().text = "other".into();
+    a.editor.as_mut().unwrap().text.text = "other".into();
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.header, "exp1");
     assert!(a
@@ -647,7 +647,7 @@ fn a_hand_typed_folder_out_names_the_method_in_it() {
     a.method_row = lc;
     a.rows[lc].on = true;
     key(&mut a, KeyCode::Char('o'));
-    a.editor.as_mut().unwrap().text = "res/sub/".into();
+    a.editor.as_mut().unwrap().text.text = "res/sub/".into();
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.rows[lc].out, "res/sub/lc");
     // Not there yet: no problem, the run makes it.

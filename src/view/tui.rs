@@ -13,6 +13,7 @@ mod browse;
 mod gallery;
 pub(super) mod grid;
 mod plots;
+mod save;
 
 pub use browse::pick_run;
 
@@ -460,8 +461,14 @@ impl<'a> App<'a> {
     }
 
     /// Whether the side panel is the wide one, for annotation or a dialog.
+    /// The save dialog fits the usual panel: widening it would shrink
+    /// the map that is about to be saved.
     fn wide(&self) -> bool {
-        self.relabel.is_some() || self.modal.is_some()
+        self.relabel.is_some()
+            || self
+                .modal
+                .as_ref()
+                .is_some_and(|m| !matches!(m, annotate::Modal::Save(_)))
     }
 
     /// Columns the wide panel has beyond its usual width, for its text.
@@ -624,7 +631,7 @@ impl<'a> App<'a> {
             KeyCode::Char('e') => self.toggle_edges(terminal)?,
             KeyCode::Char('b') => self.next_tile(),
             KeyCode::Char('w') => self.toggle_grid(),
-            KeyCode::Char('s') => self.export()?,
+            KeyCode::Char('s') => self.ask_export(),
             KeyCode::Char('x') => self.clear_focus(),
             KeyCode::Char('g') => self.step_gene(1),
             KeyCode::Char('G') => self.step_gene(-1),
@@ -652,6 +659,10 @@ impl<'a> App<'a> {
                 self.need_map = true;
                 self.need_panel = true;
             }
+            return;
+        }
+        // The view stays as it is while it is being saved.
+        if matches!(self.modal, Some(annotate::Modal::Save(_))) {
             return;
         }
         if self.resize_panel(m) {
@@ -1049,17 +1060,11 @@ impl<'a> App<'a> {
         self.fit(bounds);
     }
 
-    /// Freeze the current view: a PNG and a PDF at `--export-scale` × the
-    /// screen resolution, and a `.txt` with the command that redraws them,
-    /// the legend and the shown communities' markers.
-    fn export(&mut self) -> anyhow::Result<()> {
-        if self.view != plots::View::Map {
-            return self.export_plot();
-        }
-        if self.grid_shows() {
-            return self.export_grid();
-        }
-        let stem = free_stem("pinto-view", "png");
+    /// Freeze the current view as `stem`: a PNG and a PDF at
+    /// `--export-scale` × the screen resolution, and a `.txt` with the
+    /// command that redraws them, the legend and the shown communities'
+    /// markers.
+    fn export_map(&mut self, stem: &str) -> anyhow::Result<()> {
         let (png, pdf, txt) = (
             format!("{stem}.png"),
             format!("{stem}.pdf"),
@@ -1098,7 +1103,7 @@ impl<'a> App<'a> {
         };
         let listed = self.remember(&pdf, &what, &thumb);
         let bars = if self.bars.height > 0 {
-            self.export_structure()?
+            self.export_structure(&format!("{stem}-structure"))?
         } else {
             String::new()
         };
@@ -1119,9 +1124,11 @@ impl<'a> App<'a> {
         let win = window;
         let mut cmd = format!(
             // `{}` prints the shortest text that parses back to the same f32.
-            "pinto view {} --png {png} --pdf {pdf} --units {} --width {} --height {} \
+            "pinto view {} --png {} --pdf {} --units {} --width {} --height {} \
              --bbox={},{},{},{} --level {} --layer {}",
             self.args.prefix(),
+            crate::tui::quote(png),
+            crate::tui::quote(pdf),
             self.args.units,
             vp.w,
             vp.h,
@@ -1735,11 +1742,11 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
                 " H  structure plot → heatmap → map"
             },
             " drag the panel's left edge: width",
-            " s save  f saved figures  q quit",
+            " s save as  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
         ]
     } else {
-        &[" s save view  r start over", " Esc back  ? keys  q quit"]
+        &[" s save as  r start over", " Esc back  ? keys  q quit"]
     };
     text.iter().map(|t| Line::styled(*t, dim)).collect()
 }
@@ -1753,14 +1760,6 @@ fn step_point(x: f32, by: f32) -> f32 {
     } else {
         next
     }
-}
-
-/// The first `{prefix}-NNN` without a `.{ext}` file yet.
-fn free_stem(prefix: &str, ext: &str) -> String {
-    (1..)
-        .map(|n| format!("{prefix}-{n:03}"))
-        .find(|s| !std::path::Path::new(&format!("{s}.{ext}")).exists())
-        .expect("unbounded")
 }
 
 fn ms(d: Duration) -> f64 {

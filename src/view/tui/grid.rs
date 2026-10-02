@@ -673,9 +673,8 @@ impl App<'_> {
 
     /// `s` on the grid: the grid as a PNG at the export scale, its batches
     /// listed beside it.
-    pub(super) fn export_grid(&mut self) -> anyhow::Result<()> {
+    pub(super) fn export_grid(&mut self, stem: &str) -> anyhow::Result<()> {
         use std::fmt::Write as _;
-        let stem = super::free_stem("pinto-grid", "png");
         let scale = self.args.export_scale.max(1);
         let w = (self.canvas.width as f32 * self.px_per_cell.0) as usize * scale;
         let h = (self.canvas.height as f32 * self.px_per_cell.1) as usize * scale;

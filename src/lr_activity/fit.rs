@@ -58,7 +58,6 @@ use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
-use data_beans::convert::try_open_or_convert;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::membership::GeneIndexResolver;
 use legume_numeric::matrix::rand_util::mix_seed;
@@ -643,11 +642,7 @@ fn load_expr_data(c: &SrtLrActivityArgs) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
     for data_file in c.data_files.iter() {
         info!("Importing data file: {}", data_file);
-        let mut data = try_open_or_convert(data_file)?;
-        if c.preload_data {
-            info!("Preloading columns for {}", data_file);
-            data.preload_columns()?;
-        }
+        let data = crate::util::input::open_sparse(data_file, c.preload_data)?;
         let data_name = attach_data_name
             .then(|| legume_numeric::matrix::common_io::basename(data_file))
             .transpose()?;

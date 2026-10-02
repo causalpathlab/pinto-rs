@@ -14,6 +14,7 @@ use super::super::round::round_name;
 use super::browse::Panels;
 use super::{rgb, App, Pick, Show};
 use crate::tui::browse::{Browser, Outcome};
+use crate::tui::field::Field;
 use crate::tui::style::{self, short, tail};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style as TStyle;
@@ -62,6 +63,8 @@ pub enum Modal {
     Prompt(Prompt),
     /// The staged decisions, before they are sent.
     Confirm(Vec<String>),
+    /// Naming an export.
+    Save(super::save::SaveAs),
 }
 
 /// Typing a label, then a rationale.
@@ -69,8 +72,8 @@ pub struct Prompt {
     what: Staging,
     /// 0 the label, 1 the rationale.
     field: usize,
-    label: String,
-    rationale: String,
+    label: Field,
+    rationale: Field,
     /// Labels Tab completes to.
     options: Vec<String>,
 }
@@ -379,6 +382,11 @@ impl App<'_> {
         let Some(modal) = self.modal.take() else {
             return Ok(());
         };
+        // Typing a file name leaves the map as it is.
+        if let Modal::Save(s) = modal {
+            self.modal = self.save_key(s, key).map(Modal::Save);
+            return Ok(());
+        }
         self.need_map = true;
         match modal {
             Modal::Browse(mut b) => match b.key(key) {
@@ -393,14 +401,14 @@ impl App<'_> {
                         return Ok(());
                     }
                     KeyCode::Enter if p.field == 0 => {
-                        if p.label.trim().is_empty() {
+                        if p.label.text.trim().is_empty() {
                             self.status = "type a label (Tab completes)".into();
                         } else {
                             p.field = 1;
                         }
                     }
                     KeyCode::Enter => {
-                        if p.rationale.trim().is_empty() {
+                        if p.rationale.text.trim().is_empty() {
                             self.status = "lupin needs a rationale".into();
                         } else {
                             self.stage(p);
@@ -408,26 +416,18 @@ impl App<'_> {
                         }
                     }
                     KeyCode::Tab if p.field == 0 => complete(&mut p),
-                    KeyCode::Backspace => {
+                    _ => {
                         let field = if p.field == 0 {
                             &mut p.label
                         } else {
                             &mut p.rationale
                         };
-                        field.pop();
+                        field.key(key);
                     }
-                    KeyCode::Char(c) => {
-                        let field = if p.field == 0 {
-                            &mut p.label
-                        } else {
-                            &mut p.rationale
-                        };
-                        field.push(c);
-                    }
-                    _ => {}
                 }
                 self.modal = Some(Modal::Prompt(p));
             }
+            Modal::Save(_) => unreachable!("handled above"),
             Modal::Confirm(lines) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.send_draft(false),
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
@@ -461,25 +461,19 @@ impl App<'_> {
                     ),
                 };
                 out.push(Line::styled(title, bold));
-                let field = |name: &str, v: &str, on: bool| {
-                    let cursor = if on { "▏" } else { "" };
-                    Line::from(vec![
-                        Span::styled(format!(" {name:<10}"), dim),
-                        Span::styled(
-                            format!("{v}{cursor}"),
-                            if on { bold } else { TStyle::default() },
-                        ),
-                    ])
+                // Name on the first line, the text wrapped beside it.
+                let mut field = |name: &str, f: &Field, width: usize, on: bool| {
+                    let style = if on { bold } else { TStyle::default() };
+                    for (i, piece) in f.lines(width, on, style).into_iter().enumerate() {
+                        let name = if i == 0 { name } else { "" };
+                        out.push(Line::from(vec![
+                            Span::styled(format!(" {name:<10}"), dim),
+                            piece,
+                        ]));
+                    }
                 };
-                out.push(field("label", &p.label, p.field == 0));
-                let lines = wrap(&p.rationale, 32 + more);
-                for (i, line) in lines.iter().enumerate() {
-                    let name = if i == 0 { "rationale" } else { "" };
-                    out.push(field(name, line, p.field == 1 && i + 1 == lines.len()));
-                }
-                if p.rationale.is_empty() {
-                    out.push(field("rationale", "", p.field == 1));
-                }
+                field("label", &p.label, usize::MAX, p.field == 0);
+                field("rationale", &p.rationale, 32 + more, p.field == 1);
                 out.push(Line::raw(""));
                 if p.field == 0 {
                     let known: Vec<&str> = p.options.iter().take(12).map(String::as_str).collect();
@@ -491,6 +485,7 @@ impl App<'_> {
                     out.push(Line::styled(" Enter stage  Esc cancel", dim));
                 }
             }
+            Modal::Save(s) => out.extend(self.save_lines(s)),
             Modal::Confirm(lines) => {
                 out.push(Line::styled(
                     format!(" apply {} decisions?", lines.len()),
@@ -892,8 +887,8 @@ impl App<'_> {
         self.modal = Some(Modal::Prompt(Prompt {
             what,
             field,
-            label,
-            rationale,
+            label: Field::new(label),
+            rationale: Field::new(rationale),
             options,
         }));
         self.need_map = true;
@@ -944,8 +939,8 @@ impl App<'_> {
         self.modal = Some(Modal::Prompt(Prompt {
             what: Staging::Merge(ids),
             field: 0,
-            label,
-            rationale,
+            label: Field::new(label),
+            rationale: Field::new(rationale),
             options,
         }));
         self.need_map = true;
@@ -955,8 +950,8 @@ impl App<'_> {
         let Some(r) = self.relabel.as_mut() else {
             return;
         };
-        let label = p.label.trim().to_string();
-        let rationale = p.rationale.trim().to_string();
+        let label = p.label.text.trim().to_string();
+        let rationale = p.rationale.text.trim().to_string();
         match p.what {
             Staging::Label(id) => {
                 r.draft.verdicts.insert(
@@ -1306,7 +1301,7 @@ fn history_line(h: &serde_json::Value) -> String {
 
 /// Tab: the next known label starting with what is typed.
 fn complete(p: &mut Prompt) {
-    let typed = p.label.to_lowercase();
+    let typed = p.label.text.to_lowercase();
     let matching: Vec<&String> = p
         .options
         .iter()
@@ -1318,9 +1313,9 @@ fn complete(p: &mut Prompt) {
     // Typed exactly one already: move on to the next match.
     let at = matching
         .iter()
-        .position(|o| o.eq_ignore_ascii_case(&p.label));
+        .position(|o| o.eq_ignore_ascii_case(&p.label.text));
     let next = at.map_or(0, |i| (i + 1) % matching.len());
-    p.label = matching[next].clone();
+    p.label.set(matching[next].clone());
 }
 
 /// A one-line account of a `--preview` reply.

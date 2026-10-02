@@ -358,8 +358,9 @@ fn profile_propensities(
     write_propensity_matrix(&c.out, &query_prop, &query_cells)?;
     info!("Wrote {}.propensity.parquet (profile-projected)", c.out);
     // Everything needed from the query is extracted; release it before the
-    // reference opens so two (possibly preloaded) datasets never coexist —
-    // preload budgets are per backend, per call.
+    // reference opens so two (possibly preloaded) datasets never coexist.
+    // data-beans keeps the query's preload budget reserved even so, so a
+    // large reference may stay on disk.
     drop(query_data);
 
     // The reference goes through the SAME map — not through the training
