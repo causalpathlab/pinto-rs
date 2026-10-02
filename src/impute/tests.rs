@@ -117,7 +117,7 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let (profiles, _) = disjoint_profiles();
     // Model keys as training writes them: `chr` dropped, case kept.
-    let features: Vec<Box<str>> = ["X_0_1000", "X_2000_3000", "1_0_1000", "1_2000_3000"]
+    let features: Vec<Box<str>> = ["X:0-1000", "X:2000-3000", "1:0-1000", "1:2000-3000"]
         .map(Into::into)
         .to_vec();
     // Two files read the way impute reads them, so the loader aligns
