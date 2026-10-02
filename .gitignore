@@ -3,3 +3,6 @@
 **/.claude/
 temp*/
 *.pinto.json
+
+# Not tracked; resolved fresh on each build
+Cargo.lock
