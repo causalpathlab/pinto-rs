@@ -88,7 +88,10 @@ fn show(args: &ViewArgs, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
     let level = base.level(first, args.edges)?;
 
     execute!(std::io::stdout(), EnableMouseCapture)?;
+    // Asked while "loading" is on screen.
+    let keys = crate::tui::EnhancedKeys::push();
     let mut app = App::new(&base, level, args, (gfx, px));
+    app.shift_enter = keys.is_some();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
     app.run(terminal)
 }
@@ -215,6 +218,8 @@ struct App<'a> {
     /// Whether the mouse moved since the button went down.
     dragged: bool,
     help: bool,
+    /// Whether the terminal tells shift-enter from enter.
+    shift_enter: bool,
     status: String,
 
     mode: Mode,
@@ -301,6 +306,7 @@ impl<'a> App<'a> {
             drag: None,
             dragged: false,
             help: false,
+            shift_enter: false,
             status: String::new(),
             mode: Mode::Points,
             render_time: Duration::ZERO,
@@ -504,6 +510,12 @@ impl<'a> App<'a> {
         if self.modal.is_some() {
             return self.modal_key(key, terminal);
         }
+        // Outside a dialog, shift-enter is H: the next chart.
+        let key = if crate::tui::shift_enter(&key) {
+            KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE)
+        } else {
+            key
+        };
         if self.view == plots::View::Heatmap && !plots::chart_key(key) {
             self.status = "on a chart: H next chart or back to the map · esc the map".into();
             return Ok(());
@@ -1357,7 +1369,7 @@ impl<'a> App<'a> {
             style::bold(),
         ));
 
-        let help = help_lines(self.help, self.relabel.is_some());
+        let help = help_lines(self.help, self.relabel.is_some(), self.shift_enter);
         let mut clickable = Vec::new();
         if let Some(modal) = &self.modal {
             let room = (height as usize).saturating_sub(lines.len());
@@ -1584,7 +1596,7 @@ fn ramp_legend(ramp: &Ramp, title: &str, top: &str) -> Vec<Line<'static>> {
     vec![Line::raw(format!(" {title}")), Line::from(first)]
 }
 
-fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
+fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>> {
     let dim = style::dim();
     let text: &[&str] = if relabel && !full {
         annotate::RELABEL_HELP
@@ -1608,7 +1620,11 @@ fn help_lines(full: bool, relabel: bool) -> Vec<Line<'static>> {
             " p  gene ramp top: p99 / p95",
             " c/C  communities / types / clusters",
             " , .  prev/next lupin round",
-            " H  structure plot → heatmap → map",
+            if shift_enter {
+                " H shift-enter  next chart"
+            } else {
+                " H  structure plot → heatmap → map"
+            },
             " s save  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
         ]

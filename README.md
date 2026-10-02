@@ -159,7 +159,8 @@ as a PNG with a `.txt` listing the batches by tile number.
 
 #### Structure plot and heatmap
 
-`H` steps through the charts: the map with a structure plot under it, then a
+`H` (or shift-enter, where the terminal tells it from enter) steps through
+the charts: the map with a structure plot under it, then a
 gene heatmap in place of the map, then the map again (`Esc` goes straight
 back). Both follow the grouping on screen (communities, or with `c` the
 round's cell types or clusters):

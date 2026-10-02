@@ -15,9 +15,11 @@ use legume_numeric::matrix::common_io::{mkdir, remove_file};
 const KEEP: usize = 2000;
 
 /// One fit to run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Job {
     pub method: String,
+    /// Its row on the Methods screen.
+    pub row: usize,
     /// Where it runs and the script goes.
     pub dir: PathBuf,
     /// The `--out` prefix, a name in `dir`.
@@ -48,6 +50,13 @@ impl Job {
     pub fn script(&self) -> PathBuf {
         outputs(&self.dir, &self.out)[1].clone()
     }
+
+    /// What a run that did not finish leaves: its script and batch files.
+    #[must_use]
+    pub fn leftovers(&self) -> [PathBuf; 2] {
+        let [_, script, batches] = outputs(&self.dir, &self.out);
+        [script, batches]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +76,8 @@ pub struct Shared {
     /// The last line each job wrote.
     pub last: Vec<String>,
     pub finished: bool,
+    /// Whether the end was taken in: see [`Queue::take_end`].
+    pub seen: bool,
 }
 
 /// The queue, running.
@@ -134,6 +145,16 @@ impl Queue {
         self.shared.lock().map_or(true, |s| s.finished)
     }
 
+    /// Whether the queue has ended, true only the first time it is asked
+    /// after that.
+    pub fn take_end(&self) -> bool {
+        self.shared.lock().is_ok_and(|mut s| {
+            let new = s.finished && !s.seen;
+            s.seen |= s.finished;
+            new
+        })
+    }
+
     /// Each job's state now.
     #[must_use]
     pub fn states(&self) -> Vec<State> {
@@ -171,8 +192,8 @@ fn run_job(
         return State::Failed(format!("{} exists", job.manifest().display()));
     }
     if job.clear {
-        let left = outputs(&job.dir, &job.out);
-        if let Err(e) = left[1..]
+        if let Err(e) = job
+            .leftovers()
             .iter()
             .try_for_each(|p| remove_file(&p.to_string_lossy()))
         {

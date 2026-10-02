@@ -56,18 +56,6 @@ struct Row {
     typed: bool,
     /// Whether it finished in the last run it was in.
     done: bool,
-    /// The `out` of the last run it was in.
-    last: Option<String>,
-    /// An `out` whose script and batch files a run that did not finish
-    /// left: a new run there clears them first.
-    leftover: Option<String>,
-}
-
-impl Row {
-    /// Whether a run at `out` clears what an unfinished one left there.
-    fn clears(&self) -> bool {
-        self.leftover.as_deref() == Some(self.out.as_str())
-    }
 }
 
 /// What a line being typed will become.
@@ -103,8 +91,6 @@ struct Planned {
     problem: Option<String>,
     /// The flag clap blamed, to mark its row.
     blamed: Option<String>,
-    /// Whether the method already finished earlier in this session.
-    again: bool,
 }
 
 pub(crate) struct App {
@@ -143,8 +129,6 @@ pub(crate) struct App {
     /// The label list open over the data screen.
     labels: Option<Labels>,
     queue: Option<Queue>,
-    /// Whether the end of the queue was taken in: see [`App::settle`].
-    settled: bool,
     /// Whether the terminal tells shift-enter from enter.
     shift_enter: bool,
     /// The fit under the cursor on the run screen.
@@ -212,12 +196,7 @@ type Blame = (usize, Vec<String>, Option<String>);
 pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
     let mut app = App::new(cli, start)?;
     let ended = crate::tui::with_terminal(|terminal| {
-        // Shift-enter told apart from enter, where the terminal can.
-        app.shift_enter = enhance_keys(true);
         let result = app.screens_loop(terminal);
-        if app.shift_enter {
-            enhance_keys(false);
-        }
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
@@ -240,6 +219,10 @@ pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
 impl App {
     /// Draw and take keys until the user quits.
     fn screens_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+        // Asked once the first screen is up, so it never waits on a blank one.
+        terminal.draw(|f| self.draw(f))?;
+        let keys = crate::tui::EnhancedKeys::push();
+        self.shift_enter = keys.is_some();
         while !self.quit {
             self.poll();
             terminal.draw(|f| self.draw(f))?;
@@ -273,8 +256,6 @@ impl App {
                     out: free_out(&here, m),
                     typed: false,
                     done: false,
-                    last: None,
-                    leftover: None,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -309,7 +290,6 @@ impl App {
             reading: std::collections::BTreeSet::new(),
             labels: None,
             queue: None,
-            settled: false,
             shift_enter: false,
             job_row: 0,
             message: None,
@@ -362,12 +342,11 @@ impl App {
     fn global_key(&mut self, k: KeyEvent) -> bool {
         let screens = self.screens();
         let at = screens.iter().position(|s| *s == self.screen).unwrap_or(0);
+        let shift_enter = crate::tui::shift_enter(&k);
         match k.code {
             KeyCode::Tab => self.screen = screens[(at + 1) % screens.len()],
+            _ if shift_enter => self.screen = screens[(at + 1) % screens.len()],
             KeyCode::BackTab => self.screen = screens[(at + screens.len() - 1) % screens.len()],
-            KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.screen = screens[(at + 1) % screens.len()];
-            }
             KeyCode::Char(c @ '1'..='4') => {
                 if let Some(s) = screens.get(c as usize - '1' as usize) {
                     self.screen = *s;
@@ -725,11 +704,7 @@ impl App {
             KeyCode::Char(' ') => {
                 let r = &mut self.rows[self.method_row];
                 r.on = !r.on;
-                // The parameters screen shows a method its strip lists.
-                if !self.param_methods().contains(&self.param_method) {
-                    self.param_method = self.param_methods()[0];
-                    self.field_row = 0;
-                }
+                self.keep_param_method();
             }
             KeyCode::Char('o') => {
                 let out = self.rows[self.method_row].out.clone();
@@ -750,6 +725,16 @@ impl App {
         }
         self.param_method = m;
         self.screen = Screen::Params;
+    }
+
+    /// Keep the parameters screen on a method its strip lists, after the
+    /// methods queued change.
+    fn keep_param_method(&mut self) {
+        let ms = self.param_methods();
+        if !ms.contains(&self.param_method) {
+            self.param_method = ms[0];
+            self.field_row = 0;
+        }
     }
 
     /// Methods the parameters screen steps through: the queued ones, or
@@ -896,15 +881,20 @@ impl App {
             let argv = r.form.argv(&data, &coords, &batches, &out);
             let job = Job {
                 method: r.form.name.clone(),
+                row: i,
                 dir: dir.clone(),
                 out: out.clone(),
                 argv,
                 made,
-                clear: r.clears(),
+                clear: self.clears(i),
             };
             // What an unfinished run left is cleared, so only its manifest
-            // would be written over.
-            let kept = if job.clear { 1 } else { 3 };
+            // is in the way.
+            let in_the_way = if job.clear {
+                vec![job.manifest()]
+            } else {
+                jobs::outputs(&job.dir, &job.out).to_vec()
+            };
             let mut blamed = None;
             let problem = if self.pairs.is_empty() {
                 Some("no data files: add some on the Data screen".to_string())
@@ -912,11 +902,7 @@ impl App {
                 Some(p.clone())
             } else if let Err(why) = &batch_args {
                 Some(why.clone())
-            } else if let Some(there) = jobs::outputs(&job.dir, &job.out)
-                .into_iter()
-                .take(kept)
-                .find(|p| p.exists())
-            {
+            } else if let Some(there) = in_the_way.into_iter().find(|p| p.exists()) {
                 Some(format!(
                     "{} exists: change --out (o on Methods)",
                     shown(&there)
@@ -936,7 +922,6 @@ impl App {
                 job,
                 problem,
                 blamed,
-                again: r.done,
             });
         }
         planned
@@ -952,7 +937,11 @@ impl App {
 
     fn open_confirm(&mut self) {
         if !self.rows.iter().any(|r| r.on) {
-            self.message = Some("no method queued: space on the Methods screen picks some".into());
+            self.message = Some(if self.rows.iter().any(|r| r.done) {
+                "every method queued finished: space on the Methods screen queues one again".into()
+            } else {
+                "no method queued: space on the Methods screen picks some".into()
+            });
             self.screen = Screen::Methods;
             return;
         }
@@ -997,13 +986,8 @@ impl App {
                 match std::env::current_exe() {
                     Ok(exe) => {
                         self.queue = Some(Queue::start(jobs, exe));
-                        self.settled = false;
-                        for r in self.rows.iter_mut().filter(|r| r.on) {
-                            r.last = Some(r.out.clone());
-                        }
                         self.job_row = 0;
                         self.screen = Screen::Run;
-                        self.move_outs_on();
                     }
                     Err(e) => self.message = Some(format!("cannot find pinto: {e}")),
                 }
@@ -1012,44 +996,29 @@ impl App {
         }
     }
 
-    /// Once the queue has ended, unqueue the methods it finished, so `G`
-    /// again runs only those stopped, failed or not reached, each at the
-    /// `--out` it had.
+    /// Once the queue has ended, unqueue the methods it finished and move
+    /// their `--out` on, so `G` again runs only those stopped, failed or
+    /// not reached, each at the `--out` it had.
     fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
-        if self.settled || !q.finished() {
+        if !q.take_end() {
             return;
         }
-        self.settled = true;
+        let states = q.states();
         let mut done = Vec::new();
-        let mut left = false;
-        for (job, state) in q.jobs.iter().zip(q.states()) {
-            let Some(r) = self.rows.iter_mut().find(|r| r.form.name == job.method) else {
-                continue;
-            };
-            r.done = state == jobs::State::Done;
-            r.leftover = None;
+        for (job, state) in q.jobs.iter().zip(&states) {
+            let r = &mut self.rows[job.row];
+            r.done = *state == jobs::State::Done;
             if r.done {
                 r.on = false;
-                done.push(job.method.clone());
-            } else {
-                left = true;
-                // Back to the same --out, what the run left cleared then.
-                if !job.manifest().exists() {
-                    if let Some(last) = r.last.clone() {
-                        if !r.typed {
-                            r.out.clone_from(&last);
-                        }
-                        r.leftover = Some(last);
-                    }
+                if !r.typed {
+                    r.out = free_out(&self.here, &under(&self.header, &r.form.name));
                 }
+                done.push(job.method.clone());
             }
         }
-        if !self.param_methods().contains(&self.param_method) {
-            self.param_method = self.param_methods()[0];
-            self.field_row = 0;
-        }
-        if left && !done.is_empty() {
+        self.keep_param_method();
+        if !done.is_empty() && done.len() < states.len() {
             self.message = Some(format!(
                 "{} done and unqueued: G runs the rest (space queues one again)",
                 done.join(", ")
@@ -1057,12 +1026,20 @@ impl App {
         }
     }
 
-    /// Give each queued method whose `--out` was not typed by hand the
-    /// next free name, so `G` again does not aim at the runs just started.
-    fn move_outs_on(&mut self) {
-        for r in self.rows.iter_mut().filter(|r| r.on && !r.typed) {
-            r.out = next_out(&self.here, &under(&self.header, &r.form.name), Some(&r.out));
-        }
+    /// Whether a run of row `i` clears first what the last queue's
+    /// unfinished run of it left at the same `--out`.
+    fn clears(&self, i: usize) -> bool {
+        let Some(q) = self.queue.as_ref().filter(|q| q.finished()) else {
+            return false;
+        };
+        let (dir, out) = self.out_of(i);
+        q.jobs.iter().zip(q.states()).any(|(j, s)| {
+            j.row == i
+                && s != jobs::State::Done
+                && j.dir == dir
+                && j.out == out
+                && !j.manifest().exists()
+        })
     }
 
     /// Name every `--out` not typed by hand after the header, each the
@@ -1124,16 +1101,7 @@ impl App {
                 q.stop();
                 self.message = Some("stopping".into());
             }
-            KeyCode::Char('r') => {
-                if self.running() {
-                    self.message = Some("fits are still running".into());
-                } else if self.rows.iter().any(|r| r.on) {
-                    self.open_confirm();
-                } else {
-                    self.message =
-                        Some("every method finished: space on Methods queues one again".into());
-                }
-            }
+            KeyCode::Char('r') => self.open_confirm(),
             KeyCode::Char('v') => {
                 let job = &q.jobs[self.job_row.min(last)];
                 let state = q.states().get(self.job_row.min(last)).cloned();
@@ -1149,25 +1117,6 @@ impl App {
             _ => {}
         }
     }
-}
-
-/// Ask the terminal to report modifiers on enter (`on`), or stop asking.
-/// Returns whether it can.
-fn enhance_keys(on: bool) -> bool {
-    use ratatui::crossterm::event::{
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    };
-    use ratatui::crossterm::{execute, terminal::supports_keyboard_enhancement};
-    let mut out = std::io::stdout();
-    if !on {
-        return execute!(out, PopKeyboardEnhancementFlags).is_ok();
-    }
-    supports_keyboard_enhancement().unwrap_or(false)
-        && execute!(
-            out,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
-        .is_ok()
 }
 
 /// What is printed once the terminal is given back: how each run ended,
@@ -1208,15 +1157,7 @@ fn under(header: &str, stem: &str) -> String {
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, base: &str) -> String {
-    next_out(dir, base, None)
-}
-
-/// The first of `{base}`, `{base}-2`, … in `dir` with no manifest or
-/// script yet, and not `used` (a run started, its files not written yet).
-fn next_out(dir: &Path, base: &str, used: Option<&str>) -> String {
-    first_free(base, |p| {
-        Some(p) == used || jobs::outputs(dir, p).iter().any(|f| f.exists())
-    })
+    first_free(base, |p| jobs::outputs(dir, p).iter().any(|f| f.exists()))
 }
 
 /// `base`, else `base-2`, `base-3`, …: the first that is not `taken`.

@@ -367,10 +367,12 @@ impl App {
             let changed = r.form.changed();
             let text = format!(
                 " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
-                match (r.on, r.done) {
-                    (true, _) => "x",
-                    (false, true) => "✓",
-                    (false, false) => " ",
+                if r.on {
+                    "x"
+                } else if r.done {
+                    "✓"
+                } else {
+                    " "
                 },
                 r.form.name,
                 fit(&outs[i], out_w),
@@ -590,18 +592,19 @@ impl App {
                 let more = if k + 1 < n { " \\" } else { "" };
                 body.extend(wrap(format!("{indent}{l}{more}"), Style::default()));
             }
-            if p.again {
-                body.extend(wrap(
-                    "   ✓ finished earlier in this session: it runs again".into(),
-                    dim(),
-                ));
-            }
-            if p.job.clear {
-                body.extend(wrap(
-                    "   ↻ the unfinished run's script and batch files here are cleared first"
-                        .into(),
-                    dim(),
-                ));
+            for (on, note) in [
+                (
+                    self.rows[p.job.row].done,
+                    "✓ finished earlier in this session: it runs again",
+                ),
+                (
+                    p.job.clear,
+                    "↻ the unfinished run's script and batch files here are cleared first",
+                ),
+            ] {
+                if on {
+                    body.extend(wrap(format!("   {note}"), dim()));
+                }
             }
             if let Some(why) = &p.problem {
                 body.extend(wrap(format!("   ✗ {why}"), bold()));
