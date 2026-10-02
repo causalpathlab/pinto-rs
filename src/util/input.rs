@@ -635,10 +635,9 @@ pub const PRELOAD_LONG_HELP: &str = "Sparse column data is preloaded into memory
      LEGUME_PRELOAD_BUDGET_BYTES sets the limit for each file instead.";
 
 /// Open `data_file`, its columns preloaded when asked or, by default,
-/// whenever data-beans' memory budget allows. The budget is shared by the
-/// whole process and not given back when data is dropped, so a file read
-/// only once is better opened without this. data-beans checks the budget
-/// only for a backend that knows its nonzero count, so one that does not
+/// whenever data-beans' memory budget allows; the budget is shared by the
+/// whole process and given back when the data is dropped. data-beans checks
+/// it only for a backend that knows its nonzero count, so one that does not
 /// is preloaded only when asked.
 pub fn open_sparse(
     data_file: &str,

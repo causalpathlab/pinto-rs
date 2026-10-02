@@ -745,12 +745,7 @@ fn training_feature_totals(
             .expect("with_row_canonicalizer on empty SparseIoVec");
     }
     for f in files {
-        let mut data = data_beans::convert::try_open_or_convert(f)?;
-        // Read once, for the totals: preloaded only when asked, so the
-        // process-wide preload budget stays for the data read many times.
-        if common.preload_data {
-            data.preload_columns()?;
-        }
+        let data = crate::util::input::open_sparse(f, common.preload_data)?;
         loaded.push(std::sync::Arc::from(data), None)?;
     }
     let axis = crate::util::feature_axis::FeatureAxis::resolve(&loaded.row_names()?)?;
