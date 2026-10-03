@@ -44,7 +44,7 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.7.4", features = ["aux", "alg"] }
+data-beans = { version = "0.7.5", features = ["aux", "alg"] }
 legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 parquet = "59"
