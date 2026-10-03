@@ -43,7 +43,7 @@ use crate::util::srt_pipeline::{
     preprocess_srt, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
 };
 use clap::Args;
-use data_beans::aux::frozen_features::{load_frozen_feature_host, FrozenLoadArgs};
+use data_beans::aux::frozen_features::{load_frozen_feature_host_matching, FrozenLoadArgs};
 use graph_embedding_util::embedding_col_names;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::traits::IoOps;
@@ -345,19 +345,30 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
     // The frozen feature side, on THIS sample's feature axis. Unmatched features keep a
     // zero row and a zero total, which `PairDictionary` reads as "not on the
     // partition axis" — dropped, not invented.
-    let host = load_frozen_feature_host(FrozenLoadArgs {
-        dictionary_path: &format!("{}.feature_embedding.parquet", args.model),
-        bias_path: None,
-        target_feature_names: &feature_names,
-        name_kind: feature_kind.clone(),
-        source_name_map: None,
-    })?;
+    // Only the model's gene and region rows name a feature: a mixed-type
+    // table's terms, words and cell types may share a gene's name.
+    let dictionary_path = format!("{}.feature_embedding.parquet", args.model);
+    let mut n_model = 0;
+    let host = load_frozen_feature_host_matching(
+        FrozenLoadArgs {
+            dictionary_path: &dictionary_path,
+            bias_path: None,
+            target_feature_names: &feature_names,
+            name_kind: feature_kind.clone(),
+            source_name_map: None,
+        },
+        |names| {
+            let marks = crate::util::dictionary_rows::matchable_rows(&dictionary_path, names)?;
+            n_model = marks.iter().filter(|&&m| m).count();
+            Ok(marks)
+        },
+    )?;
     let n_matched = host.keep_target_indices.len();
-    // The MODEL's full feature count, from the dictionary file. NOT
-    // `e_feat.nrows()`, which is the count AFTER the intersection and therefore
-    // always equals `n_matched` — a coverage built from it is identically 1 and
-    // `--min-feature-overlap` can never fire.
-    let n_model = host.n_src;
+    // The MODEL's feature count: its rows that may match, from the dictionary
+    // file. NOT `e_feat.nrows()`, which is the count AFTER the intersection and
+    // therefore always equals `n_matched` — a coverage built from it is
+    // identically 1 and `--min-feature-overlap` can never fire. Nor every row
+    // of a mixed-type table, whose terms and words no sample carries.
     // The share of the MODEL's features this sample carries — the same denominator
     // senna's identically-named flag uses. Dividing by the query's feature count
     // instead would refuse a whole-transcriptome sample containing every panel feature.

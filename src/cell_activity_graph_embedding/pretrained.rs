@@ -8,7 +8,9 @@
 //!
 //! The heavy lifting — parquet read, per-side name canonicalization, bias
 //! pairing, target-order alignment — is
-//! [`data_beans::aux::frozen_features::load_frozen_feature_host`]. This module
+//! [`data_beans::aux::frozen_features::load_frozen_feature_host_matching`],
+//! matching only the gene and region rows of a mixed-type table
+//! ([`crate::util::dictionary_rows`]). This module
 //! adds what `cage` needs on top: rejection of co-embed artifacts, expansion
 //! from the matched subset back to the full feature axis, profile-neighbor
 //! seeding, and an auditable per-feature record of where every row came from.
@@ -16,7 +18,7 @@
 use crate::util::common::Mat;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::aux::feature_rows::parse_feature_row;
-use data_beans::aux::frozen_features::{load_frozen_feature_host, FrozenLoadArgs};
+use data_beans::aux::frozen_features::{load_frozen_feature_host_matching, FrozenLoadArgs};
 use legume_numeric::candle::candle_core::{Tensor, Var};
 use log::{info, warn};
 use rayon::prelude::*;
@@ -169,13 +171,18 @@ pub fn load_pretrained_feature_embedding(
         offending.join(", ")
     );
 
-    let host = load_frozen_feature_host(FrozenLoadArgs {
-        dictionary_path: args.dictionary_path,
-        bias_path: args.bias_path,
-        target_feature_names: args.feature_names,
-        name_kind: args.name_kind,
-        source_name_map: None,
-    })?;
+    // Only the dictionary's gene and region rows name a feature: a mixed-type
+    // table's terms, words and cell types may share a gene's name.
+    let host = load_frozen_feature_host_matching(
+        FrozenLoadArgs {
+            dictionary_path: args.dictionary_path,
+            bias_path: args.bias_path,
+            target_feature_names: args.feature_names,
+            name_kind: args.name_kind,
+            source_name_map: None,
+        },
+        |names| crate::util::dictionary_rows::matchable_rows(args.dictionary_path, names),
+    )?;
     let h = host.h;
     let n_matched = host.keep_target_indices.len();
     anyhow::ensure!(
