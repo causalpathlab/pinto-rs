@@ -358,7 +358,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
             source_name_map: None,
         },
         |names| {
-            let marks = crate::util::dictionary_rows::matchable_rows(&dictionary_path, names)?;
+            let marks = crate::util::dictionary_rows::matchable_rows(&dictionary_path, names);
             n_model = marks.iter().filter(|&&m| m).count();
             Ok(marks)
         },
@@ -425,7 +425,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
                 .unwrap_or(row_profiles))
         };
         let pre = pretrained::load_pretrained_feature_embedding(pretrained::PretrainedArgs {
-            dictionary_path: &format!("{}.feature_embedding.parquet", args.model),
+            dictionary_path: &dictionary_path,
             bias_path: None,
             feature_names: &feature_names,
             name_kind: feature_kind.clone(),

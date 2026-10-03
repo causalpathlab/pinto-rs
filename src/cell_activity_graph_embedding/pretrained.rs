@@ -155,9 +155,17 @@ pub fn load_pretrained_feature_embedding(
     // single-sourced in `data_beans::aux::feature_rows`.
     let dict_names =
         legume_numeric::matrix::parquet::read_parquet_string_column(args.dictionary_path, 0)?;
+    // Only the dictionary's gene and region rows name a feature: a mixed-type
+    // table's terms, words and cell types may share a gene's name, or carry a
+    // slash of their own.
+    let marks = crate::util::dictionary_rows::matchable_rows(args.dictionary_path, &dict_names);
+    let mixed = marks.iter().any(|&m| !m);
+    let n_matchable = marks.iter().filter(|&&m| m).count();
     let offending: Vec<&str> = dict_names
         .iter()
-        .filter(|r| parse_feature_row(r).is_some())
+        .zip(&marks)
+        .filter(|(r, &m)| m && parse_feature_row(r).is_some())
+        .map(|(r, _)| r)
         .map(|r| r.as_ref())
         .take(3)
         .collect();
@@ -171,8 +179,6 @@ pub fn load_pretrained_feature_embedding(
         offending.join(", ")
     );
 
-    // Only the dictionary's gene and region rows name a feature: a mixed-type
-    // table's terms, words and cell types may share a gene's name.
     let host = load_frozen_feature_host_matching(
         FrozenLoadArgs {
             dictionary_path: args.dictionary_path,
@@ -181,7 +187,7 @@ pub fn load_pretrained_feature_embedding(
             name_kind: args.name_kind,
             source_name_map: None,
         },
-        |names| crate::util::dictionary_rows::matchable_rows(args.dictionary_path, names),
+        |_| Ok(marks),
     )?;
     let h = host.h;
     let n_matched = host.keep_target_indices.len();
@@ -205,17 +211,31 @@ pub fn load_pretrained_feature_embedding(
     // Membership initialization through the dictionary's modules, when asked
     // for and the tables exist. Returns early with the alignment's rows for the
     // unmatched features; otherwise the neighbour rule below runs.
-    if let (Some(knobs), false) = (args.membership_init, unmatched_idx.is_empty()) {
+    // A mixed-type table's modules span its terms and cell types too, so its
+    // memberships would place a feature among them: the neighbour rule, over
+    // matched features only, is used instead.
+    if mixed && args.membership_init.is_some() && !unmatched_idx.is_empty() {
+        info!(
+            "{} holds rows that are not features (terms, words, cell types): its unmatched \
+             features are seeded by the neighbour rule, not through its modules",
+            args.dictionary_path
+        );
+    }
+    if let (Some(knobs), false, false) = (args.membership_init, unmatched_idx.is_empty(), mixed) {
         let (pi_path, mu_path) =
             graph_embedding_util::transfer::module_table_paths(args.dictionary_path);
         let tables =
             if std::path::Path::new(&pi_path).exists() && std::path::Path::new(&mu_path).exists() {
-                Some(graph_embedding_util::transfer::read_module_tables(
+                // Tables that do not describe this dictionary (a run whose table
+                // gained rows its modules never had) fall back like no tables.
+                graph_embedding_util::transfer::read_module_tables(
                     &pi_path,
                     &mu_path,
                     &host.src_names,
                     h,
-                )?)
+                )
+                .map_err(|e| warn!("{e}; falling back to the neighbour rule"))
+                .ok()
             } else {
                 None
             };
@@ -290,12 +310,12 @@ pub fn load_pretrained_feature_embedding(
                 .collect();
             info!(
                 "Pre-trained feature embedding: {} matched, {} membership-initialized through {} \
-                 modules ({} on the diffuse prior), {} dictionary rows unused",
+                 modules ({} on the diffuse prior), {} matchable dictionary rows unused",
                 n_matched,
                 unmatched_idx.len(),
                 pi.ncols(),
                 diffuse,
-                dict_names.len().saturating_sub(n_matched)
+                n_matchable.saturating_sub(n_matched)
             );
             return Ok(PretrainedFeatureEmbedding {
                 e_feat,
@@ -400,9 +420,9 @@ pub fn load_pretrained_feature_embedding(
         })
         .collect();
 
-    let unused = dict_names.len().saturating_sub(n_matched);
+    let unused = n_matchable.saturating_sub(n_matched);
     info!(
-        "Pre-trained feature embedding: {} matched, {} neighbor-seeded ({} of those from the matched mean), {} dictionary rows unused",
+        "Pre-trained feature embedding: {} matched, {} neighbor-seeded ({} of those from the matched mean), {} matchable dictionary rows unused",
         n_matched,
         unmatched_idx.len(),
         mean_seeded,

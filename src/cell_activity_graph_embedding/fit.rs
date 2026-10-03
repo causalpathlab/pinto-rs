@@ -1439,6 +1439,13 @@ pub fn fit_cell_activity_graph_embedding(
         (Some(&feature_names), Some("feature")),
         Some(&embedding_col_names(embedding_dim)),
     )?;
+    // This table is all features: a types table another run left at this
+    // prefix (a senna fne run's) would be read as describing it.
+    let types = data_beans::aux::feature_types::feature_types_path(&c.out);
+    if std::path::Path::new(&types).is_file() {
+        std::fs::remove_file(&types)?;
+        info!("Removed {types}: it described another run's table");
+    }
     // Learned-module tables (no-op without modules); the feature embedding above
     // already holds the composed row.
     graph_embedding_util::write_module_tables(&c.out, &model, &feature_names)?;
