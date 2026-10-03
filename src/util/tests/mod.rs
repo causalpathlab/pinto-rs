@@ -1,5 +1,6 @@
 mod batch_effects;
 mod cell_pairs;
+mod dictionary_rows;
 mod edge_clustering;
 mod graph_augmentation;
 mod graph_coarsen;

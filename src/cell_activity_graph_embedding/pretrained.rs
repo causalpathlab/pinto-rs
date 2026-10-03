@@ -8,7 +8,9 @@
 //!
 //! The heavy lifting — parquet read, per-side name canonicalization, bias
 //! pairing, target-order alignment — is
-//! [`data_beans::aux::frozen_features::load_frozen_feature_host`]. This module
+//! [`data_beans::aux::frozen_features::load_frozen_feature_host_matching`],
+//! matching only the gene and region rows of a mixed-type table
+//! ([`crate::util::dictionary_rows`]). This module
 //! adds what `cage` needs on top: rejection of co-embed artifacts, expansion
 //! from the matched subset back to the full feature axis, profile-neighbor
 //! seeding, and an auditable per-feature record of where every row came from.
@@ -16,7 +18,7 @@
 use crate::util::common::Mat;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::aux::feature_rows::parse_feature_row;
-use data_beans::aux::frozen_features::{load_frozen_feature_host, FrozenLoadArgs};
+use data_beans::aux::frozen_features::{load_frozen_feature_host_matching, FrozenLoadArgs};
 use legume_numeric::candle::candle_core::{Tensor, Var};
 use log::{info, warn};
 use rayon::prelude::*;
@@ -146,36 +148,46 @@ pub fn load_pretrained_feature_embedding(
     let n_features = args.feature_names.len();
     anyhow::ensure!(n_features > 0, "empty feature axis");
 
-    // A row name in the channelized `{feature}/{modality}/...` grammar means a
-    // channelized or co-embed artifact, which is not a dictionary. Catch it
-    // by name — a names-only column read, not a full matrix decode — before
-    // alignment would quietly match nothing. The grammar itself is
-    // single-sourced in `data_beans::aux::feature_rows`.
-    let dict_names =
-        legume_numeric::matrix::parquet::read_parquet_string_column(args.dictionary_path, 0)?;
-    let offending: Vec<&str> = dict_names
-        .iter()
-        .filter(|r| parse_feature_row(r).is_some())
-        .map(|r| r.as_ref())
-        .take(3)
-        .collect();
-    anyhow::ensure!(
-        offending.is_empty(),
-        "{} does not look like a feature x H dictionary: row names carry the \
-         channelized row grammar (e.g. {}). Point --feature-embedding at a raw \
-         feature embedding (a run's feature_embedding.parquet), not at a \
-         co-embedding output (feature_coembedding.parquet).",
-        args.dictionary_path,
-        offending.join(", ")
-    );
-
-    let host = load_frozen_feature_host(FrozenLoadArgs {
-        dictionary_path: args.dictionary_path,
-        bias_path: args.bias_path,
-        target_feature_names: args.feature_names,
-        name_kind: args.name_kind,
-        source_name_map: None,
-    })?;
+    // Only the dictionary's gene and region rows name a feature: a mixed-type
+    // table's terms, words and cell types may share a gene's name, or carry a
+    // slash of their own. Among those rows, a name in the channelized
+    // `{feature}/{modality}/...` grammar means a channelized or co-embed
+    // artifact, which is not a dictionary: refused before alignment would
+    // quietly match nothing. The grammar is single-sourced in
+    // `data_beans::aux::feature_rows`.
+    let mut n_matchable = 0;
+    let mut n_rows = 0;
+    let host = load_frozen_feature_host_matching(
+        FrozenLoadArgs {
+            dictionary_path: args.dictionary_path,
+            bias_path: args.bias_path,
+            target_feature_names: args.feature_names,
+            name_kind: args.name_kind,
+            source_name_map: None,
+        },
+        |names| {
+            let marks = crate::util::dictionary_rows::matchable_rows(args.dictionary_path, names);
+            let offending: Vec<&str> = names
+                .iter()
+                .zip(&marks)
+                .filter(|(r, &m)| m && parse_feature_row(r).is_some())
+                .map(|(r, _)| r.as_ref())
+                .take(3)
+                .collect();
+            anyhow::ensure!(
+                offending.is_empty(),
+                "this does not look like a feature x H dictionary: row names carry the \
+                 channelized row grammar (e.g. {}). Point --feature-embedding at a raw \
+                 feature embedding (a run's feature_embedding.parquet), not at a \
+                 co-embedding output (feature_coembedding.parquet).",
+                offending.join(", ")
+            );
+            n_rows = names.len();
+            n_matchable = marks.iter().filter(|&&m| m).count();
+            Ok(marks)
+        },
+    )?;
+    let mixed = n_matchable < n_rows;
     let h = host.h;
     let n_matched = host.keep_target_indices.len();
     anyhow::ensure!(
@@ -197,8 +209,18 @@ pub fn load_pretrained_feature_embedding(
 
     // Membership initialization through the dictionary's modules, when asked
     // for and the tables exist. Returns early with the alignment's rows for the
-    // unmatched features; otherwise the neighbour rule below runs.
-    if let (Some(knobs), false) = (args.membership_init, unmatched_idx.is_empty()) {
+    // unmatched features; otherwise the neighbour rule below runs. Not for a
+    // mixed-type table: its modules span its terms and cell types too, so its
+    // memberships would place a feature among them.
+    let knobs = args.membership_init.filter(|_| !unmatched_idx.is_empty());
+    if knobs.is_some() && mixed {
+        info!(
+            "{} holds rows that are not features (terms, words, cell types): its unmatched \
+             features are seeded by the neighbour rule, not through its modules",
+            args.dictionary_path
+        );
+    }
+    if let Some(knobs) = knobs.filter(|_| !mixed) {
         let (pi_path, mu_path) =
             graph_embedding_util::transfer::module_table_paths(args.dictionary_path);
         let tables =
@@ -283,12 +305,12 @@ pub fn load_pretrained_feature_embedding(
                 .collect();
             info!(
                 "Pre-trained feature embedding: {} matched, {} membership-initialized through {} \
-                 modules ({} on the diffuse prior), {} dictionary rows unused",
+                 modules ({} on the diffuse prior), {} matchable dictionary rows unused",
                 n_matched,
                 unmatched_idx.len(),
                 pi.ncols(),
                 diffuse,
-                dict_names.len().saturating_sub(n_matched)
+                n_matchable.saturating_sub(n_matched)
             );
             return Ok(PretrainedFeatureEmbedding {
                 e_feat,
@@ -393,9 +415,9 @@ pub fn load_pretrained_feature_embedding(
         })
         .collect();
 
-    let unused = dict_names.len().saturating_sub(n_matched);
+    let unused = n_matchable.saturating_sub(n_matched);
     info!(
-        "Pre-trained feature embedding: {} matched, {} neighbor-seeded ({} of those from the matched mean), {} dictionary rows unused",
+        "Pre-trained feature embedding: {} matched, {} neighbor-seeded ({} of those from the matched mean), {} matchable dictionary rows unused",
         n_matched,
         unmatched_idx.len(),
         mean_seeded,

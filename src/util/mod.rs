@@ -2,6 +2,7 @@ pub mod batch_effects;
 pub mod cell_pairs;
 pub mod common;
 pub mod device;
+pub mod dictionary_rows;
 pub mod edge_clustering;
 pub mod feature_axis;
 pub mod graph_coarsen;
