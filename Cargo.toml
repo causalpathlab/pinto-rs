@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.12.7"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -44,9 +44,9 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.7.5", features = ["aux", "alg"] }
-legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle", "mcmc"] }
-graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
+data-beans = { version = "0.8", features = ["aux", "alg"] }
+legume-numeric = { version = "0.9", features = ["matrix", "param", "candle", "mcmc"] }
+graph-embedding-util = { version = "0.9", package = "legume-graph-embedding" }
 parquet = "59"
 arrow-array = "59"
 regex = "1"
