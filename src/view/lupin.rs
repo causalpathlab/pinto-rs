@@ -355,8 +355,9 @@ pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
 }
 
 /// The oldest lupin with everything the viewer uses: `annotate --level`,
-/// `relabel --preview/--next`, `review --json`.
-const MIN_LUPIN: (u32, u32, u32) = (0, 2, 1);
+/// `relabel --preview/--next`, `review --json`, and marker panels split
+/// by the same two-column rule as pinto view.
+const MIN_LUPIN: (u32, u32, u32) = (0, 6, 1);
 
 /// Whether the installed lupin is new enough; the reason when it is not.
 /// A good answer is kept for the session; a bad one is asked again, so
