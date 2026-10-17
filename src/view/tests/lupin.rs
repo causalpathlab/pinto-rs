@@ -8,8 +8,10 @@ fn write(path: &Path, body: &str) {
 
 #[test]
 fn labels_compare_as_lupin_folds_them() {
-    assert_eq!(label_key("CD4 T, naive"), "cd4_t_naive");
-    assert_eq!(label_key("CD4_T__naive"), label_key("cd4 t naive"));
+    assert_eq!(label_key("CD4 T, naive"), "CD4_T_naive");
+    assert_eq!(label_key("CD4_T__naive"), label_key("CD4 T naive"));
+    // lupin keeps case: two spellings are two types.
+    assert_ne!(label_key("T cell"), label_key("t cell"));
 }
 
 #[test]
@@ -22,8 +24,86 @@ fn panels_read_tab_or_comma_lines_and_skip_headers() {
     );
     let panel = Panel::read(&p).unwrap();
     assert_eq!(panel.types.len(), 2);
-    assert_eq!(panel.genes("t cell").unwrap(), ["CD3E", "CD2"]);
+    assert_eq!(panel.genes("T cell").unwrap(), ["CD3E", "CD2"]);
     assert_eq!(panel.types_of("ms4a1"), ["B cell"]);
+}
+
+/// Warnings logged on this thread, counted by [`count_logs`].
+mod quiet {
+    use std::cell::Cell;
+
+    thread_local!(static LOGGED: Cell<usize> = const { Cell::new(0) });
+
+    struct Counter;
+    impl log::Log for Counter {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, _: &log::Record) {
+            LOGGED.with(|n| n.set(n.get() + 1));
+        }
+        fn flush(&self) {}
+    }
+
+    /// Records `f` logs on this thread, at any level. A probe logged first
+    /// must be counted, so a 0 means nothing was logged, not that another
+    /// logger or level filter swallowed it.
+    pub fn count_logs(f: impl FnOnce()) -> usize {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let _ = log::set_logger(&Counter);
+            log::set_max_level(log::LevelFilter::Trace);
+        });
+        let before = LOGGED.with(Cell::get);
+        log::trace!("probe");
+        assert_eq!(LOGGED.with(Cell::get), before + 1, "logs are not counted");
+        f();
+        LOGGED.with(Cell::get) - before - 1
+    }
+}
+
+#[test]
+fn panels_read_by_the_shared_two_column_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("panel.csv");
+    write(
+        &p,
+        "% note, with a comma\n\
+         GENE1,\"CT1, sub a\"\n\
+         GENE2,\"CT1, sub a\"\n\
+         GENE3,CT3, sub b\n\
+         GENE4\tCT4, sub c\textra\n",
+    );
+    let panel = Panel::read(&p).unwrap();
+    let names: Vec<&str> = panel.types.iter().map(|(t, _)| t.as_str()).collect();
+    // A quoted label keeps its comma; an unquoted comma ends the label; a
+    // tab line splits on its tabs only; a `%` line is a comment.
+    assert_eq!(names, ["CT1, sub a", "CT3", "CT4, sub c"]);
+    assert_eq!(panel.genes("CT1, sub a").unwrap(), ["GENE1", "GENE2"]);
+    assert_eq!(panel.genes("CT3").unwrap(), ["GENE3"]);
+}
+
+#[test]
+fn panels_keep_case_and_drop_labels_that_key_to_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("panel.tsv");
+    write(&p, "CD3E\tT cell\nCD2\tt cell\nCD19\t_\n");
+    let panel = Panel::read(&p).unwrap();
+    assert_eq!(panel.genes("T cell").unwrap(), ["CD3E"]);
+    assert_eq!(panel.genes("t cell").unwrap(), ["CD2"]);
+    assert!(panel.types_of("CD19").is_empty());
+}
+
+#[test]
+fn reading_a_panel_logs_nothing() {
+    // The panel picker sniffs every file in a folder with this reader.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("panel.csv");
+    write(&p, "gene,type\nGENE3,CT3, sub b\nGENE5,\n,CT5\n");
+    let logged = quiet::count_logs(|| {
+        Panel::read(&p).unwrap();
+    });
+    assert_eq!(logged, 0);
 }
 
 #[test]
