@@ -115,7 +115,7 @@ mod embedding_dim {
     }
 
     #[test]
-    fn the_lora_rank_is_validated_against_the_resolved_width() {
+    fn the_lora_rank_is_validated_but_not_capped_at_the_width() {
         let a = [
             "--feature-embedding",
             "d.parquet",
@@ -123,8 +123,9 @@ mod embedding_dim {
             "lora",
         ];
         assert!(dim(&a, Some(128)).is_ok());
-        // The default rank equals a narrow dictionary's width: refused, not silently init.
-        assert!(dim(&a, Some(16)).is_err());
+        // legume-graph-embedding 0.9 does not cap the rank at the width: the
+        // default rank on a narrow dictionary is allowed.
+        assert!(dim(&a, Some(16)).is_ok());
         assert!(dim(&[&a[..], &["--lora-rank", "4"]].concat(), Some(16)).is_ok());
         assert!(dim(&[&a[..], &["--lora-rank", "0"]].concat(), Some(128)).is_err());
     }
