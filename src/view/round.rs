@@ -190,24 +190,27 @@ fn cell_ids(path: &Path, geom: &Geometry) -> anyhow::Result<Vec<Option<i64>>> {
 }
 
 /// Per geometry cell, its cell type's index in the returned names, read
-/// from an `argmax.tsv` (`cell<TAB>cell_type<TAB>probability`).
+/// from a round's labels by column name (`cell`, `cell_type`): its
+/// `argmax.parquet` or its `argmax.tsv`.
 pub(super) fn cell_types(
     path: &Path,
     geom: &Geometry,
 ) -> anyhow::Result<(Vec<u16>, Vec<Box<str>>)> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    use legume_numeric::matrix::table::TableReader;
+    let t = TableReader::open(&path.to_string_lossy())?;
+    let cols = t.select(&["cell", "cell_type"])?;
     let mut names: Vec<Box<str>> = Vec::new();
     let mut at: HashMap<Box<str>, u16> = HashMap::default();
     let mut group = vec![NO_CLUSTER; geom.n()];
-    for line in text.lines().skip(1) {
-        let mut f = line.split('\t');
-        let (Some(cell), Some(label)) = (f.next(), f.next()) else {
-            continue;
-        };
+    for row in t.rows(&cols)? {
+        let row = row?;
+        let (cell, label) = (row[0].as_ref(), row[1].as_ref());
         let Some(&i) = geom.index.get(cell) else {
             continue;
         };
+        if label.is_empty() {
+            continue;
+        }
         // lupin's word for a cell no type claimed: drawn as ungrouped.
         if label.eq_ignore_ascii_case("unassigned") {
             continue;

@@ -603,8 +603,8 @@ impl CellActivityGraphEmbeddingArgs {
     /// dictionary's width (`dictionary_width`, when `--feature-embedding` is
     /// given), else the default. A pinned dictionary (every mode but adapt)
     /// installs its rows verbatim, so a flag that disagrees with it is
-    /// refused; the adapter maps into its own width. The LoRA rank is checked
-    /// against the resolved width here, the one place it is known.
+    /// refused; the adapter maps into its own width. The LoRA settings are
+    /// checked here, with the resolved width (the rank is not capped at it).
     pub fn resolve_embedding_dim(&self, dictionary_width: Option<usize>) -> anyhow::Result<usize> {
         self.validate_feature_embedding()?;
         let pinned = dictionary_width.filter(|_| {
