@@ -13,6 +13,7 @@ mod lupin;
 mod markers;
 mod pdf;
 mod render;
+mod round;
 mod saved;
 mod scalebar;
 mod structure;

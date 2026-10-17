@@ -191,7 +191,10 @@ fn cell_ids(path: &Path, geom: &Geometry) -> anyhow::Result<Vec<Option<i64>>> {
 
 /// Per geometry cell, its cell type's index in the returned names, read
 /// from an `argmax.tsv` (`cell<TAB>cell_type<TAB>probability`).
-fn cell_types(path: &Path, geom: &Geometry) -> anyhow::Result<(Vec<u16>, Vec<Box<str>>)> {
+pub(super) fn cell_types(
+    path: &Path,
+    geom: &Geometry,
+) -> anyhow::Result<(Vec<u16>, Vec<Box<str>>)> {
     let text =
         std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     let mut names: Vec<Box<str>> = Vec::new();
