@@ -120,7 +120,7 @@ Enter, ← up, type to narrow, `~` home).
 
 #### Annotation with lupin
 
-Cell types come from [lupin](https://crates.io/crates/lupin-rs) (0.2.1 or
+Cell types come from [lupin](https://crates.io/crates/lupin-rs) (0.6.1 or
 later, on the `PATH` or at `$PINTO_LUPIN`); the viewer runs it and never
 writes labels itself. lupin re-reads the run's data files, so for `.h5` data
 install it with HDF5 as pinto was: `cargo install lupin-rs --features hdf5`.
