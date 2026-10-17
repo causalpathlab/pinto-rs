@@ -63,12 +63,20 @@ fn a_mark_toggles_and_the_opposite_replaces_it() {
         add,
     };
     assert!(d.toggle_mark(mark(true)));
-    // The same type under another spelling is the same type.
+    // The same type under another separator is the same type, as in lupin.
     assert!(!d.toggle_mark(Mark {
-        label: "t cell".into(),
+        label: "T cell".into(),
         ..mark(true)
     }));
     assert!(d.marks.is_empty());
+    // Another case is another type.
+    d.toggle_mark(mark(true));
+    assert!(d.toggle_mark(Mark {
+        label: "t cell".into(),
+        ..mark(true)
+    }));
+    assert_eq!(d.marks.len(), 2);
+    d.marks.clear();
     d.toggle_mark(mark(true));
     assert!(d.toggle_mark(mark(false)));
     assert_eq!(d.marks, [mark(false)]);

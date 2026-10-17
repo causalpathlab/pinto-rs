@@ -1310,10 +1310,9 @@ fn complete(p: &mut Prompt) {
     if matching.is_empty() {
         return;
     }
-    // Typed exactly one already: move on to the next match.
-    let at = matching
-        .iter()
-        .position(|o| o.eq_ignore_ascii_case(&p.label.text));
+    // Typed exactly one already: move on to the next match. Exactly, since
+    // labels that differ only in case are two options.
+    let at = matching.iter().position(|o| **o == p.label.text);
     let next = at.map_or(0, |i| (i + 1) % matching.len());
     p.label.set(matching[next].clone());
 }
@@ -1361,4 +1360,29 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// `s` in lines of at most `n` characters.
 fn wrap(s: &str, n: usize) -> Vec<String> {
     style::wrap(s, n, n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_steps_past_labels_that_differ_only_in_case() {
+        // Case is kept, so both spellings are options; Tab must walk on.
+        let mut p = Prompt {
+            what: Staging::Label(0),
+            field: 0,
+            label: Field::new("nk"),
+            rationale: Field::new(""),
+            options: ["nk cell", "NK cell", "NK cell bright"]
+                .map(String::from)
+                .to_vec(),
+        };
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            complete(&mut p);
+            seen.push(p.label.text.clone());
+        }
+        assert_eq!(seen, ["nk cell", "NK cell", "NK cell bright"]);
+    }
 }

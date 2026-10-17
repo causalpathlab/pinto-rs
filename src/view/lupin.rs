@@ -9,9 +9,10 @@
 //! was made from, back to the run's `.pinto.json`. The newest round of a
 //! chain is the one no other round names as its source.
 
+use data_beans::aux::gene_sets::membership_rows;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -392,15 +393,15 @@ pub fn check() -> Result<(), String> {
 
 // ── marker panels ───────────────────────────────────────────────────────
 
-/// lupin's label key: split on whitespace, `,` and `_`, joined with `_`, so
-/// "CT 1" and "CT_1" are one type. Compared case-insensitively.
+/// lupin's label key (its `annotate::markers::label_key`): words split on
+/// whitespace, `,` and `_`, joined by `_`, so "CT 1", "CT_1" and "CT, 1" are
+/// one type. Case is kept, as lupin keeps it.
 pub fn label_key(label: &str) -> String {
     label
         .split(|c: char| c.is_whitespace() || c == ',' || c == '_')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("_")
-        .to_lowercase()
 }
 
 /// A marker panel: cell type → its genes, in file order.
@@ -409,36 +410,28 @@ pub struct Panel {
 }
 
 impl Panel {
-    /// Read `gene<TAB>type` (or `gene,type`) lines, as lupin does: blank,
-    /// `#` and header lines skipped, gzip read through.
+    /// Read `gene<TAB>type` lines by the two-column rule lupin and senna
+    /// share ([`membership_rows`]). Types are grouped by [`label_key`] and
+    /// named as first written; a label that keys to nothing is dropped.
+    /// Nothing is logged, since the panel picker reads every file in a
+    /// folder with this.
     pub fn read(path: &Path) -> anyhow::Result<Panel> {
-        let file = std::fs::File::open(path)?;
-        let mut text = String::new();
-        if crate::tui::name(path).ends_with(".gz") {
-            flate2::read::MultiGzDecoder::new(file).read_to_string(&mut text)?;
-        } else {
-            BufReader::new(file).read_to_string(&mut text)?;
-        }
+        let name = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("{}: path is not UTF-8", path.display()))?;
+        let rows = membership_rows(name)?.rows;
         let mut types: Vec<(String, Vec<String>)> = Vec::new();
         let mut at: BTreeMap<String, usize> = BTreeMap::new();
-        for line in text.lines() {
-            let line = line.trim_end_matches('\r');
-            if line.trim().is_empty() || line.starts_with('#') {
+        for (gene, kind) in rows {
+            let key = label_key(&kind);
+            if key.is_empty() {
                 continue;
             }
-            let (gene, kind) = match line.split_once('\t').or_else(|| line.split_once(',')) {
-                Some((g, t)) => (g.trim(), t.split('\t').next().unwrap_or("").trim()),
-                None => continue,
-            };
-            let lower = gene.to_lowercase();
-            if gene.is_empty() || kind.is_empty() || lower == "gene" || lower == "symbol" {
-                continue;
-            }
-            let i = *at.entry(label_key(kind)).or_insert_with(|| {
-                types.push((kind.to_string(), Vec::new()));
+            let i = *at.entry(key).or_insert_with(|| {
+                types.push((kind.into_string(), Vec::new()));
                 types.len() - 1
             });
-            types[i].1.push(gene.to_string());
+            types[i].1.push(gene.into_string());
         }
         Ok(Panel { types })
     }
