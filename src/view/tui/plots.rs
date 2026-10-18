@@ -59,6 +59,15 @@ impl Cache {
     pub fn has_structure(&self) -> bool {
         self.structure.is_some()
     }
+
+    /// Forget every plot made, to be drawn again in other colours; the
+    /// genes per group chosen stay.
+    pub fn forget(&mut self) {
+        *self = Cache {
+            per_group: self.per_group,
+            ..Default::default()
+        };
+    }
 }
 
 /// A heatmap cell's colour: its clipped z on the diverging scale; a gene
@@ -264,7 +273,7 @@ impl App<'_> {
             &level.palette,
             (w, h),
             focus.as_deref(),
-            self.base.theme,
+            self.base.theme(),
         )
     }
 
@@ -480,7 +489,7 @@ impl App<'_> {
             for &z in &heat.z[r * cols..(r + 1) * cols] {
                 spans.push(Span::styled(
                     "█".repeat(cw),
-                    TStyle::default().fg(rgb(z_colour(z, self.base.theme))),
+                    TStyle::default().fg(rgb(z_colour(z, self.base.theme()))),
                 ));
             }
             rows.push((self.map.y + out.len() as u16, feature.clone()));
@@ -512,7 +521,7 @@ impl App<'_> {
         let cols = heat.groups.len().max(1);
         let rows = heat.genes.len() + 1;
         let (w, h) = (cols * PX, rows * PX);
-        let bg = self.base.theme.background();
+        let bg = self.base.theme().background();
         let mut rgba = Vec::with_capacity(w * h * 4);
         for y in 0..h {
             for x in 0..w {
@@ -522,7 +531,7 @@ impl App<'_> {
                 } else {
                     z_colour(
                         heat.z.get((r - 1) * cols + c).copied().unwrap_or(0.),
-                        self.base.theme,
+                        self.base.theme(),
                     )
                 };
                 rgba.extend_from_slice(&[red, g, b, 255]);

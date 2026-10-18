@@ -1,7 +1,38 @@
 //! The pinto and lupin processes a terminal front end starts: run one to
 //! its end where it can be stopped, and follow its log a line at a time.
 
+use std::ffi::OsString;
 use std::process::{Command, Stdio};
+
+/// What the session sets in the environment of the programs it starts
+/// ([`legume_tui::Session::command`]): set once the session is known,
+/// for programs started away from it (on a worker thread).
+static SESSION_ENV: std::sync::OnceLock<Vec<(OsString, OsString)>> = std::sync::OnceLock::new();
+
+/// The environment `session` gives a program it starts.
+pub(crate) fn session_env(session: &legume_tui::Session) -> Vec<(OsString, OsString)> {
+    let mut probe = Command::new("pinto");
+    session.command(&mut probe);
+    probe
+        .get_envs()
+        .filter_map(|(k, v)| Some((k.to_owned(), v?.to_owned())))
+        .collect()
+}
+
+/// Start every later [`command`] as `session` starts its programs.
+pub(crate) fn follow(session: &legume_tui::Session) {
+    let _ = SESSION_ENV.set(session_env(session));
+}
+
+/// `program`, to run as the session's programs do: with the user's
+/// opt-out of sessions passed on ([`follow`]).
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    if let Some(env) = SESSION_ENV.get() {
+        cmd.envs(env.iter().map(|(k, v)| (k, v)));
+    }
+    cmd
+}
 
 /// Stops a run of child commands: the one running is killed, and none
 /// after it starts.
@@ -24,6 +55,22 @@ impl Stopper {
 
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Keep `child` where [`Stopper::stop`] reaches it; stopped already,
+    /// it goes at once.
+    pub fn hold(&self, child: std::process::Child) {
+        if let Ok(mut c) = self.child.lock() {
+            *c = Some(child);
+        }
+        if self.is_stopped() {
+            self.stop();
+        }
+    }
+
+    /// The child [`Stopper::hold`] kept, to wait on.
+    pub fn release(&self) -> Option<std::process::Child> {
+        self.child.lock().ok().and_then(|mut c| c.take())
     }
 }
 
@@ -53,20 +100,9 @@ pub(crate) fn run_one(
             Failed::Error(format!("cannot run {program}: {e}"))
         })?;
     let log = child.stderr.take();
-    // Where `stop` can reach it; stopped meanwhile, it goes at once.
-    if let Ok(mut c) = stopper.child.lock() {
-        *c = Some(child);
-    }
-    if stopper.is_stopped() {
-        stopper.stop();
-    }
+    stopper.hold(child);
     let last = follow_log(log, each);
-    let status = stopper
-        .child
-        .lock()
-        .ok()
-        .and_then(|mut c| c.take())
-        .map(|mut c| c.wait());
+    let status = stopper.release().map(|mut c| c.wait());
     if stopper.is_stopped() {
         return Err(Failed::Stopped);
     }

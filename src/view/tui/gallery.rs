@@ -67,7 +67,7 @@ impl App<'_> {
         }
         let cols = self.strip.width.saturating_sub(2);
         let mut room = self.strip.height.saturating_sub(1);
-        let bg = self.base.theme.background();
+        let bg = self.base.theme().background();
         let paths: Vec<PathBuf> = self
             .gallery
             .entries()

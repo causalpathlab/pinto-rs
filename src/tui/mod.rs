@@ -9,29 +9,50 @@ pub(crate) mod style;
 
 use std::path::Path;
 
-/// The terminal reporting modifiers on enter, so shift-enter is told
-/// apart from enter, until dropped.
-pub struct EnhancedKeys;
+/// The tool `pinto run` and `pinto view` sessions belong to: they are
+/// named `pinto-run-1`, `pinto-view-2`, and `pinto attach` finds them.
+pub(crate) const TOOL: legume_tui::Tool = legume_tui::Tool::new("pinto");
 
-impl EnhancedKeys {
-    /// Ask for it; `None` where the terminal cannot. The terminal is asked
-    /// and answers first, so call it once something is on screen.
-    pub fn push() -> Option<Self> {
-        use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-        use ratatui::crossterm::{execute, terminal::supports_keyboard_enhancement};
-        let flags =
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
-        (supports_keyboard_enhancement().unwrap_or(false)
-            && execute!(std::io::stdout(), flags).is_ok())
-        .then_some(EnhancedKeys)
+/// The modes of a screen: modifiers reported on enter, so shift-enter is
+/// told apart from enter where the terminal can, and the mouse as asked.
+/// The session turns them on again after every attach.
+pub(crate) fn modes(mouse: legume_tui::Mouse) -> legume_tui::Modes {
+    use ratatui::crossterm::event::KeyboardEnhancementFlags;
+    legume_tui::Modes {
+        mouse,
+        keyboard_enhancement: Some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+        ..Default::default()
     }
 }
 
-impl Drop for EnhancedKeys {
-    fn drop(&mut self) {
-        use ratatui::crossterm::{event::PopKeyboardEnhancementFlags, execute};
-        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
-    }
+/// Whether the terminal attached now tells shift-enter from enter. It is
+/// asked, so call it with the screen up and before mouse reports are on:
+/// once something is on screen, and again in the repaint after an attach.
+pub(crate) fn shift_enter_works(session: &legume_tui::Session) -> bool {
+    session.attached()
+        && ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+}
+
+/// The detach and switch keys, each with what it does in a word or two,
+/// in lower case as the help shows keys; none when the screen runs plain.
+pub(crate) fn session_keys() -> Vec<(String, String)> {
+    legume_tui::help_keys()
+        .into_iter()
+        .map(|(key, help)| {
+            let what = help.split(':').next().unwrap_or(&help).to_string();
+            (key.to_lowercase(), what)
+        })
+        .collect()
+}
+
+/// A session run plain by `--no-detach`, for tests.
+#[cfg(test)]
+pub(crate) fn plain_session() -> legume_tui::Session {
+    let opts = legume_tui::Options {
+        no_detach: true,
+        ..Default::default()
+    };
+    TOOL.session("test", &opts).unwrap()
 }
 
 /// Whether `k` is shift-enter.
@@ -41,17 +62,18 @@ pub fn shift_enter(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT)
 }
 
-/// Run `f` on the whole terminal and give the terminal back however it
-/// ends. Logging is off meanwhile: log lines would land over the screen.
+/// Run `f` on the whole terminal of `session`, its `modes` on, and give
+/// the terminal back however it ends. Logging is off meanwhile: log lines
+/// would land over the screen.
 pub fn with_terminal<T>(
+    session: &legume_tui::Session,
+    modes: legume_tui::Modes,
     f: impl FnOnce(&mut ratatui::DefaultTerminal) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let logging = log::max_level();
-    log::set_max_level(log::LevelFilter::Off);
-    let mut terminal = ratatui::init();
+    let _quiet = legume_tui::logs::quiet();
+    let mut terminal = session.terminal_with(modes)?;
     let out = f(&mut terminal);
-    ratatui::restore();
-    log::set_max_level(logging);
+    session.restore();
     out
 }
 

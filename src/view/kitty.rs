@@ -37,11 +37,14 @@ pub enum Transport {
 }
 
 impl Transport {
-    /// Direct over ssh, file otherwise.
-    pub fn detect() -> Self {
+    /// Direct over ssh (a variable of it set and not empty), file
+    /// otherwise, by the terminal's environment (`var`): in a session, what the terminal attached now passed on
+    /// ([`legume_tui::Session::terminal_env`]), as it may be reached
+    /// another way than the one the view started from.
+    pub fn detect(var: impl Fn(&str) -> Option<String>) -> Self {
         let remote = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
             .iter()
-            .any(|v| std::env::var_os(v).is_some());
+            .any(|v| var(v).is_some_and(|s| !s.is_empty()));
         if remote {
             Transport::Direct
         } else {
@@ -159,12 +162,17 @@ impl Kitty {
         }
         self.shown = None;
         out.flush()?;
-        // Kitty deletes each file once read; one it never read (a terminal
-        // that ignored the command) would otherwise stay behind.
+        self.remove_files();
+        Ok(())
+    }
+
+    /// Remove the files the pixels went through. Kitty deletes each once
+    /// read; one it never read (a terminal that ignored the command, or
+    /// none attached to read it) would otherwise stay behind.
+    pub fn remove_files(&self) {
         for slot in 0..IDS.len() {
             let _ = std::fs::remove_file(temp_path(slot));
         }
-        Ok(())
     }
 }
 

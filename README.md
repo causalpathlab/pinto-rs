@@ -193,6 +193,23 @@ WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,
 2×2 pixels per character (`--graphics symbols` for boundaries at eighths of a
 character, `blocks` for half-blocks).
 
+### Sessions
+
+`pinto run` and `pinto view` keep going when the terminal goes: a dropped
+connection, or ctrl+alt+d, detaches them (the first time, it asks for a
+name), and the fits or lupin run on. Started again with nothing named, each
+offers the live sessions to return to; ctrl+alt+s switches to another one.
+On return the screen is drawn again for the terminal it is on now, its
+image protocol asked anew. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs
+in this terminal only.
+
+```sh
+pinto sessions         # the live ones, with what each is doing
+pinto attach fits      # back to one, by its name or id
+pinto rename run-1 fits
+pinto kill fits        # stops it as ctrl+c does: the fits running are stopped
+```
+
 ## Input data
 
 - **Expression:** `.h5` or `.zarr` via `data-beans`

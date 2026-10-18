@@ -74,3 +74,16 @@ fn inside_tmux_commands_are_wrapped_with_escapes_doubled() {
     // No graphics command escapes tmux unwrapped.
     assert!(!text.replace("\x1b\x1b_G", "").contains("\x1b_G"));
 }
+
+#[test]
+fn pixels_go_inline_to_a_terminal_reached_over_ssh() {
+    // What the terminal attached now passed on decides, not where the
+    // view started.
+    let over_ssh = |k: &str| (k == "SSH_CONNECTION").then(|| "a b c d".to_string());
+    assert_eq!(Transport::detect(over_ssh), Transport::Direct);
+    assert_eq!(Transport::detect(|_| None), Transport::File);
+    let tty = |k: &str| (k == "SSH_TTY").then(|| "/dev/pts/0".to_string());
+    assert_eq!(Transport::detect(tty), Transport::Direct);
+    // Emptied, as a shell's `SSH_TTY=` does: not over ssh.
+    assert_eq!(Transport::detect(|_| Some(String::new())), Transport::File);
+}

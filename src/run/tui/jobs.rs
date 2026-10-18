@@ -4,7 +4,6 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use super::script;
@@ -220,7 +219,8 @@ fn run_job(
         i,
         format!("── {} · {}", job.method, crate::tui::shown(&job.script())),
     );
-    let mut command = Command::new(program);
+    // As the session starts its programs: `--no-detach` passed on.
+    let mut command = crate::tui::child::command(program);
     command.args(&job.argv).current_dir(&job.dir);
     // The log level the script sets, so the run is the one it records.
     if std::env::var_os("RUST_LOG").is_none() {

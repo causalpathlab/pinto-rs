@@ -9,12 +9,13 @@
 //! was made from, back to the run's `.pinto.json`. The newest round of a
 //! chain is the one no other round names as its source.
 
+use crate::tui::child::Stopper;
 use data_beans::aux::gene_sets::membership_rows;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -29,6 +30,8 @@ pub fn binary() -> String {
 pub struct Job {
     pub what: JobKind,
     progress: Arc<Mutex<String>>,
+    /// Where [`Job::stop`] reaches the subprocess.
+    stopper: Arc<Stopper>,
     handle: Option<JoinHandle<Result<String, String>>>,
 }
 
@@ -46,14 +49,47 @@ impl Job {
     /// Run `lupin args…` in `dir` with `stdin` fed in; the result is its
     /// stdout.
     pub fn spawn(what: JobKind, dir: PathBuf, args: Vec<String>, stdin: Option<String>) -> Self {
+        Job::spawn_of(binary(), what, dir, args, stdin)
+    }
+
+    /// [`Job::spawn`] of the program `bin`.
+    pub(super) fn spawn_of(
+        bin: String,
+        what: JobKind,
+        dir: PathBuf,
+        args: Vec<String>,
+        stdin: Option<String>,
+    ) -> Self {
         let progress = Arc::new(Mutex::new(String::from("starting lupin ...")));
         let shared = Arc::clone(&progress);
-        let handle = std::thread::spawn(move || run(&dir, &args, stdin, &shared));
+        let stopper = Arc::new(Stopper::default());
+        let held = Arc::clone(&stopper);
+        let handle = std::thread::spawn(move || run(&bin, &dir, &args, stdin, &shared, &held));
         Job {
             what,
             progress,
+            stopper,
             handle: Some(handle),
         }
+    }
+
+    /// Whether it writes a round from the user's decisions
+    /// (`relabel --next`): a save, to finish rather than stop.
+    pub fn saves(&self) -> bool {
+        matches!(self.what, JobKind::Next(_))
+    }
+
+    /// Wait for the subprocess to end on its own.
+    pub fn wait(mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    /// Kill the subprocess and wait for it.
+    pub fn stop(self) {
+        self.stopper.stop();
+        self.wait();
     }
 
     /// The last progress line.
@@ -76,13 +112,14 @@ impl Job {
 }
 
 fn run(
+    bin: &str,
     dir: &Path,
     args: &[String],
     stdin: Option<String>,
     progress: &Mutex<String>,
+    stopper: &Stopper,
 ) -> Result<String, String> {
-    let bin = binary();
-    let mut child = Command::new(&bin)
+    let mut child = crate::tui::child::command(bin)
         .current_dir(dir)
         .args(args)
         .stdin(if stdin.is_some() {
@@ -105,15 +142,22 @@ fn run(
         let _ = out_pipe.read_to_string(&mut s);
         s
     });
-    let last = crate::tui::child::follow_log(child.stderr.take(), |line| {
+    let log = child.stderr.take();
+    stopper.hold(child);
+    let last = crate::tui::child::follow_log(log, |line| {
         if let Ok(mut p) = progress.lock() {
             p.clear();
             p.push_str(line);
         }
     });
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = match stopper.release() {
+        Some(mut child) => child.wait().map_err(|e| e.to_string())?,
+        None => return Err("lupin ended unseen".into()),
+    };
     let stdout = out.join().unwrap_or_default();
-    if status.success() {
+    if stopper.is_stopped() {
+        Err("lupin stopped".into())
+    } else if status.success() {
         Ok(stdout)
     } else if last.is_empty() {
         Err(format!("lupin failed ({status})"))
@@ -331,7 +375,7 @@ pub struct Evidence {
 /// `lupin review -f round --json`, keyed by cluster id. Blocks: a round's
 /// review takes about a second.
 pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
-    let out = Command::new(binary())
+    let out = crate::tui::child::command(binary())
         .args(["review", "-f"])
         .arg(round)
         .arg("--json")
@@ -367,7 +411,7 @@ pub fn check() -> Result<(), String> {
     if OK.get().is_some() {
         return Ok(());
     }
-    let out = Command::new(binary())
+    let out = crate::tui::child::command(binary())
         .arg("--version")
         .stdin(Stdio::null())
         .output()

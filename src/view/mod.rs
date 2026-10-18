@@ -285,6 +285,9 @@ pub struct ViewArgs {
                      default to dark."
     )]
     pub theme: Option<Theme>,
+
+    #[command(flatten)]
+    pub session: legume_tui::cli::SessionArgs,
 }
 
 /// What groups the cells on the map (`--show`).
@@ -319,26 +322,41 @@ pub enum Graphics {
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
-    if args.prefix.is_none() {
+    // A summary or a still prints and exits; the rest is on screen.
+    if args.summary || args.png.is_some() || args.pdf.is_some() {
         anyhow::ensure!(
-            !args.summary && args.png.is_none() && args.pdf.is_none(),
+            args.prefix.is_some(),
             "--summary, --png and --pdf need the run: pinto view <prefix>"
         );
-        let Some(path) = tui::pick_run()? else {
-            return Ok(());
+        return if args.summary {
+            summarize(args)
+        } else {
+            write_still(args)
         };
-        let mut args = args.clone();
-        args.prefix = Some(path.to_string_lossy().into());
-        return run_view(&args);
     }
-    if args.summary {
-        return summarize(args);
-    }
-    if args.png.is_some() || args.pdf.is_some() {
-        write_still(args)
-    } else {
-        tui::run(args)
-    }
+    // On screen, the session first. Hosted, this process only relays the
+    // terminal from here on, and the program the host starts reads the
+    // run; with none named, live views are offered before a new one.
+    let session = crate::tui::TOOL.session("view", &args.session.options(args.prefix.is_some()))?;
+    crate::tui::child::follow(&session);
+    // One screen for the run browser and the view after it.
+    let modes = crate::tui::modes(legume_tui::Mouse::Off);
+    crate::tui::with_terminal(&session, modes, |terminal| {
+        let picked;
+        let args = match &args.prefix {
+            Some(_) => args,
+            None => {
+                let Some(path) = tui::pick_run(&session, terminal)? else {
+                    return Ok(());
+                };
+                let mut with = args.clone();
+                with.prefix = Some(path.to_string_lossy().into());
+                picked = with;
+                &picked
+            }
+        };
+        tui::run(&session, terminal, args)
+    })
 }
 
 /// A run's cell geometry and grid, shared by every level.
@@ -352,8 +370,9 @@ struct Base {
     spacing: f32,
     /// The run's expression data, opened on the first observed gene.
     expression: OnceLock<Result<Option<Expression>, String>>,
-    /// Colours of every frame and palette drawn from this run.
-    theme: Theme,
+    /// Colours of every frame and palette drawn from this run; the view
+    /// takes another when a terminal of another background attaches.
+    theme: std::sync::RwLock<Theme>,
 }
 
 impl Base {
@@ -376,8 +395,18 @@ impl Base {
             units,
             spacing,
             expression: OnceLock::new(),
-            theme,
+            theme: theme.into(),
         })
+    }
+
+    /// The colours frames and palettes are drawn in now.
+    fn theme(&self) -> Theme {
+        *self.theme.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Draw in `theme` from here on; the palettes already made keep theirs.
+    fn set_theme(&self, theme: Theme) {
+        *self.theme.write().unwrap_or_else(|e| e.into_inner()) = theme;
     }
 
     /// The expression data, opened once; `None` when the run names no data
@@ -434,7 +463,7 @@ impl Base {
                     layer: Layer::Gene,
                     edges: false,
                     focus: None,
-                    theme: self.theme,
+                    theme: self.theme(),
                     point: style.point,
                 };
                 render::render(&scene, vp, &style, &[[255; 3]])
@@ -450,7 +479,7 @@ impl Base {
         let comm = self.run.load_communities(&self.geom, info)?;
         log::info!("level {}: K={} in {:.2?}", comm.tag, comm.k, t.elapsed());
         let pyramid = Pyramid::build(&self.grid, &comm);
-        let palette = self.theme.palette(comm.k);
+        let palette = self.theme().palette(comm.k);
         let mut level = Level {
             index: i,
             comm,
@@ -509,7 +538,7 @@ impl Base {
     /// the level's own files.
     fn grouping(&self, index: usize, comm: Communities, rates: Option<FeatureRates>) -> Level {
         let pyramid = Pyramid::build(&self.grid, &comm);
-        let palette = self.theme.palette(comm.k);
+        let palette = self.theme().palette(comm.k);
         let features = rates.unwrap_or_else(|| FeatureRates {
             names: Vec::new(),
             rates: crate::util::common::Mat::zeros(0, comm.k),
@@ -727,7 +756,7 @@ fn figure<'a>(
     let ramp = |title: String, layer: Layer, top: String| pdf::Legend::Ramp {
         title,
         stops: (0..64)
-            .map(|i| layer.ramp(base.theme).at(i as f32 / 63.))
+            .map(|i| layer.ramp(base.theme()).at(i as f32 / 63.))
             .collect(),
         top,
     };
@@ -737,7 +766,7 @@ fn figure<'a>(
             comm.by_size
                 .iter()
                 .map(|&c| {
-                    let (colour, on) = legend_swatch(c, &level.palette, style.focus, base.theme);
+                    let (colour, on) = legend_swatch(c, &level.palette, style.focus, base.theme());
                     pdf::Entry {
                         label: comm.name(c),
                         count: comm.sizes[c],

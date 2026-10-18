@@ -724,3 +724,48 @@ fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
     assert!(a.rows[lc].on);
     assert!(a.rows[lc].done, "finished before: the review says so");
 }
+
+#[test]
+fn the_session_status_says_where_the_fits_are() {
+    use super::jobs::State;
+    let a = app(tempfile::tempdir().unwrap().path());
+    assert_eq!(a.session_status(), "setting up fits");
+    let states = [State::Done, State::Running, State::Waiting];
+    assert_eq!(fits_status(&states, false), "fits running: 1 of 3 done");
+    let states = [State::Done, State::Failed("x".into()), State::Stopped];
+    assert_eq!(
+        fits_status(&states, true),
+        "fits finished: 1 of 3 done, 1 failed, 1 stopped"
+    );
+}
+
+#[test]
+fn v_opens_the_run_as_this_session_was_asked_to() {
+    let session = crate::tui::plain_session();
+    let mut cmd = view_command("pinto".into(), Path::new("r.pinto.json"));
+    session.command(&mut cmd);
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(args, ["view", "r.pinto.json"]);
+    // `--no-detach` reaches the view, which then runs plain too.
+    let env: Vec<_> = cmd.get_envs().collect();
+    let no_detach = std::ffi::OsStr::new(legume_tui::NO_DETACH_VAR);
+    assert_eq!(env, [(no_detach, Some(std::ffi::OsStr::new("1")))]);
+}
+
+#[test]
+fn nothing_is_written_to_a_terminal_that_is_not_there() {
+    // Without pbcopy, the copy goes through the terminal: refused while
+    // detached rather than written into nothing.
+    if std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+    {
+        return;
+    }
+    let e = copy("text", false).unwrap_err();
+    assert!(e.to_string().contains("no terminal"), "{e}");
+}

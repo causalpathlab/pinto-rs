@@ -51,3 +51,13 @@ fn a_failed_command_gives_its_last_line_and_a_stopped_one_says_so() {
         Err(Failed::Error(why)) if why.starts_with("cannot run program:")
     ));
 }
+
+#[test]
+fn a_program_started_from_a_plain_session_is_plain_too() {
+    // `--no-detach` reaches what the session starts, so a TUI among them
+    // runs plain as well.
+    let session = crate::tui::plain_session();
+    let env = session_env(&session);
+    let no_detach = OsString::from(legume_tui::NO_DETACH_VAR);
+    assert_eq!(env, [(no_detach, OsString::from("1"))]);
+}

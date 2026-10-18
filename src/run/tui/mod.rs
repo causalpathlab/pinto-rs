@@ -16,7 +16,7 @@ use data::Pair;
 use data::{Pick, Side};
 use form::{Field, Kind, Method};
 use jobs::{Job, Queue};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -132,6 +132,8 @@ pub(crate) struct App {
     queue: Option<Queue>,
     /// Whether the terminal tells shift-enter from enter.
     shift_enter: bool,
+    /// Whether a terminal is there: nothing is written to it otherwise.
+    attached: bool,
     /// The fit under the cursor on the run screen.
     job_row: usize,
     message: Option<String>,
@@ -192,56 +194,116 @@ enum Found {
 /// A method row, its command line, and the flag clap blamed in it.
 type Blame = (usize, Vec<String>, Option<String>);
 
+/// Where the queue stands, in a line: `fits running: 1 of 3 done`, with
+/// failures and stops when there are any.
+fn fits_status(states: &[jobs::State], finished: bool) -> String {
+    use jobs::State;
+    let count = |f: fn(&State) -> bool| states.iter().filter(|s| f(s)).count();
+    let done = count(|s| *s == State::Done);
+    let failed = count(|s| matches!(s, State::Failed(_)));
+    let stopped = count(|s| *s == State::Stopped);
+    let mut line = format!(
+        "fits {}: {done} of {} done",
+        if finished { "finished" } else { "running" },
+        states.len()
+    );
+    if failed > 0 {
+        line += &format!(", {failed} failed");
+    }
+    if stopped > 0 {
+        line += &format!(", {stopped} stopped");
+    }
+    line
+}
+
+/// `pinto view` on `manifest`, as `v` opens it once the screens are left;
+/// [`legume_tui::Session::run_child`] runs it in this session as this one
+/// runs (plain too, when it was asked to be).
+fn view_command(exe: PathBuf, manifest: &Path) -> std::process::Command {
+    let mut view = std::process::Command::new(exe);
+    view.arg("view").arg(shown(manifest));
+    view
+}
+
 /// Run the screens; `cli` is pinto's built command, the source of every
 /// method's flags and the check of every command line.
-pub fn run(cli: clap::Command, start: PathBuf) -> anyhow::Result<()> {
-    let mut app = App::new(cli, start)?;
-    let ended = crate::tui::with_terminal(|terminal| {
-        let result = app.screens_loop(terminal);
+pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()> {
+    // First: hosted, this process only relays the terminal from here on,
+    // and the program the host starts does the rest.
+    let session = crate::tui::TOOL.session("run", &args.session())?;
+    crate::tui::child::follow(&session);
+    let mut app = App::new(cli, args.start())?;
+    let modes = crate::tui::modes(legume_tui::Mouse::Off);
+    let ended = crate::tui::with_terminal(&session, modes, |terminal| {
+        let result = app.screens_loop(&session, terminal);
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
     })?;
+    // Detached (a `pinto kill` with no terminal attached), these lines
+    // reach no screen; each fit's script stays to run it again.
     if let Some((jobs, states)) = ended {
         for line in summary(&jobs, &states) {
             println!("{line}");
         }
     }
-    if let Some(manifest) = &app.view {
-        let exe = std::env::current_exe()?;
-        std::process::Command::new(exe)
-            .arg("view")
-            .arg(shown(manifest))
-            .status()?;
+    // Not after a `pinto kill`: it asked for the session to end.
+    if let (Some(manifest), false) = (&app.view, session.stop_requested()) {
+        let mut view = view_command(std::env::current_exe()?, manifest);
+        // In the same session: a `pinto kill` reaches it through us.
+        session.run_child(&mut view)?;
     }
     Ok(())
 }
 
 impl App {
-    /// Draw and take keys until the user quits.
-    fn screens_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
-        // Asked once the first screen is up, so it never waits on a blank one.
-        terminal.draw(|f| self.draw(f))?;
-        let keys = crate::tui::EnhancedKeys::push();
-        self.shift_enter = keys.is_some();
+    /// Draw and take keys until the user quits, or `pinto kill` asks the
+    /// screens to stop. Detached, the fits are followed and nothing is
+    /// drawn.
+    fn screens_loop(
+        &mut self,
+        session: &legume_tui::Session,
+        terminal: &mut ratatui::DefaultTerminal,
+    ) -> anyhow::Result<()> {
         while !self.quit {
             self.poll();
-            terminal.draw(|f| self.draw(f))?;
+            self.attached = session.attached();
+            session.draw(terminal, |f| self.draw(f))?;
+            session.status(&self.session_status());
             // Redraw often only while something changes on its own.
             let wait = if self.running() || self.describing > 0 {
                 Duration::from_millis(200)
             } else {
                 Duration::from_secs(60)
             };
-            if event::poll(wait)? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind != KeyEventKind::Release {
-                        self.key(k);
-                    }
+            // The terminal is asked after the first screen is drawn, so it
+            // never waits on a blank one, and again after every attach.
+            let shift_enter = &mut self.shift_enter;
+            let event = session.poll_with(terminal, wait, || {
+                *shift_enter = crate::tui::shift_enter_works(session);
+                Ok(())
+            })?;
+            if let Some(Event::Key(k)) = event {
+                if k.kind != KeyEventKind::Release {
+                    self.key(k);
                 }
             }
+            // `pinto kill` quits as ctrl+c does: the fits running are
+            // stopped as the screens are left.
+            self.quit |= session.stop_requested();
         }
         Ok(())
+    }
+
+    /// One line for `pinto sessions` and the resume picker.
+    fn session_status(&self) -> String {
+        match &self.queue {
+            None => "setting up fits".into(),
+            Some(q) => match q.shared.lock() {
+                Ok(s) => fits_status(&s.states, s.finished),
+                Err(_) => fits_status(&[], true),
+            },
+        }
     }
 
     fn new(cli: clap::Command, start: PathBuf) -> anyhow::Result<Self> {
@@ -292,6 +354,7 @@ impl App {
             labels: None,
             queue: None,
             shift_enter: false,
+            attached: true,
             job_row: 0,
             message: None,
             quit: false,
@@ -965,7 +1028,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 let text = self.copy_text();
-                self.message = Some(match copy(&text) {
+                self.message = Some(match copy(&text, self.attached) {
                     Ok(how) => format!("commands copied ({how})"),
                     Err(e) => format!("cannot copy: {e}"),
                 });
@@ -1172,8 +1235,8 @@ pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
 }
 
 /// Put `text` on the clipboard: `pbcopy` where there is one, else the
-/// terminal's OSC 52. Says which.
-fn copy(text: &str) -> anyhow::Result<&'static str> {
+/// terminal's OSC 52, when one is `attached`. Says which.
+fn copy(text: &str, attached: bool) -> anyhow::Result<&'static str> {
     use std::io::Write;
     if let Ok(mut c) = std::process::Command::new("pbcopy")
         .stdin(std::process::Stdio::piped())
@@ -1186,6 +1249,7 @@ fn copy(text: &str) -> anyhow::Result<&'static str> {
             return Ok("pbcopy");
         }
     }
+    anyhow::ensure!(attached, "no terminal attached");
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{}\x07", {
         use base64::Engine;
