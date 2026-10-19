@@ -21,6 +21,7 @@ use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
 use legume_tui::map::kitty::cellart::{Cells, Glyphs};
+use legume_tui::map::viewport::{Limits, YAxis};
 use std::ops::RangeInclusive;
 
 /// Rows per parallel band. Tall enough that grid rows shared by two bands
@@ -113,6 +114,24 @@ pub struct Scene<'a> {
     pub spacing: f32,
 }
 
+/// Where the map looks: legume-tui's viewport, a centre and pixels per
+/// world unit, with y down the screen.
+pub type MapView = legume_tui::map::viewport::Viewport;
+
+/// Zoom `cam` by `f` (> 1 zooms out) keeping the world point under pixel
+/// `anchor` (the centre without one) under it, its world units a pixel
+/// kept within `(min, max)`, taken either way round (a batch with no
+/// extent is fitted to less than its finest zoom).
+pub fn zoom(cam: &mut MapView, f: f32, anchor: Option<(f32, f32)>, (a, b): (f32, f32)) {
+    let (min, max) = (a.min(b), a.max(b));
+    let (ax, ay) = anchor.unwrap_or((0.5 * cam.w as f32, 0.5 * cam.h as f32));
+    let limits = Limits {
+        scale: Some((1. / max, 1. / min)),
+        keep_inside: None,
+    };
+    cam.zoom_at(1. / f, ax, ay, &limits);
+}
+
 /// The world window drawn into a `w × h` frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
@@ -153,19 +172,29 @@ impl Viewport {
         )
     }
 
-    /// Scaled by `f` (> 1 zooms out), `upp` kept within `limits`, with the
-    /// world point under pixel `anchor` (the centre without one) staying
-    /// under it.
-    pub fn zoomed(&self, f: f32, anchor: Option<(f32, f32)>, (min, max): (f32, f32)) -> Self {
-        let upp = (self.upp * f).clamp(min, max);
-        let f = upp / self.upp;
-        let (ax, ay) = anchor.unwrap_or((0.5 * self.w as f32, 0.5 * self.h as f32));
-        let (wx, wy) = (self.x0 + ax * self.upp, self.y0 + ay * self.upp);
+    /// The window `cam` shows.
+    pub fn of(cam: &MapView) -> Self {
+        debug_assert_eq!(cam.y, YAxis::Down, "pinto's maps run y down");
+        let [x0, y0, _, _] = cam.window();
         Viewport {
-            x0: wx - (wx - self.x0) * f,
-            y0: wy - (wy - self.y0) * f,
-            upp,
-            ..*self
+            x0,
+            y0,
+            upp: cam.upp(),
+            w: cam.w,
+            h: cam.h,
+        }
+    }
+
+    /// The camera that shows this window.
+    pub fn camera(&self) -> MapView {
+        let (cx, cy) = self.centre();
+        MapView {
+            cx,
+            cy,
+            scale: 1. / self.upp,
+            w: self.w,
+            h: self.h,
+            y: YAxis::Down,
         }
     }
 
