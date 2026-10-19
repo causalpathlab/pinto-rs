@@ -247,11 +247,30 @@ fn query_at(t: &Term, from: usize) -> usize {
     from + t.text()[from..].find(ASKED).unwrap()
 }
 
-/// The files kitty's images from the program `pid` go through.
-fn kitty_files(pid: u32) -> Vec<std::path::PathBuf> {
-    (0..2)
-        .map(|slot| {
-            std::env::temp_dir().join(format!("tty-graphics-protocol-pinto-{pid}-{slot}.rgba"))
+/// A temporary directory for the program, and the environment that gives
+/// it that one and keeps it off ssh, whatever the tests run in: kitty's
+/// images go through files there.
+fn kitty_tmp() -> (tempfile::TempDir, Vec<(&'static str, String)>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = vec![
+        ("TMPDIR", tmp.path().to_string_lossy().into_owned()),
+        ("SSH_CONNECTION", String::new()),
+        ("SSH_CLIENT", String::new()),
+        ("SSH_TTY", String::new()),
+    ];
+    (tmp, env)
+}
+
+/// The files kitty's pixels went through, in `tmp`, the program's own
+/// temporary directory: named for the terminal's graphics protocol.
+fn kitty_files(tmp: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(tmp)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("tty-graphics-protocol"))
         })
         .collect()
 }
@@ -265,7 +284,9 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     // A run named starts a new session, hosted. The test terminal answers
     // the graphics query with nothing it has: the map is drawn in block
     // characters, dark.
-    let mut first = term(&dir, &["view", &prefix], &[]);
+    let (tmp, env) = kitty_tmp();
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let mut first = term(&dir, &["view", &prefix], &env);
     first.wait_screen(VIEW_PAINTED);
     first.wait_screen("quadrants");
     first.wait_for(DARK_MAP);
@@ -316,7 +337,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     assert!(!third.text().contains(PROMPT));
     dir.gone(pid);
     assert!(dir.is_empty(), "left behind in {:?}", dir.path());
-    assert!(kitty_files(pid).iter().all(|f| !f.exists()));
+    assert!(kitty_files(tmp.path()).is_empty());
 }
 
 #[test]
@@ -354,21 +375,16 @@ fn a_kill_while_detached_stops_lupin_and_removes_kittys_files() {
         std::fs::set_permissions(&lupin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let lupin = lupin.to_string_lossy().into_owned();
-    // Not over ssh, whatever the tests run in: kitty's images go through
-    // files.
-    let env = [
-        ("PINTO_LUPIN", lupin.as_str()),
-        ("SSH_CONNECTION", ""),
-        ("SSH_CLIENT", ""),
-        ("SSH_TTY", ""),
-    ];
+    let (tmp, mut env) = kitty_tmp();
+    env.push(("PINTO_LUPIN", lupin));
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let mut first = term_answering(&dir, &["view", &prefix], &env, kitty_light());
     first.wait_for("\x1b_Ga=T,f=32");
     first.wait_screen("kitty (file)");
     let pid = dir.program_pid();
     assert!(
-        kitty_files(pid).iter().any(|f| f.exists()),
+        !kitty_files(tmp.path()).is_empty(),
         "the map went through a file"
     );
 
@@ -391,7 +407,7 @@ fn a_kill_while_detached_stops_lupin_and_removes_kittys_files() {
     let said = dir.run(&["kill", "view-1"]);
     assert!(said.contains("pinto-view-1 stopped"), "{said:?}");
     dir.gone(pid);
-    assert!(kitty_files(pid).iter().all(|f| !f.exists()));
+    assert!(kitty_files(tmp.path()).is_empty());
     std::thread::sleep(Duration::from_secs(4));
     assert!(!written.exists(), "lupin went on after the view");
 }

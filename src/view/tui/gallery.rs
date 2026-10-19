@@ -3,11 +3,11 @@
 //! Thumbnails are drawn in block characters, so they show in any terminal
 //! beside a map in any graphics protocol.
 
-use super::super::cellart::{Cells, Glyphs};
 use super::super::render::Frame;
 use super::super::saved::{self, ago, read_thumb};
 use super::App;
 use crate::tui::style;
+use legume_tui::map::kitty::cellart::{Cells, Glyphs};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -83,12 +83,7 @@ impl App<'_> {
                     frame.w.div_ceil(cols as usize).max(1),
                     frame.h.div_ceil(rows as usize).max(1),
                 );
-                let cells = Cells::fit(
-                    &frame,
-                    Glyphs::Quadrants,
-                    ppc,
-                    (cols as usize, rows as usize),
-                );
+                let cells = frame.cells(Glyphs::Quadrants, ppc, (cols as usize, rows as usize));
                 self.thumbs.insert(key.clone(), (rows, cells));
             }
             let rows = self.thumbs[&key].0;

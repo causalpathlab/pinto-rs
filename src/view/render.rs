@@ -20,6 +20,7 @@ use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
+use legume_tui::map::kitty::cellart::{Cells, Glyphs};
 use std::ops::RangeInclusive;
 
 /// Rows per parallel band. Tall enough that grid rows shared by two bands
@@ -208,6 +209,20 @@ impl Frame {
     /// Byte offset of pixel `(x, y)`.
     pub fn offset(&self, x: usize, y: usize) -> usize {
         (y * self.w + x) * 4
+    }
+
+    /// The frame in `cols × rows` block characters of `glyphs`, each `ppc`
+    /// of its pixels; past its edge reads as its background.
+    pub fn cells(&self, glyphs: Glyphs, ppc: (usize, usize), size: (usize, usize)) -> Cells {
+        Cells::fit_srgba(
+            (self.w, self.h),
+            &self.rgba,
+            self.background,
+            glyphs,
+            ppc,
+            size,
+        )
+        .expect("a frame holds its w × h pixels")
     }
 
     pub fn write_png(&self, path: &std::path::Path) -> anyhow::Result<()> {

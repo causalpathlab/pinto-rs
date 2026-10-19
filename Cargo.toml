@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.13.7"
+version = "0.13.8"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -80,9 +80,10 @@ flate2 = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 pdf-writer = { version = "0.15", optional = true }
 # Detachable sessions for `pinto run` and `pinto view`, and what the
-# viewers share: map colours, screen styles, the save field and the
-# gallery of saved figures; the same floor as in [dev-dependencies].
-legume-tui = { version = "0.3.8", optional = true, features = ["style", "save", "gallery"] }
+# viewers share: map colours, screen styles, kitty graphics and block
+# characters, the save field and the gallery of saved figures. The same
+# floor as in [dev-dependencies].
+legume-tui = { version = "0.3.8", optional = true, features = ["style", "save", "gallery", "map-kitty"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

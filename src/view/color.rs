@@ -1,9 +1,7 @@
 //! Colours: pinto's two map themes, drawn with legume-tui's, and the
 //! palette, ramps and sRGB tables they share with the other viewers.
 
-pub use legume_tui::map::colour::{
-    diverging, encode, linear, to_linear, viridis, Ramp, Srgb as Rgb,
-};
+pub use legume_tui::map::colour::{diverging, encode, to_linear, viridis, Ramp, Srgb as Rgb};
 use legume_tui::map::theme::Theme as Page;
 
 /// The map's colours on a dark or a light background.

@@ -1,9 +1,9 @@
 //! Interactive terminal view: the map on the left, a side panel on the right.
 //!
 //! The map is drawn by [`render`] at the pixel size of its cells and shown
-//! through the terminal's graphics protocol: our own kitty transport
-//! (`kitty`), ratatui-image for sixel/iTerm2, or coloured block characters
-//! (`cellart`, 2×2 pixels per cell) anywhere else.
+//! through the terminal's graphics protocol: legume-tui's kitty transport,
+//! ratatui-image for sixel/iTerm2, or legume-tui's coloured block
+//! characters anywhere else.
 //!
 //! Input is drained before each redraw, so a burst of scroll or drag events
 //! costs one frame, not one per event.
@@ -19,22 +19,22 @@ pub use browse::pick_run;
 
 use crate::tui::style;
 
-use super::cellart::{Cells, Glyphs};
 use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::Kitty;
 use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::round::Round;
 use super::scalebar;
 use super::{
     focus_name, focused, ids, legend_line, legend_swatch, markers, thousands, write_outputs, Base,
-    Graphics, Level, Show, ViewArgs, FIT_MARGIN,
+    Level, Show, ViewArgs, FIT_MARGIN,
 };
 use clap::ValueEnum;
 use legume_tui::chrome::rgb;
+use legume_tui::map::kitty::cellart::{Cells, Glyphs};
+use legume_tui::map::kitty::{Kitty, MapGraphics};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -116,18 +116,9 @@ impl Gfx {
     /// attached to now, its frame pixels per cell, and the terminal's
     /// background colour when it reports one. The terminal is asked once,
     /// for block characters too (their cell shape, and the background).
-    fn pick(session: &legume_tui::Session, choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
+    fn pick(session: &legume_tui::Session, choice: MapGraphics) -> (Self, (f32, f32), Option<Rgb>) {
         use legume_tui::graphics::{self, Fallback};
-        let wanted = match choice {
-            Graphics::Auto => None,
-            Graphics::Kitty | Graphics::KittyInline => Some(ProtocolType::Kitty),
-            Graphics::Sixel => Some(ProtocolType::Sixel),
-            Graphics::Iterm2 => Some(ProtocolType::Iterm2),
-            Graphics::Quadrants | Graphics::Symbols | Graphics::Blocks => {
-                Some(ProtocolType::Halfblocks)
-            }
-        };
-        let (picker, answer) = graphics::pick_protocol(session, wanted, Fallback::Probe);
+        let (picker, answer) = graphics::pick_protocol(session, choice.protocol(), Fallback::Probe);
         let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
         // A picker for block characters has a stock cell: the terminal's,
         // where it said.
@@ -138,7 +129,7 @@ impl Gfx {
         let (fw, fh) = (font.0.max(1) as f32, font.1.max(1) as f32);
         let tmux = graphics::in_tmux(session);
         let kitty = |transport| {
-            let kitty = Kitty::new(transport).through_tmux(tmux);
+            let kitty = Kitty::new(transport).named("pinto").through_tmux(tmux);
             (Gfx::Kitty(kitty), (fw, fh))
         };
         let cells = |glyphs: Glyphs| {
@@ -146,21 +137,24 @@ impl Gfx {
             (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
         };
         let via_picker = || (Gfx::Picker(picker.clone(), None), (fw, fh));
-        let (gfx, px) = match choice {
-            Graphics::Kitty => kitty(graphics::kitty_transport(session)),
-            Graphics::KittyInline => kitty(graphics::Transport::Inline),
-            Graphics::Sixel | Graphics::Iterm2 => via_picker(),
-            Graphics::Quadrants => cells(Glyphs::Quadrants),
-            Graphics::Symbols => cells(Glyphs::Symbols),
-            Graphics::Blocks => cells(Glyphs::HalfBlocks),
-            // tmux passes kitty graphics through only with allow-passthrough,
-            // and then only as best effort: block characters always work.
-            Graphics::Auto if tmux => cells(Glyphs::Quadrants),
-            Graphics::Auto => match picker.protocol_type() {
-                ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
-                ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
-                _ => via_picker(),
-            },
+        let (gfx, px) = if let Some(glyphs) = choice.glyphs() {
+            cells(glyphs)
+        } else {
+            match choice {
+                MapGraphics::Kitty => kitty(graphics::kitty_transport(session)),
+                MapGraphics::KittyInline => kitty(graphics::Transport::Inline),
+                MapGraphics::Sixel | MapGraphics::Iterm2 => via_picker(),
+                // Auto, and any choice legume-tui adds that pinto does not
+                // draw itself. tmux passes kitty graphics through only with
+                // allow-passthrough, and then only as best effort: block
+                // characters always work.
+                _ if tmux => cells(Glyphs::Quadrants),
+                _ => match picker.protocol_type() {
+                    ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
+                    ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
+                    _ => via_picker(),
+                },
+            }
         };
         (gfx, px, background)
     }
@@ -1438,9 +1432,10 @@ impl<'a> App<'a> {
 
         if let (Gfx::Kitty(kitty), Some(frame)) = (&mut self.gfx, fresh) {
             let t = Instant::now();
-            kitty.show(
+            kitty.show_rgba(
                 &mut std::io::stdout(),
-                &frame,
+                (frame.w, frame.h),
+                &frame.rgba,
                 (canvas.x, canvas.y),
                 (canvas.width, canvas.height),
             )?;
@@ -1460,7 +1455,7 @@ impl<'a> App<'a> {
                     let t = Instant::now();
                     let (cols, rows) = (self.canvas.width as usize, self.canvas.height as usize);
                     let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
-                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows)));
+                    *slot = Some(frame.cells(*glyphs, ppc, (cols, rows)));
                     self.send_time = t.elapsed();
                 }
                 Gfx::Picker(picker, proto) => {
