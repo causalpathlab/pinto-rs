@@ -10,7 +10,9 @@ per-cell soft membership falls out of the edge labels.
 
 This is the standalone crate extracted from
 [`legume-rs`](https://github.com/causalpathlab/legume-rs). The crates.io
-package is `pinto-rs`; the installed binary is `pinto`.
+package is `pinto-rs`; the installed binary is `pinto`. Its terminal
+screens use [`legume-tui`](https://crates.io/crates/legume-tui), which the
+other legume viewers share.
 
 ## Installation
 
@@ -21,7 +23,7 @@ cargo install pinto-rs
 
 ## Subcommands
 
-### `lc` (link-community) — recommended
+### `lc` (link-community), recommended
 
 ```sh
 pinto lc data.h5 -c tissue_positions.csv -o out
@@ -51,12 +53,15 @@ Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
 `dsvd`, and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
-and runs them in turn with their log on screen. Tab or shift-enter moves to
-the next screen (shift-enter where the terminal tells it from enter). Once a
-run ends, the methods it finished are unqueued (marked ✓), so ctrl+r again, or
-`r` on the Run screen, runs only the ones stopped, failed or not reached;
-space queues one again. Each runs again at the `--out` it had, the script and
-batch files its unfinished run left there cleared first.
+and runs them in turn with their log on screen; each fit shows a progress
+bar, plus a sparkline of its score (loss, NLL or moves) once it has two
+values and the row has room. Tab or shift-enter moves to the next screen
+(shift-enter only where the terminal can tell it apart from enter).
+Once a run ends, the methods it finished are unqueued (marked ✓), so
+ctrl+r again, or `r` on the Run screen, runs only the ones stopped, failed
+or not reached; space queues one again. Each reruns into its old `--out`,
+after first clearing the script and batch files its unfinished run left
+there.
 
 ```sh
 pinto run data/        # the file browser starts in data/
@@ -190,10 +195,15 @@ a PNG and a PDF figure, the heatmap as a table and a PDF figure. Saved
 files are listed with thumbnails on the left of the map, kept in
 `.pinto-view/` in the working directory (`f` hides them).
 
-Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
-WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,
-2×2 pixels per character (`--graphics symbols` for boundaries at eighths of a
-character, `blocks` for half-blocks).
+By default (`--graphics auto`) the viewer asks the terminal what it
+supports. It uses kitty graphics on kitty and Ghostty, iTerm2 images on
+iTerm2, WezTerm and VS Code, and sixel on foot and xterm. Everywhere else,
+and inside tmux, it draws coloured quadrant blocks (2×2 pixels per
+character). `--graphics` names a way instead: `symbols` for block
+boundaries at eighths of a character, `blocks` for half-blocks, `kitty`
+for kitty graphics through a temporary file (inline over ssh), and
+`kitty-inline` for kitty graphics always inline. Inside tmux this goes
+through passthrough (best effort; needs `allow-passthrough` on).
 
 ### Sessions
 
