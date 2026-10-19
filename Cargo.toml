@@ -79,13 +79,14 @@ image = { version = "0.25", optional = true, default-features = false }
 flate2 = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 pdf-writer = { version = "0.15", optional = true }
-# Detachable sessions for `pinto run` and `pinto view`.
-legume-tui = { version = "0.3.3", optional = true }
+# Detachable sessions for `pinto run` and `pinto view`; the same floor as
+# in [dev-dependencies].
+legume-tui = { version = "0.3.5", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
-# pseudo-terminals in tests/detach_session.rs.
-legume-tui = { version = "0.3.3", default-features = false, features = ["testing"] }
+# pseudo-terminals in tests/detach_session.rs; the same floor as above.
+legume-tui = { version = "0.3.5", default-features = false, features = ["testing"] }
