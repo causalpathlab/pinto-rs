@@ -55,10 +55,13 @@ fn a_job_whose_result_exists_does_not_run() {
 }
 
 /// A queue of two jobs, a and b, run by a pinto that is the shell
-/// script `body`, its first fit started.
+/// script `body`, its first fit started and past the line `READY` in
+/// `body` (a new script can take a while to reach its first line).
 #[cfg(unix)]
 fn running(dir: &Path, body: &str) -> Queue {
     use std::os::unix::fs::PermissionsExt;
+    let ready = dir.join("ready");
+    let body = body.replace("READY", &format!("touch '{}'", ready.display()));
     let slow = dir.join("slow-pinto");
     std::fs::write(&slow, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -70,10 +73,15 @@ fn running(dir: &Path, body: &str) -> Queue {
         ..Job::default()
     };
     let q = Queue::start(vec![job("a"), job("b")], slow);
-    while q.shared.lock().unwrap().states[0] != State::Running {
+    let t = std::time::Instant::now();
+    while !ready.exists() {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(10),
+            "never ready"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(q.shared.lock().unwrap().states[0], State::Running);
     q
 }
 
@@ -81,7 +89,7 @@ fn running(dir: &Path, body: &str) -> Queue {
 #[test]
 fn a_stopped_queue_is_waited_for_and_its_fit_interrupted() {
     let dir = tempfile::tempdir().unwrap();
-    let q = running(dir.path(), "exec sleep 30");
+    let q = running(dir.path(), "READY\nexec sleep 30");
     let t = std::time::Instant::now();
     let (_, states) = q.finish();
     // Ended by the interrupt, well before it would be killed.
@@ -94,7 +102,7 @@ fn a_stopped_queue_is_waited_for_and_its_fit_interrupted() {
 #[test]
 fn a_fit_that_ignores_the_interrupt_is_killed_after_a_grace() {
     let dir = tempfile::tempdir().unwrap();
-    let q = running(dir.path(), "trap '' INT\nsleep 30");
+    let q = running(dir.path(), "trap '' INT\nREADY\nsleep 30");
     let t = std::time::Instant::now();
     let (_, states) = q.finish();
     assert!(t.elapsed() >= GRACE);
