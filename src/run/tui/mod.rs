@@ -297,8 +297,10 @@ impl App {
             session.draw(terminal, |f| self.draw(f))?;
             session.status(&self.session_status());
             // Redraw often only while something changes on its own.
+            // Within legume-tui's grace, so a bar its fit cleared leaves
+            // the screen on time.
             let wait = if self.running() || self.describing > 0 {
-                Duration::from_millis(200)
+                Duration::from_millis(200).min(legume_tui::child::GRACE)
             } else {
                 Duration::from_secs(60)
             };

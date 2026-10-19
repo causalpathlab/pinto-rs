@@ -9,51 +9,14 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use legume_numeric::matrix::common_io::{mkdir, remove_file};
-use legume_tui::child::{run_one, Failed, Progress, Said, Stopper};
+use legume_tui::child::{run_one, Bar, Failed, Said, Stopper};
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
 
-/// Scores kept in a bar's trend, at most drawn in its sparkline.
-pub const TREND: usize = 64;
-
-/// How long a bar goes without a frame before it is taken as cleared:
-/// indicatif redraws a live one every 200 ms.
-pub const STALE: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// A job's progress bar: where it stands, and the scores it has said.
-#[derive(Clone, Debug)]
-pub struct Bar {
-    pub now: Progress,
-    /// When `now` was drawn.
-    pub at: std::time::Instant,
-    /// One point per score the bar said, the newest last.
-    pub trend: Vec<f64>,
-    /// The message the newest point came from.
-    scored: String,
-    /// The bar's name: its message without numbers.
-    label: String,
-}
-
-impl Bar {
-    /// Whether the bar is still drawn, not cleared by its fit.
-    pub fn live(&self) -> bool {
-        self.at.elapsed() < STALE
-    }
-}
-
-/// A bar message's name: its words that carry no number, so a sweep's
-/// count or score does not make it another bar.
-fn label(what: &str) -> String {
-    what.split_whitespace()
-        .filter(|w| !w.contains('=') && !w.chars().any(|c| c.is_ascii_digit()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// How long a fit interrupted by [`Queue::finish`] has to end before it
 /// is killed.
-pub(crate) const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+pub(crate) const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One fit to run.
 #[derive(Clone, Debug, Default)]
@@ -123,6 +86,17 @@ pub struct Shared {
     pub seen: bool,
 }
 
+impl Shared {
+    /// Line `line` of job `i`'s log, the newest.
+    fn push(&mut self, i: usize, line: String) {
+        if self.log.len() >= KEEP {
+            self.log.pop_front();
+        }
+        self.last[i].clone_from(&line);
+        self.log.push_back(line);
+    }
+}
+
 /// The queue, running.
 pub struct Queue {
     pub jobs: Vec<Job>,
@@ -177,7 +151,7 @@ impl Queue {
 
     /// Stop, and wait for the worker until the fit it may have been
     /// starting is stopped too: interrupted, and killed if it has not
-    /// ended within [`GRACE`]. The jobs and how each ended.
+    /// ended within [`STOP_GRACE`]. The jobs and how each ended.
     pub fn finish(self) -> (Vec<Job>, Vec<State>) {
         self.stop();
         let Queue {
@@ -187,7 +161,7 @@ impl Queue {
             worker,
         } = self;
         let start = std::time::Instant::now();
-        while !worker.is_finished() && start.elapsed() < GRACE {
+        while !worker.is_finished() && start.elapsed() < STOP_GRACE {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if !worker.is_finished() {
@@ -229,45 +203,16 @@ fn set(s: &Mutex<Shared>, i: usize, state: State) {
     }
 }
 
-fn say(s: &Mutex<Shared>, i: usize, line: String) {
-    if let Ok(mut s) = s.lock() {
-        if s.log.len() >= KEEP {
-            s.log.pop_front();
-        }
-        s.last[i].clone_from(&line);
-        s.log.push_back(line);
-    }
-}
-
-/// A frame `p` of job `i`'s progress bar: where it stands, and a new
-/// point of its trend when it says a new score.
-fn progress(s: &Mutex<Shared>, i: usize, p: Progress) {
-    let label = label(&p.what);
+/// What job `i` said: a line of its log, a frame of its progress bar, or
+/// the bar cleared. A line or a clear hides the bar until it is drawn
+/// again ([`Bar::track`]); the screen keeps it for legume-tui's grace.
+fn heard(s: &Mutex<Shared>, i: usize, said: Said) {
+    // One lock: the screen never sees the bar hidden for a line not yet in.
     let Ok(mut s) = s.lock() else { return };
-    // A new bar (none before, restarted, another length or name) starts a
-    // new trend: its scores are not on the last one's scale.
-    let slot = &mut s.bars[i];
-    let b = match slot {
-        Some(b) if p.pos >= b.now.pos && p.len == b.now.len && label == b.label => b,
-        _ => slot.insert(Bar {
-            now: Progress::default(),
-            at: std::time::Instant::now(),
-            trend: Vec::new(),
-            scored: String::new(),
-            label,
-        }),
-    };
-    // A fit says each score once, and the bar redraws it until the next:
-    // a point per message, so a score that holds still counts each time.
-    if let Some(v) = p.score().filter(|_| p.what != b.scored) {
-        if b.trend.len() >= TREND {
-            b.trend.remove(0);
-        }
-        b.trend.push(v);
-        b.scored.clone_from(&p.what);
+    Bar::track(&mut s.bars[i], &said);
+    if let Said::Line(line) = said {
+        s.push(i, line);
     }
-    b.now = p;
-    b.at = std::time::Instant::now();
 }
 
 /// Run `job` with `command`, the program set up as the session starts
@@ -306,10 +251,14 @@ fn run_job(
     if let Err(e) = script::write(&job.script(), &job.out, &job.argv) {
         return State::Failed(format!("cannot write the script: {e}"));
     }
-    say(
+    heard(
         s,
         i,
-        format!("── {} · {}", job.method, crate::tui::shown(&job.script())),
+        Said::Line(format!(
+            "── {} · {}",
+            job.method,
+            crate::tui::shown(&job.script())
+        )),
     );
     command.args(&job.argv).current_dir(&job.dir);
     // The log level the script sets, so the run is the one it records.
@@ -317,12 +266,7 @@ fn run_job(
         command.env("RUST_LOG", script::LOG_LEVEL);
     }
     // Its log, a line at a time, and where its progress bars stand.
-    let each = |said| match said {
-        Said::Line(line) => say(s, i, line),
-        Said::Progress(p) => progress(s, i, p),
-        _ => {}
-    };
-    let ran = run_one(command, stopper, each);
+    let ran = run_one(command, stopper, |said| heard(s, i, said));
     if let Ok(mut s) = s.lock() {
         s.bars[i] = None;
     }
