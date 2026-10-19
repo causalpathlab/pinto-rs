@@ -16,7 +16,7 @@ fn rows_are_marked_by_the_types_table_that_lists_them() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("run").to_string_lossy().into_owned();
     let path = format!("{prefix}.feature_embedding.parquet");
-    let names: Vec<Box<str>> = ["CD4", "CD4", "chr1:0-5000", "apoptosis"]
+    let names: Vec<Box<str>> = ["GENE1", "GENE1", "chr1:0-5000", "TERM1"]
         .map(Box::from)
         .to_vec();
 
@@ -30,7 +30,7 @@ fn rows_are_marked_by_the_types_table_that_lists_them() {
     assert_eq!(matchable_rows(&path, &names), [false, true, true, false]);
 
     // A table that lists other rows says nothing of this one.
-    let other: Vec<Box<str>> = ["CD4", "MYC", "chr1:0-5000", "apoptosis"]
+    let other: Vec<Box<str>> = ["GENE1", "GENE2", "chr1:0-5000", "TERM1"]
         .map(Box::from)
         .to_vec();
     assert_eq!(matchable_rows(&path, &other), [true; 4]);

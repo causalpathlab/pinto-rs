@@ -21,18 +21,18 @@ fn decisions_go_marker_edits_then_merges_then_labels() {
     d.verdicts.insert(
         3,
         Verdict::Label {
-            label: "T cell".into(),
-            rationale: "CD3E".into(),
+            label: "CT1 a".into(),
+            rationale: "GENE1".into(),
         },
     );
     d.merges.push(Merge {
         clusters: vec![2, 6],
-        label: "B cell".into(),
+        label: "CT2 a".into(),
         rationale: "one program".into(),
     });
-    for gene in ["CD2", "CD5"] {
+    for gene in ["GENE2", "GENE5"] {
         d.toggle_mark(Mark {
-            label: "T cell".into(),
+            label: "CT1 a".into(),
             feature: gene.into(),
             add: true,
         });
@@ -41,7 +41,7 @@ fn decisions_go_marker_edits_then_merges_then_labels() {
     let actions: Vec<&str> = got.iter().map(|v| v["action"].as_str().unwrap()).collect();
     assert_eq!(actions, ["markers_add", "merge", "label"]);
     // One marker line per type and direction.
-    assert_eq!(got[0]["features"], serde_json::json!(["CD2", "CD5"]));
+    assert_eq!(got[0]["features"], serde_json::json!(["GENE2", "GENE5"]));
     assert_eq!(got[1]["clusters"], serde_json::json!([2, 6]));
     assert_eq!(got[2]["cluster"], 3);
     for v in &got {
@@ -58,21 +58,21 @@ fn decisions_go_marker_edits_then_merges_then_labels() {
 fn a_mark_toggles_and_the_opposite_replaces_it() {
     let mut d = draft();
     let mark = |add| Mark {
-        label: "T_cell".into(),
-        feature: "CD3E".into(),
+        label: "CT1_a".into(),
+        feature: "GENE1".into(),
         add,
     };
     assert!(d.toggle_mark(mark(true)));
     // The same type under another separator is the same type, as in lupin.
     assert!(!d.toggle_mark(Mark {
-        label: "T cell".into(),
+        label: "CT1 a".into(),
         ..mark(true)
     }));
     assert!(d.marks.is_empty());
     // Another case is another type.
     d.toggle_mark(mark(true));
     assert!(d.toggle_mark(Mark {
-        label: "t cell".into(),
+        label: "ct1 a".into(),
         ..mark(true)
     }));
     assert_eq!(d.marks.len(), 2);
@@ -126,11 +126,11 @@ fn a_draft_is_kept_beside_its_round_and_only_for_it() {
 fn space_clears_a_genes_mark_whatever_type_it_names() {
     let mut d = draft();
     d.toggle_mark(Mark {
-        label: "T_cell".into(),
-        feature: "CD3E".into(),
+        label: "CT1_a".into(),
+        feature: "GENE1".into(),
         add: false,
     });
-    assert!(d.clear_mark("cd3e"));
+    assert!(d.clear_mark("gene1"));
     assert!(d.marks.is_empty());
-    assert!(!d.clear_mark("CD3E"));
+    assert!(!d.clear_mark("GENE1"));
 }

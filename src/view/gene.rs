@@ -290,7 +290,7 @@ impl Expression {
 }
 
 /// Position of `feature` in `names`: the exact name, or else the first
-/// whose symbol (`ENSG…_CD3E` → `CD3E`) matches.
+/// whose symbol (`ENSG…_GENE1` → `GENE1`) matches.
 pub fn find(names: &[Box<str>], feature: &str) -> Option<usize> {
     names
         .iter()

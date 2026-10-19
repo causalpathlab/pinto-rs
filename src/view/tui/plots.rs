@@ -421,7 +421,7 @@ impl App<'_> {
             heat_key(),
         ];
         // Group names written down their columns.
-        // A round cluster by its id: `K3 T_cell` → `K3`.
+        // A round cluster by its id: `K3 CT1_a` → `K3`.
         let short = |c: usize| -> Vec<char> { super::focus_name(comm, c).chars().collect() };
         let tallest = heat
             .groups

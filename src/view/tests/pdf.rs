@@ -32,7 +32,7 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
         markers: vec![MarkerBlock {
             title: "C3 markers".into(),
             colour: [200, 10, 10],
-            genes: vec![("CD3E".into(), 55.2)],
+            genes: vec![("GENE1".into(), 55.2)],
         }],
     };
     let dir = tempfile::tempdir().unwrap();
@@ -43,7 +43,7 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
     assert!(bytes.starts_with(b"%PDF-"));
     assert!(text.contains("/Helvetica-Bold") && text.contains("/Width 40"));
     // Content streams are uncompressed, so labels appear verbatim.
-    assert!(text.contains("(CD3E)") && text.contains("(1,234)"));
+    assert!(text.contains("(GENE1)") && text.contains("(1,234)"));
     // 400 units wide → a 50 µm bar. pdf-writer hex-encodes strings
     // with non-ASCII bytes: "50 µm" in WinAnsi is 35 30 20 B5 6D.
     assert!(text.contains("<353020B56D>"), "scale bar label");

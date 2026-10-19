@@ -1376,9 +1376,9 @@ mod tests {
         let mut p = Prompt {
             what: Staging::Label(0),
             field: 0,
-            label: Field::new("nk"),
+            label: Field::new("ct1"),
             rationale: Field::new(""),
-            options: ["nk cell", "NK cell", "NK cell bright"]
+            options: ["ct1 a", "CT1 a", "CT1 a bright"]
                 .map(String::from)
                 .to_vec(),
         };
@@ -1387,6 +1387,6 @@ mod tests {
             complete(&mut p);
             seen.push(p.label.text.clone());
         }
-        assert_eq!(seen, ["nk cell", "NK cell", "NK cell bright"]);
+        assert_eq!(seen, ["ct1 a", "CT1 a", "CT1 a bright"]);
     }
 }

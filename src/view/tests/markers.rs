@@ -28,7 +28,7 @@ fn markers_rank_by_fold_over_other_communities() {
 
 #[test]
 fn symbols_drop_the_ensembl_id() {
-    assert_eq!(symbol("ENSG00000116824_CD2"), "CD2");
-    assert_eq!(symbol("CD45RA"), "CD45RA");
-    assert_eq!(symbol("HLA_DRA"), "HLA_DRA");
+    assert_eq!(symbol("ENSG99999999902_GENE2"), "GENE2");
+    assert_eq!(symbol("PROT1"), "PROT1");
+    assert_eq!(symbol("GENE6_X"), "GENE6_X");
 }

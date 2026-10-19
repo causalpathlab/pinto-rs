@@ -113,9 +113,9 @@ pub struct ViewArgs {
     #[arg(
         long,
         value_name = "FEATURE",
-        help = "Colour cells by one feature, e.g. CD3E (--png/--pdf)",
+        help = "Colour cells by one feature, by its symbol or full name (--png/--pdf)",
         long_help = "Colour cells by one feature instead of communities: its symbol\n\
-                     (CD3E) or full name (ENSG00000198851_CD3E). Shows the observed\n\
+                     (SYMBOL) or full name (ENSG…_SYMBOL). Shows the observed\n\
                      ln(1+count) from the run's data files, or, with --expected or\n\
                      when no data file is found, the community model's expected level.\n\
                      In the terminal, click a marker in the panel instead."

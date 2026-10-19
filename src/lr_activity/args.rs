@@ -152,7 +152,7 @@ pub struct SrtLrActivityArgs {
         default_value = "_",
         help = "Delimiter used to split compound gene row names (e.g. `_` for ENSG..._SYMBOL)",
         long_help = "Delimiter used to alias compound gene row names.\n\
-                     The default `_` aliases `ENSG00000105329_TGFB1`.\n\
+                     The default `_` aliases `ENSG…_SYMBOL`.\n\
                      Either the Ensembl id or the symbol then matches it. Pass an empty string,\n\
                      or a character that never occurs,\n\
                      to disable aliasing and demand exact full-name matches.",

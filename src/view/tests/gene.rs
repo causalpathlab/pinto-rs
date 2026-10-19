@@ -7,14 +7,14 @@ use crate::view::markers::FeatureRates;
 
 #[test]
 fn features_are_found_by_name_or_symbol() {
-    let names: Vec<Box<str>> = ["ENSG00000198851_CD3E", "CD45RA", "ENSG00000116824_CD2"]
+    let names: Vec<Box<str>> = ["ENSG99999999901_GENE1", "PROT1", "ENSG99999999902_GENE2"]
         .map(Box::from)
         .to_vec();
-    assert_eq!(find(&names, "ENSG00000198851_CD3E"), Some(0));
-    assert_eq!(find(&names, "CD3E"), Some(0));
-    assert_eq!(find(&names, "CD45RA"), Some(1));
-    assert_eq!(find(&names, "CD2"), Some(2));
-    assert_eq!(find(&names, "CD8A"), None);
+    assert_eq!(find(&names, "ENSG99999999901_GENE1"), Some(0));
+    assert_eq!(find(&names, "GENE1"), Some(0));
+    assert_eq!(find(&names, "PROT1"), Some(1));
+    assert_eq!(find(&names, "GENE2"), Some(2));
+    assert_eq!(find(&names, "GENE9"), None);
 }
 
 #[test]
