@@ -61,7 +61,7 @@ fn a_job_whose_result_exists_does_not_run() {
 fn running(dir: &Path, body: &str) -> Queue {
     use std::os::unix::fs::PermissionsExt;
     let ready = dir.join("ready");
-    let body = body.replace("READY", &format!("touch '{}'", ready.display()));
+    let body = body.replace("READY", &format!(": > '{}'", ready.display()));
     let slow = dir.join("slow-pinto");
     std::fs::write(&slow, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
