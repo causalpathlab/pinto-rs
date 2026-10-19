@@ -359,7 +359,7 @@ impl<'a> App<'a> {
             bar_focus: None,
             canvas: Rect::default(),
             plots: plots::Cache::default(),
-            gallery: super::saved::Gallery::here(),
+            gallery: super::saved::here(),
             show_saved: true,
             strip: Rect::default(),
             thumbs: Default::default(),

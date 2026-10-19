@@ -91,7 +91,7 @@ impl App {
             let mut lines = vec![Line::from(Span::styled(what, bold()))];
             lines.extend(help.into_iter().map(|h| Line::from(Span::styled(h, dim()))));
             // One piece: the popup wraps it.
-            for piece in e.text.lines(usize::MAX, true, Style::default()) {
+            for piece in e.text.lines(usize::MAX, true, Style::default(), selected()) {
                 lines.push(Line::from(vec![Span::raw(" "), piece]));
             }
             lines.push(Line::from(Span::styled(

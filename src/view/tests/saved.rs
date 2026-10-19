@@ -12,40 +12,48 @@ fn frame(w: usize, h: usize) -> Frame {
     }
 }
 
+/// pinto's frame goes in as the thumbnail and comes back as one: the
+/// listing itself is legume-tui's.
 #[test]
-fn saves_are_listed_newest_first_with_a_thumbnail_each() {
+fn a_save_is_listed_with_its_frame_as_thumbnail() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join(".pinto-view");
-    let (a, b) = (dir.path().join("a.pdf"), dir.path().join("b.png"));
-    std::fs::write(&a, "a").unwrap();
-    std::fs::write(&b, "b").unwrap();
-    let mut g = Gallery::open(&store);
-    g.add(&a, "map", &frame(480, 360)).unwrap();
-    g.add(&b, "structure", &frame(100, 50)).unwrap();
-    g.add(&a, "map again", &frame(480, 360)).unwrap();
+    let fig = dir.path().join("b.png");
+    std::fs::write(&fig, "b").unwrap();
+    let mut g = open(&store);
+    add(&mut g, &fig, "structure", &frame(100, 50)).unwrap();
 
-    let g = Gallery::open(&store);
-    let names: Vec<String> = g.entries().iter().map(Entry::name).collect();
-    assert_eq!(names, ["a.pdf", "b.png"]);
-    assert_eq!(g.entries()[0].what, "map again");
-    // Shrunk to the thumbnail width at the picture's aspect; never enlarged.
-    let t = read_thumb(&g.thumb(&g.entries()[0]), [0; 3]).unwrap();
-    assert_eq!((t.w, t.h), (THUMB_WIDTH, THUMB_WIDTH * 3 / 4));
-    let t = read_thumb(&g.thumb(&g.entries()[1]), [0; 3]).unwrap();
+    let g = open(&store);
+    assert_eq!(g.entries()[0].name(), "b.png");
+    assert_eq!(g.entries()[0].what, "structure");
+    let t = read_thumb(&g.thumb(&g.entries()[0]).unwrap(), [0; 3]).unwrap();
     assert_eq!((t.w, t.h), (100, 50));
-    // One thumbnail per entry: the replaced one is gone.
-    assert_eq!(std::fs::read_dir(store.join("thumbs")).unwrap().count(), 2);
-
-    // A deleted file leaves the list, its thumbnail with it.
-    std::fs::remove_file(&b).unwrap();
-    let g = Gallery::open(&store);
-    assert_eq!(g.entries().len(), 1);
-    assert_eq!(std::fs::read_dir(store.join("thumbs")).unwrap().count(), 1);
+    assert_eq!(&t.rgba[4..8], &[1, 0, 0, 255]);
 }
 
+/// The log pinto wrote before its gallery came from legume-tui still
+/// lists its saves.
 #[test]
-fn ages_read_in_the_largest_whole_unit() {
-    assert_eq!(ago(100, 130), "just now");
-    assert_eq!(ago(0, 7200), "2 h ago");
-    assert_eq!(ago(0, 3 * 86_400 + 5), "3 d ago");
+fn an_earlier_log_still_lists_its_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join(".pinto-view");
+    let fig = dir.path().join("fig.pdf");
+    std::fs::write(&fig, "f").unwrap();
+    std::fs::create_dir_all(store.join("thumbs")).unwrap();
+    frame(4, 3)
+        .write_png(&store.join("thumbs").join("1.png"))
+        .unwrap();
+    let log = serde_json::json!([{
+        "path": fig,
+        "what": "map · final · argmax",
+        "when": 1,
+        "thumb": "1.png",
+    }]);
+    std::fs::write(store.join("saved.json"), log.to_string()).unwrap();
+
+    let g = open(&store);
+    assert_eq!(g.entries().len(), 1);
+    assert_eq!(g.entries()[0].what, "map · final · argmax");
+    let t = read_thumb(&g.thumb(&g.entries()[0]).unwrap(), [0; 3]).unwrap();
+    assert_eq!((t.w, t.h), (4, 3));
 }

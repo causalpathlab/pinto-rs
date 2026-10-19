@@ -3,7 +3,6 @@
 //! run in their session.
 
 pub(crate) mod browse;
-pub(crate) mod field;
 pub(crate) mod style;
 
 use std::path::Path;

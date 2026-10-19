@@ -5,7 +5,7 @@
 
 use super::super::cellart::{Cells, Glyphs};
 use super::super::render::Frame;
-use super::super::saved::{ago, read_thumb};
+use super::super::saved::{self, ago, read_thumb};
 use super::App;
 use crate::tui::style;
 use ratatui::layout::Rect;
@@ -41,7 +41,7 @@ impl App<'_> {
 
     /// Log a file just saved, with `picture` as its thumbnail.
     pub(super) fn remember(&mut self, path: &str, what: &str, picture: &Frame) -> String {
-        match self.gallery.add(std::path::Path::new(path), what, picture) {
+        match saved::add(&mut self.gallery, std::path::Path::new(path), what, picture) {
             Ok(()) => {
                 self.need_map = true;
                 String::new()
@@ -68,14 +68,11 @@ impl App<'_> {
         let cols = self.strip.width.saturating_sub(2);
         let mut room = self.strip.height.saturating_sub(1);
         let bg = self.base.theme().background();
-        let paths: Vec<PathBuf> = self
-            .gallery
-            .entries()
-            .iter()
-            .map(|e| self.gallery.thumb(e))
-            .collect();
         let mut shown = std::collections::HashSet::new();
-        for path in paths {
+        for e in self.gallery.entries() {
+            let Some(path) = self.gallery.thumb(e) else {
+                continue;
+            };
             let key = (path, cols);
             if !self.thumbs.contains_key(&key) {
                 let Some(frame) = read_thumb(&key.0, bg) else {
@@ -115,15 +112,17 @@ impl App<'_> {
             ));
         let inner = block.inner(strip);
         f.render_widget(block, strip);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let now = saved::now();
         let dim = style::dim();
         let bold = style::bold();
         let cols = strip.width.saturating_sub(2);
         let mut y = inner.y + 1;
         for e in self.gallery.entries() {
-            let Some((rows, cells)) = self.thumbs.get(&(self.gallery.thumb(e), cols)) else {
+            let Some((rows, cells)) = self
+                .gallery
+                .thumb(e)
+                .and_then(|t| self.thumbs.get(&(t, cols)))
+            else {
                 continue;
             };
             if y + rows + 2 > inner.bottom() {
