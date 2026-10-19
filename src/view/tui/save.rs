@@ -2,11 +2,11 @@
 //! comes up selected, so Enter takes it and typing replaces it.
 
 use super::{plots, App};
-use crate::tui::field::Field;
 use crate::tui::style;
+use legume_tui::save::{self, Field, Numbering};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
-use std::path::Path;
+use std::path::PathBuf;
 
 /// What `s` exports, fixed when the dialog opens.
 #[derive(Clone, Copy)]
@@ -28,46 +28,45 @@ impl Export {
         }
     }
 
-    /// The extensions written under the stem itself.
-    fn exts(self) -> &'static [&'static str] {
+    /// What each file an export adds to its stem: the map's structure
+    /// plot goes beside it as `{stem}-structure`.
+    fn suffixes(self) -> &'static [&'static str] {
         match self {
-            Export::Map { .. } => &["png", "pdf", "txt"],
-            Export::Grid => &["png", "txt"],
-            Export::Heatmap => &["tsv", "txt"],
+            Export::Map { structure: true } => &[
+                ".png",
+                ".pdf",
+                ".txt",
+                "-structure.png",
+                "-structure.pdf",
+                "-structure.txt",
+            ],
+            Export::Map { structure: false } => &[".png", ".pdf", ".txt"],
+            Export::Grid => &[".png", ".txt"],
+            Export::Heatmap => &[".tsv", ".pdf", ".txt"],
         }
     }
 
-    /// Every file an export as `stem` writes: the map's structure plot
-    /// goes beside it as `{stem}-structure`.
-    fn files(self, stem: &str) -> Vec<String> {
-        let mut out: Vec<String> = self.exts().iter().map(|e| format!("{stem}.{e}")).collect();
-        if let Export::Map { structure: true } = self {
-            out.extend(["png", "txt"].map(|e| format!("{stem}-structure.{e}")));
-        }
-        out
+    /// The extensions written under the stem itself.
+    fn exts(self) -> Vec<&'static str> {
+        self.suffixes()
+            .iter()
+            .filter_map(|s| s.strip_prefix('.'))
+            .collect()
     }
 
-    /// The first `{prefix}-NNN` none of whose files exist yet.
-    fn free_stem(self) -> String {
-        (1..)
-            .map(|n| format!("{}-{n:03}", self.prefix()))
-            .find(|s| self.files(s).iter().all(|f| !Path::new(f).exists()))
-            .expect("unbounded")
+    /// The first `{stem}-NNN` none of whose files exist yet.
+    fn free_stem(self, stem: &str) -> String {
+        save::free_stem(stem, self.suffixes(), Numbering::Counter { digits: 3 })
+    }
+
+    /// The files of an export as `stem` that exist already.
+    fn taken(self, stem: &str) -> Vec<PathBuf> {
+        save::taken(stem, self.suffixes())
     }
 
     /// `name` without an extension this export writes, `~/` expanded.
     fn stem_of(self, name: &str) -> String {
-        let name = name.trim();
-        let name = match (name.strip_prefix("~/"), std::env::var("HOME")) {
-            (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-            _ => name.to_string(),
-        };
-        for ext in self.exts() {
-            if let Some(s) = name.strip_suffix(&format!(".{ext}")) {
-                return s.to_string();
-            }
-        }
-        name
+        save::stem_of(name, &self.exts())
     }
 }
 
@@ -97,7 +96,7 @@ impl App<'_> {
         };
         self.modal = Some(super::annotate::Modal::Save(SaveAs {
             what,
-            name: Field::new(what.free_stem()),
+            name: Field::new(what.free_stem(what.prefix())),
             overwrite: false,
         }));
         self.need_panel = true;
@@ -112,24 +111,14 @@ impl App<'_> {
             }
             KeyCode::Enter => {
                 let stem = s.what.stem_of(&s.name.text);
-                if stem.is_empty() || stem.ends_with('/') {
-                    self.status = "type a file name".into();
+                if let Some(problem) = save::name_problem(&stem) {
+                    self.status = problem;
                     return Some(s);
                 }
-                let parent = Path::new(&stem)
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty());
-                if let Some(dir) = parent.filter(|d| !d.is_dir()) {
-                    self.status = format!("no folder {}", dir.display());
-                    return Some(s);
-                }
-                let taken: Vec<String> = s
-                    .what
-                    .files(&stem)
-                    .into_iter()
-                    .filter(|f| Path::new(f).exists())
-                    .collect();
+                let taken = s.what.taken(&stem);
                 if !taken.is_empty() && !s.overwrite {
+                    let taken: Vec<String> =
+                        taken.iter().map(|p| p.display().to_string()).collect();
                     self.status = format!(
                         "{} exists: enter overwrites, or type another name",
                         taken.join(", ")
@@ -164,7 +153,7 @@ impl App<'_> {
             Line::styled(" save as", style::bold()),
             Line::styled(format!(" writes {}", exts.join(" ")), dim),
         ];
-        for piece in s.name.lines(width, true, style::bold()) {
+        for piece in s.name.lines(width, true, style::bold(), style::selected()) {
             out.push(Line::from(vec![Span::raw(" "), piece]));
         }
         out.push(Line::raw(""));
@@ -179,20 +168,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_typed_extension_is_dropped_and_home_expanded() {
-        let map = Export::Map { structure: false };
-        assert_eq!(map.stem_of(" fig.pdf "), "fig");
-        assert_eq!(map.stem_of("fig.v2"), "fig.v2");
-        assert_eq!(Export::Heatmap.stem_of("t.tsv"), "t");
-        let home = std::env::var("HOME").unwrap();
-        assert_eq!(map.stem_of("~/a/fig.png"), format!("{home}/a/fig"));
+    fn the_structure_files_count_only_where_the_plot_shows() {
+        let with = Export::Map { structure: true }.suffixes();
+        assert!(with.contains(&"-structure.png") && with.contains(&"-structure.pdf"));
+        // The heatmap's figure is a file of its own beside its table.
+        assert_eq!(Export::Heatmap.suffixes(), [".tsv", ".pdf", ".txt"]);
+        let without = Export::Map { structure: false }.suffixes();
+        assert_eq!(without, [".png", ".pdf", ".txt"]);
     }
 
     #[test]
-    fn the_structure_files_count_only_where_the_plot_shows() {
-        let with = Export::Map { structure: true }.files("f");
-        assert!(with.contains(&"f-structure.png".to_string()));
-        let without = Export::Map { structure: false }.files("f");
-        assert_eq!(without, ["f.png", "f.pdf", "f.txt"]);
+    fn the_name_offered_is_free_of_every_file_an_export_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let stem = dir.path().join("pinto-view").to_string_lossy().into_owned();
+        let map = Export::Map { structure: true };
+        std::fs::write(format!("{stem}-001-structure.png"), "").unwrap();
+        assert_eq!(map.free_stem(&stem), format!("{stem}-002"));
+        assert_eq!(map.taken(&format!("{stem}-001")).len(), 1);
     }
 }

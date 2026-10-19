@@ -1,6 +1,7 @@
 use crate::view::color::Theme;
 use crate::view::data::{Communities, NO_CLUSTER};
 use crate::view::structure::Structure;
+use crate::view::tests::fixture::on_page;
 
 /// Five cells over K = 2: shares of community 0 given, the rest is 1's.
 fn comm(share0: &[u8]) -> Communities {
@@ -18,9 +19,9 @@ fn cells_sort_by_dominant_community_then_share() {
     // Community 1 dominates more cells overall, so it stacks first.
     let c = comm(&[200, 10, 250, 60, 100]);
     let s = Structure::build(&c, &[0; 5], &["all".into()], &[0]);
-    assert_eq!(s.stack, [1, 0]);
+    assert_eq!(s.layout().stack, [1, 0]);
     // Community 1's cells by its share (1: 245, 3: 195, 4: 155), then 0's.
-    assert_eq!(s.panels[0].1, [1, 3, 4, 2, 0]);
+    assert_eq!(s.layout().panels[0].rows, [1, 3, 4, 2, 0]);
 }
 
 #[test]
@@ -30,9 +31,10 @@ fn panels_follow_the_given_order() {
     let names = ["x".to_string(), "y".to_string()];
     let s = Structure::build(&c, &panel_of, &names, &[1, 0]);
     let got: Vec<(&str, usize)> = s
+        .layout()
         .panels
         .iter()
-        .map(|(n, c)| (n.as_str(), c.len()))
+        .map(|p| (p.name.as_str(), p.rows.len()))
         .collect();
     // The cell with no group goes last, as unassigned.
     assert_eq!(got, [("y", 2), ("x", 2), ("unassigned", 1)]);
@@ -45,7 +47,7 @@ fn bars_stack_from_the_bottom_in_palette_colours() {
     let palette = [[255, 0, 0], [0, 0, 255]];
     let d = s.render(&c, &palette, (5, 10), None, Theme::Dark);
     let frame = &d.frame;
-    assert_eq!((d.panels[0].x0, d.panels[0].x1), (0, 4));
+    assert_eq!((d.panels()[0].x0, d.panels()[0].x1), (0, 4));
     let px = |x, y| {
         let o = frame.offset(x, y);
         [frame.rgba[o], frame.rgba[o + 1], frame.rgba[o + 2]]
@@ -81,9 +83,125 @@ fn cells_no_group_claims_go_last_as_unassigned() {
     let panel_of = [0, NO_CLUSTER, 0, NO_CLUSTER, 0];
     let s = Structure::build(&c, &panel_of, &["x".to_string()], &[0]);
     let got: Vec<(&str, usize)> = s
+        .layout()
         .panels
         .iter()
-        .map(|(n, c)| (n.as_str(), c.len()))
+        .map(|p| (p.name.as_str(), p.rows.len()))
         .collect();
     assert_eq!(got, [("x", 3), ("unassigned", 2)]);
+}
+
+/// The structure plot as a figure for a PDF: its title, panel names and
+/// key are text over the bars, not pixels.
+#[test]
+fn the_figure_sets_its_title_panels_and_key_as_text() {
+    let c = comm(&[200, 10, 250, 60, 100]);
+    let panel_of = [1, 0, 1, 0, 0];
+    let names = ["x".to_string(), "y".to_string()];
+    let s = Structure::build(&c, &panel_of, &names, &[1, 0]);
+    let palette = Theme::Light.palette(2);
+    let page = s
+        .figure(&c, &palette, "structure · batch", None, Theme::Light)
+        .expect("drawn");
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for want in ["structure · batch", "x", "y", "a", "b"] {
+        assert!(text.contains(&want), "{want} in {text:?}");
+    }
+    let pdf = legume_tui::export::pdf_bytes(&[page], 300.).unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+}
+
+/// Many communities and long panel names all fit their page: every key
+/// entry is there, and no text runs off it.
+#[test]
+fn a_figure_is_as_tall_as_its_key_and_names() {
+    let k = 30;
+    let n = 300;
+    let group: Vec<u16> = (0..n).map(|i| (i % k) as u16).collect();
+    let names: Vec<Box<str>> = (0..k).map(|c| format!("C{c}").into()).collect();
+    let mut c = Communities::from_groups("t", group, names);
+    for i in 0..n {
+        c.prop[i * k + i % k] = 255;
+    }
+    let panels: Vec<String> = (0..3)
+        .map(|p| format!("a-very-long-panel-name-{p}"))
+        .collect();
+    let panel_of: Vec<u16> = (0..n).map(|i| (i % 3) as u16).collect();
+    let s = Structure::build(&c, &panel_of, &panels, &[0, 1, 2]);
+    let page = s
+        .figure(
+            &c,
+            &Theme::Light.palette(k),
+            "structure",
+            None,
+            Theme::Light,
+        )
+        .expect("drawn");
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for c in 0..k {
+        assert!(text.contains(&format!("C{c}").as_str()), "C{c} in the key");
+    }
+    on_page(&page);
+}
+
+/// `k` communities over `k` cells, one each, named `name(c)`.
+fn one_each(k: usize, name: impl Fn(usize) -> String) -> Communities {
+    let group: Vec<u16> = (0..k).map(|i| i as u16).collect();
+    let names: Vec<Box<str>> = (0..k).map(|c| name(c).into()).collect();
+    let mut c = Communities::from_groups("t", group, names);
+    for i in 0..k {
+        c.prop[i * k + i] = 255;
+    }
+    c
+}
+
+/// A few communities under short names still make a page of the figure's
+/// usual shape, not a sliver.
+#[test]
+fn a_small_figure_keeps_its_shape() {
+    let c = one_each(2, |i| format!("C{i}"));
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    let page = s
+        .figure(
+            &c,
+            &Theme::Light.palette(2),
+            "structure",
+            None,
+            Theme::Light,
+        )
+        .expect("drawn");
+    let (w, h) = (page.img.width() as f32, page.img.height() as f32);
+    assert!(h >= 0.4 * w - 1., "{w}×{h}");
+}
+
+/// Too many communities for a page, or names too long to leave room for
+/// the bars: no figure, rather than one too large or empty.
+#[test]
+fn a_figure_that_cannot_be_drawn_is_refused() {
+    let c = one_each(1500, |i| format!("C{i}"));
+    let s = Structure::build(&c, &[0; 1500], &["all".into()], &[0]);
+    let palette = Theme::Light.palette(1500);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
+
+    let c = one_each(2, |i| format!("{i}{}", "n".repeat(120)));
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    let palette = Theme::Light.palette(2);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
+}
+
+/// A level with no cell in any panel has no bars to draw, so no figure.
+#[test]
+fn a_figure_with_no_bars_is_refused() {
+    let mut c = one_each(2, |i| format!("C{i}"));
+    c.cluster.fill(NO_CLUSTER);
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    assert!(s.layout().panels.is_empty());
+    let palette = Theme::Light.palette(2);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
 }

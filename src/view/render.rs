@@ -20,6 +20,8 @@ use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
+use legume_tui::map::kitty::cellart::{Cells, Glyphs};
+use legume_tui::map::viewport::{Limits, YAxis};
 use std::ops::RangeInclusive;
 
 /// Rows per parallel band. Tall enough that grid rows shared by two bands
@@ -112,6 +114,23 @@ pub struct Scene<'a> {
     pub spacing: f32,
 }
 
+/// Where the map looks: legume-tui's viewport, a centre and pixels per
+/// world unit, with y down the screen.
+pub type MapView = legume_tui::map::viewport::Viewport;
+
+/// Zoom `cam` by `f` (> 1 zooms out) keeping the world point under pixel
+/// `anchor` (the centre without one) under it, its world units a pixel
+/// kept between `limits`, in either order (a batch with no extent is
+/// fitted to less than its finest zoom; legume-tui orders them).
+pub fn zoom(cam: &mut MapView, f: f32, anchor: Option<(f32, f32)>, limits: (f32, f32)) {
+    let (ax, ay) = anchor.unwrap_or((0.5 * cam.w as f32, 0.5 * cam.h as f32));
+    let limits = Limits {
+        scale: Some((1. / limits.0, 1. / limits.1)),
+        keep_inside: None,
+    };
+    cam.zoom_at(1. / f, ax, ay, &limits);
+}
+
 /// The world window drawn into a `w × h` frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
@@ -152,19 +171,29 @@ impl Viewport {
         )
     }
 
-    /// Scaled by `f` (> 1 zooms out), `upp` kept within `limits`, with the
-    /// world point under pixel `anchor` (the centre without one) staying
-    /// under it.
-    pub fn zoomed(&self, f: f32, anchor: Option<(f32, f32)>, (min, max): (f32, f32)) -> Self {
-        let upp = (self.upp * f).clamp(min, max);
-        let f = upp / self.upp;
-        let (ax, ay) = anchor.unwrap_or((0.5 * self.w as f32, 0.5 * self.h as f32));
-        let (wx, wy) = (self.x0 + ax * self.upp, self.y0 + ay * self.upp);
+    /// The window `cam` shows.
+    pub fn of(cam: &MapView) -> Self {
+        debug_assert_eq!(cam.y, YAxis::Down, "pinto's maps run y down");
+        let [x0, y0, _, _] = cam.window();
         Viewport {
-            x0: wx - (wx - self.x0) * f,
-            y0: wy - (wy - self.y0) * f,
-            upp,
-            ..*self
+            x0,
+            y0,
+            upp: cam.upp(),
+            w: cam.w,
+            h: cam.h,
+        }
+    }
+
+    /// The camera that shows this window.
+    pub fn camera(&self) -> MapView {
+        let (cx, cy) = self.centre();
+        MapView {
+            cx,
+            cy,
+            scale: 1. / self.upp,
+            w: self.w,
+            h: self.h,
+            y: YAxis::Down,
         }
     }
 
@@ -210,6 +239,30 @@ impl Frame {
         (y * self.w + x) * 4
     }
 
+    /// legume-tui's `frame`, drawn on `background`, as pinto's bytes.
+    pub fn from_raster(frame: &legume_tui::map::raster::Frame, background: Rgb) -> Self {
+        Frame {
+            w: frame.w,
+            h: frame.h,
+            rgba: frame.to_image().into_raw(),
+            background,
+        }
+    }
+
+    /// The frame in `cols × rows` block characters of `glyphs`, each `ppc`
+    /// of its pixels; past its edge reads as its background.
+    pub fn cells(&self, glyphs: Glyphs, ppc: (usize, usize), size: (usize, usize)) -> Cells {
+        Cells::fit_srgba(
+            (self.w, self.h),
+            &self.rgba,
+            self.background,
+            glyphs,
+            ppc,
+            size,
+        )
+        .expect("a frame holds its w × h pixels")
+    }
+
     pub fn write_png(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut enc = png::Encoder::new(file, self.w as u32, self.h as u32);
@@ -253,7 +306,7 @@ impl<'a> Paint<'a> {
             focus: style.focus,
             theme: style.theme,
             palette,
-            linear: palette.iter().map(|c| c.map(color::linear)).collect(),
+            linear: palette.iter().map(|&c| color::to_linear(c)).collect(),
             ramp: style.layer.ramp(style.theme),
         }
     }
@@ -285,7 +338,7 @@ impl<'a> Paint<'a> {
 
     fn mix(&self, weights: impl Iterator<Item = f32>) -> Rgb {
         self.mix_linear(weights)
-            .map_or(self.theme.no_community(), |c| c.map(color::encode_fast))
+            .map_or(self.theme.no_community(), |c| c.map(color::encode))
     }
 
     fn in_focus(&self, c: u16) -> bool {
@@ -346,7 +399,7 @@ impl<'a> Paint<'a> {
                 return c;
             }
         }
-        self.cell(comm, i).map(color::linear)
+        color::to_linear(self.cell(comm, i))
     }
 
     /// Whether cell `i` has a level to draw: on a gene map, a cell whose
@@ -627,7 +680,7 @@ fn draw_average(
     for (a, px) in acc.iter().zip(canvas.buf.as_chunks_mut::<4>().0) {
         let cover = ((a[3] + a[4]) / full).min(1.);
         if a[3] > 0. {
-            let c = [0, 1, 2].map(|ch| color::encode_fast(a[ch] / a[3]));
+            let c = [0, 1, 2].map(|ch| color::encode(a[ch] / a[3]));
             blend(&mut px[..3], c, cover);
         } else if a[4] > 0. {
             blend(&mut px[..3], none, cover);

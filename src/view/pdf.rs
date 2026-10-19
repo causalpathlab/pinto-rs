@@ -10,8 +10,42 @@ use super::color::{Rgb, Theme};
 use super::render::{Frame, Viewport};
 use super::scalebar::{self, Units};
 use super::thousands;
+use legume_tui::export::Page;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
 use std::io::Write;
+
+/// The page of a chart's PDF (the structure plot, the heatmap): a
+/// double-column figure, its bars and cells at 300 dpi, its text about 8 pt.
+pub const CHART_PAGE: legume_tui::export::PageSize = legume_tui::export::PageSize {
+    width_in: 7.0,
+    dpi: 300,
+};
+
+/// Whether a chart's page `w × h` pixels can be drawn and read: within
+/// legume-tui's pixel cap, and within the 200 in a PDF reader opens.
+pub fn chart_fits(w: usize, h: usize) -> Result<(), &'static str> {
+    legume_tui::export::fits((w, h), CHART_PAGE.dpi as f32).map_err(|_| "too large for a page")
+}
+
+/// A chart's page, `w × h` pixels on `theme`'s background, drawn by `draw`
+/// in the page's fonts, its text kept as text.
+pub fn chart_page<T>(
+    (w, h): (usize, usize),
+    theme: Theme,
+    draw: impl FnOnce(&mut legume_tui::map::raster::Frame) -> T,
+) -> (Page, T) {
+    Page::draw(
+        (w, h),
+        theme.background(),
+        CHART_PAGE.cell_px(),
+        |frame, _, _| draw(frame),
+    )
+}
+
+/// Write a chart's `page` to `path` as a PDF.
+pub fn write_chart(page: Page, path: &std::path::Path) -> std::io::Result<()> {
+    legume_tui::export::write_pdf(&[page], CHART_PAGE.dpi as f32, path)
+}
 
 pub struct Figure<'a> {
     /// The map, without a burnt-in scale bar.

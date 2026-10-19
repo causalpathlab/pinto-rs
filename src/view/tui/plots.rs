@@ -9,15 +9,22 @@
 //! community lies: on a map of communities it is the focus, on a map of a
 //! round's groups the map draws its propensity.
 
-use super::super::heatmap::Heatmap;
+use super::super::color::to_linear;
+use super::super::heatmap::{Heatmap, CLIP};
 use super::super::markers;
+use super::super::pdf::write_chart;
 use super::super::render::Frame;
 use super::super::structure::{Drawn, Structure};
 use super::super::Level;
 use super::{legend_text, rgb, App, Pick, Show};
 use crate::tui::style;
+use legume_tui::chart::heatmap::{cell_colour, thumbnail};
+use legume_tui::chart::structure::name_rows;
+use legume_tui::chart::{step_top, Step};
+use legume_tui::export::Page;
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,29 +77,19 @@ impl Cache {
     }
 }
 
-/// A heatmap cell's colour: its clipped z on the diverging scale; a gene
-/// missing from the data in the dimmed tissue colour.
-fn z_colour(z: f32, theme: super::super::color::Theme) -> [u8; 3] {
-    if z.is_finite() {
-        super::super::color::diverging(z / super::super::heatmap::CLIP)
-    } else {
-        theme.dimmed()
-    }
-}
-
 /// The heatmap's colour key: -2.5 … 0 … +2.5.
 fn heat_key() -> Line<'static> {
-    let clip = super::super::heatmap::CLIP;
-    let mut spans = vec![Span::raw(format!("  z -{clip} "))];
+    let mut spans = vec![Span::raw(format!("  z -{CLIP} "))];
     for i in 0..21 {
-        let t = i as f32 / 10. - 1.;
+        // As the cells are coloured; every z here is a number.
+        let z = (i as f32 / 10. - 1.) * CLIP;
         spans.push(Span::styled(
             "█",
-            TStyle::default().fg(rgb(super::super::color::diverging(t))),
+            TStyle::default().fg(rgb(cell_colour(z, CLIP, [0; 3]))),
         ));
     }
     spans.push(Span::raw(format!(
-        " +{clip}   + - genes  click a gene: map"
+        " +{CLIP}   + - genes  click a gene: map"
     )));
     Line::from(spans)
 }
@@ -340,33 +337,13 @@ impl App<'_> {
             return None;
         }
         let drawn = self.plots.drawn.as_ref()?;
-        let width = self.below.width as usize;
-        let mut rows = vec![vec![' '; width]; 2];
-        let mut next_free = [0usize; 2];
-        for (i, p) in drawn.panels.iter().enumerate() {
-            let c0 = (p.x0 as f32 / self.px_per_cell.0) as usize;
-            let c1 = ((p.x1 + 1) as f32 / self.px_per_cell.0) as usize;
-            let r = i % 2;
-            let start = c0.max(next_free[r]);
-            if start >= width {
-                continue;
-            }
-            // At most the panel's width, or up to the next panel on the row.
-            let room = c1.saturating_sub(start).max(8).min(width - start);
-            let name: Vec<char> = p.name.chars().take(room.saturating_sub(1)).collect();
-            if name.is_empty() {
-                continue;
-            }
-            for (k, ch) in name.iter().enumerate() {
-                rows[r][start + k] = *ch;
-            }
-            next_free[r] = start + name.len() + 1;
-        }
-        Some(
-            rows.into_iter()
-                .map(|r| Line::raw(r.into_iter().collect::<String>()))
-                .collect(),
-        )
+        let rows = name_rows(
+            drawn.panels(),
+            self.below.width as usize,
+            self.px_per_cell.0,
+            2,
+        );
+        Some(rows.into_iter().map(Line::raw).collect())
     }
 
     /// The heatmap as text; `None` in the other views.
@@ -478,6 +455,7 @@ impl App<'_> {
             .gene
             .as_ref()
             .map(|g| markers::symbol(&g.feature).to_string());
+        let missing = self.base.theme().dimmed();
         let mut rows = Vec::new();
         for (r, (feature, symbol, _)) in heat.genes.iter().enumerate().take(room) {
             let on = drawn.as_deref() == Some(symbol.as_str());
@@ -489,7 +467,7 @@ impl App<'_> {
             for &z in &heat.z[r * cols..(r + 1) * cols] {
                 spans.push(Span::styled(
                     "█".repeat(cw),
-                    TStyle::default().fg(rgb(z_colour(z, self.base.theme()))),
+                    TStyle::default().fg(rgb(cell_colour(z, CLIP, missing))),
                 ));
             }
             rows.push((self.map.y + out.len() as u16, feature.clone()));
@@ -516,43 +494,26 @@ impl App<'_> {
     /// The heatmap as a picture, for its thumbnail: a swatch row of the
     /// groups' colours, then a block per gene and group.
     fn heat_picture(&self, heat: &Heatmap) -> Frame {
-        const PX: usize = 6;
         let level = self.level();
-        let cols = heat.groups.len().max(1);
-        let rows = heat.genes.len() + 1;
-        let (w, h) = (cols * PX, rows * PX);
-        let bg = self.base.theme().background();
-        let mut rgba = Vec::with_capacity(w * h * 4);
-        for y in 0..h {
-            for x in 0..w {
-                let (r, c) = (y / PX, x / PX);
-                let [red, g, b] = if r == 0 {
-                    heat.groups.get(c).map_or(bg, |&g| level.palette[g])
-                } else {
-                    z_colour(
-                        heat.z.get((r - 1) * cols + c).copied().unwrap_or(0.),
-                        self.base.theme(),
-                    )
-                };
-                rgba.extend_from_slice(&[red, g, b, 255]);
-            }
-        }
-        Frame {
-            w,
-            h,
-            rgba,
-            background: bg,
-        }
+        let theme = self.base.theme();
+        let swatch: Vec<_> = heat
+            .groups
+            .iter()
+            .map(|&g| to_linear(level.palette[g]))
+            .collect();
+        let cols = heat.groups.len();
+        let picture = thumbnail(&heat.z, cols, Some(&swatch), 6, theme.page(), CLIP);
+        Frame::from_raster(&picture, theme.background())
     }
 
-    /// `+`/`-` in the heatmap: genes per group.
-    pub(super) fn more_genes(&mut self, by: isize) {
+    /// `+`/`-` in the heatmap: genes per group, one more or one fewer.
+    pub(super) fn more_genes(&mut self, more: bool) {
         let now = match (&self.plots.heatmap, self.plots.per_group) {
             (_, n) if n > 0 => n,
             (Some(((_, n), _)), _) => *n,
             _ => 3,
         };
-        self.plots.per_group = (now as isize + by).clamp(1, 100) as usize;
+        self.plots.per_group = step_top(now, more, Step::One, (1, 100));
         self.status = format!("{} genes per group", self.plots.per_group);
         self.need_map = true;
     }
@@ -575,8 +536,8 @@ impl App<'_> {
         self.need_map = true;
     }
 
-    /// The structure plot as a PNG at the export scale, its panels and
-    /// stack listed beside it; with the map's export (`s`).
+    /// The structure plot as a PNG at the export scale and as a PDF figure,
+    /// its panels and stack listed beside them; with the map's export (`s`).
     pub(super) fn export_structure(&mut self, stem: &str) -> anyhow::Result<String> {
         use std::fmt::Write as _;
         if self.plots.structure.is_none() {
@@ -590,9 +551,16 @@ impl App<'_> {
             .frame
             .write_png(std::path::Path::new(&format!("{stem}.png")))?;
         let what = format!("structure · {}", self.group_word());
-        let listed = self.remember(&format!("{stem}.png"), &what, &drawn.frame);
         let level = self.levels[self.bars()].as_ref().expect("loaded");
         let (_, structure) = self.plots.structure.as_ref().expect("built");
+        let focus = self.bars_focus();
+        let figure = structure.figure(
+            &level.comm,
+            &level.palette,
+            &what,
+            focus.as_deref(),
+            self.base.theme(),
+        );
         let mut notes = String::new();
         writeln!(notes, "run      {}", self.base.run.source()).ok();
         writeln!(notes, "bars     level {} propensities", level.comm.tag).ok();
@@ -602,20 +570,18 @@ impl App<'_> {
             drawn.frame.w, drawn.frame.h
         )
         .ok();
+        let figure = save_figure(figure, stem, &mut notes)?;
         writeln!(notes, "\npanels (first..last pixel column, cells)").ok();
-        for (p, (_, cells)) in drawn.panels.iter().zip(&structure.panels) {
+        for p in drawn.panels() {
             writeln!(
                 notes,
                 "  {:<24} {:>6}..{:<6} {:>9}",
-                p.name,
-                p.x0,
-                p.x1,
-                cells.len()
+                p.name, p.x0, p.x1, p.rows
             )
             .ok();
         }
         writeln!(notes, "\nstack, bottom to top").ok();
-        for &c in &structure.stack {
+        for &c in &structure.layout().stack {
             writeln!(
                 notes,
                 "{}",
@@ -624,10 +590,16 @@ impl App<'_> {
             .ok();
         }
         std::fs::write(format!("{stem}.txt"), notes)?;
-        Ok(format!(", {stem}.png{listed}"))
+        // Listed once every file is written.
+        let listed = self.remember(&format!("{stem}.png"), &what, &drawn.frame);
+        Ok(match figure {
+            Ok(()) => format!(", {stem}.png .pdf{listed}"),
+            Err(why) => format!(", {stem}.png{listed}; no structure figure: {why}"),
+        })
     }
 
-    /// `s` in the heatmap: its values as a table, with a note.
+    /// `s` in the heatmap: its values as a table and the heatmap as a PDF
+    /// figure, with a note.
     pub(super) fn export_plot(&mut self, stem: &str) -> anyhow::Result<()> {
         use std::fmt::Write as _;
         let Some((_, heat)) = self.plots.heatmap.as_ref() else {
@@ -637,13 +609,43 @@ impl App<'_> {
         std::fs::write(format!("{stem}.tsv"), heat.tsv(&self.level().comm))?;
         let picture = self.heat_picture(heat);
         let what = format!("heatmap · {}", self.group_word());
-        let listed = self.remember(&format!("{stem}.tsv"), &what, &picture);
+        let level = self.level();
+        // Nothing to draw, or too much for a page: no figure, and why.
+        let figure = heat.figure(&level.comm, &level.palette, &what, self.base.theme());
         let mut notes = String::new();
         writeln!(notes, "run      {}", self.base.run.source()).ok();
         writeln!(notes, "table    {stem}.tsv: value per gene and group").ok();
+        let figure = save_figure(figure, stem, &mut notes)?;
         writeln!(notes, "groups   {}", self.level().comm.tag).ok();
         std::fs::write(format!("{stem}.txt"), notes)?;
-        self.status = format!("saved {stem}.tsv .txt{listed}");
+        // Listed once every file is written.
+        let listed = self.remember(&format!("{stem}.tsv"), &what, &picture);
+        self.status = match figure {
+            Ok(()) => format!("saved {stem}.tsv .pdf .txt{listed}"),
+            Err(why) => format!("saved {stem}.tsv .txt{listed}; no figure: {why}"),
+        };
         Ok(())
     }
+}
+
+/// `figure` written as `{stem}.pdf`, and a line saying so in `notes`; with
+/// no figure (nothing to draw, or too much for a page), the line says why.
+/// Whether it was written.
+fn save_figure(
+    figure: Result<Page, &'static str>,
+    stem: &str,
+    notes: &mut String,
+) -> std::io::Result<Result<(), &'static str>> {
+    use std::fmt::Write as _;
+    Ok(match figure {
+        Ok(page) => {
+            write_chart(page, Path::new(&format!("{stem}.pdf")))?;
+            writeln!(notes, "figure   {stem}.pdf").ok();
+            Ok(())
+        }
+        Err(why) => {
+            writeln!(notes, "figure   none: {why}").ok();
+            Err(why)
+        }
+    })
 }

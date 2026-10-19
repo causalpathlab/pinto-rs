@@ -6,20 +6,22 @@
 //! the map reads as a diagonal; a tie peaks nowhere and is left out.
 //!
 //! Genes are chosen in two stages. The model's levels, ln(1 + rate), rank
-//! every gene cheaply and propose [`CANDIDATES`] × N per group; the groups'
-//! mean observed ln(1 + count) then ranks those candidates again, and each
-//! group keeps its top N. Without readable counts the model's levels do
+//! every gene cheaply and propose [`CANDIDATES`](chart::CANDIDATES) × N per
+//! group; the groups' mean observed ln(1 + count) then ranks those
+//! candidates again, and each group keeps its top N. Without readable counts the model's levels do
 //! both. Rows are z-scored across the groups and clipped to ±[`CLIP`], so a
-//! few outliers do not wash out the rest.
+//! few outliers do not wash out the rest. The ranking, the z-scores and the
+//! table are legume-tui's chart.
 
+use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
 use super::markers::{self, FeatureRates};
+use super::pdf::{chart_fits, chart_page, CHART_PAGE};
+use legume_tui::chart::heatmap::{self as chart, ByFn, Levels};
+use legume_tui::chart::heatmap::{Heat, HeatStyle};
+use legume_tui::export::Page;
 
-/// Largest |z| drawn; beyond it colours saturate.
-pub const CLIP: f32 = 2.5;
-
-/// Candidates the model proposes per gene finally kept.
-pub const CANDIDATES: usize = 5;
+pub use chart::CLIP;
 
 pub struct Heatmap {
     /// Columns: groups, largest first.
@@ -55,14 +57,15 @@ impl Heatmap {
             .filter(|&c| c < rates.rates.ncols())
             .collect();
         let cols = groups.len();
-        let model = |f: usize, j: usize| rates.rates[(f, groups[j])].max(0.).ln_1p();
+        let model = ByFn {
+            rows: rates.names.len(),
+            cols,
+            f: |f: usize, j: usize| rates.rates[(f, groups[j])].max(0.).ln_1p(),
+        };
 
         // Stage one: the model proposes candidates from every gene.
-        let proposed = by_margin(rates.names.len(), cols, &model, per_group * CANDIDATES);
-        let names: Vec<&str> = proposed
-            .iter()
-            .map(|&(f, _)| rates.names[f].as_ref())
-            .collect();
+        let proposed = chart::candidates(&model, per_group);
+        let names: Vec<&str> = proposed.iter().map(|&f| rates.names[f].as_ref()).collect();
 
         // Stage two: the candidates' own levels, observed when possible.
         let observed = observe(&names).filter(|m| m.iter().any(Option::is_some));
@@ -70,7 +73,7 @@ impl Heatmap {
             Some(means) => proposed
                 .iter()
                 .zip(means)
-                .filter_map(|(&(f, _), m)| {
+                .filter_map(|(&f, m)| {
                     let m = m.as_ref()?;
                     Some((
                         f,
@@ -83,10 +86,15 @@ impl Heatmap {
                 .unzip(),
             None => proposed
                 .iter()
-                .map(|&(f, _)| (f, (0..cols).map(|j| model(f, j)).collect()))
+                .map(|&f| (f, (0..cols).map(|j| model.at(f, j)).collect()))
                 .unzip(),
         };
-        let chosen = by_margin(rows.len(), cols, &|r, j| level[r][j], per_group);
+        let shown = ByFn {
+            rows: rows.len(),
+            cols,
+            f: |r: usize, j: usize| level[r][j],
+        };
+        let chosen = chart::by_margin(&shown, per_group);
 
         let genes = chosen
             .iter()
@@ -100,7 +108,8 @@ impl Heatmap {
             .iter()
             .flat_map(|&(r, _)| level[r].iter().copied())
             .collect();
-        let z = zscores(&values, cols);
+        let mut z = values.clone();
+        chart::zscore_rows(&mut z, cols, CLIP);
         Heatmap {
             groups,
             genes,
@@ -112,81 +121,56 @@ impl Heatmap {
 
     /// Tab-separated: gene, the group it marks, then the value per group.
     pub fn tsv(&self, comm: &Communities) -> String {
-        let cols = self.groups.len();
         let what = if self.observed {
             "mean ln(1+count)"
         } else {
             "model ln(1+rate)"
         };
-        let mut out = format!("# {what}\ngene\tmarks");
-        for &c in &self.groups {
-            out.push('\t');
-            out.push_str(&comm.name(c));
-        }
-        out.push('\n');
-        for (r, (name, _, c)) in self.genes.iter().enumerate() {
-            out.push_str(&format!("{name}\t{}", comm.name(*c)));
-            for v in &self.values[r * cols..(r + 1) * cols] {
-                out.push_str(&format!("\t{v:.4}"));
-            }
-            out.push('\n');
-        }
-        out
+        let rows: Vec<String> = self.genes.iter().map(|(n, _, _)| n.to_string()).collect();
+        let marks: Vec<String> = self.genes.iter().map(|&(_, _, c)| comm.name(c)).collect();
+        let cols = self.group_names(comm);
+        chart::tsv(what, "gene", &rows, &marks, &cols, &self.values)
     }
-}
 
-/// Of `rows` × `cols` levels, each column's top `per_col` rows by margin
-/// over their next-highest column, among the rows that peak there: as
-/// (row, column), columns in order, best margin first.
-pub fn by_margin(
-    rows: usize,
-    cols: usize,
-    level: &dyn Fn(usize, usize) -> f32,
-    per_col: usize,
-) -> Vec<(usize, usize)> {
-    // Each row's peak column and its lead over the runner-up.
-    let mut lead: Vec<Vec<(usize, f32)>> = vec![Vec::new(); cols];
-    for r in 0..rows {
-        let (mut top, mut first, mut second) = (0, f32::NEG_INFINITY, f32::NEG_INFINITY);
-        for j in 0..cols {
-            let v = level(r, j);
-            if v > first {
-                (top, second, first) = (j, first, v);
-            } else if v > second {
-                second = v;
-            }
-        }
-        let margin = if cols > 1 { first - second } else { first };
-        if margin > 0. && margin.is_finite() {
-            lead[top].push((r, margin));
-        }
+    /// The heatmap as a page for a PDF: `title`, a cell per gene and group
+    /// on the diverging scale with each group's colour over its column,
+    /// and the genes, groups and key as text. The page is as large as the
+    /// chart needs to name every gene and group. With nothing to draw, or too
+    /// much for a page, why not.
+    pub fn figure(
+        &self,
+        comm: &Communities,
+        palette: &[Rgb],
+        title: &str,
+        theme: Theme,
+    ) -> Result<Page, &'static str> {
+        let rows: Vec<String> = self.genes.iter().map(|(_, s, _)| s.clone()).collect();
+        let cols = self.group_names(comm);
+        let swatch: Vec<_> = self.groups.iter().map(|&c| to_linear(palette[c])).collect();
+        let style = HeatStyle {
+            missing: to_linear(theme.dimmed()),
+            ..HeatStyle::for_theme(theme.page())
+        };
+        let heat = Heat {
+            title,
+            rows: &rows,
+            cols: &cols,
+            col_swatch: Some(&swatch),
+            z: &self.z,
+            clip: CLIP,
+            bold_row: None,
+        };
+        let (font, bold) = CHART_PAGE.fonts();
+        let (w, h) = chart::heat_size(&heat, font, &style, CHART_PAGE.px(1.).0);
+        chart_fits(w, h).map_err(|_| "too large for a page: fewer genes per group (-) draw one")?;
+        let (page, drawn) = chart_page((w, h), theme, |frame| {
+            chart::draw_heat(frame, &heat, font, bold, theme.page(), &style)
+        });
+        drawn.map(|_| page)
     }
-    let mut out = Vec::new();
-    for (j, mut rows) in lead.into_iter().enumerate() {
-        rows.sort_by(|a, b| b.1.total_cmp(&a.1));
-        out.extend(rows.into_iter().take(per_col).map(|(r, _)| (r, j)));
-    }
-    out
-}
 
-/// Each row of `values` (`cols` wide) as z-scores, clipped to ±[`CLIP`]; a
-/// flat row is 0, NaN stays NaN.
-pub fn zscores(values: &[f32], cols: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(values.len());
-    for row in values.chunks(cols.max(1)) {
-        let finite: Vec<f32> = row.iter().copied().filter(|v| v.is_finite()).collect();
-        let n = finite.len().max(1) as f32;
-        let mean = finite.iter().sum::<f32>() / n;
-        let sd = (finite.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n).sqrt();
-        out.extend(row.iter().map(|&v| {
-            if !v.is_finite() {
-                f32::NAN
-            } else if sd > 0. {
-                ((v - mean) / sd).clamp(-CLIP, CLIP)
-            } else {
-                0.
-            }
-        }));
+    /// Each column's group, by name.
+    fn group_names(&self, comm: &Communities) -> Vec<String> {
+        self.groups.iter().map(|&c| comm.name(c)).collect()
     }
-    out
 }

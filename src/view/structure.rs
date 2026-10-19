@@ -1,49 +1,53 @@
 //! Structure plot: every cell's community mixture as a stacked bar, as
-//! admixture plots show ancestry and topic models show topic shares.
+//! admixture plots show ancestry and topic models show topic shares,
+//! through legume-tui's chart.
 //!
-//! Following `lupin plot-topic`: communities stack in order of overall
-//! prevalence, most prevalent at the bottom; cells are grouped into panels
-//! (batches, or a lupin round's cell types or clusters), and within a panel
-//! ordered by their dominant community's rank, then by its share,
-//! highest first. A pixel column averages the cells that fall on it.
+//! Communities stack in order of overall prevalence, most prevalent at the
+//! bottom; cells are grouped into panels (batches, or a lupin round's cell
+//! types or clusters), and within a panel ordered by their dominant
+//! community's rank, then by its share, highest first. A pixel column
+//! averages the cells that fall on it.
 
-use super::color::{Rgb, Theme};
+use super::color::{to_linear, Rgb, Theme};
 use super::data::{Communities, NO_CLUSTER};
+use super::pdf::{chart_fits, chart_page, CHART_PAGE};
 use super::render::Frame;
+use legume_tui::chart::structure::{
+    self as chart, BarStyle, Figure, Grouping, Layout, Names, Span, Weights,
+};
+use legume_tui::export::Page;
 
-/// Pixels between panels.
-const GAP: usize = 2;
+/// The bars of one level's communities, in panels.
+pub struct Structure(Layout);
 
-pub struct Structure {
-    /// Panel name and its cells in drawing order.
-    pub panels: Vec<(String, Vec<u32>)>,
-    /// Communities from the bottom of a bar to the top.
-    pub stack: Vec<usize>,
-}
-
-/// A panel's place in a rendered frame: first and last pixel column.
-pub struct Span {
-    pub x0: usize,
-    pub x1: usize,
-    pub name: String,
-}
-
-/// A rendered plot: the picture, where its panels are, and which
-/// community each pixel shows ([`NO_CLUSTER`] for none), row-major.
+/// A rendered plot: the picture, and where its panels and communities are.
 pub struct Drawn {
     pub frame: Frame,
-    pub panels: Vec<Span>,
-    pub community: Vec<u16>,
+    bars: chart::Drawn,
 }
 
 impl Drawn {
     /// The community at pixel `(x, y)`.
     pub fn at(&self, x: usize, y: usize) -> Option<usize> {
-        if x >= self.frame.w || y >= self.frame.h {
-            return None;
-        }
-        let c = self.community[y * self.frame.w + x];
-        (c != NO_CLUSTER).then_some(c as usize)
+        self.bars.at(x, y).map(|(_, c)| c)
+    }
+
+    /// Where each panel is drawn, with its name and cells.
+    pub fn panels(&self) -> &[Span] {
+        &self.bars.spans
+    }
+}
+
+/// The cells that have a propensity row.
+fn valid(comm: &Communities) -> Vec<bool> {
+    comm.cluster.iter().map(|&c| c != NO_CLUSTER).collect()
+}
+
+fn weights<'a>(comm: &'a Communities, valid: Option<&'a [bool]>) -> Weights<'a, u8> {
+    Weights {
+        k: comm.k,
+        w: &comm.prop,
+        valid,
     }
 }
 
@@ -52,113 +56,28 @@ impl Structure {
     /// cell, [`NO_CLUSTER`] for none), named `names`, in `order`. Cells
     /// without a propensity row are left out.
     pub fn build(comm: &Communities, panel_of: &[u16], names: &[String], order: &[usize]) -> Self {
-        let k = comm.k;
-        let n = comm.cluster.len();
-        let has = |i: usize| comm.cluster[i] != NO_CLUSTER;
-
-        let mut totals = vec![0u64; k];
-        for i in (0..n).filter(|&i| has(i)) {
-            for (t, &q) in totals.iter_mut().zip(&comm.prop[i * k..(i + 1) * k]) {
-                *t += q as u64;
-            }
-        }
-        let mut stack: Vec<usize> = (0..k).collect();
-        stack.sort_by_key(|&c| (std::cmp::Reverse(totals[c]), c));
-        let mut rank = vec![0usize; k];
-        for (r, &c) in stack.iter().enumerate() {
-            rank[c] = r;
-        }
-
-        let mut members: Vec<Vec<u32>> = vec![Vec::new(); names.len()];
-        for i in (0..n).filter(|&i| has(i)) {
-            if let Some(m) = members.get_mut(panel_of[i] as usize) {
-                m.push(i as u32);
-            }
-        }
-        let unassigned: Vec<u32> = (0..n)
-            .filter(|&i| has(i) && (panel_of[i] as usize) >= names.len())
-            .map(|i| i as u32)
-            .collect();
-        let mut panels: Vec<(String, Vec<u32>)> = order
-            .iter()
-            .filter(|&&p| p < names.len())
-            .filter_map(|&p| {
-                let cells = std::mem::take(&mut members[p]);
-                if cells.is_empty() {
-                    return None;
-                }
-                Some((names[p].clone(), cells))
-            })
-            .collect();
-        // Cells no group claims go last.
-        if !unassigned.is_empty() {
-            panels.push(("unassigned".into(), unassigned));
-        }
-        let panels: Vec<(String, Vec<u32>)> = panels
-            .into_iter()
-            .map(|(name, mut cells)| {
-                sort_cells(&mut cells, comm, &rank);
-                (name, cells)
-            })
-            .collect();
-        Structure { panels, stack }
+        let valid = valid(comm);
+        let grouping = Grouping {
+            of: panel_of,
+            names,
+            order: Some(order),
+        };
+        Structure(Layout::build(&weights(comm, Some(&valid)), &grouping))
     }
 
     /// Each panel as a plot of its own, by name, on the same stack.
     pub fn into_panels(self) -> Vec<(String, Structure)> {
-        let stack = self.stack;
-        self.panels
+        self.0
+            .into_panels()
             .into_iter()
-            .map(|(name, cells)| {
-                let one = Structure {
-                    panels: vec![(name.clone(), cells)],
-                    stack: stack.clone(),
-                };
-                (name, one)
-            })
+            .map(|(name, l)| (name, Structure(l)))
             .collect()
     }
 
-    pub fn n_cells(&self) -> usize {
-        self.panels.iter().map(|(_, c)| c.len()).sum()
-    }
-
-    /// Panel widths for `w` pixels: in proportion to their cells, at least
-    /// one pixel each while there is room, `GAP` between them.
-    fn widths(&self, w: usize) -> Vec<usize> {
-        let p = self.panels.len();
-        let n = self.n_cells().max(1);
-        let avail = w.saturating_sub(GAP * p.saturating_sub(1));
-        let exact: Vec<f64> = self
-            .panels
-            .iter()
-            .map(|(_, c)| c.len() as f64 * avail as f64 / n as f64)
-            .collect();
-        let mut out: Vec<usize> = exact.iter().map(|&x| x.floor() as usize).collect();
-        // Largest remainders take the pixels left over.
-        let mut left = avail.saturating_sub(out.iter().sum());
-        let mut by_rest: Vec<usize> = (0..p).collect();
-        by_rest.sort_by(|&a, &b| {
-            (exact[b] - exact[b].floor()).total_cmp(&(exact[a] - exact[a].floor()))
-        });
-        for &i in &by_rest {
-            if left == 0 {
-                break;
-            }
-            out[i] += 1;
-            left -= 1;
-        }
-        // A panel too small for a pixel borrows one from the widest.
-        for i in 0..p {
-            if out[i] == 0 {
-                let widest = (0..p).max_by_key(|&j| out[j]).unwrap_or(i);
-                if out[widest] > 1 {
-                    out[widest] -= 1;
-                    out[i] = 1;
-                }
-            }
-        }
-        out
+    /// What the plot shows: its panels, and the communities from the
+    /// bottom of a bar to the top.
+    pub fn layout(&self) -> &Layout {
+        &self.0
     }
 
     /// The plot at `w × h` pixels. With `focus`, communities not in it
@@ -171,79 +90,72 @@ impl Structure {
         focus: Option<&[bool]>,
         theme: Theme,
     ) -> Drawn {
-        let mut frame = Frame::blank(w, h, theme.background());
-        let k = comm.k;
-        let mut community = vec![NO_CLUSTER; w * h];
-        let colour = |c: usize| match focus {
-            Some(f) if !f.get(c).copied().unwrap_or(false) => theme.dimmed(),
-            _ => palette[c],
+        let bg = theme.background();
+        // Encoded exactly, so the bars come back as the palette's own bytes.
+        let mut frame = legume_tui::map::raster::Frame::blank_exact(w, h, bg);
+        let palette: Vec<_> = palette.iter().map(|&c| to_linear(c)).collect();
+        let style = BarStyle {
+            palette: &palette,
+            focus: focus.map(|f| (f, to_linear(theme.dimmed()))),
+            gap: chart::GAP,
+            hits: true,
         };
-        let mut spans = Vec::new();
-        let mut x = 0usize;
-        let mut mix = vec![0f32; k];
-        for ((name, cells), width) in self.panels.iter().zip(self.widths(w)) {
-            if width == 0 {
-                continue;
-            }
-            for col in 0..width {
-                // The cells under this column; stretched when a panel has
-                // fewer cells than pixels.
-                let a = col * cells.len() / width;
-                let b = ((col + 1) * cells.len() / width)
-                    .max(a + 1)
-                    .min(cells.len());
-                mix.fill(0.);
-                for &i in &cells[a..b] {
-                    let i = i as usize;
-                    for (m, &q) in mix.iter_mut().zip(&comm.prop[i * k..(i + 1) * k]) {
-                        *m += q as f32;
-                    }
-                }
-                let total: f32 = mix.iter().sum();
-                if total <= 0. || x + col >= w {
-                    continue;
-                }
-                // Bottom up, each community a run of rows.
-                let mut from = 0f32;
-                for &c in &self.stack {
-                    let to = from + mix[c] / total;
-                    let y0 = (h as f32 * (1. - to)).round() as usize;
-                    let y1 = (h as f32 * (1. - from)).round() as usize;
-                    let [r, g, b] = colour(c);
-                    for y in y0..y1.min(h) {
-                        let o = frame.offset(x + col, y);
-                        frame.rgba[o..o + 4].copy_from_slice(&[r, g, b, 255]);
-                        community[y * w + x + col] = c as u16;
-                    }
-                    from = to;
-                }
-            }
-            spans.push(Span {
-                x0: x,
-                x1: x + width - 1,
-                name: name.clone(),
-            });
-            x += width + GAP;
-        }
+        // The layout chose the rows; drawing only weighs them.
+        let bars = chart::bars(
+            &mut frame,
+            [0, 0, w, h],
+            &self.0,
+            &weights(comm, None),
+            &style,
+        );
         Drawn {
-            frame,
-            panels: spans,
-            community,
+            frame: Frame::from_raster(&frame, bg),
+            bars,
         }
     }
-}
 
-/// Dominant community's rank, then its share, highest first.
-fn sort_cells(cells: &mut [u32], comm: &Communities, rank: &[usize]) {
-    let k = comm.k;
-    cells.sort_by_key(|&i| {
-        let i = i as usize;
-        let row = &comm.prop[i * k..(i + 1) * k];
-        let (c, q) = row
-            .iter()
-            .enumerate()
-            .max_by_key(|&(c, &q)| (q, std::cmp::Reverse(rank[c])))
-            .map_or((0, 0), |(c, &q)| (c, q));
-        (rank[c], std::cmp::Reverse(q))
-    });
+    /// The plot as a page for a PDF: `title` over the bars, each panel's
+    /// name under it and the communities' key at the right, as text. With
+    /// `focus`, communities not in it are dimmed, as on screen. The page is
+    /// as tall as its key and its panel names need; past what a page holds,
+    /// or with no room left for the bars, there is no figure, and why.
+    pub fn figure(
+        &self,
+        comm: &Communities,
+        palette: &[Rgb],
+        title: &str,
+        focus: Option<&[bool]>,
+        theme: Theme,
+    ) -> Result<Page, &'static str> {
+        if self.0.panels.is_empty() {
+            return Err("nothing to draw: no cell is in a panel");
+        }
+        let (font, bold) = CHART_PAGE.fonts();
+        let w = CHART_PAGE.px(1.).0;
+        let palette: Vec<_> = palette.iter().map(|&c| to_linear(c)).collect();
+        let key: Vec<String> = (0..comm.k).map(|c| comm.name(c)).collect();
+        let style = BarStyle {
+            palette: &palette,
+            focus: focus.map(|f| (f, to_linear(theme.dimmed()))),
+            gap: chart::GAP,
+            hits: false,
+        };
+        let fig = Figure {
+            title: Some(title),
+            key: Some(&key),
+            names: Names::Auto,
+            font,
+            bold,
+            theme: theme.page(),
+        };
+        let no_room = "too small to draw: the key or the names leave no room for the bars";
+        let h = chart::figure_size_checked(&self.0, &style, &fig, w).ok_or(no_room)?;
+        let h = h.max(CHART_PAGE.px(0.4).1);
+        chart_fits(w, h)?;
+        let (page, drawn) = chart_page((w, h), theme, |frame| {
+            chart::try_figure(frame, &self.0, &weights(comm, None), &style, &fig)
+        });
+        drawn.map_err(|_| no_room)?;
+        Ok(page)
+    }
 }

@@ -8,7 +8,7 @@ fn palette(k: usize) -> Vec<[u8; 3]> {
 }
 use crate::view::data::{Communities, Geometry, Rect};
 use crate::view::index::{Grid, Pyramid};
-use crate::view::render::{mode, render, Frame, Layer, Mode, Scene, Style, Viewport};
+use crate::view::render::{mode, render, zoom, Frame, Layer, Mode, Scene, Style, Viewport};
 
 /// A 40×40 lattice filling x,y in 0..40, one community per 10-wide stripe.
 fn fixture() -> (Geometry, Communities, Grid, Pyramid) {
@@ -202,4 +202,55 @@ fn a_gene_s_average_leaves_out_the_cells_without_a_level() {
     let got = pixel(&frame, vp.w / 2, vp.h / 2);
     let off = (0..3).map(|c| got[c].abs_diff(top[c])).max().unwrap();
     assert!(off <= 2, "{got:?} is not the gene's top {top:?}");
+}
+
+/// The camera zooms as pinto's always did: a factor above one zooms out,
+/// the world point under the anchor stays under it, and the scale stops
+/// at its limits.
+#[test]
+fn the_camera_zooms_out_above_one_about_its_anchor_within_limits() {
+    let vp = Viewport::at((10., 20.), 0.5, 200, 100);
+    let mut cam = vp.camera();
+    let anchor = (30., 70.);
+    let before = (vp.x0 + anchor.0 * vp.upp, vp.y0 + anchor.1 * vp.upp);
+    zoom(&mut cam, 2., Some(anchor), (0.01, 100.));
+    let after = Viewport::of(&cam);
+    assert!((after.upp - 1.).abs() < 1e-6, "{}", after.upp);
+    let moved = (
+        after.x0 + anchor.0 * after.upp,
+        after.y0 + anchor.1 * after.upp,
+    );
+    assert!((moved.0 - before.0).abs() < 1e-4 && (moved.1 - before.1).abs() < 1e-4);
+    // Without an anchor, about the centre.
+    let mut cam = vp.camera();
+    zoom(&mut cam, 0.5, None, (0.01, 100.));
+    let c = Viewport::of(&cam).centre();
+    assert!((c.0 - 10.).abs() < 1e-4 && (c.1 - 20.).abs() < 1e-4);
+    // Held within the limits, in world units a pixel.
+    let mut cam = vp.camera();
+    zoom(&mut cam, 1000., None, (0.01, 4.));
+    assert!((Viewport::of(&cam).upp - 4.).abs() < 1e-5);
+    zoom(&mut cam, 1e-6, None, (0.01, 4.));
+    assert!((Viewport::of(&cam).upp - 0.01).abs() < 1e-7);
+}
+
+/// A window and its camera are one view.
+#[test]
+fn a_window_and_its_camera_are_the_same_view() {
+    let vp = Viewport::at((-3., 7.5), 0.25, 64, 48);
+    let back = Viewport::of(&vp.camera());
+    assert_eq!((back.w, back.h), (64, 48));
+    for (a, b) in [(back.x0, vp.x0), (back.y0, vp.y0), (back.upp, vp.upp)] {
+        assert!((a - b).abs() < 1e-5, "{a} {b}");
+    }
+}
+
+/// Limits given the wrong way round (a batch with no extent, fitted to
+/// nothing) still zoom, between them, rather than fail.
+#[test]
+fn limits_the_wrong_way_round_still_hold() {
+    let mut cam = Viewport::at((0., 0.), 1., 10, 10).camera();
+    zoom(&mut cam, 2., None, (4., 0.5));
+    let upp = Viewport::of(&cam).upp;
+    assert!((0.5..=4.).contains(&upp), "{upp}");
 }

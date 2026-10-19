@@ -1,9 +1,9 @@
 //! Interactive terminal view: the map on the left, a side panel on the right.
 //!
 //! The map is drawn by [`render`] at the pixel size of its cells and shown
-//! through the terminal's graphics protocol: our own kitty transport
-//! (`kitty`), ratatui-image for sixel/iTerm2, or coloured block characters
-//! (`cellart`, 2×2 pixels per cell) anywhere else.
+//! through the terminal's graphics protocol: legume-tui's kitty transport,
+//! ratatui-image for sixel/iTerm2, or legume-tui's coloured block
+//! characters anywhere else.
 //!
 //! Input is drained before each redraw, so a burst of scroll or drag events
 //! costs one frame, not one per event.
@@ -18,22 +18,24 @@ mod save;
 pub use browse::pick_run;
 
 use crate::tui::style;
+use legume_tui::map::viewport::Limits;
 
-use super::cellart::{rgb, Cells, Glyphs};
 use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::Kitty;
 use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::round::Round;
 use super::scalebar;
 use super::{
     focus_name, focused, ids, legend_line, legend_swatch, markers, thousands, write_outputs, Base,
-    Graphics, Level, Show, ViewArgs, FIT_MARGIN,
+    Level, Show, ViewArgs, FIT_MARGIN,
 };
 use clap::ValueEnum;
+use legume_tui::chrome::rgb;
+use legume_tui::map::kitty::cellart::{Cells, Glyphs};
+use legume_tui::map::kitty::{Kitty, MapGraphics, Resolved};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -43,7 +45,7 @@ use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use std::path::PathBuf;
@@ -115,68 +117,43 @@ impl Gfx {
     /// attached to now, its frame pixels per cell, and the terminal's
     /// background colour when it reports one. The terminal is asked once,
     /// for block characters too (their cell shape, and the background).
-    fn pick(session: &legume_tui::Session, choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
+    fn pick(session: &legume_tui::Session, choice: MapGraphics) -> (Self, (f32, f32), Option<Rgb>) {
         use legume_tui::graphics::{self, Fallback};
-        let wanted = match choice {
-            Graphics::Auto => None,
-            Graphics::Kitty | Graphics::KittyInline => Some(ProtocolType::Kitty),
-            Graphics::Sixel => Some(ProtocolType::Sixel),
-            Graphics::Iterm2 => Some(ProtocolType::Iterm2),
-            Graphics::Quadrants | Graphics::Symbols | Graphics::Blocks => {
-                Some(ProtocolType::Halfblocks)
-            }
-        };
-        let (picker, answer) = graphics::pick_protocol(session, wanted, Fallback::Probe);
+        let (picker, answer) = graphics::pick_protocol(session, choice.protocol(), Fallback::Probe);
         let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
-        // A picker for block characters has a stock cell: the terminal's,
-        // where it said.
-        let font = match (picker.protocol_type(), answer.and_then(|a| a.cell)) {
-            (ProtocolType::Halfblocks, Some((w, h))) => (w, h),
-            _ => (picker.font_size().width, picker.font_size().height),
-        };
-        let (fw, fh) = (font.0.max(1) as f32, font.1.max(1) as f32);
-        let tmux = graphics::in_tmux(session);
-        let kitty = |transport| {
-            let kitty = Kitty::new(transport).through_tmux(tmux);
-            (Gfx::Kitty(kitty), (fw, fh))
-        };
-        let cells = |glyphs: Glyphs| {
-            let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
-            (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
-        };
-        let via_picker = || (Gfx::Picker(picker.clone(), None), (fw, fh));
-        let (gfx, px) = match choice {
-            Graphics::Kitty => kitty(graphics::kitty_transport(session)),
-            Graphics::KittyInline => kitty(graphics::Transport::Inline),
-            Graphics::Sixel | Graphics::Iterm2 => via_picker(),
-            Graphics::Quadrants => cells(Glyphs::Quadrants),
-            Graphics::Symbols => cells(Glyphs::Symbols),
-            Graphics::Blocks => cells(Glyphs::HalfBlocks),
-            // tmux passes kitty graphics through only with allow-passthrough,
-            // and then only as best effort: block characters always work.
-            Graphics::Auto if tmux => cells(Glyphs::Quadrants),
-            Graphics::Auto => match picker.protocol_type() {
-                ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
-                ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
-                _ => via_picker(),
-            },
+        let resolved = choice.resolve(
+            graphics::in_tmux(session),
+            picker.protocol_type(),
+            graphics::kitty_transport(session),
+        );
+        let px = resolved.pixels_per_cell(graphics::cell_size(&picker, answer));
+        let gfx = match resolved {
+            Resolved::Kitty { transport, tmux } => {
+                Gfx::Kitty(Kitty::new(transport).named("pinto").through_tmux(tmux))
+            }
+            Resolved::Picker(p) => {
+                debug_assert_eq!(
+                    p,
+                    picker.protocol_type(),
+                    "the picker holds what was chosen"
+                );
+                Gfx::Picker(picker, None)
+            }
+            Resolved::Cells(glyphs) => Gfx::Cells(glyphs, None),
         };
         (gfx, px, background)
     }
 
-    fn name(&self) -> String {
+    fn name(&self) -> &'static str {
         match self {
-            Gfx::Kitty(k) => {
-                let how = match k.transport() {
-                    legume_tui::graphics::Transport::Inline => "inline",
-                    _ => "file",
-                };
-                let tmux = if k.via_tmux() { ", tmux" } else { "" };
-                format!("kitty ({how}{tmux})")
-            }
-            Gfx::Picker(p, _) => format!("{:?}", p.protocol_type()).to_lowercase(),
-            Gfx::Cells(glyphs, _) => glyphs.name().into(),
+            Gfx::Kitty(k) => Resolved::Kitty {
+                transport: k.transport(),
+                tmux: k.via_tmux(),
+            },
+            Gfx::Picker(p, _) => Resolved::Picker(p.protocol_type()),
+            Gfx::Cells(glyphs, _) => Resolved::Cells(*glyphs),
         }
+        .name()
     }
 }
 
@@ -194,9 +171,8 @@ struct App<'a> {
     /// Image pixels per terminal cell.
     px_per_cell: (f32, f32),
 
-    center: (f32, f32),
-    /// World units per image pixel.
-    upp: f32,
+    /// Where the map looks; its frame size is the map's at each use.
+    cam: render::MapView,
     layer: Layer,
     community: usize,
     edges: bool,
@@ -313,8 +289,8 @@ impl<'a> App<'a> {
             home: cur,
             gfx: gfx.0,
             px_per_cell: gfx.1,
-            center: (0., 0.),
-            upp: 0.,
+            // Framed by the fit below, once the map has a size.
+            cam: Viewport::at((0., 0.), 1., 1, 1).camera(),
             layer: args.layer,
             community,
             edges: args.edges,
@@ -358,7 +334,7 @@ impl<'a> App<'a> {
             bar_focus: None,
             canvas: Rect::default(),
             plots: plots::Cache::default(),
-            gallery: super::saved::Gallery::here(),
+            gallery: super::saved::here(),
             show_saved: true,
             strip: Rect::default(),
             thumbs: Default::default(),
@@ -459,7 +435,7 @@ impl<'a> App<'a> {
     /// is made again; the map frames what it framed. Its `background`,
     /// when it says, picks the theme unless `--theme` or the theme key did.
     fn repick(&mut self, gfx: Gfx, px: (f32, f32), background: Option<Rgb>) {
-        self.upp *= self.px_per_cell.0 / px.0.max(1.);
+        self.cam.scale *= px.0.max(1.) / self.px_per_cell.0;
         self.gfx = gfx;
         self.px_per_cell = px;
         self.thumbs.clear();
@@ -606,14 +582,25 @@ impl<'a> App<'a> {
     }
 
     fn viewport(&self) -> Viewport {
-        let (w, h) = self.image_size();
-        Viewport::at(self.center, self.upp, w, h)
+        Viewport::of(&self.camera_now())
     }
 
-    /// Show `vp`'s window on the map.
-    fn set_view(&mut self, vp: &Viewport) {
-        self.upp = vp.upp;
-        self.center = vp.centre();
+    /// The camera, at the map's size now.
+    fn camera_now(&self) -> render::MapView {
+        let (w, h) = self.image_size();
+        render::MapView { w, h, ..self.cam }
+    }
+
+    /// Move the map by `(dx, dy)` image pixels, as a drag does.
+    fn pan_px(&mut self, dx: f32, dy: f32) {
+        let mut cam = self.camera_now();
+        cam.pan_px(dx, dy, &Limits::default());
+        self.set_cam(cam);
+    }
+
+    /// Look where `cam` looks.
+    fn set_cam(&mut self, cam: render::MapView) {
+        self.cam = cam;
         self.need_map = true;
     }
 
@@ -627,10 +614,7 @@ impl<'a> App<'a> {
     fn fit(&mut self, r: WorldRect) {
         let r = r.pad(FIT_MARGIN);
         let (w, h) = self.image_size();
-        let vp = Viewport::fit(r, w, h);
-        self.upp = vp.upp;
-        self.center = (0.5 * (r.x0 + r.x1), 0.5 * (r.y0 + r.y1));
-        self.need_map = true;
+        self.set_cam(Viewport::fit(r, w, h).camera());
     }
 
     /// Pixel under terminal cell `(col, row)`, in an image placed at `r`.
@@ -643,9 +627,9 @@ impl<'a> App<'a> {
 
     /// World point under terminal cell `(col, row)`.
     fn world_at(&self, col: u16, row: u16) -> (f32, f32) {
-        let vp = self.viewport();
         let (px, py) = self.px_in(self.map, col, row);
-        (vp.x0 + px * vp.upp, vp.y0 + py * vp.upp)
+        let [x, y] = self.camera_now().to_data(px, py);
+        (x, y)
     }
 
     fn in_map(&self, col: u16, row: u16) -> bool {
@@ -656,16 +640,15 @@ impl<'a> App<'a> {
     fn zoom(&mut self, f: f32, anchor: Option<(u16, u16)>) {
         let limits = self.zoom_limits(self.base.geom.bounds(), self.image_size());
         let anchor = anchor.map(|(c, r)| self.px_in(self.map, c, r));
-        let vp = self.viewport().zoomed(f, anchor, limits);
-        self.set_view(&vp);
+        let mut cam = self.camera_now();
+        render::zoom(&mut cam, f, anchor, limits);
+        self.set_cam(cam);
     }
 
     /// Pan by a fraction of the view.
     fn pan(&mut self, fx: f32, fy: f32) {
         let (w, h) = self.image_size();
-        self.center.0 += fx * w as f32 * self.upp;
-        self.center.1 += fy * h as f32 * self.upp;
-        self.need_map = true;
+        self.pan_px(-fx * w as f32, -fy * h as f32);
     }
 
     // ── input ───────────────────────────────────────────────────────────
@@ -721,8 +704,8 @@ impl<'a> App<'a> {
             KeyCode::Right => self.pan(step, 0.),
             KeyCode::Up => self.pan(0., -step),
             KeyCode::Down => self.pan(0., step),
-            KeyCode::Char('+' | '=') if self.view == plots::View::Heatmap => self.more_genes(1),
-            KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(-1),
+            KeyCode::Char('+' | '=') if self.view == plots::View::Heatmap => self.more_genes(true),
+            KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(false),
             KeyCode::Char('+' | '=') => self.zoom(1. / ZOOM, None),
             KeyCode::Char('-' | '_') => self.zoom(ZOOM, None),
             // Zoom keys that mean the same in every mode.
@@ -839,12 +822,10 @@ impl<'a> App<'a> {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some((c0, r0)) = self.drag {
                     self.dragged |= (c0, r0) != (col, row);
-                    let dx = (col as f32 - c0 as f32) * self.px_per_cell.0 * self.upp;
-                    let dy = (row as f32 - r0 as f32) * self.px_per_cell.1 * self.upp;
-                    self.center.0 -= dx;
-                    self.center.1 -= dy;
+                    let dx = (col as f32 - c0 as f32) * self.px_per_cell.0;
+                    let dy = (row as f32 - r0 as f32) * self.px_per_cell.1;
+                    self.pan_px(dx, dy);
                     self.drag = Some((col, row));
-                    self.need_map = true;
                 }
                 self.cursor = self.in_map(col, row).then_some((col, row));
             }
@@ -863,7 +844,10 @@ impl<'a> App<'a> {
     fn click(&mut self, col: u16, row: u16, add: bool) {
         let at = self.world_at(col, row);
         // Within a cell spacing, or two screen pixels when zoomed far out.
-        let radius = self.base.spacing.max(2. * self.px_per_cell.0 * self.upp);
+        let radius = self
+            .base
+            .spacing
+            .max(2. * self.px_per_cell.0 * self.cam.upp());
         let geom = &self.base.geom;
         match self.base.grid.nearest(&geom.x, &geom.y, at, radius) {
             Some(i) => {
@@ -1437,9 +1421,10 @@ impl<'a> App<'a> {
 
         if let (Gfx::Kitty(kitty), Some(frame)) = (&mut self.gfx, fresh) {
             let t = Instant::now();
-            kitty.show(
+            kitty.show_rgba(
                 &mut std::io::stdout(),
-                &frame,
+                (frame.w, frame.h),
+                &frame.rgba,
                 (canvas.x, canvas.y),
                 (canvas.width, canvas.height),
             )?;
@@ -1459,7 +1444,7 @@ impl<'a> App<'a> {
                     let t = Instant::now();
                     let (cols, rows) = (self.canvas.width as usize, self.canvas.height as usize);
                     let ppc = (self.px_per_cell.0 as usize, self.px_per_cell.1 as usize);
-                    *slot = Some(Cells::fit(&frame, *glyphs, ppc, (cols, rows)));
+                    *slot = Some(frame.cells(*glyphs, ppc, (cols, rows)));
                     self.send_time = t.elapsed();
                 }
                 Gfx::Picker(picker, proto) => {
@@ -1525,14 +1510,14 @@ impl<'a> App<'a> {
                 format!("{}  K={}", thousands(self.base.geom.n()), comm.k),
             ),
             row("show", self.show_line()),
-            row("scale", format!("{:.3} /px  {}", self.upp, self.mode)),
+            row("scale", format!("{:.3} /px  {}", self.cam.upp(), self.mode)),
             row("point", format!("×{:.2}  < >", self.point)),
             row(
                 "bar",
                 match self.base.units {
                     Some(units) => {
                         let (w, _) = self.image_size();
-                        scalebar::bar_for(w as f32 * self.upp, units).label
+                        scalebar::bar_for(w as f32 * self.cam.upp(), units).label
                     }
                     None => "off (--units)".into(),
                 },
@@ -1545,7 +1530,7 @@ impl<'a> App<'a> {
                     ms(self.send_time)
                 ),
             ),
-            row("screen", self.gfx.name()),
+            row("screen", self.gfx.name().into()),
         ];
         if let Some(r) = self.round_line() {
             lines.insert(5, row("round", r));

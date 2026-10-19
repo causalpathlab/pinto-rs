@@ -14,8 +14,8 @@ use super::super::round::round_name;
 use super::browse::Panels;
 use super::{rgb, App, Pick, Show};
 use crate::tui::browse::{Browser, Outcome};
-use crate::tui::field::Field;
 use crate::tui::style::{self, short, tail};
+use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
@@ -464,7 +464,11 @@ impl App<'_> {
                 // Name on the first line, the text wrapped beside it.
                 let mut field = |name: &str, f: &Field, width: usize, on: bool| {
                     let style = if on { bold } else { TStyle::default() };
-                    for (i, piece) in f.lines(width, on, style).into_iter().enumerate() {
+                    for (i, piece) in f
+                        .lines(width, on, style, style::selected())
+                        .into_iter()
+                        .enumerate()
+                    {
                         let name = if i == 0 { name } else { "" };
                         out.push(Line::from(vec![
                             Span::styled(format!(" {name:<10}"), dim),

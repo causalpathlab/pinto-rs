@@ -1,7 +1,9 @@
 use crate::util::common::*;
+use crate::view::color::Theme;
 use crate::view::data::Communities;
-use crate::view::heatmap::{zscores, Heatmap, CLIP};
+use crate::view::heatmap::Heatmap;
 use crate::view::markers::FeatureRates;
+use crate::view::tests::fixture::on_page;
 
 fn rates(rows: &[[f32; 3]]) -> FeatureRates {
     let names = (0..rows.len()).map(|i| format!("g{i}").into()).collect();
@@ -81,16 +83,101 @@ fn without_counts_the_model_chooses() {
     assert_eq!(h.genes.len(), 1);
 }
 
+/// The heatmap as a figure for a PDF: its genes and groups are text.
 #[test]
-fn rows_are_z_scored_clipped_and_flat_rows_are_zero() {
-    let z = zscores(&[1., 2., 3., 4., 4., 4., 0., f32::NAN, 2.], 3);
-    let s = (2f32 / 3.).sqrt();
-    assert!((z[0] + 1. / s).abs() < 1e-5 && z[1].abs() < 1e-6);
-    assert_eq!(&z[3..6], &[0., 0., 0.]);
-    assert!(z[7].is_nan() && (z[6] + 1.).abs() < 1e-6);
-    let wide = zscores(
-        &[0.; 99].iter().copied().chain([1000.]).collect::<Vec<_>>(),
-        100,
-    );
-    assert_eq!(wide[99], CLIP);
+fn the_figure_sets_its_genes_and_groups_as_text() {
+    let fr = rates(&[[5., 1., 1.], [1., 1., 7.], [1., 6., 1.]]);
+    let comm = groups();
+    let h = Heatmap::build(&fr, &comm, 1, Box::new(|_| None));
+    let palette = Theme::Light.palette(3);
+    let page = h
+        .figure(&comm, &palette, "heatmap · group", Theme::Light)
+        .expect("drawn");
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for want in ["heatmap · group", "g0", "g1", "g2", "a", "b", "c"] {
+        assert!(text.contains(&want), "{want} in {text:?}");
+    }
+    let pdf = legume_tui::export::pdf_bytes(&[page], 300.).unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+}
+
+/// Many genes, many groups and long group names: every gene and group is
+/// named, and no text runs off the page.
+#[test]
+fn a_figure_is_as_large_as_its_genes_and_groups() {
+    let (genes, k) = (120, 40);
+    let names: Vec<Box<str>> = (0..k)
+        .map(|c| format!("group-with-a-long-name-{c}").into())
+        .collect();
+    let comm = Communities::from_groups("t", (0..k as u16).collect(), names);
+    let flat: Vec<f32> = (0..genes)
+        .flat_map(|g| (0..k).map(move |c| if c == g % k { 9. + (g / k) as f32 } else { 1. }))
+        .collect();
+    let fr = FeatureRates {
+        names: (0..genes).map(|i| format!("g{i}").into()).collect(),
+        rates: Mat::from_row_slice(genes, k, &flat),
+    };
+    let h = Heatmap::build(&fr, &comm, 3, Box::new(|_| None));
+    assert_eq!(h.genes.len(), genes);
+    let palette = Theme::Light.palette(k);
+    let page = h
+        .figure(&comm, &palette, "heatmap", Theme::Light)
+        .expect("drawn");
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for g in 0..genes {
+        assert!(text.contains(&format!("g{g}").as_str()), "g{g} named");
+    }
+    let named = text
+        .iter()
+        .filter(|t| t.starts_with("group-with-a-long"))
+        .count();
+    assert_eq!(named, k);
+    on_page(&page);
+}
+
+/// With no genes to show there is no figure to write.
+#[test]
+fn an_empty_heatmap_has_no_figure() {
+    let fr = rates(&[[3., 3., 1.]]);
+    let comm = groups();
+    let h = Heatmap::build(&fr, &comm, 1, Box::new(|_| None));
+    assert!(h.genes.is_empty());
+    let palette = Theme::Light.palette(3);
+    assert!(h.figure(&comm, &palette, "heatmap", Theme::Light).is_err());
+}
+
+/// A few genes under long group names: the names stay on the page.
+#[test]
+fn long_group_names_fit_a_short_heatmap() {
+    let names: Vec<Box<str>> = (0..3)
+        .map(|c| format!("a-group-name-{c}-long").into())
+        .collect();
+    let comm = Communities::from_groups("t", vec![0, 1, 2], names);
+    let fr = rates(&[[5., 1., 1.], [1., 1., 7.], [1., 6., 1.]]);
+    let h = Heatmap::build(&fr, &comm, 1, Box::new(|_| None));
+    let palette = Theme::Light.palette(3);
+    let page = h
+        .figure(&comm, &palette, "heatmap", Theme::Light)
+        .expect("drawn");
+    on_page(&page);
+}
+
+/// A heatmap too large for a page (every group's top hundred genes) has no
+/// figure, rather than one too large to draw or open.
+#[test]
+fn a_heatmap_too_large_for_a_page_has_no_figure() {
+    let (genes, k) = (4000, 40);
+    let names: Vec<Box<str>> = (0..k).map(|c| format!("t{c}").into()).collect();
+    let comm = Communities::from_groups("t", (0..k as u16).collect(), names);
+    let flat: Vec<f32> = (0..genes)
+        .flat_map(|g| (0..k).map(move |c| if c == g % k { 9. + g as f32 } else { 1. }))
+        .collect();
+    let fr = FeatureRates {
+        names: (0..genes).map(|i| format!("g{i}").into()).collect(),
+        rates: Mat::from_row_slice(genes, k, &flat),
+    };
+    let h = Heatmap::build(&fr, &comm, 100, Box::new(|_| None));
+    assert_eq!(h.genes.len(), genes);
+    let palette = Theme::Light.palette(k);
+    assert!(h.figure(&comm, &palette, "heatmap", Theme::Light).is_err());
 }

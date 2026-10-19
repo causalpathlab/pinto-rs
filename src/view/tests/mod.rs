@@ -1,4 +1,3 @@
-mod cellart;
 mod color;
 mod data;
 mod draft;
@@ -8,7 +7,6 @@ mod grid;
 mod heatmap;
 mod helpers;
 mod index;
-mod kitty;
 mod lupin;
 mod markers;
 mod pdf;

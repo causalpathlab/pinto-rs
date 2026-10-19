@@ -270,7 +270,7 @@ impl App<'_> {
         match camera {
             Some(c) => {
                 let (w, h) = self.image_size();
-                self.set_view(&c.view(bounds.pad(FIT_MARGIN), w, h));
+                self.set_cam(c.view(bounds.pad(FIT_MARGIN), w, h).camera());
             }
             None => self.fit(bounds),
         }
@@ -286,7 +286,7 @@ impl App<'_> {
     fn camera(&self) -> Option<Camera> {
         let open = self.tile?;
         let tiles = &self.base.geom.tiles;
-        let (cx, cy) = self.center;
+        let (cx, cy) = (self.cam.cx, self.cam.cy);
         let b = tiles
             .iter()
             .position(|t| {
@@ -331,9 +331,9 @@ impl App<'_> {
         };
         let size = (slot.map.w.max(1), slot.map.h.max(1));
         let frame = self.base.geom.tiles[b].bounds.pad(FIT_MARGIN);
-        let vp =
-            self.tile_view(b, size, self.camera())
-                .zoomed(f, anchor, self.zoom_limits(frame, size));
+        let mut cam = self.tile_view(b, size, self.camera()).camera();
+        render::zoom(&mut cam, f, anchor, self.zoom_limits(frame, size));
+        let vp = Viewport::of(&cam);
         self.grid.own.entry(b).or_default().cam = Some(Camera::of(&vp, frame));
         let name = &self.base.geom.tiles[b].name;
         self.status = format!("{name} zoomed on its own  alt: every batch  0 fits all");

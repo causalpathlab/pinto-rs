@@ -51,3 +51,20 @@ pub(super) fn synth_communities(geom: &Geometry, k: usize) -> Communities {
     let entropy = Some(vec![0.5 * (k as f32).ln(); n]);
     Communities::join(geom, "final", (prop, cluster, entropy, names))
 }
+
+/// Every run of `page`'s text lies on the page.
+pub(super) fn on_page(page: &legume_tui::export::Page) {
+    let (w, h) = (page.img.width() as f32, page.img.height() as f32);
+    for t in &page.text {
+        let (x0, y0, x1, y1) = if t.vertical {
+            (t.x, t.y - t.w, t.x + t.line, t.y)
+        } else {
+            (t.x, t.y, t.x + t.w, t.y + t.line)
+        };
+        assert!(
+            x0 >= 0. && y0 >= 0. && x1 <= w + 0.5 && y1 <= h + 0.5,
+            "{:?} off a {w}×{h} page",
+            t.text
+        );
+    }
+}
