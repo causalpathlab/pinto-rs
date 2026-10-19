@@ -2,54 +2,24 @@
 //! Same look as `pinto view`.
 
 use super::batch;
-use super::jobs::{State, TREND};
+use super::jobs::State;
 use super::{App, Kind, Review, Screen, Target};
 use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
-use legume_tui::child::Progress;
+use legume_tui::child::{gauge, Bar};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-/// A progress bar `width` cells wide with its count and what it counts;
-/// a spinner, with no count, as what it is doing. The trend is drawn in
-/// what is left of `room` cells.
-pub(super) fn gauge(p: &Progress, width: usize, trend: &[f64], room: usize) -> String {
-    if p.len == 0 {
-        return format!("… {}", p.what);
+/// A running fit's row, in `room` cells: its bar while it is drawn, else
+/// its last log line. A bar its fit cleared gives way once legume-tui's
+/// grace runs out, which the screen's redraw tick keeps up with.
+pub(super) fn running(bar: Option<&Bar>, last: &str, room: usize) -> String {
+    match bar.filter(|b| b.visible()) {
+        Some(b) => gauge(&b.now, 24, &b.trend, room),
+        None => format!("running  {last}"),
     }
-    let filled = (width as u64 * p.pos.min(p.len) / p.len) as usize;
-    let bar = format!(
-        "{}{} {}/{} {}",
-        "█".repeat(filled),
-        "░".repeat(width - filled),
-        p.pos,
-        p.len,
-        p.what
-    );
-    match spark(trend, room.saturating_sub(bar.chars().count() + 2)) {
-        s if s.is_empty() => bar,
-        s => format!("{bar}  {s}"),
-    }
-}
-
-/// The last `n` (at most [`TREND`]) scores as blocks, lowest to highest
-/// over their own range; nothing until there are two.
-pub(super) fn spark(v: &[f64], n: usize) -> String {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let v = &v[v.len().saturating_sub(n.min(TREND))..];
-    if v.len() < 2 {
-        return String::new();
-    }
-    let lo = v.iter().copied().fold(f64::INFINITY, f64::min);
-    let range = v.iter().copied().fold(f64::NEG_INFINITY, f64::max) - lo;
-    v.iter()
-        .map(|&x| {
-            let r = if range > 0.0 { (x - lo) / range } else { 0.0 };
-            BLOCKS[((r * 7.0).round() as usize).min(7)]
-        })
-        .collect()
 }
 
 impl App {
@@ -605,14 +575,14 @@ impl App {
             let name = format!(" {:<13} {:<24} ", j.method, fit(&shown(&j.manifest()), 24));
             let (said, style) = match state {
                 State::Waiting => ("waiting".to_string(), dim()),
-                // A bar its fit cleared gives way to what the fit logs.
-                State::Running => match bars[i].as_ref().filter(|b| b.live()) {
-                    Some(b) => (
-                        gauge(&b.now, 24, &b.trend, w.saturating_sub(name.chars().count())),
-                        bold(),
+                State::Running => (
+                    running(
+                        bars[i].as_ref(),
+                        last,
+                        w.saturating_sub(name.chars().count()),
                     ),
-                    None => (format!("running  {last}"), bold()),
-                },
+                    bold(),
+                ),
                 State::Done => ("done".to_string(), Style::default()),
                 State::Failed(why) => (format!("failed: {why}"), bold()),
                 State::Stopped => ("stopped".to_string(), dim()),

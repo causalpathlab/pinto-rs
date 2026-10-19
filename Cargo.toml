@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.13.4"
+version = "0.13.5"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -81,7 +81,7 @@ base64 = { version = "0.22", optional = true }
 pdf-writer = { version = "0.15", optional = true }
 # Detachable sessions for `pinto run` and `pinto view`; the same floor as
 # in [dev-dependencies].
-legume-tui = { version = "0.3.5", optional = true }
+legume-tui = { version = "0.3.7", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -89,4 +89,4 @@ libc = "0.2"
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
-legume-tui = { version = "0.3.5", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.3.7", default-features = false, features = ["testing"] }

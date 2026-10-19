@@ -783,35 +783,6 @@ fn nothing_is_written_to_a_terminal_that_is_not_there() {
 }
 
 #[test]
-fn a_trend_is_drawn_over_its_own_range() {
-    use super::draw::spark;
-    assert_eq!(spark(&[1.0], 9), "");
-    assert_eq!(spark(&[3.0, 3.0], 9), "▁▁");
-    assert_eq!(spark(&[0.0, 0.5, 1.0], 9), "▁▅█");
-    let long: Vec<f64> = (0..100).map(f64::from).collect();
-    assert_eq!(spark(&long, 10).chars().count(), 10);
-    assert_eq!(spark(&long, 500).chars().count(), super::jobs::TREND);
-    assert_eq!(spark(&long, 1), "");
-}
-
-#[test]
-fn a_running_fit_shows_its_bar_and_trend_in_the_room_it_has() {
-    use super::draw::gauge;
-    use legume_tui::child::Progress;
-    let p = Progress::new(5, 10, "sweeps score=1");
-    let g = gauge(&p, 10, &[3., 2., 1.], 80);
-    assert!(g.starts_with("█████░░░░░ 5/10 sweeps score=1"), "{g}");
-    assert!(g.ends_with("█▅▁"), "{g}");
-    // No room left: the bar alone.
-    assert!(!gauge(&p, 10, &[3., 2., 1.], 20).contains('▁'));
-    // A spinner says what it does.
-    assert_eq!(
-        gauge(&Progress::new(0, 0, "reading"), 10, &[], 80),
-        "… reading"
-    );
-}
-
-#[test]
 fn a_double_tap_of_the_run_key_stops_at_the_review() {
     // ctrl+r opens the review and runs from it, as in senna; pressed twice
     // at once, or held, it must not skip the review it opened.
@@ -846,4 +817,23 @@ fn a_held_run_key_stops_at_the_review() {
         run_key(&mut a);
         assert!(a.confirm.is_some(), "a repeat does not run");
     }
+}
+
+#[test]
+fn a_running_fit_shows_its_bar_until_its_fit_clears_it_then_its_log() {
+    use super::draw::running;
+    use legume_tui::child::{Bar, Progress, Said, GRACE};
+    assert_eq!(running(None, "reading", 80), "running  reading");
+    let mut bar = None;
+    Bar::track(
+        &mut bar,
+        &Said::Progress(Progress::new(2, 10, "sweeps 2: moves=4")),
+    );
+    assert!(running(bar.as_ref(), "level 1", 80).starts_with('█'));
+    // Cleared: kept for the grace (a redraw split between reads), then
+    // the fit's own words.
+    Bar::track(&mut bar, &Said::Cleared);
+    assert!(running(bar.as_ref(), "level 1", 80).starts_with('█'));
+    std::thread::sleep(GRACE + std::time::Duration::from_millis(50));
+    assert_eq!(running(bar.as_ref(), "level 1", 80), "running  level 1");
 }
