@@ -10,7 +10,7 @@
 
 use super::color::{to_linear, Rgb, Theme};
 use super::data::{Communities, NO_CLUSTER};
-use super::pdf::{chart_fonts, chart_page, CHART_PAGE};
+use super::pdf::{chart_fits, chart_fonts, chart_page, CHART_PAGE};
 use super::render::Frame;
 use legume_tui::chart::structure::{
     self as chart, BarStyle, Figure, Grouping, Layout, Names, Span, Weights,
@@ -117,7 +117,8 @@ impl Structure {
     /// The plot as a page for a PDF: `title` over the bars, each panel's
     /// name under it and the communities' key at the right, as text. With
     /// `focus`, communities not in it are dimmed, as on screen. The page is
-    /// as tall as its key and its panel names need.
+    /// as tall as its key and its panel names need; past what a page holds,
+    /// or with no room left for the bars, there is no figure, and why.
     pub fn figure(
         &self,
         comm: &Communities,
@@ -125,24 +126,11 @@ impl Structure {
         title: &str,
         focus: Option<&[bool]>,
         theme: Theme,
-    ) -> Page {
-        let (font, _) = chart_fonts();
-        let (lh, adv) = (font.line_height(), font.advance());
+    ) -> Result<Page, &'static str> {
+        let (font, bold) = chart_fonts();
         let w = CHART_PAGE.px(1.).0;
-        let widest = (self.0.panels.iter())
-            .map(|p| p.name.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(chart::NAME_CHARS);
-        // Under the bars, names turned take at most a third of the page.
-        let h = [
-            (0.4 * w as f32) as usize,
-            (self.0.stack.len() + 3) * lh,
-            3 * (widest * adv + lh),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
+        // A key too long for any page is refused before it is laid out.
+        chart_fits(w, (self.0.stack.len() + 2) * font.line_height())?;
         let palette: Vec<_> = palette.iter().map(|&c| to_linear(c)).collect();
         let key: Vec<String> = (0..comm.k).map(|c| comm.name(c)).collect();
         let style = BarStyle {
@@ -151,17 +139,22 @@ impl Structure {
             gap: chart::GAP,
             hits: false,
         };
-        let (page, _) = chart_page((w, h), theme, |frame, font, bold| {
-            let fig = Figure {
-                title: Some(title),
-                key: Some(&key),
-                names: Names::Auto,
-                font,
-                bold,
-                theme: theme.page(),
-            };
+        let fig = Figure {
+            title: Some(title),
+            key: Some(&key),
+            names: Names::Auto,
+            font,
+            bold,
+            theme: theme.page(),
+        };
+        let h = chart::figure_size(&self.0, &style, &fig, w).max(CHART_PAGE.px(0.4).1);
+        chart_fits(w, h)?;
+        let (page, drawn) = chart_page((w, h), theme, |frame| {
             chart::figure(frame, &self.0, &weights(comm, None), &style, &fig)
         });
-        page
+        if drawn.spans.is_empty() {
+            return Err("too small to draw: the key leaves no room for the bars");
+        }
+        Ok(page)
     }
 }

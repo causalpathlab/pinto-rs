@@ -31,9 +31,15 @@ pub fn chart_fonts() -> (Font, Font) {
     )
 }
 
-/// Write a chart's `page` to `path` as a PDF.
-pub fn write_chart(page: Page, path: &std::path::Path) -> std::io::Result<()> {
-    legume_tui::export::write_pdf(&[page], CHART_PAGE.dpi as f32, path)
+/// Whether a chart's page `w × h` pixels can be drawn and read: within
+/// legume-tui's pixel cap, and within the 200 in a PDF reader opens.
+pub fn chart_fits(w: usize, h: usize) -> Result<(), &'static str> {
+    let longest = (200 * CHART_PAGE.dpi) as usize;
+    if w.saturating_mul(h) > legume_tui::export::MAX_PIXELS || w.max(h) > longest {
+        Err("too large for a page")
+    } else {
+        Ok(())
+    }
 }
 
 /// A chart's page, `w × h` pixels on `theme`'s background, drawn by `draw`
@@ -41,17 +47,19 @@ pub fn write_chart(page: Page, path: &std::path::Path) -> std::io::Result<()> {
 pub fn chart_page<T>(
     (w, h): (usize, usize),
     theme: Theme,
-    draw: impl FnOnce(&mut legume_tui::map::raster::Frame, Font, Font) -> T,
+    draw: impl FnOnce(&mut legume_tui::map::raster::Frame) -> T,
 ) -> (Page, T) {
-    let (font, bold) = chart_fonts();
-    let mut frame = legume_tui::map::raster::Frame::blank(w, h, theme.background());
-    frame.keep_text();
-    let drawn = draw(&mut frame, font, bold);
-    let page = Page {
-        img: frame.to_image(),
-        text: frame.take_text(),
-    };
-    (page, drawn)
+    Page::draw(
+        (w, h),
+        theme.background(),
+        CHART_PAGE.cell_px(),
+        |frame, _, _| draw(frame),
+    )
+}
+
+/// Write a chart's `page` to `path` as a PDF.
+pub fn write_chart(page: Page, path: &std::path::Path) -> std::io::Result<()> {
+    legume_tui::export::write_pdf(&[page], CHART_PAGE.dpi as f32, path)
 }
 
 pub struct Figure<'a> {

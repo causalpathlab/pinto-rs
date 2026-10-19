@@ -16,10 +16,10 @@
 use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
 use super::markers::{self, FeatureRates};
-use super::pdf::{chart_fonts, chart_page, CHART_PAGE};
+use super::pdf::{chart_fits, chart_fonts, chart_page, CHART_PAGE};
 use legume_tui::chart::heatmap::{self as chart, ByFn, Levels};
 use legume_tui::chart::heatmap::{Heat, HeatStyle};
-use legume_tui::export::{Page, MAX_PIXELS};
+use legume_tui::export::Page;
 
 pub use chart::CLIP;
 
@@ -134,8 +134,8 @@ impl Heatmap {
 
     /// The heatmap as a page for a PDF: `title`, a cell per gene and group
     /// on the diverging scale with each group's colour over its column,
-    /// and the genes, groups and key as text. The page is as large as a
-    /// line for every gene and group needs. With nothing to draw, or too
+    /// and the genes, groups and key as text. The page is as large as the
+    /// chart needs to name every gene and group. With nothing to draw, or too
     /// much for a page, why not.
     pub fn figure(
         &self,
@@ -151,34 +151,6 @@ impl Heatmap {
             missing: to_linear(theme.dimmed()),
             ..HeatStyle::for_theme(theme.page())
         };
-        let (font, _) = chart_fonts();
-        let (lh, adv) = (font.line_height(), font.advance());
-        let longest = |names: &[String], most: usize| {
-            names
-                .iter()
-                .map(|n| n.chars().count())
-                .max()
-                .unwrap_or(0)
-                .min(most)
-                * adv
-        };
-        let (names_w, labels_h) = (
-            longest(&rows, style.row_chars),
-            longest(&cols, style.col_chars) + lh,
-        );
-        // A line for each group across, and for each gene down; the group
-        // names under the columns take at most a third of the page.
-        let w = CHART_PAGE
-            .px(1.)
-            .0
-            .max(names_w + (cols.len() + 9) * lh + 6 * adv);
-        let h = (3 * labels_h).max((rows.len() + 3) * (lh + 1) + labels_h);
-        // Past what a page holds (its pixels, or the 200 in a PDF reader
-        // opens), there is no figure; fewer genes per group make one.
-        let longest_px = (200 * CHART_PAGE.dpi) as usize;
-        if w.saturating_mul(h) > MAX_PIXELS || w.max(h) > longest_px {
-            return Err("too large for a page: fewer genes per group (-) draw one");
-        }
         let heat = Heat {
             title,
             rows: &rows,
@@ -188,7 +160,14 @@ impl Heatmap {
             clip: CLIP,
             bold_row: None,
         };
-        let (page, drawn) = chart_page((w, h), theme, |frame, font, bold| {
+        let (font, bold) = chart_fonts();
+        let too_large = |_| "too large for a page: fewer genes per group (-) draw one";
+        // A line a gene: too many for any page is refused before laying out.
+        let w = CHART_PAGE.px(1.).0;
+        chart_fits(w, (rows.len() + 3) * font.line_height()).map_err(too_large)?;
+        let (w, h) = chart::heat_size(&heat, font, &style, w);
+        chart_fits(w, h).map_err(too_large)?;
+        let (page, drawn) = chart_page((w, h), theme, |frame| {
             chart::draw_heat(frame, &heat, font, bold, theme.page(), &style)
         });
         drawn.map(|_| page)

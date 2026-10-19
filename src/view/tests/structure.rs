@@ -100,7 +100,9 @@ fn the_figure_sets_its_title_panels_and_key_as_text() {
     let names = ["x".to_string(), "y".to_string()];
     let s = Structure::build(&c, &panel_of, &names, &[1, 0]);
     let palette = Theme::Light.palette(2);
-    let page = s.figure(&c, &palette, "structure · batch", None, Theme::Light);
+    let page = s
+        .figure(&c, &palette, "structure · batch", None, Theme::Light)
+        .expect("drawn");
     let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
     for want in ["structure · batch", "x", "y", "a", "b"] {
         assert!(text.contains(&want), "{want} in {text:?}");
@@ -126,16 +128,67 @@ fn a_figure_is_as_tall_as_its_key_and_names() {
         .collect();
     let panel_of: Vec<u16> = (0..n).map(|i| (i % 3) as u16).collect();
     let s = Structure::build(&c, &panel_of, &panels, &[0, 1, 2]);
-    let page = s.figure(
-        &c,
-        &Theme::Light.palette(k),
-        "structure",
-        None,
-        Theme::Light,
-    );
+    let page = s
+        .figure(
+            &c,
+            &Theme::Light.palette(k),
+            "structure",
+            None,
+            Theme::Light,
+        )
+        .expect("drawn");
     let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
     for c in 0..k {
         assert!(text.contains(&format!("C{c}").as_str()), "C{c} in the key");
     }
     on_page(&page);
+}
+
+/// `k` communities over `k` cells, one each, named `name(c)`.
+fn one_each(k: usize, name: impl Fn(usize) -> String) -> Communities {
+    let group: Vec<u16> = (0..k).map(|i| i as u16).collect();
+    let names: Vec<Box<str>> = (0..k).map(|c| name(c).into()).collect();
+    let mut c = Communities::from_groups("t", group, names);
+    for i in 0..k {
+        c.prop[i * k + i] = 255;
+    }
+    c
+}
+
+/// A few communities under short names still make a page of the figure's
+/// usual shape, not a sliver.
+#[test]
+fn a_small_figure_keeps_its_shape() {
+    let c = one_each(2, |i| format!("C{i}"));
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    let page = s
+        .figure(
+            &c,
+            &Theme::Light.palette(2),
+            "structure",
+            None,
+            Theme::Light,
+        )
+        .expect("drawn");
+    let (w, h) = (page.img.width() as f32, page.img.height() as f32);
+    assert!(h >= 0.4 * w - 1., "{w}×{h}");
+}
+
+/// Too many communities for a page, or names too long to leave room for
+/// the bars: no figure, rather than one too large or empty.
+#[test]
+fn a_figure_that_cannot_be_drawn_is_refused() {
+    let c = one_each(1500, |i| format!("C{i}"));
+    let s = Structure::build(&c, &[0; 1500], &["all".into()], &[0]);
+    let palette = Theme::Light.palette(1500);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
+
+    let c = one_each(2, |i| format!("{i}{}", "n".repeat(120)));
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    let palette = Theme::Light.palette(2);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
 }
