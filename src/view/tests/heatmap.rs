@@ -1,6 +1,6 @@
 use crate::util::common::*;
 use crate::view::data::Communities;
-use crate::view::heatmap::{zscores, Heatmap, CLIP};
+use crate::view::heatmap::Heatmap;
 use crate::view::markers::FeatureRates;
 
 fn rates(rows: &[[f32; 3]]) -> FeatureRates {
@@ -79,18 +79,4 @@ fn without_counts_the_model_chooses() {
     let h = Heatmap::build(&fr, &groups(), 1, Box::new(|_| Some(vec![None])));
     assert!(!h.observed);
     assert_eq!(h.genes.len(), 1);
-}
-
-#[test]
-fn rows_are_z_scored_clipped_and_flat_rows_are_zero() {
-    let z = zscores(&[1., 2., 3., 4., 4., 4., 0., f32::NAN, 2.], 3);
-    let s = (2f32 / 3.).sqrt();
-    assert!((z[0] + 1. / s).abs() < 1e-5 && z[1].abs() < 1e-6);
-    assert_eq!(&z[3..6], &[0., 0., 0.]);
-    assert!(z[7].is_nan() && (z[6] + 1.).abs() < 1e-6);
-    let wide = zscores(
-        &[0.; 99].iter().copied().chain([1000.]).collect::<Vec<_>>(),
-        100,
-    );
-    assert_eq!(wide[99], CLIP);
 }

@@ -18,9 +18,9 @@ fn cells_sort_by_dominant_community_then_share() {
     // Community 1 dominates more cells overall, so it stacks first.
     let c = comm(&[200, 10, 250, 60, 100]);
     let s = Structure::build(&c, &[0; 5], &["all".into()], &[0]);
-    assert_eq!(s.stack, [1, 0]);
+    assert_eq!(s.layout().stack, [1, 0]);
     // Community 1's cells by its share (1: 245, 3: 195, 4: 155), then 0's.
-    assert_eq!(s.panels[0].1, [1, 3, 4, 2, 0]);
+    assert_eq!(s.layout().panels[0].rows, [1, 3, 4, 2, 0]);
 }
 
 #[test]
@@ -30,9 +30,10 @@ fn panels_follow_the_given_order() {
     let names = ["x".to_string(), "y".to_string()];
     let s = Structure::build(&c, &panel_of, &names, &[1, 0]);
     let got: Vec<(&str, usize)> = s
+        .layout()
         .panels
         .iter()
-        .map(|(n, c)| (n.as_str(), c.len()))
+        .map(|p| (p.name.as_str(), p.rows.len()))
         .collect();
     // The cell with no group goes last, as unassigned.
     assert_eq!(got, [("y", 2), ("x", 2), ("unassigned", 1)]);
@@ -45,7 +46,7 @@ fn bars_stack_from_the_bottom_in_palette_colours() {
     let palette = [[255, 0, 0], [0, 0, 255]];
     let d = s.render(&c, &palette, (5, 10), None, Theme::Dark);
     let frame = &d.frame;
-    assert_eq!((d.panels[0].x0, d.panels[0].x1), (0, 4));
+    assert_eq!((d.panels()[0].x0, d.panels()[0].x1), (0, 4));
     let px = |x, y| {
         let o = frame.offset(x, y);
         [frame.rgba[o], frame.rgba[o + 1], frame.rgba[o + 2]]
@@ -81,9 +82,10 @@ fn cells_no_group_claims_go_last_as_unassigned() {
     let panel_of = [0, NO_CLUSTER, 0, NO_CLUSTER, 0];
     let s = Structure::build(&c, &panel_of, &["x".to_string()], &[0]);
     let got: Vec<(&str, usize)> = s
+        .layout()
         .panels
         .iter()
-        .map(|(n, c)| (n.as_str(), c.len()))
+        .map(|p| (p.name.as_str(), p.rows.len()))
         .collect();
     assert_eq!(got, [("x", 3), ("unassigned", 2)]);
 }

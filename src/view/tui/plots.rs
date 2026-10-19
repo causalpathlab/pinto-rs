@@ -9,13 +9,17 @@
 //! community lies: on a map of communities it is the focus, on a map of a
 //! round's groups the map draws its propensity.
 
-use super::super::heatmap::Heatmap;
+use super::super::color::to_linear;
+use super::super::heatmap::{Heatmap, CLIP};
 use super::super::markers;
 use super::super::render::Frame;
 use super::super::structure::{Drawn, Structure};
 use super::super::Level;
 use super::{legend_text, rgb, App, Pick, Show};
 use crate::tui::style;
+use legume_tui::chart::heatmap::thumbnail;
+use legume_tui::chart::structure::name_rows;
+use legume_tui::chart::{step_top, Step};
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use std::path::PathBuf;
@@ -74,7 +78,7 @@ impl Cache {
 /// missing from the data in the dimmed tissue colour.
 fn z_colour(z: f32, theme: super::super::color::Theme) -> [u8; 3] {
     if z.is_finite() {
-        super::super::color::diverging(z / super::super::heatmap::CLIP)
+        super::super::color::diverging(z / CLIP)
     } else {
         theme.dimmed()
     }
@@ -82,8 +86,7 @@ fn z_colour(z: f32, theme: super::super::color::Theme) -> [u8; 3] {
 
 /// The heatmap's colour key: -2.5 … 0 … +2.5.
 fn heat_key() -> Line<'static> {
-    let clip = super::super::heatmap::CLIP;
-    let mut spans = vec![Span::raw(format!("  z -{clip} "))];
+    let mut spans = vec![Span::raw(format!("  z -{CLIP} "))];
     for i in 0..21 {
         let t = i as f32 / 10. - 1.;
         spans.push(Span::styled(
@@ -92,7 +95,7 @@ fn heat_key() -> Line<'static> {
         ));
     }
     spans.push(Span::raw(format!(
-        " +{clip}   + - genes  click a gene: map"
+        " +{CLIP}   + - genes  click a gene: map"
     )));
     Line::from(spans)
 }
@@ -340,33 +343,13 @@ impl App<'_> {
             return None;
         }
         let drawn = self.plots.drawn.as_ref()?;
-        let width = self.below.width as usize;
-        let mut rows = vec![vec![' '; width]; 2];
-        let mut next_free = [0usize; 2];
-        for (i, p) in drawn.panels.iter().enumerate() {
-            let c0 = (p.x0 as f32 / self.px_per_cell.0) as usize;
-            let c1 = ((p.x1 + 1) as f32 / self.px_per_cell.0) as usize;
-            let r = i % 2;
-            let start = c0.max(next_free[r]);
-            if start >= width {
-                continue;
-            }
-            // At most the panel's width, or up to the next panel on the row.
-            let room = c1.saturating_sub(start).max(8).min(width - start);
-            let name: Vec<char> = p.name.chars().take(room.saturating_sub(1)).collect();
-            if name.is_empty() {
-                continue;
-            }
-            for (k, ch) in name.iter().enumerate() {
-                rows[r][start + k] = *ch;
-            }
-            next_free[r] = start + name.len() + 1;
-        }
-        Some(
-            rows.into_iter()
-                .map(|r| Line::raw(r.into_iter().collect::<String>()))
-                .collect(),
-        )
+        let rows = name_rows(
+            drawn.panels(),
+            self.below.width as usize,
+            self.px_per_cell.0,
+            2,
+        );
+        Some(rows.into_iter().map(Line::raw).collect())
     }
 
     /// The heatmap as text; `None` in the other views.
@@ -516,43 +499,26 @@ impl App<'_> {
     /// The heatmap as a picture, for its thumbnail: a swatch row of the
     /// groups' colours, then a block per gene and group.
     fn heat_picture(&self, heat: &Heatmap) -> Frame {
-        const PX: usize = 6;
         let level = self.level();
-        let cols = heat.groups.len().max(1);
-        let rows = heat.genes.len() + 1;
-        let (w, h) = (cols * PX, rows * PX);
-        let bg = self.base.theme().background();
-        let mut rgba = Vec::with_capacity(w * h * 4);
-        for y in 0..h {
-            for x in 0..w {
-                let (r, c) = (y / PX, x / PX);
-                let [red, g, b] = if r == 0 {
-                    heat.groups.get(c).map_or(bg, |&g| level.palette[g])
-                } else {
-                    z_colour(
-                        heat.z.get((r - 1) * cols + c).copied().unwrap_or(0.),
-                        self.base.theme(),
-                    )
-                };
-                rgba.extend_from_slice(&[red, g, b, 255]);
-            }
-        }
-        Frame {
-            w,
-            h,
-            rgba,
-            background: bg,
-        }
+        let theme = self.base.theme();
+        let swatch: Vec<_> = heat
+            .groups
+            .iter()
+            .map(|&g| to_linear(level.palette[g]))
+            .collect();
+        let cols = heat.groups.len();
+        let picture = thumbnail(&heat.z, cols, Some(&swatch), 6, theme.page(), CLIP);
+        Frame::from_raster(&picture, theme.background())
     }
 
-    /// `+`/`-` in the heatmap: genes per group.
-    pub(super) fn more_genes(&mut self, by: isize) {
+    /// `+`/`-` in the heatmap: genes per group, one more or one fewer.
+    pub(super) fn more_genes(&mut self, more: bool) {
         let now = match (&self.plots.heatmap, self.plots.per_group) {
             (_, n) if n > 0 => n,
             (Some(((_, n), _)), _) => *n,
             _ => 3,
         };
-        self.plots.per_group = (now as isize + by).clamp(1, 100) as usize;
+        self.plots.per_group = step_top(now, more, Step::One, (1, 100));
         self.status = format!("{} genes per group", self.plots.per_group);
         self.need_map = true;
     }
@@ -603,19 +569,16 @@ impl App<'_> {
         )
         .ok();
         writeln!(notes, "\npanels (first..last pixel column, cells)").ok();
-        for (p, (_, cells)) in drawn.panels.iter().zip(&structure.panels) {
+        for p in drawn.panels() {
             writeln!(
                 notes,
                 "  {:<24} {:>6}..{:<6} {:>9}",
-                p.name,
-                p.x0,
-                p.x1,
-                cells.len()
+                p.name, p.x0, p.x1, p.rows
             )
             .ok();
         }
         writeln!(notes, "\nstack, bottom to top").ok();
-        for &c in &structure.stack {
+        for &c in &structure.layout().stack {
             writeln!(
                 notes,
                 "{}",

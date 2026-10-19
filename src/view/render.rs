@@ -211,6 +211,16 @@ impl Frame {
         (y * self.w + x) * 4
     }
 
+    /// legume-tui's `frame`, drawn on `background`, as pinto's bytes.
+    pub fn from_raster(frame: &legume_tui::map::raster::Frame, background: Rgb) -> Self {
+        Frame {
+            w: frame.w,
+            h: frame.h,
+            rgba: frame.to_image().into_raw(),
+            background,
+        }
+    }
+
     /// The frame in `cols × rows` block characters of `glyphs`, each `ppc`
     /// of its pixels; past its edge reads as its background.
     pub fn cells(&self, glyphs: Glyphs, ppc: (usize, usize), size: (usize, usize)) -> Cells {

@@ -13,7 +13,7 @@ pub enum Theme {
 
 impl Theme {
     /// legume-tui's page for this theme.
-    fn page(self) -> &'static Page {
+    pub fn page(self) -> &'static Page {
         match self {
             Theme::Dark => &Page::DARK,
             Theme::Light => &Page::LIGHT,

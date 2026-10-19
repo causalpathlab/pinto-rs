@@ -701,8 +701,8 @@ impl<'a> App<'a> {
             KeyCode::Right => self.pan(step, 0.),
             KeyCode::Up => self.pan(0., -step),
             KeyCode::Down => self.pan(0., step),
-            KeyCode::Char('+' | '=') if self.view == plots::View::Heatmap => self.more_genes(1),
-            KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(-1),
+            KeyCode::Char('+' | '=') if self.view == plots::View::Heatmap => self.more_genes(true),
+            KeyCode::Char('-' | '_') if self.view == plots::View::Heatmap => self.more_genes(false),
             KeyCode::Char('+' | '=') => self.zoom(1. / ZOOM, None),
             KeyCode::Char('-' | '_') => self.zoom(ZOOM, None),
             // Zoom keys that mean the same in every mode.
