@@ -271,3 +271,15 @@ fn test_memoized_stats_consistency() {
         );
     }
 }
+
+// The score is read by `pinto run`, which the viewer feature builds.
+#[cfg(feature = "view")]
+#[test]
+fn a_sweep_bar_scores_the_edges_it_moved() {
+    use legume_tui::child::Progress;
+    let said = |sweep, moves| Progress::new(0, 9, sweep_message("Gibbs sweeps", sweep, moves));
+    assert_eq!(said(0, 7).score(), Some(7.));
+    // The sweep's count is not the score, and tells one sweep's from the next.
+    assert_eq!(said(11, 0).score(), Some(0.));
+    assert_ne!(said(1, 0).what, said(2, 0).what);
+}

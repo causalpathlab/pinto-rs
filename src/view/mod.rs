@@ -281,8 +281,8 @@ pub struct ViewArgs {
         help = "Map colours for a dark or light background [default: the terminal's]",
         long_help = "Map colours for a dark or a light background: background,\n\
                      dimmed tissue, palette, ramps and scale bar. The terminal viewer\n\
-                     defaults to the terminal's own background; --png and --pdf\n\
-                     default to dark."
+                     defaults to the terminal's own background, and `t` switches it;\n\
+                     --png and --pdf default to dark."
     )]
     pub theme: Option<Theme>,
 

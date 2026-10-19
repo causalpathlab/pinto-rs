@@ -77,7 +77,8 @@ impl LinkGibbsSampler {
 
         let prog_bar = new_progress_bar(num_sweeps as u64).with_message("Gibbs sweeps");
 
-        for _sweep in 0..num_sweeps {
+        for sweep in 0..num_sweeps {
+            let mut sweep_moves = 0;
             for e in 0..n {
                 let old_c = stats.membership[e];
 
@@ -87,9 +88,11 @@ impl LinkGibbsSampler {
 
                 if new_c != old_c {
                     stats.delta_move(e, old_c, new_c, profiles);
-                    total_moves += 1;
+                    sweep_moves += 1;
                 }
             }
+            total_moves += sweep_moves;
+            prog_bar.set_message(sweep_message("Gibbs sweeps", sweep, sweep_moves));
             prog_bar.inc(1);
         }
         prog_bar.finish_and_clear();
@@ -178,14 +181,17 @@ impl LinkGibbsSampler {
                 })
                 .collect();
 
+            let mut sweep_moves = 0;
             for (e, &new_c) in proposals.iter().enumerate() {
                 let old_c = stats.membership[e];
                 if new_c != old_c {
                     stats.delta_move(e, old_c, new_c, profiles);
-                    total_moves += 1;
+                    sweep_moves += 1;
                 }
             }
+            total_moves += sweep_moves;
             observer(sweep, stats);
+            prog_bar.set_message(sweep_message("Gibbs sweeps", sweep, sweep_moves));
             prog_bar.inc(1);
         }
         prog_bar.finish_and_clear();
@@ -258,6 +264,7 @@ impl LinkGibbsSampler {
             }
             total_moves += sweep_moves;
             observer(sweep, stats);
+            prog_bar.set_message(sweep_message("greedy sweeps", sweep, sweep_moves));
             prog_bar.inc(1);
             if sweep_moves == 0 {
                 break;
@@ -456,6 +463,7 @@ impl LinkGibbsSampler {
             }
 
             total_moves += sweep_moves;
+            prog_bar.set_message(sweep_message(&format!("{label} jobs"), sweep, sweep_moves));
             if matches!(strategy, MoveStrategy::Greedy) && sweep_moves == 0 {
                 break;
             }
@@ -549,6 +557,12 @@ fn partition_edges_balanced(
         }
     }
     balanced
+}
+
+/// A sweep bar's message: its name, which sweep, and the edges it moved
+/// as the one `key=value`, the score `pinto run` draws.
+pub(crate) fn sweep_message(name: &str, sweep: usize, moves: usize) -> String {
+    format!("{name} {}: moves={moves}", sweep + 1)
 }
 
 /// Pick the index with the highest value.

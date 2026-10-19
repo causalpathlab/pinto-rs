@@ -158,3 +158,48 @@ fn larger_points_are_drawn_from_further_out() {
     assert_ne!(mode(&scene, &vp, 0.5), Mode::Points);
     assert_eq!(mode(&scene, &vp, 2.), Mode::Points);
 }
+
+#[test]
+fn a_gene_s_average_leaves_out_the_cells_without_a_level() {
+    use crate::view::data::NO_CLUSTER;
+    // Every other cell's file never measured the gene; the rest sit at the
+    // top of its ramp. Averaged into pixels, the gene stays at its top.
+    let geom = Geometry::from_cells(synth_cells(1600, 1));
+    let mut comm = Communities::single("GENE1", vec![255; geom.n()]);
+    for c in comm.cluster.iter_mut().skip(1).step_by(2) {
+        *c = NO_CLUSTER;
+    }
+    let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), 6.);
+    let pyramid = Pyramid::build(&grid, &comm);
+    let scene = Scene {
+        geom: &geom,
+        comm: &comm,
+        grid: &grid,
+        pyramid: &pyramid,
+        edges: None,
+        spacing: 1.,
+    };
+    let style = Style {
+        layer: Layer::Gene,
+        edges: false,
+        focus: None,
+        theme: DARK,
+        point: 1.,
+    };
+    let window = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 40.,
+        y1: 40.,
+    };
+    let vp = [24, 32, 48, 64, 96]
+        .into_iter()
+        .map(|w| Viewport::fit(window, w, w))
+        .find(|vp| mode(&scene, vp, 1.) == Mode::Average)
+        .expect("a size that averages");
+    let frame = render(&scene, &vp, &style, &palette(1));
+    let top = Layer::Gene.ramp(DARK).at_u8(255);
+    let got = pixel(&frame, vp.w / 2, vp.h / 2);
+    let off = (0..3).map(|c| got[c].abs_diff(top[c])).max().unwrap();
+    assert!(off <= 2, "{got:?} is not the gene's top {top:?}");
+}

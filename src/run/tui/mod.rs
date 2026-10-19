@@ -26,6 +26,25 @@ use std::time::Duration;
 /// the short alias of its subcommand.
 pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
 
+/// How long after the review opens the run key is not yet taken as "run":
+/// a double tap or a held key would otherwise skip the review.
+const CONFIRM_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The commands up for review, and when the review opened.
+struct Review {
+    planned: Vec<Planned>,
+    at: std::time::Instant,
+}
+
+impl Review {
+    fn new(planned: Vec<Planned>) -> Self {
+        Review {
+            planned,
+            at: std::time::Instant::now(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Data,
@@ -114,7 +133,7 @@ pub(crate) struct App {
     advanced: bool,
     filter: String,
     editor: Option<Editor>,
-    confirm: Option<Vec<Planned>>,
+    confirm: Option<Review>,
     confirm_scroll: usize,
     /// How far the confirm popup can scroll, as last drawn.
     confirm_max: std::cell::Cell<usize>,
@@ -418,7 +437,7 @@ impl App {
                     self.screen = *s;
                 }
             }
-            KeyCode::Char('G') => self.open_confirm(),
+            _ if crate::tui::is_run_key(&k) => self.open_confirm(),
             KeyCode::Char('q') => {
                 if self.running() {
                     self.message =
@@ -1017,7 +1036,7 @@ impl App {
             self.message = Some("fits are still running".into());
             return;
         }
-        self.confirm = Some(self.plan());
+        self.confirm = Some(Review::new(self.plan()));
         self.confirm_scroll = 0;
     }
 
@@ -1035,8 +1054,21 @@ impl App {
                     Err(e) => format!("cannot copy: {e}"),
                 });
             }
-            KeyCode::Enter => {
-                let Some(planned) = self.confirm.take() else {
+            // The run key pressed twice at once, or held, stops here: the
+            // review it opened is read before it runs. Each repeat starts
+            // the wait again, so a held key runs nothing until let go.
+            _ if crate::tui::is_run_key(&k)
+                && self
+                    .confirm
+                    .as_ref()
+                    .is_some_and(|r| r.at.elapsed() < CONFIRM_SETTLE) =>
+            {
+                if let Some(r) = self.confirm.as_mut() {
+                    r.at = std::time::Instant::now();
+                }
+            }
+            _ if k.code == KeyCode::Enter || crate::tui::is_run_key(&k) => {
+                let Some(Review { planned, .. }) = self.confirm.take() else {
                     return;
                 };
                 if let Some(p) = planned.iter().find(|p| p.problem.is_some()) {
@@ -1065,7 +1097,7 @@ impl App {
     }
 
     /// Once the queue has ended, unqueue the methods it finished and move
-    /// their `--out` on, so `G` again runs only those stopped, failed or
+    /// their `--out` on, so ctrl+r again runs only those stopped, failed or
     /// not reached, each at the `--out` it had.
     fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
@@ -1088,8 +1120,9 @@ impl App {
         self.keep_param_method();
         if !done.is_empty() && done.len() < states.len() {
             self.message = Some(format!(
-                "{} done and unqueued: G runs the rest (space queues one again)",
-                done.join(", ")
+                "{} done and unqueued: {} runs the rest (space queues one again)",
+                done.join(", "),
+                crate::tui::RUN_KEY
             ));
         }
     }
@@ -1142,7 +1175,7 @@ impl App {
     fn copy_text(&self) -> String {
         self.confirm
             .iter()
-            .flatten()
+            .flat_map(|r| &r.planned)
             .map(|p| {
                 let cmd = format!("pinto {}", script::line(&p.job.argv));
                 if p.job.dir == self.here {

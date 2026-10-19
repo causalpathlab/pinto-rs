@@ -673,9 +673,9 @@ enum Commands {
              all its cells (files given one name are one batch) or `b` takes\n\
              a label file, whose labels `e` renames. Label files the run\n\
              needs beyond those given are written to `{{out}}.batches/`.\n\n\
-             `G` shows the exact commands, checked as pinto would parse\n\
+             ctrl+r shows the exact commands, checked as pinto would parse\n\
              them, and runs them in turn with their log on screen; the\n\
-             methods a run finished are then unqueued, so `G` again (or\n\
+             methods a run finished are then unqueued, so ctrl+r again (or\n\
              `r` on the Run screen) runs only the rest, each at the --out\n\
              it had. Tab or shift-enter moves to the next screen.\n\
              Each is saved first as `{{out}}.cmd.sh`: run it again with\n\

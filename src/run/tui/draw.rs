@@ -2,14 +2,55 @@
 //! Same look as `pinto view`.
 
 use super::batch;
-use super::jobs::State;
-use super::{App, Kind, Screen, Target};
+use super::jobs::{State, TREND};
+use super::{App, Kind, Review, Screen, Target};
 use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
+use legume_tui::child::Progress;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+/// A progress bar `width` cells wide with its count and what it counts;
+/// a spinner, with no count, as what it is doing. The trend is drawn in
+/// what is left of `room` cells.
+pub(super) fn gauge(p: &Progress, width: usize, trend: &[f64], room: usize) -> String {
+    if p.len == 0 {
+        return format!("… {}", p.what);
+    }
+    let filled = (width as u64 * p.pos.min(p.len) / p.len) as usize;
+    let bar = format!(
+        "{}{} {}/{} {}",
+        "█".repeat(filled),
+        "░".repeat(width - filled),
+        p.pos,
+        p.len,
+        p.what
+    );
+    match spark(trend, room.saturating_sub(bar.chars().count() + 2)) {
+        s if s.is_empty() => bar,
+        s => format!("{bar}  {s}"),
+    }
+}
+
+/// The last `n` (at most [`TREND`]) scores as blocks, lowest to highest
+/// over their own range; nothing until there are two.
+pub(super) fn spark(v: &[f64], n: usize) -> String {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let v = &v[v.len().saturating_sub(n.min(TREND))..];
+    if v.len() < 2 {
+        return String::new();
+    }
+    let lo = v.iter().copied().fold(f64::INFINITY, f64::min);
+    let range = v.iter().copied().fold(f64::NEG_INFINITY, f64::max) - lo;
+    v.iter()
+        .map(|&x| {
+            let r = if range > 0.0 { (x - lo) / range } else { 0.0 };
+            BLOCKS[((r * 7.0).round() as usize).min(7)]
+        })
+        .collect()
+}
 
 impl App {
     pub(super) fn draw(&self, f: &mut ratatui::Frame) {
@@ -170,7 +211,7 @@ impl App {
                 "tab / shift-tab / 1-4 screens"
             }
             .to_string(),
-            "G review and run".to_string(),
+            format!("{} review and run", crate::tui::RUN_KEY),
             "q quit".to_string(),
         ];
         // The detach and switch keys, in a session.
@@ -536,11 +577,17 @@ impl App {
         let Some(q) = &self.queue else { return };
         let rows = usize::from(area.height).saturating_sub(q.jobs.len() + 3);
         // Copied out, so the worker writing the log is not held up.
-        let (states, last, finished, log) = {
+        let (states, last, bars, finished, log) = {
             let Ok(s) = q.shared.lock() else { return };
             let skip = s.log.len().saturating_sub(rows);
             let log: Vec<String> = s.log.iter().skip(skip).cloned().collect();
-            (s.states.clone(), s.last.clone(), s.finished, log)
+            (
+                s.states.clone(),
+                s.last.clone(),
+                s.bars.clone(),
+                s.finished,
+                log,
+            )
         };
         let w = usize::from(area.width);
         let mut lines = vec![
@@ -555,18 +602,22 @@ impl App {
             Line::from(""),
         ];
         for (i, ((j, state), last)) in q.jobs.iter().zip(&states).zip(&last).enumerate() {
+            let name = format!(" {:<13} {:<24} ", j.method, fit(&shown(&j.manifest()), 24));
             let (said, style) = match state {
                 State::Waiting => ("waiting".to_string(), dim()),
-                State::Running => (format!("running  {last}"), bold()),
+                // A bar its fit cleared gives way to what the fit logs.
+                State::Running => match bars[i].as_ref().filter(|b| b.live()) {
+                    Some(b) => (
+                        gauge(&b.now, 24, &b.trend, w.saturating_sub(name.chars().count())),
+                        bold(),
+                    ),
+                    None => (format!("running  {last}"), bold()),
+                },
                 State::Done => ("done".to_string(), Style::default()),
                 State::Failed(why) => (format!("failed: {why}"), bold()),
                 State::Stopped => ("stopped".to_string(), dim()),
             };
-            let text = format!(
-                " {:<13} {:<24} {said}",
-                j.method,
-                fit(&shown(&j.manifest()), 24)
-            );
+            let text = format!("{name}{said}");
             let style = if i == self.job_row { selected() } else { style };
             lines.push(Line::from(Span::styled(fit(&text, w), style)));
         }
@@ -582,7 +633,7 @@ impl App {
     /// `width` wide: long command lines are wrapped here, so the scroll and
     /// the keys below count every row on screen.
     pub(super) fn confirm_lines(&self, rows: usize, width: usize) -> Vec<Line<'static>> {
-        let Some(planned) = &self.confirm else {
+        let Some(Review { planned, .. }) = &self.confirm else {
             return Vec::new();
         };
         let wrap = |text: String, style: Style| wrap(&text, style, width);
@@ -637,11 +688,13 @@ impl App {
         out.push(Line::from(""));
         let mut foot = wrap(
             if blocked {
-                " enter go to the problem   c copy   ↑ ↓ scroll   esc back"
+                " enter go to the problem   c copy   ↑ ↓ scroll   esc back".to_string()
             } else {
-                " enter run   c copy the commands   ↑ ↓ scroll   esc back"
-            }
-            .into(),
+                format!(
+                    " enter or {} run   c copy the commands   ↑ ↓ scroll   esc back",
+                    crate::tui::RUN_KEY
+                )
+            },
             dim(),
         );
         if let Some(m) = &self.message {

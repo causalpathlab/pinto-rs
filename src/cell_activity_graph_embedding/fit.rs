@@ -1295,10 +1295,13 @@ pub fn fit_cell_activity_graph_embedding(
                 .and_then(|t| t.to_scalar::<f32>().ok())
                 .map_or(f64::NAN, |v| v as f64 / chunk_count as f64);
             info!("epoch {}: mean |pair| = {:.4e}", epoch, pair_mean);
+            // The loss is the bar's one `key=value`: the score `pinto run`
+            // draws, a NaN loss included.
             train_bar.set_message(format!(
-                "training — epoch {}/{}, mean |pair| {:.2e}",
+                "training epoch {}/{} loss={:.4e} |pair| {:.2e}",
                 epoch + 1,
                 args.epochs,
+                mean_loss,
                 pair_mean
             ));
         }

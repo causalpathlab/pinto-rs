@@ -166,6 +166,9 @@ pub struct PyramidLevel {
     pub ny: usize,
     pub bin: f32,
     pub count: Vec<u32>,
+    /// Cells with no community ([`NO_CLUSTER`]) among `count`: on a gene
+    /// map, the cells whose file never measured the gene.
+    pub absent: Vec<u32>,
     /// Summed propensity, `nx·ny × k`.
     pub prop: Vec<f32>,
     /// Summed normalized entropy (0 when the level has none).
@@ -185,6 +188,7 @@ impl PyramidLevel {
             ny,
             bin,
             count: vec![0; nb],
+            absent: vec![0; nb],
             prop: vec![0.; nb * k],
             entropy: vec![0.; nb],
             top: vec![NO_CLUSTER; nb],
@@ -207,7 +211,11 @@ impl PyramidLevel {
     }
 
     pub fn bytes(&self) -> usize {
-        self.count.len() * 4 + self.prop.len() * 4 + self.entropy.len() * 4 + self.top.len() * 2
+        self.count.len() * 4
+            + self.absent.len() * 4
+            + self.prop.len() * 4
+            + self.entropy.len() * 4
+            + self.top.len() * 2
     }
 }
 
@@ -238,13 +246,15 @@ impl Pyramid {
         base.prop
             .par_chunks_mut(k.max(1))
             .zip(base.count.par_iter_mut())
+            .zip(base.absent.par_iter_mut())
             .zip(base.entropy.par_iter_mut())
             .enumerate()
-            .for_each(|(b, ((prop, count), ent))| {
+            .for_each(|(b, (((prop, count), absent), ent))| {
                 let cells = grid.cells(b % nx, b / nx);
                 *count = cells.len() as u32;
                 for &i in cells {
                     let i = i as usize;
+                    *absent += u32::from(comm.cluster[i] == NO_CLUSTER);
                     let row = &comm.prop[i * k..(i + 1) * k];
                     for (acc, &q) in prop.iter_mut().zip(row) {
                         *acc += q as f32 / 255.;
@@ -281,9 +291,10 @@ fn coarsen(prev: &PyramidLevel, k: usize) -> PyramidLevel {
     next.prop
         .par_chunks_mut(k.max(1))
         .zip(next.count.par_iter_mut())
+        .zip(next.absent.par_iter_mut())
         .zip(next.entropy.par_iter_mut())
         .enumerate()
-        .for_each(|(b, ((prop, count), ent))| {
+        .for_each(|(b, (((prop, count), absent), ent))| {
             let (bx, by) = (b % nx, b / nx);
             for (cx, cy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 let (px, py) = (2 * bx + cx, 2 * by + cy);
@@ -292,6 +303,7 @@ fn coarsen(prev: &PyramidLevel, k: usize) -> PyramidLevel {
                 }
                 let pb = py * prev.nx + px;
                 *count += prev.count[pb];
+                *absent += prev.absent[pb];
                 *ent += prev.entropy[pb];
                 for (acc, &p) in prop.iter_mut().zip(&prev.prop[pb * k..(pb + 1) * k]) {
                     *acc += p;

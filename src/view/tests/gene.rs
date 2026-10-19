@@ -110,3 +110,63 @@ fn ramp_tops_keep_three_significant_digits() {
     assert_eq!(significant(123.4, 3), "123");
     assert_eq!(significant(0., 3), "0");
 }
+
+/// Two cells' counts of `rows` in a zarr file `tag`.
+fn write_data(dir: &tempfile::TempDir, tag: &str, rows: &[&str], counts: &[[f32; 2]]) -> Box<str> {
+    let triplets: Vec<(u64, u64, f32)> = counts
+        .iter()
+        .enumerate()
+        .flat_map(|(r, c)| (0..2).map(move |j| (r as u64, j as u64, c[j])))
+        .filter(|t| t.2 > 0.)
+        .collect();
+    crate::test_support::write_zarr(dir.path(), tag, rows, 2, &triplets)
+}
+
+#[test]
+fn a_gene_one_file_never_measured_is_not_a_zero_there() {
+    use crate::util::parquet_io::CellTable;
+    use crate::view::data::NO_CLUSTER;
+    let dir = tempfile::tempdir().unwrap();
+    // GENE2 is on the first file's panel only; its second cell has none.
+    let files = vec![
+        write_data(&dir, "a", &["GENE1", "GENE2"], &[[1., 1.], [3., 0.]]),
+        write_data(&dir, "b", &["GENE1"], &[[1., 1.]]),
+    ];
+    let mut names = crate::util::input::read_expr_data(&files)
+        .unwrap()
+        .column_names()
+        .unwrap();
+    // A map cell no data file holds: no level either.
+    names.push("elsewhere".into());
+    let cells = CellTable {
+        index: names
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), i))
+            .collect(),
+        coords: (0..names.len())
+            .map(|i| ((i % 2) as f32, (i / 2) as f32))
+            .collect(),
+        names,
+        batches: None,
+        in_graph: None,
+        coord_col_names: vec!["x".into(), "y".into()],
+    };
+    let geom = Geometry::from_cells(cells);
+    let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), 6.);
+    let expr = Expression::open(&files, &geom).unwrap();
+
+    let g = expr.observed("GENE2", &geom, 100., &grid).unwrap();
+    // Measured: a count, or a measured zero. Not measured: no value.
+    assert_eq!(&g.comm.cluster[..2], &[0, 0]);
+    assert_eq!(&g.comm.cluster[2..], &[NO_CLUSTER; 3]);
+    assert_eq!(&g.comm.prop[..2], &[255, 0]);
+    // Zoomed out, a bin averages the cells that were measured.
+    let top = g.pyramid.levels.last().unwrap();
+    assert_eq!((top.count[0], top.absent[0]), (5, 3));
+
+    // A group's mean is over the cells whose file measured the gene.
+    let means = expr.group_means(&["GENE2", "GENE1"], &[0; 5], 1).unwrap();
+    assert_eq!(means[0].as_deref(), Some(&[3f32.ln_1p() / 2.][..]));
+    assert_eq!(means[1].as_deref(), Some(&[1f32.ln_1p()][..]));
+}

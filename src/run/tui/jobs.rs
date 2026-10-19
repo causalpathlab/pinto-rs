@@ -1,6 +1,7 @@
 //! The queued fits, run one after another on a worker thread: each writes
 //! its `{out}.cmd.sh`, then starts pinto in the script's folder with the
-//! same command, its log kept for the screen.
+//! same command, its log and the frames of its progress bars kept for
+//! the screen.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -8,10 +9,47 @@ use std::sync::{Arc, Mutex};
 
 use super::script;
 use legume_numeric::matrix::common_io::{mkdir, remove_file};
-use legume_tui::child::{run_one, Failed, Said, Stopper};
+use legume_tui::child::{run_one, Failed, Progress, Said, Stopper};
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
+
+/// Scores kept in a bar's trend, at most drawn in its sparkline.
+pub const TREND: usize = 64;
+
+/// How long a bar goes without a frame before it is taken as cleared:
+/// indicatif redraws a live one every 200 ms.
+pub const STALE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A job's progress bar: where it stands, and the scores it has said.
+#[derive(Clone, Debug)]
+pub struct Bar {
+    pub now: Progress,
+    /// When `now` was drawn.
+    pub at: std::time::Instant,
+    /// One point per score the bar said, the newest last.
+    pub trend: Vec<f64>,
+    /// The message the newest point came from.
+    scored: String,
+    /// The bar's name: its message without numbers.
+    label: String,
+}
+
+impl Bar {
+    /// Whether the bar is still drawn, not cleared by its fit.
+    pub fn live(&self) -> bool {
+        self.at.elapsed() < STALE
+    }
+}
+
+/// A bar message's name: its words that carry no number, so a sweep's
+/// count or score does not make it another bar.
+fn label(what: &str) -> String {
+    what.split_whitespace()
+        .filter(|w| !w.contains('=') && !w.chars().any(|c| c.is_ascii_digit()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// How long a fit interrupted by [`Queue::finish`] has to end before it
 /// is killed.
@@ -78,6 +116,8 @@ pub struct Shared {
     pub log: VecDeque<String>,
     /// The last line each job wrote.
     pub last: Vec<String>,
+    /// Each job's progress bar, while it runs.
+    pub bars: Vec<Option<Bar>>,
     pub finished: bool,
     /// Whether the end was taken in: see [`Queue::take_end`].
     pub seen: bool,
@@ -97,6 +137,7 @@ impl Queue {
         let shared = Arc::new(Mutex::new(Shared {
             states: vec![State::Waiting; jobs.len()],
             last: vec![String::new(); jobs.len()],
+            bars: vec![None; jobs.len()],
             ..Shared::default()
         }));
         let stopper = Arc::new(Stopper::new());
@@ -198,6 +239,37 @@ fn say(s: &Mutex<Shared>, i: usize, line: String) {
     }
 }
 
+/// A frame `p` of job `i`'s progress bar: where it stands, and a new
+/// point of its trend when it says a new score.
+fn progress(s: &Mutex<Shared>, i: usize, p: Progress) {
+    let label = label(&p.what);
+    let Ok(mut s) = s.lock() else { return };
+    // A new bar (none before, restarted, another length or name) starts a
+    // new trend: its scores are not on the last one's scale.
+    let slot = &mut s.bars[i];
+    let b = match slot {
+        Some(b) if p.pos >= b.now.pos && p.len == b.now.len && label == b.label => b,
+        _ => slot.insert(Bar {
+            now: Progress::default(),
+            at: std::time::Instant::now(),
+            trend: Vec::new(),
+            scored: String::new(),
+            label,
+        }),
+    };
+    // A fit says each score once, and the bar redraws it until the next:
+    // a point per message, so a score that holds still counts each time.
+    if let Some(v) = p.score().filter(|_| p.what != b.scored) {
+        if b.trend.len() >= TREND {
+            b.trend.remove(0);
+        }
+        b.trend.push(v);
+        b.scored.clone_from(&p.what);
+    }
+    b.now = p;
+    b.at = std::time::Instant::now();
+}
+
 /// Run `job` with `command`, the program set up as the session starts
 /// its programs.
 fn run_job(
@@ -244,14 +316,17 @@ fn run_job(
     if std::env::var_os("RUST_LOG").is_none() {
         command.env("RUST_LOG", script::LOG_LEVEL);
     }
-    // Its log, a line at a time; the frames of its progress bars are not
-    // kept.
-    let each = |said| {
-        if let Said::Line(line) = said {
-            say(s, i, line);
-        }
+    // Its log, a line at a time, and where its progress bars stand.
+    let each = |said| match said {
+        Said::Line(line) => say(s, i, line),
+        Said::Progress(p) => progress(s, i, p),
+        _ => {}
     };
-    match run_one(command, stopper, each) {
+    let ran = run_one(command, stopper, each);
+    if let Ok(mut s) = s.lock() {
+        s.bars[i] = None;
+    }
+    match ran {
         Ok(()) => State::Done,
         Err(Failed::Stopped) => State::Stopped,
         Err(Failed::Start(why) | Failed::Exit(why)) => State::Failed(why),
