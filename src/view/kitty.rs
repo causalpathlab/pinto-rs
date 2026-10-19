@@ -19,6 +19,7 @@
 use super::render::Frame;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use legume_tui::graphics::Transport;
 use ratatui_image::picker::cap_parser::Parser;
 use std::io::Write;
 
@@ -27,28 +28,6 @@ pub(super) const IDS: [u32; 2] = [0x7069_0001, 0x7069_0002];
 
 /// Base64 payload bytes per escape sequence (protocol limit is 4096).
 const CHUNK: usize = 4096;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Transport {
-    /// Through a temporary file; the terminal must share our filesystem.
-    File,
-    /// Inline, compressed.
-    Direct,
-}
-
-impl Transport {
-    /// Direct over ssh, file otherwise.
-    pub fn detect() -> Self {
-        let remote = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
-            .iter()
-            .any(|v| std::env::var_os(v).is_some());
-        if remote {
-            Transport::Direct
-        } else {
-            Transport::File
-        }
-    }
-}
 
 pub struct Kitty {
     transport: Transport,
@@ -115,14 +94,8 @@ impl Kitty {
             frame.w, frame.h
         );
         self.last_bytes = match self.transport {
-            Transport::File => {
-                let path = temp_path(slot);
-                std::fs::write(&path, &frame.rgba)?;
-                let payload = B64.encode(path.to_string_lossy().as_bytes());
-                self.command(out, &[format!("{keys},t=t;{payload}").as_bytes()])?;
-                frame.rgba.len()
-            }
-            Transport::Direct => {
+            // Inline, compressed.
+            Transport::Inline => {
                 let mut z = flate2::write::ZlibEncoder::new(
                     Vec::with_capacity(frame.rgba.len() / 4),
                     flate2::Compression::fast(),
@@ -140,6 +113,14 @@ impl Kitty {
                     self.command(out, &[head.as_bytes(), chunk])?;
                 }
                 payload.len()
+            }
+            // Through a temporary file: the terminal shares our files.
+            _ => {
+                let path = temp_path(slot);
+                std::fs::write(&path, &frame.rgba)?;
+                let payload = B64.encode(path.to_string_lossy().as_bytes());
+                self.command(out, &[format!("{keys},t=t;{payload}").as_bytes()])?;
+                frame.rgba.len()
             }
         };
         if let Some(old) = self.shown {
@@ -159,12 +140,17 @@ impl Kitty {
         }
         self.shown = None;
         out.flush()?;
-        // Kitty deletes each file once read; one it never read (a terminal
-        // that ignored the command) would otherwise stay behind.
+        self.remove_files();
+        Ok(())
+    }
+
+    /// Remove the files the pixels went through. Kitty deletes each once
+    /// read; one it never read (a terminal that ignored the command, or
+    /// none attached to read it) would otherwise stay behind.
+    pub fn remove_files(&self) {
         for slot in 0..IDS.len() {
             let _ = std::fs::remove_file(temp_path(slot));
         }
-        Ok(())
     }
 }
 

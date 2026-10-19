@@ -24,7 +24,7 @@ use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::{Kitty, Transport};
+use super::kitty::Kitty;
 use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::round::Round;
@@ -35,17 +35,15 @@ use super::{
 };
 use clap::ValueEnum;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
-use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::cap_parser::QueryStdioOptions;
-use ratatui_image::picker::{Capability, Picker, ProtocolType};
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use std::path::PathBuf;
@@ -70,24 +68,23 @@ const ZOOM: f32 = 1.25;
 /// Point size step per `<` or `>`.
 const POINT_STEP: f32 = 1.25;
 
-pub fn run(args: &ViewArgs) -> anyhow::Result<()> {
-    crate::tui::with_terminal(|terminal| {
-        let result = show(args, terminal);
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
-        result
-    })
-}
-
-/// Load the run and show it until the user quits.
-fn show(args: &ViewArgs, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
-    // The terminal is asked first: its background picks the theme the
-    // palette is built in.
-    let (gfx, px, background) = Gfx::pick(args.graphics);
+/// Load the run and show it on `session`'s `terminal` until the user
+/// quits, or until `pinto kill` asks the view to stop.
+pub fn run(
+    session: &legume_tui::Session,
+    terminal: &mut DefaultTerminal,
+    args: &ViewArgs,
+) -> anyhow::Result<()> {
+    // The terminal is fresh: a repaint asked for by now is this one. It
+    // is asked first, before the mouse is on, so no report lands amid its
+    // answer: its background picks the theme the palette is built in.
+    session.take_repaint();
+    let (gfx, px, background) = Gfx::pick(session, args.graphics);
     let theme = args
         .theme
         .or(background.map(Theme::for_background))
         .unwrap_or(Theme::Dark);
-    terminal.draw(|f| {
+    session.draw(terminal, |f| {
         let msg = format!(" loading {} ...", args.prefix());
         f.render_widget(Paragraph::new(msg), f.area());
     })?;
@@ -95,11 +92,11 @@ fn show(args: &ViewArgs, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
     let first = base.run.level_index(args.level.as_deref())?;
     let level = base.level(first, args.edges)?;
 
-    execute!(std::io::stdout(), EnableMouseCapture)?;
-    // Asked while "loading" is on screen.
-    let keys = crate::tui::EnhancedKeys::push();
-    let mut app = App::new(&base, level, args, (gfx, px));
-    app.shift_enter = keys.is_some();
+    // The keyboard was asked with the graphics; the session turns the
+    // mouse on again after every attach.
+    session.set_modes(crate::tui::modes(legume_tui::Mouse::Full))?;
+    let mut app = App::new(&base, level, args, (gfx, px), session);
+    app.shift_enter = session.keyboard_enhanced();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
     app.run(terminal)
 }
@@ -114,22 +111,31 @@ enum Gfx {
 }
 
 impl Gfx {
-    /// The drawing method for `choice`, its frame pixels per cell, and the
-    /// terminal's background colour when it reports one.
-    fn pick(choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
-        let options = QueryStdioOptions {
-            terminal_background_color_osc: true,
-            ..Default::default()
+    /// The drawing method for `choice` on the terminal `session` is
+    /// attached to now, its frame pixels per cell, and the terminal's
+    /// background colour when it reports one. The terminal is asked once,
+    /// for block characters too (their cell shape, and the background).
+    fn pick(session: &legume_tui::Session, choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
+        use legume_tui::graphics::{self, Fallback};
+        let wanted = match choice {
+            Graphics::Auto => None,
+            Graphics::Kitty | Graphics::KittyInline => Some(ProtocolType::Kitty),
+            Graphics::Sixel => Some(ProtocolType::Sixel),
+            Graphics::Iterm2 => Some(ProtocolType::Iterm2),
+            Graphics::Quadrants | Graphics::Symbols | Graphics::Blocks => {
+                Some(ProtocolType::Halfblocks)
+            }
         };
-        let picker =
-            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks());
-        let background = picker.capabilities().iter().find_map(|c| match c {
-            Capability::Background(r, g, b) => Some([*r, *g, *b]),
-            _ => None,
-        });
-        let font = picker.font_size();
-        let (fw, fh) = (font.width.max(1) as f32, font.height.max(1) as f32);
-        let tmux = picker.tmux_detected();
+        let (picker, answer) = graphics::pick_protocol(session, wanted, Fallback::Probe);
+        let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
+        // A picker for block characters has a stock cell: the terminal's,
+        // where it said.
+        let font = match (picker.protocol_type(), answer.and_then(|a| a.cell)) {
+            (ProtocolType::Halfblocks, Some((w, h))) => (w, h),
+            _ => (picker.font_size().width, picker.font_size().height),
+        };
+        let (fw, fh) = (font.0.max(1) as f32, font.1.max(1) as f32);
+        let tmux = graphics::in_tmux(session);
         let kitty = |transport| {
             let kitty = Kitty::new(transport).through_tmux(tmux);
             (Gfx::Kitty(kitty), (fw, fh))
@@ -138,16 +144,11 @@ impl Gfx {
             let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
             (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
         };
-        let via_picker = |kind| {
-            let mut picker = picker.clone();
-            picker.set_protocol_type(kind);
-            (Gfx::Picker(picker, None), (fw, fh))
-        };
+        let via_picker = || (Gfx::Picker(picker.clone(), None), (fw, fh));
         let (gfx, px) = match choice {
-            Graphics::Kitty => kitty(Transport::detect()),
-            Graphics::KittyInline => kitty(Transport::Direct),
-            Graphics::Sixel => via_picker(ProtocolType::Sixel),
-            Graphics::Iterm2 => via_picker(ProtocolType::Iterm2),
+            Graphics::Kitty => kitty(graphics::kitty_transport(session)),
+            Graphics::KittyInline => kitty(graphics::Transport::Inline),
+            Graphics::Sixel | Graphics::Iterm2 => via_picker(),
             Graphics::Quadrants => cells(Glyphs::Quadrants),
             Graphics::Symbols => cells(Glyphs::Symbols),
             Graphics::Blocks => cells(Glyphs::HalfBlocks),
@@ -155,9 +156,9 @@ impl Gfx {
             // and then only as best effort: block characters always work.
             Graphics::Auto if tmux => cells(Glyphs::Quadrants),
             Graphics::Auto => match picker.protocol_type() {
-                ProtocolType::Kitty => kitty(Transport::detect()),
+                ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
                 ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
-                other => via_picker(other),
+                _ => via_picker(),
             },
         };
         (gfx, px, background)
@@ -167,8 +168,8 @@ impl Gfx {
         match self {
             Gfx::Kitty(k) => {
                 let how = match k.transport() {
-                    Transport::File => "file",
-                    Transport::Direct => "inline",
+                    legume_tui::graphics::Transport::Inline => "inline",
+                    _ => "file",
                 };
                 let tmux = if k.via_tmux() { ", tmux" } else { "" };
                 format!("kitty ({how}{tmux})")
@@ -182,6 +183,9 @@ impl Gfx {
 struct App<'a> {
     base: &'a Base,
     args: &'a ViewArgs,
+    /// The session the view runs in: whether a terminal is there to draw
+    /// on, and what it is.
+    session: &'a legume_tui::Session,
     levels: Vec<Option<Level>>,
     cur: usize,
     /// The level the viewer opened on, for `r`.
@@ -282,7 +286,13 @@ struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    fn new(base: &'a Base, level: Level, args: &'a ViewArgs, gfx: (Gfx, (f32, f32))) -> Self {
+    fn new(
+        base: &'a Base,
+        level: Level,
+        args: &'a ViewArgs,
+        gfx: (Gfx, (f32, f32)),
+        session: &'a legume_tui::Session,
+    ) -> Self {
         let mut levels: Vec<Option<Level>> = base.run.levels.iter().map(|_| None).collect();
         let cur = level.index;
         let community = match args.layer {
@@ -294,6 +304,7 @@ impl<'a> App<'a> {
         App {
             base,
             args,
+            session,
             levels,
             cur,
             home: cur,
@@ -377,22 +388,112 @@ impl<'a> App<'a> {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.layout(terminal)?;
         self.fit(self.base.geom.bounds());
+        let (session, choice) = (self.session, self.args.graphics);
         while !self.quit {
-            if self.need_map || self.need_panel {
+            // Detached, nothing is drawn or sent (kitty's images among it)
+            // and lupin is followed; the map waits for the next attach.
+            if session.attached() && (self.need_map || self.need_panel) {
                 self.redraw(terminal)?;
             }
             self.poll_job(terminal)?;
-            if event::poll(Duration::from_millis(250))? {
-                self.handle(event::read()?, terminal)?;
-                while !self.quit && event::poll(Duration::ZERO)? {
-                    self.handle(event::read()?, terminal)?;
+            session.status(&self.session_status());
+            // After an attach the terminal is asked again, before the
+            // mouse is on, and the pictures made anew for it.
+            let mut repicked = None;
+            let round = session.poll_with(terminal, Duration::from_millis(250), || {
+                repicked = Some(Gfx::pick(session, choice));
+                Ok(())
+            })?;
+            match round {
+                legume_tui::Round::Event(ev) => {
+                    self.handle(ev, terminal)?;
+                    while !self.quit && event::poll(Duration::ZERO)? {
+                        self.handle(event::read()?, terminal)?;
+                    }
                 }
+                legume_tui::Round::Repainted => {
+                    if let Some((gfx, px, background)) = repicked {
+                        self.repick(gfx, px, background);
+                    }
+                    self.shift_enter = session.keyboard_enhanced();
+                }
+                // `pinto kill` stops the view as q does.
+                legume_tui::Round::Stopped => self.quit = true,
+                _ => {}
             }
         }
+        self.end_job(terminal)?;
         if let Gfx::Kitty(k) = &mut self.gfx {
-            k.clear(&mut std::io::stdout())?;
+            // Detached, only its files go: there is no screen to clear.
+            if session.attached() {
+                k.clear(&mut std::io::stdout())?;
+            } else {
+                k.remove_files();
+            }
         }
         Ok(())
+    }
+
+    /// On the way out, by `q`, ctrl+c or `pinto kill`: a `relabel --next`
+    /// writing the next round is let finish, so the decisions sent are
+    /// saved whole; an annotation or a preview is stopped (lupin writes a
+    /// round aside and moves it in place last, so none is left half made).
+    fn end_job(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        let Some(job) = self.job.take() else {
+            return Ok(());
+        };
+        if !job.quit() {
+            self.busy(terminal, "finishing lupin's next round ...".into())?;
+        }
+        job.wait();
+        Ok(())
+    }
+
+    /// Take `gfx`, drawing `px` frame pixels per cell, for the terminal
+    /// attached now. Every picture made for the last one (the map's
+    /// protocol or cells, kitty's images, the saved figures' thumbnails)
+    /// is made again; the map frames what it framed. Its `background`,
+    /// when it says, picks the theme unless `--theme` did.
+    fn repick(&mut self, gfx: Gfx, px: (f32, f32), background: Option<Rgb>) {
+        self.upp *= self.px_per_cell.0 / px.0.max(1.);
+        self.gfx = gfx;
+        self.px_per_cell = px;
+        self.thumbs.clear();
+        if let (None, Some(bg)) = (self.args.theme, background) {
+            self.retheme(Theme::for_background(bg));
+        }
+        self.need_map = true;
+        self.need_panel = true;
+    }
+
+    /// Draw in `theme` from here on: every palette and plot made in the
+    /// last one is made again.
+    fn retheme(&mut self, theme: Theme) {
+        if theme == self.base.theme() {
+            return;
+        }
+        self.base.set_theme(theme);
+        let round = self
+            .round
+            .iter_mut()
+            .flat_map(|r| [&mut r.clusters, &mut r.types]);
+        for level in self.levels.iter_mut().flatten().chain(round) {
+            level.palette = theme.palette(level.comm.k);
+        }
+        self.plots.forget();
+        self.thumbs.clear();
+        self.need_map = true;
+        self.need_panel = true;
+    }
+
+    /// What `pinto sessions` says the view is showing: the run and its
+    /// level.
+    fn session_status(&self) -> String {
+        format!(
+            "{} · {}",
+            self.base.run.name(),
+            self.base.run.levels[self.cur].tag
+        )
     }
 
     // ── geometry ────────────────────────────────────────────────────────
@@ -1150,7 +1251,7 @@ impl<'a> App<'a> {
         }
         let theme = self
             .base
-            .theme
+            .theme()
             .to_possible_value()
             .expect("no skipped variants");
         write!(cmd, " --theme {}", theme.get_name()).ok();
@@ -1200,12 +1301,16 @@ impl<'a> App<'a> {
         out
     }
 
-    /// Show `msg` before a blocking load.
+    /// Show `msg` before a blocking load, while a terminal is there.
     fn busy(&mut self, terminal: &mut DefaultTerminal, msg: String) -> anyhow::Result<()> {
+        if !self.session.attached() {
+            return Ok(());
+        }
         self.status = msg;
         let side = self.layout(terminal)?;
         let (panel, _) = self.panel(side.height);
-        terminal.draw(|f| f.render_widget(Paragraph::new(panel), side))?;
+        self.session
+            .draw(terminal, |f| f.render_widget(Paragraph::new(panel), side))?;
         self.status.clear();
         Ok(())
     }
@@ -1221,7 +1326,7 @@ impl<'a> App<'a> {
                     layer: Layer::Community(c),
                     edges: false,
                     focus: None,
-                    theme: self.base.theme,
+                    theme: self.base.theme(),
                     point: self.point,
                 },
             ),
@@ -1234,7 +1339,7 @@ impl<'a> App<'a> {
             layer: self.layer,
             edges: self.edges && !self.level().grouping,
             focus: self.focus(),
-            theme: self.base.theme,
+            theme: self.base.theme(),
             point: self.point,
         }
     }
@@ -1591,7 +1696,7 @@ impl<'a> App<'a> {
         // A community picked in the structure plot, drawn as its propensity.
         if let Some((level, c)) = self.bar_focus_level() {
             let title = format!("{} propensity  Esc", level.comm.name(c));
-            return ramp_legend(Layer::Community(c).ramp(self.base.theme), &title, "1")
+            return ramp_legend(Layer::Community(c).ramp(self.base.theme()), &title, "1")
                 .into_iter()
                 .map(|l| (l, None))
                 .collect();
@@ -1602,7 +1707,7 @@ impl<'a> App<'a> {
         let untagged = |lines: Vec<Line<'static>>| lines.into_iter().map(|l| (l, None)).collect();
         if let Some(g) = &self.gene {
             return untagged(ramp_legend(
-                Layer::Gene.ramp(self.base.theme),
+                Layer::Gene.ramp(self.base.theme()),
                 &format!("{}  o p", g.title()),
                 &g.top_label(),
             ));
@@ -1615,7 +1720,8 @@ impl<'a> App<'a> {
                 let mut out: Vec<(Line, Option<Pick>)> = order[..shown]
                     .iter()
                     .map(|&c| {
-                        let (colour, on) = legend_swatch(c, &level.palette, focus, self.base.theme);
+                        let (colour, on) =
+                            legend_swatch(c, &level.palette, focus, self.base.theme());
                         let text = if on { TStyle::default() } else { style::dim() };
                         let mark = if focus.is_some() && on { "▸" } else { " " };
                         let line = Line::from(vec![
@@ -1637,7 +1743,7 @@ impl<'a> App<'a> {
                 out
             }
             Layer::Entropy => untagged(ramp_legend(
-                self.layer.ramp(self.base.theme),
+                self.layer.ramp(self.base.theme()),
                 &self.layer.legend_title(),
                 "1",
             )),
@@ -1645,7 +1751,7 @@ impl<'a> App<'a> {
             Layer::Gene => Vec::new(),
             Layer::Community(c) => {
                 let title = format!("{}  c/C", self.layer.legend_title());
-                let mut out = ramp_legend(self.layer.ramp(self.base.theme), &title, "1");
+                let mut out = ramp_legend(self.layer.ramp(self.base.theme()), &title, "1");
                 let size = comm.sizes.get(c).copied().unwrap_or(0);
                 out.push(Line::from(vec![
                     Span::raw(" "),
@@ -1748,7 +1854,15 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
     } else {
         &[" s save as  r start over", " Esc back  ? keys  q quit"]
     };
-    text.iter().map(|t| Line::styled(*t, dim)).collect()
+    let mut lines: Vec<Line<'static>> = text.iter().map(|t| Line::styled(*t, dim)).collect();
+    // The detach and switch keys, in a session.
+    if full {
+        lines.extend(
+            crate::tui::session_keys()
+                .map(|(key, what)| Line::styled(format!(" {key}  {what}"), dim)),
+        );
+    }
+    lines
 }
 
 /// `x` stepped by the factor `by`, within `--point-size`'s range, snapped

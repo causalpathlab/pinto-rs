@@ -163,16 +163,20 @@ impl App {
             format!(" {}", self.message.clone().unwrap_or_default()),
             bold(),
         ))];
-        let all = [
+        let mut all = vec![
             if self.shift_enter {
                 "tab / shift-tab / shift-enter / 1-4 screens"
             } else {
                 "tab / shift-tab / 1-4 screens"
-            },
-            "G review and run",
-            "q quit",
+            }
+            .to_string(),
+            "G review and run".to_string(),
+            "q quit".to_string(),
         ];
-        for group in [keys, &all[..]] {
+        // The detach and switch keys, in a session.
+        all.extend(crate::tui::session_keys().map(|(key, what)| format!("{key} {what}")));
+        let keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
+        for group in [&keys, &all] {
             let mut row = String::new();
             for k in group {
                 if !row.is_empty() && row.chars().count() + 3 + k.chars().count() > width {

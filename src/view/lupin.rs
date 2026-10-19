@@ -10,6 +10,8 @@
 //! chain is the one no other round names as its source.
 
 use data_beans::aux::gene_sets::membership_rows;
+use legume_tui::child::Stopper;
+use legume_tui::Group;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -29,6 +31,9 @@ pub fn binary() -> String {
 pub struct Job {
     pub what: JobKind,
     progress: Arc<Mutex<String>>,
+    /// Where [`Job::quit`] reaches the subprocess; one that writes a round
+    /// from the user's decisions (`relabel --next`) is a save, let finish.
+    stopper: Arc<Stopper>,
     handle: Option<JoinHandle<Result<String, String>>>,
 }
 
@@ -46,13 +51,50 @@ impl Job {
     /// Run `lupin args…` in `dir` with `stdin` fed in; the result is its
     /// stdout.
     pub fn spawn(what: JobKind, dir: PathBuf, args: Vec<String>, stdin: Option<String>) -> Self {
+        Job::spawn_of(binary(), what, dir, args, stdin)
+    }
+
+    /// [`Job::spawn`] of the program `bin`.
+    pub(super) fn spawn_of(
+        bin: String,
+        what: JobKind,
+        dir: PathBuf,
+        args: Vec<String>,
+        stdin: Option<String>,
+    ) -> Self {
         let progress = Arc::new(Mutex::new(String::from("starting lupin ...")));
         let shared = Arc::clone(&progress);
-        let handle = std::thread::spawn(move || run(&dir, &args, stdin, &shared));
+        let stopper = Arc::new(match &what {
+            JobKind::Next(_) => Stopper::saving(),
+            JobKind::Annotate(_) | JobKind::Preview => Stopper::new(),
+        });
+        let held = Arc::clone(&stopper);
+        let mut cmd = Command::new(bin);
+        // A group of its own: a stop reaches what it starts, and a save is
+        // spared a hangup of the view. Only the signal: its stderr and
+        // stdout are the view's pipes, so a line it writes once the view is
+        // gone can still end it.
+        crate::tui::child_env().apply(&mut cmd, Group::Own);
+        let handle = std::thread::spawn(move || run(cmd, &dir, &args, stdin, &shared, &held));
         Job {
             what,
             progress,
+            stopper,
             handle: Some(handle),
+        }
+    }
+
+    /// What the view's quit path does to it: a save is let finish, any
+    /// other job is stopped. Whether it was stopped; [`Job::wait`] for it
+    /// either way.
+    pub fn quit(&self) -> bool {
+        self.stopper.quit()
+    }
+
+    /// Wait for the subprocess to end.
+    pub fn wait(mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
         }
     }
 
@@ -75,14 +117,16 @@ impl Job {
     }
 }
 
+/// Run `cmd`, the program set up as the session starts its programs.
 fn run(
+    mut cmd: Command,
     dir: &Path,
     args: &[String],
     stdin: Option<String>,
     progress: &Mutex<String>,
+    stopper: &Stopper,
 ) -> Result<String, String> {
-    let bin = binary();
-    let mut child = Command::new(&bin)
+    let mut child = cmd
         .current_dir(dir)
         .args(args)
         .stdin(if stdin.is_some() {
@@ -93,7 +137,10 @@ fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("cannot run {bin}: {e} (set PINTO_LUPIN to its path)"))?;
+        .map_err(|e| {
+            let bin = Path::new(cmd.get_program()).display();
+            format!("cannot run {bin}: {e} (set PINTO_LUPIN to its path)")
+        })?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
         // A write error shows up as lupin's own complaint on stderr.
         let _ = pipe.write_all(text.as_bytes());
@@ -105,15 +152,22 @@ fn run(
         let _ = out_pipe.read_to_string(&mut s);
         s
     });
-    let last = crate::tui::child::follow_log(child.stderr.take(), |line| {
+    let log = child.stderr.take();
+    stopper.hold(child);
+    let last = legume_tui::child::follow_log(log, |line| {
         if let Ok(mut p) = progress.lock() {
             p.clear();
             p.push_str(line);
         }
     });
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = match stopper.release() {
+        Some(mut child) => child.wait().map_err(|e| e.to_string())?,
+        None => return Err("lupin ended unseen".into()),
+    };
     let stdout = out.join().unwrap_or_default();
-    if status.success() {
+    if stopper.is_stopped() {
+        Err("lupin stopped".into())
+    } else if status.success() {
         Ok(stdout)
     } else if last.is_empty() {
         Err(format!("lupin failed ({status})"))
@@ -331,7 +385,9 @@ pub struct Evidence {
 /// `lupin review -f round --json`, keyed by cluster id. Blocks: a round's
 /// review takes about a second.
 pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
-    let out = Command::new(binary())
+    let mut cmd = Command::new(binary());
+    let out = crate::tui::child_env()
+        .apply(&mut cmd, Group::OwnWhenHosted)
         .args(["review", "-f"])
         .arg(round)
         .arg("--json")
@@ -345,7 +401,7 @@ pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
             .rev()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("");
-        anyhow::bail!("lupin review: {}", crate::tui::child::log_line(last));
+        anyhow::bail!("lupin review: {}", legume_tui::child::log_line(last));
     }
     let map: BTreeMap<String, Reviewed> = serde_json::from_slice(&out.stdout)?;
     Ok(map
@@ -367,7 +423,9 @@ pub fn check() -> Result<(), String> {
     if OK.get().is_some() {
         return Ok(());
     }
-    let out = Command::new(binary())
+    let mut cmd = Command::new(binary());
+    let out = crate::tui::child_env()
+        .apply(&mut cmd, Group::OwnWhenHosted)
         .arg("--version")
         .stdin(Stdio::null())
         .output()

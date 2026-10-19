@@ -173,3 +173,41 @@ fn a_cluster_goes_by_its_id_and_a_type_by_its_whole_name() {
     let got: Vec<String> = (0..2).map(|g| focus_name(&types, g)).collect();
     assert_eq!(got, ["Kupffer cell", "K2 cell"]);
 }
+
+/// A job of `sh -c script` in `dir`, for `what`.
+fn sh_job(what: JobKind, dir: &Path, script: &str) -> Job {
+    let args = vec!["-c".into(), script.into()];
+    Job::spawn_of("sh".into(), what, dir.to_path_buf(), args, None)
+}
+
+#[test]
+fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    // Its sleep let go of the pipes, so only `sh` holds them.
+    let script = "sleep 1 </dev/null >/dev/null 2>&1; echo > written";
+    let written = dir.path().join("written");
+
+    // The quit path lets the next round be written whole.
+    let next = sh_job(
+        JobKind::Next(dir.path().join("r.lupin.json")),
+        dir.path(),
+        script,
+    );
+    assert!(!next.quit(), "a save is not stopped");
+    next.wait();
+    assert!(written.exists(), "the next round is written whole");
+    std::fs::remove_file(&written).unwrap();
+
+    for what in [
+        JobKind::Annotate(dir.path().join("a.lupin.json")),
+        JobKind::Preview,
+    ] {
+        let job = sh_job(what, dir.path(), script);
+        let start = std::time::Instant::now();
+        assert!(job.quit(), "anything else is stopped");
+        job.wait();
+        assert!(start.elapsed() < std::time::Duration::from_millis(900));
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(!written.exists(), "a stopped job writes nothing more");
+    }
+}

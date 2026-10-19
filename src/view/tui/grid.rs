@@ -577,7 +577,7 @@ impl App<'_> {
                 &level.palette,
                 s.bars.size(),
                 focus.as_deref(),
-                self.base.theme,
+                self.base.theme(),
             );
             self.grid.bars.insert(b, (key, drawn));
         }
@@ -633,7 +633,7 @@ impl App<'_> {
             })
             .collect();
 
-        let mut out = Frame::blank(w, h, self.base.theme.background());
+        let mut out = Frame::blank(w, h, self.base.theme().background());
         for (&(_, at, ..), f) in jobs.iter().zip(&maps) {
             blit(&mut out, f, (at.x, at.y));
         }

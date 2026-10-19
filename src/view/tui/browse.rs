@@ -5,7 +5,7 @@
 use super::super::lupin::{self, Panel};
 use crate::tui::browse::{name_then, Browser, Header, Outcome, Wanted};
 use crate::util::metadata::PintoMetadata;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Paragraph;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -170,31 +170,43 @@ fn read_panel(path: &Path, known: &HashSet<String>) -> Option<(usize, usize, usi
     Some((types, genes.len(), found))
 }
 
-/// Browse for a run before the viewer opens, full screen: the path picked
-/// (relative to the working directory when under it), `None` when
-/// cancelled.
-pub fn pick_run() -> anyhow::Result<Option<PathBuf>> {
+/// Browse for a run before the viewer opens, full screen on `session`'s
+/// `terminal`: the path picked (relative to the working directory when
+/// under it), `None` when cancelled or stopped by `pinto kill`. It waits
+/// a round at a time, so an attach repaints it and a kill is seen.
+pub fn pick_run(
+    session: &legume_tui::Session,
+    terminal: &mut ratatui::DefaultTerminal,
+) -> anyhow::Result<Option<PathBuf>> {
     let mut b = Browser::open(lupin::canonical(&std::env::current_dir()?), Runs, None);
-    let picked = crate::tui::with_terminal(|terminal| loop {
-        terminal.draw(|f| {
+    let picked = loop {
+        if session.stop_requested() {
+            break None;
+        }
+        session.draw(terminal, |f| {
             let area = f.area();
             let width = usize::from(area.width).min(110);
             let lines = b.lines(usize::from(area.height), width);
             f.render_widget(Paragraph::new(lines), area);
         })?;
-        if let Event::Key(k) = event::read()? {
-            if k.kind == KeyEventKind::Release {
-                continue;
-            }
-            if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                return Ok(None);
-            }
-            match b.key(k) {
-                Outcome::Cancelled => return Ok(None),
-                Outcome::Chosen(c) => return Ok(Some(c.file())),
-                Outcome::Ignored | Outcome::Moved => {}
-            }
+        session.status("browsing for a run");
+        let Some(Event::Key(k)) = session
+            .poll(terminal, std::time::Duration::from_secs(60))?
+            .event()
+        else {
+            continue;
+        };
+        if k.kind == KeyEventKind::Release {
+            continue;
         }
-    })?;
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            break None;
+        }
+        match b.key(k) {
+            Outcome::Cancelled => break None,
+            Outcome::Chosen(c) => break Some(c.file()),
+            Outcome::Ignored | Outcome::Moved => {}
+        }
+    };
     Ok(picked.map(|p| crate::tui::relative(&p)))
 }

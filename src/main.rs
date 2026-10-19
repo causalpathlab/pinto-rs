@@ -637,43 +637,97 @@ enum Commands {
     #[cfg(feature = "view")]
     #[command(
         about = "View a run's communities on the tissue (multi-resolution)",
-        long_about = "View a pinto run's cells and communities on the tissue.\n\n\
-                      Reads {prefix}.pinto.json and the parquet files it lists:\n\
-                      \x20 cells            every cell's coordinates and batch label\n\
-                      \x20                  (older runs: from coord_pairs)\n\
-                      \x20 propensity       per-cell community mixture, per level\n\
-                      \x20 link_community   per-edge community labels\n\n\
-                      Batches share one coordinate frame, so they are tiled\n\
-                      side by side rather than drawn on top of each other.\n\n\
-                      Examples:\n\
-                      \x20 pinto view results --summary\n\
-                      \x20 pinto view results.pinto.json --level L2 --summary"
+        long_about = format!(
+            "View a pinto run's cells and communities on the tissue.\n\n\
+             Reads {{prefix}}.pinto.json and the parquet files it lists:\n\
+             \x20 cells            every cell's coordinates and batch label\n\
+             \x20                  (older runs: from coord_pairs)\n\
+             \x20 propensity       per-cell community mixture, per level\n\
+             \x20 link_community   per-edge community labels\n\n\
+             Batches share one coordinate frame, so they are tiled\n\
+             side by side rather than drawn on top of each other.\n\n\
+             Examples:\n\
+             \x20 pinto view results --summary\n\
+             \x20 pinto view results.pinto.json --level L2 --summary\n\n\
+             {}",
+            legume_tui::cli::session_help(
+                &tui::TOOL,
+                legume_tui::cli::SessionHelp::new()
+                    .resume_hint(Some("`pinto view` with no run"))
+                    .more("`?` shows the keys in effect.")
+            )
+        )
     )]
     View(view::ViewArgs),
 
     #[cfg(feature = "view")]
     #[command(
         about = "Set up fits in the terminal and run them",
-        long_about = "Set up pinto fits in the terminal and run them.\n\n\
-                      Pick the data files with the coordinate and batch files of\n\
-                      each, queue one or more of lc, cage and dsvd, and change\n\
-                      their flags. Every flag a method has is listed with its help;\n\
-                      hidden ones under `a`.\n\n\
-                      Each data file is its own batch unless `n` names one batch for\n\
-                      all its cells (files given one name are one batch) or `b` takes\n\
-                      a label file, whose labels `e` renames. Label files the run\n\
-                      needs beyond those given are written to `{out}.batches/`.\n\n\
-                      `G` shows the exact commands, checked as pinto would parse\n\
-                      them, and runs them in turn with their log on screen; the\n\
-                      methods a run finished are then unqueued, so `G` again (or\n\
-                      `r` on the Run screen) runs only the rest, each at the --out\n\
-                      it had. Tab or shift-enter moves to the next screen.\n\
-                      Each is saved first as `{out}.cmd.sh`: run it again with\n\
-                      `bash {out}.cmd.sh`. The script refuses to run over an\n\
-                      existing `{out}.pinto.json`, and pinto run never writes over\n\
-                      a script. When the fits finish, `v` opens one in `pinto view`."
+        long_about = format!(
+            "Set up pinto fits in the terminal and run them.\n\n\
+             Pick the data files with the coordinate and batch files of\n\
+             each, queue one or more of lc, cage and dsvd, and change\n\
+             their flags. Every flag a method has is listed with its help;\n\
+             hidden ones under `a`.\n\n\
+             Each data file is its own batch unless `n` names one batch for\n\
+             all its cells (files given one name are one batch) or `b` takes\n\
+             a label file, whose labels `e` renames. Label files the run\n\
+             needs beyond those given are written to `{{out}}.batches/`.\n\n\
+             `G` shows the exact commands, checked as pinto would parse\n\
+             them, and runs them in turn with their log on screen; the\n\
+             methods a run finished are then unqueued, so `G` again (or\n\
+             `r` on the Run screen) runs only the rest, each at the --out\n\
+             it had. Tab or shift-enter moves to the next screen.\n\
+             Each is saved first as `{{out}}.cmd.sh`: run it again with\n\
+             `bash {{out}}.cmd.sh`. The script refuses to run over an\n\
+             existing `{{out}}.pinto.json`, and pinto run never writes over\n\
+             a script. When the fits finish, `v` opens one in `pinto view`.\n\n\
+             {}",
+            legume_tui::cli::session_help(
+                &tui::TOOL,
+                legume_tui::cli::SessionHelp::new()
+                    .what_goes_on("the fits go on")
+                    .resume_hint(Some("`pinto run` with no folder"))
+                    .more("The keys in effect are listed at the foot of the screen.")
+            )
+        )
     )]
     Run(run::RunArgs),
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "Return to a detached `pinto run` or `pinto view`",
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").attach
+    )]
+    Attach(legume_tui::cli::AttachArgs),
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "List the live `pinto run` and `pinto view` sessions",
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").sessions
+    )]
+    Sessions,
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "Stop a `pinto run` or `pinto view` session as ctrl+c in it does",
+        long_about = format!(
+            "{}\n\n{}",
+            legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").kill,
+            "`pinto run` stops the fits it is running first; with no terminal\n\
+             attached, the lines it ends on are said here, and each fit's\n\
+             `{out}.cmd.sh` is there to run it again. `pinto view` lets a\n\
+             relabelling lupin is writing finish and stops any other lupin run."
+        )
+    )]
+    Kill(legume_tui::cli::KillArgs),
+
+    #[cfg(feature = "view")]
+    #[command(
+        about = "Give a `pinto run` or `pinto view` session a label",
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").rename
+    )]
+    Rename(legume_tui::cli::RenameArgs),
 }
 
 /// Expand `pinto lra --from <.pinto.json>` into the full positional /
@@ -806,6 +860,11 @@ fn name_folder_out(commands: &mut Commands) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // A session's host runs this binary again: it serves the session and
+    // exits here, before any of pinto's own work.
+    #[cfg(feature = "view")]
+    legume_tui::serve_if_host();
+
     // Rust ignores SIGPIPE, so printing into a closed pipe (`pinto … | head`)
     // panics. Take the default back: the process just ends, as other
     // command-line tools do.
@@ -864,8 +923,16 @@ fn main() -> anyhow::Result<()> {
             use clap::CommandFactory;
             let mut cli = Cli::command();
             cli.build();
-            run::tui::run(cli, args.dir.clone())?;
+            run::tui::run(cli, args)?;
         }
+        #[cfg(feature = "view")]
+        Commands::Attach(args) => legume_tui::cli::attach(&tui::TOOL, args)?,
+        #[cfg(feature = "view")]
+        Commands::Sessions => legume_tui::cli::sessions(&tui::TOOL)?,
+        #[cfg(feature = "view")]
+        Commands::Kill(args) => legume_tui::cli::kill(&tui::TOOL, args)?,
+        #[cfg(feature = "view")]
+        Commands::Rename(args) => legume_tui::cli::rename(&tui::TOOL, args)?,
     }
 
     Ok(())
@@ -874,3 +941,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "tests/main.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "view"))]
+#[path = "tests/session_cli.rs"]
+mod session_cli_tests;
