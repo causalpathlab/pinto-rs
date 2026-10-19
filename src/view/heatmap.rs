@@ -8,16 +8,17 @@
 //! Genes are chosen in two stages. The model's levels, ln(1 + rate), rank
 //! every gene cheaply and propose [`CANDIDATES`](chart::CANDIDATES) × N per
 //! group; the groups' mean observed ln(1 + count) then ranks those
-//! candidates again, and each group keeps its top N. Without readable counts the model's levels do
-//! both. Rows are z-scored across the groups and clipped to ±[`CLIP`], so a
-//! few outliers do not wash out the rest. The ranking, the z-scores and the
-//! table are legume-tui's chart.
+//! candidates again, and each group keeps its top N. Without readable
+//! counts the model's levels do both. Rows are z-scored across the groups
+//! and clipped to ±[`CLIP`], so a few outliers do not wash out the rest.
+//! With one group in view, genes at 0 there are left out. The ranking, the
+//! z-scores and the table are legume-tui's chart.
 
 use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
 use super::markers::{self, FeatureRates};
 use super::pdf::{chart_fits, chart_page, CHART_PAGE};
-use legume_tui::chart::heatmap::{self as chart, ByFn, Levels};
+use legume_tui::chart::heatmap::{self as chart, Above, ByFn, Levels};
 use legume_tui::chart::heatmap::{Heat, HeatStyle};
 use legume_tui::export::Page;
 
@@ -57,11 +58,9 @@ impl Heatmap {
             .filter(|&c| c < rates.rates.ncols())
             .collect();
         let cols = groups.len();
-        let model = ByFn {
-            rows: rates.names.len(),
-            cols,
-            f: |f: usize, j: usize| rates.rates[(f, groups[j])].max(0.).ln_1p(),
-        };
+        let model = above_zero(rates.names.len(), cols, |f, j| {
+            rates.rates[(f, groups[j])].max(0.).ln_1p()
+        });
 
         // Stage one: the model proposes candidates from every gene.
         let proposed = chart::candidates(&model, per_group);
@@ -89,11 +88,7 @@ impl Heatmap {
                 .map(|&f| (f, (0..cols).map(|j| model.at(f, j)).collect()))
                 .unzip(),
         };
-        let shown = ByFn {
-            rows: rows.len(),
-            cols,
-            f: |r: usize, j: usize| level[r][j],
-        };
+        let shown = above_zero(rows.len(), cols, |r, j| level[r][j]);
         let chosen = chart::by_margin(&shown, per_group);
 
         let genes = chosen
@@ -172,5 +167,14 @@ impl Heatmap {
     /// Each column's group, by name.
     fn group_names(&self, comm: &Communities) -> Vec<String> {
         self.groups.iter().map(|&c| comm.name(c)).collect()
+    }
+}
+
+/// `rows × cols` levels by `f`, floored at 0: they are ln(1 + x) of
+/// non-negative values.
+fn above_zero<F: Fn(usize, usize) -> f32>(rows: usize, cols: usize, f: F) -> Above<ByFn<F>> {
+    Above {
+        levels: ByFn { rows, cols, f },
+        floor: 0.,
     }
 }

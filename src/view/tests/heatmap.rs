@@ -181,3 +181,40 @@ fn a_heatmap_too_large_for_a_page_has_no_figure() {
     let palette = Theme::Light.palette(k);
     assert!(h.figure(&comm, &palette, "heatmap", Theme::Light).is_err());
 }
+
+/// With one group in view, a gene at level 0 there says nothing: it is
+/// left out even when fewer genes than asked for are above it.
+#[test]
+fn one_group_leaves_out_genes_at_zero() {
+    let comm = Communities::from_groups("t", vec![0, 0], vec!["a".into()]);
+    let fr = FeatureRates {
+        names: (0..3).map(|i| format!("g{i}").into()).collect(),
+        rates: Mat::from_row_slice(3, 1, &[2., 0., 1.]),
+    };
+    let h = Heatmap::build(&fr, &comm, 3, Box::new(|_| None));
+    let genes: Vec<&str> = h.genes.iter().map(|(n, _, _)| n.as_ref()).collect();
+    assert_eq!(genes, ["g0", "g2"]);
+}
+
+/// The same holds for observed counts: a candidate never seen in the one
+/// group shown is left out, whatever the model expected of it.
+#[test]
+fn one_group_leaves_out_genes_never_observed() {
+    let comm = Communities::from_groups("t", vec![0, 0], vec!["a".into()]);
+    let fr = FeatureRates {
+        names: (0..2).map(|i| format!("g{i}").into()).collect(),
+        rates: Mat::from_row_slice(2, 1, &[2., 1.]),
+    };
+    let observe = Box::new(|names: &[&str]| {
+        Some(
+            names
+                .iter()
+                .map(|&n| Some(vec![if n == "g0" { 1. } else { 0. }]))
+                .collect(),
+        )
+    });
+    let h = Heatmap::build(&fr, &comm, 2, observe);
+    assert!(h.observed);
+    let genes: Vec<&str> = h.genes.iter().map(|(n, _, _)| n.as_ref()).collect();
+    assert_eq!(genes, ["g0"]);
+}
