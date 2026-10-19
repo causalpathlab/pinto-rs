@@ -12,6 +12,7 @@
 use super::super::color::to_linear;
 use super::super::heatmap::{Heatmap, CLIP};
 use super::super::markers;
+use super::super::pdf::write_chart;
 use super::super::render::Frame;
 use super::super::structure::{Drawn, Structure};
 use super::super::Level;
@@ -22,6 +23,7 @@ use legume_tui::chart::structure::name_rows;
 use legume_tui::chart::{step_top, Step};
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -541,8 +543,8 @@ impl App<'_> {
         self.need_map = true;
     }
 
-    /// The structure plot as a PNG at the export scale, its panels and
-    /// stack listed beside it; with the map's export (`s`).
+    /// The structure plot as a PNG at the export scale and as a PDF figure,
+    /// its panels and stack listed beside them; with the map's export (`s`).
     pub(super) fn export_structure(&mut self, stem: &str) -> anyhow::Result<String> {
         use std::fmt::Write as _;
         if self.plots.structure.is_none() {
@@ -556,9 +558,17 @@ impl App<'_> {
             .frame
             .write_png(std::path::Path::new(&format!("{stem}.png")))?;
         let what = format!("structure · {}", self.group_word());
-        let listed = self.remember(&format!("{stem}.png"), &what, &drawn.frame);
         let level = self.levels[self.bars()].as_ref().expect("loaded");
         let (_, structure) = self.plots.structure.as_ref().expect("built");
+        let focus = self.bars_focus();
+        let page = structure.figure(
+            &level.comm,
+            &level.palette,
+            &what,
+            focus.as_deref(),
+            self.base.theme(),
+        );
+        write_chart(page, Path::new(&format!("{stem}.pdf")))?;
         let mut notes = String::new();
         writeln!(notes, "run      {}", self.base.run.source()).ok();
         writeln!(notes, "bars     level {} propensities", level.comm.tag).ok();
@@ -568,6 +578,7 @@ impl App<'_> {
             drawn.frame.w, drawn.frame.h
         )
         .ok();
+        writeln!(notes, "figure   {stem}.pdf").ok();
         writeln!(notes, "\npanels (first..last pixel column, cells)").ok();
         for p in drawn.panels() {
             writeln!(
@@ -587,10 +598,13 @@ impl App<'_> {
             .ok();
         }
         std::fs::write(format!("{stem}.txt"), notes)?;
-        Ok(format!(", {stem}.png{listed}"))
+        // Listed once every file is written.
+        let listed = self.remember(&format!("{stem}.png"), &what, &drawn.frame);
+        Ok(format!(", {stem}.png .pdf{listed}"))
     }
 
-    /// `s` in the heatmap: its values as a table, with a note.
+    /// `s` in the heatmap: its values as a table and the heatmap as a PDF
+    /// figure, with a note.
     pub(super) fn export_plot(&mut self, stem: &str) -> anyhow::Result<()> {
         use std::fmt::Write as _;
         let Some((_, heat)) = self.plots.heatmap.as_ref() else {
@@ -600,13 +614,31 @@ impl App<'_> {
         std::fs::write(format!("{stem}.tsv"), heat.tsv(&self.level().comm))?;
         let picture = self.heat_picture(heat);
         let what = format!("heatmap · {}", self.group_word());
-        let listed = self.remember(&format!("{stem}.tsv"), &what, &picture);
+        let level = self.level();
+        // Nothing to draw, or too much for a page: no figure, and why.
+        let figure = match heat.figure(&level.comm, &level.palette, &what, self.base.theme()) {
+            Ok(page) => {
+                write_chart(page, Path::new(&format!("{stem}.pdf")))?;
+                Ok(())
+            }
+            Err(why) => Err(why),
+        };
         let mut notes = String::new();
         writeln!(notes, "run      {}", self.base.run.source()).ok();
         writeln!(notes, "table    {stem}.tsv: value per gene and group").ok();
+        match figure {
+            Ok(()) => writeln!(notes, "figure   {stem}.pdf"),
+            Err(why) => writeln!(notes, "figure   none: {why}"),
+        }
+        .ok();
         writeln!(notes, "groups   {}", self.level().comm.tag).ok();
         std::fs::write(format!("{stem}.txt"), notes)?;
-        self.status = format!("saved {stem}.tsv .txt{listed}");
+        // Listed once every file is written.
+        let listed = self.remember(&format!("{stem}.tsv"), &what, &picture);
+        self.status = match figure {
+            Ok(()) => format!("saved {stem}.tsv .pdf .txt{listed}"),
+            Err(why) => format!("saved {stem}.tsv .txt{listed}; no figure: {why}"),
+        };
         Ok(())
     }
 }

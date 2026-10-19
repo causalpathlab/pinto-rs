@@ -185,10 +185,10 @@ round's cell types or clusters):
   clipped to ±2.5. `+`/`-` change the genes per group; clicking a gene maps
   it. The heatmap takes only its own keys, `c`, `s`, `f`, `?` and `q`.
 
-`s` saves the view: the map as PNG, PDF and `.txt`, the structure plot as a
-PNG, the heatmap as a table. Saved files are listed with thumbnails on the
-left of the map, kept in `.pinto-view/` in the working directory (`f` hides
-them).
+`s` saves the view: the map as PNG, PDF and `.txt`, the structure plot as
+a PNG and a PDF figure, the heatmap as a table and a PDF figure. Saved
+files are listed with thumbnails on the left of the map, kept in
+`.pinto-view/` in the working directory (`f` hides them).
 
 Full-resolution images need a terminal with kitty graphics (kitty, Ghostty,
 WezTerm) or sixel; elsewhere the map is drawn with coloured quadrant blocks,

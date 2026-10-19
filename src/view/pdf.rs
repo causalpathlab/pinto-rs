@@ -10,8 +10,49 @@ use super::color::{Rgb, Theme};
 use super::render::{Frame, Viewport};
 use super::scalebar::{self, Units};
 use super::thousands;
+use legume_tui::export::Page;
+use legume_tui::map::text::Font;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
 use std::io::Write;
+
+/// The page of a chart's PDF (the structure plot, the heatmap): a
+/// double-column figure, its bars and cells at 300 dpi, its text about 8 pt.
+pub const CHART_PAGE: legume_tui::export::PageSize = legume_tui::export::PageSize {
+    width_in: 7.0,
+    dpi: 300,
+};
+
+/// The fonts a chart's page sets its text in, regular and bold.
+pub fn chart_fonts() -> (Font, Font) {
+    let px = CHART_PAGE.cell_px();
+    (
+        Font::for_cell_height(px, false),
+        Font::for_cell_height(px, true),
+    )
+}
+
+/// Write a chart's `page` to `path` as a PDF.
+pub fn write_chart(page: Page, path: &std::path::Path) -> std::io::Result<()> {
+    legume_tui::export::write_pdf(&[page], CHART_PAGE.dpi as f32, path)
+}
+
+/// A chart's page, `w × h` pixels on `theme`'s background, drawn by `draw`
+/// in [`chart_fonts`], its text kept as text.
+pub fn chart_page<T>(
+    (w, h): (usize, usize),
+    theme: Theme,
+    draw: impl FnOnce(&mut legume_tui::map::raster::Frame, Font, Font) -> T,
+) -> (Page, T) {
+    let (font, bold) = chart_fonts();
+    let mut frame = legume_tui::map::raster::Frame::blank(w, h, theme.background());
+    frame.keep_text();
+    let drawn = draw(&mut frame, font, bold);
+    let page = Page {
+        img: frame.to_image(),
+        text: frame.take_text(),
+    };
+    (page, drawn)
+}
 
 pub struct Figure<'a> {
     /// The map, without a burnt-in scale bar.

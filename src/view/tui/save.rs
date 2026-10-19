@@ -32,12 +32,17 @@ impl Export {
     /// plot goes beside it as `{stem}-structure`.
     fn suffixes(self) -> &'static [&'static str] {
         match self {
-            Export::Map { structure: true } => {
-                &[".png", ".pdf", ".txt", "-structure.png", "-structure.txt"]
-            }
+            Export::Map { structure: true } => &[
+                ".png",
+                ".pdf",
+                ".txt",
+                "-structure.png",
+                "-structure.pdf",
+                "-structure.txt",
+            ],
             Export::Map { structure: false } => &[".png", ".pdf", ".txt"],
             Export::Grid => &[".png", ".txt"],
-            Export::Heatmap => &[".tsv", ".txt"],
+            Export::Heatmap => &[".tsv", ".pdf", ".txt"],
         }
     }
 
@@ -165,7 +170,9 @@ mod tests {
     #[test]
     fn the_structure_files_count_only_where_the_plot_shows() {
         let with = Export::Map { structure: true }.suffixes();
-        assert!(with.contains(&"-structure.png"));
+        assert!(with.contains(&"-structure.png") && with.contains(&"-structure.pdf"));
+        // The heatmap's figure is a file of its own beside its table.
+        assert_eq!(Export::Heatmap.suffixes(), [".tsv", ".pdf", ".txt"]);
         let without = Export::Map { structure: false }.suffixes();
         assert_eq!(without, [".png", ".pdf", ".txt"]);
     }

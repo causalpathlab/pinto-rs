@@ -13,9 +13,13 @@
 //! few outliers do not wash out the rest. The ranking, the z-scores and the
 //! table are legume-tui's chart.
 
+use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
 use super::markers::{self, FeatureRates};
+use super::pdf::{chart_fonts, chart_page, CHART_PAGE};
 use legume_tui::chart::heatmap::{self as chart, ByFn, Levels};
+use legume_tui::chart::heatmap::{Heat, HeatStyle};
+use legume_tui::export::{Page, MAX_PIXELS};
 
 pub use chart::CLIP;
 
@@ -124,7 +128,74 @@ impl Heatmap {
         };
         let rows: Vec<String> = self.genes.iter().map(|(n, _, _)| n.to_string()).collect();
         let marks: Vec<String> = self.genes.iter().map(|&(_, _, c)| comm.name(c)).collect();
-        let cols: Vec<String> = self.groups.iter().map(|&c| comm.name(c)).collect();
+        let cols = self.group_names(comm);
         chart::tsv(what, "gene", &rows, &marks, &cols, &self.values)
+    }
+
+    /// The heatmap as a page for a PDF: `title`, a cell per gene and group
+    /// on the diverging scale with each group's colour over its column,
+    /// and the genes, groups and key as text. The page is as large as a
+    /// line for every gene and group needs. With nothing to draw, or too
+    /// much for a page, why not.
+    pub fn figure(
+        &self,
+        comm: &Communities,
+        palette: &[Rgb],
+        title: &str,
+        theme: Theme,
+    ) -> Result<Page, &'static str> {
+        let rows: Vec<String> = self.genes.iter().map(|(_, s, _)| s.clone()).collect();
+        let cols = self.group_names(comm);
+        let swatch: Vec<_> = self.groups.iter().map(|&c| to_linear(palette[c])).collect();
+        let style = HeatStyle {
+            missing: to_linear(theme.dimmed()),
+            ..HeatStyle::for_theme(theme.page())
+        };
+        let (font, _) = chart_fonts();
+        let (lh, adv) = (font.line_height(), font.advance());
+        let longest = |names: &[String], most: usize| {
+            names
+                .iter()
+                .map(|n| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(most)
+                * adv
+        };
+        let (names_w, labels_h) = (
+            longest(&rows, style.row_chars),
+            longest(&cols, style.col_chars) + lh,
+        );
+        // A line for each group across, and for each gene down; the group
+        // names under the columns take at most a third of the page.
+        let w = CHART_PAGE
+            .px(1.)
+            .0
+            .max(names_w + (cols.len() + 9) * lh + 6 * adv);
+        let h = (3 * labels_h).max((rows.len() + 3) * (lh + 1) + labels_h);
+        // Past what a page holds (its pixels, or the 200 in a PDF reader
+        // opens), there is no figure; fewer genes per group make one.
+        let longest_px = (200 * CHART_PAGE.dpi) as usize;
+        if w.saturating_mul(h) > MAX_PIXELS || w.max(h) > longest_px {
+            return Err("too large for a page: fewer genes per group (-) draw one");
+        }
+        let heat = Heat {
+            title,
+            rows: &rows,
+            cols: &cols,
+            col_swatch: Some(&swatch),
+            z: &self.z,
+            clip: CLIP,
+            bold_row: None,
+        };
+        let (page, drawn) = chart_page((w, h), theme, |frame, font, bold| {
+            chart::draw_heat(frame, &heat, font, bold, theme.page(), &style)
+        });
+        drawn.map(|_| page)
+    }
+
+    /// Each column's group, by name.
+    fn group_names(&self, comm: &Communities) -> Vec<String> {
+        self.groups.iter().map(|&c| comm.name(c)).collect()
     }
 }

@@ -1,6 +1,7 @@
 use crate::view::color::Theme;
 use crate::view::data::{Communities, NO_CLUSTER};
 use crate::view::structure::Structure;
+use crate::view::tests::fixture::on_page;
 
 /// Five cells over K = 2: shares of community 0 given, the rest is 1's.
 fn comm(share0: &[u8]) -> Communities {
@@ -88,4 +89,53 @@ fn cells_no_group_claims_go_last_as_unassigned() {
         .map(|p| (p.name.as_str(), p.rows.len()))
         .collect();
     assert_eq!(got, [("x", 3), ("unassigned", 2)]);
+}
+
+/// The structure plot as a figure for a PDF: its title, panel names and
+/// key are text over the bars, not pixels.
+#[test]
+fn the_figure_sets_its_title_panels_and_key_as_text() {
+    let c = comm(&[200, 10, 250, 60, 100]);
+    let panel_of = [1, 0, 1, 0, 0];
+    let names = ["x".to_string(), "y".to_string()];
+    let s = Structure::build(&c, &panel_of, &names, &[1, 0]);
+    let palette = Theme::Light.palette(2);
+    let page = s.figure(&c, &palette, "structure · batch", None, Theme::Light);
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for want in ["structure · batch", "x", "y", "a", "b"] {
+        assert!(text.contains(&want), "{want} in {text:?}");
+    }
+    let pdf = legume_tui::export::pdf_bytes(&[page], 300.).unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+}
+
+/// Many communities and long panel names all fit their page: every key
+/// entry is there, and no text runs off it.
+#[test]
+fn a_figure_is_as_tall_as_its_key_and_names() {
+    let k = 30;
+    let n = 300;
+    let group: Vec<u16> = (0..n).map(|i| (i % k) as u16).collect();
+    let names: Vec<Box<str>> = (0..k).map(|c| format!("C{c}").into()).collect();
+    let mut c = Communities::from_groups("t", group, names);
+    for i in 0..n {
+        c.prop[i * k + i % k] = 255;
+    }
+    let panels: Vec<String> = (0..3)
+        .map(|p| format!("a-very-long-panel-name-{p}"))
+        .collect();
+    let panel_of: Vec<u16> = (0..n).map(|i| (i % 3) as u16).collect();
+    let s = Structure::build(&c, &panel_of, &panels, &[0, 1, 2]);
+    let page = s.figure(
+        &c,
+        &Theme::Light.palette(k),
+        "structure",
+        None,
+        Theme::Light,
+    );
+    let text: Vec<&str> = page.text.iter().map(|t| t.text.as_str()).collect();
+    for c in 0..k {
+        assert!(text.contains(&format!("C{c}").as_str()), "C{c} in the key");
+    }
+    on_page(&page);
 }
