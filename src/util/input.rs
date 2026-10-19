@@ -584,8 +584,8 @@ impl SrtInputArgs {
     /// feature names like `ENSG00000105329_TGFB1` register both the full
     /// name and the `TGFB1` suffix as aliases — required for matching
     /// against external feature resources (PPI, marker sets, etc.). `lc`
-    /// and `svd` currently pass `FeatureNameKind::Exact` for strict
-    /// equality.
+    /// and `svd` pass `FeatureNameKind::Exact`, which reads the files on
+    /// the rows they all share.
     pub fn to_read_args_with_kind(&self, feature_kind: FeatureNameKind) -> SRTReadArgs {
         SRTReadArgs {
             data_files: self.data_files.clone(),
@@ -609,11 +609,9 @@ pub struct SRTReadArgs {
     pub batch_files: Option<Vec<Box<str>>>,
     pub header_in_coord: Option<usize>,
     /// Optional row-name canonicalizer for fuzzy cross-file feature/locus
-    /// alignment. Default = `Exact` keeps the strict row-name equality
-    /// check in [`read_data_with_coordinates`] (used by `pinto lc` and
-    /// friends). When non-Exact, canonicalization runs through
-    /// [`SparseIoVec::with_row_canonicalizer`] and the strict check is
-    /// skipped — `SparseIoVec`'s intersection logic handles alignment.
+    /// alignment. `Exact` (used by `pinto lc` and friends) keeps the rows
+    /// every file shares; other kinds canonicalize through
+    /// [`SparseIoVec::with_row_canonicalizer`] and keep the union.
     pub feature_kind: FeatureNameKind,
 }
 
@@ -669,21 +667,17 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     Ok(data_vec)
 }
 
-pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
-    anyhow::ensure!(
-        args.coord_files.len() == args.data_files.len(),
-        "Number of coordinate files ({}) must match number of data files ({})",
-        args.coord_files.len(),
-        args.data_files.len()
-    );
-
+/// Open every data file into one [`SparseIoVec`]. Under `Exact` names the
+/// files are read on the rows all of them share, in whatever order each
+/// lists them: a feature one sample never measured is not a zero there.
+/// Other kinds canonicalize names first and keep their union, as before.
+fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
     let attach_data_name = args.data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
-    let canonicalize_rows = !args.feature_kind.is_exact();
     if let Some(canon) = args.feature_kind.clone().into_canonicalizer() {
-        data_vec = data_vec
-            .with_row_canonicalizer(move |name| canon(name))
-            .expect("with_row_canonicalizer on empty SparseIoVec");
+        data_vec = data_vec.with_row_canonicalizer(move |name| canon(name))?;
+    } else {
+        data_vec = data_vec.with_row_alignment(RowAlignment::Intersect)?;
     }
 
     for data_file in args.data_files.iter() {
@@ -695,19 +689,30 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
         data_vec.push(Arc::from(data), data_name)?;
     }
 
-    // Strict row-name equality check is only meaningful for exact-match
-    // mode; when canonicalization is enabled, SparseIoVec's intersection
-    // already aligns rows and a per-backend equality check would fail on
-    // the very inputs the canonicalizer is meant to handle.
-    if !canonicalize_rows {
-        let row_names = data_vec[0].row_names()?;
-        for j in 1..data_vec.len() {
-            let row_names_j = data_vec[j].row_names()?;
-            if row_names != row_names_j {
-                return Err(anyhow::anyhow!("Row names are not the same"));
+    anyhow::ensure!(data_vec.num_rows() > 0, "the data files share no row name");
+    // Rows spelled differently across files (`ENSG..._GENE1` against
+    // `GENE1`) leave few shared: say so, rather than fit on what is left.
+    if args.feature_kind.is_exact() {
+        let shared = data_vec.num_rows();
+        for (j, file) in args.data_files.iter().enumerate() {
+            let own = data_vec[j].num_rows().unwrap_or(0);
+            if 2 * shared < own {
+                log::warn!("{file}: only {shared} of its {own} rows are in every data file");
             }
         }
     }
+    Ok(data_vec)
+}
+
+pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
+    anyhow::ensure!(
+        args.coord_files.len() == args.data_files.len(),
+        "Number of coordinate files ({}) must match number of data files ({})",
+        args.coord_files.len(),
+        args.data_files.len()
+    );
+
+    let data_vec = open_data_files(&args)?;
 
     let mut coord_vec = Vec::with_capacity(args.coord_files.len());
 
@@ -834,35 +839,7 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
 /// Use this when no coordinate files are provided (expression mode).
 /// Coordinates will be filled in later from expression embeddings.
 pub fn read_data_without_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
-    let attach_data_name = args.data_files.len() > 1;
-    let mut data_vec = SparseIoVec::new();
-    let canonicalize_rows = !args.feature_kind.is_exact();
-    if let Some(canon) = args.feature_kind.clone().into_canonicalizer() {
-        data_vec = data_vec
-            .with_row_canonicalizer(move |name| canon(name))
-            .expect("with_row_canonicalizer on empty SparseIoVec");
-    }
-
-    for data_file in args.data_files.iter() {
-        info!("Importing data file: {}", data_file);
-
-        let data = open_sparse(data_file, args.preload_data)?;
-        let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
-
-        data_vec.push(Arc::from(data), data_name)?;
-    }
-
-    // Strict row-name equality only in exact-match mode (see
-    // `read_data_with_coordinates` for the same rationale).
-    if !canonicalize_rows {
-        let row_names = data_vec[0].row_names()?;
-        for j in 1..data_vec.len() {
-            let row_names_j = data_vec[j].row_names()?;
-            if row_names != row_names_j {
-                return Err(anyhow::anyhow!("Row names are not the same"));
-            }
-        }
-    }
+    let data_vec = open_data_files(&args)?;
 
     // Parse batch membership
     let mut batch_membership = Vec::with_capacity(data_vec.len());
@@ -1436,5 +1413,109 @@ mod tests {
         assert_eq!(r.mat.ncols(), 2);
         assert_eq!(r.cols[0].as_ref(), "cell_centroid_x");
         assert_eq!(r.cols[1].as_ref(), "cell_centroid_y");
+    }
+}
+
+#[cfg(test)]
+mod row_alignment_tests {
+    use super::*;
+    use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
+    use std::io::Write as _;
+
+    /// One zarr file of `rows.len()` x 2 cells, where cell 1 holds `rows[i]`'s
+    /// index plus one at row `i`, so a value names the row it came from.
+    fn write_data(dir: &tempfile::TempDir, tag: &str, rows: &[&str]) -> Box<str> {
+        let path = dir.path().join(format!("{tag}.zarr"));
+        let triplets: Vec<(u64, u64, f32)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i as u64, 1, r[4..].parse::<f32>().unwrap()))
+            .collect();
+        let mut backend = create_sparse_from_triplets(
+            &triplets,
+            (rows.len(), 2, triplets.len()),
+            Some(path.to_str().unwrap()),
+            Some(&SparseIoBackend::Zarr),
+        )
+        .unwrap();
+        let rows: Vec<Box<str>> = rows.iter().map(|&s| s.into()).collect();
+        let cells: Vec<Box<str>> = (0..2).map(|j| format!("{tag}_{j}").into()).collect();
+        backend.register_row_names_vec(&rows);
+        backend.register_column_names_vec(&cells);
+        path.to_str().unwrap().into()
+    }
+
+    fn write_coord(dir: &tempfile::TempDir, tag: &str) -> Box<str> {
+        let path = dir.path().join(format!("{tag}.csv"));
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "barcode,x,y\n{tag}_0,0,0\n{tag}_1,1,1").unwrap();
+        path.to_str().unwrap().into()
+    }
+
+    fn args(data_files: Vec<Box<str>>, coord_files: Vec<Box<str>>) -> SRTReadArgs {
+        SRTReadArgs {
+            data_files,
+            coord_files,
+            preload_data: false,
+            coord_columns: vec![],
+            coord_column_names: vec!["x".into(), "y".into()],
+            batch_files: None,
+            header_in_coord: None,
+            feature_kind: FeatureNameKind::Exact,
+        }
+    }
+
+    /// Samples from different chemistries list different genes, in different
+    /// orders. They are read on the genes all of them measured, each value
+    /// under its own name; a gene some sample never measured is not a zero.
+    fn assert_shared_rows(data: &SparseIoVec) {
+        let rows = data.row_names().unwrap();
+        let mut sorted = rows.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec!["GENE1".into(), "GENE3".into()] as Vec<Box<str>>
+        );
+        let x = data.read_columns_csc([1usize, 3].into_iter()).unwrap();
+        for (r, name) in rows.iter().enumerate() {
+            let want = name[4..].parse::<f32>().unwrap();
+            for c in 0..2 {
+                let col = x.col(c);
+                let got = col
+                    .row_indices()
+                    .iter()
+                    .position(|&i| i == r)
+                    .map(|k| col.values()[k]);
+                assert_eq!(got, Some(want), "{name} in column {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn files_with_different_rows_are_read_on_the_rows_they_share() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = vec![
+            write_data(&dir, "a", &["GENE1", "GENE2", "GENE3"]),
+            write_data(&dir, "b", &["GENE3", "GENE1", "GENE4"]),
+        ];
+        let coord = vec![write_coord(&dir, "a"), write_coord(&dir, "b")];
+
+        let with = read_data_with_coordinates(args(data.clone(), coord)).unwrap();
+        assert_shared_rows(&with.data);
+
+        let without = read_data_without_coordinates(args(data, vec![])).unwrap();
+        assert_shared_rows(&without.data);
+    }
+
+    #[test]
+    fn files_sharing_no_row_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = vec![
+            write_data(&dir, "a", &["GENE1"]),
+            write_data(&dir, "b", &["GENE2"]),
+        ];
+        let coord = vec![write_coord(&dir, "a"), write_coord(&dir, "b")];
+        assert!(read_data_with_coordinates(args(data.clone(), coord)).is_err());
+        assert!(read_data_without_coordinates(args(data, vec![])).is_err());
     }
 }

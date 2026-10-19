@@ -204,6 +204,9 @@ struct App<'a> {
     point: f32,
     /// Batch tile last jumped to.
     tile: Option<usize>,
+    /// The theme `--theme` or the theme key chose; `None` follows the
+    /// terminal's background.
+    theme: Option<Theme>,
     /// Every batch side by side (`w`).
     grid: grid::Grid,
 
@@ -317,6 +320,7 @@ impl<'a> App<'a> {
             edges: args.edges,
             point: args.point_size,
             tile: None,
+            theme: args.theme,
             grid: grid::Grid::default(),
             focus: vec![false; k],
             shown: None,
@@ -453,17 +457,27 @@ impl<'a> App<'a> {
     /// attached now. Every picture made for the last one (the map's
     /// protocol or cells, kitty's images, the saved figures' thumbnails)
     /// is made again; the map frames what it framed. Its `background`,
-    /// when it says, picks the theme unless `--theme` did.
+    /// when it says, picks the theme unless `--theme` or the theme key did.
     fn repick(&mut self, gfx: Gfx, px: (f32, f32), background: Option<Rgb>) {
         self.upp *= self.px_per_cell.0 / px.0.max(1.);
         self.gfx = gfx;
         self.px_per_cell = px;
         self.thumbs.clear();
-        if let (None, Some(bg)) = (self.args.theme, background) {
+        if let (None, Some(bg)) = (self.theme, background) {
             self.retheme(Theme::for_background(bg));
         }
         self.need_map = true;
         self.need_panel = true;
+    }
+
+    /// `t`: the other theme, dark or light (for paper), kept from here on
+    /// whatever the terminal's background; saved figures are drawn in it.
+    fn toggle_theme(&mut self) {
+        let theme = self.base.theme().other();
+        self.theme = Some(theme);
+        self.retheme(theme);
+        let name = theme.to_possible_value().expect("no skipped variants");
+        self.status = format!("{} background  t: the other", name.get_name());
     }
 
     /// Draw in `theme` from here on: every palette and plot made in the
@@ -732,6 +746,7 @@ impl<'a> App<'a> {
             KeyCode::Char('e') => self.toggle_edges(terminal)?,
             KeyCode::Char('b') => self.next_tile(),
             KeyCode::Char('w') => self.toggle_grid(),
+            KeyCode::Char('t') => self.toggle_theme(),
             KeyCode::Char('s') => self.ask_export(),
             KeyCode::Char('x') => self.clear_focus(),
             KeyCode::Char('g') => self.step_gene(1),
@@ -1848,6 +1863,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
                 " H  structure plot → heatmap → map"
             },
             " drag the panel's left edge: width",
+            " t dark / light background (paper)",
             " s save as  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
         ]

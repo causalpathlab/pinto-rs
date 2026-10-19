@@ -59,3 +59,14 @@ fn ramps_start_on_the_background_side() {
         }
     }
 }
+
+#[test]
+fn the_theme_key_flips_between_dark_and_light() {
+    assert_eq!(Theme::Dark.other(), Theme::Light);
+    assert_eq!(Theme::Light.other(), Theme::Dark);
+    // A light map, for paper, is drawn on a light background.
+    assert_eq!(
+        Theme::for_background(Theme::Dark.other().background()),
+        Theme::Light
+    );
+}

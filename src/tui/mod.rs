@@ -59,6 +59,17 @@ pub fn shift_enter(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT)
 }
 
+/// The key that runs what a screen set up, as in senna: ctrl+r, which
+/// every terminal passes on as it is.
+pub(crate) const RUN_KEY: &str = "ctrl+r";
+
+/// Whether `k` is [`RUN_KEY`].
+#[must_use]
+pub(crate) fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    k.code == KeyCode::Char('r') && k.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 /// Run `f` on the whole terminal of `session`, its `modes` on, and give
 /// the terminal back however it ends. Logging is off meanwhile: log lines
 /// would land over the screen. An error it ends with is held where it is

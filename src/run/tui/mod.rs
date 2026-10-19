@@ -418,7 +418,7 @@ impl App {
                     self.screen = *s;
                 }
             }
-            KeyCode::Char('G') => self.open_confirm(),
+            _ if crate::tui::is_run_key(&k) => self.open_confirm(),
             KeyCode::Char('q') => {
                 if self.running() {
                     self.message =
@@ -1035,7 +1035,7 @@ impl App {
                     Err(e) => format!("cannot copy: {e}"),
                 });
             }
-            KeyCode::Enter => {
+            _ if k.code == KeyCode::Enter || crate::tui::is_run_key(&k) => {
                 let Some(planned) = self.confirm.take() else {
                     return;
                 };
@@ -1065,7 +1065,7 @@ impl App {
     }
 
     /// Once the queue has ended, unqueue the methods it finished and move
-    /// their `--out` on, so `G` again runs only those stopped, failed or
+    /// their `--out` on, so ctrl+r again runs only those stopped, failed or
     /// not reached, each at the `--out` it had.
     fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
@@ -1088,8 +1088,9 @@ impl App {
         self.keep_param_method();
         if !done.is_empty() && done.len() < states.len() {
             self.message = Some(format!(
-                "{} done and unqueued: G runs the rest (space queues one again)",
-                done.join(", ")
+                "{} done and unqueued: {} runs the rest (space queues one again)",
+                done.join(", "),
+                crate::tui::RUN_KEY
             ));
         }
     }

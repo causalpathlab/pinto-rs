@@ -47,6 +47,11 @@ fn key(a: &mut App, c: KeyCode) {
     a.key(KeyEvent::new(c, KeyModifiers::NONE));
 }
 
+/// ctrl+r, which runs what a screen set up, as in senna.
+fn run_key(a: &mut App) {
+    a.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+}
+
 /// A fit of method `m` in `dir`, writing to `--out m`.
 fn job(dir: &Path, m: &str) -> jobs::Job {
     jobs::Job {
@@ -182,8 +187,10 @@ fn enter_on_a_problem_goes_to_the_flag_clap_blamed() {
     a.rows[lc].on = true;
     a.rows[lc].form.fields[0].value = "many".into();
     key(&mut a, KeyCode::Char('G'));
+    assert!(a.confirm.is_none(), "G no longer runs");
+    run_key(&mut a);
     assert!(a.confirm.is_some());
-    key(&mut a, KeyCode::Enter);
+    run_key(&mut a);
     assert!(a.confirm.is_none() && a.queue.is_none());
     assert_eq!(a.screen, Screen::Params);
     assert_eq!(a.param_method, lc);
@@ -672,7 +679,7 @@ fn shift_enter_moves_to_the_next_screen_and_enter_on_data_does_not() {
 
 #[cfg(unix)]
 #[test]
-fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
+fn methods_a_run_finished_are_unqueued_so_the_run_key_again_runs_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = app(dir.path());
     let (lc, cage) = (0, 1);
@@ -694,7 +701,11 @@ fn methods_a_run_finished_are_unqueued_so_g_again_runs_the_rest() {
     a.poll();
     assert!(!a.rows[lc].on && a.rows[lc].done);
     assert!(a.rows[cage].on && !a.rows[cage].done);
-    assert!(a.message.as_deref().unwrap().contains("G runs the rest"));
+    assert!(a
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("ctrl+r runs the rest"));
     // The finished one moves on; the failed one keeps its --out, its
     // script there cleared when it runs again.
     assert_eq!(a.rows[lc].out, format!("{}-2", METHODS[lc]));
@@ -768,4 +779,33 @@ fn nothing_is_written_to_a_terminal_that_is_not_there() {
     }
     let e = copy("text", false).unwrap_err();
     assert!(e.to_string().contains("no terminal"), "{e}");
+}
+
+#[test]
+fn a_trend_is_drawn_over_its_own_range() {
+    use super::draw::spark;
+    assert_eq!(spark(&[1.0], 9), "");
+    assert_eq!(spark(&[3.0, 3.0], 9), "▁▁");
+    assert_eq!(spark(&[0.0, 0.5, 1.0], 9), "▁▅█");
+    let long: Vec<f64> = (0..100).map(f64::from).collect();
+    assert_eq!(spark(&long, 10).chars().count(), 10);
+    assert_eq!(spark(&long, 500).chars().count(), super::jobs::TREND);
+    assert_eq!(spark(&long, 1), "");
+}
+
+#[test]
+fn a_running_fit_shows_its_bar_and_trend_in_the_room_it_has() {
+    use super::draw::gauge;
+    use legume_tui::child::Progress;
+    let p = Progress::new(5, 10, "sweeps score=1");
+    let g = gauge(&p, 10, &[3., 2., 1.], 80);
+    assert!(g.starts_with("█████░░░░░ 5/10 sweeps score=1"), "{g}");
+    assert!(g.ends_with("█▅▁"), "{g}");
+    // No room left: the bar alone.
+    assert!(!gauge(&p, 10, &[3., 2., 1.], 20).contains('▁'));
+    // A spinner says what it does.
+    assert_eq!(
+        gauge(&Progress::new(0, 0, "reading"), 10, &[], 80),
+        "… reading"
+    );
 }

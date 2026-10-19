@@ -895,6 +895,11 @@ impl PairEncoder {
             }
             let (nll, pi) = self.evaluate(&stats, &check, batch)?;
             nll_per_count = nll;
+            // The held-out NLL first: it is the score `pinto run` draws.
+            bar.set_message(format!(
+                "pair encoder epoch {}/{epochs} nll={nll:.4}",
+                epoch + 1
+            ));
             info!(
                 "Pair encoder epoch {}/{epochs}: mean step loss {:.2}, held-out NLL/count {:.4}, expert usage {}",
                 epoch + 1,

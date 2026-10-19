@@ -238,7 +238,7 @@ fn kitty_light() -> Replies {
 /// The background of the map in the dark and the light theme, as the
 /// colour of a block character's cell.
 const DARK_MAP: &str = "17;17;20";
-const LIGHT_MAP: &str = "250;250;248";
+const LIGHT_MAP: &str = "238;238;236";
 
 /// Wait for `t` to ask its graphics query after `from`, which its
 /// terminal answers. Where it asked.

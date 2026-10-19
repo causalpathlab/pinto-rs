@@ -13,10 +13,18 @@ pub enum Theme {
 }
 
 impl Theme {
+    /// The other one, for the theme key.
+    pub fn other(self) -> Theme {
+        match self {
+            Theme::Dark => Theme::Light,
+            Theme::Light => Theme::Dark,
+        }
+    }
+
     pub fn background(self) -> Rgb {
         match self {
             Theme::Dark => [17, 17, 20],
-            Theme::Light => [250, 250, 248],
+            Theme::Light => [238, 238, 236],
         }
     }
 
@@ -25,7 +33,7 @@ impl Theme {
     pub fn dimmed(self) -> Rgb {
         match self {
             Theme::Dark => [40, 40, 46],
-            Theme::Light => [222, 222, 226],
+            Theme::Light => [212, 212, 216],
         }
     }
 
