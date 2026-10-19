@@ -120,13 +120,12 @@ pub type MapView = legume_tui::map::viewport::Viewport;
 
 /// Zoom `cam` by `f` (> 1 zooms out) keeping the world point under pixel
 /// `anchor` (the centre without one) under it, its world units a pixel
-/// kept within `(min, max)`, taken either way round (a batch with no
-/// extent is fitted to less than its finest zoom).
-pub fn zoom(cam: &mut MapView, f: f32, anchor: Option<(f32, f32)>, (a, b): (f32, f32)) {
-    let (min, max) = (a.min(b), a.max(b));
+/// kept between `limits`, in either order (a batch with no extent is
+/// fitted to less than its finest zoom; legume-tui orders them).
+pub fn zoom(cam: &mut MapView, f: f32, anchor: Option<(f32, f32)>, limits: (f32, f32)) {
     let (ax, ay) = anchor.unwrap_or((0.5 * cam.w as f32, 0.5 * cam.h as f32));
     let limits = Limits {
-        scale: Some((1. / max, 1. / min)),
+        scale: Some((1. / limits.0, 1. / limits.1)),
         keep_inside: None,
     };
     cam.zoom_at(1. / f, ax, ay, &limits);

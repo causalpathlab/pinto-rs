@@ -10,7 +10,7 @@
 
 use super::color::{to_linear, Rgb, Theme};
 use super::data::{Communities, NO_CLUSTER};
-use super::pdf::{chart_fits, chart_fonts, chart_page, CHART_PAGE};
+use super::pdf::{chart_fits, chart_page, CHART_PAGE};
 use super::render::Frame;
 use legume_tui::chart::structure::{
     self as chart, BarStyle, Figure, Grouping, Layout, Names, Span, Weights,
@@ -127,10 +127,11 @@ impl Structure {
         focus: Option<&[bool]>,
         theme: Theme,
     ) -> Result<Page, &'static str> {
-        let (font, bold) = chart_fonts();
+        if self.0.panels.is_empty() {
+            return Err("nothing to draw: no cell is in a panel");
+        }
+        let (font, bold) = CHART_PAGE.fonts();
         let w = CHART_PAGE.px(1.).0;
-        // A key too long for any page is refused before it is laid out.
-        chart_fits(w, (self.0.stack.len() + 2) * font.line_height())?;
         let palette: Vec<_> = palette.iter().map(|&c| to_linear(c)).collect();
         let key: Vec<String> = (0..comm.k).map(|c| comm.name(c)).collect();
         let style = BarStyle {
@@ -147,14 +148,14 @@ impl Structure {
             bold,
             theme: theme.page(),
         };
-        let h = chart::figure_size(&self.0, &style, &fig, w).max(CHART_PAGE.px(0.4).1);
+        let no_room = "too small to draw: the key or the names leave no room for the bars";
+        let h = chart::figure_size_checked(&self.0, &style, &fig, w).ok_or(no_room)?;
+        let h = h.max(CHART_PAGE.px(0.4).1);
         chart_fits(w, h)?;
         let (page, drawn) = chart_page((w, h), theme, |frame| {
-            chart::figure(frame, &self.0, &weights(comm, None), &style, &fig)
+            chart::try_figure(frame, &self.0, &weights(comm, None), &style, &fig)
         });
-        if drawn.spans.is_empty() {
-            return Err("too small to draw: the key leaves no room for the bars");
-        }
+        drawn.map_err(|_| no_room)?;
         Ok(page)
     }
 }

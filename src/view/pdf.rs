@@ -11,7 +11,6 @@ use super::render::{Frame, Viewport};
 use super::scalebar::{self, Units};
 use super::thousands;
 use legume_tui::export::Page;
-use legume_tui::map::text::Font;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
 use std::io::Write;
 
@@ -22,28 +21,14 @@ pub const CHART_PAGE: legume_tui::export::PageSize = legume_tui::export::PageSiz
     dpi: 300,
 };
 
-/// The fonts a chart's page sets its text in, regular and bold.
-pub fn chart_fonts() -> (Font, Font) {
-    let px = CHART_PAGE.cell_px();
-    (
-        Font::for_cell_height(px, false),
-        Font::for_cell_height(px, true),
-    )
-}
-
 /// Whether a chart's page `w × h` pixels can be drawn and read: within
 /// legume-tui's pixel cap, and within the 200 in a PDF reader opens.
 pub fn chart_fits(w: usize, h: usize) -> Result<(), &'static str> {
-    let longest = (200 * CHART_PAGE.dpi) as usize;
-    if w.saturating_mul(h) > legume_tui::export::MAX_PIXELS || w.max(h) > longest {
-        Err("too large for a page")
-    } else {
-        Ok(())
-    }
+    legume_tui::export::fits((w, h), CHART_PAGE.dpi as f32).map_err(|_| "too large for a page")
 }
 
 /// A chart's page, `w × h` pixels on `theme`'s background, drawn by `draw`
-/// in [`chart_fonts`], its text kept as text.
+/// in the page's fonts, its text kept as text.
 pub fn chart_page<T>(
     (w, h): (usize, usize),
     theme: Theme,

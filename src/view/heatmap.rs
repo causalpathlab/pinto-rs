@@ -16,7 +16,7 @@
 use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
 use super::markers::{self, FeatureRates};
-use super::pdf::{chart_fits, chart_fonts, chart_page, CHART_PAGE};
+use super::pdf::{chart_fits, chart_page, CHART_PAGE};
 use legume_tui::chart::heatmap::{self as chart, ByFn, Levels};
 use legume_tui::chart::heatmap::{Heat, HeatStyle};
 use legume_tui::export::Page;
@@ -160,13 +160,9 @@ impl Heatmap {
             clip: CLIP,
             bold_row: None,
         };
-        let (font, bold) = chart_fonts();
-        let too_large = |_| "too large for a page: fewer genes per group (-) draw one";
-        // A line a gene: too many for any page is refused before laying out.
-        let w = CHART_PAGE.px(1.).0;
-        chart_fits(w, (rows.len() + 3) * font.line_height()).map_err(too_large)?;
-        let (w, h) = chart::heat_size(&heat, font, &style, w);
-        chart_fits(w, h).map_err(too_large)?;
+        let (font, bold) = CHART_PAGE.fonts();
+        let (w, h) = chart::heat_size(&heat, font, &style, CHART_PAGE.px(1.).0);
+        chart_fits(w, h).map_err(|_| "too large for a page: fewer genes per group (-) draw one")?;
         let (page, drawn) = chart_page((w, h), theme, |frame| {
             chart::draw_heat(frame, &heat, font, bold, theme.page(), &style)
         });

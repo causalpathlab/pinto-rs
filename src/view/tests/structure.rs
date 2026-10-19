@@ -192,3 +192,16 @@ fn a_figure_that_cannot_be_drawn_is_refused() {
         .figure(&c, &palette, "structure", None, Theme::Light)
         .is_err());
 }
+
+/// A level with no cell in any panel has no bars to draw, so no figure.
+#[test]
+fn a_figure_with_no_bars_is_refused() {
+    let mut c = one_each(2, |i| format!("C{i}"));
+    c.cluster.fill(NO_CLUSTER);
+    let s = Structure::build(&c, &[0; 2], &["all".into()], &[0]);
+    assert!(s.layout().panels.is_empty());
+    let palette = Theme::Light.palette(2);
+    assert!(s
+        .figure(&c, &palette, "structure", None, Theme::Light)
+        .is_err());
+}
