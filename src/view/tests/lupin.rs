@@ -8,10 +8,10 @@ fn write(path: &Path, body: &str) {
 
 #[test]
 fn labels_compare_as_lupin_folds_them() {
-    assert_eq!(label_key("CD4 T, naive"), "CD4_T_naive");
-    assert_eq!(label_key("CD4_T__naive"), label_key("CD4 T naive"));
+    assert_eq!(label_key("CT3 X, sub"), "CT3_X_sub");
+    assert_eq!(label_key("CT3_X__sub"), label_key("CT3 X sub"));
     // lupin keeps case: two spellings are two types.
-    assert_ne!(label_key("T cell"), label_key("t cell"));
+    assert_ne!(label_key("CT1 a"), label_key("ct1 a"));
 }
 
 #[test]
@@ -20,12 +20,12 @@ fn panels_read_tab_or_comma_lines_and_skip_headers() {
     let p = dir.path().join("panel.tsv");
     write(
         &p,
-        "gene\tcell_type\n# note\n\nCD3E\tT cell\nCD2,T_cell\nMS4A1\tB cell\n",
+        "gene\tcell_type\n# note\n\nGENE1\tCT1 a\nGENE2,CT1_a\nGENE3\tCT2 a\n",
     );
     let panel = Panel::read(&p).unwrap();
     assert_eq!(panel.types.len(), 2);
-    assert_eq!(panel.genes("T cell").unwrap(), ["CD3E", "CD2"]);
-    assert_eq!(panel.types_of("ms4a1"), ["B cell"]);
+    assert_eq!(panel.genes("CT1 a").unwrap(), ["GENE1", "GENE2"]);
+    assert_eq!(panel.types_of("gene3"), ["CT2 a"]);
 }
 
 /// Warnings logged on this thread, counted by [`count_logs`].
@@ -87,11 +87,11 @@ fn panels_read_by_the_shared_two_column_rule() {
 fn panels_keep_case_and_drop_labels_that_key_to_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("panel.tsv");
-    write(&p, "CD3E\tT cell\nCD2\tt cell\nCD19\t_\n");
+    write(&p, "GENE1\tCT1 a\nGENE2\tct1 a\nGENE4\t_\n");
     let panel = Panel::read(&p).unwrap();
-    assert_eq!(panel.genes("T cell").unwrap(), ["CD3E"]);
-    assert_eq!(panel.genes("t cell").unwrap(), ["CD2"]);
-    assert!(panel.types_of("CD19").is_empty());
+    assert_eq!(panel.genes("CT1 a").unwrap(), ["GENE1"]);
+    assert_eq!(panel.genes("ct1 a").unwrap(), ["GENE2"]);
+    assert!(panel.types_of("GENE4").is_empty());
 }
 
 #[test]
@@ -162,16 +162,16 @@ fn a_grouping_draws_as_one_hot_communities() {
 #[test]
 fn a_cluster_goes_by_its_id_and_a_type_by_its_whole_name() {
     use crate::view::focus_name;
-    let names = ["K3 T_cell", "K12 –"].map(Box::<str>::from).to_vec();
+    let names = ["K3 CT1_a", "K12 –"].map(Box::<str>::from).to_vec();
     let ids = ["K3", "K12"].map(Box::<str>::from).to_vec();
     let clusters = Communities::from_groups("g", vec![0, 1], names).with_ids(ids);
     let got: Vec<String> = (0..2).map(|g| focus_name(&clusters, g)).collect();
     assert_eq!(got, ["K3", "K12"]);
     // A cell type is its whole name, even one that starts like an id.
-    let names = ["Kupffer cell", "K2 cell"].map(Box::<str>::from).to_vec();
+    let names = ["Kx cell", "K2 cell"].map(Box::<str>::from).to_vec();
     let types = Communities::from_groups("g", vec![0, 1], names);
     let got: Vec<String> = (0..2).map(|g| focus_name(&types, g)).collect();
-    assert_eq!(got, ["Kupffer cell", "K2 cell"]);
+    assert_eq!(got, ["Kx cell", "K2 cell"]);
 }
 
 /// A job of `sh -c script` in `dir`, for `what`.

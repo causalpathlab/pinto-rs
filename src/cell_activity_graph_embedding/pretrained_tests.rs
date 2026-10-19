@@ -377,7 +377,7 @@ fn dictionary_width_counts_the_value_columns() -> anyhow::Result<()> {
 #[test]
 fn only_the_gene_rows_of_a_mixed_table_match() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["CD4", "T/NK/ILC", "CD4", "MYC"]);
+    let dict_features = names(&["GENE1", "CT1/CT2/CT3", "GENE1", "GENE2"]);
     let path = write_dictionary(&dir, "fne", &dict_features, 2, 0.0)?;
     let prefix = path.strip_suffix(".parquet").unwrap();
     data_beans::aux::feature_types::write_feature_types(
@@ -386,7 +386,7 @@ fn only_the_gene_rows_of_a_mixed_table_match() -> anyhow::Result<()> {
         &names(&["cell_type", "cell_type", "gene", "gene"]),
     )?;
 
-    let run_features = names(&["CD4", "MYC"]);
+    let run_features = names(&["GENE1", "GENE2"]);
     let profiles = Mat::zeros(2, 2);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -396,7 +396,7 @@ fn only_the_gene_rows_of_a_mixed_table_match() -> anyhow::Result<()> {
         feature_profiles: &|| Ok(profiles.clone()),
         membership_init: None,
     })?;
-    // CD4 takes the gene row (row 2: 20, 21), not the cell type's (row 0).
+    // GENE1 takes the gene row (row 2: 20, 21), not the cell type's (row 0).
     assert_eq!(
         out.e_feat.row(0).iter().copied().collect::<Vec<_>>(),
         [20.0, 21.0]

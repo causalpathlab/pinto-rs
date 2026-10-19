@@ -100,8 +100,8 @@ pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
 pinto view out --png big.png --point-size 2     # larger cell discs
 pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
-pinto view out --png cd3e.png --gene CD3E       # one gene: observed ln(1+count)
-pinto view out --png cd3e.png --gene CD3E --expected --clip 95
+pinto view out --png gene.png --gene SYMBOL     # one gene: observed ln(1+count)
+pinto view out --png gene.png --gene SYMBOL --expected --clip 95
 ```
 
 In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
@@ -199,11 +199,13 @@ By default (`--graphics auto`) the viewer asks the terminal what it
 supports. It uses kitty graphics on kitty and Ghostty, iTerm2 images on
 iTerm2, WezTerm and VS Code, and sixel on foot and xterm. Everywhere else,
 and inside tmux, it draws coloured quadrant blocks (2×2 pixels per
-character). `--graphics` names a way instead: `symbols` for block
+character). `--graphics` picks one instead: `sixel` and `iterm2` for those
+protocols, `quadrants` for the blocks above, `symbols` for block
 boundaries at eighths of a character, `blocks` for half-blocks, `kitty`
 for kitty graphics through a temporary file (inline over ssh), and
-`kitty-inline` for kitty graphics always inline. Inside tmux this goes
-through passthrough (best effort; needs `allow-passthrough` on).
+`kitty-inline` for kitty graphics always inline. Inside tmux,
+`kitty-inline` goes through passthrough (best effort; needs
+`allow-passthrough` on).
 
 ### Sessions
 

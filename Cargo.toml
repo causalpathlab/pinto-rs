@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.13.13"
+version = "0.13.14"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -84,7 +84,7 @@ pdf-writer = { version = "0.15", optional = true }
 # characters, the structure plot and heatmap and their PDF figures, the
 # save field and the gallery of saved figures. The same floor as in
 # [dev-dependencies].
-legume-tui = { version = "0.3.11", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
+legume-tui = { version = "0.3.13", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -92,4 +92,4 @@ libc = "0.2"
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
-legume-tui = { version = "0.3.11", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.3.13", default-features = false, features = ["testing"] }

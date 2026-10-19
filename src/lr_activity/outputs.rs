@@ -13,8 +13,8 @@ pub struct LrActivityRow {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
     /// Canonical row name of the ligand gene as it appears in the
-    /// expression backend's `row_names()` (e.g. `ENSG00000112715_VEGFA_Gene`).
-    /// May differ from the user-supplied `ligand` (e.g. just `VEGFA`).
+    /// expression backend's `row_names()` (e.g. `ENSG99999999904_GENE4_Gene`).
+    /// May differ from the user-supplied `ligand` (e.g. just `GENE4`).
     /// Persisted to the JSON sidecar so downstream tools can look up
     /// expression directly without re-running the gene resolver.
     pub ligand_resolved: Box<str>,

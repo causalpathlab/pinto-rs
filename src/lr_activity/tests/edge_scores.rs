@@ -36,7 +36,7 @@ fn fixture_edges() -> Vec<Edge> {
 /// L is global gene 10 (row 0 of x_lr), R is global gene 11 (row 1),
 /// and gene 12 (row 2) is never detected anywhere.
 fn fixture_genes() -> GeneFixture {
-    let pairs = vec![("LIG1".into(), "REC1".into(), 10usize, 11usize)];
+    let pairs = vec![("LIGAND1".into(), "RECEPTOR1".into(), 10usize, 11usize)];
     let mut gene_to_local: HashMap<usize, usize> = HashMap::default();
     gene_to_local.insert(10, 0);
     gene_to_local.insert(11, 1);
@@ -151,7 +151,7 @@ fn scores_match_hand_built_tables() {
 #[test]
 fn swapping_ligand_and_receptor_transposes_but_scores_agree() {
     let (mut pairs, _, _) = fixture_genes();
-    pairs.push(("REC1".into(), "LIG1".into(), 11, 10));
+    pairs.push(("RECEPTOR1".into(), "LIGAND1".into(), 11, 10));
     let (rows, _) = run_pairs(&fixture_edges(), pairs);
     for key in [("a", 0u32), ("b", 0), ("a", 1)] {
         let group: Vec<_> = rows
@@ -181,16 +181,22 @@ fn swapping_ligand_and_receptor_transposes_but_scores_agree() {
 #[test]
 fn a_prior_dominated_pair_is_nan_not_scored() {
     let pairs = vec![
-        ("LIG1".into(), "REC1".into(), 10usize, 11usize),
-        ("LIG1".into(), "REC2".into(), 10, 12),
+        ("LIGAND1".into(), "RECEPTOR1".into(), 10usize, 11usize),
+        ("LIGAND1".into(), "RECEPTOR2".into(), 10, 12),
     ];
     let (rows, _) = run_pairs(&fixture_edges(), pairs);
     let c1: Vec<_> = rows
         .iter()
         .filter(|r| r.batch.as_ref() == "a" && r.community == 1)
         .collect();
-    let supported = c1.iter().find(|r| r.receptor.as_ref() == "REC1").unwrap();
-    let empty = c1.iter().find(|r| r.receptor.as_ref() == "REC2").unwrap();
+    let supported = c1
+        .iter()
+        .find(|r| r.receptor.as_ref() == "RECEPTOR1")
+        .unwrap();
+    let empty = c1
+        .iter()
+        .find(|r| r.receptor.as_ref() == "RECEPTOR2")
+        .unwrap();
     assert_eq!(empty.rec_rate, 0.0);
     assert!(empty.log_or.is_nan(), "unmeasurable, not a number");
     assert!(empty.log_or_se.is_nan(), "the SE must not pretend either");
@@ -335,7 +341,7 @@ fn configuration_counts_and_purity_match_hand_enumeration() {
     // A pair with no co-detected contact reports NaN purity, not zero.
     let (rows, _) = run_pairs(
         &fixture_edges(),
-        vec![("LIG1".into(), "REC2".into(), 10, 12)],
+        vec![("LIGAND1".into(), "RECEPTOR2".into(), 10, 12)],
     );
     let empty = rows
         .iter()

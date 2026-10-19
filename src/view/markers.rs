@@ -19,9 +19,9 @@ pub struct Marker {
     pub fold: f32,
 }
 
-/// `ENSG00000116824_CD2` → `CD2`: the symbol half of a composite
+/// `ENSG99999999902_GENE2` → `GENE2`: the symbol half of a composite
 /// `{id}_{symbol}` feature name. Only Ensembl ids are dropped, so a name
-/// that merely contains the separator (`HLA_DRA`) stays whole.
+/// that merely contains the separator (`GENE6_X`) stays whole.
 pub fn symbol(name: &str) -> &str {
     match split_id_name(name) {
         (id, sym) if id.starts_with("ENS") && !sym.is_empty() && id != name => sym,
@@ -68,7 +68,7 @@ impl FeatureRates {
         scored
     }
 
-    /// `CD2×58.0 CD3E×55.2 …` for the top `n` of community `k`.
+    /// `GENE2×58.0 GENE1×55.2 …` for the top `n` of community `k`.
     pub fn summary(&self, k: usize, n: usize) -> String {
         self.top(k, n)
             .iter()

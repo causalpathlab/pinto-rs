@@ -457,7 +457,7 @@ pub struct Communities {
     /// (a lupin round's clusters or cell types); `None` names them `C{c}`.
     pub names: Option<Vec<Box<str>>>,
     /// Short ids `--focus` takes, when the names are longer (a round's
-    /// cluster `K3`, named `K3 T_cell`); `None` uses the names.
+    /// cluster `K3`, named `K3 CT1_a`); `None` uses the names.
     pub ids: Option<Vec<Box<str>>>,
 }
 

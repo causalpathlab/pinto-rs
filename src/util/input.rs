@@ -581,9 +581,9 @@ impl SrtInputArgs {
     /// `feature_kind` selects how row names get canonicalized for
     /// cross-file / cross-resource matching. `pinto cage` uses
     /// `FeatureNameKind::Gene { delim: '_' }` (or `auto_detect`'d) so
-    /// feature names like `ENSG00000105329_TGFB1` register both the full
-    /// name and the `TGFB1` suffix as aliases — required for matching
-    /// against external feature resources (PPI, marker sets, etc.). `lc`
+    /// feature names like `ENSG…_SYMBOL` register both the full name and
+    /// the `SYMBOL` suffix as aliases, which matching against external
+    /// feature resources (PPI, marker sets, etc.) needs. `lc`
     /// and `svd` pass `FeatureNameKind::Exact`, which reads the files on
     /// the rows they all share.
     pub fn to_read_args_with_kind(&self, feature_kind: FeatureNameKind) -> SRTReadArgs {

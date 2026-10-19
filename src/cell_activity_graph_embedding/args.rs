@@ -88,11 +88,11 @@ pub struct CellActivityGraphEmbeddingArgs {
         value_enum,
         help = "Feature-name canonicalization for matching external resources",
         long_help = "Row-name canonicalization strategy:\n\
-                     auto  — peek row names and auto-detect (default)\n\
-                     exact — strict string equality (pinto lc / svd default)\n\
-                     gene  — gene symbols; split on '_' so 'ENSG..._TGFB1' and 'TGFB1' alias\n\
-                     locus — normalize chrom-coord names; collapse overlaps mixed —\n\
-                     per-row dispatch (RNA+ATAC paired axes)"
+                     auto:  peek row names and auto-detect (default)\n\
+                     exact: strict string equality (pinto lc / svd default)\n\
+                     gene:  gene symbols; split on '_' so 'ENSG…_SYMBOL' and 'SYMBOL' alias\n\
+                     locus: normalize chrom-coord names; collapse overlaps\n\
+                     mixed: per-row dispatch (RNA+ATAC paired axes)"
     )]
     #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
