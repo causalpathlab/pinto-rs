@@ -16,7 +16,7 @@
 //! grid rows it overlaps.
 
 use super::color::{self, Ramp, Rgb, Theme};
-use super::data::{Communities, Edges, Geometry, Rect};
+use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
@@ -349,6 +349,12 @@ impl<'a> Paint<'a> {
         self.cell(comm, i).map(color::linear)
     }
 
+    /// Whether cell `i` has a level to draw: on a gene map, a cell whose
+    /// file never measured the gene has none.
+    fn has_level(&self, comm: &Communities, i: usize) -> bool {
+        self.layer != Layer::Gene || comm.cluster[i] != NO_CLUSTER
+    }
+
     fn cell_colour(&self, comm: &Communities, i: usize) -> Rgb {
         match self.layer {
             Layer::Argmax => self.community(comm.cluster[i]),
@@ -360,6 +366,7 @@ impl<'a> Paint<'a> {
             Layer::Community(c) => self
                 .ramp
                 .at_u8(self.row(comm, i).get(c).copied().unwrap_or(0)),
+            _ if !self.has_level(comm, i) => self.theme.no_community(),
             Layer::Gene => self.ramp.at_u8(self.row(comm, i)[0]),
         }
     }
@@ -373,7 +380,11 @@ impl<'a> Paint<'a> {
             Layer::Soft => self.mix(sums.iter().copied()),
             Layer::Entropy => self.ramp.at(level.entropy[b] / n),
             Layer::Community(c) => self.ramp.at(sums.get(c).map_or(0., |p| p / n)),
-            Layer::Gene => self.ramp.at(sums[0] / n),
+            // Over the cells with a level; none, and the bin has none.
+            Layer::Gene => match n - level.absent[b] as f32 {
+                m if m > 0. => self.ramp.at(sums[0] / m),
+                _ => self.theme.no_community(),
+            },
         };
         self.dim(c, self.focused_share(sums.iter().copied()))
     }
@@ -574,18 +585,19 @@ fn draw_points(canvas: &mut Canvas, scene: &Scene, vp: &Viewport, paint: &Paint,
     }
 }
 
-/// `acc` is per-thread scratch: linear RGB sums and a count per pixel.
+/// `acc` is per-thread scratch: linear RGB sums and a count per pixel of
+/// the cells with a level, and a count of those without.
 fn draw_average(
     canvas: &mut Canvas,
     scene: &Scene,
     vp: &Viewport,
     paint: &Paint,
     full: f32,
-    acc: &mut Vec<[f32; 4]>,
+    acc: &mut Vec<[f32; 5]>,
 ) {
     let (w, r0, r1) = (canvas.w, canvas.r0, canvas.r1);
     acc.clear();
-    acc.resize((r1 - r0) * w, [0.; 4]);
+    acc.resize((r1 - r0) * w, [0.; 5]);
     let (xs, ys) = canvas.bins(scene.grid, vp, 0.);
     for iy in ys {
         for ix in xs.clone() {
@@ -597,6 +609,10 @@ fn draw_average(
                     continue;
                 }
                 let a = &mut acc[(py as usize - r0) * w + px as usize];
+                if !paint.has_level(scene.comm, i) {
+                    a[4] += 1.;
+                    continue;
+                }
                 let c = paint.cell_linear(scene.comm, i);
                 for ch in 0..3 {
                     a[ch] += c[ch];
@@ -605,10 +621,16 @@ fn draw_average(
             }
         }
     }
+    // A pixel's colour is its cells with a level; with none, it shows them
+    // as having none. Every cell counts towards its cover.
+    let none = paint.theme.no_community();
     for (a, px) in acc.iter().zip(canvas.buf.as_chunks_mut::<4>().0) {
+        let cover = ((a[3] + a[4]) / full).min(1.);
         if a[3] > 0. {
             let c = [0, 1, 2].map(|ch| color::encode_fast(a[ch] / a[3]));
-            blend(&mut px[..3], c, (a[3] / full).min(1.));
+            blend(&mut px[..3], c, cover);
+        } else if a[4] > 0. {
+            blend(&mut px[..3], none, cover);
         }
     }
 }

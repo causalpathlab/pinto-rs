@@ -3,7 +3,7 @@
 
 use super::batch;
 use super::jobs::{State, TREND};
-use super::{App, Kind, Screen, Target};
+use super::{App, Kind, Review, Screen, Target};
 use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
 use legume_tui::child::Progress;
@@ -633,7 +633,7 @@ impl App {
     /// `width` wide: long command lines are wrapped here, so the scroll and
     /// the keys below count every row on screen.
     pub(super) fn confirm_lines(&self, rows: usize, width: usize) -> Vec<Line<'static>> {
-        let Some(planned) = &self.confirm else {
+        let Some(Review { planned, .. }) = &self.confirm else {
             return Vec::new();
         };
         let wrap = |text: String, style: Style| wrap(&text, style, width);
@@ -688,11 +688,13 @@ impl App {
         out.push(Line::from(""));
         let mut foot = wrap(
             if blocked {
-                " enter go to the problem   c copy   ↑ ↓ scroll   esc back"
+                " enter go to the problem   c copy   ↑ ↓ scroll   esc back".to_string()
             } else {
-                " enter or ctrl+r run   c copy the commands   ↑ ↓ scroll   esc back"
-            }
-            .into(),
+                format!(
+                    " enter or {} run   c copy the commands   ↑ ↓ scroll   esc back",
+                    crate::tui::RUN_KEY
+                )
+            },
             dim(),
         );
         if let Some(m) = &self.message {

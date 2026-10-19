@@ -649,6 +649,11 @@ pub fn open_sparse(
     Ok(data)
 }
 
+/// Open `data_files` on the union of their rows, for reading expression
+/// back (propensity, the viewer's gene maps): a feature some file never
+/// measured is kept, and [`crate::util::coverage::Coverage`] tells its
+/// unmeasured cells from zeros. The fits read the shared rows instead
+/// ([`read_data_with_coordinates`]).
 pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     if data_files.is_empty() {
         return Err(anyhow::anyhow!("empty data files"));
@@ -1419,30 +1424,25 @@ mod tests {
 #[cfg(test)]
 mod row_alignment_tests {
     use super::*;
-    use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
     use std::io::Write as _;
 
-    /// One zarr file of `rows.len()` x 2 cells, where cell 1 holds `rows[i]`'s
-    /// index plus one at row `i`, so a value names the row it came from.
+    /// Each row's value in cell 1 of every file, so a value names its row.
+    fn value(row: &str) -> f32 {
+        ["GENE1", "GENE2", "GENE3", "GENE4"]
+            .iter()
+            .position(|&r| r == row)
+            .unwrap() as f32
+            + 1.
+    }
+
+    /// A file of `rows` by 2 cells, cell 1 holding each row's [`value`].
     fn write_data(dir: &tempfile::TempDir, tag: &str, rows: &[&str]) -> Box<str> {
-        let path = dir.path().join(format!("{tag}.zarr"));
         let triplets: Vec<(u64, u64, f32)> = rows
             .iter()
             .enumerate()
-            .map(|(i, r)| (i as u64, 1, r[4..].parse::<f32>().unwrap()))
+            .map(|(i, r)| (i as u64, 1, value(r)))
             .collect();
-        let mut backend = create_sparse_from_triplets(
-            &triplets,
-            (rows.len(), 2, triplets.len()),
-            Some(path.to_str().unwrap()),
-            Some(&SparseIoBackend::Zarr),
-        )
-        .unwrap();
-        let rows: Vec<Box<str>> = rows.iter().map(|&s| s.into()).collect();
-        let cells: Vec<Box<str>> = (0..2).map(|j| format!("{tag}_{j}").into()).collect();
-        backend.register_row_names_vec(&rows);
-        backend.register_column_names_vec(&cells);
-        path.to_str().unwrap().into()
+        crate::test_support::write_zarr(dir.path(), tag, rows, 2, &triplets)
     }
 
     fn write_coord(dir: &tempfile::TempDir, tag: &str) -> Box<str> {
@@ -1478,7 +1478,7 @@ mod row_alignment_tests {
         );
         let x = data.read_columns_csc([1usize, 3].into_iter()).unwrap();
         for (r, name) in rows.iter().enumerate() {
-            let want = name[4..].parse::<f32>().unwrap();
+            let want = value(name);
             for c in 0..2 {
                 let col = x.col(c);
                 let got = col

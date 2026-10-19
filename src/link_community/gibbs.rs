@@ -559,13 +559,13 @@ fn partition_edges_balanced(
     balanced
 }
 
-/// Pick the index with the highest value.
 /// A sweep bar's message: its name, which sweep, and the edges it moved
 /// as the one `key=value`, the score `pinto run` draws.
 pub(crate) fn sweep_message(name: &str, sweep: usize, moves: usize) -> String {
     format!("{name} {}: moves={moves}", sweep + 1)
 }
 
+/// Pick the index with the highest value.
 fn argmax_log(log_probs: &[f64]) -> usize {
     let mut best = 0;
     let mut best_val = log_probs[0];

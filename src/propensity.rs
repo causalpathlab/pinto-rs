@@ -1,4 +1,5 @@
 use crate::util::common::*;
+use crate::util::coverage::{measured_mass, Coverage};
 use crate::util::input::read_expr_data;
 use clap::Parser;
 use dmatrix_gamma::GammaMatrix;
@@ -278,69 +279,14 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         info!("Estimate cluster-specific feature expressions");
         let data_vec = read_expr_data(data_files)?;
         let features = data_vec.row_names()?;
-        let data_vertices = data_vec.column_names()?;
-
-        let jobs = legume_numeric::matrix::utils::generate_minibatch_intervals(
-            data_vec.num_columns(),
-            data_vec.num_rows(),
-            args.block_size,
-        );
-
-        let prog_bar = new_progress_bar(jobs.len() as u64).with_message("feature-module blocks");
-        // Folded, not collected: `sum_dk` is `[n_features x k]` no matter how few
-        // cells a job reads, so collecting one per job makes peak memory scale
-        // with the job count. `generate_minibatch_intervals` sizes a block to
-        // bound READ work and knows nothing about that, so a wide, sparse input
-        // lands on the small-block floor and produces thousands of jobs. Same
-        // shape as `fit_feature_community_param`.
-        let (mut sum_dk, n_k_sum) = jobs
-            .par_iter()
-            .progress_with(prog_bar.clone())
-            .try_fold(
-                || {
-                    (
-                        Mat::zeros(features.len(), prop_kn.nrows()),
-                        DVec::zeros(prop_kn.nrows()),
-                    )
-                },
-                |(mut acc_dk, mut acc_k), &(lb, ub)| -> anyhow::Result<(Mat, DVec)> {
-                    let x_dn = data_vec.read_columns_csc(lb..ub)?;
-                    let mut p_kn = Mat::zeros(prop_kn.nrows(), x_dn.ncols());
-
-                    for (i, v) in data_vertices[lb..ub].iter().enumerate() {
-                        if let Some(&j) = vertex_index.get(v) {
-                            p_kn.column_mut(i).copy_from(&prop_kn.column(j));
-                        }
-                    }
-
-                    acc_k += p_kn.column_sum();
-                    acc_dk += x_dn * p_kn.transpose();
-                    Ok((acc_dk, acc_k))
-                },
-            )
-            .try_reduce(
-                || {
-                    (
-                        Mat::zeros(features.len(), prop_kn.nrows()),
-                        DVec::zeros(prop_kn.nrows()),
-                    )
-                },
-                |(mut a_dk, mut a_k), (b_dk, b_k)| {
-                    a_dk += b_dk;
-                    a_k += b_k;
-                    Ok((a_dk, a_k))
-                },
-            )?;
-        prog_bar.finish_and_clear();
-        let n_1k = n_k_sum.transpose();
+        let (mut sum_dk, denom_dk) =
+            feature_stats(&data_vec, &prop_kn, &vertex_index, args.block_size)?;
 
         info!("Applying NB Fisher-info weighting to feature-cluster stats");
         let w = compute_nb_fisher_weights(&data_vec, args.block_size)?;
         apply_feature_weights(&mut sum_dk, &w);
 
         let mut gamma_param = GammaMatrix::new((sum_dk.nrows(), sum_dk.ncols()), 1.0, 1.0);
-
-        let denom_dk = DVec::from_element(sum_dk.nrows(), 1.0) * n_1k;
 
         gamma_param.update_stat(&sum_dk, &denom_dk);
         gamma_param.calibrate();
@@ -368,4 +314,133 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
 
     info!("Done");
     Ok(())
+}
+
+/// Each feature's summed counts per community, and the community mass
+/// they are averaged over: `n_features × k` each. A feature is averaged
+/// over the cells of the files that measured it.
+fn feature_stats(
+    data_vec: &SparseIoVec,
+    prop_kn: &Mat,
+    vertex_index: &HashMap<Box<str>, usize>,
+    block_size: Option<usize>,
+) -> anyhow::Result<(Mat, Mat)> {
+    let data_vertices = data_vec.column_names()?;
+
+    let jobs = legume_numeric::matrix::utils::generate_minibatch_intervals(
+        data_vec.num_columns(),
+        data_vec.num_rows(),
+        block_size,
+    );
+
+    let prog_bar = new_progress_bar(jobs.len() as u64).with_message("feature-module blocks");
+    // Folded, not collected: `sum_dk` is `[n_features x k]` no matter how few
+    // cells a job reads, so collecting one per job makes peak memory scale
+    // with the job count. `generate_minibatch_intervals` sizes a block to
+    // bound READ work and knows nothing about that, so a wide, sparse input
+    // lands on the small-block floor and produces thousands of jobs. Same
+    // shape as `fit_feature_community_param`.
+    let coverage = Coverage::of(data_vec);
+    let n_files = coverage.as_ref().map_or(1, Coverage::n_files);
+    let (sum_dk, n_bk) = jobs
+        .par_iter()
+        .progress_with(prog_bar.clone())
+        .try_fold(
+            || {
+                (
+                    Mat::zeros(data_vec.num_rows(), prop_kn.nrows()),
+                    Mat::zeros(n_files, prop_kn.nrows()),
+                )
+            },
+            |(mut acc_dk, mut acc_bk), &(lb, ub)| -> anyhow::Result<(Mat, Mat)> {
+                let x_dn = data_vec.read_columns_csc(lb..ub)?;
+                let mut p_kn = Mat::zeros(prop_kn.nrows(), x_dn.ncols());
+
+                for (i, v) in data_vertices[lb..ub].iter().enumerate() {
+                    if let Some(&j) = vertex_index.get(v) {
+                        p_kn.column_mut(i).copy_from(&prop_kn.column(j));
+                    }
+                }
+
+                // Each cell's mass goes to its file: a feature is
+                // averaged over the files that measured it.
+                for i in 0..p_kn.ncols() {
+                    let b = coverage.as_ref().map_or(0, |c| c.file(lb + i));
+                    let mut row = acc_bk.row_mut(b);
+                    row += p_kn.column(i).transpose();
+                }
+                acc_dk += x_dn * p_kn.transpose();
+                Ok((acc_dk, acc_bk))
+            },
+        )
+        .try_reduce(
+            || {
+                (
+                    Mat::zeros(data_vec.num_rows(), prop_kn.nrows()),
+                    Mat::zeros(n_files, prop_kn.nrows()),
+                )
+            },
+            |(mut a_dk, mut a_bk), (b_dk, b_bk)| {
+                a_dk += b_dk;
+                a_bk += b_bk;
+                Ok((a_dk, a_bk))
+            },
+        )?;
+    prog_bar.finish_and_clear();
+
+    let mut denom_dk = Mat::zeros(sum_dk.nrows(), sum_dk.ncols());
+    for d in 0..denom_dk.nrows() {
+        for (k, m) in measured_mass(&n_bk, coverage.as_ref(), d)
+            .into_iter()
+            .enumerate()
+        {
+            denom_dk[(d, k)] = m;
+        }
+    }
+    Ok((sum_dk, denom_dk))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::write_zarr;
+
+    #[test]
+    fn a_feature_s_sums_divide_by_the_cells_of_files_that_measured_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // GENE2 is on the first file's panel only: 4 and 0 in its cells.
+        let files = vec![
+            write_zarr(
+                dir.path(),
+                "a",
+                &["GENE1", "GENE2"],
+                2,
+                &[(0, 0, 1.), (0, 1, 1.), (1, 0, 4.)],
+            ),
+            write_zarr(dir.path(), "b", &["GENE1"], 2, &[(0, 0, 1.), (0, 1, 1.)]),
+        ];
+        let data = read_expr_data(&files).unwrap();
+        let names = data.column_names().unwrap();
+        let vertex_index: HashMap<Box<str>, usize> = names
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, n)| (n, i))
+            .collect();
+        // One community holding every cell wholly.
+        let prop_kn = Mat::from_element(1, names.len(), 1.);
+
+        let (sum_dk, denom_dk) = feature_stats(&data, &prop_kn, &vertex_index, Some(1)).unwrap();
+        let row = |f: &str| {
+            data.row_names()
+                .unwrap()
+                .iter()
+                .position(|r| r.as_ref() == f)
+                .unwrap()
+        };
+        let (g1, g2) = (row("GENE1"), row("GENE2"));
+        assert_eq!((sum_dk[(g1, 0)], denom_dk[(g1, 0)]), (4., 4.));
+        // Over file a's two cells, not all four.
+        assert_eq!((sum_dk[(g2, 0)], denom_dk[(g2, 0)]), (4., 2.));
+    }
 }

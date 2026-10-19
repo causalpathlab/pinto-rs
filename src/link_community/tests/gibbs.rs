@@ -272,6 +272,8 @@ fn test_memoized_stats_consistency() {
     }
 }
 
+// The score is read by `pinto run`, which the viewer feature builds.
+#[cfg(feature = "view")]
 #[test]
 fn a_sweep_bar_scores_the_edges_it_moved() {
     use legume_tui::child::Progress;

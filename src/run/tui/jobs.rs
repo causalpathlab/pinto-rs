@@ -242,24 +242,21 @@ fn say(s: &Mutex<Shared>, i: usize, line: String) {
 /// A frame `p` of job `i`'s progress bar: where it stands, and a new
 /// point of its trend when it says a new score.
 fn progress(s: &Mutex<Shared>, i: usize, p: Progress) {
-    let Ok(mut s) = s.lock() else { return };
     let label = label(&p.what);
+    let Ok(mut s) = s.lock() else { return };
     // A new bar (none before, restarted, another length or name) starts a
     // new trend: its scores are not on the last one's scale.
     let slot = &mut s.bars[i];
-    if slot
-        .as_ref()
-        .is_none_or(|b| p.pos < b.now.pos || p.len != b.now.len || label != b.label)
-    {
-        *slot = Some(Bar {
-            now: p.clone(),
+    let b = match slot {
+        Some(b) if p.pos >= b.now.pos && p.len == b.now.len && label == b.label => b,
+        _ => slot.insert(Bar {
+            now: Progress::default(),
             at: std::time::Instant::now(),
             trend: Vec::new(),
             scored: String::new(),
             label,
-        });
-    }
-    let b = slot.as_mut().expect("set above");
+        }),
+    };
     // A fit says each score once, and the bar redraws it until the next:
     // a point per message, so a score that holds still counts each time.
     if let Some(v) = p.score().filter(|_| p.what != b.scored) {

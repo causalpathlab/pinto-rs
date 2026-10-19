@@ -1,6 +1,7 @@
 pub mod batch_effects;
 pub mod cell_pairs;
 pub mod common;
+pub mod coverage;
 pub mod device;
 pub mod dictionary_rows;
 pub mod edge_clustering;

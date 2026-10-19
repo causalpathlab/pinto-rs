@@ -12,10 +12,11 @@
 //! pyramid, so the renderer draws them like a single community's
 //! propensity.
 
-use super::data::{Communities, Geometry};
+use super::data::{Communities, Geometry, NO_CLUSTER};
 use super::index::{Grid, Pyramid};
 use super::markers::{symbol, FeatureRates};
 use crate::util::common::*;
+use crate::util::coverage::{measured_mass, Coverage};
 use crate::util::input::read_expr_data;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,7 +56,16 @@ pub struct GeneMap {
 }
 
 impl GeneMap {
-    fn new(feature: &str, source: Source, values: &[f32], clip: f32, grid: &Grid) -> Self {
+    /// `values` per cell; with `measured`, a cell it marks false has no
+    /// level (its file never measured the feature), drawn as such.
+    fn new(
+        feature: &str,
+        source: Source,
+        values: &[f32],
+        measured: Option<&[bool]>,
+        clip: f32,
+        grid: &Grid,
+    ) -> Self {
         let top = top_of(values, clip);
         let scaled: Vec<u8> = values
             .iter()
@@ -67,7 +77,13 @@ impl GeneMap {
                 }
             })
             .collect();
-        let comm = Communities::single(feature, scaled);
+        let mut comm = Communities::single(feature, scaled);
+        if let Some(measured) = measured {
+            for (c, _) in comm.cluster.iter_mut().zip(measured).filter(|(_, &m)| !m) {
+                *c = NO_CLUSTER;
+            }
+            comm.sizes = vec![measured.iter().filter(|&&m| m).count()];
+        }
         let pyramid = Pyramid::build(grid, &comm);
         GeneMap {
             feature: feature.into(),
@@ -105,6 +121,7 @@ impl GeneMap {
             &rates.names[g],
             Source::Expected,
             &values,
+            None,
             clip,
             grid,
         ))
@@ -166,6 +183,8 @@ pub struct Expression {
     features: Vec<Box<str>>,
     /// Map cell of each data column, if it is on the map.
     cell_of: Vec<Option<u32>>,
+    /// Which file measured which feature, when some file lacks some.
+    coverage: Option<Coverage>,
 }
 
 impl Expression {
@@ -177,10 +196,12 @@ impl Expression {
             .iter()
             .map(|name| geom.index.get(name).map(|&i| i as u32))
             .collect();
+        let coverage = Coverage::of(&data);
         Ok(Expression {
             data,
             features,
             cell_of,
+            coverage,
         })
     }
 
@@ -193,11 +214,16 @@ impl Expression {
         group: &[u16],
         k: usize,
     ) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
-        // Cells per group, among the data's columns on the map.
-        let mut n = vec![0f32; k];
-        for &i in self.cell_of.iter().flatten() {
-            if let Some(c) = n.get_mut(group[i as usize] as usize) {
-                *c += 1.;
+        // Cells per file and group, among the data's columns on the map; a
+        // feature's means divide by the files that measured it.
+        let cov = self.coverage.as_ref();
+        let mut n_bk = Mat::zeros(cov.map_or(1, Coverage::n_files), k);
+        for (col, cell) in self.cell_of.iter().enumerate() {
+            let Some(&c) = cell.and_then(|i| group.get(i as usize)) else {
+                continue;
+            };
+            if (c as usize) < k {
+                n_bk[(cov.map_or(0, |v| v.file(col)), c as usize)] += 1.;
             }
         }
         // One row per read: data-beans 0.6.12 reading many rows of a
@@ -213,10 +239,12 @@ impl Expression {
                 let mut sum = vec![0f32; k];
                 for (_, col, &count) in row.triplet_iter() {
                     let cell = self.cell_of.get(col).copied().flatten();
-                    if let Some(s) = cell.and_then(|i| sum.get_mut(group[i as usize] as usize)) {
+                    let c = cell.and_then(|i| group.get(i as usize));
+                    if let Some(s) = c.and_then(|&c| sum.get_mut(c as usize)) {
                         *s += count.ln_1p();
                     }
                 }
+                let n = measured_mass(&n_bk, cov, g);
                 Ok(Some(
                     sum.iter().zip(&n).map(|(s, n)| s / n.max(1.)).collect(),
                 ))
@@ -241,10 +269,20 @@ impl Expression {
                 values[i as usize] = count.ln_1p();
             }
         }
+        // A cell no data file holds, or whose file never measured the
+        // feature, has no level.
+        let cov = self.coverage.as_ref();
+        let mut measured = vec![false; geom.n()];
+        for (col, cell) in self.cell_of.iter().enumerate() {
+            if let Some(i) = cell {
+                measured[*i as usize] = cov.is_none_or(|c| c.measured(g, col));
+            }
+        }
         Ok(GeneMap::new(
             &self.features[g],
             Source::Observed,
             &values,
+            Some(&measured),
             clip,
             grid,
         ))
