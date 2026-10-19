@@ -34,7 +34,7 @@ use super::{
 use clap::ValueEnum;
 use legume_tui::chrome::rgb;
 use legume_tui::map::kitty::cellart::{Cells, Glyphs};
-use legume_tui::map::kitty::{Kitty, MapGraphics};
+use legume_tui::map::kitty::{Kitty, MapGraphics, Resolved};
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -44,7 +44,7 @@ use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use std::path::PathBuf;
@@ -120,58 +120,43 @@ impl Gfx {
         use legume_tui::graphics::{self, Fallback};
         let (picker, answer) = graphics::pick_protocol(session, choice.protocol(), Fallback::Probe);
         let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
-        // A picker for block characters has a stock cell: the terminal's,
-        // where it said.
-        let font = match (picker.protocol_type(), answer.and_then(|a| a.cell)) {
-            (ProtocolType::Halfblocks, Some((w, h))) => (w, h),
-            _ => (picker.font_size().width, picker.font_size().height),
-        };
-        let (fw, fh) = (font.0.max(1) as f32, font.1.max(1) as f32);
-        let tmux = graphics::in_tmux(session);
-        let kitty = |transport| {
-            let kitty = Kitty::new(transport).named("pinto").through_tmux(tmux);
-            (Gfx::Kitty(kitty), (fw, fh))
-        };
-        let cells = |glyphs: Glyphs| {
-            let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
-            (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
-        };
-        let via_picker = || (Gfx::Picker(picker.clone(), None), (fw, fh));
-        let (gfx, px) = if let Some(glyphs) = choice.glyphs() {
-            cells(glyphs)
-        } else {
-            match choice {
-                MapGraphics::Kitty => kitty(graphics::kitty_transport(session)),
-                MapGraphics::KittyInline => kitty(graphics::Transport::Inline),
-                MapGraphics::Sixel | MapGraphics::Iterm2 => via_picker(),
-                // Auto, and any choice legume-tui adds that pinto does not
-                // draw itself. tmux passes kitty graphics through only with
-                // allow-passthrough, and then only as best effort: block
-                // characters always work.
-                _ if tmux => cells(Glyphs::Quadrants),
-                _ => match picker.protocol_type() {
-                    ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
-                    ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
-                    _ => via_picker(),
-                },
+        let (fw, fh) = graphics::cell_size(&picker, answer);
+        let resolved = choice.resolve(
+            graphics::in_tmux(session),
+            picker.protocol_type(),
+            graphics::kitty_transport(session),
+        );
+        let (gfx, px) = match resolved {
+            Resolved::Kitty { transport, tmux } => {
+                let kitty = Kitty::new(transport).named("pinto").through_tmux(tmux);
+                (Gfx::Kitty(kitty), (fw, fh))
+            }
+            Resolved::Picker(p) => {
+                debug_assert_eq!(
+                    p,
+                    picker.protocol_type(),
+                    "the picker holds what was chosen"
+                );
+                (Gfx::Picker(picker, None), (fw, fh))
+            }
+            Resolved::Cells(glyphs) => {
+                let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
+                (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
             }
         };
         (gfx, px, background)
     }
 
-    fn name(&self) -> String {
+    fn name(&self) -> &'static str {
         match self {
-            Gfx::Kitty(k) => {
-                let how = match k.transport() {
-                    legume_tui::graphics::Transport::Inline => "inline",
-                    _ => "file",
-                };
-                let tmux = if k.via_tmux() { ", tmux" } else { "" };
-                format!("kitty ({how}{tmux})")
-            }
-            Gfx::Picker(p, _) => format!("{:?}", p.protocol_type()).to_lowercase(),
-            Gfx::Cells(glyphs, _) => glyphs.name().into(),
+            Gfx::Kitty(k) => Resolved::Kitty {
+                transport: k.transport(),
+                tmux: k.via_tmux(),
+            },
+            Gfx::Picker(p, _) => Resolved::Picker(p.protocol_type()),
+            Gfx::Cells(glyphs, _) => Resolved::Cells(*glyphs),
         }
+        .name()
     }
 }
 
@@ -1541,7 +1526,7 @@ impl<'a> App<'a> {
                     ms(self.send_time)
                 ),
             ),
-            row("screen", self.gfx.name()),
+            row("screen", self.gfx.name().into()),
         ];
         if let Some(r) = self.round_line() {
             lines.insert(5, row("round", r));
