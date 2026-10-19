@@ -1,4 +1,5 @@
 use crate::view::color::*;
+use legume_tui::map::colour::diverging;
 
 #[test]
 fn a_theme_reads_its_background_and_the_key_flips_it() {

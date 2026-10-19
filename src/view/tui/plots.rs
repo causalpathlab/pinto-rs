@@ -18,7 +18,7 @@ use super::super::structure::{Drawn, Structure};
 use super::super::Level;
 use super::{legend_text, rgb, App, Pick, Show};
 use crate::tui::style;
-use legume_tui::chart::heatmap::thumbnail;
+use legume_tui::chart::heatmap::{cell_colour, thumbnail};
 use legume_tui::chart::structure::name_rows;
 use legume_tui::chart::{step_top, Step};
 use ratatui::style::Style as TStyle;
@@ -76,24 +76,15 @@ impl Cache {
     }
 }
 
-/// A heatmap cell's colour: its clipped z on the diverging scale; a gene
-/// missing from the data in the dimmed tissue colour.
-fn z_colour(z: f32, theme: super::super::color::Theme) -> [u8; 3] {
-    if z.is_finite() {
-        super::super::color::diverging(z / CLIP)
-    } else {
-        theme.dimmed()
-    }
-}
-
 /// The heatmap's colour key: -2.5 … 0 … +2.5.
 fn heat_key() -> Line<'static> {
     let mut spans = vec![Span::raw(format!("  z -{CLIP} "))];
     for i in 0..21 {
-        let t = i as f32 / 10. - 1.;
+        // As the cells are coloured; every z here is a number.
+        let z = (i as f32 / 10. - 1.) * CLIP;
         spans.push(Span::styled(
             "█",
-            TStyle::default().fg(rgb(super::super::color::diverging(t))),
+            TStyle::default().fg(rgb(cell_colour(z, CLIP, [0; 3]))),
         ));
     }
     spans.push(Span::raw(format!(
@@ -463,6 +454,7 @@ impl App<'_> {
             .gene
             .as_ref()
             .map(|g| markers::symbol(&g.feature).to_string());
+        let missing = self.base.theme().dimmed();
         let mut rows = Vec::new();
         for (r, (feature, symbol, _)) in heat.genes.iter().enumerate().take(room) {
             let on = drawn.as_deref() == Some(symbol.as_str());
@@ -474,7 +466,7 @@ impl App<'_> {
             for &z in &heat.z[r * cols..(r + 1) * cols] {
                 spans.push(Span::styled(
                     "█".repeat(cw),
-                    TStyle::default().fg(rgb(z_colour(z, self.base.theme()))),
+                    TStyle::default().fg(rgb(cell_colour(z, CLIP, missing))),
                 ));
             }
             rows.push((self.map.y + out.len() as u16, feature.clone()));

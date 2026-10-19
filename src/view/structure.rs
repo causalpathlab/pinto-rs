@@ -91,9 +91,8 @@ impl Structure {
         theme: Theme,
     ) -> Drawn {
         let bg = theme.background();
-        // From bytes, so the bars come back as the palette's own bytes.
-        let mut frame =
-            legume_tui::map::raster::Frame::from_srgba(w, h, &Frame::blank(w, h, bg).rgba, bg);
+        // Encoded exactly, so the bars come back as the palette's own bytes.
+        let mut frame = legume_tui::map::raster::Frame::blank_exact(w, h, bg);
         let palette: Vec<_> = palette.iter().map(|&c| to_linear(c)).collect();
         let style = BarStyle {
             palette: &palette,

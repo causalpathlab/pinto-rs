@@ -120,16 +120,15 @@ impl Gfx {
         use legume_tui::graphics::{self, Fallback};
         let (picker, answer) = graphics::pick_protocol(session, choice.protocol(), Fallback::Probe);
         let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
-        let (fw, fh) = graphics::cell_size(&picker, answer);
         let resolved = choice.resolve(
             graphics::in_tmux(session),
             picker.protocol_type(),
             graphics::kitty_transport(session),
         );
-        let (gfx, px) = match resolved {
+        let px = resolved.pixels_per_cell(graphics::cell_size(&picker, answer));
+        let gfx = match resolved {
             Resolved::Kitty { transport, tmux } => {
-                let kitty = Kitty::new(transport).named("pinto").through_tmux(tmux);
-                (Gfx::Kitty(kitty), (fw, fh))
+                Gfx::Kitty(Kitty::new(transport).named("pinto").through_tmux(tmux))
             }
             Resolved::Picker(p) => {
                 debug_assert_eq!(
@@ -137,12 +136,9 @@ impl Gfx {
                     picker.protocol_type(),
                     "the picker holds what was chosen"
                 );
-                (Gfx::Picker(picker, None), (fw, fh))
+                Gfx::Picker(picker, None)
             }
-            Resolved::Cells(glyphs) => {
-                let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
-                (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
-            }
+            Resolved::Cells(glyphs) => Gfx::Cells(glyphs, None),
         };
         (gfx, px, background)
     }
