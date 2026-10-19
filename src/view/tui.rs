@@ -19,7 +19,7 @@ pub use browse::pick_run;
 
 use crate::tui::style;
 
-use super::cellart::{rgb, Cells, Glyphs};
+use super::cellart::{Cells, Glyphs};
 use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
@@ -34,6 +34,7 @@ use super::{
     Graphics, Level, Show, ViewArgs, FIT_MARGIN,
 };
 use clap::ValueEnum;
+use legume_tui::chrome::rgb;
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,

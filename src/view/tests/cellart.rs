@@ -1,5 +1,5 @@
 use crate::view::cellart::*;
-use crate::view::color::{encode_fast, linear};
+use crate::view::color::{encode, linear, to_linear};
 use crate::view::render::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -9,21 +9,17 @@ use ratatui::widgets::Widget;
 const RED: [u8; 3] = [200, 30, 30];
 const BLUE: [u8; 3] = [30, 30, 200];
 
-fn lin(c: [u8; 3]) -> [f32; 3] {
-    c.map(linear)
-}
-
 /// Mean of sRGB colours, taken in linear light as the fit does.
 fn mean(cs: &[[u8; 3]]) -> [u8; 3] {
-    [0, 1, 2].map(|ch| encode_fast(cs.iter().map(|c| linear(c[ch])).sum::<f32>() / cs.len() as f32))
+    [0, 1, 2].map(|ch| encode(cs.iter().map(|c| linear(c[ch])).sum::<f32>() / cs.len() as f32))
 }
 
 fn quadrant(px: [[u8; 3]; 4]) -> (char, [u8; 3], [u8; 3]) {
-    fit(&px.map(lin), Glyphs::Quadrants)
+    fit(&px.map(to_linear), Glyphs::Quadrants)
 }
 
 fn symbol(px: &[[u8; 3]; 64]) -> (char, [u8; 3], [u8; 3]) {
-    fit(&px.map(lin), Glyphs::Symbols)
+    fit(&px.map(to_linear), Glyphs::Symbols)
 }
 
 /// Cells of 1:2 terminal characters.

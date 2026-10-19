@@ -151,7 +151,7 @@ pub fn shrink(frame: &Frame, width: usize) -> Frame {
                     n += 1.;
                 }
             }
-            let [r, g, b] = sum.map(|s| color::encode_fast(s / n.max(1.)));
+            let [r, g, b] = sum.map(|s| color::encode(s / n.max(1.)));
             rgba.extend([r, g, b, 255]);
         }
     }

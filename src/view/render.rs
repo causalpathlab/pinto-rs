@@ -253,7 +253,7 @@ impl<'a> Paint<'a> {
             focus: style.focus,
             theme: style.theme,
             palette,
-            linear: palette.iter().map(|c| c.map(color::linear)).collect(),
+            linear: palette.iter().map(|&c| color::to_linear(c)).collect(),
             ramp: style.layer.ramp(style.theme),
         }
     }
@@ -285,7 +285,7 @@ impl<'a> Paint<'a> {
 
     fn mix(&self, weights: impl Iterator<Item = f32>) -> Rgb {
         self.mix_linear(weights)
-            .map_or(self.theme.no_community(), |c| c.map(color::encode_fast))
+            .map_or(self.theme.no_community(), |c| c.map(color::encode))
     }
 
     fn in_focus(&self, c: u16) -> bool {
@@ -346,7 +346,7 @@ impl<'a> Paint<'a> {
                 return c;
             }
         }
-        self.cell(comm, i).map(color::linear)
+        color::to_linear(self.cell(comm, i))
     }
 
     /// Whether cell `i` has a level to draw: on a gene map, a cell whose
@@ -627,7 +627,7 @@ fn draw_average(
     for (a, px) in acc.iter().zip(canvas.buf.as_chunks_mut::<4>().0) {
         let cover = ((a[3] + a[4]) / full).min(1.);
         if a[3] > 0. {
-            let c = [0, 1, 2].map(|ch| color::encode_fast(a[ch] / a[3]));
+            let c = [0, 1, 2].map(|ch| color::encode(a[ch] / a[3]));
             blend(&mut px[..3], c, cover);
         } else if a[4] > 0. {
             blend(&mut px[..3], none, cover);

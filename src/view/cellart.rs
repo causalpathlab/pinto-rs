@@ -26,9 +26,9 @@
 use super::color::{self, Rgb};
 use super::render::Frame;
 use crate::util::common::*;
+use legume_tui::chrome::rgb;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Color;
 use ratatui::widgets::Widget;
 use std::sync::LazyLock;
 
@@ -173,10 +173,6 @@ impl Widget for &Cells {
     }
 }
 
-pub(super) fn rgb(c: Rgb) -> Color {
-    Color::Rgb(c[0], c[1], c[2])
-}
-
 /// Glyph pixels of cell `(c, r)` in linear light, row-major: each the mean
 /// of the frame pixels it covers. Outside the frame reads as background.
 fn sample(
@@ -225,7 +221,7 @@ pub(super) fn fit(px: &[[f32; 3]], glyphs: Glyphs) -> (char, Rgb, Rgb) {
             total[ch] += p[ch];
         }
     }
-    let mean = |sum: [f32; 3], k: usize| sum.map(|s| color::encode_fast(s / k as f32));
+    let mean = |sum: [f32; 3], k: usize| sum.map(|s| color::encode(s / k as f32));
 
     // Squared error of a split, less the constant Σp², is
     // -|S_in|²/n_in - |S_out|²/n_out: maximize the sum of those terms. No
