@@ -7,11 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::script;
-use crate::tui::child::{run_one, Failed, Stopper};
 use legume_numeric::matrix::common_io::{mkdir, remove_file};
+use legume_tui::child::{run_one, Failed, Said, Stopper};
 
 /// Log lines kept for the screen.
 const KEEP: usize = 2000;
+
+/// How long a fit interrupted by [`Queue::finish`] has to end before it
+/// is killed.
+pub(crate) const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One fit to run.
 #[derive(Clone, Debug, Default)]
@@ -95,15 +99,20 @@ impl Queue {
             last: vec![String::new(); jobs.len()],
             ..Shared::default()
         }));
-        let stopper = Arc::new(Stopper::default());
+        let stopper = Arc::new(Stopper::new());
         let (s, st, js) = (shared.clone(), stopper.clone(), jobs.clone());
+        // As the session starts its programs: `--no-detach` passed on.
+        let env = crate::tui::child_env();
         let worker = std::thread::spawn(move || {
             for (i, job) in js.iter().enumerate() {
                 let state = if st.is_stopped() {
                     State::Stopped
                 } else {
                     set(&s, i, State::Running);
-                    run_job(job, &program, i, &s, &st)
+                    let mut command = std::process::Command::new(&program);
+                    // A group of its own, so a stop reaches what it starts.
+                    env.apply(&mut command, legume_tui::Group::Own);
+                    run_job(job, command, i, &s, &st)
                 };
                 set(&s, i, state);
             }
@@ -119,21 +128,30 @@ impl Queue {
         }
     }
 
-    /// Kill the fit running and start none after it.
+    /// Stop the fit running (interrupted, killed when asked again) and
+    /// start none after it.
     pub fn stop(&self) {
         self.stopper.stop();
     }
 
     /// Stop, and wait for the worker until the fit it may have been
-    /// starting is killed too: the jobs and how each ended.
+    /// starting is stopped too: interrupted, and killed if it has not
+    /// ended within [`GRACE`]. The jobs and how each ended.
     pub fn finish(self) -> (Vec<Job>, Vec<State>) {
         self.stop();
         let Queue {
             jobs,
             shared,
+            stopper,
             worker,
-            ..
         } = self;
+        let start = std::time::Instant::now();
+        while !worker.is_finished() && start.elapsed() < GRACE {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !worker.is_finished() {
+            stopper.kill();
+        }
         let _ = worker.join();
         let states = shared.lock().map(|s| s.states.clone()).unwrap_or_default();
         (jobs, states)
@@ -180,9 +198,11 @@ fn say(s: &Mutex<Shared>, i: usize, line: String) {
     }
 }
 
+/// Run `job` with `command`, the program set up as the session starts
+/// its programs.
 fn run_job(
     job: &Job,
-    program: &std::path::Path,
+    mut command: std::process::Command,
     i: usize,
     s: &Mutex<Shared>,
     stopper: &Stopper,
@@ -219,17 +239,23 @@ fn run_job(
         i,
         format!("── {} · {}", job.method, crate::tui::shown(&job.script())),
     );
-    // As the session starts its programs: `--no-detach` passed on.
-    let mut command = crate::tui::child::command(program);
     command.args(&job.argv).current_dir(&job.dir);
     // The log level the script sets, so the run is the one it records.
     if std::env::var_os("RUST_LOG").is_none() {
         command.env("RUST_LOG", script::LOG_LEVEL);
     }
-    match run_one(command, stopper, |line| say(s, i, line.to_string())) {
+    // Its log, a line at a time; the frames of its progress bars are not
+    // kept.
+    let each = |said| {
+        if let Said::Line(line) = said {
+            say(s, i, line);
+        }
+    };
+    match run_one(command, stopper, each) {
         Ok(()) => State::Done,
         Err(Failed::Stopped) => State::Stopped,
-        Err(Failed::Error(why)) => State::Failed(why),
+        Err(Failed::Start(why) | Failed::Exit(why)) => State::Failed(why),
+        Err(e) => State::Failed(format!("{e:?}")),
     }
 }
 

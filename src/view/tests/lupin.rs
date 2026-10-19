@@ -187,12 +187,13 @@ fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
     let script = "sleep 1 </dev/null >/dev/null 2>&1; echo > written";
     let written = dir.path().join("written");
 
+    // The quit path lets the next round be written whole.
     let next = sh_job(
         JobKind::Next(dir.path().join("r.lupin.json")),
         dir.path(),
         script,
     );
-    assert!(next.saves());
+    assert!(!next.quit(), "a save is not stopped");
     next.wait();
     assert!(written.exists(), "the next round is written whole");
     std::fs::remove_file(&written).unwrap();
@@ -202,9 +203,9 @@ fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
         JobKind::Preview,
     ] {
         let job = sh_job(what, dir.path(), script);
-        assert!(!job.saves());
         let start = std::time::Instant::now();
-        job.stop();
+        assert!(job.quit(), "anything else is stopped");
+        job.wait();
         assert!(start.elapsed() < std::time::Duration::from_millis(900));
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(!written.exists(), "a stopped job writes nothing more");

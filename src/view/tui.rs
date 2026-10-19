@@ -24,7 +24,7 @@ use super::color::{Ramp, Rgb, Theme};
 use super::data::Rect as WorldRect;
 use super::data::NO_CLUSTER;
 use super::gene::{GeneMap, Source};
-use super::kitty::{Kitty, Transport};
+use super::kitty::Kitty;
 use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Style, Viewport};
 use super::round::Round;
@@ -92,12 +92,11 @@ pub fn run(
     let first = base.run.level_index(args.level.as_deref())?;
     let level = base.level(first, args.edges)?;
 
-    // Asked while "loading" is on screen; the session turns the mouse on
-    // again after every attach.
-    let shift_enter = crate::tui::shift_enter_works(session);
+    // The keyboard was asked with the graphics; the session turns the
+    // mouse on again after every attach.
     session.set_modes(crate::tui::modes(legume_tui::Mouse::Full))?;
     let mut app = App::new(&base, level, args, (gfx, px), session);
-    app.shift_enter = shift_enter;
+    app.shift_enter = session.keyboard_enhanced();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
     app.run(terminal)
 }
@@ -117,18 +116,17 @@ impl Gfx {
     /// background colour when it reports one. The terminal is asked once,
     /// for block characters too (their cell shape, and the background).
     fn pick(session: &legume_tui::Session, choice: Graphics) -> (Self, (f32, f32), Option<Rgb>) {
-        use legume_tui::graphics::{self, Fallback, Graphics as Asked};
-        let asked = match choice {
-            Graphics::Auto => Some(Asked::Auto),
-            Graphics::Kitty | Graphics::KittyInline => Some(Asked::Kitty),
-            Graphics::Sixel => Some(Asked::Sixel),
-            Graphics::Iterm2 => Some(Asked::Iterm2),
-            Graphics::Quadrants | Graphics::Symbols | Graphics::Blocks => None,
+        use legume_tui::graphics::{self, Fallback};
+        let wanted = match choice {
+            Graphics::Auto => None,
+            Graphics::Kitty | Graphics::KittyInline => Some(ProtocolType::Kitty),
+            Graphics::Sixel => Some(ProtocolType::Sixel),
+            Graphics::Iterm2 => Some(ProtocolType::Iterm2),
+            Graphics::Quadrants | Graphics::Symbols | Graphics::Blocks => {
+                Some(ProtocolType::Halfblocks)
+            }
         };
-        let (picker, answer) = match asked {
-            Some(asked) => graphics::pick_with(session, asked, Fallback::Probe),
-            None => (Picker::halfblocks(), graphics::query(session)),
-        };
+        let (picker, answer) = graphics::pick_protocol(session, wanted, Fallback::Probe);
         let background = answer.and_then(|a| a.background).map(|(r, g, b)| [r, g, b]);
         // A picker for block characters has a stock cell: the terminal's,
         // where it said.
@@ -138,7 +136,6 @@ impl Gfx {
         };
         let (fw, fh) = (font.0.max(1) as f32, font.1.max(1) as f32);
         let tmux = graphics::in_tmux(session);
-        let detect = || Transport::detect(|k| session.terminal_env(k));
         let kitty = |transport| {
             let kitty = Kitty::new(transport).through_tmux(tmux);
             (Gfx::Kitty(kitty), (fw, fh))
@@ -147,16 +144,11 @@ impl Gfx {
             let (pw, ph) = glyphs.pixels_per_cell(fh / fw);
             (Gfx::Cells(glyphs, None), (pw as f32, ph as f32))
         };
-        let via_picker = |kind| {
-            let mut picker = picker.clone();
-            picker.set_protocol_type(kind);
-            (Gfx::Picker(picker, None), (fw, fh))
-        };
+        let via_picker = || (Gfx::Picker(picker.clone(), None), (fw, fh));
         let (gfx, px) = match choice {
-            Graphics::Kitty => kitty(detect()),
-            Graphics::KittyInline => kitty(Transport::Direct),
-            Graphics::Sixel => via_picker(ProtocolType::Sixel),
-            Graphics::Iterm2 => via_picker(ProtocolType::Iterm2),
+            Graphics::Kitty => kitty(graphics::kitty_transport(session)),
+            Graphics::KittyInline => kitty(graphics::Transport::Inline),
+            Graphics::Sixel | Graphics::Iterm2 => via_picker(),
             Graphics::Quadrants => cells(Glyphs::Quadrants),
             Graphics::Symbols => cells(Glyphs::Symbols),
             Graphics::Blocks => cells(Glyphs::HalfBlocks),
@@ -164,9 +156,9 @@ impl Gfx {
             // and then only as best effort: block characters always work.
             Graphics::Auto if tmux => cells(Glyphs::Quadrants),
             Graphics::Auto => match picker.protocol_type() {
-                ProtocolType::Kitty => kitty(detect()),
+                ProtocolType::Kitty => kitty(graphics::kitty_transport(session)),
                 ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
-                other => via_picker(other),
+                _ => via_picker(),
             },
         };
         (gfx, px, background)
@@ -176,8 +168,8 @@ impl Gfx {
         match self {
             Gfx::Kitty(k) => {
                 let how = match k.transport() {
-                    Transport::File => "file",
-                    Transport::Direct => "inline",
+                    legume_tui::graphics::Transport::Inline => "inline",
+                    _ => "file",
                 };
                 let tmux = if k.via_tmux() { ", tmux" } else { "" };
                 format!("kitty ({how}{tmux})")
@@ -408,23 +400,27 @@ impl<'a> App<'a> {
             // After an attach the terminal is asked again, before the
             // mouse is on, and the pictures made anew for it.
             let mut repicked = None;
-            let event = session.poll_with(terminal, Duration::from_millis(250), || {
-                let shift_enter = crate::tui::shift_enter_works(session);
-                repicked = Some((Gfx::pick(session, choice), shift_enter));
+            let round = session.poll_with(terminal, Duration::from_millis(250), || {
+                repicked = Some(Gfx::pick(session, choice));
                 Ok(())
             })?;
-            if let Some(((gfx, px, background), shift_enter)) = repicked {
-                self.repick(gfx, px, background);
-                self.shift_enter = shift_enter;
-            }
-            if let Some(ev) = event {
-                self.handle(ev, terminal)?;
-                while !self.quit && event::poll(Duration::ZERO)? {
-                    self.handle(event::read()?, terminal)?;
+            match round {
+                legume_tui::Round::Event(ev) => {
+                    self.handle(ev, terminal)?;
+                    while !self.quit && event::poll(Duration::ZERO)? {
+                        self.handle(event::read()?, terminal)?;
+                    }
                 }
+                legume_tui::Round::Repainted => {
+                    if let Some((gfx, px, background)) = repicked {
+                        self.repick(gfx, px, background);
+                    }
+                    self.shift_enter = session.keyboard_enhanced();
+                }
+                // `pinto kill` stops the view as q does.
+                legume_tui::Round::Stopped => self.quit = true,
+                _ => {}
             }
-            // `pinto kill` stops the view as q does.
-            self.quit |= session.stop_requested();
         }
         self.end_job(terminal)?;
         if let Gfx::Kitty(k) = &mut self.gfx {
@@ -446,12 +442,10 @@ impl<'a> App<'a> {
         let Some(job) = self.job.take() else {
             return Ok(());
         };
-        if job.saves() {
+        if !job.quit() {
             self.busy(terminal, "finishing lupin's next round ...".into())?;
-            job.wait();
-        } else {
-            job.stop();
         }
+        job.wait();
         Ok(())
     }
 
@@ -1865,7 +1859,6 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
     if full {
         lines.extend(
             crate::tui::session_keys()
-                .into_iter()
                 .map(|(key, what)| Line::styled(format!(" {key}  {what}"), dim)),
         );
     }

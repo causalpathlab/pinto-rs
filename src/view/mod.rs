@@ -338,7 +338,6 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     // terminal from here on, and the program the host starts reads the
     // run; with none named, live views are offered before a new one.
     let session = crate::tui::TOOL.session("view", &args.session.options(args.prefix.is_some()))?;
-    crate::tui::child::follow(&session);
     // One screen for the run browser and the view after it.
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
     crate::tui::with_terminal(&session, modes, |terminal| {

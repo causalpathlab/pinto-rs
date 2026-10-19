@@ -174,11 +174,7 @@ impl App {
             "q quit".to_string(),
         ];
         // The detach and switch keys, in a session.
-        all.extend(
-            crate::tui::session_keys()
-                .into_iter()
-                .map(|(key, what)| format!("{key} {what}")),
-        );
+        all.extend(crate::tui::session_keys().map(|(key, what)| format!("{key} {what}")));
         let keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
         for group in [&keys, &all] {
             let mut row = String::new();

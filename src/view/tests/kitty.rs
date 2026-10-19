@@ -2,6 +2,7 @@ use crate::view::kitty::*;
 use crate::view::render::Frame;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use legume_tui::graphics::Transport;
 
 fn frame(w: usize, h: usize) -> Frame {
     Frame {
@@ -34,7 +35,7 @@ fn decode_inline(bytes: &[u8]) -> (String, Vec<u8>) {
 fn direct_frames_round_trip_through_zlib_chunks() {
     let f = frame(300, 200);
     let mut out = Vec::new();
-    let mut k = Kitty::new(Transport::Direct);
+    let mut k = Kitty::new(Transport::Inline);
     k.show(&mut out, &f, (2, 3), (40, 20)).unwrap();
 
     let (keys, z) = decode_inline(&out);
@@ -49,7 +50,7 @@ fn direct_frames_round_trip_through_zlib_chunks() {
 #[test]
 fn frames_alternate_ids_and_delete_the_previous_one() {
     let f = frame(4, 4);
-    let mut k = Kitty::new(Transport::Direct);
+    let mut k = Kitty::new(Transport::Inline);
     let mut first = Vec::new();
     k.show(&mut first, &f, (0, 0), (1, 1)).unwrap();
     let mut second = Vec::new();
@@ -66,24 +67,11 @@ fn frames_alternate_ids_and_delete_the_previous_one() {
 fn inside_tmux_commands_are_wrapped_with_escapes_doubled() {
     let f = frame(2, 2);
     let mut out = Vec::new();
-    let mut k = Kitty::new(Transport::Direct).through_tmux(true);
+    let mut k = Kitty::new(Transport::Inline).through_tmux(true);
     k.show(&mut out, &f, (0, 0), (1, 1)).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("\x1bPtmux;\x1b\x1b_G"));
     assert!(text.contains("\x1b\x1b\\\x1b\\"));
     // No graphics command escapes tmux unwrapped.
     assert!(!text.replace("\x1b\x1b_G", "").contains("\x1b_G"));
-}
-
-#[test]
-fn pixels_go_inline_to_a_terminal_reached_over_ssh() {
-    // What the terminal attached now passed on decides, not where the
-    // view started.
-    let over_ssh = |k: &str| (k == "SSH_CONNECTION").then(|| "a b c d".to_string());
-    assert_eq!(Transport::detect(over_ssh), Transport::Direct);
-    assert_eq!(Transport::detect(|_| None), Transport::File);
-    let tty = |k: &str| (k == "SSH_TTY").then(|| "/dev/pts/0".to_string());
-    assert_eq!(Transport::detect(tty), Transport::Direct);
-    // Emptied, as a shell's `SSH_TTY=` does: not over ssh.
-    assert_eq!(Transport::detect(|_| Some(String::new())), Transport::File);
 }

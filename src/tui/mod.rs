@@ -1,9 +1,8 @@
 //! What the terminal front ends, `pinto view` and `pinto run`, share: how
-//! text and popups look, a file browser, and the pinto and lupin processes
-//! they start and follow.
+//! text and popups look, a file browser, and how the programs they start
+//! run in their session.
 
 pub(crate) mod browse;
-pub(crate) mod child;
 pub(crate) mod field;
 pub(crate) mod style;
 
@@ -13,36 +12,34 @@ use std::path::Path;
 /// named `pinto-run-1`, `pinto-view-2`, and `pinto attach` finds them.
 pub(crate) const TOOL: legume_tui::Tool = legume_tui::Tool::new("pinto");
 
-/// The modes of a screen: modifiers reported on enter, so shift-enter is
-/// told apart from enter where the terminal can, and the mouse as asked.
+/// The modes of a screen: modifiers reported on enter where the terminal
+/// has them, so shift-enter is told apart from enter
+/// ([`legume_tui::Session::keyboard_enhanced`]), and the mouse as asked.
 /// The session turns them on again after every attach.
 pub(crate) fn modes(mouse: legume_tui::Mouse) -> legume_tui::Modes {
     use ratatui::crossterm::event::KeyboardEnhancementFlags;
-    legume_tui::Modes {
-        mouse,
-        keyboard_enhancement: Some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-        ..Default::default()
-    }
+    legume_tui::Modes::new()
+        .mouse(mouse)
+        .keyboard_enhancement(legume_tui::Keyboard::IfSupported(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))
 }
 
-/// Whether the terminal attached now tells shift-enter from enter. It is
-/// asked, so call it with the screen up and before mouse reports are on:
-/// once something is on screen, and again in the repaint after an attach.
-pub(crate) fn shift_enter_works(session: &legume_tui::Session) -> bool {
-    session.attached()
-        && ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
-}
-
-/// The detach and switch keys, each with what it does in a word or two,
-/// in lower case as the help shows keys; none when the screen runs plain.
-pub(crate) fn session_keys() -> Vec<(String, String)> {
+/// The detach and switch keys as the help lists them, the key in lower
+/// case then what it does in a word; none when the screen runs plain.
+pub(crate) fn session_keys() -> impl Iterator<Item = (String, String)> {
     legume_tui::help_keys()
         .into_iter()
-        .map(|(key, help)| {
-            let what = help.split(':').next().unwrap_or(&help).to_string();
-            (key.to_lowercase(), what)
-        })
-        .collect()
+        .map(|k| (k.key.to_lowercase(), k.short))
+}
+
+/// How the session started first in this process starts its programs,
+/// for code far from it (a worker thread); as a plain program does before
+/// there is one.
+pub(crate) fn child_env() -> legume_tui::ChildEnv {
+    legume_tui::current()
+        .map(legume_tui::Session::child_env)
+        .unwrap_or_default()
 }
 
 /// A session run plain by `--no-detach`, for tests.
@@ -64,7 +61,9 @@ pub fn shift_enter(k: &ratatui::crossterm::event::KeyEvent) -> bool {
 
 /// Run `f` on the whole terminal of `session`, its `modes` on, and give
 /// the terminal back however it ends. Logging is off meanwhile: log lines
-/// would land over the screen.
+/// would land over the screen. An error it ends with is held where it is
+/// seen ([`legume_tui::Session::hold_error`]): drawn until a terminal
+/// attaches, or left for whoever looks next.
 pub fn with_terminal<T>(
     session: &legume_tui::Session,
     modes: legume_tui::Modes,
@@ -73,6 +72,9 @@ pub fn with_terminal<T>(
     let _quiet = legume_tui::logs::quiet();
     let mut terminal = session.terminal_with(modes)?;
     let out = f(&mut terminal);
+    if let Err(e) = &out {
+        let _ = session.hold_error(&mut terminal, e);
+    }
     session.restore();
     out
 }

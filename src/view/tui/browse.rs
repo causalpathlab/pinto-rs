@@ -190,7 +190,9 @@ pub fn pick_run(
             f.render_widget(Paragraph::new(lines), area);
         })?;
         session.status("browsing for a run");
-        let Some(Event::Key(k)) = session.poll(terminal, std::time::Duration::from_secs(60))?
+        let Some(Event::Key(k)) = session
+            .poll(terminal, std::time::Duration::from_secs(60))?
+            .event()
         else {
             continue;
         };

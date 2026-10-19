@@ -54,17 +54,17 @@ fn a_job_whose_result_exists_does_not_run() {
     assert!(!dir.path().join("r.cmd.sh").exists());
 }
 
+/// A queue of two jobs, a and b, run by a pinto that is the shell
+/// script `body`, its first fit started.
 #[cfg(unix)]
-#[test]
-fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
+fn running(dir: &Path, body: &str) -> Queue {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let slow = dir.path().join("slow-pinto");
-    std::fs::write(&slow, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    let slow = dir.join("slow-pinto");
+    std::fs::write(&slow, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
     let job = |m: &str| Job {
         method: m.into(),
-        dir: dir.path().to_path_buf(),
+        dir: dir.to_path_buf(),
         out: m.into(),
         argv: vec![m.into(), "--out".into(), m.into()],
         ..Job::default()
@@ -74,9 +74,31 @@ fn a_stopped_queue_is_waited_for_and_its_fit_killed() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     std::thread::sleep(std::time::Duration::from_millis(50));
+    q
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stopped_queue_is_waited_for_and_its_fit_interrupted() {
+    let dir = tempfile::tempdir().unwrap();
+    let q = running(dir.path(), "exec sleep 30");
     let t = std::time::Instant::now();
     let (_, states) = q.finish();
-    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    // Ended by the interrupt, well before it would be killed.
+    assert!(t.elapsed() < GRACE);
+    assert_eq!(states, [State::Stopped, State::Stopped]);
+    assert!(!dir.path().join("b.cmd.sh").exists(), "b never started");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fit_that_ignores_the_interrupt_is_killed_after_a_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let q = running(dir.path(), "trap '' INT\nsleep 30");
+    let t = std::time::Instant::now();
+    let (_, states) = q.finish();
+    assert!(t.elapsed() >= GRACE);
+    assert!(t.elapsed() < GRACE + std::time::Duration::from_secs(5));
     assert_eq!(states, [State::Stopped, State::Stopped]);
     assert!(!dir.path().join("b.cmd.sh").exists(), "b never started");
 }

@@ -7,7 +7,7 @@
 
 #![cfg(all(unix, feature = "view"))]
 
-use legume_tui::testing::{alive, Private, Term, PROMPT};
+use legume_tui::testing::{alive, Private, Replies, Setup, Term, PROMPT};
 use legume_tui::Size;
 use std::path::Path;
 use std::time::Duration;
@@ -33,6 +33,12 @@ fn term(dir: &Private, args: &[&str], env: &[(&str, &str)]) -> Term {
     dir.term_sized(args, env, SIZE)
 }
 
+/// [`term`], on a terminal that answers the program's queries with
+/// `replies`.
+fn term_answering(dir: &Private, args: &[&str], env: &[(&str, &str)], replies: Replies) -> Term {
+    dir.term_with(args, env, Setup::new().size(SIZE).replies(replies))
+}
+
 /// Detach `t` by the key, keeping the session unnamed, and wait for it to
 /// be listed as `id` detached.
 fn detach(dir: &Private, t: &mut Term, id: &str) {
@@ -52,7 +58,7 @@ fn run_detaches_attaches_and_is_killed_through_its_quit_path() {
     // Started in a terminal, it is hosted: this terminal is its first
     // client, and the program runs apart from it.
     let mut first = term(&dir, &["run", &work], &[]);
-    first.wait_for(PAINTED);
+    first.wait_screen(PAINTED);
     assert!(!first.cooked(), "the client's terminal is raw");
     let listed = dir.wait_listed("setting up fits");
     assert!(listed.contains("pinto-run-1\tattached"), "{listed:?}");
@@ -79,26 +85,28 @@ fn run_detaches_attaches_and_is_killed_through_its_quit_path() {
         width: 1500,
         height: 1000,
     };
-    let mut second = dir.term_sized(&["attach"], &[], size);
-    second.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
-    let reset = second.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();
+    // This one has kitty's keyboard enhancement: shift-enter is told from
+    // enter there, and the help says so.
+    let replies = Replies::plain().keyboard(0);
+    let setup = Setup::new().size(size).replies(replies);
+    let mut second = dir.term_with(&["attach"], &[], setup);
     for tab in ["1 Data", "2 Methods", PAINTED] {
-        second.wait_for_after(reset, tab);
+        second.wait_screen(tab);
     }
+    assert!(second.alternate());
     // The keys of the session are listed with the others.
-    second.wait_for("ctrl+alt+d detach");
-    second.wait_for("ctrl+alt+s switch");
-    // Keys reach the program: typed into the output header it asks first
-    // (the second key drawn beside the cursor, the first already there).
-    let before = second.seen_len();
+    second.wait_screen("ctrl+alt+d detach");
+    second.wait_screen("ctrl+alt+s switch");
+    second.wait_screen("tab / shift-tab / shift-enter / 1-4 screens");
+    // Keys reach the program: typed into the output header it asks first.
     second.type_(b"zq");
-    second.wait_for_after(before, "q▏");
+    second.wait_screen("zq▏");
 
     // A TUI started under the session's marker, as `pinto run` starts
     // `pinto view` when `v` asks for it, runs plain: no second host, no
     // second socket.
     let mut nested = term(&dir, &["view"], &[(legume_tui::SESSION_VAR, "pinto-run-1")]);
-    nested.wait_for("run to open");
+    nested.wait_screen("run to open");
     assert_eq!(dir.sockets(), ["pinto-run-1"]);
     nested.type_(b"\x03");
     assert_eq!(nested.exit_code(), 0);
@@ -135,11 +143,16 @@ fn run_and_view_opted_out_run_plain() {
         (vec!["view", "--no-detach"], vec![]),
     ] {
         let mut plain = term(&dir, &args, &env);
-        plain.wait_for(if args[0] == "run" {
+        plain.wait_screen(if args[0] == "run" {
             PAINTED
         } else {
             "run to open"
         });
+        if args[0] == "run" {
+            // A terminal that does not say it has kitty's keyboard: no
+            // shift-enter.
+            plain.wait_screen("tab / shift-tab / 1-4 screens");
+        }
         assert!(!plain.cooked());
         assert!(dir.sockets().is_empty(), "{args:?} {env:?}");
         assert!(dir.run(&["sessions"]).contains("no live pinto sessions"));
@@ -211,25 +224,27 @@ const VIEW_PAINTED: &str = "pinto view  run";
 /// The last of the terminal's graphics query: its background colour.
 const ASKED: &str = "\x1b]11;?\x07";
 
-/// A terminal's answer to it: cells of 10 by 20 pixels and a white
-/// background, no image protocol; the status report ends it.
-const LIGHT: &[u8] = b"\x1b[6;20;10t\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[0n";
+/// A terminal with cells of 10 by 20 pixels and a white background, no
+/// image protocol.
+fn light() -> Replies {
+    Replies::plain().cell(10, 20).background(255, 255, 255)
+}
 
-/// The same from a terminal that shows kitty's images.
-const KITTY_LIGHT: &[u8] = b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;10t\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[0n";
+/// The same, showing kitty's images.
+fn kitty_light() -> Replies {
+    light().kitty()
+}
 
 /// The background of the map in the dark and the light theme, as the
 /// colour of a block character's cell.
 const DARK_MAP: &str = "17;17;20";
 const LIGHT_MAP: &str = "250;250;248";
 
-/// Wait for `t` to ask its graphics query after `from`, and answer it.
-/// Where it asked.
-fn answer_query(t: &mut Term, from: usize, answer: &[u8]) -> usize {
+/// Wait for `t` to ask its graphics query after `from`, which its
+/// terminal answers. Where it asked.
+fn query_at(t: &Term, from: usize) -> usize {
     t.wait_for_after(from, ASKED);
-    let asked = from + t.text()[from..].find(ASKED).unwrap();
-    t.type_(answer);
-    asked
+    from + t.text()[from..].find(ASKED).unwrap()
 }
 
 /// The files kitty's images from the program `pid` go through.
@@ -247,12 +262,12 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     let work = tempfile::tempdir().unwrap();
     let prefix = write_run(work.path(), 400);
 
-    // A run named starts a new session, hosted. The test terminal never
-    // answers the graphics query: the map is drawn in block characters,
-    // dark.
+    // A run named starts a new session, hosted. The test terminal answers
+    // the graphics query with nothing it has: the map is drawn in block
+    // characters, dark.
     let mut first = term(&dir, &["view", &prefix], &[]);
-    first.wait_for(VIEW_PAINTED);
-    first.wait_for("quadrants");
+    first.wait_screen(VIEW_PAINTED);
+    first.wait_screen("quadrants");
     first.wait_for(DARK_MAP);
     let listed = dir.wait_listed("pinto-view-1\tattached");
     assert!(listed.contains("run · final"), "{listed:?}");
@@ -268,30 +283,29 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     // Back by its label on another terminal: the screen repainted whole
     // after the client's reset, the terminal asked again and the mouse on
     // once more. This one says it is light: the map is drawn light.
-    let mut second = term(&dir, &["attach", "tissue"], &[]);
+    let mut second = term_answering(&dir, &["attach", "tissue"], &[], light());
     second.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
     let reset = second.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();
-    let asked = answer_query(&mut second, reset, LIGHT);
-    second.wait_for_after(asked, VIEW_PAINTED);
-    second.wait_for_after(asked, "quadrants");
+    let asked = query_at(&second, reset);
     second.wait_for_after(asked, LIGHT_MAP);
-    second.wait_for_after(reset, "\x1b[?1003h");
+    second.wait_screen(VIEW_PAINTED);
+    second.wait_screen("quadrants");
+    second.wait_for_after(asked, "\x1b[?1003h");
     second.type_(b"\x1b\x04");
     assert_eq!(second.exit_code(), 0);
     dir.wait_listed("tissue (pinto-view-1)\tdetached");
 
     // On one that shows kitty's images, the map is sent as one.
-    let mut third = term(&dir, &["attach", "tissue"], &[]);
+    let mut third = term_answering(&dir, &["attach", "tissue"], &[], kitty_light());
     third.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
     let reset = third.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();
-    let asked = answer_query(&mut third, reset, KITTY_LIGHT);
-    third.wait_for_after(asked, "kitty");
+    let asked = query_at(&third, reset);
     third.wait_for_after(asked, "\x1b_Ga=T,f=32");
-    // `?` lists the session keys among the view's (drawn over the lines
-    // before, only what differs: the keys and a word of each).
+    third.wait_screen("kitty");
+    // `?` lists the session keys among the view's.
     third.type_(b"?");
-    third.wait_for("ctrl+alt+d");
-    third.wait_for("switch");
+    third.wait_screen("ctrl+alt+d  detach");
+    third.wait_screen("ctrl+alt+s  switch");
 
     // Killed while attached: it quits as ctrl+c does, the client ends with
     // it, and nothing is left, kitty's files among it.
@@ -349,11 +363,9 @@ fn a_kill_while_detached_stops_lupin_and_removes_kittys_files() {
         ("SSH_TTY", ""),
     ];
 
-    let mut first = term(&dir, &["view", &prefix], &env);
-    let asked = answer_query(&mut first, 0, KITTY_LIGHT);
-    first.wait_for_after(asked, "kitty");
-    first.wait_for_after(asked, "(file)");
-    first.wait_for_after(asked, "\x1b_Ga=T,f=32");
+    let mut first = term_answering(&dir, &["view", &prefix], &env, kitty_light());
+    first.wait_for("\x1b_Ga=T,f=32");
+    first.wait_screen("kitty (file)");
     let pid = dir.program_pid();
     assert!(
         kitty_files(pid).iter().any(|f| f.exists()),
@@ -362,7 +374,7 @@ fn a_kill_while_detached_stops_lupin_and_removes_kittys_files() {
 
     // `A` and the panel beside the run: lupin annotates.
     first.type_(b"A");
-    first.wait_for("marker panel for level");
+    first.wait_screen("marker panel for level");
     first.type_(b"\r");
     let start = std::time::Instant::now();
     while !started.exists() {
@@ -390,7 +402,7 @@ fn the_run_browser_comes_back_on_attach_and_stops_on_kill() {
 
     // With no run named it browses for one, hosted.
     let mut first = term(&dir, &["view"], &[]);
-    first.wait_for("run to open");
+    first.wait_screen("run to open");
     dir.wait_listed("pinto-view-1\tattached");
     let pid = dir.program_pid();
     detach(&dir, &mut first, "pinto-view-1");
@@ -398,7 +410,7 @@ fn the_run_browser_comes_back_on_attach_and_stops_on_kill() {
     // Started again with nothing named, the live session is offered first:
     // Enter takes it, and the browser is drawn there whole.
     let mut second = term(&dir, &["view"], &[]);
-    second.wait_for("pinto-view-1");
+    second.wait_screen("pinto-view-1");
     second.type_(b"\r");
     second.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
     let reset = second.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();

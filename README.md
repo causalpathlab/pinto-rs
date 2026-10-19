@@ -200,7 +200,9 @@ connection, or ctrl+alt+d, detaches them (the first time, it asks for a
 name), and the fits or lupin run on. Started again with nothing named, each
 offers the live sessions to return to; ctrl+alt+s switches to another one.
 On return the screen is drawn again for the terminal it is on now, its
-image protocol asked anew. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs
+image protocol asked anew. What a session ends with while nobody is
+attached (the fits' summary, an error) is said by the next `pinto sessions`,
+`attach`, `kill` or start. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs
 in this terminal only.
 
 ```sh

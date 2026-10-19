@@ -650,7 +650,12 @@ enum Commands {
              \x20 pinto view results --summary\n\
              \x20 pinto view results.pinto.json --level L2 --summary\n\n\
              {}",
-            session_help(None, "`pinto view` with no run", "`?` shows the keys in effect.")
+            legume_tui::cli::session_help(
+                &tui::TOOL,
+                legume_tui::cli::SessionHelp::new()
+                    .resume_hint(Some("`pinto view` with no run"))
+                    .more("`?` shows the keys in effect.")
+            )
         )
     )]
     View(view::ViewArgs),
@@ -678,10 +683,12 @@ enum Commands {
              existing `{{out}}.pinto.json`, and pinto run never writes over\n\
              a script. When the fits finish, `v` opens one in `pinto view`.\n\n\
              {}",
-            session_help(
-                Some("the fits go on"),
-                "`pinto run` with no folder",
-                "The keys in effect are listed at the foot of the screen."
+            legume_tui::cli::session_help(
+                &tui::TOOL,
+                legume_tui::cli::SessionHelp::new()
+                    .what_goes_on("the fits go on")
+                    .resume_hint(Some("`pinto run` with no folder"))
+                    .more("The keys in effect are listed at the foot of the screen.")
             )
         )
     )]
@@ -690,14 +697,14 @@ enum Commands {
     #[cfg(feature = "view")]
     #[command(
         about = "Return to a detached `pinto run` or `pinto view`",
-        long_about = legume_tui::cli::about("pinto").attach
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").attach
     )]
     Attach(legume_tui::cli::AttachArgs),
 
     #[cfg(feature = "view")]
     #[command(
         about = "List the live `pinto run` and `pinto view` sessions",
-        long_about = legume_tui::cli::about("pinto").sessions
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").sessions
     )]
     Sessions,
 
@@ -706,9 +713,9 @@ enum Commands {
         about = "Stop a `pinto run` or `pinto view` session as ctrl+c in it does",
         long_about = format!(
             "{}\n\n{}",
-            legume_tui::cli::about("pinto").kill,
+            legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").kill,
             "`pinto run` stops the fits it is running first; with no terminal\n\
-             attached, the lines it ends on are seen by none, and each fit's\n\
+             attached, the lines it ends on are said here, and each fit's\n\
              `{out}.cmd.sh` is there to run it again. `pinto view` lets a\n\
              relabelling lupin is writing finish and stops any other lupin run."
         )
@@ -718,26 +725,9 @@ enum Commands {
     #[cfg(feature = "view")]
     #[command(
         about = "Give a `pinto run` or `pinto view` session a label",
-        long_about = legume_tui::cli::about("pinto").rename
+        long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").rename
     )]
     Rename(legume_tui::cli::RenameArgs),
-}
-
-/// The session paragraph of `pinto run`'s and `pinto view`'s long help:
-/// what goes on when the connection drops (the fits, or its work when
-/// None), who offers the live sessions to return to, and `more`: where
-/// the keys are shown.
-#[cfg(feature = "view")]
-fn session_help(what_goes_on: Option<&str>, resume_hint: &str, more: &str) -> String {
-    legume_tui::cli::session_help(
-        &tui::TOOL,
-        legume_tui::cli::SessionHelp {
-            what_goes_on,
-            resume_hint,
-            more: Some(more),
-            ..Default::default()
-        },
-    )
 }
 
 /// Expand `pinto lra --from <.pinto.json>` into the full positional /

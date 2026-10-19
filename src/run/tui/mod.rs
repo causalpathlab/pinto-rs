@@ -16,6 +16,7 @@ use data::Pair;
 use data::{Pick, Side};
 use form::{Field, Kind, Method};
 use jobs::{Job, Queue};
+use legume_tui::Round;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
@@ -231,7 +232,6 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
     // First: hosted, this process only relays the terminal from here on,
     // and the program the host starts does the rest.
     let session = crate::tui::TOOL.session("run", &args.session())?;
-    crate::tui::child::follow(&session);
     let mut app = App::new(cli, args.start())?;
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
     let ended = crate::tui::with_terminal(&session, modes, |terminal| {
@@ -240,11 +240,18 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
     })?;
-    // Detached (a `pinto kill` with no terminal attached), these lines
-    // reach no screen; each fit's script stays to run it again.
+    // Said after the screen, or, ended detached (a `pinto kill` with no
+    // terminal attached), by whoever looks next; each fit's script stays
+    // to run it again.
+    // Plain, on stdout as before.
     if let Some((jobs, states)) = ended {
-        for line in summary(&jobs, &states) {
-            println!("{line}");
+        let lines = summary(&jobs, &states);
+        if session.is_hosted() {
+            session.leave(&lines.join("\n"));
+        } else {
+            for line in lines {
+                println!("{line}");
+            }
         }
     }
     // Not after a `pinto kill`: it asked for the session to end.
@@ -276,21 +283,16 @@ impl App {
             } else {
                 Duration::from_secs(60)
             };
-            // The terminal is asked after the first screen is drawn, so it
-            // never waits on a blank one, and again after every attach.
-            let shift_enter = &mut self.shift_enter;
-            let event = session.poll_with(terminal, wait, || {
-                *shift_enter = crate::tui::shift_enter_works(session);
-                Ok(())
-            })?;
-            if let Some(Event::Key(k)) = event {
-                if k.kind != KeyEventKind::Release {
-                    self.key(k);
-                }
+            match session.poll(terminal, wait)? {
+                Round::Event(Event::Key(k)) if k.kind != KeyEventKind::Release => self.key(k),
+                // The terminal was asked as the screen came up, and again
+                // after every attach.
+                Round::Repainted => self.shift_enter = session.keyboard_enhanced(),
+                // `pinto kill` quits as ctrl+c does: the fits running are
+                // stopped as the screens are left.
+                Round::Stopped => self.quit = true,
+                _ => {}
             }
-            // `pinto kill` quits as ctrl+c does: the fits running are
-            // stopped as the screens are left.
-            self.quit |= session.stop_requested();
         }
         Ok(())
     }
@@ -1185,8 +1187,8 @@ impl App {
     }
 }
 
-/// What is printed once the terminal is given back: how each run ended,
-/// and its script.
+/// What is said once the terminal is given back: how each run ended, and
+/// its script.
 fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
     jobs.iter()
         .zip(states)
