@@ -4,7 +4,7 @@
 //! the screen.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use super::script;
@@ -37,12 +37,7 @@ pub struct Job {
     pub clear: bool,
 }
 
-/// What a run with `--out` prefix `out` writes in `dir` that a new run
-/// must not write over: its manifest, its script, and its batch files.
-#[must_use]
-pub fn outputs(dir: &Path, out: &str) -> [PathBuf; 3] {
-    ["pinto.json", "cmd.sh", "batches"].map(|end| dir.join(format!("{out}.{end}")))
-}
+pub use crate::run::script::outputs;
 
 impl Job {
     #[must_use]

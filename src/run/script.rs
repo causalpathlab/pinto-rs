@@ -160,6 +160,32 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
+/// What a run with `--out` prefix `out` writes in `dir` that a new run
+/// must not write over: its manifest, its script, and its batch files.
+#[must_use]
+pub fn outputs(dir: &Path, out: &str) -> [PathBuf; 3] {
+    ["pinto.json", "cmd.sh", "batches"].map(|end| dir.join(format!("{out}.{end}")))
+}
+
+/// Whether `out` ends as a header does (a folder `/`, or `_`, `-`, `.`),
+/// for a stem to follow it.
+pub fn is_header(out: &str) -> bool {
+    out.ends_with(['/', '_', '-', '.'])
+}
+
+/// `stem` named after the output `header`: the stem alone when there is
+/// none, `{header}{stem}` when it ends in `/` (a folder), `_`, `-` or
+/// `.`, else `{header}_{stem}`.
+pub fn under(header: &str, stem: &str) -> String {
+    if header.is_empty() {
+        stem.to_string()
+    } else if is_header(header) {
+        format!("{header}{stem}")
+    } else {
+        format!("{header}_{stem}")
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/script.rs"]
 mod tests;

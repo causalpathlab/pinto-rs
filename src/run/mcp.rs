@@ -1,12 +1,14 @@
 //! `pinto run`'s tools for `pinto mcp`: the methods and their flags, and
-//! a fit started as `pinto run` starts one: the exact command, checked as
-//! pinto parses it, run as a child `pinto` in the project's records, in
-//! the background when the agent asks (a fit takes minutes to hours).
+//! a fit set up as `pinto run` sets one up: the command built and checked
+//! as pinto parses it, never over a run, run as a child `pinto` in the
+//! project's records, as a background job unless asked otherwise (a fit
+//! takes minutes to hours, and a call that waited would hold the server).
 
-use super::tui::form::{check, Kind, Method};
-use super::tui::script;
-use super::tui::METHODS;
-use legume_mcp::{Call, Content, ToolSpec};
+use super::form::{blamed, check, Kind, Method};
+use super::script::{self, is_header, outputs, under};
+use super::METHODS;
+use crate::mcp::{parse, shown_path};
+use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::Path;
@@ -16,33 +18,45 @@ pub struct Tools {
     cli: clap::Command,
 }
 
-impl Tools {
-    /// `cli` built (`Command::build`), so its subcommands are complete.
-    pub fn new(cli: clap::Command) -> Self {
+impl Default for Tools {
+    fn default() -> Self {
+        use clap::CommandFactory;
+        let mut cli = crate::Cli::command();
+        cli.build();
         Tools { cli }
     }
+}
 
-    pub fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
+impl Handler for Tools {
+    fn tools(&self) -> Vec<ToolSpec> {
+        specs()
+    }
+
+    fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
         match name {
             "run_methods" => self.methods(parse(args)?),
             "run_fit" => self.fit(parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
+}
 
+/// A method in a line: what it is, and the files it takes.
+fn summary(name: &str, method: &Method) -> Value {
+    json!({
+        "method": name,
+        "about": method.about,
+        "coords": method.takes_coords(),
+        "batches": method.takes_batches(),
+    })
+}
+
+impl Tools {
     fn methods(&self, a: MethodsArgs) -> anyhow::Result<Vec<Content>> {
         let Some(name) = a.method else {
             let methods = METHODS
                 .iter()
-                .map(|&m| {
-                    let method = Method::new(&self.cli, m)?;
-                    Ok(json!({
-                        "method": m,
-                        "about": method.about,
-                        "coords": method.takes_coords(),
-                        "batches": method.takes_batches(),
-                    }))
-                })
+                .map(|&m| Ok(summary(m, &Method::new(&self.cli, m)?)))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             return Ok(vec![Content::Json(json!({ "methods": methods }))]);
         };
@@ -72,13 +86,9 @@ impl Tools {
                 flag
             })
             .collect();
-        Ok(vec![Content::Json(json!({
-            "method": name,
-            "about": method.about,
-            "coords": method.takes_coords(),
-            "batches": method.takes_batches(),
-            "flags": flags,
-        }))])
+        let mut out = summary(&name, &method);
+        out["flags"] = flags.into();
+        Ok(vec![Content::Json(out)])
     }
 
     fn method(&self, name: &str) -> anyhow::Result<Method> {
@@ -93,16 +103,23 @@ impl Tools {
     fn fit(&self, a: FitArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         let mut method = self.method(&a.method)?;
         anyhow::ensure!(!a.data.is_empty(), "give the data files");
-        anyhow::ensure!(
-            a.coords.is_empty() || method.takes_coords(),
-            "{} takes no coordinate files",
-            a.method
-        );
-        anyhow::ensure!(
-            a.batches.is_empty() || method.takes_batches(),
-            "{} takes no batch files",
-            a.method
-        );
+        anyhow::ensure!(!a.out.trim().is_empty(), "give out, the output prefix");
+        for (what, takes, files) in [
+            ("coordinate", method.takes_coords(), &a.coords),
+            ("batch", method.takes_batches(), &a.batches),
+        ] {
+            anyhow::ensure!(
+                files.is_empty() || takes,
+                "{} takes no {what} files",
+                a.method
+            );
+            anyhow::ensure!(
+                files.is_empty() || files.len() == a.data.len(),
+                "{what} files: one per data file ({} for {})",
+                files.len(),
+                a.data.len()
+            );
+        }
         for (flag, value) in &a.flags {
             let long = flag.trim_start_matches('-');
             let field = method
@@ -112,47 +129,70 @@ impl Tools {
                 .ok_or_else(|| {
                     anyhow::anyhow!("{} has no flag --{long}: run_methods lists them", a.method)
                 })?;
-            field.value = match value {
-                Value::String(s) => s.clone(),
-                Value::Array(vs) => vs.iter().map(text).collect::<Vec<_>>().join(","),
-                v => text(v),
+            field.value = match (&field.kind, value) {
+                (Kind::Flag { .. }, Value::Bool(on)) => on.to_string(),
+                (Kind::Flag { .. }, v) => {
+                    anyhow::bail!("--{long} is a switch: true or false, not {v}")
+                }
+                (_, Value::Array(vs)) => vs.iter().map(text).collect::<Vec<_>>().join(","),
+                (_, v) => text(v),
             };
         }
-        // `--out res/` names the run for its method, as pinto does.
-        let out = match a.out.strip_suffix('/') {
-            Some(_) => format!("{}{}", a.out, a.method),
-            None => a.out.clone(),
+        // An `out` naming a folder, or a header, is named for the method,
+        // as `pinto run` names it; `.` is this folder.
+        let out = if a.out == "." {
+            "./".into()
+        } else {
+            a.out.clone()
         };
-        let manifest = format!("{out}.pinto.json");
-        anyhow::ensure!(
-            !Path::new(&manifest).exists(),
-            "{} exists: a run is not written over; give another out",
-            shown_path(&manifest)
-        );
-        let argv = method.argv(&a.data, &a.coords, &a.batches, &out);
-        check(&self.cli, &argv).map_err(|e| anyhow::anyhow!("pinto {}: {e}", a.method))?;
-
-        let command = format!("pinto {}", script::line(&argv));
-        let summary = format!("{} fit of {}", a.method, a.data.join(", "));
-        let written = vec![shown_path(&manifest)];
-        let cmd = legume_mcp::own_command(&argv)?;
-        let outputs = [manifest.clone().into()];
-        if a.background {
-            let job = cx.spawn_job(cmd, &outputs, &summary)?;
-            return Ok(vec![Content::Json(json!({
-                "job": job,
-                "written": written,
-                "command": command,
-                "note": format!("job_wait (id {job}) or job_status until it ends, then view_open {out}"),
-            }))]);
+        let out = if is_header(&out) {
+            under(&out, &a.method)
+        } else {
+            out
+        };
+        // Paths from the root: the fit, and the records' replay of it from
+        // the project, read the same files wherever the server started.
+        let rooted = |paths: &[String]| -> Vec<String> {
+            paths.iter().map(|p| shown_path(Path::new(p))).collect()
+        };
+        let (data, coords, batches) = (rooted(&a.data), rooted(&a.coords), rooted(&a.batches));
+        let out = shown_path(Path::new(&out));
+        let made = outputs(Path::new(""), &out);
+        if let Some(there) = made.iter().find(|p| p.exists()) {
+            anyhow::bail!(
+                "{} exists: a run is not written over; give another out",
+                shown_path(there)
+            );
         }
-        let log = cx.run_making(cmd, &outputs, &summary)?;
-        Ok(vec![Content::Json(json!({
-            "written": written,
-            "command": command,
-            "log": tail(&log, 20),
-            "note": format!("view_open {out} to look at it"),
-        }))])
+        let argv = method.argv(&data, &coords, &batches, &out);
+        check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
+            Some(flag) => anyhow::anyhow!("pinto {} --{flag}: {e}", a.method),
+            None => anyhow::anyhow!("pinto {}: {e}", a.method),
+        })?;
+
+        let manifest = made[0].clone();
+        let mut reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
+        let summary = format!("{} fit of {}", a.method, a.data.join(", "));
+        let mut cmd = legume_mcp::own_command(&argv)?;
+        // The log level `pinto run` starts a fit with, so its progress
+        // reaches job_status as it does the run screen.
+        if std::env::var_os("RUST_LOG").is_none() {
+            cmd.env("RUST_LOG", script::LOG_LEVEL);
+        }
+        let paths = vec![shown_path(&manifest)];
+        if a.background {
+            let job = cx.spawn_job(cmd, &[manifest], &summary)?;
+            reply["writes"] = paths.into();
+            reply["note"] =
+                format!("job_wait (id {job}) or job_status until it ends, then view_open {out}")
+                    .into();
+            reply["job"] = job.into();
+        } else {
+            cx.run_making(cmd, &[manifest], &summary)?;
+            reply["written"] = paths.into();
+            reply["note"] = format!("view_open {out} to look at it").into();
+        }
+        Ok(vec![Content::Json(reply)])
     }
 }
 
@@ -174,13 +214,12 @@ struct FitArgs {
     out: String,
     #[serde(default)]
     flags: Map<String, Value>,
-    #[serde(default)]
+    #[serde(default = "in_background")]
     background: bool,
 }
 
-/// The arguments of a call, or what is wrong with them.
-fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
+fn in_background() -> bool {
+    true
 }
 
 /// A flag's value as typed on the command line.
@@ -191,18 +230,7 @@ fn text(v: &Value) -> String {
     }
 }
 
-/// The last `n` lines of `log`.
-fn tail(log: &str, n: usize) -> String {
-    let lines: Vec<&str> = log.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
-}
-
-/// `p` as results give paths: from the root.
-fn shown_path(p: &str) -> String {
-    std::path::absolute(p).map_or_else(|_| p.to_string(), |a| a.to_string_lossy().into_owned())
-}
-
-pub fn specs() -> Vec<ToolSpec> {
+fn specs() -> Vec<ToolSpec> {
     let methods =
         json!({"enum": METHODS, "description": "lc (link community, recommended), cage, or dsvd"});
     vec![
@@ -218,11 +246,12 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_fit",
-            "Fit one method on data files, as pinto run would: the exact command is checked \
-             as pinto parses it, then run as a child pinto and kept in the project's records. \
-             A fit takes minutes to hours: with background, it returns a job at once (follow it \
-             with job_status / job_wait / job_cancel). A run is never written over. When it \
-             ends, view_open its out.",
+            "Fit one method on data files, with the command pinto run would build: checked as \
+             pinto parses it, then run as a child pinto and kept in the project's records. A fit \
+             takes minutes to hours, so it runs as a background job: the call returns the job at \
+             once, to follow with job_status / job_wait / job_cancel (background: false waits for \
+             it, for a small data set). A run is never written over. When it ends, view_open its \
+             out.",
             json!({
                 "type": "object",
                 "properties": {
@@ -230,9 +259,9 @@ pub fn specs() -> Vec<ToolSpec> {
                     "data": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Expression data files (.zarr, .zarr.zip, .h5)"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (barcode, x, y, …)"},
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file"},
-                    "out": {"type": "string", "description": "Output prefix (-o); ending in / names the run for its method (res/ → res/lc)"},
-                    "flags": {"type": "object", "description": "The method's flags by name (run_methods lists them): {\"n-communities\": 12, \"verbose\": true}"},
-                    "background": {"type": "boolean", "description": "Return a job at once instead of waiting for the fit [default: false]"},
+                    "out": {"type": "string", "description": "Output prefix (-o); ending in /, _, - or . names the run for its method (res/ → res/lc)"},
+                    "flags": {"type": "object", "description": "The method's flags by name, as run_methods lists them (a switch takes true or false): {\"n-communities\": 12}"},
+                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits for the fit"},
                 },
                 "required": ["method", "data", "out"],
                 "additionalProperties": false,

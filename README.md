@@ -310,7 +310,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | Tool | Does |
 |---|---|
 | `run_methods` | pinto's fitting methods (what `pinto run` sets up); with a method, its flags: name, help, default, choices |
-| `run_fit` | fits one method on data files with their coordinates (and batches), as `pinto run` would: the command checked as pinto parses it, run as a child `pinto`, in the background with `background` (a job), never over an existing run |
+| `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |

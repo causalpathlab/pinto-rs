@@ -25,24 +25,15 @@ down the map. lupin rounds are read here as they are on disk; annotating and \
 relabelling them is lupin's own server.";
 
 /// The server: the viewer's tools and the run tools.
+#[derive(Default)]
 pub struct Server {
     view: crate::view::mcp::Tools,
     run: crate::run::mcp::Tools,
 }
 
-impl Server {
-    /// The server, reading the run methods from `cli` (built).
-    pub fn new(cli: clap::Command) -> Self {
-        Server {
-            view: Default::default(),
-            run: crate::run::mcp::Tools::new(cli),
-        }
-    }
-}
-
 impl Handler for Server {
     fn tools(&self) -> Vec<ToolSpec> {
-        let mut tools = crate::run::mcp::specs();
+        let mut tools = self.run.tools();
         tools.extend(self.view.tools());
         tools
     }
@@ -54,4 +45,17 @@ impl Handler for Server {
             self.view.call(name, args, cx)
         }
     }
+}
+
+/// The arguments of a call, or what is wrong with them.
+pub fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
+    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
+}
+
+/// `p` as results give paths: from the root.
+pub fn shown_path(p: &std::path::Path) -> String {
+    std::path::absolute(p)
+        .unwrap_or_else(|_| p.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }

@@ -670,7 +670,7 @@ enum Commands {
         about = "Serve pinto run and the viewer to agents (Model Context Protocol, stdio)",
         long_about = "Serve pinto to an agent as a Model Context Protocol server on\n\
                       stdin and stdout. run_methods and run_fit set up and run fits as\n\
-                      `pinto run` does (in the background, as jobs, when asked). The\n\
+                      `pinto run` does, as background jobs unless asked to wait. The\n\
                       viewer's tools: view_open opens a run, view_map draws it as a PNG\n\
                       with its legend, view_markers, view_cell and view_export ask\n\
                       about it and write figures.\n\
@@ -945,19 +945,14 @@ fn main() -> anyhow::Result<()> {
             view::run_view(args)?;
         }
         #[cfg(feature = "view")]
-        Commands::Mcp => {
-            use clap::CommandFactory;
-            let mut cli = Cli::command();
-            cli.build();
-            legume_mcp::serve(
-                legume_mcp::ServerInfo {
-                    name: view::mcp::SERVER.into(),
-                    version: env!("CARGO_PKG_VERSION").into(),
-                    instructions: Some(mcp::INSTRUCTIONS.into()),
-                },
-                mcp::Server::new(cli),
-            )?
-        }
+        Commands::Mcp => legume_mcp::serve(
+            legume_mcp::ServerInfo {
+                name: view::mcp::SERVER.into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                instructions: Some(mcp::INSTRUCTIONS.into()),
+            },
+            mcp::Server::default(),
+        )?,
         #[cfg(feature = "view")]
         Commands::Run(args) => {
             use clap::CommandFactory;

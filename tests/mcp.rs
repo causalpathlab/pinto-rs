@@ -153,10 +153,13 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    // The view's own, then what the protocol adds (the records' notebook).
+    // pinto run's, the view's own, then what the protocol adds (the
+    // records' notebook, the jobs).
     assert_eq!(
-        names[..5],
+        names[..7],
         [
+            "run_methods",
+            "run_fit",
             "view_open",
             "view_map",
             "view_markers",
@@ -395,20 +398,41 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
         "{msg}"
     );
     let msg = c.fails("run_fit", fit(json!({"flags": {"n-communities": "many"}})));
-    assert!(msg.contains("pinto lc"), "clap's own complaint: {msg}");
+    assert!(
+        msg.contains("pinto lc --n-communities"),
+        "clap's complaint, its flag named: {msg}"
+    );
+    // `pinto run`'s other outputs count as a run there too, not only its
+    // manifest.
+    std::fs::create_dir_all(dir.path().join("fits")).unwrap();
+    std::fs::write(dir.path().join("fits/c.cmd.sh"), "").unwrap();
+    let msg = c.fails("run_fit", fit(json!({"out": "fits/c"})));
+    assert!(msg.contains("c.cmd.sh exists"), "{msg}");
+    // A switch is true or false; coordinates come one per data file.
+    let msg = c.fails("run_fit", fit(json!({"flags": {"no-qc": 1}})));
+    assert!(msg.contains("--no-qc is a switch"), "{msg}");
+    let msg = c.fails("run_fit", fit(json!({"coords": ["a.csv", "b.csv"]})));
+    assert!(msg.contains("one per data file"), "{msg}");
     // The run already there is not written over.
     let msg = c.fails("run_fit", fit(json!({"out": prefix})));
     assert!(msg.contains("exists"), "{msg}");
 
     // A fit that fails says so: at once, or through its job.
-    let msg = c.fails("run_fit", fit(json!({"flags": {"n-communities": 4}})));
+    let msg = c.fails("run_fit", fit(json!({"background": false})));
     assert!(msg.contains("nowhere.zarr.zip"), "{msg}");
-    let (job, _) = c.ok("run_fit", fit(json!({"background": true, "out": "fits/b"})));
+    // In the background unless asked otherwise.
+    let (job, _) = c.ok("run_fit", fit(json!({"out": "fits/b"})));
     let id = job["job"].as_str().unwrap().to_string();
-    assert!(job["command"]
+    // Paths go from the root, so the records replay it from the project.
+    let command = job["command"].as_str().unwrap();
+    assert!(
+        command.starts_with("pinto lc /") && command.contains("/nowhere.zarr.zip"),
+        "{command}"
+    );
+    assert!(job["writes"][0]
         .as_str()
         .unwrap()
-        .starts_with("pinto lc nowhere.zarr.zip"));
+        .ends_with("fits/b.pinto.json"));
     assert!(job["note"].as_str().unwrap().contains(&id));
     let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 60}));
     assert_eq!(waited["state"], "failed", "{waited}");

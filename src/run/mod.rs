@@ -5,8 +5,14 @@
 //! them in turn. Each command is kept as `{out}.cmd.sh`, a script that
 //! runs it again and refuses to run over a result already there.
 
+pub(crate) mod form;
 pub(crate) mod mcp;
+pub(crate) mod script;
 pub(crate) mod tui;
+
+/// The methods `pinto run` sets up, in the order listed, each as typed:
+/// the short alias of its subcommand.
+pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
 
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {
