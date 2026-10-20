@@ -236,6 +236,14 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     assert!(c
         .fails("view_map", json!({"show": "types"}))
         .contains("round"));
+    for window in [
+        json!({"bbox": [1, 1, 1, 5]}),
+        json!({"bbox": [-3e38, 0, 3e38, 1]}),
+        json!({"zoom": 1e-38}),
+    ] {
+        let msg = c.fails("view_map", window.clone());
+        assert!(msg.contains("no area"), "{window}: {msg}");
+    }
 
     // Export writes the view, then refuses to write over it.
     let (wrote, _) = c.ok("view_export", json!({"png": "map.png", "width": 300}));

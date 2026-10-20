@@ -418,10 +418,6 @@ impl Open {
         let mut window = self.window;
         if let Some([x0, y0, x1, y1]) = a.bbox {
             window = Rect::from_corners(x0, y0, x1, y1);
-            anyhow::ensure!(
-                window.width() > 0. && window.height() > 0.,
-                "bbox {window:?} is empty"
-            );
         } else if a.fit == Some(true) {
             window = geom.bounds().pad(FIT_MARGIN);
         } else if let Some(name) = &a.batch {
@@ -446,6 +442,12 @@ impl Open {
             let (hw, hh) = (0.5 * w.width() / zoom, 0.5 * w.height() / zoom);
             window = Rect::from_corners(cx - hw, cy - hh, cx + hw, cy + hh);
         }
+        let (w, h) = (window.width(), window.height());
+        anyhow::ensure!(
+            w.is_finite() && h.is_finite() && w > 0. && h > 0.,
+            "window {:?}: no area to draw",
+            rect(window)
+        );
         Ok(window)
     }
 
