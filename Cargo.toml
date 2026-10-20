@@ -33,6 +33,7 @@ view = [
     "dep:base64",
     "dep:pdf-writer",
     "dep:legume-tui",
+    "dep:legume-mcp",
 ]
 cuda = [
     "legume-numeric/cuda",
@@ -85,6 +86,10 @@ pdf-writer = { version = "0.15", optional = true }
 # save field and the gallery of saved figures. The same floor as in
 # [dev-dependencies].
 legume-tui = { version = "0.3.13", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
+
+# `pinto mcp`: the Model Context Protocol on stdio, and the feed
+# `pinto view --follow` reads. A git rev until it is on crates.io.
+legume-mcp = { git = "https://github.com/causalpathlab/legume-mcp", rev = "7eafdd3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

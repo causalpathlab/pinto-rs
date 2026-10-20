@@ -21,6 +21,8 @@ impl Client {
         let mut child = Command::new(env!("CARGO_BIN_EXE_pinto"))
             .arg("mcp")
             .current_dir(dir)
+            // The feed `pinto view --follow` reads, kept with the test.
+            .env("LEGUME_MCP_WATCH", dir.join("watch"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -151,8 +153,9 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
+    // The view's own, then what the protocol adds (the records' notebook).
     assert_eq!(
-        names,
+        names[..5],
         [
             "view_open",
             "view_map",
@@ -273,4 +276,62 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     let msg = c.fails("view_export", json!({"png": manifest, "overwrite": true}));
     assert!(msg.contains(".png file"), "{msg}");
     assert!(std::fs::read_to_string(&manifest).unwrap().starts_with('{'));
+}
+
+/// A person follows the agent from `pinto view --follow`: the agent's
+/// view as it changes, paused by a move of their own, taken up again by
+/// `F`, and its last view kept once the server is gone.
+#[cfg(unix)]
+#[test]
+fn a_person_follows_the_agent_in_the_viewer() {
+    use legume_tui::testing::Private;
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = common::write_run(dir.path(), 400);
+    let watch = dir.path().join("watch");
+    let watch = watch.to_str().unwrap();
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+
+    // Before the agent opens a run there is nothing to follow.
+    let sessions = Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(30));
+    let env = [("LEGUME_MCP_WATCH", watch)];
+    let (ok, said) = {
+        let mut cmd = sessions.command();
+        cmd.args(["view", "--follow", "--no-detach"])
+            .env("LEGUME_MCP_WATCH", watch);
+        let out = cmd.output().unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert!(!ok && said.contains("opened no run"), "{said}");
+
+    c.ok("view_open", json!({"prefix": prefix}));
+    c.ok("view_map", json!({"layer": "soft"}));
+    let mut t = sessions.term(&["view", "--follow", "--no-detach"], &env);
+    t.wait_screen("following");
+    t.wait_screen("layer  soft");
+
+    // The agent's next move shows, with its call.
+    c.ok("view_map", json!({"layer": "C1"}));
+    t.wait_screen("layer  C1");
+    t.wait_screen("view_map");
+
+    // A zoom of the person's own pauses following; F takes it up again.
+    t.type_(b"z");
+    t.wait_screen("paused");
+    c.ok("view_map", json!({"layer": "argmax"}));
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(t.screen().contains("layer  C1"), "{}", t.screen());
+    t.type_(b"F");
+    t.wait_screen("layer  argmax");
+
+    // The server gone, its last view stays.
+    drop(c);
+    t.wait_screen("ended");
+    assert!(t.screen().contains("layer  argmax"));
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
 }

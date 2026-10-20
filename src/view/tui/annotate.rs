@@ -108,7 +108,7 @@ impl App<'_> {
         }
     }
 
-    fn load_round(&mut self, path: &Path) -> anyhow::Result<()> {
+    pub(super) fn load_round(&mut self, path: &Path) -> anyhow::Result<()> {
         let round = self.base.round(path)?;
         self.round = Some(round);
         Ok(())
@@ -145,7 +145,7 @@ impl App<'_> {
     }
 
     /// Draw `show`, with nothing selected.
-    fn set_show(&mut self, show: Show) {
+    pub(super) fn set_show(&mut self, show: Show) {
         self.show = show;
         self.bar_focus = None;
         let k = self.level().comm.k;

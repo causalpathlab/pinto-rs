@@ -270,6 +270,21 @@ pub struct ViewArgs {
     )]
     pub theme: Option<Theme>,
 
+    #[arg(
+        long,
+        value_name = "SERVER",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["prefix", "summary", "png", "pdf"],
+        help = "Follow what an agent shows on `pinto mcp` [default: the newest]",
+        long_help = "Follow the view an agent has on a running `pinto mcp`: the\n\
+                     newest, or the one SERVER names (its pid, or its watch folder).\n\
+                     The map follows the agent's as it changes; a move of your own\n\
+                     pauses that, and F follows again. Nothing goes back to the\n\
+                     agent. The panel lists its last calls."
+    )]
+    pub follow: Option<Box<str>>,
+
     #[command(flatten)]
     pub session: legume_tui::cli::SessionArgs,
 }
@@ -305,6 +320,21 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
             write_still(args)
         };
     }
+    // An agent's view: its server, and the run it has open, found before
+    // the session so a miss is said plainly.
+    let followed = match &args.follow {
+        Some(server) => {
+            let live = tui::pick_server(server)?;
+            let mut with = args.clone();
+            with.prefix = Some(tui::run_of(&live)?.into());
+            Some((live, with))
+        }
+        None => None,
+    };
+    let (follow, args) = match &followed {
+        Some((live, with)) => (Some(live), with),
+        None => (None, args),
+    };
     // On screen, the session first. Hosted, this process only relays the
     // terminal from here on, and the program the host starts reads the
     // run; with none named, live views are offered before a new one.
@@ -325,7 +355,7 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
                 &picked
             }
         };
-        tui::run(&session, terminal, args)
+        tui::run(&session, terminal, args, follow)
     })
 }
 

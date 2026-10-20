@@ -4,8 +4,6 @@ mod feature_network;
 mod impute;
 mod link_community;
 mod lr_activity;
-#[cfg(feature = "view")]
-mod mcp;
 mod predict;
 mod propensity;
 #[cfg(feature = "view")]
@@ -652,7 +650,8 @@ enum Commands {
              side by side rather than drawn on top of each other.\n\n\
              Examples:\n\
              \x20 pinto view results --summary\n\
-             \x20 pinto view results.pinto.json --level L2 --summary\n\n\
+             \x20 pinto view results.pinto.json --level L2 --summary\n\
+             \x20 pinto view --follow     # what an agent shows on `pinto mcp`\n\n\
              {}",
             legume_tui::cli::session_help(
                 &tui::TOOL,
@@ -938,8 +937,8 @@ fn main() -> anyhow::Result<()> {
             view::run_view(args)?;
         }
         #[cfg(feature = "view")]
-        Commands::Mcp => mcp::serve(
-            mcp::ServerInfo {
+        Commands::Mcp => legume_mcp::serve(
+            legume_mcp::ServerInfo {
                 name: "pinto".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 instructions: Some(view::mcp::INSTRUCTIONS.into()),

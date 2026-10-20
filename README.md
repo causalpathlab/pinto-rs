@@ -247,6 +247,17 @@ files, and replaces one only with `overwrite`. lupin rounds are shown as they
 are on disk, and focus takes lupin's cluster ids. Annotating and
 relabelling are left to lupin's own server.
 
+To watch what an agent does, follow it in a viewer of your own:
+
+```sh
+pinto view --follow          # the newest `pinto mcp`; --follow PID for another
+```
+
+The map follows the agent's view as it changes, and the panel lists its
+last calls. A move of your own (a key, a click, a zoom) pauses following,
+and `F` follows again. Nothing goes back to the agent. The viewer is a
+session like any other, so you can detach it and attach again later.
+
 ## Input data
 
 - **Expression:** `.h5` or `.zarr` via `data-beans`

@@ -11,8 +11,8 @@ use super::gene::{GeneMap, Source};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
-use crate::mcp::{Call, Content, Handler, ToolSpec};
 use clap::ValueEnum;
+use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -66,6 +66,7 @@ impl Handler for Tools {
             cx.progress(&format!("loading {}", a.prefix));
             let open = Open::new(&a.prefix, a.level.as_deref())?;
             let summary = open.summary();
+            cx.state(&open.followed());
             self.open = Some(open);
             return Ok(vec![Content::Json(summary)]);
         }
@@ -74,7 +75,11 @@ impl Handler for Tools {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("no run open: call view_open first"))?;
         match name {
-            "view_map" => open.map(parse(args)?),
+            "view_map" => {
+                let shown = open.map(parse(args)?)?;
+                cx.state(&open.followed());
+                Ok(shown)
+            }
             "view_markers" => open.markers(parse(args)?),
             "view_cell" => open.cell(parse(args)?),
             "view_export" => open.export(parse(args)?),
@@ -470,6 +475,35 @@ impl Open {
     fn render(&self, vp: &Viewport) -> super::render::Frame {
         self.base
             .render(self.level(), &self.style(), self.gene.as_ref(), vp)
+    }
+
+    /// The view as someone following the server sees it (`pinto view
+    /// --follow`): `view_map`'s arguments that draw it again, with the
+    /// run they are of.
+    fn followed(&self) -> Value {
+        let comm = &self.level().comm;
+        let focus: Vec<String> = super::focused(self.focus())
+            .iter()
+            .map(|&c| super::focus_name(comm, c))
+            .collect();
+        let round = match drawn(self.show, self.at, self.round.as_ref()) {
+            (_, _, Some(path)) => Some(shown_path(path)),
+            _ => None,
+        };
+        json!({
+            "run": shown_path(Path::new(&self.base.run.prefix)),
+            "level": self.base.run.levels[self.at].tag,
+            "round": round,
+            "show": super::value_name(&self.show),
+            "layer": self.layer.to_string(),
+            "focus": focus,
+            "gene": self.gene.as_ref().map_or("", |g| &g.feature),
+            "source": super::value_name(&self.source),
+            "clip": self.clip,
+            "edges": self.edges,
+            "point_size": self.point,
+            "bbox": rect(self.window),
+        })
     }
 
     /// What the map shows: enough to read it and to ask for another.

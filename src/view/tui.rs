@@ -10,6 +10,7 @@
 
 mod annotate;
 mod browse;
+mod follow;
 mod gallery;
 pub(super) mod grid;
 mod plots;
@@ -76,6 +77,7 @@ pub fn run(
     session: &legume_tui::Session,
     terminal: &mut DefaultTerminal,
     args: &ViewArgs,
+    follow: Option<&legume_mcp::watch::Live>,
 ) -> anyhow::Result<()> {
     // The terminal is fresh: a repaint asked for by now is this one. It
     // is asked first, before the mouse is on, so no report lands amid its
@@ -100,8 +102,11 @@ pub fn run(
     let mut app = App::new(&base, level, args, (gfx, px), session);
     app.shift_enter = session.keyboard_enhanced();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
+    app.follower = follow.map(follow::Follower::open).transpose()?;
     app.run(terminal)
 }
+
+pub(super) use follow::{pick as pick_server, run_of};
 
 /// How the map reaches the screen.
 enum Gfx {
@@ -256,6 +261,8 @@ struct App<'a> {
     relabel: Option<annotate::Relabel>,
     /// A dialog that takes the keys: file browser, prompt, confirmation.
     modal: Option<annotate::Modal>,
+    /// The agent followed (`--follow`).
+    follower: Option<follow::Follower>,
 
     /// The map must be rendered again.
     need_map: bool,
@@ -338,6 +345,7 @@ impl<'a> App<'a> {
             show_saved: true,
             strip: Rect::default(),
             thumbs: Default::default(),
+            follower: None,
             need_map: true,
             need_panel: true,
             quit: false,
@@ -364,6 +372,7 @@ impl<'a> App<'a> {
                 self.redraw(terminal)?;
             }
             self.poll_job(terminal)?;
+            self.follow_tick(terminal)?;
             session.status(&self.session_status());
             // After an attach the terminal is asked again, before the
             // mouse is on, and the pictures made anew for it.
@@ -635,6 +644,9 @@ impl<'a> App<'a> {
 
     fn handle(&mut self, ev: Event, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.need_panel = true;
+        if self.follower.is_some() && moves(&ev) {
+            self.pause_following();
+        }
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, terminal)?,
             Event::Mouse(m) => self.mouse(m),
@@ -693,6 +705,7 @@ impl<'a> App<'a> {
             KeyCode::Char('Z') => self.zoom(ZOOM, None),
             KeyCode::Char('H') => self.cycle_chart(),
             KeyCode::Char('f') => self.toggle_saved(),
+            KeyCode::Char('F') => self.resume_following(),
             KeyCode::Char('0') => self.fit_all(),
             KeyCode::Char('r') | KeyCode::Home => self.reset(),
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
@@ -1072,6 +1085,11 @@ impl<'a> App<'a> {
         if next == self.cur && self.show == Show::Communities {
             return Ok(());
         }
+        self.go_level(next, terminal)
+    }
+
+    /// Level `next`'s communities on the map, loaded first if need be.
+    fn go_level(&mut self, next: usize, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.show = Show::Communities;
         self.bar_focus = None;
         if self.levels[next].is_none() {
@@ -1479,6 +1497,11 @@ impl<'a> App<'a> {
         if let Some(r) = self.round_line() {
             lines.insert(5, row("round", r));
         }
+        if let Some(f) = &self.follower {
+            let mut agent = f.lines().into_iter();
+            lines.push(row("agent", agent.next().unwrap_or_default()));
+            lines.extend(agent.map(|call| Line::styled(format!("        {call}"), dim)));
+        }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(
                 "sent",
@@ -1713,6 +1736,18 @@ fn legend_text(comm: &super::data::Communities, c: usize, n: usize) -> String {
 
 /// Right-click or a held Ctrl/Alt adds to the selection instead of
 /// replacing it. (Shift-click is kept by terminals for text selection.)
+/// Whether `ev` moves the view (a key, a click, a scroll), which pauses
+/// following an agent; showing help, saving and the theme do not.
+fn moves(ev: &Event) -> bool {
+    match ev {
+        Event::Key(k) if k.kind == KeyEventKind::Release => false,
+        Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) => false,
+        Event::Key(k) => !matches!(k.code, KeyCode::Char('F' | 'q' | '?' | 't' | 's' | 'f')),
+        Event::Mouse(m) => !matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Up(_)),
+        _ => false,
+    }
+}
+
 fn adds(modifiers: KeyModifiers) -> bool {
     modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
@@ -1791,6 +1826,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
             " t dark / light background (paper)",
             " s save as  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
+            " F  follow the agent again (--follow)",
         ]
     } else {
         &[" s save as  r start over", " Esc back  ? keys  q quit"]
