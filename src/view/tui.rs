@@ -1530,11 +1530,11 @@ impl<'a> App<'a> {
             lines.insert(5, row("round", r));
         }
         if let Some(f) = &self.follower {
-            lines.push(row("agent", f.header()));
-            lines.extend(
-                f.calls()
-                    .map(|call| Line::styled(format!("        {call}"), dim)),
-            );
+            // The panel's rows read ` agent  …`; the agent's lines fit after.
+            let width = (self.side.width as usize).saturating_sub(9);
+            let mut agent = f.lines(width).into_iter();
+            lines.push(row("agent", agent.next().unwrap_or_default()));
+            lines.extend(agent.map(|call| Line::styled(format!("        {call}"), dim)));
         }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(
