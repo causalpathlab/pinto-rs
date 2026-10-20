@@ -89,7 +89,7 @@ legume-tui = { version = "0.3.13", optional = true, features = ["style", "save",
 
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads. A git rev until it is on crates.io.
-legume-mcp = { git = "https://github.com/causalpathlab/legume-mcp", rev = "7eafdd3", optional = true }
+legume-mcp = { git = "https://github.com/causalpathlab/legume-mcp", rev = "29df8dd", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

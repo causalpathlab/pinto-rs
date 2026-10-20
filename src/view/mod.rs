@@ -301,8 +301,9 @@ pub enum Show {
     Clusters,
 }
 
-/// An agent's view on `pinto mcp`, as `pinto view --follow` draws it:
-/// `view_map`'s settings that draw it again, and the run they are of.
+/// An agent's view on `pinto mcp`, as `pinto view --follow` draws it: the
+/// run, and `view_map`'s settings by its own names and values. A `gene` or
+/// `round` of none means there is none, where `view_map` keeps what it has.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Followed {
     run: String,
@@ -772,56 +773,59 @@ impl Still<'_> {
 
     /// The `pinto view` command that draws this view into `png` and `pdf`.
     fn command(&self, png: Option<&str>, pdf: Option<&str>) -> String {
-        use std::fmt::Write as _;
+        let args: Vec<String> = self
+            .args(png, pdf)
+            .iter()
+            .map(|a| crate::tui::quote(a))
+            .collect();
+        format!("pinto {}", args.join(" "))
+    }
+
+    /// [`Still::command`]'s arguments, after `pinto`.
+    fn args(&self, png: Option<&str>, pdf: Option<&str>) -> Vec<String> {
         let (style, win) = (&self.style, self.window);
-        let mut cmd = format!("pinto view {}", crate::tui::quote(self.prefix));
-        for (flag, path) in [("--png", png), ("--pdf", pdf)] {
+        let mut args = vec!["view".into(), self.prefix.to_string()];
+        let mut flag = |name: &str, value: Option<String>| {
+            args.push(name.into());
+            args.extend(value);
+        };
+        for (name, path) in [("--png", png), ("--pdf", pdf)] {
             if let Some(path) = path {
-                write!(cmd, " {flag} {}", crate::tui::quote(path)).ok();
+                flag(name, Some(path.into()));
             }
         }
-        write!(
-            cmd,
-            // `{}` prints the shortest text that parses back to the same f32.
-            " --units {} --width {} --height {} --bbox={},{},{},{} --level {} --layer {}",
-            self.units,
-            self.vp.w,
-            self.vp.h,
-            win.x0,
-            win.y0,
-            win.x1,
-            win.y1,
-            self.tag(),
-            style.layer,
-        )
-        .ok();
+        flag("--units", Some(self.units.into()));
+        flag("--width", Some(self.vp.w.to_string()));
+        flag("--height", Some(self.vp.h.to_string()));
+        // `{}` prints the shortest text that parses back to the same f32;
+        // one word, so a negative X0 is not read as a flag.
+        let bbox = format!("--bbox={},{},{},{}", win.x0, win.y0, win.x1, win.y1);
+        flag(&bbox, None);
+        flag("--level", Some(self.tag().into()));
+        flag("--layer", Some(style.layer.to_string()));
         let focused = focused(style.focus);
         if !focused.is_empty() {
-            write!(cmd, " --focus {}", ids(&self.level.comm, &focused, ",")).ok();
+            flag("--focus", Some(ids(&self.level.comm, &focused, ",")));
         }
         if style.edges {
-            cmd.push_str(" --edges");
+            flag("--edges", None);
         }
         if style.point != 1. {
-            write!(cmd, " --point-size {}", style.point).ok();
+            flag("--point-size", Some(style.point.to_string()));
         }
-        write!(cmd, " --theme {}", value_name(&style.theme)).ok();
+        flag("--theme", Some(value_name(&style.theme)));
         if let Some((round, show)) = self.round {
-            write!(
-                cmd,
-                " --round {} --show {}",
-                round.display(),
-                value_name(&show)
-            )
-            .ok();
+            flag("--round", Some(round.display().to_string()));
+            flag("--show", Some(value_name(&show)));
         }
         if let Some(g) = self.gene {
-            write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
+            flag("--gene", Some(g.feature.to_string()));
+            flag("--clip", Some(g.clip.to_string()));
             if g.source == Source::Expected {
-                cmd.push_str(" --expected");
+                flag("--expected", None);
             }
         }
-        cmd
+        args
     }
 }
 

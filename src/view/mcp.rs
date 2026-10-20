@@ -101,7 +101,7 @@ impl Handler for Tools {
             }
             "view_markers" => open.markers(parse(args)?),
             "view_cell" => open.cell(parse(args)?),
-            "view_export" => open.export(parse(args)?),
+            "view_export" => open.export(parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
@@ -633,7 +633,10 @@ impl Open {
             .ok_or_else(|| anyhow::anyhow!("no cell within {radius} of {at:?}"))
     }
 
-    fn export(&mut self, a: ExportArgs) -> anyhow::Result<Vec<Content>> {
+    /// Write the view's figures by running the `pinto view` command that
+    /// draws them, so the project's records (`runall.sh`, `INDEX.tsv`)
+    /// can make them again.
+    fn export(&mut self, a: ExportArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         anyhow::ensure!(a.png.is_some() || a.pdf.is_some(), "give png, pdf or both");
         let paths: Vec<&Path> = [a.png.as_deref(), a.pdf.as_deref()]
             .into_iter()
@@ -657,21 +660,7 @@ impl Open {
                 shown_path(p)
             );
         }
-        // The figure lists the focused groups' markers.
-        if self.focus().is_some() && a.pdf.is_some() {
-            let (base, level) = self.parts();
-            base.load_features(level)?;
-        }
         let vp = self.viewport(a.width.unwrap_or(2400));
-        super::write_outputs(
-            &self.base,
-            self.level(),
-            &self.style(),
-            self.gene.as_ref(),
-            &vp,
-            a.png.as_deref().map(Path::new),
-            a.pdf.as_deref().map(Path::new),
-        )?;
         let shown = |p: Option<&String>| p.map(|p| shown_path(Path::new(p)));
         let (png, pdf) = (shown(a.png.as_ref()), shown(a.pdf.as_ref()));
         let round = match drawn(self.show, self.at, self.round.as_ref()) {
@@ -689,8 +678,18 @@ impl Open {
             vp,
             window: vp.window(),
         };
+        let wrote: Vec<&String> = png.iter().chain(&pdf).collect();
+        let summary = format!(
+            "{} of {} {}",
+            still.style.layer,
+            self.base.run.name(),
+            self.level().comm.tag
+        );
+        let outputs: Vec<std::path::PathBuf> = wrote.iter().map(Into::into).collect();
+        let args = still.args(png.as_deref(), pdf.as_deref());
+        cx.run_making(legume_mcp::own_command(&args)?, &outputs, &summary)?;
         Ok(vec![Content::Json(json!({
-            "wrote": png.iter().chain(&pdf).collect::<Vec<_>>(),
+            "wrote": wrote,
             "image": [vp.w, vp.h],
             // What draws the same files again, without an agent.
             "command": still.command(png.as_deref(), pdf.as_deref()),

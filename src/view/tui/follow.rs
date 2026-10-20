@@ -1,9 +1,10 @@
 //! `pinto view --follow`: the view an agent has on `pinto mcp`, drawn
 //! here as it changes. Watch only: the agent's view is applied as the
-//! viewer's own keys would, a move of the person's own pauses following
+//! viewer's own keys would, a change of the person's own pauses following
 //! (`F` takes it up again), and nothing goes back to the agent.
 
 use super::App;
+use crate::tui::style::short;
 use crate::view::lupin::same_file;
 use crate::view::{parse_focus, Followed, Show};
 use legume_mcp::watch::{self, Body, Follow, Live};
@@ -14,36 +15,45 @@ use std::path::Path;
 /// The agent's calls the panel lists.
 const CALLS: usize = 4;
 
-/// Longest a call's arguments run in the panel.
+/// Longest a call's arguments, or its error, run in the panel.
 const ARGS: usize = 40;
 
-/// The running `pinto mcp` server `server` names (its pid, or its folder),
-/// or the newest one when it names none, and the run its agent has open.
+/// The running `pinto mcp` server `server` names (its pid, its folder or
+/// the folder's name), or the newest one when it names none, and the run
+/// its agent has open.
 pub(in crate::view) fn pick_server(server: &str) -> anyhow::Result<(Live, String)> {
     let mut live = watch::live()
         .into_iter()
         .filter(|l| l.meta.server == crate::view::mcp::SERVER && l.alive);
+    let named = |l: &Live| {
+        l.meta.pid.to_string() == server
+            || l.dir.file_name().is_some_and(|n| n == server)
+            || same_file(&l.dir, Path::new(server))
+    };
     let live = if server.is_empty() {
         live.next()
     } else {
-        live.find(|l| l.meta.pid.to_string() == server || l.dir == Path::new(server))
+        live.find(named)
     }
     .ok_or_else(|| match server {
         "" => anyhow::anyhow!("no `pinto mcp` is running: an agent starts one"),
         _ => anyhow::anyhow!("no running `pinto mcp` is {server:?}: give its pid or folder"),
     })?;
-    let run = view_of(&live.dir).map(|v| v.run).ok_or_else(|| {
-        anyhow::anyhow!(
-            "the agent on `pinto mcp` (pid {}) has opened no run yet",
-            live.meta.pid
-        )
+    let pid = live.meta.pid;
+    let view = watch::state(&live.dir).ok_or_else(|| {
+        anyhow::anyhow!("the agent on `pinto mcp` (pid {pid}) has opened no run yet")
     })?;
+    let run = read(view)
+        .map_err(|e| anyhow::anyhow!("pid {pid}: {e}"))?
+        .run;
     Ok((live, run))
 }
 
-/// The view the server in `dir` published last.
-fn view_of(dir: &Path) -> Option<Followed> {
-    serde_json::from_value(watch::state(dir)?).ok()
+/// A view the server published.
+fn read(view: serde_json::Value) -> anyhow::Result<Followed> {
+    serde_json::from_value(view).map_err(|e| {
+        anyhow::anyhow!("cannot read the agent's view ({e}): is its `pinto mcp` this version?")
+    })
 }
 
 /// The server followed, and what it has done.
@@ -54,6 +64,10 @@ pub(super) struct Follower {
     /// The agent's view as last published, and as last drawn here.
     latest: Option<Followed>,
     drawn: Option<Followed>,
+    /// Why the last view published could not be read, and whether the
+    /// person was told.
+    unreadable: Option<String>,
+    told: bool,
     /// The agent's last calls, the newest last: the tool, its arguments,
     /// and how it went.
     calls: VecDeque<String>,
@@ -63,15 +77,29 @@ pub(super) struct Follower {
 impl Follower {
     /// Follow the server `live` from its view now.
     pub(super) fn open(live: &Live) -> anyhow::Result<Self> {
-        Ok(Follower {
+        let mut f = Follower {
             feed: watch::follow(&live.dir, watch::From::End)?,
             pid: live.meta.pid,
             following: true,
-            latest: view_of(&live.dir),
+            latest: None,
             drawn: None,
+            unreadable: None,
+            told: false,
             calls: VecDeque::new(),
             ended: false,
-        })
+        };
+        if let Some(view) = watch::state(&live.dir) {
+            f.take(view);
+        }
+        Ok(f)
+    }
+
+    /// `view`, published, as the agent's latest.
+    fn take(&mut self, view: serde_json::Value) {
+        match read(view) {
+            Ok(view) => (self.latest, self.unreadable, self.told) = (Some(view), None, false),
+            Err(e) => self.unreadable = Some(e.to_string()),
+        }
     }
 
     /// Read what the server did since; true when the panel has news.
@@ -90,19 +118,17 @@ impl Follower {
                     if let Some(call) = self.calls.back_mut() {
                         call.push_str(&match ok {
                             true => format!("  ✓ {ms} ms"),
-                            false => format!("  ✗ {}", text.lines().next().unwrap_or("")),
+                            false => {
+                                format!("  ✗ {}", short(text.lines().next().unwrap_or(""), ARGS))
+                            }
                         });
                     }
                 }
-                Body::State { state, .. } => {
-                    if let Ok(view) = serde_json::from_value(state) {
-                        self.latest = Some(view);
-                    }
-                }
+                Body::State { state, .. } => self.take(state),
                 _ => {}
             }
         }
-        if !self.ended && !alive(self.pid) {
+        if !self.ended && self.feed.ended() {
             self.ended = true;
             news = true;
         }
@@ -121,6 +147,8 @@ impl Follower {
         // The last view stays once the server has ended.
         let how = if self.ended {
             "ended"
+        } else if self.unreadable.is_some() {
+            "cannot read its view"
         } else if self.following {
             "following"
         } else {
@@ -137,34 +165,16 @@ impl Follower {
 
 /// `args` in a line: its JSON, cut short.
 fn brief(args: &serde_json::Value) -> String {
-    let text = match args.as_object() {
+    match args.as_object() {
         Some(o) if o.is_empty() => String::new(),
-        _ => args.to_string(),
-    };
-    match text.char_indices().nth(ARGS) {
-        Some((at, _)) => format!("{}…", &text[..at]),
-        None => text,
+        _ => short(&args.to_string(), ARGS),
     }
-}
-
-#[cfg(unix)]
-fn alive(pid: u32) -> bool {
-    // Signal 0 only asks whether the process is there.
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-    let there = unsafe { libc::kill(pid, 0) } == 0;
-    there || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(not(unix))]
-fn alive(_: u32) -> bool {
-    true
 }
 
 impl App<'_> {
     /// Read the server followed, and draw the agent's view when it changed
-    /// and is followed.
+    /// and is followed. Relabelling or a dialog keeps the view as it is
+    /// until it is done.
     pub(super) fn follow_tick(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         let Some(f) = self.follower.as_mut() else {
             return Ok(());
@@ -172,6 +182,16 @@ impl App<'_> {
         if f.read() {
             self.need_panel = true;
         }
+        if let Some(why) = f.unreadable.clone().filter(|_| !f.told) {
+            f.told = true;
+            self.fail(why);
+        }
+        if self.relabel.is_some() || self.modal.is_some() {
+            return Ok(());
+        }
+        let Some(f) = self.follower.as_mut() else {
+            return Ok(());
+        };
         let Some(view) = f.due().cloned() else {
             return Ok(());
         };
@@ -182,7 +202,7 @@ impl App<'_> {
         Ok(())
     }
 
-    /// A move of the person's own: following waits for `F`.
+    /// A change of the person's own: following waits for `F`.
     pub(super) fn pause_following(&mut self) {
         if let Some(f) = self.follower.as_mut().filter(|f| f.following) {
             f.following = false;
@@ -195,6 +215,10 @@ impl App<'_> {
         &mut self,
         terminal: &mut DefaultTerminal,
     ) -> anyhow::Result<()> {
+        if self.relabel.is_some() {
+            self.status = "leave relabel mode first".into();
+            return Ok(());
+        }
         let Some(f) = self.follower.as_mut() else {
             self.status = "F follows an agent: pinto view --follow".into();
             return Ok(());
@@ -229,6 +253,8 @@ impl App<'_> {
             {
                 self.busy(terminal, "loading the agent's round ...".into())?;
                 self.load_round(Path::new(path))?;
+                // Another round is another grouping, as `,` and `.` show it.
+                self.set_show(view.show);
             }
         }
         if view.show != self.show {
@@ -246,7 +272,8 @@ impl App<'_> {
             let shown = focus.iter().position(|&f| f);
             self.set_focus(focus, shown);
         }
-        if view.edges != self.edges {
+        // A round's groupings have no edges of their own.
+        if view.show == Show::Communities && view.edges != self.edges {
             self.toggle_edges(terminal)?;
         }
         self.point = view.point_size;

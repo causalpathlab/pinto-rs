@@ -647,9 +647,10 @@ impl<'a> App<'a> {
 
     fn handle(&mut self, ev: Event, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.need_panel = true;
-        if moves(&ev) {
-            self.pause_following();
-        }
+        // What the person changed of the view, not what they pressed,
+        // pauses following an agent; F is following itself.
+        let resumes = matches!(&ev, Event::Key(k) if k.code == KeyCode::Char('F'));
+        let before = (self.follower.is_some() && !resumes).then(|| self.view_key());
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, terminal)?,
             Event::Mouse(m) => self.mouse(m),
@@ -659,7 +660,28 @@ impl<'a> App<'a> {
             }
             _ => {}
         }
+        if before.is_some_and(|b| b != self.view_key()) {
+            self.pause_following();
+        }
         Ok(())
+    }
+
+    /// What an agent's view sets, as drawn here now: a change of it is a
+    /// move of the person's own.
+    fn view_key(&self) -> impl PartialEq {
+        let round = self.round.as_ref().map(|r| r.path.clone());
+        let gene = self.gene.as_ref().map(|g| (g.feature.clone(), g.clip));
+        let cam = (self.cam.cx, self.cam.cy, self.cam.scale);
+        let groups = (self.cur, self.show, round, self.focus.clone());
+        (
+            groups,
+            self.layer,
+            gene,
+            self.source,
+            self.edges,
+            self.point,
+            cam,
+        )
     }
 
     fn key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -1744,18 +1766,6 @@ fn legend_text(comm: &super::data::Communities, c: usize, n: usize) -> String {
     let name: String = comm.name(c).chars().take(17).collect();
     let width = if comm.names.is_some() { 17 } else { 4 };
     format!(" {name:<width$} {:>9}", thousands(n))
-}
-
-/// Whether `ev` moves the view (a key, a click, a scroll), which pauses
-/// following an agent; showing help, saving and the theme do not.
-fn moves(ev: &Event) -> bool {
-    match ev {
-        Event::Key(k) if k.kind == KeyEventKind::Release => false,
-        Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) => false,
-        Event::Key(k) => !matches!(k.code, KeyCode::Char('F' | 'q' | '?' | 't' | 's' | 'f')),
-        Event::Mouse(m) => !matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Up(_)),
-        _ => false,
-    }
 }
 
 /// Right-click or a held Ctrl/Alt adds to the selection instead of

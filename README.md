@@ -247,6 +247,12 @@ files, and replaces one only with `overwrite`. lupin rounds are shown as they
 are on disk, and focus takes lupin's cluster ids. Annotating and
 relabelling are left to lupin's own server.
 
+`pinto mcp` keeps legume-mcp's project records in the directory it
+starts in (`LEGUME_MCP_PROJECT` names another, `LEGUME_MCP_RECORDS=off`
+keeps none): `results/<day>/runall.sh` makes each exported figure again
+(`view_export` runs the `pinto view` command it returns),
+`results/INDEX.tsv` lists them, and the agent keeps a notebook there.
+
 To watch what an agent does, follow it in a viewer of your own:
 
 ```sh

@@ -3,8 +3,8 @@
 use crate::view::mcp::MapArgs;
 use crate::view::{Followed, Show};
 
-/// The view published is `view_map`'s own settings (and its run): the
-/// agent's call could be made again from it, so the two cannot drift.
+/// The view published names its settings as `view_map` does, with values
+/// it takes (and the run), so the two cannot drift apart.
 #[test]
 fn the_view_followed_is_view_maps_settings() {
     let view = Followed {
