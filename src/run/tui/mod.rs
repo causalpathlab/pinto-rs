@@ -5,10 +5,10 @@
 mod batch;
 mod data;
 mod draw;
-mod form;
 mod jobs;
-mod script;
 
+use super::script::under;
+use super::{form, script};
 use crate::tui::browse::{Browser, Outcome};
 use crate::tui::shown;
 use data::Pair;
@@ -22,9 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-/// The methods `pinto run` sets up, in the order listed, each as typed:
-/// the short alias of its subcommand.
-pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
+pub use super::METHODS;
 
 /// How long after the review opens the run key is not yet taken as "run":
 /// a double tap or a held key would otherwise skip the review.
@@ -1242,19 +1240,6 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
             }
         })
         .collect()
-}
-
-/// `stem` named after the output `header`: the stem alone when there is
-/// none, `{header}{stem}` when it ends in `/` (a folder), `_`, `-` or
-/// `.`, else `{header}_{stem}`.
-fn under(header: &str, stem: &str) -> String {
-    if header.is_empty() {
-        stem.to_string()
-    } else if header.ends_with(['/', '_', '-', '.']) {
-        format!("{header}{stem}")
-    } else {
-        format!("{header}_{stem}")
-    }
 }
 
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no

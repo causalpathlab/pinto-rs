@@ -11,6 +11,7 @@ use super::gene::{GeneMap, Source};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
+use crate::mcp::{parse, shown_path};
 use clap::ValueEnum;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
@@ -105,11 +106,6 @@ impl Handler for Tools {
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
-}
-
-/// The arguments of a call, or what is wrong with them.
-fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
 }
 
 #[derive(Deserialize)]
@@ -743,25 +739,6 @@ fn value_enum<T: ValueEnum>(s: &str, what: &str) -> anyhow::Result<T> {
 fn rect(r: Rect) -> [f32; 4] {
     [r.x0, r.y0, r.x1, r.y1]
 }
-
-/// `p` as results give paths: from the root.
-fn shown_path(p: &Path) -> String {
-    lupin::absolute(p).to_string_lossy().into_owned()
-}
-
-/// For the agent: what the viewer is for and the order of calls.
-/// The README gives the same, for clients that do not pass it on.
-pub const INSTRUCTIONS: &str = "\
-Use pinto's MCP tools to look at spatial link-community runs on the tissue. \
-Start with `view_open` on a run prefix (the `-o` of a pinto fit, or its \
-`.pinto.json`): it lists the run's levels, batches, groups and any lupin rounds. \
-`view_map` draws the map as a PNG with its legend; its arguments stay set until \
-changed, so pass only what changes. `view_markers` lists a group's top features, \
-`view_cell` names the cell under a pixel of the last map (or at a world point, \
-or by name), and `view_export` writes the current view as PNG/PDF files. World \
-coordinates are those `view_open` reports, with y running down the map. lupin \
-rounds are read here as they are on disk; annotating and relabelling them is \
-lupin's own server.";
 
 fn specs() -> Vec<ToolSpec> {
     let spec = ToolSpec::new;

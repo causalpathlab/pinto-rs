@@ -4,6 +4,8 @@ mod feature_network;
 mod impute;
 mod link_community;
 mod lr_activity;
+#[cfg(feature = "view")]
+mod mcp;
 mod predict;
 mod propensity;
 #[cfg(feature = "view")]
@@ -74,7 +76,7 @@ fn print_logo() {
                   \x20 run   Set up fits in the terminal\n\
                   \x20       Choose data, methods and flags, then run them.\n\n\
                   \x20 mcp   Server for agents (Model Context Protocol)\n\
-                  \x20       The viewer's map and questions as tools, on stdio.\n\n\
+                  \x20       pinto run's fits and the viewer's map as tools, on stdio.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -665,11 +667,13 @@ enum Commands {
 
     #[cfg(feature = "view")]
     #[command(
-        about = "Serve the viewer to agents (Model Context Protocol, stdio)",
+        about = "Serve pinto run and the viewer to agents (Model Context Protocol, stdio)",
         long_about = "Serve pinto to an agent as a Model Context Protocol server on\n\
-                      stdin and stdout. The tools are the viewer's: view_open opens a\n\
-                      run, view_map draws it as a PNG with its legend, view_markers,\n\
-                      view_cell and view_export ask about it and write figures.\n\
+                      stdin and stdout. run_methods and run_fit set up and run fits as\n\
+                      `pinto run` does, as background jobs unless asked to wait. The\n\
+                      viewer's tools: view_open opens a run, view_map draws it as a PNG\n\
+                      with its legend, view_markers, view_cell and view_export ask\n\
+                      about it and write figures.\n\
                       The view is kept between calls, as `pinto view` keeps it.\n\
                       lupin rounds are shown as they are on disk.\n\n\
                       Any MCP client runs it as the command `pinto mcp`. The project's\n\
@@ -945,9 +949,9 @@ fn main() -> anyhow::Result<()> {
             legume_mcp::ServerInfo {
                 name: view::mcp::SERVER.into(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                instructions: Some(view::mcp::INSTRUCTIONS.into()),
+                instructions: Some(mcp::INSTRUCTIONS.into()),
             },
-            view::mcp::Tools::default(),
+            mcp::Server::default(),
         )?,
         #[cfg(feature = "view")]
         Commands::Run(args) => {
