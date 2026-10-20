@@ -2,6 +2,7 @@ mod color;
 mod data;
 mod draft;
 mod fixture;
+mod follow;
 mod gene;
 mod grid;
 mod heatmap;

@@ -19,7 +19,8 @@ use crate::util::common::*;
 use crate::util::coverage::{measured_mass, Coverage};
 use crate::util::input::read_expr_data;
 
-#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Source {
     Observed,
     Expected,

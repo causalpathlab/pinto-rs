@@ -17,6 +17,7 @@ mod plots;
 mod save;
 
 pub use browse::pick_run;
+pub(super) use follow::pick_server;
 
 use crate::tui::style;
 use legume_tui::map::viewport::Limits;
@@ -105,8 +106,6 @@ pub fn run(
     app.follower = follow.map(follow::Follower::open).transpose()?;
     app.run(terminal)
 }
-
-pub(super) use follow::{pick as pick_server, run_of};
 
 /// How the map reaches the screen.
 enum Gfx {
@@ -601,7 +600,11 @@ impl<'a> App<'a> {
 
     /// Fit `r`, with a small margin, to the map.
     fn fit(&mut self, r: WorldRect) {
-        let r = r.pad(FIT_MARGIN);
+        self.look_at(r.pad(FIT_MARGIN));
+    }
+
+    /// The map on `r` exactly, filling the tighter axis.
+    fn look_at(&mut self, r: WorldRect) {
         let (w, h) = self.image_size();
         self.set_cam(Viewport::fit(r, w, h).camera());
     }
@@ -644,7 +647,7 @@ impl<'a> App<'a> {
 
     fn handle(&mut self, ev: Event, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.need_panel = true;
-        if self.follower.is_some() && moves(&ev) {
+        if moves(&ev) {
             self.pause_following();
         }
         match ev {
@@ -705,7 +708,7 @@ impl<'a> App<'a> {
             KeyCode::Char('Z') => self.zoom(ZOOM, None),
             KeyCode::Char('H') => self.cycle_chart(),
             KeyCode::Char('f') => self.toggle_saved(),
-            KeyCode::Char('F') => self.resume_following(),
+            KeyCode::Char('F') => self.resume_following(terminal)?,
             KeyCode::Char('0') => self.fit_all(),
             KeyCode::Char('r') | KeyCode::Home => self.reset(),
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
@@ -930,6 +933,14 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Show the groups `focus` flags, listing `shown`'s markers.
+    pub(super) fn set_focus(&mut self, focus: Vec<bool>, shown: Option<usize>) {
+        self.focus = focus;
+        self.shown = shown;
+        self.list_markers();
+        self.need_map = true;
+    }
+
     fn clear_focus(&mut self) {
         self.focus.fill(false);
         self.shown = None;
@@ -1039,11 +1050,10 @@ impl<'a> App<'a> {
             None => n - 1,
         };
         let c = order[next as usize];
-        self.focus.fill(false);
-        self.focus[c] = true;
-        self.shown = Some(c);
+        let mut focus = vec![false; self.focus.len()];
+        focus[c] = true;
         self.gene = None;
-        self.list_markers();
+        self.set_focus(focus, Some(c));
         if let Layer::Community(_) = self.layer {
             self.community = c;
             self.layer = Layer::Community(c);
@@ -1498,9 +1508,11 @@ impl<'a> App<'a> {
             lines.insert(5, row("round", r));
         }
         if let Some(f) = &self.follower {
-            let mut agent = f.lines().into_iter();
-            lines.push(row("agent", agent.next().unwrap_or_default()));
-            lines.extend(agent.map(|call| Line::styled(format!("        {call}"), dim)));
+            lines.push(row("agent", f.header()));
+            lines.extend(
+                f.calls()
+                    .map(|call| Line::styled(format!("        {call}"), dim)),
+            );
         }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(
@@ -1734,8 +1746,6 @@ fn legend_text(comm: &super::data::Communities, c: usize, n: usize) -> String {
     format!(" {name:<width$} {:>9}", thousands(n))
 }
 
-/// Right-click or a held Ctrl/Alt adds to the selection instead of
-/// replacing it. (Shift-click is kept by terminals for text selection.)
 /// Whether `ev` moves the view (a key, a click, a scroll), which pauses
 /// following an agent; showing help, saving and the theme do not.
 fn moves(ev: &Event) -> bool {
@@ -1748,6 +1758,8 @@ fn moves(ev: &Event) -> bool {
     }
 }
 
+/// Right-click or a held Ctrl/Alt adds to the selection instead of
+/// replacing it. (Shift-click is kept by terminals for text selection.)
 fn adds(modifiers: KeyModifiers) -> bool {
     modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }

@@ -290,7 +290,8 @@ pub struct ViewArgs {
 }
 
 /// What groups the cells on the map (`--show`).
-#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Show {
     /// The level's communities.
     Communities,
@@ -298,6 +299,25 @@ pub enum Show {
     Types,
     /// A lupin round's clusters.
     Clusters,
+}
+
+/// An agent's view on `pinto mcp`, as `pinto view --follow` draws it:
+/// `view_map`'s settings that draw it again, and the run they are of.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Followed {
+    run: String,
+    /// The level whose communities are shown, when they are.
+    level: String,
+    round: Option<String>,
+    show: Show,
+    layer: String,
+    focus: Vec<Box<str>>,
+    gene: Option<String>,
+    source: Source,
+    clip: f32,
+    edges: bool,
+    point_size: f32,
+    bbox: [f32; 4],
 }
 
 impl ViewArgs {
@@ -322,18 +342,17 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     }
     // An agent's view: its server, and the run it has open, found before
     // the session so a miss is said plainly.
-    let followed = match &args.follow {
+    let with;
+    let (args, follow) = match &args.follow {
+        None => (args, None),
         Some(server) => {
-            let live = tui::pick_server(server)?;
-            let mut with = args.clone();
-            with.prefix = Some(tui::run_of(&live)?.into());
-            Some((live, with))
+            let (live, run) = tui::pick_server(server)?;
+            with = ViewArgs {
+                prefix: Some(run.into()),
+                ..args.clone()
+            };
+            (&with, Some(live))
         }
-        None => None,
-    };
-    let (follow, args) = match &followed {
-        Some((live, with)) => (Some(live), with),
-        None => (None, args),
     };
     // On screen, the session first. Hosted, this process only relays the
     // terminal from here on, and the program the host starts reads the
@@ -355,7 +374,7 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
                 &picked
             }
         };
-        tui::run(&session, terminal, args, follow)
+        tui::run(&session, terminal, args, follow.as_ref())
     })
 }
 

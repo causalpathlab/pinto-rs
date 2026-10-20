@@ -609,11 +609,8 @@ impl App<'_> {
             }
         }
         let g = round.group(id);
-        self.focus = focus;
-        self.shown = g;
         self.gene = None;
-        self.list_markers();
-        self.need_map = true;
+        self.set_focus(focus, g);
     }
 
     /// A click on group `g` of the cluster map or the list: visit it, or

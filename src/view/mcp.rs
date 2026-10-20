@@ -28,6 +28,25 @@ const MAX_SIDE: usize = 4096;
 #[derive(Default)]
 pub struct Tools {
     open: Option<Open>,
+    /// The view last published to followers, so an unchanged one is not
+    /// published again.
+    published: Option<super::Followed>,
+}
+
+/// The server's name, which `pinto view --follow` looks for.
+pub const SERVER: &str = "pinto";
+
+impl Tools {
+    /// Publish the open view to followers, when it changed.
+    fn publish(&mut self, cx: &Call) {
+        let Some(view) = self.open.as_ref().map(Open::followed) else {
+            return;
+        };
+        if self.published.as_ref() != Some(&view) {
+            cx.state(&serde_json::to_value(&view).expect("plain fields"));
+            self.published = Some(view);
+        }
+    }
 }
 
 /// An open run and the view on it.
@@ -66,8 +85,8 @@ impl Handler for Tools {
             cx.progress(&format!("loading {}", a.prefix));
             let open = Open::new(&a.prefix, a.level.as_deref())?;
             let summary = open.summary();
-            cx.state(&open.followed());
             self.open = Some(open);
+            self.publish(cx);
             return Ok(vec![Content::Json(summary)]);
         }
         let open = self
@@ -77,7 +96,7 @@ impl Handler for Tools {
         match name {
             "view_map" => {
                 let shown = open.map(parse(args)?)?;
-                cx.state(&open.followed());
+                self.publish(cx);
                 Ok(shown)
             }
             "view_markers" => open.markers(parse(args)?),
@@ -102,7 +121,7 @@ struct OpenArgs {
 
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
-struct MapArgs {
+pub(super) struct MapArgs {
     level: Option<String>,
     round: Option<String>,
     show: Option<String>,
@@ -477,33 +496,30 @@ impl Open {
             .render(self.level(), &self.style(), self.gene.as_ref(), vp)
     }
 
-    /// The view as someone following the server sees it (`pinto view
-    /// --follow`): `view_map`'s arguments that draw it again, with the
-    /// run they are of.
-    fn followed(&self) -> Value {
+    /// The view as someone following the server sees it.
+    fn followed(&self) -> super::Followed {
         let comm = &self.level().comm;
-        let focus: Vec<String> = super::focused(self.focus())
-            .iter()
-            .map(|&c| super::focus_name(comm, c))
-            .collect();
         let round = match drawn(self.show, self.at, self.round.as_ref()) {
             (_, _, Some(path)) => Some(shown_path(path)),
             _ => None,
         };
-        json!({
-            "run": shown_path(Path::new(&self.base.run.prefix)),
-            "level": self.base.run.levels[self.at].tag,
-            "round": round,
-            "show": super::value_name(&self.show),
-            "layer": self.layer.to_string(),
-            "focus": focus,
-            "gene": self.gene.as_ref().map_or("", |g| &g.feature),
-            "source": super::value_name(&self.source),
-            "clip": self.clip,
-            "edges": self.edges,
-            "point_size": self.point,
-            "bbox": rect(self.window),
-        })
+        super::Followed {
+            run: shown_path(Path::new(&self.base.run.prefix)),
+            level: self.base.run.levels[self.at].tag.clone(),
+            round,
+            show: self.show,
+            layer: self.layer.to_string(),
+            focus: super::focused(self.focus())
+                .iter()
+                .map(|&c| super::focus_name(comm, c).into())
+                .collect(),
+            gene: self.gene.as_ref().map(|g| g.feature.to_string()),
+            source: self.source,
+            clip: self.clip,
+            edges: self.edges,
+            point_size: self.point,
+            bbox: rect(self.window),
+        }
     }
 
     /// What the map shows: enough to read it and to ask for another.
