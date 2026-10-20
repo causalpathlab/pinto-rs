@@ -63,6 +63,9 @@ const WIDE_PANEL: u16 = 46;
 const MIN_PANEL: u16 = 24;
 const MIN_MAP: u16 = 20;
 
+/// Columns of a side panel row's name (` level  `), the row's text after.
+const KEY: usize = 8;
+
 /// Most side panel rows a status message wraps to.
 const STATUS_ROWS: usize = 6;
 
@@ -1475,7 +1478,8 @@ impl<'a> App<'a> {
         let dim = style::dim();
         let bold = style::bold();
         let row = |k: &str, v: String| {
-            Line::from(vec![Span::styled(format!(" {k:<7}"), dim), Span::raw(v)])
+            let k = format!(" {k:<w$}", w = KEY - 1);
+            Line::from(vec![Span::styled(k, dim), Span::raw(v)])
         };
 
         let mut lines = vec![
@@ -1530,11 +1534,10 @@ impl<'a> App<'a> {
             lines.insert(5, row("round", r));
         }
         if let Some(f) = &self.follower {
-            // The panel's rows read ` agent  …`; the agent's lines fit after.
-            let width = (self.side.width as usize).saturating_sub(9);
+            let width = usize::from(self.side.width).saturating_sub(KEY + 1);
             let mut agent = f.lines(width).into_iter();
             lines.push(row("agent", agent.next().unwrap_or_default()));
-            lines.extend(agent.map(|call| Line::styled(format!("        {call}"), dim)));
+            lines.extend(agent.map(|l| Line::styled(format!("{:KEY$}{l}", ""), dim)));
         }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(

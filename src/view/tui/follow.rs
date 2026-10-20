@@ -20,13 +20,14 @@ const CALLS: usize = 4;
 /// the folder's name), or the newest one when it names none, and the run
 /// its agent has open.
 pub(in crate::view) fn pick_server(server: &str) -> anyhow::Result<(Live, String)> {
+    let pid = server.parse().ok();
     let named = |l: &Live| {
         server.is_empty()
-            || l.meta.pid.to_string() == server
+            || pid.is_some()
             || l.dir.file_name().is_some_and(|n| n == server)
             || same_file(&l.dir, Path::new(server))
     };
-    let live = watch::find(crate::view::mcp::SERVER, None)
+    let live = watch::find(crate::view::mcp::SERVER, pid)
         .into_iter()
         .find(named)
         .ok_or_else(|| match server {
@@ -50,17 +51,15 @@ fn read(view: serde_json::Value) -> anyhow::Result<Followed> {
     })
 }
 
-/// The server followed, and its views as drawn here.
+/// The server followed, and its view as drawn here.
 pub(super) struct Follower {
     agent: Agent,
-    pid: u32,
-    /// The agent's view as last published, and as last drawn here.
+    /// The agent's view as last published, and whether it is yet to be
+    /// drawn here.
     latest: Option<Followed>,
-    drawn: Option<Followed>,
-    /// Why the last view published could not be read, and whether the
-    /// person was told.
-    unreadable: Option<String>,
-    told: bool,
+    due: bool,
+    /// Whether the last view published could not be read.
+    unreadable: bool,
 }
 
 impl Follower {
@@ -68,46 +67,48 @@ impl Follower {
     pub(super) fn open(live: &Live) -> anyhow::Result<Self> {
         Ok(Follower {
             agent: Agent::new(&live.dir, false)?,
-            pid: live.meta.pid,
             latest: None,
-            drawn: None,
-            unreadable: None,
-            told: false,
+            due: false,
+            unreadable: false,
         })
     }
 
-    /// Read what the server did since; true when the panel has news.
-    fn read(&mut self) -> bool {
+    /// Read what the server did since: whether the panel has news, and why
+    /// a view it published just now cannot be read.
+    fn read(&mut self) -> (bool, Option<String>) {
         let news = self.agent.poll();
-        if let Some(view) = self.agent.take_new_state() {
-            match read(view) {
-                Ok(view) => (self.latest, self.unreadable, self.told) = (Some(view), None, false),
-                Err(e) => self.unreadable = Some(e.to_string()),
+        let Some(view) = self.agent.take_new_state() else {
+            return (news, None);
+        };
+        match read(view) {
+            Ok(view) => {
+                (self.latest, self.due, self.unreadable) = (Some(view), true, false);
+                (news, None)
+            }
+            Err(e) => {
+                self.unreadable = true;
+                (news, Some(e.to_string()))
             }
         }
-        news
-    }
-
-    /// The agent's view yet to be drawn, while it is followed.
-    fn due(&self) -> Option<&Followed> {
-        self.latest
-            .as_ref()
-            .filter(|v| self.agent.following() && self.drawn.as_ref() != Some(v))
     }
 
     /// The panel's lines on the agent, at most `width` wide: the server and
-    /// whether it is followed, then its last calls. The last view stays
-    /// once the server has ended.
+    /// whether it is followed, its pid and what to do, then its last calls.
+    /// The last view stays once the server has ended.
     pub(super) fn lines(&self, width: usize) -> Vec<String> {
         let mut lines = self.agent.lines(CALLS + 1, width);
-        if let Some(head) = lines.first_mut() {
-            head.push_str(&format!(" · pid {}", self.pid));
-            if self.unreadable.is_some() {
-                head.push_str(" · cannot read its view");
-            } else if !self.agent.following() && !self.agent.ended() {
-                head.push_str("  F");
-            }
-        }
+        let pid = self.agent.meta().map_or(0, |m| m.pid);
+        let what = if self.unreadable {
+            " · cannot read its view"
+        } else if !self.agent.following() && !self.agent.ended() {
+            " · F follows"
+        } else {
+            ""
+        };
+        lines.insert(
+            1,
+            crate::tui::style::short(&format!("pid {pid}{what}"), width),
+        );
         lines
     }
 }
@@ -117,28 +118,25 @@ impl App<'_> {
     /// and is followed. Relabelling or a dialog keeps the view as it is
     /// until it is done.
     pub(super) fn follow_tick(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        let busy = self.relabel.is_some() || self.modal.is_some();
         let Some(f) = self.follower.as_mut() else {
             return Ok(());
         };
-        if f.read() {
-            self.need_panel = true;
+        let (news, unreadable) = f.read();
+        let view = (f.due && f.agent.following() && !busy)
+            .then(|| f.latest.clone())
+            .flatten();
+        if view.is_some() {
+            f.due = false;
         }
-        if let Some(why) = f.unreadable.clone().filter(|_| !f.told) {
-            f.told = true;
+        self.need_panel |= news;
+        if let Some(why) = unreadable {
             self.fail(why);
         }
-        if self.relabel.is_some() || self.modal.is_some() {
-            return Ok(());
-        }
-        let Some(f) = self.follower.as_mut() else {
-            return Ok(());
-        };
-        let Some(view) = f.due().cloned() else {
-            return Ok(());
-        };
-        f.drawn = Some(view.clone());
-        if let Err(e) = self.apply_followed(&view, terminal) {
-            self.fail(format!("following the agent: {e}"));
+        if let Some(view) = view {
+            if let Err(e) = self.apply_followed(&view, terminal) {
+                self.fail(format!("following the agent: {e}"));
+            }
         }
         Ok(())
     }
@@ -166,7 +164,7 @@ impl App<'_> {
         };
         f.agent.resume();
         // What is on screen is the person's now: draw the agent's anew.
-        f.drawn = None;
+        f.due = f.latest.is_some();
         self.status = "following the agent".into();
         self.follow_tick(terminal)
     }
