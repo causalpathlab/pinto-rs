@@ -14,6 +14,9 @@ pub struct FeatureRates {
     pub rates: Mat,
 }
 
+/// Markers a group lists where nothing says how many.
+pub const TOP: usize = 12;
+
 pub struct Marker {
     pub name: Box<str>,
     pub fold: f32,

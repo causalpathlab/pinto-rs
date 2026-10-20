@@ -8,7 +8,7 @@
 //! change without writing anything.
 
 use super::super::draft::{Draft, Mark, Merge, Verdict};
-use super::super::lupin::{self, JobKind};
+use super::super::lupin::{self, same_file, JobKind};
 use super::super::markers;
 use super::super::round::round_name;
 use super::browse::Panels;
@@ -90,9 +90,7 @@ impl App<'_> {
     /// Find the run's rounds; open `explicit` (from `--round`) or, when
     /// `--show` asks for a round, the newest.
     pub(super) fn open_rounds(&mut self, explicit: Option<PathBuf>) {
-        if let Some(manifest) = &self.base.run.manifest {
-            self.rounds = lupin::latest_rounds(manifest);
-        }
+        self.rounds = self.base.rounds();
         if let Some(p) = explicit {
             self.rounds.retain(|r| !same_file(r, &p));
             self.rounds.insert(0, p);
@@ -1355,10 +1353,6 @@ fn preview_of(v: Option<&serde_json::Value>, id: i64, more: usize) -> Option<Str
         })
         .unwrap_or_default();
     Some(format!("→ {}{top}", short(after, 14 + more / 2)))
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    lupin::canonical(a) == lupin::canonical(b)
 }
 
 /// `s` in lines of at most `n` characters.

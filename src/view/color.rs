@@ -4,6 +4,11 @@
 pub use legume_tui::map::colour::{encode, to_linear, viridis, Ramp, Srgb as Rgb};
 use legume_tui::map::theme::Theme as Page;
 
+/// `#rrggbb`.
+pub fn hex([r, g, b]: Rgb) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 /// The map's colours on a dark or a light background.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Theme {

@@ -346,23 +346,11 @@ impl<'a> App<'a> {
 
     /// What the map draws: the current level, or a grouping of the round.
     fn level(&self) -> &Level {
-        match (self.show, &self.round) {
-            (Show::Types, Some(r)) => &r.types,
-            (Show::Clusters, Some(r)) => &r.clusters,
-            _ => self.levels[self.cur]
-                .as_ref()
-                .expect("current level is loaded"),
-        }
+        super::shown(&self.levels, self.round.as_ref(), self.show, self.cur)
     }
 
     fn level_mut(&mut self) -> &mut Level {
-        match (self.show, &mut self.round) {
-            (Show::Types, Some(r)) => &mut r.types,
-            (Show::Clusters, Some(r)) => &mut r.clusters,
-            _ => self.levels[self.cur]
-                .as_mut()
-                .expect("current level is loaded"),
-        }
+        super::shown_mut(&mut self.levels, self.round.as_mut(), self.show, self.cur)
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -459,16 +447,8 @@ impl<'a> App<'a> {
     /// Draw in `theme` from here on: every palette and plot made in the
     /// last one is made again.
     fn retheme(&mut self, theme: Theme) {
-        if theme == self.base.theme() {
+        if !super::repalette(self.base, theme, &mut self.levels, self.round.as_mut()) {
             return;
-        }
-        self.base.set_theme(theme);
-        let round = self
-            .round
-            .iter_mut()
-            .flat_map(|r| [&mut r.clusters, &mut r.types]);
-        for level in self.levels.iter_mut().flatten().chain(round) {
-            level.palette = theme.palette(level.comm.k);
         }
         self.plots.forget();
         self.thumbs.clear();
@@ -904,7 +884,7 @@ impl<'a> App<'a> {
             Ok(()) => {
                 let rates = level.features.as_ref().expect("just loaded");
                 self.markers = rates
-                    .top(shown, 12)
+                    .top(shown, markers::TOP)
                     .into_iter()
                     .map(|m| {
                         let symbol = markers::symbol(&m.name).to_string();
@@ -1023,8 +1003,8 @@ impl<'a> App<'a> {
 
     fn set_layer(&mut self, layer: Layer) {
         self.gene = None;
-        if layer == Layer::Entropy && self.level().comm.entropy.is_none() {
-            self.status = "this level has no entropy".into();
+        if let Err(e) = layer.check(&self.level().comm) {
+            self.status = e.to_string();
             return;
         }
         self.layer = layer;
@@ -1217,60 +1197,24 @@ impl<'a> App<'a> {
         let (level, style) = self.drawn();
         let comm = &level.comm;
         let focused = focused(style.focus);
-        // The run's level, also under a round's grouping, whose own tag
-        // (`cell types`) is no level `--level` knows.
-        let tag = &self.base.run.levels[level.index].tag;
-
-        let win = window;
-        let mut cmd = format!(
-            // `{}` prints the shortest text that parses back to the same f32.
-            "pinto view {} --png {} --pdf {} --units {} --width {} --height {} \
-             --bbox={},{},{},{} --level {} --layer {}",
-            self.args.prefix(),
-            crate::tui::quote(png),
-            crate::tui::quote(pdf),
-            self.args.units,
-            vp.w,
-            vp.h,
-            win.x0,
-            win.y0,
-            win.x1,
-            win.y1,
-            tag,
-            style.layer,
-        );
-        if !focused.is_empty() {
-            write!(cmd, " --focus {}", ids(comm, &focused, ",")).ok();
-        }
-        if style.edges {
-            cmd.push_str(" --edges");
-        }
-        if style.point != 1. {
-            write!(cmd, " --point-size {}", style.point).ok();
-        }
-        let theme = self
-            .base
-            .theme()
-            .to_possible_value()
-            .expect("no skipped variants");
-        write!(cmd, " --theme {}", theme.get_name()).ok();
         let round_drawn = self.show != Show::Communities && self.bar_focus_level().is_none();
-        if let (Some(round), true) = (&self.round, round_drawn) {
-            let show = self.show.to_possible_value().expect("no skipped variants");
-            write!(
-                cmd,
-                " --round {} --show {}",
-                round.path.display(),
-                show.get_name()
-            )
-            .ok();
-        }
-        if let Some(g) = &self.gene {
-            write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
-            if g.source == Source::Expected {
-                cmd.push_str(" --expected");
-            }
-        }
+        let still = super::Still {
+            base: self.base,
+            prefix: self.args.prefix(),
+            units: &self.args.units,
+            level,
+            style,
+            round: self
+                .round
+                .as_ref()
+                .filter(|_| round_drawn)
+                .map(|r| (&*r.path, self.show)),
+            gene: self.gene.as_ref(),
+            vp: *vp,
+            window,
+        };
+        let cmd = still.command(Some(png), Some(pdf));
+        let tag = still.tag();
 
         let mut out = String::new();
         writeln!(out, "# pinto view export").ok();
@@ -1625,14 +1569,10 @@ impl<'a> App<'a> {
     fn cell_lines(&self, i: usize) -> Vec<Line<'static>> {
         let comm = &self.level().comm;
         let dim = style::dim();
-        let k = comm.k;
-        let mut top: Vec<(usize, u8)> = (0..k).map(|c| (c, comm.prop[i * k + c])).collect();
-        top.sort_by_key(|&(_, q)| std::cmp::Reverse(q));
-        let mut mix: Vec<String> = top
-            .iter()
-            .take(3)
-            .filter(|&&(_, q)| q > 0)
-            .map(|&(c, q)| format!("{} {:.2}", comm.name(c), q as f32 / 255.))
+        let mut mix: Vec<String> = comm
+            .top_props(i, 3)
+            .into_iter()
+            .map(|(c, p)| format!("{} {p:.2}", comm.name(c)))
             .collect();
         if let Some(h) = comm.entropy.as_ref() {
             mix.push(format!("H {:.2}", h[i] as f32 / 255.));

@@ -207,7 +207,7 @@ pub fn annotate(manifest: &Path, tag: &str, markers: &Path, out: &str) -> Job {
 }
 
 /// `p` from the root, so it reads the same from any working directory.
-fn absolute(p: &Path) -> PathBuf {
+pub(super) fn absolute(p: &Path) -> PathBuf {
     std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
@@ -324,6 +324,11 @@ fn dir_or_cwd(p: &Path) -> PathBuf {
     } else {
         p.to_path_buf()
     }
+}
+
+/// Whether `a` and `b` are one file, through links.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    canonical(a) == canonical(b)
 }
 
 /// `p` resolved through links, or as given when it does not resolve.
