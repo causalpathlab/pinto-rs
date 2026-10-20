@@ -27,3 +27,18 @@ fn the_view_followed_is_view_maps_settings() {
     json.as_object_mut().unwrap().remove("run");
     serde_json::from_value::<MapArgs>(json.clone()).unwrap_or_else(|e| panic!("{e}: {json}"));
 }
+
+/// The README's block for clients that do not pass the server's
+/// instructions on is those instructions, word for word.
+#[test]
+fn the_readme_carries_the_servers_instructions() {
+    let readme = include_str!("../../../README.md");
+    let quoted: String = readme
+        .lines()
+        .skip_while(|l| !l.starts_with("> Use pinto's MCP tools"))
+        .take_while(|l| l.starts_with('>'))
+        .map(|l| l.trim_start_matches('>').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(quoted, crate::view::mcp::INSTRUCTIONS);
+}

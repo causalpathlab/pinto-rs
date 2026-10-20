@@ -750,16 +750,18 @@ fn shown_path(p: &Path) -> String {
 }
 
 /// For the agent: what the viewer is for and the order of calls.
+/// The README gives the same, for clients that do not pass it on.
 pub const INSTRUCTIONS: &str = "\
-pinto: spatial link-community runs on the tissue. Start with view_open on a run \
-prefix (the -o of a pinto fit, or its .pinto.json): it lists the run's levels, \
-batches, groups and any lupin rounds. view_map draws the map as a PNG with its \
-legend; its arguments stay set until changed, so pass only what changes. \
-view_markers lists a group's top features, view_cell names the cell under a \
-pixel of the last map (or at a world point, or by name), and view_export writes \
-the current view as PNG/PDF files. World coordinates are those view_open \
-reports, with y running down the map. lupin rounds are read here as they are on \
-disk; annotating and relabelling them is lupin's own server.";
+Use pinto's MCP tools to look at spatial link-community runs on the tissue. \
+Start with `view_open` on a run prefix (the `-o` of a pinto fit, or its \
+`.pinto.json`): it lists the run's levels, batches, groups and any lupin rounds. \
+`view_map` draws the map as a PNG with its legend; its arguments stay set until \
+changed, so pass only what changes. `view_markers` lists a group's top features, \
+`view_cell` names the cell under a pixel of the last map (or at a world point, \
+or by name), and `view_export` writes the current view as PNG/PDF files. World \
+coordinates are those `view_open` reports, with y running down the map. lupin \
+rounds are read here as they are on disk; annotating and relabelling them is \
+lupin's own server.";
 
 fn specs() -> Vec<ToolSpec> {
     let spec = ToolSpec::new;
@@ -793,7 +795,13 @@ fn specs() -> Vec<ToolSpec> {
                     "level": {"type": "string", "description": "Level tag; shows its communities"},
                     "round": {"type": "string", "description": "A lupin round ({out}.lupin.json); shows its clusters unless show says otherwise"},
                     "show": {"enum": ["communities", "types", "clusters"], "description": "What groups the cells; types and clusters are the round's (the newest round when none is given)"},
-                    "layer": {"type": "string", "description": "argmax (most likely group), soft (colours mixed by propensity), entropy (propensity entropy / ln K), or C<k> (one community's propensity)"},
+                    "layer": {
+                        "anyOf": [
+                            {"enum": ["argmax", "soft", "entropy"]},
+                            {"type": "string", "pattern": "^[Cc]?[0-9]+$"},
+                        ],
+                        "description": "argmax (most likely group), soft (colours mixed by propensity), entropy (propensity entropy / ln K), or C<k> (one community's propensity, e.g. C3)",
+                    },
                     "focus": {"type": "array", "items": group, "description": "Groups to show; the rest are dimmed. [] shows every group"},
                     "gene": {"type": "string", "description": "Colour cells by one feature, by symbol or full name; \"\" shows the groups again"},
                     "source": {"enum": ["observed", "expected"], "description": "The gene's observed ln(1+count), or the model's expected level"},
