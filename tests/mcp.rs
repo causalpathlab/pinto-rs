@@ -314,17 +314,30 @@ fn a_person_follows_the_agent_in_the_viewer() {
     t.wait_screen("following");
     t.wait_screen("layer  soft");
 
-    // The agent's next move shows, with its call.
+    // The agent's next move shows, and its call joins the panel's.
+    let calls = |t: &legume_tui::testing::Term| t.screen().matches("view_map").count();
+    let before = calls(&t);
     c.ok("view_map", json!({"layer": "C1"}));
     t.wait_screen("layer  C1");
-    t.wait_screen("view_map");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while calls(&t) <= before && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(calls(&t) > before, "{}", t.screen());
 
-    // A zoom of the person's own pauses following; F takes it up again.
+    // A zoom of the person's own pauses following, but the agent's calls
+    // still join the panel; F takes following up again.
     t.type_(b"z");
     t.wait_screen("paused");
+    let before = calls(&t);
     c.ok("view_map", json!({"layer": "argmax"}));
     std::thread::sleep(Duration::from_millis(800));
     assert!(t.screen().contains("layer  C1"), "{}", t.screen());
+    assert!(
+        calls(&t) > before,
+        "the calls stay listed while paused: {}",
+        t.screen()
+    );
     t.type_(b"F");
     t.wait_screen("layer  argmax");
 
