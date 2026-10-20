@@ -228,11 +228,12 @@ pinto kill fits        # stops it as ctrl+c does: the fits running are stopped
 
 ### `mcp`: agents (MCP)
 
-`pinto mcp` serves the viewer over the
+`pinto mcp` serves `pinto run` and the viewer over the
 [Model Context Protocol](https://modelcontextprotocol.io) on stdin/stdout,
-so any MCP client can look at a run as `pinto view` shows it, with any model
-behind it (Claude, GPT, Gemini, or a local one). The agent gets the map as an
-image with its legend, and asks about groups and cells.
+so any MCP client can fit a run and look at it as `pinto view` shows it, with
+any model behind it (Claude, GPT, Gemini, or a local one). The agent sets up
+fits as `pinto run` does, gets the map as an image with its legend, and asks
+about groups and cells.
 
 #### Connect a client
 
@@ -291,26 +292,32 @@ The server tells the agent how to work when it connects (the MCP
 `instructions`). Some clients do not pass those to the model; with one of them,
 put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 
-> Use pinto's MCP tools to look at spatial link-community runs on the tissue.
-> Start with `view_open` on a run prefix (the `-o` of a pinto fit, or its
-> `.pinto.json`): it lists the run's levels, batches, groups and any lupin
-> rounds. `view_map` draws the map as a PNG with its legend; its arguments stay
-> set until changed, so pass only what changes. `view_markers` lists a group's
-> top features, `view_cell` names the cell under a pixel of the last map (or at
-> a world point, or by name), and `view_export` writes the current view as
-> PNG/PDF files. World coordinates are those `view_open` reports, with y running
-> down the map. lupin rounds are read here as they are on disk; annotating and
-> relabelling them is lupin's own server.
+> Use pinto's MCP tools to fit spatial link-community models and to look at
+> them on the tissue. A fit: `run_methods` lists the methods (lc is the
+> recommended one) and, with a method, its flags; `run_fit` runs one on data
+> files with their coordinates, in the background for anything but a small
+> data set (follow its job with `job_status` / `job_wait`), and never writes
+> over a run. Looking: start with `view_open` on a run prefix (the `out` of a
+> fit, or its `.pinto.json`): it lists the run's levels, batches, groups and
+> any lupin rounds. `view_map` draws the map as a PNG with its legend; its
+> arguments stay set until changed, so pass only what changes. `view_markers`
+> lists a group's top features, `view_cell` names the cell under a pixel of
+> the last map (or at a world point, or by name), and `view_export` writes the
+> current view as PNG/PDF files. World coordinates are those `view_open`
+> reports, with y running down the map. lupin rounds are read here as they are
+> on disk; annotating and relabelling them is lupin's own server.
 
 | Tool | Does |
 |---|---|
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up); with a method, its flags: name, help, default, choices |
+| `run_fit` | fits one method on data files with their coordinates (and batches), as `pinto run` would: the command checked as pinto parses it, run as a child `pinto`, in the background with `background` (a job), never over an existing run |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
 | `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
-| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) background jobs; pinto's own tools answer in the foreground |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` in the background, or stop it |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.
@@ -322,9 +329,10 @@ organizing computational biology projects [1] (see
 [legume-mcp](https://crates.io/crates/legume-mcp)):
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
-  with paths relative to the project. Each `view_export` is its `pinto view
-  --png/--pdf` command, so `bash results/<day>/runall.sh` makes the figures
-  again without the agent.
+  with paths relative to the project. Each `run_fit` is its `pinto lc` (or
+  `cage`, `dsvd`) command and each `view_export` its `pinto view --png/--pdf`
+  command, so `bash results/<day>/runall.sh` makes the fits and figures again
+  without the agent.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
   conclusions.
 - `results/INDEX.tsv`: one row per output with a one-line summary.

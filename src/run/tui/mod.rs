@@ -5,9 +5,9 @@
 mod batch;
 mod data;
 mod draw;
-mod form;
+pub(crate) mod form;
 mod jobs;
-mod script;
+pub(crate) mod script;
 
 use crate::tui::browse::{Browser, Outcome};
 use crate::tui::shown;

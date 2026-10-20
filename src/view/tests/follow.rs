@@ -40,5 +40,5 @@ fn the_readme_carries_the_servers_instructions() {
         .map(|l| l.trim_start_matches('>').trim())
         .collect::<Vec<_>>()
         .join(" ");
-    assert_eq!(quoted, crate::view::mcp::INSTRUCTIONS);
+    assert_eq!(quoted, crate::mcp::INSTRUCTIONS);
 }

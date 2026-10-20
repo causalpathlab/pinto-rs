@@ -5,6 +5,7 @@
 //! them in turn. Each command is kept as `{out}.cmd.sh`, a script that
 //! runs it again and refuses to run over a result already there.
 
+pub(crate) mod mcp;
 pub(crate) mod tui;
 
 #[derive(clap::Args, Debug)]
