@@ -1643,8 +1643,11 @@ impl<'a> App<'a> {
             name = format!("{name}  ({})", geom.tiles[geom.batch[i] as usize].name);
         }
         vec![
-            Line::from(vec![Span::styled(" cell   ", dim), Span::raw(name)]),
-            Line::raw(format!("        {}", mix.join("  "))),
+            Line::from(vec![
+                Span::styled(format!(" {:<w$}", "cell", w = KEY - 1), dim),
+                Span::raw(name),
+            ]),
+            Line::raw(format!("{:KEY$}{}", "", mix.join("  "))),
         ]
     }
 

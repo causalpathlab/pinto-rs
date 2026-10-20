@@ -310,6 +310,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) background jobs; pinto's own tools answer in the foreground |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.

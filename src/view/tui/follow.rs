@@ -20,7 +20,11 @@ const CALLS: usize = 4;
 /// the folder's name), or the newest one when it names none, and the run
 /// its agent has open.
 pub(in crate::view) fn pick_server(server: &str) -> anyhow::Result<(Live, String)> {
-    let pid = server.parse().ok();
+    // Its pid as `ps` gives it: `01234` names no server.
+    let pid = server
+        .parse()
+        .ok()
+        .filter(|p: &u32| p.to_string() == server);
     let named = |l: &Live| {
         server.is_empty()
             || pid.is_some()
@@ -58,8 +62,10 @@ pub(super) struct Follower {
     /// drawn here.
     latest: Option<Followed>,
     due: bool,
-    /// Whether the last view published could not be read.
+    /// Whether the last view published could not be read, and whether the
+    /// person was told so since one could.
     unreadable: bool,
+    told: bool,
 }
 
 impl Follower {
@@ -70,11 +76,12 @@ impl Follower {
             latest: None,
             due: false,
             unreadable: false,
+            told: false,
         })
     }
 
     /// Read what the server did since: whether the panel has news, and why
-    /// a view it published just now cannot be read.
+    /// a view it published cannot be read, the first time since one could.
     fn read(&mut self) -> (bool, Option<String>) {
         let news = self.agent.poll();
         let Some(view) = self.agent.take_new_state() else {
@@ -82,33 +89,35 @@ impl Follower {
         };
         match read(view) {
             Ok(view) => {
-                (self.latest, self.due, self.unreadable) = (Some(view), true, false);
+                (self.latest, self.due) = (Some(view), true);
+                (self.unreadable, self.told) = (false, false);
                 (news, None)
             }
             Err(e) => {
                 self.unreadable = true;
-                (news, Some(e.to_string()))
+                let first = !std::mem::replace(&mut self.told, true);
+                (news, first.then(|| e.to_string()))
             }
         }
     }
 
-    /// The panel's lines on the agent, at most `width` wide: the server and
-    /// whether it is followed, its pid and what to do, then its last calls.
-    /// The last view stays once the server has ended.
+    /// The panel's lines on the agent, at most `width` wide: the server,
+    /// its pid and whether it is followed; what to do, when there is
+    /// something; then its last calls. The last view stays once the server
+    /// has ended.
     pub(super) fn lines(&self, width: usize) -> Vec<String> {
-        let mut lines = self.agent.lines(CALLS + 1, width);
-        let pid = self.agent.meta().map_or(0, |m| m.pid);
-        let what = if self.unreadable {
-            " · cannot read its view"
-        } else if !self.agent.following() && !self.agent.ended() {
-            " · F follows"
-        } else {
-            ""
-        };
-        lines.insert(
-            1,
-            crate::tui::style::short(&format!("pid {pid}{what}"), width),
-        );
+        let mut lines = self.agent.lines(1, width);
+        let mut say = Vec::new();
+        if !self.agent.following() {
+            say.push("F follows");
+        }
+        if self.unreadable {
+            say.push("cannot read its view");
+        }
+        if !say.is_empty() {
+            lines.push(crate::tui::style::short(&say.join(" · "), width));
+        }
+        lines.extend(self.agent.call_lines(CALLS, width));
         lines
     }
 }
@@ -123,12 +132,9 @@ impl App<'_> {
             return Ok(());
         };
         let (news, unreadable) = f.read();
-        let view = (f.due && f.agent.following() && !busy)
+        let view = (f.agent.following() && !busy && std::mem::take(&mut f.due))
             .then(|| f.latest.clone())
             .flatten();
-        if view.is_some() {
-            f.due = false;
-        }
         self.need_panel |= news;
         if let Some(why) = unreadable {
             self.fail(why);
@@ -162,9 +168,9 @@ impl App<'_> {
             self.status = "F follows an agent: pinto view --follow".into();
             return Ok(());
         };
+        // What is on screen is the person's now: legume-mcp offers the
+        // agent's view again, and the tick below draws it.
         f.agent.resume();
-        // What is on screen is the person's now: draw the agent's anew.
-        f.due = f.latest.is_some();
         self.status = "following the agent".into();
         self.follow_tick(terminal)
     }
