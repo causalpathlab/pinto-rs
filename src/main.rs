@@ -4,6 +4,8 @@ mod feature_network;
 mod impute;
 mod link_community;
 mod lr_activity;
+#[cfg(feature = "view")]
+mod mcp;
 mod predict;
 mod propensity;
 #[cfg(feature = "view")]
@@ -73,6 +75,8 @@ fn print_logo() {
                   \x20       Zoomable map of a run's communities, in the terminal.\n\n\
                   \x20 run   Set up fits in the terminal\n\
                   \x20       Choose data, methods and flags, then run them.\n\n\
+                  \x20 mcp   Server for agents (Model Context Protocol)\n\
+                  \x20       The viewer's map and questions as tools, on stdio.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -662,6 +666,21 @@ enum Commands {
 
     #[cfg(feature = "view")]
     #[command(
+        about = "Serve the viewer to agents (Model Context Protocol, stdio)",
+        long_about = "Serve pinto to an agent as a Model Context Protocol server on\n\
+                      stdin and stdout. The tools are the viewer's: view_open opens a\n\
+                      run, view_map draws it as a PNG with its legend, view_markers,\n\
+                      view_cell and view_export ask about it and write figures.\n\
+                      The view is kept between calls, as `pinto view` keeps it.\n\
+                      lupin rounds are shown as they are on disk.\n\n\
+                      Examples:\n\
+                      \x20 claude mcp add pinto -- pinto mcp\n\
+                      \x20 codex mcp add pinto -- pinto mcp"
+    )]
+    Mcp,
+
+    #[cfg(feature = "view")]
+    #[command(
         about = "Set up fits in the terminal and run them",
         long_about = format!(
             "Set up pinto fits in the terminal and run them.\n\n\
@@ -918,6 +937,15 @@ fn main() -> anyhow::Result<()> {
         Commands::View(args) => {
             view::run_view(args)?;
         }
+        #[cfg(feature = "view")]
+        Commands::Mcp => mcp::serve(
+            mcp::ServerInfo {
+                name: "pinto".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                instructions: Some(view::mcp::INSTRUCTIONS.into()),
+            },
+            view::mcp::Tools::default(),
+        )?,
         #[cfg(feature = "view")]
         Commands::Run(args) => {
             use clap::CommandFactory;

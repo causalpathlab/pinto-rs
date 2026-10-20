@@ -36,6 +36,21 @@ impl Rect {
         y1: 1.,
     };
 
+    /// The box with corners `(x0, y0)` and `(x1, y1)`, in either order.
+    pub fn from_corners(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+        Rect {
+            x0: x0.min(x1),
+            y0: y0.min(y1),
+            x1: x0.max(x1),
+            y1: y0.max(y1),
+        }
+    }
+
+    /// The height in pixels of a frame `w` wide in this box's shape.
+    pub fn height_at(&self, w: usize) -> usize {
+        ((w as f32 * self.height() / self.width().max(f32::MIN_POSITIVE)).round() as usize).max(1)
+    }
+
     /// Grown by `frac` of its larger side on every edge.
     pub fn pad(&self, frac: f32) -> Rect {
         self.grow(frac * self.width().max(self.height()))
@@ -578,6 +593,19 @@ impl Communities {
             ids: Some(ids),
             ..self
         }
+    }
+
+    /// Cell `i`'s `n` strongest groups with their propensity, strongest
+    /// first, leaving out the zeros.
+    pub fn top_props(&self, i: usize, n: usize) -> Vec<(usize, f32)> {
+        let k = self.k;
+        let mut top: Vec<(usize, u8)> = (0..k).map(|c| (c, self.prop[i * k + c])).collect();
+        top.sort_by_key(|&(_, q)| std::cmp::Reverse(q));
+        top.into_iter()
+            .take(n)
+            .filter(|&(_, q)| q > 0)
+            .map(|(c, q)| (c, q as f32 / 255.))
+            .collect()
     }
 
     /// Community `c`'s name: its given name, else `C{c}`.

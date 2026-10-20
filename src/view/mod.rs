@@ -13,6 +13,7 @@ mod heatmap;
 mod index;
 mod lupin;
 mod markers;
+pub mod mcp;
 mod pdf;
 mod render;
 mod round;
@@ -484,6 +485,15 @@ impl Base {
         Ok(())
     }
 
+    /// Every chain's newest lupin round made from this run, newest first.
+    fn rounds(&self) -> Vec<std::path::PathBuf> {
+        self.run
+            .manifest
+            .as_deref()
+            .map(lupin::latest_rounds)
+            .unwrap_or_default()
+    }
+
     /// The lupin round at `path`, on the level it annotated.
     fn round(&self, path: &Path) -> anyhow::Result<round::Round> {
         let tags: Vec<&str> = self.run.levels.iter().map(|l| l.tag.as_str()).collect();
@@ -535,6 +545,56 @@ impl Base {
     }
 }
 
+/// The grouping drawn: a round's cell types or clusters when `show` asks
+/// for them and a round is open, else community level `at`.
+fn shown<'a>(
+    levels: &'a [Option<Level>],
+    round: Option<&'a round::Round>,
+    show: Show,
+    at: usize,
+) -> &'a Level {
+    match (show, round) {
+        (Show::Types, Some(r)) => &r.types,
+        (Show::Clusters, Some(r)) => &r.clusters,
+        _ => levels[at].as_ref().expect("the level shown is loaded"),
+    }
+}
+
+/// [`shown`], to load into or redraw.
+fn shown_mut<'a>(
+    levels: &'a mut [Option<Level>],
+    round: Option<&'a mut round::Round>,
+    show: Show,
+    at: usize,
+) -> &'a mut Level {
+    match (show, round) {
+        (Show::Types, Some(r)) => &mut r.types,
+        (Show::Clusters, Some(r)) => &mut r.clusters,
+        _ => levels[at].as_mut().expect("the level shown is loaded"),
+    }
+}
+
+/// Draw in `theme` from here on: every palette of `levels` and `round`
+/// made again. False when it was the theme already.
+fn repalette(
+    base: &Base,
+    theme: Theme,
+    levels: &mut [Option<Level>],
+    round: Option<&mut round::Round>,
+) -> bool {
+    if theme == base.theme() {
+        return false;
+    }
+    base.set_theme(theme);
+    let round = round
+        .into_iter()
+        .flat_map(|r| [&mut r.clusters, &mut r.types]);
+    for level in levels.iter_mut().flatten().chain(round) {
+        level.palette = theme.palette(level.comm.k);
+    }
+    true
+}
+
 /// One community level, loaded on demand.
 struct Level {
     /// Position in `run.levels`.
@@ -575,20 +635,12 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     }
 
     let window = match args.bbox.as_deref() {
-        Some(&[x0, y0, x1, y1]) => Rect {
-            x0: x0.min(x1),
-            y0: y0.min(y1),
-            x1: x0.max(x1),
-            y1: y0.max(y1),
-        },
+        Some(&[x0, y0, x1, y1]) => Rect::from_corners(x0, y0, x1, y1),
         Some(v) => anyhow::bail!("--bbox takes 4 numbers X0,Y0,X1,Y1, got {}", v.len()),
         None => base.geom.bounds().pad(FIT_MARGIN),
     };
     let w = args.width.max(1);
-    let h = args.height.unwrap_or_else(|| {
-        ((w as f32 * window.height() / window.width().max(f32::MIN_POSITIVE)).round() as usize)
-            .max(1)
-    });
+    let h = args.height.unwrap_or_else(|| window.height_at(w));
     let vp = Viewport::fit(window, w, h);
     let focus = args
         .focus
@@ -647,6 +699,83 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One view as `pinto view` draws it without a terminal, to say the
+/// command that draws it again.
+struct Still<'a> {
+    base: &'a Base,
+    prefix: &'a str,
+    units: &'a str,
+    level: &'a Level,
+    style: Style<'a>,
+    /// The round drawn, and what of it.
+    round: Option<(&'a Path, Show)>,
+    gene: Option<&'a GeneMap>,
+    vp: Viewport,
+    window: Rect,
+}
+
+impl Still<'_> {
+    /// The run's level, also under a round's grouping, whose own tag
+    /// (`cell types`) is no level `--level` knows.
+    fn tag(&self) -> &str {
+        &self.base.run.levels[self.level.index].tag
+    }
+
+    /// The `pinto view` command that draws this view into `png` and `pdf`.
+    fn command(&self, png: Option<&str>, pdf: Option<&str>) -> String {
+        use std::fmt::Write as _;
+        let (style, win) = (&self.style, self.window);
+        let mut cmd = format!("pinto view {}", crate::tui::quote(self.prefix));
+        for (flag, path) in [("--png", png), ("--pdf", pdf)] {
+            if let Some(path) = path {
+                write!(cmd, " {flag} {}", crate::tui::quote(path)).ok();
+            }
+        }
+        write!(
+            cmd,
+            // `{}` prints the shortest text that parses back to the same f32.
+            " --units {} --width {} --height {} --bbox={},{},{},{} --level {} --layer {}",
+            self.units,
+            self.vp.w,
+            self.vp.h,
+            win.x0,
+            win.y0,
+            win.x1,
+            win.y1,
+            self.tag(),
+            style.layer,
+        )
+        .ok();
+        let focused = focused(style.focus);
+        if !focused.is_empty() {
+            write!(cmd, " --focus {}", ids(&self.level.comm, &focused, ",")).ok();
+        }
+        if style.edges {
+            cmd.push_str(" --edges");
+        }
+        if style.point != 1. {
+            write!(cmd, " --point-size {}", style.point).ok();
+        }
+        write!(cmd, " --theme {}", value_name(&style.theme)).ok();
+        if let Some((round, show)) = self.round {
+            write!(
+                cmd,
+                " --round {} --show {}",
+                round.display(),
+                value_name(&show)
+            )
+            .ok();
+        }
+        if let Some(g) = self.gene {
+            write!(cmd, " --gene {} --clip {}", g.feature, g.clip).ok();
+            if g.source == Source::Expected {
+                cmd.push_str(" --expected");
+            }
+        }
+        cmd
+    }
+}
+
 /// Render `vp` once and write it as a PDF figure and/or a PNG. The PDF
 /// takes the map clean and draws its own vector scale bar; the PNG gets the
 /// bar burnt in afterwards, on the same buffer.
@@ -695,9 +824,9 @@ fn focus_name(comm: &Communities, c: usize) -> String {
 }
 
 /// One legend row: name, hex colour, cell count.
-fn legend_line(comm: &Communities, c: usize, [r, g, b]: color::Rgb) -> String {
+fn legend_line(comm: &Communities, c: usize, colour: color::Rgb) -> String {
     let n = comm.sizes[c];
-    format!("  {:<5} #{r:02x}{g:02x}{b:02x} {n:>9} cells", comm.name(c))
+    format!("  {:<5} {} {n:>9} cells", comm.name(c), color::hex(colour))
 }
 
 /// The PDF page for a rendered view: title, legend for the layer (or the
@@ -756,7 +885,7 @@ fn figure<'a>(
                 title: format!("{} markers", comm.name(c)),
                 colour: level.palette[c],
                 genes: rates
-                    .top(c, 12)
+                    .top(c, markers::TOP)
                     .into_iter()
                     .map(|m| (markers::symbol(&m.name).to_string(), m.fold))
                     .collect(),
@@ -779,15 +908,47 @@ fn figure<'a>(
     }
 }
 
+/// How the command line spells `v`.
+fn value_name<T: clap::ValueEnum>(v: &T) -> String {
+    v.to_possible_value()
+        .expect("no skipped variants")
+        .get_name()
+        .to_string()
+}
+
 /// `814243` → `814,243`.
 fn thousands(n: usize) -> String {
     indicatif::HumanCount(n as u64).to_string()
 }
 
+/// Percentiles `--clip` takes.
+const CLIPS: std::ops::RangeInclusive<f32> = 50.0..=100.;
+
 fn parse_clip(s: &str) -> Result<f32, String> {
-    match s.parse::<f32>() {
-        Ok(p) if (50. ..=100.).contains(&p) => Ok(p),
-        _ => Err(format!("{s:?}: a percentile from 50 to 100")),
+    s.parse::<f32>()
+        .ok()
+        .and_then(|p| check_clip(p).ok())
+        .ok_or_else(|| format!("{s:?}: a percentile from 50 to 100"))
+}
+
+fn check_clip(p: f32) -> Result<f32, String> {
+    in_range(p, &CLIPS, "a percentile")
+}
+
+fn check_point_size(x: f32) -> Result<f32, String> {
+    in_range(x, &POINT_SIZES, "a size")
+}
+
+/// `x` when `range` holds it; else what it should be.
+fn in_range(x: f32, range: &std::ops::RangeInclusive<f32>, what: &str) -> Result<f32, String> {
+    if range.contains(&x) {
+        Ok(x)
+    } else {
+        Err(format!(
+            "{x}: {what} from {} to {}",
+            range.start(),
+            range.end()
+        ))
     }
 }
 
@@ -795,14 +956,16 @@ fn parse_clip(s: &str) -> Result<f32, String> {
 const POINT_SIZES: std::ops::RangeInclusive<f32> = 0.25..=8.;
 
 fn parse_point_size(s: &str) -> Result<f32, String> {
-    match s.parse::<f32>() {
-        Ok(x) if POINT_SIZES.contains(&x) => Ok(x),
-        _ => Err(format!(
-            "{s:?}: a size from {} to {}",
-            POINT_SIZES.start(),
-            POINT_SIZES.end()
-        )),
-    }
+    s.parse::<f32>()
+        .ok()
+        .and_then(|x| check_point_size(x).ok())
+        .ok_or_else(|| {
+            format!(
+                "{s:?}: a size from {} to {}",
+                POINT_SIZES.start(),
+                POINT_SIZES.end()
+            )
+        })
 }
 
 /// `["C7", "3"]` → one flag per community; a round's groups by name
@@ -812,6 +975,13 @@ fn parse_focus(given: &[Box<str>], comm: &Communities) -> anyhow::Result<Vec<boo
     let mut focus = vec![false; k];
     for id in given {
         let c = if comm.names.is_some() {
+            // A round's cluster by its bare id too, as lupin gives it.
+            let cluster = comm.ids.is_some() && id.parse::<i64>().is_ok();
+            let id: Box<str> = if cluster {
+                format!("K{id}").into()
+            } else {
+                id.clone()
+            };
             (0..k)
                 .find(|&c| focus_name(comm, c) == id.as_ref())
                 .ok_or_else(|| anyhow::anyhow!("--focus: no group {id:?} in this round"))?

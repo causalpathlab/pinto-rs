@@ -19,7 +19,7 @@ use crate::util::common::*;
 use crate::util::coverage::{measured_mass, Coverage};
 use crate::util::input::read_expr_data;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
 pub enum Source {
     Observed,
     Expected,

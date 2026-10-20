@@ -81,6 +81,31 @@ impl Layer {
         }
     }
 
+    /// Whether `comm` can be drawn in this layer: its community is one of
+    /// them, its entropy is there.
+    pub fn check(&self, comm: &Communities) -> anyhow::Result<()> {
+        match *self {
+            Layer::Community(c) => {
+                anyhow::ensure!(c < comm.k, "C{c}: the grouping has K={}", comm.k)
+            }
+            Layer::Entropy => {
+                anyhow::ensure!(comm.entropy.is_some(), "this grouping has no entropy")
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// This layer for `comm`, drawn another way: past its last community,
+    /// its last; entropy it does not have, its most likely community.
+    pub fn fit(self, comm: &Communities) -> Layer {
+        match self {
+            Layer::Community(c) => Layer::Community(c.min(comm.k.saturating_sub(1))),
+            Layer::Entropy if comm.entropy.is_none() => Layer::Argmax,
+            layer => layer,
+        }
+    }
+
     /// Legend title of a continuous layer.
     pub fn legend_title(&self) -> String {
         match self {
@@ -201,6 +226,11 @@ impl Viewport {
         ((x - self.x0) / self.upp, (y - self.y0) / self.upp)
     }
 
+    /// The world point at pixel `(px, py)`.
+    pub fn to_world(self, px: f32, py: f32) -> (f32, f32) {
+        (self.x0 + px * self.upp, self.y0 + py * self.upp)
+    }
+
     /// The world window the frame covers.
     pub fn window(&self) -> Rect {
         Rect {
@@ -265,11 +295,41 @@ impl Frame {
 
     pub fn write_png(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        let mut enc = png::Encoder::new(file, self.w as u32, self.h as u32);
-        enc.set_color(png::ColorType::Rgba);
+        self.encode(
+            file,
+            png::ColorType::Rgba,
+            png::Compression::Fast,
+            &self.rgba,
+        )
+    }
+
+    /// The frame as a PNG to send rather than keep: opaque RGB, compressed
+    /// harder, about half the bytes of [`Frame::write_png`]'s.
+    pub fn small_png(&self) -> anyhow::Result<Vec<u8>> {
+        let rgb: Vec<u8> = self
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b, _]| [r, g, b])
+            .collect();
+        let mut out = Vec::new();
+        self.encode(&mut out, png::ColorType::Rgb, png::Compression::High, &rgb)?;
+        Ok(out)
+    }
+
+    fn encode(
+        &self,
+        out: impl std::io::Write,
+        colour: png::ColorType,
+        compression: png::Compression,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let mut enc = png::Encoder::new(out, self.w as u32, self.h as u32);
+        enc.set_color(colour);
         enc.set_depth(png::BitDepth::Eight);
-        enc.set_compression(png::Compression::Fast);
-        enc.write_header()?.write_image_data(&self.rgba)?;
+        enc.set_compression(compression);
+        enc.write_header()?.write_image_data(data)?;
         Ok(())
     }
 }
