@@ -260,4 +260,9 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
         .fails("view_export", json!({"png": "map.png"}))
         .contains("exists"));
     c.ok("view_export", json!({"png": "map.png", "overwrite": true}));
+    // Nothing but a figure is written, not even with overwrite.
+    let manifest = format!("{prefix}.pinto.json");
+    let msg = c.fails("view_export", json!({"png": manifest, "overwrite": true}));
+    assert!(msg.contains(".png file"), "{msg}");
+    assert!(std::fs::read_to_string(&manifest).unwrap().starts_with('{'));
 }

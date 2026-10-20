@@ -241,8 +241,9 @@ takes the viewer's settings (level, layer, focus, gene, round and
 `show`, theme, edges, box, zoom), and they stay set until changed.
 `view_markers` lists a group's top features. `view_cell` names the cell
 under a pixel of the last map, at a world point, or by name.
-`view_export` writes the view as a PNG and PDF figure, and refuses to
-replace a file unless `overwrite` is set. lupin rounds are shown as they
+`view_export` writes the view as a PNG and PDF figure, with the
+`pinto view` command that draws it again. It writes only `.png` and `.pdf`
+files, and replaces one only with `overwrite`. lupin rounds are shown as they
 are on disk, and focus takes lupin's cluster ids. Annotating and
 relabelling are left to lupin's own server.
 

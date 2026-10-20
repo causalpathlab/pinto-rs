@@ -588,6 +588,16 @@ impl Open {
             .flatten()
             .map(Path::new)
             .collect();
+        // Only figures are written, so no other file (a script, a config,
+        // a run's .json) can be written over.
+        for (path, ext) in [(&a.png, "png"), (&a.pdf, "pdf")] {
+            if let Some(path) = path {
+                let ok = Path::new(path)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(ext));
+                anyhow::ensure!(ok, "{ext} {path:?}: a .{ext} file");
+            }
+        }
         for p in &paths {
             anyhow::ensure!(
                 a.overwrite || !p.exists(),
@@ -784,8 +794,8 @@ fn specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "png": {"type": "string", "description": "PNG path"},
-                    "pdf": {"type": "string", "description": "PDF path"},
+                    "png": {"type": "string", "description": "PNG path, ending .png"},
+                    "pdf": {"type": "string", "description": "PDF path, ending .pdf"},
                     "width": {"type": "integer", "minimum": 1, "maximum": MAX_SIDE, "description": "Image width in pixels [default: 2400]"},
                     "overwrite": {"type": "boolean", "description": "Replace files that exist"},
                 },
