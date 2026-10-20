@@ -11,8 +11,8 @@ use super::gene::{GeneMap, Source};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
-use crate::mcp::{Call, Content, Handler, ToolSpec};
 use clap::ValueEnum;
+use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -28,6 +28,25 @@ const MAX_SIDE: usize = 4096;
 #[derive(Default)]
 pub struct Tools {
     open: Option<Open>,
+    /// The view last published to followers, so an unchanged one is not
+    /// published again.
+    published: Option<super::Followed>,
+}
+
+/// The server's name, which `pinto view --follow` looks for.
+pub const SERVER: &str = "pinto";
+
+impl Tools {
+    /// Publish the open view to followers, when it changed.
+    fn publish(&mut self, cx: &Call) {
+        let Some(view) = self.open.as_ref().map(Open::followed) else {
+            return;
+        };
+        if self.published.as_ref() != Some(&view) {
+            cx.state(&serde_json::to_value(&view).expect("plain fields"));
+            self.published = Some(view);
+        }
+    }
 }
 
 /// An open run and the view on it.
@@ -67,6 +86,7 @@ impl Handler for Tools {
             let open = Open::new(&a.prefix, a.level.as_deref())?;
             let summary = open.summary();
             self.open = Some(open);
+            self.publish(cx);
             return Ok(vec![Content::Json(summary)]);
         }
         let open = self
@@ -74,10 +94,14 @@ impl Handler for Tools {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("no run open: call view_open first"))?;
         match name {
-            "view_map" => open.map(parse(args)?),
+            "view_map" => {
+                let shown = open.map(parse(args)?)?;
+                self.publish(cx);
+                Ok(shown)
+            }
             "view_markers" => open.markers(parse(args)?),
             "view_cell" => open.cell(parse(args)?),
-            "view_export" => open.export(parse(args)?),
+            "view_export" => open.export(parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
@@ -97,7 +121,7 @@ struct OpenArgs {
 
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
-struct MapArgs {
+pub(super) struct MapArgs {
     level: Option<String>,
     round: Option<String>,
     show: Option<String>,
@@ -472,6 +496,32 @@ impl Open {
             .render(self.level(), &self.style(), self.gene.as_ref(), vp)
     }
 
+    /// The view as someone following the server sees it.
+    fn followed(&self) -> super::Followed {
+        let comm = &self.level().comm;
+        let round = match drawn(self.show, self.at, self.round.as_ref()) {
+            (_, _, Some(path)) => Some(shown_path(path)),
+            _ => None,
+        };
+        super::Followed {
+            run: shown_path(Path::new(&self.base.run.prefix)),
+            level: self.base.run.levels[self.at].tag.clone(),
+            round,
+            show: self.show,
+            layer: self.layer.to_string(),
+            focus: super::focused(self.focus())
+                .iter()
+                .map(|&c| super::focus_name(comm, c).into())
+                .collect(),
+            gene: self.gene.as_ref().map(|g| g.feature.to_string()),
+            source: self.source,
+            clip: self.clip,
+            edges: self.edges,
+            point_size: self.point,
+            bbox: rect(self.window),
+        }
+    }
+
     /// What the map shows: enough to read it and to ask for another.
     fn state(&self, vp: &Viewport) -> Value {
         let comm = &self.level().comm;
@@ -583,7 +633,10 @@ impl Open {
             .ok_or_else(|| anyhow::anyhow!("no cell within {radius} of {at:?}"))
     }
 
-    fn export(&mut self, a: ExportArgs) -> anyhow::Result<Vec<Content>> {
+    /// Write the view's figures by running the `pinto view` command that
+    /// draws them, so the project's records (`runall.sh`, `INDEX.tsv`)
+    /// can make them again.
+    fn export(&mut self, a: ExportArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         anyhow::ensure!(a.png.is_some() || a.pdf.is_some(), "give png, pdf or both");
         let paths: Vec<&Path> = [a.png.as_deref(), a.pdf.as_deref()]
             .into_iter()
@@ -607,21 +660,7 @@ impl Open {
                 shown_path(p)
             );
         }
-        // The figure lists the focused groups' markers.
-        if self.focus().is_some() && a.pdf.is_some() {
-            let (base, level) = self.parts();
-            base.load_features(level)?;
-        }
         let vp = self.viewport(a.width.unwrap_or(2400));
-        super::write_outputs(
-            &self.base,
-            self.level(),
-            &self.style(),
-            self.gene.as_ref(),
-            &vp,
-            a.png.as_deref().map(Path::new),
-            a.pdf.as_deref().map(Path::new),
-        )?;
         let shown = |p: Option<&String>| p.map(|p| shown_path(Path::new(p)));
         let (png, pdf) = (shown(a.png.as_ref()), shown(a.pdf.as_ref()));
         let round = match drawn(self.show, self.at, self.round.as_ref()) {
@@ -639,8 +678,18 @@ impl Open {
             vp,
             window: vp.window(),
         };
+        let wrote: Vec<&String> = png.iter().chain(&pdf).collect();
+        let summary = format!(
+            "{} of {} {}",
+            still.style.layer,
+            self.base.run.name(),
+            self.level().comm.tag
+        );
+        let outputs: Vec<std::path::PathBuf> = wrote.iter().map(Into::into).collect();
+        let args = still.args(png.as_deref(), pdf.as_deref());
+        cx.run_making(legume_mcp::own_command(&args)?, &outputs, &summary)?;
         Ok(vec![Content::Json(json!({
-            "wrote": png.iter().chain(&pdf).collect::<Vec<_>>(),
+            "wrote": wrote,
             "image": [vp.w, vp.h],
             // What draws the same files again, without an agent.
             "command": still.command(png.as_deref(), pdf.as_deref()),
@@ -701,16 +750,18 @@ fn shown_path(p: &Path) -> String {
 }
 
 /// For the agent: what the viewer is for and the order of calls.
+/// The README gives the same, for clients that do not pass it on.
 pub const INSTRUCTIONS: &str = "\
-pinto: spatial link-community runs on the tissue. Start with view_open on a run \
-prefix (the -o of a pinto fit, or its .pinto.json): it lists the run's levels, \
-batches, groups and any lupin rounds. view_map draws the map as a PNG with its \
-legend; its arguments stay set until changed, so pass only what changes. \
-view_markers lists a group's top features, view_cell names the cell under a \
-pixel of the last map (or at a world point, or by name), and view_export writes \
-the current view as PNG/PDF files. World coordinates are those view_open \
-reports, with y running down the map. lupin rounds are read here as they are on \
-disk; annotating and relabelling them is lupin's own server.";
+Use pinto's MCP tools to look at spatial link-community runs on the tissue. \
+Start with `view_open` on a run prefix (the `-o` of a pinto fit, or its \
+`.pinto.json`): it lists the run's levels, batches, groups and any lupin rounds. \
+`view_map` draws the map as a PNG with its legend; its arguments stay set until \
+changed, so pass only what changes. `view_markers` lists a group's top features, \
+`view_cell` names the cell under a pixel of the last map (or at a world point, \
+or by name), and `view_export` writes the current view as PNG/PDF files. World \
+coordinates are those `view_open` reports, with y running down the map. lupin \
+rounds are read here as they are on disk; annotating and relabelling them is \
+lupin's own server.";
 
 fn specs() -> Vec<ToolSpec> {
     let spec = ToolSpec::new;
@@ -744,7 +795,13 @@ fn specs() -> Vec<ToolSpec> {
                     "level": {"type": "string", "description": "Level tag; shows its communities"},
                     "round": {"type": "string", "description": "A lupin round ({out}.lupin.json); shows its clusters unless show says otherwise"},
                     "show": {"enum": ["communities", "types", "clusters"], "description": "What groups the cells; types and clusters are the round's (the newest round when none is given)"},
-                    "layer": {"type": "string", "description": "argmax (most likely group), soft (colours mixed by propensity), entropy (propensity entropy / ln K), or C<k> (one community's propensity)"},
+                    "layer": {
+                        "anyOf": [
+                            {"enum": ["argmax", "soft", "entropy"]},
+                            {"type": "string", "pattern": "^[Cc]?[0-9]+$"},
+                        ],
+                        "description": "argmax (most likely group), soft (colours mixed by propensity), entropy (propensity entropy / ln K), or C<k> (one community's propensity, e.g. C3)",
+                    },
                     "focus": {"type": "array", "items": group, "description": "Groups to show; the rest are dimmed. [] shows every group"},
                     "gene": {"type": "string", "description": "Colour cells by one feature, by symbol or full name; \"\" shows the groups again"},
                     "source": {"enum": ["observed", "expected"], "description": "The gene's observed ln(1+count), or the model's expected level"},

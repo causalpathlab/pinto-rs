@@ -10,12 +10,14 @@
 
 mod annotate;
 mod browse;
+mod follow;
 mod gallery;
 pub(super) mod grid;
 mod plots;
 mod save;
 
 pub use browse::pick_run;
+pub(super) use follow::pick_server;
 
 use crate::tui::style;
 use legume_tui::map::viewport::Limits;
@@ -76,6 +78,7 @@ pub fn run(
     session: &legume_tui::Session,
     terminal: &mut DefaultTerminal,
     args: &ViewArgs,
+    follow: Option<&legume_mcp::watch::Live>,
 ) -> anyhow::Result<()> {
     // The terminal is fresh: a repaint asked for by now is this one. It
     // is asked first, before the mouse is on, so no report lands amid its
@@ -100,6 +103,7 @@ pub fn run(
     let mut app = App::new(&base, level, args, (gfx, px), session);
     app.shift_enter = session.keyboard_enhanced();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
+    app.follower = follow.map(follow::Follower::open).transpose()?;
     app.run(terminal)
 }
 
@@ -256,6 +260,8 @@ struct App<'a> {
     relabel: Option<annotate::Relabel>,
     /// A dialog that takes the keys: file browser, prompt, confirmation.
     modal: Option<annotate::Modal>,
+    /// The agent followed (`--follow`).
+    follower: Option<follow::Follower>,
 
     /// The map must be rendered again.
     need_map: bool,
@@ -338,6 +344,7 @@ impl<'a> App<'a> {
             show_saved: true,
             strip: Rect::default(),
             thumbs: Default::default(),
+            follower: None,
             need_map: true,
             need_panel: true,
             quit: false,
@@ -364,6 +371,7 @@ impl<'a> App<'a> {
                 self.redraw(terminal)?;
             }
             self.poll_job(terminal)?;
+            self.follow_tick(terminal)?;
             session.status(&self.session_status());
             // After an attach the terminal is asked again, before the
             // mouse is on, and the pictures made anew for it.
@@ -592,7 +600,11 @@ impl<'a> App<'a> {
 
     /// Fit `r`, with a small margin, to the map.
     fn fit(&mut self, r: WorldRect) {
-        let r = r.pad(FIT_MARGIN);
+        self.look_at(r.pad(FIT_MARGIN));
+    }
+
+    /// The map on `r` exactly, filling the tighter axis.
+    fn look_at(&mut self, r: WorldRect) {
         let (w, h) = self.image_size();
         self.set_cam(Viewport::fit(r, w, h).camera());
     }
@@ -635,6 +647,10 @@ impl<'a> App<'a> {
 
     fn handle(&mut self, ev: Event, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.need_panel = true;
+        // What the person changed of the view, not what they pressed,
+        // pauses following an agent; F is following itself.
+        let resumes = matches!(&ev, Event::Key(k) if k.code == KeyCode::Char('F'));
+        let before = (self.follower.is_some() && !resumes).then(|| self.view_key());
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, terminal)?,
             Event::Mouse(m) => self.mouse(m),
@@ -644,7 +660,28 @@ impl<'a> App<'a> {
             }
             _ => {}
         }
+        if before.is_some_and(|b| b != self.view_key()) {
+            self.pause_following();
+        }
         Ok(())
+    }
+
+    /// What an agent's view sets, as drawn here now: a change of it is a
+    /// move of the person's own.
+    fn view_key(&self) -> impl PartialEq {
+        let round = self.round.as_ref().map(|r| r.path.clone());
+        let gene = self.gene.as_ref().map(|g| (g.feature.clone(), g.clip));
+        let cam = (self.cam.cx, self.cam.cy, self.cam.scale);
+        let groups = (self.cur, self.show, round, self.focus.clone());
+        (
+            groups,
+            self.layer,
+            gene,
+            self.source,
+            self.edges,
+            self.point,
+            cam,
+        )
     }
 
     fn key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -693,6 +730,7 @@ impl<'a> App<'a> {
             KeyCode::Char('Z') => self.zoom(ZOOM, None),
             KeyCode::Char('H') => self.cycle_chart(),
             KeyCode::Char('f') => self.toggle_saved(),
+            KeyCode::Char('F') => self.resume_following(terminal)?,
             KeyCode::Char('0') => self.fit_all(),
             KeyCode::Char('r') | KeyCode::Home => self.reset(),
             KeyCode::Char('1') => self.set_layer(Layer::Argmax),
@@ -917,6 +955,14 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Show the groups `focus` flags, listing `shown`'s markers.
+    pub(super) fn set_focus(&mut self, focus: Vec<bool>, shown: Option<usize>) {
+        self.focus = focus;
+        self.shown = shown;
+        self.list_markers();
+        self.need_map = true;
+    }
+
     fn clear_focus(&mut self) {
         self.focus.fill(false);
         self.shown = None;
@@ -1026,11 +1072,10 @@ impl<'a> App<'a> {
             None => n - 1,
         };
         let c = order[next as usize];
-        self.focus.fill(false);
-        self.focus[c] = true;
-        self.shown = Some(c);
+        let mut focus = vec![false; self.focus.len()];
+        focus[c] = true;
         self.gene = None;
-        self.list_markers();
+        self.set_focus(focus, Some(c));
         if let Layer::Community(_) = self.layer {
             self.community = c;
             self.layer = Layer::Community(c);
@@ -1072,6 +1117,11 @@ impl<'a> App<'a> {
         if next == self.cur && self.show == Show::Communities {
             return Ok(());
         }
+        self.go_level(next, terminal)
+    }
+
+    /// Level `next`'s communities on the map, loaded first if need be.
+    fn go_level(&mut self, next: usize, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.show = Show::Communities;
         self.bar_focus = None;
         if self.levels[next].is_none() {
@@ -1479,6 +1529,13 @@ impl<'a> App<'a> {
         if let Some(r) = self.round_line() {
             lines.insert(5, row("round", r));
         }
+        if let Some(f) = &self.follower {
+            lines.push(row("agent", f.header()));
+            lines.extend(
+                f.calls()
+                    .map(|call| Line::styled(format!("        {call}"), dim)),
+            );
+        }
         if let Gfx::Kitty(_) = self.gfx {
             lines.push(row(
                 "sent",
@@ -1791,6 +1848,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
             " t dark / light background (paper)",
             " s save as  f saved figures  q quit",
             " A annotate (lupin)  R relabel",
+            " F  follow the agent again (--follow)",
         ]
     } else {
         &[" s save as  r start over", " Esc back  ? keys  q quit"]

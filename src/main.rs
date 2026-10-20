@@ -4,8 +4,6 @@ mod feature_network;
 mod impute;
 mod link_community;
 mod lr_activity;
-#[cfg(feature = "view")]
-mod mcp;
 mod predict;
 mod propensity;
 #[cfg(feature = "view")]
@@ -652,7 +650,8 @@ enum Commands {
              side by side rather than drawn on top of each other.\n\n\
              Examples:\n\
              \x20 pinto view results --summary\n\
-             \x20 pinto view results.pinto.json --level L2 --summary\n\n\
+             \x20 pinto view results.pinto.json --level L2 --summary\n\
+             \x20 pinto view --follow     # what an agent shows on `pinto mcp`\n\n\
              {}",
             legume_tui::cli::session_help(
                 &tui::TOOL,
@@ -673,8 +672,12 @@ enum Commands {
                       view_cell and view_export ask about it and write figures.\n\
                       The view is kept between calls, as `pinto view` keeps it.\n\
                       lupin rounds are shown as they are on disk.\n\n\
+                      Any MCP client runs it as the command `pinto mcp`. The project's\n\
+                      records go to its working directory, or to LEGUME_MCP_PROJECT;\n\
+                      LEGUME_MCP_RECORDS=off keeps none. `pinto view --follow` shows\n\
+                      a person what the agent does. The README has each client's setup.\n\n\
                       Examples:\n\
-                      \x20 claude mcp add pinto -- pinto mcp\n\
+                      \x20 claude mcp add pinto -e LEGUME_MCP_PROJECT=\"$PWD\" -- pinto mcp\n\
                       \x20 codex mcp add pinto -- pinto mcp"
     )]
     Mcp,
@@ -938,9 +941,9 @@ fn main() -> anyhow::Result<()> {
             view::run_view(args)?;
         }
         #[cfg(feature = "view")]
-        Commands::Mcp => mcp::serve(
-            mcp::ServerInfo {
-                name: "pinto".into(),
+        Commands::Mcp => legume_mcp::serve(
+            legume_mcp::ServerInfo {
+                name: view::mcp::SERVER.into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 instructions: Some(view::mcp::INSTRUCTIONS.into()),
             },

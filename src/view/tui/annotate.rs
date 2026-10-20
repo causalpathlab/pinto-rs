@@ -108,7 +108,7 @@ impl App<'_> {
         }
     }
 
-    fn load_round(&mut self, path: &Path) -> anyhow::Result<()> {
+    pub(super) fn load_round(&mut self, path: &Path) -> anyhow::Result<()> {
         let round = self.base.round(path)?;
         self.round = Some(round);
         Ok(())
@@ -145,7 +145,7 @@ impl App<'_> {
     }
 
     /// Draw `show`, with nothing selected.
-    fn set_show(&mut self, show: Show) {
+    pub(super) fn set_show(&mut self, show: Show) {
         self.show = show;
         self.bar_focus = None;
         let k = self.level().comm.k;
@@ -609,11 +609,8 @@ impl App<'_> {
             }
         }
         let g = round.group(id);
-        self.focus = focus;
-        self.shown = g;
         self.gene = None;
-        self.list_markers();
-        self.need_map = true;
+        self.set_focus(focus, g);
     }
 
     /// A click on group `g` of the cluster map or the list: visit it, or
