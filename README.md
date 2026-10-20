@@ -226,43 +226,127 @@ pinto rename run-1 fits
 pinto kill fits        # stops it as ctrl+c does: the fits running are stopped
 ```
 
-### `mcp` (for agents)
+### `mcp`: agents (MCP)
 
-`pinto mcp` serves the viewer to an agent over the Model Context Protocol
-(stdio), so an agent can look at a run as `pinto view` shows it:
+`pinto mcp` serves the viewer over the
+[Model Context Protocol](https://modelcontextprotocol.io) on stdin/stdout,
+so any MCP client can look at a run as `pinto view` shows it, with any model
+behind it (Claude, GPT, Gemini, or a local one). The agent gets the map as an
+image with its legend, and asks about groups and cells.
 
-```sh
-claude mcp add pinto -- pinto mcp
+#### Connect a client
+
+The server is one command, `pinto mcp`. A client needs that, and where the
+project is: the server keeps its records (below) in its working directory, or
+in `LEGUME_MCP_PROJECT` when set. Set it whenever the client may start servers
+somewhere else (desktop apps usually do). If the client cannot find `pinto`,
+give its full path (`which pinto`).
+
+Most clients (Claude Desktop, Cursor's `.cursor/mcp.json`, Gemini CLI's
+`settings.json`, and others) take this shape:
+
+```json
+{
+  "mcpServers": {
+    "pinto": {
+      "command": "pinto",
+      "args": ["mcp"],
+      "env": { "LEGUME_MCP_PROJECT": "/path/to/project" }
+    }
+  }
+}
 ```
 
-`view_open` opens a run and lists its levels, batches, groups and lupin
-rounds. `view_map` draws the map as a PNG, with its legend as JSON. It
-takes the viewer's settings (level, layer, focus, gene, round and
-`show`, theme, edges, box, zoom), and they stay set until changed.
-`view_markers` lists a group's top features. `view_cell` names the cell
-under a pixel of the last map, at a world point, or by name.
-`view_export` writes the view as a PNG and PDF figure, with the
-`pinto view` command that draws it again. It writes only `.png` and `.pdf`
-files, and replaces one only with `overwrite`. lupin rounds are shown as they
-are on disk, and focus takes lupin's cluster ids. Annotating and
-relabelling are left to lupin's own server.
+Claude Code:
 
-`pinto mcp` keeps legume-mcp's project records in the directory it
-starts in (`LEGUME_MCP_PROJECT` names another, `LEGUME_MCP_RECORDS=off`
-keeps none): `results/<day>/runall.sh` makes each exported figure again
-(`view_export` runs the `pinto view` command it returns),
-`results/INDEX.tsv` lists them, and the agent keeps a notebook there.
+```sh
+claude mcp add pinto -e LEGUME_MCP_PROJECT="$PWD" -- pinto mcp
+```
 
-To watch what an agent does, follow it in a viewer of your own:
+VS Code (`.vscode/mcp.json`):
+
+```json
+{ "servers": { "pinto": { "type": "stdio", "command": "pinto", "args": ["mcp"],
+                          "env": { "LEGUME_MCP_PROJECT": "${workspaceFolder}" } } } }
+```
+
+Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.pinto]
+command = "pinto"
+args = ["mcp"]
+env = { LEGUME_MCP_PROJECT = "/path/to/project" }
+```
+
+Key names differ between clients; the server needs only the command, its
+argument and, optionally, the environment. Nothing is sent anywhere by pinto:
+the model sees what the tools return (maps as PNG images among it), and where
+that goes is up to the client and model you choose (a local model keeps it on
+the machine). An image reaches the model only if the client passes images on.
+
+#### What the agent does
+
+The server tells the agent how to work when it connects (the MCP
+`instructions`). Some clients do not pass those to the model; with one of them,
+put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
+
+> Use pinto's MCP tools to look at spatial link-community runs on the tissue.
+> Start with `view_open` on a run prefix (the `-o` of a pinto fit, or its
+> `.pinto.json`): it lists the run's levels, batches, groups and any lupin
+> rounds. `view_map` draws the map as a PNG with its legend; its arguments stay
+> set until changed, so pass only what changes. `view_markers` lists a group's
+> top features, `view_cell` names the cell under a pixel of the last map (or at
+> a world point, or by name), and `view_export` writes the current view as
+> PNG/PDF files. World coordinates are those `view_open` reports, with y running
+> down the map. lupin rounds are read here as they are on disk; annotating and
+> relabelling them is lupin's own server.
+
+| Tool | Does |
+|---|---|
+| `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
+| `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
+| `view_markers` | a group's top features, by fold over the other groups |
+| `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
+| `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns |
+| `notebook` | (from legume-mcp) an entry in the day's lab notebook |
+
+Focus takes a level's communities (`C3` or `3`), and when a round is shown,
+lupin's cluster ids (`K3` or `3`) or cell types.
+
+#### Records
+
+The server keeps the project's records, laid out after Noble's guide to
+organizing computational biology projects [1] (see
+[legume-mcp](https://crates.io/crates/legume-mcp)):
+
+- `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
+  with paths relative to the project. Each `view_export` is its `pinto view
+  --png/--pdf` command, so `bash results/<day>/runall.sh` makes the figures
+  again without the agent.
+- `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
+  conclusions.
+- `results/INDEX.tsv`: one row per output with a one-line summary.
+
+`LEGUME_MCP_RECORDS=off` keeps none.
+
+#### Watching
+
+While an agent works, the server writes a live feed to
+`$XDG_RUNTIME_DIR/legume-mcp/pinto-<pid>/` (`LEGUME_MCP_WATCH=off` writes
+none), with its view after each change. Follow it in a viewer of your own:
 
 ```sh
 pinto view --follow          # the newest `pinto mcp`; --follow PID for another
 ```
 
-The map follows the agent's view as it changes, and the panel lists its
-last calls. A move of your own (a key, a click, a zoom) pauses following,
-and `F` follows again. Nothing goes back to the agent. The viewer is a
-session like any other, so you can detach it and attach again later.
+The map follows the agent's view as it changes, and the panel lists its last
+calls. A change of your own (a key, a click, a zoom) pauses following, and `F`
+follows again. Nothing goes back to the agent. The viewer is a session like any
+other, so you can detach it and attach again later.
+
+[1] W. S. Noble, "A quick guide to organizing computational biology projects",
+PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
 
 ## Input data
 

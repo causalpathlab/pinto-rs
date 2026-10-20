@@ -672,8 +672,12 @@ enum Commands {
                       view_cell and view_export ask about it and write figures.\n\
                       The view is kept between calls, as `pinto view` keeps it.\n\
                       lupin rounds are shown as they are on disk.\n\n\
+                      Any MCP client runs it as the command `pinto mcp`. The project's\n\
+                      records go to its working directory, or to LEGUME_MCP_PROJECT;\n\
+                      LEGUME_MCP_RECORDS=off keeps none. `pinto view --follow` shows\n\
+                      a person what the agent does. The README has each client's setup.\n\n\
                       Examples:\n\
-                      \x20 claude mcp add pinto -- pinto mcp\n\
+                      \x20 claude mcp add pinto -e LEGUME_MCP_PROJECT=\"$PWD\" -- pinto mcp\n\
                       \x20 codex mcp add pinto -- pinto mcp"
     )]
     Mcp,
