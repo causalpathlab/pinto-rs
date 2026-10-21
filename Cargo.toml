@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.14.2"
+version = "0.14.3"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -46,9 +46,9 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.8.6", features = ["aux", "alg"] }
-legume-numeric = { version = "0.9.5", features = ["matrix", "param", "candle", "mcmc"] }
-graph-embedding-util = { version = "0.9", package = "legume-graph-embedding" }
+data-beans = { version = "0.10", default-features = false, features = ["aux", "alg", "ndarray", "tensor"] }
+legume-numeric = { version = "0.9", features = ["matrix", "param", "candle", "mcmc"] }
+graph-embedding-util = { version = "0.10", package = "legume-graph-embedding" }
 parquet = "59"
 arrow-array = "59"
 regex = "1"
@@ -85,11 +85,11 @@ pdf-writer = { version = "0.15", optional = true }
 # characters, the structure plot and heatmap and their PDF figures, the
 # save field and the gallery of saved figures. The same floor as in
 # [dev-dependencies].
-legume-tui = { version = "0.3.13", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
+legume-tui = { version = "0.3", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
 
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads.
-legume-mcp = { version = "0.3.1", optional = true }
+legume-mcp = { version = "0.4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -97,4 +97,4 @@ libc = "0.2"
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
-legume-tui = { version = "0.3.13", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.3", default-features = false, features = ["testing"] }
