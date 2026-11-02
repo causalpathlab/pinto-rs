@@ -14,7 +14,12 @@ them on the tissue. A fit: `run_methods` lists the methods (lc is the \
 recommended one) and, with a method, its flags; `run_fit` runs one on data \
 files with their coordinates, in the background for anything but a small \
 data set (follow its job with `job_status` / `job_wait`), and never writes \
-over a run. Looking: start with `view_open` on a run prefix (the `out` of a \
+over a run. Ablations are fits with run_fit's ablation flags \
+(permute-coords, drop-features, mask-cells with ablation-parent); \
+`run_region` turns a polygon into the cell list mask-cells takes; \
+`run_compare` sets two runs' communities against each other (ARI, NMI, \
+matched communities, and which vanish, split or merge); `run_predict` scores \
+held-out cells on a fitted lc model. Looking: start with `view_open` on a run prefix (the `out` of a \
 fit, or its `.pinto.json`): it lists the run's levels, batches, groups and any \
 lupin rounds. `view_map` draws the map as a PNG with its legend; its arguments \
 stay set until changed, so pass only what changes. `view_markers` lists a \

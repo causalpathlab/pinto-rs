@@ -47,6 +47,54 @@ pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 
 See `pinto --help` and per-subcommand `--help`.
 
+### Ablations, `compare` and held-out scoring
+
+An ablation is a fit with one thing taken away or scrambled. Set it against
+its parent with `pinto compare`. lc, cage and dsvd all take the flags; only
+one ablation is allowed per run.
+
+```sh
+pinto lc data*.zarr.zip -c coords... --seed 42 -o base
+pinto lc data*.zarr.zip -c coords... --seed 42 -o perm \
+    --permute-coords within-batch --ablation-parent base.pinto.json
+pinto compare base.pinto.json perm.pinto.json -o base_vs_perm
+```
+
+- `--permute-coords within-batch` shuffles cells among their own section's
+  positions. `block` moves whole square tiles (`--permute-block` per side).
+  Only the graph sees the scrambled positions; the written coordinates stay
+  the cells' own.
+- `--drop-features FILE|REGEX` drops features before QC.
+- `--mask-cells FILE` masks the listed cells after QC. By default
+  (`--mask-mode cut-edges`) the graph is built with them and their edges are
+  then cut, so cells on either side of a masked region are not joined across
+  it.
+- The manifest records `ablation: {parent, kind, spec, seed}`.
+
+`pinto compare A B` joins the two runs' labels on cell name. It reports ARI,
+NMI, a Hungarian matching on Jaccard, and A's communities that vanish, split
+or merge in B. A community's partners are the communities holding at least
+`--tau` of its cells. Writes `{out}.compare.json` and
+`{out}.contingency.parquet`.
+
+Held-out scoring: fit lc without a donor, then
+`pinto predict donor.zarr.zip -c donor.cells.parquet --model fit -o held_out`.
+Each cell pair is split in two: its counts are thinned, or with
+`--ablate-features` the listed features are hidden from the fit, as
+`senna predict` does it. The pair's community mix is fitted on one part and
+the other part is scored. The donor's batch shift δ comes from the fitting
+parts only. `{out}.predictive.parquet` uses the column names cage and senna
+use, with the training-composition null (`--null-from`), plus a pooled K=1
+profile. The manifest's `holdout` block has the totals, the ceiling and a
+per-section breakdown.
+
+`pinto compare --paired A B` sets two models' held-out scores against each
+other. A and B are `pinto predict` runs on the same held-out cells, each side a
+comma list for leave-one-donor-out folds. Units are joined on their cell pair.
+The donor is the replicate: `--donor-map` groups sections into donors. Writes
+`{out}.paired.json` with each donor's difference in nats per count, exact sign
+and Wilcoxon tests over donors, and a donor bootstrap interval.
+
 ### `run`
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
@@ -297,7 +345,12 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > recommended one) and, with a method, its flags; `run_fit` runs one on data
 > files with their coordinates, in the background for anything but a small
 > data set (follow its job with `job_status` / `job_wait`), and never writes
-> over a run. Looking: start with `view_open` on a run prefix (the `out` of a
+> over a run. Ablations are fits with run_fit's ablation flags
+> (permute-coords, drop-features, mask-cells with ablation-parent);
+> `run_region` turns a polygon into the cell list mask-cells takes;
+> `run_compare` sets two runs' communities against each other (ARI, NMI,
+> matched communities, and which vanish, split or merge); `run_predict` scores
+> held-out cells on a fitted lc model. Looking: start with `view_open` on a run prefix (the `out` of a
 > fit, or its `.pinto.json`): it lists the run's levels, batches, groups and
 > any lupin rounds. `view_map` draws the map as a PNG with its legend; its
 > arguments stay set until changed, so pass only what changes. `view_markers`
@@ -311,6 +364,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 |---|---|
 | `run_methods` | pinto's fitting methods (what `pinto run` sets up); with a method, its flags: name, help, default, choices |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
+| `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
+| `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
+| `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |

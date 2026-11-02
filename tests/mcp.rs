@@ -156,10 +156,13 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..7],
+        names[..10],
         [
             "run_methods",
             "run_fit",
+            "run_predict",
+            "run_region",
+            "run_compare",
             "view_open",
             "view_map",
             "view_markers",
@@ -392,6 +395,13 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
             json!({"method": "svd", "data": ["d"], "out": "x"})
         )
         .contains("one of lc"));
+    // Two ablations in one fit are refused when the call is made, by clap,
+    // before any job starts.
+    let msg = c.fails(
+        "run_fit",
+        fit(json!({"flags": {"drop-features": "^MT-", "mask-cells": "c.txt"}})),
+    );
+    assert!(msg.contains("cannot be used with"), "{msg}");
     let msg = c.fails("run_fit", fit(json!({"flags": {"no-such-flag": 1}})));
     assert!(
         msg.contains("--no-such-flag") && msg.contains("run_methods"),
@@ -436,4 +446,88 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
     assert!(job["note"].as_str().unwrap().contains(&id));
     let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 60}));
     assert_eq!(waited["state"], "failed", "{waited}");
+}
+
+#[test]
+fn an_agent_compares_two_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = common::write_run(dir.path(), 100);
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+
+    // The ablation flags are the method's own, listed as any other.
+    let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));
+    let flags = lc["flags"].as_array().unwrap();
+    for flag in [
+        "--permute-coords",
+        "--drop-features",
+        "--mask-cells",
+        "--ablation-parent",
+    ] {
+        assert!(flags.iter().any(|f| f["flag"] == flag), "{flag}");
+    }
+
+    let out = dir.path().join("cmp").to_string_lossy().into_owned();
+    let (same, _) = c.ok(
+        "run_compare",
+        json!({"a": prefix, "b": format!("{prefix}.propensity.parquet"), "out": out}),
+    );
+    assert_eq!(same["ari"], 1.0);
+    assert_eq!(same["n_shared"], 100);
+    assert!(same["vanished"].as_array().unwrap().is_empty());
+    assert!(std::path::Path::new(&format!("{out}.compare.json")).exists());
+    assert!(std::path::Path::new(&format!("{out}.contingency.parquet")).exists());
+    assert!(c
+        .fails("run_compare", json!({"a": prefix, "b": prefix, "out": out}))
+        .contains("written over"));
+    assert!(c
+        .fails(
+            "run_compare",
+            json!({"a": prefix, "b": prefix, "level_b": "L9", "out": "x"})
+        )
+        .contains("L9"));
+}
+
+#[test]
+fn an_agent_marks_a_region_to_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = common::write_run(dir.path(), 100);
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+
+    // The 10 × 10 grid's left two columns (x 0 and 1), in world coordinates.
+    let out = dir.path().join("left").to_string_lossy().into_owned();
+    let (picked, _) = c.ok(
+        "run_region",
+        json!({"run": prefix, "polygon": [[-0.5, -0.5], [1.5, -0.5], [1.5, 9.5], [-0.5, 9.5]], "out": out}),
+    );
+    assert_eq!(picked["cells"], 20);
+    assert_eq!(picked["of"], 100);
+    let list = std::fs::read_to_string(format!("{out}.cells.txt")).unwrap();
+    assert_eq!(list.lines().count(), 21, "a header and 20 cells");
+    assert!(picked["note"].as_str().unwrap().contains("mask-cells"));
+
+    // The same region as GeoJSON in section coordinates (one section here).
+    let gj = dir.path().join("left.geojson");
+    std::fs::write(
+        &gj,
+        r#"{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-0.5,-0.5],[1.5,-0.5],[1.5,9.5],[-0.5,9.5]]]}}"#,
+    )
+    .unwrap();
+    let out2 = dir.path().join("left2").to_string_lossy().into_owned();
+    let (again, _) = c.ok(
+        "run_region",
+        json!({"run": prefix, "geojson": gj, "out": out2}),
+    );
+    assert_eq!(again["cells"], 20);
+    assert!(c
+        .fails("run_region", json!({"run": prefix, "out": "x"}))
+        .contains("polygon"));
+
+    // run_predict checks its command as pinto parses it before running.
+    let msg = c.fails(
+        "run_predict",
+        json!({"model": prefix, "data": ["d.zarr"], "out": "p", "flags": {"no-such": 1}}),
+    );
+    assert!(msg.contains("--no-such"), "{msg}");
 }

@@ -1,7 +1,7 @@
 //! The model's pair encoder is found from the model prefix alone, so the
 //! resolution is checked without a model.
 
-use super::pair_encoder_path;
+use super::{cage_only_flags, default_args, pair_encoder_path};
 
 #[test]
 fn the_pair_encoder_is_required_and_found_beside_the_model() {
@@ -14,4 +14,17 @@ fn the_pair_encoder_is_required_and_found_beside_the_model() {
 
     std::fs::write(&file, b"").unwrap();
     assert_eq!(pair_encoder_path(&model).unwrap(), file);
+}
+
+#[test]
+fn cage_only_flags_are_named_when_set() {
+    let d = default_args().unwrap();
+    assert!(cage_only_flags(&d, &d).is_empty());
+    let mut set = default_args().unwrap();
+    set.no_init_features = true;
+    set.device_no = 1;
+    assert_eq!(
+        cage_only_flags(&set, &d),
+        vec!["--device-no", "--no-init-features"]
+    );
 }

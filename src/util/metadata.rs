@@ -10,6 +10,35 @@ use crate::util::parquet_io::cells_table_path;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// A run named by its prefix or by its manifest: the prefix.
+pub fn run_prefix(run: &str) -> &str {
+    run.strip_suffix(".pinto.json").unwrap_or(run)
+}
+
+/// A run's file name without its directory or the suffix of the file it was
+/// named by (`.pinto.json`, `.predictive.parquet`, `.propensity.parquet`, …).
+pub fn run_stem(run: &str) -> String {
+    let name = Path::new(run)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    [
+        ".pinto.json",
+        ".predictive.parquet",
+        ".propensity.parquet",
+        ".parquet",
+    ]
+    .iter()
+    .find_map(|s| name.strip_suffix(s))
+    .unwrap_or(&name)
+    .to_string()
+}
+
+/// A run named by its prefix or by its manifest: the manifest's path.
+pub fn run_manifest(run: &str) -> String {
+    format!("{}.pinto.json", run_prefix(run))
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PintoMetadata {
     pub command: String,
@@ -50,6 +79,17 @@ pub struct PintoMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub levels: Option<Vec<LevelInfo>>,
+
+    /// Present on an ablation (`--permute-coords`, `--drop-features`,
+    /// `--mask-cells`): what was taken away, from which parent run. pinto's
+    /// own provenance; the run's `version` above is the pinto that made it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ablation: Option<crate::util::ablation::Ablation>,
+
+    /// Present on `pinto predict` of an lc / dsvd model: the held-out
+    /// scoring, what the model left out, and its log-likelihoods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holdout: Option<crate::holdout::HoldoutInfo>,
 }
 
 /// The k's that decided the cell-pair graph.
@@ -254,6 +294,11 @@ pub struct OutputFiles {
     #[serde(alias = "gene_bias", skip_serializing_if = "Option::is_none")]
     pub feature_bias: Option<String>,
 
+    /// `pinto predict` of an lc / dsvd model: one row per held-out unit, its
+    /// held-out log-likelihood beside the pooled K = 1 profile's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predictive: Option<String>,
+
     /// Legacy slot: hard cluster labels `[N × 1]` from a run that
     /// clustered CELLS directly. No subcommand writes it now — cage
     /// clusters cell PAIRS and publishes `propensity` /
@@ -339,7 +384,6 @@ impl PintoMetadata {
         Ok(meta)
     }
 
-    #[cfg(feature = "view")]
     /// The run's levels. Manifests from before `levels` name one
     /// propensity table; that is the only level, `final`.
     pub fn level_list(&self) -> Vec<LevelInfo> {
@@ -430,7 +474,7 @@ impl PintoMetadata {
     }
 }
 
-fn now_secs() -> String {
+pub(crate) fn now_secs() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
@@ -486,6 +530,8 @@ pub struct RunInputs<'a> {
     /// `RunInputs` builds a graph. `pinto prop` re-cuts an existing pair table
     /// and has none, but it does not go through here.
     pub graph: GraphParams,
+    /// The ablation this run is, if any.
+    pub ablation: Option<crate::util::ablation::Ablation>,
 }
 
 /// Helper to create metadata for `pinto lc` runs.
@@ -546,6 +592,8 @@ pub fn create_lc_metadata(
             ..Default::default()
         },
         levels: Some(levels),
+        ablation: inputs.ablation.clone(),
+        holdout: None,
     }
 }
 
@@ -586,6 +634,8 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             ..Default::default()
         },
         levels: Some(levels),
+        ablation: inputs.ablation.clone(),
+        holdout: None,
     }
 }
 
@@ -642,6 +692,8 @@ pub fn create_cage_metadata(
             ..Default::default()
         },
         levels: Some(levels),
+        ablation: inputs.ablation.clone(),
+        holdout: None,
     }
 }
 
@@ -683,5 +735,7 @@ pub fn create_prop_metadata(
             ..Default::default()
         },
         levels: Some(levels),
+        ablation: None,
+        holdout: None,
     }
 }

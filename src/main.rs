@@ -1,11 +1,14 @@
 mod annotate;
 mod cell_activity_graph_embedding;
+mod compare;
 mod feature_network;
+mod holdout;
 mod impute;
 mod link_community;
 mod lr_activity;
 #[cfg(feature = "view")]
 mod mcp;
+mod paired;
 mod predict;
 mod propensity;
 #[cfg(feature = "view")]
@@ -26,10 +29,11 @@ use cell_activity_graph_embedding::{
 };
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use compare::{run_compare, CompareArgs};
 use impute::{run_impute, ImputeArgs};
 use link_community::fit::*;
 use lr_activity::{fit_srt_lr_activity, SrtLrActivityArgs};
-use predict::{predict_cage, PredictArgs};
+use predict::{predict, PredictArgs};
 use propensity::*;
 use svd::fit::*;
 
@@ -403,8 +407,28 @@ enum Commands {
     Annotate(AnnotateArgs),
 
     #[command(
-        about = "Apply a trained cage run to a new sample",
-        long_about = "Apply a trained `pinto cage` run to a new sample.\n\
+        about = "Apply a trained run to a new sample (cage), or score held-out cells (lc, dsvd)",
+        long_about = "Apply a trained run to a new sample.\n\n\
+                      LC / DSVD MODELS -- held-out scoring. Fit lc without a donor\n\
+                      (leave out its files), then:\n\
+                      \x20 pinto predict donor.zarr.zip -c donor.cells.parquet \\\n\
+                      \x20     --model fit_without_donor -o held_out\n\
+                      Each cell pair of the donor's graph (--holdout-unit cell for\n\
+                      cells) is split in two: binomial thinning of its counts\n\
+                      (--holdout-fit-fraction), or with --ablate-features the listed\n\
+                      features hidden from the fit and exactly they scored, as in\n\
+                      `senna predict`. Its community mix is fitted by EM on one part\n\
+                      and the other part is scored. The donor's per-batch shift δ is\n\
+                      estimated from the fitting parts only (--holdout-delta-iters).\n\
+                      {out}.predictive.parquet has the columns cage and senna write\n\
+                      (eval_llik, eval_count, eval_llik_per_count, spearman,\n\
+                      pearson_log1p, eval_null_llik_per_count) plus\n\
+                      eval_pooled_k1_llik_per_count. The null is the training data's\n\
+                      composition: --null-from, else the model's own data files.\n\
+                      {out}.pinto.json carries a `holdout` block with the totals and\n\
+                      the ceiling. Score a non-spatial lc fit (no -c) the same way\n\
+                      for the spatial baseline.\n\n\
+                      CAGE MODELS -- the rest of this help.\n\
                       The feature side and the community dictionary transfer;\n\
                       the geometry is rebuilt from the new sample's own coordinates.\n\n\
                       TYPICAL USE -- score a trained run on a held-out half:\n\
@@ -637,6 +661,23 @@ enum Commands {
                       \x20 Freeze them alongside any analysis of these scores."
     )]
     LrActivity(SrtLrActivityArgs),
+
+    #[command(
+        about = "Compare two runs' communities over the cells they share",
+        long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
+                      Over the cells both runs placed it reports the adjusted Rand\n\
+                      index, normalised mutual information, a one-to-one community\n\
+                      matching (Hungarian, on Jaccard) and each community's fate.\n\
+                      A community's partners are the other run's communities holding\n\
+                      at least --tau of its cells: two or more is a split (from A) or\n\
+                      a merge (into B); none means the other run has no counterpart\n\
+                      (vanished from A, new in B).\n\n\
+                      Writes {out}.compare.json and {out}.contingency.parquet.\n\n\
+                      Examples:\n\
+                      \x20 pinto compare base.pinto.json perm.pinto.json -o base_vs_perm\n\
+                      \x20 pinto compare base perm --level-a draft --tau 0.3 -o cmp"
+    )]
+    Compare(CompareArgs),
 
     #[cfg(feature = "view")]
     #[command(
@@ -932,7 +973,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Predict(args) => {
             // The return value serves `pinto impute`; the CLI path only wants
             // the files predict writes.
-            let (_propensity, _cell_names) = predict_cage(args)?;
+            let (_propensity, _cell_names) = predict(args)?;
         }
         Commands::Impute(args) => {
             run_impute(args)?;
@@ -940,6 +981,7 @@ fn main() -> anyhow::Result<()> {
         Commands::LrActivity(args) => {
             fit_srt_lr_activity(args)?;
         }
+        Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
             view::run_view(args)?;
