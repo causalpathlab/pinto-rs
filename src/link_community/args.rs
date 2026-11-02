@@ -9,6 +9,9 @@ pub struct SrtLinkCommunityArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
 
+    #[command(flatten)]
+    pub ablation: crate::util::ablation::AblationArgs,
+
     #[arg(
         long,
         default_value_t = 50,

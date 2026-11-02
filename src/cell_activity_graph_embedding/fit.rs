@@ -254,8 +254,11 @@ pub fn fit_cell_activity_graph_embedding(
         feature_stats: _,
         n_cells,
         n_rows,
+        graph_coordinates,
+        ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
+        ablation: Some(&args.ablation),
         fisher_weights: !args.no_fisher_weights,
         batch_effects: true,
         feature_axis: FeatureAxisMode::Strict,
@@ -424,8 +427,10 @@ pub fn fit_cell_activity_graph_embedding(
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
+            // The positions the graph was built on: under --permute-coords
+            // the scrambled ones, so the seeding follows the graph.
             seeding: has_coords.then(|| SeedingParams {
-                coordinates: &coordinates,
+                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
                 batch_membership: Some(&batch_membership),
             }),
             modularity_veto: None,
@@ -1608,6 +1613,7 @@ pub fn fit_cell_activity_graph_embedding(
                 n_features,
                 n_edges: n_fine_edges,
                 graph: (&knn).into(),
+                ablation,
                 k: n_edge_clusters,
             },
             batch_db.is_some(),

@@ -10,6 +10,11 @@
 //! `SrtCellPairs::with_graph`, passing the data, coordinates, graph and edge
 //! source it finds here.
 
+use crate::util::ablation::{
+    cell_keep, cells_in_regions, feature_keep, induced_subgraph, is_region_file, permute_blocks,
+    permute_within, plane_columns, read_cell_list, read_regions, sections, Ablation, AblationArgs,
+    AblationKind, MaskMode, PermuteCoords,
+};
 use crate::util::batch_effects::{
     estimate_and_write_batch_effects, load_cnv_cell_strata, EstimateBatchArgs,
 };
@@ -36,6 +41,9 @@ use legume_numeric::matrix::knn_graph::{DistanceMerge, EdgeSource};
 
 pub struct SrtPreprocessConfig<'a> {
     pub common: &'a SrtInputArgs,
+    /// The fit's ablation flags; `None` for a command that fits nothing
+    /// (`predict`).
+    pub ablation: Option<&'a AblationArgs>,
     /// Compute per-feature NB Fisher-info weights. `lc` needs them; `svd`
     /// and (v1) `cage` do not.
     pub fisher_weights: bool,
@@ -124,6 +132,14 @@ pub struct SrtPreprocessed {
     pub n_cells: usize,
     /// Matrix rows. Equal to the feature count only on a non-channelized axis.
     pub n_rows: usize,
+    /// Under `--permute-coords`: the scrambled positions the graph was built
+    /// on. Anything else that reads positions to build the fit (the
+    /// coarsening's spatial seeding) must read these, or real-space structure
+    /// leaks into the ablation; `coordinates` stays the cells' own, for output.
+    pub graph_coordinates: Option<Mat>,
+    /// What `--permute-coords`, `--drop-features` or `--mask-cells` did, for
+    /// the manifest's `ablation` block. `None` on an ordinary fit.
+    pub ablation: Option<Ablation>,
 }
 
 /// The graph neighbourhood algorithms must navigate, given the modelled graph
@@ -170,6 +186,9 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // the user wait through a load, a possible zarr conversion and a full QC
     // pass to hear about it is time spent on an answer already known.
     c.validate_knn_flags()?;
+    let no_ablation = AblationArgs::default();
+    let ab = cfg.ablation.unwrap_or(&no_ablation);
+    ab.validate(c.has_coordinates())?;
 
     info!("Loading data files...");
     let has_coords = c.has_coordinates();
@@ -197,6 +216,31 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         batch_membership.iter().any(|b| Some(b) != first)
     };
     let mut dropped: Option<DroppedCells> = None;
+    let mut ablation: Option<Ablation> = None;
+
+    // A permutation keeps cells inside their section: one id per data file
+    // and batch label, taken while the cells are still in file order.
+    let mut section_of: Option<Vec<u32>> = ab
+        .permute_coords
+        .map(|_| -> anyhow::Result<_> {
+            Ok(sections(
+                &data_vec.num_columns_by_data()?,
+                &batch_membership,
+            ))
+        })
+        .transpose()?;
+
+    // Dropped features never reach QC, so the cells it keeps are judged on
+    // the features the ablation fits.
+    if let Some(spec) = ab.drop_features.as_deref() {
+        let (keep, spec) = feature_keep(&data_vec.row_names()?, spec)?;
+        info!(
+            "Ablation: dropping {} of {} features",
+            spec["n_dropped"], spec["n_rows"]
+        );
+        data_vec.mask_rows(&keep)?;
+        ablation = Some(ab.record(AblationKind::FeatureDrop, spec, None));
+    }
 
     // Optional shared cell QC — applied before the KNN graph is built so
     // dropped cells never become graph nodes. MAD outliers are dropped from
@@ -260,11 +304,69 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             data_vec.mask_columns(&report.train_keep)?;
             batch_membership =
                 data_beans::qc_lib::filter_by_keep(&batch_membership, &report.train_keep);
+            if let Some(s) = section_of.as_mut() {
+                *s = data_beans::qc_lib::filter_by_keep(s, &report.train_keep);
+            }
         }
     }
 
-    // The kept cells' read-time labels, before `--auto-batch` relabels them.
-    let read_batches = (has_coords && multi_sample).then(|| batch_membership.clone());
+    // Masked cells go after QC. Under cut-edges (with coordinates) they stay
+    // for the graph build and are taken out with their edges right after it.
+    let mut cut_after_graph: Option<Vec<bool>> = None;
+    if let Some(path) = ab.mask_cells.as_deref() {
+        let names = data_vec.column_names()?;
+        let (listed, regions) = if is_region_file(path) {
+            let regions = read_regions(path)?;
+            let (xc, yc) = plane_columns(&coordinate_names)?;
+            let x: Vec<f32> = coordinates.column(xc).iter().copied().collect();
+            let y: Vec<f32> = coordinates.column(yc).iter().copied().collect();
+            let (cells, counts) = cells_in_regions(&names, &x, &y, &regions)?;
+            info!(
+                "Ablation: {} polygon(s) hold {:?} cells",
+                regions.len(),
+                counts
+            );
+            (cells, Some(regions.len()))
+        } else {
+            (read_cell_list(path)?, None)
+        };
+        let keep = cell_keep(&names, &listed)?;
+        let n_masked = keep.iter().filter(|&&k| !k).count();
+        let cut = has_coords && ab.mask_mode == MaskMode::CutEdges;
+        info!(
+            "Ablation: masking {} of {} cells ({})",
+            n_masked,
+            keep.len(),
+            if cut {
+                "their edges cut after the graph is built"
+            } else {
+                "left out of the graph build"
+            }
+        );
+        ablation = Some(ab.record(
+            AblationKind::CellMask,
+            serde_json::json!({
+                "file": path,
+                "n_polygons": regions,
+                "mode": if cut { "cut-edges" } else { "drop" },
+                "n_masked": n_masked,
+                "n_cells": keep.len(),
+            }),
+            None,
+        ));
+        if cut {
+            cut_after_graph = Some(keep);
+        } else {
+            mask_cells(
+                &keep,
+                &mut data_vec,
+                &mut coordinates,
+                &coordinate_names,
+                &mut batch_membership,
+                has_coords.then_some(&mut dropped),
+            )?;
+        }
+    }
 
     let n_rows = data_vec.num_rows();
     let n_cells = data_vec.num_columns();
@@ -276,10 +378,43 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let knn = c.resolve_knn(n_cells)?;
     let base_knn = knn.base;
 
+    // The positions the graph is built on: the cells' own, or scrambled ones
+    // under `--permute-coords`. Only the graph sees the scrambled ones.
+    let permuted: Option<Mat> = match (ab.permute_coords, section_of.as_deref()) {
+        (Some(mode), Some(section_of)) => {
+            let seed = ab.seed(c.seed);
+            let n_sections = section_of.iter().collect::<HashSet<_>>().len();
+            let (moved, spec) = match mode {
+                PermuteCoords::WithinBatch => (
+                    permute_within(&coordinates, section_of, seed),
+                    serde_json::json!({ "mode": "within-batch", "n_sections": n_sections }),
+                ),
+                PermuteCoords::Block => {
+                    let xy = plane_columns(&coordinate_names)?;
+                    let (moved, n_tiles) =
+                        permute_blocks(&coordinates, xy, section_of, ab.permute_block, seed);
+                    (
+                        moved,
+                        serde_json::json!({
+                            "mode": "block",
+                            "per_side": ab.permute_block,
+                            "n_tiles": n_tiles,
+                            "n_sections": n_sections,
+                        }),
+                    )
+                }
+            };
+            info!("Ablation: graph built on permuted positions ({spec})");
+            ablation = Some(ab.record(AblationKind::CoordPermutation, spec, Some(seed)));
+            Some(moved)
+        }
+        _ => None,
+    };
+
     let graph = if has_coords {
         info!("Building spatial KNN graph (k={})...", base_knn);
         build_spatial_graph(
-            &coordinates,
+            permuted.as_ref().unwrap_or(&coordinates),
             SrtCellPairsArgs {
                 knn: base_knn,
                 block_size: c.block_size,
@@ -308,6 +443,30 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         coordinate_names = vec!["pc_1".into(), "pc_2".into()];
         g
     };
+
+    let (graph, n_cells) = match cut_after_graph {
+        Some(keep) => {
+            let graph = induced_subgraph(&graph, &keep);
+            mask_cells(
+                &keep,
+                &mut data_vec,
+                &mut coordinates,
+                &coordinate_names,
+                &mut batch_membership,
+                Some(&mut dropped),
+            )?;
+            info!(
+                "Ablation: {} cells and {} edges left after the cut",
+                graph.n_nodes,
+                graph.edges.len()
+            );
+            (graph, data_vec.num_columns())
+        }
+        None => (graph, n_cells),
+    };
+
+    // The kept cells' read-time labels, before `--auto-batch` relabels them.
+    let read_batches = (has_coords && multi_sample).then(|| batch_membership.clone());
 
     if c.auto_batch && c.batch_files.is_none() {
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
@@ -490,7 +649,54 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         feature_stats,
         n_cells,
         n_rows,
+        graph_coordinates: permuted,
+        ablation,
     })
+}
+
+/// Take the cells `keep` rules out of the working set: the data, the
+/// coordinates and the batch labels in lockstep, and (with coordinates) set
+/// aside for the cells table as cells not in the graph.
+fn mask_cells(
+    keep: &[bool],
+    data_vec: &mut SparseIoVec,
+    coordinates: &mut Mat,
+    coordinate_names: &[Box<str>],
+    batch_membership: &mut Vec<Box<str>>,
+    dropped: Option<&mut Option<DroppedCells>>,
+) -> anyhow::Result<()> {
+    // `dropped` is given exactly when the run has coordinates. Without them
+    // the coordinates are a placeholder (QC does not filter it, and the
+    // expression embedding replaces it after the graph), so it is left alone.
+    let with_coords = dropped.is_some();
+    anyhow::ensure!(
+        batch_membership.len() == keep.len() && (!with_coords || coordinates.nrows() == keep.len()),
+        "mask: {} coordinate rows and {} batch labels for {} cells",
+        coordinates.nrows(),
+        batch_membership.len(),
+        keep.len()
+    );
+    let out: Vec<usize> = (0..keep.len()).filter(|&i| !keep[i]).collect();
+    let kept: Vec<usize> = (0..keep.len()).filter(|&i| keep[i]).collect();
+    if let Some(dropped) = dropped {
+        let names = data_vec.column_names()?;
+        let set_aside = DroppedCells {
+            names: out.iter().map(|&i| names[i].clone()).collect(),
+            coordinates: coordinates.select_rows(out.iter()),
+            coordinate_names: coordinate_names.to_vec(),
+            batches: out.iter().map(|&i| batch_membership[i].clone()).collect(),
+        };
+        *dropped = Some(match dropped.take() {
+            None => set_aside,
+            Some(qc) => qc.join(set_aside)?,
+        });
+    }
+    if with_coords {
+        *coordinates = coordinates.select_rows(kept.iter());
+    }
+    data_vec.mask_columns(keep)?;
+    *batch_membership = data_beans::qc_lib::filter_by_keep(batch_membership, keep);
+    Ok(())
 }
 
 /// One log line per weight vector, so a channelized run shows both axes and a
@@ -512,6 +718,31 @@ struct DroppedCells {
     coordinates: Mat,
     coordinate_names: Vec<Box<str>>,
     batches: Vec<Box<str>>,
+}
+
+impl DroppedCells {
+    /// QC's cells, then a mask's: both read with the same columns.
+    fn join(self, more: DroppedCells) -> anyhow::Result<DroppedCells> {
+        anyhow::ensure!(
+            self.coordinate_names == more.coordinate_names,
+            "cells set aside with different coordinate columns"
+        );
+        let n = self.names.len() + more.names.len();
+        let d = self.coordinates.ncols();
+        let coordinates = Mat::from_fn(n, d, |i, j| {
+            if i < self.names.len() {
+                self.coordinates[(i, j)]
+            } else {
+                more.coordinates[(i - self.names.len(), j)]
+            }
+        });
+        Ok(DroppedCells {
+            names: self.names.into_iter().chain(more.names).collect(),
+            coordinates,
+            coordinate_names: self.coordinate_names,
+            batches: self.batches.into_iter().chain(more.batches).collect(),
+        })
+    }
 }
 
 /// `{prefix}.cells.parquet`: the kept cells as they stand, then the ones QC

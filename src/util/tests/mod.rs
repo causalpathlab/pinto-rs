@@ -1,3 +1,4 @@
+mod ablation;
 mod batch_effects;
 mod cell_pairs;
 mod dictionary_rows;

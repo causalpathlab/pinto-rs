@@ -23,6 +23,7 @@ fn metadata_roundtrip_lc() {
             n_edges: 55555,
             k: 12,
             graph: GraphParams::default(),
+            ablation: None,
         },
         Some(DictMergeSummary {
             min_nnz: 1,
@@ -87,6 +88,7 @@ fn metadata_roundtrip_cage() {
             n_edges: 5000,
             k: 16, // edge clusters
             graph: GraphParams::default(),
+            ablation: None,
         },
         true,
         Some(SpliceTrackInfo {
@@ -164,6 +166,7 @@ fn metadata_roundtrip_cage_no_batch() {
             n_edges: 300,
             k: 8,
             graph: GraphParams::default(),
+            ablation: None,
         },
         false,
         None,
@@ -198,6 +201,7 @@ fn metadata_roundtrip_lc_merge_no_collapse() {
             n_edges: 300,
             k: 8,
             graph: GraphParams::default(),
+            ablation: None,
         },
         None,
         None,
@@ -234,6 +238,7 @@ fn roundtrip_graph(graph: GraphParams) -> (tempfile::TempDir, GraphParams) {
             n_edges: 55555,
             k: 12,
             graph,
+            ablation: None,
         },
         None,
         None,

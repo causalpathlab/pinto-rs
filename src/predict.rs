@@ -51,16 +51,21 @@ use log::info;
 use rayon::prelude::*;
 use std::path::Path;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct PredictArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
 
+    #[command(flatten)]
+    pub holdout: crate::holdout::HoldoutArgs,
+
     #[arg(
         long,
         required = true,
-        help = "Trained `pinto cage` prefix (reads its feature_embedding, latent, link_community)",
-        long_help = "Trained `pinto cage` run prefix. Reads:\n  \
+        help = "Trained run prefix: cage, or lc / dsvd for held-out scoring",
+        long_help = "Trained run prefix. An lc or dsvd run (by its .pinto.json) is\n\
+                     scored on held-out cells against {model}.feature_community.parquet.\n\
+                     A `pinto cage` run is applied to the new sample. Reads:\n  \
                      {model}.feature_embedding.parquet  feature × D frozen dictionary\n  \
                      {model}.latent.parquet             training pair latent (E × D)\n  \
                      {model}.link_community.parquet     training pair → community\n\
@@ -305,6 +310,79 @@ fn assign_to_centroids(latent_nk: &Mat, centroids_kd: &Mat, counts: &[f32]) -> V
 /// Returns the per-cell propensity and the cell names — the same table
 /// written to `{out}.propensity.parquet` — so a caller that consumes the
 /// prediction (`pinto impute`) need not round-trip it through parquet.
+pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+    // A model named by its manifest is the same model: records name runs that
+    // way, so a held-out scoring links to the fit it scores.
+    let mut args = args.clone();
+    args.model = crate::util::metadata::run_prefix(&args.model).into();
+    let args = &args;
+    let c = &args.common;
+    anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
+    let model = args.model.as_ref();
+    let meta =
+        crate::util::metadata::PintoMetadata::read(Path::new(&format!("{model}.pinto.json")));
+    let defaults = default_args()?;
+    match meta {
+        Ok(meta) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
+            let unused = cage_only_flags(args, &defaults);
+            anyhow::ensure!(
+                unused.is_empty(),
+                "{model} is an {} model: {} apply to cage models only",
+                meta.command,
+                unused.join(", ")
+            );
+            crate::holdout::predict_profiles(args, &meta)
+        }
+        _ => {
+            anyhow::ensure!(
+                args.holdout == defaults.holdout,
+                "{model} is not an lc / dsvd model: the held-out scoring flags \
+                 (--held-out, --holdout-*, --ablate-features) apply to those only"
+            );
+            predict_cage(args)
+        }
+    }
+}
+
+/// `PredictArgs` as parsed with nothing set: what a flag left alone reads.
+pub(crate) fn default_args() -> anyhow::Result<PredictArgs> {
+    #[derive(clap::Parser)]
+    struct Probe {
+        #[command(flatten)]
+        args: PredictArgs,
+    }
+    use clap::Parser;
+    Ok(Probe::try_parse_from(["predict", "data", "--model", "m", "-o", "o"])?.args)
+}
+
+/// The cage-only flags `args` sets away from their defaults, by name.
+pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'static str> {
+    [
+        ("--device", args.device != d.device),
+        ("--device-no", args.device_no != d.device_no),
+        (
+            "--no-init-features",
+            args.no_init_features != d.no_init_features,
+        ),
+        (
+            "--feature-init-neighbours",
+            args.feature_init_neighbours != d.feature_init_neighbours,
+        ),
+        (
+            "--feature-init-similarity-floor",
+            args.feature_init_similarity_floor != d.feature_init_similarity_floor,
+        ),
+        ("--pair-block", args.pair_block != d.pair_block),
+        (
+            "--no-fisher-weights",
+            args.no_fisher_weights != d.no_fisher_weights,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+    .collect()
+}
+
 pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     mkdir_parent(&c.out)?;
@@ -331,6 +409,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         ..
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
+        ablation: None,
         fisher_weights: !args.no_fisher_weights,
         batch_effects: true,
         feature_axis: FeatureAxisMode::Strict,
@@ -459,7 +538,12 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         }
     }
     let mut feature_totals = match args.null_from.as_deref() {
-        Some(files) => training_feature_totals(files, c, &feature_kind, &feature_names)?,
+        Some(files) => crate::util::profile_match::training_feature_totals(
+            files,
+            c,
+            &feature_kind,
+            &feature_names,
+        )?,
         None => {
             log::warn!(
                 "no --null-from: per-feature totals come from the QUERY, so the pair log-rate \
@@ -647,6 +731,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
             n_features,
             n_edges,
             graph: (&knn).into(),
+            ablation: None,
             k,
         },
         batch_effects.is_some(),
@@ -729,63 +814,6 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
     }
     info!("Wrote {out}.predictive.parquet");
     Ok(())
-}
-
-/// Per-feature totals from the training half, on this sample's feature axis.
-///
-/// The training data gets its own `FeatureAxis`, so a channelized training matrix
-/// pools the same way this one does before the two are matched by name. A feature
-/// the training half never saw keeps a zero total, which `PairDictionary` reads
-/// as "not on the partition axis" and drops -- the same treatment a feature with no
-/// counts here gets, and the honest one: the model has no abundance for it.
-fn training_feature_totals(
-    files: &[Box<str>],
-    common: &crate::util::input::SrtInputArgs,
-    feature_kind: &data_beans::aux::feature_names::FeatureNameKind,
-    target_features: &[Box<str>],
-) -> anyhow::Result<Vec<f64>> {
-    // The query's row names were canonicalized on the way in, by the same
-    // `--feature-name-mode` this uses. Without applying it here the two sides are
-    // spelled differently and nothing matches — which is exactly the failure this
-    // hit first, and it surfaced as "shares no expressed feature" rather than as a
-    // naming problem.
-    let mut loaded = data_beans::sparse_io_vector::SparseIoVec::new();
-    if let Some(canon) = feature_kind.clone().into_canonicalizer() {
-        loaded = loaded
-            .with_row_canonicalizer(move |name| canon(name))
-            .expect("with_row_canonicalizer on empty SparseIoVec");
-    }
-    for f in files {
-        let data = crate::util::input::open_sparse(f, common.preload_data)?;
-        loaded.push(std::sync::Arc::from(data), None)?;
-    }
-    let axis = crate::util::feature_axis::FeatureAxis::resolve(&loaded.row_names()?)?;
-    let per_row = crate::link_community::profiles::compute_row_totals(&loaded, common.block_size)?;
-    let per_feature = axis.pool_totals(&per_row);
-
-    let total_of: HashMap<&str, f64> = axis
-        .feature_names()
-        .iter()
-        .map(std::convert::AsRef::as_ref)
-        .zip(per_feature.iter().copied())
-        .collect();
-    let out: Vec<f64> = target_features
-        .iter()
-        .map(|g| total_of.get(g.as_ref()).copied().unwrap_or(0.0))
-        .collect();
-
-    let matched = out.iter().filter(|&&t| t > 0.0).count();
-    anyhow::ensure!(
-        matched > 0,
-        "--null-from shares no expressed feature with this sample after canonicalizing names \
-         with --feature-name-mode; check that it points at the training data for this model"
-    );
-    info!(
-        "Training totals: {matched} of {} features carry counts in the training half ({} cells)",
-        target_features.len(),
-        loaded.num_columns()
-    );
-    Ok(out)
 }
 
 #[cfg(test)]

@@ -76,6 +76,9 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
 
+    #[command(flatten)]
+    pub ablation: crate::util::ablation::AblationArgs,
+
     #[arg(long, default_value_t = ComputeDevice::Cpu, value_enum, help = "Compute device")]
     pub device: ComputeDevice,
 

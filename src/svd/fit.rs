@@ -20,6 +20,9 @@ pub struct SrtDeltaSvdArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
 
+    #[command(flatten)]
+    pub ablation: crate::util::ablation::AblationArgs,
+
     #[arg(
         short = 't',
         long,
@@ -147,8 +150,11 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         feature_stats: _,
         n_cells,
         n_rows: n_features,
+        graph_coordinates,
+        ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
+        ablation: Some(&args.ablation),
         fisher_weights: false,
         batch_effects: true,
         feature_axis: FeatureAxisMode::Rows,
@@ -204,8 +210,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
+            // The positions the graph was built on: under --permute-coords
+            // the scrambled ones, so the seeding follows the graph.
             seeding: has_coords.then(|| SeedingParams {
-                coordinates: &coordinates,
+                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
                 batch_membership: Some(&batch_membership),
             }),
             modularity_veto: None,
@@ -345,6 +353,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             n_features: data_vec.num_rows(),
             n_edges: edges.len(),
             graph: (&knn).into(),
+            ablation,
             k: n_clusters,
         });
         let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", c.out));

@@ -1,3 +1,4 @@
+pub mod ablation;
 pub mod batch_effects;
 pub mod cell_pairs;
 pub mod common;
@@ -14,6 +15,7 @@ pub mod knn_graph;
 pub mod metadata;
 #[allow(dead_code)] // helpers kept for non-plot consumers / future viz
 pub mod parquet_io;
+pub mod profile_match;
 pub mod score_trace;
 pub mod srt_pipeline;
 

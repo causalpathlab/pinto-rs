@@ -6,7 +6,7 @@
 //! of screen pixels, not the number of cells.
 
 mod color;
-mod data;
+pub(crate) mod data;
 mod draft;
 mod gene;
 mod heatmap;

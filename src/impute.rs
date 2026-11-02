@@ -34,6 +34,7 @@ use crate::link_community::outputs::write_propensity_matrix;
 use crate::predict::{predict_cage, PredictArgs};
 use crate::util::common::*;
 use crate::util::metadata::PintoMetadata;
+use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles};
 use clap::Args;
 use data_beans::alg::retrieval_impute::{retrieval_impute, RetrievalImputeConfig};
 use data_beans::sparse_data_visitors::VisitColumnsOps;
@@ -98,6 +99,11 @@ pub struct ImputeArgs {
 pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
+    anyhow::ensure!(
+        args.predict.holdout == crate::predict::default_args()?.holdout,
+        "the held-out scoring flags (--held-out, --holdout-*, --ablate-features) are for \
+         `pinto predict`, not impute"
+    );
     mkdir_parent(&c.out)?;
 
     // The manifest is the authority on what the model IS; artifact probing
@@ -378,22 +384,15 @@ fn profile_propensities(
 }
 
 struct ProfileEmParam {
-    /// `[K, G_matched]` per-community feature probabilities, TRANSPOSED so a
-    /// feature's K values are one contiguous column, renormalized over the
-    /// matched features (f64 for the per-cell EM accumulators).
-    p_t: nalgebra::DMatrix<f64>,
-    /// data row → matched-profile column.
-    row_to_matched: Vec<Option<usize>>,
+    profiles: MatchedProfiles,
     /// Already clamped to ≥ 1.
     iters: usize,
 }
 
-/// `[N, K]` per-cell community proportions by EM over the profile mixture.
-///
-/// Per cell: `π ← Σ_g x_g · r_g` with responsibilities
-/// `r_{g,k} ∝ π_k p̃_k(g)`, iterated to convergence. `p̃_k` is the profile
-/// conditioned on this dataset's matched features. A cell with no counts on
-/// any matched feature keeps a zero row (skipped by the retrieval core).
+/// `[N, K]` per-cell community proportions by EM over the profile mixture
+/// ([`em_proportions`] per cell). `p̃_k` is the profile conditioned on this
+/// dataset's matched features. A cell with no counts on any matched feature
+/// keeps a zero row (skipped by the retrieval core).
 fn project_profile_propensity(
     data: &SparseIoVec,
     profiles: &Mat,
@@ -404,61 +403,16 @@ fn project_profile_propensity(
     what: &str,
 ) -> anyhow::Result<Mat> {
     let k = profiles.ncols();
-    let data_features = data.row_names()?;
-
-    // Model feature → profile row, on canonicalized names.
-    let model_idx: HashMap<Box<str>, usize> = model_features
-        .iter()
-        .enumerate()
-        .map(|(i, g)| (g.clone(), i))
-        .collect();
-    let mut matched_profile_rows: Vec<usize> = Vec::new();
-    let mut row_to_matched: Vec<Option<usize>> = vec![None; data_features.len()];
-    let mut seen: HashMap<usize, usize> = HashMap::default();
-    for (row, name) in data_features.iter().enumerate() {
-        let key = feature_kind.canonicalize(name);
-        if let Some(&g) = model_idx.get(&key) {
-            let slot = *seen.entry(g).or_insert_with(|| {
-                matched_profile_rows.push(g);
-                matched_profile_rows.len() - 1
-            });
-            row_to_matched[row] = Some(slot);
-        }
-    }
-    anyhow::ensure!(
-        !matched_profile_rows.is_empty(),
-        "{what}: none of its {} features match the model's {} — check --feature-name-mode",
-        data_features.len(),
-        model_features.len()
-    );
-    info!(
-        "{what}: {} of the model's {} features are present across {} cells",
-        matched_profile_rows.len(),
-        model_features.len(),
-        data.num_columns()
-    );
-
-    // Condition each community's profile on the matched window and drop the
-    // rest: `p̃_k(g) = λ_gk / Σ_{g∈matched} λ_gk`. Stored [K, G_matched] so
-    // the EM's per-feature access is one contiguous column.
-    let g_m = matched_profile_rows.len();
-    let mut p_t = nalgebra::DMatrix::<f64>::zeros(k, g_m);
-    for (slot, &g) in matched_profile_rows.iter().enumerate() {
-        for c in 0..k {
-            p_t[(c, slot)] = f64::from(profiles[(g, c)]).max(0.0);
-        }
-    }
-    for c in 0..k {
-        let total: f64 = p_t.row(c).iter().sum();
-        if total > 0.0 {
-            let mut row = p_t.row_mut(c);
-            row /= total;
-        }
-    }
-
+    let matched = match_profiles(
+        &data.row_names()?,
+        profiles,
+        model_features,
+        feature_kind,
+        what,
+        data.num_columns(),
+    )?;
     let param = ProfileEmParam {
-        p_t,
-        row_to_matched,
+        profiles: matched,
         iters: iters.max(1),
     };
     let n = data.num_columns();
@@ -475,16 +429,11 @@ fn profile_em_visitor(
 ) -> anyhow::Result<()> {
     let (lb, ub) = job;
     let csc = data.read_columns_csc(lb..ub)?;
-    let k = param.p_t.nrows();
+    let k = param.profiles.p_t.nrows();
     let mut chunk = Mat::zeros(k, ub - lb);
 
-    // One set of buffers for the whole block; the per-cell loop below only
-    // clears and refills them.
     let mut obs: Vec<(usize, f64)> = Vec::new();
     let mut pi = vec![0.0f64; k];
-    let mut num = vec![0.0f64; k];
-    let mut resp = vec![0.0f64; k];
-
     for c_local in 0..csc.ncols() {
         let col = csc.col(c_local);
         // The cell's counts on the matched window.
@@ -494,48 +443,11 @@ fn profile_em_visitor(
                 .iter()
                 .zip(col.values().iter())
                 .filter_map(|(&row, &v)| {
-                    param.row_to_matched[row].map(|slot| (slot, f64::from(v)))
+                    param.profiles.row_to_matched[row].map(|slot| (slot, f64::from(v)))
                 }),
         );
-        if obs.iter().map(|&(_, x)| x).sum::<f64>() <= 0.0 {
+        if !em_proportions(&obs, &param.profiles.p_t, param.iters, &mut pi) {
             continue; // zero row → skipped downstream
-        }
-
-        pi.fill(1.0 / k as f64);
-        for _ in 0..param.iters {
-            num.fill(0.0);
-            for &(slot, x) in &obs {
-                // `resp_c = π_c · p̃_c(g)`, computed once for both the
-                // denominator and the numerator; the profile column is
-                // contiguous, so this is a straight cache-line scan.
-                let p_col = param.p_t.column(slot);
-                let mut denom = 0.0f64;
-                for c in 0..k {
-                    resp[c] = pi[c] * p_col[c];
-                    denom += resp[c];
-                }
-                if denom <= 0.0 {
-                    continue; // feature absent from every community
-                }
-                let f = x / denom;
-                for c in 0..k {
-                    num[c] += resp[c] * f;
-                }
-            }
-            let assigned: f64 = num.iter().sum();
-            if assigned <= 0.0 {
-                pi.fill(0.0);
-                break;
-            }
-            let mut delta = 0.0f64;
-            for (c, pi_c) in pi.iter_mut().enumerate() {
-                let next = num[c] / assigned;
-                delta = delta.max((next - *pi_c).abs());
-                *pi_c = next;
-            }
-            if delta < 1e-6 {
-                break;
-            }
         }
         for (c, &pi_c) in pi.iter().enumerate() {
             chunk[(c, c_local)] = pi_c as f32;

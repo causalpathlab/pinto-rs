@@ -222,14 +222,32 @@ pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<M
 /// One numeric column of a table keyed by its first column: row names and
 /// the values (e.g. a lupin round's `cell`, `cluster`, with NaN for none).
 pub fn read_keyed_column(path: &Path, column: &str) -> anyhow::Result<(Vec<Box<str>>, Vec<f32>)> {
+    let (rows, mut values) = read_keyed_columns(path, &[column])?;
+    Ok((rows, values.remove(0)))
+}
+
+/// Row keys, and each requested float column.
+pub type KeyedColumns = (Vec<Box<str>>, Vec<Vec<f32>>);
+
+/// [`read_keyed_column`] for several float columns in one pass: the key
+/// column (the first) and each named column, in order.
+pub fn read_keyed_columns(path: &Path, columns: &[&str]) -> anyhow::Result<KeyedColumns> {
     let fields = field_names(path)?;
     let key = fields
         .first()
         .ok_or_else(|| anyhow::anyhow!("{path:?}: no columns"))?;
-    let cols = read_named_columns(path, &[key.as_ref(), column])?;
+    let mut names = vec![key.as_ref()];
+    names.extend_from_slice(columns);
+    let cols = read_named_columns(path, &names)?;
     let rows = labels(&cols[0])?;
-    let values = floats(&cols[1])?;
-    anyhow::ensure!(rows.len() == values.len(), "{path:?}: ragged columns");
+    let values = cols[1..]
+        .iter()
+        .map(|c| floats(c))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        values.iter().all(|v| v.len() == rows.len()),
+        "{path:?}: ragged columns"
+    );
     Ok((rows, values))
 }
 

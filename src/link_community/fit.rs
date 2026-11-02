@@ -78,8 +78,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_stats,
         n_cells,
         n_rows,
+        graph_coordinates,
+        ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
+        ablation: Some(&args.ablation),
         fisher_weights: true,
         batch_effects: true,
         // Everything `lc` filters, weights and reports is per FEATURE. On a
@@ -217,8 +220,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
+            // The positions the graph was built on: under --permute-coords
+            // the scrambled ones, so the seeding follows the graph.
             seeding: has_coords.then(|| SeedingParams {
-                coordinates: &coordinates,
+                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
                 batch_membership: Some(&batch_membership),
             }),
             modularity_veto: (args.modularity_gamma > 0.0).then_some(ModularityVeto {
@@ -652,6 +657,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 n_edges: edges.len(),
                 k,
                 graph: (&knn).into(),
+                ablation,
             },
             merge_summary,
             // What `lc` can report is the structural fact of the axis, not a
