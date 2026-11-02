@@ -64,6 +64,7 @@ use legume_numeric::candle::candle_nn::{
     VarBuilder, VarMap,
 };
 use legume_numeric::candle::encoder::{SymmetricPairHead, SymmetricPairHeadArgs};
+use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::nn::seed_uniform_vars;
 use legume_numeric::candle::vae::{clip_and_step_dense, PhaseTimers};
 use legume_numeric::matrix::rand_util::mix_seed;
@@ -96,6 +97,12 @@ pub(crate) const CELL_BLOCK: usize = 4096;
 /// axis takes fewer rows per pass and a panel takes the caps, and the device
 /// holds a fixed amount of dense work either way.
 const BLOCK_ELEMENTS: usize = 1 << 25;
+/// Elements of one chunk of feature outer products `[rows × D(D+1)/2]` in the
+/// certificate's second moment: 64 MB of f32 whatever G and D are.
+const EE_CHUNK_ELEMENTS: usize = 1 << 24;
+/// The chunks are kept for a whole placement pass while all of them fit this
+/// (about 280 MB of f32); beyond it they are built per block instead.
+const EE_CACHE_ELEMENTS: usize = 70 << 20;
 /// Optimizer steps a run makes at least, whatever its pair count: a small
 /// sample at the batch cap would otherwise train for a handful of steps.
 const MIN_STEPS: usize = 512;
@@ -247,13 +254,13 @@ impl CorpusStats {
         })
     }
 
-    /// The rows of `ids` → `(sums, totals, offsets)`.
-    fn gather(&self, ids: &Tensor) -> anyhow::Result<(Tensor, Tensor, Tensor)> {
-        Ok((
-            self.sums.index_select(ids, 0)?,
-            self.totals.index_select(ids, 0)?,
-            self.offsets.index_select(ids, 0)?,
-        ))
+    /// The rows of `ids`.
+    fn gather(&self, ids: &Tensor) -> anyhow::Result<Stats> {
+        Ok(Stats {
+            sums: gather_rows(&self.sums, ids)?,
+            totals: gather_rows(&self.totals, ids)?,
+            offsets: gather_rows(&self.offsets, ids)?,
+        })
     }
 }
 
@@ -335,15 +342,15 @@ pub(crate) struct Encoded {
 ////////////
 
 /// The frozen side on the device: the dictionary for the composition mean,
-/// its transpose for the partition, its row outer products for the
-/// curvature, the log-rate offset and the statistic's population moments.
+/// its transpose for the partition, the index of the upper triangle the
+/// curvature's outer products are taken on (the products themselves are built
+/// on demand, never kept as a `[G × D²]` table), the log-rate offset and the
+/// statistic's population moments.
 struct DeviceDict {
     /// `[G × D]`.
     e_gd: Tensor,
     /// `[D × G]`.
     e_hd: Tensor,
-    /// `[G × D²]`, row `g` = `e_g e_gᵀ` flattened.
-    ee_gdd: Tensor,
     /// `[1 × G]`.
     b_1d: Tensor,
     /// `[1 × (D + 1)]` each.
@@ -351,6 +358,9 @@ struct DeviceDict {
     stat_std: Tensor,
     /// `max_g ‖e_g‖`.
     max_row_norm: f32,
+    /// The upper triangle of `D × D`, (row, column) index tensors, row-major.
+    tri_rows: Tensor,
+    tri_cols: Tensor,
     g: usize,
     d: usize,
 }
@@ -371,13 +381,14 @@ impl DeviceDict {
             d + 1
         );
         let e_gd = Tensor::from_slice(&dict.feat, (g, d), dev)?;
-        let ee_gdd = e_gd
-            .unsqueeze(2)?
-            .broadcast_mul(&e_gd.unsqueeze(1)?)?
-            .reshape((g, d * d))?;
+        let (r, c): (Vec<u32>, Vec<u32>) = (0..d as u32)
+            .flat_map(|r| (r..d as u32).map(move |c| (r, c)))
+            .unzip();
+        let tri = r.len();
         Ok(Self {
+            tri_rows: Tensor::from_vec(r, tri, dev)?,
+            tri_cols: Tensor::from_vec(c, tri, dev)?,
             e_hd: e_gd.t()?.contiguous()?,
-            ee_gdd,
             e_gd,
             b_1d: Tensor::from_slice(&dict.b, (1, g), dev)?,
             stat_mean: Tensor::from_slice(stat_mean, (1, d + 1), dev)?,
@@ -390,6 +401,66 @@ impl DeviceDict {
             g,
             d,
         })
+    }
+
+    /// The outer products `e_g e_gᵀ`, upper triangle, of features
+    /// `start..start + len`: `[len × D(D+1)/2]`. A symmetric second moment
+    /// needs `D(D+1)/2` of its `D²` entries.
+    fn outer_chunk(&self, start: usize, len: usize) -> anyhow::Result<Tensor> {
+        // Gathered as rows of the transpose: `[D × len]` → `[T × len]`.
+        let e = self.e_hd.narrow(1, start, len)?.contiguous()?;
+        Ok(
+            (gather_rows(&e, &self.tri_rows)? * gather_rows(&e, &self.tri_cols)?)?
+                .t()?
+                .contiguous()?,
+        )
+    }
+
+    /// Features per outer-product chunk, each within [`EE_CHUNK_ELEMENTS`].
+    fn chunk_rows(&self) -> usize {
+        (EE_CHUNK_ELEMENTS / (self.d * (self.d + 1) / 2)).max(1)
+    }
+
+    /// Every chunk, once for a whole placement pass, when together they fit
+    /// [`EE_CACHE_ELEMENTS`] (about 280 MB at G = 33k, D = 64); `None` beyond,
+    /// and [`Self::second_moment`] then builds and drops them one at a time.
+    fn outer_chunks_cached(&self) -> anyhow::Result<Option<Vec<Tensor>>> {
+        let tri = self.d * (self.d + 1) / 2;
+        if self.g.saturating_mul(tri) > EE_CACHE_ELEMENTS {
+            return Ok(None);
+        }
+        let rows = self.chunk_rows();
+        (0..self.g)
+            .step_by(rows)
+            .map(|start| self.outer_chunk(start, rows.min(self.g - start)))
+            .collect::<anyhow::Result<_>>()
+            .map(Some)
+    }
+
+    /// `Σ_g p_bg e_g e_gᵀ`, upper triangle, for each row of `p` `[B × G]` →
+    /// `[B × D(D+1)/2]`, accumulated over chunks of features: the cached ones,
+    /// or each built, used and dropped in turn, so at most one chunk is held.
+    /// A resident `[G × D²]` table would be 0.5 GB at G = 33k, D = 64, and
+    /// several GB on a channelized axis or at D = 128.
+    fn second_moment(&self, p: &Tensor, cached: Option<&[Tensor]>) -> anyhow::Result<Tensor> {
+        let tri = self.d * (self.d + 1) / 2;
+        let rows = self.chunk_rows();
+        let mut acc = Tensor::zeros((p.dim(0)?, tri), p.dtype(), p.device())?;
+        for (k, start) in (0..self.g).step_by(rows).enumerate() {
+            let len = rows.min(self.g - start);
+            let built;
+            let ee = match cached {
+                Some(c) => &c[k],
+                None => {
+                    built = self.outer_chunk(start, len)?;
+                    &built
+                }
+            };
+            // Contiguous: some backends' matmul refuse a strided left side.
+            let block = p.narrow(1, start, len)?.contiguous()?;
+            acc = (acc + block.matmul(ee)?)?;
+        }
+        Ok(acc)
     }
 
     fn device(&self) -> &Device {
@@ -474,10 +545,6 @@ impl Stats {
 /// A block of pairs through the trunk and the head: what training,
 /// evaluation and inference all read.
 struct PairForward {
-    /// `[2B, L]` cell codes, the `u`s then the `v`s.
-    h: Tensor,
-    /// The `2B` endpoints' own statistics.
-    endpoints: Stats,
     /// `[B, 2L + D + 1]` pair features.
     features: Tensor,
     /// `[B, D]` pair codes.
@@ -672,9 +739,10 @@ impl PairEncoder {
     }
 
     /// The self-pair of every row of a block: its code with itself, at the
-    /// doubled depth.
-    fn self_pair_code(&self, h: &Tensor, stats: &Stats) -> anyhow::Result<Tensor> {
-        Ok(self.pair_code(h, h, &stats.doubled()?)?.0)
+    /// doubled depth (`doubled` is the rows' statistics doubled, which the
+    /// caller also scores against).
+    fn self_pair_code(&self, h: &Tensor, doubled: &Stats) -> anyhow::Result<Tensor> {
+        Ok(self.pair_code(h, h, doubled)?.0)
     }
 
     /// A block of pairs, from their endpoints' statistics (the `u`s then the
@@ -694,8 +762,6 @@ impl PairEncoder {
         let pairs = side(0)?.pooled(&side(1)?)?;
         let (z_uv, features) = self.pair_code(&h_u, &h_v, &pairs)?;
         Ok(PairForward {
-            h,
-            endpoints,
             features,
             z_uv,
             pairs,
@@ -719,11 +785,28 @@ impl PairEncoder {
     /// nodes `stats`, with `∇ = N p̄ − S + λz` and `H = N·Cov_p(e) + λI`
     /// under the composition `p` the scores fit: the composition's mean and
     /// second moment come off the device, the `D × D` solves run here.
-    fn decrement(&self, z: &Tensor, scores: &Tensor, stats: &Stats) -> anyhow::Result<Vec<f32>> {
+    fn decrement(
+        &self,
+        z: &Tensor,
+        scores: &Tensor,
+        stats: &Stats,
+        outer: Option<&[Tensor]>,
+    ) -> anyhow::Result<Vec<f32>> {
         let d = self.dict.d;
+        let tri = d * (d + 1) / 2;
         let p = legume_numeric::candle::candle_nn::ops::softmax(scores, 1)?; // [B, G]
         let pbar: Vec<f32> = p.matmul(&self.dict.e_gd)?.flatten_all()?.to_vec1()?; // [B, D]
-        let m2: Vec<f32> = p.matmul(&self.dict.ee_gdd)?.flatten_all()?.to_vec1()?; // [B, D²]
+        let m2: Vec<f32> = self
+            .dict
+            .second_moment(&p, outer)?
+            .flatten_all()?
+            .to_vec1()?;
+        // m2 is [B, D(D+1)/2], the upper triangle row-major: (r, c) → its
+        // place in it, either way round.
+        let at = |r: usize, c: usize| {
+            let (r, c) = if r <= c { (r, c) } else { (c, r) };
+            r * d - r * (r + 1) / 2 + c
+        };
         let z: Vec<f32> = z.flatten_all()?.to_vec1()?;
         let sums: Vec<f32> = stats.sums.flatten_all()?.to_vec1()?;
         let totals: Vec<f32> = stats.totals.to_vec1()?;
@@ -742,7 +825,7 @@ impl PairEncoder {
                     (0..d).map(|j| n * pb[j] - si[j] + ridge * zi[j]),
                 );
                 let hess = nalgebra::DMatrix::<f32>::from_fn(d, d, |r, c| {
-                    let cov = m2[i * d * d + r * d + c] - pb[r] * pb[c];
+                    let cov = m2[i * tri + at(r, c)] - pb[r] * pb[c];
                     n * cov + if r == c { ridge } else { 0.0 }
                 });
                 match hess.cholesky() {
@@ -753,17 +836,41 @@ impl PairEncoder {
             .collect())
     }
 
-    /// One step's loss on a block of pairs: the pairs' objective plus the
-    /// endpoints' own, each with its ridge.
-    fn step_loss(&self, endpoints: Stats) -> anyhow::Result<Tensor> {
+    /// One step's loss: a block of pairs' objective, plus the self-pair
+    /// objective of a block of cells, each weighted by how many pair
+    /// endpoints it is, over `2 · batch` (the endpoint rows of a full step).
+    /// Each cell comes once per epoch, so an epoch's summed loss is the
+    /// one that scored every pair's two endpoints in every step, at a fraction
+    /// of the rows: a cell is an endpoint of about `2E/n` pairs.
+    fn step_loss(
+        &self,
+        endpoints: Stats,
+        selves: Option<(Stats, Tensor)>,
+        batch: usize,
+    ) -> anyhow::Result<Tensor> {
         let half_ridge = f64::from(self.ridge) / 2.0;
         let fwd = self.pair_forward(endpoints)?;
         let nll_uv = self.nll(&fwd.z_uv, &self.scores(&fwd.z_uv)?, &fwd.pairs)?;
         let ridge_uv = fwd.z_uv.sqr()?.sum(1)?.affine(half_ridge, 0.0)?;
-        let z_uu = self.self_pair_code(&fwd.h, &fwd.endpoints)?;
-        let nll_uu = self.nll(&z_uu, &self.scores(&z_uu)?, &fwd.endpoints.doubled()?)?;
+        let pairs = (nll_uv + ridge_uv)?.mean_all()?;
+        let Some((cells, weight)) = selves else {
+            return Ok(pairs);
+        };
+        let h = self.cell_codes(&cells)?;
+        let doubled = cells.doubled()?;
+        let z_uu = self.self_pair_code(&h, &doubled)?;
+        let nll_uu = self.nll(&z_uu, &self.scores(&z_uu)?, &doubled)?;
         let ridge_uu = z_uu.sqr()?.sum(1)?.affine(half_ridge, 0.0)?;
-        Ok(((nll_uv + ridge_uv)?.mean_all()? + (nll_uu + ridge_uu)?.mean_all()?)?)
+        // Over the endpoint rows a step of `batch` pairs has.
+        let own = ((nll_uu + ridge_uu)? * weight)?
+            .sum_all()?
+            .affine(1.0 / (2 * batch) as f64, 0.0)?;
+        Ok((pairs + own)?)
+    }
+
+    /// The statistics of cells `ids`, gathered on the device.
+    fn cell_stats(&self, corpus: &CorpusStats, ids: &[u32]) -> anyhow::Result<Stats> {
+        corpus.gather(&Tensor::from_slice(ids, ids.len(), self.dict.device())?)
     }
 
     /// The endpoint statistics of a chunk of pairs, the `u` rows then the
@@ -774,13 +881,7 @@ impl PairEncoder {
             .map(|&(u, _)| u)
             .chain(chunk.iter().map(|&(_, v)| v))
             .collect();
-        let ids = Tensor::from_vec(ids, chunk.len() * 2, self.dict.device())?;
-        let (sums, totals, offsets) = corpus.gather(&ids)?;
-        Ok(Stats {
-            sums,
-            totals,
-            offsets,
-        })
+        self.cell_stats(corpus, &ids)
     }
 
     /// NLL per pooled count over `pairs`, and the mean expert weights: the
@@ -821,9 +922,30 @@ impl PairEncoder {
         seed: u64,
     ) -> anyhow::Result<TrainStats> {
         let n_pairs = edges.len();
-        // A step scores its pairs and their two endpoints.
+        // How many pair endpoints each cell is: its weight in the self-pair
+        // term, which visits each endpoint cell once per epoch.
+        anyhow::ensure!(
+            edges
+                .iter()
+                .all(|&(u, v)| (u.max(v) as usize) < corpus.len()),
+            "pair encoder: an edge names a cell beyond the corpus's {}",
+            corpus.len()
+        );
+        let mut degree = vec![0f32; corpus.len()];
+        for &(u, v) in edges {
+            degree[u as usize] += 1.0;
+            degree[v as usize] += 1.0;
+        }
+        let mut cell_order: Vec<u32> = (0..corpus.len() as u32)
+            .filter(|&c| degree[c as usize] > 0.0)
+            .collect();
+        // The batch is sized as it always was, for a pair and its two
+        // endpoints, so the optimizer takes the same steps per epoch; a step
+        // now scores its pairs and only its share of the endpoint cells, and
+        // costs that much less.
         let batch = rows_within_budget(3 * self.dict.g, spec.batch).max(MIN_STEP_PAIRS);
         let steps_per_epoch = n_pairs.div_ceil(batch).max(1);
+        let degree = Tensor::from_vec(degree, corpus.len(), self.dict.device())?;
         let epochs = if spec.epochs == 0 {
             0
         } else {
@@ -861,21 +983,37 @@ impl PairEncoder {
         let mut nll_per_count = nll0;
         let bar = new_progress_bar((epochs * steps_per_epoch) as u64).with_message("pair encoder");
         for epoch in 0..epochs {
-            order.shuffle(&mut StdRng::seed_from_u64(mix_seed(seed, epoch as u64)));
+            let mut rng = StdRng::seed_from_u64(mix_seed(seed, epoch as u64));
+            order.shuffle(&mut rng);
+            cell_order.shuffle(&mut rng);
+            // The steps that train (a last chunk under MIN_STEP_PAIRS is
+            // skipped), and the endpoint cells shared out over exactly those.
+            let chunks: Vec<&[usize]> = order
+                .chunks(batch)
+                .filter(|c| c.len() >= MIN_STEP_PAIRS)
+                .collect();
+            bar.inc((steps_per_epoch - chunks.len()) as u64);
+            let n_chunks = chunks.len().max(1);
+            let cell_share = |k: usize| {
+                &cell_order[k * cell_order.len() / n_chunks..(k + 1) * cell_order.len() / n_chunks]
+            };
             let mut loss_sum = 0f64;
             let mut n_steps = 0usize;
-            for chunk in order.chunks(batch) {
-                if chunk.len() < MIN_STEP_PAIRS {
-                    bar.inc(1);
-                    continue;
-                }
+            for (k, chunk) in chunks.iter().enumerate() {
                 let t = std::time::Instant::now();
                 let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| edges[i]).collect();
                 let endpoints = self.endpoint_stats(&stats, &pairs)?;
+                let cells = cell_share(k);
+                let selves = if cells.is_empty() {
+                    None
+                } else {
+                    let ids = Tensor::from_slice(cells, cells.len(), self.dict.device())?;
+                    Some((stats.gather(&ids)?, gather_rows(&degree, &ids)?))
+                };
                 timers.precompute += t.elapsed();
 
                 let t = std::time::Instant::now();
-                let loss = self.step_loss(endpoints)?;
+                let loss = self.step_loss(endpoints, selves, batch)?;
                 timers.encoder_fwd += t.elapsed();
 
                 let t = std::time::Instant::now();
@@ -937,6 +1075,9 @@ impl PairEncoder {
         let cell_block = rows_within_budget(g, cell_block);
         let pair_block = rows_within_budget(g, pair_block);
         let stats = CorpusStats::new(corpus, d, dev)?;
+        // The certificate's outer-product chunks, built once for the pass
+        // when they fit their budget, else per block.
+        let ee = self.dict.outer_chunks_cached()?;
 
         // Cells: the codes stay on the device for the pair pass; the
         // self-pairs are written out.
@@ -951,18 +1092,14 @@ impl PairEncoder {
             Some(cell_block),
         ) {
             let ids = Tensor::from_vec((lb as u32..ub as u32).collect::<Vec<u32>>(), ub - lb, dev)?;
-            let (sums, totals, offsets) = stats.gather(&ids)?;
-            let own = Stats {
-                sums,
-                totals,
-                offsets,
-            };
+            let own = stats.gather(&ids)?;
             let h = self.cell_codes(&own)?;
-            let z = self.self_pair_code(&h, &own)?;
+            // The self-pair's objective is over the doubled profile.
+            let doubled = own.doubled()?;
+            let z = self.self_pair_code(&h, &doubled)?;
             let scores = self.scores(&z)?;
             let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
-            // The self-pair's objective is over the doubled profile.
-            let gap = self.decrement(&z, &scores, &own.doubled()?)?;
+            let gap = self.decrement(&z, &scores, &doubled, ee.as_deref())?;
             let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
             for (i, c) in (lb..ub).enumerate() {
                 let total = corpus[c].total;
@@ -1002,20 +1139,12 @@ impl PairEncoder {
                 )?)
             };
             let (u, v) = (ids(|e| e.0)?, ids(|e| e.1)?);
-            let (h_u, h_v) = (codes.index_select(&u, 0)?, codes.index_select(&v, 0)?);
-            let side = |ids: &Tensor| -> anyhow::Result<Stats> {
-                let (sums, totals, offsets) = stats.gather(ids)?;
-                Ok(Stats {
-                    sums,
-                    totals,
-                    offsets,
-                })
-            };
-            let pooled = side(&u)?.pooled(&side(&v)?)?;
+            let (h_u, h_v) = (gather_rows(&codes, &u)?, gather_rows(&codes, &v)?);
+            let pooled = stats.gather(&u)?.pooled(&stats.gather(&v)?)?;
             let (z, _) = self.pair_code(&h_u, &h_v, &pooled)?;
             let scores = self.scores(&z)?;
             let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
-            let gap = self.decrement(&z, &scores, &pooled)?;
+            let gap = self.decrement(&z, &scores, &pooled, ee.as_deref())?;
             let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
             for (i, &(u, v)) in chunk.iter().enumerate() {
                 let total = corpus[u as usize].total + corpus[v as usize].total;

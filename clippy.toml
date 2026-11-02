@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "candle_core::Tensor::index_select", reason = "its CUDA backward walks every id serially on one thread per column; use legume_numeric::candle::fast_index::gather_rows" },
+]

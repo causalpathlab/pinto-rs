@@ -27,6 +27,8 @@ use graph_embedding_util::loss::{
 };
 use graph_embedding_util::model::JointEmbedModel;
 use legume_numeric::candle::candle_core::{Device, Result as CResult, Tensor};
+// Not `index_select`, whose CUDA backward is serial over ids: see fast_index.
+use legume_numeric::candle::fast_index::gather_rows;
 
 pub struct CageLossOut {
     /// Per-(feature, level) NCE loss, `[G, L]`.
@@ -109,10 +111,10 @@ pub fn cage_nce_loss_per_feature_level(
     let left_idx = Tensor::from_vec(all_left, total_b, dev)?;
     let right_idx = Tensor::from_vec(all_right, total_b, dev)?;
     let feature_idx = Tensor::from_vec(feature_repeat, total_b, dev)?;
-    let e_left = model.e_cell.index_select(&left_idx, 0)?;
-    let b_left = model.b_cell.index_select(&left_idx, 0)?;
-    let e_right = model.e_cell.index_select(&right_idx, 0)?;
-    let b_right = model.b_cell.index_select(&right_idx, 0)?;
+    let e_left = gather_rows(&model.e_cell, &left_idx)?;
+    let b_left = gather_rows(&model.b_cell, &left_idx)?;
+    let e_right = gather_rows(&model.e_cell, &right_idx)?;
+    let b_right = gather_rows(&model.b_cell, &right_idx)?;
 
     // Feature rows with whatever gates them applied — geu's own helper, so cage,
     // `senna bge` and `senna gem` share ONE definition of what multiplies a
@@ -162,8 +164,8 @@ pub fn cage_nce_loss_per_feature_level(
 
     for lvl_neg in all_neg_per_level.into_iter() {
         let neg_idx = Tensor::from_vec(lvl_neg, total_neg, dev)?;
-        let e_neg_flat = model.e_cell.index_select(&neg_idx, 0)?;
-        let b_neg_flat = model.b_cell.index_select(&neg_idx, 0)?;
+        let e_neg_flat = gather_rows(&model.e_cell, &neg_idx)?;
+        let b_neg_flat = gather_rows(&model.b_cell, &neg_idx)?;
         let h = e_neg_flat.dim(1)?;
         let e_neg = e_neg_flat.reshape((total_b, k, h))?;
         let b_neg = b_neg_flat.reshape((total_b, k))?;

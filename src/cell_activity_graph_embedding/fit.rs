@@ -89,6 +89,7 @@ use graph_embedding_util::model::{
 };
 use graph_embedding_util::stop::setup_stop_handler;
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
+use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::frozen_features::trainable_vars;
 use legume_numeric::candle::vae::{clip_and_step_dense_all, PhaseTimers};
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -1037,7 +1038,7 @@ pub fn fit_cell_activity_graph_embedding(
 
     // Module warm-up: hold the k-means membership for the first epochs, release
     // it afterwards (geu's schedule). The profile matrix the exact term pools sits
-    // on the device as `[n_pb × G]`, so a step is one `index_select`.
+    // on the device as `[n_pb × G]`, so a step is one row gather.
     let module_run: Option<(usize, Tensor)> = match (&module_cfg, &module_profiles) {
         (Some(gm), Some(p)) => {
             let wu = gm.warmup_epochs_for(args.epochs);
@@ -1191,7 +1192,7 @@ pub fn fit_cell_activity_graph_embedding(
                         .map(|_| rng_master.random_range(0..n_pb) as u32)
                         .collect();
                     let idx = Tensor::from_vec(picks, u, &dev)?;
-                    let x = profile_t.index_select(&idx, 0)?;
+                    let x = gather_rows(profile_t, &idx)?;
                     let pi = m.membership()?;
                     let pi_masked = if gm.feature_dropout > 0.0 {
                         let keep = draw_gene_keep_mask(
@@ -1204,7 +1205,7 @@ pub fn fit_cell_activity_graph_embedding(
                     } else {
                         pi.detach()
                     };
-                    let e_units = model.e_cell.index_select(&idx, 0)?;
+                    let e_units = gather_rows(&model.e_cell, &idx)?;
                     total =
                         (total + module_step_loss(m, &pi_masked, &x, &e_units, gm.lambda_module)?)?;
                     if let Some(prior) = module_priors(m, &pi, gm.lambda_balance)? {

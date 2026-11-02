@@ -39,6 +39,10 @@ impl Fixture {
     }
 }
 
+fn wide(c: &Compact) -> Counts {
+    widen(c.iter())
+}
+
 /// Every data row matched to the slot of the same index.
 fn identity(n: usize) -> Vec<Option<usize>> {
     (0..n).map(Some).collect()
@@ -51,7 +55,7 @@ fn thinning_splits_every_count_and_is_seeded() {
     let m = identity(4);
     let split = Split::Thinning(0.5);
     let (f, t) = split_cell(rows.iter().copied(), &m, &split, &fit, &scored, 1);
-    let total = |v: &[(usize, f64)]| v.iter().map(|o| o.1).sum::<f64>();
+    let total = |v: &Compact| v.iter().map(|o| f64::from(o.1)).sum::<f64>();
     assert_eq!(total(&f) + total(&t), 18.0);
     assert!(f.iter().chain(&t).all(|o| o.1 > 0.0 && o.0 != 2));
     assert_eq!(
@@ -71,7 +75,7 @@ fn the_split_does_not_depend_on_which_features_a_model_has() {
     let split = Split::Thinning(0.5);
     let (fa, ta) = split_cell(rows.iter().copied(), &a, &split, &all, &all, 9);
     let (fb, tb) = split_cell(rows.iter().copied(), &b, &split, &all, &all, 9);
-    let on = |v: &[(usize, f64)], slot: usize| v.iter().find(|o| o.0 == slot).map(|o| o.1);
+    let on = |v: &Compact, slot: u32| v.iter().find(|o| o.0 == slot).map(|o| o.1);
     for (sa, sb) in [(0, 0), (2, 1), (3, 2)] {
         assert_eq!(on(&fa, sa), on(&fb, sb));
         assert_eq!(on(&ta, sa), on(&tb, sb));
@@ -80,7 +84,7 @@ fn the_split_does_not_depend_on_which_features_a_model_has() {
 
 #[test]
 fn a_pairs_parts_are_its_cells_parts() {
-    let parts = vec![
+    let parts: Vec<CellParts> = vec![
         (vec![(0, 2.0), (1, 1.0)], vec![(1, 3.0)]),
         (vec![(1, 4.0)], vec![(0, 1.0), (1, 2.0)]),
     ];
@@ -114,7 +118,12 @@ fn feature_ablation_fits_on_the_rest_and_scores_the_hidden() {
     let mut fx = Fixture::new(4, 2);
     fx.fit = fit;
     fx.scored = scored;
-    let s = score_unit(&f, &t, &fx.profiles(&p_t), &fx.plan(Split::Ablate));
+    let s = score_unit(
+        &wide(&f),
+        &wide(&t),
+        &fx.profiles(&p_t),
+        &fx.plan(Split::Ablate),
+    );
     assert_eq!((s.n_fit, s.n_test), (35.0, 34.0));
     assert!(s.loglik > s.loglik_pooled);
 }
@@ -199,7 +208,12 @@ fn a_unit_from_one_community_beats_the_pooled_profile() {
         &fx.scored,
         7,
     );
-    let s = score_unit(&f, &t, &fx.profiles(&p_t), &fx.plan(Split::Thinning(0.5)));
+    let s = score_unit(
+        &wide(&f),
+        &wide(&t),
+        &fx.profiles(&p_t),
+        &fx.plan(Split::Thinning(0.5)),
+    );
     assert!(s.n_test > 0.0 && s.n_fit > 0.0);
     assert!(
         s.loglik > s.loglik_pooled,

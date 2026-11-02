@@ -304,8 +304,16 @@ pub fn per_section(sections: &[&str], scored: &[Scored]) -> Vec<SectionScore> {
 /// A unit's counts on the matched window: (matched column, count).
 pub type Counts = Vec<(usize, f64)>;
 
-/// A cell's (or a unit's) fitting part and scored part.
-pub type CellParts = (Counts, Counts);
+/// A unit's fitting part and scored part, widened for EM and the score.
+pub type UnitParts = (Counts, Counts);
+
+/// A cell's counts as stored for the whole run: (matched column, count) in
+/// 8 bytes, half of [`Counts`]. Counts arrive as f32, so this loses nothing
+/// below 2^24 per cell and feature; a thinned part above that rounds as f32.
+pub type Compact = Vec<(u32, f32)>;
+
+/// A cell's fitting part and scored part.
+pub type CellParts = (Compact, Compact);
 
 /// One cell's counts split once into its fitting and scored parts, on the
 /// matched window. `nonzeros` is the cell's (data row, count) in row order.
@@ -325,9 +333,9 @@ pub fn split_cell(
     fit: &[bool],
     scored: &[bool],
     seed: u64,
-) -> (Counts, Counts) {
-    let mut fit_part = Vec::new();
-    let mut test_part = Vec::new();
+) -> CellParts {
+    let mut fit_part: Compact = Vec::new();
+    let mut test_part: Compact = Vec::new();
     match *split {
         Split::Thinning(frac) => {
             let mut rng = SmallRng::seed_from_u64(seed);
@@ -341,10 +349,10 @@ pub fn split_cell(
                     .sample(&mut rng);
                 if let Some(s) = row_to_matched[row] {
                     if a > 0 {
-                        fit_part.push((s, a as f64));
+                        fit_part.push((s as u32, a as f32));
                     }
                     if a < n && scored[s] {
-                        test_part.push((s, (n - a) as f64));
+                        test_part.push((s as u32, (n - a) as f32));
                     }
                 }
             }
@@ -353,10 +361,10 @@ pub fn split_cell(
             for (row, v) in nonzeros {
                 if let Some(s) = row_to_matched[row] {
                     if fit[s] {
-                        fit_part.push((s, f64::from(v)));
+                        fit_part.push((s as u32, v));
                     }
                     if scored[s] {
-                        test_part.push((s, f64::from(v)));
+                        test_part.push((s as u32, v));
                     }
                 }
             }
@@ -522,15 +530,42 @@ fn merged(mut v: Counts) -> Counts {
     v
 }
 
-/// A unit's parts: its cell's, or the sum of its two cells', each slot once.
-pub fn unit_parts(parts: &[CellParts], i: usize, j: Option<usize>) -> CellParts {
-    match j {
-        Some(j) => (
-            merged(parts[i].0.iter().chain(&parts[j].0).copied().collect()),
-            merged(parts[i].1.iter().chain(&parts[j].1).copied().collect()),
-        ),
-        None => (merged(parts[i].0.clone()), merged(parts[i].1.clone())),
-    }
+/// A stored part as EM and the score read it.
+pub fn widen<'a>(part: impl Iterator<Item = &'a (u32, f32)>) -> Counts {
+    part.map(|&(s, x)| (s as usize, f64::from(x))).collect()
+}
+
+/// The fitting part of a cell's parts.
+pub fn fit_side(p: &CellParts) -> &Compact {
+    &p.0
+}
+
+/// The scored part of a cell's parts.
+pub fn test_side(p: &CellParts) -> &Compact {
+    &p.1
+}
+
+/// One side of a unit (`fit_side` or `test_side`): its cell's, or the sum of
+/// its two cells', each slot once.
+pub fn unit_side(
+    parts: &[CellParts],
+    i: usize,
+    j: Option<usize>,
+    side: fn(&CellParts) -> &Compact,
+) -> Counts {
+    merged(widen(
+        std::iter::once(i)
+            .chain(j)
+            .flat_map(|c| side(&parts[c]).iter()),
+    ))
+}
+
+/// A unit's parts: its fitting part and its scored part.
+pub fn unit_parts(parts: &[CellParts], i: usize, j: Option<usize>) -> UnitParts {
+    (
+        unit_side(parts, i, j, fit_side),
+        unit_side(parts, i, j, test_side),
+    )
 }
 
 /// One unit, under one batch's profiles: fit on its fitting part, score its
@@ -940,7 +975,7 @@ pub fn predict_profiles(
             .par_iter()
             .fold(zero, |(mut o, mut a), &(i, j)| {
                 let b = batch_of[i];
-                let (fit_part, _) = unit_parts(&parts, i, j);
+                let fit_part = unit_side(&parts, i, j, fit_side);
                 let mut pi = vec![0.0; k];
                 if em_proportions(&fit_part, &profs[b].p_fit, plan.iters, &mut pi) {
                     let n: f64 = fit_part.iter().map(|o| o.1).sum();
