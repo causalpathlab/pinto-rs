@@ -615,10 +615,13 @@ pub enum EdgeClustering {
     /// Leiden over a cosine kNN graph on the pairs. `target` steers the
     /// resolution toward a community count when the caller has one in mind;
     /// `None` lets `resolution` alone decide.
+    /// `runs` > 1 combines that many seeded runs into one consensus
+    /// partition ([`consensus_leiden`]).
     Leiden {
         knn: usize,
         resolution: f64,
         target: Option<usize>,
+        runs: usize,
         seed: u64,
     },
 }
@@ -660,24 +663,110 @@ impl EdgeClustering {
                 knn,
                 resolution,
                 target,
+                runs,
                 seed,
             } => {
                 info!(
-                    "Leiden clustering edges (knn={knn}, resolution={resolution}, target={target:?})..."
+                    "Leiden clustering edges (knn={knn}, resolution={resolution}, target={target:?}, \
+                     runs={runs})..."
                 );
-                // Cosine, because the pair latent is a direction (it was
-                // L2-normalized before it got here).
-                legume_numeric::matrix::clustering::leiden_clustering(
-                    pair_latent_nk,
-                    knn,
-                    resolution,
-                    target,
-                    Some(seed),
-                    true,
-                )?
+                consensus_leiden(pair_latent_nk, knn, resolution, target, runs, seed)?
             }
         })
     }
+}
+
+/// Leiden `runs` times on one cosine kNN graph over the pairs, then once more
+/// on that graph with each edge's weight scaled by the share of runs that put
+/// its two pairs in one community.
+///
+/// A single run's partition moves with its seed, because Leiden moves nodes
+/// greedily in a seeded order and a different order settles in a different
+/// local optimum. Edges the runs agree on keep their weight; edges they
+/// split on are weakened, so the final run's boundaries fall where the runs
+/// disagree least. The work grows with the graph's edges, not with the square
+/// of the pairs. The graph (cosine, since the pair latent is a direction)
+/// and the resolution scaling are the ones `leiden_clustering` uses, and
+/// `runs <= 1` is exactly `leiden_clustering`.
+// TODO: move into legume-numeric beside `leiden_clustering` (via the legume
+// session), so senna, lupin and legume-graph-embedding can share it.
+pub fn consensus_leiden(
+    pair_latent_nk: &Mat,
+    knn: usize,
+    resolution: f64,
+    target: Option<usize>,
+    runs: usize,
+    seed: u64,
+) -> anyhow::Result<Vec<usize>> {
+    use legume_numeric::matrix::knn_graph::{
+        compact_labels, modularity_to_cpm_resolution, run_leiden, tune_leiden_resolution, KnnGraph,
+        KnnGraphArgs,
+    };
+    let n = pair_latent_nk.nrows();
+    anyhow::ensure!(n >= 2, "Leiden needs at least 2 pairs");
+    let (graph, weights) = {
+        let mut unit = pair_latent_nk.clone();
+        for mut row in unit.row_iter_mut() {
+            let norm = row.norm().max(1e-8);
+            row /= norm;
+        }
+        KnnGraph::from_rows_fuzzy(
+            &unit,
+            KnnGraphArgs {
+                knn,
+                block_size: 1000,
+                reciprocal: false,
+            },
+        )?
+    };
+    let network = |w: &[f32]| {
+        let (network, total) = graph.to_leiden_network_with(w);
+        (network, modularity_to_cpm_resolution(resolution, total))
+    };
+    let leiden = |(network, res): &(_, f64), s: u64| -> Vec<usize> {
+        match target {
+            Some(k) => tune_leiden_resolution(network, n, k, *res, Some(s as usize)),
+            None => run_leiden(network, n, *res, Some(s as usize)),
+        }
+    };
+    let base = network(&weights);
+    if runs <= 1 {
+        let mut labels = leiden(&base, seed);
+        compact_labels(&mut labels);
+        return Ok(labels);
+    }
+    // One network shared by the runs; each run differs only in its seed.
+    // The runs go one after another (Leiden is parallel inside), so only one
+    // run's working state and one partition are held at a time; each
+    // partition is folded into per-edge agreement counts and dropped.
+    let mut together = vec![0u32; graph.edges.len()];
+    for r in 0..runs {
+        let labels = leiden(
+            &base,
+            legume_numeric::matrix::rand_util::mix_seed(seed, r as u64),
+        );
+        together
+            .par_iter_mut()
+            .zip(&graph.edges)
+            .for_each(|(t, &(i, j))| *t += u32::from(labels[i] == labels[j]));
+    }
+    drop(base);
+    let consensus: Vec<f32> = together
+        .iter()
+        .zip(&weights)
+        .map(|(&t, &w)| w * (t as f32 / runs as f32))
+        .collect();
+    let split = together
+        .iter()
+        .filter(|&&t| t > 0 && (t as usize) < runs)
+        .count();
+    info!(
+        "Leiden consensus: {runs} runs disagree on {split} of {} kNN edges",
+        graph.edges.len()
+    );
+    let mut labels = leiden(&network(&consensus), seed);
+    compact_labels(&mut labels);
+    Ok(labels)
 }
 
 /// How many communities the labels actually realize — what Leiden discovered,
