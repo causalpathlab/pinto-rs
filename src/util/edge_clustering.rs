@@ -63,6 +63,23 @@ pub struct EdgeClusterArgs {
 
     #[arg(
         long,
+        default_value_t = 10,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help = "Leiden runs combined into one consensus partition (1 = a single run)",
+        long_help = "Leiden's partition moves with its seed: on one cage fit's pair latent,\n\
+                     five seeds agreed only at ARI 0.58-0.79, with 12 to 14 communities.\n\
+                     So Leiden runs this many times (seeds derived from --seed), each\n\
+                     kNN-graph edge is weighted by the share of runs that keep its two\n\
+                     pairs together, and one final Leiden on that graph gives the\n\
+                     partition. On that latent, 10 runs agreed at ARI 0.80-0.91 across\n\
+                     seeds; 30 runs at 0.89-0.95, for more stability at three times the\n\
+                     work. The runs share the cores. 1 runs Leiden once, as before.\n\
+                     Ignored under kmeans."
+    )]
+    pub leiden_runs: usize,
+
+    #[arg(
+        long,
         help = "Link communities to cut from the pair latent [default: let leiden decide]",
         long_help = "How many edge clusters to cut from the pair latent.\n\
                      Under the default --edge-cluster-method leiden this is a TARGET:\n\
@@ -102,6 +119,7 @@ impl EdgeClusterArgs {
                 knn: self.leiden_knn,
                 resolution: self.leiden_resolution,
                 target: self.n_edge_clusters,
+                runs: self.leiden_runs,
                 seed,
             },
         }
