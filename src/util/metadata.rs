@@ -39,6 +39,76 @@ pub fn run_manifest(run: &str) -> String {
     format!("{}.pinto.json", run_prefix(run))
 }
 
+/// A prior run, opened by its prefix or its manifest.
+#[derive(Debug, Clone)]
+pub struct Run {
+    pub manifest: std::path::PathBuf,
+    /// The run's prefix, from the manifest's own path: its directory and
+    /// file name, so a run opened from elsewhere still finds its files.
+    pub prefix: String,
+    pub meta: PintoMetadata,
+}
+
+impl Run {
+    /// The run `run` names: its manifest (`{prefix}.pinto.json`, or any
+    /// manifest file named in full), or its prefix. The prefix of
+    /// `{prefix}.pinto.json` is `{prefix}`; of a manifest named otherwise
+    /// (`run1.json`), its directory joined with the file name of the prefix
+    /// the manifest records, so it still finds the run's files (its own
+    /// name less `.json` when it records none).
+    pub fn open(run: &str) -> anyhow::Result<Self> {
+        let manifest = if Path::new(run).is_file() {
+            std::path::PathBuf::from(run)
+        } else {
+            std::path::PathBuf::from(run_manifest(run))
+        };
+        anyhow::ensure!(
+            manifest.is_file(),
+            "{}: no such manifest (a prior run's {{prefix}}.pinto.json)",
+            manifest.display()
+        );
+        let meta = PintoMetadata::read(&manifest)
+            .map_err(|e| anyhow::anyhow!("{}: not a pinto manifest: {e}", manifest.display()))?;
+        let m = manifest.to_string_lossy();
+        let dir = manifest.parent().unwrap_or(Path::new(""));
+        let prefix = match (
+            m.strip_suffix(".pinto.json"),
+            Path::new(&meta.prefix).file_name(),
+        ) {
+            (Some(p), _) => p.to_string(),
+            (None, Some(stem)) => dir.join(stem).to_string_lossy().into_owned(),
+            (None, None) => m.strip_suffix(".json").unwrap_or(&m).to_string(),
+        };
+        Ok(Self {
+            prefix,
+            manifest,
+            meta,
+        })
+    }
+
+    /// A path as the manifest writes it ([`resolve_beside`]).
+    pub fn resolve(&self, path: &str) -> Option<std::path::PathBuf> {
+        resolve_beside(&self.manifest, path)
+    }
+}
+
+/// `path` as written in `manifest`: an absolute path as is; a relative one
+/// under the manifest's directory when it exists there, else as given
+/// (relative to the working directory) when it exists there. `None` when it
+/// exists in neither place; the caller names both.
+pub fn resolve_beside(manifest: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return p.exists().then(|| p.to_path_buf());
+    }
+    let dir = manifest.parent().unwrap_or(Path::new(""));
+    let under = dir.join(p);
+    if under.exists() {
+        return Some(under);
+    }
+    p.exists().then(|| p.to_path_buf())
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PintoMetadata {
     pub command: String,
@@ -241,18 +311,22 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dict_merge: Option<DictMergeFiles>,
 
-    /// JSON sidecar from `pinto lr-activity`. Optional; written only when
-    /// the lr-activity subcommand is run against this prefix and emits
+    /// JSON sidecar from `pinto lra --method coexpression-test`. Optional;
+    /// written only when that method is run against this prefix and emits
     /// per-significant-pair edge participation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lr_activity: Option<String>,
 
     /// Per-batch contact-association score table from
-    /// `pinto lr-activity --edge-scores-only`. Optional; written only when
+    /// `pinto lra --method coexpression-scores`. Optional; written only when
     /// that mode is run against this prefix. Descriptive phenotypes, not a
     /// test, so it is a separate slot from `lr_activity`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lr_scores: Option<String>,
+    /// `pinto lra` contact-effect outputs and `pinto lra-simulate`'s check
+    /// ([`LraFiles`]).
+    #[serde(default, skip_serializing_if = "LraFiles::is_empty")]
+    pub lra: LraFiles,
 
     /// `pinto cage` cell embedding `[N × D]`: every cell's own placement on
     /// the feature embedding by the same map that places its pairs.
@@ -317,6 +391,39 @@ pub struct DictMergeSummary {
     pub features_scored: usize,
 }
 
+/// What `pinto lra` (contact effect) and `pinto lra-simulate` recorded:
+/// their tables, the reference behind them, and the fixed settings they
+/// were made with (none of them is a flag). Paths are absolute.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct LraFiles {
+    /// The contact-effect table, `{out}.lra.parquet`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    /// Each pair's threshold–response curve, `{out}.lra.curve.parquet`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
+    /// The power and calibration check, `{out}.lra-simulate.parquet`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub simulate: Option<String>,
+    /// The reference record (`reference.json`: sources, download
+    /// checksums, build date) behind the table's pairs and programmes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// The fixed settings of the last analysis or check recorded here
+    /// ([`crate::lr_activity::ligand_effect::Internals`]), kept as JSON: a
+    /// record for the reader, never read back, so a settings block from
+    /// another version can never make the manifest unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
+impl LraFiles {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DictMergeFiles {
     /// Full agglomerative merge tree (one row per merge step).
@@ -353,15 +460,13 @@ pub struct LevelInfo {
 }
 
 impl PintoMetadata {
-    /// Read a run's manifest, set one output slot, write it back.
-    ///
-    /// Both `lr-activity` modes back-fill the upstream manifest this way;
-    /// keeping it in one place stops the two call sites from drifting on
-    /// error handling (one used to swallow write failures silently).
-    pub fn backfill_output(path: &std::path::Path, set: impl FnOnce(&mut OutputFiles)) {
+    /// Read a run's manifest, change it, write it back; a missing or
+    /// unreadable manifest is left alone (at debug level), a failed write
+    /// warned about.
+    pub fn backfill(path: &std::path::Path, set: impl FnOnce(&mut PintoMetadata)) {
         match Self::read(path) {
             Ok(mut meta) => {
-                set(&mut meta.outputs);
+                set(&mut meta);
                 if let Err(e) = meta.write(path) {
                     log::warn!("could not update {}: {e}", path.display());
                 }
@@ -370,6 +475,15 @@ impl PintoMetadata {
                 log::debug!("no upstream manifest at {} to update: {e}", path.display());
             }
         }
+    }
+
+    /// Read a run's manifest, set one output slot, write it back.
+    ///
+    /// Both `lr-activity` modes back-fill the upstream manifest this way;
+    /// keeping it in one place stops the two call sites from drifting on
+    /// error handling (one used to swallow write failures silently).
+    pub fn backfill_output(path: &std::path::Path, set: impl FnOnce(&mut OutputFiles)) {
+        Self::backfill(path, |m| set(&mut m.outputs));
     }
 
     pub fn write(&self, path: &Path) -> anyhow::Result<()> {

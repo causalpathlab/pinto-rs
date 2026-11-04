@@ -40,3 +40,37 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
     };
     assert_eq!(default_name(&args), "run.draft_vs_other");
 }
+
+#[test]
+fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
+    let tools = specs();
+    for name in ["run_lra", "run_lra_simulate"] {
+        let spec = tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"));
+        assert_eq!(spec.input_schema["additionalProperties"], false, "{name}");
+    }
+    let lra = tools.iter().find(|t| t.name == "run_lra").unwrap();
+    assert_eq!(lra.input_schema["required"], json!(["run"]));
+    let props = lra.input_schema["properties"].as_object().unwrap();
+    for arg in [
+        "run",
+        "method",
+        "out",
+        "lr_pairs",
+        "targets",
+        "fdr",
+        "species",
+        "background",
+    ] {
+        assert!(props.contains_key(arg), "run_lra lacks {arg}");
+    }
+    // The schema's methods are the command line's.
+    use clap::ValueEnum;
+    let methods: Vec<String> = crate::lr_activity::args::LraMethod::value_variants()
+        .iter()
+        .map(|m| m.to_possible_value().unwrap().get_name().to_string())
+        .collect();
+    assert_eq!(props["method"]["enum"], json!(methods));
+}

@@ -7,8 +7,16 @@ use serde_json::Value;
 
 /// What the agent is told when it connects: what the tools are for, and in
 /// which order to call them. The README gives the same, for clients that
-/// do not pass it on.
-pub const INSTRUCTIONS: &str = "\
+/// do not pass it on. The verdicts are `pinto lra --help`'s, from the one
+/// table ([`crate::lr_activity::ligand_effect::output::Verdict`]).
+pub fn instructions() -> String {
+    format!(
+        "{FITS} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
+        crate::lr_activity::ligand_effect::output::verdict_line()
+    )
+}
+
+const FITS: &str = "\
 Use pinto's MCP tools to fit spatial link-community models and to look at \
 them on the tissue. A fit: `run_methods` lists the methods (lc is the \
 recommended one) and, with a method, its flags; `run_fit` runs one on data \
@@ -19,7 +27,21 @@ over a run. Ablations are fits with run_fit's ablation flags \
 `run_region` turns a polygon into the cell list mask-cells takes; \
 `run_compare` sets two runs' communities against each other (ARI, NMI, \
 matched communities, and which vanish, split or merge); `run_predict` scores \
-held-out cells on a fitted lc model. Looking: start with `view_open` on a run prefix (the `out` of a \
+held-out cells on a fitted lc model.";
+
+const LRA: &str = "\
+Ligand-receptor analysis: `run_lra` on a run asks, per ligand-receptor pair, \
+whether receivers touching ligand-carrying neighbours change their response \
+programme compared with similar cells that do not (adjusted for region, \
+section, cell identity, neighbour make-up, depth and segmentation bleed, with \
+negative controls); `run_lra_simulate` plants effects of known size on the \
+same tissue and reports, per scenario, power and type I error beside the \
+co-expression baselines (`example_study: true` returns the study it takes). \
+Run lra-simulate to check power and calibration before trusting lra on a new \
+tissue.";
+
+const LOOKING: &str = "\
+Looking: start with `view_open` on a run prefix (the `out` of a \
 fit, or its `.pinto.json`): it lists the run's levels, batches, groups and any \
 lupin rounds. `view_map` draws the map as a PNG with its legend; its arguments \
 stay set until changed, so pass only what changes. `view_markers` lists a \

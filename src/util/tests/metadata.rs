@@ -318,3 +318,40 @@ fn an_older_graph_block_still_deserializes() {
     );
     assert_eq!(g.knn_expr, 0, "no union, however the block was written");
 }
+
+/// The lra settings block is a record, not a schema: a block from another
+/// version (a field renamed, a type changed) never fails the manifest.
+#[test]
+fn an_unknown_lra_settings_block_still_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("r.pinto.json");
+    let mut m = serde_json::to_value(PintoMetadata::default()).unwrap();
+    m["outputs"]["lra"] = serde_json::json!({
+        "table": "/x/r.lra.parquet",
+        "settings": {"draws": 7, "renamed_field": [1, 2]},
+        "a_later_slot": "/x/new.parquet"
+    });
+    std::fs::write(&path, m.to_string()).unwrap();
+    let read = PintoMetadata::read(&path).unwrap();
+    assert_eq!(read.outputs.lra.table.as_deref(), Some("/x/r.lra.parquet"));
+    assert_eq!(read.outputs.lra.settings.as_ref().unwrap()["draws"], 7);
+}
+
+/// A manifest named in full but not `{prefix}.pinto.json` finds the run's
+/// files through the prefix it records, beside itself.
+#[test]
+fn a_manifest_named_otherwise_finds_its_run_by_its_recorded_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = PintoMetadata {
+        prefix: "elsewhere/run1".into(),
+        ..PintoMetadata::default()
+    };
+    let named = dir.path().join("run1.json");
+    meta.write(&named).unwrap();
+    let run = crate::util::metadata::Run::open(&named.to_string_lossy()).unwrap();
+    assert_eq!(run.prefix, dir.path().join("run1").to_string_lossy());
+    let usual = dir.path().join("copy.pinto.json");
+    meta.write(&usual).unwrap();
+    let run = crate::util::metadata::Run::open(&usual.to_string_lossy()).unwrap();
+    assert_eq!(run.prefix, dir.path().join("copy").to_string_lossy());
+}

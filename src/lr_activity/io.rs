@@ -22,6 +22,9 @@ pub struct EdgeRecord {
     /// If either `left_batch` or `right_batch` is absent the whole fit is
     /// treated as single-batch and this is `None`.
     pub batch: Option<Box<str>>,
+    /// Each end's own batch, `(left, right)`, when the table has batch
+    /// columns: a cell's batch even when the edge straddles two.
+    pub side_batches: Option<(Box<str>, Box<str>)>,
     /// Whether the two cells are physically adjacent. `true` for every edge of
     /// a run whose pair graph was not augmented, and for the shared pairs of
     /// one that was, since those really are adjacent.
@@ -30,6 +33,14 @@ pub struct EdgeRecord {
 
 /// Read `{prefix}.link_community.parquet` (columns: left_cell, right_cell, community).
 pub fn read_link_community(file_path: &str) -> anyhow::Result<Vec<EdgeRecord>> {
+    read_pair_table(file_path, true)
+}
+
+/// Read a table of cell pairs (`left_cell`, `right_cell`): a link-community
+/// table, or `coord_pairs.parquet` (`community: false`, every community 0).
+/// Each pair's kind comes from `edge_kind` and its batch from `left_batch`
+/// / `right_batch` (shared by both ends) when the table has those columns.
+pub fn read_pair_table(file_path: &str, community: bool) -> anyhow::Result<Vec<EdgeRecord>> {
     let file = File::open(file_path)?;
     let reader = SerializedFileReader::new(file)?;
     let schema = reader.metadata().file_metadata().schema();
@@ -39,16 +50,18 @@ pub fn read_link_community(file_path: &str) -> anyhow::Result<Vec<EdgeRecord>> {
         .enumerate()
         .map(|(i, f)| (f.name().to_string().into_boxed_str(), i))
         .collect();
-
-    let li = *name_to_idx
-        .get("left_cell")
-        .ok_or_else(|| anyhow::anyhow!("left_cell missing in {file_path}"))?;
-    let ri = *name_to_idx
-        .get("right_cell")
-        .ok_or_else(|| anyhow::anyhow!("right_cell missing in {file_path}"))?;
-    let ci = *name_to_idx
-        .get("community")
-        .ok_or_else(|| anyhow::anyhow!("community missing in {file_path}"))?;
+    let col = |name: &str| {
+        name_to_idx
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("{name} missing in {file_path}"))
+    };
+    let (li, ri) = (col("left_cell")?, col("right_cell")?);
+    let ci = if community {
+        Some(col("community")?)
+    } else {
+        None
+    };
     // Absent on a run that predates pair-graph augmentation, and on any run
     // that did not augment — which, with `--knn-expr` defaulting off, is the
     // common case rather than the exception. Both mean every pair is spatial.
@@ -58,11 +71,18 @@ pub fn read_link_community(file_path: &str) -> anyhow::Result<Vec<EdgeRecord>> {
     // run carries ARE the layout its pairs are adjacent in, and treating them
     // as expression pairs would drop all of them from the test.
     let ki = name_to_idx.get("edge_kind").copied();
+    let batch = name_to_idx
+        .get("left_batch")
+        .copied()
+        .zip(name_to_idx.get("right_batch").copied());
 
     let mut out = Vec::new();
     for record in reader.get_row_iter(None)? {
         let row = record?;
-        let community_f = row.get_float(ci)?;
+        let community = match ci {
+            Some(c) => row.get_float(c)? as u32,
+            None => 0,
+        };
         let is_spatial = match ki {
             Some(k) => {
                 crate::util::parquet_io::row_int_like(&row, k)?
@@ -70,11 +90,19 @@ pub fn read_link_community(file_path: &str) -> anyhow::Result<Vec<EdgeRecord>> {
             }
             None => true,
         };
+        let side_batches = match batch {
+            Some((lb, rb)) => Some((row_label(&row, lb)?, row_label(&row, rb)?)),
+            None => None,
+        };
+        let batch = side_batches
+            .as_ref()
+            .and_then(|(l, r)| (l == r).then(|| l.clone()));
         out.push(EdgeRecord {
             left_cell: row_label(&row, li)?,
             right_cell: row_label(&row, ri)?,
-            community: community_f as u32,
-            batch: None,
+            community,
+            batch,
+            side_batches,
             is_spatial,
         });
     }

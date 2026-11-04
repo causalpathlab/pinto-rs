@@ -259,7 +259,7 @@ pub fn round_level(round: &Path, tags: &[&str]) -> Option<String> {
         if let Some(tag) = recorded {
             return Some(tag.to_string());
         }
-        let source = resolve(&at, a.get("source")?.as_str()?);
+        let source = resolve_beside(&at, a.get("source")?.as_str()?)?;
         if !source.to_string_lossy().ends_with(".lupin.json") {
             // `at` is the chain's first round.
             let stem = crate::tui::name(&at);
@@ -273,82 +273,9 @@ pub fn round_level(round: &Path, tags: &[&str]) -> Option<String> {
     None
 }
 
-/// Every chain's newest round made from the run at `manifest`, newest
-/// first by modification time.
-pub fn latest_rounds(manifest: &Path) -> Vec<PathBuf> {
-    let Some(dir) = manifest.parent().map(dir_or_cwd) else {
-        return Vec::new();
-    };
-    let run = canonical(manifest);
-    // Round → the file it was made from.
-    let mut source: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
-    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if !crate::tui::name(&path).ends_with(".lupin.json") {
-            continue;
-        }
-        let from = read_json(&path)
-            .and_then(|m| m.pointer("/annotate/source")?.as_str().map(String::from));
-        if let Some(from) = from {
-            source.insert(canonical(&path), canonical(&resolve(&path, &from)));
-        }
-    }
-    let of_run = |start: &PathBuf| {
-        let mut r = start;
-        for _ in 0..source.len() + 1 {
-            match source.get(r) {
-                Some(s) if *s == run => return true,
-                Some(s) => r = s,
-                None => return false,
-            }
-        }
-        false
-    };
-    let parents: std::collections::HashSet<&PathBuf> = source.values().collect();
-    let mut tips: Vec<PathBuf> = source
-        .keys()
-        .filter(|r| !parents.contains(r) && of_run(r))
-        .cloned()
-        .collect();
-    tips.sort_by_key(|p| std::cmp::Reverse(modified(p)));
-    tips
-}
-
-fn modified(p: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-}
-
-fn dir_or_cwd(p: &Path) -> PathBuf {
-    if p.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        p.to_path_buf()
-    }
-}
-
-/// Whether `a` and `b` are one file, through links.
-pub fn same_file(a: &Path, b: &Path) -> bool {
-    canonical(a) == canonical(b)
-}
-
-/// `p` resolved through links, or as given when it does not resolve.
-pub fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-}
-
-pub fn read_json(path: &Path) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// `path` as written in `manifest`: relative to the manifest's directory.
-pub fn resolve(manifest: &Path, path: &str) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    dir_or_cwd(manifest.parent().unwrap_or(Path::new(""))).join(p)
-}
+use crate::util::lupin_rounds::dir_or_cwd;
+pub use crate::util::lupin_rounds::{canonical, latest_rounds, read_json, same_file};
+pub use crate::util::metadata::resolve_beside;
 
 // ── lupin review --json ─────────────────────────────────────────────────
 

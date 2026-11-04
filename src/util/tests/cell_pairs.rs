@@ -150,6 +150,7 @@ mod coord_pairs_table {
                 right_cell: format!("cell{r}").into(),
                 community: 0,
                 batch: None,
+                side_batches: None,
                 is_spatial: true,
             })
             .collect();
