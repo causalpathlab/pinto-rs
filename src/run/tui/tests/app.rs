@@ -891,10 +891,8 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     let p = &planned[0];
     assert!(p.problem.is_none(), "{:?}", p.problem);
     let j = &p.job;
-    assert_eq!(
-        j.dir,
-        here.join("out").canonicalize().unwrap_or(here.join("out"))
-    );
+    // macOS temp folders sit behind a symlink (/var -> /private/var).
+    assert_eq!(j.dir, here.canonicalize().unwrap().join("out"));
     assert_eq!(
         j.argv,
         [

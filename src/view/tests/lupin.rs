@@ -184,7 +184,9 @@ fn sh_job(what: JobKind, dir: &Path, script: &str) -> Job {
 fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
     let dir = tempfile::tempdir().unwrap();
     // Its sleep let go of the pipes, so only `sh` holds them.
-    let script = "sleep 1 </dev/null >/dev/null 2>&1; echo > written";
+    // The sleep is long enough that a stop on a loaded CI runner still
+    // comes well before it ends.
+    let script = "sleep 3 </dev/null >/dev/null 2>&1; echo > written";
     let written = dir.path().join("written");
 
     // The quit path lets the next round be written whole.
@@ -206,8 +208,8 @@ fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
         let start = std::time::Instant::now();
         assert!(job.quit(), "anything else is stopped");
         job.wait();
-        assert!(start.elapsed() < std::time::Duration::from_millis(900));
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(start.elapsed() < std::time::Duration::from_millis(2000));
+        std::thread::sleep(std::time::Duration::from_millis(3500));
         assert!(!written.exists(), "a stopped job writes nothing more");
     }
 }
