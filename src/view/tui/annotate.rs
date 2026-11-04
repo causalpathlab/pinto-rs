@@ -262,7 +262,7 @@ impl App<'_> {
             .as_ref()
             .and_then(|r| {
                 let m = lupin::read_json(&r.path)?;
-                let p = lupin::resolve(&r.path, m.pointer("/annotate/markers")?.as_str()?);
+                let p = lupin::resolve_beside(&r.path, m.pointer("/annotate/markers")?.as_str()?)?;
                 p.parent().map(Path::to_path_buf)
             })
             .or_else(|| manifest.parent().map(Path::to_path_buf))

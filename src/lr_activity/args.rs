@@ -1,33 +1,83 @@
-//! CLI arguments for the `pinto lr-activity` subcommand.
+//! CLI arguments for `pinto lra` and `pinto lra-simulate`.
 
-use clap::Parser;
+use clap::{Args, Parser, ValueEnum};
 
-#[derive(Parser, Debug, Clone)]
-pub struct SrtLrActivityArgs {
-    // Deliberately NOT the shared `SrtInputArgs`: this command reads its cell
-    // pairs from a prior run, so the graph, coordinate, batch and QC options
-    // that struct carries would all parse and do nothing here. Twice that
-    // shape produced a command that failed or lied at its own defaults, so
-    // lra declares exactly what it consumes, the way `prop` does.
+// * Input
+
+/// Where lra reads its cells, expression and spatial contacts: a prior run's
+/// manifest (`--from`), or data files with coordinates. Shared by `lra` and
+/// `lra-simulate`.
+//
+// Deliberately NOT the shared `SrtInputArgs`: lra fits nothing, so the QC,
+// coarsening and batch-correction options that struct carries would all
+// parse and do nothing here. lra declares exactly what it consumes.
+#[derive(Args, Debug, Clone, Default)]
+pub struct LraInputArgs {
     #[arg(
-        required = true,
         value_delimiter(','),
-        help = "Spatial gene expression data files (.zarr or .h5)",
-        long_help = "Spatial gene expression data files, comma separated.\n\
-                     Accepted formats are .zarr and .h5.\n\
-                     Each file is a genes-by-cells sparse matrix.\n\
-                     Multiple files are concatenated column-wise, over cells.\n\
-                     Cells must match the prior run the pairs are read from."
+        help_heading = "Input",
+        help = "Expression data files (.zarr or .h5); read from --from when left out",
+        long_help = "Spatial gene expression data files, comma separated (.zarr or .h5).\n\
+                     Each file is a genes-by-cells sparse matrix; several files are\n\
+                     concatenated over cells. With --from they are read from the\n\
+                     manifest when left out; given here, they win."
     )]
     pub data_files: Vec<Box<str>>,
 
     #[arg(
         long,
-        short,
-        required = true,
-        help = "Output file prefix (e.g., results/my_run)"
+        short = 'f',
+        value_name = "PINTO_JSON",
+        help_heading = "Input",
+        help = "A prior pinto run's .pinto.json (lc, cage, dsvd, ...)",
+        long_help = "A prior pinto run's manifest ({prefix}.pinto.json) from lc, cage,\n\
+                     dsvd or any run that wrote cell pairs. Its data files, coordinates\n\
+                     and spatial contacts are reused; relative paths in it are read\n\
+                     against the manifest's own directory. The co-expression methods\n\
+                     also need its link communities (a `pinto lc` run).\n\
+                     Without --out the results go next to the run: {prefix}.lra.*."
     )]
-    pub out: Box<str>,
+    pub from: Option<Box<str>>,
+
+    #[arg(
+        long = "coord",
+        short = 'c',
+        value_delimiter(','),
+        help_heading = "Input",
+        help = "Coordinate files, one per data file (without --from)",
+        long_help = "Spatial coordinate files, one per data file, comma separated, when\n\
+                     reading data files directly instead of --from. The first column\n\
+                     names the cells; the next two are x and y. Spatial contacts are\n\
+                     the -k nearest neighbours of each cell, within its batch."
+    )]
+    pub coord_files: Vec<Box<str>>,
+
+    #[arg(
+        long = "coord-column-names",
+        value_delimiter(','),
+        help_heading = "Input",
+        hide = true,
+        help = "Column names of the coordinates in the coordinate files"
+    )]
+    pub coord_column_names: Vec<Box<str>>,
+
+    #[arg(
+        long,
+        short = 'b',
+        value_delimiter(','),
+        help_heading = "Input",
+        help = "Batch (section) label files, one per data file (without --from)"
+    )]
+    pub batch_files: Option<Vec<Box<str>>>,
+
+    #[arg(
+        long = "knn-spatial",
+        short = 'k',
+        default_value_t = 5,
+        help_heading = "Input",
+        help = "Spatial contacts per cell when building them from coordinates"
+    )]
+    pub knn_spatial: usize,
 
     #[arg(long, default_value_t = 42, help = "Random seed for reproducibility")]
     pub seed: u64,
@@ -42,169 +92,248 @@ pub struct SrtLrActivityArgs {
     #[arg(
         long,
         default_value_t = false,
+        hide = true,
         help = crate::util::input::PRELOAD_HELP,
         long_help = crate::util::input::PRELOAD_LONG_HELP
     )]
     pub preload_data: bool,
+}
 
-    // Documentation-only: `--from` is expanded and REMOVED by
-    // `expand_lra_from_metadata` in main.rs before clap parses the
-    // command line, so this field is never populated at runtime. It is
-    // declared so `--help` lists the flag beside the args it fills in.
-    #[arg(
-        long,
-        short = 'f',
-        value_name = "PINTO_JSON",
-        help = "Read the data files, --lc-prefix and --out from a prior run's .pinto.json",
-        long_help = "Read inputs from a prior `pinto lc` run's .pinto.json metadata.\n\
-                     Auto-fills --lc-prefix, --out (= {prefix}.lra),\n\
-                     and the positional data files.\n\
-                     Anything passed explicitly on the command line wins."
-    )]
-    pub from: Option<Box<str>>,
+// * lra
 
-    #[arg(
-        long,
-        required = true,
-        help = "Prefix of a prior `pinto lc` run",
-        long_help = "Prefix of a prior `pinto lc` run.\n\
-                     Edge-to-community assignments are read from {prefix}.link_community.parquet.\n\
-                     Cell-pair metadata comes from {prefix}.coord_pairs.parquet,\n\
-                     including per-edge batch labels when present.\n\
-                     Row order must match across both files. They are joined by position."
-    )]
-    pub lc_prefix: Box<str>,
+/// What `pinto lra` computes.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LraMethod {
+    /// Effect of neighbouring ligand on the receiver's response programme
+    #[default]
+    ContactEffect,
+    /// Permutation test of ligand-receptor co-expression per link community
+    CoexpressionTest,
+    /// Descriptive co-expression scores per batch and link community, no test
+    CoexpressionScores,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct SrtLrActivityArgs {
+    #[command(flatten)]
+    pub input: LraInputArgs,
 
     #[arg(
         long,
-        required = true,
-        help = "Two-column TSV of ligand-receptor pairs",
-        long_help = "Ligand-receptor pair file, one pair per line.\n\
-                     Each line holds two columns: ligand gene, then receptor gene.\n\
-                     They may be separated by whitespace, tab or comma.\n\
-                     The delimiter is auto-detected: comma for .csv, else tab.\n\
-                     \n\
-                     Gene names must match row names in the expression data.\n\
-                     Pairs naming a missing gene are dropped with a warning."
+        short,
+        help = "Output prefix [default with --from: the run's prefix]",
+        long_help = "Output prefix (e.g. results/my_run). With --from it defaults to the\n\
+                     run's own prefix, so the table lands beside the run as\n\
+                     {prefix}.lra.parquet."
     )]
-    pub lr_pairs: Box<str>,
+    pub out: Option<Box<str>>,
 
     #[arg(
         long,
-        default_value_t = 10,
-        help = "Random-projection dimension for propensity binary-sort",
-        long_help = "Random-projection axes for binning cells by propensity.\n\
-                     A binary sort over d axes gives each batch up to 2^d bins.\n\
-                     Pseudobulk samples are (batch × propensity-bin) pairs.\n\
-                     \n\
-                     The default of 10 gives ≈1024 bins per batch.\n\
-                     Larger d buys finer resolution and more permutation power.\n\
-                     It also leaves fewer cells per pseudobulk. At d=12, roughly 4096 bins,\n\
-                     Visium-scale data turns sparse.",
-        hide = true
+        value_enum,
+        default_value_t = LraMethod::ContactEffect,
+        help = "What to compute"
     )]
-    pub propensity_dim: usize,
+    pub method: LraMethod,
 
+    #[arg(
+        long,
+        help = "Ligand-receptor pairs (two-column TSV/CSV), added to the reference",
+        long_help = "Ligand-receptor pair file, one pair per line: ligand gene, receptor\n\
+                     gene, separated by tab, comma or whitespace. contact-effect adds\n\
+                     them to the reference pairs; the co-expression methods test only\n\
+                     these and require the file. Pairs naming a gene missing from the\n\
+                     data are dropped with a warning."
+    )]
+    pub lr_pairs: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_delimiter(','),
+        help = "Response programmes (TSV or GMT), added to the reference",
+        long_help = "Response programme files, comma separated, added to the reference.\n\
+                     TSV/CSV: a header with `receptor` and/or `ligand`, `target`, optional\n\
+                     `weight` (signed). GMT: set names are a receptor, a ligand, or\n\
+                     `ligand_receptor`. A name with `_` that the pair list uses whole for\n\
+                     a ligand or receptor (a complex, TGFBR1_TGFBR2) keys that gene;\n\
+                     otherwise it splits at the `_` that names a listed pair, else at\n\
+                     the first `_`."
+    )]
+    pub targets: Vec<Box<str>>,
+
+    #[arg(
+        long,
+        default_value_t = 0.05,
+        help = "False discovery rate for the verdicts",
+        long_help = "False discovery rate for the contact-effect verdicts.\n\
+                     The effect, the co-expression score and the negative controls each\n\
+                     get Benjamini-Hochberg q-values across pairs, pooled and within\n\
+                     each section; a test counts when its q is below this level."
+    )]
+    pub fdr: f64,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ReferenceSpecies::Auto,
+        help = "Species of the reference; auto reads it from the gene-name case"
+    )]
+    pub species: ReferenceSpecies,
+
+    // * Co-expression methods
     #[arg(
         long,
         default_value_t = 1000,
-        help = "Number of sample permutations for the null distribution"
+        help_heading = "Co-expression methods",
+        help = "Sample permutations for the null (coexpression-test)"
     )]
     pub n_permutations: usize,
 
     #[arg(
         long,
-        default_value_t = 4,
-        help = "Number of top propensity bits to stratify the shuffle by (0 = unstratified)",
-        long_help = "Permutation reshuffles L within sample groups only.\n\
-                     A group shares the top s bits of the propensity binary code.\n\
-                     That preserves the cell-population marginal across permutations.\n\
-                     Free shuffles across populations behave differently.\n\
-                     They pick up cell-type marginals, and turn anti-conservative.\n\
-                     \n\
-                     The default of 4 gives 16 stratification buckets.\n\
-                     Each holds 2^(d−4) samples, so about 64 at d=10.\n\
-                     Pick s ≤ d − 3 to keep at least ~8 samples per bucket.\n\
-                     Pass 0 to disable stratification.",
-        hide = true
+        default_value_t = 0.05,
+        help_heading = "Co-expression methods",
+        help = "FWER cutoff for the JSON sidecar of significant pairs (coexpression-test)",
+        long_help = "Westfall-Young FWER cutoff for the JSON sidecar (coexpression-test).\n\
+                     A row enters the sidecar when its FWER is below this AND its\n\
+                     restandardized z is positive. The parquet always carries the\n\
+                     full table."
     )]
-    pub shuffle_stratify_dim: usize,
+    pub json_fwer_threshold: f32,
 
     #[arg(
         long,
         default_value_t = 50.0,
-        help = "Minimum total count for a real LR gene's pair to be tested"
+        help_heading = "Co-expression methods",
+        help = "Minimum total count of a ligand or receptor gene for its pair to be scored"
     )]
     pub min_gene_count: f32,
 
     #[arg(
         long,
+        default_value_t = 10,
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Random-projection axes for binning cells by propensity"
+    )]
+    pub propensity_dim: usize,
+
+    #[arg(
+        long,
+        default_value_t = 4,
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Top propensity bits the shuffle is stratified by (0 = unstratified)"
+    )]
+    pub shuffle_stratify_dim: usize,
+
+    #[arg(
+        long,
         default_value_t = 100,
-        help = "Skip communities with fewer than this many edges",
-        long_help = "Skip communities holding fewer than this many edges.\n\
-                     A sparse community cannot calibrate the null reliably.",
-        hide = true
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Skip communities with fewer than this many edges"
     )]
     pub min_edges_per_community: usize,
 
     #[arg(
         long,
         default_value = "_",
-        help = "Delimiter used to split compound gene row names (e.g. `_` for ENSG..._SYMBOL)",
-        long_help = "Delimiter used to alias compound gene row names.\n\
-                     The default `_` aliases `ENSG…_SYMBOL`.\n\
-                     Either the Ensembl id or the symbol then matches it. Pass an empty string,\n\
-                     or a character that never occurs,\n\
-                     to disable aliasing and demand exact full-name matches.",
-        hide = true
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Delimiter used to alias compound gene row names (ENSG..._SYMBOL)"
     )]
     pub gene_delimiter: Option<char>,
 
     #[arg(
         long,
         default_value_t = false,
-        help = "Allow prefix matching of gene names (forward/reverse) as a fallback",
-        hide = true
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Allow prefix matching of gene names as a fallback"
     )]
     pub gene_allow_prefix: bool,
 
     #[arg(
         long,
         default_value_t = true,
-        help = "Also write a JSON sidecar with per-stratum edge lists for sig. pairs",
-        long_help = "Also write a JSON sidecar of participating edge lists.\n\
-                     They are recorded per stratum, for significant pairs."
+        action = clap::ArgAction::Set,
+        help_heading = "Co-expression methods",
+        hide = true,
+        help = "Also write the JSON sidecar of significant pairs (true/false)"
     )]
     pub emit_json: bool,
+}
+
+/// Species of the contact-effect reference.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceSpecies {
+    Auto,
+    Human,
+    Mouse,
+}
+
+// * lra-simulate
+
+#[derive(Parser, Debug, Clone)]
+pub struct LraSimulateArgs {
+    #[command(flatten)]
+    pub input: LraInputArgs,
+
+    #[arg(
+        long,
+        short,
+        help = "Output prefix [default with --from: the run's prefix]"
+    )]
+    pub out: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "JSON",
+        help = "Study design: scenarios, replicates, pairs [default: the built-in study]",
+        long_help = "Study design as JSON: the scenario grid (confounder kinds, length\n\
+                     scales, shapes, effect sizes, spillover, field shift, marker,\n\
+                     heterogeneous and ring scenarios), replicates and pairs. Fields left\n\
+                     out keep the built-in study's values. See --example-study."
+    )]
+    pub study: Option<Box<str>>,
 
     #[arg(
         long,
         default_value_t = false,
-        help = "Skip the permutation test; write descriptive per-batch edge scores instead",
-        long_help = "Skip the permutation machinery entirely.\n\
-                     Instead, write {out}.lr_scores.parquet:\n\
-                     one row per (batch, community, ligand, receptor),\n\
-                     holding the posterior log odds ratio of co-detection\n\
-                     across that community's spatial contacts in that batch,\n\
-                     its posterior SE, and each side's marginal detection rate.\n\
-                     No test and no null is attached; the table is meant to be\n\
-                     pivoted into a batch x (pair, community) phenotype matrix.\n\
-                     Test-only flags (--n-permutations and friends) are unused\n\
-                     in this mode."
+        help = "Print the built-in study as commented JSON and exit"
     )]
-    pub edge_scores_only: bool,
+    pub example_study: bool,
 
     #[arg(
         long,
-        default_value_t = 0.05,
-        help = "FWER cutoff for the JSON sidecar; gates every LR figure pinto plot draws",
-        long_help = "Westfall-Young FWER cutoff for the JSON sidecar.\n\
-                     A row enters the sidecar when its FWER is below this\n\
-                     AND its restandardized z is positive,\n\
-                     meaning the pair is active in that stratum specifically.\n\
-                     The sidecar is what pinto plot renders,\n\
-                     so this cutoff gates every LR figure.\n\
-                     The parquet always carries the full table regardless."
+        value_enum,
+        default_value_t = ReferenceSpecies::Auto,
+        help = "Species of the reference; auto reads it from the gene-name case"
     )]
-    pub json_fwer_threshold: f32,
+    pub species: ReferenceSpecies,
+}
+
+// * Removed flags
+
+/// Flags of the released `pinto lr-activity` that `pinto lra` no longer
+/// takes, with what replaced each.
+pub const REMOVED_LRA_FLAGS: &[(&str, &str)] = &[
+    ("--edge-scores-only", "use `--method coexpression-scores`"),
+    (
+        "--lc-prefix",
+        "pass the run's manifest: `--from {prefix}.pinto.json`",
+    ),
+];
+
+/// The first removed flag in `tail` (the arguments after `lra`), with its
+/// replacement, as an error message.
+pub fn removed_lra_flag(tail: &[String]) -> Option<String> {
+    tail.iter().find_map(|a| {
+        let name = a.split('=').next().unwrap_or(a);
+        REMOVED_LRA_FLAGS
+            .iter()
+            .find(|&&(flag, _)| name == flag)
+            .map(|(_, hint)| format!("`{name}` was removed from `pinto lra`: {hint}"))
+    })
 }

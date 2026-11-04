@@ -1,5 +1,5 @@
 //! Descriptive per-batch LR contact-association scores
-//! (`pinto lra --edge-scores-only`).
+//! (`pinto lra --method coexpression-scores`).
 //!
 //! The estimand: the probability that a ligand and a receptor are
 //! co-expressed across a physical contact of one link community, BEYOND
@@ -318,7 +318,7 @@ pub(crate) fn jeffreys_log_odds(n: usize, n11: usize, n_l: usize, n_r: usize) ->
 
 /// Write `{out}.lr_scores.parquet`, long format: one row per
 /// (batch, community, ligand, receptor).
-pub fn write_edge_scores(out_prefix: &str, rows: &[EdgeScoreRow]) -> anyhow::Result<()> {
+pub fn write_edge_scores(path: &str, rows: &[EdgeScoreRow]) -> anyhow::Result<()> {
     use legume_numeric::matrix::parquet::{write_named_table, Column};
 
     let batch: Vec<Box<str>> = rows.iter().map(|r| r.batch.clone()).collect();
@@ -339,7 +339,7 @@ pub fn write_edge_scores(out_prefix: &str, rows: &[EdgeScoreRow]) -> anyhow::Res
         .collect();
 
     write_named_table(
-        &format!("{out_prefix}.lr_scores.parquet"),
+        path,
         "row",
         &row_names,
         &[

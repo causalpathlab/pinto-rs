@@ -43,9 +43,88 @@ pinto dsvd data.h5 -c coords.csv -o out
 pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 ```
 
-### `cage` / `predict` / `impute` / `lr-activity`
+### `cage` / `predict` / `impute`
 
 See `pinto --help` and per-subcommand `--help`.
+
+### `lra`: ligand-receptor analysis
+
+`pinto lra` asks, per ligand-receptor pair, whether cells touching
+ligand-carrying neighbours change their response programme compared with
+similar cells that do not. It reads any prior run's manifest (lc, cage,
+dsvd, ...) or data files with coordinates:
+
+```sh
+pinto lra --from out/run1.pinto.json          # writes out/run1.lra.parquet
+pinto lra data.zarr --coord cells.csv -o out/lra
+pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv --fdr 0.1
+```
+
+Pairs and response programmes come from a reference (LIANA+ consensus
+pairs; receptor -> signalling -> TF -> target programmes from OmniPath and
+CollecTRI), downloaded once into a cache. `--lr-pairs` and `--targets` add
+to it. A complex is named by its subunits joined with `_` (`ITGA4_ITGB1`);
+every subunit must be in the data, and the complex counts as its scarcest
+subunit, for ligands and receptors alike. In a `--targets` GMT file a set
+name with `_` keys a ligand or receptor the pair list uses whole
+(`TGFBR1_TGFBR2`), otherwise a `ligand_receptor` pair, split at the `_`
+that names a listed pair (else the first). `PINTO_REFERENCE_DIR=<dir>` moves the cache, `PINTO_OFFLINE=1` never
+downloads, `PINTO_REFERENCE_REFRESH=1` rebuilds it. The analysis's fixed
+settings are recorded in the manifest under `outputs.lra.settings`.
+With `--from`, cell types of the run's newest lupin round, when it has
+one, adjust the estimate as confounders and strata and add one row per
+receiver cell type (`type:<name>`); without a round there are none. The
+labels come from expression-derived clusters: the receiver identity
+projection leaves the ligand, receptor and target genes out, but the
+clustering behind the labels may have used them.
+
+Two other methods test co-expression within link communities (they need an
+lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
+`{out}.lr_activity.parquet`) and `--method coexpression-scores`
+(descriptive log odds per batch, `{out}.lr_scores.parquet`).
+
+Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
+pooled row). `effect_competent` is the headline, a log-rate change of the
+response programme (`exp(x) - 1` is the percent change); `verdict` sums up
+the evidence and `verdict_note` says why in words:
+
+| verdict | meaning |
+|---|---|
+| `supported` | receivers next to ligand-carrying cells change their response programme, ligand and receptor are co-expressed across contacts, and the negative controls hold |
+| `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
+| `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response programme |
+| `no_evidence` | neither a response nor co-expression at this false discovery rate |
+| `control_failed` | an effect appeared, but so did one in a negative control (receivers without the receptor, distant cells that do not touch, or a matched decoy programme): likely confounding |
+| `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
+| `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
+
+### `lra-simulate`: power and calibration check
+
+Can this tissue detect ligand effects of a given size, and does the
+analysis stay honest under confounding? `pinto lra-simulate` keeps the real
+tissue, plants effects of known size with and without hidden spatial
+confounders, and reports power, type I error, bias and coverage per
+scenario. It writes `{out}.lra-simulate.parquet`, and `pinto lra` on the
+same run then points to it.
+
+By default the hidden field drives the receptor too (`confound_receptor` in
+the study): the receptor is simulated per identity bin from the real one,
+scaled by `e^{βZ}` at the response's confounding strength β, and competence
+is read from it as `pinto lra` reads it. Every run also scores the
+co-expression statistics that do not adjust for confounders, each tested at
+5%: cell-type label permutation (CellPhoneDB v2, Efremova 2020; CellChat's
+product score, Jin 2021; identity bins coarsened to ≤ 8 types, Bonferroni
+over type pairs), bivariate Moran's I over contacts (SpatialDM, Li 2023), a
+contact co-expression score `Σ L_i R_j` (NICHES, Raredon 2022; COMMOT, Cang
+2023), and lra's own co-expression log odds. The summary ends with a table
+of each method's type I error and power per scenario, their means over the
+confounded nulls and the planted effects, and the baselines' run time.
+
+```sh
+pinto lra-simulate --from out/run1.pinto.json
+pinto lra-simulate --example-study > study.json   # edit, then:
+pinto lra-simulate --from out/run1.pinto.json --study study.json
+```
 
 ### Ablations, `compare` and held-out scoring
 
@@ -350,15 +429,39 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > `run_region` turns a polygon into the cell list mask-cells takes;
 > `run_compare` sets two runs' communities against each other (ARI, NMI,
 > matched communities, and which vanish, split or merge); `run_predict` scores
-> held-out cells on a fitted lc model. Looking: start with `view_open` on a run prefix (the `out` of a
-> fit, or its `.pinto.json`): it lists the run's levels, batches, groups and
-> any lupin rounds. `view_map` draws the map as a PNG with its legend; its
-> arguments stay set until changed, so pass only what changes. `view_markers`
-> lists a group's top features, `view_cell` names the cell under a pixel of
-> the last map (or at a world point, or by name), and `view_export` writes the
-> current view as PNG/PDF files. World coordinates are those `view_open`
-> reports, with y running down the map. lupin rounds are read here as they are
-> on disk; annotating and relabelling them is lupin's own server.
+> held-out cells on a fitted lc model. Ligand-receptor analysis: `run_lra` on
+> a run asks, per ligand-receptor pair, whether receivers touching
+> ligand-carrying neighbours change their response programme compared with
+> similar cells that do not (adjusted for region, section, cell identity,
+> neighbour make-up, depth and segmentation bleed, with negative controls);
+> `run_lra_simulate` plants effects of known size on the same tissue and
+> reports, per scenario, power and type I error beside the co-expression
+> baselines (`example_study: true` returns the study it takes). Run
+> lra-simulate to check power and calibration before trusting lra on a new
+> tissue. Each pair's verdict is one of: supported: receivers next to
+> ligand-carrying cells change their response programme, ligand and receptor
+> are co-expressed across contacts, and the negative controls hold;
+> effect_without_coexpression: receivers respond to neighbouring ligand, but
+> ligand and receptor are not co-expressed across contacts beyond chance;
+> colocation_only: ligand and receptor sit together across contacts, but
+> receivers show no change in their response programme; no_evidence: neither a
+> response nor co-expression at this false discovery rate; control_failed: an
+> effect appeared, but so did one in a negative control (receivers without the
+> receptor, distant cells that do not touch, or a matched decoy programme):
+> likely confounding; celltype_inseparable: being exposed to the ligand is
+> nearly the same as having a neighbour of one cell type, so the ligand cannot
+> be told apart from that cell type; insufficient_data: too few exposed or
+> unexposed receptor-carrying receivers, or too little overlap between them,
+> to estimate an effect. Looking: start with `view_open` on a run prefix (the
+> `out` of a fit, or its `.pinto.json`): it lists the run's levels, batches,
+> groups and any lupin rounds. `view_map` draws the map as a PNG with its
+> legend; its arguments stay set until changed, so pass only what changes.
+> `view_markers` lists a group's top features, `view_cell` names the cell
+> under a pixel of the last map (or at a world point, or by name), and
+> `view_export` writes the current view as PNG/PDF files. World coordinates
+> are those `view_open` reports, with y running down the map. lupin rounds are
+> read here as they are on disk; annotating and relabelling them is lupin's
+> own server.
 
 | Tool | Does |
 |---|---|
@@ -367,13 +470,15 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
+| `run_lra` | `pinto lra --from <run>` as a recorded job: `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
+| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job: `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
 | `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
-| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` in the background, or stop it |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`) in the background, or stop it |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.
@@ -386,9 +491,10 @@ organizing computational biology projects [1] (see
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
   with paths relative to the project. Each `run_fit` is its `pinto lc` (or
-  `cage`, `dsvd`) command and each `view_export` its `pinto view --png/--pdf`
-  command, so `bash results/<day>/runall.sh` makes the fits and figures again
-  without the agent.
+  `cage`, `dsvd`) command, each `run_lra` its `pinto lra` command (the study
+  file `run_lra_simulate` writes kept as a heredoc), and each `view_export`
+  its `pinto view --png/--pdf` command, so `bash results/<day>/runall.sh`
+  makes the fits and figures again without the agent.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
   conclusions.
 - `results/INDEX.tsv`: one row per output with a one-line summary.

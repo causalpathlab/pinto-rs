@@ -12,6 +12,7 @@ pub mod graph_dc_poisson_refine;
 pub mod graph_refine;
 pub mod input;
 pub mod knn_graph;
+pub mod lupin_rounds;
 pub mod metadata;
 #[allow(dead_code)] // helpers kept for non-plot consumers / future viz
 pub mod parquet_io;

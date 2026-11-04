@@ -32,7 +32,7 @@ use colored::Colorize;
 use compare::{run_compare, CompareArgs};
 use impute::{run_impute, ImputeArgs};
 use link_community::fit::*;
-use lr_activity::{fit_srt_lr_activity, SrtLrActivityArgs};
+use lr_activity::{fit_lra_simulate, fit_srt_lr_activity, LraSimulateArgs, SrtLrActivityArgs};
 use predict::{predict, PredictArgs};
 use propensity::*;
 use svd::fit::*;
@@ -175,7 +175,7 @@ enum Commands {
                       \x20 w_g = 1 / (1 + π_g · s̄ · φ(μ_g)), which attenuates\n\
                       \x20 high-mean high-dispersion features. There is no flag for it.\n\
                       - {out}.pinto.json: information-flow manifest used by\n\
-                      \x20 `pinto lr-activity` (lists every parquet)."
+                      \x20 `pinto lra --from` (lists every parquet)."
     )]
     DeltaSvd(SrtDeltaSvdArgs),
 
@@ -311,9 +311,8 @@ enum Commands {
                       \x20 {out}.pinto.json           Information-flow manifest:\n\
                       \x20                                lists every parquet, level tags,\n\
                       \x20                                dict-merge presence, and (when set by\n\
-                      \x20                                lr-activity) the lr_activity JSON.\n\
-                      \x20                                Pass this path as the run prefix.\n\
-                      \x20                                or `pinto lr-activity --lc-prefix`."
+                      \x20                                pinto lra) its tables.\n\
+                      \x20                                Pass this path to `pinto lra --from`."
     )]
     LinkCommunity(SrtLinkCommunityArgs),
 
@@ -514,153 +513,19 @@ enum Commands {
     Impute(ImputeArgs),
 
     #[command(
-        aliases = ["lra", "test-lr"],
-        about = "Posthoc ligand-receptor co-activity test per link community",
-        long_about = "Tests a user-supplied ligand-receptor list.\n\
-                      It asks whether each pair is co-active along the contacts of a\n\
-                      link community from a prior lc run, one community at a time.\n\
-                      The statistic is symmetric in the pair: both orientations of\n\
-                      every within-community edge are counted, so no endpoint plays a\n\
-                      privileged role, and edges bridging two communities sit out.\n\n\
-                      DESIGN:\n\
-                      \x20 1. Cells are collapsed into pseudobulk samples =\n\
-                      \x20    (batch × propensity-bin), where the propensity bin is the\n\
-                      \x20    sign-LSH binary code of an SVD'd random projection of feature\n\
-                      \x20    expression (`binary_sort_columns`).\n\
-                      \x20 2. Each cell carries soft membership over the link communities:\n\
-                      \x20    the fraction of its within-community edge instances in each.\n\
-                      \x20 3. Per (community, sample) we accumulate membership-weighted\n\
-                      \x20    feature sums for the LR features: one pseudobulk profile per\n\
-                      \x20    sample per community, with weight w = membership mass.\n\
-                      \x20 4. Statistic per (batch, community, LR pair): weighted covariance\n\
-                      \x20    of `log1p(w_g · pb_mean)` between L and R across samples,\n\
-                      \x20    sample-weighted by w. Per-feature `w_g` are NB-Fisher-info\n\
-                      \x20    weights (same as propensity / lc).\n\
-                      \x20 5. Null: sample-level permutation of L within propensity-stratified\n\
-                      \x20    buckets (top --shuffle-stratify-dim bits of the propensity\n\
-                      \x20    code). The same shuffle σ_k is applied to every pair so\n\
-                      \x20    cross-pair dependence is preserved.\n\
-                      \x20 6. Inference: Efron-Tibshirani restandardize stat_obs against\n\
-                      \x20    per-stratum (median, MAD) of stat_obs (z_re / p_re), then\n\
-                      \x20    Westfall-Young single-step minP for FWER (fwer_wy).\n\n\
-                      QUICK START:\n\n\
-                      \x20 # Shortest form, reading inputs from a prior pinto lc .pinto.json:\n\
-                      \x20 pinto lra --from out/run1.pinto.json --lr-pairs cellchat_pairs.tsv\n\n\
-                      \x20   `--from <.pinto.json>` auto-fills `--lc-prefix`, `--out` (=\n\
-                      \x20   `<prefix>.lra`), and the positional data files from\n\
-                      \x20   the metadata. Any of those passed explicitly on the CLI win.\n\n\
-                      \x20 # Long form, same effect, fully explicit:\n\
-                      \x20 pinto lr-activity data.h5 -o out/run1.lr \\\n\
-                      \x20   --lc-prefix out/run1 --lr-pairs cellchat_pairs.tsv\n\n\
-                      INPUTS:\n\n\
-                      \x20 --lc-prefix   prefix of a prior `pinto lc` run (reads its\n\
-                      \x20               {prefix}.link_community.parquet +\n\
-                      \x20               {prefix}.coord_pairs.parquet, and back-fills\n\
-                      \x20               the lr_activity path into {prefix}.pinto.json\n\
-                      \x20               so downstream tools can auto-discover it).\n\
-                      \x20 --lr-pairs    two-column TSV/CSV: ligand feature, receptor feature.\n\
-                      \x20               Feature names are resolved against the data\n\
-                      \x20               row-names; the resolved canonical names are\n\
-                      \x20               persisted in the JSON sidecar.\n\n\
-                      KEY KNOBS:\n\n\
-                      \x20 --propensity-dim         d for binary-sort propensity codes\n\
-                      \x20                          (default 10 → ≤1024 samples per batch).\n\
-                      \x20 --shuffle-stratify-dim   top bits of propensity used for\n\
-                      \x20                          permutation buckets (default 4 → 16\n\
-                      \x20                          buckets; 0 disables stratification).\n\
-                      \x20 --n-permutations         number of sample shuffles (default 1000).\n\n\
-                      OUTPUTS:\n\n\
-                      \x20 {out}.lr_activity.parquet, columns:\n\
-                      \x20   batch, community, ligand, receptor, n_samples,\n\
-                      \x20   stat_obs (weighted covariance of log1p(w·pb)),\n\
-                      \x20   null_mean, null_sd, z, p_empirical, p_z, z_re, p_re,\n\
-                      \x20   fwer_wy.\n\
-                      \x20   z_re/p_re: Efron-Tibshirani restandardization of\n\
-                      \x20     stat_obs against per-stratum (median, MAD).\n\
-                      \x20   fwer_wy: Westfall-Young single-step minP\n\
-                      \x20     (joint sample permutation across pairs in a stratum;\n\
-                      \x20     FWER-controlled).\n\
-                      \x20   community: the link community id. It joins directly\n\
-                      \x20     against link_community.parquet and\n\
-                      \x20     propensity.parquet.\n\
-                      \x20   The statistic is symmetric in the pair; no direction\n\
-                      \x20     may be read off any row.\n\n\
-                      \x20 {out}.lr_activity.json, JSON sidecar with significant pairs:\n\
-                      \x20   summary stats per pair (with `ligand_resolved` /\n\
-                      \x20   `receptor_resolved` row-name aliases) PLUS, for each\n\
-                      \x20   significant pair (fwer_wy < --json-fwer-threshold), the\n\
-                      \x20   participating-edge endpoints under a deduped per-stratum\n\
-                      \x20   block. Disable with --emit-json=false.\n\n\
-                      \x20 BATCH LABELS:\n\
-                      \x20   `all`     single-batch run pseudo-label (no --batch-files).\n\
-                      \x20   `pooled`  cross-batch pooled rows; emitted only when\n\
-                      \x20             ≥ 2 real batches exist (would just duplicate\n\
-                      \x20             the per-batch stats otherwise). WY shuffles are\n\
-                      \x20             still bucketed per (batch, propensity-bin).\n\n\
-                      EDGE SCORES (--edge-scores-only):\n\n\
-                      \x20 Skips the test entirely and writes {out}.lr_scores.parquet,\n\
-                      \x20 one row per (batch, community, ligand, receptor).\n\
-                      \x20 The estimand: the probability that ligand and receptor are\n\
-                      \x20 co-detected across a physical contact of that community,\n\
-                      \x20 BEYOND each side's independent activity. Every contact\n\
-                      \x20 contributes both orientations; each instance is classified\n\
-                      \x20 by endpoint detection into a 2x2 table, and the score is\n\
-                      \x20 the posterior log odds ratio under a Jeffreys +1/2 prior:\n\
-                      \x20   log_or    = ln[(n11+.5)(n00+.5)/((n10+.5)(n01+.5))]\n\
-                      \x20   log_or_se = sqrt(sum of 1/(cell+.5))\n\
-                      \x20 log_or is symmetric in the pair by construction.\n\n\
-                      \x20 Direction is reported as CONFIGURATION, not inferred:\n\
-                      \x20 the pair file names the ligand,\n\
-                      \x20 so a contact whose roles sit on opposite cells\n\
-                      \x20 identifies its ligand side outright. Per row:\n\
-                      \x20   n_oneway  contacts with the ligand on exactly one side\n\
-                      \x20   n_mutual  contacts co-detected both ways (no side)\n\
-                      \x20   (the 2x2's n11 counts oriented instances,\n\
-                      \x20    so n11 = 2*n_mutual + n_oneway)\n\
-                      \x20   role_purity  the mean of\n\
-                      \x20     |sent - received| / (sent + received)\n\
-                      \x20     over cells touching a co-detected contact:\n\
-                      \x20     1 = cells specialize as sender or receiver here,\n\
-                      \x20     0 = every cell plays both roles equally.\n\
-                      \x20 These are configuration facts from annotated roles.\n\
-                      \x20 They say which cells carry which side,\n\
-                      \x20 never that signalling flowed;\n\
-                      \x20 a static snapshot cannot say more.\n\
-                      \x20 Spot-level platforms mix cells within a spot\n\
-                      \x20 and deflate role_purity by construction;\n\
-                      \x20 compare it across cores of one platform,\n\
-                      \x20 never across platforms.\n\
-                      \x20 Below a handful of co-detected contacts\n\
-                      \x20 role_purity is forced to an extreme;\n\
-                      \x20 filter on n_oneway + n_mutual downstream.\n\n\
-                      \x20 The margins ship beside it:\n\
-                      \x20 lig_rate and rec_rate are the detection rates\n\
-                      \x20 of each side over the contact instances.\n\
-                      \x20 They are rates over contacts, not cell fractions:\n\
-                      \x20 a cell counts once per contact it participates in.\n\
-                      \x20 Use them as covariates to isolate the interaction;\n\
-                      \x20 they are activity phenotypes in their own right.\n\
-                      \x20 No test and no null: these are descriptive phenotypes.\n\n\
-                      \x20 Pivot to a batch x (pair, community) matrix in R:\n\
-                      \x20   dcast(dt, batch ~ ligand + receptor + community,\n\
-                      \x20         value.var = \"log_or\")\n\n\
-                      \x20 Caveats. A prior-dominated pair is NaN in both columns:\n\
-                      \x20 no co-detection observed and none expected\n\
-                      \x20 means the row is unmeasurable, not zero.\n\
-                      \x20 The SE counts each physical contact once,\n\
-                      \x20 but contacts sharing a cell are still correlated,\n\
-                      \x20 so treat log_or_se as a relative precision weight,\n\
-                      \x20 not a calibrated interval.\n\
-                      \x20 A fully saturated table grows with the contact count;\n\
-                      \x20 compare such rows through their SE, never by magnitude.\n\
-                      \x20 Filter or precision-weight on log_or_se and n_edges\n\
-                      \x20 downstream (no threshold is applied here),\n\
-                      \x20 and keep mean_log_depth in the covariate set.\n\
-                      \x20 Community ids come from the `pinto lc` fit,\n\
-                      \x20 so the lc artifacts are part of the phenotype definition.\n\
-                      \x20 Freeze them alongside any analysis of these scores."
+        name = "lra",
+        aliases = ["lr-activity", "test-lr"],
+        about = "Ligand-receptor analysis: does neighbouring ligand change the receiving cells?",
+        long_about = lr_activity::lra_long_about()
     )]
     LrActivity(SrtLrActivityArgs),
+
+    #[command(
+        name = "lra-simulate",
+        about = "Power and calibration check for lra on this tissue",
+        long_about = lr_activity::lra_simulate_long_about()
+    )]
+    LraSimulate(LraSimulateArgs),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",
@@ -797,106 +662,17 @@ enum Commands {
     Rename(legume_tui::cli::RenameArgs),
 }
 
-/// Expand `pinto lra --from <.pinto.json>` into the full positional /
-/// flag form clap expects.
-///
-/// The user-friendly `--from` is not a real `clap` arg on `pinto lra` — it's
-/// preprocessed here so the rest of the CLI surface (`SrtInputArgs` and
-/// friends) stays unchanged. When `--from foo.pinto.json` is detected
-/// after the `lra` / `lr-activity` / `test-lr` subcommand:
-///
-///   - `--lc-prefix`, `--out`, and the positional `data_files` are
-///     injected from the metadata when not already on the CLI;
-///   - `--from <path>` is removed before clap sees it.
-///
-/// Anything the user explicitly passed wins: only missing fields are filled.
-fn expand_lra_from_metadata(mut args: Vec<String>) -> anyhow::Result<Vec<String>> {
+/// A helpful error for a flag `pinto lra` no longer takes, before clap's
+/// plain "unexpected argument".
+fn check_removed_lra_flags(args: &[String]) -> anyhow::Result<()> {
     const LRA_NAMES: &[&str] = &["lra", "lr-activity", "test-lr"];
-
-    let Some(lra_pos) = args.iter().position(|a| LRA_NAMES.contains(&a.as_str())) else {
-        return Ok(args);
+    let Some(pos) = args.iter().position(|a| LRA_NAMES.contains(&a.as_str())) else {
+        return Ok(());
     };
-
-    let from_pos = (lra_pos + 1..args.len()).find(|&i| {
-        let a = &args[i];
-        a == "--from" || a.starts_with("--from=") || a == "-f"
-    });
-    let Some(from_pos) = from_pos else {
-        return Ok(args);
-    };
-
-    let meta_path: String = if let Some(rest) = args[from_pos].strip_prefix("--from=") {
-        let p = rest.to_string();
-        args.drain(from_pos..from_pos + 1);
-        p
-    } else {
-        if from_pos + 1 >= args.len() {
-            anyhow::bail!("--from requires a path argument");
-        }
-        let p = args[from_pos + 1].clone();
-        args.drain(from_pos..from_pos + 2);
-        p
-    };
-
-    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&meta_path))?;
-
-    // Inspect what's already on the CLI (post-drain) so we don't clobber
-    // explicit user overrides.
-    let (has_lc_prefix, has_out, has_positional) = {
-        let tail = &args[lra_pos + 1..];
-        let has_flag = |needles: &[&str]| -> bool {
-            tail.iter().any(|a| {
-                needles
-                    .iter()
-                    .any(|n| a == n || a.starts_with(&format!("{n}=")))
-            })
-        };
-        let mut positional = false;
-        let mut i = 0;
-        while i < tail.len() {
-            let a = &tail[i];
-            if a.starts_with('-') {
-                // "--flag value" pair → skip both. "--flag=value" or short bool → skip one.
-                if !a.contains('=') && i + 1 < tail.len() && !tail[i + 1].starts_with('-') {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            } else {
-                positional = true;
-                break;
-            }
-        }
-        (
-            has_flag(&["--lc-prefix"]),
-            has_flag(&["--out", "-o"]),
-            positional,
-        )
-    };
-
-    if !has_lc_prefix {
-        args.push("--lc-prefix".to_string());
-        args.push(meta.prefix.clone());
+    match lr_activity::args::removed_lra_flag(&args[pos + 1..]) {
+        Some(msg) => anyhow::bail!(msg),
+        None => Ok(()),
     }
-    if !has_out {
-        args.push("--out".to_string());
-        args.push(format!("{}.lra", meta.prefix));
-    }
-    if !has_positional {
-        match meta.data_files.as_ref() {
-            Some(files) if !files.is_empty() => {
-                for f in files {
-                    args.push(f.clone());
-                }
-            }
-            _ => anyhow::bail!(
-                ".pinto.json {meta_path} has no data_files; pass them as positional args, \
-                 or re-run pinto lc/dsvd to regenerate metadata"
-            ),
-        }
-    }
-
-    Ok(args)
 }
 
 impl Commands {
@@ -909,7 +685,8 @@ impl Commands {
             Commands::Cage(a) => (&mut a.common.out, "cage"),
             Commands::Predict(a) => (&mut a.common.out, "predict"),
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
-            Commands::LrActivity(a) => (&mut a.out, "lra"),
+            Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
+            Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
             _ => return None,
         })
     }
@@ -944,7 +721,8 @@ fn main() -> anyhow::Result<()> {
         print_logo();
     }
 
-    let argv = expand_lra_from_metadata(std::env::args().collect())?;
+    let argv: Vec<String> = std::env::args().collect();
+    check_removed_lra_flags(&argv)?;
     let mut cli = Cli::parse_from(argv);
     name_folder_out(&mut cli.commands);
 
@@ -981,6 +759,9 @@ fn main() -> anyhow::Result<()> {
         Commands::LrActivity(args) => {
             fit_srt_lr_activity(args)?;
         }
+        Commands::LraSimulate(args) => {
+            fit_lra_simulate(args)?;
+        }
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
@@ -991,7 +772,7 @@ fn main() -> anyhow::Result<()> {
             legume_mcp::ServerInfo {
                 name: view::mcp::SERVER.into(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                instructions: Some(mcp::INSTRUCTIONS.into()),
+                instructions: Some(mcp::instructions()),
             },
             mcp::Server::default(),
         )?,

@@ -39,6 +39,8 @@ impl Handler for Tools {
             "run_compare" => compare(parse(args)?, cx),
             "run_predict" => self.predict(parse(args)?, cx),
             "run_region" => region(parse(args)?, cx),
+            "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
+            "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
@@ -227,26 +229,50 @@ impl Tools {
 
         let manifest = made[0].clone();
         let mut reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
-        let mut cmd = legume_mcp::own_command(&argv)?;
-        // The log level `pinto run` starts a fit with, so its progress
-        // reaches job_status as it does the run screen.
-        if std::env::var_os("RUST_LOG").is_none() {
-            cmd.env("RUST_LOG", script::LOG_LEVEL);
-        }
         let paths = vec![shown_path(&manifest)];
-        if a.background {
-            let job = cx.spawn_job(cmd, std::slice::from_ref(&manifest), summary)?;
-            reply["writes"] = paths.into();
-            reply["note"] =
-                format!("job_wait (id {job}) or job_status until it ends, then view_open {out}")
-                    .into();
-            reply["job"] = job.into();
-        } else {
-            cx.run_making(cmd, std::slice::from_ref(&manifest), summary)?;
-            reply["written"] = paths.into();
-            reply["note"] = format!("view_open {out} to look at it").into();
+        match spawn(
+            cx,
+            &argv,
+            std::slice::from_ref(&manifest),
+            summary,
+            a.background,
+        )? {
+            Some(job) => {
+                reply["writes"] = paths.into();
+                reply["note"] = format!(
+                    "job_wait (id {job}) or job_status until it ends, then view_open {out}"
+                )
+                .into();
+                reply["job"] = job.into();
+            }
+            None => {
+                reply["written"] = paths.into();
+                reply["note"] = format!("view_open {out} to look at it").into();
+            }
         }
         Ok((reply, manifest))
+    }
+}
+
+/// Run a child pinto for `argv` making `made`, at the log level `pinto run`
+/// starts a step with (so its progress reaches job_status as it does the
+/// run screen): in the background, giving the job's id, or to its end.
+pub(super) fn spawn(
+    cx: &Call,
+    argv: &[String],
+    made: &[std::path::PathBuf],
+    summary: &str,
+    background: bool,
+) -> anyhow::Result<Option<String>> {
+    let mut cmd = legume_mcp::own_command(argv)?;
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", script::LOG_LEVEL);
+    }
+    if background {
+        Ok(Some(cx.spawn_job(cmd, made, summary)?))
+    } else {
+        cx.run_making(cmd, made, summary)?;
+        Ok(None)
     }
 }
 
@@ -270,7 +296,7 @@ fn ablation_summary(flags: &Map<String, Value>) -> Option<String> {
 
 /// A run as the records name it: a prefix whose manifest exists is given as
 /// that `.pinto.json`, so the step's inputs link to the fit that made it.
-fn as_run(input: &str) -> String {
+pub(super) fn as_run(input: &str) -> String {
     let manifest = crate::util::metadata::run_manifest(input);
     let named = if !Path::new(input).is_file() && Path::new(&manifest).is_file() {
         manifest
@@ -283,7 +309,7 @@ fn as_run(input: &str) -> String {
 /// The output prefix: `out` when given (from the root), else a free name
 /// after `base` in today's results folder; refused when one of the outputs
 /// `plan` names exists or a running job holds it.
-fn out_or_free(
+pub(super) fn out_or_free(
     cx: &Call,
     out: Option<&str>,
     base: &str,
@@ -612,7 +638,7 @@ struct FitArgs {
     background: bool,
 }
 
-fn in_background() -> bool {
+pub(super) fn in_background() -> bool {
     true
 }
 
@@ -735,6 +761,60 @@ fn specs() -> Vec<ToolSpec> {
                     "bootstrap": {"type": "integer", "description": "paired: donor bootstrap replicates [default: 2000]"},
                 },
                 "required": ["a", "b"],
+                "additionalProperties": false,
+            }),
+        ),
+        ToolSpec::new(
+            "run_lra",
+            "Ligand-receptor analysis on a run's spatial contacts (pinto lra --from run): per \
+             ligand-receptor pair, do receivers touching ligand-carrying neighbours change \
+             their response programme, compared with similar cells that do not (method \
+             contact-effect, the default)? Writes {out}.lra.parquet and {out}.lra.curve.parquet \
+             and records the table in the run's manifest (slot lra.table). The co-expression methods \
+             need an lc run and lr_pairs. Runs as a background job unless asked (minutes on a \
+             whole tissue); the reply when done holds the verdict counts, the strongest \
+             pairs (percent change with its 95% CI, q) and the files. Called again with the \
+             same run and out once done, it reads the tables instead of running. Never \
+             written over.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "run": {"type": "string", "description": "The run whose cells, expression and contacts are read: its .pinto.json (--from)"},
+                    "method": {"enum": ["contact-effect", "coexpression-test", "coexpression-scores"], "description": "What to compute [default: contact-effect]"},
+                    "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
+                    "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference (--lr-pairs); the co-expression methods test only these"},
+                    "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
+                    "fdr": {"type": "number", "description": "False discovery rate for the verdicts [default: 0.05]"},
+                    "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference; auto reads it from the gene-name case [default: auto]"},
+                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                },
+                "required": ["run"],
+                "additionalProperties": false,
+            }),
+        ),
+        ToolSpec::new(
+            "run_lra_simulate",
+            "Power and calibration check for run_lra on this tissue (pinto lra-simulate --from \
+             run): plants ligand effects of known size on the real tissue, with and without \
+             hidden spatial confounders, and reports per scenario each method's share of runs \
+             rejecting at 5% (type I error where nothing is planted, power elsewhere) beside \
+             the co-expression baselines, the estimable share, and the means over the \
+             confounded nulls and the planted effects. Writes {out}.lra-simulate.parquet and \
+             records it in the run's manifest (slot lra.simulate). study is the design as a \
+             JSON object (written beside the output as {out}.study.json and passed as \
+             --study); example_study: true returns the built-in study to start from and runs \
+             nothing. Runs as a background job unless asked; called again with the same run \
+             and out once done, it reads the table instead of running.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from)"},
+                    "study": {"type": "object", "description": "Study design: reps, pairs, scenarios (fields left out keep the built-in values; see example_study)"},
+                    "example_study": {"type": "boolean", "description": "Return the built-in study as JSON and run nothing"},
+                    "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
+                    "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
+                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                },
                 "additionalProperties": false,
             }),
         ),

@@ -48,7 +48,9 @@
 //! - `fwer_wy` — Westfall-Young single-step minP (FWER); same shuffle σ_k
 //!   applied to every pair so cross-pair dependence is preserved.
 
-use crate::lr_activity::args::SrtLrActivityArgs;
+use super::{lra_outputs, recorded};
+use crate::lr_activity::args::{LraMethod, LraSimulateArgs, SrtLrActivityArgs};
+use crate::lr_activity::input::{load_contacts, record_manifest, LraInput};
 use crate::lr_activity::io::*;
 use crate::lr_activity::orientation::CommunityStrata;
 use crate::lr_activity::outputs::{
@@ -67,14 +69,12 @@ use nalgebra::DMatrix;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
-use special::Error as SpecialError;
 
 /// One-sided upper-tail Gaussian p-value: P(Z >= z) for standard normal.
 #[inline]
 fn one_sided_p_z(z: f32) -> f32 {
     // erfc(z/√2) / 2; numerically stable for large |z|.
-    let z = z as f64;
-    let p = 0.5 * SpecialError::compl_error(z / std::f64::consts::SQRT_2);
+    let p = super::ligand_effect::overlap::upper_normal_p(z as f64);
     (p as f32).clamp(0.0, 1.0)
 }
 
@@ -95,14 +95,28 @@ const EPS: f32 = 1e-8;
 const MIN_SAMPLES_PER_STRATUM: usize = 4;
 
 pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
-    let c = args;
-    mkdir_parent(&c.out)?;
+    let input = args.input.resolve()?;
+    let out = input.out(args.out.as_deref())?;
+    mkdir_parent(&out)?;
+    if args.method == LraMethod::ContactEffect {
+        return contact_effect(args, &input, &out);
+    }
+    let lc_prefix = input.lc_prefix()?;
+    let lc_prefix = lc_prefix.as_str();
+    // The `--from` run's manifest, which every method records into.
+    let manifest = input
+        .run
+        .as_ref()
+        .expect("lc_prefix checked")
+        .manifest
+        .as_path();
+    let edge_scores_only = args.method == LraMethod::CoexpressionScores;
 
     /////////////////////////////////////////////////
     // 1. Load expression + resolve gene index map //
     /////////////////////////////////////////////////
     info!("Loading expression data...");
-    let data_vec = load_expr_data(c)?;
+    let data_vec = load_expr_data(&input.data_files, input.preload_data)?;
 
     let row_names = data_vec.row_names()?;
     let cell_names = data_vec.column_names()?;
@@ -144,8 +158,12 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     //////////////////////////////////////
     // 2. Parse LR pairs, resolve genes //
     //////////////////////////////////////
-    info!("Reading LR pairs from {}...", args.lr_pairs);
-    let raw_pairs = read_lr_pairs(&args.lr_pairs)?;
+    let lr_pairs_file = args
+        .lr_pairs
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--lr-pairs is required by the co-expression methods"))?;
+    info!("Reading LR pairs from {}...", lr_pairs_file);
+    let raw_pairs = read_lr_pairs(lr_pairs_file)?;
     let mut resolved_pairs: Vec<(Box<str>, Box<str>, usize, usize)> = Vec::new();
     let mut missing = 0usize;
     for (l, r) in raw_pairs {
@@ -172,60 +190,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     );
     info!("Resolved {} LR pairs", resolved_pairs.len());
 
-    ///////////////////////////////////////////////////////
-    // 3. Read edges + batches from prior `pinto lc` run //
-    ///////////////////////////////////////////////////////
-    let lc_edges_path = format!("{}.link_community.parquet", args.lc_prefix);
-    let coord_pairs_path = format!("{}.coord_pairs.parquet", args.lc_prefix);
-    info!("Reading edge assignments from {}", lc_edges_path);
-    let mut edge_records = read_link_community(&lc_edges_path)?;
-    info!("Attaching per-edge batch from {}", coord_pairs_path);
-    attach_batch_from_coord_pairs(&mut edge_records, &coord_pairs_path)?;
+    let (anchor_edges, edges) = load_edges(lc_prefix, &cell_to_col)?;
 
-    // Two lists with different jobs. `anchor_edges` is everything, and fixes
-    // which community each cell belongs to. `edges` is the physically adjacent
-    // subset, and is what actually gets tested: a directional test on a pair
-    // that is merely expression-similar has no estimand, since the two cells
-    // never touch. See `orientation` for why the anchor may be wider.
-    let mut anchor_edges: Vec<(usize, usize, u32, Option<Box<str>>)> =
-        Vec::with_capacity(edge_records.len());
-    let mut edges: Vec<(usize, usize, u32, Option<Box<str>>)> =
-        Vec::with_capacity(edge_records.len());
-    let mut unresolved = 0usize;
-    for e in edge_records {
-        match (
-            cell_to_col.get(&e.left_cell).copied(),
-            cell_to_col.get(&e.right_cell).copied(),
-        ) {
-            (Some(i), Some(j)) => {
-                let edge = (i, j, e.community, e.batch);
-                if e.is_spatial {
-                    edges.push(edge.clone());
-                }
-                anchor_edges.push(edge);
-            }
-            _ => unresolved += 1,
-        }
-    }
-    let n_expression = anchor_edges.len() - edges.len();
-    if n_expression > 0 {
-        info!(
-            "{} of {} pairs are expression-similar rather than adjacent: they set \
-             each cell's community but are not themselves tested",
-            n_expression,
-            anchor_edges.len()
-        );
-    }
-    if unresolved > 0 {
-        info!(
-            "Dropped {} edges whose cell names are not in the expression data",
-            unresolved
-        );
-    }
-    anyhow::ensure!(
-        !edges.is_empty(),
-        "no edges resolved against expression data"
-    );
     // Over the anchor list: a community that exists only on expression pairs
     // still has to be a valid stratum label.
     let n_communities = (anchor_edges.iter().map(|e| e.2).max().unwrap_or(0) as usize) + 1;
@@ -264,7 +230,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // NB precisions further down, so a separate totals pass would be a second
     // full read of the matrix for a number already in hand.
     info!("Computing per-gene statistics...");
-    let (_, gene_stats) = feature_axis.running_stats(&data_vec, c.block_size, "NB-Fisher")?;
+    let (_, gene_stats) = feature_axis.running_stats(&data_vec, input.block_size, "NB-Fisher")?;
     let gene_sum: Vec<f32> = gene_stats.sum().to_vec();
     let fisher_all = fisher_weights_from_stats(&gene_stats, n_cells);
     let pre_filter_n = resolved_pairs.len();
@@ -329,7 +295,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     ///////////////////////////////////////////////////////////
     // Descriptive mode: per-batch edge scores, then done.   //
     ///////////////////////////////////////////////////////////
-    if args.edge_scores_only {
+    if edge_scores_only {
         use crate::lr_activity::edge_scores::*;
 
         let distinct: HashSet<&str> = edges.iter().filter_map(|e| e.3.as_deref()).collect();
@@ -348,7 +314,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         }
 
         info!("Computing per-cell log1p depth...");
-        let log_depth = per_cell_log1p_depth(&data_vec, c.block_size)?;
+        let log_depth = per_cell_log1p_depth(&data_vec, input.block_size)?;
 
         info!(
             "Scoring {} LR pairs on the edges of {} strata...",
@@ -379,18 +345,20 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
                 score_rows.len()
             );
         }
-        let out_path = format!("{}.lr_scores.parquet", c.out);
-        write_edge_scores(&c.out, &score_rows)?;
-        info!("Wrote {} score rows to {}", score_rows.len(), out_path);
+        let out_path = lra_outputs(LraMethod::CoexpressionScores, &out).remove(0);
+        write_edge_scores(&out_path.to_string_lossy(), &score_rows)?;
+        info!(
+            "Wrote {} score rows to {}",
+            score_rows.len(),
+            out_path.display()
+        );
 
         // Back-fill the upstream manifest, the way the test path does for
         // its JSON sidecar, so a downstream reader can find this table
         // from the prefix alone rather than guessing the name.
-        let upstream_meta_path = format!("{}.pinto.json", args.lc_prefix);
-        crate::util::metadata::PintoMetadata::backfill_output(
-            std::path::Path::new(&upstream_meta_path),
-            |o| o.lr_scores = Some(out_path.clone()),
-        );
+        crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| {
+            o.lr_scores = Some(recorded(&out_path))
+        });
         return Ok(());
     }
 
@@ -414,7 +382,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     );
     let proj = data_vec.project_columns_with_batch_correction(
         args.propensity_dim,
-        c.block_size,
+        input.block_size,
         Some(&cell_batch),
     )?;
     let propbin = binary_sort_columns(&proj.proj, args.propensity_dim)?;
@@ -493,7 +461,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         .filter(|b| b.as_ref() != BATCH_LABEL_ALL)
         .count();
 
-    let base_seed = c.seed;
+    let base_seed = args.input.seed;
 
     let mut plan: Vec<(Box<str>, u32, Vec<usize>, bool)> = Vec::new();
     for batch_label in &unique_batches {
@@ -607,19 +575,23 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     //////////////////////
     // 11. Write output //
     //////////////////////
-    let out_path = format!("{}.lr_activity.parquet", c.out);
+    let [out_path, json_path]: [std::path::PathBuf; 2] =
+        lra_outputs(LraMethod::CoexpressionTest, &out)
+            .try_into()
+            .expect("a table and its sidecar");
+    let (out_path, json_path) = (
+        out_path.to_string_lossy().into_owned(),
+        json_path.to_string_lossy().into_owned(),
+    );
     info!("Writing {} rows to {}", rows.len(), out_path);
     write_lr_activity(&out_path, &rows)?;
 
     if args.emit_json {
-        let json_path = format!("{}.lr_activity.json", c.out);
-        let upstream_meta_path = format!("{}.pinto.json", args.lc_prefix);
-        let upstream_meta =
-            crate::util::metadata::PintoMetadata::read(std::path::Path::new(&upstream_meta_path))
-                .ok();
+        let upstream_meta_path = manifest.to_string_lossy().into_owned();
+        let upstream_meta = crate::util::metadata::PintoMetadata::read(manifest).ok();
         write_lr_activity_json(
             &json_path,
-            args.lc_prefix.as_ref(),
+            lc_prefix,
             upstream_meta.as_ref().map(|_| upstream_meta_path.as_str()),
             &rows,
             &strata,
@@ -627,22 +599,160 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         )?;
         info!("Wrote {}", json_path);
 
-        crate::util::metadata::PintoMetadata::backfill_output(
-            std::path::Path::new(&upstream_meta_path),
-            |o| o.lr_activity = Some(json_path.clone()),
-        );
+        crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| {
+            o.lr_activity = Some(recorded(std::path::Path::new(&json_path)))
+        });
     }
 
     Ok(())
 }
 
-fn load_expr_data(c: &SrtLrActivityArgs) -> anyhow::Result<SparseIoVec> {
-    anyhow::ensure!(!c.data_files.is_empty(), "empty data files");
-    let attach_data_name = c.data_files.len() > 1;
+/// `pinto lra --method contact-effect`: expression, coordinates and spatial
+/// contacts, from the `--from` run or built from the coordinates given.
+fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyhow::Result<()> {
+    use crate::lr_activity::ligand_effect::{run, RunInputs, Settings};
+    let contacts = load_contacts(input)?;
+    let manifest = record_manifest(input, out, &contacts)?;
+    run(&RunInputs {
+        settings: Settings {
+            out,
+            manifest: &manifest,
+            lr_pairs: args.lr_pairs.as_deref(),
+            targets: &args.targets,
+            species: args.species,
+            fdr: args.fdr,
+            seed: args.input.seed,
+            block_size: input.block_size,
+        },
+        data: &contacts.data,
+        axis: &contacts.axis,
+        pairs: &contacts.pairs,
+        cell_section: &contacts.cell_section,
+        coords: &contacts.coords,
+        cell_type: contacts
+            .cell_type
+            .as_ref()
+            .map(|(c, n)| (c.as_slice(), n.as_slice())),
+    })
+}
+
+/// `pinto lra-simulate`: the contact-effect analysis's power and
+/// calibration check on this tissue.
+pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
+    use crate::lr_activity::ligand_effect::simulate::Study;
+    use crate::lr_activity::ligand_effect::{run_simulate, RunInputs, Settings};
+    if args.example_study {
+        println!("{}", Study::example_json());
+        return Ok(());
+    }
+    let study = match args.study.as_deref() {
+        Some(path) => Study::read(path)?,
+        None => Study::default(),
+    };
+    let input = args.input.resolve()?;
+    let out = input.out(args.out.as_deref())?;
+    mkdir_parent(&out)?;
+    let contacts = load_contacts(&input)?;
+    let manifest = record_manifest(&input, &out, &contacts)?;
+    run_simulate(
+        &RunInputs {
+            settings: Settings {
+                out: &out,
+                manifest: &manifest,
+                lr_pairs: None,
+                targets: &[],
+                species: args.species,
+                fdr: 0.05,
+                seed: args.input.seed,
+                block_size: input.block_size,
+            },
+            data: &contacts.data,
+            axis: &contacts.axis,
+            pairs: &contacts.pairs,
+            cell_section: &contacts.cell_section,
+            coords: &contacts.coords,
+            cell_type: contacts
+                .cell_type
+                .as_ref()
+                .map(|(c, n)| (c.as_slice(), n.as_slice())),
+        },
+        &study,
+    )
+}
+
+/// One edge as lra uses it: endpoints as data columns, link community, batch.
+pub(crate) type LraEdge = (usize, usize, u32, Option<Box<str>>);
+
+/// Read a prior `pinto lc` run's pairs: every pair (`anchor`), and the
+/// physically adjacent subset that is tested (`edges`).
+fn load_edges(
+    lc_prefix: &str,
+    cell_to_col: &HashMap<Box<str>, usize>,
+) -> anyhow::Result<(Vec<LraEdge>, Vec<LraEdge>)> {
+    let lc_edges_path = format!("{}.link_community.parquet", lc_prefix);
+    let coord_pairs_path = format!("{}.coord_pairs.parquet", lc_prefix);
+    info!("Reading edge assignments from {}", lc_edges_path);
+    let mut edge_records = read_link_community(&lc_edges_path)?;
+    info!("Attaching per-edge batch from {}", coord_pairs_path);
+    attach_batch_from_coord_pairs(&mut edge_records, &coord_pairs_path)?;
+
+    // Two lists with different jobs. `anchor_edges` is everything, and fixes
+    // which community each cell belongs to. `edges` is the physically adjacent
+    // subset, and is what actually gets tested: a directional test on a pair
+    // that is merely expression-similar has no estimand, since the two cells
+    // never touch. See `orientation` for why the anchor may be wider.
+    let mut anchor_edges: Vec<(usize, usize, u32, Option<Box<str>>)> =
+        Vec::with_capacity(edge_records.len());
+    let mut edges: Vec<(usize, usize, u32, Option<Box<str>>)> =
+        Vec::with_capacity(edge_records.len());
+    let mut unresolved = 0usize;
+    for e in edge_records {
+        match (
+            cell_to_col.get(&e.left_cell).copied(),
+            cell_to_col.get(&e.right_cell).copied(),
+        ) {
+            (Some(i), Some(j)) => {
+                let edge = (i, j, e.community, e.batch);
+                if e.is_spatial {
+                    edges.push(edge.clone());
+                }
+                anchor_edges.push(edge);
+            }
+            _ => unresolved += 1,
+        }
+    }
+    let n_expression = anchor_edges.len() - edges.len();
+    if n_expression > 0 {
+        info!(
+            "{} of {} pairs are expression-similar rather than adjacent: they set \
+             each cell's community but are not themselves tested",
+            n_expression,
+            anchor_edges.len()
+        );
+    }
+    if unresolved > 0 {
+        info!(
+            "Dropped {} edges whose cell names are not in the expression data",
+            unresolved
+        );
+    }
+    anyhow::ensure!(
+        !edges.is_empty(),
+        "no edges resolved against expression data"
+    );
+    Ok((anchor_edges, edges))
+}
+
+pub(crate) fn load_expr_data(
+    data_files: &[Box<str>],
+    preload: bool,
+) -> anyhow::Result<SparseIoVec> {
+    anyhow::ensure!(!data_files.is_empty(), "empty data files");
+    let attach_data_name = data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
-    for data_file in c.data_files.iter() {
+    for data_file in data_files.iter() {
         info!("Importing data file: {}", data_file);
-        let data = crate::util::input::open_sparse(data_file, c.preload_data)?;
+        let data = crate::util::input::open_sparse(data_file, preload)?;
         let data_name = attach_data_name
             .then(|| legume_numeric::matrix::common_io::basename(data_file))
             .transpose()?;
@@ -654,7 +764,7 @@ fn load_expr_data(c: &SrtLrActivityArgs) -> anyhow::Result<SparseIoVec> {
 /// Modal batch among edges incident to each cell. Cells with no batched
 /// edges fall back to `BATCH_LABEL_ALL` (also the default for runs where
 /// `coord_pairs.parquet` carried no batch columns).
-fn derive_cell_batch_labels(
+pub(crate) fn derive_cell_batch_labels(
     edges: &[(usize, usize, u32, Option<Box<str>>)],
     n_cells: usize,
 ) -> Vec<Box<str>> {

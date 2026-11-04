@@ -13,6 +13,7 @@ fn records(n: usize) -> Vec<EdgeRecord> {
             right_cell: format!("cell{}", i + 1).into(),
             community: 0,
             batch: None,
+            side_batches: None,
             is_spatial: true,
         })
         .collect()

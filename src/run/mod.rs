@@ -6,6 +6,7 @@
 //! runs it again and refuses to run over a result already there.
 
 pub(crate) mod form;
+pub(crate) mod lra;
 pub(crate) mod mcp;
 pub(crate) mod script;
 pub(crate) mod tui;

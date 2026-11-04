@@ -44,7 +44,7 @@ impl Round {
         let field = |v: &serde_json::Value, key: &str| {
             v.get(key)
                 .and_then(|p| p.as_str())
-                .map(|p| lupin::resolve(path, p))
+                .and_then(|p| lupin::resolve_beside(path, p))
         };
         let reviewed = lupin::review(path)?;
 

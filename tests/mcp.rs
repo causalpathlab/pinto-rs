@@ -156,13 +156,15 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..10],
+        names[..12],
         [
             "run_methods",
             "run_fit",
             "run_predict",
             "run_region",
             "run_compare",
+            "run_lra",
+            "run_lra_simulate",
             "view_open",
             "view_map",
             "view_markers",
@@ -530,4 +532,40 @@ fn an_agent_marks_a_region_to_mask() {
         json!({"model": prefix, "data": ["d.zarr"], "out": "p", "flags": {"no-such": 1}}),
     );
     assert!(msg.contains("--no-such"), "{msg}");
+}
+
+/// lra over the server: the study to start from, and calls refused as
+/// pinto would refuse them, before anything runs.
+#[test]
+fn an_agent_sets_up_a_ligand_receptor_analysis() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = common::write_run(dir.path(), 100);
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+
+    let (example, _) = c.ok("run_lra_simulate", json!({"example_study": true}));
+    let study = &example["study"];
+    assert!(study["reps"].as_u64().unwrap() > 0, "{example}");
+    assert!(study["scenarios"].is_object(), "{example}");
+
+    let run = format!("{prefix}.pinto.json");
+    let msg = c.fails("run_lra", json!({"run": run, "fdr_level": 0.1}));
+    assert!(msg.contains("unknown field `fdr_level`"), "{msg}");
+    let msg = c.fails("run_lra", json!({"run": run, "method": "both"}));
+    assert!(msg.contains("contact-effect"), "{msg}");
+    let msg = c.fails(
+        "run_lra",
+        json!({"run": run, "species": "fish", "out": "x"}),
+    );
+    assert!(msg.contains("pinto lra") && msg.contains("fish"), "{msg}");
+    let msg = c.fails("run_lra", json!({"run": "nowhere.pinto.json"}));
+    assert!(msg.contains("not found"), "{msg}");
+    let msg = c.fails(
+        "run_lra_simulate",
+        json!({"run": run, "study": {"replicates": 2}}),
+    );
+    assert!(msg.contains("replicates"), "{msg}");
+    let msg = c.fails("run_lra_simulate", json!({}));
+    assert!(msg.contains("example_study"), "{msg}");
+    assert!(!dir.path().join("x.lra.parquet").exists());
 }

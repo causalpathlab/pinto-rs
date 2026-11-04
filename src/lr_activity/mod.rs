@@ -1,4 +1,6 @@
-//! Posthoc directional ligand→receptor activity test per link community.
+//! Ligand-receptor analysis, `pinto lra`: the contact effect
+//! ([`ligand_effect`], the default method) and, below, the co-expression
+//! test per link community (`--method coexpression-test`).
 //!
 //! Consumes the output of `pinto lc` (edge→community assignments) and a
 //! user-supplied directional ligand→receptor list, and tests whether each
@@ -53,12 +55,102 @@
 pub mod args;
 pub mod edge_scores;
 pub mod fit;
+pub mod input;
 pub mod io;
+pub mod ligand_effect;
 pub mod orientation;
 pub mod outputs;
 
 #[cfg(test)]
 mod tests;
 
-pub use args::SrtLrActivityArgs;
-pub use fit::fit_srt_lr_activity;
+pub use args::{LraSimulateArgs, SrtLrActivityArgs};
+pub use fit::{fit_lra_simulate, fit_srt_lr_activity};
+
+/// What `pinto lra --method {method} -o {out}` writes, its table first: the
+/// names its writers write and the MCP reply reads.
+pub fn lra_outputs(method: args::LraMethod, out: &str) -> Vec<std::path::PathBuf> {
+    use args::LraMethod::*;
+    match method {
+        ContactEffect => vec![
+            ligand_effect::lra_path(out).into(),
+            ligand_effect::lra_curve_path(out).into(),
+        ],
+        CoexpressionTest => vec![
+            format!("{out}.lr_activity.parquet").into(),
+            format!("{out}.lr_activity.json").into(),
+        ],
+        CoexpressionScores => vec![format!("{out}.lr_scores.parquet").into()],
+    }
+}
+
+/// `path` as every lra method records it in the `--from` run's manifest:
+/// absolute, so it reads the same from the manifest's directory and from
+/// wherever lra ran.
+pub fn recorded(path: &std::path::Path) -> String {
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `pinto lra --help`: the three methods, the reference, the verdicts.
+pub fn lra_long_about() -> String {
+    format!(
+        "Ligand-receptor analysis on spatial contacts.\n\
+         \n\
+         Reads a prior run (--from run.pinto.json: lc, cage, dsvd, ...) or data\n\
+         files with coordinates (--coord), and asks per ligand-receptor pair:\n\
+         \n\
+         \x20 --method contact-effect (default)\n\
+         \x20   Do cells touching ligand-carrying neighbours change their response\n\
+         \x20   programme, compared with similar cells that do not? Adjusted for\n\
+         \x20   region, section, cell identity, neighbour make-up, depth and\n\
+         \x20   segmentation bleed, with negative controls. Writes {{out}}.lra.parquet.\n\
+         \x20 --method coexpression-test\n\
+         \x20   Permutation test of ligand-receptor co-expression within each link\n\
+         \x20   community (needs an lc run and --lr-pairs).\n\
+         \x20   Writes {{out}}.lr_activity.parquet and .json.\n\
+         \x20 --method coexpression-scores\n\
+         \x20   Descriptive co-expression log odds per batch and link community, no\n\
+         \x20   test (needs an lc run and --lr-pairs). Writes {{out}}.lr_scores.parquet.\n\
+         \n\
+         Reference: contact-effect uses LIANA+ consensus pairs and receptor ->\n\
+         signalling -> TF -> target programmes (OmniPath, CollecTRI), downloaded\n\
+         once into a cache and reused. --lr-pairs and --targets add to it.\n\
+         PINTO_REFERENCE_DIR=<dir> moves the cache, PINTO_OFFLINE=1 never\n\
+         downloads, PINTO_REFERENCE_REFRESH=1 rebuilds it.\n\
+         \n\
+         Verdicts (column `verdict`, explained in `verdict_note`):\n\
+         {}\n\
+         Check what this tissue can detect with `pinto lra-simulate`.\n\
+         \n\
+         Example:\n\
+         \x20 pinto lra --from out/run1.pinto.json\n\
+         \x20 pinto lra data.zarr --coord cells.csv -o out/lra",
+        ligand_effect::output::verdict_help()
+    )
+}
+
+/// `pinto lra-simulate --help`.
+pub fn lra_simulate_long_about() -> String {
+    "Power and calibration check: can this tissue detect ligand effects of a\n\
+     given size, and does the analysis stay honest under confounding?\n\
+     \n\
+     Keeps the real tissue (coordinates, contacts, cell identity, depth) and\n\
+     plants ligand effects of known size on a few abundant pairs, with and\n\
+     without hidden spatial confounders. Then runs the contact-effect\n\
+     analysis and reports, per scenario, how often it finds a planted effect\n\
+     (power), how often it calls one where none was planted (type I error),\n\
+     its bias and its interval coverage, beside the naive contrast.\n\
+     \n\
+     The study (scenarios, replicates, pairs) is JSON: --example-study prints\n\
+     the built-in one to start from. Writes {out}.lra-simulate.parquet and\n\
+     prints the summary; `pinto lra` on the same run then notes the check.\n\
+     \n\
+     Example:\n\
+     \x20 pinto lra-simulate --from out/run1.pinto.json\n\
+     \x20 pinto lra-simulate --example-study > study.json\n\
+     \x20 pinto lra-simulate --from out/run1.pinto.json --study study.json"
+        .to_string()
+}

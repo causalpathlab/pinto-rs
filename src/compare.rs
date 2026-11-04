@@ -13,7 +13,7 @@
 //! Writes `{out}.compare.json` and `{out}.contingency.parquet` (one row per
 //! nonzero cell of the A × B table).
 
-use crate::util::metadata::{run_manifest, run_prefix, PintoMetadata};
+use crate::util::metadata::{run_prefix, Run};
 use crate::util::parquet_io::read_propensity;
 use clap::Args;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -156,9 +156,9 @@ pub fn propensity_path(input: &str, level: &str) -> anyhow::Result<PathBuf> {
         "final" => format!("{prefix}.propensity.parquet"),
         tag => format!("{prefix}.{tag}.propensity.parquet"),
     };
-    let listed = PintoMetadata::read(Path::new(&run_manifest(input)))
+    let listed = Run::open(input)
         .ok()
-        .and_then(|meta| meta.level_list().into_iter().find(|l| l.tag == level))
+        .and_then(|run| run.meta.level_list().into_iter().find(|l| l.tag == level))
         .map(|l| beside(&l.propensity));
     let path = listed.unwrap_or_else(|| PathBuf::from(by_name));
     anyhow::ensure!(
