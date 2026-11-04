@@ -13,7 +13,10 @@ mod targets;
 
 // * Shared helpers
 
-use super::estimate::{estimate_pair_with, DecoyPool, EffectOpts, EffectRow, PairData};
+use super::estimate::{
+    effects_on, estimate_pair_with, DecoyPool, DrawFits, EffectOpts, EffectRow, Effects, Exposure,
+    PairData, Response, Rows, Sensitivity,
+};
 use super::simulate::{calibrate_producers, Scenario, SimBase, SimRow, SimShared};
 use super::tissue::Tissue;
 
@@ -23,7 +26,20 @@ pub(super) fn estimate_pair(
     pair: &PairData<'_>,
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<EffectRow>> {
-    estimate_pair_with(tissue, pair, &DecoyPool::default(), opts)
+    estimate_pair_with(tissue, pair, &DecoyPool::default(), opts).map(|(rows, _)| rows)
+}
+
+/// [`effects_on`] with the draw's propensities fitted for it.
+pub(super) fn fitted_effects(
+    rows: Rows<'_>,
+    x: &Exposure,
+    r: &Response,
+    levels: &[Vec<bool>],
+    sens: Sensitivity,
+    opts: &EffectOpts,
+) -> anyhow::Result<Effects> {
+    let fits = DrawFits::new(rows, x, levels, opts)?.with_controls(rows, sens.steps, opts)?;
+    effects_on(rows, &fits, r, sens, opts)
 }
 
 /// One benchmark run, the pair's shared ingredients computed for it alone.

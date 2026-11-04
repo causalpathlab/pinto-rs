@@ -108,12 +108,12 @@
 use super::baselines::{self, baselines, Baselines};
 use super::confounders::fourier_features;
 use super::estimate::{
-    choose_threshold, effects_on, expected_bleed, exposed, exposures, niche_ligand, EffectOpts,
-    Exposure, PairFrame, Response, Rows, Sensitivity,
+    choose_threshold, effects_on, expected_bleed, exposed, exposures, niche_ligand, DrawFits,
+    EffectOpts, Exposure, Response, Rows, Sensitivity,
 };
 use super::exposure::competence;
 use super::overlap::{crude_difference, Estimate};
-use super::pseudobulk::{combine, draw, draw_limit, stop_drawing, unit_response};
+use super::pseudobulk::{combine, draw, draw_limit, stop_drawing, unit_response, UnitTally};
 use super::regression::standardize;
 use super::tissue::Tissue;
 use crate::util::common::HashMap;
@@ -527,6 +527,9 @@ pub struct SimRow {
     /// Wall time of the whole run and of its baselines, in seconds.
     pub seconds: f64,
     pub baseline_seconds: f64,
+    /// The pseudobulk partitions drawn, for the run's mean unit size (not
+    /// written).
+    pub units: UnitTally,
 }
 
 impl SimRow {
@@ -1188,6 +1191,7 @@ pub fn simulate(
     // One draw is the cells themselves, or one random pseudobulk partition;
     // as many draws as `pinto lra` would run, by the same rule.
     let draws = draw_limit(opts);
+    let mut tally = UnitTally::default();
     let mut per: Vec<[Estimate; 7]> = Vec::with_capacity(draws);
     let mut headline: Vec<Estimate> = Vec::with_capacity(draws);
     let mut truths: Vec<(f64, f64)> = Vec::with_capacity(draws);
@@ -1201,27 +1205,20 @@ pub fn simulate(
                 mix_seed(seed, 100 + d as u64),
             )
         });
-        // Rows, the frame and competence on them, and the potential
-        // responses.
+        tally.add(units.as_ref());
+        // Rows, the exposure, response and competence on them, and the
+        // potential responses.
         let rows = Rows::of(&units, tissue).pooled();
         let unit_resp = units
             .as_ref()
             .map(|u| u.response_of(&response, &targets_seen));
-        let (fr, compr) = match &units {
+        let (ex, r, compr) = match &units {
             Some(u) => (
-                PairFrame {
-                    exposure: &u.exposure,
-                    response: unit_resp.as_ref().expect("units"),
-                },
+                &u.exposure,
+                unit_resp.as_ref().expect("units"),
                 u.of_lead(&comp),
             ),
-            None => (
-                PairFrame {
-                    exposure: &exposure,
-                    response: &response,
-                },
-                comp.clone(),
-            ),
+            None => (&exposure, &response, comp.clone()),
         };
         let pot = units.as_ref().map(|u| {
             (
@@ -1238,7 +1235,10 @@ pub fn simulate(
             nospill: sens.nospill && kappa > 0.0,
             ..sens
         };
-        let eff = effects_on(rows, fr, std::slice::from_ref(&compr), sens, opts)?;
+        let levels = std::slice::from_ref(&compr);
+        let fits = DrawFits::new(rows, ex, levels, opts)?.with_controls(rows, sens.steps, opts)?;
+        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.any();
+        let eff = effects_on(rows, &fits, r, sens, opts)?;
         let e = eff.levels[0].scopes[0];
         let weighted_truth = {
             let h = &eff.h;
@@ -1269,7 +1269,7 @@ pub fn simulate(
             e.steps[2],
         ]);
         headline.push(e.competent);
-        if stop_drawing(opts, &headline) {
+        if stop_drawing(opts, &headline, varies) {
             break;
         }
     }
@@ -1311,6 +1311,7 @@ pub fn simulate(
         baselines: coexpression_baselines,
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds,
+        units: tally,
     })
 }
 

@@ -104,8 +104,12 @@ pub struct Internals {
     pub benchmark_competence: f64,
     /// Receivers per random pseudobulk unit (1 = single cells).
     pub pseudobulk: usize,
-    /// Random pseudobulk partitions, combined by Rubin's rules: as many as
-    /// the estimate needs.
+    /// Random pseudobulk partitions per pair, combined by Rubin's rules:
+    /// chosen automatically between 3 and 20 (until the Monte Carlo error
+    /// is small beside the sampling error), and 1 when no seed can change
+    /// the draw (every stratum under two units' worth of receivers, or
+    /// every fit skipped for a thin arm); the curve's thresholds by the
+    /// same rule on their own partitions.
     pub draws: std::borrow::Cow<'static, str>,
     /// Fewest exposed and fewest unexposed receivers of a reported subgroup.
     pub min_arm: usize,
@@ -134,7 +138,9 @@ pub const INTERNALS: Internals = Internals {
     competence_grid: estimate::COMPETENCE_GRID,
     benchmark_competence: BENCHMARK_COMPETENCE[0],
     pseudobulk: pseudobulk::UNIT_SIZE,
-    draws: std::borrow::Cow::Borrowed("automatic, 3 to 20"),
+    draws: std::borrow::Cow::Borrowed(
+        "automatic, 3 to 20; 1 when the pseudobulk partition cannot change",
+    ),
     min_arm: 20,
     min_ess: 30.0,
     min_overlap: 0.01,
@@ -443,6 +449,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         },
         min_arm: k.min_arm,
         min_ess: k.min_ess,
+        fit_thin: false,
     };
     Ok(Prepared {
         tissue,
@@ -455,17 +462,56 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     })
 }
 
+/// The contact-effect table's mean pseudobulk unit size, as [`record`]
+/// writes it to the manifest.
+enum UnitSize {
+    /// `lra`'s own: the mean of its partitions, `None` when it drew none
+    /// (single cells), which removes the key.
+    Own(Option<f64>),
+    /// Keep what `lra` recorded: `lra-simulate`'s units are not the
+    /// table's.
+    Kept,
+}
+
 /// Record lra's outputs and the fixed settings in the run's manifest, each
-/// path absolute ([`crate::lr_activity::recorded`]).
+/// path absolute ([`crate::lr_activity::recorded`]), with the mean unit
+/// size `unit_size` says.
 fn record(
     manifest: &Path,
+    unit_size: UnitSize,
     set: impl FnOnce(&mut crate::util::metadata::LraFiles),
 ) -> anyhow::Result<()> {
+    const KEY: &str = "pseudobulk_mean_unit_size";
     crate::util::metadata::PintoMetadata::backfill(manifest, |m| {
+        let size = match unit_size {
+            UnitSize::Own(s) => s.map(|s| serde_json::json!((s * 100.0).round() / 100.0)),
+            UnitSize::Kept => m
+                .outputs
+                .lra
+                .settings
+                .as_ref()
+                .and_then(|v| v.get(KEY))
+                .cloned(),
+        };
+        let mut settings = serde_json::to_value(INTERNALS).ok();
+        if let (Some(serde_json::Value::Object(o)), Some(v)) = (&mut settings, size) {
+            o.insert(KEY.into(), v);
+        }
         set(&mut m.outputs.lra);
-        m.outputs.lra.settings = serde_json::to_value(INTERNALS).ok();
+        m.outputs.lra.settings = settings;
     });
     Ok(())
+}
+
+/// Log the run's achieved mean pseudobulk unit size (recorded in the
+/// manifest as `pseudobulk_mean_unit_size`, [`pseudobulk::UnitTally`]).
+fn log_unit_size(units: pseudobulk::UnitTally) {
+    if let Some(size) = units.mean() {
+        info!(
+            "Pseudobulk units hold {size:.1} receivers on average (target {})",
+            pseudobulk::UNIT_SIZE
+        );
+    }
 }
 
 // * Contact effect
@@ -488,12 +534,19 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     // fill the cores, and one at a time on a large one: each live pair holds
     // a few dozen receiver-length vectors and its propensity design, and
     // the concurrency is what that costs against a fixed memory budget.
-    let per_pair = n * 8 * 32 + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
+    // Beside the pair's own vectors, a draw's fits ([`estimate::DrawFits`])
+    // hold per competence threshold an effect modifier and a pair column,
+    // and own ligand, niche, the exposure column and the main, ring and
+    // three step propensities.
+    let nc = eopts.competences.len();
+    let draw_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
+    let per_pair = n * 8 * (32 + draw_fits)
+        + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
     let concurrent = (PAIR_MEMORY_BUDGET / per_pair.max(1)).clamp(1, rayon::current_num_threads());
     if concurrent > 1 {
         info!("Estimating up to {concurrent} pairs at a time");
     }
-    let one = |p: &Pair| -> Vec<estimate::EffectRow> {
+    let one = |p: &Pair| -> Vec<(Vec<estimate::EffectRow>, pseudobulk::UnitTally)> {
         let lig = prep.ligand_counts(p);
         let rec = prep.receptor_counts(p);
         // Two weightings of the programme, as given and with hub targets
@@ -517,9 +570,8 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
             reweighted: (specific.len() >= INTERNALS.min_targets).then_some(specific.as_slice()),
             n_removed: p.n_removed,
         };
-        let both = estimate_pair_with(tissue, &data, &pool, eopts);
-        let out = match both {
-            Ok(r) => r,
+        let out = match estimate_pair_with(tissue, &data, &pool, eopts) {
+            Ok(r) => vec![r],
             Err(e) => {
                 warn!("{}-{}: {e}", p.ligand, p.receptor);
                 Vec::new()
@@ -529,8 +581,14 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         out
     };
     let t_pairs = std::time::Instant::now();
-    let mut rows = run_bounded(&prep.pairs, concurrent, one);
+    let mut units = pseudobulk::UnitTally::default();
+    let mut rows: Vec<estimate::EffectRow> = Vec::new();
+    for (r, u) in run_bounded(&prep.pairs, concurrent, one) {
+        rows.extend(r);
+        units.merge(u);
+    }
     pb.finish_and_clear();
+    log_unit_size(units);
     info!(
         "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
         prep.pairs.len(),
@@ -541,6 +599,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         fdr: a.fdr,
         max_exposure_eta2: INTERNALS.max_exposure_eta2,
         min_arm: INTERNALS.min_arm,
+        units: eopts.pseudobulk > 1,
     };
     estimate::report(&mut rows, &ropts);
     let path = lra_path(a.out);
@@ -548,7 +607,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let curve_path = lra_curve_path(a.out);
     output::write_curve(&curve_path, &rows)?;
     let recorded = |p: &str| crate::lr_activity::recorded(Path::new(p));
-    record(a.manifest, |o| {
+    record(a.manifest, UnitSize::Own(units.mean()), |o| {
         o.table = Some(recorded(&path));
         o.curve = Some(recorded(&curve_path));
         o.reference = prep
@@ -748,9 +807,14 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         }));
     }
     pb.finish_and_clear();
+    let mut units = pseudobulk::UnitTally::default();
+    for r in &rows {
+        units.merge(r.units);
+    }
+    log_unit_size(units);
     let path = lra_simulate_path(a.out);
     output::write_sim(&path, &rows)?;
-    record(a.manifest, |o| {
+    record(a.manifest, UnitSize::Kept, |o| {
         o.simulate = Some(crate::lr_activity::recorded(Path::new(&path)))
     })?;
     println!("{}", output::sim_summary(&rows));
