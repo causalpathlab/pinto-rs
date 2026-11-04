@@ -106,6 +106,7 @@ pub fn verdict_help() -> String {
 
 /// The verdicts in one line, `code: note` joined by `; `, for the MCP
 /// server's instructions.
+#[cfg(feature = "view")]
 pub fn verdict_line() -> String {
     Verdict::ALL
         .iter()
@@ -628,6 +629,7 @@ pub struct ScenarioRates {
     pub scenario: String,
     /// Nothing planted (or the field shifted): the rates are type I error.
     pub null: bool,
+    #[cfg_attr(not(feature = "view"), allow(dead_code))]
     pub runs: usize,
     /// Share of runs with a reported estimate.
     pub estimable: f64,
@@ -782,6 +784,7 @@ impl From<&EffectRow> for PooledEffect {
 }
 
 /// The pooled rows of `{out}.lra.parquet` (section `all`), in table order.
+#[cfg(feature = "view")]
 pub fn read_pooled_effects(path: &str) -> anyhow::Result<Vec<PooledEffect>> {
     use legume_numeric::matrix::parquet::read_table_columns;
     let (s, x) = read_table_columns(
@@ -829,6 +832,7 @@ pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
 
 /// The runs of `{out}.lra-simulate.parquet` as [`compare_runs`] reads them,
 /// each column by its name ([`sim_cols`]).
+#[cfg(feature = "view")]
 pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
     use super::simulate::{ConfoundShape, ConfounderKind, Scenario};
     use legume_numeric::matrix::parquet::read_table_columns;

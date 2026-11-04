@@ -38,7 +38,9 @@
 //! a linear ridge for `m`, both on a shared confounder matrix. Double
 //! robustness means either one being right is enough for consistency;
 //! plainness is what lets one Gram matrix per fold serve every
-//! ligand-receptor pair.
+//! ligand-receptor pair. Confounders read off the response enter `m` alone
+//! ([`PairInputs::outcome_only`]), so one fitted `e` ([`propensity`])
+//! serves every fit with the same exposure side ([`overlap_terms_with`]).
 
 use super::regression::{logistic_ridge, ridge_bordered, sigmoid, standardize, subsample};
 use nalgebra::DMatrix;
@@ -285,29 +287,130 @@ pub struct OverlapTerms {
     pub num: Vec<f64>,
 }
 
-/// Per-pair inputs to [`overlap_terms`].
+/// Per-pair inputs to [`overlap_terms_with`].
+#[derive(Clone, Copy)]
 pub struct PairInputs<'a> {
     pub t: &'a [bool],
     pub y: &'a [f64],
-    /// Extra confounders specific to this pair (raw scale; standardized
-    /// here). They enter both nuisance models.
+    /// Extra confounders specific to this pair, standardized
+    /// ([`standardize`]). They enter both nuisance models.
     pub extra: &'a [&'a [f64]],
+    /// Extra confounders of the outcome model alone (raw scale;
+    /// standardized here): those read off the response (the neighbours'
+    /// response, bleed). They leave the propensity a function of the
+    /// exposure side, so one fit serves every programme ([`propensity`]);
+    /// the estimator stays doubly robust, consistent when the outcome model
+    /// holds.
+    pub outcome_only: &'a [&'a [f64]],
     /// Effect modifiers: the outcome model carries `T · m` for each, so
     /// `m₁ − m₀` can differ between subgroups estimated from these terms.
     pub modifiers: &'a [&'a [f64]],
 }
 
 /// Cross-fit both nuisances on a (possibly nested) design and return the
-/// per-row estimator pieces.
+/// per-row estimator pieces, `pair.extra` given on the raw scale. The
+/// estimator itself fits the propensity once for every fit that shares it
+/// ([`propensity`], [`overlap_terms_with`]).
+#[cfg(test)]
 pub fn overlap_terms(
     design: DesignView<'_>,
     cf: &CrossFit,
     pair: &PairInputs<'_>,
     opts: &NuisanceOpts,
 ) -> anyhow::Result<OverlapTerms> {
-    let n = design.x.nrows();
-    anyhow::ensure!(pair.t.len() == n && pair.y.len() == n, "row count mismatch");
     let extra: Vec<Vec<f64>> = pair.extra.iter().map(|c| standardize(c)).collect();
+    let extra: Vec<&[f64]> = extra.iter().map(|c| c.as_slice()).collect();
+    let pair = PairInputs {
+        extra: &extra,
+        ..*pair
+    };
+    let e = propensity(design, cf, pair.t, &extra, opts)?;
+    overlap_terms_with(design, cf, &pair, &e, opts)
+}
+
+/// `x_i·β₀ + Σ_c cols[c][i]·β_c` for each row `i` of `rows`, handed to `f`
+/// with the row: `β₀` is the first `p` coefficients of `beta`, `β_c` the
+/// ones after.
+fn linear_predictor(
+    design: DesignView<'_>,
+    rows: &[usize],
+    beta: &[f64],
+    cols: &[&[f64]],
+    mut f: impl FnMut(usize, f64),
+) {
+    let p = design.p;
+    let mut buf = Vec::new();
+    for block in rows.chunks(ROW_BLOCK) {
+        gather_rows(design.x, p, block, &mut buf);
+        for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
+            let mut eta: f64 = (0..p).map(|j| xi[j] * beta[j]).sum();
+            for (c, col) in cols.iter().enumerate() {
+                eta += col[i] * beta[p + c];
+            }
+            f(i, eta);
+        }
+    }
+}
+
+/// The cross-fitted propensity `e` of each row: a logistic ridge of `t` on
+/// the design and `extra` (standardized, [`standardize`]), fitted per fold
+/// on the other folds' rows.
+pub fn propensity(
+    design: DesignView<'_>,
+    cf: &CrossFit,
+    t: &[bool],
+    extra: &[&[f64]],
+    opts: &NuisanceOpts,
+) -> anyhow::Result<Vec<f64>> {
+    use super::estimate::timing;
+    let n = design.x.nrows();
+    anyhow::ensure!(t.len() == n, "row count mismatch");
+    let tf: Vec<f64> = t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
+    let p = design.p;
+    let mut e = vec![0.0; n];
+    // Each fold's propensity starts from the previous fold's solution.
+    let mut prev: Option<nalgebra::DVector<f64>> = None;
+    for k in 0..cf.k {
+        let (train, test) = (&cf.train[k], &cf.test[k]);
+        if test.is_empty() {
+            continue;
+        }
+        anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
+        let beta = timing::time(timing::LOGISTIC, || {
+            logistic_ridge(
+                design.x,
+                p,
+                extra,
+                &tf,
+                &subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64),
+                opts.ridge,
+                prev.as_ref(),
+            )
+        })?;
+        linear_predictor(design, test, beta.as_slice(), extra, |i, eta| {
+            e[i] = sigmoid(eta)
+        });
+        prev = Some(beta);
+    }
+    Ok(e)
+}
+
+/// The per-row estimator pieces with the cross-fitted propensity `e` given
+/// ([`propensity`] on the same design, folds, `t` and `extra`): only the
+/// outcome model is fitted.
+pub fn overlap_terms_with(
+    design: DesignView<'_>,
+    cf: &CrossFit,
+    pair: &PairInputs<'_>,
+    e: &[f64],
+    opts: &NuisanceOpts,
+) -> anyhow::Result<OverlapTerms> {
+    let n = design.x.nrows();
+    anyhow::ensure!(
+        pair.t.len() == n && pair.y.len() == n && e.len() == n,
+        "row count mismatch"
+    );
+    let outcome_only: Vec<Vec<f64>> = pair.outcome_only.iter().map(|c| standardize(c)).collect();
     let modifiers = pair.modifiers;
     let tf: Vec<f64> = pair.t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
     let products: Vec<Vec<f64>> = modifiers
@@ -315,18 +418,15 @@ pub fn overlap_terms(
         .map(|m| m.iter().zip(&tf).map(|(a, b)| a * b).collect())
         .collect();
 
-    // Outcome model columns beyond X: extra, T, T·modifier.
-    let n_extra = extra.len();
-    let extra_cols: Vec<&[f64]> = extra.iter().map(|c| c.as_slice()).collect();
-    let mut o_cols: Vec<&[f64]> = extra_cols.clone();
+    // Outcome model columns beyond X: extra (both kinds), T, T·modifier.
+    let n_extra = pair.extra.len() + outcome_only.len();
+    let mut o_cols: Vec<&[f64]> = pair.extra.to_vec();
+    o_cols.extend(outcome_only.iter().map(|c| c.as_slice()));
     o_cols.push(&tf);
     o_cols.extend(products.iter().map(|c| c.as_slice()));
 
     let mut h = vec![0.0; n];
     let mut num = vec![0.0; n];
-    // Each fold's propensity starts from the previous fold's solution.
-    let mut prev_e: Option<nalgebra::DVector<f64>> = None;
-    let mut buf = Vec::new();
     for k in 0..cf.k {
         let (train, test) = (&cf.train[k], &cf.test[k]);
         if test.is_empty() {
@@ -345,54 +445,26 @@ pub fn overlap_terms(
                 opts.ridge,
             )
         })?;
-        let beta_e = timing::time(timing::LOGISTIC, || {
-            logistic_ridge(
-                design.x,
-                design.p,
-                &extra_cols,
-                &tf,
-                &subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64),
-                opts.ridge,
-                prev_e.as_ref(),
-            )
-        })?;
 
         let p = design.p;
-        for block in test.chunks(ROW_BLOCK) {
-            gather_rows(design.x, p, block, &mut buf);
-            for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
-                let mut base = 0.0;
-                let mut eta = 0.0;
-                for j in 0..p {
-                    let v = xi[j];
-                    base += v * beta_o[j];
-                    eta += v * beta_e[j];
-                }
-                for (c, col) in o_cols.iter().take(n_extra).enumerate() {
-                    base += col[i] * beta_o[p + c];
-                }
-                let mut effect = beta_o[p + n_extra];
-                for (c, m) in modifiers.iter().enumerate() {
-                    effect += m[i] * beta_o[p + n_extra + 1 + c];
-                }
-                let m0 = base;
-                let m1 = base + effect;
-
-                for (c, col) in extra.iter().enumerate() {
-                    eta += col[i] * beta_e[p + c];
-                }
-                let e = sigmoid(eta);
-                let w = e * (1.0 - e);
-                let yi = pair.y[i];
-                h[i] = w;
-                num[i] = if pair.t[i] {
-                    w * (m1 - m0) + (1.0 - e) * (yi - m1)
-                } else {
-                    w * (m1 - m0) - e * (yi - m0)
-                };
+        let beta_o = beta_o.as_slice();
+        linear_predictor(design, test, beta_o, &o_cols[..n_extra], |i, base| {
+            let mut effect = beta_o[p + n_extra];
+            for (c, m) in modifiers.iter().enumerate() {
+                effect += m[i] * beta_o[p + n_extra + 1 + c];
             }
-        }
-        prev_e = Some(beta_e);
+            let m0 = base;
+            let m1 = base + effect;
+            let ei = e[i];
+            let w = ei * (1.0 - ei);
+            let yi = pair.y[i];
+            h[i] = w;
+            num[i] = if pair.t[i] {
+                w * (m1 - m0) + (1.0 - ei) * (yi - m1)
+            } else {
+                w * (m1 - m0) - ei * (yi - m0)
+            };
+        });
     }
     Ok(OverlapTerms { h, num })
 }
@@ -490,6 +562,12 @@ pub fn t_crit_975(df: f64) -> f64 {
 /// `θ̂` over `rows` (ascending row indices), with the cluster sums of its
 /// linearization `ψ_i = (num_i − h_i θ̂) / Σ h` (zero outside `rows`),
 /// which give the variance and the simultaneous band.
+///
+/// The counts (`n`, `n_treated`) and the overlap summaries (`mean_h`,
+/// `ess = (Σh)² / Σh²`) are over the rows, the estimator's own points: on
+/// pseudobulk a unit counts once, as it weighs once in `θ̂`, so the guards
+/// on them ([`super::estimate::EffectOpts::guard`]) read the information
+/// the estimate rests on.
 pub fn subset_estimate(
     terms: &OverlapTerms,
     t: &[bool],

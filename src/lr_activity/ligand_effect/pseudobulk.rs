@@ -7,7 +7,8 @@
 //! contact exposure arm and the ring exposure arm. Grouping never mixes
 //! arms or identities, so every unit keeps one treatment and one
 //! competence, and its confounders are its members' average. Units inherit
-//! their tile's fold and variance cluster.
+//! their tile's fold and variance cluster. The guards on arm size and
+//! overlap count units, the estimator's own points, not their members.
 //!
 //! The grouping is random, so one partition is one draw. The estimate is
 //! averaged over independent draws and its variance combined by Rubin's
@@ -18,8 +19,14 @@
 //!
 //! Units hold [`UNIT_SIZE`] receivers, and the number of draws is chosen
 //! per pair ([`enough_draws`]): draws continue until the Monte Carlo error
-//! of the averaged estimate is small beside its sampling error. When cell
-//! types are given, units never mix them either.
+//! of the averaged estimate is small beside its sampling error. A partition
+//! whose strata are all under `2m` receivers is the same in every draw
+//! ([`Units::random`]); when a draw's is such, or none of its fits runs,
+//! one draw is the answer ([`stop_drawing`]). When cell types
+//! are given, units never mix them either. On a small tissue a tile holds
+//! a cell or two of one identity bin and arm, so units hold fewer than
+//! [`UNIT_SIZE`]; the achieved mean size is logged and recorded
+//! ([`UnitTally`]).
 
 use super::estimate::{Exposure, Response};
 use super::overlap::{CrossFit, Design, Estimate};
@@ -34,7 +41,8 @@ use rand::SeedableRng;
 pub const UNIT_SIZE: usize = 10;
 
 /// Fewest draws: the between-draw variance needs at least two degrees of
-/// freedom before the stopping rule can read it.
+/// freedom before the stopping rule can read it. The sensitivity fits run
+/// on this many draws ([`Sensitivity::on_draw`](super::estimate::Sensitivity::on_draw)).
 pub const MIN_DRAWS: usize = 3;
 
 /// Most draws. Past this the grouping noise is large beside the sampling
@@ -83,10 +91,17 @@ pub fn draw_limit(opts: &super::estimate::EffectOpts) -> usize {
     }
 }
 
-/// Whether automatic draws can stop, given the headline of each draw so
-/// far ([`enough_draws`]); fixed draws run to [`draw_limit`].
-pub fn stop_drawing(opts: &super::estimate::EffectOpts, headline: &[Estimate]) -> bool {
-    opts.pseudobulk > 1 && opts.draws == super::estimate::AUTO_DRAWS && enough_draws(headline)
+/// Whether the draws of an estimate can stop, given its value on each draw
+/// so far and whether the last draw `varies`: whether another seed could
+/// have changed it (its partition is random, [`Units::random`], and a fit
+/// ran on it). At once when it could not (Rubin's rules over copies add
+/// nothing but a smaller df, so one draw is the answer), else under
+/// automatic draws by [`enough_draws`]; a fixed count runs to
+/// [`draw_limit`]. `lra` and `lra-simulate` both stop the headline by this
+/// rule, each on the headline's own partition.
+pub fn stop_drawing(opts: &super::estimate::EffectOpts, draws: &[Estimate], varies: bool) -> bool {
+    opts.pseudobulk > 1
+        && (!varies || opts.draws == super::estimate::AUTO_DRAWS && enough_draws(draws))
 }
 
 /// One random partition of the receivers into units.
@@ -105,6 +120,8 @@ pub struct Units {
     /// First member (receiver row) and member count of each unit.
     pub lead: Vec<u32>,
     pub size: Vec<usize>,
+    /// Whether another seed could give another partition ([`partition`]).
+    pub random: bool,
 }
 
 impl Units {
@@ -134,41 +151,88 @@ impl Units {
     }
 }
 
-/// Assign each receiver to a unit of about `m` (between `m/2` and `3m/2`)
-/// inside its stratum. Strata smaller than `m` form one unit.
-pub fn partition(tissue: &Tissue, f: &Exposure, m: usize, seed: u64) -> (Vec<u32>, usize) {
-    let n = tissue.n();
-    // Section, tile, identity bin, cell type, contact arm, ring arm.
-    type Stratum = (u32, u32, usize, u32, bool, bool);
+/// Section, tile, identity bin, cell type, contact arm, ring arm: what a
+/// unit never mixes.
+type Stratum = (u32, u32, usize, u32, bool, bool);
+
+/// The receivers of each stratum under the arms `t` and `t_ring`, the
+/// strata in a fixed order (so a seed fixes the partition), members
+/// ascending.
+fn strata(tissue: &Tissue, t: &[bool], t_ring: &[bool]) -> Vec<Vec<u32>> {
     let mut strata: HashMap<Stratum, Vec<u32>> = HashMap::default();
-    for i in 0..n {
+    for i in 0..tissue.n() {
         let key = (
             tissue.section[i],
             tissue.cf.cluster[i],
             tissue.identity_bin[i],
             tissue.cell_type.as_ref().map_or(u32::MAX, |c| c[i]),
-            f.t[i],
-            f.t_ring[i],
+            t[i],
+            t_ring[i],
         );
         strata.entry(key).or_default().push(i as u32);
     }
-    // Visit strata in a fixed order so a seed fixes the partition.
-    let mut keys: Vec<_> = strata.keys().copied().collect();
-    keys.sort_unstable();
+    let mut keyed: Vec<(Stratum, Vec<u32>)> = strata.into_iter().collect();
+    keyed.sort_unstable_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, m)| m).collect()
+}
+
+/// Units a stratum of `len` receivers splits into at size `m`: at least
+/// one, and more only from `2m` receivers on.
+fn units_in(len: usize, m: usize) -> usize {
+    (len / m.max(1)).max(1)
+}
+
+/// Assign each receiver to a unit inside its stratum, `⌊len / m⌋` units
+/// of sizes differing by at most one, so each holds between `m` and `2m − 1`
+/// receivers, or the whole stratum when it has fewer than `m`; with the
+/// number of units, and whether the seed matters: only a stratum of at
+/// least `2m` receivers splits, the rest are one unit each whatever the
+/// seed.
+pub fn partition(tissue: &Tissue, f: &Exposure, m: usize, seed: u64) -> (Vec<u32>, usize, bool) {
     let mut rng = SmallRng::seed_from_u64(seed);
-    let mut unit_of = vec![u32::MAX; n];
+    let mut unit_of = vec![u32::MAX; tissue.n()];
     let mut next = 0u32;
-    for key in keys {
-        let members = strata.get_mut(&key).expect("key from map");
+    let mut random = false;
+    for mut members in strata(tissue, &f.t, &f.t_ring) {
         members.shuffle(&mut rng);
-        let k = (members.len() / m.max(1)).max(1);
+        let k = units_in(members.len(), m);
+        random |= k > 1;
         // `k` units, sizes differing by at most one.
         for (j, &i) in members.iter().enumerate() {
             unit_of[i as usize] = next + (j * k / members.len()) as u32;
         }
         next += k as u32;
     }
-    (unit_of, next as usize)
+    (unit_of, next as usize, random)
+}
+
+/// Receivers and units over the partitions of a run, for the mean unit
+/// size it logs and records: on a small tissue a tile holds few receivers
+/// of one identity bin and arm, and units fall short of [`UNIT_SIZE`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnitTally {
+    pub receivers: u64,
+    pub units: u64,
+}
+
+impl UnitTally {
+    /// Tally one draw's partition, `None` on single cells.
+    pub fn add(&mut self, u: Option<&Units>) {
+        if let Some(u) = u {
+            self.receivers += u.unit_of.len() as u64;
+            self.units += u.lead.len() as u64;
+        }
+    }
+
+    pub fn merge(&mut self, o: UnitTally) {
+        self.receivers += o.receivers;
+        self.units += o.units;
+    }
+
+    /// Mean receivers per unit; `None` before the first partition.
+    pub fn mean(&self) -> Option<f64> {
+        (self.units > 0).then(|| self.receivers as f64 / self.units as f64)
+    }
 }
 
 pub fn sum_by_unit(v: &[f64], unit_of: &[u32], n_units: usize) -> Vec<f64> {
@@ -216,7 +280,7 @@ pub fn unit_response(
 /// ligand from the members' summed `ligand_counts` (per receiver, as the
 /// estimator sees them), the niche as the members' mean.
 pub fn draw(tissue: &Tissue, f: &Exposure, ligand_counts: &[f64], m: usize, seed: u64) -> Units {
-    let (unit_of, n_units) = partition(tissue, f, m, seed);
+    let (unit_of, n_units, random) = partition(tissue, f, m, seed);
     let mut first = vec![u32::MAX; n_units];
     let mut size = vec![0usize; n_units];
     for (i, &u) in unit_of.iter().enumerate() {
@@ -295,6 +359,7 @@ pub fn draw(tissue: &Tissue, f: &Exposure, ligand_counts: &[f64], m: usize, seed
         size_factor,
         lead: first,
         size,
+        random,
     }
 }
 

@@ -45,6 +45,10 @@
 //!   signalling it is no exposure itself;
 //! - competence.
 //!
+//! The two response-side columns enter the outcome model only, so one
+//! propensity serves every fit of a draw with the same treatment and
+//! design ([`DrawFits`]).
+//!
 //! Neighbours share senders with the receiver, so their response is partly
 //! downstream of the same exposure and adjusting for it can attenuate a
 //! real effect; `effect_competent_nospill` drops both response-side bleed
@@ -94,10 +98,11 @@
 
 use super::output::Verdict;
 use super::overlap::{
-    crude_difference, difference, overlap_terms, subset_estimate, upper_normal_p, Estimate,
-    NuisanceOpts, PairInputs,
+    crude_difference, difference, overlap_terms_with, propensity, subset_estimate, upper_normal_p,
+    CrossFit, DesignView, Estimate, NuisanceOpts, OverlapTerms, PairInputs,
 };
-use super::pseudobulk;
+use super::pseudobulk::{self, UnitTally};
+use super::regression::standardize;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
 
@@ -167,6 +172,10 @@ pub struct EffectOpts {
     /// many as the estimate needs.
     pub draws: usize,
     pub seed: u64,
+    /// Run even the fits whose every subset leaves an arm thin
+    /// ([`Reads`]), which the guard then reports as not estimable all the
+    /// same; for tests that check skipping them changes nothing.
+    pub fit_thin: bool,
 }
 
 impl Default for EffectOpts {
@@ -182,6 +191,7 @@ impl Default for EffectOpts {
             pseudobulk: 1,
             draws: 1,
             seed: 42,
+            fit_thin: false,
         }
     }
 }
@@ -200,8 +210,7 @@ impl EffectOpts {
     /// cluster: its clustered SE is a rounding residue with no degrees of
     /// freedom; it comes back with `df` 0 to say so ([`ONE_CLUSTER_DF`]).
     pub fn guard(&self, (e, sums): (Estimate, Vec<f64>)) -> (Estimate, Vec<f64>) {
-        let thin = e.n_treated < self.min_arm
-            || e.n.saturating_sub(e.n_treated) < self.min_arm
+        let thin = self.thin_arm(e.n, e.n_treated)
             // NaN fails both comparisons, so a NaN estimate counts as thin.
             || e.ess.is_nan()
             || e.ess < self.min_ess
@@ -216,6 +225,20 @@ impl EffectOpts {
             (e, sums)
         }
     }
+
+    /// Whether `n` analysis units, `treated` of them exposed, leave an arm
+    /// under `min_arm` ([`thin_arm`]).
+    pub fn thin_arm(&self, n: usize, treated: usize) -> bool {
+        thin_arm(self.min_arm, n, treated)
+    }
+}
+
+/// Whether `n` analysis units (receivers, or pseudobulk units), `treated`
+/// of them exposed, leave either arm under `min_arm`: the arm guard
+/// ([`EffectOpts::guard`]), the fits skipped as hopeless ([`Reads`]) and
+/// the verdict note all read this one rule.
+pub fn thin_arm(min_arm: usize, n: usize, treated: usize) -> bool {
+    treated < min_arm || n.saturating_sub(treated) < min_arm
 }
 
 /// The `df` of a not-estimable estimate whose rows lie in fewer than two
@@ -400,9 +423,8 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn build(tissue: &Tissue, targets: &[(f64, &[(u32, f32)])]) -> Self {
-        let genes: Vec<&[(u32, f32)]> = targets.iter().map(|(_, nz)| *nz).collect();
-        let weights: Vec<f64> = targets.iter().map(|(w, _)| *w).collect();
+    pub fn build(tissue: &Tissue, targets: &Targets<'_>) -> Self {
+        let (genes, weights) = genes_and_weights(targets);
         Self::build_many(tissue, &genes, &[weights])
             .pop()
             .expect("one weighting")
@@ -434,11 +456,12 @@ impl Response {
     }
 }
 
-/// The two sides together, as every fit reads them.
-#[derive(Clone, Copy)]
-pub struct PairFrame<'a> {
-    pub exposure: &'a Exposure,
-    pub response: &'a Response,
+/// One gene's non-zero counts by row.
+type Gene<'t> = &'t [(u32, f32)];
+
+/// A programme's genes and weights, apart.
+fn genes_and_weights<'t>(targets: &Targets<'t>) -> (Vec<Gene<'t>>, Vec<f64>) {
+    targets.iter().map(|&(w, nz)| (nz, w)).unzip()
 }
 
 /// `log1p` of the mean of `lnorm` (ligand / size factor) over each row's
@@ -643,55 +666,278 @@ pub enum Fit {
     Ring,
 }
 
+/// The units (receivers, or pseudobulk units) of the pooled scope of `rows`
+/// where `keep` holds, and how many of them `t` exposes: the counts the arm
+/// guard reads of the subset ([`subset_estimate`]). Every other scope is a
+/// subset of the pooled one, so neither of its arms is larger.
+fn pooled_arms(rows: Rows<'_>, t: &[bool], keep: impl Fn(usize) -> bool) -> (usize, usize) {
+    let (mut n, mut treated) = (0usize, 0usize);
+    for &i in &rows.scope_rows[0] {
+        let i = i as usize;
+        if keep(i) {
+            n += 1;
+            treated += t[i] as usize;
+        }
+    }
+    (n, treated)
+}
+
+/// What the guard reports of a subset it rejects for a thin arm, without
+/// the fit: not estimable with the subset's counts, and zero cluster sums.
+fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) {
+    let treated = rows.iter().filter(|&&i| t[i as usize]).count();
+    (
+        Estimate::nan(rows.len(), treated),
+        vec![0.0; cf.n_clusters()],
+    )
+}
+
+/// Which of a draw's fits serve a subset with both arms at `min_arm`
+/// ([`thin_arm`]) on the pooled rows: the main fit's E2 subsets (the
+/// competent units at some competence threshold; also what the no-spill,
+/// step, curve and decoy fits read), its E3 subsets (the incompetent ones)
+/// and the ring fit's. A fit none of whose subsets is read is skipped,
+/// propensity and all, and its estimands are what the guard would make of
+/// them, not estimable with their counts ([`thin_subset`]): the units of an
+/// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
+/// so the skip is the guard read before the fit, not a second rule.
+#[derive(Clone, Copy, Debug)]
+pub struct Reads {
+    pub e2: bool,
+    pub e3: bool,
+    pub ring: bool,
+}
+
+impl Reads {
+    pub fn of(rows: Rows<'_>, x: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Self {
+        let open = |t: &[bool], keep: &dyn Fn(usize) -> bool| {
+            let (n, treated) = pooled_arms(rows, t, keep);
+            !opts.thin_arm(n, treated)
+        };
+        Self {
+            e2: levels.iter().any(|c| open(&x.t, &|i| c[i])),
+            e3: levels.iter().any(|c| open(&x.t, &|i| !c[i])),
+            ring: levels.iter().any(|c| open(&x.t_ring, &|i| c[i])),
+        }
+    }
+
+    /// The main fit serves some subset.
+    pub fn main(&self) -> bool {
+        self.e2 || self.e3
+    }
+
+    /// Some fit of the draw runs: else its estimates are the same under
+    /// every seed ([`super::pseudobulk::stop_drawing`]).
+    pub fn any(&self) -> bool {
+        self.main() || self.ring
+    }
+}
+
+/// The controls' propensities ([`DrawFits::with_controls`]); `None` for a
+/// fit skipped as hopeless ([`Reads`]).
+struct Controls {
+    ring: Option<Vec<f64>>,
+    /// Each adjustment step's, when asked for and E2 is read.
+    steps: Option<Vec<Vec<f64>>>,
+}
+
+/// One draw's exposure side as its fits read it, built once and shared by
+/// every fit on the draw: the competence indicators (raw, the outcome
+/// model's effect modifiers), the pair columns both models carry
+/// (standardized: own ligand, niche, every competence indicator, and the
+/// contact exposure the ring fit adds to them), which fits serve a subset
+/// ([`Reads`]), and the cross-fitted propensities ([`propensity`]) of the
+/// main fit and, with [`DrawFits::with_controls`], of the ring fit and each
+/// adjustment step. The propensity reads no response-side column
+/// ([`fit_main`]), so one serves every programme weighting, the decoy and
+/// the no-spill fit.
+pub struct DrawFits<'a> {
+    pub exposure: &'a Exposure,
+    /// Competence at each threshold, per row.
+    pub levels: &'a [Vec<bool>],
+    pub reads: Reads,
+    /// [`EffectOpts::fit_thin`]: run the fits [`Reads`] would skip.
+    force: bool,
+    modifiers: Vec<Vec<f64>>,
+    extra: Vec<Vec<f64>>,
+    exposed: Vec<f64>,
+    main: Option<Vec<f64>>,
+    controls: Option<Controls>,
+}
+
+fn indicator(v: &[bool]) -> Vec<f64> {
+    v.iter().map(|&b| b as u8 as f64).collect()
+}
+
+impl<'a> DrawFits<'a> {
+    /// The columns and the main fit's propensity on `rows`: all the curve
+    /// and the decoy need.
+    pub fn new(
+        rows: Rows<'_>,
+        exposure: &'a Exposure,
+        levels: &'a [Vec<bool>],
+        opts: &EffectOpts,
+    ) -> anyhow::Result<Self> {
+        let modifiers: Vec<Vec<f64>> = levels.iter().map(|c| indicator(c)).collect();
+        let extra = [&exposure.own, &exposure.niche]
+            .into_iter()
+            .chain(&modifiers)
+            .map(|c| standardize(c))
+            .collect();
+        let mut fits = Self {
+            exposure,
+            levels,
+            reads: Reads::of(rows, exposure, levels, opts),
+            force: opts.fit_thin,
+            modifiers,
+            extra,
+            exposed: standardize(&indicator(&exposure.t)),
+            main: None,
+            controls: None,
+        };
+        if fits.runs(fits.reads.main()) {
+            let extra = fits.extra(Fit::Main);
+            let main = propensity(
+                rows.design.view(),
+                rows.cf,
+                &exposure.t,
+                &extra,
+                &opts.nuisance,
+            )?;
+            fits.main = Some(main);
+        }
+        Ok(fits)
+    }
+
+    /// Also the ring fit's propensity and, when `steps`, each adjustment
+    /// step's: what [`effects_on`] needs.
+    pub fn with_controls(
+        mut self,
+        rows: Rows<'_>,
+        steps: bool,
+        opts: &EffectOpts,
+    ) -> anyhow::Result<Self> {
+        let x = self.exposure;
+        let ring = if self.runs(self.reads.ring) {
+            let extra = self.extra(Fit::Ring);
+            Some(timing::time(timing::MAIN, || {
+                propensity(
+                    rows.design.view(),
+                    rows.cf,
+                    &x.t_ring,
+                    &extra,
+                    &opts.nuisance,
+                )
+            })?)
+        } else {
+            None
+        };
+        let steps = if steps && self.runs(self.reads.e2) {
+            let extra = self.extra(Fit::Main);
+            Some(timing::time(timing::STEPS, || {
+                rows.steps
+                    .iter()
+                    .map(|s| {
+                        let view = s.design.view(rows.design);
+                        propensity(view, rows.cf, &x.t, &extra, &opts.nuisance)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })?)
+        } else {
+            None
+        };
+        self.controls = Some(Controls { ring, steps });
+        Ok(self)
+    }
+
+    /// Whether a fit serving subsets that `read` says are read runs.
+    fn runs(&self, read: bool) -> bool {
+        read || self.force
+    }
+
+    /// The pair columns of both models under `kind`.
+    fn extra(&self, kind: Fit) -> Vec<&[f64]> {
+        let mut cols: Vec<&[f64]> = self.extra.iter().map(|c| c.as_slice()).collect();
+        if kind == Fit::Ring {
+            cols.push(&self.exposed);
+        }
+        cols
+    }
+
+    /// The propensity of the fit `kind` (of adjustment step `step` when
+    /// given); an error when it was not fitted: the controls' before
+    /// [`DrawFits::with_controls`], or a fit skipped as hopeless.
+    fn propensity(&self, kind: Fit, step: Option<usize>) -> anyhow::Result<&[f64]> {
+        let controls = || {
+            self.controls
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("the controls' propensities are not fitted"))
+        };
+        let e = match (kind, step) {
+            (Fit::Ring, _) => controls()?.ring.as_deref(),
+            (_, Some(s)) => controls()?
+                .steps
+                .as_ref()
+                .and_then(|v| v.get(s))
+                .map(Vec::as_slice),
+            _ => self.main.as_deref(),
+        };
+        e.ok_or_else(|| anyhow::anyhow!("the {kind:?} propensity (step {step:?}) is not fitted"))
+    }
+}
+
 /// One cross-fitted fit of a pair on `design`, every competence threshold
-/// at once.
+/// at once, with its propensity from `fits` ([`DrawFits`]): the main one,
+/// or adjustment step `step`'s, or the ring's; an error when that one is
+/// not fitted.
 ///
 /// The thresholds give nested indicators `C_c`. One outcome model carries
 /// every `C_c` and every `T · C_c`, and one propensity model every `C_c`;
 /// E2 at threshold `c` is then the subset estimate over the receivers
 /// competent at `c`. Each single-threshold model is nested in this one, so
-/// each `m_t` stays correctly specified wherever its own was, and the
-/// estimator stays doubly robust; what changes is one fit per draw
-/// instead of one per threshold.
+/// each `m_t` stays correctly specified wherever its own was; what changes
+/// is one fit per draw instead of one per threshold.
 ///
-/// The pair columns: own ligand, spillover, bleed (not under
-/// [`Fit::NoSpill`]), niche, every competence indicator, and under
-/// [`Fit::Ring`] the contact exposure, the ring exposure being the
-/// treatment.
+/// The pair columns: own ligand, niche, every competence indicator, and
+/// under [`Fit::Ring`] the contact exposure, the ring exposure being the
+/// treatment, in both models; spillover and bleed (not under
+/// [`Fit::NoSpill`]) in the outcome model alone. Read off the response,
+/// they would tie the propensity to one programme; without them it depends
+/// on the exposure side only and is fitted once per draw for every
+/// programme weighting, the decoy and the no-spill fit.
+///
+/// That is a trade-off in robustness. The estimator is doubly robust in
+/// the confounders and pair columns both models carry: right when either
+/// the propensity or the outcome model is. For spillover and bleed it
+/// relies on the outcome model alone: the propensity does not balance
+/// them, so if they confound exposure and the outcome model gets them
+/// wrong, the estimate is biased.
+#[allow(clippy::too_many_arguments)]
 pub fn fit_main(
-    design: super::overlap::DesignView<'_>,
-    cf: &super::overlap::CrossFit,
-    f: PairFrame<'_>,
-    levels: &[Vec<bool>],
+    design: DesignView<'_>,
+    cf: &CrossFit,
+    fits: &DrawFits<'_>,
+    r: &Response,
     kind: Fit,
+    step: Option<usize>,
     opts: &EffectOpts,
-) -> anyhow::Result<super::overlap::OverlapTerms> {
-    let (x, r) = (f.exposure, f.response);
-    let indicator = |v: &[bool]| -> Vec<f64> { v.iter().map(|&b| b as u8 as f64).collect() };
-    let cols: Vec<Vec<f64>> = levels.iter().map(|c| indicator(c)).collect();
-    let mods: Vec<&[f64]> = cols.iter().map(|c| c.as_slice()).collect();
-    let mut extra: Vec<&[f64]> = match kind {
-        Fit::NoSpill => vec![&x.own, &x.niche],
-        Fit::Main | Fit::Ring => vec![&x.own, &r.spill, &r.bleed, &x.niche],
+) -> anyhow::Result<OverlapTerms> {
+    let e = fits.propensity(kind, step)?;
+    let x = fits.exposure;
+    let extra = fits.extra(kind);
+    let outcome_only: Vec<&[f64]> = match kind {
+        Fit::NoSpill => Vec::new(),
+        Fit::Main | Fit::Ring => vec![&r.spill, &r.bleed],
     };
-    extra.extend(mods.iter().copied());
-    let tf;
-    if kind == Fit::Ring {
-        tf = indicator(&x.t);
-        extra.push(&tf);
-    }
-    let t = if kind == Fit::Ring { &x.t_ring } else { &x.t };
-    overlap_terms(
-        design,
-        cf,
-        &PairInputs {
-            t,
-            y: &r.y,
-            extra: &extra,
-            modifiers: &mods,
-        },
-        &opts.nuisance,
-    )
+    let modifiers: Vec<&[f64]> = fits.modifiers.iter().map(|c| c.as_slice()).collect();
+    let inputs = PairInputs {
+        t: if kind == Fit::Ring { &x.t_ring } else { &x.t },
+        y: &r.y,
+        extra: &extra,
+        outcome_only: &outcome_only,
+        modifiers: &modifiers,
+    };
+    overlap_terms_with(design, cf, &inputs, e, &opts.nuisance)
 }
 
 /// Where an estimand is summed: the whole tissue, one section, or one
@@ -719,7 +965,10 @@ pub struct ScopeEffects {
     /// only; NaN elsewhere).
     pub nospill: Estimate,
     /// Share of the scope's competent rows (units, on pseudobulk) whose
-    /// overlap weight is below [`NEAR_DETERMINED_H`] in the main fit.
+    /// overlap weight is below [`NEAR_DETERMINED_H`] in the main fit; NaN
+    /// without competent rows or without the main fit, which is skipped
+    /// when every E2 and E3 subset leaves an arm thin ([`Reads`]), on every
+    /// path alike.
     pub near_determined: f64,
 }
 
@@ -763,7 +1012,7 @@ pub struct LevelEffects {
 }
 
 /// [`effects_on`]'s result: per competence threshold, and the main fit's
-/// overlap weights `h` per row.
+/// overlap weights `h` per row (empty when the main fit was skipped).
 pub struct Effects {
     pub levels: Vec<LevelEffects>,
     pub h: Vec<f64>,
@@ -802,44 +1051,67 @@ impl Sensitivity {
     }
 }
 
-/// The estimands on `rows` for each competence threshold (`levels`, per
-/// row) and each scope of `rows`, from one fit per adjustment set
-/// ([`fit_main`]). The sensitivity fits `sens` asks for serve the pooled
-/// scope (the first).
+/// The estimands on `rows` for each competence threshold
+/// ([`DrawFits::levels`]) and each scope of `rows`, from one fit per
+/// adjustment set ([`fit_main`]) of the response `r`; `fits` carries the
+/// controls' propensities ([`DrawFits::with_controls`]). The sensitivity
+/// fits `sens` asks for serve the pooled scope (the first). A fit none of
+/// whose subsets has both arms at `min_arm` is skipped ([`Reads`]); without
+/// the main fit, the near-determined shares are NaN and `h` is empty.
 pub fn effects_on(
     rows: Rows<'_>,
-    f: PairFrame<'_>,
-    levels: &[Vec<bool>],
+    fits: &DrawFits<'_>,
+    r: &Response,
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
     use timing::{time, MAIN, NOSPILL, STEPS};
     let (design, cf) = (rows.design.view(), rows.cf);
+    let reads = fits.reads;
+    let fit = |run: bool, kind: Fit, step: Option<usize>, d: DesignView<'_>| {
+        run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
+            .transpose()
+    };
     let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
         Ok((
-            fit_main(design, cf, f, levels, Fit::Main, opts)?,
-            fit_main(design, cf, f, levels, Fit::Ring, opts)?,
+            fit(fits.runs(reads.main()), Fit::Main, None, design)?,
+            fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
         ))
     })?;
-    let nospill = if sens.nospill {
-        Some(time(NOSPILL, || {
-            fit_main(design, cf, f, levels, Fit::NoSpill, opts)
-        })?)
-    } else {
-        None
-    };
-    let steps = if sens.steps {
+    let on_e2 = fits.runs(reads.e2);
+    let nospill = time(NOSPILL, || {
+        fit(sens.nospill && on_e2, Fit::NoSpill, None, design)
+    })?;
+    let steps = if sens.steps && on_e2 {
         time(STEPS, || {
             rows.steps
                 .iter()
-                .map(|s| fit_main(s.design.view(rows.design), cf, f, levels, Fit::Main, opts))
+                .enumerate()
+                .map(|(k, s)| {
+                    fit_main(
+                        s.design.view(rows.design),
+                        cf,
+                        fits,
+                        r,
+                        Fit::Main,
+                        Some(k),
+                        opts,
+                    )
+                })
                 .collect::<anyhow::Result<Vec<_>>>()
         })?
     } else {
         Vec::new()
     };
-    let (t, t_ring) = (&f.exposure.t, &f.exposure.t_ring);
-    let levels = levels
+    let (t, t_ring) = (&fits.exposure.t, &fits.exposure.t_ring);
+    // A subset's estimate from `terms`, or the guard's verdict on it when
+    // the fit was skipped.
+    let est = |terms: Option<&OverlapTerms>, t: &[bool], sub: &[u32]| match terms {
+        Some(terms) => opts.guard(subset_estimate(terms, t, sub, cf)),
+        None => thin_subset(t, sub, cf),
+    };
+    let levels = fits
+        .levels
         .iter()
         .map(|competent| {
             let mut pooled_sums = Vec::new();
@@ -850,28 +1122,31 @@ pub fn effects_on(
                 .map(|(k, inside)| {
                     let (comp, incomp): (Vec<u32>, Vec<u32>) =
                         inside.iter().partition(|&&i| competent[i as usize]);
-                    let (e2, s2) = opts.guard(subset_estimate(&main, t, &comp, cf));
-                    let (e3, s3) = opts.guard(subset_estimate(&main, t, &incomp, cf));
+                    let (e2, s2) = est(main.as_ref(), t, &comp);
+                    let (e3, s3) = est(main.as_ref(), t, &incomp);
                     let e1 = difference(&e2, &s2, &e3, &s3);
-                    let (e5, _) = opts.guard(subset_estimate(&ring, t_ring, &comp, cf));
+                    let (e5, _) = est(ring.as_ref(), t_ring, &comp);
                     let nan = Estimate::nan(e2.n, e2.n_treated);
                     let mut step_est = [nan; 3];
                     let mut e2_nospill = nan;
-                    let near = comp
-                        .iter()
-                        .filter(|&&i| main.h[i as usize] < NEAR_DETERMINED_H)
-                        .count();
-                    let near_determined = if comp.is_empty() {
-                        f64::NAN
-                    } else {
-                        near as f64 / comp.len() as f64
+                    let near_determined = match &main {
+                        Some(m) if reads.main() && !comp.is_empty() => {
+                            let near = comp
+                                .iter()
+                                .filter(|&&i| m.h[i as usize] < NEAR_DETERMINED_H)
+                                .count();
+                            near as f64 / comp.len() as f64
+                        }
+                        _ => f64::NAN,
                     };
                     if k == 0 {
-                        if let Some(terms) = &nospill {
-                            e2_nospill = opts.guard(subset_estimate(terms, t, &comp, cf)).0;
+                        if sens.nospill {
+                            e2_nospill = est(nospill.as_ref(), t, &comp).0;
                         }
-                        for (k, terms) in steps.iter().take(3).enumerate() {
-                            step_est[k] = opts.guard(subset_estimate(terms, t, &comp, cf)).0;
+                        if sens.steps {
+                            for (j, e) in step_est.iter_mut().enumerate() {
+                                *e = est(steps.get(j), t, &comp).0;
+                            }
                         }
                         pooled_sums = s2;
                     }
@@ -892,26 +1167,40 @@ pub fn effects_on(
             }
         })
         .collect();
-    Ok(Effects { levels, h: main.h })
+    let h = match main {
+        Some(m) if reads.main() => m.h,
+        _ => Vec::new(),
+    };
+    Ok(Effects { levels, h })
 }
 
-/// Pooled E2 at competence threshold `k` with the cluster sums of its ψ,
-/// from one main fit carrying every threshold ([`fit_main`]). For the
-/// curve and the decoy.
+/// Pooled E2 of the response `r` at competence threshold `k` with the
+/// cluster sums of its ψ, from one main fit carrying every threshold
+/// ([`fit_main`]), and whether the fit ran: it is skipped when the subset
+/// leaves an arm thin ([`Reads`]). For the curve and the decoy.
 pub fn competent_effect(
     rows: Rows<'_>,
-    f: PairFrame<'_>,
-    levels: &[Vec<bool>],
+    fits: &DrawFits<'_>,
+    r: &Response,
     k: usize,
     opts: &EffectOpts,
-) -> anyhow::Result<(Estimate, Vec<f64>)> {
-    let terms = fit_main(rows.design.view(), rows.cf, f, levels, Fit::Main, opts)?;
+) -> anyhow::Result<(Estimate, Vec<f64>, bool)> {
+    let (design, cf) = (rows.design.view(), rows.cf);
+    let t = &fits.exposure.t;
     let comp: Vec<u32> = rows.scope_rows[0]
         .iter()
         .copied()
-        .filter(|&i| levels[k][i as usize])
+        .filter(|&i| fits.levels[k][i as usize])
         .collect();
-    Ok(opts.guard(subset_estimate(&terms, &f.exposure.t, &comp, rows.cf)))
+    let treated = comp.iter().filter(|&&i| t[i as usize]).count();
+    let read = !opts.thin_arm(comp.len(), treated);
+    if !fits.runs(read) {
+        let (e, s) = thin_subset(t, &comp, cf);
+        return Ok((e, s, false));
+    }
+    let terms = fit_main(design, cf, fits, r, Fit::Main, None, opts)?;
+    let (e, s) = opts.guard(subset_estimate(&terms, t, &comp, cf));
+    Ok((e, s, read))
 }
 
 /// Each analysis (draw or choice) combined into one by Rubin's rules,
@@ -1214,12 +1503,19 @@ struct Decoy<'d> {
 /// threshold and scope from one fit per adjustment set ([`effects_on`]);
 /// under the first weighting also E2 at each curve threshold and on the
 /// decoy at the middle competence threshold. Draws are combined first,
-/// then competence thresholds, both by Rubin's rules; each weighting's
-/// draws stop by [`super::pseudobulk::enough_draws`] on its pooled E2
-/// averaged over the thresholds. The weightings share each draw's
-/// partition, design and exposure side; only the response side is rebuilt
-/// per weighting. Curve thresholds other than the headline's get their own
-/// partitions (units never mix arms), drawn with the same seeds.
+/// then competence thresholds, both by Rubin's rules. The weightings share
+/// each draw's partition, design and exposure side; only the response side
+/// is rebuilt per weighting.
+///
+/// Each weighting's draws stop by [`super::pseudobulk::stop_drawing`] on its
+/// pooled E2 averaged over the thresholds and on whether the draw could
+/// change under another seed (its partition is random and some fit ran,
+/// [`Reads::any`]); `lra-simulate` stops its headline by the same rule.
+/// Curve thresholds other than the headline's get their own partitions
+/// (units never mix arms), drawn with the same seeds, and stop by the same
+/// rule on their own estimates and partitions, so a random curve partition
+/// neither adds draws to a fixed headline nor goes without them. With the
+/// tally of every partition drawn.
 #[allow(clippy::too_many_arguments)]
 fn effects(
     tissue: &Tissue,
@@ -1231,7 +1527,7 @@ fn effects(
     a: &[f64],
     taus: &[(f64, f64)],
     opts: &EffectOpts,
-) -> anyhow::Result<Vec<Analysis>> {
+) -> anyhow::Result<(Vec<Analysis>, UnitTally)> {
     use super::pseudobulk::{combine, draw, draw_limit, stop_drawing};
     use legume_numeric::matrix::rand_util::mix_seed;
     let nc = comps.len();
@@ -1241,6 +1537,10 @@ fn effects(
     let head_k = taus.iter().position(|&(t, _)| t == ex.tau);
     let units_on = opts.pseudobulk > 1;
     let max_draws = draw_limit(opts);
+    let random = |u: &Option<super::pseudobulk::Units>| u.as_ref().is_some_and(|u| u.random);
+    let mut tally = UnitTally::default();
+    // Whether any fit ran, for the run log.
+    let mut fitted = false;
     // Per weighting: per competence threshold, the scope effects of each
     // draw; and the headline of each draw.
     let mut scope_draws: Vec<Vec<Vec<Vec<ScopeEffects>>>> = vec![vec![Vec::new(); nc]; nw];
@@ -1248,118 +1548,119 @@ fn effects(
     let mut done = vec![false; nw];
     let mut decoy_draws: Vec<Estimate> = Vec::new();
     let mut curve_draws: Vec<Vec<Estimate>> = vec![Vec::new(); nk];
+    // The headline's curve point is read off the first weighting's draws.
+    let mut curve_done: Vec<bool> = (0..nk).map(|k| Some(k) == head_k).collect();
     let mut stacked: Vec<Vec<f64>> = Vec::new();
     for d in 0..max_draws {
-        let seed = mix_seed(opts.seed, d as u64);
-        let first = !done[0];
-        // Cluster sums of ψ per curve threshold, this draw.
-        let mut sums: Vec<Vec<f64>> = vec![Vec::new(); nk];
-        let units = units_on.then(|| {
-            timing::time(timing::PARTITION, || {
-                draw(tissue, ex, ligand_counts, opts.pseudobulk, seed)
-            })
-        });
-        let rows = Rows::of(&units, tissue);
-        let unit_levels: Vec<Vec<bool>>;
-        let (exposure, levels): (&Exposure, &[Vec<bool>]) = match &units {
-            Some(u) => {
-                unit_levels = comps.iter().map(|c| u.of_lead(c)).collect();
-                (&u.exposure, &unit_levels)
-            }
-            None => (&*ex, comps),
-        };
-        // The response side of a programme on this draw's rows.
-        let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
-            units.as_ref().map(|u| u.response_of(r, targets))
-        };
-        for (w, wt) in weightings.iter().enumerate() {
-            if done[w] {
-                continue;
-            }
-            let own = on_rows(&wt.response, wt.targets);
-            let f = PairFrame {
-                exposure,
-                response: own.as_ref().unwrap_or(&wt.response),
-            };
-            let per_c = effects_on(rows, f, levels, Sensitivity::on_draw(d), opts)?;
-            if w == 0 {
-                if let Some(dc) = decoy {
-                    let own = on_rows(&dc.response, &dc.targets);
-                    let df = PairFrame {
-                        exposure,
-                        response: own.as_ref().unwrap_or(&dc.response),
-                    };
-                    let (e, _) = timing::time(timing::DECOY, || {
-                        competent_effect(rows, df, levels, mid, opts)
-                    })?;
-                    decoy_draws.push(e);
-                }
-                if let Some(k) = head_k {
-                    curve_draws[k].push(per_c.levels[mid].scopes[0].competent);
-                    sums[k] = per_c.levels[mid].pooled_sums.clone();
-                }
-            }
-            let pooled: Vec<Estimate> =
-                per_c.levels.iter().map(|l| l.scopes[0].competent).collect();
-            headline[w].push(mean_estimate(&pooled));
-            for (ci, level) in per_c.levels.into_iter().enumerate() {
-                scope_draws[w][ci].push(level.scopes);
-            }
-        }
-        drop(units);
-        if first {
-            let w0 = &weightings[0];
-            for (k, &(tau, _)) in taus.iter().enumerate() {
-                if Some(k) == head_k {
-                    continue;
-                }
-                let curve_timer = std::time::Instant::now();
-                let t0 = std::mem::replace(&mut ex.t, exposed(a, tau));
-                let units_k =
-                    units_on.then(|| draw(tissue, ex, ligand_counts, opts.pseudobulk, seed));
-                let (e, s) = match &units_k {
-                    Some(u) => {
-                        let lv: Vec<Vec<bool>> = comps.iter().map(|c| u.of_lead(c)).collect();
-                        let r = u.response_of(&w0.response, w0.targets);
-                        let f = PairFrame {
-                            exposure: &u.exposure,
-                            response: &r,
-                        };
-                        competent_effect(Rows::units(u), f, &lv, mid, opts)?
-                    }
-                    None => {
-                        let f = PairFrame {
-                            exposure: ex,
-                            response: &w0.response,
-                        };
-                        competent_effect(Rows::cells(tissue), f, comps, mid, opts)?
-                    }
-                };
-                curve_draws[k].push(e);
-                sums[k] = s;
-                ex.t = t0;
-                timing::add(timing::CURVE, curve_timer);
-            }
-            for c in 0..tissue.cf.n_clusters() {
-                let row: Vec<f64> = sums
-                    .iter()
-                    .map(|s| s.get(c).copied().unwrap_or(0.0))
-                    .collect();
-                if row.iter().any(|&x| x != 0.0) {
-                    stacked.push(row);
-                }
-            }
-        }
-        for (w, h) in headline.iter().enumerate() {
-            if !done[w] && stop_drawing(opts, h) {
-                done[w] = true;
-            }
-        }
-        if done.iter().all(|&d| d) {
+        if done.iter().chain(&curve_done).all(|&x| x) {
             break;
         }
+        let seed = mix_seed(opts.seed, d as u64);
+        // Cluster sums of ψ per curve threshold, this draw.
+        let mut sums: Vec<Vec<f64>> = vec![Vec::new(); nk];
+        if !done.iter().all(|&x| x) {
+            let units = units_on.then(|| {
+                timing::time(timing::PARTITION, || {
+                    draw(tissue, ex, ligand_counts, opts.pseudobulk, seed)
+                })
+            });
+            tally.add(units.as_ref());
+            let rows = Rows::of(&units, tissue);
+            let unit_levels: Vec<Vec<bool>>;
+            let (exposure, levels): (&Exposure, &[Vec<bool>]) = match &units {
+                Some(u) => {
+                    unit_levels = comps.iter().map(|c| u.of_lead(c)).collect();
+                    (&u.exposure, &unit_levels)
+                }
+                None => (&*ex, comps),
+            };
+            let sens = Sensitivity::on_draw(d);
+            let fits = timing::time(timing::MAIN, || DrawFits::new(rows, exposure, levels, opts))?
+                .with_controls(rows, sens.steps, opts)?;
+            fitted |= fits.reads.any();
+            let varies = random(&units) && fits.reads.any();
+            // The response side of a programme on this draw's rows.
+            let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
+                units.as_ref().map(|u| u.response_of(r, targets))
+            };
+            for (w, wt) in weightings.iter().enumerate() {
+                if done[w] {
+                    continue;
+                }
+                let own = on_rows(&wt.response, wt.targets);
+                let r = own.as_ref().unwrap_or(&wt.response);
+                let per_c = effects_on(rows, &fits, r, sens, opts)?;
+                if w == 0 {
+                    if let Some(dc) = decoy {
+                        let own = on_rows(&dc.response, &dc.targets);
+                        let r = own.as_ref().unwrap_or(&dc.response);
+                        let (e, _, _) = timing::time(timing::DECOY, || {
+                            competent_effect(rows, &fits, r, mid, opts)
+                        })?;
+                        decoy_draws.push(e);
+                    }
+                    if let Some(k) = head_k {
+                        curve_draws[k].push(per_c.levels[mid].scopes[0].competent);
+                        sums[k] = per_c.levels[mid].pooled_sums.clone();
+                    }
+                }
+                let pooled: Vec<Estimate> =
+                    per_c.levels.iter().map(|l| l.scopes[0].competent).collect();
+                headline[w].push(mean_estimate(&pooled));
+                for (ci, level) in per_c.levels.into_iter().enumerate() {
+                    scope_draws[w][ci].push(level.scopes);
+                }
+                if stop_drawing(opts, &headline[w], varies) {
+                    done[w] = true;
+                }
+            }
+        }
+        let w0 = &weightings[0];
+        for (k, &(tau, _)) in taus.iter().enumerate() {
+            if curve_done[k] {
+                continue;
+            }
+            let curve_timer = std::time::Instant::now();
+            let t0 = std::mem::replace(&mut ex.t, exposed(a, tau));
+            let units_k = units_on.then(|| draw(tissue, ex, ligand_counts, opts.pseudobulk, seed));
+            tally.add(units_k.as_ref());
+            let (e, s, ran) = match &units_k {
+                Some(u) => {
+                    let rows = Rows::units(u);
+                    let lv: Vec<Vec<bool>> = comps.iter().map(|c| u.of_lead(c)).collect();
+                    let r = u.response_of(&w0.response, w0.targets);
+                    let fits = DrawFits::new(rows, &u.exposure, &lv, opts)?;
+                    competent_effect(rows, &fits, &r, mid, opts)?
+                }
+                None => {
+                    let rows = Rows::cells(tissue);
+                    let fits = DrawFits::new(rows, ex, comps, opts)?;
+                    competent_effect(rows, &fits, &w0.response, mid, opts)?
+                }
+            };
+            fitted |= ran;
+            curve_draws[k].push(e);
+            sums[k] = s;
+            ex.t = t0;
+            if stop_drawing(opts, &curve_draws[k], random(&units_k) && ran) {
+                curve_done[k] = true;
+            }
+            timing::add(timing::CURVE, curve_timer);
+        }
+        for c in 0..tissue.cf.n_clusters() {
+            let row: Vec<f64> = sums
+                .iter()
+                .map(|s| s.get(c).copied().unwrap_or(0.0))
+                .collect();
+            if row.iter().any(|&x| x != 0.0) {
+                stacked.push(row);
+            }
+        }
     }
-    Ok((0..nw)
+    if !fitted {
+        timing::all_skipped();
+    }
+    let analyses = (0..nw)
         .map(|w| {
             timing::draws(headline[w].len());
             let per_c: Vec<Vec<ScopeEffects>> =
@@ -1383,7 +1684,8 @@ fn effects(
                 decoy,
             }
         })
-        .collect())
+        .collect();
+    Ok((analyses, tally))
 }
 
 /// `b`'s weights on `a`'s genes (0 where `b` leaves a gene out), when
@@ -1411,36 +1713,17 @@ fn aligned(a: &[(f64, &[(u32, f32)])], b: &[(f64, &[(u32, f32)])]) -> Option<Vec
 /// averaged ([`Analysis::average`]); the curve and the decoy describe the
 /// pair, not the weighting, and are read under `targets`. Counts,
 /// co-expression, the crude contrast and the diagnostics read competence
-/// at the middle threshold of the grid.
+/// at the middle threshold of the grid. With the tally of the pseudobulk
+/// partitions drawn, for the run's mean unit size.
 pub fn estimate_pair_with(
     tissue: &Tissue,
     pair: &PairData<'_>,
     pool: &DecoyPool<'_>,
     opts: &EffectOpts,
-) -> anyhow::Result<Vec<EffectRow>> {
+) -> anyhow::Result<(Vec<EffectRow>, UnitTally)> {
     let n = tissue.n();
-    let (mut ex, a, weightings) = timing::time(timing::FRAME, || {
-        let (ex, a) = Exposure::build(tissue, pair.ligand_counts, opts);
-        let programmes: Vec<&Targets<'_>> = std::iter::once(pair.targets)
-            .chain(pair.reweighted)
-            .collect();
-        let responses = match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
-            Some(wb) => {
-                let genes: Vec<&[(u32, f32)]> = pair.targets.iter().map(|(_, nz)| *nz).collect();
-                let wa: Vec<f64> = pair.targets.iter().map(|(w, _)| *w).collect();
-                Response::build_many(tissue, &genes, &[wa, wb])
-            }
-            None => programmes
-                .iter()
-                .map(|p| Response::build(tissue, p))
-                .collect(),
-        };
-        let weightings: Vec<Weighting<'_>> = programmes
-            .into_iter()
-            .zip(responses)
-            .map(|(targets, response)| Weighting { targets, response })
-            .collect();
-        (ex, a, weightings)
+    let (mut ex, a) = timing::time(timing::FRAME, || {
+        Exposure::build(tissue, pair.ligand_counts, opts)
     });
     let detected: Vec<bool> = pair.receptor_counts.iter().map(|&r| r > 0.0).collect();
     let comps = super::exposure::competence_grid(&tissue.identity_bin, &detected, opts.competences);
@@ -1450,13 +1733,33 @@ pub fn estimate_pair_with(
     } else {
         Vec::new()
     };
+    let programmes: Vec<&Targets<'_>> = std::iter::once(pair.targets)
+        .chain(pair.reweighted)
+        .collect();
+    let weightings = timing::time(timing::FRAME, || {
+        let responses = match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
+            Some(wb) => {
+                let (genes, wa) = genes_and_weights(pair.targets);
+                Response::build_many(tissue, &genes, &[wa, wb])
+            }
+            None => programmes
+                .iter()
+                .map(|p| Response::build(tissue, p))
+                .collect(),
+        };
+        programmes
+            .iter()
+            .zip(responses)
+            .map(|(&targets, response)| Weighting { targets, response })
+            .collect::<Vec<_>>()
+    });
     let decoy_targets = pool.matched(&tissue.size_factor, pair.targets);
+    let n_decoy_genes = decoy_targets.len();
     let decoy = (!decoy_targets.is_empty()).then(|| Decoy {
         response: Response::build(tissue, &decoy_targets),
         targets: decoy_targets,
     });
-    let n_decoy_genes = decoy.as_ref().map_or(0, |d| d.targets.len());
-    let mut analyses = effects(
+    let (analyses, tally) = effects(
         tissue,
         &mut ex,
         &weightings,
@@ -1466,16 +1769,17 @@ pub fn estimate_pair_with(
         &a,
         &taus,
         opts,
-    )?
-    .into_iter();
+    )?;
+    let mut analyses = analyses.into_iter();
     let first = analyses.next().expect("one analysis per weighting");
     let eff = match analyses.next() {
         Some(b) => first.average(b),
         None => first,
     };
-    drop(decoy);
+    // The response of each weighting, for the crude contrast.
+    let ys: Vec<Vec<f64>> = weightings.into_iter().map(|w| w.response.y).collect();
     let competent = &comps[comps.len() / 2];
-    let tf: Vec<f64> = ex.t.iter().map(|&b| b as u8 as f64).collect();
+    let tf = indicator(&ex.t);
     let mut rows = Vec::with_capacity(tissue.scopes.len());
     let mut curve = Some(eff.curve);
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
@@ -1501,9 +1805,9 @@ pub fn estimate_pair_with(
         };
         // The crude contrast of each weighting, averaged.
         let crude = {
-            let c: Vec<f64> = weightings
+            let c: Vec<f64> = ys
                 .iter()
-                .map(|w| crude_difference(&w.response.y, &ex.t, &comp))
+                .map(|y| crude_difference(y, &ex.t, &comp))
                 .collect();
             if c.len() == 2 {
                 0.5 * (c[0] + c[1])
@@ -1553,7 +1857,7 @@ pub fn estimate_pair_with(
             warnings: String::new(),
         });
     }
-    Ok(rows)
+    Ok((rows, tally))
 }
 
 /// E0 over the contacts inside the scope, both orientations: the Jeffreys
@@ -1626,6 +1930,7 @@ pub mod timing {
     static NS: [AtomicU64; 10] = [ZERO; 10];
     static DRAWS: AtomicU64 = AtomicU64::new(0);
     static ANALYSES: AtomicU64 = AtomicU64::new(0);
+    static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
     pub fn time<T>(stage: usize, f: impl FnOnce() -> T) -> T {
         let t = std::time::Instant::now();
@@ -1644,7 +1949,13 @@ pub mod timing {
         ANALYSES.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Thread-seconds per stage and the mean draws per analysis.
+    /// One pair none of whose fits ran: every subset left an arm thin.
+    pub fn all_skipped() {
+        ALL_SKIPPED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Thread-seconds per stage, the mean draws per analysis and the pairs
+    /// with every fit skipped.
     pub fn summary() -> String {
         let stages: Vec<String> = STAGES
             .iter()
@@ -1653,9 +1964,10 @@ pub mod timing {
             .collect();
         let a = ANALYSES.load(Ordering::Relaxed).max(1) as f64;
         format!(
-            "{}; {:.1} pseudobulk draws per analysis",
+            "{}; {:.1} pseudobulk draws per analysis; {} pairs with every fit skipped (thin arms)",
             stages.join(", "),
-            DRAWS.load(Ordering::Relaxed) as f64 / a
+            DRAWS.load(Ordering::Relaxed) as f64 / a,
+            ALL_SKIPPED.load(Ordering::Relaxed)
         )
     }
 }
@@ -1671,6 +1983,9 @@ pub struct ReportOpts {
     pub max_exposure_eta2: f64,
     /// [`EffectOpts::min_arm`], to say why a pair is not estimable.
     pub min_arm: usize,
+    /// The estimator's points are pseudobulk units ([`EffectOpts::pseudobulk`]
+    /// above 1), not receivers: what the thin-arm note counts.
+    pub units: bool,
 }
 
 impl Default for ReportOpts {
@@ -1679,6 +1994,7 @@ impl Default for ReportOpts {
             fdr: 0.05,
             max_exposure_eta2: 0.8,
             min_arm: 20,
+            units: false,
         }
     }
 }
@@ -1725,7 +2041,8 @@ pub fn eta_squared(group: &[usize], x: &[f64], rows: &[u32]) -> f64 {
     if total <= 1e-12 {
         return f64::NAN;
     }
-    let mut by: std::collections::HashMap<usize, (f64, usize)> = Default::default();
+    // Ordered, so the sum is the same in every run.
+    let mut by: std::collections::BTreeMap<usize, (f64, usize)> = Default::default();
     for &i in rows {
         let e = by.entry(group[i as usize]).or_default();
         e.0 += x[i as usize];
@@ -1859,12 +2176,15 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     if !ev.estimable {
         w.push(if row.n_competent == 0 {
             "not estimable: no receptor-competent receivers".into()
-        } else if head.n_treated < opts.min_arm
-            || head.n.saturating_sub(head.n_treated) < opts.min_arm
-        {
+        } else if thin_arm(opts.min_arm, head.n, head.n_treated) {
+            let (points, guards) = if opts.units {
+                ("pseudobulk units", "pseudobulk and min_arm")
+            } else {
+                ("receivers", "min_arm")
+            };
             format!(
-                "not estimable: thin arm ({} exposed, {} unexposed competent rows; internal \
-                 guard min_arm {}, see outputs.lra.settings in the manifest)",
+                "not estimable: thin arm ({} exposed, {} unexposed competent {points}; \
+                 internal guards {guards} {}, see outputs.lra.settings in the manifest)",
                 head.n_treated,
                 head.n.saturating_sub(head.n_treated),
                 opts.min_arm

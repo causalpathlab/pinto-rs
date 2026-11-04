@@ -224,6 +224,7 @@ fn prefix_terms_match_a_copied_design() {
         t: &t,
         y: &y,
         extra: &[&extra],
+        outcome_only: &[],
         modifiers: &[],
     };
     let opts = NuisanceOpts::default();

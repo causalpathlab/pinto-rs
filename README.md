@@ -68,9 +68,10 @@ every subunit must be in the data, and the complex counts as its scarcest
 subunit, for ligands and receptors alike. In a `--targets` GMT file a set
 name with `_` keys a ligand or receptor the pair list uses whole
 (`TGFBR1_TGFBR2`), otherwise a `ligand_receptor` pair, split at the `_`
-that names a listed pair (else the first). `PINTO_REFERENCE_DIR=<dir>` moves the cache, `PINTO_OFFLINE=1` never
-downloads, `PINTO_REFERENCE_REFRESH=1` rebuilds it. The analysis's fixed
-settings are recorded in the manifest under `outputs.lra.settings`.
+that names a listed pair (else the first). `PINTO_REFERENCE_DIR=<dir>`
+moves the cache, `PINTO_OFFLINE=1` never downloads,
+`PINTO_REFERENCE_REFRESH=1` rebuilds it. The analysis's fixed settings are
+recorded in the manifest under `outputs.lra.settings`.
 With `--from`, cell types of the run's newest lupin round, when it has
 one, adjust the estimate as confounders and strata and add one row per
 receiver cell type (`type:<name>`); without a round there are none. The

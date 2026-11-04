@@ -33,7 +33,8 @@ fn units_stay_inside_their_stratum() {
         own: vec![0.0; n],
         niche: vec![0.0; n],
     };
-    let (unit_of, n_units) = partition(t, &frame, 6, 3);
+    let (unit_of, n_units, random) = partition(t, &frame, 6, 3);
+    assert!(random);
     assert!(n_units > n / 12 && n_units <= n, "{n_units} units");
     let mut lead = vec![usize::MAX; n_units];
     let mut size = vec![0usize; n_units];
@@ -158,4 +159,77 @@ fn one_variance_cluster_is_not_estimable() {
     let mixed = combine(&[one, est(0.1, 0.05), est(0.12, 0.05)]);
     assert!(mixed.df.is_finite() && mixed.df < 50.0, "{}", mixed.df);
     assert!((mixed.theta - 0.11).abs() < 1e-12);
+}
+
+/// A partition whose strata all hold fewer than two units' worth of
+/// receivers is the same under every seed, and says so.
+#[test]
+fn a_partition_no_seed_changes_is_fixed() {
+    let f = fixture();
+    let t = &f.tissue;
+    let n = t.n();
+    let frame = Exposure {
+        tau: 0.0,
+        t: (0..n).map(|i| i % 3 == 0).collect(),
+        t_ring: vec![false; n],
+        own: vec![0.0; n],
+        niche: vec![0.0; n],
+    };
+    let big = n;
+    let (a, _, random) = partition(t, &frame, big, 1);
+    assert!(!random);
+    assert_eq!(a, partition(t, &frame, big, 2).0);
+    assert!(partition(t, &frame, 1, 1).2);
+}
+
+/// The guards count units, the estimator's points: twenty exposed
+/// receivers in one stratum make two units of ten, an arm the guard
+/// rejects at `min_arm` 20, and the skip of hopeless fits reads the same
+/// two.
+#[test]
+fn the_guard_counts_units_not_their_members() {
+    use crate::lr_activity::ligand_effect::estimate::{Reads, Rows};
+    use crate::lr_activity::ligand_effect::overlap::{subset_estimate, OverlapTerms};
+    use crate::lr_activity::ligand_effect::pseudobulk::draw;
+    let f = fixture();
+    let t = &f.tissue;
+    let n = t.n();
+    // The largest group of one tile and identity bin; twenty of it exposed.
+    let mut groups: std::collections::HashMap<(u32, usize), Vec<usize>> = Default::default();
+    for i in 0..n {
+        groups
+            .entry((t.cf.cluster[i], t.identity_bin[i]))
+            .or_default()
+            .push(i);
+    }
+    let group = groups.into_values().max_by_key(|g| g.len()).unwrap();
+    assert!(group.len() >= 20, "{} receivers", group.len());
+    let mut exposed = vec![false; n];
+    for &i in &group[..20] {
+        exposed[i] = true;
+    }
+    let frame = Exposure {
+        tau: 0.0,
+        t: exposed,
+        t_ring: vec![false; n],
+        own: vec![0.0; n],
+        niche: vec![0.0; n],
+    };
+    let u = draw(t, &frame, &vec![0.0; n], 10, 5);
+    let rows: Vec<u32> = (0..u.lead.len() as u32).collect();
+    let terms = OverlapTerms {
+        h: vec![0.25; rows.len()],
+        num: vec![0.01; rows.len()],
+    };
+    let (e, sums) = subset_estimate(&terms, &u.exposure.t, &rows, &u.cf);
+    assert_eq!(e.n_treated, 2);
+    assert_eq!(e.n, u.lead.len());
+    let o = opts();
+    assert_eq!(o.min_arm, 20);
+    assert!(o.thin_arm(e.n, e.n_treated));
+    assert!(o.guard((e, sums)).0.theta.is_nan());
+    // The skip reads the same count: the fit of that arm is not run.
+    let every = vec![vec![true; u.lead.len()]];
+    let reads = Reads::of(Rows::units(&u), &u.exposure, &every, &o);
+    assert!(!reads.e2);
 }
