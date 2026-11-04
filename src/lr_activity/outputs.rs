@@ -237,7 +237,8 @@ pub fn write_lr_activity_json(
     Ok(())
 }
 
-fn opt_finite(v: f32) -> serde_json::Value {
+pub fn opt_finite(v: impl Into<f64>) -> serde_json::Value {
+    let v: f64 = v.into();
     if v.is_finite() {
         serde_json::Value::from(v)
     } else {

@@ -156,7 +156,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..12],
+        names[..13],
         [
             "run_methods",
             "run_fit",
@@ -169,6 +169,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "view_map",
             "view_markers",
             "view_cell",
+            "view_lra",
             "view_export"
         ]
     );
@@ -560,6 +561,17 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
     assert!(msg.contains("pinto lra") && msg.contains("fish"), "{msg}");
     let msg = c.fails("run_lra", json!({"run": "nowhere.pinto.json"}));
     assert!(msg.contains("not found"), "{msg}");
+    let msg = c.fails("run_lra", json!({"run": run, "only": "SPP1", "out": "x"}));
+    assert!(msg.contains("sequence"), "{msg}");
+    // A run with no lra table has none to list.
+    c.ok("view_open", json!({"prefix": prefix}));
+    let msg = c.fails("view_lra", json!({}));
+    assert!(
+        msg.contains("no lra table") && msg.contains("run_lra"),
+        "{msg}"
+    );
+    let msg = c.fails("view_export", json!({"png": "c.png", "curve": true}));
+    assert!(msg.contains("no lra pair"), "{msg}");
     let msg = c.fails(
         "run_lra_simulate",
         json!({"run": run, "study": {"replicates": 2}}),

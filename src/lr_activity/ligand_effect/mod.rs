@@ -58,9 +58,11 @@ pub mod estimate;
 pub mod exposure;
 pub mod folds;
 pub mod genes;
+pub mod only;
 pub mod output;
 pub mod overlap;
 pub mod pseudobulk;
+pub mod receivers;
 pub mod reference;
 pub mod regression;
 pub mod simulate;
@@ -81,7 +83,7 @@ use overlap::NuisanceOpts;
 use simulate::{default_grid, simulate, SimBase, SimShared, Study};
 use std::path::Path;
 use targets::TargetSets;
-use tissue::{receiver_cells, Tissue, TissueInputs, TissueOpts};
+use tissue::{Tissue, TissueInputs, TissueOpts};
 
 /// Memory allowed for pairs estimated at once.
 const PAIR_MEMORY_BUDGET: usize = 2 << 30;
@@ -165,6 +167,40 @@ pub struct Settings<'a> {
     pub fdr: f64,
     pub seed: u64,
     pub block_size: Option<usize>,
+    /// `--only`: the pairs to estimate; empty for every pair.
+    pub only: &'a [Box<str>],
+}
+
+impl Settings<'_> {
+    /// What decides the pairs and the receivers' identity, as the manifest
+    /// records it beside the table ([`crate::util::metadata::LraOptions`]).
+    pub fn options(&self) -> crate::util::metadata::LraOptions {
+        let abs = |p: &str| crate::lr_activity::recorded(Path::new(p));
+        crate::util::metadata::LraOptions {
+            lr_pairs: self.lr_pairs.map(abs),
+            targets: self.targets.iter().map(|t| abs(t)).collect(),
+            species: self.species.name(),
+            seed: self.seed,
+            fdr: self.fdr,
+            identity_excluded: Vec::new(),
+        }
+    }
+
+    fn choices(&self) -> PairChoices<'_> {
+        PairChoices {
+            species: self.species,
+            lr_pairs: self.lr_pairs,
+            targets: self.targets,
+        }
+    }
+}
+
+/// What decides which pairs there are: the reference's species and the
+/// user's pair and programme files on top of it.
+pub struct PairChoices<'a> {
+    pub species: ReferenceSpecies,
+    pub lr_pairs: Option<&'a str>,
+    pub targets: &'a [Box<str>],
 }
 
 /// What the lra front end hands over.
@@ -187,7 +223,16 @@ pub fn lra_path(out: &str) -> String {
 
 /// `{out}.lra.curve.parquet`, each pair's threshold-response curve.
 pub fn lra_curve_path(out: &str) -> String {
-    format!("{out}.lra.curve.parquet")
+    curve_beside(&lra_path(out))
+}
+
+/// The curves written beside the contact-effect table `table`, the full
+/// one or a subset's: `{table without .parquet}.curve.parquet`.
+pub fn curve_beside(table: &str) -> String {
+    format!(
+        "{}.curve.parquet",
+        table.strip_suffix(".parquet").unwrap_or(table)
+    )
 }
 
 /// `{out}.lra-simulate.parquet`, the power and calibration check.
@@ -211,12 +256,16 @@ struct Pair {
 struct Prepared {
     tissue: Tissue,
     pairs: Vec<Pair>,
+    /// Pairs the full analysis would estimate, of which `pairs` are kept.
+    n_all: usize,
     store: GeneStore,
     local: HashMap<usize, usize>,
     eopts: EffectOpts,
     reference_record: Option<std::path::PathBuf>,
     /// Genes of the decoy pool ([`estimate::DecoyPool`]), in `local`.
     decoy_genes: Vec<usize>,
+    /// The genes the receivers' identity leaves out, by name, sorted.
+    identity_excluded: Vec<String>,
 }
 
 impl Prepared {
@@ -328,21 +377,23 @@ pub fn human_bytes(b: u64) -> String {
 
 // * Preparation
 
-fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
-    let a = &inp.settings;
-    let k = INTERNALS;
-    let gene_names = inp.axis.feature_names().to_vec();
-    let index = GeneIndex::build(&gene_names);
-
+/// The pairs this data can estimate: the reference's for its species,
+/// then `--lr-pairs` and `--targets` on top, resolved against the data's
+/// genes ([`resolve_pairs`]); with the reference's record.
+fn reference_pairs(
+    c: &PairChoices<'_>,
+    gene_names: &[Box<str>],
+    index: &GeneIndex,
+) -> anyhow::Result<(Vec<Pair>, std::path::PathBuf)> {
     // The reference first, then the user's files on top of it.
-    let files = reference(a.species, &gene_names)?;
+    let files = reference(c.species, gene_names)?;
     let mut sets = TargetSets::default();
     sets.add_file(&files.receptor_targets.to_string_lossy())?;
     let mut pair_files = vec![files.lr_pairs];
-    if let Some(f) = a.lr_pairs {
+    if let Some(f) = c.lr_pairs {
         pair_files.push(f.into());
     }
-    for f in a.targets {
+    for f in c.targets {
         sets.add_file(f)?;
     }
     let mut raw = Vec::new();
@@ -351,45 +402,53 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     }
     sets.settle_gmt_names(&raw);
     let specificity = sets.specificity();
-    let pairs = resolve_pairs(raw, &gene_names, &index, &sets, &specificity);
+    let pairs = resolve_pairs(raw, gene_names, index, &sets, &specificity);
     anyhow::ensure!(
         !pairs.is_empty(),
         "no ligand-receptor pair has a usable response programme"
     );
+    Ok((pairs, files.record))
+}
 
-    let receivers = receiver_cells(inp.coords, inp.pairs);
-    let mut row_of_cell = vec![usize::MAX; inp.coords.len()];
-    for (r, &c) in receivers.iter().enumerate() {
-        row_of_cell[c] = r;
-    }
+/// Every gene `pairs` read (ligands, receptors, targets), sorted.
+fn pair_genes(pairs: &[Pair]) -> Vec<usize> {
     let mut needed: Vec<usize> = Vec::new();
-    for p in &pairs {
+    for p in pairs {
         needed.extend(&p.ligand_genes);
         needed.extend(&p.receptor_genes);
         needed.extend(p.targets.iter().map(|(g, _, _)| *g));
     }
     needed.sort_unstable();
     needed.dedup();
-    // Decoy pool (estimate::DecoyPool): genes outside every pair and
-    // programme, read with them and left out of the identity like them.
-    let decoy_genes = estimate::decoy_pool_genes(gene_names.len(), &needed, a.seed);
-    needed.extend(&decoy_genes);
-    needed.sort_unstable();
-    let local: HashMap<usize, usize> = needed.iter().enumerate().map(|(k, &g)| (g, k)).collect();
-    info!(
-        "Reading {} genes (ligands, receptors, targets) sparsely over {} receivers...",
-        needed.len(),
-        receivers.len()
-    );
-    let (store, log1p_depth) =
-        GeneStore::read(inp.data, inp.axis, &needed, &row_of_cell, a.block_size)?;
+    needed
+}
 
-    // Identity with every signalling and programme gene weighted out, so a
-    // receiver's identity is not partly its own outcome.
-    let excluded: HashSet<usize> = needed.iter().copied().collect();
-    let row_weights: Vec<f32> = (0..inp.data.num_rows())
+/// The genes the receivers' identity leaves out, for every pair of `all`
+/// whichever are estimated, so a subset (`--only`) sees the receivers the
+/// full analysis sees; and the decoy pool ([`estimate::DecoyPool`]), genes
+/// outside every pair and programme, read with them and left out like
+/// them.
+fn signalling_genes(all: &[Pair], n_genes: usize, seed: u64) -> (HashSet<usize>, Vec<usize>) {
+    let needed = pair_genes(all);
+    let decoys = estimate::decoy_pool_genes(n_genes, &needed, seed);
+    let excluded = needed.iter().chain(&decoys).copied().collect();
+    (excluded, decoys)
+}
+
+/// The receivers' identity projection and its bins (`identity_bits` of
+/// it), every row of an `excluded` gene weighted out, so a receiver's
+/// identity is not partly its own outcome.
+fn identity_bins(
+    data: &SparseIoVec,
+    axis: &FeatureAxis,
+    excluded: &HashSet<usize>,
+    cell_section: &[Box<str>],
+    block_size: Option<usize>,
+) -> anyhow::Result<(Mat, Vec<usize>)> {
+    let k = INTERNALS;
+    let row_weights: Vec<f32> = (0..data.num_rows())
         .map(|r| {
-            if excluded.contains(&inp.axis.feature_of_row(r)) {
+            if excluded.contains(&axis.feature_of_row(r)) {
                 0.0
             } else {
                 1.0
@@ -404,14 +463,72 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
             row_weights.len()
         );
     }
-    let identity = inp.data.project_columns_weighted(
+    let identity = data.project_columns_weighted(
         k.identity_dim,
-        a.block_size,
-        Some(inp.cell_section),
+        block_size,
+        Some(cell_section),
         &row_weights,
     )?;
     let bits = k.identity_bits.min(k.identity_dim);
-    let identity_bin = binary_sort_columns(&identity.proj, bits)?;
+    let bins = binary_sort_columns(&identity.proj, bits)?;
+    Ok((identity.proj, bins))
+}
+
+fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
+    let a = &inp.settings;
+    let k = INTERNALS;
+    let gene_names = inp.axis.feature_names().to_vec();
+    let index = GeneIndex::build(&gene_names);
+    let (all, record) = reference_pairs(&a.choices(), &gene_names, &index)?;
+    let (excluded, decoy_genes) = signalling_genes(&all, gene_names.len(), a.seed);
+    let mut identity_excluded: Vec<String> = excluded
+        .iter()
+        .map(|&g| gene_names[g].to_string())
+        .collect();
+    identity_excluded.sort_unstable();
+    let n_all = all.len();
+    let pairs: Vec<Pair> = if a.only.is_empty() {
+        all
+    } else {
+        let wanted = only::parse(a.only)?;
+        let keep = only::select(&wanted, &all, &gene_names, &index)?;
+        info!(
+            "--only: {} of {n_all} pairs ({})",
+            keep.iter().filter(|&&k| k).count(),
+            wanted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        all.into_iter()
+            .zip(keep)
+            .filter_map(|(p, k)| k.then_some(p))
+            .collect()
+    };
+
+    let (receivers, row_of_cell) = receivers::receiver_rows(inp.coords, inp.pairs);
+    // The genes estimated pairs read, and the decoys.
+    let mut needed = pair_genes(&pairs);
+    needed.extend(&decoy_genes);
+    needed.sort_unstable();
+    needed.dedup();
+    let local: HashMap<usize, usize> = needed.iter().enumerate().map(|(k, &g)| (g, k)).collect();
+    info!(
+        "Reading {} genes (ligands, receptors, targets) sparsely over {} receivers...",
+        needed.len(),
+        receivers.len()
+    );
+    let (store, log1p_depth) =
+        GeneStore::read(inp.data, inp.axis, &needed, &row_of_cell, a.block_size)?;
+
+    let (identity, identity_bin) = identity_bins(
+        inp.data,
+        inp.axis,
+        &excluded,
+        inp.cell_section,
+        a.block_size,
+    )?;
 
     let topts = TissueOpts {
         scales: k.scales.to_vec(),
@@ -426,7 +543,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
             coords: inp.coords,
             section: inp.cell_section,
             pairs: inp.pairs,
-            identity: &identity.proj,
+            identity: &identity,
             identity_bin: &identity_bin,
             log1p_depth: &log1p_depth,
             cell_type: inp.cell_type.map(|(codes, _)| codes),
@@ -454,11 +571,13 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     Ok(Prepared {
         tissue,
         pairs,
+        n_all,
         store,
         local,
         eopts,
-        reference_record: Some(files.record),
+        reference_record: Some(record),
         decoy_genes,
+        identity_excluded,
     })
 }
 
@@ -602,19 +721,49 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         units: eopts.pseudobulk > 1,
     };
     estimate::report(&mut rows, &ropts);
-    let path = lra_path(a.out);
-    output::write_effects(&path, &rows)?;
-    let curve_path = lra_curve_path(a.out);
+    let subset = !a.only.is_empty();
+    let made = crate::lr_activity::lra_outputs(
+        crate::lr_activity::args::LraMethod::ContactEffect,
+        a.out,
+        a.only,
+    );
+    let [path, curve_path] = [&made[0], &made[1]].map(|p| p.to_string_lossy().into_owned());
+    let q_scope = if subset {
+        only::q_scope(prep.pairs.len(), prep.n_all)
+    } else {
+        output::Q_SCOPE_ALL.into()
+    };
+    output::write_effects(&path, &rows, &q_scope)?;
     output::write_curve(&curve_path, &rows)?;
     let recorded = |p: &str| crate::lr_activity::recorded(Path::new(p));
-    record(a.manifest, UnitSize::Own(units.mean()), |o| {
-        o.table = Some(recorded(&path));
-        o.curve = Some(recorded(&curve_path));
-        o.reference = prep
-            .reference_record
-            .as_deref()
-            .map(crate::lr_activity::recorded);
-    })?;
+    // The genes left out of the identity, so the viewer draws the
+    // receivers as they were without the files that decided them.
+    let options = crate::util::metadata::LraOptions {
+        identity_excluded: prep.identity_excluded.clone(),
+        ..a.options()
+    };
+    if subset {
+        let entry = crate::util::metadata::LraSubset {
+            only: only::canonical(a.only),
+            pairs: prep.pairs.len(),
+            of: prep.n_all,
+            table: recorded(&path),
+            curve: recorded(&curve_path),
+            options: Some(options),
+        };
+        // The full table's unit size stays the manifest's.
+        record(a.manifest, UnitSize::Kept, |o| o.record_subset(entry))?;
+    } else {
+        record(a.manifest, UnitSize::Own(units.mean()), |o| {
+            o.table = Some(recorded(&path));
+            o.curve = Some(recorded(&curve_path));
+            o.record_options(options);
+            o.reference = prep
+                .reference_record
+                .as_deref()
+                .map(crate::lr_activity::recorded);
+        })?;
+    }
     let power_check = crate::util::metadata::PintoMetadata::read(a.manifest)
         .ok()
         .and_then(|m| m.outputs.lra.simulate);
@@ -622,6 +771,9 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         "{}",
         output::console_summary(&rows, &path, power_check.as_deref())
     );
+    if subset {
+        println!("  {q_scope}; the full table, when there is one, is unchanged");
+    }
     Ok(())
 }
 

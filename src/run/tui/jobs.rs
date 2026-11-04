@@ -4,7 +4,7 @@
 //! the screen.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::script;
@@ -18,43 +18,118 @@ const KEEP: usize = 2000;
 /// is killed.
 pub(crate) const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// One fit to run.
-#[derive(Clone, Debug, Default)]
+/// One run to make: a fit, or a method that reads one (lra), each with
+/// the files it owns resolved.
+#[derive(Clone, Debug)]
 pub struct Job {
     pub method: String,
     /// Its row on the Methods screen.
     pub row: usize,
     /// Where it runs and the script goes.
     pub dir: PathBuf,
-    /// The `--out` prefix, a name in `dir`.
+    /// The `--out` prefix, a name in `dir`: the script's `$out`.
     pub out: String,
     /// The command line without the program, paths relative to `dir`.
     pub argv: Vec<String>,
     /// Batch label files written for the run, before its script.
     pub made: Vec<(PathBuf, super::batch::Made)>,
-    /// Whether to clear the script and batch files a run at the same
-    /// `--out` left unfinished.
+    /// Whether to clear what a run of it that did not finish left
+    /// ([`Job::leftovers`]).
     pub clear: bool,
+    /// The file that says the run is done, and that it must not write
+    /// over: a fit's manifest, lra's table.
+    pub done: PathBuf,
+    /// Its script.
+    pub script: PathBuf,
+    /// What a run of it that did not finish leaves, and only what it owns:
+    /// its script, and a fit's batch files.
+    pub leftovers: Vec<PathBuf>,
+    /// The run `pinto view` opens once it is done.
+    pub opens: PathBuf,
 }
 
 pub use crate::run::script::outputs;
 
 impl Job {
+    /// A fit writing `--out out` in `dir`: its manifest, script and batch
+    /// files named after `out` ([`outputs`]).
     #[must_use]
-    pub fn manifest(&self) -> PathBuf {
-        outputs(&self.dir, &self.out)[0].clone()
+    pub fn fit(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>) -> Self {
+        let [manifest, script, batches] = outputs(dir, out);
+        Job {
+            method: method.to_string(),
+            row,
+            dir: dir.to_path_buf(),
+            out: out.to_string(),
+            argv,
+            made: Vec::new(),
+            clear: false,
+            done: manifest.clone(),
+            leftovers: vec![script.clone(), batches],
+            script,
+            opens: manifest,
+        }
+    }
+
+    /// A method reading the run `opens` (lra), writing `done` in `dir`: it
+    /// owns only its `script`, never the run's own files.
+    #[must_use]
+    pub fn reading(
+        method: &str,
+        dir: &Path,
+        out: &str,
+        argv: Vec<String>,
+        [done, script, opens]: [PathBuf; 3],
+    ) -> Self {
+        Job {
+            method: method.to_string(),
+            row: 0,
+            dir: dir.to_path_buf(),
+            out: out.to_string(),
+            argv,
+            made: Vec::new(),
+            clear: false,
+            done,
+            leftovers: vec![script.clone()],
+            script,
+            opens,
+        }
+    }
+
+    /// The file that says the run is done: see [`Job::done`].
+    #[must_use]
+    pub fn manifest(&self) -> &Path {
+        &self.done
     }
 
     #[must_use]
-    pub fn script(&self) -> PathBuf {
-        outputs(&self.dir, &self.out)[1].clone()
+    pub fn script(&self) -> &Path {
+        &self.script
     }
 
-    /// What a run that did not finish leaves: its script and batch files.
+    /// The run `pinto view` opens once it is done.
     #[must_use]
-    pub fn leftovers(&self) -> [PathBuf; 2] {
-        let [_, script, batches] = outputs(&self.dir, &self.out);
-        [script, batches]
+    pub fn view(&self) -> &Path {
+        &self.opens
+    }
+
+    /// What a new run must not write over: what says it is done, and what
+    /// it leaves.
+    #[must_use]
+    pub fn in_the_way(&self) -> Vec<PathBuf> {
+        std::iter::once(self.done.clone())
+            .chain(self.leftovers.iter().cloned())
+            .collect()
+    }
+
+    /// [`Job::done`] as the script checks it, from `dir`.
+    #[must_use]
+    pub fn done_name(&self) -> String {
+        self.done
+            .strip_prefix(&self.dir)
+            .unwrap_or(&self.done)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -219,12 +294,12 @@ fn run_job(
     s: &Mutex<Shared>,
     stopper: &Stopper,
 ) -> State {
-    if job.manifest().exists() {
-        return State::Failed(format!("{} exists", job.manifest().display()));
+    if job.done.exists() {
+        return State::Failed(format!("{} exists", job.done.display()));
     }
     if job.clear {
         if let Err(e) = job
-            .leftovers()
+            .leftovers
             .iter()
             .try_for_each(|p| remove_file(&p.to_string_lossy()))
         {
@@ -243,7 +318,7 @@ fn run_job(
             return State::Failed(format!("cannot write the batch files: {e}"));
         }
     }
-    if let Err(e) = script::write(&job.script(), &job.out, &job.argv) {
+    if let Err(e) = script::write(&job.script, &job.out, &job.done_name(), &job.argv) {
         return State::Failed(format!("cannot write the script: {e}"));
     }
     heard(
@@ -252,7 +327,7 @@ fn run_job(
         Said::Line(format!(
             "── {} · {}",
             job.method,
-            crate::tui::shown(&job.script())
+            crate::tui::shown(&job.script)
         )),
     );
     command.args(&job.argv).current_dir(&job.dir);

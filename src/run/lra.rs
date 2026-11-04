@@ -14,7 +14,7 @@ use crate::lr_activity::ligand_effect::output::{
 };
 use crate::lr_activity::ligand_effect::simulate::{Study, COMPARED};
 use crate::mcp::shown_path;
-use crate::util::metadata::{run_stem, PintoMetadata};
+use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -41,8 +41,18 @@ pub(super) struct LraToolArgs {
     pub fdr: Option<f64>,
     #[serde(default)]
     pub species: Option<String>,
+    /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
+    #[serde(default)]
+    pub only: Vec<String>,
     #[serde(default = "in_background")]
     pub background: bool,
+}
+
+impl LraToolArgs {
+    /// `only` as `pinto lra` takes it.
+    fn only(&self) -> Vec<Box<str>> {
+        self.only.iter().map(|s| s.as_str().into()).collect()
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -94,33 +104,20 @@ fn named_out(out: Option<&str>) -> Option<String> {
     })
 }
 
-/// `pinto lra` for `a`, reading `run` and writing under `out`: each flag the
-/// tool was given, as the command line takes it.
-pub(super) fn lra_argv(a: &LraToolArgs, run: &str, out: &str) -> Vec<String> {
-    let mut argv: Vec<String> = vec![
-        "lra".into(),
-        "--from".into(),
-        run.into(),
-        "-o".into(),
-        out.into(),
-    ];
-    if let Some(m) = &a.method {
-        argv.extend(["--method".into(), m.clone()]);
-    }
-    if let Some(p) = &a.lr_pairs {
-        argv.extend(["--lr-pairs".into(), shown_path(Path::new(p))]);
-    }
-    if !a.targets.is_empty() {
-        let files: Vec<String> = a.targets.iter().map(|t| shown_path(Path::new(t))).collect();
-        argv.extend(["--targets".into(), files.join(",")]);
-    }
-    if let Some(q) = a.fdr {
-        argv.extend(["--fdr".into(), q.to_string()]);
-    }
-    if let Some(s) = &a.species {
-        argv.extend(["--species".into(), s.clone()]);
-    }
-    argv
+/// `pinto lra` for `a` with `method`, reading `run` and writing under
+/// `out`: each choice the tool was given, as the command line takes it
+/// ([`LraOptions::argv`]).
+pub(super) fn lra_argv(a: &LraToolArgs, method: LraMethod, run: &str, out: &str) -> Vec<String> {
+    let d = LraOptions::default();
+    let options = LraOptions {
+        lr_pairs: a.lr_pairs.as_deref().map(|p| shown_path(Path::new(p))),
+        targets: a.targets.iter().map(|t| shown_path(Path::new(t))).collect(),
+        species: a.species.clone().unwrap_or(d.species),
+        fdr: a.fdr.unwrap_or(d.fdr),
+        seed: d.seed,
+        identity_excluded: Vec::new(),
+    };
+    options.argv(run, Some(out), method, &a.only)
 }
 
 /// `pinto lra-simulate` reading `run`, writing under `out`, with the study
@@ -211,12 +208,13 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         "{run} not found: give run, a run's .pinto.json"
     );
     let out = named_out(a.out.as_deref());
+    let only = a.only();
     // A finished `out` is read, not run again.
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
-        let made = lra_outputs(method, &o);
+        let made = lra_outputs(method, &o, &only);
         if finished(cx, &made) {
-            let argv = lra_argv(&a, &run, &o);
+            let argv = lra_argv(&a, method, &run, &o);
             let mut reply = lra_reply(method, &argv, &run, &made)?;
             push_note(
                 &mut reply,
@@ -226,9 +224,9 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &run_stem(&run), |o| {
-        Ok(lra_outputs(method, o))
+        Ok(lra_outputs(method, o, &only))
     })?;
-    let argv = lra_argv(&a, &run, &out);
+    let argv = lra_argv(&a, method, &run, &out);
     checked(cli, &argv)?;
     let summary = format!("lra {} of {run}", method_name(method));
     // The same call, by its out: what reads the tables once the job is done.
@@ -242,6 +240,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         ),
         ("fdr", a.fdr.map(Value::from)),
         ("species", a.species.clone().map(Value::from)),
+        ("only", (!a.only.is_empty()).then(|| a.only.clone().into())),
     ] {
         if let Some(v) = v {
             again[k] = v;
@@ -281,6 +280,11 @@ fn lra_reply(
         let mut r = effects_summary(&read_pooled_effects(&made[0].to_string_lossy())?);
         r["reading"] =
             "one row per pair and section (`all` pooled); verdict_note says why in words".into();
+        if argv.iter().any(|w| w == "--only") {
+            r["q_scope"] = "q corrected within this --only subset, not over every pair; \
+                            recorded under lra.subsets, the full table unchanged"
+                .into();
+        }
         r
     } else {
         json!({})
@@ -305,11 +309,10 @@ fn lra_reply(
 /// The pooled pairs in a few lines: how many, each verdict's count, and the
 /// strongest evidence (percent change with its 95% interval, and q).
 pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
-    let mut counts = Map::new();
-    for v in Verdict::ALL {
-        let n = rows.iter().filter(|r| r.verdict == v).count();
-        counts.insert(v.code().into(), n.into());
-    }
+    let counts: Map<String, Value> = Verdict::counts(rows.iter().map(|r| r.verdict))
+        .iter()
+        .map(|(v, n)| (v.code().into(), (*n).into()))
+        .collect();
     let top: Vec<Value> = rank_pooled(rows)
         .into_iter()
         .take(TOP_PAIRS)

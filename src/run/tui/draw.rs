@@ -572,7 +572,7 @@ impl App {
             Line::from(""),
         ];
         for (i, ((j, state), last)) in q.jobs.iter().zip(&states).zip(&last).enumerate() {
-            let name = format!(" {:<13} {:<24} ", j.method, fit(&shown(&j.manifest()), 24));
+            let name = format!(" {:<13} {:<24} ", j.method, fit(&shown(j.manifest()), 24));
             let (said, style) = match state {
                 State::Waiting => ("waiting".to_string(), dim()),
                 State::Running => (
@@ -610,7 +610,7 @@ impl App {
         let mut body: Vec<Line<'static>> = Vec::new();
         for p in planned {
             body.extend(wrap(
-                format!(" {}   recorded in {}", p.job.method, shown(&p.job.script())),
+                format!(" {}   recorded in {}", p.job.method, shown(p.job.script())),
                 bold(),
             ));
             let lines = super::script::command_lines(&p.job.argv);

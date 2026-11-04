@@ -23,6 +23,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 pub use super::METHODS;
+pub(crate) use jobs::{Job as QueuedJob, Queue as JobQueue, State as JobState};
 
 /// How long after the review opens the run key is not yet taken as "run":
 /// a double tap or a held key would otherwise skip the review.
@@ -331,8 +332,13 @@ impl App {
         let here = std::env::current_dir()?;
         // `..` resolved, symlinks kept: the folders as the user knows them.
         let start = script::lexical(&here.join(start));
+        // The methods on a fitted run follow the fits, where pinto has them.
+        let on_runs = super::ON_RUNS
+            .iter()
+            .filter(|m| cli.find_subcommand(m).is_some());
         let rows = METHODS
             .iter()
+            .chain(on_runs)
             .map(|m| {
                 Ok(Row {
                     form: Method::new(&cli, m)?,
@@ -965,29 +971,52 @@ impl App {
                     }
                 }
             }
-            let argv = r.form.argv(&data, &coords, &batches, &out);
-            let job = Job {
-                method: r.form.name.clone(),
-                row: i,
-                dir: dir.clone(),
-                out: out.clone(),
-                argv,
-                made,
-                clear: self.clears(i),
-            };
-            // What an unfinished run left is cleared, so only its manifest
-            // is in the way.
-            let in_the_way = if job.clear {
-                vec![job.manifest()]
+            let mut argv = r.form.argv(&data, &coords, &batches, &out);
+            // Files typed where pinto run started, read where it runs.
+            relative_values(&r.form, &mut argv, &self.here, &dir);
+            let on_run = r.form.from_run;
+            let mut job = if on_run {
+                on_run_job(&r.form.name, i, &dir, &out, argv)
             } else {
-                jobs::outputs(&job.dir, &job.out).to_vec()
+                Job {
+                    made,
+                    ..Job::fit(&r.form.name, i, &dir, &out, argv)
+                }
+            };
+            job.clear = self.clears(i);
+            // What an unfinished run left is cleared, so only what says it
+            // is done is in the way.
+            let in_the_way = if job.clear {
+                vec![job.done.clone()]
+            } else {
+                job.in_the_way()
             };
             let mut blamed = None;
-            let problem = if self.pairs.is_empty() {
+            // A line clap refuses says so: on a run, the job could not
+            // even tell which manifest it reads.
+            let refused = || {
+                form::check(&self.cli, &job.argv).err().map(|why| {
+                    let who = form::blamed(&why, &r.form.fields).map(str::to_string);
+                    (why, who)
+                })
+            };
+            let problem = if on_run && r.form.from().is_none() {
+                blamed = Some("from".to_string());
+                Some("--from is unset: the run's .pinto.json (Parameters screen)".to_string())
+            } else if let Some((why, who)) = on_run.then(refused).flatten() {
+                blamed = who;
+                Some(why)
+            } else if on_run && !job.opens.is_file() {
+                blamed = Some("from".to_string());
+                Some(format!(
+                    "--from {}: no such run manifest",
+                    r.form.from().unwrap_or_default()
+                ))
+            } else if !on_run && self.pairs.is_empty() {
                 Some("no data files: add some on the Data screen".to_string())
-            } else if let Some(p) = &coord_problem {
+            } else if let (Some(p), false) = (&coord_problem, on_run) {
                 Some(p.clone())
-            } else if let Err(why) = &batch_args {
+            } else if let (Err(why), false) = (&batch_args, on_run) {
                 Some(why.clone())
             } else if let Some(there) = in_the_way.into_iter().find(|p| p.exists()) {
                 Some(format!(
@@ -999,10 +1028,11 @@ impl App {
             } else if std::fs::metadata(&dir).is_ok_and(|m| !m.is_dir()) {
                 // A folder not there yet is made when the fit starts.
                 Some(format!("{} is not a folder", shown(&dir)))
+            } else if let Some((why, who)) = refused() {
+                blamed = who;
+                Some(why)
             } else {
-                form::check(&self.cli, &job.argv).err().inspect(|why| {
-                    blamed = form::blamed(why, &r.form.fields).map(str::to_string);
-                })
+                None
             };
             outs.push(dir.join(&out));
             planned.push(Planned {
@@ -1208,8 +1238,8 @@ impl App {
                 let state = q.states().get(self.job_row.min(last)).cloned();
                 if self.running() {
                     self.message = Some("still running: s stops, or wait for the fits".into());
-                } else if state == Some(jobs::State::Done) && job.manifest().exists() {
-                    self.view = Some(job.manifest());
+                } else if state == Some(jobs::State::Done) && job.view().exists() {
+                    self.view = Some(job.view().to_path_buf());
                     self.quit = true;
                 } else {
                     self.message = Some(format!("{} did not finish", job.method));
@@ -1234,12 +1264,67 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
                 jobs::State::Waiting | jobs::State::Running => "not finished".to_string(),
             };
             if script.exists() {
-                format!("{} {what}; again with: bash {}", j.method, shown(&script))
+                format!("{} {what}; again with: bash {}", j.method, shown(script))
             } else {
                 format!("{} {what}", j.method)
             }
         })
         .collect()
+}
+
+/// The job of a method that reads a prior run (`--from`), `argv` as
+/// pinto parses it: what says it is done (lra's table, a subset's with
+/// `--only`, lra-simulate's), and the run it read, which it opens. It owns
+/// only its script, `{out}.cmd.sh`: never the run's own files.
+fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>) -> Job {
+    use crate::lr_activity::{ligand_effect::lra_simulate_path, lra_outputs};
+    let cli = <crate::Cli as clap::Parser>::try_parse_from(
+        std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
+    );
+    let (done, from) = match cli.map(|c| c.commands) {
+        Ok(crate::Commands::LrActivity(a)) => (
+            lra_outputs(a.method, out, &a.only).swap_remove(0),
+            a.input.from,
+        ),
+        Ok(crate::Commands::LraSimulate(a)) => (lra_simulate_path(out).into(), a.input.from),
+        // An argv pinto does not take: the plan's check says why, and the
+        // job does not run.
+        _ => (PathBuf::from(out), None),
+    };
+    let opens = from.map_or_else(PathBuf::new, |f| script::lexical(&dir.join(&*f)));
+    let paths = [dir.join(done), dir.join(format!("{out}.cmd.sh")), opens];
+    Job {
+        row,
+        ..Job::reading(method, dir, out, argv, paths)
+    }
+}
+
+/// Values of `form`'s flags that name files ([`form::Field::path`]), as
+/// typed in `here`, rewritten for a run started in `dir`; `--from` names
+/// the run's manifest, given its prefix.
+fn relative_values(form: &Method, argv: &mut [String], here: &Path, dir: &Path) {
+    let flags: Vec<String> = form
+        .fields
+        .iter()
+        .filter(|f| f.path)
+        .map(|f| format!("--{}", f.long))
+        .collect();
+    for k in 1..argv.len() {
+        if !flags.contains(&argv[k - 1]) {
+            continue;
+        }
+        let files: Vec<String> = argv[k]
+            .split(',')
+            .map(|f| {
+                let mut p = here.join(f);
+                if argv[k - 1] == "--from" {
+                    p = PathBuf::from(crate::util::metadata::run_manifest(&p.to_string_lossy()));
+                }
+                script::relative(&p, dir).to_string_lossy().into_owned()
+            })
+            .collect();
+        argv[k] = files.join(",");
+    }
 }
 
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no

@@ -20,13 +20,13 @@ fn lra_args(v: Value) -> LraToolArgs {
 fn run_lra_builds_pinto_lras_command_line() {
     let a = lra_args(json!({
         "run": "r.pinto.json",
-        "method": "contact-effect",
+        "method": "coexpression-test",
         "lr_pairs": "pairs.tsv",
         "targets": ["a.gmt", "b.tsv"],
         "fdr": 0.1,
         "species": "mouse",
     }));
-    let argv = lra_argv(&a, "/p/r.pinto.json", "/p/out");
+    let argv = lra_argv(&a, LraMethod::CoexpressionTest, "/p/r.pinto.json", "/p/out");
     let pairs = shown_path(Path::new("pairs.tsv"));
     let targets = format!(
         "{},{}",
@@ -40,7 +40,7 @@ fn run_lra_builds_pinto_lras_command_line() {
         "-o",
         "/p/out",
         "--method",
-        "contact-effect",
+        "coexpression-test",
         "--lr-pairs",
         &pairs,
         "--targets",
@@ -55,10 +55,20 @@ fn run_lra_builds_pinto_lras_command_line() {
     assert_eq!(argv, want);
     checked(&cli(), &argv).unwrap();
     // Only what was given: the CLI's defaults stay its own.
-    let bare = lra_argv(&lra_args(json!({"run": "r"})), "r.pinto.json", "o");
+    let bare = lra_argv(
+        &lra_args(json!({"run": "r"})),
+        LraMethod::ContactEffect,
+        "r.pinto.json",
+        "o",
+    );
     assert_eq!(bare, ["lra", "--from", "r.pinto.json", "-o", "o"]);
     // clap's complaint on a value pinto does not take.
-    let bad = lra_argv(&lra_args(json!({"run": "r", "species": "fish"})), "r", "o");
+    let bad = lra_argv(
+        &lra_args(json!({"run": "r", "species": "fish"})),
+        LraMethod::ContactEffect,
+        "r",
+        "o",
+    );
     assert!(checked(&cli(), &bad)
         .unwrap_err()
         .to_string()
@@ -66,9 +76,27 @@ fn run_lra_builds_pinto_lras_command_line() {
 }
 
 #[test]
+fn run_lra_passes_only_and_writes_the_subset_table() {
+    let a = lra_args(json!({"run": "r", "only": ["SPP1", "TGFB1:TGFBR1_TGFBR2"]}));
+    let argv = lra_argv(&a, LraMethod::ContactEffect, "/p/r.pinto.json", "/p/out");
+    assert_eq!(
+        argv[argv.len() - 2..],
+        ["--only", "SPP1,TGFB1:TGFBR1_TGFBR2"]
+    );
+    checked(&cli(), &argv).unwrap();
+    let made = lra_outputs(LraMethod::ContactEffect, "/p/out", &a.only());
+    let tag = crate::lr_activity::ligand_effect::only::tag(&a.only());
+    assert_eq!(
+        made[0],
+        Path::new(&format!("/p/out.lra.only-{tag}.parquet"))
+    );
+    assert!(crate::mcp::parse::<LraToolArgs>(json!({"run": "r", "only": "SPP1"})).is_err());
+}
+
+#[test]
 fn each_method_declares_what_it_writes() {
     let names = |m| -> Vec<String> {
-        lra_outputs(lra_method(m).unwrap(), "o")
+        lra_outputs(lra_method(m).unwrap(), "o", &[])
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect()
@@ -159,6 +187,8 @@ fn write_effects(path: &str) {
     let lo = [20.0f32, -5.0, f32::NAN, 10.0];
     let hi = [51.0f32, 7.0, f32::NAN, 90.0];
     let names = s(&["0", "1", "2", "3"]);
+    let blank = s(&["", "", "", ""]);
+    let zero = [0f32; 4];
     write_named_table(
         path,
         "row",
@@ -168,6 +198,14 @@ fn write_effects(path: &str) {
             ("ligand".into(), Column::Str(&ligand)),
             ("receptor".into(), Column::Str(&receptor)),
             ("verdict".into(), Column::Str(&verdict)),
+            ("verdict_note".into(), Column::Str(&blank)),
+            ("warnings".into(), Column::Str(&blank)),
+            ("effect_competent_se".into(), Column::F32(&zero)),
+            ("coexpr_q".into(), Column::F32(&zero)),
+            ("exposure_threshold".into(), Column::F32(&zero)),
+            ("n_receivers".into(), Column::F32(&zero)),
+            ("n_competent".into(), Column::F32(&zero)),
+            ("n_exposed".into(), Column::F32(&zero)),
             ("effect_competent".into(), Column::F32(&effect)),
             ("effect_p".into(), Column::F32(&p)),
             ("effect_q".into(), Column::F32(&q)),

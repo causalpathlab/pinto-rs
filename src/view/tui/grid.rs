@@ -615,7 +615,7 @@ impl App<'_> {
             })
             .collect();
         let (level, style) = self.drawn();
-        let (base, gene) = (self.base, self.gene.as_ref());
+        let (base, gene) = (self.base, self.drawn_gene());
         let maps: Vec<Frame> = jobs
             .par_iter()
             .map(|&(b, _, vp, point)| {

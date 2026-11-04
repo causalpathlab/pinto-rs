@@ -23,7 +23,10 @@ fn every_verdict_has_one_code_and_a_note() {
             "insufficient_data",
         ]
     );
-    for v in Verdict::ALL {
+    for (k, v) in Verdict::ALL.into_iter().enumerate() {
+        // `counts` indexes by `index`: it is the place in ALL.
+        assert_eq!(v.index(), k);
+        assert_eq!(Verdict::counts([v])[k], (v, 1));
         assert_eq!(v.code().parse::<Verdict>().unwrap(), v);
         assert!(
             !v.note().is_empty() && !v.note().contains("  "),
@@ -70,6 +73,15 @@ fn readme_verdict_table_matches_the_enum() {
         .map(|v| (v.code().to_string(), v.note().to_string()))
         .collect();
     assert_eq!(table, want);
+    // The viewer's `v` steps through the verdicts in that order too.
+    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
+    let cycle = format!("with `v`/`V` ({}, or\nall)", codes.join(", "));
+    let flat = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat(readme).contains(&flat(&cycle)),
+        "README's v/V cycle: {}",
+        flat(&cycle)
+    );
 }
 
 /// A log-rate effect as a percent change with its 95% interval.

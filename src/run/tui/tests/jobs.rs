@@ -13,12 +13,14 @@ fn jobs_run_in_turn_and_leave_their_scripts() {
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let job = |m: &str| Job {
-        method: m.into(),
-        dir: dir.path().to_path_buf(),
-        out: m.into(),
-        argv: vec![m.into(), "d.zarr".into(), "--out".into(), m.into()],
-        ..Job::default()
+    let job = |m: &str| {
+        Job::fit(
+            m,
+            0,
+            dir.path(),
+            m,
+            vec![m.into(), "d.zarr".into(), "--out".into(), m.into()],
+        )
     };
     let q = Queue::start(vec![job("lc"), job("cage")], fake);
     while !q.finished() {
@@ -37,13 +39,13 @@ fn jobs_run_in_turn_and_leave_their_scripts() {
 fn a_job_whose_result_exists_does_not_run() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("r.pinto.json"), "{}").unwrap();
-    let job = Job {
-        method: "lc".into(),
-        dir: dir.path().to_path_buf(),
-        out: "r".into(),
-        argv: vec!["lc".into(), "--out".into(), "r".into()],
-        ..Job::default()
-    };
+    let job = Job::fit(
+        "lc",
+        0,
+        dir.path(),
+        "r",
+        vec!["lc".into(), "--out".into(), "r".into()],
+    );
     let q = Queue::start(vec![job], PathBuf::from("/bin/false"));
     while !q.finished() {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -66,13 +68,7 @@ fn running(dir: &Path, body: &str) -> Queue {
     let slow = dir.join("slow-pinto");
     std::fs::write(&slow, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let job = |m: &str| Job {
-        method: m.into(),
-        dir: dir.to_path_buf(),
-        out: m.into(),
-        argv: vec![m.into(), "--out".into(), m.into()],
-        ..Job::default()
-    };
+    let job = |m: &str| Job::fit(m, 0, dir, m, vec![m.into(), "--out".into(), m.into()]);
     let q = Queue::start(vec![job("a"), job("b")], slow);
     let t = std::time::Instant::now();
     while !ready.exists() {
@@ -117,15 +113,17 @@ fn a_fit_that_ignores_the_interrupt_is_killed_after_a_grace() {
 fn batch_files_made_for_a_run_are_written_before_it_starts() {
     let dir = tempfile::tempdir().unwrap();
     let job = Job {
-        method: "lc".into(),
-        dir: dir.path().to_path_buf(),
-        out: "r".into(),
-        argv: vec!["lc".into(), "--out".into(), "r".into()],
         made: vec![(
             dir.path().join("r.batches/s1.txt"),
             crate::run::tui::batch::Made::Repeat("b1".into(), 2),
         )],
-        ..Job::default()
+        ..Job::fit(
+            "lc",
+            0,
+            dir.path(),
+            "r",
+            vec!["lc".into(), "--out".into(), "r".into()],
+        )
     };
     let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
     while !q.finished() {
@@ -143,13 +141,13 @@ fn batch_files_made_for_a_run_are_written_before_it_starts() {
 fn a_new_out_folder_is_made_before_the_script() {
     let dir = tempfile::tempdir().unwrap();
     let at = dir.path().join("res").join("sub");
-    let job = Job {
-        method: "lc".into(),
-        dir: at.clone(),
-        out: "r".into(),
-        argv: vec!["lc".into(), "--out".into(), "r".into()],
-        ..Job::default()
-    };
+    let job = Job::fit(
+        "lc",
+        0,
+        &at,
+        "r",
+        vec!["lc".into(), "--out".into(), "r".into()],
+    );
     let q = Queue::start(vec![job], PathBuf::from("true"));
     while !q.finished() {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -166,12 +164,14 @@ fn a_run_where_one_did_not_finish_clears_its_script_and_batch_files_first() {
     std::fs::create_dir(dir.path().join("r.batches")).unwrap();
     std::fs::write(dir.path().join("r.batches/old.txt"), "x\n").unwrap();
     let job = Job {
-        method: "lc".into(),
-        dir: dir.path().to_path_buf(),
-        out: "r".into(),
-        argv: vec!["lc".into(), "--out".into(), "r".into()],
         clear: true,
-        ..Job::default()
+        ..Job::fit(
+            "lc",
+            0,
+            dir.path(),
+            "r",
+            vec!["lc".into(), "--out".into(), "r".into()],
+        )
     };
     let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
     while !q.finished() {
@@ -206,4 +206,41 @@ fn a_job_s_bar_and_log_follow_what_it_said() {
     assert!(!st.bars[0].as_ref().unwrap().shown);
     assert_eq!(st.last[0], "level 1 done");
     assert_eq!(st.log.back().map(String::as_str), Some("level 1 done"));
+}
+
+/// A job reading a run (lra from `pinto run` or the viewer) beside it, at
+/// the run's own prefix: clearing what an unfinished run of it left takes
+/// its own script, never the run's manifest, script or batch files.
+#[cfg(unix)]
+#[test]
+fn a_job_reading_a_run_clears_only_its_own_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    for f in ["run.pinto.json", "run.cmd.sh", "run.lra.cmd.sh"] {
+        std::fs::write(d.join(f), "kept").unwrap();
+    }
+    std::fs::create_dir(d.join("run.batches")).unwrap();
+    std::fs::write(d.join("run.batches/s1.txt"), "b1\n").unwrap();
+    let argv = vec!["lra".into(), "--from".into(), "run.pinto.json".into()];
+    let paths = ["run.lra.parquet", "run.lra.cmd.sh", "run.pinto.json"].map(|f| d.join(f));
+    let job = Job {
+        clear: true,
+        ..Job::reading("lra", d, "run", argv, paths)
+    };
+    let run_own = |p: &PathBuf| {
+        p.ends_with("run.batches") || p.ends_with("run.pinto.json") || p.ends_with("run.cmd.sh")
+    };
+    assert!(!job.leftovers.iter().any(run_own), "{:?}", job.leftovers);
+    assert!(!job.in_the_way().iter().any(run_own));
+    let q = Queue::start(vec![job], PathBuf::from("/usr/bin/true"));
+    while !q.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(q.states(), vec![State::Done]);
+    assert!(d.join("run.batches/s1.txt").exists());
+    for f in ["run.pinto.json", "run.cmd.sh"] {
+        assert_eq!(std::fs::read_to_string(d.join(f)).unwrap(), "kept");
+    }
+    let script = std::fs::read_to_string(d.join("run.lra.cmd.sh")).unwrap();
+    assert!(script.contains("if [ -f run.lra.parquet ]"), "{script}");
 }

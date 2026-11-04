@@ -15,6 +15,11 @@ pub(crate) mod tui;
 /// the short alias of its subcommand.
 pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
 
+/// What `pinto run` also sets up on a fitted run (`--from` its
+/// `.pinto.json`), after the fits: ligand-receptor analysis and its power
+/// check.
+pub const ON_RUNS: [&str; 2] = ["lra", "lra-simulate"];
+
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {
     #[arg(help = "Folder the file browser starts in [default: .]")]

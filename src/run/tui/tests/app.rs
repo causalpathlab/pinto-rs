@@ -54,13 +54,7 @@ fn run_key(a: &mut App) {
 
 /// A fit of method `m` in `dir`, writing to `--out m`.
 fn job(dir: &Path, m: &str) -> jobs::Job {
-    jobs::Job {
-        method: m.into(),
-        dir: dir.to_path_buf(),
-        out: m.into(),
-        argv: vec![m.into(), "--out".into(), m.into()],
-        ..jobs::Job::default()
-    }
+    jobs::Job::fit(m, 0, dir, m, vec![m.into(), "--out".into(), m.into()])
 }
 
 /// A stand-in pinto in `dir`: the shell script `body`.
@@ -836,4 +830,151 @@ fn a_running_fit_shows_its_bar_until_its_fit_clears_it_then_its_log() {
     assert!(running(bar.as_ref(), "level 1", 80).starts_with('█'));
     std::thread::sleep(GRACE + std::time::Duration::from_millis(50));
     assert_eq!(running(bar.as_ref(), "level 1", 80), "running  level 1");
+}
+
+/// lra and lra-simulate follow the fits, on a run given by `--from`: no
+/// data files are passed, files typed where pinto run started are read
+/// from where it runs, and what says each is done is its table.
+#[test]
+fn lra_on_a_run_is_set_up_with_its_flags() {
+    use clap::CommandFactory;
+    let dir = tempfile::tempdir().unwrap();
+    // macOS temp folders sit behind a symlink (/var -> /private/var).
+    let here = &dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(here.join("res")).unwrap();
+    std::fs::write(here.join("res/run.pinto.json"), "{}").unwrap();
+    std::fs::write(here.join("pairs.tsv"), "A\tB\n").unwrap();
+    let mut cli = crate::Cli::command();
+    cli.build();
+    let mut a = App {
+        here: here.to_path_buf(),
+        ..App::new(cli, here.to_path_buf()).unwrap()
+    };
+    a.browser = None;
+    a.editor = None;
+    let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
+    assert_eq!(names, ["lc", "cage", "dsvd", "lra", "lra-simulate"]);
+    let lra = 3;
+    assert!(a.rows[lra].form.from_run && !a.rows[lra].form.takes_coords());
+
+    a.rows[lra].on = true;
+    a.rows[lra].out = "out/lra".into();
+    // Without --from, the plan says so and blames it.
+    let p = &a.plan()[0];
+    assert!(
+        p.problem.as_ref().unwrap().contains("--from"),
+        "{:?}",
+        p.problem
+    );
+    assert_eq!(p.blamed.as_deref(), Some("from"));
+    let set = |a: &mut App, long: &str, v: &str| {
+        let f = a.rows[lra]
+            .form
+            .fields
+            .iter_mut()
+            .find(|f| f.long == long)
+            .unwrap();
+        f.value = v.into();
+    };
+    // A run's prefix is taken for its manifest.
+    set(&mut a, "from", "res/run");
+    set(&mut a, "lr-pairs", "pairs.tsv");
+    set(&mut a, "only", "SPP1:CD44, TGFB1");
+    set(&mut a, "fdr", "0.1");
+    // A value clap refuses is what the plan says, not a missing manifest.
+    set(&mut a, "fdr", "lots");
+    let p = &a.plan()[0];
+    let why = p.problem.as_deref().unwrap();
+    assert!(why.contains("lots") && !why.contains("manifest"), "{why}");
+    assert_eq!(p.blamed.as_deref(), Some("fdr"));
+    set(&mut a, "fdr", "0.1");
+    let planned = a.plan();
+    let p = &planned[0];
+    assert!(p.problem.is_none(), "{:?}", p.problem);
+    let j = &p.job;
+    assert_eq!(j.dir, here.join("out"));
+    assert_eq!(
+        j.argv,
+        [
+            "lra",
+            "--out",
+            "lra",
+            "--from",
+            "../res/run.pinto.json",
+            "--lr-pairs",
+            "../pairs.tsv",
+            "--only",
+            "SPP1:CD44,TGFB1",
+            "--fdr",
+            "0.1"
+        ]
+    );
+    assert_eq!(
+        j.manifest(),
+        j.dir.join("lra.lra.only-spp1-cd44+tgfb1.parquet")
+    );
+    assert_eq!(j.script(), j.dir.join("lra.cmd.sh"));
+    assert_eq!(
+        script::normalize(j.view()),
+        script::normalize(&here.join("res/run.pinto.json"))
+    );
+    // It owns its script alone: never a batch folder or a manifest.
+    assert_eq!(j.leftovers, [j.dir.join("lra.cmd.sh")]);
+    form::check(&a.cli, &j.argv).unwrap();
+    // The script refuses to run over the table, not over a manifest.
+    let text = script::text(&j.argv, &j.out, &j.done_name(), "lra.cmd.sh");
+    assert!(
+        text.contains("if [ -f lra.lra.only-spp1-cd44+tgfb1.parquet ]"),
+        "{text}"
+    );
+    assert!(text.contains("bash lra.cmd.sh"), "{text}");
+
+    // lra-simulate: its own table.
+    let sim = 4;
+    a.rows[lra].on = false;
+    a.rows[sim].on = true;
+    a.rows[sim].out = "sim".into();
+    let f = a.rows[sim]
+        .form
+        .fields
+        .iter_mut()
+        .find(|f| f.long == "from")
+        .unwrap();
+    f.value = "res/run.pinto.json".into();
+    let p = &a.plan()[0];
+    assert!(p.problem.is_none(), "{:?}", p.problem);
+    assert_eq!(
+        p.job.argv,
+        [
+            "lra-simulate",
+            "--out",
+            "sim",
+            "--from",
+            "res/run.pinto.json"
+        ]
+    );
+    assert_eq!(p.job.manifest(), here.join("sim.lra-simulate.parquet"));
+    // A table there already is in the way.
+    std::fs::write(here.join("sim.lra-simulate.parquet"), "").unwrap();
+    let p = &a.plan()[0];
+    assert!(
+        p.problem.as_ref().unwrap().contains("exists"),
+        "{:?}",
+        p.problem
+    );
+    // A --from that names no run.
+    std::fs::remove_file(here.join("sim.lra-simulate.parquet")).unwrap();
+    let f = a.rows[sim]
+        .form
+        .fields
+        .iter_mut()
+        .find(|f| f.long == "from")
+        .unwrap();
+    f.value = "nowhere".into();
+    let p = &a.plan()[0];
+    assert!(
+        p.problem.as_ref().unwrap().contains("no such run"),
+        "{:?}",
+        p.problem
+    );
 }

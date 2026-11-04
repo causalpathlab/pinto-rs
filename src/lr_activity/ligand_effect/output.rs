@@ -24,6 +24,30 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// How many of `verdicts` are each verdict, in [`Verdict::ALL`]'s order.
+    pub fn counts(
+        verdicts: impl IntoIterator<Item = Verdict>,
+    ) -> [(Verdict, usize); Verdict::ALL.len()] {
+        let mut out = Verdict::ALL.map(|v| (v, 0));
+        for v in verdicts {
+            out[v.index()].1 += 1;
+        }
+        out
+    }
+
+    /// Its place in [`Verdict::ALL`] (a test checks the two agree).
+    pub fn index(self) -> usize {
+        match self {
+            Verdict::Supported => 0,
+            Verdict::EffectWithoutCoexpression => 1,
+            Verdict::ColocationOnly => 2,
+            Verdict::NoEvidence => 3,
+            Verdict::ControlFailed => 4,
+            Verdict::CelltypeInseparable => 5,
+            Verdict::InsufficientData => 6,
+        }
+    }
+
     /// Every verdict, in the order the run summary lists them.
     pub const ALL: [Verdict; 7] = [
         Verdict::Supported,
@@ -185,10 +209,14 @@ impl<'r, T> Columns<'r, T> {
     }
 }
 
+/// The `q_scope` of a table of every pair.
+pub const Q_SCOPE_ALL: &str = "all pairs";
+
 /// `{out}.lra.parquet`: one row per pair and section (`all` for the pooled
 /// row). `verdict` is a [`Verdict`] code, `verdict_note` its words; the
-/// headline's [`Moments`] are computed here.
-pub fn write_effects(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
+/// headline's [`Moments`] are computed here. `q_scope` says which pairs the
+/// q-values were corrected over: [`Q_SCOPE_ALL`], or a `--only` subset.
+pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::Result<()> {
     let moments: Vec<(&EffectRow, Moments)> = rows
         .iter()
         .map(|r| (r, Moments::of(&r.effects.competent)))
@@ -241,7 +269,8 @@ pub fn write_effects(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
         .est("decoy_effect", |(r, _)| r.decoy_effect)
         .f("decoy_effect_df", |(r, _)| r.decoy_effect.df)
         .f("decoy_q", |(r, _)| r.decoy_q)
-        .i("n_decoy_genes", |(r, _)| r.n_decoy_genes);
+        .i("n_decoy_genes", |(r, _)| r.n_decoy_genes)
+        .s("q_scope", |_| q_scope);
     c.write(path)
 }
 
@@ -383,12 +412,9 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
         .filter(|r| &*r.section == super::estimate::ALL_SECTIONS)
         .map(PooledEffect::from)
         .collect();
-    let counts: Vec<String> = Verdict::ALL
+    let counts: Vec<String> = Verdict::counts(pooled.iter().map(|r| r.verdict))
         .iter()
-        .map(|&v| {
-            let n = pooled.iter().filter(|r| r.verdict == v).count();
-            format!("{n} {}", v.code())
-        })
+        .map(|(v, n)| format!("{n} {}", v.code()))
         .collect();
     let mut out = format!("lra: {} pairs: {}\n", pooled.len(), counts.join(", "));
     let top: Vec<String> = rank_pooled(&pooled)
@@ -783,40 +809,187 @@ impl From<&EffectRow> for PooledEffect {
     }
 }
 
-/// The pooled rows of `{out}.lra.parquet` (section `all`), in table order.
+/// A pooled row of `{out}.lra.parquet` as the viewer lists it.
 #[cfg(feature = "view")]
-pub fn read_pooled_effects(path: &str) -> anyhow::Result<Vec<PooledEffect>> {
+#[derive(Clone, Debug, PartialEq)]
+pub struct PairRow {
+    pub ligand: Box<str>,
+    pub receptor: Box<str>,
+    /// `ligand` and `receptor` in upper case: what the list searches and
+    /// sorts by.
+    pub key: (Box<str>, Box<str>),
+    pub verdict: Verdict,
+    pub note: Box<str>,
+    pub warnings: Box<str>,
+    /// The headline E2 (log rate ratio), its SE, p and q.
+    pub effect: f64,
+    pub effect_se: f64,
+    pub effect_p: f64,
+    pub effect_q: f64,
+    pub coexpr_q: f64,
+    /// The headline as a percent change, `exp(effect) − 1`, with its 95%
+    /// interval.
+    pub pct: f64,
+    pub pct_lo: f64,
+    pub pct_hi: f64,
+    /// The exposure threshold τ the pair used.
+    pub threshold: f64,
+    pub n_receivers: usize,
+    pub n_competent: usize,
+    pub n_exposed: usize,
+}
+
+#[cfg(feature = "view")]
+impl PairRow {
+    /// `LIGAND:RECEPTOR`.
+    pub fn name(&self) -> String {
+        format!("{}:{}", self.ligand, self.receptor)
+    }
+}
+
+#[cfg(feature = "view")]
+impl From<&PairRow> for PooledEffect {
+    fn from(r: &PairRow) -> Self {
+        Self {
+            ligand: r.ligand.clone(),
+            receptor: r.receptor.clone(),
+            verdict: r.verdict,
+            effect: r.effect,
+            effect_p: r.effect_p,
+            effect_q: r.effect_q,
+            pct: r.pct,
+            pct_lo: r.pct_lo,
+            pct_hi: r.pct_hi,
+        }
+    }
+}
+
+/// The pooled rows of a contact-effect table, in table order, and which
+/// pairs its q-values were corrected over (its `q_scope`: [`Q_SCOPE_ALL`],
+/// or a `--only` subset's words); a table from before the column says
+/// nothing.
+#[cfg(feature = "view")]
+pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<str>>)> {
     use legume_numeric::matrix::parquet::read_table_columns;
-    let (s, x) = read_table_columns(
-        path,
-        &["section", "ligand", "receptor", "verdict"],
-        &[
-            "effect_competent",
-            "effect_p",
-            "effect_q",
-            "effect_pct",
-            "effect_pct_lo",
-            "effect_pct_hi",
-        ],
-    )?;
-    (0..s[0].len())
+    let strings = [
+        "section",
+        "ligand",
+        "receptor",
+        "verdict",
+        "verdict_note",
+        "warnings",
+        "q_scope",
+    ];
+    let numbers = [
+        "effect_competent",
+        "effect_competent_se",
+        "effect_p",
+        "effect_q",
+        "coexpr_q",
+        "effect_pct",
+        "effect_pct_lo",
+        "effect_pct_hi",
+        "exposure_threshold",
+        "n_receivers",
+        "n_competent",
+        "n_exposed",
+    ];
+    // Tables from before `q_scope` have none.
+    let (s, x) = read_table_columns(path, &strings, &numbers)
+        .or_else(|_| read_table_columns(path, &strings[..strings.len() - 1], &numbers))?;
+    let q_scope = s.get(6).and_then(|v| v.first().cloned());
+    let count = |v: f64| {
+        if v.is_finite() && v > 0. {
+            v as usize
+        } else {
+            0
+        }
+    };
+    let rows = (0..s[0].len())
         .filter(|&i| &*s[0][i] == super::estimate::ALL_SECTIONS)
         .map(|i| {
-            Ok(PooledEffect {
+            Ok(PairRow {
                 ligand: s[1][i].clone(),
                 receptor: s[2][i].clone(),
+                key: (s[1][i].to_uppercase().into(), s[2][i].to_uppercase().into()),
                 verdict: s[3][i]
                     .parse()
                     .map_err(|e| anyhow::anyhow!("{path}: {e}"))?,
+                note: s[4][i].clone(),
+                warnings: s[5][i].clone(),
                 effect: x[0][i],
-                effect_p: x[1][i],
-                effect_q: x[2][i],
-                pct: x[3][i],
-                pct_lo: x[4][i],
-                pct_hi: x[5][i],
+                effect_se: x[1][i],
+                effect_p: x[2][i],
+                effect_q: x[3][i],
+                coexpr_q: x[4][i],
+                pct: x[5][i],
+                pct_lo: x[6][i],
+                pct_hi: x[7][i],
+                threshold: x[8][i],
+                n_receivers: count(x[9][i]),
+                n_competent: count(x[10][i]),
+                n_exposed: count(x[11][i]),
             })
         })
-        .collect()
+        .collect::<anyhow::Result<_>>()?;
+    Ok((rows, q_scope))
+}
+
+/// The pooled rows of `{out}.lra.parquet` (section `all`) as a summary
+/// reads them, in table order.
+#[cfg(feature = "view")]
+pub fn read_pooled_effects(path: &str) -> anyhow::Result<Vec<PooledEffect>> {
+    Ok(read_pair_rows(path)?
+        .0
+        .iter()
+        .map(PooledEffect::from)
+        .collect())
+}
+
+/// One point of a pair's threshold–response curve, as
+/// `{out}.lra.curve.parquet` holds it (log rate ratios).
+#[cfg(feature = "view")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CurveRow {
+    pub tau: f64,
+    pub quantile: f64,
+    pub effect: f64,
+    pub lo: f64,
+    pub hi: f64,
+    pub band_lo: f64,
+    pub band_hi: f64,
+}
+
+/// Each pair's curve points, by `(ligand, receptor)`.
+#[cfg(feature = "view")]
+pub type Curves = std::collections::HashMap<(Box<str>, Box<str>), Vec<CurveRow>>;
+
+/// Every pair's curve, by `(ligand, receptor)`, points in table order.
+#[cfg(feature = "view")]
+pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    let (s, x) = read_table_columns(
+        path,
+        &["ligand", "receptor"],
+        &[
+            "tau", "quantile", "effect", "lo", "hi", "band_lo", "band_hi",
+        ],
+    )?;
+    let mut out = Curves::default();
+    for i in 0..s[0].len() {
+        out.entry((s[0][i].clone(), s[1][i].clone()))
+            .or_default()
+            .push(CurveRow {
+                tau: x[0][i],
+                quantile: x[1][i],
+                effect: x[2][i],
+                lo: x[3][i],
+                hi: x[4][i],
+                band_lo: x[5][i],
+                band_hi: x[6][i],
+            });
+    }
+    Ok(out)
 }
 
 /// The pooled rows ranked as the run summary ranks them: estimable

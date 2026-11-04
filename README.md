@@ -58,6 +58,7 @@ dsvd, ...) or data files with coordinates:
 pinto lra --from out/run1.pinto.json          # writes out/run1.lra.parquet
 pinto lra data.zarr --coord cells.csv -o out/lra
 pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv --fdr 0.1
+pinto lra --from out/run1.pinto.json --only SPP1,TGFB1:TGFBR1_TGFBR2
 ```
 
 Pairs and response programmes come from a reference (LIANA+ consensus
@@ -79,6 +80,21 @@ labels come from expression-derived clusters: the receiver identity
 projection leaves the ligand, receptor and target genes out, but the
 clustering behind the labels may have used them.
 
+`--only` estimates a few pairs instead of all of them: comma-separated
+`LIGAND:RECEPTOR` entries (a complex joins its subunits with `_`,
+`TGFB1:TGFBR1_TGFBR2`) or bare ligands for all of their pairs, matched on
+genes (case and subunit order aside) among the reference pairs and
+`--lr-pairs`; an entry no pair answers is an error that names the nearest
+pairs. The receivers and each pair's estimate are those of the full run
+(the receiver identity still leaves out every pair's genes), so a subset
+takes seconds. A subset never writes over the full table: it goes to
+`{out}.lra.only-<tag>.parquet` (and `.curve.parquet`), `<tag>` the list
+itself when short (`spp1+tgfb1`) or a short hash of it, with or without
+`-o`, and the manifest records it apart, under `outputs.lra.subsets`, the
+full table staying `outputs.lra.table`. Its q-values are corrected within
+the subset only: the `q_scope` column (`all pairs` in a full table) and each
+row's `warnings` say so.
+
 Two other methods test co-expression within link communities (they need an
 lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 `{out}.lr_activity.parquet`) and `--method coexpression-scores`
@@ -87,7 +103,8 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
 pooled row). `effect_competent` is the headline, a log-rate change of the
 response programme (`exp(x) - 1` is the percent change); `verdict` sums up
-the evidence and `verdict_note` says why in words:
+the evidence and `verdict_note` says why in words. `pinto view` shows the
+pairs and draws each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
 |---|---|
@@ -210,9 +227,18 @@ a label file, and `e` renames its labels. The Data screen lists the batches
 this makes. Label files the run needs beyond the ones given are written to
 `{out}.batches/`.
 
-A saved script refuses to run over an existing `{out}.pinto.json`, and
-`pinto run` never writes over a script. `v` opens a finished run in
-`pinto view`.
+After the fits, the Methods screen lists `lra` and `lra-simulate`, which run
+on a fitted run instead of data files: set `--from` to the run's
+`.pinto.json` (or its prefix) on the Parameters screen, with `--lr-pairs`,
+`--targets`, `--fdr` or `--only` as `pinto lra` takes them (files typed as
+seen from where `pinto run` started). They are run and saved as
+`{out}.cmd.sh` like the fits, write `{out}.lra.parquet` (a subset's
+`{out}.lra.only-<tag>.parquet`) or `{out}.lra-simulate.parquet`, and
+record them in the `--from` run's manifest; `v` opens that run.
+
+A saved script refuses to run over what its run writes (a fit's
+`{out}.pinto.json`, lra's table), and `pinto run` never writes over a script.
+`v` opens a finished run in `pinto view`.
 
 ### `view`
 
@@ -230,6 +256,10 @@ pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
 pinto view out --png gene.png --gene SYMBOL     # one gene: observed ln(1+count)
 pinto view out --png gene.png --gene SYMBOL --expected --clip 95
+pinto view out --png pair.png --pair SPP1:CD44  # an lra pair: senders, exposed
+                                                # and receptor+ receivers
+pinto view out --png pair.png --pair SPP1:CD44 --pair-show exposure
+pinto view out --png curve.png --pdf curve.pdf --pair SPP1:CD44 --curve
 ```
 
 In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
@@ -277,6 +307,33 @@ install it with HDF5 as pinto was: `cargo install lupin-rs --features hdf5`.
 ```sh
 pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
 ```
+
+#### Ligand-receptor pairs (`pinto lra`)
+
+`I` opens the run's lra table (the full table, or with `T` each `--only`
+subset in turn) as a list in the side panel: one line per pair with its
+change, q and verdict, sorted by q (`o`: by effect, by name), one verdict at
+a time with `v`/`V` (supported, effect_without_coexpression,
+colocation_only, no_evidence, control_failed, celltype_inseparable,
+insufficient_data, or all), and `/` keeps the pairs naming a gene. `↑`/`↓` (or a click) pick a
+pair: the panel gives its effect as a percent change (`exp(x) - 1`) with its
+95% CI, q, coexpression q, threshold, counts and verdict note (a subset's q
+marked subset-corrected), and the map draws it, computed as lra computes it:
+senders (cells carrying the ligand), and receivers exposed or not (their
+contact exposure to the ligand above the table's threshold) and
+receptor-competent or not (their identity bin detects the receptor). `e`
+draws the exposure itself instead; `c` puts the pair's threshold–response
+curve (the effect at each exposure threshold, pointwise 95% whiskers,
+simultaneous 95% band, the table's threshold ringed) under the map. The
+first pair drawn reads the run's receivers once (a pass over its data); each
+pair after that reads two genes.
+
+Space or `m` marks pairs; `L` runs `pinto lra --only` on the marked ones in
+the background, beside the run (`{prefix}.lra.only-<tag>.parquet`, its script
+`{prefix}.lra.only-<tag>.cmd.sh`), and opens its table in the list when it is
+done. On a run without an lra table, `I` then `L` runs the full `pinto lra`.
+`s` saves the pair's map, and its curve when shown, as PNG and PDF with the
+`pinto view --pair` command that redraws them.
 
 #### Batches side by side
 
@@ -439,7 +496,12 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > reports, per scenario, power and type I error beside the co-expression
 > baselines (`example_study: true` returns the study it takes). Run
 > lra-simulate to check power and calibration before trusting lra on a new
-> tissue. Each pair's verdict is one of: supported: receivers next to
+> tissue. `run_lra` with `only` estimates a few pairs into a subset table of
+> its own (its q corrected within the subset). `view_lra` lists a run's pairs
+> with their verdicts and, given a pair, makes `view_map` draw it: senders,
+> and receivers exposed or not and receptor-competent or not; `view_export`
+> with `curve: true` writes its threshold-response curve. Each pair's verdict
+> is one of: supported: receivers next to
 > ligand-carrying cells change their response programme, ligand and receptor
 > are co-expressed across contacts, and the negative controls hold;
 > effect_without_coexpression: receivers respond to neighbouring ligand, but
@@ -471,13 +533,14 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
-| `run_lra` | `pinto lra --from <run>` as a recorded job: `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
+| `run_lra` | `pinto lra --from <run>` as a recorded job: `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`, `only`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
 | `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job: `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
 | `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
-| `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns |
+| `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: verdict counts and a list filtered by `verdict` and `search` (genes), `sort`ed by q, effect or name, each with its percent change and q; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
+| `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns; with `curve: true`, the selected lra pair's threshold-response curve |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
 | `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`) in the background, or stop it |
 

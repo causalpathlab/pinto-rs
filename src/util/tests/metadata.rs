@@ -355,3 +355,97 @@ fn a_manifest_named_otherwise_finds_its_run_by_its_recorded_prefix() {
     let run = crate::util::metadata::Run::open(&usual.to_string_lossy()).unwrap();
     assert_eq!(run.prefix, dir.path().join("copy").to_string_lossy());
 }
+
+/// The genes an lra identity left out are one line of the manifest, read
+/// back as written; a name with a comma makes them an array, read too; a
+/// manifest from before them reads as none.
+#[test]
+fn lra_identity_genes_are_one_line_and_read_back() {
+    let options = |genes: &[&str]| LraOptions {
+        identity_excluded: genes.iter().map(|g| g.to_string()).collect(),
+        ..LraOptions::default()
+    };
+    let o = options(&["ENSG1_CFH", "GCLC", "NFYA"]);
+    let json = serde_json::to_string_pretty(&o).unwrap();
+    assert!(
+        json.contains("\"identity_excluded\": \"ENSG1_CFH,GCLC,NFYA\""),
+        "{json}"
+    );
+    assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), o);
+    let odd = options(&["A,B", "C"]);
+    let json = serde_json::to_string(&odd).unwrap();
+    assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), odd);
+    let old: LraOptions = serde_json::from_str(r#"{"seed": 42}"#).unwrap();
+    assert!(old.identity_excluded.is_empty());
+    assert!(!serde_json::to_string(&old).unwrap().contains("identity"));
+}
+
+/// A subset's identity genes are stored once: a subset made as the full
+/// table was keeps no copy and reads the full list back; one made with
+/// other pairs keeps its own; a subset recorded before any full table
+/// keeps its own until one with the same list comes; and a new full table
+/// with another list leaves what an inheriting subset reads unchanged.
+#[test]
+fn lra_subset_identity_genes_are_stored_once() {
+    let options = |genes: &[&str], lr_pairs: Option<&str>| LraOptions {
+        identity_excluded: genes.iter().map(|g| g.to_string()).collect(),
+        lr_pairs: lr_pairs.map(String::from),
+        ..LraOptions::default()
+    };
+    let subset = |table: &str, o: LraOptions| LraSubset {
+        table: table.into(),
+        options: Some(o),
+        ..LraSubset::default()
+    };
+    let genes = |f: &LraFiles, i: usize| f.subset_options(&f.subsets[i]).unwrap().identity_excluded;
+    let (full, other) = (
+        options(&["A", "B"], None),
+        options(&["A", "C"], Some("/p.tsv")),
+    );
+
+    let mut f = LraFiles::default();
+    f.record_subset(subset("/early", options(&["A", "B"], None)));
+    assert_eq!(
+        f.subsets[0].options.as_ref().unwrap().identity_excluded,
+        ["A", "B"]
+    );
+    f.record_options(full.clone());
+    f.record_subset(subset("/same", options(&["A", "B"], None)));
+    f.record_subset(subset("/other", other.clone()));
+    for i in [0, 1] {
+        assert!(f.subsets[i]
+            .options
+            .as_ref()
+            .unwrap()
+            .identity_excluded
+            .is_empty());
+        assert_eq!(genes(&f, i), ["A", "B"]);
+    }
+    assert_eq!(f.subsets[2].options, Some(other.clone()));
+
+    // Through the manifest, then a full table made with another list.
+    let json = serde_json::to_string(&f).unwrap();
+    assert_eq!(json.matches("A,B").count(), 1, "{json}");
+    let mut f: LraFiles = serde_json::from_str(&json).unwrap();
+    f.record_options(options(&["A", "B", "D"], None));
+    for i in [0, 1] {
+        assert_eq!(genes(&f, i), ["A", "B"]);
+    }
+    assert_eq!(genes(&f, 2), ["A", "C"]);
+    // And back to the first list: the copies are dropped again.
+    f.record_options(full);
+    assert!(f.subsets[0]
+        .options
+        .as_ref()
+        .unwrap()
+        .identity_excluded
+        .is_empty());
+    assert_eq!(genes(&f, 1), ["A", "B"]);
+
+    // A subset from before the lists, beside a full table with one, reads
+    // none unless it decides its receivers as the full table does.
+    let mut f = LraFiles::default();
+    f.record_options(options(&["A"], None));
+    f.subsets.push(subset("/old", options(&[], Some("/p.tsv"))));
+    assert!(genes(&f, 0).is_empty());
+}

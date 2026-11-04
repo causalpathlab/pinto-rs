@@ -13,9 +13,10 @@
 
 use super::confounders::{self, ConfounderInputs, Group};
 use super::estimate::{Scope, ALL_SECTIONS};
-use super::exposure::{median_contact_length, ring_partners, upper_median, Contacts};
+use super::exposure::{median_contact_length, ring_partners, Contacts};
 use super::folds::spatial_folds;
 use super::overlap::{CrossFit, Design, DesignPrefix};
+use super::receivers::{receiver_contacts, size_factors};
 use crate::util::common::*;
 
 /// Settings that shape the tissue, shared by estimation and simulation.
@@ -142,24 +143,12 @@ pub fn receiver_cells(coords: &[Option<(f32, f32)>], pairs: &[(usize, usize)]) -
 
 impl Tissue {
     pub fn build(inp: &TissueInputs<'_>, opts: &TissueOpts) -> anyhow::Result<Self> {
-        let n_cells = inp.coords.len();
-        let cell = receiver_cells(inp.coords, inp.pairs);
+        let (cell, _, contacts) = receiver_contacts(inp.coords, inp.pairs);
         anyhow::ensure!(
             cell.len() >= 50,
             "too few cells with spatial contacts ({})",
             cell.len()
         );
-        let mut row_of = vec![usize::MAX; n_cells];
-        for (r, &c) in cell.iter().enumerate() {
-            row_of[c] = r;
-        }
-        let row_pairs: Vec<(usize, usize)> = inp
-            .pairs
-            .iter()
-            .filter(|&&(i, j)| row_of[i] != usize::MAX && row_of[j] != usize::MAX)
-            .map(|&(i, j)| (row_of[i], row_of[j]))
-            .collect();
-        let contacts = Contacts::from_pairs(cell.len(), &row_pairs);
         let second = second_neighbours(&contacts);
 
         let coords: Vec<(f32, f32)> = cell
@@ -216,9 +205,7 @@ impl Tissue {
         }
 
         let log_depth: Vec<f64> = cell.iter().map(|&c| inp.log1p_depth[c] as f64).collect();
-        let depth: Vec<f64> = log_depth.iter().map(|l| l.exp_m1().max(1.0)).collect();
-        let med = upper_median(&mut depth.clone()).unwrap_or(1.0).max(1.0);
-        let size_factor: Vec<f64> = depth.iter().map(|d| d / med).collect();
+        let size_factor = size_factors(&log_depth);
 
         let identity = inp.identity.select_columns(&cell);
         let identity_bin: Vec<usize> = cell.iter().map(|&c| inp.identity_bin[c]).collect();

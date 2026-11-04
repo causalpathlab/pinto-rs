@@ -67,11 +67,20 @@ mod tests;
 pub use args::{LraSimulateArgs, SrtLrActivityArgs};
 pub use fit::{fit_lra_simulate, fit_srt_lr_activity};
 
-/// What `pinto lra --method {method} -o {out}` writes, its table first: the
-/// names its writers write and the MCP reply reads.
-pub fn lra_outputs(method: args::LraMethod, out: &str) -> Vec<std::path::PathBuf> {
+/// What `pinto lra --method {method} -o {out}` writes (with `--only`
+/// `only`, when not empty), its table first: the names its writers write
+/// and the MCP reply reads.
+pub fn lra_outputs(
+    method: args::LraMethod,
+    out: &str,
+    only: &[Box<str>],
+) -> Vec<std::path::PathBuf> {
     use args::LraMethod::*;
     match method {
+        ContactEffect if !only.is_empty() => vec![
+            ligand_effect::only::table_path(out, only).into(),
+            ligand_effect::only::curve_path(out, only).into(),
+        ],
         ContactEffect => vec![
             ligand_effect::lra_path(out).into(),
             ligand_effect::lra_curve_path(out).into(),
@@ -81,6 +90,53 @@ pub fn lra_outputs(method: args::LraMethod, out: &str) -> Vec<std::path::PathBuf
             format!("{out}.lr_activity.json").into(),
         ],
         CoexpressionScores => vec![format!("{out}.lr_scores.parquet").into()],
+    }
+}
+
+/// `pinto lra --from {from}` with `method` and `options` (`-o out` when
+/// given, else beside the run), each choice that is not lra's default,
+/// then `--only only` when not empty: the one command line `run_lra` and
+/// the viewer start.
+#[cfg(feature = "view")]
+impl crate::util::metadata::LraOptions {
+    pub fn argv(
+        &self,
+        from: &str,
+        out: Option<&str>,
+        method: args::LraMethod,
+        only: &[String],
+    ) -> Vec<String> {
+        use clap::ValueEnum;
+        let mut argv: Vec<String> = vec!["lra".into(), "--from".into(), from.into()];
+        if let Some(o) = out {
+            argv.extend(["-o".into(), o.into()]);
+        }
+        let mut flag = |name: &str, value: String| argv.extend([name.into(), value]);
+        if method != args::LraMethod::default() {
+            if let Some(m) = method.to_possible_value() {
+                flag("--method", m.get_name().into());
+            }
+        }
+        if let Some(p) = &self.lr_pairs {
+            flag("--lr-pairs", p.clone());
+        }
+        if !self.targets.is_empty() {
+            flag("--targets", self.targets.join(","));
+        }
+        let d = Self::default();
+        if self.fdr != d.fdr {
+            flag("--fdr", self.fdr.to_string());
+        }
+        if self.species != d.species {
+            flag("--species", self.species.clone());
+        }
+        if self.seed != d.seed {
+            flag("--seed", self.seed.to_string());
+        }
+        if !only.is_empty() {
+            flag("--only", only.join(","));
+        }
+        argv
     }
 }
 

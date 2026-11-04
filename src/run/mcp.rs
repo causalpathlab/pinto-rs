@@ -770,7 +770,8 @@ fn specs() -> Vec<ToolSpec> {
              ligand-receptor pair, do receivers touching ligand-carrying neighbours change \
              their response programme, compared with similar cells that do not (method \
              contact-effect, the default)? Writes {out}.lra.parquet and {out}.lra.curve.parquet \
-             and records the table in the run's manifest (slot lra.table). The co-expression methods \
+             and records the table in the run's manifest (slot lra.table); with only, a few \
+             pairs to {out}.lra.only-<tag>.parquet (slot lra.subsets). The co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (minutes on a \
              whole tissue); the reply when done holds the verdict counts, the strongest \
              pairs (percent change with its 95% CI, q) and the files. Called again with the \
@@ -786,6 +787,7 @@ fn specs() -> Vec<ToolSpec> {
                     "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
                     "fdr": {"type": "number", "description": "False discovery rate for the verdicts [default: 0.05]"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference; auto reads it from the gene-name case [default: auto]"},
+                    "only": {"type": "array", "items": {"type": "string"}, "description": "Estimate only these pairs (--only): LIGAND:RECEPTOR (a complex joins subunits with _, TGFB1:TGFBR1_TGFBR2) or a bare LIGAND for all its pairs. Writes {out}.lra.only-<tag>.parquet, recorded under lra.subsets; q is corrected within the subset only"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "required": ["run"],
