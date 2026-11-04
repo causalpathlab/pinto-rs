@@ -8,9 +8,12 @@
 use super::color::{hex, Theme};
 use super::data::{Rect, NO_CLUSTER};
 use super::gene::{GeneMap, Source};
+use super::lra::{self as lra_layer, LraView, PairShow, Sort};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
+use crate::lr_activity::ligand_effect::output::{Verdict, Q_SCOPE_ALL};
+use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::{parse, shown_path};
 use clap::ValueEnum;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
@@ -51,7 +54,7 @@ impl Tools {
 }
 
 /// An open run and the view on it.
-struct Open {
+pub(super) struct Open {
     base: Base,
     /// Levels loaded so far, by position in the run's levels.
     levels: Vec<Option<Level>>,
@@ -71,6 +74,10 @@ struct Open {
     window: Rect,
     /// The last map drawn, for `view_cell` pixels.
     drawn: Option<Viewport>,
+    /// The lra layer, read on the first `view_lra`.
+    pub(super) lra: Option<LraView>,
+    /// Whether the map draws the lra pair selected, in place of the groups.
+    pair_drawn: bool,
 }
 
 impl Handler for Tools {
@@ -102,6 +109,7 @@ impl Handler for Tools {
             }
             "view_markers" => open.markers(parse(args)?),
             "view_cell" => open.cell(parse(args)?),
+            "view_lra" => open.lra(parse(args)?, cx),
             "view_export" => open.export(parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
@@ -159,10 +167,26 @@ struct ExportArgs {
     pdf: Option<String>,
     width: Option<usize>,
     overwrite: bool,
+    curve: bool,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct LraArgs {
+    table: Option<String>,
+    verdict: Option<String>,
+    search: Option<String>,
+    sort: Option<String>,
+    limit: Option<usize>,
+    pair: Option<String>,
+    show: Option<String>,
+}
+
+/// Pairs `view_lra` lists without a limit.
+const LIST: usize = 20;
+
 impl Open {
-    fn new(prefix: &str, level: Option<&str>) -> anyhow::Result<Self> {
+    pub(super) fn new(prefix: &str, level: Option<&str>) -> anyhow::Result<Self> {
         // No terminal to read a background from: dark, as --png draws.
         let base = Base::load(prefix, "auto", Theme::Dark)?;
         let at = base.run.level_index(level)?;
@@ -186,6 +210,8 @@ impl Open {
             point: 1.,
             window,
             drawn: None,
+            lra: None,
+            pair_drawn: false,
         })
     }
 
@@ -267,9 +293,25 @@ impl Open {
             .collect()
     }
 
-    fn map(&mut self, a: MapArgs) -> anyhow::Result<Vec<Content>> {
+    pub(super) fn map(&mut self, a: MapArgs) -> anyhow::Result<Vec<Content>> {
         let next = self.next(&a)?;
         self.commit(next);
+        // Asking for groups, a layer or a gene draws them instead of the pair.
+        let regroup = a.level.is_some()
+            || a.round.is_some()
+            || a.show.is_some()
+            || a.layer.is_some()
+            || a.focus.is_some()
+            || a.gene.is_some();
+        if regroup {
+            self.pair_drawn = false;
+        }
+        if let Some(theme) = a.theme.as_deref() {
+            let theme: Theme = value_enum(theme, "theme")?;
+            if let Some(v) = self.lra.as_mut() {
+                v.retheme(theme);
+            }
+        }
         let vp = self.viewport(a.width.unwrap_or(WIDTH));
         let mut frame = self.render(&vp);
         if let Some(units) = self.base.units {
@@ -488,8 +530,18 @@ impl Open {
     }
 
     fn render(&self, vp: &Viewport) -> super::render::Frame {
+        if let Some(on) = self.pair_on_map() {
+            let lra = self.lra.as_ref().expect("a pair is drawn");
+            let (level, style, gene) = on.drawn(&self.base, lra.show, self.point);
+            return self.base.render(level, &style, gene, vp);
+        }
         self.base
             .render(self.level(), &self.style(), self.gene.as_ref(), vp)
+    }
+
+    /// The lra pair the map draws, when it draws one.
+    fn pair_on_map(&self) -> Option<&lra_layer::OnMap> {
+        self.lra.as_ref().filter(|_| self.pair_drawn)?.shown()
     }
 
     /// The view as someone following the server sees it.
@@ -542,6 +594,39 @@ impl Open {
             .iter()
             .map(|&c| super::focus_name(comm, c))
             .collect();
+        if let Some(on) = self.pair_on_map() {
+            let show = self.lra.as_ref().map_or(PairShow::Classes, |v| v.show);
+            let legend = match show {
+                PairShow::Classes => json!({"groups": on.legend().iter().map(|(name, colour, n)| {
+                    json!({"group": name, "colour": hex(*colour), "cells": n})
+                }).collect::<Vec<_>>()}),
+                PairShow::Exposure => {
+                    let exposure = on.exposure(&self.base);
+                    json!({
+                        "ramp": exposure.title(),
+                        "low": hex(Layer::Gene.ramp(theme).at(0.)),
+                        "high": hex(Layer::Gene.ramp(theme).at(1.)),
+                        "top": exposure.top_label(),
+                    })
+                }
+            };
+            return json!({
+                "run": self.base.run.name(),
+                "pair": format!("{}:{}", on.ligand, on.receptor),
+                "pair_show": super::value_name(&show),
+                "threshold": on.map.threshold,
+                "competence": on.map.competence,
+                "point_size": self.point,
+                "theme": super::value_name(&theme),
+                "image": [vp.w, vp.h],
+                "window": rect(vp.window()),
+                "units_per_px": vp.upp,
+                "background": hex(theme.background()),
+                "no_receiver": hex(theme.no_community()),
+                "legend": legend,
+                "note": "the lra pair is drawn; view_map with level, round, show, layer, focus or gene draws groups again, view_lra pair: \"\" too",
+            });
+        }
         json!({
             "run": self.base.run.name(),
             "level": self.base.run.levels[drawn(self.show, self.at, self.round.as_ref()).1].tag,
@@ -621,6 +706,191 @@ impl Open {
         }))])
     }
 
+    /// `view_lra`: the run's contact-effect tables and their pairs, listed
+    /// as asked; with `pair`, that pair on the map from now on. What it is
+    /// given stays set, as `view_map`'s arguments do.
+    fn lra(&mut self, a: LraArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
+        let reply = self.lra_with(a, &|msg| cx.progress(msg))?;
+        Ok(vec![Content::Json(reply)])
+    }
+
+    /// [`Open::lra`]'s work and reply, telling `progress` what it reads.
+    pub(super) fn lra_with(
+        &mut self,
+        a: LraArgs,
+        progress: &dyn Fn(&str),
+    ) -> anyhow::Result<Value> {
+        if self.lra.is_none() {
+            let run = &self.base.run;
+            let view = LraView::new(run.tables())?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} has no lra table: run_lra on {} first",
+                    run.name(),
+                    run.manifest
+                        .as_deref()
+                        .map_or_else(|| run.prefix.clone(), shown_path)
+                )
+            })?;
+            self.lra = Some(view);
+        }
+        // What changes, checked before any of it is kept.
+        let v = self.lra.as_mut().expect("read above");
+        let mut filter = v.filter().clone();
+        if let Some(code) = a.verdict.as_deref() {
+            filter.verdict = match code {
+                "" | "all" => None,
+                code => Some(code.parse().map_err(|_| {
+                    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
+                    anyhow::anyhow!(
+                        "verdict {code:?}: one of {}, or \"\" for all",
+                        codes.join(", ")
+                    )
+                })?),
+            };
+        }
+        if let Some(search) = &a.search {
+            filter.search = search.trim().to_string();
+        }
+        if let Some(sort) = a.sort.as_deref() {
+            filter.sort = value_enum::<Sort>(sort, "sort")?;
+        }
+        let show = a
+            .show
+            .as_deref()
+            .map(|s| value_enum::<PairShow>(s, "show"))
+            .transpose()?;
+        let staged = match a.table.as_deref() {
+            Some(t) => Some(match find_table(&v.tables, t) {
+                Some(at) => v.stage(lra_layer::Which::At(at))?,
+                None => v.stage(lra_layer::Which::Path(Box::new(lra_layer::TableRef::at(
+                    Path::new(t),
+                    &self.base.run,
+                ))))?,
+            }),
+            None => None,
+        };
+        // The pair selected from now on, in the table shown from now on.
+        let table = staged.as_ref().map_or_else(|| v.table(), |s| v.staged(s));
+        let selected = match a.pair.as_deref() {
+            Some(name) => LraView::resolve(table, name)?,
+            None => v.selection_in(table),
+        };
+        // A pair asked for is drawn, and one drawn stays drawn in the
+        // table switched to: drawn before anything is kept, as it is the
+        // one thing left that can fail.
+        let draw = selected.is_some() && (a.pair.is_some() || self.pair_drawn);
+        if let (true, Some(i)) = (draw, selected) {
+            let (row, options) = (table.rows[i].clone(), table.r.options.clone());
+            if v.needs_receivers_for(&options) {
+                progress("reading the run's receivers as lra saw them");
+            }
+            v.draw(&self.base, &options, &row, self.at)?;
+        }
+        if let Some(s) = staged {
+            v.commit(s);
+        }
+        v.selected = selected;
+        self.pair_drawn = draw;
+        v.set_filter(filter);
+        if let Some(show) = show {
+            v.show = show;
+        }
+        Ok(self.lra_reply(a.limit.unwrap_or(LIST)))
+    }
+
+    /// The lra layer as `view_lra` says it: the table, the verdict counts,
+    /// the pairs listed, and the pair selected.
+    fn lra_reply(&self, limit: usize) -> Value {
+        let v = self.lra.as_ref().expect("the layer is read");
+        let table = v.table();
+        let rows = &table.rows;
+        let counts: serde_json::Map<String, Value> =
+            Verdict::counts(rows.iter().map(|r| r.verdict))
+                .iter()
+                .map(|(v, n)| (v.code().into(), (*n).into()))
+                .collect();
+        let shown = v.visible();
+        let list: Vec<Value> = shown
+            .iter()
+            .take(limit)
+            .map(|&i| {
+                let r = &rows[i];
+                json!({
+                    "pair": r.name(),
+                    "verdict": r.verdict.code(),
+                    "change": lra_layer::change(r),
+                    "q": opt_finite(r.effect_q),
+                    "marked": v.marked.contains(&r.name()),
+                })
+            })
+            .collect();
+        let q_scope: String = match &table.q_scope {
+            _ if !table.subset_corrected() => Q_SCOPE_ALL.into(),
+            Some(scope) => scope.to_string(),
+            None => "q corrected within the --only subset".into(),
+        };
+        let selected = v.selected_row().map(|r| {
+            let mut out = json!({
+                "pair": r.name(),
+                "verdict": r.verdict.code(),
+                "note": r.note,
+                "warnings": r.warnings,
+                "change": lra_layer::change(r),
+                "effect": opt_finite(r.effect),
+                "effect_se": opt_finite(r.effect_se),
+                "q": opt_finite(r.effect_q),
+                "coexpr_q": opt_finite(r.coexpr_q),
+                "subset_corrected": table.subset_corrected(),
+                "threshold": opt_finite(r.threshold),
+                "receivers": r.n_receivers,
+                "competent": r.n_competent,
+                "exposed": r.n_exposed,
+                "curve_points": table.curve(v.selected.expect("selected")).len(),
+            });
+            if let Some(on) = v.shown() {
+                let classes: serde_json::Map<_, _> = on
+                    .legend()
+                    .iter()
+                    .map(|(name, _, n)| ((*name).to_string(), Value::from(*n)))
+                    .collect();
+                let count = |f: &[bool]| f.iter().filter(|&&x| x).count();
+                out["map"] = json!({
+                    "classes": classes,
+                    "exposed": count(&on.map.exposed),
+                    "competent": count(&on.map.competent),
+                    "threshold": on.map.threshold,
+                    "competence": on.map.competence,
+                });
+                out["drawn"] = self.pair_drawn.into();
+            }
+            out
+        });
+        let f = v.filter();
+        json!({
+            "table": table.r.label(),
+            "path": shown_path(&table.r.path),
+            "q_scope": q_scope,
+            "tables": v.tables.iter().map(|t| json!({"table": t.label(), "path": shown_path(&t.path)})).collect::<Vec<_>>(),
+            "pairs": rows.len(),
+            "verdicts": counts,
+            "filter": {
+                "verdict": f.verdict.map(|v| v.code()),
+                "search": f.search,
+                "sort": f.sort.name(),
+            },
+            "shown": shown.len(),
+            "list": list,
+            "selected": selected,
+            "show": super::value_name(&v.show),
+            "reading": "change: the headline effect as a percent change (exp(effect) - 1) with \
+                        its 95% CI; q: Benjamini-Hochberg over the table's pairs (q_scope). With \
+                        a pair, view_map draws it: senders (ligand+), receivers exposed or not \
+                        (contact exposure above threshold) and receptor+ or not; show: exposure \
+                        draws the exposure itself. view_export curve: true writes its \
+                        threshold-response curve.",
+        })
+    }
+
     fn nearest(&self, at: (f32, f32), radius: f32) -> anyhow::Result<usize> {
         let geom = &self.base.geom;
         self.base
@@ -656,9 +926,23 @@ impl Open {
                 shown_path(p)
             );
         }
-        let vp = self.viewport(a.width.unwrap_or(2400));
+        let mut vp = self.viewport(a.width.unwrap_or(2400));
         let shown = |p: Option<&String>| p.map(|p| shown_path(Path::new(p)));
         let (png, pdf) = (shown(a.png.as_ref()), shown(a.pdf.as_ref()));
+        // The pair drawn, or with `curve` the selected pair's curve.
+        let lra = self.lra.as_ref();
+        let selected = lra.and_then(LraView::selected_row);
+        anyhow::ensure!(
+            !a.curve || selected.is_some(),
+            "curve: no lra pair selected; view_lra pair first"
+        );
+        let pair = lra
+            .filter(|_| a.curve || self.pair_drawn)
+            .and_then(|v| v.still_pair(a.curve));
+        if a.curve {
+            let w = vp.w;
+            vp = Viewport::fit(vp.window(), w, (w * 3 / 5).max(1));
+        }
         let round = match drawn(self.show, self.at, self.round.as_ref()) {
             (show, _, Some(path)) => Some((lupin::absolute(path), show)),
             _ => None,
@@ -671,16 +955,21 @@ impl Open {
             style: self.style(),
             round: round.as_ref().map(|(path, show)| (path.as_path(), *show)),
             gene: self.gene.as_ref(),
+            pair,
             vp,
             window: vp.window(),
         };
         let wrote: Vec<&String> = png.iter().chain(&pdf).collect();
-        let summary = format!(
-            "{} of {} {}",
-            still.style.layer,
-            self.base.run.name(),
-            self.level().comm.tag
-        );
+        let summary = match &still.pair {
+            Some(p) if p.curve => format!("lra curve of {} on {}", p.name, self.base.run.name()),
+            Some(p) => format!("lra pair {} on {}", p.name, self.base.run.name()),
+            None => format!(
+                "{} of {} {}",
+                still.style.layer,
+                self.base.run.name(),
+                self.level().comm.tag
+            ),
+        };
         let outputs: Vec<std::path::PathBuf> = wrote.iter().map(Into::into).collect();
         let args = still.args(png.as_deref(), pdf.as_deref());
         cx.run_making(legume_mcp::own_command(&args)?, &outputs, &summary)?;
@@ -718,6 +1007,21 @@ fn drawn(show: Show, at: usize, round: Option<&Round>) -> (Show, usize, Option<&
         (Show::Types | Show::Clusters, Some(r)) => (show, r.level, Some(&r.path)),
         _ => (Show::Communities, at, None),
     }
+}
+
+/// The table `name` names among `tables`: `full`, or a subset by its
+/// list (`SPP1,TGFB1`, order and case aside), or by its path.
+fn find_table(tables: &[lra_layer::TableRef], name: &str) -> Option<usize> {
+    let list: Vec<Box<str>> = name.split(',').map(|s| s.trim().into()).collect();
+    let canonical = crate::lr_activity::ligand_effect::only::canonical(&list);
+    let path = shown_path(Path::new(name));
+    tables.iter().position(|t| {
+        shown_path(&t.path) == path
+            || match &t.subset {
+                None => name.eq_ignore_ascii_case("full"),
+                Some(s) => s.only == canonical,
+            }
+    })
 }
 
 /// `v` as `--focus` spells a group: a name, or a number.
@@ -824,9 +1128,36 @@ fn specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "view_lra",
+            "The run's ligand-receptor tables (pinto lra: the full table and any --only \
+             subsets) and their pooled pairs: verdict counts and a list filtered by verdict \
+             and gene, sorted by q, effect or name, each with its change (percent, exp(effect) \
+             - 1, with 95% CI) and q. With pair, returns that pair's row (verdict, note, \
+             threshold, receivers) and view_map draws it from then on: senders (ligand+), \
+             receivers exposed or not (contact exposure above the table's threshold) and \
+             receptor-competent or not, as lra computed them (show: exposure draws the \
+             exposure itself). Arguments stay set until changed. A subset's q is corrected \
+             within the subset only (q_scope). view_export curve: true writes the pair's \
+             threshold-response curve.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string", "description": "full, a subset by its --only list (SPP1,TGFB1), or a table's path [default: the full table]"},
+                    "verdict": {"type": "string", "description": "List only this verdict (supported, effect_without_coexpression, colocation_only, no_evidence, control_failed, celltype_inseparable, insufficient_data); \"\" lists all"},
+                    "search": {"type": "string", "description": "Genes: each word must be in the ligand's or receptor's name; \"\" for all"},
+                    "sort": {"enum": ["q", "effect", "name"], "description": "Order of the list [default: q]"},
+                    "limit": {"type": "integer", "minimum": 0, "description": "Pairs listed, this call only [default: 20]"},
+                    "pair": {"type": "string", "description": "LIGAND:RECEPTOR to select and draw on the map; \"\" draws groups again"},
+                    "show": {"enum": ["classes", "exposure"], "description": "What the pair's map shows [default: classes]"},
+                },
+                "additionalProperties": false,
+            }),
+        ),
+        spec(
             "view_export",
             "Write the current view as a PNG and/or a one-page PDF figure (title, scale \
-             bar, legend, focused groups' markers). Refuses to replace a file unless overwrite.",
+             bar, legend, focused groups' markers); with curve, the selected lra pair's \
+             threshold-response curve instead. Refuses to replace a file unless overwrite.",
             json!({
                 "type": "object",
                 "properties": {
@@ -834,6 +1165,7 @@ fn specs() -> Vec<ToolSpec> {
                     "pdf": {"type": "string", "description": "PDF path, ending .pdf"},
                     "width": {"type": "integer", "minimum": 1, "maximum": MAX_SIDE, "description": "Image width in pixels [default: 2400]"},
                     "overwrite": {"type": "boolean", "description": "Replace files that exist"},
+                    "curve": {"type": "boolean", "description": "Write the selected lra pair's threshold-response curve (view_lra pair) instead of the map"},
                 },
                 "additionalProperties": false,
             }),

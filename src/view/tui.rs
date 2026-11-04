@@ -13,6 +13,7 @@ mod browse;
 mod follow;
 mod gallery;
 pub(super) mod grid;
+mod lra;
 mod plots;
 mod save;
 
@@ -266,6 +267,23 @@ struct App<'a> {
     /// The agent followed (`--follow`).
     follower: Option<follow::Follower>,
 
+    /// The lra layer (`I`): the run's contact-effect tables, their pairs,
+    /// and the pair on the map; read the first time it opens.
+    lra: Option<super::lra::LraView>,
+    /// Whether the layer is open: the panel lists pairs, the map draws the
+    /// selected one.
+    lra_on: bool,
+    /// The list's cursor, a position among the pairs shown.
+    lra_cursor: usize,
+    /// The selected pair's curve under the map (`c` in the layer).
+    lra_curve: bool,
+    /// The gene search being typed (`/` in the layer).
+    lra_search: Option<legume_tui::save::Field>,
+    /// A `pinto lra` started from the layer.
+    lra_job: Option<lra::LraJob>,
+    /// The pair selected is to be drawn with the next map.
+    pair_pending: bool,
+
     /// The map must be rendered again.
     need_map: bool,
     /// The panel must be drawn again (always, when the map is).
@@ -348,6 +366,13 @@ impl<'a> App<'a> {
             strip: Rect::default(),
             thumbs: Default::default(),
             follower: None,
+            lra: None,
+            lra_on: false,
+            lra_cursor: 0,
+            lra_curve: false,
+            lra_search: None,
+            lra_job: None,
+            pair_pending: false,
             need_map: true,
             need_panel: true,
             quit: false,
@@ -374,6 +399,7 @@ impl<'a> App<'a> {
                 self.redraw(terminal)?;
             }
             self.poll_job(terminal)?;
+            self.poll_lra();
             self.follow_tick(terminal)?;
             session.status(&self.session_status());
             // After an attach the terminal is asked again, before the
@@ -402,6 +428,9 @@ impl<'a> App<'a> {
             }
         }
         self.end_job(terminal)?;
+        if let Some(job) = self.lra_job.take() {
+            job.stop();
+        }
         if let Gfx::Kitty(k) = &mut self.gfx {
             // Detached, only its files go: there is no screen to clear.
             if session.attached() {
@@ -461,6 +490,9 @@ impl<'a> App<'a> {
         if !super::repalette(self.base, theme, &mut self.levels, self.round.as_mut()) {
             return;
         }
+        if let Some(v) = self.lra.as_mut() {
+            v.retheme(theme);
+        }
         self.plots.forget();
         self.thumbs.clear();
         self.need_map = true;
@@ -519,12 +551,18 @@ impl<'a> App<'a> {
             map.width -= gallery::SAVED_WIDTH;
         }
         // The structure plot under the map, a quarter of its height, and
-        // two rows of panel names under that.
+        // two rows of panel names under that; the curve, which names its
+        // own axes, takes those rows too.
         self.bars = Rect::default();
         self.below = Rect::default();
-        if self.structure && self.view == plots::View::Map && !self.grid_shows() && map.height >= 16
+        let curve = self.curve_shows();
+        if (self.structure || curve)
+            && self.view == plots::View::Map
+            && !self.grid_shows()
+            && map.height >= 16
         {
-            let (h, names) = ((map.height / 4).max(6), 2);
+            let names = if curve { 0 } else { 2 };
+            let h = (map.height / 4).max(6) + 2 - names;
             self.below = Rect::new(map.x, map.bottom() - names, map.width, names);
             self.bars = Rect::new(map.x, map.bottom() - names - h, map.width, h);
             map.height -= h + names;
@@ -547,6 +585,7 @@ impl<'a> App<'a> {
     /// the map that is about to be saved.
     fn wide(&self) -> bool {
         self.relabel.is_some()
+            || self.lra_on
             || self
                 .modal
                 .as_ref()
@@ -710,6 +749,9 @@ impl<'a> App<'a> {
             self.status = "on a chart: H next chart or back to the map · esc the map".into();
             return Ok(());
         }
+        if self.lra_on && self.lra_key(key, Some(terminal))? {
+            return Ok(());
+        }
         if self.relabel.is_some() && self.relabel_key(key, terminal)? {
             return Ok(());
         }
@@ -762,6 +804,7 @@ impl<'a> App<'a> {
             KeyCode::Char('C') => self.step_show(-1, terminal)?,
             KeyCode::Char('A') => self.ask_markers(),
             KeyCode::Char('R') => self.toggle_relabel(terminal)?,
+            KeyCode::Char('I') => self.toggle_lra(Some(terminal))?,
             KeyCode::Char('<') => self.scale_points(1. / POINT_STEP),
             KeyCode::Char('>') => self.scale_points(POINT_STEP),
             KeyCode::Char('.') => self.next_round(1, terminal)?,
@@ -794,7 +837,9 @@ impl<'a> App<'a> {
         // The structure plot: a click picks a community; nothing pans it.
         if self.bars.contains(Position::new(col, row)) {
             match m.kind {
-                MouseEventKind::Down(MouseButton::Left) => self.bar_click(col, row),
+                MouseEventKind::Down(MouseButton::Left) if !self.curve_shows() => {
+                    self.bar_click(col, row)
+                }
                 MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 }
                 _ => {}
@@ -834,6 +879,7 @@ impl<'a> App<'a> {
                     Some(&(_, Pick::Community(c))) => self.select(c, add),
                     Some(&(_, Pick::Gene(i))) => self.pick_gene(i),
                     Some(&(_, Pick::Bar(c))) => self.focus_bar(c),
+                    Some(&(_, Pick::Pair(i))) => self.pick_pair(i),
                     None => {}
                 }
             }
@@ -1216,7 +1262,7 @@ impl<'a> App<'a> {
             self.base,
             level,
             &style,
-            self.gene.as_ref(),
+            self.drawn_gene(),
             &hi,
             Some(png.as_ref()),
             Some(pdf.as_ref()),
@@ -1229,13 +1275,16 @@ impl<'a> App<'a> {
         );
         let small = Viewport::fit(window, tw, th.max(1));
         let (level, style) = self.drawn();
-        let thumb = self.base.render(level, &style, self.gene.as_ref(), &small);
-        let what = match &self.gene {
-            Some(g) => format!("map · {}", markers::symbol(&g.feature)),
-            None => format!("map · {} · {}", level.comm.tag, style.layer),
+        let thumb = self.base.render(level, &style, self.drawn_gene(), &small);
+        let what = match (self.lra_drawn(), &self.gene) {
+            (Some((level, ..)), _) => format!("map · lra {}", level.comm.tag),
+            (None, Some(g)) => format!("map · {}", markers::symbol(&g.feature)),
+            (None, None) => format!("map · {} · {}", level.comm.tag, style.layer),
         };
         let listed = self.remember(&pdf, &what, &thumb);
-        let bars = if self.bars.height > 0 {
+        let bars = if self.curve_shows() {
+            self.export_curve(&format!("{stem}-curve"))?
+        } else if self.bars.height > 0 {
             self.export_structure(&format!("{stem}-structure"))?
         } else {
             String::new()
@@ -1263,6 +1312,7 @@ impl<'a> App<'a> {
                 .filter(|_| round_drawn)
                 .map(|r| (&*r.path, self.show)),
             gene: self.gene.as_ref(),
+            pair: self.still_pair(false),
             vp: *vp,
             window,
         };
@@ -1315,6 +1365,9 @@ impl<'a> App<'a> {
     /// community picked in the structure plot on a map of a round's groups,
     /// its level and propensity.
     fn drawn(&self) -> (&Level, Style<'_>) {
+        if let Some((level, style, _)) = self.lra_drawn() {
+            return (level, style);
+        }
         match self.bar_focus_level() {
             Some((level, c)) => (
                 level,
@@ -1327,6 +1380,15 @@ impl<'a> App<'a> {
                 },
             ),
             None => (self.level(), self.style()),
+        }
+    }
+
+    /// The feature drawn: the lra pair's exposure when the layer draws
+    /// it, else the gene picked.
+    fn drawn_gene(&self) -> Option<&GeneMap> {
+        match self.lra_drawn() {
+            Some((_, _, gene)) => gene,
+            None => self.gene.as_ref(),
         }
     }
 
@@ -1343,6 +1405,7 @@ impl<'a> App<'a> {
     // ── drawing ─────────────────────────────────────────────────────────
 
     fn redraw(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        self.draw_pending_pair(Some(terminal));
         self.need_panel = false;
         let side = self.layout(terminal)?;
         let mut fresh: Option<Frame> = None;
@@ -1364,14 +1427,18 @@ impl<'a> App<'a> {
             let t = Instant::now();
             let (level, style) = self.drawn();
             let scene = self.base.scene(level);
-            let mut frame = self.base.render(level, &style, self.gene.as_ref(), &vp);
+            let mut frame = self.base.render(level, &style, self.drawn_gene(), &vp);
             // Unlabelled: the panel states the bar's length as text.
             if let Some(units) = self.base.units {
                 scalebar::draw(&mut frame, &vp, units, false);
             }
             let mode = render::mode(&scene, &vp, self.point);
             if self.bars.height > 0 {
-                frame = self.with_structure(frame);
+                frame = if self.curve_shows() {
+                    self.with_curve(frame)
+                } else {
+                    self.with_structure(frame)
+                };
             }
             self.render_time = t.elapsed();
             self.mode = mode;
@@ -1575,10 +1642,31 @@ impl<'a> App<'a> {
         }
 
         let help = help_lines(self.help, self.relabel.is_some(), self.shift_enter);
+        let help = if self.lra_on && !self.help {
+            lra::LRA_HELP
+                .iter()
+                .map(|t| Line::styled(*t, style::dim()))
+                .collect()
+        } else {
+            help
+        };
         let mut clickable = Vec::new();
         if let Some(modal) = &self.modal {
             let room = (height as usize).saturating_sub(lines.len());
             lines.extend(self.modal_lines(modal, room));
+            return (lines, clickable);
+        }
+        if self.lra_on {
+            let room = (height as usize).saturating_sub(lines.len() + help.len());
+            for (line, pick) in self.lra_lines(room) {
+                if let Some(pick) = pick {
+                    clickable.push((lines.len(), pick));
+                }
+                lines.push(line);
+            }
+            let pad = (height as usize).saturating_sub(lines.len() + help.len());
+            lines.extend(std::iter::repeat_n(Line::raw(""), pad));
+            lines.extend(help);
             return (lines, clickable);
         }
         if self.relabel.is_some() {
@@ -1788,6 +1876,8 @@ enum Pick {
     Gene(usize),
     /// A community of the structure plot's bars.
     Bar(usize),
+    /// A pair of the lra list, by its position among the pairs shown.
+    Pair(usize),
 }
 
 /// A colour ramp from 0 to `top`, under `title`.
@@ -1853,7 +1943,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
             " drag the panel's left edge: width",
             " t dark / light background (paper)",
             " s save as  f saved figures  q quit",
-            " A annotate (lupin)  R relabel",
+            " A annotate  R relabel  I pairs",
             " F  follow the agent again (--follow)",
         ]
     } else {

@@ -8,6 +8,7 @@ mod grid;
 mod heatmap;
 mod helpers;
 mod index;
+pub(super) mod lra;
 mod lupin;
 mod markers;
 mod pdf;

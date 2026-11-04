@@ -208,18 +208,16 @@ impl App<'_> {
 
     /// `map` with the structure plot drawn under it, as one frame.
     pub(super) fn with_structure(&mut self, map: Frame) -> Frame {
-        let total = ((self.canvas.height as f32 * self.px_per_cell.1) as usize).max(map.h + 1);
-        let Some(bars) = self.structure_frame(map.w, total - map.h) else {
-            return map;
-        };
-        let mut rgba = map.rgba;
-        rgba.extend_from_slice(&bars.rgba);
-        Frame {
-            w: map.w,
-            h: map.h + bars.h,
-            rgba,
-            background: map.background,
+        match self.structure_frame(map.w, self.room_below(&map)) {
+            Some(bars) => stack_below(map, &bars),
+            None => map,
         }
+    }
+
+    /// The canvas's pixels under `map`, at least one row.
+    pub(super) fn room_below(&self, map: &Frame) -> usize {
+        let total = ((self.canvas.height as f32 * self.px_per_cell.1) as usize).max(map.h + 1);
+        total - map.h
     }
 
     /// The structure plot at `w × h`, kept for clicks; `None` when its
@@ -648,4 +646,16 @@ fn save_figure(
             Err(why)
         }
     })
+}
+
+/// `map` with `below` (as wide) drawn under it, as one frame.
+pub(super) fn stack_below(map: Frame, below: &Frame) -> Frame {
+    let mut rgba = map.rgba;
+    rgba.extend_from_slice(&below.rgba);
+    Frame {
+        w: map.w,
+        h: map.h + below.h,
+        rgba,
+        background: map.background,
+    }
 }

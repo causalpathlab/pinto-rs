@@ -62,9 +62,12 @@ fn the_script_refuses_to_run_over_a_result() {
             "--fast",
         ]),
         "r1",
+        "r1.pinto.json",
+        "r1.cmd.sh",
     );
     assert!(s.starts_with("#!/usr/bin/env bash\n"));
-    assert!(s.contains("if [ -f \"${out}.pinto.json\" ]; then\n"));
+    assert!(s.contains("if [ -f r1.pinto.json ]; then\n"));
+    assert!(s.contains("bash r1.cmd.sh\n"));
     assert!(s.contains("out=r1\n"));
     assert!(s.ends_with(
         "\"${PINTO:-pinto}\" lc \\\n  'd 1.zarr' \\\n  --batch-files b.tsv \\\n  --out \"$out\" \\\n  --fast\n"
@@ -76,12 +79,12 @@ fn a_script_is_never_written_over() {
     let dir = tempfile::tempdir().unwrap();
     let a = argv(&["lc", "d.zarr", "--out", "r"]);
     let path = dir.path().join("r.cmd.sh");
-    write(&path, "r", &a).unwrap();
+    write(&path, "r", "r.pinto.json", &a).unwrap();
     assert!(std::fs::read_to_string(&path)
         .unwrap()
         .contains("lc \\\n  d.zarr"));
     std::fs::write(&path, "kept").unwrap();
-    assert!(write(&path, "r", &a).is_err());
+    assert!(write(&path, "r", "r.pinto.json", &a).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
 }
 
@@ -99,7 +102,13 @@ fn the_script_runs_the_command_once_and_then_refuses() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = dir.path().join("r.cmd.sh");
-    write(&path, "r", &argv(&["lc", "d.zarr", "--out", "r"])).unwrap();
+    write(
+        &path,
+        "r",
+        "r.pinto.json",
+        &argv(&["lc", "d.zarr", "--out", "r"]),
+    )
+    .unwrap();
     let run = || {
         std::process::Command::new("bash")
             .arg(&path)
@@ -116,7 +125,12 @@ fn the_script_runs_the_command_once_and_then_refuses() {
 
 #[test]
 fn the_script_logs_as_the_run_on_screen_did() {
-    let s = text(&argv(&["lc", "d.zarr", "--out", "r"]), "r");
+    let s = text(
+        &argv(&["lc", "d.zarr", "--out", "r"]),
+        "r",
+        "r.pinto.json",
+        "r.cmd.sh",
+    );
     assert!(s.contains(&format!("export RUST_LOG=\"${{RUST_LOG:-{LOG_LEVEL}}}\"\n")));
 }
 

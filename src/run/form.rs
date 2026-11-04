@@ -4,7 +4,7 @@
 //! Nothing here names a flag of any one method: every row comes from the
 //! subcommand's `Arg`s, so a flag added to a method shows up on its own.
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, ValueHint};
 
 /// Flags `pinto run` fills from its own screens or never passes.
 const OWN: &[&str] = &["out", "coord", "batch-files", "help", "version", "verbose"];
@@ -46,6 +46,9 @@ pub struct Field {
     /// Hidden from `--help`: shown only with the advanced rows.
     pub advanced: bool,
     pub required: bool,
+    /// Its values name files (`value_hint` a path): typed where `pinto
+    /// run` started, they are rewritten for the folder the run starts in.
+    pub path: bool,
     many: Many,
 }
 
@@ -103,6 +106,10 @@ impl Field {
             default,
             advanced: a.is_hide_set(),
             required: a.is_required_set(),
+            path: matches!(
+                a.get_value_hint(),
+                ValueHint::FilePath | ValueHint::AnyPath | ValueHint::DirPath
+            ),
             kind,
             many,
             long,
@@ -226,6 +233,9 @@ pub struct Method {
     coord: Option<Many>,
     /// How the batch files are passed, when the method takes them.
     batch: Option<Many>,
+    /// Whether it reads a prior run (`--from`, as lra does) instead of
+    /// the data files: they, their coordinates and batches are not passed.
+    pub from_run: bool,
 }
 
 impl Method {
@@ -246,19 +256,36 @@ impl Method {
             fields: cmd.get_arguments().filter_map(Field::from_arg).collect(),
             coord: slot("coord"),
             batch: slot("batch-files"),
+            from_run: slot("from").is_some(),
         })
     }
 
     /// Whether the method reads coordinate files.
     #[must_use]
     pub fn takes_coords(&self) -> bool {
-        self.coord.is_some()
+        self.coord.is_some() && !self.from_run
     }
 
     /// Whether the method reads batch files.
     #[must_use]
     pub fn takes_batches(&self) -> bool {
-        self.batch.is_some()
+        self.batch.is_some() && !self.from_run
+    }
+
+    /// The `--from` run, as typed; `None` when unset or not a method that
+    /// reads one.
+    #[must_use]
+    pub fn from(&self) -> Option<&str> {
+        self.value("from").filter(|_| self.from_run)
+    }
+
+    /// The value of the flag `long`, as typed, when it is not its default.
+    #[must_use]
+    pub fn value(&self, long: &str) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|f| f.long == long && !f.is_default())
+            .map(|f| f.value.trim())
     }
 
     /// Flags changed from their defaults.
@@ -278,6 +305,12 @@ impl Method {
         out: &str,
     ) -> Vec<String> {
         let mut argv = vec![self.name.clone()];
+        // A method reading a prior run takes its data from it.
+        let (data, coords, batches) = if self.from_run {
+            (&[][..], &[][..], &[][..])
+        } else {
+            (data, coords, batches)
+        };
         argv.extend(data.iter().cloned());
         for (flag, many, files) in [
             ("--coord", self.coord, coords),

@@ -392,12 +392,8 @@ impl Exposure {
     /// each row's contact dose (ligand / size factor summed over its
     /// contacts), which the threshold is read from.
     pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> (Self, Vec<f64>) {
-        let lnorm: Vec<f64> = ligand_counts
-            .iter()
-            .zip(&tissue.size_factor)
-            .map(|(c, s)| c / s)
-            .collect();
-        let a = tissue.contacts.sum(&lnorm);
+        let (lnorm, a) =
+            super::receivers::contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
         let ring = tissue.ring_sum(&lnorm);
         let tau = choose_threshold(&a, opts);
         let x = Self {

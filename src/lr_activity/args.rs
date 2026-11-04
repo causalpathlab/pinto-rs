@@ -1,6 +1,12 @@
 //! CLI arguments for `pinto lra` and `pinto lra-simulate`.
 
-use clap::{Args, Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum, ValueHint};
+
+/// `--seed`'s default.
+pub const DEFAULT_SEED: u64 = 42;
+
+/// `--fdr`'s default.
+pub const DEFAULT_FDR: f64 = 0.05;
 
 // * Input
 
@@ -28,6 +34,7 @@ pub struct LraInputArgs {
         long,
         short = 'f',
         value_name = "PINTO_JSON",
+        value_hint = ValueHint::FilePath,
         help_heading = "Input",
         help = "A prior pinto run's .pinto.json (lc, cage, dsvd, ...)",
         long_help = "A prior pinto run's manifest ({prefix}.pinto.json) from lc, cage,\n\
@@ -79,7 +86,7 @@ pub struct LraInputArgs {
     )]
     pub knn_spatial: usize,
 
-    #[arg(long, default_value_t = 42, help = "Random seed for reproducibility")]
+    #[arg(long, default_value_t = DEFAULT_SEED, help = "Random seed for reproducibility")]
     pub seed: u64,
 
     #[arg(
@@ -138,6 +145,7 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
+        value_hint = ValueHint::FilePath,
         help = "Ligand-receptor pairs (two-column TSV/CSV), added to the reference",
         long_help = "Ligand-receptor pair file, one pair per line: ligand gene, receptor\n\
                      gene, separated by tab, comma or whitespace. contact-effect adds\n\
@@ -150,6 +158,24 @@ pub struct SrtLrActivityArgs {
     #[arg(
         long,
         value_delimiter(','),
+        value_name = "PAIRS",
+        help = "Estimate only these pairs: LIGAND:RECEPTOR or a bare LIGAND, comma separated",
+        long_help = "Estimate only these pairs (contact-effect), comma separated: LIGAND:RECEPTOR,\n\
+                     a complex joining its subunits with `_` (TGFB1:TGFBR1_TGFBR2), or a\n\
+                     bare LIGAND for all of its pairs. Matched on genes, case aside, among\n\
+                     the reference pairs and --lr-pairs; an entry no pair answers is an\n\
+                     error naming the nearest. The subset goes to\n\
+                     {out}.lra.only-<tag>.parquet (and .curve.parquet), never over the full\n\
+                     table, and is recorded apart in the manifest (outputs.lra.subsets).\n\
+                     Its q-values are corrected within the subset only (column q_scope).\n\
+                     The receivers and each pair's estimate are those of the full run."
+    )]
+    pub only: Vec<Box<str>>,
+
+    #[arg(
+        long,
+        value_delimiter(','),
+        value_hint = ValueHint::FilePath,
         help = "Response programmes (TSV or GMT), added to the reference",
         long_help = "Response programme files, comma separated, added to the reference.\n\
                      TSV/CSV: a header with `receptor` and/or `ligand`, `target`, optional\n\
@@ -163,7 +189,7 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
-        default_value_t = 0.05,
+        default_value_t = DEFAULT_FDR,
         help = "False discovery rate for the verdicts",
         long_help = "False discovery rate for the contact-effect verdicts.\n\
                      The effect, the co-expression score and the negative controls each\n\
@@ -273,6 +299,15 @@ pub enum ReferenceSpecies {
     Mouse,
 }
 
+impl ReferenceSpecies {
+    /// As `--species` spells it.
+    pub fn name(self) -> String {
+        self.to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default()
+    }
+}
+
 // * lra-simulate
 
 #[derive(Parser, Debug, Clone)]
@@ -290,6 +325,7 @@ pub struct LraSimulateArgs {
     #[arg(
         long,
         value_name = "JSON",
+        value_hint = ValueHint::FilePath,
         help = "Study design: scenarios, replicates, pairs [default: the built-in study]",
         long_help = "Study design as JSON: the scenario grid (confounder kinds, length\n\
                      scales, shapes, effect sizes, spillover, field shift, marker,\n\

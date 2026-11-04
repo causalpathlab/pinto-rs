@@ -116,22 +116,27 @@ pub fn command_lines(argv: &[String]) -> Vec<String> {
     lines
 }
 
-/// The script for `argv` (without the program), whose `--out` is `out`.
+/// The script for `argv` (without the program), whose `--out` is `out`,
+/// itself named `script`: it refuses to run over `done`, what says the
+/// run is done (a path from the script's folder).
 #[must_use]
-pub fn text(argv: &[String], out: &str) -> String {
+pub fn text(argv: &[String], out: &str, done: &str, script: &str) -> String {
     let mut s = String::new();
     s.push_str("#!/usr/bin/env bash\n");
     s.push_str(&format!(
-        "# Made by `pinto run` (pinto {}). Run it again with: bash {}.cmd.sh\n",
+        "# Made by `pinto run` (pinto {}). Run it again with: bash {}\n",
         env!("CARGO_PKG_VERSION"),
-        quote(out)
+        quote(script)
     ));
     s.push_str("set -euo pipefail\n");
     s.push_str("cd \"$(dirname \"$0\")\"\n");
     s.push_str(&format!("export RUST_LOG=\"${{RUST_LOG:-{LOG_LEVEL}}}\"\n"));
     s.push_str(&format!("out={}\n", quote(out)));
-    s.push_str("if [ -f \"${out}.pinto.json\" ]; then\n");
-    s.push_str("  echo \"${out}.pinto.json exists; move it away to run again\" >&2\n");
+    s.push_str(&format!("if [ -f {} ]; then\n", quote(done)));
+    s.push_str(&format!(
+        "  echo {} >&2\n",
+        quote(&format!("{done} exists; move it away to run again"))
+    ));
     s.push_str("  exit 1\n");
     s.push_str("fi\n");
     s.push_str(&command_lines(argv).join(" \\\n  "));
@@ -139,9 +144,14 @@ pub fn text(argv: &[String], out: &str) -> String {
     s
 }
 
-/// Write the script for `argv` to `path`, never over an existing file.
-pub fn write(path: &Path, out: &str, argv: &[String]) -> anyhow::Result<()> {
-    write_new(path, text(argv, out).as_bytes())?;
+/// Write the script for `argv` to `path`, never over an existing file;
+/// it refuses to run over `done` ([`text`]).
+pub fn write(path: &Path, out: &str, done: &str, argv: &[String]) -> anyhow::Result<()> {
+    let script = path.file_name().map_or_else(
+        || format!("{out}.cmd.sh"),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    write_new(path, text(argv, out, done, &script).as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

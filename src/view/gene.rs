@@ -54,12 +54,15 @@ pub struct GeneMap {
     /// The values, scaled to `max`, as a single community.
     pub comm: Communities,
     pub pyramid: Pyramid,
+    /// What the ramp measures, when it is not the feature's own level
+    /// (an lra pair's exposure).
+    pub label: Option<Box<str>>,
 }
 
 impl GeneMap {
     /// `values` per cell; with `measured`, a cell it marks false has no
     /// level (its file never measured the feature), drawn as such.
-    fn new(
+    pub(super) fn new(
         feature: &str,
         source: Source,
         values: &[f32],
@@ -93,6 +96,15 @@ impl GeneMap {
             clip,
             comm,
             pyramid,
+            label: None,
+        }
+    }
+
+    /// The same map, its ramp titled `label`.
+    pub(super) fn labelled(self, label: &str) -> Self {
+        GeneMap {
+            label: Some(label.into()),
+            ..self
         }
     }
 
@@ -147,6 +159,9 @@ impl GeneMap {
 
     /// Legend title: the feature's symbol and what the ramp measures.
     pub fn title(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.to_string();
+        }
         let what = match self.source {
             Source::Observed => "ln(1+count)",
             Source::Expected => "expected, relative",

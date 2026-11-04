@@ -6,11 +6,13 @@
 //! of screen pixels, not the number of cells.
 
 mod color;
+mod curve;
 pub(crate) mod data;
 mod draft;
 mod gene;
 mod heatmap;
 mod index;
+mod lra;
 mod lupin;
 mod markers;
 pub mod mcp;
@@ -284,6 +286,47 @@ pub struct ViewArgs {
                      agent. The panel lists its last calls."
     )]
     pub follow: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "LIGAND:RECEPTOR",
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "Colour cells by an lra pair: senders, exposure, competence (--png/--pdf)",
+        long_help = "Colour cells by a ligand-receptor pair of the run's lra table\n\
+                     (pinto lra): senders (cells carrying the ligand), and receivers by\n\
+                     exposed or not (contact exposure above the table's threshold) and\n\
+                     receptor-competent or not, computed as lra computes them. In the\n\
+                     terminal, I opens the pair list instead."
+    )]
+    pub pair: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "classes",
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "With --pair: classes (senders, exposed, competent) or exposure"
+    )]
+    pub pair_show: lra::PairShow,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "With --pair: the lra table [default: the run's full table]",
+        long_help = "With --pair: the contact-effect table the pair is read from, such\n\
+                     as a subset of pinto lra --only ({prefix}.lra.only-<tag>.parquet).\n\
+                     Defaults to the full table the run's manifest records, else its\n\
+                     first subset."
+    )]
+    pub lra_table: Option<Box<str>>,
+
+    #[arg(
+        long,
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "With --pair: draw its threshold-response curve, not the map"
+    )]
+    pub curve: bool,
 
     #[command(flatten)]
     pub session: legume_tui::cli::SessionArgs,
@@ -663,6 +706,13 @@ struct Level {
 fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     // Without a terminal to ask, `auto` means dark.
     let theme = args.theme.unwrap_or(Theme::Dark);
+    if let Some(pair) = args.pair.as_deref() {
+        return write_pair_still(args, theme, pair);
+    }
+    anyhow::ensure!(
+        !args.curve,
+        "--curve draws an lra pair's curve: give --pair"
+    );
     let base = Base::load(args.prefix(), &args.units, theme)?;
     let mut level = match args.show {
         Show::Communities => {
@@ -684,14 +734,7 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         anyhow::ensure!(c < level.comm.k, "C{c}: level has K={}", level.comm.k);
     }
 
-    let window = match args.bbox.as_deref() {
-        Some(&[x0, y0, x1, y1]) => Rect::from_corners(x0, y0, x1, y1),
-        Some(v) => anyhow::bail!("--bbox takes 4 numbers X0,Y0,X1,Y1, got {}", v.len()),
-        None => base.geom.bounds().pad(FIT_MARGIN),
-    };
-    let w = args.width.max(1);
-    let h = args.height.unwrap_or_else(|| window.height_at(w));
-    let vp = Viewport::fit(window, w, h);
+    let vp = still_viewport(args, &base)?;
     let focus = args
         .focus
         .as_deref()
@@ -734,19 +777,110 @@ fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         args.pdf.as_deref().map(Path::new),
     )?;
     let took = t.elapsed();
-    for out in [args.png.as_deref(), args.pdf.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        println!("wrote {out}");
-    }
-    println!("{w}×{h}, {:.3} units/px, in {took:.2?}", vp.upp);
+    print_written(args);
+    println!("{}×{}, {:.3} units/px, in {took:.2?}", vp.w, vp.h, vp.upp);
     if matches!(args.layer, Layer::Argmax | Layer::Soft) {
         for &c in &level.comm.by_size {
             println!("{}", legend_line(&level.comm, c, level.palette[c]));
         }
     }
     Ok(())
+}
+
+/// The map's viewport for a still: `--bbox`, else the whole tissue, at
+/// `--width` and `--height` (else the height that keeps its aspect).
+fn still_viewport(args: &ViewArgs, base: &Base) -> anyhow::Result<Viewport> {
+    let window = match args.bbox.as_deref() {
+        Some(&[x0, y0, x1, y1]) => Rect::from_corners(x0, y0, x1, y1),
+        Some(v) => anyhow::bail!("--bbox takes 4 numbers X0,Y0,X1,Y1, got {}", v.len()),
+        None => base.geom.bounds().pad(FIT_MARGIN),
+    };
+    let w = args.width.max(1);
+    let h = args.height.unwrap_or_else(|| window.height_at(w));
+    Ok(Viewport::fit(window, w, h))
+}
+
+/// Say each file a still wrote.
+fn print_written(args: &ViewArgs) {
+    for out in [args.png.as_deref(), args.pdf.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        println!("wrote {out}");
+    }
+}
+
+/// The lra layer for `--pair`: the table `--lra-table` names, else the
+/// run's first, with `pair` selected.
+fn pair_layer(run: &data::Run, table: Option<&str>, pair: &str) -> anyhow::Result<lra::LraView> {
+    let tables = match table {
+        Some(path) => vec![lra::TableRef::at(Path::new(path), run)],
+        None => run.tables(),
+    };
+    let mut view = lra::LraView::new(tables)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--pair: the run has no lra table; run `pinto lra --from {}` first, or give \
+             --lra-table",
+            run.manifest
+                .as_deref()
+                .map_or_else(|| run.prefix.clone(), |m| m.display().to_string())
+        )
+    })?;
+    view.select(pair)?;
+    Ok(view)
+}
+
+/// `--pair`: the pair on the map, or with `--curve` its curve (which needs
+/// only the run, not its cells), as a PNG and/or a PDF figure.
+fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result<()> {
+    let t = Instant::now();
+    if args.curve {
+        let run = data::Run::open(args.prefix())?;
+        let view = pair_layer(&run, args.lra_table.as_deref(), pair)?;
+        let curve = view.curve().expect("a pair is selected");
+        let w = args.width.max(1);
+        let h = args.height.unwrap_or(w * 3 / 5);
+        if let Some(path) = args.png.as_deref() {
+            curve::still(&curve, (w, h), theme).write_png(Path::new(path))?;
+        }
+        if let Some(path) = args.pdf.as_deref() {
+            let page = curve::page(&curve, theme).map_err(anyhow::Error::msg)?;
+            pdf::write_chart(page, Path::new(path))?;
+        }
+    } else {
+        let base = Base::load(args.prefix(), &args.units, theme)?;
+        let mut view = pair_layer(&base.run, args.lra_table.as_deref(), pair)?;
+        let level = base.run.level_index(args.level.as_deref())?;
+        let on = view.on_map(&base, level)?.expect("a pair is selected");
+        let vp = still_viewport(args, &base)?;
+        let (level, style, gene) = on.drawn(&base, args.pair_show, args.point_size);
+        write_outputs(
+            &base,
+            level,
+            &style,
+            gene,
+            &vp,
+            args.png.as_deref().map(Path::new),
+            args.pdf.as_deref().map(Path::new),
+        )?;
+        if args.pair_show == lra::PairShow::Classes {
+            for (name, colour, n) in on.legend() {
+                println!("  {name:<22} {} {n:>9} receivers", color::hex(colour));
+            }
+        }
+    }
+    print_written(args);
+    println!("in {:.2?}", t.elapsed());
+    Ok(())
+}
+
+/// The lra pair a still draws, to say the command that draws it again.
+pub(super) struct StillPair<'a> {
+    pub name: String,
+    pub show: lra::PairShow,
+    /// The table, when it is not the run's first.
+    pub table: Option<&'a Path>,
+    pub curve: bool,
 }
 
 /// One view as `pinto view` draws it without a terminal, to say the
@@ -760,6 +894,9 @@ struct Still<'a> {
     /// The round drawn, and what of it.
     round: Option<(&'a Path, Show)>,
     gene: Option<&'a GeneMap>,
+    /// An lra pair drawn in place of the groups (its exposure map is the
+    /// pair's, not `gene`).
+    pair: Option<StillPair<'a>>,
     vp: Viewport,
     window: Rect,
 }
@@ -817,6 +954,17 @@ impl Still<'_> {
         if let Some((round, show)) = self.round {
             flag("--round", Some(round.display().to_string()));
             flag("--show", Some(value_name(&show)));
+        }
+        if let Some(p) = &self.pair {
+            flag("--pair", Some(p.name.clone()));
+            flag("--pair-show", Some(value_name(&p.show)));
+            if let Some(t) = p.table {
+                flag("--lra-table", Some(t.display().to_string()));
+            }
+            if p.curve {
+                flag("--curve", None);
+            }
+            return args;
         }
         if let Some(g) = self.gene {
             flag("--gene", Some(g.feature.to_string()));

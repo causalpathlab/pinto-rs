@@ -101,6 +101,11 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     if args.method == LraMethod::ContactEffect {
         return contact_effect(args, &input, &out);
     }
+    anyhow::ensure!(
+        args.only.is_empty(),
+        "--only applies to --method contact-effect; the co-expression methods test the \
+         pairs of --lr-pairs"
+    );
     let lc_prefix = input.lc_prefix()?;
     let lc_prefix = lc_prefix.as_str();
     // The `--from` run's manifest, which every method records into.
@@ -345,7 +350,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
                 score_rows.len()
             );
         }
-        let out_path = lra_outputs(LraMethod::CoexpressionScores, &out).remove(0);
+        let out_path = lra_outputs(LraMethod::CoexpressionScores, &out, &[]).remove(0);
         write_edge_scores(&out_path.to_string_lossy(), &score_rows)?;
         info!(
             "Wrote {} score rows to {}",
@@ -576,7 +581,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // 11. Write output //
     //////////////////////
     let [out_path, json_path]: [std::path::PathBuf; 2] =
-        lra_outputs(LraMethod::CoexpressionTest, &out)
+        lra_outputs(LraMethod::CoexpressionTest, &out, &[])
             .try_into()
             .expect("a table and its sidecar");
     let (out_path, json_path) = (
@@ -623,6 +628,7 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             fdr: args.fdr,
             seed: args.input.seed,
             block_size: input.block_size,
+            only: &args.only,
         },
         data: &contacts.data,
         axis: &contacts.axis,
@@ -665,6 +671,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
                 fdr: 0.05,
                 seed: args.input.seed,
                 block_size: input.block_size,
+                only: &[],
             },
             data: &contacts.data,
             axis: &contacts.axis,

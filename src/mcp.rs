@@ -38,7 +38,11 @@ negative controls); `run_lra_simulate` plants effects of known size on the \
 same tissue and reports, per scenario, power and type I error beside the \
 co-expression baselines (`example_study: true` returns the study it takes). \
 Run lra-simulate to check power and calibration before trusting lra on a new \
-tissue.";
+tissue. `run_lra` with `only` estimates a few pairs into a subset table of its \
+own (its q corrected within the subset). `view_lra` lists a run's pairs with \
+their verdicts and, given a pair, makes `view_map` draw it: senders, and \
+receivers exposed or not and receptor-competent or not; `view_export` with \
+`curve: true` writes its threshold-response curve.";
 
 const LOOKING: &str = "\
 Looking: start with `view_open` on a run prefix (the `out` of a \
