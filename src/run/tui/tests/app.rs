@@ -839,7 +839,8 @@ fn a_running_fit_shows_its_bar_until_its_fit_clears_it_then_its_log() {
 fn lra_on_a_run_is_set_up_with_its_flags() {
     use clap::CommandFactory;
     let dir = tempfile::tempdir().unwrap();
-    let here = dir.path();
+    // macOS temp folders sit behind a symlink (/var -> /private/var).
+    let here = &dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(here.join("res")).unwrap();
     std::fs::write(here.join("res/run.pinto.json"), "{}").unwrap();
     std::fs::write(here.join("pairs.tsv"), "A\tB\n").unwrap();
@@ -891,8 +892,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     let p = &planned[0];
     assert!(p.problem.is_none(), "{:?}", p.problem);
     let j = &p.job;
-    // macOS temp folders sit behind a symlink (/var -> /private/var).
-    assert_eq!(j.dir, here.canonicalize().unwrap().join("out"));
+    assert_eq!(j.dir, here.join("out"));
     assert_eq!(
         j.argv,
         [
