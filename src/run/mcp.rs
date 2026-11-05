@@ -291,13 +291,13 @@ fn ablation_summary(flags: &Map<String, Value>) -> Option<String> {
     Some(format!("{kind} ablation of {parent}"))
 }
 
-/// A run as the records name it: a prefix whose manifest exists is given as
-/// that `.pinto.json`, so the step's inputs link to the fit that made it.
 /// `paths`, each as a command line takes it.
 pub(super) fn rooted(paths: &[String]) -> Vec<String> {
     paths.iter().map(|p| shown_path(Path::new(p))).collect()
 }
 
+/// A run as the records name it: a prefix whose manifest exists is given as
+/// that `.pinto.json`, so the step's inputs link to the fit that made it.
 pub(super) fn as_run(input: &str) -> String {
     let manifest = crate::util::metadata::run_manifest(input);
     let named = if !Path::new(input).is_file() && Path::new(&manifest).is_file() {

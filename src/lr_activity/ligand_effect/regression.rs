@@ -391,9 +391,11 @@ fn newton_on_rows(
         std::mem::swap(&mut at, &mut next);
         let amax = step.amax();
         // A reused factor's step says less about the distance left than a
-        // fresh one's, so only the step's size may end the fit then.
+        // fresh one's, so only the size of a full step may end the fit then:
+        // a halved one is small because the factor pointed poorly.
         let small_gain = !reused && gain.abs() < 1e-12 * (1.0 + at.objective.abs());
-        if amax < 1e-8 || small_gain {
+        let small_step = amax < 1e-8 && !(reused && halved);
+        if small_step || small_gain {
             converged = true;
             break;
         }

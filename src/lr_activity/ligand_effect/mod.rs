@@ -35,7 +35,7 @@
 //! neighbour identity: `exposure_eta2` measures how much of the exposure
 //! the dominant neighbour's identity bin explains, and at
 //! [`INTERNALS`]`.max_exposure_eta2` the pair is `celltype_inseparable`
-//! rather than a finding. A significant the competent effect beside a failed control is
+//! rather than a finding. A significant competent effect beside a failed control is
 //! `control_failed`.
 //!
 //! "Effect" is a contrast of two stochastic interventions: each receiver's
@@ -150,7 +150,8 @@ impl Progress {
         let done = 1 + self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let total = self.bar.length().unwrap_or(done).max(1);
         if self.bar.is_hidden() && done * 20 / total > (done - 1) * 20 / total {
-            info!(
+            // Not through the log, whose default level would hide it.
+            eprintln!(
                 "{done}/{total} {} ({:.0}s)",
                 self.bar.message(),
                 self.bar.elapsed().as_secs_f64()

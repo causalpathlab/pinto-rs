@@ -879,7 +879,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     // A run's prefix is taken for its manifest.
     set(&mut a, "from", "res/run");
     set(&mut a, "lr-pairs", "pairs.tsv");
-    set(&mut a, "only", "SPP1:CD44, TGFB1");
+    set(&mut a, "only", "L1:R1, L2");
     set(&mut a, "seed", "7");
     // A value clap refuses is what the plan says, not a missing manifest.
     set(&mut a, "seed", "lots");
@@ -906,13 +906,10 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
             "--lr-pairs",
             "../pairs.tsv",
             "--only",
-            "SPP1:CD44,TGFB1"
+            "L1:R1,L2"
         ]
     );
-    assert_eq!(
-        j.manifest(),
-        j.dir.join("lra.lra.only-spp1-cd44+tgfb1.parquet")
-    );
+    assert_eq!(j.manifest(), j.dir.join("lra.lra.only-l1-r1+l2.parquet"));
     assert_eq!(j.script(), j.dir.join("lra.cmd.sh"));
     assert_eq!(
         script::normalize(j.view()),

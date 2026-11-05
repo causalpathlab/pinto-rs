@@ -547,7 +547,7 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in
 /// the output, on single cells and on pseudobulk units: for a hopeless
-/// pair, and for a pair whose controls alone would be estimable (no the competent effect, so
+/// pair, and for a pair whose controls alone would be estimable (no competent effect, so
 /// the incompetent effect and the ring are not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {

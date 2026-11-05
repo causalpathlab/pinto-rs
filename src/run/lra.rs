@@ -142,8 +142,11 @@ impl Input<'_> {
                     "{run} not found: give run, a run's .pinto.json"
                 );
                 anyhow::ensure!(
-                    self.coord_files.is_empty(),
-                    "coord_files apply to data files read directly; a run's coordinates are used"
+                    self.coord_files.is_empty()
+                        && self.batch_files.is_empty()
+                        && self.knn_spatial.is_none(),
+                    "coord_files, batch_files and knn_spatial apply to data files read \
+                     directly; a run's coordinates, sections and contacts are used"
                 );
                 Ok(Some(run))
             }
@@ -189,12 +192,14 @@ impl Input<'_> {
     /// The same input as the tool's arguments, for the calls a reply names.
     fn args(&self, run: Option<&str>) -> Value {
         let mut args = json!({});
-        match run {
-            Some(run) => args["run"] = run.into(),
-            None => {
-                args["data_files"] = self.data_files.into();
-                args["coord_files"] = self.coord_files.into();
-            }
+        if let Some(run) = run {
+            args["run"] = run.into();
+        }
+        if !self.data_files.is_empty() {
+            args["data_files"] = self.data_files.into();
+        }
+        if !self.coord_files.is_empty() {
+            args["coord_files"] = self.coord_files.into();
         }
         if !self.batch_files.is_empty() {
             args["batch_files"] = self.batch_files.into();
@@ -236,6 +241,16 @@ fn named_out(out: Option<&str>) -> Option<String> {
     } else {
         o.to_string()
     })
+}
+
+/// The co-expression methods read link communities, which only a run has.
+fn method_can_read(method: LraMethod, run: Option<&str>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        run.is_some() || method == LraMethod::ContactEffect,
+        "method {} reads a run's link communities: give run",
+        method_name(method)
+    );
+    Ok(())
 }
 
 /// `pinto lra` for `a` with `method`, reading `run` (or its data files) and
@@ -355,6 +370,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     let input = a.input();
     let run = input.run()?;
     let run = run.as_deref();
+    method_can_read(method, run)?;
     let out = named_out(a.out.as_deref());
     let only = a.only();
     // A finished `out` is read, not run again.

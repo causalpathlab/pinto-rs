@@ -185,6 +185,32 @@ fn unknown_arguments_are_refused() {
 }
 
 #[test]
+fn run_lra_refuses_what_a_run_or_data_files_would_ignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("r.pinto.json");
+    std::fs::write(&run, "{}").unwrap();
+    let run = run.to_str().unwrap();
+    for ignored in [
+        json!({"run": run, "coord_files": ["c.csv"]}),
+        json!({"run": run, "batch_files": ["b.txt"]}),
+        json!({"run": run, "knn_spatial": 7}),
+    ] {
+        let e = lra_args(ignored).input().run().unwrap_err().to_string();
+        assert!(e.contains("read directly"), "{e}");
+    }
+    // The co-expression methods need a run's link communities.
+    assert!(method_can_read(LraMethod::ContactEffect, None).is_ok());
+    assert!(method_can_read(LraMethod::CoexpressionTest, Some(run)).is_ok());
+    let e = method_can_read(LraMethod::CoexpressionScores, None).unwrap_err();
+    assert!(e.to_string().contains("give run"), "{e}");
+    // The call a reply names reads what this one read.
+    let a = lra_args(json!({"run": run, "data_files": ["new.h5"]}));
+    let args = a.input().args(Some(run));
+    assert_eq!(args["run"], run);
+    assert_eq!(args["data_files"], json!(["new.h5"]));
+}
+
+#[test]
 fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     let a = lra_args(json!({
         "data_files": ["d1.h5", "d2.h5"],
@@ -195,10 +221,9 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
         "n_permutations": 20,
         "json_fwer_threshold": 0.1,
         "min_gene_count": 5.0,
-        "method": "coexpression-test",
     }));
     assert_eq!(a.input().run().unwrap(), None);
-    let argv = lra_argv(&a, LraMethod::CoexpressionTest, None, "o");
+    let argv = lra_argv(&a, LraMethod::ContactEffect, None, "o");
     assert!(!argv.iter().any(|w| w == "--from"), "{argv:?}");
     for flag in [
         "--coord",
