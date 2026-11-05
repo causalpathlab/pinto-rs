@@ -952,9 +952,11 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     };
     let pairs = &prep.pairs;
     let n = tissue.n();
-    // The most abundant distinct ligands: a benchmark on a ligand seen in a
-    // handful of cells would measure sparsity, not the estimator, and three
-    // receptors of one ligand would benchmark one ligand three times.
+    // The most abundant distinct ligands among pairs with receivers to estimate
+    // on: a benchmark on a ligand seen in a handful of cells would measure
+    // sparsity, not the estimator, one without competent receivers would measure
+    // nothing, and three receptors of one ligand would benchmark one ligand three
+    // times.
     let mut order: Vec<usize> = (0..pairs.len()).collect();
     let abundance = |p: &Pair| {
         p.ligand_genes
@@ -963,6 +965,21 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
             .fold(f64::INFINITY, f64::min)
     };
     order.sort_by(|&x, &y| abundance(&pairs[y]).total_cmp(&abundance(&pairs[x])));
+    // Both arms at `min_arm` units, were the competent receivers split evenly.
+    let enough = 2 * eopts.min_arm * eopts.pseudobulk.max(1);
+    order.retain(|&k| {
+        let detected: Vec<bool> = prep
+            .receptor_counts(&pairs[k])
+            .iter()
+            .map(|&r| r > 0.0)
+            .collect();
+        let competent = exposure::competence(&tissue.identity_bin, &detected, eopts.competence());
+        competent.iter().filter(|&&c| c).count() >= enough
+    });
+    anyhow::ensure!(
+        !order.is_empty(),
+        "no pair has {enough} receptor-competent receivers to benchmark on"
+    );
     let mut seen_ligand: HashSet<&[usize]> = HashSet::default();
     order.retain(|&k| seen_ligand.insert(&pairs[k].ligand_genes));
     order.truncate(study.pairs);

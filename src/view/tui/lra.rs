@@ -88,7 +88,9 @@ fn short(v: Verdict) -> &'static str {
 /// A percent change in a few characters.
 fn pct_short(r: &PairRow) -> String {
     if r.pct.is_finite() {
-        format!("{:+.0}%", r.pct)
+        // Under a percent, a whole percent would read +0%.
+        let d = if r.pct.abs() < 1.0 { 2 } else { 0 };
+        format!("{:+.d$}%", r.pct)
     } else {
         "—".into()
     }
