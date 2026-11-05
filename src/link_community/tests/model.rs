@@ -68,7 +68,14 @@ fn test_size_factors() {
 fn assert_feature_table_is_fresh(stats: &LinkCommunityStats, store: &LinkProfileStore) {
     let fresh = LinkCommunityStats::from_profiles(store, stats.k, &stats.membership);
     // Whole counts: nothing here can have drifted, so nothing may differ.
-    assert_eq!(stats.feature_table.bits(), fresh.feature_table.bits());
+    let bits = |cell: [f32; 3]| cell.map(f32::to_bits);
+    for i in 0..stats.k * stats.m {
+        assert_eq!(
+            bits(stats.feature_table.cell(i)),
+            bits(fresh.feature_table.cell(i)),
+            "cell {i}"
+        );
+    }
 }
 
 #[test]

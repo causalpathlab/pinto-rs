@@ -71,13 +71,15 @@ const MIDPOINT_FROM: f32 = 8.0;
 /// their `f32` digits, and past `x ≈ 2e7` `x + y` no longer even differs from
 /// `x`. Short of the expansion there is the midpoint rule: `∫ ln(t − ½) dt` over
 /// `[x, x + y]` needs no subtraction, and with `mid = x + (y − 1)/2` and
-/// `r = y/mid`, it is `y · (ln(mid) − r²/24 − r⁴/320)`, to the order that keeps
-/// it close to the difference where the two meet, at `x = y`. When `y` is not below
-/// `x`, the difference cancels nothing and is used as is.
+/// `r = y/mid`, it is `y · (ln(mid) + 1/(24 mid²) − r²/24 − r⁴/320)`, the second term
+/// from the slope being `ln(t − ½) + 1/(24 (t − ½)²)`, the others to the order that
+/// keeps it close to the difference where the two meet, at `x = y`. When `y` is not
+/// below `x`, the difference cancels nothing and is used as is.
 #[inline(always)]
 pub(crate) fn ln_gamma_increment(x: f32, y: f32) -> f32 {
     debug_assert!(x > 0.0, "{x}");
     let inv = 1.0 / x;
+    debug_assert!(y >= 0.0, "{y}");
     if inv > expansion_limit(y) {
         short_of_expansion(x, y)
     } else {
@@ -90,7 +92,8 @@ pub(crate) fn ln_gamma_increment(x: f32, y: f32) -> f32 {
 /// so that a run needing none pays no branch per cell.
 #[inline(always)]
 pub(crate) fn ln_gamma_increments(run: LnRun<'_>, y: f32, out: &mut [f32]) {
-    debug_assert_eq!(run.xs.len(), out.len());
+    assert_eq!(run.xs.len(), out.len());
+    debug_assert!(y >= 0.0, "{y}");
     let coefficients = ExpansionCoefficients::of(y);
     let limit = expansion_limit(y);
     let mut any_fails = false;
@@ -107,18 +110,22 @@ pub(crate) fn ln_gamma_increments(run: LnRun<'_>, y: f32, out: &mut [f32]) {
     }
 }
 
+/// From here up in `x`, against a `y` of at most one, the expansion holds.
+const EXPANSION_FROM: f32 = 8.0;
+
 /// Past this `y`, `c₄` is near the top of what `f32` holds.
 const EXPANSION_UP_TO: f32 = 1e9;
 
 /// The largest `1/x` at which the expansion holds: `x` at least `8 max(1, y)`. Its
 /// next term is about `y (y/x)⁴ / 20`, about `1e-5` of `y` there, under what
-/// `fast_ln` itself resolves. No `x` qualifies for a `y` past [`EXPANSION_UP_TO`].
+/// `fast_ln` itself resolves. No `x` qualifies for a `y` past
+/// [`EXPANSION_UP_TO`], not even an infinite one.
 #[inline(always)]
 fn expansion_limit(y: f32) -> f32 {
     if y > EXPANSION_UP_TO {
-        0.0
+        -1.0
     } else {
-        0.125 / y.max(1.0)
+        1.0 / (EXPANSION_FROM * y.max(1.0))
     }
 }
 
@@ -134,6 +141,7 @@ impl ExpansionCoefficients {
     #[inline(always)]
     fn of(y: f32) -> Self {
         let c2 = 0.5 * y * (y - 1.0);
+        // Reciprocals, as a division by these constants is not folded and costs a pass.
         ExpansionCoefficients {
             y,
             c2,
@@ -153,9 +161,11 @@ impl ExpansionCoefficients {
 fn short_of_expansion(x: f32, y: f32) -> f32 {
     if y < x && x >= MIDPOINT_FROM {
         let mid = x + 0.5 * (y - 1.0);
-        let ratio = y / mid;
+        let inv_mid = 1.0 / mid;
+        let ratio = y * inv_mid;
         let squared = ratio * ratio;
-        y * (fast_ln(mid) - squared * (1.0 / 24.0 + squared * (1.0 / 320.0)))
+        let slope = fast_ln(mid) + inv_mid * inv_mid * (1.0 / 24.0);
+        y * (slope - squared * (1.0 / 24.0 + squared * (1.0 / 320.0)))
     } else {
         fast_ln_gamma(x + y) - fast_ln_gamma(x)
     }
@@ -170,6 +180,7 @@ pub(crate) struct LnTable {
 }
 
 /// A stretch of an [`LnTable`], its slices of one length.
+#[derive(Copy, Clone)]
 pub(crate) struct LnRun<'a> {
     xs: &'a [f32],
     ln_xs: &'a [f32],
@@ -179,9 +190,9 @@ pub(crate) struct LnRun<'a> {
 impl LnTable {
     pub(crate) fn new(n: usize) -> Self {
         LnTable {
-            xs: vec![0.0; n],
-            ln_xs: vec![0.0; n],
-            inv_xs: vec![0.0; n],
+            xs: vec![f32::NAN; n],
+            ln_xs: vec![f32::NAN; n],
+            inv_xs: vec![f32::INFINITY; n],
         }
     }
 
@@ -202,17 +213,9 @@ impl LnTable {
         }
     }
 
-    /// Every value as bits, for tests to compare two tables exactly.
+    /// Cell `i`: its `x`, `ln x` and `1/x`.
     #[cfg(test)]
-    pub(crate) fn bits(&self) -> Vec<[u32; 3]> {
-        (0..self.xs.len())
-            .map(|i| {
-                [
-                    self.xs[i].to_bits(),
-                    self.ln_xs[i].to_bits(),
-                    self.inv_xs[i].to_bits(),
-                ]
-            })
-            .collect()
+    pub(crate) fn cell(&self, i: usize) -> [f32; 3] {
+        [self.xs[i], self.ln_xs[i], self.inv_xs[i]]
     }
 }
