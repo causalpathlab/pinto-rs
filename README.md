@@ -112,11 +112,18 @@ pairs and draws each on the tissue (see `view`, `I`):
 | `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
 | `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response programme |
 | `no_evidence` | neither a response nor co-expression at this false discovery rate |
-| `control_failed` | an effect appeared, but so did one in a negative control (receivers without the receptor, distant cells that do not touch, or a matched decoy programme): likely confounding |
+| `control_failed` | an effect appeared, but the negative controls do not hold: receivers without the receptor respond as much, distant cells that do not touch or a matched decoy programme respond too, or one of these could not be checked: likely confounding |
 | `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
 | `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
 
-The negative controls are corrected among the pairs with a significant effect, so their q is empty for the rest.
+A verdict is deliberately conservative. A pair has an estimate only if its
+receptor-competent receivers fill both arms at the middle competence threshold.
+A significant effect then has to clear every control, each corrected among the
+pairs with a significant effect (so their q is empty for the rest, and depends
+on `--fdr`): the effect must exceed the one in receptor-negative receivers
+(`effect_contrast_q`, same direction), and those receivers, distant cells and a
+matched decoy must show none. A control that could not run does not pass, except
+a decoy where none could be matched.
 
 ### `lra-simulate`: power and calibration check
 
@@ -513,9 +520,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > colocation_only: ligand and receptor sit together across contacts, but
 > receivers show no change in their response programme; no_evidence: neither a
 > response nor co-expression at this false discovery rate; control_failed: an
-> effect appeared, but so did one in a negative control (receivers without the
-> receptor, distant cells that do not touch, or a matched decoy programme):
-> likely confounding; celltype_inseparable: being exposed to the ligand is
+> effect appeared, but the negative controls do not hold: receivers without the
+> receptor respond as much, distant cells that do not touch or a matched decoy
+> programme respond too, or one of these could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
 > nearly the same as having a neighbour of one cell type, so the ligand cannot
 > be told apart from that cell type; insufficient_data: too few exposed or
 > unexposed receptor-carrying receivers, or too little overlap between them,

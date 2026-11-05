@@ -292,6 +292,8 @@ pub struct EffectRow {
     pub coexpr_q: f64,
     /// BH q of the controls (E3, E5), two-sided, within the section.
     pub effect_incompetent_q: f64,
+    /// BH q of the contrast of E2 with E3, among the significant effects.
+    pub effect_contrast_q: f64,
     pub ring_effect_q: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
@@ -698,10 +700,11 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
 /// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
 /// so the skip is the guard read before the fit, not a second rule.
 ///
-/// E3 and the ring are controls on E2: a pair whose competent receivers leave
-/// E2 thin at every threshold (none, or nearly none) has no estimate for them
-/// to check, so they are not read either, and leave the families their
-/// q-values are corrected over.
+/// E2 is read only when the middle competence threshold leaves both arms open:
+/// a pair resting on a looser threshold alone has no estimate, whatever its
+/// looser thresholds show. E3 and the ring are controls on E2, with nothing to
+/// check without it, so they are not read either, and neither are the curve's
+/// other thresholds ([`effects`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
     pub e2: bool,
@@ -715,7 +718,9 @@ impl Reads {
             let (n, treated) = pooled_arms(rows, t, keep);
             !opts.thin_arm(n, treated)
         };
-        let e2 = levels.iter().any(|c| open(&x.t, &|i| c[i]));
+        let e2 = levels
+            .get(levels.len() / 2)
+            .is_some_and(|c| open(&x.t, &|i| c[i]));
         Self {
             e2,
             e3: e2 && levels.iter().any(|c| open(&x.t, &|i| !c[i])),
@@ -1136,6 +1141,17 @@ pub fn effects_on(
         Some(terms) => opts.guard(subset_estimate(terms, t, sub, cf)),
         None => thin_subset(t, sub, cf),
     };
+    // Per scope, whether E2 has an estimate: the middle threshold ([`Reads`]).
+    let headline: Vec<bool> = rows
+        .scope_rows
+        .iter()
+        .map(|inside| {
+            let middle = &fits.levels[fits.levels.len() / 2];
+            let comp = inside.iter().filter(|&&i| middle[i as usize]);
+            let (n, treated) = comp.fold((0, 0), |(n, x), &i| (n + 1, x + t[i as usize] as usize));
+            !opts.thin_arm(n, treated)
+        })
+        .collect();
     let levels = fits
         .levels
         .iter()
@@ -1148,10 +1164,11 @@ pub fn effects_on(
                 .map(|(k, inside)| {
                     let (comp, incomp): (Vec<u32>, Vec<u32>) =
                         inside.iter().partition(|&&i| competent[i as usize]);
-                    let (e2, s2) = est(main.as_ref(), t, &comp);
-                    let (e3, s3) = est(main.as_ref().filter(|_| reads.e3), t, &incomp);
+                    let open = headline[k];
+                    let (e2, s2) = est(main.as_ref().filter(|_| open), t, &comp);
+                    let (e3, s3) = est(main.as_ref().filter(|_| open && reads.e3), t, &incomp);
                     let e1 = difference(&e2, &s2, &e3, &s3);
-                    let (e5, _) = est(ring.as_ref().filter(|_| reads.ring), t_ring, &comp);
+                    let (e5, _) = est(ring.as_ref().filter(|_| open && reads.ring), t_ring, &comp);
                     let nan = Estimate::nan(e2.n, e2.n_treated);
                     let mut step_est = [nan; 3];
                     let mut e2_nospill = nan;
@@ -1167,11 +1184,11 @@ pub fn effects_on(
                     };
                     if k == 0 {
                         if sens.nospill {
-                            e2_nospill = est(nospill.as_ref(), t, &comp).0;
+                            e2_nospill = est(nospill.as_ref().filter(|_| open), t, &comp).0;
                         }
                         if sens.steps {
                             for (j, e) in step_est.iter_mut().enumerate() {
-                                *e = est(steps.get(j), t, &comp).0;
+                                *e = est(steps.get(j).filter(|_| open), t, &comp).0;
                             }
                         }
                         pooled_sums = s2;
@@ -1608,6 +1625,10 @@ fn effects(
             })?
             .with_controls(rows, sens.steps, opts, &mut starts)?;
             fitted |= fits.reads.any();
+            // No estimate at the headline threshold: no curve to put it on.
+            if !fits.reads.e2 {
+                curve_done.fill(true);
+            }
             let varies = random(&units) && fits.reads.any();
             // The response side of a programme on this draw's rows.
             let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
@@ -1880,6 +1901,7 @@ pub fn estimate_pair_with(
             coexpr_p: f64::NAN,
             coexpr_q: f64::NAN,
             effect_incompetent_q: f64::NAN,
+            effect_contrast_q: f64::NAN,
             ring_effect_q: f64::NAN,
             n_pairs_same_ligand: 0,
             ligand_q: f64::NAN,
@@ -2179,6 +2201,7 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
                 .collect();
             bh(&p)
         };
+        let q1 = control(&|r| r.effects.effect.p());
         let q3 = control(&|r| r.effects.incompetent.p());
         let q5 = control(&|r| r.effects.ring.p());
         let qd = control(&|r| r.decoy_effect.p());
@@ -2208,6 +2231,7 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
             r.effect_q = qe[k];
             r.coexpr_p = pc[k];
             r.coexpr_q = qc[k];
+            r.effect_contrast_q = q1[k];
             r.effect_incompetent_q = q3[k];
             r.ring_effect_q = q5[k];
             r.decoy_q = qd[k];
@@ -2225,11 +2249,26 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     let failed_e3 = sig(row.effect_incompetent_q);
     let failed_ring = sig(row.ring_effect_q);
     let failed_decoy = sig(row.decoy_q);
+    let effect = sig(row.effect_q);
+    // Beside a significant effect a control that could not run has not held,
+    // but for a decoy where the pool matched none. The effect must also exceed
+    // E3's: the contrast significant, the same way as the effect.
+    let contrast = row.effects.effect;
+    let unspecific = effect && !(sig(row.effect_contrast_q) && contrast.theta * head.theta > 0.0);
+    let unchecked_e3 = effect && row.effect_incompetent_q.is_nan();
+    let unchecked_ring = effect && row.ring_effect_q.is_nan();
+    let unchecked_decoy = effect && row.n_decoy_genes > 0 && row.decoy_q.is_nan();
     let ev = Evidence {
         estimable: head.theta.is_finite() && head.se.is_finite(),
-        effect: sig(row.effect_q),
+        effect,
         coexpr: sig(row.coexpr_q),
-        control_failed: failed_e3 || failed_ring || failed_decoy,
+        control_failed: failed_e3
+            || failed_ring
+            || failed_decoy
+            || unspecific
+            || unchecked_e3
+            || unchecked_ring
+            || unchecked_decoy,
         confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
     };
     row.verdict = verdict(ev);
@@ -2273,6 +2312,17 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     }
     if failed_e3 {
         w.push("receptor-negative receivers respond".into());
+    }
+    if unchecked_e3 {
+        w.push("receptor-negative receivers could not be checked".into());
+    } else if unspecific {
+        w.push("the effect does not exceed the one in receptor-negative receivers".into());
+    }
+    if unchecked_ring {
+        w.push("distant senders could not be checked".into());
+    }
+    if unchecked_decoy {
+        w.push("the matched decoy programme could not be checked".into());
     }
     if failed_ring {
         w.push("distant senders have an effect".into());

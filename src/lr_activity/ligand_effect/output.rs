@@ -92,9 +92,10 @@ impl Verdict {
                 "neither a response nor co-expression at this false discovery rate"
             }
             Verdict::ControlFailed => {
-                "an effect appeared, but so did one in a negative control (receivers \
-                 without the receptor, distant cells that do not touch, or a matched decoy \
-                 programme): likely confounding"
+                "an effect appeared, but the negative controls do not hold: receivers \
+                 without the receptor respond as much, distant cells that do not touch or a \
+                 matched decoy programme respond too, or one of these could not be checked: \
+                 likely confounding"
             }
             Verdict::CelltypeInseparable => {
                 "being exposed to the ligand is nearly the same as having a neighbour of \
@@ -251,6 +252,7 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .est("ring_effect", |(r, _)| r.effects.ring)
         .f("ring_effect_q", |(r, _)| r.ring_effect_q)
         .est("effect_contrast", |(r, _)| r.effects.effect)
+        .f("effect_contrast_q", |(r, _)| r.effect_contrast_q)
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)

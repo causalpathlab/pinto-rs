@@ -609,6 +609,31 @@ fn a_thin_headline_drops_its_controls() {
     );
 }
 
+/// Competent only at a threshold looser than the middle one: no estimate, on
+/// any threshold, with every fit skipped.
+#[test]
+fn a_pair_empty_at_the_middle_threshold_has_no_estimate() {
+    let mut w = world(8, 0.3, false);
+    w.receptor = w
+        .receptor
+        .iter()
+        .zip(&w.tissue.identity_bin)
+        .map(|(&r, &b)| if b == 1 { r } else { 0.0 })
+        .collect();
+    let targets = [(1.0, w.response.as_slice())];
+    static GRID: [f64; 2] = [0.05, 0.2];
+    let o = opts(&GRID, false);
+    let row = &estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[0];
+    assert_eq!(row.n_competent, 0);
+    assert!(row.effects.competent.theta.is_nan());
+    assert!(row.effects.incompetent.theta.is_nan());
+    assert!(row.effects.ring.theta.is_nan());
+    // The looser threshold alone does estimate this pair.
+    static LOOSE: [f64; 1] = [0.05];
+    let row = &estimate_pair(&w.tissue, &data(&w, &targets), &opts(&LOOSE, false)).unwrap()[0];
+    assert!(row.effects.competent.theta.is_finite());
+}
+
 // * Fixed partitions
 
 /// The partitions a pair drew, counted in tissues' worth of receivers.

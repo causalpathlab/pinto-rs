@@ -774,7 +774,10 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let per_pair = pair_memory(n, 32 + draw_fits, tissue, &eopts.nuisance);
     let concurrent = pair_workers(per_pair, n, tissue, &eopts.nuisance);
     if concurrent > 1 {
-        info!("Estimating up to {concurrent} pairs at a time");
+        info!(
+            "Estimating up to {} pairs at a time",
+            concurrent.min(prep.pairs.len())
+        );
     }
     let one = |p: &Pair| -> Vec<(Vec<estimate::EffectRow>, pseudobulk::UnitTally)> {
         let lig = prep.ligand_counts(p);
@@ -820,9 +823,10 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     pb.finish();
     log_unit_size(units);
     info!(
-        "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
+        "Estimated {} pairs in {:.0}s ({} at a time). Thread time: {}",
         prep.pairs.len(),
         t_pairs.elapsed().as_secs_f64(),
+        concurrent.min(prep.pairs.len()),
         estimate::timing::summary()
     );
     let ropts = estimate::ReportOpts {
