@@ -698,7 +698,9 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
 /// ([`thin_arm`]) on the pooled rows: the main fit's competent subsets (the
 /// competent units at some competence threshold; also what the no-spill,
 /// step, curve and decoy fits read), its incompetent subsets (the incompetent ones)
-/// and the ring fit's. A fit none of whose subsets is read is skipped,
+/// and the ring fit's; without the first neither of the others is read, and
+/// a draw that reads none has the same estimates under every seed
+/// ([`super::pseudobulk::stop_drawing`]). A fit none of whose subsets is read is skipped,
 /// propensity and all, and its estimands are what the guard would make of
 /// them, not estimable with their counts ([`thin_subset`]): the units of an
 /// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
@@ -730,17 +732,6 @@ impl Reads {
             e3: e2 && levels.iter().any(|c| open(&x.t, &|i| !c[i])),
             ring: e2 && levels.iter().any(|c| open(&x.t_ring, &|i| c[i])),
         }
-    }
-
-    /// The main fit serves some subset.
-    pub fn main(&self) -> bool {
-        self.e2 || self.e3
-    }
-
-    /// Some fit of the draw runs: else its estimates are the same under
-    /// every seed ([`super::pseudobulk::stop_drawing`]).
-    pub fn any(&self) -> bool {
-        self.main() || self.ring
     }
 }
 
@@ -816,7 +807,7 @@ impl<'a> DrawFits<'a> {
             main: None,
             controls: None,
         };
-        if fits.runs(fits.reads.main()) {
+        if fits.runs(fits.reads.e2) {
             let extra = fits.extra(Fit::Main);
             let main = propensity(
                 rows.design.view(),
@@ -1109,7 +1100,7 @@ pub fn effects_on(
     };
     let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
         Ok((
-            fit(fits.runs(reads.main()), Fit::Main, None, design)?,
+            fit(fits.runs(reads.e2), Fit::Main, None, design)?,
             fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
         ))
     })?;
@@ -1178,7 +1169,7 @@ pub fn effects_on(
                     let mut step_est = [nan; 3];
                     let mut e2_nospill = nan;
                     let near_determined = match &main {
-                        Some(m) if reads.main() && !comp.is_empty() => {
+                        Some(m) if reads.e2 && !comp.is_empty() => {
                             let near = comp
                                 .iter()
                                 .filter(|&&i| m.h[i as usize] < NEAR_DETERMINED_H)
@@ -1216,7 +1207,7 @@ pub fn effects_on(
         })
         .collect();
     let h = match main {
-        Some(m) if reads.main() => m.h,
+        Some(m) if reads.e2 => m.h,
         _ => Vec::new(),
     };
     Ok(Effects { levels, h })
@@ -1629,12 +1620,12 @@ fn effects(
                 DrawFits::new(rows, exposure, levels, opts, &mut starts)
             })?
             .with_controls(rows, sens.steps, opts, &mut starts)?;
-            fitted |= fits.reads.any();
+            fitted |= fits.reads.e2;
             // No estimate at the headline threshold: no curve to put it on.
             if !fits.reads.e2 {
                 curve_done.fill(true);
             }
-            let varies = random(&units) && fits.reads.any();
+            let varies = random(&units) && fits.reads.e2;
             // The response side of a programme on this draw's rows.
             let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
                 units.as_ref().map(|u| u.response_of(r, targets))
@@ -2139,7 +2130,9 @@ pub struct Evidence {
     pub effect: bool,
     /// The co-expression q is below the FDR level.
     pub coexpr: bool,
-    /// The incompetent effect, the ring effect or the decoy effect has a q below the FDR level.
+    /// A control beside a significant effect did not hold: the incompetent,
+    /// ring or decoy effect is significant or could not be checked, or the effect
+    /// does not exceed the incompetent one.
     pub control_failed: bool,
     /// `exposure_eta2` reaches the internal guard `max_exposure_eta2`
     /// (`outputs.lra.settings` in the manifest).

@@ -20,7 +20,8 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-/// Pairs the reply lists, strongest evidence first (as the run summary).
+/// Pairs the reply lists, of those that survived the controls, strongest first
+/// (as the run summary).
 const TOP_PAIRS: usize = 5;
 
 // * Arguments
@@ -426,7 +427,7 @@ fn push_note(reply: &mut [Content], note: &str) {
 }
 
 /// The reply to a finished `pinto lra`: for the contact effect, the verdict
-/// counts over the pooled pairs and the strongest pairs, then the files and
+/// counts over the pooled pairs and those that survived the controls, then the files and
 /// what to do next.
 fn lra_reply(
     method: LraMethod,
@@ -467,7 +468,7 @@ fn lra_reply(
 }
 
 /// The pooled pairs in a few lines: how many, each verdict's count, and the
-/// strongest evidence (percent change with its 95% interval, and q).
+/// strongest that survived the controls (percent change with its 95% interval, and q).
 pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
     let counts: Map<String, Value> = Verdict::counts(rows.iter().map(|r| r.verdict))
         .iter()

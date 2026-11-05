@@ -1243,7 +1243,7 @@ pub fn simulate(
             opts,
             &mut starts,
         )?;
-        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.any();
+        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.e2;
         let eff = effects_on(rows, &fits, r, sens, opts)?;
         let e = eff.levels[0].scopes[0];
         let weighted_truth = {
