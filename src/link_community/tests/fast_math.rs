@@ -1,5 +1,5 @@
 use crate::link_community::fast_math::{
-    fast_ln, fast_ln_gamma, ln_gamma_increment, ln_gamma_increments,
+    fast_ln, fast_ln_gamma, ln_gamma_increment, ln_gamma_increments, LnTable,
 };
 use special::Gamma;
 
@@ -55,7 +55,7 @@ fn increments_hold_at_large_counts() {
 
 /// Callers compare differences of increments, so the 1% above is no bound on a
 /// decision: at `y = 1000` it would forgive tens of nats. The error
-/// has to scale with `y`, and stay small across the split between the two forms.
+/// has to scale with `y`, and stay small across the splits between the forms.
 #[test]
 fn the_error_of_an_increment_scales_with_its_count() {
     for x in grid(1e-3, 1e7, 1.31) {
@@ -89,21 +89,66 @@ fn small_counts_do_not_pile_up_a_bias_on_empty_features() {
     }
 }
 
+/// How far crossing from `below` to `above` moves an increment beyond its true slope.
+fn jump_error(below: f64, above: f64, y: f64) -> f64 {
+    let approx = |x: f64| f64::from(ln_gamma_increment(x as f32, y as f32));
+    let exact = |x: f64| Gamma::ln_gamma(x + y).0 - Gamma::ln_gamma(x).0;
+    ((approx(above) - approx(below)) - (exact(above) - exact(below))).abs()
+}
+
 /// The two forms meet at `x = y`, a common place for `x` to sit when it mostly
 /// holds one count like `y`, so crossing it may not shift a score by more than its true
 /// slope and a small share of `y`.
 #[test]
 fn increments_barely_jump_where_the_forms_meet() {
     for y in [1e2f64, 1e3, 1e4, 1e5, 1e6] {
-        let (below, above) = (y * 0.999, y * 1.001);
-        let got = f64::from(ln_gamma_increment(above as f32, y as f32))
-            - f64::from(ln_gamma_increment(below as f32, y as f32));
-        let want = (Gamma::ln_gamma(above + y).0 - Gamma::ln_gamma(above).0)
-            - (Gamma::ln_gamma(below + y).0 - Gamma::ln_gamma(below).0);
-        assert!(
-            (got - want).abs() <= 2e-4 * y,
-            "y = {y}: a jump of {got} against {want}"
-        );
+        let error = jump_error(y * 0.999, y * 1.001, y);
+        assert!(error <= 2e-4 * y, "y = {y}: a jump off by {error}");
+    }
+}
+
+/// The cached form gives way to the others at `x = 8 max(1, y)`. The two agreeing
+/// there is what keeps crossing it from shifting a score: this far from `x = y` the
+/// two sides of the seam have no reason to differ by more than their slope.
+#[test]
+fn increments_barely_jump_where_the_cached_form_ends() {
+    for y in [1e-1f64, 0.5, 1.0, 3.0, 1e1, 1e2, 1e3, 1e4, 1e5] {
+        let seam = 8.0 * y.max(1.0);
+        let error = jump_error(seam * 0.999, seam * 1.001, y);
+        assert!(error <= 2e-4 * y + 2e-4, "y = {y}: a jump off by {error}");
+    }
+}
+
+/// Near where the forms hand over, the error is a one-sided bias if the expansion
+/// runs too close to `y`, and a score sums a bias where it averages noise out.
+#[test]
+fn increments_stay_within_what_fast_ln_resolves_around_the_seam() {
+    for y in [1e1f64, 1e2, 1e3, 1e4] {
+        for x in grid(4.0 * y, 64.0 * y, 1.03) {
+            let want = Gamma::ln_gamma(x + y).0 - Gamma::ln_gamma(x).0;
+            let got = f64::from(ln_gamma_increment(x as f32, y as f32));
+            assert!(
+                (got - want).abs() <= 1.6e-4 * y,
+                "ln Γ({x} + {y}) − ln Γ({x}): {got} against {want}, {:.2e} of y",
+                (got - want).abs() / y
+            );
+        }
+    }
+}
+
+/// A pair of totals multiplied makes a `y` of this size, and an overflow in the
+/// coefficients would silently wreck a fit, as a sampler reads `inf` as no opinion.
+#[test]
+fn increments_survive_very_large_counts() {
+    for y in [1e8f64, 1e9, 1e10, 1e11, 1e12] {
+        for x in grid(y, 1e4 * y, 3.1) {
+            let want = Gamma::ln_gamma(x + y).0 - Gamma::ln_gamma(x).0;
+            let got = f64::from(ln_gamma_increment(x as f32, y as f32));
+            assert!(
+                (got - want).abs() <= 1e-2 * y,
+                "ln Γ({x} + {y}) − ln Γ({x}): {got} against {want}"
+            );
+        }
     }
 }
 
@@ -112,10 +157,14 @@ fn increments_barely_jump_where_the_forms_meet() {
 #[test]
 fn a_run_of_increments_is_the_scalar_bit_for_bit() {
     let xs: Vec<f32> = grid(1e-3, 1e7, 1.7).iter().map(|&x| x as f32).collect();
+    let mut table = LnTable::new(xs.len());
+    for (i, &x) in xs.iter().enumerate() {
+        table.set(i, x);
+    }
     let mut out = vec![0.0; xs.len()];
     for y in grid(1e-3, 1e5, 3.3) {
         let y = y as f32;
-        ln_gamma_increments(&xs, y, &mut out);
+        ln_gamma_increments(table.run(0..xs.len()), y, &mut out);
         for (&x, &got) in xs.iter().zip(&out) {
             assert_eq!(
                 got.to_bits(),

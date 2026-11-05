@@ -65,14 +65,10 @@ fn test_size_factors() {
     assert_eq!(store.size_factors[1], 15.0);
 }
 
-fn assert_prior_x_is_fresh(stats: &LinkCommunityStats, store: &LinkProfileStore) {
+fn assert_feature_table_is_fresh(stats: &LinkCommunityStats, store: &LinkProfileStore) {
     let fresh = LinkCommunityStats::from_profiles(store, stats.k, &stats.membership);
-    for (got, want) in stats.prior_x.iter().zip(&fresh.prior_x) {
-        assert!(
-            (got - want).abs() <= 1e-4 * want.abs(),
-            "{got} against {want}"
-        );
-    }
+    // Whole counts: nothing here can have drifted, so nothing may differ.
+    assert_eq!(stats.feature_table.bits(), fresh.feature_table.bits());
 }
 
 #[test]
@@ -81,7 +77,7 @@ fn scoring_reads_fresh_counts_after_a_move() {
     let mut stats = LinkCommunityStats::from_profiles(&store, 3, &labels);
     let old_c = stats.membership[0];
     stats.delta_move(0, old_c, (old_c + 1) % 3, &store);
-    assert_prior_x_is_fresh(&stats, &store);
+    assert_feature_table_is_fresh(&stats, &store);
 }
 
 #[test]
@@ -93,5 +89,5 @@ fn scoring_reads_fresh_counts_after_a_merged_delta() {
     let new = LinkCommunityStats::local_stats(&store, 3, &moved);
     stats.apply_delta((&old.0, &old.1, &old.2), (&new.0, &new.1, &new.2));
     stats.membership = moved;
-    assert_prior_x_is_fresh(&stats, &store);
+    assert_feature_table_is_fresh(&stats, &store);
 }
