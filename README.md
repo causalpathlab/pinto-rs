@@ -57,7 +57,7 @@ dsvd, ...) or data files with coordinates:
 ```sh
 pinto lra --from out/run1.pinto.json          # writes out/run1.lra.parquet
 pinto lra data.zarr --coord cells.csv -o out/lra
-pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv --fdr 0.1
+pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv
 pinto lra --from out/run1.pinto.json --only SPP1,TGFB1:TGFBR1_TGFBR2
 ```
 
@@ -119,8 +119,7 @@ pairs and draws each on the tissue (see `view`, `I`):
 A verdict is deliberately conservative. A pair has an estimate only if its
 receptor-competent receivers fill both arms at the middle competence threshold.
 A significant effect then has to clear every control, each corrected among the
-pairs with a significant effect (so their q is empty for the rest, and depends
-on `--fdr`): the effect must exceed the one in receptor-negative receivers
+pairs with a significant effect (so their q is empty for the rest): the effect must exceed the one in receptor-negative receivers
 (`effect_contrast_q`, same direction), and those receivers, distant cells and a
 matched decoy must show none. A control that could not run does not pass, except
 a decoy where none could be matched.
@@ -239,7 +238,7 @@ this makes. Label files the run needs beyond the ones given are written to
 After the fits, the Methods screen lists `lra` and `lra-simulate`, which run
 on a fitted run instead of data files: set `--from` to the run's
 `.pinto.json` (or its prefix) on the Parameters screen, with `--lr-pairs`,
-`--targets`, `--fdr` or `--only` as `pinto lra` takes them (files typed as
+`--targets` or `--only` as `pinto lra` takes them (files typed as
 seen from where `pinto run` started). They are run and saved as
 `{out}.cmd.sh` like the fits, write `{out}.lra.parquet` (a subset's
 `{out}.lra.only-<tag>.parquet`) or `{out}.lra-simulate.parquet`, and
@@ -544,7 +543,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
-| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
+| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
 | `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |

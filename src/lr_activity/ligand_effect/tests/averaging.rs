@@ -547,8 +547,8 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in
 /// the output, on single cells and on pseudobulk units: for a hopeless
-/// pair, and for a pair whose controls alone would be estimable (no E2, so
-/// E3 and the ring are not read either); every fit is skipped for both.
+/// pair, and for a pair whose controls alone would be estimable (no the competent effect, so
+/// the incompetent effect and the ring are not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
     use crate::lr_activity::ligand_effect::pseudobulk::UNIT_SIZE;
@@ -580,8 +580,9 @@ fn skipped_fits_change_no_output() {
     }
 }
 
-/// A thin competent arm skips the fits: E3 and the ring are controls on an
-/// estimate the pair does not have, and neither enters its family's q-values.
+/// A thin competent arm skips the fits: the receptor-negative and distant-cell
+/// controls check an estimate the pair does not have, and neither enters its
+/// family's q-values.
 #[test]
 fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);

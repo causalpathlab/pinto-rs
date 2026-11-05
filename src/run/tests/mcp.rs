@@ -59,7 +59,6 @@ fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
         "out",
         "lr_pairs",
         "targets",
-        "fdr",
         "species",
         "background",
     ] {

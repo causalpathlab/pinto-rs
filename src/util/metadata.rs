@@ -511,7 +511,6 @@ pub struct LraOptions {
     /// `auto`, `human` or `mouse`.
     pub species: String,
     pub seed: u64,
-    pub fdr: f64,
     /// The genes the receivers' identity left out (every pair's genes and
     /// the decoys), by name: the viewer reads the receivers with these
     /// rather than the files above, which may have moved. Thousands of
@@ -562,7 +561,6 @@ impl Default for LraOptions {
             targets: Vec::new(),
             species: crate::lr_activity::args::ReferenceSpecies::Auto.name(),
             seed: crate::lr_activity::args::DEFAULT_SEED,
-            fdr: crate::lr_activity::args::DEFAULT_FDR,
             identity_excluded: Vec::new(),
         }
     }

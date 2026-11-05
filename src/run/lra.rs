@@ -55,8 +55,6 @@ pub(super) struct LraToolArgs {
     #[serde(default)]
     pub targets: Vec<String>,
     #[serde(default)]
-    pub fdr: Option<f64>,
-    #[serde(default)]
     pub species: Option<String>,
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
     #[serde(default)]
@@ -254,7 +252,6 @@ pub(super) fn lra_argv(
         lr_pairs: a.lr_pairs.as_deref().map(|p| shown_path(Path::new(p))),
         targets: a.targets.iter().map(|t| shown_path(Path::new(t))).collect(),
         species: a.species.clone().unwrap_or(d.species),
-        fdr: a.fdr.unwrap_or(d.fdr),
         seed: a.seed.unwrap_or(d.seed),
         identity_excluded: Vec::new(),
     };
@@ -401,7 +398,6 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
             "targets",
             (!a.targets.is_empty()).then(|| a.targets.clone().into()),
         ),
-        ("fdr", a.fdr.map(Value::from)),
         ("species", a.species.clone().map(Value::from)),
         ("only", (!a.only.is_empty()).then(|| a.only.clone().into())),
     ] {

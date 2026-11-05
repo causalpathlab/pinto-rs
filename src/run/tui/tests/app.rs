@@ -880,14 +880,14 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     set(&mut a, "from", "res/run");
     set(&mut a, "lr-pairs", "pairs.tsv");
     set(&mut a, "only", "SPP1:CD44, TGFB1");
-    set(&mut a, "fdr", "0.1");
+    set(&mut a, "seed", "7");
     // A value clap refuses is what the plan says, not a missing manifest.
-    set(&mut a, "fdr", "lots");
+    set(&mut a, "seed", "lots");
     let p = &a.plan()[0];
     let why = p.problem.as_deref().unwrap();
     assert!(why.contains("lots") && !why.contains("manifest"), "{why}");
-    assert_eq!(p.blamed.as_deref(), Some("fdr"));
-    set(&mut a, "fdr", "0.1");
+    assert_eq!(p.blamed.as_deref(), Some("seed"));
+    set(&mut a, "seed", "7");
     let planned = a.plan();
     let p = &planned[0];
     assert!(p.problem.is_none(), "{:?}", p.problem);
@@ -901,12 +901,12 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
             "lra",
             "--from",
             "../res/run.pinto.json",
+            "--seed",
+            "7",
             "--lr-pairs",
             "../pairs.tsv",
             "--only",
-            "SPP1:CD44,TGFB1",
-            "--fdr",
-            "0.1"
+            "SPP1:CD44,TGFB1"
         ]
     );
     assert_eq!(

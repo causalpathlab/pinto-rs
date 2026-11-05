@@ -774,8 +774,8 @@ fn specs() -> Vec<ToolSpec> {
              and records the table in the run's manifest (slot lra.table); with only, a few \
              pairs to {out}.lra.only-<tag>.parquet (slot lra.subsets). The co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
-             on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the strongest \
-             pairs (percent change with its 95% CI, q) and the files. Called again with the \
+             on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the pairs \
+             whose effect survived the controls (percent change with its 95% CI, q) and the files. Called again with the \
              same run and out once done, it reads the tables instead of running. Never \
              written over.",
             json!({
@@ -791,7 +791,6 @@ fn specs() -> Vec<ToolSpec> {
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference (--lr-pairs); the co-expression methods test only these"},
                     "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
-                    "fdr": {"type": "number", "description": "False discovery rate for the verdicts [default: 0.05]"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference; auto reads it from the gene-name case [default: auto]"},
                     "only": {"type": "array", "items": {"type": "string"}, "description": "Estimate only these pairs (--only): LIGAND:RECEPTOR (a complex joins subunits with _, TGFB1:TGFBR1_TGFBR2) or a bare LIGAND for all its pairs. Writes {out}.lra.only-<tag>.parquet, recorded under lra.subsets; q is corrected within the subset only"},
                     "n_permutations": {"type": "integer", "minimum": 1, "description": "coexpression-test: sample permutations for the null (--n-permutations) [default: 1000]"},

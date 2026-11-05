@@ -5,9 +5,6 @@ use clap::{Args, Parser, ValueEnum, ValueHint};
 /// `--seed`'s default.
 pub const DEFAULT_SEED: u64 = 42;
 
-/// `--fdr`'s default.
-pub const DEFAULT_FDR: f64 = 0.05;
-
 // * Input
 
 /// Where lra reads its cells, expression and spatial contacts: a prior run's
@@ -189,17 +186,6 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
-        default_value_t = DEFAULT_FDR,
-        help = "False discovery rate for the verdicts",
-        long_help = "False discovery rate for the contact-effect verdicts.\n\
-                     The effect, the co-expression score and the negative controls each\n\
-                     get Benjamini-Hochberg q-values across pairs, pooled and within\n\
-                     each section; a test counts when its q is below this level."
-    )]
-    pub fdr: f64,
-
-    #[arg(
-        long,
         value_enum,
         default_value_t = ReferenceSpecies::Auto,
         help = "Species of the reference; auto reads it from the gene-name case"
@@ -356,6 +342,10 @@ pub struct LraSimulateArgs {
 /// takes, with what replaced each.
 pub const REMOVED_LRA_FLAGS: &[(&str, &str)] = &[
     ("--edge-scores-only", "use `--method coexpression-scores`"),
+    (
+        "--fdr",
+        "the level is fixed (outputs.lra.settings in the manifest); the table has every q",
+    ),
     (
         "--lc-prefix",
         "pass the run's manifest: `--from {prefix}.pinto.json`",

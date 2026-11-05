@@ -1,4 +1,4 @@
-//! A pair's threshold–response curve: the headline effect (E2) at each
+//! A pair's threshold–response curve: the headline effect (the competent effect) at each
 //! exposure threshold, as a percent change, with its pointwise 95%
 //! intervals as whiskers and the simultaneous 95% band over the
 //! thresholds shaded behind. The x axis is the threshold's quantile among

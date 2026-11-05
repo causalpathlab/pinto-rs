@@ -483,7 +483,6 @@ fn the_layer_starts_lra_beside_the_run() {
         targets: vec!["/p/a.gmt".into(), "/p/b.tsv".into()],
         species: "mouse".into(),
         seed: 7,
-        fdr: 0.1,
         identity_excluded: vec!["G0".into()],
     };
     let only = vec!["SPP1:CD44".to_string(), "TGFB1".to_string()];
@@ -498,8 +497,6 @@ fn the_layer_starts_lra_beside_the_run() {
             "/p/pairs.tsv",
             "--targets",
             "/p/a.gmt,/p/b.tsv",
-            "--fdr",
-            "0.1",
             "--species",
             "mouse",
             "--seed",
@@ -751,11 +748,6 @@ fn receivers_are_read_again_for_a_table_made_with_other_options() {
     v.select("L1:R1").unwrap();
     assert!(!v.needs_receivers());
     assert!(v.on_map(&base, 0).unwrap().is_some());
-    v.tables[0].options.fdr = 0.2;
-    assert!(
-        !v.needs_receivers(),
-        "the FDR does not decide the receivers"
-    );
     v.load(1).unwrap();
     assert!(v.needs_receivers());
     assert!(v.shown().is_none(), "drawn on the other receivers");

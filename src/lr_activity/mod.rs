@@ -127,9 +127,6 @@ impl crate::util::metadata::LraOptions {
             flag("--targets", self.targets.join(","));
         }
         let d = Self::default();
-        if self.fdr != d.fdr {
-            flag("--fdr", self.fdr.to_string());
-        }
         if self.species != d.species {
             flag("--species", self.species.clone());
         }

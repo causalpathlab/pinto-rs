@@ -330,7 +330,7 @@ pub struct Receivers {
     pub frame: RunFrame,
     /// Map cell of each receiver row.
     cell_of_row: Vec<Option<u32>>,
-    /// The options they were read with, as [`receiver_options`] keeps them.
+    /// The options they were read with.
     options: LraOptions,
 }
 
@@ -346,7 +346,7 @@ impl Receivers {
         Receivers {
             frame,
             cell_of_row,
-            options: receiver_options(options),
+            options: options.clone(),
         }
     }
 
@@ -479,14 +479,6 @@ pub struct Staged {
     r: TableRef,
     /// The table as read now; `None` when the one read before is shown.
     read: Option<Table>,
-}
-
-/// The options that decide a run's receivers: all but the FDR.
-fn receiver_options(o: &LraOptions) -> LraOptions {
-    LraOptions {
-        fdr: 0.,
-        ..o.clone()
-    }
 }
 
 /// A drawn pair's key: its name and threshold, and the receivers' options.
@@ -691,11 +683,7 @@ impl LraView {
     }
 
     fn key(row: &PairRow, options: &LraOptions) -> DrawnKey {
-        (
-            row.name(),
-            row.threshold.to_bits(),
-            receiver_options(options),
-        )
+        (row.name(), row.threshold.to_bits(), options.clone())
     }
 
     /// The row of `table` the pair selected now is, by name.
@@ -713,7 +701,7 @@ impl LraView {
     pub fn needs_receivers_for(&self, options: &LraOptions) -> bool {
         self.receivers
             .as_ref()
-            .is_none_or(|rx| rx.options != receiver_options(options))
+            .is_none_or(|rx| rx.options != *options)
     }
 
     /// The selected pair on the map, drawn now if it has not been; the

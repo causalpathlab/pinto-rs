@@ -349,7 +349,8 @@ fn controls_are_corrected_among_significant_effects() {
 }
 
 /// Beside a significant effect the conservative verdict: the effect must
-/// exceed E3's, the same way, and a control that could not run has not held,
+/// exceed the receptor-negative one, the same way, and a control that could
+/// not run has not held,
 /// but for a decoy where the pool matched none.
 #[test]
 fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
@@ -361,11 +362,12 @@ fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
     };
     assert_eq!(judged(&|_| {}).0, "supported");
 
-    // E3 is quiet, but the contrast does not show the effect exceeding it.
+    // Receptor-negative receivers are quiet, but the contrast does not show
+    // the effect exceeding theirs.
     let (v, w) = judged(&|r| r.effects.effect = est(0.05, 0.05));
     assert_eq!(v, "control_failed");
     assert!(w.contains("does not exceed"), "{w}");
-    // Significant, the wrong way: E3 is the larger.
+    // Significant, the wrong way: the receptor-negative effect is the larger.
     let (v, _) = judged(&|r| r.effects.effect = est(-0.5, 0.05));
     assert_eq!(v, "control_failed");
 

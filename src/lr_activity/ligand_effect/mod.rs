@@ -13,29 +13,29 @@
 //! neighbours carry ligand above a threshold, `Y` = the receiver's signed
 //! target programme, `C` = the receiver's identity expresses the receptor:
 //!
-//! - E2 `effect_competent`, **the headline**: overlap-weighted effect of
+//! - `effect_competent`, the competent effect, **the headline**: overlap-weighted effect of
 //!   `T` on `Y` in receptor-competent receivers;
-//! - E3 `effect_incompetent`: the same in incompetent receivers (≈ 0 is a
+//! - `effect_incompetent`, the incompetent effect: the same in incompetent receivers (≈ 0 is a
 //!   negative control);
-//! - E1 `effect_contrast`: E2 − E3. Competence is read from identity bins,
+//! - `effect_contrast`, the contrast: competent effect − incompetent effect. Competence is read from identity bins,
 //!   so competent and incompetent receivers are different cell types by
-//!   construction and E1 conflates the receptor with cell type; it is kept
-//!   as a column, not as the headline;
-//! - E5 `ring_effect`: effect of ligand on distant non-touching cells given
+//!   construction and the contrast conflates the receptor with cell type; it is
+//!   no headline, but a significant effect must exceed the incompetent one;
+//! - `ring_effect`, the ring effect: effect of ligand on distant non-touching cells given
 //!   the real exposure (≈ 0 is a negative control for spatial confounding);
-//! - E0 / E0′: the co-expression log odds ratio and the crude contrast,
+//! - `coexpr_log_or` and `crude`: the co-expression log odds ratio and the crude contrast,
 //!   for comparison.
 //!
 //! **Inference across pairs** ([`estimate::report`]): Benjamini–Hochberg
-//! q-values within the pooled rows and within each section, for E2
-//! (two-sided), co-expression (one-sided, positive) and both controls, and
+//! q-values within the pooled rows and within each section, for the competent effect
+//! (two-sided), co-expression (one-sided, positive) and the controls, and
 //! a per-ligand q (Simes over the ligand's pairs, BH over ligands); the
-//! verdict ([`output::Verdict`]) reads q < `--fdr`. When the ligand marks a cell type, exposure
+//! verdict ([`output::Verdict`]) reads q at [`Internals::fdr`]. When the ligand marks a cell type, exposure
 //! is nearly "has a neighbour of that type" and cannot be told from
 //! neighbour identity: `exposure_eta2` measures how much of the exposure
 //! the dominant neighbour's identity bin explains, and at
 //! [`INTERNALS`]`.max_exposure_eta2` the pair is `celltype_inseparable`
-//! rather than a finding. A significant E2 beside a failed control is
+//! rather than a finding. A significant the competent effect beside a failed control is
 //! `control_failed`.
 //!
 //! "Effect" is a contrast of two stochastic interventions: each receiver's
@@ -236,6 +236,8 @@ pub struct Internals {
     /// Share of exposure variance explained by neighbour identity at which
     /// a pair is `celltype_inseparable`.
     pub max_exposure_eta2: f64,
+    /// The false discovery rate a test counts at in the verdicts.
+    pub fdr: f64,
     /// Dimension of the receiver identity projection, and its bins (2^bits).
     pub identity_dim: usize,
     pub identity_bits: usize,
@@ -261,6 +263,7 @@ pub const INTERNALS: Internals = Internals {
     min_ess: 30.0,
     min_overlap: 0.01,
     max_exposure_eta2: 0.8,
+    fdr: 0.05,
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,
@@ -278,7 +281,6 @@ pub struct Settings<'a> {
     pub lr_pairs: Option<&'a str>,
     pub targets: &'a [Box<str>],
     pub species: ReferenceSpecies,
-    pub fdr: f64,
     pub seed: u64,
     pub block_size: Option<usize>,
     /// `--only`: the pairs to estimate; empty for every pair.
@@ -295,7 +297,6 @@ impl Settings<'_> {
             targets: self.targets.iter().map(|t| abs(t)).collect(),
             species: self.species.name(),
             seed: self.seed,
-            fdr: self.fdr,
             identity_excluded: Vec::new(),
         }
     }
@@ -830,7 +831,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         estimate::timing::summary()
     );
     let ropts = estimate::ReportOpts {
-        fdr: a.fdr,
+        fdr: INTERNALS.fdr,
         max_exposure_eta2: INTERNALS.max_exposure_eta2,
         min_arm: INTERNALS.min_arm,
         units: eopts.pseudobulk > 1,

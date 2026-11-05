@@ -2,22 +2,25 @@
 //!
 //! | Column | Estimand |
 //! |---|---|
-//! | `coexpr_log_or` | E0: log odds of ligand on one side and receptor on the other, across contacts (association) |
-//! | `crude` | E0′: mean response of exposed minus unexposed competent receivers (association) |
-//! | `effect_competent` | E2, **the headline**: overlap-weighted effect where the receptor is expressed |
-//! | `effect_incompetent` | E3: the same where it is not; a negative control, ≈ 0 |
-//! | `effect_contrast` | E1: E2 − E3; a contrast between cell types, not only between receptor states (below) |
-//! | `ring_effect` | E5: effect of ligand on distant, non-touching cells, given the real exposure; a negative control, ≈ 0 |
-//! | `effect_competent_{section,spatial,identity}` | E2 under nested adjustment sets (pooled row only) |
-//! | `effect_competent_nospill` | E2 without the neighbour-response and bleed covariates (pooled row only) |
+//! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
+//! | `crude` | mean response of exposed minus unexposed competent receivers (association) |
+//! | `effect_competent` | the competent effect, **the headline**: overlap-weighted effect where the receptor is expressed |
+//! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
+//! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
+//! | `ring_effect` | the ring effect: effect of ligand on distant, non-touching cells, given the real exposure; a negative control, ≈ 0 |
+//! | `effect_competent_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
+//! | `effect_competent_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |
 //!
 //! Competence is read from identity bins, so competent and incompetent
-//! receivers are different cell types by construction: E1 conflates the
+//! receivers are different cell types by construction: the contrast conflates the
 //! receptor with everything else that differs between those types (their
-//! baseline responsiveness, their neighbours, their exposure). It stays a
-//! column, but the verdict rests on E2, with E3 as a control.
+//! baseline responsiveness, their neighbours, their exposure). So the
+//! contrast alone is no finding, and the headline stays the competent effect.
+//! The verdict still asks for it, conservatively: an effect that does not
+//! exceed the incompetent one is not called specific to the receptor, which
+//! can also turn away a real effect on two responsive cell types.
 //!
-//! The sequential adjustment refits E2 adjusting for (a) section only,
+//! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
 //! identity, cell type when given); `effect_competent` is the full set,
 //! adding depth. Read left to right with `crude`, it shows how much of an
@@ -67,7 +70,7 @@
 //!
 //! - competence, the share of an identity bin that must detect the
 //!   receptor, over [`COMPETENCE_GRID`]. Competence is a property of
-//!   identity bins (cell types), not of single receivers, so E2 compares
+//!   identity bins (cell types), not of single receivers, so the competent effect compares
 //!   exposed with unexposed receivers among the cell types that carry the
 //!   receptor; the grid moves the line between "carries" and "does not";
 //! - the random pseudobulk partitions, as many as [`effects`] needs
@@ -75,16 +78,16 @@
 //! - the programme's weighting ([`PairData::reweighted`]).
 //!
 //! **Threshold–response curve.** The headline τ is chosen per pair
-//! ([`choose_threshold`]). Beside it, E2 (pooled) at τ = 0 and at the
+//! ([`choose_threshold`]). Beside it, the competent effect (pooled) at τ = 0 and at the
 //! quartiles of the positive exposures ([`curve_taus`]) with pointwise
 //! intervals and a simultaneous 95% band ([`sup_t_crit`]): how the effect
 //! grows with dose, and whether the headline rests on one threshold.
 //!
 //! **Decoy programme** ([`DecoyPool`]): the pair's programme with every
 //! target swapped for a gene of matching mean expression outside every
-//! programme and pair, same weights. E2 on the decoy should be 0; when
+//! programme and pair, same weights. the competent effect on the decoy should be 0; when
 //! it is not, exposure moves generic expression (activation, depth,
-//! residual confounding) and the pair's own E2 is no finding.
+//! residual confounding) and the pair's own competent effect is no finding.
 //!
 //! **Reading an effect** ([`Moments`]): θ is a difference in the signed
 //! mean `log1p` programme, read as a mean with SD (= SE) and 95% interval,
@@ -269,10 +272,10 @@ pub struct EffectRow {
     pub exposure_eta2: f64,
     /// Distinct identity bins among the competent and the incompetent
     /// receivers: competence is a function of the bin, so these say how
-    /// many cell types each side of E1 is made of.
+    /// many cell types each side of the contrast is made of.
     pub n_competent_bins: usize,
     pub n_incompetent_bins: usize,
-    /// E2 on the matched decoy programme (pooled row only; NaN without a
+    /// The competent effect on the matched decoy programme (pooled row only; NaN without a
     /// decoy), and the decoy's gene count.
     pub decoy_effect: Estimate,
     pub n_decoy_genes: usize,
@@ -281,7 +284,7 @@ pub struct EffectRow {
     // From here on filled in by `report`, once every pair is in.
     /// BH q of the decoy effect, two-sided, within the section.
     pub decoy_q: f64,
-    /// Two-sided p of the headline (E2) against the t reference with
+    /// Two-sided p of the headline (the competent effect) against the t reference with
     /// clusters − 1 degrees of freedom ([`Estimate::p`]), and its BH q
     /// within the section.
     pub effect_p: f64,
@@ -290,9 +293,10 @@ pub struct EffectRow {
     /// and its BH q within the section.
     pub coexpr_p: f64,
     pub coexpr_q: f64,
-    /// BH q of the controls (E3, E5), two-sided, within the section.
+    /// BH q of the controls (incompetent effect, ring effect), two-sided, within the section.
     pub effect_incompetent_q: f64,
-    /// BH q of the contrast of E2 with E3, among the significant effects.
+    /// BH q of the contrast between the effects in competent and in
+    /// receptor-negative receivers, among the significant effects.
     pub effect_contrast_q: f64,
     pub ring_effect_q: f64,
     /// Pairs in the section sharing this pair's ligand.
@@ -305,7 +309,7 @@ pub struct EffectRow {
     pub warnings: String,
 }
 
-/// One point of the threshold–response curve: E2 (pooled) at exposure
+/// One point of the threshold–response curve: the competent effect (pooled) at exposure
 /// threshold `tau`, `quantile` being the share of positive exposures at or
 /// below it; the pointwise 95% interval and the simultaneous band.
 #[derive(Clone, Copy, Debug)]
@@ -691,20 +695,20 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
 }
 
 /// Which of a draw's fits serve a subset with both arms at `min_arm`
-/// ([`thin_arm`]) on the pooled rows: the main fit's E2 subsets (the
+/// ([`thin_arm`]) on the pooled rows: the main fit's competent subsets (the
 /// competent units at some competence threshold; also what the no-spill,
-/// step, curve and decoy fits read), its E3 subsets (the incompetent ones)
+/// step, curve and decoy fits read), its incompetent subsets (the incompetent ones)
 /// and the ring fit's. A fit none of whose subsets is read is skipped,
 /// propensity and all, and its estimands are what the guard would make of
 /// them, not estimable with their counts ([`thin_subset`]): the units of an
 /// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
 /// so the skip is the guard read before the fit, not a second rule.
 ///
-/// E2 is read only when the middle competence threshold leaves both arms open:
-/// a pair resting on a looser threshold alone has no estimate, whatever its
-/// looser thresholds show. E3 and the ring are controls on E2, with nothing to
-/// check without it, so they are not read either, and neither are the curve's
-/// other thresholds ([`effects`]).
+/// The effect in competent receivers is read only when the middle competence
+/// threshold leaves both arms open: a pair resting on a looser threshold alone
+/// has no estimate, whatever its looser thresholds show. The receptor-negative
+/// and distant-cell controls have nothing to check without it, so they are not
+/// read either, and neither are the curve's other thresholds ([`effects`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
     pub e2: bool,
@@ -744,7 +748,7 @@ impl Reads {
 /// fit skipped as hopeless ([`Reads`]).
 struct Controls {
     ring: Option<Vec<f64>>,
-    /// Each adjustment step's, when asked for and E2 is read.
+    /// Each adjustment step's, when asked for and the competent effect is read.
     steps: Option<Vec<Vec<f64>>>,
 }
 
@@ -924,7 +928,7 @@ impl<'a> DrawFits<'a> {
 ///
 /// The thresholds give nested indicators `C_c`. One outcome model carries
 /// every `C_c` and every `T · C_c`, and one propensity model every `C_c`;
-/// E2 at threshold `c` is then the subset estimate over the receivers
+/// The competent effect at threshold `c` is then the subset estimate over the receivers
 /// competent at `c`. Each single-threshold model is nested in this one, so
 /// each `m_t` stays correctly specified wherever its own was; what changes
 /// is one fit per draw instead of one per threshold.
@@ -983,22 +987,22 @@ pub enum Scope {
 /// Every estimand in one scope.
 #[derive(Clone, Copy, Debug)]
 pub struct ScopeEffects {
-    /// E1 = E2 − E3; not the headline (see the module doc).
+    /// the contrast: competent effect − incompetent effect; not the headline (see the module doc).
     pub effect: Estimate,
-    /// E2, the headline.
+    /// The competent effect, the headline.
     pub competent: Estimate,
     pub incompetent: Estimate,
     pub ring: Estimate,
-    /// E2 under the section, spatial and identity steps (pooled only; NaN
+    /// The competent effect under the section, spatial and identity steps (pooled only; NaN
     /// elsewhere).
     pub steps: [Estimate; 3],
-    /// E2 without the neighbour-response and bleed covariates (pooled
+    /// The competent effect without the neighbour-response and bleed covariates (pooled
     /// only; NaN elsewhere).
     pub nospill: Estimate,
     /// Share of the scope's competent rows (units, on pseudobulk) whose
     /// overlap weight is below [`NEAR_DETERMINED_H`] in the main fit; NaN
     /// without competent rows or without the main fit, which is skipped
-    /// when every E2 and E3 subset leaves an arm thin ([`Reads`]), on every
+    /// when every competent and incompetent subset leaves an arm thin ([`Reads`]), on every
     /// path alike.
     pub near_determined: f64,
 }
@@ -1036,7 +1040,7 @@ impl ScopeEffects {
 }
 
 /// One competence threshold's estimands per scope, and the cluster sums of
-/// its pooled E2's linearization ψ (zeros when not estimable).
+/// its pooled the competent effect's linearization ψ (zeros when not estimable).
 pub struct LevelEffects {
     pub scopes: Vec<ScopeEffects>,
     pub pooled_sums: Vec<f64>,
@@ -1141,7 +1145,8 @@ pub fn effects_on(
         Some(terms) => opts.guard(subset_estimate(terms, t, sub, cf)),
         None => thin_subset(t, sub, cf),
     };
-    // Per scope, whether E2 has an estimate: the middle threshold ([`Reads`]).
+    // Per scope, whether the competent effect has an estimate: the middle
+    // threshold ([`Reads`]).
     let headline: Vec<bool> = rows
         .scope_rows
         .iter()
@@ -1217,7 +1222,7 @@ pub fn effects_on(
     Ok(Effects { levels, h })
 }
 
-/// Pooled E2 of the response `r` at competence threshold `k` with the
+/// Pooled the competent effect of the response `r` at competence threshold `k` with the
 /// cluster sums of its ψ, from one main fit carrying every threshold
 /// ([`fit_main`]), and whether the fit ran: it is skipped when the subset
 /// leaves an arm thin ([`Reads`]). For the curve and the decoy.
@@ -1544,14 +1549,14 @@ struct Decoy<'d> {
 /// Every analysis of one pair, per programme weighting: for each
 /// pseudobulk draw (or the cells once), the estimands per competence
 /// threshold and scope from one fit per adjustment set ([`effects_on`]);
-/// under the first weighting also E2 at each curve threshold and on the
+/// under the first weighting also the competent effect at each curve threshold and on the
 /// decoy at the middle competence threshold. Draws are combined first,
 /// then competence thresholds, both by Rubin's rules. The weightings share
 /// each draw's partition, design and exposure side; only the response side
 /// is rebuilt per weighting.
 ///
 /// Each weighting's draws stop by [`super::pseudobulk::stop_drawing`] on its
-/// pooled E2 averaged over the thresholds and on whether the draw could
+/// pooled the competent effect averaged over the thresholds and on whether the draw could
 /// change under another seed (its partition is random and some fit ran,
 /// [`Reads::any`]); `lra-simulate` stops its headline by the same rule.
 /// Curve thresholds other than the headline's get their own partitions
@@ -1912,7 +1917,7 @@ pub fn estimate_pair_with(
     Ok((rows, tally))
 }
 
-/// E0 over the contacts inside the scope, both orientations: the Jeffreys
+/// The co-expression log odds over the contacts inside the scope, both orientations: the Jeffreys
 /// log odds ratio of ligand detected in the sender and receptor detected in
 /// the receiver, and its SE.
 pub fn coexpression(
@@ -2128,13 +2133,13 @@ pub fn eta_squared(group: &[usize], x: &[f64], rows: &[u32]) -> f64 {
 /// What one row's verdict rests on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Evidence {
-    /// The headline (E2) has an estimate.
+    /// The headline (the competent effect) has an estimate.
     pub estimable: bool,
     /// The headline's q is below the FDR level.
     pub effect: bool,
     /// The co-expression q is below the FDR level.
     pub coexpr: bool,
-    /// E3, the ring or the decoy has a q below the FDR level.
+    /// The incompetent effect, the ring effect or the decoy effect has a q below the FDR level.
     pub control_failed: bool,
     /// `exposure_eta2` reaches the internal guard `max_exposure_eta2`
     /// (`outputs.lra.settings` in the manifest).
@@ -2176,7 +2181,8 @@ pub fn verdict(e: Evidence) -> Verdict {
 /// (`min_r p_(r) k / r` over its `k` pairs, valid under PRDS) and BH runs
 /// over ligands. `n_pairs_same_ligand` is that `k`.
 ///
-/// The controls (E3, the ring, the decoy) are corrected only among the pairs
+/// The controls (receptor-negative receivers, distant cells, the decoy, and
+/// the contrast with the first) are corrected only among the pairs
 /// whose effect is significant, and are NaN for the rest: a control decides a
 /// verdict only beside a significant effect, and over every pair its q would
 /// rest on what unrelated pairs in the table happen to show.
@@ -2252,7 +2258,8 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     let effect = sig(row.effect_q);
     // Beside a significant effect a control that could not run has not held,
     // but for a decoy where the pool matched none. The effect must also exceed
-    // E3's: the contrast significant, the same way as the effect.
+    // the one in receptor-negative receivers: the contrast significant, the
+    // same way as the effect.
     let contrast = row.effects.effect;
     let unspecific = effect && !(sig(row.effect_contrast_q) && contrast.theta * head.theta > 0.0);
     let unchecked_e3 = effect && row.effect_incompetent_q.is_nan();

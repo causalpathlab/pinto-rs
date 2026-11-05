@@ -23,7 +23,6 @@ fn run_lra_builds_pinto_lras_command_line() {
         "method": "coexpression-test",
         "lr_pairs": "pairs.tsv",
         "targets": ["a.gmt", "b.tsv"],
-        "fdr": 0.1,
         "species": "mouse",
     }));
     let argv = lra_argv(
@@ -50,8 +49,6 @@ fn run_lra_builds_pinto_lras_command_line() {
         &pairs,
         "--targets",
         &targets,
-        "--fdr",
-        "0.1",
         "--species",
         "mouse",
     ]
@@ -290,16 +287,14 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
         Verdict::ALL.len(),
         "every verdict, none or not"
     );
-    // Estimable pairs by p; the one without an effect is left out.
+    // Only pairs whose effect survived the controls.
     let top = v["top"].as_array().unwrap();
-    assert_eq!(top.len(), 2);
+    assert_eq!(top.len(), 1);
     assert_eq!(top[0]["ligand"], "TGFB1");
     assert_eq!(top[0]["receptor"], "TGFBR1");
     assert_eq!(top[0]["verdict"], "supported");
     assert_eq!(top[0]["change"], "+35% (95% CI +20% to +51%)");
     assert_eq!(top[0]["q"], 3.21e-5);
-    assert_eq!(top[1]["ligand"], "WNT5A");
-    assert_eq!(top[1]["q"], 0.61);
 }
 
 fn run(effect: f64, alpha: f64, rejects: [bool; 6], estimable: bool) -> SimRun {
