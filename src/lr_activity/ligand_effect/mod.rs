@@ -85,12 +85,126 @@ use std::path::Path;
 use targets::TargetSets;
 use tissue::{Tissue, TissueInputs, TissueOpts};
 
-/// Memory allowed for pairs estimated at once.
-const PAIR_MEMORY_BUDGET: usize = 2 << 30;
+/// Memory allowed for pairs estimated at once when the machine does not say
+/// what it has, and the least allowed when it does.
+const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
+
+/// Memory allowed for pairs estimated at once: half of what is available now
+/// ([`available_memory`]), the rest left to the tissue and the machine's
+/// other work.
+fn pair_memory_budget() -> usize {
+    available_memory().map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
+        (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
+    })
+}
+
+/// Bytes this process could still allocate: the system's available memory,
+/// or less when a cgroup (a batch job, a container) limits it. `None` where
+/// the system does not say.
+fn available_memory() -> Option<usize> {
+    let read = |p: &str| std::fs::read_to_string(p).ok();
+    let meminfo = read("/proc/meminfo")?;
+    let system = parse_mem_available(&meminfo)?;
+    // cgroup v2 names the limit `memory.max` ("max" when unlimited), v1
+    // `memory.limit_in_bytes` (a huge number when unlimited).
+    let left = |limit: &str, usage: &str| -> Option<usize> {
+        let limit: usize = read(limit)?.trim().parse().ok()?;
+        let usage: usize = read(usage)?.trim().parse().ok()?;
+        Some(limit.saturating_sub(usage))
+    };
+    let group = left("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current").or_else(|| {
+        left(
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+        )
+    });
+    Some(group.map_or(system, |g| g.min(system)))
+}
+
+/// `MemAvailable` of `/proc/meminfo`, in bytes.
+fn parse_mem_available(meminfo: &str) -> Option<usize> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kb: usize = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// Memory one live pair (or benchmark scenario) holds on a tissue of `n`
+/// receivers: `vectors` receiver-length vectors, a draw's confounders (at
+/// most a row per receiver, in f32, with the unit's two depth columns), and
+/// the propensity's rows ([`regression::logistic_ridge`]).
+fn pair_memory(n: usize, vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let p = tissue.design.p();
+    n * 8 * vectors + n * (p + 2) * 4 + nuisance.max_propensity_rows * (p + 8) * 8
+}
 
 /// The single competence threshold `lra-simulate` plants on
 /// ([`Internals::benchmark_competence`]).
 const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
+
+/// The shared progress bar over the long stages. Where no bar can draw (the
+/// log of a background job, a pipe) each twentieth of the way is logged too.
+struct Progress {
+    bar: indicatif::ProgressBar,
+    what: &'static str,
+    total: usize,
+    done: std::sync::atomic::AtomicUsize,
+    logs: bool,
+    start: std::time::Instant,
+}
+
+impl Progress {
+    fn new(total: usize, what: &'static str) -> Self {
+        use std::io::IsTerminal;
+        Self {
+            bar: new_progress_bar(total as u64).with_message(what),
+            what,
+            total,
+            done: 0.into(),
+            logs: !std::io::stderr().is_terminal(),
+            start: std::time::Instant::now(),
+        }
+    }
+
+    fn inc(&self) {
+        self.bar.inc(1);
+        let done = 1 + self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.logs && (done * 20 / self.total.max(1)) > ((done - 1) * 20 / self.total.max(1)) {
+            info!(
+                "{done}/{} {} ({:.0}s)",
+                self.total,
+                self.what,
+                self.start.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    fn finish(&self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+/// A propensity fit's rows, in bytes, that stay in a core's share of the
+/// cache; past this, fits side by side compete for memory.
+const FITS_IN_CACHE: usize = 4 << 20;
+
+/// Pairs (or benchmark scenarios) to run at once, each holding `per_pair`
+/// bytes: what the memory budget allows, and on a tissue whose fits outgrow
+/// the cache a quarter of the threads, the rest serving each pair's parallel
+/// steps ([`run_bounded`]). Fits slow each other down past that: more of them
+/// at once take longer in all.
+fn pair_workers(per_pair: usize, n: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let threads = rayon::current_num_threads();
+    let rows = n.min(nuisance.max_propensity_rows);
+    let fit_bytes = rows * (tissue.design.p() + 8) * 8;
+    let by_cache = if fit_bytes < FITS_IN_CACHE {
+        threads
+    } else {
+        (threads / 4).max(1)
+    };
+    (pair_memory_budget() / per_pair.max(1))
+        .min(by_cache)
+        .clamp(1, threads)
+}
 
 // * Settings
 
@@ -648,20 +762,17 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
             .collect(),
     );
 
-    let pb = new_progress_bar(prep.pairs.len() as u64).with_message("ligand-receptor pairs");
-    // Pairs run several at a time on a small tissue, where one pair cannot
-    // fill the cores, and one at a time on a large one: each live pair holds
-    // a few dozen receiver-length vectors and its propensity design, and
-    // the concurrency is what that costs against a fixed memory budget.
+    let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
+    // Each live pair holds a few dozen receiver-length vectors and its
+    // propensity design, which bounds how many run at once ([`pair_workers`]).
     // Beside the pair's own vectors, a draw's fits ([`estimate::DrawFits`])
     // hold per competence threshold an effect modifier and a pair column,
     // and own ligand, niche, the exposure column and the main, ring and
     // three step propensities.
     let nc = eopts.competences.len();
     let draw_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
-    let per_pair = n * 8 * (32 + draw_fits)
-        + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
-    let concurrent = (PAIR_MEMORY_BUDGET / per_pair.max(1)).clamp(1, rayon::current_num_threads());
+    let per_pair = pair_memory(n, 32 + draw_fits, tissue, &eopts.nuisance);
+    let concurrent = pair_workers(per_pair, n, tissue, &eopts.nuisance);
     if concurrent > 1 {
         info!("Estimating up to {concurrent} pairs at a time");
     }
@@ -696,7 +807,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
                 Vec::new()
             }
         };
-        pb.inc(1);
+        pb.inc();
         out
     };
     let t_pairs = std::time::Instant::now();
@@ -706,7 +817,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         rows.extend(r);
         units.merge(u);
     }
-    pb.finish_and_clear();
+    pb.finish();
     log_unit_size(units);
     info!(
         "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
@@ -778,41 +889,39 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
 }
 
 /// `one` over every item, at most `workers` at a time, in item order. Each
-/// worker takes the next item as soon as it is free, so one slow item
-/// holds up only its own worker (no barrier between batches); the work
-/// inside an item still runs on the shared rayon pool.
+/// worker takes the next item as soon as it is free, so one slow item holds
+/// up only its own worker (no barrier between batches). The threads are
+/// shared out: each worker's item runs its parallel steps on a rayon pool of
+/// its own, so no item waits inside another item's work, which a shared pool
+/// would have it steal and finish first.
 fn run_bounded<T: Sync, R: Send>(
     items: &[T],
     workers: usize,
     one: impl Fn(&T) -> Vec<R> + Sync,
 ) -> Vec<R> {
+    let workers = workers.min(items.len());
     if workers <= 1 {
         return items.iter().flat_map(&one).collect();
     }
-    if workers >= rayon::current_num_threads() {
-        // Memory allows a pair on every thread: rayon's work stealing, which
-        // also serves the pairs' own parallel steps without blocking.
-        return items
-            .par_iter()
-            .with_max_len(1)
-            .map(&one)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .flatten()
-            .collect();
-    }
+    let threads = (rayon::current_num_threads() / workers).max(1);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut done: Vec<(usize, Vec<R>)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers.min(items.len()))
+        let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut out = Vec::new();
-                    loop {
-                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(k) else { break };
-                        out.push((k, one(item)));
+                    let work = || {
+                        let mut out = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(item) = items.get(k) else { break };
+                            out.push((k, one(item)));
+                        }
+                        out
+                    };
+                    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+                        Ok(pool) => pool.install(work),
+                        Err(_) => work(),
                     }
-                    out
                 })
             })
             .collect();
@@ -905,7 +1014,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         confounder_gene.as_ref().map(|(_, v)| v.as_slice()),
         &gopts.scales,
     );
-    let pb = new_progress_bar((grid.len() * order.len()) as u64).with_message("benchmark runs");
+    let pb = Progress::new(grid.len() * order.len(), "benchmark runs");
     let mut rows = Vec::new();
     for &k in &order {
         let p = &pairs[k];
@@ -938,11 +1047,9 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         // budget allows (each holds about a pair's worth of vectors, and
         // under pseudobulk three copies of the programme's non-zeros).
         let nnz: usize = genes.iter().map(|g| g.len()).sum();
-        let per_run = n * 8 * 48
-            + if eopts.pseudobulk > 1 { nnz * 8 * 3 } else { 0 }
-            + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
-        let concurrent =
-            (PAIR_MEMORY_BUDGET / per_run.max(1)).clamp(1, rayon::current_num_threads());
+        let per_run = pair_memory(n, 48, tissue, &eopts.nuisance)
+            + if eopts.pseudobulk > 1 { nnz * 8 * 3 } else { 0 };
+        let concurrent = pair_workers(per_run, n, tissue, &eopts.nuisance);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         rows.extend(run_bounded(&jobs, concurrent, |&(si, scen)| {
             let seed =
@@ -954,11 +1061,11 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
                     Vec::new()
                 }
             };
-            pb.inc(1);
+            pb.inc();
             r
         }));
     }
-    pb.finish_and_clear();
+    pb.finish();
     let mut units = pseudobulk::UnitTally::default();
     for r in &rows {
         units.merge(r.units);

@@ -23,6 +23,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 pub use super::METHODS;
+pub(crate) use draw::running as running_row;
 pub(crate) use jobs::{Job as QueuedJob, Queue as JobQueue, State as JobState};
 
 /// How long after the review opens the run key is not yet taken as "run":

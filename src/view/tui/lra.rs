@@ -3,7 +3,8 @@
 //! sorted, the selected pair on the map (senders, and receivers exposed or
 //! not and receptor-competent or not, or the exposure itself), its
 //! threshold–response curve under the map, and `pinto lra --only` on the
-//! pairs marked, run in the background as `pinto run` runs a fit; its
+//! pairs marked or the one selected, run in the background as `pinto run`
+//! runs a fit, its bar in the panel; its
 //! table opens in the layer when it is done. A run without a table is
 //! offered a full `pinto lra`.
 
@@ -16,7 +17,7 @@ use super::super::render::Style;
 use super::super::{Level, StillPair};
 use super::{rgb, App, Pick};
 use crate::lr_activity::ligand_effect::output::{PairRow, Verdict};
-use crate::run::tui::{JobQueue, JobState, QueuedJob};
+use crate::run::tui::{running_row, JobQueue, JobState, QueuedJob};
 use crate::tui::style;
 use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,8 +28,9 @@ use std::path::{Path, PathBuf};
 
 pub const LRA_HELP: &[&str] = &[
     " ↑ ↓ pair  v V verdict  o sort  / genes",
-    " space/m mark  L run lra --only marked",
-    " T next table  e exposure  c curve",
+    " space/m mark  M mark all shown",
+    " L run lra --only: marked or this pair",
+    " T next table  e exposure  c curve  X stop",
     " s save  z/Z zoom  ? all keys",
     " I or Esc leave the pairs",
 ];
@@ -47,6 +49,16 @@ impl LraJob {
     /// Stop it, and wait until it has ended.
     pub fn stop(self) {
         let _ = self.queue.finish();
+    }
+
+    /// Where it stands, in `room` cells: its progress bar while one is
+    /// drawn, else the last line it wrote.
+    fn progress(&self, room: usize) -> String {
+        let Ok(s) = self.queue.shared.lock() else {
+            return String::new();
+        };
+        let last = s.last.first().map_or("", String::as_str);
+        running_row(s.bars.first().and_then(Option::as_ref), last, room)
     }
 
     /// The last line it wrote.
@@ -176,6 +188,7 @@ impl App<'_> {
         match key.code {
             KeyCode::Char('I') | KeyCode::Esc => self.leave_lra(),
             KeyCode::Char('L') => self.start_lra(),
+            KeyCode::Char('X') if self.lra_job.is_some() => self.stop_lra(),
             _ if self.lra.is_none() => return Ok(false),
             KeyCode::Up => self.move_cursor(-1),
             KeyCode::Down => self.move_cursor(1),
@@ -184,6 +197,7 @@ impl App<'_> {
             KeyCode::Home => self.move_cursor(isize::MIN / 2),
             KeyCode::End => self.move_cursor(isize::MAX / 2),
             KeyCode::Char(' ' | 'm') => self.mark_pair(),
+            KeyCode::Char('M') => self.mark_shown(),
             KeyCode::Char('v') => self.step_verdict(1),
             KeyCode::Char('V') => self.step_verdict(-1),
             KeyCode::Char('o') => {
@@ -331,6 +345,28 @@ impl App<'_> {
         self.need_panel = true;
     }
 
+    /// `M`: mark every pair the filter shows, or, all marked already, unmark
+    /// them: a verdict or a gene's pairs in one key.
+    fn mark_shown(&mut self) {
+        let Some(v) = self.lra.as_mut() else { return };
+        let names: Vec<String> = v.visible().iter().map(|&i| v.rows()[i].name()).collect();
+        let on = names.iter().any(|name| !v.marked.contains(name));
+        for name in &names {
+            if on {
+                v.marked.insert(name.clone());
+            } else {
+                v.marked.remove(name);
+            }
+        }
+        let n = v.marked.len();
+        self.status = format!(
+            "{} {} pairs; {n} marked: L runs pinto lra --only on them",
+            if on { "marked" } else { "unmarked" },
+            names.len()
+        );
+        self.need_panel = true;
+    }
+
     /// `T`: the next table, the full one and each subset in turn.
     fn next_table(&mut self, terminal: Option<&mut DefaultTerminal>) -> anyhow::Result<()> {
         let Some(v) = self.lra.as_mut() else {
@@ -417,12 +453,25 @@ impl App<'_> {
         let (bold, dim) = (style::bold(), style::dim());
         let width = usize::from(self.side.width).saturating_sub(2).max(20);
         let mut out: Vec<(Line<'static>, Option<Pick>)> = vec![(Line::raw(""), None)];
-        let job = self.lra_job.as_ref().map(|j| {
-            (
-                Line::styled(format!(" running {}  {}", j.what, j.last_line()), bold),
-                None,
-            )
-        });
+        let job: Vec<(Line<'static>, Option<Pick>)> = self
+            .lra_job
+            .iter()
+            .flat_map(|j| {
+                [
+                    (
+                        Line::styled(
+                            format!(
+                                " {}  X stops",
+                                style::middle(&j.what, width.saturating_sub(10))
+                            ),
+                            bold,
+                        ),
+                        None,
+                    ),
+                    (Line::raw(format!(" {}", j.progress(width))), None),
+                ]
+            })
+            .collect();
         let Some(v) = self.lra.as_ref() else {
             out.push((Line::styled(" ligand-receptor pairs", bold), None));
             out.push((Line::raw(" no lra table for this run"), None));
@@ -454,6 +503,12 @@ impl App<'_> {
         if subset {
             out.push((
                 Line::styled(" subset-corrected: q within this subset", dim),
+                None,
+            ));
+        }
+        if !v.marked.is_empty() {
+            out.push((
+                Line::styled(format!(" {} marked  L runs them", v.marked.len()), dim),
                 None,
             ));
         }
@@ -606,9 +661,29 @@ impl App<'_> {
 
     // * Running lra
 
-    /// `L`: `pinto lra --only` on the marked pairs, or a full `pinto lra`
-    /// on a run without a table, in the background. A subset whose table
-    /// is there already is opened instead.
+    /// `X`: stop the `pinto lra` running; [`App::poll_lra`] sees it end.
+    fn stop_lra(&mut self) {
+        if let Some(job) = &self.lra_job {
+            job.queue.stop();
+            self.status = format!("stopping {}", job.what);
+        }
+    }
+
+    /// The pairs `L` runs: those marked, else the one under the cursor.
+    pub(super) fn pairs_to_run(&self) -> Vec<String> {
+        let Some(v) = self.lra.as_ref() else {
+            return Vec::new();
+        };
+        if v.marked.is_empty() {
+            v.selected_row().map(|r| r.name()).into_iter().collect()
+        } else {
+            v.marked.iter().cloned().collect()
+        }
+    }
+
+    /// `L`: `pinto lra --only` on the marked pairs or the one selected, or a
+    /// full `pinto lra` on a run without a table, in the background. A subset
+    /// whose table is there already is opened instead.
     fn start_lra(&mut self) {
         if self.lra_job.is_some() {
             self.status = "pinto lra is still running".into();
@@ -618,13 +693,9 @@ impl App<'_> {
             self.status = "pinto lra needs the run's .pinto.json".into();
             return;
         };
-        let only: Vec<String> = self
-            .lra
-            .as_ref()
-            .map(|v| v.marked.iter().cloned().collect())
-            .unwrap_or_default();
+        let only = self.pairs_to_run();
         if self.lra.is_some() && only.is_empty() {
-            self.status = "mark pairs first (space or m), then L runs them".into();
+            self.status = "choose or mark a pair first (space or m), then L runs it".into();
             return;
         }
         let options = self
@@ -662,10 +733,10 @@ impl App<'_> {
                 [done, script, manifest],
             )
         };
-        let what = if only.is_empty() {
-            "pinto lra".to_string()
-        } else {
-            format!("pinto lra --only {}", only.join(","))
+        let what = match only.as_slice() {
+            [] => "pinto lra".to_string(),
+            [one] => format!("pinto lra --only {one}"),
+            many => format!("pinto lra --only ({} pairs)", many.len()),
         };
         match std::env::current_exe() {
             Ok(exe) => {

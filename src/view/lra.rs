@@ -584,6 +584,17 @@ impl LraView {
         Ok(Staged { at, r, read })
     }
 
+    /// List the tables among `tables` the layer has not seen: what a
+    /// `pinto lra` that ended since it was opened added to the run.
+    pub fn add_tables(&mut self, tables: Vec<TableRef>) {
+        for t in tables {
+            if !self.tables.iter().any(|known| same(&known.path, &t.path)) {
+                self.tables.push(t);
+            }
+        }
+        self.read.resize_with(self.tables.len(), || None);
+    }
+
     /// The table `s` holds.
     pub fn staged<'a>(&'a self, s: &'a Staged) -> &'a Table {
         s.read
@@ -803,7 +814,7 @@ impl LraView {
 /// `-o`, so a subset lands beside the run and the full table is its own.
 pub fn lra_command(manifest: &Path, options: &LraOptions, only: &[String]) -> Vec<String> {
     options.argv(
-        &manifest.to_string_lossy(),
+        Some(&manifest.to_string_lossy()),
         None,
         LraMethod::ContactEffect,
         only,

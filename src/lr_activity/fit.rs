@@ -518,6 +518,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // of all cores; a second parallel axis here would chase the remainder
     // while multiplying the in-flight posterior draws, which are what set
     // peak memory.
+    let pb = new_progress_bar(n_strata as u64).with_message("strata");
     for (k, (batch_label, stratum, samples, is_meta)) in plan.into_iter().enumerate() {
         let stratum_id = strata.len();
         strata.push(stratum_entry(
@@ -569,7 +570,9 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             t0.elapsed().as_secs_f32()
         );
         rows.append(&mut br);
+        pb.inc(1);
     }
+    pb.finish_and_clear();
 
     if log::log_enabled!(log::Level::Info) {
         eprintln!();

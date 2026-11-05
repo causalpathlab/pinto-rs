@@ -99,7 +99,7 @@
 use super::output::Verdict;
 use super::overlap::{
     crude_difference, difference, overlap_terms_with, propensity, subset_estimate, upper_normal_p,
-    CrossFit, DesignView, Estimate, NuisanceOpts, OverlapTerms, PairInputs,
+    CrossFit, DesignView, Estimate, FoldStarts, NuisanceOpts, OverlapTerms, PairInputs,
 };
 use super::pseudobulk::{self, UnitTally};
 use super::regression::standardize;
@@ -697,6 +697,11 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
 /// them, not estimable with their counts ([`thin_subset`]): the units of an
 /// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
 /// so the skip is the guard read before the fit, not a second rule.
+///
+/// E3 and the ring are controls on E2: a pair whose competent receivers leave
+/// E2 thin at every threshold (none, or nearly none) has no estimate for them
+/// to check, so they are not read either, and leave the families their
+/// q-values are corrected over.
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
     pub e2: bool,
@@ -710,10 +715,11 @@ impl Reads {
             let (n, treated) = pooled_arms(rows, t, keep);
             !opts.thin_arm(n, treated)
         };
+        let e2 = levels.iter().any(|c| open(&x.t, &|i| c[i]));
         Self {
-            e2: levels.iter().any(|c| open(&x.t, &|i| c[i])),
-            e3: levels.iter().any(|c| open(&x.t, &|i| !c[i])),
-            ring: levels.iter().any(|c| open(&x.t_ring, &|i| c[i])),
+            e2,
+            e3: e2 && levels.iter().any(|c| open(&x.t, &|i| !c[i])),
+            ring: e2 && levels.iter().any(|c| open(&x.t_ring, &|i| c[i])),
         }
     }
 
@@ -761,6 +767,15 @@ pub struct DrawFits<'a> {
     controls: Option<Controls>,
 }
 
+/// Where one draw's propensities start: the previous draw's solutions, model
+/// by model ([`FoldStarts`]).
+#[derive(Clone, Debug, Default)]
+pub struct Starts {
+    main: FoldStarts,
+    ring: FoldStarts,
+    steps: Vec<FoldStarts>,
+}
+
 fn indicator(v: &[bool]) -> Vec<f64> {
     v.iter().map(|&b| b as u8 as f64).collect()
 }
@@ -773,6 +788,7 @@ impl<'a> DrawFits<'a> {
         exposure: &'a Exposure,
         levels: &'a [Vec<bool>],
         opts: &EffectOpts,
+        starts: &mut Starts,
     ) -> anyhow::Result<Self> {
         let modifiers: Vec<Vec<f64>> = levels.iter().map(|c| indicator(c)).collect();
         let extra = [&exposure.own, &exposure.niche]
@@ -799,6 +815,7 @@ impl<'a> DrawFits<'a> {
                 &exposure.t,
                 &extra,
                 &opts.nuisance,
+                &mut starts.main,
             )?;
             fits.main = Some(main);
         }
@@ -812,6 +829,7 @@ impl<'a> DrawFits<'a> {
         rows: Rows<'_>,
         steps: bool,
         opts: &EffectOpts,
+        starts: &mut Starts,
     ) -> anyhow::Result<Self> {
         let x = self.exposure;
         let ring = if self.runs(self.reads.ring) {
@@ -823,6 +841,7 @@ impl<'a> DrawFits<'a> {
                     &x.t_ring,
                     &extra,
                     &opts.nuisance,
+                    &mut starts.ring,
                 )
             })?)
         } else {
@@ -830,12 +849,23 @@ impl<'a> DrawFits<'a> {
         };
         let steps = if steps && self.runs(self.reads.e2) {
             let extra = self.extra(Fit::Main);
+            // A step's first draw starts from the main fit, the model it nests in.
+            if starts.steps.is_empty() {
+                let p = rows.design.p();
+                starts.steps = rows
+                    .steps
+                    .iter()
+                    .map(|s| starts.main.nested(p, s.design.p()))
+                    .collect();
+            }
+            starts.steps.resize(rows.steps.len(), FoldStarts::default());
             Some(timing::time(timing::STEPS, || {
                 rows.steps
                     .iter()
-                    .map(|s| {
+                    .zip(&mut starts.steps)
+                    .map(|(s, start)| {
                         let view = s.design.view(rows.design);
-                        propensity(view, rows.cf, &x.t, &extra, &opts.nuisance)
+                        propensity(view, rows.cf, &x.t, &extra, &opts.nuisance, start)
                     })
                     .collect::<anyhow::Result<Vec<_>>>()
             })?)
@@ -1119,9 +1149,9 @@ pub fn effects_on(
                     let (comp, incomp): (Vec<u32>, Vec<u32>) =
                         inside.iter().partition(|&&i| competent[i as usize]);
                     let (e2, s2) = est(main.as_ref(), t, &comp);
-                    let (e3, s3) = est(main.as_ref(), t, &incomp);
+                    let (e3, s3) = est(main.as_ref().filter(|_| reads.e3), t, &incomp);
                     let e1 = difference(&e2, &s2, &e3, &s3);
-                    let (e5, _) = est(ring.as_ref(), t_ring, &comp);
+                    let (e5, _) = est(ring.as_ref().filter(|_| reads.ring), t_ring, &comp);
                     let nan = Estimate::nan(e2.n, e2.n_treated);
                     let mut step_est = [nan; 3];
                     let mut e2_nospill = nan;
@@ -1547,6 +1577,8 @@ fn effects(
     // The headline's curve point is read off the first weighting's draws.
     let mut curve_done: Vec<bool> = (0..nk).map(|k| Some(k) == head_k).collect();
     let mut stacked: Vec<Vec<f64>> = Vec::new();
+    let mut starts = Starts::default();
+    let mut curve_starts = vec![Starts::default(); nk];
     for d in 0..max_draws {
         if done.iter().chain(&curve_done).all(|&x| x) {
             break;
@@ -1571,8 +1603,10 @@ fn effects(
                 None => (&*ex, comps),
             };
             let sens = Sensitivity::on_draw(d);
-            let fits = timing::time(timing::MAIN, || DrawFits::new(rows, exposure, levels, opts))?
-                .with_controls(rows, sens.steps, opts)?;
+            let fits = timing::time(timing::MAIN, || {
+                DrawFits::new(rows, exposure, levels, opts, &mut starts)
+            })?
+            .with_controls(rows, sens.steps, opts, &mut starts)?;
             fitted |= fits.reads.any();
             let varies = random(&units) && fits.reads.any();
             // The response side of a programme on this draw's rows.
@@ -1625,12 +1659,12 @@ fn effects(
                     let rows = Rows::units(u);
                     let lv: Vec<Vec<bool>> = comps.iter().map(|c| u.of_lead(c)).collect();
                     let r = u.response_of(&w0.response, w0.targets);
-                    let fits = DrawFits::new(rows, &u.exposure, &lv, opts)?;
+                    let fits = DrawFits::new(rows, &u.exposure, &lv, opts, &mut curve_starts[k])?;
                     competent_effect(rows, &fits, &r, mid, opts)?
                 }
                 None => {
                     let rows = Rows::cells(tissue);
-                    let fits = DrawFits::new(rows, ex, comps, opts)?;
+                    let fits = DrawFits::new(rows, ex, comps, opts, &mut curve_starts[k])?;
                     competent_effect(rows, &fits, &w0.response, mid, opts)?
                 }
             };
@@ -1927,6 +1961,19 @@ pub mod timing {
     static DRAWS: AtomicU64 = AtomicU64::new(0);
     static ANALYSES: AtomicU64 = AtomicU64::new(0);
     static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
+    static PROPENSITY_FITS: AtomicU64 = AtomicU64::new(0);
+    static HESSIANS: AtomicU64 = AtomicU64::new(0);
+    static UNCONVERGED: AtomicU64 = AtomicU64::new(0);
+
+    /// One logistic fit that computed `hessians` Hessians; `converged`
+    /// false when it stopped at the step guard, not at the optimum.
+    pub fn newton(hessians: usize, converged: bool) {
+        PROPENSITY_FITS.fetch_add(1, Ordering::Relaxed);
+        HESSIANS.fetch_add(hessians as u64, Ordering::Relaxed);
+        if !converged {
+            UNCONVERGED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     pub fn time<T>(stage: usize, f: impl FnOnce() -> T) -> T {
         let t = std::time::Instant::now();
@@ -1959,11 +2006,16 @@ pub mod timing {
             .map(|(s, n)| format!("{s} {:.0}s", n.load(Ordering::Relaxed) as f64 * 1e-9))
             .collect();
         let a = ANALYSES.load(Ordering::Relaxed).max(1) as f64;
+        let fits = PROPENSITY_FITS.load(Ordering::Relaxed);
         format!(
-            "{}; {:.1} pseudobulk draws per analysis; {} pairs with every fit skipped (thin arms)",
+            "{}; {:.1} pseudobulk draws per analysis; {} pairs with every fit skipped (thin \
+             arms); {} propensity fold fits, {:.1} Hessians each, {} not converged",
             stages.join(", "),
             DRAWS.load(Ordering::Relaxed) as f64 / a,
-            ALL_SKIPPED.load(Ordering::Relaxed)
+            ALL_SKIPPED.load(Ordering::Relaxed),
+            fits,
+            HESSIANS.load(Ordering::Relaxed) as f64 / fits.max(1) as f64,
+            UNCONVERGED.load(Ordering::Relaxed)
         )
     }
 }

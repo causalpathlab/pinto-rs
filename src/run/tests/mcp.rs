@@ -52,7 +52,6 @@ fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
         assert_eq!(spec.input_schema["additionalProperties"], false, "{name}");
     }
     let lra = tools.iter().find(|t| t.name == "run_lra").unwrap();
-    assert_eq!(lra.input_schema["required"], json!(["run"]));
     let props = lra.input_schema["properties"].as_object().unwrap();
     for arg in [
         "run",
@@ -73,4 +72,21 @@ fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
         .map(|m| m.to_possible_value().unwrap().get_name().to_string())
         .collect();
     assert_eq!(props["method"]["enum"], json!(methods));
+}
+
+#[test]
+fn the_lra_tools_take_every_flag_the_command_line_shows() {
+    use clap::CommandFactory;
+    let cli = crate::Cli::command();
+    let tools = specs();
+    for (tool, command) in [("run_lra", "lra"), ("run_lra_simulate", "lra-simulate")] {
+        let spec = tools.iter().find(|t| t.name == tool).unwrap();
+        let props = spec.input_schema["properties"].as_object().unwrap();
+        let flags = cli.find_subcommand(command).unwrap().get_arguments();
+        for arg in flags.filter(|a| !a.is_hide_set()) {
+            let id = arg.get_id().as_str();
+            let name = if id == "from" { "run" } else { id };
+            assert!(props.contains_key(name), "{tool} lacks {name}");
+        }
+    }
 }

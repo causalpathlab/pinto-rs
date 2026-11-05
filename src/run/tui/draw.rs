@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 /// A running fit's row, in `room` cells: its bar while it is drawn, else
 /// its last log line. A bar its fit cleared gives way once legume-tui's
 /// grace runs out, which the screen's redraw tick keeps up with.
-pub(super) fn running(bar: Option<&Bar>, last: &str, room: usize) -> String {
+pub(crate) fn running(bar: Option<&Bar>, last: &str, room: usize) -> String {
     match bar.filter(|b| b.visible()) {
         Some(b) => gauge(&b.now, 24, &b.trend, room),
         None => format!("running  {last}"),

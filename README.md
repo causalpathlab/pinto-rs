@@ -328,10 +328,12 @@ simultaneous 95% band, the table's threshold ringed) under the map. The
 first pair drawn reads the run's receivers once (a pass over its data); each
 pair after that reads two genes.
 
-Space or `m` marks pairs; `L` runs `pinto lra --only` on the marked ones in
-the background, beside the run (`{prefix}.lra.only-<tag>.parquet`, its script
-`{prefix}.lra.only-<tag>.cmd.sh`), and opens its table in the list when it is
-done. On a run without an lra table, `I` then `L` runs the full `pinto lra`.
+Space or `m` marks pairs, and `M` marks all the filter shows (a verdict, or
+one gene's pairs after `/`); `L` runs `pinto lra --only` on the marked ones,
+or on the pair under the cursor when none is marked, in the background beside
+the run (`{prefix}.lra.only-<tag>.parquet`, its script
+`{prefix}.lra.only-<tag>.cmd.sh`). The panel shows its progress bar, `X` stops
+it, and its table opens in the list when it is done. On a run without an lra table, `I` then `L` runs the full `pinto lra`.
 `s` saves the pair's map, and its curve when shown, as PNG and PDF with the
 `pinto view --pair` command that redraws them.
 
@@ -533,8 +535,8 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
-| `run_lra` | `pinto lra --from <run>` as a recorded job: `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`, `only`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
-| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job: `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
+| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `fdr`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the strongest pairs (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
+| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |

@@ -766,21 +766,27 @@ fn specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_lra",
-            "Ligand-receptor analysis on a run's spatial contacts (pinto lra --from run): per \
+            "Ligand-receptor analysis on a run's spatial contacts (pinto lra --from run), or on \
+             data files with coordinates: per \
              ligand-receptor pair, do receivers touching ligand-carrying neighbours change \
              their response programme, compared with similar cells that do not (method \
              contact-effect, the default)? Writes {out}.lra.parquet and {out}.lra.curve.parquet \
              and records the table in the run's manifest (slot lra.table); with only, a few \
              pairs to {out}.lra.only-<tag>.parquet (slot lra.subsets). The co-expression methods \
-             need an lc run and lr_pairs. Runs as a background job unless asked (minutes on a \
-             whole tissue); the reply when done holds the verdict counts, the strongest \
+             need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
+             on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the strongest \
              pairs (percent change with its 95% CI, q) and the files. Called again with the \
              same run and out once done, it reads the tables instead of running. Never \
              written over.",
             json!({
                 "type": "object",
                 "properties": {
-                    "run": {"type": "string", "description": "The run whose cells, expression and contacts are read: its .pinto.json (--from)"},
+                    "run": {"type": "string", "description": "The run whose cells, expression and contacts are read: its .pinto.json (--from); or give data_files and coord_files"},
+                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
+                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
+                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
+                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
+                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
                     "method": {"enum": ["contact-effect", "coexpression-test", "coexpression-scores"], "description": "What to compute [default: contact-effect]"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference (--lr-pairs); the co-expression methods test only these"},
@@ -788,9 +794,11 @@ fn specs() -> Vec<ToolSpec> {
                     "fdr": {"type": "number", "description": "False discovery rate for the verdicts [default: 0.05]"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference; auto reads it from the gene-name case [default: auto]"},
                     "only": {"type": "array", "items": {"type": "string"}, "description": "Estimate only these pairs (--only): LIGAND:RECEPTOR (a complex joins subunits with _, TGFB1:TGFBR1_TGFBR2) or a bare LIGAND for all its pairs. Writes {out}.lra.only-<tag>.parquet, recorded under lra.subsets; q is corrected within the subset only"},
+                    "n_permutations": {"type": "integer", "minimum": 1, "description": "coexpression-test: sample permutations for the null (--n-permutations) [default: 1000]"},
+                    "json_fwer_threshold": {"type": "number", "description": "coexpression-test: FWER cutoff for the JSON sidecar of significant pairs (--json-fwer-threshold) [default: 0.05]"},
+                    "min_gene_count": {"type": "number", "description": "Co-expression methods: minimum total count of a ligand or receptor gene for its pair to be scored (--min-gene-count) [default: 50]"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
-                "required": ["run"],
                 "additionalProperties": false,
             }),
         ),
@@ -810,7 +818,12 @@ fn specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from)"},
+                    "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
+                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
+                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
+                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
+                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
+                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
                     "study": {"type": "object", "description": "Study design: reps, pairs, scenarios (fields left out keep the built-in values; see example_study)"},
                     "example_study": {"type": "boolean", "description": "Return the built-in study as JSON and run nothing"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},

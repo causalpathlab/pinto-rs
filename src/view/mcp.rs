@@ -720,18 +720,24 @@ impl Open {
         a: LraArgs,
         progress: &dyn Fn(&str),
     ) -> anyhow::Result<Value> {
-        if self.lra.is_none() {
-            let run = &self.base.run;
-            let view = LraView::new(run.tables())?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{} has no lra table: run_lra on {} first",
-                    run.name(),
-                    run.manifest
-                        .as_deref()
-                        .map_or_else(|| run.prefix.clone(), shown_path)
-                )
-            })?;
-            self.lra = Some(view);
+        // As the manifest says now: a run_lra may have ended since it was opened.
+        let run = &self.base.run;
+        let tables =
+            super::data::Run::open(&run.prefix).map_or_else(|_| run.tables(), |now| now.tables());
+        match self.lra.as_mut() {
+            Some(v) => v.add_tables(tables),
+            None => {
+                let view = LraView::new(tables)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{} has no lra table: run_lra on {} first",
+                        run.name(),
+                        run.manifest
+                            .as_deref()
+                            .map_or_else(|| run.prefix.clone(), shown_path)
+                    )
+                })?;
+                self.lra = Some(view);
+            }
         }
         // What changes, checked before any of it is kept.
         let v = self.lra.as_mut().expect("read above");

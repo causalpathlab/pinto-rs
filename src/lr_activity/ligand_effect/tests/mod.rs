@@ -41,7 +41,13 @@ pub(super) fn fitted_effects(
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
-    let fits = DrawFits::new(rows, x, levels, opts)?.with_controls(rows, sens.steps, opts)?;
+    let mut starts = Default::default();
+    let fits = DrawFits::new(rows, x, levels, opts, &mut starts)?.with_controls(
+        rows,
+        sens.steps,
+        opts,
+        &mut starts,
+    )?;
     effects_on(rows, &fits, r, sens, opts)
 }
 

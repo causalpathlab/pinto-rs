@@ -547,8 +547,8 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in
 /// the output, on single cells and on pseudobulk units: for a hopeless
-/// pair, whose every fit is skipped, and for a pair whose controls alone
-/// are estimable (E3 fitted, E2 and the ring skipped).
+/// pair, and for a pair whose controls alone would be estimable (no E2, so
+/// E3 and the ring are not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
     use crate::lr_activity::ligand_effect::pseudobulk::UNIT_SIZE;
@@ -580,10 +580,10 @@ fn skipped_fits_change_no_output() {
     }
 }
 
-/// A thin competent arm alone does not skip the main fit: its incompetent
-/// receivers are fitted and E3 reported.
+/// A thin competent arm skips the fits: E3 and the ring are controls on an
+/// estimate the pair does not have, and neither enters its family's q-values.
 #[test]
-fn a_thin_headline_keeps_the_controls() {
+fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);
     w.receptor = w
         .receptor
@@ -601,10 +601,11 @@ fn a_thin_headline_keeps_the_controls() {
     let row = &estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[0];
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
+    assert!(row.effects.incompetent.theta.is_nan());
+    assert!(row.effects.ring.theta.is_nan());
     assert!(
-        row.effects.incompetent.theta.is_finite(),
-        "{:?}",
-        row.effects.incompetent
+        row.effects.incompetent.n > 0,
+        "its counts are still reported"
     );
 }
 
@@ -745,7 +746,7 @@ fn control_fits_without_their_propensities_are_an_error() {
         0.1,
     )];
     let rows = Rows::cells(&w.tissue);
-    let fits = DrawFits::new(rows, &x, &levels, &o).unwrap();
+    let fits = DrawFits::new(rows, &x, &levels, &o, &mut Default::default()).unwrap();
     let (design, cf) = (rows.design.view(), rows.cf);
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, None, &o).is_ok());
     assert!(fit_main(design, cf, &fits, &r, Fit::Ring, None, &o).is_err());

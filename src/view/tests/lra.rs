@@ -562,6 +562,37 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     assert!(LraView::new(Vec::new()).unwrap().is_none());
 }
 
+/// A `run_lra --only` that ends after the run was opened: its table is listed
+/// and can be switched to, the ones read kept.
+#[test]
+fn view_lra_finds_a_table_written_after_the_run_was_opened() {
+    use crate::view::mcp::{LraArgs, Open};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let manifest = format!("{prefix}.pinto.json");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let mut held: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let subsets = held["outputs"]["lra"]["subsets"].take();
+    held["outputs"]["lra"]["subsets"] = json!([]);
+    std::fs::write(&manifest, held.to_string()).unwrap();
+
+    let mut open = Open::new(&prefix, None).unwrap();
+    let call = |open: &mut Open, a: serde_json::Value| {
+        let a: LraArgs = serde_json::from_value(a).unwrap();
+        open.lra_with(a, &|_| {})
+    };
+    call(&mut open, json!({})).unwrap();
+    assert_eq!(open.lra.as_ref().unwrap().tables.len(), 1);
+
+    std::fs::write(&manifest, text).unwrap();
+    assert!(subsets.as_array().is_some_and(|s| !s.is_empty()));
+    call(&mut open, json!({"table": "L1:R1"})).unwrap();
+    let v = open.lra.as_ref().unwrap();
+    assert_eq!(v.tables.len(), 2);
+    assert_eq!(v.tables[v.at].label(), "only L1:R1");
+}
+
 #[test]
 fn view_lra_lists_selects_and_view_map_draws_the_pair() {
     use crate::view::mcp::{LraArgs, MapArgs, Open};

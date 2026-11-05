@@ -42,7 +42,9 @@
 //! ([`PairInputs::outcome_only`]), so one fitted `e` ([`propensity`])
 //! serves every fit with the same exposure side ([`overlap_terms_with`]).
 
-use super::regression::{logistic_ridge, ridge_bordered, sigmoid, standardize, subsample};
+use super::regression::{
+    fold_products, logistic_ridge, ridge_bordered, sigmoid, standardize, subsample,
+};
 use nalgebra::DMatrix;
 use rayon::prelude::*;
 use special::{Beta, Error as _};
@@ -324,7 +326,7 @@ pub fn overlap_terms(
         extra: &extra,
         ..*pair
     };
-    let e = propensity(design, cf, pair.t, &extra, opts)?;
+    let e = propensity(design, cf, pair.t, &extra, opts, &mut FoldStarts::default())?;
     overlap_terms_with(design, cf, &pair, &e, opts)
 }
 
@@ -352,15 +354,47 @@ fn linear_predictor(
     }
 }
 
+/// Each fold's last solution of one propensity model, where the same fold
+/// of the next draw starts: its training tiles are the same, so the solution
+/// is close. Another fold's is not a good start: the folds differ in space,
+/// and Newton takes more steps from it than from the marginal log-odds. The
+/// problem is strictly convex, so a start changes the steps, not the optimum.
+#[derive(Clone, Debug, Default)]
+pub struct FoldStarts(Vec<Option<nalgebra::DVector<f64>>>);
+
+impl FoldStarts {
+    /// These solutions, of a model on the first `p` design columns and pair
+    /// columns after them, cut down to a nested model on the first `nested`
+    /// design columns and the same pair columns.
+    pub fn nested(&self, p: usize, nested: usize) -> Self {
+        Self(
+            self.0
+                .iter()
+                .map(|b| {
+                    b.as_ref().map(|b| {
+                        let s = b.as_slice();
+                        nalgebra::DVector::from_iterator(
+                            nested + s.len() - p,
+                            s[..nested].iter().chain(&s[p..]).copied(),
+                        )
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
 /// The cross-fitted propensity `e` of each row: a logistic ridge of `t` on
 /// the design and `extra` (standardized, [`standardize`]), fitted per fold
-/// on the other folds' rows.
+/// on the other folds' rows, each from its entry in `starts`, which it
+/// updates.
 pub fn propensity(
     design: DesignView<'_>,
     cf: &CrossFit,
     t: &[bool],
     extra: &[&[f64]],
     opts: &NuisanceOpts,
+    starts: &mut FoldStarts,
 ) -> anyhow::Result<Vec<f64>> {
     use super::estimate::timing;
     let n = design.x.nrows();
@@ -368,8 +402,7 @@ pub fn propensity(
     let tf: Vec<f64> = t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
     let p = design.p;
     let mut e = vec![0.0; n];
-    // Each fold's propensity starts from the previous fold's solution.
-    let mut prev: Option<nalgebra::DVector<f64>> = None;
+    starts.0.resize(cf.k, None);
     for k in 0..cf.k {
         let (train, test) = (&cf.train[k], &cf.test[k]);
         if test.is_empty() {
@@ -384,13 +417,13 @@ pub fn propensity(
                 &tf,
                 &subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64),
                 opts.ridge,
-                prev.as_ref(),
+                starts.0[k].as_ref(),
             )
         })?;
         linear_predictor(design, test, beta.as_slice(), extra, |i, eta| {
             e[i] = sigmoid(eta)
         });
-        prev = Some(beta);
+        starts.0[k] = Some(beta);
     }
     Ok(e)
 }
@@ -425,25 +458,21 @@ pub fn overlap_terms_with(
     o_cols.push(&tf);
     o_cols.extend(products.iter().map(|c| c.as_slice()));
 
+    use super::estimate::timing;
+    let products = timing::time(timing::RIDGE, || {
+        fold_products(design.x, design.p, &o_cols, pair.y, &cf.fold, cf.k)
+    });
     let mut h = vec![0.0; n];
     let mut num = vec![0.0; n];
-    for k in 0..cf.k {
+    for (k, fold) in products.iter().enumerate() {
         let (train, test) = (&cf.train[k], &cf.test[k]);
         if test.is_empty() {
             continue;
         }
         anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
 
-        use super::estimate::timing;
         let beta_o = timing::time(timing::RIDGE, || {
-            ridge_bordered(
-                design.x,
-                &design.gram[k],
-                &o_cols,
-                pair.y,
-                train,
-                opts.ridge,
-            )
+            ridge_bordered(&design.gram[k], fold, train.len(), opts.ridge)
         })?;
 
         let p = design.p;

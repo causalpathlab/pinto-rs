@@ -101,13 +101,16 @@ pub fn lra_outputs(
 impl crate::util::metadata::LraOptions {
     pub fn argv(
         &self,
-        from: &str,
+        from: Option<&str>,
         out: Option<&str>,
         method: args::LraMethod,
         only: &[String],
     ) -> Vec<String> {
         use clap::ValueEnum;
-        let mut argv: Vec<String> = vec!["lra".into(), "--from".into(), from.into()];
+        let mut argv: Vec<String> = vec!["lra".into()];
+        if let Some(from) = from {
+            argv.extend(["--from".into(), from.into()]);
+        }
         if let Some(o) = out {
             argv.extend(["-o".into(), o.into()]);
         }
