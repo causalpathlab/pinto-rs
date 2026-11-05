@@ -2153,6 +2153,11 @@ pub fn verdict(e: Evidence) -> Verdict {
 /// inside a family: each ligand's headline p are combined by Simes
 /// (`min_r p_(r) k / r` over its `k` pairs, valid under PRDS) and BH runs
 /// over ligands. `n_pairs_same_ligand` is that `k`.
+///
+/// The controls (E3, the ring, the decoy) are corrected only among the pairs
+/// whose effect is significant, and are NaN for the rest: a control decides a
+/// verdict only beside a significant effect, and over every pair its q would
+/// rest on what unrelated pairs in the table happen to show.
 pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
     let mut by_section: std::collections::HashMap<Box<str>, Vec<usize>> = Default::default();
     for (i, r) in rows.iter().enumerate() {
@@ -2166,9 +2171,17 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
         let pc = col(&|r| upper_normal_p(r.coexpr_log_or / r.coexpr_se));
         let qe = bh(&pe);
         let qc = bh(&pc);
-        let q3 = bh(&col(&|r| r.effects.incompetent.p()));
-        let q5 = bh(&col(&|r| r.effects.ring.p()));
-        let qd = bh(&col(&|r| r.decoy_effect.p()));
+        let control = |g: &dyn Fn(&EffectRow) -> f64| -> Vec<f64> {
+            let p: Vec<f64> = col(g)
+                .into_iter()
+                .zip(&qe)
+                .map(|(p, &q)| if q < opts.fdr { p } else { f64::NAN })
+                .collect();
+            bh(&p)
+        };
+        let q3 = control(&|r| r.effects.incompetent.p());
+        let q5 = control(&|r| r.effects.ring.p());
+        let qd = control(&|r| r.decoy_effect.p());
         let mut by_ligand: std::collections::HashMap<String, Vec<usize>> = Default::default();
         for (k, &i) in idx.iter().enumerate() {
             by_ligand

@@ -298,3 +298,51 @@ fn exposure_eta2_tracks_neighbour_identity() {
     // A constant exposure has no variance to explain.
     assert!(eta_squared(&nb, &vec![1.0; n], &all).is_nan());
 }
+
+/// The controls are corrected among the pairs with a significant effect:
+/// the others show none and warn of none, and what they show cannot move a
+/// significant pair's control.
+#[test]
+fn controls_are_corrected_among_significant_effects() {
+    let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_incompetent_q;
+    // No significant effect: no control is read, however strong.
+    let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 10.0, 0.1)];
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0).is_nan() && rows[0].ring_effect_q.is_nan());
+    assert_eq!(rows[0].verdict.code(), "no_evidence");
+    assert!(
+        !rows[0].warnings.contains("respond"),
+        "{}",
+        rows[0].warnings
+    );
+
+    // Alone among the significant, its control's q is its p: unrelated pairs,
+    // with controls strong or weak, change neither it nor its verdict.
+    let alone = |others: &[f64]| {
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1)];
+        for (k, &z3) in others.iter().enumerate() {
+            rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.0, 0.1));
+        }
+        report(&mut rows, &ReportOpts::default());
+        (e3_q(&rows, 0), rows[0].verdict.code())
+    };
+    let (q, verdict) = alone(&[]);
+    assert_eq!(verdict, "control_failed");
+    assert_eq!((q, verdict), alone(&[10.0; 20]));
+    assert_eq!((q, verdict), alone(&[0.0; 20]));
+
+    // A significant effect whose control has no estimate fails nothing.
+    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
+    rows[0].effects.incompetent = Estimate::nan(10, 1);
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0).is_nan());
+    assert_eq!(rows[0].verdict.code(), "supported");
+
+    // Each section is its own family.
+    let mut rows = vec![
+        row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1),
+        row("s1", "L1", 0.0, 10.0, 2.5, 0.0, 0.1),
+    ];
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0) < 0.05 && e3_q(&rows, 1).is_nan());
+}

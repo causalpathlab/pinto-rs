@@ -116,6 +116,8 @@ pairs and draws each on the tissue (see `view`, `I`):
 | `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
 | `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
 
+The negative controls are corrected among the pairs with a significant effect, so their q is empty for the rest.
+
 ### `lra-simulate`: power and calibration check
 
 Can this tissue detect ligand effects of a given size, and does the
