@@ -7,7 +7,9 @@ use super::run_sim;
 use crate::lr_activity::ligand_effect::estimate::EffectOpts;
 use crate::lr_activity::ligand_effect::exposure::{competence, ring_partners, Contacts};
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
-use crate::lr_activity::ligand_effect::simulate::{ConfounderKind, Scenario, SimBase};
+use crate::lr_activity::ligand_effect::simulate::{
+    simulate_decoy, ConfounderKind, Scenario, SimBase,
+};
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
 
@@ -318,4 +320,59 @@ fn an_effect_at_ring_range_is_seen_by_the_ring_estimate() {
         r.ring.se,
         r.ring_truth
     );
+}
+
+/// The simulated decoy runs beside the programme without touching it: it does
+/// not move the estimate, it ignores a planted effect, it follows the hidden
+/// field as far as it is told to, and the run carries `lra`'s verdict.
+#[test]
+fn the_decoy_sees_the_field_and_not_the_effect() {
+    let f = fixture();
+    let b = base(&f);
+    let run = |scen: &Scenario, seed: u64| run_sim(&f.tissue, &b, scen, &opts(), seed).unwrap();
+
+    let planted = Scenario {
+        effect: 0.6,
+        ..Scenario::default()
+    };
+    let r = run(&planted, 11);
+    assert!(r.estimate.rejects(), "{:?}", r.estimate);
+    assert!(r.decoy.theta.is_finite());
+    assert!(r.decoy.z().abs() < 3.0, "{:?}", r.decoy);
+    assert_eq!(r.survived(), r.verdict.survived());
+
+    let field = |decoy_confounding: f64| Scenario {
+        confound_ligand: 1.0,
+        confound_response: 1.0,
+        decoy_confounding,
+        ..Scenario::default()
+    };
+    let (on, off) = (run(&field(1.0), 3), run(&field(0.0), 3));
+    assert_eq!(on.estimate.theta, off.estimate.theta);
+}
+
+/// Decoy counts follow the hidden field as far as they are told to.
+#[test]
+fn the_decoy_counts_follow_the_field_they_are_given() {
+    let f = fixture();
+    let b = base(&f);
+    let n = f.tissue.n();
+    let field: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+        .collect();
+    let high_share = |beta: f64| {
+        let nz = simulate_decoy(&f.tissue, &b, &field, beta, &[false; 64], 0.0, 5);
+        let (mut high, mut all) = (0.0, 0.0);
+        for (genes, &w) in nz.iter().zip(b.target_weights) {
+            let up = w > 0.0;
+            for &(i, v) in genes {
+                let on_high = (field[i as usize] > 0.0) == up;
+                high += if on_high { v as f64 } else { 0.0 };
+                all += v as f64;
+            }
+        }
+        high / all
+    };
+    assert!((high_share(0.0) - 0.5).abs() < 0.05, "{}", high_share(0.0));
+    assert!(high_share(1.0) > 0.75, "{}", high_share(1.0));
 }

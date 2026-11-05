@@ -9,7 +9,8 @@
 //! group explains: (a) section, (b) + spatial smooth, (c) + cell identity
 //! (receiver and neighbour identity, and cell type when given); the full
 //! design adds depth. Each is a column prefix of the one standardized
-//! matrix and owns only its small per-fold Grams.
+//! matrix and owns only its small per-fold Grams; a pseudobulk draw's
+//! prefixes also hold its units' pooled depth and member count.
 
 use super::confounders::{self, ConfounderInputs, Group};
 use super::estimate::{Scope, ALL_SECTIONS};

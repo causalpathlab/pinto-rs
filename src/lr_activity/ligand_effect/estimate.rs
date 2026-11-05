@@ -26,7 +26,8 @@
 //! adding depth. Read left to right with `crude`, it shows how much of an
 //! apparent effect each confounder group explains. The pair's own columns
 //! (own ligand, spillover, bleed, niche ligand, competence) are in every
-//! step.
+//! step, and on pseudobulk so are the unit's pooled depth and member count,
+//! which the pooled response depends on whatever the tissue.
 //!
 //! Exposure `T = 1{Σ_contacts ligand / size factor > τ}`. Response
 //! `Y = Σ_g w_g log1p(x_g / size factor) / Σ_g |w_g|` over the pair's
@@ -307,6 +308,53 @@ pub struct EffectRow {
     /// Why the verdict is what it is beyond the q-values: failed controls,
     /// confounding, why a pair is not estimable. Semicolon separated.
     pub warnings: String,
+}
+
+impl EffectRow {
+    /// A pooled row holding what [`report`] reads for its verdict: the
+    /// estimands, co-expression, the exposure's identity share and the decoy.
+    /// `lra-simulate` judges its runs by the rule `lra` uses through this.
+    pub fn for_verdict(
+        effects: ScopeEffects,
+        (coexpr_log_or, coexpr_se): (f64, f64),
+        exposure_eta2: f64,
+        decoy_effect: Estimate,
+        n_decoy_genes: usize,
+    ) -> Self {
+        Self {
+            section: ALL_SECTIONS.into(),
+            ligand: "".into(),
+            receptor: "".into(),
+            n_targets: 0,
+            n_removed: 0,
+            n_receivers: 0,
+            n_competent: 0,
+            n_exposed: 0,
+            threshold: f64::NAN,
+            coexpr_log_or,
+            coexpr_se,
+            crude: f64::NAN,
+            effects,
+            exposure_eta2,
+            n_competent_bins: 0,
+            n_incompetent_bins: 0,
+            decoy_effect,
+            n_decoy_genes,
+            curve: Vec::new(),
+            decoy_q: f64::NAN,
+            effect_p: f64::NAN,
+            effect_q: f64::NAN,
+            coexpr_p: f64::NAN,
+            coexpr_q: f64::NAN,
+            effect_incompetent_q: f64::NAN,
+            effect_contrast_q: f64::NAN,
+            ring_effect_q: f64::NAN,
+            n_pairs_same_ligand: 0,
+            ligand_q: f64::NAN,
+            verdict: Verdict::InsufficientData,
+            warnings: String::new(),
+        }
+    }
 }
 
 /// One point of the threshold–response curve: the competent effect (pooled) at exposure

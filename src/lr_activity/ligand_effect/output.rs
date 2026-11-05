@@ -109,6 +109,16 @@ impl Verdict {
     }
 }
 
+impl Verdict {
+    /// The pair's effect survived the controls.
+    pub fn survived(self) -> bool {
+        matches!(
+            self,
+            Verdict::Supported | Verdict::EffectWithoutCoexpression
+        )
+    }
+}
+
 impl std::str::FromStr for Verdict {
     type Err = anyhow::Error;
 
@@ -376,6 +386,11 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .est("estimate_section", |r| r.steps[0])
         .est("estimate_spatial", |r| r.steps[1])
         .est("estimate_identity", |r| r.steps[2])
+        .est("effect_contrast", |r| r.contrast)
+        .est("decoy_effect", |r| r.decoy)
+        .f("decoy_confounding", |r| r.scenario.decoy_confounding)
+        .s("verdict", |r| r.verdict.code())
+        .i("survived", |r| r.survived() as usize)
         .f("mean_overlap", |r| r.estimate.mean_h)
         .f("misclassified", |r| r.misclassified)
         .i(CONFOUND_RECEPTOR, |r| r.scenario.confound_receptor as usize)
@@ -582,10 +597,12 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
             share(&v)
         };
         out += &format!(
-            "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}\n",
+            "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, decoy reject {}, verdict survived {}\n",
             g.len(),
             rej_of(|r| r.ring),
             rej_of(|r| r.no_spill),
+            rej_of(|r| r.decoy),
+            share(&g.iter().map(|r| r.survived()).collect::<Vec<_>>()),
         );
         for (name, view) in views {
             let ok: Vec<(f64, f64, f64, f64, f64)> = g
@@ -1017,14 +1034,7 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     let mut v: Vec<&PooledEffect> = rows
         .iter()
-        .filter(|r| {
-            r.effect.is_finite()
-                && r.effect_p.is_finite()
-                && matches!(
-                    r.verdict,
-                    Verdict::Supported | Verdict::EffectWithoutCoexpression
-                )
-        })
+        .filter(|r| r.effect.is_finite() && r.effect_p.is_finite() && r.verdict.survived())
         .collect();
     v.sort_by(|a, b| a.effect_p.total_cmp(&b.effect_p));
     v
@@ -1093,6 +1103,7 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
                 shift: num(SHIFT, i),
                 confound_receptor: flag(CONFOUND_RECEPTOR, i),
                 rep: col(REP)[i] as usize,
+                ..Scenario::default()
             };
             let mut hits = [false; 6];
             for (h, name) in hits.iter_mut().zip(&rejects) {

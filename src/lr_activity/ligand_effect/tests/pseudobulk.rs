@@ -6,7 +6,7 @@ use super::run_sim;
 use super::simulate::{base, fixture, opts};
 use crate::lr_activity::ligand_effect::estimate::{EffectOpts, Exposure};
 use crate::lr_activity::ligand_effect::overlap::Estimate;
-use crate::lr_activity::ligand_effect::pseudobulk::{combine, partition, unit_response};
+use crate::lr_activity::ligand_effect::pseudobulk::{combine, draw, partition, unit_response};
 use crate::lr_activity::ligand_effect::simulate::Scenario;
 
 fn est(theta: f64, se: f64) -> Estimate {
@@ -232,4 +232,39 @@ fn the_guard_counts_units_not_their_members() {
     let every = vec![vec![true; u.lead.len()]];
     let reads = Reads::of(Rows::units(&u), &u.exposure, &every, &o);
     assert!(!reads.competent);
+}
+
+/// A unit's pooled response depends on its pooled depth and member count, and
+/// arms differ in both, so every adjustment step adjusts for them: a step that
+/// leaves them out reports the unit-size artefact as an effect.
+#[test]
+fn every_adjustment_step_carries_the_unit_size() {
+    let f = fixture();
+    let t = &f.tissue;
+    let n = t.n();
+    let frame = Exposure {
+        tau: 0.0,
+        t: (0..n).map(|i| i % 3 == 0).collect(),
+        t_ring: (0..n).map(|i| i % 5 == 0).collect(),
+        own: vec![0.0; n],
+        niche: vec![0.0; n],
+    };
+    let u = draw(t, &frame, &vec![0.0; n], 6, 3);
+    let corr = |a: &[f64], j: usize| {
+        let b: Vec<f64> = u.design.x.column(j).iter().map(|&v| v as f64).collect();
+        let k = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / k, b.iter().sum::<f64>() / k);
+        let cov: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+        let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+        cov / (va * vb).sqrt()
+    };
+    let depth: Vec<f64> = u.size_factor.iter().map(|s| s.ln()).collect();
+    let members: Vec<f64> = u.size.iter().map(|&s| (s as f64).ln()).collect();
+    assert!(corr(&depth, 1) > 0.999, "column 1 is the pooled depth");
+    assert!(corr(&members, 2) > 0.999, "column 2 is the member count");
+    assert_eq!(u.design.p(), t.design.p() + 2);
+    for (s, cells) in u.steps.iter().zip(&t.steps) {
+        assert_eq!(s.design.p(), cells.design.p() + 2, "{}", s.name);
+    }
 }

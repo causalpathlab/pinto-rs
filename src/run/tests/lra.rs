@@ -368,7 +368,7 @@ fn simulate_runs_read_back_as_written() {
     let path = dir.path().join("o.lra-simulate.parquet");
     let n = 2;
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
-    let (confounder, shape) = (s("realgene"), s("interaction"));
+    let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |v: [f32; 2]| v.to_vec();
     let floats: Vec<(String, Vec<f32>)> = vec![
         ("planted_effect".into(), f([0.3, 0.3])),
@@ -419,7 +419,7 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0]["scenario"],
-        "θ=0.30 α=0.3 β=0.3 realgene/interaction@16 κ=0.1 marker"
+        "θ=0.30 α=0.3 β=0.3 realgene/quadratic@16 κ=0.1 marker"
     );
     assert_eq!(s[0]["reject"]["crude"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);

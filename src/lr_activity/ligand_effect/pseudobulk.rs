@@ -315,18 +315,17 @@ pub fn draw(tissue: &Tissue, f: &Exposure, ligand_counts: &[f64], m: usize, seed
             acc[u as usize * p + j] += v as f64;
         }
     }
-    // Members' means, then the unit's pooled size factor and member count:
-    // the pooled log response depends on pooled depth (a bigger unit has
-    // less Jensen shrinkage at the same rate), and unit sizes can differ
-    // between arms, so both are confounders at the unit level.
-    let x = DMatrix::<f32>::from_fn(n_units, p + 2, |u, j| {
-        if j < p {
-            (acc[u * p + j] / size[u] as f64) as f32
-        } else if j == p {
-            size_factor[u].ln() as f32
-        } else {
-            (size[u] as f64).ln() as f32
-        }
+    // The intercept, the unit's pooled size factor and member count, then the
+    // members' mean confounders. The pooled log response depends on pooled
+    // depth (a bigger unit has less Jensen shrinkage at the same rate), and
+    // unit sizes differ between arms, so both are confounders at the unit
+    // level; next to the intercept, every adjustment step's prefix holds them.
+    const UNIT_COLUMNS: usize = 2;
+    let x = DMatrix::<f32>::from_fn(n_units, p + UNIT_COLUMNS, |u, j| match j {
+        0 => (acc[u * p] / size[u] as f64) as f32,
+        1 => size_factor[u].ln() as f32,
+        2 => (size[u] as f64).ln() as f32,
+        _ => (acc[u * p + j - UNIT_COLUMNS] / size[u] as f64) as f32,
     });
     drop(acc);
     let design = Design::new(x, &cf);
@@ -335,7 +334,7 @@ pub fn draw(tissue: &Tissue, f: &Exposure, ligand_counts: &[f64], m: usize, seed
         .iter()
         .map(|s| AdjustmentStep {
             name: s.name,
-            design: design.prefix(s.design.p()),
+            design: design.prefix(s.design.p() + UNIT_COLUMNS),
         })
         .collect();
     let lig = sum_by_unit(ligand_counts, &unit_of, n_units);
