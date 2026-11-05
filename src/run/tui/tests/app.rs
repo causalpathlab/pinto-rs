@@ -921,7 +921,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     // The script refuses to run over the table, not over a manifest.
     let text = script::text(&j.argv, &j.out, &j.done_name(), "lra.cmd.sh");
     assert!(
-        text.contains("if [ -f lra.lra.only-spp1-cd44+tgfb1.parquet ]"),
+        text.contains("if [ -f lra.lra.only-l1-r1+l2.parquet ]"),
         "{text}"
     );
     assert!(text.contains("bash lra.cmd.sh"), "{text}");
