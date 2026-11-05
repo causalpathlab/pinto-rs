@@ -41,7 +41,13 @@ pub(super) fn fitted_effects(
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
-    let fits = DrawFits::new(rows, x, levels, opts)?.with_controls(rows, sens.steps, opts)?;
+    let mut starts = crate::lr_activity::ligand_effect::estimate::Starts::default();
+    let fits = DrawFits::new(rows, x, levels, opts, &mut starts.main)?.with_controls(
+        rows,
+        sens.steps,
+        opts,
+        &mut starts,
+    )?;
     effects_on(rows, &fits, r, sens, opts)
 }
 

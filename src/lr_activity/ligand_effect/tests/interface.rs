@@ -98,7 +98,8 @@ fn an_effect_reads_as_a_percent_change_with_its_interval() {
         df: f64::INFINITY,
         ..Estimate::nan(100, 50)
     };
-    assert_eq!(percent_change(&e), "+0% (95% CI +0% to +0%)");
+    // Under a percent, whole percents would all read +0%.
+    assert_eq!(percent_change(&e), "+0.00% (95% CI +0.00% to +0.00%)");
     let e = Estimate {
         theta: 2f64.ln(),
         ..e

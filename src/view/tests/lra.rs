@@ -483,7 +483,6 @@ fn the_layer_starts_lra_beside_the_run() {
         targets: vec!["/p/a.gmt".into(), "/p/b.tsv".into()],
         species: "mouse".into(),
         seed: 7,
-        fdr: 0.1,
         identity_excluded: vec!["G0".into()],
     };
     let only = vec!["SPP1:CD44".to_string(), "TGFB1".to_string()];
@@ -498,8 +497,6 @@ fn the_layer_starts_lra_beside_the_run() {
             "/p/pairs.tsv",
             "--targets",
             "/p/a.gmt,/p/b.tsv",
-            "--fdr",
-            "0.1",
             "--species",
             "mouse",
             "--seed",
@@ -560,6 +557,37 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     assert!(v.curve().unwrap().title.contains("subset"));
     // A run without a table has no layer.
     assert!(LraView::new(Vec::new()).unwrap().is_none());
+}
+
+/// A `run_lra --only` that ends after the run was opened: its table is listed
+/// and can be switched to, the ones read kept.
+#[test]
+fn view_lra_finds_a_table_written_after_the_run_was_opened() {
+    use crate::view::mcp::{LraArgs, Open};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let manifest = format!("{prefix}.pinto.json");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let mut held: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let subsets = held["outputs"]["lra"]["subsets"].take();
+    held["outputs"]["lra"]["subsets"] = json!([]);
+    std::fs::write(&manifest, held.to_string()).unwrap();
+
+    let mut open = Open::new(&prefix, None).unwrap();
+    let call = |open: &mut Open, a: serde_json::Value| {
+        let a: LraArgs = serde_json::from_value(a).unwrap();
+        open.lra_with(a, &|_| {})
+    };
+    call(&mut open, json!({})).unwrap();
+    assert_eq!(open.lra.as_ref().unwrap().tables.len(), 1);
+
+    std::fs::write(&manifest, text).unwrap();
+    assert!(subsets.as_array().is_some_and(|s| !s.is_empty()));
+    call(&mut open, json!({"table": "L1:R1"})).unwrap();
+    let v = open.lra.as_ref().unwrap();
+    assert_eq!(v.tables.len(), 2);
+    assert_eq!(v.tables[v.at].label(), "only L1:R1");
 }
 
 #[test]
@@ -720,11 +748,6 @@ fn receivers_are_read_again_for_a_table_made_with_other_options() {
     v.select("L1:R1").unwrap();
     assert!(!v.needs_receivers());
     assert!(v.on_map(&base, 0).unwrap().is_some());
-    v.tables[0].options.fdr = 0.2;
-    assert!(
-        !v.needs_receivers(),
-        "the FDR does not decide the receivers"
-    );
     v.load(1).unwrap();
     assert!(v.needs_receivers());
     assert!(v.shown().is_none(), "drawn on the other receivers");

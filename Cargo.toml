@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.16.4"
+version = "0.16.5"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -68,6 +68,7 @@ wide = "0.7"
 
 special = "0.13"
 indicatif = { version = "^0.18", features = ["rayon"] }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 log = "0.4"
 colored = "3"
 rustc-hash = "2.1"

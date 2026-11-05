@@ -257,6 +257,24 @@ impl Queue {
         })
     }
 
+    /// Job `i`'s row, in `room` cells: its progress bar while one is drawn,
+    /// else its last line.
+    #[must_use]
+    pub fn row(&self, i: usize, room: usize) -> String {
+        self.shared.lock().map_or_else(
+            |_| String::new(),
+            |s| super::draw::running(s.bars[i].as_ref(), &s.last[i], room),
+        )
+    }
+
+    /// The last line job `i` wrote.
+    #[must_use]
+    pub fn last_line(&self, i: usize) -> String {
+        self.shared
+            .lock()
+            .map_or_else(|_| String::new(), |s| s.last[i].clone())
+    }
+
     /// Each job's state now.
     #[must_use]
     pub fn states(&self) -> Vec<State> {

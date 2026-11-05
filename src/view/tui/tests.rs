@@ -185,6 +185,29 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
     want.sort();
     assert_eq!(marked, want);
 
+    // M marks all the filter shows; again, it unmarks them.
+    app.lra_key(key(KeyCode::Char('M')), None).unwrap();
+    let v = app.lra.as_ref().unwrap();
+    assert_eq!(v.marked.len(), v.visible().len());
+    let lines = app.lra_lines(40);
+    let said = |l: &Line| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
+    assert!(lines
+        .iter()
+        .any(|(l, _)| said(l).contains("marked  L runs them")));
+    app.lra_key(key(KeyCode::Char('M')), None).unwrap();
+    assert!(app.lra.as_ref().unwrap().marked.is_empty());
+    // With none marked, L runs the pair under the cursor.
+    app.lra.as_mut().unwrap().select("L1:R1").unwrap();
+    assert_eq!(app.pairs_to_run(), vec!["L1:R1".to_string()]);
+    app.lra.as_mut().unwrap().marked.insert("L1:G0".into());
+    assert_eq!(app.pairs_to_run(), vec!["L1:G0".to_string()]);
+    app.lra.as_mut().unwrap().marked.clear();
+
     // T keeps the pair selected and queues it to be drawn.
     app.lra.as_mut().unwrap().select("L1:R1").unwrap();
     app.draw_pair(None);

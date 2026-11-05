@@ -42,6 +42,7 @@ impl GeneStore {
             .collect();
         let jobs = generate_minibatch_intervals(n_cells, data.num_rows(), block_size);
         type Block = (usize, Vec<f32>, Vec<(u32, u32, f32)>);
+        let pb = new_progress_bar(jobs.len() as u64).with_message("reading gene blocks");
         let blocks: Vec<Block> = jobs
             .par_iter()
             .map(|&(lb, ub)| -> anyhow::Result<Block> {
@@ -62,9 +63,11 @@ impl GeneStore {
                         }
                     }
                 }
+                pb.inc(1);
                 Ok((lb, depth, kept))
             })
             .collect::<anyhow::Result<_>>()?;
+        pb.finish_and_clear();
         let mut log1p_depth = vec![0.0f32; n_cells];
         let mut nz: Vec<Vec<(u32, f32)>> = vec![Vec::new(); genes.len()];
         for (lb, depth, kept) in blocks {

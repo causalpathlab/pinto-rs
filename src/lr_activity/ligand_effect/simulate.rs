@@ -1195,6 +1195,7 @@ pub fn simulate(
     let mut per: Vec<[Estimate; 7]> = Vec::with_capacity(draws);
     let mut headline: Vec<Estimate> = Vec::with_capacity(draws);
     let mut truths: Vec<(f64, f64)> = Vec::with_capacity(draws);
+    let mut starts = super::estimate::Starts::default();
     for d in 0..draws {
         let units = units_on.then(|| {
             draw(
@@ -1236,8 +1237,13 @@ pub fn simulate(
             ..sens
         };
         let levels = std::slice::from_ref(&compr);
-        let fits = DrawFits::new(rows, ex, levels, opts)?.with_controls(rows, sens.steps, opts)?;
-        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.any();
+        let fits = DrawFits::new(rows, ex, levels, opts, &mut starts.main)?.with_controls(
+            rows,
+            sens.steps,
+            opts,
+            &mut starts,
+        )?;
+        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.competent;
         let eff = effects_on(rows, &fits, r, sens, opts)?;
         let e = eff.levels[0].scopes[0];
         let weighted_truth = {

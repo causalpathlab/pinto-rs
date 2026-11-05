@@ -13,29 +13,29 @@
 //! neighbours carry ligand above a threshold, `Y` = the receiver's signed
 //! target programme, `C` = the receiver's identity expresses the receptor:
 //!
-//! - E2 `effect_competent`, **the headline**: overlap-weighted effect of
+//! - `effect_competent`, the competent effect, **the headline**: overlap-weighted effect of
 //!   `T` on `Y` in receptor-competent receivers;
-//! - E3 `effect_incompetent`: the same in incompetent receivers (≈ 0 is a
+//! - `effect_incompetent`, the incompetent effect: the same in incompetent receivers (≈ 0 is a
 //!   negative control);
-//! - E1 `effect_contrast`: E2 − E3. Competence is read from identity bins,
+//! - `effect_contrast`, the contrast: competent effect − incompetent effect. Competence is read from identity bins,
 //!   so competent and incompetent receivers are different cell types by
-//!   construction and E1 conflates the receptor with cell type; it is kept
-//!   as a column, not as the headline;
-//! - E5 `ring_effect`: effect of ligand on distant non-touching cells given
+//!   construction and the contrast conflates the receptor with cell type; it is
+//!   no headline, but a significant effect must exceed the incompetent one;
+//! - `ring_effect`, the ring effect: effect of ligand on distant non-touching cells given
 //!   the real exposure (≈ 0 is a negative control for spatial confounding);
-//! - E0 / E0′: the co-expression log odds ratio and the crude contrast,
+//! - `coexpr_log_or` and `crude`: the co-expression log odds ratio and the crude contrast,
 //!   for comparison.
 //!
 //! **Inference across pairs** ([`estimate::report`]): Benjamini–Hochberg
-//! q-values within the pooled rows and within each section, for E2
-//! (two-sided), co-expression (one-sided, positive) and both controls, and
+//! q-values within the pooled rows and within each section, for the competent effect
+//! (two-sided), co-expression (one-sided, positive) and the controls, and
 //! a per-ligand q (Simes over the ligand's pairs, BH over ligands); the
-//! verdict ([`output::Verdict`]) reads q < `--fdr`. When the ligand marks a cell type, exposure
+//! verdict ([`output::Verdict`]) reads q at [`Internals::fdr`]. When the ligand marks a cell type, exposure
 //! is nearly "has a neighbour of that type" and cannot be told from
 //! neighbour identity: `exposure_eta2` measures how much of the exposure
 //! the dominant neighbour's identity bin explains, and at
 //! [`INTERNALS`]`.max_exposure_eta2` the pair is `celltype_inseparable`
-//! rather than a finding. A significant E2 beside a failed control is
+//! rather than a finding. A significant competent effect beside a failed control is
 //! `control_failed`.
 //!
 //! "Effect" is a contrast of two stochastic interventions: each receiver's
@@ -85,12 +85,107 @@ use std::path::Path;
 use targets::TargetSets;
 use tissue::{Tissue, TissueInputs, TissueOpts};
 
-/// Memory allowed for pairs estimated at once.
-const PAIR_MEMORY_BUDGET: usize = 2 << 30;
+/// Memory allowed for pairs estimated at once when the machine does not say
+/// what it has, and the least allowed when it does.
+const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
+
+/// Memory allowed for pairs estimated at once: half of what is available now
+/// ([`available_memory`]), the rest left to the tissue and the machine's
+/// other work.
+fn pair_memory_budget() -> usize {
+    available_memory().map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
+        (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
+    })
+}
+
+/// Bytes this process could still allocate: the system's available memory, or
+/// less when a cgroup (a batch job, a container) limits it. `None` where the
+/// system does not say.
+fn available_memory() -> Option<usize> {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let available = system.available_memory();
+    let left = system
+        .cgroup_limits()
+        .map_or(available, |group| group.free_memory.min(available));
+    (left > 0).then_some(left as usize)
+}
+
+/// Bytes of `rows` rows of a propensity fit ([`regression::logistic_ridge`]) on
+/// `p` confounders: those and the pair's own columns.
+fn propensity_bytes(rows: usize, p: usize) -> usize {
+    rows * (p + 8) * 8
+}
+
+/// Memory one live pair (or benchmark scenario) holds: `vectors` receiver-length
+/// vectors, a draw's confounders (at
+/// most a row per receiver, in f32, with the unit's two depth columns), and
+/// the propensity's rows ([`regression::logistic_ridge`]).
+fn pair_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let (n, p) = (tissue.n(), tissue.design.p());
+    n * 8 * vectors + n * (p + 2) * 4 + propensity_bytes(nuisance.max_propensity_rows, p)
+}
 
 /// The single competence threshold `lra-simulate` plants on
 /// ([`Internals::benchmark_competence`]).
 const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
+
+/// The shared progress bar over the long stages. Where no bar can draw (the
+/// log of a background job, a pipe) each twentieth of the way is logged too.
+struct Progress {
+    bar: indicatif::ProgressBar,
+    done: std::sync::atomic::AtomicU64,
+}
+
+impl Progress {
+    fn new(total: usize, what: &'static str) -> Self {
+        Self {
+            bar: new_progress_bar(total as u64).with_message(what),
+            done: 0.into(),
+        }
+    }
+
+    fn inc(&self) {
+        self.bar.inc(1);
+        let done = 1 + self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let total = self.bar.length().unwrap_or(done).max(1);
+        if self.bar.is_hidden() && done * 20 / total > (done - 1) * 20 / total {
+            // Not through the log, whose default level would hide it.
+            eprintln!(
+                "{done}/{total} {} ({:.0}s)",
+                self.bar.message(),
+                self.bar.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    fn finish(&self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+/// A propensity fit's rows, in bytes, that stay in a core's share of the
+/// cache; past this, fits side by side compete for memory.
+const FITS_IN_CACHE: usize = 4 << 20;
+
+/// Pairs (or benchmark scenarios) to run at once, each holding `per_pair`
+/// bytes: what the memory budget allows, and on a tissue whose fits outgrow
+/// the cache a quarter of the threads, the rest serving each pair's parallel
+/// steps ([`run_bounded`]). Fits slow each other down past that: more of them
+/// at once take longer in all.
+fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let threads = rayon::current_num_threads();
+    let rows = tissue.n().min(nuisance.max_propensity_rows);
+    let fit_bytes = propensity_bytes(rows, tissue.design.p());
+    let by_cache = if fit_bytes < FITS_IN_CACHE {
+        threads
+    } else {
+        (threads / 4).max(1)
+    };
+    (pair_memory_budget() / per_pair.max(1))
+        .min(by_cache)
+        .max(1)
+}
 
 // * Settings
 
@@ -122,6 +217,8 @@ pub struct Internals {
     /// Share of exposure variance explained by neighbour identity at which
     /// a pair is `celltype_inseparable`.
     pub max_exposure_eta2: f64,
+    /// The false discovery rate a test counts at in the verdicts.
+    pub fdr: f64,
     /// Dimension of the receiver identity projection, and its bins (2^bits).
     pub identity_dim: usize,
     pub identity_bits: usize,
@@ -147,6 +244,7 @@ pub const INTERNALS: Internals = Internals {
     min_ess: 30.0,
     min_overlap: 0.01,
     max_exposure_eta2: 0.8,
+    fdr: 0.05,
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,
@@ -164,7 +262,6 @@ pub struct Settings<'a> {
     pub lr_pairs: Option<&'a str>,
     pub targets: &'a [Box<str>],
     pub species: ReferenceSpecies,
-    pub fdr: f64,
     pub seed: u64,
     pub block_size: Option<usize>,
     /// `--only`: the pairs to estimate; empty for every pair.
@@ -181,7 +278,6 @@ impl Settings<'_> {
             targets: self.targets.iter().map(|t| abs(t)).collect(),
             species: self.species.name(),
             seed: self.seed,
-            fdr: self.fdr,
             identity_excluded: Vec::new(),
         }
     }
@@ -639,7 +735,6 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     let (tissue, store, local, eopts) = (&prep.tissue, &prep.store, &prep.local, &prep.eopts);
-    let n = tissue.n();
     let pool = estimate::DecoyPool::new(
         &tissue.size_factor,
         prep.decoy_genes
@@ -648,20 +743,17 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
             .collect(),
     );
 
-    let pb = new_progress_bar(prep.pairs.len() as u64).with_message("ligand-receptor pairs");
-    // Pairs run several at a time on a small tissue, where one pair cannot
-    // fill the cores, and one at a time on a large one: each live pair holds
-    // a few dozen receiver-length vectors and its propensity design, and
-    // the concurrency is what that costs against a fixed memory budget.
+    let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
+    // Each live pair holds a few dozen receiver-length vectors and its
+    // propensity design, which bounds how many run at once ([`pair_workers`]).
     // Beside the pair's own vectors, a draw's fits ([`estimate::DrawFits`])
     // hold per competence threshold an effect modifier and a pair column,
     // and own ligand, niche, the exposure column and the main, ring and
     // three step propensities.
     let nc = eopts.competences.len();
     let draw_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
-    let per_pair = n * 8 * (32 + draw_fits)
-        + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
-    let concurrent = (PAIR_MEMORY_BUDGET / per_pair.max(1)).clamp(1, rayon::current_num_threads());
+    let per_pair = pair_memory(32 + draw_fits, tissue, &eopts.nuisance);
+    let concurrent = pair_workers(per_pair, tissue, &eopts.nuisance).min(prep.pairs.len());
     if concurrent > 1 {
         info!("Estimating up to {concurrent} pairs at a time");
     }
@@ -696,7 +788,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
                 Vec::new()
             }
         };
-        pb.inc(1);
+        pb.inc();
         out
     };
     let t_pairs = std::time::Instant::now();
@@ -706,7 +798,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         rows.extend(r);
         units.merge(u);
     }
-    pb.finish_and_clear();
+    pb.finish();
     log_unit_size(units);
     info!(
         "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
@@ -715,7 +807,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         estimate::timing::summary()
     );
     let ropts = estimate::ReportOpts {
-        fdr: a.fdr,
+        fdr: INTERNALS.fdr,
         max_exposure_eta2: INTERNALS.max_exposure_eta2,
         min_arm: INTERNALS.min_arm,
         units: eopts.pseudobulk > 1,
@@ -778,41 +870,39 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
 }
 
 /// `one` over every item, at most `workers` at a time, in item order. Each
-/// worker takes the next item as soon as it is free, so one slow item
-/// holds up only its own worker (no barrier between batches); the work
-/// inside an item still runs on the shared rayon pool.
+/// worker takes the next item as soon as it is free, so one slow item holds
+/// up only its own worker (no barrier between batches). The threads are
+/// shared out: each worker's item runs its parallel steps on a rayon pool of
+/// its own, so no item waits inside another item's work, which a shared pool
+/// would have it steal and finish first.
 fn run_bounded<T: Sync, R: Send>(
     items: &[T],
     workers: usize,
     one: impl Fn(&T) -> Vec<R> + Sync,
 ) -> Vec<R> {
+    let workers = workers.min(items.len());
     if workers <= 1 {
         return items.iter().flat_map(&one).collect();
     }
-    if workers >= rayon::current_num_threads() {
-        // Memory allows a pair on every thread: rayon's work stealing, which
-        // also serves the pairs' own parallel steps without blocking.
-        return items
-            .par_iter()
-            .with_max_len(1)
-            .map(&one)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .flatten()
-            .collect();
-    }
+    let threads = (rayon::current_num_threads() / workers).max(1);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut done: Vec<(usize, Vec<R>)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers.min(items.len()))
+        let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut out = Vec::new();
-                    loop {
-                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(k) else { break };
-                        out.push((k, one(item)));
+                    let work = || {
+                        let mut out = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(item) = items.get(k) else { break };
+                            out.push((k, one(item)));
+                        }
+                        out
+                    };
+                    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+                        Ok(pool) => pool.install(work),
+                        Err(_) => work(),
                     }
-                    out
                 })
             })
             .collect();
@@ -838,9 +928,11 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     };
     let pairs = &prep.pairs;
     let n = tissue.n();
-    // The most abundant distinct ligands: a benchmark on a ligand seen in a
-    // handful of cells would measure sparsity, not the estimator, and three
-    // receptors of one ligand would benchmark one ligand three times.
+    // The most abundant distinct ligands among pairs with receivers to estimate
+    // on: a benchmark on a ligand seen in a handful of cells would measure
+    // sparsity, not the estimator, one without competent receivers would measure
+    // nothing, and three receptors of one ligand would benchmark one ligand three
+    // times.
     let mut order: Vec<usize> = (0..pairs.len()).collect();
     let abundance = |p: &Pair| {
         p.ligand_genes
@@ -849,9 +941,30 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
             .fold(f64::INFINITY, f64::min)
     };
     order.sort_by(|&x, &y| abundance(&pairs[y]).total_cmp(&abundance(&pairs[x])));
+    // Both arms at `min_arm` units, were the competent receivers split evenly.
+    let enough = 2 * eopts.min_arm * eopts.pseudobulk.max(1);
+    let has_receivers = |k: usize| {
+        let detected: Vec<bool> = prep
+            .receptor_counts(&pairs[k])
+            .iter()
+            .map(|&r| r > 0.0)
+            .collect();
+        let competent = exposure::competence(&tissue.identity_bin, &detected, eopts.competence());
+        competent.iter().filter(|&&c| c).count() >= enough
+    };
     let mut seen_ligand: HashSet<&[usize]> = HashSet::default();
-    order.retain(|&k| seen_ligand.insert(&pairs[k].ligand_genes));
-    order.truncate(study.pairs);
+    let order: Vec<usize> = order
+        .into_iter()
+        .filter(|&k| {
+            let ligand = pairs[k].ligand_genes.as_slice();
+            !seen_ligand.contains(ligand) && has_receivers(k) && seen_ligand.insert(ligand)
+        })
+        .take(study.pairs)
+        .collect();
+    anyhow::ensure!(
+        !order.is_empty(),
+        "no pair has {enough} receptor-competent receivers to benchmark on"
+    );
     // The real-gene confounder: the most abundant gene read for the run
     // that no benchmarked pair uses. It is left out of the identity
     // projection with the other signalling and programme genes, so it lies
@@ -905,7 +1018,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         confounder_gene.as_ref().map(|(_, v)| v.as_slice()),
         &gopts.scales,
     );
-    let pb = new_progress_bar((grid.len() * order.len()) as u64).with_message("benchmark runs");
+    let pb = Progress::new(grid.len() * order.len(), "benchmark runs");
     let mut rows = Vec::new();
     for &k in &order {
         let p = &pairs[k];
@@ -938,11 +1051,9 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         // budget allows (each holds about a pair's worth of vectors, and
         // under pseudobulk three copies of the programme's non-zeros).
         let nnz: usize = genes.iter().map(|g| g.len()).sum();
-        let per_run = n * 8 * 48
-            + if eopts.pseudobulk > 1 { nnz * 8 * 3 } else { 0 }
-            + eopts.nuisance.max_propensity_rows * (tissue.design.p() + 8) * 16;
-        let concurrent =
-            (PAIR_MEMORY_BUDGET / per_run.max(1)).clamp(1, rayon::current_num_threads());
+        let per_run = pair_memory(48, tissue, &eopts.nuisance)
+            + if eopts.pseudobulk > 1 { nnz * 8 * 3 } else { 0 };
+        let concurrent = pair_workers(per_run, tissue, &eopts.nuisance);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         rows.extend(run_bounded(&jobs, concurrent, |&(si, scen)| {
             let seed =
@@ -954,11 +1065,11 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
                     Vec::new()
                 }
             };
-            pb.inc(1);
+            pb.inc();
             r
         }));
     }
-    pb.finish_and_clear();
+    pb.finish();
     let mut units = pseudobulk::UnitTally::default();
     for r in &rows {
         units.merge(r.units);

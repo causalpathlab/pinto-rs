@@ -4,7 +4,7 @@
 //! and tested at the same 5% level, one-sided (more co-expression than
 //! chance). They see what the estimator sees: the detected (possibly
 //! shifted) ligand and the receptor, as depth-normalized `log1p(x / sf)`
-//! (detection for E0).
+//! (detection for the co-expression log odds).
 //!
 //! - **Cell-type label permutation** (CellPhoneDB v2, Efremova et al. 2020;
 //!   CellChat, Jin et al. 2021). Cell types are the identity bins coarsened
@@ -29,7 +29,7 @@
 //!   Cang et al. 2023, without its optimal transport): `Σ_contacts L_i R_j`
 //!   over both orientations of every contact. Null: ligand permuted across
 //!   cells within each section, sharing the permutations of Moran's I.
-//! - **E0**, the co-expression log odds ratio `pinto lra` reports
+//! - The co-expression log odds ratio `pinto lra` reports
 //!   ([`super::estimate::coexpression`], Jeffreys), with its normal p.
 //!
 //! Permutation p-values are `(1 + #{null ≥ observed}) / (1 + permutations)`.

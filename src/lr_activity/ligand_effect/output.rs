@@ -92,9 +92,10 @@ impl Verdict {
                 "neither a response nor co-expression at this false discovery rate"
             }
             Verdict::ControlFailed => {
-                "an effect appeared, but so did one in a negative control (receivers \
-                 without the receptor, distant cells that do not touch, or a matched decoy \
-                 programme): likely confounding"
+                "an effect appeared, but the negative controls do not hold: receivers \
+                 without the receptor respond as much, distant cells that do not touch or a \
+                 matched decoy programme respond too, or one of these could not be checked: \
+                 likely confounding"
             }
             Verdict::CelltypeInseparable => {
                 "being exposed to the ligand is nearly the same as having a neighbour of \
@@ -251,6 +252,7 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .est("ring_effect", |(r, _)| r.effects.ring)
         .f("ring_effect_q", |(r, _)| r.ring_effect_q)
         .est("effect_contrast", |(r, _)| r.effects.effect)
+        .f("effect_contrast_q", |(r, _)| r.effect_contrast_q)
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)
@@ -275,7 +277,7 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
 }
 
 /// `{out}.lra.curve.parquet`: the threshold–response curve of each pair's
-/// pooled row, one row per pair and threshold: E2 at exposure threshold
+/// pooled row, one row per pair and threshold: the competent effect at exposure threshold
 /// `tau` (`quantile` of the positive exposures), its SE and df, the
 /// pointwise 95% interval and the simultaneous 95% band over the pair's
 /// thresholds.
@@ -398,13 +400,24 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
 
 // * Run summary
 
+/// Decimals to print a percent change and its interval with: under a percent,
+/// whole percents would read as +0% to +0%.
+pub fn percent_digits(pct: f64, lo: f64, hi: f64) -> usize {
+    if pct.abs().max(lo.abs()).max(hi.abs()) < 1.0 {
+        2
+    } else {
+        0
+    }
+}
+
 /// A percent change and its 95% interval, as the summaries word them.
 pub fn percent_text(pct: f64, lo: f64, hi: f64) -> String {
-    format!("{pct:+.0}% (95% CI {lo:+.0}% to {hi:+.0}%)")
+    let d = percent_digits(pct, lo, hi);
+    format!("{pct:+.d$}% (95% CI {lo:+.d$}% to {hi:+.d$}%)")
 }
 
 /// The few lines a run ends with: verdict counts over the pooled pairs,
-/// the five pairs with the strongest evidence, the table's path, and a
+/// the pairs whose effect survived the controls, the table's path, and a
 /// pointer to `pinto lra-simulate` when this run has no power check.
 pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>) -> String {
     let pooled: Vec<PooledEffect> = rows
@@ -417,8 +430,9 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
         .map(|(v, n)| format!("{n} {}", v.code()))
         .collect();
     let mut out = format!("lra: {} pairs: {}\n", pooled.len(), counts.join(", "));
-    let top: Vec<String> = rank_pooled(&pooled)
-        .into_iter()
+    let survived = rank_pooled(&pooled);
+    let top: Vec<String> = survived
+        .iter()
         .take(5)
         .map(|r| {
             format!(
@@ -431,14 +445,20 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
         })
         .collect();
     if top.is_empty() {
-        out += "  no pair has an estimable effect\n";
+        out += "  no pair's effect survived the controls\n";
     } else {
         out += &format!(
-            "  strongest evidence: {}\n",
+            "  survived the controls: {}\n",
             top[..top.len().min(3)].join("; ")
         );
         if top.len() > 3 {
-            out += &format!("                      {}\n", top[3..].join("; "));
+            out += &format!("                         {}\n", top[3..].join("; "));
+        }
+        if survived.len() > top.len() {
+            out += &format!(
+                "                         and {} more in the table\n",
+                survived.len() - top.len()
+            );
         }
     }
     out += &format!("  table: {path} (verdict_note says why)");
@@ -739,7 +759,7 @@ pub fn comparison(rows: &[SimRow]) -> String {
         "\nComparison at 5%: share of runs rejecting (type I where nothing is planted or the \
          field is shifted, power elsewhere). celltype: cell-type label permutation \
          (CellPhoneDB/CellChat); moran: bivariate Moran's I (SpatialDM); contact: contact \
-         co-expression score (NICHES/COMMOT); coexpr: lra's co-expression log odds (E0).\n  \
+         co-expression score (NICHES/COMMOT); coexpr: lra's co-expression log odds.\n  \
          {:<width$} {:<6} {:>5} ",
         "scenario", "rate", "estim"
     );
@@ -821,7 +841,7 @@ pub struct PairRow {
     pub verdict: Verdict,
     pub note: Box<str>,
     pub warnings: Box<str>,
-    /// The headline E2 (log rate ratio), its SE, p and q.
+    /// The headline competent effect (log rate ratio), its SE, p and q.
     pub effect: f64,
     pub effect_se: f64,
     pub effect_p: f64,
@@ -997,7 +1017,14 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     let mut v: Vec<&PooledEffect> = rows
         .iter()
-        .filter(|r| r.effect.is_finite() && r.effect_p.is_finite())
+        .filter(|r| {
+            r.effect.is_finite()
+                && r.effect_p.is_finite()
+                && matches!(
+                    r.verdict,
+                    Verdict::Supported | Verdict::EffectWithoutCoexpression
+                )
+        })
         .collect();
     v.sort_by(|a, b| a.effect_p.total_cmp(&b.effect_p));
     v

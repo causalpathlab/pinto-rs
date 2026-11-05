@@ -56,10 +56,9 @@ fn lra_methods_parse_and_default_to_contact_effect() {
         );
     }
     assert!(lra(&["--method", "permutation"]).is_err());
-    let a = lra(&["d.zarr", "--coord", "c.csv", "-o", "o", "--fdr", "0.1"]).unwrap();
+    let a = lra(&["d.zarr", "--coord", "c.csv", "-o", "o"]).unwrap();
     assert_eq!(a.input.data_files, vec!["d.zarr".into()]);
     assert_eq!(a.input.coord_files, vec!["c.csv".into()]);
-    assert_eq!(a.fdr, 0.1);
     // The old names still reach the command.
     assert!(Cli::try_parse_from(["pinto", "lr-activity", "-f", "r.pinto.json"]).is_ok());
 }
@@ -77,9 +76,7 @@ fn removed_lra_flags_are_refused_with_their_replacement() {
         .unwrap_err()
         .to_string();
     assert!(msg.contains("--method coexpression-scores"), "{msg}");
-    assert!(
-        check_removed_lra_flags(&strings(&["pinto", "lra", "-f", "r", "--fdr", "0.1"])).is_ok()
-    );
+    assert!(check_removed_lra_flags(&strings(&["pinto", "lra", "-f", "r", "--seed", "1"])).is_ok());
     // Other commands are not checked.
     assert!(check_removed_lra_flags(&strings(&["pinto", "lc", "--lc-prefix", "3"])).is_ok());
 }

@@ -23,10 +23,14 @@ fn run_lra_builds_pinto_lras_command_line() {
         "method": "coexpression-test",
         "lr_pairs": "pairs.tsv",
         "targets": ["a.gmt", "b.tsv"],
-        "fdr": 0.1,
         "species": "mouse",
     }));
-    let argv = lra_argv(&a, LraMethod::CoexpressionTest, "/p/r.pinto.json", "/p/out");
+    let argv = lra_argv(
+        &a,
+        LraMethod::CoexpressionTest,
+        Some("/p/r.pinto.json"),
+        "/p/out",
+    );
     let pairs = shown_path(Path::new("pairs.tsv"));
     let targets = format!(
         "{},{}",
@@ -45,8 +49,6 @@ fn run_lra_builds_pinto_lras_command_line() {
         &pairs,
         "--targets",
         &targets,
-        "--fdr",
-        "0.1",
         "--species",
         "mouse",
     ]
@@ -58,7 +60,7 @@ fn run_lra_builds_pinto_lras_command_line() {
     let bare = lra_argv(
         &lra_args(json!({"run": "r"})),
         LraMethod::ContactEffect,
-        "r.pinto.json",
+        Some("r.pinto.json"),
         "o",
     );
     assert_eq!(bare, ["lra", "--from", "r.pinto.json", "-o", "o"]);
@@ -66,7 +68,7 @@ fn run_lra_builds_pinto_lras_command_line() {
     let bad = lra_argv(
         &lra_args(json!({"run": "r", "species": "fish"})),
         LraMethod::ContactEffect,
-        "r",
+        Some("r"),
         "o",
     );
     assert!(checked(&cli(), &bad)
@@ -78,7 +80,12 @@ fn run_lra_builds_pinto_lras_command_line() {
 #[test]
 fn run_lra_passes_only_and_writes_the_subset_table() {
     let a = lra_args(json!({"run": "r", "only": ["SPP1", "TGFB1:TGFBR1_TGFBR2"]}));
-    let argv = lra_argv(&a, LraMethod::ContactEffect, "/p/r.pinto.json", "/p/out");
+    let argv = lra_argv(
+        &a,
+        LraMethod::ContactEffect,
+        Some("/p/r.pinto.json"),
+        "/p/out",
+    );
     assert_eq!(
         argv[argv.len() - 2..],
         ["--only", "SPP1,TGFB1:TGFBR1_TGFBR2"]
@@ -121,7 +128,7 @@ fn a_study_becomes_the_file_study_reads() {
     assert_eq!(Study::from_json(&text).unwrap().reps, 2);
     let path = study_path("/p/out");
     assert_eq!(path, Path::new("/p/out.study.json"));
-    let argv = lra_simulate_argv(&a, "/p/r.pinto.json", "/p/out", Some(&path));
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out", Some(&path));
     assert_eq!(
         argv,
         [
@@ -165,10 +172,80 @@ fn unknown_arguments_are_refused() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("unknown field `reps`"), "{e}");
+    let none = crate::mcp::parse::<LraToolArgs>(json!({})).unwrap();
     assert!(
-        crate::mcp::parse::<LraToolArgs>(json!({})).is_err(),
-        "run is required"
+        none.input().run().is_err(),
+        "run or data files are required"
     );
+    let only_data: LraToolArgs = crate::mcp::parse(json!({"data_files": ["d.h5"]})).unwrap();
+    assert!(
+        only_data.input().run().is_err(),
+        "data files need coordinates"
+    );
+}
+
+#[test]
+fn run_lra_refuses_what_a_run_or_data_files_would_ignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("r.pinto.json");
+    std::fs::write(&run, "{}").unwrap();
+    let run = run.to_str().unwrap();
+    for ignored in [
+        json!({"run": run, "coord_files": ["c.csv"]}),
+        json!({"run": run, "batch_files": ["b.txt"]}),
+        json!({"run": run, "knn_spatial": 7}),
+    ] {
+        let e = lra_args(ignored).input().run().unwrap_err().to_string();
+        assert!(e.contains("read directly"), "{e}");
+    }
+    // The co-expression methods need a run's link communities.
+    assert!(method_can_read(LraMethod::ContactEffect, None).is_ok());
+    assert!(method_can_read(LraMethod::CoexpressionTest, Some(run)).is_ok());
+    let e = method_can_read(LraMethod::CoexpressionScores, None).unwrap_err();
+    assert!(e.to_string().contains("give run"), "{e}");
+    // The call a reply names reads what this one read.
+    let a = lra_args(json!({"run": run, "data_files": ["new.h5"]}));
+    let args = a.input().args(Some(run));
+    assert_eq!(args["run"], run);
+    assert_eq!(args["data_files"], json!(["new.h5"]));
+}
+
+#[test]
+fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
+    let a = lra_args(json!({
+        "data_files": ["d1.h5", "d2.h5"],
+        "coord_files": ["c1.csv", "c2.csv"],
+        "batch_files": ["b1.txt", "b2.txt"],
+        "knn_spatial": 7,
+        "seed": 3,
+        "n_permutations": 20,
+        "json_fwer_threshold": 0.1,
+        "min_gene_count": 5.0,
+    }));
+    assert_eq!(a.input().run().unwrap(), None);
+    let argv = lra_argv(&a, LraMethod::ContactEffect, None, "o");
+    assert!(!argv.iter().any(|w| w == "--from"), "{argv:?}");
+    for flag in [
+        "--coord",
+        "--batch-files",
+        "--knn-spatial",
+        "--seed",
+        "--n-permutations",
+        "--json-fwer-threshold",
+        "--min-gene-count",
+    ] {
+        assert!(argv.iter().any(|w| w == flag), "{flag}: {argv:?}");
+    }
+    checked(&cli(), &argv).unwrap();
+    let s: LraSimulateToolArgs = crate::mcp::parse(json!({
+        "data_files": ["d.h5"],
+        "coord_files": ["c.csv"],
+        "seed": 3,
+    }))
+    .unwrap();
+    let argv = lra_simulate_argv(&s, None, "o", None);
+    assert!(argv.iter().any(|w| w == "--seed"), "{argv:?}");
+    checked(&cli(), &argv).unwrap();
 }
 
 // * Replies
@@ -235,16 +312,14 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
         Verdict::ALL.len(),
         "every verdict, none or not"
     );
-    // Estimable pairs by p; the one without an effect is left out.
+    // Only pairs whose effect survived the controls.
     let top = v["top"].as_array().unwrap();
-    assert_eq!(top.len(), 2);
+    assert_eq!(top.len(), 1);
     assert_eq!(top[0]["ligand"], "TGFB1");
     assert_eq!(top[0]["receptor"], "TGFBR1");
     assert_eq!(top[0]["verdict"], "supported");
     assert_eq!(top[0]["change"], "+35% (95% CI +20% to +51%)");
     assert_eq!(top[0]["q"], 3.21e-5);
-    assert_eq!(top[1]["ligand"], "WNT5A");
-    assert_eq!(top[1]["q"], 0.61);
 }
 
 fn run(effect: f64, alpha: f64, rejects: [bool; 6], estimable: bool) -> SimRun {

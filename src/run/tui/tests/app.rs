@@ -879,15 +879,15 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     // A run's prefix is taken for its manifest.
     set(&mut a, "from", "res/run");
     set(&mut a, "lr-pairs", "pairs.tsv");
-    set(&mut a, "only", "SPP1:CD44, TGFB1");
-    set(&mut a, "fdr", "0.1");
+    set(&mut a, "only", "L1:R1, L2");
+    set(&mut a, "seed", "7");
     // A value clap refuses is what the plan says, not a missing manifest.
-    set(&mut a, "fdr", "lots");
+    set(&mut a, "seed", "lots");
     let p = &a.plan()[0];
     let why = p.problem.as_deref().unwrap();
     assert!(why.contains("lots") && !why.contains("manifest"), "{why}");
-    assert_eq!(p.blamed.as_deref(), Some("fdr"));
-    set(&mut a, "fdr", "0.1");
+    assert_eq!(p.blamed.as_deref(), Some("seed"));
+    set(&mut a, "seed", "7");
     let planned = a.plan();
     let p = &planned[0];
     assert!(p.problem.is_none(), "{:?}", p.problem);
@@ -901,18 +901,15 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
             "lra",
             "--from",
             "../res/run.pinto.json",
+            "--seed",
+            "7",
             "--lr-pairs",
             "../pairs.tsv",
             "--only",
-            "SPP1:CD44,TGFB1",
-            "--fdr",
-            "0.1"
+            "L1:R1,L2"
         ]
     );
-    assert_eq!(
-        j.manifest(),
-        j.dir.join("lra.lra.only-spp1-cd44+tgfb1.parquet")
-    );
+    assert_eq!(j.manifest(), j.dir.join("lra.lra.only-l1-r1+l2.parquet"));
     assert_eq!(j.script(), j.dir.join("lra.cmd.sh"));
     assert_eq!(
         script::normalize(j.view()),
@@ -924,7 +921,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     // The script refuses to run over the table, not over a manifest.
     let text = script::text(&j.argv, &j.out, &j.done_name(), "lra.cmd.sh");
     assert!(
-        text.contains("if [ -f lra.lra.only-spp1-cd44+tgfb1.parquet ]"),
+        text.contains("if [ -f lra.lra.only-l1-r1+l2.parquet ]"),
         "{text}"
     );
     assert!(text.contains("bash lra.cmd.sh"), "{text}");

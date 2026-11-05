@@ -170,6 +170,7 @@ pub fn compute_edge_scores(input: &EdgeScoresInput<'_>) -> (Vec<EdgeScoreRow>, u
 
     let mut rows: Vec<EdgeScoreRow> = Vec::new();
     let mut n_straddling = 0usize;
+    let pb = new_progress_bar(strata.n_strata() as u64).with_message("edge-score strata");
     for s in 0..strata.n_strata() {
         let community = strata.community(s);
 
@@ -279,7 +280,9 @@ pub fn compute_edge_scores(input: &EdgeScoresInput<'_>) -> (Vec<EdgeScoreRow>, u
                 .collect();
             rows.extend(batch_rows);
         }
+        pb.inc(1);
     }
+    pb.finish_and_clear();
     (rows, n_straddling)
 }
 

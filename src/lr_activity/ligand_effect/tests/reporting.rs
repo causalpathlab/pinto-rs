@@ -157,7 +157,7 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
         coexpr_se: 0.1,
         crude: 0.0,
         effects: ScopeEffects {
-            effect: nan,
+            effect: est((z - z3) * 0.05, 0.05),
             competent: est(z * 0.05, 0.05),
             incompetent: est(z3 * 0.05, 0.05),
             ring: est(z5 * 0.05, 0.05),
@@ -177,6 +177,7 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
         coexpr_p: f64::NAN,
         coexpr_q: f64::NAN,
         effect_incompetent_q: f64::NAN,
+        effect_contrast_q: f64::NAN,
         ring_effect_q: f64::NAN,
         n_pairs_same_ligand: 0,
         ligand_q: f64::NAN,
@@ -297,4 +298,86 @@ fn exposure_eta2_tracks_neighbour_identity() {
 
     // A constant exposure has no variance to explain.
     assert!(eta_squared(&nb, &vec![1.0; n], &all).is_nan());
+}
+
+/// The controls are corrected among the pairs with a significant effect:
+/// the others show none and warn of none, and what they show cannot move a
+/// significant pair's control.
+#[test]
+fn controls_are_corrected_among_significant_effects() {
+    let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_incompetent_q;
+    // No significant effect: no control is read, however strong.
+    let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 10.0, 0.1)];
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0).is_nan() && rows[0].ring_effect_q.is_nan());
+    assert_eq!(rows[0].verdict.code(), "no_evidence");
+    assert!(
+        !rows[0].warnings.contains("respond"),
+        "{}",
+        rows[0].warnings
+    );
+
+    // Alone among the significant, its control's q is its p: unrelated pairs,
+    // with controls strong or weak, change neither it nor its verdict.
+    let alone = |others: &[f64]| {
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1)];
+        for (k, &z3) in others.iter().enumerate() {
+            rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.0, 0.1));
+        }
+        report(&mut rows, &ReportOpts::default());
+        (e3_q(&rows, 0), rows[0].verdict.code())
+    };
+    let (q, verdict) = alone(&[]);
+    assert_eq!(verdict, "control_failed");
+    assert_eq!((q, verdict), alone(&[10.0; 20]));
+    assert_eq!((q, verdict), alone(&[0.0; 20]));
+
+    // A significant effect whose control has no estimate has not held.
+    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
+    rows[0].effects.incompetent = Estimate::nan(10, 1);
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0).is_nan());
+    assert_eq!(rows[0].verdict.code(), "control_failed");
+
+    // Each section is its own family.
+    let mut rows = vec![
+        row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1),
+        row("s1", "L1", 0.0, 10.0, 2.5, 0.0, 0.1),
+    ];
+    report(&mut rows, &ReportOpts::default());
+    assert!(e3_q(&rows, 0) < 0.05 && e3_q(&rows, 1).is_nan());
+}
+
+/// Beside a significant effect the conservative verdict: the effect must
+/// exceed the receptor-negative one, the same way, and a control that could
+/// not run has not held,
+/// but for a decoy where the pool matched none.
+#[test]
+fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
+    let judged = |change: &dyn Fn(&mut EffectRow)| {
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
+        change(&mut rows[0]);
+        report(&mut rows, &ReportOpts::default());
+        (rows[0].verdict.code(), rows[0].warnings.clone())
+    };
+    assert_eq!(judged(&|_| {}).0, "supported");
+
+    // Receptor-negative receivers are quiet, but the contrast does not show
+    // the effect exceeding theirs.
+    let (v, w) = judged(&|r| r.effects.effect = est(0.05, 0.05));
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("does not exceed"), "{w}");
+    // Significant, the wrong way: the receptor-negative effect is the larger.
+    let (v, _) = judged(&|r| r.effects.effect = est(-0.5, 0.05));
+    assert_eq!(v, "control_failed");
+
+    let (v, w) = judged(&|r| r.effects.incompetent = Estimate::nan(10, 1));
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("receptor-negative receivers could not"), "{w}");
+    let (v, w) = judged(&|r| r.effects.ring = Estimate::nan(10, 1));
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("distant senders could not"), "{w}");
+    let (v, w) = judged(&|r| r.n_decoy_genes = 5);
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("decoy programme could not"), "{w}");
 }

@@ -217,3 +217,40 @@ fn a_group_with_one_arm_is_not_estimable() {
     assert!(e.theta.is_nan());
     assert!(crude_difference(&y, &t, &all_rows(500)).is_nan());
 }
+
+/// The Hessian kernel against the plain sum.
+#[test]
+fn weighted_gram_is_the_plain_sum() {
+    use crate::lr_activity::ligand_effect::regression::weighted_gram;
+    let mut rng = SmallRng::seed_from_u64(3);
+    let (m, d) = (37, 9);
+    let rows: Vec<f64> = (0..m * d)
+        .map(|_| StandardNormal.sample(&mut rng))
+        .collect();
+    let w: Vec<f64> = (0..m).map(|_| rng.random::<f64>()).collect();
+    let h = weighted_gram(&rows, d, &w);
+    for a in 0..d {
+        for b in 0..d {
+            let plain: f64 = (0..m)
+                .map(|r| w[r] * rows[r * d + a] * rows[r * d + b])
+                .sum();
+            assert!((h[(a, b)] - plain).abs() < 1e-12, "({a}, {b})");
+        }
+    }
+}
+
+/// A fit from the marginal log-odds and one from a distant start reach the
+/// one optimum of the penalized likelihood.
+#[test]
+fn logistic_ridge_reaches_one_optimum_from_any_start() {
+    use crate::lr_activity::ligand_effect::regression::logistic_ridge;
+    let w = world(900, 5);
+    let (t, _) = draw(&w, 1.5, 0.0, 0.0, 0.0, 6);
+    let tf: Vec<f64> = t.iter().map(|&t| t as u8 as f64).collect();
+    let rows: Vec<usize> = (0..tf.len()).collect();
+    let x = &w.design.x;
+    let cold = logistic_ridge(x, 2, &[], &tf, &rows, 1.0, None).unwrap();
+    let far = nalgebra::DVector::from_vec(vec![3.0, -4.0]);
+    let warm = logistic_ridge(x, 2, &[], &tf, &rows, 1.0, Some(&far)).unwrap();
+    assert!((cold - warm).amax() < 1e-6);
+}
