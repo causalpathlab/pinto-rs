@@ -400,14 +400,19 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
 
 // * Run summary
 
-/// A percent change and its 95% interval, as the summaries word them.
-pub fn percent_text(pct: f64, lo: f64, hi: f64) -> String {
-    // Under a percent, whole percents would read as +0% to +0%.
-    let d = if pct.abs().max(lo.abs()).max(hi.abs()) < 1.0 {
+/// Decimals to print a percent change and its interval with: under a percent,
+/// whole percents would read as +0% to +0%.
+pub fn percent_digits(pct: f64, lo: f64, hi: f64) -> usize {
+    if pct.abs().max(lo.abs()).max(hi.abs()) < 1.0 {
         2
     } else {
         0
-    };
+    }
+}
+
+/// A percent change and its 95% interval, as the summaries word them.
+pub fn percent_text(pct: f64, lo: f64, hi: f64) -> String {
+    let d = percent_digits(pct, lo, hi);
     format!("{pct:+.d$}% (95% CI {lo:+.d$}% to {hi:+.d$}%)")
 }
 

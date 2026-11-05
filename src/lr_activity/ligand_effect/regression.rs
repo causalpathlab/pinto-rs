@@ -53,7 +53,7 @@ pub(super) fn fold_products(
     fold: &[u8],
     k: usize,
 ) -> Vec<FoldProducts> {
-    use super::overlap::{gather_rows, ROW_BLOCK};
+    use super::overlap::ROW_BLOCK;
     debug_assert!(p <= x.ncols());
     let q = cols.len();
     let d = p + q;
@@ -65,15 +65,10 @@ pub(super) fn fold_products(
         .par_chunks(8192)
         .map(|rows| {
             let mut sums = empty();
-            let mut zi = vec![0.0; d];
             let mut buf = Vec::new();
             for block in rows.chunks(ROW_BLOCK) {
-                gather_rows(x, p, block, &mut buf);
-                for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
-                    zi[..p].copy_from_slice(&xi[..p]);
-                    for (c, col) in cols.iter().enumerate() {
-                        zi[p + c] = col[i];
-                    }
+                gather_design_rows(x, p, cols, block, &mut buf);
+                for (zi, &i) in buf.chunks_exact(d.max(1)).zip(block) {
                     let (a, b) = &mut sums[fold[i] as usize];
                     let yi = y[i];
                     for r in 0..d {
@@ -82,7 +77,7 @@ pub(super) fn fold_products(
                     for c in 0..q {
                         let zc = zi[p + c];
                         let out = a.column_mut(c);
-                        for (o, &z) in out.into_iter().zip(&zi) {
+                        for (o, &z) in out.into_iter().zip(zi) {
                             *o += z * zc;
                         }
                     }
@@ -247,23 +242,31 @@ impl RowPass {
     }
 
     fn at(&mut self, z: &[f64], t: &[f64], beta: &[f64], ridge: f64) {
-        let d = beta.len();
         self.gradient.fill(0.0);
-        #[allow(unused_mut)]
-        let mut ll = None;
-        #[cfg(target_arch = "x86_64")]
-        if std::arch::is_x86_feature_detected!("avx2") {
-            // SAFETY: the check above found the feature the function enables.
-            ll = Some(unsafe { row_pass_avx2(z, t, beta, &mut self.gradient, &mut self.weights) });
-        }
-        let ll = ll.unwrap_or_else(|| row_pass(z, t, beta, &mut self.gradient, &mut self.weights));
+        let ll = row_pass_best(z, t, beta, &mut self.gradient, &mut self.weights);
         let mut penalty = 0.0;
-        for (b, g) in beta.iter().zip(self.gradient.iter_mut()).take(d).skip(1) {
+        for (b, g) in beta.iter().zip(self.gradient.iter_mut()).skip(1) {
             penalty += b * b;
             *g -= ridge * b;
         }
         self.objective = ll - 0.5 * ridge * penalty;
     }
+}
+
+/// [`row_pass`] on the widest vectors the machine has.
+fn row_pass_best(
+    z: &[f64],
+    t: &[f64],
+    beta: &[f64],
+    gradient: &mut [f64],
+    weights: &mut [f64],
+) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the check above found the feature the function enables.
+        return unsafe { row_pass_avx2(z, t, beta, gradient, weights) };
+    }
+    row_pass(z, t, beta, gradient, weights)
 }
 
 /// The log-likelihood, adding each row's score to `gradient` and writing its
@@ -439,14 +442,11 @@ fn accumulate_gram_avx2(rows: &[f64], d: usize, w: &[f64], h: &mut [f64]) {
     accumulate_gram(rows, d, w, h);
 }
 
-/// The symmetric matrix of the upper triangle of `h`, row-major.
-fn mirrored(mut h: Vec<f64>, d: usize) -> DMatrix<f64> {
-    for a in 0..d {
-        for b in 0..a {
-            h[a * d + b] = h[b * d + a];
-        }
-    }
-    DMatrix::from_vec(d, d, h)
+/// The symmetric matrix of `h`, of which only one triangle was accumulated.
+fn mirrored(h: Vec<f64>, d: usize) -> DMatrix<f64> {
+    let mut m = DMatrix::from_vec(d, d, h);
+    m.fill_upper_triangle_with_lower_triangle();
+    m
 }
 
 /// `log(1 + e^x)` without overflow.

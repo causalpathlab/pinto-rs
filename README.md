@@ -122,7 +122,7 @@ A significant effect then has to clear every control, each corrected among the
 pairs with a significant effect (so their q is empty for the rest): the effect must exceed the one in receptor-negative receivers
 (`effect_contrast_q`, same direction), and those receivers, distant cells and a
 matched decoy must show none. A control that could not run does not pass, except
-a decoy where none could be matched.
+a decoy where none exists: no match in the pool, or a section's row, which has none.
 
 ### `lra-simulate`: power and calibration check
 

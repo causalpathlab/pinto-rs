@@ -231,5 +231,5 @@ fn the_guard_counts_units_not_their_members() {
     // The skip reads the same count: the fit of that arm is not run.
     let every = vec![vec![true; u.lead.len()]];
     let reads = Reads::of(Rows::units(&u), &u.exposure, &every, &o);
-    assert!(!reads.e2);
+    assert!(!reads.competent);
 }

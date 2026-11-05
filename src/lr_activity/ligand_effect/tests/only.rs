@@ -228,12 +228,3 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
         "{text}"
     );
 }
-
-/// `/proc/meminfo` reads as bytes; a file without the line says nothing.
-#[test]
-fn mem_available_reads_kilobytes() {
-    use crate::lr_activity::ligand_effect::parse_mem_available;
-    let info = "MemTotal:  1000 kB\nMemAvailable:  512 kB\nCached: 3 kB\n";
-    assert_eq!(parse_mem_available(info), Some(512 * 1024));
-    assert_eq!(parse_mem_available("MemTotal: 1000 kB\n"), None);
-}

@@ -1237,13 +1237,13 @@ pub fn simulate(
             ..sens
         };
         let levels = std::slice::from_ref(&compr);
-        let fits = DrawFits::new(rows, ex, levels, opts, &mut starts)?.with_controls(
+        let fits = DrawFits::new(rows, ex, levels, opts, &mut starts.main)?.with_controls(
             rows,
             sens.steps,
             opts,
             &mut starts,
         )?;
-        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.e2;
+        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.competent;
         let eff = effects_on(rows, &fits, r, sens, opts)?;
         let e = eff.levels[0].scopes[0];
         let weighted_truth = {

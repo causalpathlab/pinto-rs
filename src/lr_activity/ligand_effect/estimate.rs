@@ -668,20 +668,14 @@ pub enum Fit {
     Ring,
 }
 
-/// The units (receivers, or pseudobulk units) of the pooled scope of `rows`
-/// where `keep` holds, and how many of them `t` exposes: the counts the arm
-/// guard reads of the subset ([`subset_estimate`]). Every other scope is a
-/// subset of the pooled one, so neither of its arms is larger.
-fn pooled_arms(rows: Rows<'_>, t: &[bool], keep: impl Fn(usize) -> bool) -> (usize, usize) {
-    let (mut n, mut treated) = (0usize, 0usize);
-    for &i in &rows.scope_rows[0] {
-        let i = i as usize;
-        if keep(i) {
-            n += 1;
-            treated += t[i] as usize;
-        }
-    }
-    (n, treated)
+/// Whether the competent ones (`level`) among the rows `inside` leave both arms
+/// of `t` at `min_arm`: the counts the arm guard reads of the subset
+/// ([`subset_estimate`]). Every other scope is a subset of the pooled one, so
+/// neither of its arms is larger.
+fn arms_open(inside: &[u32], t: &[bool], level: &[bool], opts: &EffectOpts) -> bool {
+    let competent = inside.iter().filter(|&&i| level[i as usize]);
+    let (n, treated) = competent.fold((0, 0), |(n, x), &i| (n + 1, x + t[i as usize] as usize));
+    !opts.thin_arm(n, treated)
 }
 
 /// What the guard reports of a subset it rejects for a thin arm, without
@@ -695,42 +689,33 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
 }
 
 /// Which of a draw's fits serve a subset with both arms at `min_arm`
-/// ([`thin_arm`]) on the pooled rows: the main fit's competent subsets (the
-/// competent units at some competence threshold; also what the no-spill,
-/// step, curve and decoy fits read), its incompetent subsets (the incompetent ones)
-/// and the ring fit's; without the first neither of the others is read, and
-/// a draw that reads none has the same estimates under every seed
-/// ([`super::pseudobulk::stop_drawing`]). A fit none of whose subsets is read is skipped,
-/// propensity and all, and its estimands are what the guard would make of
-/// them, not estimable with their counts ([`thin_subset`]): the units of an
-/// arm are fixed by the strata whatever the seed ([`pseudobulk::partition`]),
-/// so the skip is the guard read before the fit, not a second rule.
+/// ([`thin_arm`]) on the pooled rows. The main fit is read for the effect in
+/// competent receivers, at the middle competence threshold: a pair resting on a
+/// looser threshold alone has no estimate, whatever those thresholds show. The
+/// no-spill, step, curve and decoy fits read the same subset. The ring fit is
+/// read beside it, when one of its own subsets is open.
 ///
-/// The effect in competent receivers is read only when the middle competence
-/// threshold leaves both arms open: a pair resting on a looser threshold alone
-/// has no estimate, whatever its looser thresholds show. The receptor-negative
-/// and distant-cell controls have nothing to check without it, so they are not
-/// read either, and neither are the curve's other thresholds ([`effects`]).
+/// A fit not read is skipped, propensity and all, and its estimands are what
+/// the guard would make of them, not estimable with their counts
+/// ([`thin_subset`]): the units of an arm are fixed by the strata whatever the
+/// seed ([`pseudobulk::partition`]), so the skip is the guard read before the
+/// fit, not a second rule. A draw that reads nothing has the same estimates
+/// under every seed ([`super::pseudobulk::stop_drawing`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
-    pub e2: bool,
-    pub e3: bool,
+    pub competent: bool,
     pub ring: bool,
 }
 
 impl Reads {
     pub fn of(rows: Rows<'_>, x: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Self {
-        let open = |t: &[bool], keep: &dyn Fn(usize) -> bool| {
-            let (n, treated) = pooled_arms(rows, t, keep);
-            !opts.thin_arm(n, treated)
-        };
-        let e2 = levels
+        let pooled = &rows.scope_rows[0];
+        let competent = levels
             .get(levels.len() / 2)
-            .is_some_and(|c| open(&x.t, &|i| c[i]));
+            .is_some_and(|c| arms_open(pooled, &x.t, c, opts));
         Self {
-            e2,
-            e3: e2 && levels.iter().any(|c| open(&x.t, &|i| !c[i])),
-            ring: e2 && levels.iter().any(|c| open(&x.t_ring, &|i| c[i])),
+            competent,
+            ring: competent && levels.iter().any(|c| arms_open(pooled, &x.t_ring, c, opts)),
         }
     }
 }
@@ -771,7 +756,7 @@ pub struct DrawFits<'a> {
 /// by model ([`FoldStarts`]).
 #[derive(Clone, Debug, Default)]
 pub struct Starts {
-    main: FoldStarts,
+    pub(super) main: FoldStarts,
     ring: FoldStarts,
     steps: Vec<FoldStarts>,
 }
@@ -788,7 +773,7 @@ impl<'a> DrawFits<'a> {
         exposure: &'a Exposure,
         levels: &'a [Vec<bool>],
         opts: &EffectOpts,
-        starts: &mut Starts,
+        starts: &mut FoldStarts,
     ) -> anyhow::Result<Self> {
         let modifiers: Vec<Vec<f64>> = levels.iter().map(|c| indicator(c)).collect();
         let extra = [&exposure.own, &exposure.niche]
@@ -807,7 +792,7 @@ impl<'a> DrawFits<'a> {
             main: None,
             controls: None,
         };
-        if fits.runs(fits.reads.e2) {
+        if fits.runs(fits.reads.competent) {
             let extra = fits.extra(Fit::Main);
             let main = propensity(
                 rows.design.view(),
@@ -815,7 +800,7 @@ impl<'a> DrawFits<'a> {
                 &exposure.t,
                 &extra,
                 &opts.nuisance,
-                &mut starts.main,
+                starts,
             )?;
             fits.main = Some(main);
         }
@@ -847,7 +832,7 @@ impl<'a> DrawFits<'a> {
         } else {
             None
         };
-        let steps = if steps && self.runs(self.reads.e2) {
+        let steps = if steps && self.runs(self.reads.competent) {
             let extra = self.extra(Fit::Main);
             // A step's first draw starts from the main fit, the model it nests in.
             if starts.steps.is_empty() {
@@ -858,7 +843,6 @@ impl<'a> DrawFits<'a> {
                     .map(|s| starts.main.nested(p, s.design.p()))
                     .collect();
             }
-            starts.steps.resize(rows.steps.len(), FoldStarts::default());
             Some(timing::time(timing::STEPS, || {
                 rows.steps
                     .iter()
@@ -993,7 +977,7 @@ pub struct ScopeEffects {
     /// Share of the scope's competent rows (units, on pseudobulk) whose
     /// overlap weight is below [`NEAR_DETERMINED_H`] in the main fit; NaN
     /// without competent rows or without the main fit, which is skipped
-    /// when every competent and incompetent subset leaves an arm thin ([`Reads`]), on every
+    /// when the competent subset leaves an arm thin ([`Reads`]), on every
     /// path alike.
     pub near_determined: f64,
 }
@@ -1031,7 +1015,7 @@ impl ScopeEffects {
 }
 
 /// One competence threshold's estimands per scope, and the cluster sums of
-/// its pooled the competent effect's linearization ψ (zeros when not estimable).
+/// its pooled competent effect's linearization ψ (zeros when not estimable).
 pub struct LevelEffects {
     pub scopes: Vec<ScopeEffects>,
     pub pooled_sums: Vec<f64>,
@@ -1100,15 +1084,15 @@ pub fn effects_on(
     };
     let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
         Ok((
-            fit(fits.runs(reads.e2), Fit::Main, None, design)?,
+            fit(fits.runs(reads.competent), Fit::Main, None, design)?,
             fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
         ))
     })?;
-    let on_e2 = fits.runs(reads.e2);
+    let runs_competent = fits.runs(reads.competent);
     let nospill = time(NOSPILL, || {
-        fit(sens.nospill && on_e2, Fit::NoSpill, None, design)
+        fit(sens.nospill && runs_competent, Fit::NoSpill, None, design)
     })?;
-    let steps = if sens.steps && on_e2 {
+    let steps = if sens.steps && runs_competent {
         time(STEPS, || {
             rows.steps
                 .iter()
@@ -1130,23 +1114,13 @@ pub fn effects_on(
         Vec::new()
     };
     let (t, t_ring) = (&fits.exposure.t, &fits.exposure.t_ring);
-    // A subset's estimate from `terms`, or the guard's verdict on it when
-    // the fit was skipped.
-    let est = |terms: Option<&OverlapTerms>, t: &[bool], sub: &[u32]| match terms {
-        Some(terms) => opts.guard(subset_estimate(terms, t, sub, cf)),
-        None => thin_subset(t, sub, cf),
-    };
     // Per scope, whether the competent effect has an estimate: the middle
     // threshold ([`Reads`]).
+    let middle = &fits.levels[fits.levels.len() / 2];
     let headline: Vec<bool> = rows
         .scope_rows
         .iter()
-        .map(|inside| {
-            let middle = &fits.levels[fits.levels.len() / 2];
-            let comp = inside.iter().filter(|&&i| middle[i as usize]);
-            let (n, treated) = comp.fold((0, 0), |(n, x), &i| (n + 1, x + t[i as usize] as usize));
-            !opts.thin_arm(n, treated)
-        })
+        .map(|inside| arms_open(inside, t, middle, opts))
         .collect();
     let levels = fits
         .levels
@@ -1161,15 +1135,23 @@ pub fn effects_on(
                     let (comp, incomp): (Vec<u32>, Vec<u32>) =
                         inside.iter().partition(|&&i| competent[i as usize]);
                     let open = headline[k];
-                    let (e2, s2) = est(main.as_ref().filter(|_| open), t, &comp);
-                    let (e3, s3) = est(main.as_ref().filter(|_| open && reads.e3), t, &incomp);
-                    let e1 = difference(&e2, &s2, &e3, &s3);
-                    let (e5, _) = est(ring.as_ref().filter(|_| open && reads.ring), t_ring, &comp);
-                    let nan = Estimate::nan(e2.n, e2.n_treated);
+                    // A subset's estimate from `terms`, or the guard's verdict
+                    // on it when the fit was skipped or the scope has no
+                    // headline.
+                    let est = |terms: Option<&OverlapTerms>, t: &[bool], sub: &[u32]| match terms {
+                        Some(terms) if open => opts.guard(subset_estimate(terms, t, sub, cf)),
+                        _ => thin_subset(t, sub, cf),
+                    };
+                    let (on_competent, sums) = est(main.as_ref(), t, &comp);
+                    let (on_incompetent, incompetent_sums) = est(main.as_ref(), t, &incomp);
+                    let contrast =
+                        difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
+                    let (on_ring, _) = est(ring.as_ref(), t_ring, &comp);
+                    let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
                     let mut step_est = [nan; 3];
-                    let mut e2_nospill = nan;
+                    let mut without_spill = nan;
                     let near_determined = match &main {
-                        Some(m) if reads.e2 && !comp.is_empty() => {
+                        Some(m) if open && !comp.is_empty() => {
                             let near = comp
                                 .iter()
                                 .filter(|&&i| m.h[i as usize] < NEAR_DETERMINED_H)
@@ -1180,22 +1162,22 @@ pub fn effects_on(
                     };
                     if k == 0 {
                         if sens.nospill {
-                            e2_nospill = est(nospill.as_ref().filter(|_| open), t, &comp).0;
+                            without_spill = est(nospill.as_ref(), t, &comp).0;
                         }
                         if sens.steps {
                             for (j, e) in step_est.iter_mut().enumerate() {
-                                *e = est(steps.get(j).filter(|_| open), t, &comp).0;
+                                *e = est(steps.get(j), t, &comp).0;
                             }
                         }
-                        pooled_sums = s2;
+                        pooled_sums = sums;
                     }
                     ScopeEffects {
-                        effect: e1,
-                        competent: e2,
-                        incompetent: e3,
-                        ring: e5,
+                        effect: contrast,
+                        competent: on_competent,
+                        incompetent: on_incompetent,
+                        ring: on_ring,
                         steps: step_est,
-                        nospill: e2_nospill,
+                        nospill: without_spill,
                         near_determined,
                     }
                 })
@@ -1207,39 +1189,35 @@ pub fn effects_on(
         })
         .collect();
     let h = match main {
-        Some(m) if reads.e2 => m.h,
+        Some(m) if reads.competent => m.h,
         _ => Vec::new(),
     };
     Ok(Effects { levels, h })
 }
 
-/// Pooled the competent effect of the response `r` at competence threshold `k` with the
-/// cluster sums of its ψ, from one main fit carrying every threshold
-/// ([`fit_main`]), and whether the fit ran: it is skipped when the subset
-/// leaves an arm thin ([`Reads`]). For the curve and the decoy.
+/// The pooled competent effect of the response `r` at the middle threshold with
+/// the cluster sums of its ψ, from one main fit carrying every threshold
+/// ([`fit_main`]); skipped when the subset leaves an arm thin ([`Reads`]). For
+/// the curve and the decoy.
 pub fn competent_effect(
     rows: Rows<'_>,
     fits: &DrawFits<'_>,
     r: &Response,
-    k: usize,
     opts: &EffectOpts,
-) -> anyhow::Result<(Estimate, Vec<f64>, bool)> {
+) -> anyhow::Result<(Estimate, Vec<f64>)> {
     let (design, cf) = (rows.design.view(), rows.cf);
     let t = &fits.exposure.t;
+    let middle = &fits.levels[fits.levels.len() / 2];
     let comp: Vec<u32> = rows.scope_rows[0]
         .iter()
         .copied()
-        .filter(|&i| fits.levels[k][i as usize])
+        .filter(|&i| middle[i as usize])
         .collect();
-    let treated = comp.iter().filter(|&&i| t[i as usize]).count();
-    let read = !opts.thin_arm(comp.len(), treated);
-    if !fits.runs(read) {
-        let (e, s) = thin_subset(t, &comp, cf);
-        return Ok((e, s, false));
+    if !fits.runs(fits.reads.competent) {
+        return Ok(thin_subset(t, &comp, cf));
     }
     let terms = fit_main(design, cf, fits, r, Fit::Main, None, opts)?;
-    let (e, s) = opts.guard(subset_estimate(&terms, t, &comp, cf));
-    Ok((e, s, read))
+    Ok(opts.guard(subset_estimate(&terms, t, &comp, cf)))
 }
 
 /// Each analysis (draw or choice) combined into one by Rubin's rules,
@@ -1547,9 +1525,9 @@ struct Decoy<'d> {
 /// is rebuilt per weighting.
 ///
 /// Each weighting's draws stop by [`super::pseudobulk::stop_drawing`] on its
-/// pooled the competent effect averaged over the thresholds and on whether the draw could
+/// pooled competent effect averaged over the thresholds and on whether the draw could
 /// change under another seed (its partition is random and some fit ran,
-/// [`Reads::any`]); `lra-simulate` stops its headline by the same rule.
+/// [`Reads`]); `lra-simulate` stops its headline by the same rule.
 /// Curve thresholds other than the headline's get their own partitions
 /// (units never mix arms), drawn with the same seeds, and stop by the same
 /// rule on their own estimates and partitions, so a random curve partition
@@ -1591,7 +1569,7 @@ fn effects(
     let mut curve_done: Vec<bool> = (0..nk).map(|k| Some(k) == head_k).collect();
     let mut stacked: Vec<Vec<f64>> = Vec::new();
     let mut starts = Starts::default();
-    let mut curve_starts = vec![Starts::default(); nk];
+    let mut curve_starts = vec![FoldStarts::default(); nk];
     for d in 0..max_draws {
         if done.iter().chain(&curve_done).all(|&x| x) {
             break;
@@ -1617,15 +1595,15 @@ fn effects(
             };
             let sens = Sensitivity::on_draw(d);
             let fits = timing::time(timing::MAIN, || {
-                DrawFits::new(rows, exposure, levels, opts, &mut starts)
+                DrawFits::new(rows, exposure, levels, opts, &mut starts.main)
             })?
             .with_controls(rows, sens.steps, opts, &mut starts)?;
-            fitted |= fits.reads.e2;
+            fitted |= fits.reads.competent;
             // No estimate at the headline threshold: no curve to put it on.
-            if !fits.reads.e2 {
+            if !fits.reads.competent {
                 curve_done.fill(true);
             }
-            let varies = random(&units) && fits.reads.e2;
+            let varies = random(&units) && fits.reads.competent;
             // The response side of a programme on this draw's rows.
             let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
                 units.as_ref().map(|u| u.response_of(r, targets))
@@ -1641,9 +1619,8 @@ fn effects(
                     if let Some(dc) = decoy {
                         let own = on_rows(&dc.response, &dc.targets);
                         let r = own.as_ref().unwrap_or(&dc.response);
-                        let (e, _, _) = timing::time(timing::DECOY, || {
-                            competent_effect(rows, &fits, r, mid, opts)
-                        })?;
+                        let (e, _) =
+                            timing::time(timing::DECOY, || competent_effect(rows, &fits, r, opts))?;
                         decoy_draws.push(e);
                     }
                     if let Some(k) = head_k {
@@ -1677,12 +1654,14 @@ fn effects(
                     let lv: Vec<Vec<bool>> = comps.iter().map(|c| u.of_lead(c)).collect();
                     let r = u.response_of(&w0.response, w0.targets);
                     let fits = DrawFits::new(rows, &u.exposure, &lv, opts, &mut curve_starts[k])?;
-                    competent_effect(rows, &fits, &r, mid, opts)?
+                    let (e, s) = competent_effect(rows, &fits, &r, opts)?;
+                    (e, s, fits.reads.competent)
                 }
                 None => {
                     let rows = Rows::cells(tissue);
                     let fits = DrawFits::new(rows, ex, comps, opts, &mut curve_starts[k])?;
-                    competent_effect(rows, &fits, &w0.response, mid, opts)?
+                    let (e, s) = competent_effect(rows, &fits, &w0.response, opts)?;
+                    (e, s, fits.reads.competent)
                 }
             };
             fitted |= ran;
@@ -2245,30 +2224,37 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
 fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     let sig = |q: f64| q < opts.fdr;
     let head = row.effects.competent;
-    let failed_e3 = sig(row.effect_incompetent_q);
-    let failed_ring = sig(row.ring_effect_q);
-    let failed_decoy = sig(row.decoy_q);
     let effect = sig(row.effect_q);
     // Beside a significant effect a control that could not run has not held,
-    // but for a decoy where the pool matched none. The effect must also exceed
-    // the one in receptor-negative receivers: the contrast significant, the
-    // same way as the effect.
-    let contrast = row.effects.effect;
-    let unspecific = effect && !(sig(row.effect_contrast_q) && contrast.theta * head.theta > 0.0);
-    let unchecked_e3 = effect && row.effect_incompetent_q.is_nan();
-    let unchecked_ring = effect && row.ring_effect_q.is_nan();
-    let unchecked_decoy = effect && row.n_decoy_genes > 0 && row.decoy_q.is_nan();
+    // but for a decoy where none exists (no match in the pool, or a section's
+    // row). The effect must also exceed the one in receptor-negative receivers:
+    // the contrast significant, the same way as the effect.
+    let unchecked = |q: f64| effect && q.is_nan();
+    let specific = sig(row.effect_contrast_q) && row.effects.effect.theta * head.theta > 0.0;
+    let (e3_q, ring_q, decoy_q) = (row.effect_incompetent_q, row.ring_effect_q, row.decoy_q);
+    let controls = [
+        (sig(e3_q), "receptor-negative receivers respond"),
+        (
+            unchecked(e3_q),
+            "receptor-negative receivers could not be checked",
+        ),
+        (
+            effect && !specific && !unchecked(e3_q),
+            "the effect does not exceed the one in receptor-negative receivers",
+        ),
+        (unchecked(ring_q), "distant senders could not be checked"),
+        (
+            row.n_decoy_genes > 0 && unchecked(decoy_q),
+            "the matched decoy programme could not be checked",
+        ),
+        (sig(ring_q), "distant senders have an effect"),
+        (sig(decoy_q), "a matched decoy programme responds too"),
+    ];
     let ev = Evidence {
         estimable: head.theta.is_finite() && head.se.is_finite(),
         effect,
         coexpr: sig(row.coexpr_q),
-        control_failed: failed_e3
-            || failed_ring
-            || failed_decoy
-            || unspecific
-            || unchecked_e3
-            || unchecked_ring
-            || unchecked_decoy,
+        control_failed: controls.iter().any(|c| c.0),
         confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
     };
     row.verdict = verdict(ev);
@@ -2310,25 +2296,6 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
             w.push("co-expression is likely a cell-type artefact".into());
         }
     }
-    if failed_e3 {
-        w.push("receptor-negative receivers respond".into());
-    }
-    if unchecked_e3 {
-        w.push("receptor-negative receivers could not be checked".into());
-    } else if unspecific {
-        w.push("the effect does not exceed the one in receptor-negative receivers".into());
-    }
-    if unchecked_ring {
-        w.push("distant senders could not be checked".into());
-    }
-    if unchecked_decoy {
-        w.push("the matched decoy programme could not be checked".into());
-    }
-    if failed_ring {
-        w.push("distant senders have an effect".into());
-    }
-    if failed_decoy {
-        w.push("a matched decoy programme responds too".into());
-    }
+    w.extend(controls.iter().filter(|c| c.0).map(|c| c.1.to_string()));
     row.warnings = w.join("; ");
 }

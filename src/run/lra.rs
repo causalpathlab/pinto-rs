@@ -5,7 +5,7 @@
 //! reply is read from the tables the child wrote.
 
 use super::form::check;
-use super::mcp::{as_run, in_background, out_or_free, spawn};
+use super::mcp::{as_run, in_background, out_or_free, rooted, spawn};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::lra_simulate_path;
@@ -16,7 +16,7 @@ use crate::lr_activity::ligand_effect::simulate::{Study, COMPARED};
 use crate::mcp::shown_path;
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -26,41 +26,41 @@ const TOP_PAIRS: usize = 5;
 
 // * Arguments
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(super) struct LraToolArgs {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub data_files: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coord_files: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub batch_files: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knn_spatial: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_permutations: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_fwer_threshold: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_gene_count: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lr_pairs: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub species: Option<String>,
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
-    #[serde(default = "in_background")]
+    #[serde(default = "in_background", skip_serializing)]
     pub background: bool,
 }
 
@@ -79,6 +79,33 @@ impl LraToolArgs {
             knn_spatial: self.knn_spatial,
         }
     }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LraSimulateToolArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coord_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub batch_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knn_spatial: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study: Option<Value>,
+    #[serde(default, skip_serializing)]
+    pub example_study: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub species: Option<String>,
+    #[serde(default = "in_background", skip_serializing)]
+    pub background: bool,
 }
 
 impl LraSimulateToolArgs {
@@ -130,20 +157,19 @@ impl Input<'_> {
         }
     }
 
+    /// What it reads, by one name: the run, or the first data file.
+    fn source<'s>(&'s self, run: Option<&'s str>) -> &'s str {
+        run.unwrap_or_else(|| self.data_files.first().map_or("lra", String::as_str))
+    }
+
     /// The name a free `out` goes by.
     fn stem(&self, run: Option<&str>) -> String {
-        run_stem(run.unwrap_or_else(|| self.data_files.first().map_or("lra", String::as_str)))
+        run_stem(self.source(run))
     }
 
     /// The flags beside `--from`: only what was given.
     fn flags(&self) -> Vec<String> {
-        let shown = |files: &[String]| -> String {
-            files
-                .iter()
-                .map(|f| shown_path(Path::new(f)))
-                .collect::<Vec<_>>()
-                .join(",")
-        };
+        let shown = |files: &[String]| rooted(files).join(",");
         let mut argv = Vec::new();
         if !self.data_files.is_empty() {
             argv.push(shown(self.data_files));
@@ -178,33 +204,6 @@ impl Input<'_> {
         }
         args
     }
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LraSimulateToolArgs {
-    #[serde(default)]
-    pub run: Option<String>,
-    #[serde(default)]
-    pub data_files: Vec<String>,
-    #[serde(default)]
-    pub coord_files: Vec<String>,
-    #[serde(default)]
-    pub batch_files: Vec<String>,
-    #[serde(default)]
-    pub knn_spatial: Option<usize>,
-    #[serde(default)]
-    pub seed: Option<u64>,
-    #[serde(default)]
-    pub study: Option<Value>,
-    #[serde(default)]
-    pub example_study: bool,
-    #[serde(default)]
-    pub out: Option<String>,
-    #[serde(default)]
-    pub species: Option<String>,
-    #[serde(default = "in_background")]
-    pub background: bool,
 }
 
 // * Command lines
@@ -377,35 +376,13 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     })?;
     let argv = lra_argv(&a, method, run, &out);
     checked(cli, &argv)?;
-    let summary = format!(
-        "lra {} of {}",
-        method_name(method),
-        run.unwrap_or_else(|| a.data_files[0].as_str())
-    );
+    let summary = format!("lra {} of {}", method_name(method), input.source(run));
     // The same call, by its out: what reads the tables once the job is done.
-    let mut again = input.args(run);
-    again["out"] = out.clone().into();
-    for (k, v) in [
-        ("seed", a.seed.map(Value::from)),
-        ("n_permutations", a.n_permutations.map(Value::from)),
-        (
-            "json_fwer_threshold",
-            a.json_fwer_threshold.map(Value::from),
-        ),
-        ("min_gene_count", a.min_gene_count.map(Value::from)),
-        ("method", a.method.clone().map(Value::from)),
-        ("lr_pairs", a.lr_pairs.clone().map(Value::from)),
-        (
-            "targets",
-            (!a.targets.is_empty()).then(|| a.targets.clone().into()),
-        ),
-        ("species", a.species.clone().map(Value::from)),
-        ("only", (!a.only.is_empty()).then(|| a.only.clone().into())),
-    ] {
-        if let Some(v) = v {
-            again[k] = v;
-        }
+    let mut again = serde_json::to_value(&a)?;
+    if let Some(run) = run {
+        again["run"] = run.into();
     }
+    again["out"] = out.clone().into();
     if let Some(job) = start(cx, &argv, &made, &summary, a.background, "run_lra", &again)? {
         return Ok(vec![Content::Json(job)]);
     }
@@ -558,19 +535,13 @@ pub(super) fn lra_simulate(
     }
     let summary = format!(
         "lra-simulate power and calibration check of {}",
-        run.unwrap_or_else(|| a.data_files[0].as_str())
+        input.source(run)
     );
-    let mut again = input.args(run);
-    again["out"] = out.clone().into();
-    for (k, v) in [
-        ("seed", a.seed.map(Value::from)),
-        ("study", a.study.clone()),
-        ("species", a.species.clone().map(Value::from)),
-    ] {
-        if let Some(v) = v {
-            again[k] = v;
-        }
+    let mut again = serde_json::to_value(&a)?;
+    if let Some(run) = run {
+        again["run"] = run.into();
     }
+    again["out"] = out.clone().into();
     if let Some(job) = start(
         cx,
         &argv,

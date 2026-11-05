@@ -209,9 +209,6 @@ impl Tools {
         };
         // Paths from the root: the fit, and the records' replay of it from
         // the project, read the same files wherever the server started.
-        let rooted = |paths: &[String]| -> Vec<String> {
-            paths.iter().map(|p| shown_path(Path::new(p))).collect()
-        };
         let (data, coords, batches) = (rooted(&a.data), rooted(&a.coords), rooted(&a.batches));
         let out = shown_path(Path::new(&out));
         let made = outputs(Path::new(""), &out);
@@ -296,6 +293,11 @@ fn ablation_summary(flags: &Map<String, Value>) -> Option<String> {
 
 /// A run as the records name it: a prefix whose manifest exists is given as
 /// that `.pinto.json`, so the step's inputs link to the fit that made it.
+/// `paths`, each as a command line takes it.
+pub(super) fn rooted(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|p| shown_path(Path::new(p))).collect()
+}
+
 pub(super) fn as_run(input: &str) -> String {
     let manifest = crate::util::metadata::run_manifest(input);
     let named = if !Path::new(input).is_file() && Path::new(&manifest).is_file() {
@@ -778,15 +780,10 @@ fn specs() -> Vec<ToolSpec> {
              whose effect survived the controls (percent change with its 95% CI, q) and the files. Called again with the \
              same run and out once done, it reads the tables instead of running. Never \
              written over.",
-            json!({
+            with_lra_input(json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run whose cells, expression and contacts are read: its .pinto.json (--from); or give data_files and coord_files"},
-                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
-                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
-                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
-                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
-                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
                     "method": {"enum": ["contact-effect", "coexpression-test", "coexpression-scores"], "description": "What to compute [default: contact-effect]"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference (--lr-pairs); the co-expression methods test only these"},
@@ -799,7 +796,7 @@ fn specs() -> Vec<ToolSpec> {
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
-            }),
+            })),
         ),
         ToolSpec::new(
             "run_lra_simulate",
@@ -814,15 +811,10 @@ fn specs() -> Vec<ToolSpec> {
              --study); example_study: true returns the built-in study to start from and runs \
              nothing. Runs as a background job unless asked; called again with the same run \
              and out once done, it reads the table instead of running.",
-            json!({
+            with_lra_input(json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
-                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
-                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
-                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
-                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
-                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
                     "study": {"type": "object", "description": "Study design: reps, pairs, scenarios (fields left out keep the built-in values; see example_study)"},
                     "example_study": {"type": "boolean", "description": "Return the built-in study as JSON and run nothing"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
@@ -830,9 +822,25 @@ fn specs() -> Vec<ToolSpec> {
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
-            }),
+            })),
         ),
     ]
+}
+
+/// `schema` with the arguments of what lra reads beside a run, which `run_lra`
+/// and `run_lra_simulate` share.
+fn with_lra_input(mut schema: Value) -> Value {
+    let shared = json!({
+                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
+                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
+                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
+                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
+                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"}
+    });
+    if let (Some(props), Value::Object(shared)) = (schema["properties"].as_object_mut(), shared) {
+        props.extend(shared);
+    }
+    schema
 }
 
 #[cfg(test)]

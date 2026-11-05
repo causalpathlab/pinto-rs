@@ -16,8 +16,8 @@ use super::super::lra::{
 use super::super::render::Style;
 use super::super::{Level, StillPair};
 use super::{rgb, App, Pick};
-use crate::lr_activity::ligand_effect::output::{PairRow, Verdict};
-use crate::run::tui::{running_row, JobQueue, JobState, QueuedJob};
+use crate::lr_activity::ligand_effect::output::{percent_digits, PairRow, Verdict};
+use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
 use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -50,26 +50,6 @@ impl LraJob {
     pub fn stop(self) {
         let _ = self.queue.finish();
     }
-
-    /// Where it stands, in `room` cells: its progress bar while one is
-    /// drawn, else the last line it wrote.
-    fn progress(&self, room: usize) -> String {
-        let Ok(s) = self.queue.shared.lock() else {
-            return String::new();
-        };
-        let last = s.last.first().map_or("", String::as_str);
-        running_row(s.bars.first().and_then(Option::as_ref), last, room)
-    }
-
-    /// The last line it wrote.
-    fn last_line(&self) -> String {
-        self.queue
-            .shared
-            .lock()
-            .ok()
-            .and_then(|s| s.last.first().cloned())
-            .unwrap_or_default()
-    }
 }
 
 /// A verdict in a few letters, for the list.
@@ -88,8 +68,7 @@ fn short(v: Verdict) -> &'static str {
 /// A percent change in a few characters.
 fn pct_short(r: &PairRow) -> String {
     if r.pct.is_finite() {
-        // Under a percent, a whole percent would read +0%.
-        let d = if r.pct.abs() < 1.0 { 2 } else { 0 };
+        let d = percent_digits(r.pct, r.pct_lo, r.pct_hi);
         format!("{:+.d$}%", r.pct)
     } else {
         "—".into()
@@ -470,7 +449,7 @@ impl App<'_> {
                         ),
                         None,
                     ),
-                    (Line::raw(format!(" {}", j.progress(width))), None),
+                    (Line::raw(format!(" {}", j.queue.row(0, width))), None),
                 ]
             })
             .collect();
@@ -765,7 +744,7 @@ impl App<'_> {
         }
         let job = self.lra_job.take().expect("checked");
         let state = job.queue.states().into_iter().next();
-        let last = job.last_line();
+        let last = job.queue.last_line(0);
         let table = job.table.clone();
         let what = job.what.clone();
         job.stop();

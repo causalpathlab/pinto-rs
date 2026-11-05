@@ -98,43 +98,32 @@ fn pair_memory_budget() -> usize {
     })
 }
 
-/// Bytes this process could still allocate: the system's available memory,
-/// or less when a cgroup (a batch job, a container) limits it. `None` where
-/// the system does not say.
+/// Bytes this process could still allocate: the system's available memory, or
+/// less when a cgroup (a batch job, a container) limits it. `None` where the
+/// system does not say.
 fn available_memory() -> Option<usize> {
-    let read = |p: &str| std::fs::read_to_string(p).ok();
-    let meminfo = read("/proc/meminfo")?;
-    let system = parse_mem_available(&meminfo)?;
-    // cgroup v2 names the limit `memory.max` ("max" when unlimited), v1
-    // `memory.limit_in_bytes` (a huge number when unlimited).
-    let left = |limit: &str, usage: &str| -> Option<usize> {
-        let limit: usize = read(limit)?.trim().parse().ok()?;
-        let usage: usize = read(usage)?.trim().parse().ok()?;
-        Some(limit.saturating_sub(usage))
-    };
-    let group = left("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current").or_else(|| {
-        left(
-            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
-        )
-    });
-    Some(group.map_or(system, |g| g.min(system)))
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let available = system.available_memory();
+    let left = system
+        .cgroup_limits()
+        .map_or(available, |group| group.free_memory.min(available));
+    (left > 0).then_some(left as usize)
 }
 
-/// `MemAvailable` of `/proc/meminfo`, in bytes.
-fn parse_mem_available(meminfo: &str) -> Option<usize> {
-    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
-    let kb: usize = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb * 1024)
+/// Bytes of `rows` rows of a propensity fit ([`regression::logistic_ridge`]) on
+/// `p` confounders: those and the pair's own columns.
+fn propensity_bytes(rows: usize, p: usize) -> usize {
+    rows * (p + 8) * 8
 }
 
-/// Memory one live pair (or benchmark scenario) holds on a tissue of `n`
-/// receivers: `vectors` receiver-length vectors, a draw's confounders (at
+/// Memory one live pair (or benchmark scenario) holds: `vectors` receiver-length
+/// vectors, a draw's confounders (at
 /// most a row per receiver, in f32, with the unit's two depth columns), and
 /// the propensity's rows ([`regression::logistic_ridge`]).
-fn pair_memory(n: usize, vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
-    let p = tissue.design.p();
-    n * 8 * vectors + n * (p + 2) * 4 + nuisance.max_propensity_rows * (p + 8) * 8
+fn pair_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let (n, p) = (tissue.n(), tissue.design.p());
+    n * 8 * vectors + n * (p + 2) * 4 + propensity_bytes(nuisance.max_propensity_rows, p)
 }
 
 /// The single competence threshold `lra-simulate` plants on
@@ -145,35 +134,26 @@ const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
 /// log of a background job, a pipe) each twentieth of the way is logged too.
 struct Progress {
     bar: indicatif::ProgressBar,
-    what: &'static str,
-    total: usize,
-    done: std::sync::atomic::AtomicUsize,
-    logs: bool,
-    start: std::time::Instant,
+    done: std::sync::atomic::AtomicU64,
 }
 
 impl Progress {
     fn new(total: usize, what: &'static str) -> Self {
-        use std::io::IsTerminal;
         Self {
             bar: new_progress_bar(total as u64).with_message(what),
-            what,
-            total,
             done: 0.into(),
-            logs: !std::io::stderr().is_terminal(),
-            start: std::time::Instant::now(),
         }
     }
 
     fn inc(&self) {
         self.bar.inc(1);
         let done = 1 + self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if self.logs && (done * 20 / self.total.max(1)) > ((done - 1) * 20 / self.total.max(1)) {
+        let total = self.bar.length().unwrap_or(done).max(1);
+        if self.bar.is_hidden() && done * 20 / total > (done - 1) * 20 / total {
             info!(
-                "{done}/{} {} ({:.0}s)",
-                self.total,
-                self.what,
-                self.start.elapsed().as_secs_f64()
+                "{done}/{total} {} ({:.0}s)",
+                self.bar.message(),
+                self.bar.elapsed().as_secs_f64()
             );
         }
     }
@@ -192,10 +172,10 @@ const FITS_IN_CACHE: usize = 4 << 20;
 /// the cache a quarter of the threads, the rest serving each pair's parallel
 /// steps ([`run_bounded`]). Fits slow each other down past that: more of them
 /// at once take longer in all.
-fn pair_workers(per_pair: usize, n: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
     let threads = rayon::current_num_threads();
-    let rows = n.min(nuisance.max_propensity_rows);
-    let fit_bytes = rows * (tissue.design.p() + 8) * 8;
+    let rows = tissue.n().min(nuisance.max_propensity_rows);
+    let fit_bytes = propensity_bytes(rows, tissue.design.p());
     let by_cache = if fit_bytes < FITS_IN_CACHE {
         threads
     } else {
@@ -203,7 +183,7 @@ fn pair_workers(per_pair: usize, n: usize, tissue: &Tissue, nuisance: &NuisanceO
     };
     (pair_memory_budget() / per_pair.max(1))
         .min(by_cache)
-        .clamp(1, threads)
+        .max(1)
 }
 
 // * Settings
@@ -754,7 +734,6 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     let (tissue, store, local, eopts) = (&prep.tissue, &prep.store, &prep.local, &prep.eopts);
-    let n = tissue.n();
     let pool = estimate::DecoyPool::new(
         &tissue.size_factor,
         prep.decoy_genes
@@ -772,13 +751,10 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     // three step propensities.
     let nc = eopts.competences.len();
     let draw_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
-    let per_pair = pair_memory(n, 32 + draw_fits, tissue, &eopts.nuisance);
-    let concurrent = pair_workers(per_pair, n, tissue, &eopts.nuisance);
+    let per_pair = pair_memory(32 + draw_fits, tissue, &eopts.nuisance);
+    let concurrent = pair_workers(per_pair, tissue, &eopts.nuisance).min(prep.pairs.len());
     if concurrent > 1 {
-        info!(
-            "Estimating up to {} pairs at a time",
-            concurrent.min(prep.pairs.len())
-        );
+        info!("Estimating up to {concurrent} pairs at a time");
     }
     let one = |p: &Pair| -> Vec<(Vec<estimate::EffectRow>, pseudobulk::UnitTally)> {
         let lig = prep.ligand_counts(p);
@@ -824,10 +800,9 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     pb.finish();
     log_unit_size(units);
     info!(
-        "Estimated {} pairs in {:.0}s ({} at a time). Thread time: {}",
+        "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
         prep.pairs.len(),
         t_pairs.elapsed().as_secs_f64(),
-        concurrent.min(prep.pairs.len()),
         estimate::timing::summary()
     );
     let ropts = estimate::ReportOpts {
@@ -967,7 +942,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     order.sort_by(|&x, &y| abundance(&pairs[y]).total_cmp(&abundance(&pairs[x])));
     // Both arms at `min_arm` units, were the competent receivers split evenly.
     let enough = 2 * eopts.min_arm * eopts.pseudobulk.max(1);
-    order.retain(|&k| {
+    let has_receivers = |k: usize| {
         let detected: Vec<bool> = prep
             .receptor_counts(&pairs[k])
             .iter()
@@ -975,14 +950,20 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
             .collect();
         let competent = exposure::competence(&tissue.identity_bin, &detected, eopts.competence());
         competent.iter().filter(|&&c| c).count() >= enough
-    });
+    };
+    let mut seen_ligand: HashSet<&[usize]> = HashSet::default();
+    let order: Vec<usize> = order
+        .into_iter()
+        .filter(|&k| {
+            let ligand = pairs[k].ligand_genes.as_slice();
+            !seen_ligand.contains(ligand) && has_receivers(k) && seen_ligand.insert(ligand)
+        })
+        .take(study.pairs)
+        .collect();
     anyhow::ensure!(
         !order.is_empty(),
         "no pair has {enough} receptor-competent receivers to benchmark on"
     );
-    let mut seen_ligand: HashSet<&[usize]> = HashSet::default();
-    order.retain(|&k| seen_ligand.insert(&pairs[k].ligand_genes));
-    order.truncate(study.pairs);
     // The real-gene confounder: the most abundant gene read for the run
     // that no benchmarked pair uses. It is left out of the identity
     // projection with the other signalling and programme genes, so it lies
@@ -1069,9 +1050,9 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         // budget allows (each holds about a pair's worth of vectors, and
         // under pseudobulk three copies of the programme's non-zeros).
         let nnz: usize = genes.iter().map(|g| g.len()).sum();
-        let per_run = pair_memory(n, 48, tissue, &eopts.nuisance)
+        let per_run = pair_memory(48, tissue, &eopts.nuisance)
             + if eopts.pseudobulk > 1 { nnz * 8 * 3 } else { 0 };
-        let concurrent = pair_workers(per_run, n, tissue, &eopts.nuisance);
+        let concurrent = pair_workers(per_run, tissue, &eopts.nuisance);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         rows.extend(run_bounded(&jobs, concurrent, |&(si, scen)| {
             let seed =
