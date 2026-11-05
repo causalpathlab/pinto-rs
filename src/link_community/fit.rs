@@ -333,11 +333,12 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     let cell_names = data_vec.column_names()?;
     let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(c.seed));
 
+    info!("Dirichlet prior on community sizes: α = {}", args.alpha);
     let cascade_cfg = CascadeConfig {
         k,
         num_gibbs: args.num_gibbs,
         num_greedy: args.num_greedy,
-        user_alpha: args.alpha,
+        alpha: args.alpha,
         block_size: c.block_size,
         no_level_outputs: args.no_level_outputs,
     };
@@ -362,20 +363,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     ///////////////////////////////////////////////
     // 8. Component-EM + greedy on full profiles //
     ///////////////////////////////////////////////
-    // Alpha for EM: auto-scale from full-resolution sparsity (or user override).
-    let alpha: f64 = args.alpha.map_or_else(
-        || {
-            let full_mean_sf = full_profiles.size_factors.iter().sum::<f32>()
-                / full_profiles.n_edges.max(1) as f32;
-            let v = (full_mean_sf as f64 / k as f64).max(0.01);
-            info!(
-                "EM α = {:.4} (mean size factor {:.1} / K={})",
-                v, full_mean_sf, k
-            );
-            v
-        },
-        |v| v as f64,
-    );
     // Optional frozen K×K incidence (hybrid: Gibbs for edges, VB for B).
     // Vertex propensity θ and the variational expected log-incidence
     // E_q[log B] = ψ(a + S) − log(b + W) are both computed once from the
@@ -407,7 +394,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         graph: &graph,
         edges,
         k,
-        alpha,
+        alpha: args.alpha,
         incidence: incidence_scores.as_deref(),
     };
 
@@ -454,7 +441,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     );
     // The score above is a plug-in report. This is the collapsed target the sweeps
     // moved on, apart from the frozen incidence term.
-    info!("Log marginal: {:.6e}", fine_stats.log_marginal(alpha));
+    info!("Log marginal: {:.6e}", fine_stats.log_marginal(args.alpha));
     score_trace.push(ScoreEntry {
         level: -1,
         sweep: 0,

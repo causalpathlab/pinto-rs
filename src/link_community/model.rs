@@ -7,10 +7,11 @@
 //!
 //! With the rates integrated out under a symmetric Dirichlet(ε), the labels have
 //! the joint [`LinkCommunityStats::log_marginal`], and with `⁻ᵉ` leaving edge e
-//! out of the sums, its conditional is
+//! out of the sums and `n_k` the edges in community k, its conditional is
 //!
 //!   ln p(z_e = k | rest) = Σ_{g: y_eg > 0} [ln Γ(D⁻ᵉ_{kg} + y_eg + ε) − ln Γ(D⁻ᵉ_{kg} + ε)]
-//!                          − [ln Γ(V⁻ᵉ_k + s_e + Mε) − ln Γ(V⁻ᵉ_k + Mε)] + const
+//!                          − [ln Γ(V⁻ᵉ_k + s_e + Mε) − ln Γ(V⁻ᵉ_k + Mε)]
+//!                          + ln(n⁻ᵉ_k + α/K) + const
 //!
 //! The plug-in score
 //!   ℓ = Σ_kg f(D_{kg}) − Σ_k f(V_k),   f(x) = x · ln x

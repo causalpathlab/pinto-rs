@@ -1,3 +1,4 @@
+mod args;
 mod collapsed;
 mod dict_merge;
 mod fast_math;
