@@ -1,5 +1,7 @@
 use crate::link_community::gibbs::*;
-use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
+use crate::link_community::model::{
+    compute_log_probs_for_edge, LinkCommunityStats, LinkProfileStore,
+};
 use crate::test_support::make_test_graph;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -75,25 +77,82 @@ fn test_greedy_recovers_planted() {
     );
 }
 
+/// Two identical edges: the share of sweeps they spend in one community, against
+/// the labelings listed out.
+fn share_together_in_truth(store: &LinkProfileStore) -> f64 {
+    let log_joint =
+        |labels: &[usize]| LinkCommunityStats::from_profiles(store, 2, labels).log_marginal(0.0);
+    1.0 / (1.0 + (log_joint(&[0, 1]) - log_joint(&[0, 0])).exp())
+}
+
+const IDENTICAL_SWEEPS: usize = 20_000;
+
+fn identical_edges() -> LinkProfileStore {
+    LinkProfileStore::new(vec![50.0, 50.0, 50.0, 50.0], 2, 2)
+}
+
+/// Share of `IDENTICAL_SWEEPS` sweeps of `step` that end with the edges together.
+fn share_together(
+    store: &LinkProfileStore,
+    mut step: impl FnMut(&mut LinkCommunityStats, &LinkProfileStore),
+) -> f64 {
+    let mut stats = LinkCommunityStats::from_profiles(store, 2, &[0, 1]);
+    let mut together = 0usize;
+    for _ in 0..IDENTICAL_SWEEPS {
+        step(&mut stats, store);
+        together += usize::from(stats.membership[0] == stats.membership[1]);
+    }
+    together as f64 / IDENTICAL_SWEEPS as f64
+}
+
+/// The sequential sweep the cascade runs reaches the posterior.
 #[test]
-fn test_parallel_gibbs() {
-    let (store, _true_labels) = make_planted_profiles(100, 10);
-    let k = 2;
-
-    let random_labels: Vec<usize> = (0..100).map(|e| e % k).collect();
-    let mut stats = LinkCommunityStats::from_profiles(&store, k, &random_labels);
-
-    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42));
-
-    let moves1 = sampler.run_parallel(&mut stats, &store, 1, 0.0);
-    let _moves_mid = sampler.run_parallel(&mut stats, &store, 20, 0.0);
-    let moves_late = sampler.run_parallel(&mut stats, &store, 1, 0.0);
-
+fn the_cascade_sampler_keeps_identical_edges_at_their_posterior() {
+    let store = identical_edges();
+    let truth = share_together_in_truth(&store);
+    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(3));
+    let share = share_together(&store, |stats, store| {
+        sampler.gibbs_sweep(stats, store, 0.0);
+    });
     assert!(
-        moves_late <= moves1 || moves1 == 0,
-        "Parallel: expected convergence: early={}, late={}",
-        moves1,
-        moves_late
+        (share - truth).abs() < 0.03,
+        "together {share} against {truth}"
+    );
+}
+
+/// The check above must be able to fail: updated together against one snapshot,
+/// each edge sees its own community empty, and they trade labels.
+#[test]
+fn updating_both_against_one_snapshot_fails_the_same_check() {
+    let store = identical_edges();
+    let truth = share_together_in_truth(&store);
+    let mut rng = SmallRng::seed_from_u64(3);
+    let share = share_together(&store, |stats, store| {
+        let mut log_probs = [0.0; 2];
+        let proposals: Vec<usize> = (0..2)
+            .map(|e| {
+                compute_log_probs_for_edge(
+                    e,
+                    stats,
+                    store,
+                    0.0,
+                    None,
+                    &mut log_probs,
+                    &mut [0.0; 2],
+                );
+                sample_categorical_log(&log_probs, &mut rng)
+            })
+            .collect();
+        for (e, &new_c) in proposals.iter().enumerate() {
+            let old_c = stats.membership[e];
+            if new_c != old_c {
+                stats.delta_move(e, old_c, new_c, store);
+            }
+        }
+    });
+    assert!(
+        (share - truth).abs() > 0.05,
+        "the broken update went unnoticed: {share} against {truth}"
     );
 }
 
@@ -215,7 +274,6 @@ fn test_memoized_em_single_component() {
         incidence: None,
     };
     let moves = sampler.run_components_em(&mut membership, &store, &comp_args, 10);
-    // Should converge (fewer moves over time, similar to parallel test)
     assert!(moves > 0 || membership.iter().all(|&m| m < k));
 }
 

@@ -65,13 +65,12 @@ pub struct SrtLinkCommunityArgs {
         long,
         help = "Dirichlet concentration for community mixing weights",
         long_help = "Concentration α of the symmetric Dirichlet prior.\n\
-                     The prior sits on the community mixing weights.\n\
-                     It enables variational truncation.\n\
-                     Communities holding few edges are then pruned on their own.\n\
+                     The prior sits on the community mixing weights, integrated out.\n\
+                     Small values favor large communities over small ones.\n\
                      Pass 0 to disable it and use a uniform prior.\n\
                      \n\
                      If omitted, α is auto-scaled per level from profile sparsity.\n\
-                     α = mean_size_factor / K, so sparser data gets a weaker prior."
+                     α = mean_size_factor / K, so sparser data gets a smaller α."
     )]
     pub alpha: Option<f32>,
 

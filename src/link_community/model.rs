@@ -1,28 +1,32 @@
-//! Link community model: sufficient statistics and fast Poisson DC-SBM scoring.
+//! Link community model: sufficient statistics and the collapsed conditional.
 //!
 //! Each edge e has a profile vector y_e ∈ R^M (sparsely stored as non-zero
 //! `(col, val)` pairs) and a community assignment z_e ∈ {0..K-1}. Let
 //!   D_{kg} = Σ_{e: z_e=k} y_e^g    (edge-weighted feature degree in community k)
 //!   V_k    = Σ_g D_{kg}             (community volume)
-//! Assignment score under Poisson DC-SBM with MLE plug-in rates
-//! μ_{kg} = (D_{kg} + ε) / (V_k + M·ε):
 //!
-//!   score(e, k) = Σ_{g: y_eg > 0} y_{eg} · ln μ_{kg}
+//! With the rates integrated out under a symmetric Dirichlet(ε), the labels have
+//! the joint [`LinkCommunityStats::log_marginal`], and with `⁻ᵉ` leaving edge e
+//! out of the sums, its conditional is
 //!
-//! The total log-likelihood reduces to
+//!   ln p(z_e = k | rest) = Σ_{g: y_eg > 0} [ln Γ(D⁻ᵉ_{kg} + y_eg + ε) − ln Γ(D⁻ᵉ_{kg} + ε)]
+//!                          − [ln Γ(V⁻ᵉ_k + s_e + Mε) − ln Γ(V⁻ᵉ_k + Mε)] + const
+//!
+//! The plug-in score
 //!   ℓ = Σ_kg f(D_{kg}) − Σ_k f(V_k),   f(x) = x · ln x
-//! (equivalently −Σ_k V_k · H(p_k), where p_k = D_{k·}/V_k).
-//!
-//! where `log_rate[k, g] = log_feature[k, g] + log_size_offset[k]` is factored
-//! into per-feature and per-community-size parts for cheap incremental updates.
+//! (equivalently −Σ_k V_k · H(p_k), where p_k = D_{k·}/V_k) is kept as a report.
 //!
 //! Profiles are stored in CSR: for each edge, `(indptr[e]..indptr[e+1])`
 //! slices `indices` and `values` hold the non-zero entries. The hot Gibbs
 //! loop iterates these pairs directly, avoiding zero-skip branches.
 
+use crate::link_community::fast_math::{fast_ln, ln_gamma_increment, ln_gamma_increments};
 use special::Gamma as SpecialGamma;
 
-pub(crate) const LOG_EPS: f64 = 1e-9;
+/// Prior pseudo-count `ε` of the symmetric Dirichlet on a community's feature
+/// rates. At one, `ln Γ(y + ε) − ln Γ(ε)` goes to zero with `y`, so a vanishing
+/// count says next to nothing; a tiny `ε` charges it `−ln ε` however small it is.
+pub(crate) const PRIOR_COUNT: f64 = 1.0;
 
 /// f(x) = x · ln(x), with f(0) = 0 by convention.
 #[inline]
@@ -172,7 +176,6 @@ impl LinkProfileStore {
 pub struct LinkCommunityStats {
     pub k: usize,
     pub m: usize,
-    pub n_edges: usize,
     /// Edge-weighted feature degree D_{kg}: `feature_sum[k*m + g] = Σ_{e: z_e=k} y_e^g`.
     pub feature_sum: Vec<f64>,
     /// Community volume V_k (size-factor sum): `size_sum[k] = Σ_{e: z_e=k} s_e`.
@@ -180,55 +183,42 @@ pub struct LinkCommunityStats {
     /// Per-community edge count.
     pub edge_count: Vec<usize>,
     pub membership: Vec<usize>,
-    /// Cached `ln(feature_sum[k*m + g] + ε)`, kept in sync with `feature_sum`.
-    pub(crate) log_feature: Vec<f64>,
-    /// Cached `-ln(size_sum[k] + M·ε)`, kept in sync with `size_sum`.
-    pub(crate) log_size_offset: Vec<f64>,
+    /// `feature_sum` plus the prior count, in `f32` and feature-major
+    /// (`prior_x[g*k + k']`): what scoring reads, one short run per feature.
+    pub(crate) prior_x: Vec<f32>,
 }
 
 impl LinkCommunityStats {
     /// Build sufficient statistics from profiles and initial labels.
     pub fn from_profiles(profiles: &LinkProfileStore, k: usize, labels: &[usize]) -> Self {
+        debug_assert_eq!(labels.len(), profiles.n_edges);
+        let (feature_sum, size_sum, edge_count) = Self::local_stats(profiles, k, labels);
         let m = profiles.m;
-        let n_edges = profiles.n_edges;
-        debug_assert_eq!(labels.len(), n_edges);
-
-        let mut feature_sum = vec![0.0f64; k * m];
-        let mut size_sum = vec![0.0f64; k];
-        let mut edge_count = vec![0usize; k];
-
-        for (e, &c) in labels.iter().enumerate().take(n_edges) {
-            debug_assert!(c < k);
-            let (cols, vals) = profiles.row(e);
-            let base = c * m;
-            for (&col, &v) in cols.iter().zip(vals.iter()) {
-                feature_sum[base + col as usize] += v as f64;
-            }
-            size_sum[c] += profiles.size_factors[e] as f64;
-            edge_count[c] += 1;
-        }
-
-        let log_feature: Vec<f64> = feature_sum.iter().map(|&t| (t + LOG_EPS).ln()).collect();
-        let m_eps = (m as f64) * LOG_EPS;
-        let log_size_offset: Vec<f64> = size_sum.iter().map(|&s| -((s + m_eps).ln())).collect();
-
-        LinkCommunityStats {
+        let mut stats = LinkCommunityStats {
             k,
             m,
-            n_edges,
             feature_sum,
             size_sum,
             edge_count,
             membership: labels.to_vec(),
-            log_feature,
-            log_size_offset,
+            prior_x: vec![0.0; k * m],
+        };
+        for t in 0..k {
+            for g in 0..m {
+                stats.refresh_prior_x(t, g);
+            }
         }
+        stats
     }
 
-    /// Move edge `e` from `old_k` to `new_k`, updating stats incrementally.
-    ///
-    /// Only log_feature entries for non-zero profile columns are recomputed
-    /// (O(nnz(y_e)) per side).
+    /// Bring one cell of `prior_x` up to `feature_sum`.
+    #[inline]
+    fn refresh_prior_x(&mut self, t: usize, g: usize) {
+        self.prior_x[g * self.k + t] = (self.feature_sum[t * self.m + g] + PRIOR_COUNT) as f32;
+    }
+
+    /// Move edge `e` from `old_k` to `new_k`, updating stats incrementally
+    /// in O(nnz(y_e)).
     #[inline]
     pub fn delta_move(
         &mut self,
@@ -241,25 +231,17 @@ impl LinkCommunityStats {
         let m = self.m;
         let (cols, vals) = profiles.row(e);
         let sf = profiles.size_factors[e] as f64;
-        let m_eps = (m as f64) * LOG_EPS;
 
-        let old_base = old_k * m;
         for (&col, &y) in cols.iter().zip(vals.iter()) {
-            let idx = old_base + col as usize;
-            self.feature_sum[idx] -= y as f64;
-            self.log_feature[idx] = (self.feature_sum[idx] + LOG_EPS).ln();
-        }
-        let new_base = new_k * m;
-        for (&col, &y) in cols.iter().zip(vals.iter()) {
-            let idx = new_base + col as usize;
-            self.feature_sum[idx] += y as f64;
-            self.log_feature[idx] = (self.feature_sum[idx] + LOG_EPS).ln();
+            let g = col as usize;
+            for (t, delta) in [(old_k, -f64::from(y)), (new_k, f64::from(y))] {
+                self.feature_sum[t * m + g] += delta;
+                self.refresh_prior_x(t, g);
+            }
         }
 
         self.size_sum[old_k] -= sf;
-        self.log_size_offset[old_k] = -((self.size_sum[old_k] + m_eps).ln());
         self.size_sum[new_k] += sf;
-        self.log_size_offset[new_k] = -((self.size_sum[new_k] + m_eps).ln());
         self.edge_count[old_k] -= 1;
         self.edge_count[new_k] += 1;
         self.membership[e] = new_k;
@@ -323,64 +305,50 @@ impl LinkCommunityStats {
         old: (&[f64], &[f64], &[usize]),
         new: (&[f64], &[f64], &[usize]),
     ) {
-        let km = self.k * self.m;
-        for i in 0..km {
-            let delta = new.0[i] - old.0[i];
-            if delta != 0.0 {
-                self.feature_sum[i] += delta;
-                self.log_feature[i] = (self.feature_sum[i] + LOG_EPS).ln();
+        for (cell, (n, o)) in new.0.iter().zip(old.0).enumerate() {
+            if n != o {
+                self.feature_sum[cell] += n - o;
+                self.refresh_prior_x(cell / self.m, cell % self.m);
             }
         }
-        let m_eps = (self.m as f64) * LOG_EPS;
         for c in 0..self.k {
-            let delta = new.1[c] - old.1[c];
-            if delta != 0.0 {
-                self.size_sum[c] += delta;
-                self.log_size_offset[c] = -((self.size_sum[c] + m_eps).ln());
-            }
+            self.size_sum[c] += new.1[c] - old.1[c];
             self.edge_count[c] =
                 (self.edge_count[c] as isize + new.2[c] as isize - old.2[c] as isize) as usize;
         }
     }
 
-    /// Recompute all statistics from scratch (drift correction).
-    #[allow(dead_code)]
-    pub fn recompute(&mut self, profiles: &LinkProfileStore) {
-        let m = self.m;
-        let k = self.k;
-        self.feature_sum.iter_mut().for_each(|x| *x = 0.0);
-        self.size_sum.iter_mut().for_each(|x| *x = 0.0);
-        self.edge_count.iter_mut().for_each(|x| *x = 0);
-
-        for e in 0..self.n_edges {
-            let c = self.membership[e];
-            debug_assert!(c < k);
-            self.edge_count[c] += 1;
-            let (cols, vals) = profiles.row(e);
-            let base = c * m;
-            for (&col, &v) in cols.iter().zip(vals.iter()) {
-                self.feature_sum[base + col as usize] += v as f64;
-            }
-            self.size_sum[c] += profiles.size_factors[e] as f64;
-        }
-
-        for (lg, &gs) in self.log_feature.iter_mut().zip(self.feature_sum.iter()) {
-            *lg = (gs + LOG_EPS).ln();
-        }
-        let m_eps = (self.m as f64) * LOG_EPS;
-        for (lso, &ss) in self.log_size_offset.iter_mut().zip(self.size_sum.iter()) {
-            *lso = -((ss + m_eps).ln());
-        }
-    }
-
-    /// Compute Dirichlet-smoothed log mixing weights from edge counts.
-    pub fn compute_log_weights(&self, alpha: f64) -> Vec<f64> {
-        let alpha_k = alpha / self.k as f64;
-        let total = self.n_edges as f64 + alpha;
-        let dg_total = SpecialGamma::digamma(total);
-        (0..self.k)
-            .map(|c| SpecialGamma::digamma(self.edge_count[c] as f64 + alpha_k) - dg_total)
-            .collect()
+    /// Log joint of the labels and the profiles with every rate integrated out,
+    /// up to terms free of the labels. What the collapsed conditional samples from:
+    ///
+    ///   Σ_k [ Σ_g ln Γ(D_kg + ε) − ln Γ(V_k + Mε) ] + Σ_k ln Γ(n_k + α/K)
+    ///
+    /// each term less its value at zero count, the second sum only when `alpha > 0`.
+    /// Each `D_kg` reads as a count of a Dirichlet-multinomial; `n_k` is the
+    /// community's edges.
+    pub fn log_marginal(&self, alpha: f64) -> f64 {
+        let lg = |x: f64| SpecialGamma::ln_gamma(x).0;
+        let m_eps = self.m as f64 * PRIOR_COUNT;
+        let features: f64 = self
+            .feature_sum
+            .iter()
+            .map(|&d| lg(d + PRIOR_COUNT) - lg(PRIOR_COUNT))
+            .sum();
+        let sizes: f64 = self
+            .size_sum
+            .iter()
+            .map(|&v| lg(v + m_eps) - lg(m_eps))
+            .sum();
+        let prior: f64 = if alpha > 0.0 {
+            let a = alpha / self.k as f64;
+            self.edge_count
+                .iter()
+                .map(|&n| lg(n as f64 + a) - lg(a))
+                .sum()
+        } else {
+            0.0
+        };
+        features - sizes + prior
     }
 
     /// Plug-in Poisson DC-SBM log-likelihood Σ_kg f(D_kg) − Σ_k f(V_k),
@@ -432,168 +400,88 @@ impl LinkCommunityStats {
     }
 }
 
-#[cfg(test)]
-/// Amortized classifier for link community assignments (multinomial naive Bayes).
-pub struct LinkCommunityClassifier {
-    pub log_rates: Vec<f64>,
-    pub log_prior: Vec<f64>,
-    pub k: usize,
-    pub m: usize,
-}
-
-#[cfg(test)]
-impl LinkCommunityClassifier {
-    pub fn from_stats(stats: &LinkCommunityStats) -> Self {
-        let k = stats.k;
-        let m = stats.m;
-        let mut log_rates = vec![0.0f64; k * m];
-        for c in 0..k {
-            let off = stats.log_size_offset[c];
-            let base = c * m;
-            for g in 0..m {
-                log_rates[base + g] = stats.log_feature[base + g] + off;
-            }
-        }
-
-        let log_prior: Vec<f64> = stats
-            .edge_count
-            .iter()
-            .map(|&n| ((n as f64) + 1.0).ln())
-            .collect();
-
-        LinkCommunityClassifier {
-            log_rates,
-            log_prior,
-            k,
-            m,
-        }
-    }
-
-    /// Predict community assignment for a single sparse row `(cols, vals)`.
-    #[inline]
-    pub fn predict_one_sparse(&self, cols: &[u32], vals: &[f32]) -> usize {
-        let mut best_k = 0;
-        let mut best_score = f64::NEG_INFINITY;
-        for c in 0..self.k {
-            let base = c * self.m;
-            let mut score = self.log_prior[c];
-            for (&col, &y) in cols.iter().zip(vals.iter()) {
-                score += y as f64 * self.log_rates[base + col as usize];
-            }
-            if score > best_score {
-                best_score = score;
-                best_k = c;
-            }
-        }
-        best_k
-    }
-
-    pub fn predict_labels(&self, profiles: &LinkProfileStore) -> Vec<usize> {
-        (0..profiles.n_edges)
-            .map(|e| {
-                let (cols, vals) = profiles.row(e);
-                self.predict_one_sparse(cols, vals)
-            })
-            .collect()
-    }
-
-    pub fn predict_labels_parallel(&self, profiles: &LinkProfileStore) -> Vec<usize> {
-        use rayon::prelude::*;
-        let chunk_size = std::cmp::max(256, profiles.n_edges / rayon::current_num_threads().max(1));
-        let indices: Vec<usize> = (0..profiles.n_edges).collect();
-        indices
-            .par_chunks(chunk_size)
-            .flat_map(|chunk| {
-                chunk
-                    .iter()
-                    .map(|&e| {
-                        let (cols, vals) = profiles.row(e);
-                        self.predict_one_sparse(cols, vals)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-}
-
 /// Read-only context for the (frozen, VB) incidence term in per-edge scores.
 ///
 /// `edges` is indexed the same way as the `LinkProfileStore` rows passed
 /// alongside (so for a per-component sub-store, `edges` is the per-component
 /// `Vec<(usize, usize)>` of cell endpoints, not the global edge list).
-/// `propensity` is row-major `[n_cells × k]`. `log_incidence` is a frozen
-/// row-major `[k × k]` matrix of `E_q[log B[k, k']]`, computed once by
-/// `incidence::fit_log_incidence` from the post-V-cycle labels.
+/// `cell_scores` is the frozen `[n_cells × k]` table of
+/// `incidence::cell_incidence_scores`.
 #[derive(Copy, Clone)]
 pub(crate) struct IncidenceCtx<'a> {
     pub edges: &'a [(usize, usize)],
-    pub propensity: &'a [f64],
-    pub log_incidence: &'a [f64],
+    pub cell_scores: &'a [f32],
 }
 
-/// Compute log-probabilities for assigning edge `e` to each community.
+/// The collapsed conditional of edge `e` over the communities (see the module
+/// docs), its `ln Γ` increments as approximate as [`ln_gamma_increment`] is.
 ///
-/// `log_probs[t] = score(e, t) - score(e, current_c)`, with the current-community
-/// slot set to 0 so categorical sampling / argmax operate on deltas. When
-/// `incidence_ctx` is `Some`, the frozen VB incidence term is folded in
-/// after the standard Poisson + Dirichlet contributions.
+/// `log_probs[t] = ln p(z_e = t | rest) − ln p(z_e = current | rest)`, so the
+/// current community's slot is 0. `alpha > 0` folds in the collapsed Dirichlet
+/// prior on the community sizes, and `alpha == 0` leaves it out. When
+/// `incidence_ctx` is `Some`, the frozen VB incidence term is added last.
+/// `increments` is scratch of length `k`, the caller's so that no edge allocates.
 pub(crate) fn compute_log_probs_for_edge(
     e: usize,
     stats: &LinkCommunityStats,
     profiles: &LinkProfileStore,
-    log_weights: Option<&[f64]>,
+    alpha: f64,
     incidence_ctx: Option<IncidenceCtx<'_>>,
     log_probs: &mut [f64],
+    increments: &mut [f32],
 ) {
     let k = stats.k;
     let m = stats.m;
     let current_c = stats.membership[e];
     let (cols, vals) = profiles.row(e);
-    let sf = profiles.size_factors[e] as f64;
-    let lw_current = log_weights.map(|w| w[current_c]).unwrap_or(0.0);
-
-    let src_slice = &stats.log_feature[current_c * m..(current_c + 1) * m];
-    let src_score = edge_score(cols, vals, src_slice, sf, stats.log_size_offset[current_c]);
-
-    for (t, lp) in log_probs.iter_mut().enumerate().take(k) {
-        if t == current_c {
-            *lp = 0.0;
-            continue;
+    let sf = profiles.size_factors[e];
+    let m_eps = m as f64 * PRIOR_COUNT;
+    let prior_a = alpha / k as f64;
+    // The size and prior terms, given the volume and edges without `e`.
+    let tail = |volume: f64, count: f64| {
+        let mut score = -f64::from(ln_gamma_increment((volume + m_eps) as f32, sf));
+        if alpha > 0.0 {
+            score += f64::from(fast_ln((count + prior_a) as f32));
         }
-        let tgt_slice = &stats.log_feature[t * m..(t + 1) * m];
-        let tgt_score = edge_score(cols, vals, tgt_slice, sf, stats.log_size_offset[t]);
-        let mut delta = tgt_score - src_score;
-        if let Some(w) = log_weights {
-            delta += w[t] - lw_current;
-        }
-        *lp = delta;
+        score
+    };
+
+    // Every community as if it did not hold the edge, one feature at a time.
+    for (t, lp) in log_probs.iter_mut().enumerate() {
+        *lp = tail(stats.size_sum[t], stats.edge_count[t] as f64);
     }
+    for (&col, &y) in cols.iter().zip(vals.iter()) {
+        let g = col as usize;
+        let xs = &stats.prior_x[g * k..(g + 1) * k];
+        ln_gamma_increments(xs, y, increments);
+        for (lp, &inc) in log_probs.iter_mut().zip(increments.iter()) {
+            *lp += f64::from(inc);
+        }
+    }
+
+    // The current community does hold it, so its score leaves the edge out.
+    let features = &stats.feature_sum[current_c * m..(current_c + 1) * m];
+    let mut at_current = tail(
+        stats.size_sum[current_c] - f64::from(sf),
+        stats.edge_count[current_c] as f64 - 1.0,
+    );
+    for (&col, &y) in cols.iter().zip(vals.iter()) {
+        let rest = features[col as usize] - f64::from(y);
+        at_current += f64::from(ln_gamma_increment((rest + PRIOR_COUNT) as f32, y));
+    }
+    for lp in log_probs.iter_mut() {
+        *lp -= at_current;
+    }
+    log_probs[current_c] = 0.0;
 
     if let Some(ctx) = incidence_ctx {
         crate::link_community::incidence::add_incidence_to_log_probs(
             e,
             ctx.edges,
-            ctx.propensity,
-            ctx.log_incidence,
+            ctx.cell_scores,
             k,
             current_c,
             log_probs,
         );
     }
-}
-
-/// Sparse inner dot product `Σ y · log_feature_slice[col] + sf · log_size_offset_k`.
-#[inline]
-fn edge_score(
-    cols: &[u32],
-    vals: &[f32],
-    log_feature_slice: &[f64],
-    sf: f64,
-    log_size_offset_k: f64,
-) -> f64 {
-    let mut s = sf * log_size_offset_k;
-    for (&col, &y) in cols.iter().zip(vals.iter()) {
-        s += y as f64 * log_feature_slice[col as usize];
-    }
-    s
 }

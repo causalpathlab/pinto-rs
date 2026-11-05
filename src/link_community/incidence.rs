@@ -26,15 +26,15 @@
 //! Σ_{k'} (θ_L(e)[k'] + θ_R(e)[k']) · E_q[log B[k, k']]
 //! ```
 //!
-//! computed by `add_incidence_to_log_probs`. There is no per-move
+//! computed by `add_incidence_to_log_probs` from per-cell scores. There is no per-move
 //! bookkeeping: `B` is a global read-only weight table, exactly the
 //! "RBM-style frozen coupling" picture.
 
+use rayon::prelude::*;
 use special::Gamma as SpecialGamma;
 
 /// Compute frozen variational `E_q[log B[k, k']]` from the current edge
-/// labels and vertex propensity. Output is a length-`k*k` row-major matrix
-/// ready to be borrowed read-only by `IncidenceConfig`.
+/// labels and vertex propensity. Output is a length-`k*k` row-major matrix.
 ///
 /// `propensity` is row-major `[n_cells × k]`.
 pub fn fit_log_incidence(
@@ -73,6 +73,27 @@ pub fn fit_log_incidence(
     log_b
 }
 
+/// Each cell's share of the incidence term per community, `[n_cells × k]`
+/// row-major: `Σ_{k'} θ[v, k'] · log_B[k, k']`. An edge's term is the sum of its
+/// two cells', so scoring it takes `O(K)` where the `K × K` form took `O(K²)`.
+/// A cell's propensity is mostly zeros, which are skipped here.
+pub fn cell_incidence_scores(propensity: &[f64], log_incidence: &[f64], k: usize) -> Vec<f32> {
+    let mut table = vec![0.0f32; propensity.len()];
+    table
+        .par_chunks_mut(k)
+        .zip(propensity.par_chunks(k))
+        .for_each(|(scores, theta)| {
+            for (kp, &share) in theta.iter().enumerate() {
+                if share != 0.0 {
+                    for (t, score) in scores.iter_mut().enumerate() {
+                        *score += (share * log_incidence[t * k + kp]) as f32;
+                    }
+                }
+            }
+        });
+    table
+}
+
 /// Pack a `[n_cells × k]` row-major `Vec<f64>` propensity from a
 /// column-major `nalgebra::DMatrix<f32>`. The flat layout lets the hot
 /// loop index a length-K cell row as a contiguous slice.
@@ -88,45 +109,56 @@ pub fn pack_propensity_row_major(propensity_mat: &crate::util::common::Mat) -> V
     out
 }
 
-/// Add the (frozen) incidence contribution to `log_probs` (delta form
-/// against the current community), to be called immediately after
-/// `compute_log_probs_for_edge`. Pure read of `log_incidence`.
+/// Add the (frozen) incidence contribution to `log_probs` (delta form against
+/// the current community), to be called immediately after
+/// `compute_log_probs_for_edge`. `cell_scores` is [`cell_incidence_scores`].
 #[inline]
 pub fn add_incidence_to_log_probs(
     e: usize,
     edges: &[(usize, usize)],
-    propensity: &[f64],
-    log_incidence: &[f64],
+    cell_scores: &[f32],
     k: usize,
     current_c: usize,
     log_probs: &mut [f64],
 ) {
     let (i, j) = edges[e];
-    let prop_i = &propensity[i * k..(i + 1) * k];
-    let prop_j = &propensity[j * k..(j + 1) * k];
-
-    let cur_base = current_c * k;
-    let mut current_contrib = 0.0f64;
-    for kp in 0..k {
-        current_contrib += (prop_i[kp] + prop_j[kp]) * log_incidence[cur_base + kp];
-    }
-
-    for (t, lp) in log_probs.iter_mut().enumerate().take(k) {
-        if t == current_c {
-            continue;
-        }
-        let tgt_base = t * k;
-        let mut tgt = 0.0f64;
-        for kp in 0..k {
-            tgt += (prop_i[kp] + prop_j[kp]) * log_incidence[tgt_base + kp];
-        }
-        *lp += tgt - current_contrib;
+    let scores_i = &cell_scores[i * k..(i + 1) * k];
+    let scores_j = &cell_scores[j * k..(j + 1) * k];
+    let at_current = f64::from(scores_i[current_c]) + f64::from(scores_j[current_c]);
+    for ((lp, &a), &b) in log_probs.iter_mut().zip(scores_i).zip(scores_j) {
+        *lp += f64::from(a) + f64::from(b) - at_current;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Summing per-cell scores gives an edge what the `K × K` form did.
+    #[test]
+    fn cell_scores_give_each_edge_its_incidence_term() {
+        let k = 3usize;
+        let propensity = vec![0.5, 0.5, 0.0, 0.0, 0.2, 0.8, 1.0, 0.0, 0.0];
+        let log_incidence = vec![-0.5, -2.0, -1.5, -0.25, -3.0, -0.75, -1.0, -0.1, -2.5];
+
+        let table = cell_incidence_scores(&propensity, &log_incidence, k);
+
+        for (i, j) in [(0usize, 1usize), (1, 2), (0, 2)] {
+            for t in 0..k {
+                let want: f64 = (0..k)
+                    .map(|kp| {
+                        (propensity[i * k + kp] + propensity[j * k + kp])
+                            * log_incidence[t * k + kp]
+                    })
+                    .sum();
+                let got = f64::from(table[i * k + t]) + f64::from(table[j * k + t]);
+                assert!(
+                    (got - want).abs() < 1e-5,
+                    "({i}, {j}), {t}: {got} against {want}"
+                );
+            }
+        }
+    }
 
     /// Two well-separated cell blocks, edges placed within blocks: the
     /// fitted `log B` should be diagonally dominant.
@@ -167,8 +199,9 @@ mod tests {
         let membership = vec![0, 0, 0, 1, 1, 1];
         let log_b = fit_log_incidence(&edges, &membership, &prop, k, 1.0, 1.0);
 
+        let table = cell_incidence_scores(&prop, &log_b, k);
         let mut log_probs = vec![0.0f64; k];
-        add_incidence_to_log_probs(0, &edges, &prop, &log_b, k, 0, &mut log_probs);
+        add_incidence_to_log_probs(0, &edges, &table, k, 0, &mut log_probs);
         assert!(
             log_probs[1] < 0.0,
             "moving block-0 edge to community 1 should be penalised; got {:?}",

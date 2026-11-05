@@ -28,35 +28,20 @@ pub struct ComponentGibbsArgs<'a> {
     pub k: usize,
     /// Dirichlet concentration for mixing weight prior (0.0 = no prior).
     pub alpha: f64,
-    /// Optional collapsed K×K incidence (Poisson-Gamma) configuration.
-    pub incidence: Option<IncidenceConfig<'a>>,
-}
-
-/// Frozen incidence configuration consumed by `run_components`. Both
-/// `propensity` (`[n_cells × k]` row-major soft propensity, equivalently
-/// the variational `q(c_v)`) and `log_incidence` (`[k × k]` row-major
-/// `E_q[log B[k, k']]` under a `Gamma(a, b)` posterior) are computed once
-/// from the post-V-cycle labels and **frozen** for the duration of EM and
-/// greedy. There is no per-move bookkeeping for either.
-#[derive(Copy, Clone)]
-pub struct IncidenceConfig<'a> {
-    pub propensity: &'a [f64],
-    pub log_incidence: &'a [f64],
+    /// The `[n_cells × k]` table of `incidence::cell_incidence_scores`, computed
+    /// once from the post-V-cycle labels and held fixed through EM and greedy.
+    pub incidence: Option<&'a [f32]>,
 }
 
 /// Collapsed Gibbs sampler for link community assignments.
 pub struct LinkGibbsSampler {
     rng: SmallRng,
-    parallel_seed: u64,
 }
 
 impl LinkGibbsSampler {
     /// Create a new sampler with the given RNG.
     pub fn new(rng: SmallRng) -> Self {
-        LinkGibbsSampler {
-            rng,
-            parallel_seed: 0,
-        }
+        LinkGibbsSampler { rng }
     }
 
     /// Run `num_sweeps` sequential Gibbs sweeps over all edges.
@@ -69,144 +54,104 @@ impl LinkGibbsSampler {
         profiles: &LinkProfileStore,
         num_sweeps: usize,
     ) -> usize {
-        let k = stats.k;
-        let n = stats.n_edges;
-        let mut log_probs = vec![0.0f64; k];
-
-        let mut total_moves = 0;
-
-        let prog_bar = new_progress_bar(num_sweeps as u64).with_message("Gibbs sweeps");
-
-        for sweep in 0..num_sweeps {
-            let mut sweep_moves = 0;
-            for e in 0..n {
-                let old_c = stats.membership[e];
-
-                compute_log_probs_for_edge(e, stats, profiles, None, None, &mut log_probs);
-
-                let new_c = sample_categorical_log(&log_probs, &mut self.rng);
-
-                if new_c != old_c {
-                    stats.delta_move(e, old_c, new_c, profiles);
-                    sweep_moves += 1;
-                }
-            }
-            total_moves += sweep_moves;
-            prog_bar.set_message(sweep_message("Gibbs sweeps", sweep, sweep_moves));
-            prog_bar.inc(1);
-        }
-        prog_bar.finish_and_clear();
-
-        total_moves
+        self.run_with_observer(stats, profiles, num_sweeps, 0.0, |_, _| {})
     }
 
-    /// Run `num_sweeps` Gibbs sweeps with parallel proposal computation.
-    ///
-    /// Jacobi-style: all edges compute proposals against a frozen snapshot
-    /// of the stats using rayon `par_chunks`, then moves are applied sequentially.
-    ///
-    /// `alpha` is the Dirichlet concentration on community mixing weights:
-    /// `alpha > 0` enables the prior (log-weights recomputed each sweep from
-    /// the frozen snapshot), `alpha == 0` disables it. Match the prior used
-    /// by the downstream component-EM stage for consistency across levels.
-    ///
-    /// Returns the total number of edge moves across all sweeps.
-    #[cfg(test)]
-    pub fn run_parallel(
+    /// One sequential sweep, each edge reassigned from its collapsed conditional
+    /// given all the others as they stand. Returns the number of edges that moved.
+    fn sweep(
         &mut self,
         stats: &mut LinkCommunityStats,
         profiles: &LinkProfileStore,
-        num_sweeps: usize,
+        alpha: f64,
+        strategy: MoveStrategy,
+    ) -> usize {
+        sweep_edges(stats, profiles, alpha, None, strategy, &mut self.rng)
+    }
+
+    /// One Gibbs sweep, as the posterior tests drive it.
+    #[cfg(test)]
+    pub fn gibbs_sweep(
+        &mut self,
+        stats: &mut LinkCommunityStats,
+        profiles: &LinkProfileStore,
         alpha: f64,
     ) -> usize {
-        self.run_parallel_with_observer(stats, profiles, num_sweeps, alpha, |_, _| {})
+        self.sweep(stats, profiles, alpha, MoveStrategy::Sample)
     }
 
-    /// `Self::run_parallel` with a per-sweep observer closure called after
-    /// each sweep's stats are patched. The observer receives `(sweep_idx,
-    /// &stats)` — use it to record score / MI / whatever per-sweep diagnostic
-    /// is useful. Called zero-cost when the closure is a no-op.
-    pub fn run_parallel_with_observer<F>(
+    /// Up to `num_sweeps` sequential sweeps, calling `observer` with
+    /// `(sweep_idx, &stats)` after each. `Greedy` stops once no edge moves.
+    fn run_sequential<F>(
         &mut self,
         stats: &mut LinkCommunityStats,
         profiles: &LinkProfileStore,
         num_sweeps: usize,
         alpha: f64,
+        strategy: MoveStrategy,
         mut observer: F,
     ) -> usize
     where
         F: FnMut(usize, &LinkCommunityStats),
     {
-        let k = stats.k;
-        let n = stats.n_edges;
-
-        if self.parallel_seed == 0 {
-            self.parallel_seed = self.rng.random::<u64>() | 1;
-        }
-        let base_seed = self.parallel_seed;
-
+        let name = match strategy {
+            MoveStrategy::Sample => "Gibbs sweeps",
+            MoveStrategy::Greedy => "greedy sweeps",
+        };
+        let prog_bar = new_progress_bar(num_sweeps as u64).with_message(name);
         let mut total_moves = 0;
-
-        let edge_order: Vec<usize> = (0..n).collect();
-        let chunk_size = std::cmp::max(256, n / rayon::current_num_threads().max(1));
-
-        let prog_bar = new_progress_bar(num_sweeps as u64).with_message("Gibbs sweeps");
-
         for sweep in 0..num_sweeps {
-            let sweep_seed = base_seed.wrapping_mul(sweep as u64 + 1);
-
-            let lw_snap = (alpha > 0.0).then(|| stats.compute_log_weights(alpha));
-            let lw_ref = lw_snap.as_deref();
-
-            let proposals: Vec<usize> = edge_order
-                .par_chunks(chunk_size)
-                .flat_map(|chunk| {
-                    let mut log_probs = vec![0.0f64; k];
-                    chunk
-                        .iter()
-                        .map(|&e| {
-                            compute_log_probs_for_edge(
-                                e,
-                                stats,
-                                profiles,
-                                lw_ref,
-                                None,
-                                &mut log_probs,
-                            );
-                            let vertex_seed = sweep_seed ^ (e as u64).wrapping_mul(2654435761);
-                            let mut rng = SmallRng::seed_from_u64(vertex_seed);
-                            sample_categorical_log(&log_probs, &mut rng)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-
-            let mut sweep_moves = 0;
-            for (e, &new_c) in proposals.iter().enumerate() {
-                let old_c = stats.membership[e];
-                if new_c != old_c {
-                    stats.delta_move(e, old_c, new_c, profiles);
-                    sweep_moves += 1;
-                }
-            }
+            let sweep_moves = self.sweep(stats, profiles, alpha, strategy);
             total_moves += sweep_moves;
             observer(sweep, stats);
-            prog_bar.set_message(sweep_message("Gibbs sweeps", sweep, sweep_moves));
+            prog_bar.set_message(sweep_message(name, sweep, sweep_moves));
             prog_bar.inc(1);
+            if matches!(strategy, MoveStrategy::Greedy) && sweep_moves == 0 {
+                break;
+            }
         }
         prog_bar.finish_and_clear();
-
         total_moves
+    }
+
+    /// Run `num_sweeps` sequential Gibbs sweeps, calling `observer` with
+    /// `(sweep_idx, &stats)` after each one to record per-sweep diagnostics.
+    ///
+    /// For the cascade, whose super-edges are few. Updating them together against
+    /// one snapshot would not do: two alike, each alone in its community, each see
+    /// their own community empty once left out, and trade labels every sweep.
+    ///
+    /// `alpha` is the Dirichlet concentration on community mixing weights:
+    /// `alpha > 0` enables the prior, `alpha == 0` disables it. Match the prior
+    /// used by the downstream component-EM stage for consistency across levels.
+    ///
+    /// Returns the total number of edge moves across all sweeps.
+    pub fn run_with_observer<F>(
+        &mut self,
+        stats: &mut LinkCommunityStats,
+        profiles: &LinkProfileStore,
+        num_sweeps: usize,
+        alpha: f64,
+        observer: F,
+    ) -> usize
+    where
+        F: FnMut(usize, &LinkCommunityStats),
+    {
+        self.run_sequential(
+            stats,
+            profiles,
+            num_sweeps,
+            alpha,
+            MoveStrategy::Sample,
+            observer,
+        )
     }
 
     /// Run greedy (argmax) sweeps over all edges with early exit on convergence.
     ///
-    /// Deterministic, sequential argmax — each edge is reassigned to the
-    /// community with the highest log-probability. Used for per-level
-    /// finalization in the V-cycle cascade where the graph's connected-
-    /// component structure is irrelevant (super-edge resolution has no
-    /// meaningful cell-graph walk). For full fine-resolution greedy with
-    /// component-balanced parallelism, use [`Self::run_greedy_by_components`].
+    /// Deterministic, sequential argmax, used for per-level finalization in the
+    /// V-cycle cascade. For full fine-resolution greedy with component-balanced
+    /// parallelism, use [`Self::run_greedy_by_components`].
     ///
     /// `alpha` is the Dirichlet concentration on community mixing weights;
     /// pass `0.0` to disable the prior.
@@ -232,50 +177,26 @@ impl LinkGibbsSampler {
         profiles: &LinkProfileStore,
         max_sweeps: usize,
         alpha: f64,
-        mut observer: F,
+        observer: F,
     ) -> usize
     where
         F: FnMut(usize, &LinkCommunityStats),
     {
-        let k = stats.k;
-        let n = stats.n_edges;
-        let mut log_probs = vec![0.0f64; k];
-
-        let mut total_moves = 0;
-
-        let prog_bar = new_progress_bar(max_sweeps as u64).with_message("greedy sweeps");
-
-        for sweep in 0..max_sweeps {
-            let lw_snap = (alpha > 0.0).then(|| stats.compute_log_weights(alpha));
-            let lw_ref = lw_snap.as_deref();
-
-            let mut sweep_moves = 0;
-            for e in 0..n {
-                let old_c = stats.membership[e];
-
-                compute_log_probs_for_edge(e, stats, profiles, lw_ref, None, &mut log_probs);
-
-                let new_c = argmax_log(&log_probs);
-
-                if new_c != old_c {
-                    stats.delta_move(e, old_c, new_c, profiles);
-                    sweep_moves += 1;
-                }
-            }
-            total_moves += sweep_moves;
-            observer(sweep, stats);
-            prog_bar.set_message(sweep_message("greedy sweeps", sweep, sweep_moves));
-            prog_bar.inc(1);
-            if sweep_moves == 0 {
-                break;
-            }
-        }
-        prog_bar.finish_and_clear();
-
-        total_moves
+        self.run_sequential(
+            stats,
+            profiles,
+            max_sweeps,
+            alpha,
+            MoveStrategy::Greedy,
+            observer,
+        )
     }
 
     /// Memoized component-partitioned sweeps with configurable move strategy.
+    ///
+    /// Partitions read each other's moves only at the end of a sweep, so across
+    /// partitions this only approximates the conditional: two alike edges, each
+    /// alone in its community and in different partitions, can trade labels.
     ///
     /// Edges are partitioned by connected component (balanced across threads).
     /// Each sweep: partitions run sequential edge updates in parallel using a
@@ -301,7 +222,7 @@ impl LinkGibbsSampler {
             incidence,
         } = args;
         let (k, alpha) = (*k, *alpha);
-        let incidence_cfg = *incidence;
+        let incidence_scores = *incidence;
 
         let (comp_labels, n_comp) = connected_components(graph);
         let comp_edges = partition_edges_balanced(edges, &comp_labels, n_comp);
@@ -315,7 +236,7 @@ impl LinkGibbsSampler {
         // Per-component endpoint slice (indexed by local edge id), only
         // needed when incidence is enabled — avoids an unconditional
         // ~|E|·sizeof((usize,usize)) allocation in the baseline path.
-        let local_edges: Vec<Vec<(usize, usize)>> = if incidence_cfg.is_some() {
+        let local_edges: Vec<Vec<(usize, usize)>> = if incidence_scores.is_some() {
             comp_edges
                 .iter()
                 .map(|indices| indices.iter().map(|&e| edges[e]).collect())
@@ -358,19 +279,6 @@ impl LinkGibbsSampler {
 
         for sweep in 0..num_sweeps {
             let sweep_seed = base_seed.wrapping_mul(sweep as u64 + 1);
-            let feature_sum_snap = &global_stats.feature_sum;
-            let size_sum_snap = &global_stats.size_sum;
-            let edge_count_snap = &global_stats.edge_count;
-            let log_feature_snap = &global_stats.log_feature;
-            let log_size_offset_snap = &global_stats.log_size_offset;
-
-            // Dirichlet log-weights snapshot (recomputed each sweep)
-            let lw_snap = if alpha > 0.0 {
-                Some(global_stats.compute_log_weights(alpha))
-            } else {
-                None
-            };
-            let lw_ref = lw_snap.as_deref();
 
             let local_results: Vec<ComponentResult> = (0..n_parts)
                 .into_par_iter()
@@ -384,48 +292,31 @@ impl LinkGibbsSampler {
                     let mut local_stats = LinkCommunityStats {
                         k,
                         m: profiles.m,
-                        n_edges: sub_stores[c].n_edges,
-                        feature_sum: feature_sum_snap.clone(),
-                        size_sum: size_sum_snap.clone(),
-                        edge_count: edge_count_snap.clone(),
+                        feature_sum: global_stats.feature_sum.clone(),
+                        size_sum: global_stats.size_sum.clone(),
+                        edge_count: global_stats.edge_count.clone(),
                         membership: indices.iter().map(|&e| membership[e]).collect(),
-                        log_feature: log_feature_snap.clone(),
-                        log_size_offset: log_size_offset_snap.clone(),
+                        prior_x: global_stats.prior_x.clone(),
                     };
 
-                    // Frozen incidence context: log_B and propensity are
-                    // both global read-only weights; the only per-component
+                    // Frozen incidence context: the cell scores are a
+                    // global read-only table; the only per-component
                     // piece is the endpoint slice indexed by local edge id.
-                    let inc_ctx = incidence_cfg.map(|cfg| IncidenceCtx {
+                    let inc_ctx = incidence_scores.map(|cell_scores| IncidenceCtx {
                         edges: local_edges[c].as_slice(),
-                        propensity: cfg.propensity,
-                        log_incidence: cfg.log_incidence,
+                        cell_scores,
                     });
 
                     let comp_seed = sweep_seed ^ (c as u64).wrapping_mul(2654435761);
                     let mut rng = SmallRng::seed_from_u64(comp_seed);
-                    let mut log_probs = vec![0.0f64; k];
-                    let mut moves = 0usize;
-
-                    for e in 0..indices.len() {
-                        let old_c = local_stats.membership[e];
-                        compute_log_probs_for_edge(
-                            e,
-                            &local_stats,
-                            &sub_stores[c],
-                            lw_ref,
-                            inc_ctx,
-                            &mut log_probs,
-                        );
-                        let new_c = match strategy {
-                            MoveStrategy::Sample => sample_categorical_log(&log_probs, &mut rng),
-                            MoveStrategy::Greedy => argmax_log(&log_probs),
-                        };
-                        if new_c != old_c {
-                            local_stats.delta_move(e, old_c, new_c, &sub_stores[c]);
-                            moves += 1;
-                        }
-                    }
+                    let moves = sweep_edges(
+                        &mut local_stats,
+                        &sub_stores[c],
+                        alpha,
+                        inc_ctx,
+                        strategy,
+                        &mut rng,
+                    );
 
                     let new_comp_stats =
                         LinkCommunityStats::local_stats(&sub_stores[c], k, &local_stats.membership);
@@ -496,6 +387,42 @@ impl LinkGibbsSampler {
     }
 }
 
+/// One sequential sweep over the edges of `profiles`, each reassigned from its
+/// collapsed conditional given all the others as they stand. Returns the moves.
+fn sweep_edges(
+    stats: &mut LinkCommunityStats,
+    profiles: &LinkProfileStore,
+    alpha: f64,
+    incidence: Option<IncidenceCtx<'_>>,
+    strategy: MoveStrategy,
+    rng: &mut SmallRng,
+) -> usize {
+    let mut log_probs = vec![0.0f64; stats.k];
+    let mut increments = vec![0.0f32; stats.k];
+    let mut moves = 0;
+    for e in 0..profiles.n_edges {
+        let old_c = stats.membership[e];
+        compute_log_probs_for_edge(
+            e,
+            stats,
+            profiles,
+            alpha,
+            incidence,
+            &mut log_probs,
+            &mut increments,
+        );
+        let new_c = match strategy {
+            MoveStrategy::Sample => sample_categorical_log(&log_probs, rng),
+            MoveStrategy::Greedy => greedy_choice(&log_probs, old_c),
+        };
+        if new_c != old_c {
+            stats.delta_move(e, old_c, new_c, profiles);
+            moves += 1;
+        }
+    }
+    moves
+}
+
 /// Result from a single component's Gibbs/greedy sweep.
 struct ComponentResult {
     membership: Vec<usize>,
@@ -563,6 +490,17 @@ fn partition_edges_balanced(
 /// as the one `key=value`, the score `pinto run` draws.
 pub(crate) fn sweep_message(name: &str, sweep: usize, moves: usize) -> String {
     format!("{name} {}: moves={moves}", sweep + 1)
+}
+
+/// The best community, if it strictly beats the current one. A tie stays put: a
+/// lone edge ties with every empty community, and would otherwise keep moving.
+fn greedy_choice(log_probs: &[f64], current: usize) -> usize {
+    let best = argmax_log(log_probs);
+    if log_probs[best] > log_probs[current] {
+        best
+    } else {
+        current
+    }
 }
 
 /// Pick the index with the highest value.

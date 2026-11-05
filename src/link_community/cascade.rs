@@ -194,13 +194,10 @@ pub fn run_cascade(
             *cursor += 1;
         };
 
-        let moves = sampler.run_parallel_with_observer(
-            &mut stats_l,
-            &profiles_l,
-            sweeps,
-            alpha_l,
-            |_, stats| push_entry(stats, &mut sweep_cursor),
-        );
+        let moves =
+            sampler.run_with_observer(&mut stats_l, &profiles_l, sweeps, alpha_l, |_, stats| {
+                push_entry(stats, &mut sweep_cursor)
+            });
         info!("  L{}: Gibbs {} sweeps, {} moves", l, sweeps, moves);
 
         let greedy_moves = sampler.run_greedy_plain_with_observer(
