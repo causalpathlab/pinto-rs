@@ -134,6 +134,7 @@ fn assert_conditional_is_the_joint_ratio(store: &LinkProfileStore, alpha: f64) {
 fn conditional_is_the_joint_ratio() {
     assert_conditional_is_the_joint_ratio(&fixture(), 0.0);
     assert_conditional_is_the_joint_ratio(&fixture(), 1.5);
+    assert_conditional_is_the_joint_ratio(&fixture(), 0.04);
 }
 
 /// A count near zero says next to nothing, so it may not decide a move. A tiny
@@ -155,7 +156,8 @@ fn a_vanishing_count_costs_next_to_nothing() {
 #[test]
 fn the_sampler_reaches_the_enumerated_posterior() {
     let store = fixture();
-    for alpha in [0.0, 1.5] {
+    // At this K, the last gives each community the `α/K` a default of one does at 50.
+    for alpha in [0.0, 1.5, 0.04] {
         let target = enumerated_posterior(&store, alpha);
         let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(7));
         let visits = occupancy(&store, |stats, store| {
