@@ -8,11 +8,12 @@ use super::form::check;
 use super::mcp::{as_run, in_background, out_or_free, rooted, spawn};
 use super::script;
 use crate::lr_activity::args::LraMethod;
-use crate::lr_activity::ligand_effect::lra_simulate_path;
 use crate::lr_activity::ligand_effect::output::{
-    self, compare_runs, percent_text, rank_pooled, read_pooled_effects, read_sim_runs, Verdict,
+    self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_pooled_effects,
+    read_sim_runs,
 };
 use crate::lr_activity::ligand_effect::simulate::{Study, COMPARED};
+use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};

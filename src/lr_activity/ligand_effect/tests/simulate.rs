@@ -4,8 +4,8 @@
 //! estimate should track the truth while the crude contrast is fooled.
 
 use super::run_sim;
-use crate::lr_activity::ligand_effect::estimate::EffectOpts;
-use crate::lr_activity::ligand_effect::exposure::{competence, ring_partners, Contacts};
+use crate::lr_activity::ligand_effect::contacts::{competence, ring_partners, Contacts};
+use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
 use crate::lr_activity::ligand_effect::simulate::{
     sign_lifts, simulate_background, ConfounderKind, Scenario, SimBase,

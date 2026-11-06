@@ -53,7 +53,7 @@ pub(super) fn fold_products(
     fold: &[u8],
     k: usize,
 ) -> Vec<FoldProducts> {
-    use super::overlap::ROW_BLOCK;
+    use super::crossfit::ROW_BLOCK;
     debug_assert!(p <= x.ncols());
     let q = cols.len();
     let d = p + q;
@@ -143,7 +143,7 @@ pub(super) fn ridge_bordered(
 }
 
 /// Newton steps a logistic fit may take at most; every step moves, so this
-/// is a guard ([`super::estimate::timing::newton`] counts the fits it stops).
+/// is a guard ([`super::timing::newton`] counts the fits it stops).
 const MAX_NEWTON_STEPS: usize = 500;
 
 /// Largest coefficient change at which a Newton step's Hessian may serve the
@@ -195,7 +195,7 @@ fn gather_design_rows(
     rows: &[usize],
     z: &mut Vec<f64>,
 ) {
-    use super::overlap::ROW_BLOCK;
+    use super::crossfit::ROW_BLOCK;
     let d = p + cols.len();
     z.clear();
     z.resize(rows.len() * d, 0.0);
@@ -320,7 +320,7 @@ fn newton_on_rows(
     ridge: f64,
     init: Option<&DVector<f64>>,
 ) -> anyhow::Result<DVector<f64>> {
-    use super::estimate::timing;
+    use super::timing;
     let m = t.len();
     let mut beta = match init {
         Some(b) if b.len() == d && b.iter().all(|v| v.is_finite()) => b.clone(),

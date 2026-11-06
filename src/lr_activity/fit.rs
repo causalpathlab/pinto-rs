@@ -74,7 +74,7 @@ use rand::SeedableRng;
 #[inline]
 fn one_sided_p_z(z: f32) -> f32 {
     // erfc(z/√2) / 2; numerically stable for large |z|.
-    let p = super::ligand_effect::overlap::upper_normal_p(z as f64);
+    let p = super::ligand_effect::inference::upper_normal_p(z as f64);
     (p as f32).clamp(0.0, 1.0)
 }
 
@@ -618,7 +618,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
 /// `pinto lra --method contact-effect`: expression, coordinates and spatial
 /// contacts, from the `--from` run or built from the coordinates given.
 fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyhow::Result<()> {
-    use crate::lr_activity::ligand_effect::{run, RunInputs, Settings};
+    use crate::lr_activity::ligand_effect::pipeline::run;
+    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
     let contacts = load_contacts(input)?;
     let manifest = record_manifest(input, out, &contacts)?;
     run(&RunInputs {
@@ -647,8 +648,9 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
 /// `pinto lra-simulate`: the contact-effect analysis's power and
 /// calibration check on this tissue.
 pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
+    use crate::lr_activity::ligand_effect::pipeline::run_simulate;
     use crate::lr_activity::ligand_effect::simulate::Study;
-    use crate::lr_activity::ligand_effect::{run_simulate, RunInputs, Settings};
+    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
     if args.example_study {
         println!("{}", Study::example_json());
         return Ok(());

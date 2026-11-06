@@ -1,0 +1,798 @@
+//! Drawing counts and running one simulated pair.
+
+use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
+use super::fields::{confounding, shift_field, SimShared};
+use super::row::SimRow;
+use super::scenario::Scenario;
+use crate::lr_activity::ligand_effect::association::marginal_correlation;
+use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
+use crate::lr_activity::ligand_effect::contacts::competence;
+use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
+use crate::lr_activity::ligand_effect::effects::Sensitivity;
+use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
+use crate::lr_activity::ligand_effect::options::EffectOpts;
+use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
+use crate::lr_activity::ligand_effect::response::{expected_bleed, Response};
+use crate::lr_activity::ligand_effect::rows::EffectRow;
+use crate::lr_activity::ligand_effect::thresholds::{
+    over_thresholds, thresholds, ThresholdAverage,
+};
+use crate::lr_activity::ligand_effect::tissue::Tissue;
+use crate::lr_activity::ligand_effect::verdict::Verdict;
+use legume_numeric::matrix::rand_util::mix_seed;
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
+use rand_distr::{Distribution, Poisson, StandardNormal};
+use rayon::prelude::*;
+use special::Error as _;
+
+/// A background programme matched gene by gene to the real one: the same
+/// weights and bin means, no planted effect, the field's push on the response
+/// scaled by `share`, and the `generic` lift of each row. Counts come from
+/// their own stream, so the background changes nothing else in the run.
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_background(
+    tissue: &Tissue,
+    base: &SimBase<'_>,
+    lifts: &[Vec<f64>; 2],
+    kappa: f64,
+    seed: u64,
+) -> Vec<Vec<(u32, f32)>> {
+    let n = tissue.n();
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let ng = base.target_weights.len();
+    let mut rng = SmallRng::seed_from_u64(seed);
+    base.target_weights
+        .iter()
+        .enumerate()
+        .map(|(g, &w)| {
+            let lift = &lifts[(w < 0.0) as usize];
+            let counts: Vec<f64> = (0..n)
+                .map(|i| {
+                    poisson(
+                        &mut rng,
+                        sf[i] * base.target_bin_means[bin[i] * ng + g] * lift[i],
+                    )
+                })
+                .collect();
+            if kappa > 0.0 {
+                let bled = tissue.contacts.sum(&counts);
+                nonzeros(counts.iter().zip(&bled).map(|(c, b)| c + kappa * b))
+            } else {
+                nonzeros(counts.into_iter())
+            }
+        })
+        .collect()
+}
+
+/// What multiplies a gene's bin mean at each row, for genes of positive then
+/// of negative weight: the field `f` at strength `beta` (normalized to keep the
+/// mean), the marker types' lift and the shift `generic`. Real and background genes
+/// are generated through this alike.
+pub fn sign_lifts(
+    f: &[f64],
+    beta: f64,
+    generic: &[f64],
+    marker: &[bool],
+    bin: &[usize],
+) -> [Vec<f64>; 2] {
+    [1.0, -1.0].map(|s| {
+        let norm = f.iter().map(|z| (s * beta * z).exp()).sum::<f64>() / f.len().max(1) as f64;
+        (0..f.len())
+            .map(|i| {
+                let m = if marker[bin[i]] { s * MARKER_LIFT } else { 0.0 };
+                (s * beta * f[i] + generic[i] + m).exp() / norm
+            })
+            .collect()
+    })
+}
+
+/// The Poisson quantile at `u`: exact by summing the pmf for small rates,
+/// normal with continuity correction above 30.
+fn poisson_quantile(u: f64, lam: f64) -> f64 {
+    if lam <= 0.0 {
+        return 0.0;
+    }
+    if lam > 30.0 {
+        let z = std::f64::consts::SQRT_2 * (2.0 * u - 1.0).clamp(-0.999_999, 0.999_999).inv_error();
+        return (lam + lam.sqrt() * z + 0.5).floor().max(0.0);
+    }
+    let mut k = 0.0;
+    let mut p = (-lam).exp();
+    let mut cdf = p;
+    while cdf < u && k < 1000.0 {
+        k += 1.0;
+        p *= lam / k;
+        cdf += p;
+    }
+    k
+}
+
+fn poisson(rng: &mut SmallRng, rate: f64) -> f64 {
+    if rate > 0.0 {
+        Poisson::new(rate).map(|p| p.sample(rng)).unwrap_or(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// Non-zero entries of a count vector.
+fn nonzeros(c: impl Iterator<Item = f64>) -> Vec<(u32, f32)> {
+    c.enumerate()
+        .filter(|(_, v)| *v > 0.0)
+        .map(|(i, v)| (i as u32, v as f32))
+        .collect()
+}
+
+/// Mean of `a − b` over `subset`; NaN for an empty subset.
+fn sample_effect(a: &[f64], b: &[f64], subset: &[bool]) -> f64 {
+    let (mut s, mut k) = (0.0, 0usize);
+    for i in (0..a.len()).filter(|&i| subset[i]) {
+        s += a[i] - b[i];
+        k += 1;
+    }
+    if k == 0 {
+        f64::NAN
+    } else {
+        s / k as f64
+    }
+}
+
+/// What stays fixed through one run of a scenario.
+struct Run<'a> {
+    tissue: &'a Tissue,
+    base: &'a SimBase<'a>,
+    scen: &'a Scenario,
+    opts: &'a EffectOpts,
+    /// The run's seed; each random stream mixes in its own salt.
+    seed: u64,
+    /// The hidden field.
+    f: Vec<f64>,
+}
+
+impl Run<'_> {
+    fn ring_on(&self) -> bool {
+        self.scen.ring_effect != 0.0
+    }
+
+    /// The estimator sees a displaced ligand field.
+    fn shifted(&self) -> bool {
+        self.scen.shift > 0.0
+    }
+}
+
+/// Who truly makes ligand, and what is detected of it.
+struct TrueLigand {
+    /// The identity bins of the marker type; none without a marker scenario.
+    marker: Vec<bool>,
+    /// Each row's contacts' mean of the generic shift's hidden trait.
+    trait_near: Vec<f64>,
+    /// The true rate of each row, 0 for a non-producer.
+    rate: Vec<f64>,
+    /// The detected counts.
+    counts: Vec<f64>,
+}
+
+fn draw_ligand(run: &Run<'_>, shared: &SimShared<'_>, rng: &mut SmallRng) -> TrueLigand {
+    let (tissue, scen, f) = (run.tissue, run.scen, &run.f);
+    let n = tissue.n();
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let mut cal = shared.producers.clone();
+    let marker = if scen.marker {
+        marker_bins(&cal)
+    } else {
+        vec![false; n_bins(tissue)]
+    };
+    if scen.marker {
+        for (c, &m) in cal.iter_mut().zip(&marker) {
+            if !m {
+                c.p = 0.0;
+            }
+        }
+    }
+    // The generic shift's hidden trait, and each row's contacts' mean of it.
+    let trait_z: Vec<f64> = if scen.generic_shift != 0.0 {
+        let mut r = SmallRng::seed_from_u64(mix_seed(run.seed, 10));
+        (0..n).map(|_| StandardNormal.sample(&mut r)).collect()
+    } else {
+        vec![0.0; n]
+    };
+    let trait_near = tissue.contacts.mean(&trait_z);
+    let rate: Vec<f64> = (0..n)
+        .map(|i| {
+            let Producers { p, r, .. } = cal[bin[i]];
+            let pi = if p <= 0.0 {
+                0.0
+            } else {
+                let q = p.clamp(1e-9, 1.0 - 1e-9);
+                let eta = (q / (1.0 - q)).ln()
+                    + scen.confound_ligand * f[i]
+                    + scen.generic_shift * trait_z[i];
+                1.0 / (1.0 + (-eta).exp())
+            };
+            if rng.random::<f64>() < pi {
+                r
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let counts: Vec<f64> = (0..n).map(|i| poisson(rng, sf[i] * rate[i])).collect();
+    TrueLigand {
+        marker,
+        trait_near,
+        rate,
+        counts,
+    }
+}
+
+/// What receivers respond to: the latent dose.
+struct LatentExposure {
+    /// `T*`, the true contact exposure.
+    t: Vec<bool>,
+    /// `T*_ring`, the true ring exposure.
+    ring: Vec<bool>,
+    /// How much of the planted effect each receiver's true dose reaches.
+    dose_share: Vec<f64>,
+}
+
+fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
+    let (tissue, scen) = (run.tissue, run.scen);
+    let dose = tissue.contacts.sum(rate);
+    let tau = choose_threshold(&dose, run.opts);
+    let t = exposed(&dose, tau);
+    let ring = exposed(&tissue.ring_sum(rate), tau);
+    let dose_share: Vec<f64> = if scen.dose_response {
+        let mut pos: Vec<f64> = dose.iter().copied().filter(|&v| v > 0.0).collect();
+        pos.sort_by(f64::total_cmp);
+        let (q, order) = (scen.dose_midpoint, scen.dose_order);
+        let k = pos
+            .get(((pos.len() as f64 - 1.0) * q) as usize)
+            .copied()
+            .unwrap_or(1.0);
+        dose.iter()
+            .map(|&v| {
+                let (x, m) = (v.powi(order), k.powi(order));
+                x / (x + m).max(1e-300)
+            })
+            .collect()
+    } else {
+        vec![1.0; tissue.n()]
+    };
+    LatentExposure {
+        t,
+        ring,
+        dose_share,
+    }
+}
+
+/// What the estimator sees of the ligand and the receptor.
+struct SeenByEstimator {
+    exposure: Exposure,
+    /// Competence read from the receptor the estimator sees.
+    competent: Vec<bool>,
+    baselines: Baselines,
+    baseline_seconds: f64,
+}
+
+/// Detected counts, possibly displaced, possibly with neighbours' ligand bled
+/// into the own-ligand covariate; the estimator's own exposure rule on them;
+/// and the co-expression baselines on the same counts.
+fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
+    let (tissue, base, scen, opts) = (run.tissue, run.base, run.scen, run.opts);
+    let n = tissue.n();
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let lnorm: Vec<f64> = (0..n).map(|i| ligand_counts[i] / sf[i]).collect();
+    let seen = if run.shifted() {
+        shift_field(tissue, &lnorm, scen.shift, mix_seed(run.seed, 3))
+    } else {
+        lnorm
+    };
+    // The estimator's own exposure rule on the counts it sees.
+    let seen_counts: Vec<f64> = (0..n).map(|i| seen[i] * sf[i]).collect();
+    let mut exposure = Exposure::build(tissue, &seen_counts, opts);
+
+    // The receptor the estimator and the baselines see, and competence read
+    // from it by the estimator's own rule.
+    let sim_receptor;
+    let (receptor, competent): (&[f64], Vec<bool>) = if scen.confound_receptor {
+        sim_receptor = simulate_receptor(
+            tissue,
+            base.receptor_counts,
+            &run.f,
+            scen.confound_response,
+            mix_seed(run.seed, 6),
+        );
+        let detected: Vec<bool> = sim_receptor.iter().map(|&r| r > 0.0).collect();
+        (&sim_receptor, competence(bin, &detected, opts.competence()))
+    } else {
+        (base.receptor_counts, base.competent.to_vec())
+    };
+    let clock = std::time::Instant::now();
+    let coexpression_baselines = baselines(tissue, &seen_counts, receptor, mix_seed(run.seed, 8));
+    let baseline_seconds = clock.elapsed().as_secs_f64();
+    let kappa = scen.spillover;
+    let own_seen: Vec<f64> = if kappa > 0.0 {
+        let bled = tissue.contacts.sum(&seen_counts);
+        (0..n)
+            .map(|i| (seen_counts[i] + kappa * bled[i]) / sf[i])
+            .collect()
+    } else {
+        seen
+    };
+    exposure.own = own_seen.iter().map(|v| v.ln_1p()).collect();
+    SeenByEstimator {
+        exposure,
+        competent,
+        baselines: coexpression_baselines,
+        baseline_seconds,
+    }
+}
+
+/// Who responds, whom the estimator calls competent, and how the effect and
+/// the generic shift fall on them.
+struct Receivers {
+    responds: Vec<bool>,
+    comp: Vec<bool>,
+    /// The share of the planted effect per identity bin.
+    u_bin: Vec<f64>,
+    /// The generic shift on each row.
+    generic: Vec<f64>,
+}
+
+fn who_responds(run: &Run<'_>, ligand: &TrueLigand, competent: &[bool]) -> Receivers {
+    let (tissue, scen) = (run.tissue, run.scen);
+    let n = tissue.n();
+    let (bin, marker) = (&tissue.identity_bin, &ligand.marker);
+    let responds: Vec<bool> = (0..n)
+        .map(|i| {
+            if scen.marker {
+                marker[bin[i]]
+            } else {
+                competent[i]
+            }
+        })
+        .collect();
+    let comp: Vec<bool> = (0..n)
+        .map(|i| competent[i] || (scen.marker && marker[bin[i]]))
+        .collect();
+    let nb = n_bins(tissue);
+    let u_bin: Vec<f64> = if scen.heterogeneous {
+        let mut r = SmallRng::seed_from_u64(mix_seed(run.seed, 5));
+        (0..nb).map(|_| 0.5 + r.random::<f64>()).collect()
+    } else {
+        vec![1.0; nb]
+    };
+    let generic: Vec<f64> = (0..n)
+        .map(|i| {
+            if comp[i] {
+                scen.generic_shift * ligand.trait_near[i]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    Receivers {
+        responds,
+        comp,
+        u_bin,
+        generic,
+    }
+}
+
+/// One programme gene's counts: observed, and potential in `T*` at the realized
+/// ring exposure and in the ring exposure at the realized `T*`. The ring's are
+/// left empty when no effect reaches it.
+struct GeneCounts {
+    obs: Vec<f64>,
+    c1: Vec<f64>,
+    c0: Vec<f64>,
+    d1: Vec<f64>,
+    d0: Vec<f64>,
+    /// The observed counts as measured, with spillover.
+    measured: Vec<f64>,
+}
+
+impl GeneCounts {
+    fn new(n: usize, ring_on: bool) -> Self {
+        let ring = if ring_on { n } else { 0 };
+        Self {
+            obs: vec![0.0; n],
+            c1: vec![0.0; n],
+            c0: vec![0.0; n],
+            d1: vec![0.0; ring],
+            d0: vec![0.0; ring],
+            measured: vec![0.0; n],
+        }
+    }
+}
+
+/// Draw gene `g`'s counts from one shared uniform per receiver, so that
+/// potential counts differ by the effect alone.
+fn draw_gene(
+    run: &Run<'_>,
+    g: usize,
+    lifts: &[Vec<f64>; 2],
+    latent: &LatentExposure,
+    receivers: &Receivers,
+    c: &mut GeneCounts,
+    rng: &mut SmallRng,
+) {
+    let (tissue, base, scen) = (run.tissue, run.base, run.scen);
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let ng = base.target_weights.len();
+    let ring_on = run.ring_on();
+    let (t_star, r_star) = (&latent.t, &latent.ring);
+    let w = base.target_weights[g];
+    let s = if w < 0.0 { -1.0 } else { 1.0 };
+    let lift = &lifts[(w < 0.0) as usize];
+    for i in 0..tissue.n() {
+        let b = bin[i];
+        let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
+        let u: f64 = rng.random();
+        let (th, thr) = if receivers.responds[i] {
+            (
+                s * scen.effect * receivers.u_bin[b] * latent.dose_share[i],
+                s * scen.ring_effect * receivers.u_bin[b],
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        let q = |l: f64| poisson_quantile(u, r0 * l.exp());
+        let ring_lift = if r_star[i] { thr } else { 0.0 };
+        let hi = q(th + ring_lift);
+        let lo = if th == 0.0 { hi } else { q(ring_lift) };
+        c.c1[i] = hi;
+        c.c0[i] = lo;
+        c.obs[i] = if t_star[i] { hi } else { lo };
+        if ring_on {
+            let contact = if t_star[i] { th } else { 0.0 };
+            // The count at the ring exposure r* does not have.
+            let other = if thr == 0.0 {
+                c.obs[i]
+            } else {
+                q(contact + if r_star[i] { 0.0 } else { thr })
+            };
+            (c.d1[i], c.d0[i]) = if r_star[i] {
+                (c.obs[i], other)
+            } else {
+                (other, c.obs[i])
+            };
+        }
+    }
+}
+
+/// The programme's responses: as measured (`y_seen`), and potential in `T*`
+/// (`y1`, `y0`) and in the ring exposure (`yd1`, `yd0`, empty when no effect
+/// reaches it), with the bleed covariate. Potential counts carry the realized
+/// bleed, so the truths are on the measured scale.
+struct ProgrammeResponses {
+    y_seen: Vec<f64>,
+    y1: Vec<f64>,
+    y0: Vec<f64>,
+    yd1: Vec<f64>,
+    yd0: Vec<f64>,
+    bleed: Vec<f64>,
+}
+
+impl ProgrammeResponses {
+    fn new(n: usize, ring_on: bool) -> Self {
+        let ring = if ring_on { n } else { 0 };
+        Self {
+            y_seen: vec![0.0; n],
+            y1: vec![0.0; n],
+            y0: vec![0.0; n],
+            yd1: vec![0.0; ring],
+            yd0: vec![0.0; ring],
+            bleed: vec![0.0; n],
+        }
+    }
+
+    /// Accumulate a gene of weight `w`, its counts first taking the bleed from
+    /// the neighbours' observed counts, shared by every potential count of the
+    /// receiver.
+    fn add_gene(&mut self, run: &Run<'_>, w: f64, bin_cells: &[usize], c: &mut GeneCounts) {
+        let tissue = run.tissue;
+        let n = tissue.n();
+        let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+        let kappa = run.scen.spillover;
+        let ring_on = run.ring_on();
+        let bled: Vec<f64> = if kappa > 0.0 {
+            tissue
+                .contacts
+                .sum(&c.obs)
+                .into_iter()
+                .map(|b| kappa * b)
+                .collect()
+        } else {
+            vec![0.0; n]
+        };
+        for i in 0..n {
+            c.measured[i] = c.obs[i] + bled[i];
+            c.c1[i] += bled[i];
+            c.c0[i] += bled[i];
+            self.y_seen[i] += w * (c.measured[i] / sf[i]).ln_1p();
+            self.y1[i] += w * (c.c1[i] / sf[i]).ln_1p();
+            self.y0[i] += w * (c.c0[i] / sf[i]).ln_1p();
+            if ring_on {
+                self.yd1[i] += w * ((c.d1[i] + bled[i]) / sf[i]).ln_1p();
+                self.yd0[i] += w * ((c.d0[i] + bled[i]) / sf[i]).ln_1p();
+            }
+        }
+        // The bleed covariate from the measured counts, as
+        // [`super::super::response::programme_columns`] reads them: bin means,
+        // then expected neighbour counts.
+        let mut m = vec![0.0; bin_cells.len()];
+        for i in 0..n {
+            m[bin[i]] += c.measured[i] / sf[i];
+        }
+        for (mb, &k) in m.iter_mut().zip(bin_cells) {
+            *mb /= k.max(1) as f64;
+        }
+        for (o, x) in self
+            .bleed
+            .iter_mut()
+            .zip(expected_bleed(&m, bin, &tissue.contacts, sf))
+        {
+            *o += w * x;
+        }
+    }
+
+    fn divide_by(&mut self, total_w: f64) {
+        for v in [
+            &mut self.y_seen,
+            &mut self.y1,
+            &mut self.y0,
+            &mut self.yd1,
+            &mut self.yd0,
+            &mut self.bleed,
+        ] {
+            for x in v.iter_mut() {
+                *x /= total_w;
+            }
+        }
+    }
+}
+
+/// The programme, gene by gene.
+fn draw_programme(
+    run: &Run<'_>,
+    lifts: &[Vec<f64>; 2],
+    latent: &LatentExposure,
+    receivers: &Receivers,
+    rng: &mut SmallRng,
+) -> ProgrammeResponses {
+    let (tissue, weights) = (run.tissue, run.base.target_weights);
+    let n = tissue.n();
+    let mut bin_cells = vec![0usize; n_bins(tissue)];
+    for &b in tissue.identity_bin.iter() {
+        bin_cells[b] += 1;
+    }
+    let mut counts = GeneCounts::new(n, run.ring_on());
+    let mut out = ProgrammeResponses::new(n, run.ring_on());
+    for (g, &w) in weights.iter().enumerate() {
+        draw_gene(run, g, lifts, latent, receivers, &mut counts, rng);
+        out.add_gene(run, w, &bin_cells, &mut counts);
+    }
+    let total_w: f64 = weights.iter().map(|w| w.abs()).sum::<f64>().max(1e-12);
+    out.divide_by(total_w);
+    out
+}
+
+/// Share of competent receivers whose seen exposure is not their true exposure.
+fn misclassified_share(comp: &[bool], seen: &[bool], truth: &[bool]) -> f64 {
+    let k = comp.iter().filter(|&&c| c).count();
+    let miss = (0..comp.len())
+        .filter(|&i| comp[i] && seen[i] != truth[i])
+        .count();
+    miss as f64 / k.max(1) as f64
+}
+
+/// The run's background programmes, each from its own stream.
+fn background_responses(run: &Run<'_>, lifts: &[Vec<f64>; 2]) -> Vec<Response> {
+    let (tissue, base) = (run.tissue, run.base);
+    (0..run.opts.background_draws)
+        .into_par_iter()
+        .map(|k| {
+            let seed = mix_seed(mix_seed(run.seed, 9), k as u64);
+            let nz = simulate_background(tissue, base, lifts, run.scen.spillover, seed);
+            let genes: Vec<(f64, &[(u32, f32)])> = base
+                .target_weights
+                .iter()
+                .zip(&nz)
+                .map(|(&w, v)| (w, v.as_slice()))
+                .collect();
+            Response::build(tissue, &genes)
+        })
+        .collect()
+}
+
+/// The sample average effect of `T*` over the competent receivers, and the same
+/// contrast under the overlap weights `h`.
+fn effect_truths(y1: &[f64], y0: &[f64], comp: &[bool], h: &[f64]) -> (f64, f64) {
+    let (mut num, mut den) = (0.0, 0.0);
+    for i in (0..h.len()).filter(|&i| comp[i]) {
+        num += h[i] * (y1[i] - y0[i]);
+        den += h[i];
+    }
+    let weighted = if den > 0.0 { num / den } else { f64::NAN };
+    (sample_effect(y1, y0, comp), weighted)
+}
+
+/// The verdict `lra` would give this run alone.
+fn run_verdict(
+    tissue: &Tissue,
+    rows: Rows<'_>,
+    seen: &SeenByEstimator,
+    avg: &ThresholdAverage,
+    n_genes: usize,
+) -> Verdict {
+    let e = avg.scopes[0];
+    let mut judged = EffectRow::pending(
+        e,
+        (seen.baselines.coexpr_log_or, seen.baselines.coexpr_se),
+        eta_squared(
+            &tissue.neighbour_bin,
+            &indicator(&seen.exposure.leaned_on(e.abf)),
+            &rows.scope_rows[0],
+        ),
+        (avg.background, avg.over_background),
+        n_genes,
+    );
+    report(std::slice::from_mut(&mut judged), &ReportOpts::default());
+    judged.verdict
+}
+
+/// One run of `scen` on `base`, with the pair's shared ingredients
+/// computed once ([`super::SimShared`]); see the module doc.
+pub fn simulate(
+    tissue: &Tissue,
+    base: &SimBase<'_>,
+    shared: &SimShared<'_>,
+    scen: &Scenario,
+    opts: &EffectOpts,
+    seed: u64,
+) -> anyhow::Result<SimRow> {
+    let start = std::time::Instant::now();
+    let n = tissue.n();
+    let bin = &tissue.identity_bin;
+    let nb = n_bins(tissue);
+    let ng = base.target_weights.len();
+    anyhow::ensure!(ng > 0, "the programme has no genes");
+    anyhow::ensure!(
+        base.target_bin_means.len() == nb * ng,
+        "programme bin means are {} long, expected {nb} bins × {ng} genes",
+        base.target_bin_means.len()
+    );
+    let seed = mix_seed(seed, scen.rep as u64);
+    let f = confounding(tissue, base, shared, scen, mix_seed(seed, 1))?;
+    let run = Run {
+        tissue,
+        base,
+        scen,
+        opts,
+        seed,
+        f,
+    };
+
+    // The ligand and the programme draw from this one stream, ligand first.
+    let mut rng = SmallRng::seed_from_u64(mix_seed(seed, 2));
+    let ligand = draw_ligand(&run, shared, &mut rng);
+    let latent = latent_exposure(&run, &ligand.rate);
+    let seen = seen_by_estimator(&run, &ligand.counts);
+    let exposure = &seen.exposure;
+    let receivers = who_responds(&run, &ligand, &seen.competent);
+    let comp = &receivers.comp;
+
+    let beta = scen.confound_response;
+    let lifts = sign_lifts(&run.f, beta, &receivers.generic, &ligand.marker, bin);
+    let ProgrammeResponses {
+        y_seen,
+        y1,
+        y0,
+        yd1,
+        yd0,
+        bleed,
+    } = draw_programme(&run, &lifts, &latent, &receivers, &mut rng);
+    let ring_truth = if run.shifted() || !run.ring_on() {
+        0.0
+    } else {
+        sample_effect(&yd1, &yd0, comp)
+    };
+    drop((yd1, yd0));
+    let misclassified = misclassified_share(comp, &exposure.t, &latent.t);
+
+    let response = Response {
+        spill: tissue.contacts.mean(&y_seen),
+        y: y_seen,
+        bleed,
+    };
+    let background_lifts = sign_lifts(
+        &run.f,
+        beta * scen.background_confounding,
+        &receivers.generic,
+        &ligand.marker,
+        bin,
+    );
+
+    // The estimands over the exposure thresholds, as `lra` reads them; a fixed
+    // threshold has no others here, no curve being read.
+    let levels = std::slice::from_ref(comp);
+    let taus = if opts.threshold.is_none() {
+        thresholds(exposure, levels, opts)
+    } else {
+        Vec::new()
+    };
+    let rows = Rows::cells(tissue).pooled();
+    let avg = over_thresholds(
+        rows,
+        exposure,
+        &taus,
+        std::slice::from_ref(&response),
+        || background_responses(&run, &background_lifts),
+        levels,
+        Sensitivity {
+            nospill: scen.spillover > 0.0,
+            steps: true,
+        },
+        opts,
+    )?;
+    let e = avg.scopes[0];
+    // The displaced field the estimator sees has no effect.
+    let (truth, truth_weighted) = if run.shifted() {
+        (0.0, 0.0)
+    } else {
+        effect_truths(&y1, &y0, comp, &avg.h)
+    };
+    let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
+    let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
+    let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
+    Ok(SimRow {
+        ligand: base.ligand.into(),
+        receptor: base.receptor.into(),
+        scenario: *scen,
+        truth,
+        truth_weighted,
+        estimate: e.competent,
+        marginal_cor,
+        crude: e.crude,
+        ipw: e.ipw,
+        outcome: e.outcome,
+        incompetent: e.incompetent,
+        ring: e.ring,
+        ring_truth,
+        no_spill: e.nospill,
+        steps: e.steps,
+        contrast: e.effect,
+        over_ring: e.over_ring,
+        background: avg.background,
+        over_background: avg.over_background,
+        verdict: run_verdict(tissue, rows, &seen, &avg, ng),
+        misclassified,
+        baselines: seen.baselines,
+        seconds: start.elapsed().as_secs_f64(),
+        baseline_seconds: seen.baseline_seconds,
+    })
+}
+
+/// The receptor driven by the hidden field: `Poisson(sf · ρ_b · e^{γ f} /
+/// mean e^{γ f})`, `ρ_b` the real receptor's mean count / size factor in
+/// identity bin `b`.
+fn simulate_receptor(tissue: &Tissue, real: &[f64], f: &[f64], gamma: f64, seed: u64) -> Vec<f64> {
+    let n = tissue.n();
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let nb = n_bins(tissue);
+    let (mut rho, mut cells) = (vec![0.0; nb], vec![0usize; nb]);
+    for i in 0..n {
+        rho[bin[i]] += real[i] / sf[i];
+        cells[bin[i]] += 1;
+    }
+    for (r, &c) in rho.iter_mut().zip(&cells) {
+        *r /= c.max(1) as f64;
+    }
+    let norm = f.iter().map(|z| (gamma * z).exp()).sum::<f64>() / n.max(1) as f64;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..n)
+        .map(|i| poisson(&mut rng, sf[i] * rho[bin[i]] * (gamma * f[i]).exp() / norm))
+        .collect()
+}

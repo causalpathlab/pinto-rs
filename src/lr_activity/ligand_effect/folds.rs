@@ -7,7 +7,7 @@
 //! predicted by nuisance models that never saw its neighbourhood (except
 //! at tile edges).
 
-use super::overlap::CrossFit;
+use super::crossfit::CrossFit;
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;
 

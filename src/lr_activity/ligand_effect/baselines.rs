@@ -1,4 +1,5 @@
-//! Co-expression baselines for `pinto lra-simulate`: the ligand–receptor
+//! Co-expression baselines for the `pinto lra-simulate` benchmark, of which
+//! [`coexpression`] is also the column `pinto lra` reports: the ligand–receptor
 //! statistics in common use, none of which adjusts for a confounder, each
 //! asked the same question as the estimator ("is the pair interacting?")
 //! and tested at the same 5% level, one-sided (more co-expression than
@@ -30,7 +31,7 @@
 //!   over both orientations of every contact. Null: ligand permuted across
 //!   cells within each section, sharing the permutations of Moran's I.
 //! - The co-expression log odds ratio `pinto lra` reports
-//!   ([`super::estimate::coexpression`], Jeffreys), with its normal p.
+//!   ([`coexpression`], Jeffreys), with its normal p.
 //!
 //! Permutation p-values are `(1 + #{null ≥ observed}) / (1 + permutations)`.
 //! Permutations run in seeded chunks, a round of chunks in parallel, so a
@@ -48,9 +49,9 @@
 //! rows instead would change the statistic and save nothing on a tissue of
 //! a few thousand receivers.
 
-use super::estimate::coexpression;
-use super::overlap::upper_normal_p;
+use super::inference::upper_normal_p;
 use super::tissue::Tissue;
+use crate::lr_activity::edge_scores::jeffreys_log_odds;
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;
 use rand::rngs::SmallRng;
@@ -59,7 +60,7 @@ use rand::SeedableRng;
 
 /// Permutations of every permutation baseline. Bonferroni over up to 64
 /// type pairs needs `64 / (1 + P) < 0.05`, so `P ≥ 1280`.
-pub const PERMUTATIONS: usize = 2000;
+const PERMUTATIONS: usize = 2000;
 
 /// Permutations per chunk, each chunk with its own seed.
 const CHUNK: usize = 100;
@@ -68,15 +69,15 @@ const CHUNK: usize = 100;
 const ROUND: usize = 5;
 
 /// Leading identity bits kept as cell types (at most `2^3 = 8` types).
-pub const TYPE_BITS: usize = 3;
+const TYPE_BITS: usize = 3;
 
 /// Least detection share of the ligand in the sender type and of the
 /// receptor in the receiver type for a type pair to be tested
 /// (CellPhoneDB's default threshold).
-pub const MIN_DETECTED: f64 = 0.1;
+const MIN_DETECTED: f64 = 0.1;
 
 /// The level every method is tested at.
-pub const ALPHA: f64 = 0.05;
+const ALPHA: f64 = 0.05;
 
 /// One run's baselines: each statistic and its one-sided p (NaN where the
 /// statistic is undefined, which never rejects).
@@ -332,4 +333,40 @@ fn spatial(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, f64
         c_obs,
         perm_p(exceed[1], perms),
     )
+}
+
+/// The co-expression log odds over the contacts inside the scope, both
+/// orientations: the Jeffreys log odds ratio of ligand detected in the sender
+/// and receptor detected in the receiver, and its SE.
+pub fn coexpression(
+    tissue: &Tissue,
+    ligand_counts: &[f64],
+    receptor_counts: &[f64],
+    inside: &[bool],
+) -> (f64, f64) {
+    let (mut n, mut n11, mut nl, mut nr) = (0usize, 0usize, 0usize, 0usize);
+    for (i, adj) in tissue.contacts.adj.iter().enumerate() {
+        if !inside[i] {
+            continue;
+        }
+        let l = ligand_counts[i] > 0.0;
+        for &j in adj {
+            let j = j as usize;
+            if !inside[j] {
+                continue;
+            }
+            // Each contact is visited from both ends: one oriented instance
+            // per visit, sender i, receiver j.
+            let r = receptor_counts[j] > 0.0;
+            n += 1;
+            nl += l as usize;
+            nr += r as usize;
+            n11 += (l && r) as usize;
+        }
+    }
+    if n == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let (lor, se) = jeffreys_log_odds(n, n11, nl, nr);
+    (lor as f64, se as f64)
 }

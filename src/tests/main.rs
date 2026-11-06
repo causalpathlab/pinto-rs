@@ -115,7 +115,7 @@ fn lra_help_lists_every_verdict() {
         .expect("lra")
         .render_long_help()
         .to_string();
-    for v in lr_activity::ligand_effect::output::Verdict::ALL {
+    for v in lr_activity::ligand_effect::verdict::Verdict::ALL {
         assert!(
             help.contains(v.code()),
             "{} missing from lra --help",

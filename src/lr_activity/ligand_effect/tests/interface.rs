@@ -1,10 +1,12 @@
 //! What users see: the verdict vocabulary, the study JSON, file names.
 
-use crate::lr_activity::ligand_effect::estimate::{self, Evidence, Moments};
-use crate::lr_activity::ligand_effect::output::{percent_text, verdict_help, Verdict};
-use crate::lr_activity::ligand_effect::overlap::Estimate;
+use crate::lr_activity::ligand_effect::inference::Estimate;
+use crate::lr_activity::ligand_effect::output::percent_text;
+use crate::lr_activity::ligand_effect::output::{lra_path, lra_simulate_path};
+use crate::lr_activity::ligand_effect::rows::Moments;
 use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
-use crate::lr_activity::ligand_effect::{lra_path, lra_simulate_path};
+use crate::lr_activity::ligand_effect::verdict;
+use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
 
 // * Verdicts
 
@@ -47,7 +49,7 @@ fn every_verdict_has_one_code_and_a_note() {
             control_failed: bits & 8 != 0,
             confounded: bits & 16 != 0,
         };
-        seen.insert(estimate::verdict(e));
+        seen.insert(verdict::verdict(e));
     }
     assert_eq!(seen.len(), Verdict::ALL.len());
     let help = verdict_help();
@@ -154,4 +156,16 @@ fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
 fn outputs_are_named_lra() {
     assert_eq!(lra_path("res/run"), "res/run.lra.parquet");
     assert_eq!(lra_simulate_path("res/run"), "res/run.lra-simulate.parquet");
+}
+
+/// A section literally named like the pooled row, or a cell-type row, is
+/// relabelled so the per-section rows cannot collide with them.
+#[test]
+fn section_labels_never_collide_with_the_pooled_row() {
+    use crate::lr_activity::ligand_effect::tissue::section_label;
+    use crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS;
+    assert_eq!(&*section_label("slide1"), "slide1");
+    assert_ne!(&*section_label(ALL_SECTIONS), ALL_SECTIONS);
+    assert_eq!(&*section_label("type:T"), "section:type:T");
+    assert_ne!(section_label("section:all"), section_label("all"));
 }
