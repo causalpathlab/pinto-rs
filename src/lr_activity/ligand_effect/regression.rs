@@ -159,7 +159,7 @@ thread_local! {
 /// Logistic ridge by iteratively reweighted least squares on `[X | cols]`
 /// over `rows`, `X` being the first `p` columns of `x`. Intercept
 /// unpenalized. `init` starts Newton from a nearby solution (the same fold's
-/// on the previous draw): the penalized problem is strictly convex, so the
+/// on the previous threshold): the penalized problem is strictly convex, so the
 /// start changes only how many steps reach the one optimum.
 ///
 /// Memory traffic, not arithmetic, is what limits many fits side by side, so

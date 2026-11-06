@@ -2,12 +2,12 @@ mod adjustment;
 mod averaging;
 mod baselines;
 mod benchmark;
+mod combining;
 mod covariates;
 mod interface;
 mod only;
 mod overlap;
 mod pairs;
-mod pseudobulk;
 #[cfg(feature = "view")]
 mod receivers;
 mod reporting;
@@ -17,22 +17,22 @@ mod targets;
 // * Shared helpers
 
 use super::estimate::{
-    effects_on, estimate_pair_with, DecoyPool, DrawFits, EffectOpts, EffectRow, Effects, Exposure,
-    PairData, Response, Rows, Sensitivity,
+    effects_on, estimate_pair_with, BackgroundPool, EffectOpts, EffectRow, Effects, Exposure,
+    PairData, Response, Rows, Sensitivity, ThresholdFits,
 };
 use super::simulate::{calibrate_producers, Scenario, SimBase, SimRow, SimShared};
 use super::tissue::Tissue;
 
-/// One pair's rows without a decoy.
+/// One pair's rows without a background.
 pub(super) fn estimate_pair(
     tissue: &Tissue,
     pair: &PairData<'_>,
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<EffectRow>> {
-    estimate_pair_with(tissue, pair, &DecoyPool::default(), opts).map(|(rows, _)| rows)
+    estimate_pair_with(tissue, pair, &BackgroundPool::default(), opts)
 }
 
-/// [`effects_on`] with the draw's propensities fitted for it.
+/// [`effects_on`] with the threshold's propensities fitted for it.
 pub(super) fn fitted_effects(
     rows: Rows<'_>,
     x: &Exposure,
@@ -42,7 +42,7 @@ pub(super) fn fitted_effects(
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
     let mut starts = crate::lr_activity::ligand_effect::estimate::Starts::default();
-    let fits = DrawFits::new(rows, x, levels, opts, &mut starts.main)?.with_controls(
+    let fits = ThresholdFits::new(rows, x, levels, opts, &mut starts.main)?.with_controls(
         rows,
         sens.steps,
         opts,

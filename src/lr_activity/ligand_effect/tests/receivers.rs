@@ -140,8 +140,8 @@ fn a_pair_on_the_map_is_what_the_estimate_saw() {
         &w.receptor,
         None,
     );
-    let (ex, a) = Exposure::build(t, &w.ligand, &opts);
-    assert_eq!(map.exposure, a);
+    let ex = Exposure::build(t, &w.ligand, &opts);
+    assert_eq!(map.exposure, ex.dose);
     assert_eq!(map.threshold, ex.tau);
     assert_eq!(map.exposed, ex.t);
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
@@ -195,7 +195,7 @@ fn a_pair_on_the_map_is_what_the_estimate_saw() {
         &w.receptor,
         Some(2.5),
     );
-    let want: Vec<bool> = a.iter().map(|&x| x > 2.5).collect();
+    let want: Vec<bool> = ex.dose.iter().map(|&x| x > 2.5).collect();
     assert_eq!(higher.exposed, want);
     // A threshold that is not a number is chosen as the estimate would.
     let nan = pair_map(

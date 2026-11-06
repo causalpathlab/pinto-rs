@@ -512,7 +512,7 @@ pub struct LraOptions {
     pub species: String,
     pub seed: u64,
     /// The genes the receivers' identity left out (every pair's genes and
-    /// the decoys), by name: the viewer reads the receivers with these
+    /// the background programmes), by name: the viewer reads the receivers with these
     /// rather than the files above, which may have moved. Thousands of
     /// names, kept on one line ([`comma_list`]). Empty in a manifest from
     /// before 0.16.4.

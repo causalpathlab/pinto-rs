@@ -128,7 +128,7 @@ fn the_example_study_round_trips_to_the_default() {
 fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
     let s = Study::from_json(
         r#"{"reps": 2, "scenarios": {"effect_sizes": [0.2, 0.5], "confounders": ["fourier"],
-            "shapes": ["linear", "interaction"], "marker": false}}"#,
+            "shapes": ["linear", "quadratic"], "marker": false}}"#,
     )
     .unwrap();
     assert_eq!(s.reps, 2);
@@ -143,6 +143,7 @@ fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
         .all(|x| x.confounder == ConfounderKind::Fourier));
     assert!(Study::from_json(r#"{"scenarios": {"effect_size": [0.2]}}"#).is_err());
     assert!(Study::from_json(r#"{"repz": 2}"#).is_err());
+    assert!(Study::from_json(r#"{"scenarios": {"shapes": ["interaction"]}}"#).is_err());
     assert!(Study::from_json(r#"{"reps": 0}"#).is_err());
     assert!(Study::from_json(r#"{"scenarios": {"shapes": ["cubic"]}}"#).is_err());
 }
