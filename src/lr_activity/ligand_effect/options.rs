@@ -35,6 +35,8 @@ pub const BACKGROUND_POOL: usize = 2000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EffectOpts {
+    /// Keep the main fit's arm weights per threshold, for a simulated truth.
+    pub keep_arm_weights: bool,
     /// Exposure threshold τ; `None` picks it per pair
     /// ([`super::dose::choose_threshold`]).
     pub threshold: Option<f64>,
@@ -70,6 +72,7 @@ pub struct EffectOpts {
 impl Default for EffectOpts {
     fn default() -> Self {
         Self {
+            keep_arm_weights: false,
             threshold: None,
             competences: &[0.1],
             curve: true,

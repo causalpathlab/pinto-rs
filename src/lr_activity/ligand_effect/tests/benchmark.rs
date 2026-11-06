@@ -75,10 +75,13 @@ fn truth_is_free_of_the_estimator() {
     let other = run_sim(&f.tissue, &b, &scen, &heavy, 5).unwrap();
     assert!(plain.truth > 0.1, "truth {}", plain.truth);
     assert_eq!(
-        plain.truth, other.truth,
-        "the estimator does not move the truth"
+        plain.truth_exposed, other.truth_exposed,
+        "the estimator does not move the effect among the exposed"
     );
-    assert_ne!(plain.truth_weighted, other.truth_weighted);
+    assert_ne!(
+        plain.truth, other.truth,
+        "the arms carry the estimator's weights"
+    );
     assert!(
         plain.misclassified > 0.05,
         "dropout should misclassify exposure ({:.3})",

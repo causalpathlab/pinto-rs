@@ -23,9 +23,9 @@ pub struct ThresholdAverage {
     /// effect at the middle competence threshold and that effect's cluster
     /// sums, what a curve reads.
     pub points: Vec<(f64, Estimate, Vec<f64>)>,
-    /// The main fit's overlap weights at the headline threshold under the
-    /// first weighting; empty when that fit was skipped.
-    pub h: Vec<f64>,
+    /// The main fit's arm weights under the first weighting, one per point of
+    /// `points`; empty unless [`super::options::EffectOpts::keep_arm_weights`].
+    pub arm_weights: Vec<Vec<f64>>,
 }
 
 /// The thresholds a pair is read at beyond the headline: none without
@@ -69,7 +69,7 @@ pub fn over_thresholds(
     let mut starts = Starts::default();
     let mut at_tau: Vec<Vec<ScopeEffects>> = Vec::with_capacity(grid.len());
     let mut points = Vec::with_capacity(grid.len());
-    let mut h = Vec::new();
+    let mut arm_weights = Vec::new();
     let mut background_responses: Vec<Response> = Vec::new();
     let mut background_at: Vec<Vec<Estimate>> = Vec::with_capacity(grid.len());
     for (g, &tau) in grid.iter().enumerate() {
@@ -94,8 +94,8 @@ pub fn over_thresholds(
             if w == 0 {
                 let head = &per_c.levels[mid];
                 points.push((tau, head.scopes[0].competent, head.pooled_sums.clone()));
-                if g == 0 {
-                    h = per_c.h;
+                if opts.keep_arm_weights {
+                    arm_weights.push(per_c.arm_weight);
                 }
             }
             per_weighting.push(combine_levels(per_c.levels, mid));
@@ -135,7 +135,7 @@ pub fn over_thresholds(
         background,
         over_background,
         points,
-        h,
+        arm_weights,
     })
 }
 

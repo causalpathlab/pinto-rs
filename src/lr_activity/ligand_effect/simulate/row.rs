@@ -10,13 +10,14 @@ pub struct SimRow {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
     pub scenario: Scenario,
-    /// Sample average effect of the true exposure over competent receivers
-    /// on the analysed rows; independent of the estimator.
-    /// Over all competent receivers: under a dose response, those with no true
-    /// dose count at zero, so this sits below the effect among the exposed.
+    /// What the estimate targets: the realized effect contrasted between the
+    /// arms the estimator sees, under its arm weights, at each threshold, and
+    /// averaged over thresholds by the estimate's own weights.
     pub truth: f64,
-    /// The same contrast under the overlap weights at the headline threshold.
-    pub truth_weighted: f64,
+    /// Mean effect among the truly exposed competent receivers, without the
+    /// estimator. Below `truth`, it shows what misclassified exposure costs;
+    /// above it, what leaning to high thresholds adds.
+    pub truth_exposed: f64,
     pub estimate: Estimate,
     pub marginal_cor: Estimate,
     pub crude: Estimate,

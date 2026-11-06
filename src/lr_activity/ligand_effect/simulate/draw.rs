@@ -5,6 +5,7 @@ use super::fields::{confounding, shift_field, SimShared};
 use super::row::SimRow;
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
+use crate::lr_activity::ligand_effect::averaging::abf_weights;
 use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
 use crate::lr_activity::ligand_effect::contacts::competence;
 use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
@@ -607,16 +608,55 @@ fn background_responses(run: &Run<'_>, lifts: &[Vec<f64>; 2]) -> Vec<Response> {
         .collect()
 }
 
-/// The sample average effect of `T*` over the competent receivers, and the same
-/// contrast under the overlap weights `h`.
-fn effect_truths(y1: &[f64], y0: &[f64], comp: &[bool], h: &[f64]) -> (f64, f64) {
-    let (mut num, mut den) = (0.0, 0.0);
-    for i in (0..h.len()).filter(|&i| comp[i]) {
-        num += h[i] * (y1[i] - y0[i]);
-        den += h[i];
+/// `effect` contrasted between the seen arms `t` over the competent receivers,
+/// each arm's mean under `weight`. An empty arm has no contrast.
+pub fn seen_contrast(effect: &[f64], t: &[bool], comp: &[bool], weight: &[f64]) -> f64 {
+    let (mut num, mut den) = ([0.0; 2], [0.0; 2]);
+    for i in (0..effect.len()).filter(|&i| comp[i]) {
+        let arm = t[i] as usize;
+        num[arm] += weight[i] * effect[i];
+        den[arm] += weight[i];
     }
-    let weighted = if den > 0.0 { num / den } else { f64::NAN };
-    (sample_effect(y1, y0, comp), weighted)
+    if den[0] > 0.0 && den[1] > 0.0 {
+        num[1] / den[1] - num[0] / den[0]
+    } else {
+        f64::NAN
+    }
+}
+
+/// [`SimRow::truth`] and [`SimRow::truth_exposed`].
+fn effect_truths(
+    y1: &[f64],
+    y0: &[f64],
+    t_star: &[bool],
+    comp: &[bool],
+    dose: &[f64],
+    avg: &ThresholdAverage,
+    opts: &EffectOpts,
+) -> (f64, f64) {
+    let averaged = if opts.threshold.is_some() {
+        1
+    } else {
+        avg.points.len()
+    };
+    let realized: Vec<f64> = (0..y1.len())
+        .map(|i| if t_star[i] { y1[i] - y0[i] } else { 0.0 })
+        .collect();
+    let parts: Vec<_> = avg.points[..averaged].iter().map(|p| p.1).collect();
+    let (weights, _) = abf_weights(&parts, opts.abf_prior_sd * opts.abf_prior_sd);
+    let truth = if weights.is_empty() {
+        f64::NAN
+    } else {
+        weights
+            .iter()
+            .map(|&(k, w)| {
+                let t = exposed(dose, avg.points[k].0);
+                w * seen_contrast(&realized, &t, comp, &avg.arm_weights[k])
+            })
+            .sum()
+    };
+    let among: Vec<bool> = (0..y1.len()).map(|i| comp[i] && t_star[i]).collect();
+    (truth, sample_effect(y1, y0, &among))
 }
 
 /// The verdict `lra` would give this run alone.
@@ -654,6 +694,10 @@ pub fn simulate(
     seed: u64,
 ) -> anyhow::Result<SimRow> {
     let start = std::time::Instant::now();
+    let opts = &EffectOpts {
+        keep_arm_weights: true,
+        ..*opts
+    };
     let n = tissue.n();
     let bin = &tissue.identity_bin;
     let nb = n_bins(tissue);
@@ -739,10 +783,10 @@ pub fn simulate(
     )?;
     let e = avg.scopes[0];
     // The displaced field the estimator sees has no effect.
-    let (truth, truth_weighted) = if run.shifted() {
+    let (truth, truth_exposed) = if run.shifted() {
         (0.0, 0.0)
     } else {
-        effect_truths(&y1, &y0, comp, &avg.h)
+        effect_truths(&y1, &y0, &latent.t, comp, &exposure.dose, &avg, opts)
     };
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
@@ -752,7 +796,7 @@ pub fn simulate(
         receptor: base.receptor.into(),
         scenario: *scen,
         truth,
-        truth_weighted,
+        truth_exposed,
         estimate: e.competent,
         marginal_cor,
         crude: e.crude,

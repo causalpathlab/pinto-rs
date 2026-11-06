@@ -148,5 +148,5 @@ fn spillover_truth_is_on_the_measured_scale() {
         3,
     )
     .unwrap();
-    assert!(null.truth.abs() < 1e-12 && null.truth_weighted.abs() < 1e-12);
+    assert!(null.truth.abs() < 1e-12 && null.truth_exposed.abs() < 1e-12);
 }

@@ -46,16 +46,15 @@
 //!    not simulated, so these results do not speak to it (future work).
 //!    Composition confounding comes free: `p_b`, `r_b` and `μ_{b,g}` follow identity,
 //!    and neighbours' identities are correlated.
-//! 4. **Truths**, two of them. `truth` is the sample average effect of
-//!    `T*` on the response over competent receivers,
-//!    `mean (y(T* = 1) − y(T* = 0))` at the realized ring exposure, defined
-//!    without the estimator: no weights, no detected exposure. It is taken
-//!    on the receivers, the scale the
-//!    response lives on, as measured (with spillover's bleed, below).
-//!    `truth_weighted` is the same contrast under the
-//!    estimator's own overlap weights `h`, the population its weighting
-//!    targets; the two part where the effect is heterogeneous and the
-//!    weights move away from the competent receivers at large.
+//! 4. **Truths**, two of them, on the scale the response lives on, as measured
+//!    (with spillover's bleed, below). `truth` is what the estimate targets: the
+//!    realized effect `T* (y(1) − y(0))`, at the realized ring exposure,
+//!    contrasted between the arms the estimator sees under its arm weights at
+//!    each threshold, then averaged over thresholds by the estimate's own
+//!    weights. Misclassified exposure is thus part of the target, so coverage
+//!    tests the estimator alone. `truth_exposed` is the mean effect among the
+//!    truly exposed competent receivers, without the estimator; `estimate` far
+//!    below it means the arms could not show the effect.
 //! 5. **Heterogeneous effect**: `θ_b = θ u_b`, `u_b` uniform on `[0.5, 1.5]`
 //!    per identity bin.
 //! 6. **Marker**: the ligand is made only by a "marker type", the top
