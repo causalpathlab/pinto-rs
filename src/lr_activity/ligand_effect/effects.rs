@@ -91,10 +91,10 @@ pub struct LevelEffects {
 }
 
 /// [`effects_on`]'s result: per competence threshold, and the main fit's
-/// overlap weights `h` per row (empty when the main fit was skipped).
+/// weight of each row's own arm (empty when the main fit was skipped).
 pub struct Effects {
     pub levels: Vec<LevelEffects>,
-    pub h: Vec<f64>,
+    pub arm_weight: Vec<f64>,
 }
 
 /// Which sensitivity fits [`effects_on`] runs beside the main and ring
@@ -158,11 +158,11 @@ pub fn effects_on(
         .iter()
         .map(|competent| reader.level(rows.scope_rows, competent, &headline))
         .collect();
-    let h = match terms.main {
-        Some(m) if fits.reads.competent => m.h,
+    let arm_weight = match terms.main {
+        Some(m) if fits.reads.competent => m.arm_weight,
         _ => Vec::new(),
     };
-    Ok(Effects { levels, h })
+    Ok(Effects { levels, arm_weight })
 }
 
 /// The per-row terms of each fit of one response at one threshold; a fit

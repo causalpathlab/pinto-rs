@@ -164,6 +164,7 @@ fn build_tissue(
 fn effect_opts(seed: u64) -> EffectOpts {
     let k = INTERNALS;
     EffectOpts {
+        keep_arm_weights: false,
         threshold: None,
         min_overlap: k.min_overlap,
         abf_prior_sd: k.abf_prior_sd,

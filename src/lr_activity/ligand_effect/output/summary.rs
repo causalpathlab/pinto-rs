@@ -111,16 +111,17 @@ const VIEWS: [(&str, View); 7] = [
 /// What the columns mean, and the column headings.
 fn sim_legend() -> String {
     let mut out = String::from(
-        "`truth` is the sample average effect of the true exposure over competent \
-         receivers (estimator-free); `_w` columns use the estimator-weighted truth. \
+        "`truth` is the realized effect contrasted between the arms the estimator \
+         sees, averaged over thresholds by its weights; `_x` columns use the mean \
+         effect among the truly exposed. \
          `estim` is the share of runs with a reported estimate; `reject` the share \
          significant at 5%: type I error where nothing is planted (or the field is \
-         shifted), power elsewhere; `atten` mean estimate / mean truth under a planted \
-         effect. section/spatial/identity are the partial adjustments.\n",
+         shifted), power elsewhere; `atten` mean estimate / mean effect among the \
+         exposed under a planted effect. section/spatial/identity are the partial adjustments.\n",
     );
     out += &format!(
         "  {:<9} {:>5}  {:>7} {:>7}  {:>5} {:>7}  {:<6} {:>6}  {:>6}\n",
-        "", "estim", "bias", "bias_w", "cover", "cover_w", "rate", "reject", "atten"
+        "", "estim", "bias", "bias_x", "cover", "cover_x", "rate", "reject", "atten"
     );
     out
 }
@@ -158,7 +159,7 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
         .filter_map(|r| {
             let (th, se, crit) = view(r);
             (th.is_finite() && se.is_finite() && crit.is_finite() && r.truth.is_finite())
-                .then_some((th, se, r.truth, r.truth_weighted, crit))
+                .then_some((th, se, r.truth, r.truth_exposed, crit))
         })
         .collect();
     let estim = ok.len() as f64 / g.len() as f64;
@@ -172,31 +173,31 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
         .filter(|o| o.3.is_finite())
         .map(|o| o.0 - o.3)
         .collect();
-    let bias_w = if wv.is_empty() {
+    let bias_x = if wv.is_empty() {
         f64::NAN
     } else {
         wv.iter().sum::<f64>() / wv.len() as f64
     };
     let cover: Vec<bool> = ok.iter().map(|o| (o.0 - o.2).abs() <= o.4 * o.1).collect();
-    let cover_w: Vec<bool> = ok
+    let cover_x: Vec<bool> = ok
         .iter()
         .filter(|o| o.3.is_finite())
         .map(|o| (o.0 - o.3).abs() <= o.4 * o.1)
         .collect();
     let reject: Vec<bool> = ok.iter().map(|o| (o.0 / o.1).abs() > o.4).collect();
-    let mean_truth = ok.iter().map(|o| o.2).sum::<f64>() / n;
-    let atten = if null || mean_truth.abs() < 1e-12 {
+    let mean_exposed = ok.iter().map(|o| o.3).sum::<f64>() / n;
+    let atten = if null || mean_exposed.is_nan() || mean_exposed.abs() < 1e-12 {
         "-".to_string()
     } else {
         format!(
             "{:.2}",
-            ok.iter().map(|o| o.0).sum::<f64>() / n / mean_truth
+            ok.iter().map(|o| o.0).sum::<f64>() / n / mean_exposed
         )
     };
     format!(
-        "  {name:<9} {estim:>5.2}  {bias:>+7.3} {bias_w:>+7.3}  {:>5} {:>7}  {:<6} {:>6}  {atten:>6}\n",
+        "  {name:<9} {estim:>5.2}  {bias:>+7.3} {bias_x:>+7.3}  {:>5} {:>7}  {:<6} {:>6}  {atten:>6}\n",
         share(&cover),
-        share(&cover_w),
+        share(&cover_x),
         if null { "type I" } else { "power" },
         share(&reject),
     )

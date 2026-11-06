@@ -89,7 +89,7 @@ impl AbfSummary {
 /// Each usable estimate's posterior weight under a uniform prior over them,
 /// from its approximate Bayes factor against no effect (Wakefield 2009): the
 /// estimate as `N(θ, se²)` with the prior `θ ~ N(0, prior_var)`.
-fn abf_weights(parts: &[Estimate], prior_var: f64) -> (Vec<(usize, f64)>, f64) {
+pub fn abf_weights(parts: &[Estimate], prior_var: f64) -> (Vec<(usize, f64)>, f64) {
     let log_bf: Vec<(usize, f64)> = parts
         .iter()
         .enumerate()

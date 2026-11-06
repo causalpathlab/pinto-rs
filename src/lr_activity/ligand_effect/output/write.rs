@@ -153,8 +153,8 @@ pub(super) mod sim_cols {
 }
 
 /// `{out}.lra-simulate.parquet`: one row per pair and scenario run. `truth` is
-/// the estimator-free sample average effect of the true exposure,
-/// `truth_weighted` the same under the estimator's overlap weights; `estimable`
+/// the contrast the estimate targets and `truth_exposed` the mean effect among
+/// the truly exposed ([`super::super::simulate::SimRow`]); `estimable`
 /// is 0 where the estimate was not reported. The co-expression baselines
 /// ([`super::super::baselines`]) come with their p and a 0/1 `_reject` at 5%,
 /// as have the other methods of [`super::super::simulate::COMPARED`].
@@ -176,7 +176,7 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f(SHIFT, |r| r.scenario.shift)
         .i(REP, |r| r.scenario.rep)
         .f("truth", |r| r.truth)
-        .f("truth_weighted", |r| r.truth_weighted)
+        .f("truth_exposed", |r| r.truth_exposed)
         .i(ESTIMABLE, |r| r.estimable() as usize)
         .f("estimate", |r| r.estimate.theta)
         .f("se", |r| r.estimate.se)
