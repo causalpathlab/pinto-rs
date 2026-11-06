@@ -295,7 +295,7 @@ impl LinkGibbsSampler {
                         size_sum: global_stats.size_sum.clone(),
                         edge_count: global_stats.edge_count.clone(),
                         membership: indices.iter().map(|&e| membership[e]).collect(),
-                        prior_x: global_stats.prior_x.clone(),
+                        feature_table: global_stats.feature_table.clone(),
                     };
 
                     // Frozen incidence context: the cell scores are a
