@@ -597,7 +597,7 @@ fn simulate_reply(argv: &[String], made: &[PathBuf]) -> anyhow::Result<Vec<Conte
 /// planted effects.
 pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
     let c = compare_runs(runs);
-    let rates = |r: &[f64; 6]| -> Value {
+    let rates = |r: &[f64; COMPARED.len()]| -> Value {
         COMPARED
             .iter()
             .zip(r)
@@ -629,7 +629,9 @@ pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
         "scenarios": scenarios,
         "means": means,
         "reading": "reject: share of runs significant at 5% per method. estimate is lra's \
-                    adjusted effect; crude the unadjusted contrast; celltype, moran, contact \
+                    adjusted effect; marginal the correlation of response and contact ligand; \
+                    crude the unadjusted contrast; ipw and outcome the effect by overlap \
+                    weights alone and by the outcome regression alone; celltype, moran, contact \
                     and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
                     NICHES/COMMOT, lra's log odds). Trust lra here when estimate keeps type I \
                     near 0.05 under the confounded nulls and has power at the effect sizes \

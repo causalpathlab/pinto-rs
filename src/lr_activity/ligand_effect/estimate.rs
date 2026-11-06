@@ -3,8 +3,11 @@
 //! | Column | Estimand |
 //! |---|---|
 //! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
-//! | `crude` | mean response of exposed minus unexposed competent receivers (association) |
-//! | `effect_competent` | the competent effect, **the headline**: overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
+//! | `marginal_cor` | Pearson correlation of the response and `log1p` contact ligand over competent receivers, on its own scale (association) |
+//! | `crude` | mean response of exposed minus unexposed competent receivers, no adjustment (association) |
+//! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model |
+//! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction |
+//! | `effect_competent` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
 //! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
 //! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
 //! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
@@ -23,10 +26,12 @@
 //! exceed the incompetent one is not called specific to the receptor, which
 //! can also turn away a real effect on two responsive cell types.
 //!
-//! `crude` and the sensitivity fits below (the nested adjustment sets and the
-//! no-spill fit) read the headline threshold alone, while `effect_competent` is
-//! averaged over thresholds, so a gap between them can come from the threshold
-//! as well as the adjustment.
+//! `crude`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
+//! the headline is, each by its own evidence, and read for comparison: they
+//! enter no verdict. The sensitivity fits below (the nested adjustment sets
+//! and the no-spill fit) read the headline threshold alone, so a gap between
+//! them and `effect_competent` can come from the threshold as well as the
+//! adjustment.
 //!
 //! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
@@ -120,9 +125,10 @@ use rayon::prelude::*;
 
 use super::output::Verdict;
 use super::overlap::{
-    abf_average, abf_summary, background_comparison, combine, crude_difference, difference,
-    overlap_terms_with, propensity, subset_estimate, upper_normal_p, AbfSummary, CrossFit,
-    DesignView, Estimate, FoldStarts, NuisanceOpts, OverlapTerms, PairInputs,
+    abf_average, abf_summary, arm_contrast, background_comparison, combine, difference,
+    marginal_correlation, outcome_estimate, overlap_terms_with, propensity, subset_estimate,
+    upper_normal_p, AbfSummary, CrossFit, DesignView, Estimate, FoldStarts, NuisanceOpts,
+    OverlapTerms, PairInputs,
 };
 use super::regression::standardize;
 use super::tissue::Tissue;
@@ -287,7 +293,9 @@ pub struct EffectRow {
     pub threshold: f64,
     pub coexpr_log_or: f64,
     pub coexpr_se: f64,
-    pub crude: f64,
+    /// The correlation of the response and `log1p` contact ligand over
+    /// competent receivers ([`marginal_correlation`]), combined over weightings.
+    pub marginal_cor: Estimate,
     /// The estimands; the step and no-spill estimates are NaN on
     /// per-section rows.
     pub effects: ScopeEffects,
@@ -362,7 +370,7 @@ impl EffectRow {
             threshold: f64::NAN,
             coexpr_log_or,
             coexpr_se,
-            crude: f64::NAN,
+            marginal_cor: Estimate::nan(0, 0),
             effects,
             exposure_eta2,
             n_competent_bins: 0,
@@ -1033,6 +1041,12 @@ pub struct ScopeEffects {
     pub effect: Estimate,
     /// The competent effect, the headline.
     pub competent: Estimate,
+    /// The unadjusted contrast over competent receivers ([`arm_contrast`]).
+    pub crude: Estimate,
+    /// The competent effect by overlap weights alone ([`arm_contrast`]).
+    pub ipw: Estimate,
+    /// The competent effect by the outcome regression alone ([`outcome_estimate`]).
+    pub outcome: Estimate,
     pub incompetent: Estimate,
     pub ring: Estimate,
     /// The competent effect minus the ring effect.
@@ -1069,6 +1083,9 @@ impl ScopeEffects {
         Self {
             effect: pick(&|e| e.effect),
             competent: pick(&|e| e.competent),
+            crude: pick(&|e| e.crude),
+            ipw: pick(&|e| e.ipw),
+            outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
             ring: pick(&|e| e.ring),
             over_ring: pick(&|e| e.over_ring),
@@ -1212,6 +1229,14 @@ pub fn effects_on(
                     let (on_ring, ring_sums) = est(ring.as_ref(), t_ring, &comp);
                     let over_ring = difference(&on_competent, &sums, &on_ring, &ring_sums);
                     let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
+                    let crude = arm_contrast(&r.y, t, &comp, cf, |_| 1.0);
+                    let (ipw, outcome) = match &main {
+                        Some(m) if on_competent.theta.is_finite() => (
+                            arm_contrast(&r.y, t, &comp, cf, |i| m.arm_weight[i]),
+                            outcome_estimate(m, &on_competent, &comp),
+                        ),
+                        _ => (nan, nan),
+                    };
                     let mut step_est = [nan; 3];
                     let mut without_spill = nan;
                     let near_determined = match &main {
@@ -1238,6 +1263,9 @@ pub fn effects_on(
                     ScopeEffects {
                         effect: contrast,
                         competent: on_competent,
+                        crude,
+                        ipw,
+                        outcome,
                         incompetent: on_incompetent,
                         ring: on_ring,
                         over_ring,
@@ -1738,7 +1766,7 @@ fn aligned(a: &[(f64, &[(u32, f32)])], b: &[(f64, &[(u32, f32)])]) -> Option<Vec
 /// With [`PairData::reweighted`], the two weightings of the programme are
 /// combined ([`over_thresholds`]); the curve and the background describe the
 /// pair, not the weighting, and are read under `targets`. Counts,
-/// co-expression, the crude contrast and the diagnostics read competence
+/// co-expression, the marginal correlation and the diagnostics read competence
 /// at the middle threshold of the grid.
 pub fn estimate_pair_with(
     tissue: &Tissue,
@@ -1794,8 +1822,7 @@ pub fn estimate_pair_with(
         &eff.points,
         mix_seed(opts.seed, 0xc0_ffee),
     ));
-    // The response of each weighting, for the crude contrast.
-    let ys: Vec<Vec<f64>> = responses.into_iter().map(|r| r.y).collect();
+    let log_dose: Vec<f64> = ex.dose.iter().map(|d| d.ln_1p()).collect();
     let competent = &comps[comps.len() / 2];
     let mut rows = Vec::with_capacity(tissue.scopes.len());
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
@@ -1819,18 +1846,12 @@ pub fn estimate_pair_with(
                 .collect();
             set.len()
         };
-        // The crude contrast of each weighting, averaged.
-        let crude = {
-            let c: Vec<f64> = ys
+        let marginal_cor = combine(
+            &responses
                 .iter()
-                .map(|y| crude_difference(y, &ex.t, &comp))
-                .collect();
-            if c.len() == 2 {
-                0.5 * (c[0] + c[1])
-            } else {
-                c[0]
-            }
-        };
+                .map(|r| marginal_correlation(&r.y, &log_dose, &comp, &tissue.cf))
+                .collect::<Vec<_>>(),
+        );
         let pooled = *scope == Scope::All;
         // How far neighbour identity explains the exposure, at the threshold
         // the average leans on.
@@ -1854,7 +1875,7 @@ pub fn estimate_pair_with(
             n_competent: comp.len(),
             n_exposed: inside_rows.iter().filter(|&&i| ex.t[i as usize]).count(),
             threshold: ex.tau,
-            crude,
+            marginal_cor,
             n_competent_bins: bins(true),
             n_incompetent_bins: bins(false),
             curve: if pooled {
