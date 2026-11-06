@@ -39,25 +39,22 @@
 //!
 //! A per-(feature, dim) feature gate on `theta_g` — first a learned
 //! spike-and-slab, then a Gibbs-sampled per-epoch mask — was carried here and
-//! removed with the rest of the workspace's gate machinery; the measurement
-//! history is in `plans/posterior-feature-gate.md`.
+//! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInitMode,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
 };
 use crate::cell_activity_graph_embedding::feature_gating::build_feature_active_fine_edges;
-use crate::cell_activity_graph_embedding::loss::{cage_nce_loss_per_feature_level, CageLossOut};
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, CellLatent, PairBatchDivisor, PairEncoderSpec, PairLatent, PairProjectionArgs,
     PairSolver,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::{
-    coarsen_cell_expression_dense, compute_propensity_and_feature_community_stat,
-    PropensityReportConfig,
+    compute_propensity_and_feature_community_stat, PropensityReportConfig,
 };
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
@@ -65,101 +62,29 @@ use crate::util::graph_coarsen::{
     graph_coarsen_multilevel, CoarsenConfig, DcPoissonConfig, SeedingParams,
 };
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
-use crate::util::score_trace::{write_score_trace, ScoreEntry};
+use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
     preprocess_srt, topology_graph, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
 };
 
-use legume_numeric::candle::candle_core::Tensor;
-// `Optimizer` is what puts `AdamW::new` in scope; backward and the step run
-// separately (`loss.backward()` then `clip_and_step_dense`) so the phase timers
-// can attribute them apart.
 use data_beans::alg::gene_weighting::save_fisher_weights;
 use data_beans::alg::hvg::select_hvg_streaming;
 use data_beans::alg::random_projection::RandProjOps;
 use graph_embedding_util::embedding_col_names;
-use graph_embedding_util::loss::{
-    build_per_batch_unit_samplers, draw_gene_keep_mask, embedding_ridge,
-    log_membership_diagnostics, masked_membership, module_priors, module_step_loss,
-    ChainGroupFilter,
-};
-use graph_embedding_util::model::{
-    AdapterInit, JointEmbedModel, ModelArgs, ModelInit, ModuleInit, ModuleWarmStart,
-    E_FEAT_VAR_NAME,
-};
-use graph_embedding_util::stop::setup_stop_handler;
+use graph_embedding_util::loss::{build_per_batch_unit_samplers, ChainGroupFilter};
+use graph_embedding_util::model::E_FEAT_VAR_NAME;
+// `Optimizer` is what puts `AdamW::new` in scope.
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
-use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::frozen_features::trainable_vars;
-use legume_numeric::candle::vae::{clip_and_step_dense_all, PhaseTimers};
 use legume_numeric::matrix::common_io::mkdir_parent;
-use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
-use rand::RngExt;
-use rand::SeedableRng;
-use std::sync::atomic::Ordering;
 
-/// Classic SGD chunk over features: the validated fixed default on CPU and
-/// the CAP of the CUDA auto-probe (auto-sizing only ever shrinks it).
-/// The args long_help describes this value; keep the two in step.
-const FEATURE_BATCH_DEFAULT: usize = 2048;
-/// The probe cycles this many times the requested count of features before
-/// giving up on filling a pilot minibatch: `sample` can miss per
-/// (feature, batch), so some slack is needed, and the bound keeps a sparse
-/// sampler from turning the probe into a long scan.
-const PROBE_OVERSAMPLE: usize = 4;
+mod model;
+mod tables;
+mod train;
 
-/// One forward-only pilot minibatch of `n` FEATURES for the GPU memory
-/// probe, each feature expanded to every batch label that samples, exactly
-/// as a real training chunk expands (`perm.chunks(feature_batch_size)`
-/// then per-feature, per-batch sampling). The unit measured must be the
-/// unit the chunk size is spent in: counting (feature, batch) pairs here
-/// would under-measure a multi-batch run by the mean batches per feature.
-/// Samples through the REAL sampler, scores with the REAL loss, returns
-/// the un-backwarded loss tensor. Never steps the optimizer, so no
-/// parameter moves before epoch 0.
-#[allow(clippy::too_many_arguments)]
-fn probe_forward(
-    n_probe_features: usize,
-    trainable_features: &[usize],
-    n_exp_batches: usize,
-    sampler: &FeatureGatedChainSampler,
-    probe_rng: &mut SmallRng,
-    model: &JointEmbedModel,
-    objective: graph_embedding_util::loss::NceObjective,
-    dev: &legume_numeric::candle::candle_core::Device,
-) -> legume_numeric::candle::candle_core::Result<legume_numeric::candle::candle_core::Tensor> {
-    let mut mini: Vec<(usize, graph_embedding_util::loss::UnitChainBatch)> =
-        Vec::with_capacity(n_probe_features);
-    let mut features_sampled = 0usize;
-    'fill: for &g in trainable_features
-        .iter()
-        .cycle()
-        .take(PROBE_OVERSAMPLE * n_probe_features)
-    {
-        let before = mini.len();
-        for b in 0..n_exp_batches {
-            if let Some((cb, _)) = sampler.sample(g, b, probe_rng) {
-                mini.push((g, cb));
-            }
-        }
-        if mini.len() > before {
-            features_sampled += 1;
-            if features_sampled >= n_probe_features {
-                break 'fill;
-            }
-        }
-    }
-    if mini.is_empty() {
-        return Err(legume_numeric::candle::candle_core::Error::Msg(
-            "probe sampled nothing".into(),
-        ));
-    }
-    let (feature_ids, cbs): (Vec<usize>, Vec<_>) = mini.into_iter().unzip();
-    let feature_ids_u32: Vec<u32> = feature_ids.iter().map(|&g| g as u32).collect();
-    let out = cage_nce_loss_per_feature_level(model, cbs, &feature_ids_u32, objective, dev)?;
-    out.per_feature_level.sum_all()
-}
+use model::{build_model, BuiltModel, ModelInputs};
+use tables::write_trained_tables;
+use train::{resolve_feature_batch_size, train, ProbeInputs, TrainInputs};
 
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
@@ -678,259 +603,26 @@ pub fn fit_cell_activity_graph_embedding(
     // ordinal, and logging it made --device-no look ignored.
     info!("Using device: {} (ordinal {})", args.device, args.device_no);
     let varmap = VarMap::new();
-    // `JointEmbedModel.e_feat` / `b_feat` ARE the feature embedding
-    // (cells and features share the same D-dim space). `n_features =
-    // n_features` and `b_feat` is zero-init per feature; both are learned
-    // alongside the cell side via AdamW over `varmap.all_vars()`.
-    //
-    // Pre-trained feature side, when requested. Loaded here, after the feature
-    // axis is final and the coarsening exists (its finest level pools the
-    // per-feature profiles that seed unmatched features), and before the model so
-    // the init below can consume it.
-    // Per-feature profiles over the finest pseudobulks `[G × n_pb]`: the seed for
-    // unmatched pre-trained features, and the count rows the module term pools.
-    // Lazy for the pre-trained path (a full pass over the data that runs only if
-    // the loader finds a feature with no dictionary row); materialized once for the
-    // module path, which reads it every step.
-    let build_profiles = || -> anyhow::Result<Mat> {
-        let finest = ml
-            .all_cell_labels
-            .last()
-            .expect("coarsening produced no levels");
-        let n_pb = finest.iter().copied().max().map_or(0, |m| m + 1);
-        let row_profiles = coarsen_cell_expression_dense(&data_vec, finest, n_pb)?;
-        Ok(feature_axis
-            .pool_rows_opt(&row_profiles)
-            .unwrap_or(row_profiles))
-    };
-    let module_profiles: Option<Mat> = match &module_cfg {
-        Some(_) => Some(build_profiles()?),
-        None => None,
-    };
-    let pretrained_feature = match args.feature_embedding.as_deref() {
-        None => None,
-        Some(dict_path) => {
-            let pre = pretrained::load_pretrained_feature_embedding(pretrained::PretrainedArgs {
-                dictionary_path: dict_path,
-                bias_path: args.feature_embedding_bias.as_deref(),
-                feature_names: &feature_names,
-                name_kind: feature_kind.clone(),
-                feature_profiles: &build_profiles,
-                membership_init: match args.feature_init_mode {
-                    FeatureInitMode::Membership => {
-                        Some(graph_embedding_util::transfer::AlignKnobs {
-                            k: args.feature_init_neighbours,
-                            similarity_floor: args.feature_init_similarity_floor,
-                        })
-                    }
-                    FeatureInitMode::Neighbor => None,
-                },
-            })?;
-            // The width was resolved from this file's footer; the loader's
-            // count must agree, or the two read the file differently.
-            if args.feature_embedding_mode != FeatureEmbeddingMode::Adapt {
-                anyhow::ensure!(
-                    pre.h() == embedding_dim,
-                    "--feature-embedding loaded {} dimensions wide but the run resolved {}",
-                    pre.h(),
-                    embedding_dim
-                );
-            }
-            pretrained::write_init_report(&c.out, &pre.records)?;
-            info!("Wrote {}.feature_embedding_init.parquet", c.out);
-            Some(pre)
-        }
-    };
-    let b_feat_init: Vec<f32> = pretrained_feature
-        .as_ref()
-        .map(|p| p.b_feat.clone())
-        .unwrap_or_else(|| vec![0.0_f32; n_features]);
-
-    // One match constructs the model AND, on the Freeze arm, the freeze state
-    // in sequence — the fixed copy is taken directly after registration, so it
-    // is structurally the loaded dictionary and never a gated view.
-    let b_pb_init = vec![0.0_f32; n_pb];
-    // Warm start from the collapse SVD: the shared basis becomes the INIT of
-    // the trained PB table. Both shapes derive from the same finest labels and
-    // --embedding-dim, so a mismatch is an internal bug, not a condition to
-    // fall back from. The adapter arm has no table init and ignores it.
-    if let Some(w) = &e_pb_warm {
-        anyhow::ensure!(
-            w.nrows() == n_pb && w.ncols() == embedding_dim,
-            "collapse SVD [{} x {}] does not match the trained PB table [{} x {}]",
-            w.nrows(),
-            w.ncols(),
-            n_pb,
-            embedding_dim
-        );
-    }
-    let e_pb_init: Option<&Mat> = e_pb_warm.as_ref();
-    match (&e_pb_init, args.feature_embedding_mode) {
-        (Some(w), FeatureEmbeddingMode::Adapt) => {
-            let _ = w;
-            info!(
-                "Warm start SKIPPED: the adapter arm has no PB-table init; \
-                 the trained table starts random as on the learned arm"
-            );
-        }
-        (Some(w), _) => info!(
-            "PB table warm-started from the collapse SVD [{} x {}], |E| = {:.4}",
-            w.nrows(),
-            w.ncols(),
-            w.norm() / (w.nrows() as f32).sqrt()
-        ),
-        (None, _) => info!("PB table starts from seeded random init (no collapse SVD)"),
-    }
     let lora_spec =
         (args.feature_embedding_mode == FeatureEmbeddingMode::Lora).then(|| args.lora.spec());
-    let (mut model, frozen_feature) = match (&pretrained_feature, args.feature_embedding_mode) {
-        // Learned feature modules: every feature row is `Σ_m π_gm μ_m + r_g`, warm-started
-        // from a k-means over the pseudobulk profiles. Same detached-snapshot
-        // contract as the adapter arm.
-        _ if module_cfg.is_some() => {
-            let gm = module_cfg.as_ref().expect("checked above");
-            let profiles = module_profiles.as_ref().expect("built with the config");
-            anyhow::ensure!(
-                profiles.nrows() == n_features && profiles.ncols() == n_pb,
-                "module profiles [{} x {}] do not match {} features x {} pseudobulks",
-                profiles.nrows(),
-                profiles.ncols(),
-                n_features,
-                n_pb
-            );
-            // The profiles are the finest pseudobulks' count sums; a
-            // pseudobulk's size is its cell count.
-            let finest = ml
-                .all_cell_labels
-                .last()
-                .expect("coarsening produced no levels");
-            let mut sizes = vec![0f32; n_pb];
-            for &pb in finest {
-                if pb < n_pb {
-                    sizes[pb] += 1.0;
-                }
-            }
-            let labels =
-                graph_embedding_util::partition_modules(profiles, &sizes, gm.n_modules, c.seed)?;
-            info!(
-                "learned feature modules: {} features → {} modules (mixed membership), feature dropout {}, \
-                 exact module term λ={}, balance λ={}",
-                n_features, gm.n_modules, gm.feature_dropout, gm.lambda_module, gm.lambda_balance
-            );
-            (
-                JointEmbedModel::new_with_modules(
-                    ModuleInit {
-                        n_features,
-                        n_cells: n_pb,
-                        embedding_dim,
-                        n_modules: gm.n_modules,
-                        warm: ModuleWarmStart::Labels {
-                            labels: &labels,
-                            own_mass: gm.init_own_mass,
-                        },
-                        b_feat: &b_feat_init,
-                        b_cell: &b_pb_init,
-                        seed: c.seed,
-                    },
-                    &varmap,
-                    &dev,
-                )?,
-                None,
-            )
-        }
-        // Adapter: the dictionary is a fixed constant and the feature side trains
-        // one shared [h_src x H] map (plus the optional per-feature residual), so
-        // every feature's gradient moves the same few parameters.
-        (Some(p), FeatureEmbeddingMode::Adapt) => (
-            JointEmbedModel::new_adapted(
-                AdapterInit {
-                    n_cells: n_pb,
-                    embedding_dim,
-                    rho: &p.e_feat,
-                    b_feat: &b_feat_init,
-                    b_cell: &b_pb_init,
-                    seed: c.seed,
-                    residual: args.feature_adapter_residual,
-                },
-                &varmap,
-                &dev,
-            )?,
-            None,
-        ),
-        (pre, mode) => {
-            let model = JointEmbedModel::new_with_init(
-                ModelArgs {
-                    n_features,
-                    n_cells: n_pb,
-                    embedding_dim,
-                    seed: c.seed,
-                },
-                &ModelInit {
-                    e_feat: pre.as_ref().map(|p| &p.e_feat),
-                    e_cell: e_pb_init,
-                    b_feat: &b_feat_init,
-                    b_cell: &b_pb_init,
-                },
-                &varmap,
-                &dev,
-            )?;
-            let frozen = match (pre, mode) {
-                (Some(p), FeatureEmbeddingMode::Freeze | FeatureEmbeddingMode::Lora) => {
-                    let fetch = |name: &str| {
-                        varmap
-                            .data()
-                            .lock()
-                            .expect("varmap lock")
-                            .get(name)
-                            .cloned()
-                            .unwrap_or_else(|| panic!("the free constructor registers {name}"))
-                    };
-                    let fixed = model.e_feat.copy()?;
-                    let mask = Tensor::from_vec(p.frozen_row_mask(), (n_features, 1), &dev)?;
-                    let var = fetch(graph_embedding_util::model::E_FEAT_VAR_NAME);
-                    // The per-feature bias is part of the dictionary contract only
-                    // when a bias file was actually given; without one the
-                    // zeros are a default, and freezing them would stop b_feat
-                    // absorbing per-feature rates the way a baseline run does.
-                    let bias = if args.feature_embedding_bias.is_some() {
-                        let b_var = fetch("b_feat");
-                        Some((b_var.as_tensor().copy()?, b_var))
-                    } else {
-                        None
-                    };
-                    let n_frozen = p.n_matched();
-                    let residual = match lora_spec {
-                        Some(l) => format!(
-                            " under a rank-{} residual (LoRA+ ratio {}, ridge {} per row per epoch)",
-                            l.rank, l.lr_ratio, l.ridge
-                        ),
-                        None => String::new(),
-                    };
-                    info!(
-                        "Feature embedding PINNED: {} dictionary rows fixed{residual}, {} neighbor-seeded rows trainable{}",
-                        n_frozen,
-                        n_features - n_frozen,
-                        if bias.is_some() {
-                            "; loaded bias rows fixed too"
-                        } else {
-                            ""
-                        }
-                    );
-                    Some(pretrained::FrozenGene::new(fixed, mask, var, bias))
-                }
-                _ => None,
-            };
-            // The residual rides on the pinned rows: the factors join the map
-            // beside `e_feat`, `u` drawn on the matched features only.
-            let model = match (pre, lora_spec) {
-                (Some(p), Some(l)) => {
-                    model.with_lora(&varmap, &dev, l.rank, &p.matched_ids(), c.seed)?
-                }
-                _ => model,
-            };
-            (model, frozen)
-        }
-    };
+    let BuiltModel {
+        mut model,
+        frozen_feature,
+        module_profiles,
+    } = build_model(ModelInputs {
+        args,
+        ml: &ml,
+        data_vec: &data_vec,
+        feature_axis: &feature_axis,
+        feature_kind: &feature_kind,
+        module_cfg: module_cfg.as_ref(),
+        lora_spec,
+        n_pb,
+        embedding_dim,
+        e_pb_warm: e_pb_warm.as_ref(),
+        varmap: &varmap,
+        dev: &dev,
+    })?;
     // One AdamW over the map, or two under LoRA: the shared factor `v` leaves
     // the main group for its own at the LoRA+ rate.
     let lora_v_name = legume_numeric::candle::lora::factor_names(E_FEAT_VAR_NAME).1;
@@ -970,509 +662,46 @@ pub fn fit_cell_activity_graph_embedding(
         n_negatives: args.n_negatives,
     };
 
-    // Chunk ("SGD minibatch over features") resolution. An explicit
-    // --feature-batch-size always wins. Otherwise CPU keeps the classic
-    // 2048, and CUDA probes: one forward per candidate size through the
-    // REAL sampler and loss, measuring what the retained graph costs,
-    // growing while the next doubling fits --gpu-mem-fraction of free
-    // memory (half held back for backward). The probe never calls
-    // backward, so no parameter moves before epoch 0.
-    let feature_batch_size = match args.feature_batch_size {
-        Some(explicit) => explicit,
-        None => {
-            let mut probe_rng = SmallRng::seed_from_u64(c.seed ^ 0x9e37_79b9);
-            legume_numeric::candle::device::auto_chunk_size(
-                &dev,
-                FEATURE_BATCH_DEFAULT,
-                16.min(trainable_features.len().max(1)),
-                args.gpu_mem_fraction,
-                |n_probe_features| {
-                    probe_forward(
-                        n_probe_features,
-                        &trainable_features,
-                        n_exp_batches,
-                        &sampler,
-                        &mut probe_rng,
-                        &model,
-                        args.nce_objective.to_ge(),
-                        &dev,
-                    )
-                },
-            )
-            .unwrap_or(FEATURE_BATCH_DEFAULT)
-        }
-    };
+    let feature_batch_size = resolve_feature_batch_size(ProbeInputs {
+        args,
+        trainable_features: &trainable_features,
+        n_exp_batches,
+        sampler: &sampler,
+        model: &model,
+        dev: &dev,
+    });
 
-    let mut score_trace: Vec<ScoreEntry> = Vec::new();
-    let mut rng_master = SmallRng::seed_from_u64(c.seed);
-    // Wall-clock split of the SGD loop, to rank optimization work by evidence
-    // rather than guess. Accumulated across all epochs; logged once at the end.
-    let mut timers = PhaseTimers::default();
-    // Steps the optimizer refused because the global gradient norm was not
-    // finite. Reported at the end: a high count means the fit did not train.
-    let mut skipped_steps: usize = 0;
-
-    // One bar across the WHOLE training phase, not one per epoch: the useful
-    // question while waiting is "how long until training is done", and a bar
-    // that restarts five times cannot answer it. The total is the real step
-    // count — chunks per epoch is `ceil(features_visited / --feature-batch-size)` —
-    // so the ETA is derived from observed step rate rather than guessed.
-    // `--features-per-epoch` shortens every epoch equally, so this stays exact.
-    // Early exit (convergence or Ctrl-C) simply finishes the bar short.
-    let features_per_epoch_actual = if args.features_per_epoch > 0 {
-        args.features_per_epoch.min(trainable_features.len())
-    } else {
-        trainable_features.len()
-    };
-    let steps_per_epoch = features_per_epoch_actual.div_ceil(feature_batch_size);
-    // The LoRA ridge is a per-epoch weight; every step takes its share.
-    if let (Some(l), Some(lp)) = (model.lora.as_mut(), lora_plus.as_ref()) {
-        l.ridge_step = f64::from(lp.ridge) / steps_per_epoch.max(1) as f64;
-    }
-    let total_steps = args.epochs * steps_per_epoch.max(1);
-    let train_bar = new_progress_bar(total_steps as u64).with_message("training steps");
-
-    // First ^C = graceful stop after current chunk, finalize outputs;
-    // second ^C = hard abort. See graph_embedding_util::stop.
-    let stop = setup_stop_handler();
-
-    // Module warm-up: hold the k-means membership for the first epochs, release
-    // it afterwards (geu's schedule). The profile matrix the exact term pools sits
-    // on the device as `[n_pb × G]`, so a step is one row gather.
-    let module_run: Option<(usize, Tensor)> = match (&module_cfg, &module_profiles) {
-        (Some(gm), Some(p)) => {
-            let wu = gm.warmup_epochs_for(args.epochs);
-            if let Some(m) = &model.modules {
-                m.set_frozen(wu > 0);
-            }
-            info!(
-                "feature modules: membership held for {wu} of {} epochs, then trained",
-                args.epochs
-            );
-            let rows: Vec<f32> = (0..p.ncols())
-                .flat_map(|j| p.column(j).iter().copied().collect::<Vec<f32>>())
-                .collect();
-            Some((wu, Tensor::from_vec(rows, (p.ncols(), p.nrows()), &dev)?))
-        }
-        _ => None,
-    };
-
-    'epochs: for epoch in 0..args.epochs {
-        if let (Some(m), Some((wu, _))) = (&model.modules, &module_run) {
-            if epoch == *wu && m.is_frozen() {
-                m.set_frozen(false);
-                info!("epoch {epoch}: module membership released — π now trains");
-            }
-        }
-        let mut perm: Vec<usize> = trainable_features.clone();
-        perm.shuffle(&mut rng_master);
-        // Optional cost lever: visit a random subset of the feature axis this
-        // epoch. Stochastic coverage, NOT axis selection — every feature stays
-        // in the model, keeps its gate, and appears in the output tables; it
-        // just waits for a later epoch.
-        if args.features_per_epoch > 0 && args.features_per_epoch < perm.len() {
-            perm.truncate(args.features_per_epoch);
-        }
-
-        let mut skip_count: usize = 0;
-        let mut sample_count: usize = 0;
-
-        let sampler_ref = &sampler;
-        // Tensor accumulators — avoid per-step CUDA → CPU sync. The
-        // `.detach()` strips autograd so we can keep adding into them
-        // without retaining the backward graph across chunks.
-        let mut epoch_loss_acc: Option<Tensor> = None;
-        let mut per_level_acc: Option<Tensor> = None;
-        let mut pair_acc: Option<Tensor> = None;
-        let mut chunk_count: usize = 0;
-        // Features this epoch will actually visit.
-        debug_assert_eq!(perm.len(), features_per_epoch_actual);
-        for chunk in perm.chunks(feature_batch_size) {
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-            // (a) Parallel sampling — pure CPU, no candle.
-            let t_sample = std::time::Instant::now();
-            let mini: Vec<(usize, _)> = chunk
-                .par_iter()
-                .flat_map_iter(|&g| {
-                    let seed = c
-                        .seed
-                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                        .wrapping_add(g as u64)
-                        .wrapping_add((epoch as u64).wrapping_mul(1_000_003));
-                    let mut rng = SmallRng::seed_from_u64(seed);
-                    (0..n_exp_batches)
-                        .filter_map(move |b| {
-                            sampler_ref.sample(g, b, &mut rng).map(|(cb, _st)| (g, cb))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-
-            // Attribute sampling BEFORE the early-out: a chunk whose features all
-            // failed to sample still paid for the rayon draw, and dropping it
-            // under-reports the sampler exactly where it did the most futile
-            // work. Advance the bar too, or its total (which assumes every
-            // chunk steps) leaves it short and the ETA running long.
-            timers.precompute += t_sample.elapsed();
-            if mini.is_empty() {
-                skip_count += chunk.len() * n_exp_batches;
-                train_bar.inc(1);
-                continue;
-            }
-
-            let (feature_ids, cb_batches): (Vec<usize>, Vec<_>) = mini.into_iter().unzip();
-            sample_count += feature_ids.len();
-            let t_fwd = std::time::Instant::now();
-
-            // Feature identity enters the score function via the gated
-            // loss. The chunk's feature ids parallel-replicate to align
-            // with the [G*B] cell-side gathers.
-            let feature_ids_u32: Vec<u32> = feature_ids.iter().map(|&g| g as u32).collect();
-
-            // (b) ONE forward / backward over the whole chunk.
-            let CageLossOut {
-                per_feature_level: per_level_gl,
-                mean_abs_pair,
-            } = cage_nce_loss_per_feature_level(
-                &model,
-                cb_batches,
-                &feature_ids_u32,
-                args.nce_objective.to_ge(),
-                &dev,
-            )?; // [G, L]
-                // NB-Fisher per-feature precision: scale each feature's row of the
-                // per-level loss by w_g ∈ (0,1] before summing, so high-mean /
-                // high-dispersion housekeeping features contribute less gradient
-                // (the loss-side analog of bge's count·fisher positive draw and
-                // lc's `apply_feature_weights` on the feature basis). Coverage stays
-                // uniform — every feature is still visited once per epoch.
-            let per_level_gl = match feature_fisher_weights.as_ref() {
-                Some(w) => {
-                    let w_chunk: Vec<f32> = feature_ids.iter().map(|&g| w[g]).collect();
-                    let w_g1 = Tensor::from_vec(w_chunk, (feature_ids.len(), 1), &dev)?;
-                    per_level_gl.broadcast_mul(&w_g1)?
-                }
-                None => per_level_gl,
-            };
-            let loss = per_level_gl.sum_all()?;
-            let mut total = loss.clone();
-
-            if args.embedding_l2 > 0.0 {
-                // geu's ridge, not a local copy: the reduction is the whole
-                // content of this penalty and it was wrong here in the same way.
-                total = (total + embedding_ridge(&model.e_cell, args.embedding_l2 as f64)?)?;
-            }
-            // Which feature-side shrinkage applies is a model property
-            // (`feature_ridge`: the free table or the adapter's residual at
-            // the table ridge, the anchored model's own residual ridge, or
-            // nothing). Pinned rows are the one cage-local exception: the
-            // table ridge would only push gradient at rows the restore below
-            // reverts anyway, so it is off under freeze and lora.
-            let table_lam = if frozen_feature.is_some() {
-                0.0
-            } else {
-                args.embedding_l2 as f64
-            };
-            if let Some(ridge) = model.feature_ridge(table_lam)? {
-                total = (total + ridge)?;
-            }
-            // Exact pseudobulk–module term + membership priors, once per optimizer
-            // step, through the same functions geu's composite trainer uses: draw
-            // `units_per_step` pseudobulks uniformly, pool their count rows through
-            // the (dropout-masked) membership, and score every module against the
-            // trained PB table.
-            if let (Some(m), Some(gm), Some((_, profile_t))) =
-                (&model.modules, module_cfg.as_ref(), module_run.as_ref())
-            {
-                let u = gm.units_per_step.min(n_pb);
-                if u > 0 && gm.lambda_module > 0.0 {
-                    let picks: Vec<u32> = (0..u)
-                        .map(|_| rng_master.random_range(0..n_pb) as u32)
-                        .collect();
-                    let idx = Tensor::from_vec(picks, u, &dev)?;
-                    let x = gather_rows(profile_t, &idx)?;
-                    let pi = m.membership()?;
-                    let pi_masked = if gm.feature_dropout > 0.0 {
-                        let keep = draw_gene_keep_mask(
-                            n_features,
-                            gm.feature_dropout,
-                            &mut rng_master,
-                            &dev,
-                        )?;
-                        masked_membership(&pi, &keep)?
-                    } else {
-                        pi.detach()
-                    };
-                    let e_units = gather_rows(&model.e_cell, &idx)?;
-                    total =
-                        (total + module_step_loss(m, &pi_masked, &x, &e_units, gm.lambda_module)?)?;
-                    if let Some(prior) = module_priors(m, &pi, gm.lambda_balance)? {
-                        total = (total + prior)?;
-                    }
-                }
-            }
-            // Global-norm clip before the step. The NCE loss spikes when a
-            // chunk draws a feature whose active edges are nearly all positives,
-            // and an unbounded step there inflates the embedding norms every
-            // later epoch has to work against. A step whose global norm is
-            // non-finite is skipped rather than laundered into the parameters.
-            timers.decoder_fwd += t_fwd.elapsed();
-            let t_bwd = std::time::Instant::now();
-            let grads = total.backward()?;
-            timers.backward += t_bwd.elapsed();
-            let t_opt = std::time::Instant::now();
-            // A step is SKIPPED when the global gradient norm is not finite.
-            // Count those: a run where every step is skipped moves no parameter
-            // at all, and without this the bar would still reach 100% and the
-            // phase timings would still look normal — the instrumentation would
-            // make the failure less visible rather than more.
-            let stepped = clip_and_step_dense_all(&mut adams, grads, f64::from(args.grad_clip))?;
-            if !stepped {
-                skipped_steps += 1;
-            }
-            // Freezing is a post-step restore, not a gradient mask: AdamW's
-            // moment state moves a row even at zero gradient, so the frozen
-            // rows are put back from the fixed copy after every step.
-            if stepped {
-                if let Some(frozen) = &frozen_feature {
-                    frozen.restore()?;
-                }
-            }
-            timers.optimize += t_opt.elapsed();
-            train_bar.inc(1);
-
-            // Diagnostics (no host sync) — accumulate detached tensors.
-            // Per-feature mean of per_level → [L] for this chunk; running sum.
-            let per_level_chunk_mean = per_level_gl.mean(0)?.detach();
-            let loss_chunk = loss.detach();
-            pair_acc = Some(match pair_acc {
-                Some(prev) => (prev + &mean_abs_pair)?,
-                None => mean_abs_pair,
-            });
-            epoch_loss_acc = Some(match epoch_loss_acc {
-                Some(prev) => (prev + loss_chunk)?,
-                None => loss_chunk,
-            });
-            per_level_acc = Some(match per_level_acc {
-                Some(prev) => (prev + per_level_chunk_mean)?,
-                None => per_level_chunk_mean,
-            });
-            chunk_count += 1;
-        }
-
-        // ONE host sync per epoch — pull accumulated tensors only now.
-        let (mean_loss, mean_per_level) = if chunk_count > 0 {
-            let loss_sum: f32 = epoch_loss_acc
-                .as_ref()
-                .unwrap()
-                .to_scalar::<f32>()
-                .unwrap_or(f32::NAN);
-            let pl_sum: Vec<f32> = per_level_acc
-                .as_ref()
-                .unwrap()
-                .to_vec1::<f32>()
-                .unwrap_or_default();
-            let scale = chunk_count as f64;
-            (
-                (loss_sum as f64) / scale,
-                pl_sum.iter().map(|v| *v as f64 / scale).collect::<Vec<_>>(),
-            )
-        } else {
-            (f64::NAN, vec![0.0; n_chain_levels])
-        };
-        info!(
-            "epoch {}: mean loss = {:.4e} (per-level: {:?}), samples = {}, skipped pairs = {}",
-            epoch, mean_loss, mean_per_level, sample_count, skip_count
-        );
-        if let Some(m) = &model.modules {
-            let pi_host: Vec<f32> = m.membership()?.detach().flatten_all()?.to_vec1()?;
-            // cage draws its negatives over pseudobulks, so no within-module fallback.
-            log_membership_diagnostics(m, &pi_host, epoch, args.epochs, 0)?;
-        }
-
-        // Pair-term magnitude: the collapse detector. If this decays toward
-        // zero while the loss still falls, the ungated cell biases have taken
-        // over the objective and the feature direction is doing nothing.
-        if chunk_count > 0 {
-            let pair_mean = pair_acc
-                .as_ref()
-                .and_then(|t| t.to_scalar::<f32>().ok())
-                .map_or(f64::NAN, |v| v as f64 / chunk_count as f64);
-            info!("epoch {}: mean |pair| = {:.4e}", epoch, pair_mean);
-            // The loss is the bar's one `key=value`: the score `pinto run`
-            // draws, a NaN loss included.
-            train_bar.set_message(format!(
-                "training epoch {}/{} loss={:.4e} |pair| {:.2e}",
-                epoch + 1,
-                args.epochs,
-                mean_loss,
-                pair_mean
-            ));
-        }
-
-        // Push one summary row per epoch. `level = epoch`, `sweep = 0`.
-        // `total_mass = #samples`, `mutual_information` = mean of per-level loss
-        // (informally summarizing chain effectiveness).
-        let mi = mean_per_level.iter().sum::<f64>() / (mean_per_level.len().max(1) as f64);
-        score_trace.push(ScoreEntry {
-            level: epoch as i32,
-            sweep: 0,
-            score: mean_loss,
-            n_edges: sample_count,
-            total_mass: sample_count as f64,
-            mutual_information: mi,
-        });
-
-        // Convergence check: if the last `convergence_window` epochs'
-        // mean losses are within `convergence_tol` relative range,
-        // exit. `convergence_window == 0` disables.
-        if args.convergence_window > 0 && score_trace.len() >= args.convergence_window {
-            let window = &score_trace[score_trace.len() - args.convergence_window..];
-            let losses: Vec<f64> = window.iter().map(|e| e.score).collect();
-            let mean = losses.iter().sum::<f64>() / (losses.len() as f64);
-            let (lo, hi) = losses
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
-                    (lo.min(v), hi.max(v))
-                });
-            let rel = if mean.abs() > 1e-30 {
-                (hi - lo) / mean.abs()
-            } else {
-                f64::INFINITY
-            };
-            if rel.is_finite() && rel < args.convergence_tol as f64 {
-                info!(
-                    "converged at epoch {}: last {} losses within rel-range {:.4} < tol {:.4}",
-                    epoch, args.convergence_window, rel, args.convergence_tol
-                );
-                break;
-            }
-        }
-
-        if stop.load(Ordering::SeqCst) {
-            info!(
-                "Stopping early at epoch {}/{} — finalizing outputs",
-                epoch + 1,
-                args.epochs
-            );
-            break 'epochs;
-        }
-    }
-
-    train_bar.finish_and_clear();
-    if skipped_steps > 0 {
-        warn!(
-            "{}/{} optimizer steps were SKIPPED for non-finite gradients — those \
-             steps moved no parameters. Lower --lr or --grad-clip if this is a \
-             large fraction.",
-            skipped_steps, total_steps
-        );
-    }
-
-    // Where the SGD loop's PER-STEP work went: `precompute` is the rayon
-    // feature/edge sampling, `decoder_fwd` the loss forward, then backward and the
-    // AdamW step. Reported so optimization work is ranked on measurement.
-    //
-    // These four do NOT sum to the training wall clock. Per-EPOCH work sits
-    // outside them: the `--selection-refresh-epochs` Gibbs refresh (which on the
-    // default sampled arm fires every 5th epoch and copies `e_cell` to the host),
-    // the per-epoch diagnostic syncs, and the permutation shuffle. Read the
-    // percentages as a split of per-step cost, not of the whole phase.
-    timers.log_summary();
+    let score_trace = train(TrainInputs {
+        args,
+        model: &mut model,
+        frozen_feature: frozen_feature.as_ref(),
+        adams: &mut adams,
+        lora_plus: lora_plus.as_ref(),
+        sampler: &sampler,
+        trainable_features: &trainable_features,
+        feature_batch_size,
+        feature_fisher_weights: feature_fisher_weights.as_deref(),
+        module_cfg: module_cfg.as_ref(),
+        module_profiles: module_profiles.as_ref(),
+        n_exp_batches,
+        n_pb,
+        n_features,
+        n_chain_levels,
+        dev: &dev,
+    })?;
 
     ////////////////
     // 9. Outputs //
     ////////////////
     info!("Writing cage outputs...");
 
-    // Trained PB table [P × D] + bias [P] + the cell -> PB map. The
-    // trained unit is the finest-level super-cell; the per-CELL embedding
-    // ships separately, as each cell's own placement by the pair encoder,
-    // written after the propensity pass below.
-    // Bare integer row keys (the writer's default), so pb_embedding,
-    // pb_bias, and cell_pb's `pb` column all join directly on the id.
-    let e_pb_mat = tensor_to_mat(&model.e_cell)?;
-    e_pb_mat.to_parquet_with_names(
-        &(c.out.to_string() + ".pb_embedding.parquet"),
-        (None, Some("pb")),
-        Some(&embedding_col_names(embedding_dim)),
-    )?;
-
-    let b_pb_mat = tensor_to_mat_1d(&model.b_cell)?;
-    b_pb_mat.to_parquet_with_names(
-        &(c.out.to_string() + ".pb_bias.parquet"),
-        (None, Some("pb")),
-        Some(&[Box::from("b_pb")]),
-    )?;
-
-    // The pb id ships as the SAME bare-integer STRING the parquet writer
-    // uses for pb_embedding / pb_bias row keys (the row-name column is
-    // BYTE_ARRAY by construction), so the three files join directly with
-    // no cast; an INT32 column here would type-mismatch that join.
-    let cell_pb_col: Vec<Box<str>> = pb_frame
-        .cell_to_finest_pb
-        .iter()
-        .map(|&p| p.to_string().into_boxed_str())
-        .collect();
-    legume_numeric::matrix::parquet::write_named_table(
-        &(c.out.to_string() + ".cell_pb.parquet"),
-        "cell",
+    let e_feature_out = write_trained_tables(
+        c,
+        &mut model,
+        &pb_frame,
         &cell_names,
-        &[(
-            Box::from("pb"),
-            legume_numeric::matrix::parquet::Column::Str(&cell_pb_col),
-        )],
-    )?;
-
-    // Feature embedding [G × D] — same shared D-dim space as cells, over the FULL
-    // feature axis. There is no HVG row subset to mirror any more: HVG weights the
-    // projection, so every feature is trained and every feature gets a row here.
-    //
-    // What ships depends on which gate ran, because the two mean different
-    // things and `e_feature_out` is ALSO the frozen dictionary `project_pairs`
-    // scores every cell pair against. Shipping the wrong one would put the pair
-    // latent — and so every link community — on a feature side the fit never
-    // trained under, which is the defect commit 91c50a65 fixed in geu.
-    //
-    // A free feature table is already the trained Var; under the adapter or the
-    // module layer the `e_feat` field is a construction-time snapshot, and
-    // `materialize_e_feat` recomposes it from the live map (a no-op otherwise).
-    model.materialize_e_feat()?;
-    let e_feature_out = tensor_to_mat(&model.e_feat)?;
-    let b_feature_out = tensor_to_mat_1d(&model.b_feat)?;
-
-    e_feature_out.to_parquet_with_names(
-        &(c.out.to_string() + ".feature_embedding.parquet"),
-        (Some(&feature_names), Some("feature")),
-        Some(&embedding_col_names(embedding_dim)),
-    )?;
-    // Learned-module tables (no-op without modules); the feature embedding above
-    // already holds the composed row.
-    graph_embedding_util::write_module_tables(&c.out, &model, &feature_names)?;
-
-    // The adapter map itself, so the spatial refinement can be applied OUTSIDE
-    // this run: any feature with a row in the source dictionary, panel or not,
-    // maps into this run's frame as `rho_row . W`. Rows follow the source
-    // dictionary's column order. The per-feature residual is deliberately not
-    // exported on its own: it exists only for panel features and is already part
-    // of feature_embedding.parquet.
-    if let Some(a) = &model.adapter {
-        let w_out = tensor_to_mat(&a.w)?;
-        let src_names: Vec<Box<str>> = (0..w_out.nrows()).map(|i| format!("s{i}").into()).collect();
-        w_out.to_parquet_with_names(
-            &(c.out.to_string() + ".adapter.parquet"),
-            (Some(&src_names), Some("source_dim")),
-            Some(&embedding_col_names(embedding_dim)),
-        )?;
-        info!("Wrote {}.adapter.parquet", c.out);
-    }
-
-    b_feature_out.to_parquet_with_names(
-        &(c.out.to_string() + ".feature_bias.parquet"),
-        (Some(&feature_names), Some("feature")),
-        Some(&[Box::from("b_feature")]),
+        &feature_names,
+        embedding_dim,
     )?;
     // Phase 1's tables are on disk; the encoder below trains on the same
     // device, so release them first.
@@ -1638,20 +867,4 @@ fn log_intercept_spread(what: &str, values: Vec<f32>) {
             q[0], q[1], q[2]
         );
     }
-}
-
-/// Convert a 2-D `[R × C]` candle Tensor into an `nalgebra::DMatrix<f32>`
-/// suitable for `to_parquet_with_names`.
-fn tensor_to_mat(t: &Tensor) -> anyhow::Result<Mat> {
-    let rows = t.dim(0)?;
-    let cols = t.dim(1)?;
-    let data: Vec<f32> = t.to_vec2::<f32>()?.into_iter().flatten().collect();
-    // `from_row_slice` expects row-major, matching `to_vec2`.
-    Ok(Mat::from_row_slice(rows, cols, &data))
-}
-
-fn tensor_to_mat_1d(t: &Tensor) -> anyhow::Result<Mat> {
-    let n = t.dim(0)?;
-    let data: Vec<f32> = t.to_vec1::<f32>()?;
-    Ok(Mat::from_column_slice(n, 1, &data))
 }
