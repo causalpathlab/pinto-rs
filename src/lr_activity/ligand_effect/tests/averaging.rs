@@ -1,13 +1,12 @@
 //! Choices averaged rather than asked for, and what each pair reports
 //! beside its headline: the competence grid combined by Rubin's rules, the
-//! automatic number of pseudobulk draws, the threshold–response curve with
-//! its simultaneous band, the matched decoy programme, the two-scale
+//! average over exposure thresholds, the threshold–response curve with
+//! its simultaneous band, the matched background programme, the two-scale
 //! moments and the per-cell-type rows.
 
 use super::{estimate_pair, fitted_effects};
 use crate::lr_activity::ligand_effect::estimate::*;
-use crate::lr_activity::ligand_effect::overlap::{Estimate, Z_975};
-use crate::lr_activity::ligand_effect::pseudobulk::{combine, enough_draws, MAX_DRAWS, MIN_DRAWS};
+use crate::lr_activity::ligand_effect::overlap::{abf_average, combine, Estimate, Z_975};
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
 use rand::rngs::SmallRng;
@@ -176,7 +175,7 @@ fn competence_grid_combines_the_single_estimates() {
         .iter()
         .map(|&c| competence(&w.tissue.identity_bin, &detected, c))
         .collect();
-    let (x, _) = Exposure::build(&w.tissue, &w.ligand, &opts(&[0.1], false));
+    let x = Exposure::build(&w.tissue, &w.ligand, &opts(&[0.1], false));
     let r = Response::build(&w.tissue, &targets);
     let per = fitted_effects(
         Rows::cells(&w.tissue).pooled(),
@@ -212,55 +211,39 @@ fn competence_grid_combines_the_single_estimates() {
     }
 }
 
-// * Automatic draws
+// * The average over exposure thresholds
 
+/// The headline is the average of the curve's estimates, each with its own
+/// fits, by their evidence; a fixed threshold is its own estimate.
 #[test]
-fn draws_stop_when_monte_carlo_error_is_small() {
-    let same = vec![est(0.3, 0.1, 30.0); MIN_DRAWS];
-    assert!(
-        !enough_draws(&same[..MIN_DRAWS - 1]),
-        "fewer than the minimum"
-    );
-    assert!(enough_draws(&same), "no spread between draws");
-    // Spread sd 0.1 against within-SE 0.1: sd/√R < 0.01 needs R > 100.
-    let spread: Vec<Estimate> = (0..MAX_DRAWS)
-        .map(|d| est(0.3 + if d % 2 == 0 { 0.1 } else { -0.1 }, 0.1, 30.0))
-        .collect();
-    for r in MIN_DRAWS..MAX_DRAWS {
-        assert!(!enough_draws(&spread[..r]), "stopped at {r}");
-    }
-    assert!(enough_draws(&spread), "the cap");
-    // Small spread beside the SE: sd 0.002, sd/√3 ≈ 0.0012 < 0.01.
-    let small = [
-        est(0.300, 0.1, 30.0),
-        est(0.302, 0.1, 30.0),
-        est(0.298, 0.1, 30.0),
-    ];
-    assert!(enough_draws(&small));
-    let nan = vec![Estimate::nan(10, 2); MIN_DRAWS];
-    assert!(
-        enough_draws(&nan),
-        "not estimable: more draws will not help"
-    );
-}
-
-/// Pseudobulk with automatic draws runs to a finite headline.
-#[test]
-fn pseudobulk_with_automatic_draws() {
+fn the_headline_averages_over_the_exposure_thresholds() {
     let w = world(2, 0.3, false);
     let targets = [(1.0, w.response.as_slice())];
-    let o = EffectOpts {
-        pseudobulk: 4,
-        draws: AUTO_DRAWS,
-        ..opts(&[0.1], false)
-    };
+    let o = opts(&[0.1], true);
     let r = &estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[0];
-    assert!(
-        r.effects.competent.theta.is_finite(),
-        "{:?}",
-        r.effects.competent
-    );
-    assert!(r.effects.competent.z() > 3.0, "{:?}", r.effects.competent);
+    assert!(r.curve.len() >= 2, "{} thresholds", r.curve.len());
+    let points: Vec<Estimate> = r.curve.iter().map(|p| p.effect).collect();
+    let want = abf_average(&points, o.abf_prior_sd * o.abf_prior_sd);
+    let got = r.effects.competent;
+    assert!((got.theta - want.theta).abs() < 1e-12, "{got:?} {want:?}");
+    assert!((got.se - want.se).abs() < 1e-12);
+    assert!(r.effects.abf.log10_bf.is_finite());
+    assert!(r.curve.iter().any(|p| p.tau == r.effects.abf.top_tau));
+    assert!(r.effects.abf.top_weight > 0.0 && r.effects.abf.top_weight <= 1.0);
+    // The sensitivity fits read the headline threshold alone.
+    assert!(r.effects.steps[0].theta.is_finite());
+
+    let fixed = EffectOpts {
+        threshold: Some(r.curve[0].tau),
+        ..o
+    };
+    let r = &estimate_pair(&w.tissue, &data(&w, &targets), &fixed).unwrap()[0];
+    let point = r
+        .curve
+        .iter()
+        .find(|p| Some(p.tau) == fixed.threshold)
+        .expect("the fixed threshold is on the curve");
+    assert_eq!(r.effects.competent.theta, point.effect.theta);
 }
 
 // * Threshold–response curve
@@ -314,7 +297,7 @@ fn sup_t_critical_value_lies_between_pointwise_and_bonferroni() {
 }
 
 /// On a planted dose response the curve rises with τ, every band holds
-/// its pointwise interval, and the headline is one of its points.
+/// its pointwise interval, and the headline threshold is one of its points.
 #[test]
 fn curve_rises_with_dose_and_band_covers_pointwise() {
     let w = world(3, 0.25, false);
@@ -331,11 +314,7 @@ fn curve_rises_with_dose_and_band_covers_pointwise() {
             "a band over several points is wider: {p:?}"
         );
     }
-    let head = c
-        .iter()
-        .find(|p| p.tau == r.threshold)
-        .expect("headline on the curve");
-    assert!((head.effect.theta - r.effects.competent.theta).abs() < 1e-9);
+    assert!(c.iter().any(|p| p.tau == r.threshold), "headline threshold");
     for w in c.windows(2) {
         assert!(
             w[1].effect.theta > w[0].effect.theta - w[0].effect.se,
@@ -345,73 +324,95 @@ fn curve_rises_with_dose_and_band_covers_pointwise() {
     assert!(c.last().unwrap().effect.theta > c[0].effect.theta);
 }
 
-// * Decoy programme
+// * Background programme
 
 #[test]
-fn decoy_genes_are_matched_by_expression_and_used_once() {
+fn background_genes_are_matched_by_expression_and_used_once() {
     let n = 100;
     let sf = vec![1.0; n];
     let gene =
         |count: usize, x: f32| -> Vec<(u32, f32)> { (0..count).map(|r| (r as u32, x)).collect() };
     // Pool means 0.1, 0.2, 0.4, 0.8 (count rows of 1 over 100 rows).
     let pool_genes: Vec<Vec<(u32, f32)>> = [10, 20, 40, 80].iter().map(|&c| gene(c, 1.0)).collect();
-    let pool = DecoyPool::new(&sf, pool_genes.iter().map(|g| g.as_slice()).collect());
-    let t1 = gene(38, 1.0); // 0.38: nearest 0.4
-    let t2 = gene(42, 1.0); // 0.42: nearest 0.4 is used, then 0.2 or 0.8 (log 0.42→0.2 is 0.74, →0.8 is 0.64)
+    let pool = BackgroundPool::new(&sf, pool_genes.iter().map(|g| g.as_slice()).collect());
+    let t1 = gene(38, 1.0);
+    let t2 = gene(42, 1.0);
     let targets = [(2.0, t1.as_slice()), (-1.0, t2.as_slice())];
-    let d = pool.matched(&sf, &targets);
+    let d = pool.draw(&BackgroundPool::plan(&sf, &targets), 1);
     assert_eq!(d.len(), 2);
     assert_eq!(
-        (d[0].0, d[0].1.len()),
-        (2.0, 40),
+        (d[0].0, d[1].0),
+        (2.0, -1.0),
         "heaviest target first, same weight"
     );
+    assert_ne!(d[0].1.len(), d[1].1.len(), "a gene is used once");
     assert_eq!(
-        (d[1].0, d[1].1.len()),
-        (-1.0, 80),
-        "nearest unused in log mean"
+        pool.draw(&BackgroundPool::plan(&sf, &targets), 1)
+            .iter()
+            .map(|g| g.1.len())
+            .collect::<Vec<_>>(),
+        d.iter().map(|g| g.1.len()).collect::<Vec<_>>(),
+        "seeded"
     );
-    // A pool holding fewer than half the programme gives no decoy.
-    let small = DecoyPool::new(&sf, vec![pool_genes[0].as_slice()]);
+    // A large pool: picks stay near the target's expression, and draws differ.
+    let many: Vec<Vec<(u32, f32)>> = (1..=100).map(|c| gene(c, 1.0)).collect();
+    let big = BackgroundPool::new(&sf, many.iter().map(|g| g.as_slice()).collect());
+    let t = gene(50, 1.0);
+    let one = [(1.0, t.as_slice())];
+    let sizes: std::collections::HashSet<usize> = (0..50)
+        .map(|seed| big.draw(&BackgroundPool::plan(&sf, &one), seed)[0].1.len())
+        .collect();
+    assert!(sizes.len() > 5, "{sizes:?}");
+    assert!(sizes.iter().all(|&c| (39..=61).contains(&c)), "{sizes:?}");
+    // A pool holding fewer than half the programme gives no background.
+    let small = BackgroundPool::new(&sf, vec![pool_genes[0].as_slice()]);
     let three = [
         (1.0, t1.as_slice()),
         (1.0, t1.as_slice()),
         (1.0, t2.as_slice()),
     ];
-    assert!(small.matched(&sf, &three).is_empty());
-    let picks = decoy_pool_genes(1000, &[1, 2, 3], 7);
+    assert!(small.draw(&BackgroundPool::plan(&sf, &three), 1).is_empty());
+    let picks = background_pool_genes(1000, &[1, 2, 3], 7);
     assert_eq!(picks.len(), 199);
     assert!(picks.windows(2).all(|w| w[0] < w[1]) && !picks.contains(&2));
-    assert_eq!(picks, decoy_pool_genes(1000, &[1, 2, 3], 7), "seeded");
+    assert_eq!(picks, background_pool_genes(1000, &[1, 2, 3], 7), "seeded");
 }
 
-/// Genes unrelated to the ligand make a null decoy beside a real effect;
-/// a decoy that responds fails the control.
+/// Genes unrelated to the ligand make a null background beside a real effect;
+/// a background programme that responds fails the control.
 #[test]
-fn decoy_is_null_on_unrelated_genes_and_fails_the_control_when_not() {
+fn background_is_null_on_unrelated_genes_and_fails_the_control_when_not() {
     let w = world(4, 0.3, false);
     let programme: Vec<(f64, &[(u32, f32)])> = vec![(1.0, w.response.as_slice()); 3];
-    let pool = DecoyPool::new(
+    let pool = BackgroundPool::new(
         &w.tissue.size_factor,
         w.noise.iter().map(|g| g.as_slice()).collect(),
     );
     let o = opts(&[0.1], false);
-    let (mut rows, _) = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
+    let mut rows = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
     let r = &rows[0];
-    assert_eq!(r.n_decoy_genes, 3);
+    assert_eq!(r.n_background_genes, 3);
     assert!(r.effects.competent.z() > 4.0, "{:?}", r.effects.competent);
-    assert!(r.decoy_effect.z().abs() < 3.0, "decoy {:?}", r.decoy_effect);
+    assert!(
+        r.background_effect.z().abs() < 3.0,
+        "background {:?}",
+        r.background_effect
+    );
     report(&mut rows, &ReportOpts::default());
-    assert!(!rows[0].warnings.contains("decoy"), "{}", rows[0].warnings);
+    assert!(
+        !rows[0].warnings.contains("background"),
+        "{}",
+        rows[0].warnings
+    );
 
-    // The responding programme itself in the pool: its decoy responds.
-    let pool = DecoyPool::new(&w.tissue.size_factor, vec![w.response.as_slice(); 3]);
-    let (mut rows, _) = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
+    // The responding programme itself in the pool: its background responds.
+    let pool = BackgroundPool::new(&w.tissue.size_factor, vec![w.response.as_slice(); 3]);
+    let mut rows = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
     report(&mut rows, &ReportOpts::default());
-    assert!(rows[0].decoy_q < 0.05);
+    assert!(rows[0].background_q < 0.05);
     assert!(rows[0]
         .warnings
-        .contains("a matched decoy programme responds too"));
+        .contains("a matched background programme responds too"));
 }
 
 // * Moments
@@ -446,7 +447,7 @@ fn named_cell_types_add_one_row_each() {
     for r in &rows[1..] {
         assert!(r.effects.competent.theta.is_finite(), "{}", r.section);
         assert!(r.effects.steps[0].theta.is_nan(), "steps pooled only");
-        assert!(r.curve.is_empty() && r.decoy_effect.theta.is_nan());
+        assert!(r.curve.is_empty() && r.background_effect.theta.is_nan());
     }
     // Without names, no type rows.
     let w = world(5, 0.15, false);
@@ -475,14 +476,14 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
     assert!(rows[0].effects.near_determined.is_nan(), "no main fit");
     assert!(rows[0].curve.iter().all(|c| c.effect.theta.is_nan()));
 
-    // The fitted guard's counts at the first threshold.
+    // The fitted guard's counts at the middle threshold, which decides.
     use crate::lr_activity::ligand_effect::exposure::competence;
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
     let levels: Vec<Vec<bool>> = GRID
         .iter()
         .map(|&c| competence(&w.tissue.identity_bin, &detected, c))
         .collect();
-    let (x, _) = Exposure::build(&w.tissue, &w.ligand, &o);
+    let x = Exposure::build(&w.tissue, &w.ligand, &o);
     let r = Response::build(&w.tissue, &targets);
     let fitted = fitted_effects(
         Rows::cells(&w.tissue),
@@ -496,7 +497,7 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
         },
     )
     .unwrap();
-    let want = fitted.levels[0].scopes[0].competent;
+    let want = fitted.levels[levels.len() / 2].scopes[0].competent;
     assert!(want.theta.is_nan());
     assert_eq!((head.n, head.n_treated), (want.n, want.n_treated));
     report(&mut rows, &ReportOpts::default());
@@ -510,14 +511,6 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
         rows[0].warnings
     );
     assert!(rows[0].warnings.contains("competent receivers;"));
-    report(
-        &mut rows,
-        &ReportOpts {
-            units: true,
-            ..ReportOpts::default()
-        },
-    );
-    assert!(rows[0].warnings.contains("competent pseudobulk units;"));
 }
 
 /// Every row (every column of the contact-effect table, the curve rows
@@ -525,33 +518,26 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
 /// pair with every fit run ([`EffectOpts::fit_thin`]).
 fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
     let targets = [(1.0, w.response.as_slice())];
-    let pool = DecoyPool::new(
+    let pool = BackgroundPool::new(
         &w.tissue.size_factor,
         w.noise.iter().map(|g| g.as_slice()).collect(),
     );
     let run = |fit_thin: bool| {
         let o = EffectOpts { fit_thin, ..*o };
-        let (mut rows, _) = estimate_pair_with(&w.tissue, &data(w, &targets), &pool, &o).unwrap();
-        assert!(rows[0].n_decoy_genes > 0, "a decoy is matched");
-        report(
-            &mut rows,
-            &ReportOpts {
-                units: o.pseudobulk > 1,
-                ..ReportOpts::default()
-            },
-        );
+        let mut rows = estimate_pair_with(&w.tissue, &data(w, &targets), &pool, &o).unwrap();
+        assert!(rows[0].n_background_genes > 0, "a background is matched");
+        report(&mut rows, &ReportOpts::default());
         format!("{rows:#?}")
     };
     (run(false), run(true))
 }
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in
-/// the output, on single cells and on pseudobulk units: for a hopeless
+/// the output: for a hopeless
 /// pair, and for a pair whose controls alone would be estimable (no competent effect, so
 /// the incompetent effect and the ring are not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
-    use crate::lr_activity::ligand_effect::pseudobulk::UNIT_SIZE;
     let mut hopeless = world(7, 0.3, true);
     hopeless.ligand = (0..hopeless.ligand.len())
         .map(|i| if i % 500 == 7 { 3.0 } else { 0.0 })
@@ -568,15 +554,8 @@ fn skipped_fits_change_no_output() {
     static ONLY: [f64; 1] = [0.2];
     static GRID: [f64; 2] = [0.05, 0.2];
     for (w, grid) in [(&hopeless, &GRID[..]), (&controls_only, &ONLY[..])] {
-        for pseudobulk in [1, UNIT_SIZE] {
-            let o = EffectOpts {
-                pseudobulk,
-                draws: AUTO_DRAWS,
-                ..opts(grid, true)
-            };
-            let (skipped, fitted) = skipped_and_fitted(w, &o);
-            assert_eq!(skipped, fitted, "pseudobulk {pseudobulk}");
-        }
+        let (skipped, fitted) = skipped_and_fitted(w, &opts(grid, true));
+        assert_eq!(skipped, fitted);
     }
 }
 
@@ -594,11 +573,7 @@ fn a_thin_headline_drops_its_controls() {
         .collect();
     let targets = [(1.0, w.response.as_slice())];
     static ONLY: [f64; 1] = [0.2];
-    let o = EffectOpts {
-        pseudobulk: crate::lr_activity::ligand_effect::pseudobulk::UNIT_SIZE,
-        draws: AUTO_DRAWS,
-        ..opts(&ONLY, false)
-    };
+    let o = opts(&ONLY, false);
     let row = &estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[0];
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
@@ -635,135 +610,14 @@ fn a_pair_empty_at_the_middle_threshold_has_no_estimate() {
     assert!(row.effects.competent.theta.is_finite());
 }
 
-// * Fixed partitions
-
-/// The partitions a pair drew, counted in tissues' worth of receivers.
-fn partitions(w: &World, o: &EffectOpts) -> (Vec<EffectRow>, usize) {
-    let targets = [(1.0, w.response.as_slice())];
-    let (rows, tally) =
-        estimate_pair_with(&w.tissue, &data(w, &targets), &DecoyPool::default(), o).unwrap();
-    (rows, tally.receivers as usize / w.tissue.n())
-}
-
-/// Units as large as the tissue leave every stratum one unit: no seed
-/// changes any partition, and one draw is the answer, for the headline and
-/// each curve threshold.
-#[test]
-fn a_fixed_partition_stops_after_one_draw() {
-    use crate::lr_activity::ligand_effect::exposure::competence_grid;
-    let w = world(3, 0.3, false);
-    let o = EffectOpts {
-        pseudobulk: w.tissue.n(),
-        draws: AUTO_DRAWS,
-        ..opts(&[0.1], true)
-    };
-    let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
-    let comps = competence_grid(&w.tissue.identity_bin, &detected, o.competences);
-    let (x, a) = Exposure::build(&w.tissue, &w.ligand, &o);
-    let eligible: Vec<bool> = (0..a.len()).map(|i| comps.iter().any(|c| c[i])).collect();
-    let taus = curve_taus(&a, x.tau, &eligible, o.min_arm);
-    let curve = taus.iter().filter(|&&(t, _)| t != x.tau).count();
-    assert_eq!(partitions(&w, &o).1, 1 + curve);
-}
-
-/// A curve threshold whose own partition is random gets its own draws, and
-/// they leave the headline alone: on a fixed headline partition, the
-/// headline is its one draw (no identical copies shrinking its df by
-/// Barnard–Rubin), the same as without the curve.
-#[test]
-fn a_random_curve_partition_leaves_a_fixed_headline_alone() {
-    use crate::lr_activity::ligand_effect::exposure::competence_grid;
-    use crate::lr_activity::ligand_effect::pseudobulk::{draw, partition};
-    let mut w = world(3, 0.3, false);
-    // Ligand on every cell but an 8×8 corner: at τ = 0 nearly every
-    // receiver is exposed, while the headline at the median dose splits
-    // each stratum between the arms, so the curve's strata are larger.
-    w.ligand = (0..w.ligand.len())
-        .map(|i| {
-            let corner = i % SIDE < 8 && i / SIDE < 8;
-            if corner {
-                0.0
-            } else {
-                1.0 + (i * 7 % 5) as f64
-            }
-        })
-        .collect();
-    let (_, a) = Exposure::build(&w.tissue, &w.ligand, &opts(&[0.1], true));
-    let mut pos: Vec<f64> = a.iter().copied().filter(|&v| v > 0.0).collect();
-    pos.sort_by(f64::total_cmp);
-    // Small arms pass, so the few units of a small tissue are estimable.
-    let base = EffectOpts {
-        draws: AUTO_DRAWS,
-        threshold: Some(pos[pos.len() / 2]),
-        min_arm: 5,
-        ..opts(&[0.1], true)
-    };
-    let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
-    let comps = competence_grid(&w.tissue.identity_bin, &detected, base.competences);
-    let (x, _) = Exposure::build(&w.tissue, &w.ligand, &base);
-    let eligible: Vec<bool> = (0..a.len()).map(|i| comps.iter().any(|c| c[i])).collect();
-    let taus = curve_taus(&a, x.tau, &eligible, base.min_arm);
-    let fixed = |m: usize| {
-        let f = Exposure {
-            tau: x.tau,
-            t: x.t.clone(),
-            t_ring: x.t_ring.clone(),
-            own: Vec::new(),
-            niche: Vec::new(),
-        };
-        !partition(&w.tissue, &f, m, 1).2
-    };
-    // Whether the curve threshold `tau` draws a random partition at unit
-    // size `m` whose competent units leave both arms open, so its fit runs.
-    let open_random = |tau: f64, m: usize| {
-        let (mut f, _) = Exposure::build(&w.tissue, &w.ligand, &base);
-        f.t = exposed(&a, tau);
-        let u = draw(&w.tissue, &f, &w.ligand, m, 1);
-        let comp = u.of_lead(&comps[0]);
-        let n = comp.iter().filter(|&&c| c).count();
-        let treated = (0..comp.len())
-            .filter(|&j| comp[j] && u.exposure.t[j])
-            .count();
-        u.random && !base.thin_arm(n, treated)
-    };
-    // A unit size at which the headline's strata stay whole but some curve
-    // threshold's split, and that threshold's fit runs.
-    let m = (2..200)
-        .find(|&m| {
-            fixed(m)
-                && taus
-                    .iter()
-                    .any(|&(tau, _)| tau != x.tau && open_random(tau, m))
-        })
-        .expect("a unit size splitting an estimable curve stratum only");
-    let o = EffectOpts {
-        pseudobulk: m,
-        ..base
-    };
-    let curve = taus.iter().filter(|&&(t, _)| t != x.tau).count();
-    let (with, drawn) = partitions(&w, &o);
-    assert!(drawn >= 1 + curve + MIN_DRAWS - 1, "{drawn} partitions");
-    let (without, once) = partitions(&w, &EffectOpts { curve: false, ..o });
-    assert_eq!(once, 1);
-    let (h, h1) = (with[0].effects.competent, without[0].effects.competent);
-    assert!(h.df.is_finite() && h.df > 0.0, "{h:?}");
-    assert_eq!(format!("{h:?}"), format!("{h1:?}"));
-    assert_eq!(
-        format!("{:?}", with[0].effects),
-        format!("{:?}", without[0].effects)
-    );
-}
-
-// * Draw fits
-
 /// The ring and step fits need the controls' propensities: asked for on
-/// draw fits built without them, they are an error, not a panic.
+/// threshold fits built without them, they are an error, not a panic.
 #[test]
 fn control_fits_without_their_propensities_are_an_error() {
     let w = world(1, 0.3, false);
     let targets = [(1.0, w.response.as_slice())];
     let o = opts(&[0.1], false);
-    let (x, _) = Exposure::build(&w.tissue, &w.ligand, &o);
+    let x = Exposure::build(&w.tissue, &w.ligand, &o);
     let r = Response::build(&w.tissue, &targets);
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
     let levels = vec![crate::lr_activity::ligand_effect::exposure::competence(
@@ -772,7 +626,7 @@ fn control_fits_without_their_propensities_are_an_error() {
         0.1,
     )];
     let rows = Rows::cells(&w.tissue);
-    let fits = DrawFits::new(rows, &x, &levels, &o, &mut Default::default()).unwrap();
+    let fits = ThresholdFits::new(rows, &x, &levels, &o, &mut Default::default()).unwrap();
     let (design, cf) = (rows.design.view(), rows.cf);
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, None, &o).is_ok());
     assert!(fit_main(design, cf, &fits, &r, Fit::Ring, None, &o).is_err());

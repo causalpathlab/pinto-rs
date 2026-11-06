@@ -368,7 +368,7 @@ fn simulate_runs_read_back_as_written() {
     let path = dir.path().join("o.lra-simulate.parquet");
     let n = 2;
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
-    let (confounder, shape) = (s("realgene"), s("interaction"));
+    let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |v: [f32; 2]| v.to_vec();
     let floats: Vec<(String, Vec<f32>)> = vec![
         ("planted_effect".into(), f([0.3, 0.3])),
@@ -378,6 +378,9 @@ fn simulate_runs_read_back_as_written() {
         ("confound_scale".into(), f([16.0, 16.0])),
         ("spillover".into(), f([0.1, 0.1])),
         ("shift".into(), f([0.0, 0.0])),
+        ("background_confounding".into(), f([0.5, 0.5])),
+        ("generic_shift".into(), f([0.25, 0.25])),
+        ("dose_midpoint".into(), f([0.75, 0.75])),
     ];
     let mut ints: Vec<(String, Vec<i32>)> = vec![
         ("heterogeneous".into(), vec![0, 0]),
@@ -385,6 +388,8 @@ fn simulate_runs_read_back_as_written() {
         ("confound_receptor".into(), vec![1, 1]),
         ("rep".into(), vec![0, 1]),
         ("estimable".into(), vec![1, 0]),
+        ("dose_response".into(), vec![1, 1]),
+        ("dose_order".into(), vec![8, 8]),
     ];
     for m in COMPARED {
         ints.push((format!("{m}_reject"), vec![1, (m == "crude") as i32]));
@@ -409,6 +414,10 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
     assert_eq!(sc.confound_ligand, 0.3, "the value as written, not f32's");
+    assert_eq!(sc.background_confounding, 0.5);
+    assert_eq!(sc.generic_shift, 0.25);
+    assert!(sc.dose_response);
+    assert_eq!((sc.dose_midpoint, sc.dose_order), (0.75, 8));
     assert!(sc.marker && sc.confound_receptor && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
@@ -419,8 +428,29 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0]["scenario"],
-        "θ=0.30 α=0.3 β=0.3 realgene/interaction@16 κ=0.1 marker"
+        "θ=0.30 α=0.3 β=0.3 realgene/quadratic@16 dose generic=0.25 κ=0.1 marker"
     );
     assert_eq!(s[0]["reject"]["crude"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);
+
+    // A table from an earlier version, without the later columns, reads with
+    // the scenario's defaults.
+    let later = [
+        "background_confounding",
+        "generic_shift",
+        "dose_response",
+        "dose_midpoint",
+        "dose_order",
+    ];
+    let kept: Vec<(Box<str>, Column)> = table
+        .into_iter()
+        .filter(|(k, _)| !later.contains(&k.as_ref()))
+        .collect();
+    let old = dir.path().join("old.lra-simulate.parquet");
+    write_named_table(old.to_str().unwrap(), "row", &names, &kept).unwrap();
+    let sc = read_sim_runs(old.to_str().unwrap()).unwrap()[0].scenario;
+    let plain = Scenario::default();
+    assert_eq!(sc.background_confounding, plain.background_confounding);
+    assert_eq!(sc.generic_shift, plain.generic_shift);
+    assert!(!sc.dose_response);
 }

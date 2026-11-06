@@ -279,7 +279,7 @@ mod frame {
 
         /// The genes the identity left out, for a manifest that does not
         /// record them: every pair's of the reference and of the options'
-        /// files, read again (the decoys drawn again with the seed).
+        /// files, read again (the background programmes drawn again with the seed).
         fn excluded_from_files(
             options: &LraOptions,
             gene_names: &[Box<str>],
