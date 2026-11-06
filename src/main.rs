@@ -302,6 +302,8 @@ enum Commands {
                       \x20                                is the\n\
                       \x20                                mass-weighted mean per-community\n\
                       \x20                                log-likelihood per edge unit.\n\
+                      \x20                                A report: the sweeps move on the collapsed\n\
+                      \x20                                conditional, so it need not rise every sweep.\n\
                       \x20 {out}.delta.parquet           Batch effects (multi-sample only)\n\
                       \x20 {out}.feature_graph.parquet      Feature-feature pairs (feature-pair mode only)\n\
                       \x20 {out}.L{l}.*.parquet          Per-cascade-level outputs (unless --no-level-outputs)\n\

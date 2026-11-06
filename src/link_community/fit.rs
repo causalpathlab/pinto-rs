@@ -26,8 +26,10 @@ use crate::feature_network::graph::*;
 use crate::feature_network::modules::{kcore_trim, leiden_feature_modules};
 use crate::link_community::cascade::{run_cascade, CascadeConfig, ModulePairContext, ProfileMode};
 use crate::link_community::dict_merge::{cosine_cut, cosine_merge};
-use crate::link_community::gibbs::{ComponentGibbsArgs, IncidenceConfig, LinkGibbsSampler};
-use crate::link_community::incidence::{fit_log_incidence, pack_propensity_row_major};
+use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler};
+use crate::link_community::incidence::{
+    cell_incidence_scores, fit_log_incidence, pack_propensity_row_major,
+};
 use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
 use crate::link_community::outputs::{
     fit_partition, link_community_histogram, write_dict_cut, write_dict_merges, write_partition,
@@ -304,10 +306,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     //////////////////////////////////////
     // 6. Full fine-resolution profiles //
     //////////////////////////////////////
-    let all_edge_indices: Vec<usize> = (0..n_edges).collect();
     let full_profiles = build_full_profiles(
         &data_vec,
-        &all_edge_indices,
+        &(0..n_edges).collect::<Vec<usize>>(),
         edges,
         &profile_mode,
         c.block_size,
@@ -381,39 +382,33 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // cascade's fine-resolution labels and held fixed for the duration of
     // EM + greedy. No per-move bookkeeping; the score gains the term
     //   Σ_{k'} (θ_L[k'] + θ_R[k']) · log_B[k, k'].
-    let (incidence_propensity, incidence_log_b): (Option<Vec<f64>>, Option<Vec<f64>>) =
-        if !args.no_incidence {
-            let prop_mat = compute_node_membership(edges, &current_labels, n_cells, k);
-            let prop_flat = pack_propensity_row_major(&prop_mat);
-            let log_b = fit_log_incidence(
-                edges,
-                &current_labels,
-                &prop_flat,
-                k,
-                args.incidence_a,
-                args.incidence_b,
-            );
-            info!(
-                "Incidence enabled (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
-                k, args.incidence_a, args.incidence_b
-            );
-            (Some(prop_flat), Some(log_b))
-        } else {
-            (None, None)
-        };
+    let incidence_scores: Option<Vec<f32>> = if !args.no_incidence {
+        let prop_mat = compute_node_membership(edges, &current_labels, n_cells, k);
+        let prop_flat = pack_propensity_row_major(&prop_mat);
+        drop(prop_mat);
+        let log_b = fit_log_incidence(
+            edges,
+            &current_labels,
+            &prop_flat,
+            k,
+            args.incidence_a,
+            args.incidence_b,
+        );
+        info!(
+            "Incidence enabled (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
+            k, args.incidence_a, args.incidence_b
+        );
+        Some(cell_incidence_scores(&prop_flat, &log_b, k))
+    } else {
+        None
+    };
 
     let comp_args = ComponentGibbsArgs {
         graph: &graph,
         edges,
         k,
         alpha,
-        incidence: match (incidence_propensity.as_deref(), incidence_log_b.as_deref()) {
-            (Some(p), Some(lb)) => Some(IncidenceConfig {
-                propensity: p,
-                log_incidence: lb,
-            }),
-            _ => None,
-        },
+        incidence: incidence_scores.as_deref(),
     };
 
     let num_fine_sweeps = args.num_em.unwrap_or((args.num_gibbs / 4).max(5));
@@ -436,8 +431,13 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         &comp_args,
         args.num_greedy,
     );
+    // The fit is over: what remains is reports and outputs, which build their own
+    // per-community tables. Each of these is large, so none is carried into them.
+    drop(incidence_scores);
 
-    let fine_stats = LinkCommunityStats::from_profiles(&full_profiles, k, &current_labels);
+    let mut fine_stats = LinkCommunityStats::from_profiles(&full_profiles, k, &current_labels);
+    drop(current_labels);
+    drop(full_profiles);
     let score = fine_stats.total_score();
     let total_mass: f64 = fine_stats.size_sum.iter().sum();
     let mi = fine_stats.mutual_information();
@@ -452,16 +452,20 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         },
         mi
     );
+    // The score above is a plug-in report. This is the collapsed target the sweeps
+    // moved on, apart from the frozen incidence term.
+    info!("Log marginal: {:.6e}", fine_stats.log_marginal(alpha));
     score_trace.push(ScoreEntry {
         level: -1,
         sweep: 0,
         score,
-        n_edges: fine_stats.n_edges,
+        n_edges,
         total_mass,
         mutual_information: mi,
     });
 
-    let final_membership = fine_stats.membership.clone();
+    let final_membership = std::mem::take(&mut fine_stats.membership);
+    drop(fine_stats);
 
     if log::log_enabled!(log::Level::Info) {
         eprintln!();
