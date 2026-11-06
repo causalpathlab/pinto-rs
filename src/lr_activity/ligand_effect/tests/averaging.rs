@@ -5,8 +5,18 @@
 //! moments and the per-cell-type rows.
 
 use super::{estimate_pair, fitted_effects};
+use crate::lr_activity::ligand_effect::averaging::{abf_average, combine};
+use crate::lr_activity::ligand_effect::background::{background_pool_genes, BackgroundPool};
+use crate::lr_activity::ligand_effect::curve::{curve_taus, sup_t_crit};
+use crate::lr_activity::ligand_effect::dose::Exposure;
+use crate::lr_activity::ligand_effect::effects::{effects_on, Sensitivity};
 use crate::lr_activity::ligand_effect::estimate::*;
-use crate::lr_activity::ligand_effect::overlap::{abf_average, combine, Estimate, Z_975};
+use crate::lr_activity::ligand_effect::fits::{fit_main, Fit, Rows, ThresholdFits};
+use crate::lr_activity::ligand_effect::inference::{Estimate, Z_975};
+use crate::lr_activity::ligand_effect::options::EffectOpts;
+use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
+use crate::lr_activity::ligand_effect::response::Response;
+use crate::lr_activity::ligand_effect::rows::Moments;
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
 use rand::rngs::SmallRng;
@@ -503,7 +513,7 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
     report(&mut rows, &ReportOpts::default());
     assert_eq!(
         rows[0].verdict,
-        crate::lr_activity::ligand_effect::output::Verdict::InsufficientData
+        crate::lr_activity::ligand_effect::verdict::Verdict::InsufficientData
     );
     assert!(
         rows[0].warnings.starts_with("not estimable: thin arm"),
@@ -514,8 +524,9 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
 }
 
 /// Every row (every column of the contact-effect table, the curve rows
-/// included) of a pair with its hopeless fits skipped, beside the same
-/// pair with every fit run ([`EffectOpts::fit_thin`]).
+/// included) of a pair with its hopeless fits skipped, beside the same pair
+/// with every fit run
+/// ([`crate::lr_activity::ligand_effect::options::EffectOpts::fit_thin`]).
 fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
     let targets = [(1.0, w.response.as_slice())];
     let pool = BackgroundPool::new(
@@ -532,10 +543,10 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
     (run(false), run(true))
 }
 
-/// Skipping a fit whose every subset leaves an arm thin changes nothing in
-/// the output: for a hopeless
-/// pair, and for a pair whose controls alone would be estimable (no competent effect, so
-/// the incompetent effect and the ring are not read either); every fit is skipped for both.
+/// Skipping a fit whose every subset leaves an arm thin changes nothing in the
+/// output: for a hopeless pair, and for a pair whose controls alone would be
+/// estimable (no competent effect, so the incompetent effect and the ring are
+/// not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
     let mut hopeless = world(7, 0.3, true);

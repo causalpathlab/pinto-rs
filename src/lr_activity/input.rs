@@ -212,7 +212,8 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .map(|b| b.unwrap_or_else(|| crate::lr_activity::fit::BATCH_LABEL_ALL.into()))
         .collect();
     let prefix = &input.run.as_ref().expect("from a run").prefix;
-    let coords = crate::lr_activity::ligand_effect::read_coords(prefix, &cell_to_col, n_cells)?;
+    let coords =
+        crate::lr_activity::ligand_effect::pipeline::read_coords(prefix, &cell_to_col, n_cells)?;
     let manifest = &input.run.as_ref().expect("from a run").manifest;
     let cell_type = match newest_round(manifest) {
         Some(round) => match round_cell_types(&round, &cell_to_col, n_cells) {

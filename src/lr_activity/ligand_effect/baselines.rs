@@ -49,7 +49,7 @@
 //! a few thousand receivers.
 
 use super::estimate::coexpression;
-use super::overlap::upper_normal_p;
+use super::inference::upper_normal_p;
 use super::tissue::Tissue;
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;

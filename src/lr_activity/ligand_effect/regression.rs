@@ -53,7 +53,7 @@ pub(super) fn fold_products(
     fold: &[u8],
     k: usize,
 ) -> Vec<FoldProducts> {
-    use super::overlap::ROW_BLOCK;
+    use super::crossfit::ROW_BLOCK;
     debug_assert!(p <= x.ncols());
     let q = cols.len();
     let d = p + q;
@@ -195,7 +195,7 @@ fn gather_design_rows(
     rows: &[usize],
     z: &mut Vec<f64>,
 ) {
-    use super::overlap::ROW_BLOCK;
+    use super::crossfit::ROW_BLOCK;
     let d = p + cols.len();
     z.clear();
     z.resize(rows.len() * d, 0.0);

@@ -184,7 +184,7 @@ pub fn lra_long_about() -> String {
          Example:\n\
          \x20 pinto lra --from out/run1.pinto.json\n\
          \x20 pinto lra data.zarr --coord cells.csv -o out/lra",
-        ligand_effect::output::verdict_help()
+        ligand_effect::verdict::verdict_help()
     )
 }
 

@@ -1,10 +1,11 @@
 //! Combining analyses: Rubin's rules over fixed choices, and the Bayesian
 //! average over exposure thresholds.
 
-use crate::lr_activity::ligand_effect::estimate::{EffectOpts, ONE_CLUSTER_DF};
-use crate::lr_activity::ligand_effect::overlap::{
-    abf_average, abf_summary, background_comparison, combine, Estimate,
+use crate::lr_activity::ligand_effect::averaging::{
+    abf_average, abf_summary, background_comparison, combine,
 };
+use crate::lr_activity::ligand_effect::inference::Estimate;
+use crate::lr_activity::ligand_effect::options::{EffectOpts, ONE_CLUSTER_DF};
 
 fn est(theta: f64, se: f64) -> Estimate {
     Estimate {
@@ -118,8 +119,9 @@ fn a_control_is_averaged_by_its_own_evidence() {
     );
 }
 
-/// The effect against its background programmes is a predictive test: the spread of the background programmes,
-/// with `K − 1` degrees of freedom; their sampling variance is its floor.
+/// The effect against its background programmes is a predictive test: the
+/// spread of the background programmes, with `K − 1` degrees of freedom; their
+/// sampling variance is its floor.
 #[test]
 fn the_effect_is_compared_with_the_spread_of_its_backgrounds() {
     let backgrounds = [est(0.0, 0.01), est(0.2, 0.01), est(0.4, 0.01)];

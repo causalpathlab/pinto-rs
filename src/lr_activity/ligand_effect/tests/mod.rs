@@ -16,10 +16,14 @@ mod targets;
 
 // * Shared helpers
 
-use super::estimate::{
-    effects_on, estimate_pair_with, BackgroundPool, EffectOpts, EffectRow, Effects, Exposure,
-    PairData, Response, Rows, Sensitivity, ThresholdFits,
-};
+use super::background::BackgroundPool;
+use super::dose::Exposure;
+use super::effects::{effects_on, Effects, Sensitivity};
+use super::estimate::{estimate_pair_with, PairData};
+use super::fits::{Rows, ThresholdFits};
+use super::options::EffectOpts;
+use super::response::Response;
+use super::rows::EffectRow;
 use super::simulate::{calibrate_producers, Scenario, SimBase, SimRow, SimShared};
 use super::tissue::Tissue;
 
@@ -32,7 +36,8 @@ pub(super) fn estimate_pair(
     estimate_pair_with(tissue, pair, &BackgroundPool::default(), opts)
 }
 
-/// [`effects_on`] with the threshold's propensities fitted for it.
+/// [`crate::lr_activity::ligand_effect::effects::effects_on`] with the
+/// threshold's propensities fitted for it.
 pub(super) fn fitted_effects(
     rows: Rows<'_>,
     x: &Exposure,
@@ -41,7 +46,7 @@ pub(super) fn fitted_effects(
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
-    let mut starts = crate::lr_activity::ligand_effect::estimate::Starts::default();
+    let mut starts = crate::lr_activity::ligand_effect::fits::Starts::default();
     let fits = ThresholdFits::new(rows, x, levels, opts, &mut starts.main)?.with_controls(
         rows,
         sens.steps,

@@ -1,8 +1,8 @@
 //! Pair resolution: complexes split into subunits before gene matching,
 //! the scarcest-subunit rule, and deduplication on the matched genes.
 
+use super::super::pairs::{resolve_pairs, subunit_genes};
 use super::super::targets::TargetSets;
-use super::super::{resolve_pairs, subunit_genes};
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
 
@@ -75,5 +75,8 @@ fn pairs_resolve_complex_ligands_and_receptors_and_dedup_on_genes() {
 #[test]
 fn a_complex_counts_as_its_scarcest_subunit() {
     let cols = vec![vec![3.0, 0.0, 2.0], vec![1.0, 5.0, 4.0]];
-    assert_eq!(super::super::scarcest_subunit(&cols), [1.0, 0.0, 2.0]);
+    assert_eq!(
+        super::super::pairs::scarcest_subunit(&cols),
+        [1.0, 0.0, 2.0]
+    );
 }

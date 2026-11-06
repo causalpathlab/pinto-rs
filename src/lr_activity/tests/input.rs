@@ -1,8 +1,7 @@
 //! `--from`: a run's files are found beside its manifest.
 
 use crate::lr_activity::args::LraInputArgs;
-use crate::util::metadata::resolve_beside;
-use crate::util::metadata::PintoMetadata;
+use crate::util::metadata::{resolve_beside, PintoMetadata};
 
 fn manifest(dir: &std::path::Path, data: &str) -> std::path::PathBuf {
     let path = dir.join("run.pinto.json");
@@ -137,7 +136,7 @@ fn a_cell_without_a_within_batch_contact_keeps_its_batch() -> anyhow::Result<()>
 /// relabelled so the per-section rows cannot collide with them.
 #[test]
 fn section_labels_never_collide_with_the_pooled_row() {
-    use crate::lr_activity::ligand_effect::estimate::ALL_SECTIONS;
+    use crate::lr_activity::ligand_effect::rows::ALL_SECTIONS;
     use crate::lr_activity::ligand_effect::tissue::section_label;
     assert_eq!(&*section_label("slide1"), "slide1");
     assert_ne!(&*section_label(ALL_SECTIONS), ALL_SECTIONS);

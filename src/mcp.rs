@@ -8,11 +8,11 @@ use serde_json::Value;
 /// What the agent is told when it connects: what the tools are for, and in
 /// which order to call them. The README gives the same, for clients that
 /// do not pass it on. The verdicts are `pinto lra --help`'s, from the one
-/// table ([`crate::lr_activity::ligand_effect::output::Verdict`]).
+/// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(
         "{FITS} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
-        crate::lr_activity::ligand_effect::output::verdict_line()
+        crate::lr_activity::ligand_effect::verdict::verdict_line()
     )
 }
 

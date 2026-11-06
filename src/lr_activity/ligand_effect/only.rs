@@ -4,7 +4,7 @@
 //! An entry is `LIGAND:RECEPTOR` (a complex joins its subunits with `_`,
 //! `TGFB1:TGFBR1_TGFBR2`) or a bare `LIGAND` for all of its pairs. Entries
 //! are matched on the genes they resolve to, as the pairs themselves are
-//! ([`super::subunit_genes`]): case aside, subunits in any order. An entry
+//! ([`super::pairs::subunit_genes`]): case aside, subunits in any order. An entry
 //! no pair answers is an error that lists the nearest pairs.
 //!
 //! A subset never writes over the full table: it goes to
@@ -12,7 +12,7 @@
 //! apart (`outputs.lra.subsets`). Its q-values are corrected within the
 //! subset only, which its `q_scope` column says.
 
-use super::Pair;
+use super::pairs::Pair;
 use data_beans::utilities::name_matching::GeneIndex;
 use sha2::Digest;
 
@@ -123,7 +123,7 @@ pub(super) fn select(
     gene_names: &[Box<str>],
     index: &GeneIndex,
 ) -> anyhow::Result<Vec<bool>> {
-    let genes = |name: &str| super::subunit_genes(name, gene_names, index);
+    let genes = |name: &str| super::pairs::subunit_genes(name, gene_names, index);
     let mut keep = vec![false; pairs.len()];
     let mut unknown: Vec<String> = Vec::new();
     for w in wanted {

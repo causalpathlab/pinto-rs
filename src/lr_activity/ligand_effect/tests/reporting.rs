@@ -4,9 +4,12 @@
 
 use super::rows_of;
 use super::simulate::fixture;
-use crate::lr_activity::ligand_effect::estimate::*;
-use crate::lr_activity::ligand_effect::output::Verdict;
-use crate::lr_activity::ligand_effect::overlap::{t_crit_975, t_two_sided_p, AbfSummary, Estimate};
+use crate::lr_activity::ligand_effect::averaging::AbfSummary;
+use crate::lr_activity::ligand_effect::effects::ScopeEffects;
+use crate::lr_activity::ligand_effect::inference::{t_crit_975, t_two_sided_p, Estimate};
+use crate::lr_activity::ligand_effect::report::{bh, eta_squared, report, simes, ReportOpts};
+use crate::lr_activity::ligand_effect::rows::EffectRow;
+use crate::lr_activity::ligand_effect::verdict::{verdict, Evidence, Verdict};
 
 fn close(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len()
@@ -23,10 +26,11 @@ fn normal_tails() {
     assert!((t_two_sided_p(1.959_964, inf) - 0.05).abs() < 1e-6);
     assert!((t_two_sided_p(-1.959_964, inf) - 0.05).abs() < 1e-6);
     assert!(
-        (crate::lr_activity::ligand_effect::overlap::upper_normal_p(1.644_854) - 0.05).abs() < 1e-6
+        (crate::lr_activity::ligand_effect::inference::upper_normal_p(1.644_854) - 0.05).abs()
+            < 1e-6
     );
     assert!(
-        (crate::lr_activity::ligand_effect::overlap::upper_normal_p(-1.644_854) - 0.95).abs()
+        (crate::lr_activity::ligand_effect::inference::upper_normal_p(-1.644_854) - 0.95).abs()
             < 1e-6
     );
     assert!(t_two_sided_p(f64::NAN, inf).is_nan());

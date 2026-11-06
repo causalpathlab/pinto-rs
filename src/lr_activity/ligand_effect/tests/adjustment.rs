@@ -4,8 +4,10 @@
 //! identity step is not. The nested designs share the full matrix.
 
 use super::estimate_pair;
-use crate::lr_activity::ligand_effect::estimate::{EffectOpts, PairData};
+use crate::lr_activity::ligand_effect::crossfit::Design;
+use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
+use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::*;
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts, STEP_NAMES};
 use crate::util::common::Mat;

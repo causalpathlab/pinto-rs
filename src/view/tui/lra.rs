@@ -8,15 +8,15 @@
 //! table opens in the layer when it is done. A run without a table is
 //! offered a full `pinto lra`.
 
-use super::super::curve;
 use super::super::gene::GeneMap;
 use super::super::lra::{
     change, lra_command, lra_table, next_verdict, q_text, Filter, LraView, PairShow, TableRef,
 };
 use super::super::render::Style;
-use super::super::{Level, StillPair};
+use super::super::{curve, Level, StillPair};
 use super::{rgb, App, Pick};
-use crate::lr_activity::ligand_effect::output::{percent_digits, PairRow, Verdict};
+use crate::lr_activity::ligand_effect::output::{percent_digits, PairRow};
+use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
 use legume_tui::save::Field;

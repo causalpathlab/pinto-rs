@@ -1,10 +1,11 @@
 //! What users see: the verdict vocabulary, the study JSON, file names.
 
-use crate::lr_activity::ligand_effect::estimate::{self, Evidence, Moments};
-use crate::lr_activity::ligand_effect::output::{percent_text, verdict_help, Verdict};
-use crate::lr_activity::ligand_effect::overlap::Estimate;
+use crate::lr_activity::ligand_effect::inference::Estimate;
+use crate::lr_activity::ligand_effect::output::percent_text;
+use crate::lr_activity::ligand_effect::rows::Moments;
 use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
-use crate::lr_activity::ligand_effect::{lra_path, lra_simulate_path};
+use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
+use crate::lr_activity::ligand_effect::{lra_path, lra_simulate_path, verdict};
 
 // * Verdicts
 
@@ -47,7 +48,7 @@ fn every_verdict_has_one_code_and_a_note() {
             control_failed: bits & 8 != 0,
             confounded: bits & 16 != 0,
         };
-        seen.insert(estimate::verdict(e));
+        seen.insert(verdict::verdict(e));
     }
     assert_eq!(seen.len(), Verdict::ALL.len());
     let help = verdict_help();

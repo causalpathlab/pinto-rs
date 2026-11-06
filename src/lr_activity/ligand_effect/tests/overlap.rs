@@ -3,6 +3,7 @@
 //! stays finite when exposure is nearly determined.
 
 use super::rows_of;
+use crate::lr_activity::ligand_effect::crossfit::{CrossFit, Design};
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
 use crate::lr_activity::ligand_effect::overlap::*;
 use nalgebra::DMatrix;

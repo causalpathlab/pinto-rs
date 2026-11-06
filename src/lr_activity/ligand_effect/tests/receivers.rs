@@ -4,13 +4,14 @@
 //! middle of the grid, and the counts and threshold the table's row reports.
 
 use super::estimate_pair;
-use crate::lr_activity::ligand_effect::estimate::{
-    EffectOpts, Exposure, PairData, ALL_SECTIONS, COMPETENCE_GRID,
-};
+use crate::lr_activity::ligand_effect::dose::Exposure;
+use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::exposure::competence_grid;
+use crate::lr_activity::ligand_effect::options::{EffectOpts, COMPETENCE_GRID};
 use crate::lr_activity::ligand_effect::receivers::{
     pair_map, receiver_contacts, size_factors, Class,
 };
+use crate::lr_activity::ligand_effect::rows::ALL_SECTIONS;
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
 use rand::rngs::SmallRng;

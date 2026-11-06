@@ -71,8 +71,9 @@ pub use map::{pair_map, Class, PairMap};
 
 #[cfg(feature = "view")]
 mod map {
-    use super::super::estimate::{self, EffectOpts};
+    use super::super::dose;
     use super::super::exposure::{competence, Contacts};
+    use super::super::options::{self, EffectOpts};
     use super::super::INTERNALS;
     use super::contact_dose;
 
@@ -96,7 +97,7 @@ mod map {
     /// `pair` on the receivers: `ligand_counts` and `receptor_counts` per row
     /// (a complex as its scarcest subunit), exposed above `threshold` (a
     /// table's, [`table_threshold`]), or above the threshold the estimate
-    /// would choose ([`estimate::choose_threshold`]) when none is given.
+    /// would choose ([`dose::choose_threshold`]) when none is given.
     pub fn pair_map(
         contacts: &Contacts,
         size_factor: &[f64],
@@ -108,10 +109,10 @@ mod map {
         let (_, a) = contact_dose(contacts, size_factor, ligand_counts);
         let tau = table_threshold(&a, threshold);
         let detected: Vec<bool> = receptor_counts.iter().map(|&r| r > 0.0).collect();
-        let grid = &estimate::COMPETENCE_GRID;
+        let grid = &options::COMPETENCE_GRID;
         let level = grid[grid.len() / 2];
         PairMap {
-            exposed: estimate::exposed(&a, tau),
+            exposed: dose::exposed(&a, tau),
             exposure: a,
             threshold: tau,
             competence: level,
@@ -133,7 +134,7 @@ mod map {
             min_arm: INTERNALS.min_arm,
             ..EffectOpts::default()
         };
-        let chosen = estimate::choose_threshold(a, &opts);
+        let chosen = dose::choose_threshold(a, &opts);
         let Some(t) = given.filter(|t| t.is_finite()) else {
             return chosen;
         };
@@ -210,9 +211,10 @@ mod map {
 
 #[cfg(feature = "view")]
 mod frame {
-    use super::super::{
-        identity_bins, reference_pairs, signalling_genes, subunit_genes, GeneStore, PairChoices,
-    };
+    use super::super::genes::GeneStore;
+    use super::super::pairs::{reference_pairs, signalling_genes, subunit_genes};
+    use super::super::pipeline::identity_bins;
+    use super::super::PairChoices;
     use super::{pair_map, receiver_contacts, size_factors, PairMap};
     use crate::lr_activity::args::{LraInputArgs, ReferenceSpecies};
     use crate::lr_activity::input::{load_contacts, Contacts as RunContacts};
@@ -352,7 +354,7 @@ mod frame {
             threshold: Option<f64>,
         ) -> anyhow::Result<PairMap> {
             // The names resolved on the data's genes as the analysis
-            // resolved the reference's ([`subunit_genes`]).
+            // resolved the reference's ([`super::pairs::subunit_genes`]).
             let genes = |name: &str| {
                 subunit_genes(name, &self.gene_names, &self.index)
                     .ok_or_else(|| anyhow::anyhow!("{name}: not in the run's data"))
@@ -391,7 +393,7 @@ mod frame {
             }
             Ok(match cols.len() {
                 1 => cols.pop().expect("one"),
-                _ => super::super::scarcest_subunit(&cols),
+                _ => super::super::pairs::scarcest_subunit(&cols),
             })
         }
     }

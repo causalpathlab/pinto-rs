@@ -3,7 +3,8 @@
 //! its record in the manifest apart from the full table.
 
 use super::super::only::{self, canonical, edit_distance, parse, tag, Wanted};
-use super::super::{record, Pair};
+use super::super::pairs::Pair;
+use super::super::pipeline::record;
 use crate::util::metadata::{LraOptions, LraSubset, PintoMetadata};
 use data_beans::utilities::name_matching::GeneIndex;
 

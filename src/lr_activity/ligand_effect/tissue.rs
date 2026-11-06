@@ -12,11 +12,12 @@
 //! matrix and owns only its small per-fold Grams.
 
 use super::confounders::{self, ConfounderInputs, Group};
-use super::estimate::{Scope, ALL_SECTIONS};
+use super::crossfit::{CrossFit, Design, DesignPrefix};
+use super::effects::Scope;
 use super::exposure::{median_contact_length, ring_partners, Contacts};
 use super::folds::spatial_folds;
-use super::overlap::{CrossFit, Design, DesignPrefix};
 use super::receivers::{receiver_contacts, size_factors};
+use super::rows::ALL_SECTIONS;
 use crate::util::common::*;
 
 /// Settings that shape the tissue, shared by estimation and simulation.
@@ -391,7 +392,7 @@ fn second_neighbours(contacts: &Contacts) -> Vec<Vec<u32>> {
 }
 
 /// A section's row label: its name, unless the name reads as the pooled
-/// row's ([`ALL_SECTIONS`]) or a cell type's (`type:…`), which gets a
+/// row's ([`super::rows::ALL_SECTIONS`]) or a cell type's (`type:…`), which gets a
 /// `section:` prefix so no two kinds of row share a label.
 pub fn section_label(name: &str) -> Box<str> {
     if name == ALL_SECTIONS || name.starts_with("type:") || name.starts_with("section:") {
