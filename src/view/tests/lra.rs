@@ -4,8 +4,8 @@
 //! `view_map`.
 
 use crate::lr_activity::input::Contacts;
+use crate::lr_activity::ligand_effect::frame::RunFrame;
 use crate::lr_activity::ligand_effect::output::{PairRow, Q_SCOPE_ALL};
-use crate::lr_activity::ligand_effect::receivers::RunFrame;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::metadata::{LraOptions, LraSubset};

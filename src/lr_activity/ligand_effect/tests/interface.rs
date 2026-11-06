@@ -2,10 +2,11 @@
 
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::output::percent_text;
+use crate::lr_activity::ligand_effect::output::{lra_path, lra_simulate_path};
 use crate::lr_activity::ligand_effect::rows::Moments;
 use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
+use crate::lr_activity::ligand_effect::verdict;
 use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
-use crate::lr_activity::ligand_effect::{lra_path, lra_simulate_path, verdict};
 
 // * Verdicts
 

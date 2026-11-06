@@ -2,10 +2,8 @@
 
 use super::effects::ScopeEffects;
 use super::inference::Estimate;
+use super::tissue::ALL_SECTIONS;
 use super::verdict::Verdict;
-
-/// The section label of the pooled row.
-pub const ALL_SECTIONS: &str = "all";
 
 /// One output row: a pair in one section, or pooled.
 #[derive(Clone, Debug)]
@@ -30,7 +28,7 @@ pub struct EffectRow {
     /// per-section rows.
     pub effects: ScopeEffects,
     /// Share of the variance of the exposure explained by the receiver's
-    /// dominant-neighbour identity bin ([`super::report::eta_squared`]).
+    /// dominant-neighbour identity bin ([`super::dose::eta_squared`]).
     pub exposure_eta2: f64,
     /// Distinct identity bins among the competent and the incompetent
     /// receivers: competence is a function of the bin, so these say how

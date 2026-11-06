@@ -82,8 +82,8 @@ pub fn lra_outputs(
             ligand_effect::only::curve_path(out, only).into(),
         ],
         ContactEffect => vec![
-            ligand_effect::lra_path(out).into(),
-            ligand_effect::lra_curve_path(out).into(),
+            ligand_effect::output::lra_path(out).into(),
+            ligand_effect::output::lra_curve_path(out).into(),
         ],
         CoexpressionTest => vec![
             format!("{out}.lr_activity.parquet").into(),

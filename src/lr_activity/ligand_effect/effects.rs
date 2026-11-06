@@ -10,15 +10,6 @@ use super::overlap::{arm_contrast, difference, outcome_estimate, subset_estimate
 use super::response::Response;
 use super::timing;
 
-/// Where an estimand is summed: the whole tissue, one section, or one
-/// receiver cell type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    All,
-    Section(u32),
-    CellType(u32),
-}
-
 /// Every estimand in one scope.
 #[derive(Clone, Copy, Debug)]
 pub struct ScopeEffects {

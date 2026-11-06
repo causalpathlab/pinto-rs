@@ -1277,7 +1277,7 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
 /// `--only`, lra-simulate's), and the run it read, which it opens. It owns
 /// only its script, `{out}.cmd.sh`: never the run's own files.
 fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>) -> Job {
-    use crate::lr_activity::{ligand_effect::lra_simulate_path, lra_outputs};
+    use crate::lr_activity::{ligand_effect::output::lra_simulate_path, lra_outputs};
     let cli = <crate::Cli as clap::Parser>::try_parse_from(
         std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
     );

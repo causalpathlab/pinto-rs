@@ -69,7 +69,8 @@
 //! - around them: [`baselines`] are the co-expression scores it is compared
 //!   with, [`simulate`] benchmarks the estimator on this tissue with a planted
 //!   effect, [`output`] writes and reads the tables, and [`timing`] sums the
-//!   time per stage for the run log.
+//!   time per stage for the run log; [`frame`] puts one pair on a run's
+//!   receivers for `pinto view`.
 
 pub mod averaging;
 pub mod background;
@@ -83,6 +84,8 @@ pub mod estimate;
 pub mod exposure;
 pub mod fits;
 pub mod folds;
+#[cfg(feature = "view")]
+pub mod frame;
 pub mod genes;
 pub mod inference;
 pub mod memory;
@@ -155,7 +158,7 @@ pub struct Internals {
 
 pub const INTERNALS: Internals = Internals {
     competence_grid: options::COMPETENCE_GRID,
-    benchmark_competence: pipeline::BENCHMARK_COMPETENCE[0],
+    benchmark_competence: options::BENCHMARK_COMPETENCE[0],
     abf_prior_sd: options::ABF_PRIOR_SD,
     background_draws: options::BACKGROUND_DRAWS,
     min_arm: 20,
@@ -171,17 +174,6 @@ pub const INTERNALS: Internals = Internals {
     tile: 25.0,
     folds: 5,
 };
-
-impl Internals {
-    /// What [`report::report`] reads of these.
-    pub fn report_opts(&self) -> report::ReportOpts {
-        report::ReportOpts {
-            fdr: self.fdr,
-            max_exposure_eta2: self.max_exposure_eta2,
-            min_arm: self.min_arm,
-        }
-    }
-}
 
 /// What the user chose, and where the run records itself.
 pub struct Settings<'a> {
@@ -239,28 +231,4 @@ pub struct RunInputs<'a> {
     pub coords: &'a [Option<(f32, f32)>],
     /// Cell-type code per data column and the types' names, when known.
     pub cell_type: Option<(&'a [u32], &'a [Box<str>])>,
-}
-
-/// `{out}.lra.parquet`, the contact-effect table.
-pub fn lra_path(out: &str) -> String {
-    format!("{out}.lra.parquet")
-}
-
-/// `{out}.lra.curve.parquet`, each pair's threshold-response curve.
-pub fn lra_curve_path(out: &str) -> String {
-    curve_beside(&lra_path(out))
-}
-
-/// The curves written beside the contact-effect table `table`, the full
-/// one or a subset's: `{table without .parquet}.curve.parquet`.
-pub fn curve_beside(table: &str) -> String {
-    format!(
-        "{}.curve.parquet",
-        table.strip_suffix(".parquet").unwrap_or(table)
-    )
-}
-
-/// `{out}.lra-simulate.parquet`, the power and calibration check.
-pub fn lra_simulate_path(out: &str) -> String {
-    format!("{out}.lra-simulate.parquet")
 }

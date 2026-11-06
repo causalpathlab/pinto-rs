@@ -1,6 +1,6 @@
 //! What a contact-effect estimate is asked to do: its options and their defaults.
 
-use super::inference::Estimate;
+use super::inference::{Estimate, ONE_CLUSTER_DF};
 use super::overlap::NuisanceOpts;
 
 /// Overlap weight below which a receiver's exposure counts as nearly
@@ -10,6 +10,10 @@ pub const NEAR_DETERMINED_H: f64 = 0.01;
 /// Competence thresholds averaged over (share of an identity bin detecting
 /// the receptor).
 pub const COMPETENCE_GRID: [f64; 3] = [0.05, 0.1, 0.2];
+
+/// The single competence threshold `lra-simulate` plants on
+/// ([`super::Internals::benchmark_competence`]).
+pub const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
 
 /// Prior SD of an effect at one exposure threshold, on the response's scale.
 pub const ABF_PRIOR_SD: f64 = 0.002;
@@ -125,7 +129,3 @@ impl EffectOpts {
 pub fn thin_arm(min_arm: usize, n: usize, treated: usize) -> bool {
     treated < min_arm || n.saturating_sub(treated) < min_arm
 }
-
-/// The `df` of a not-estimable estimate whose rows lie in fewer than two
-/// variance clusters, so the verdict can say why.
-pub const ONE_CLUSTER_DF: f64 = 0.0;

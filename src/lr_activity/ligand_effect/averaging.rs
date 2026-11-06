@@ -18,8 +18,10 @@ pub fn combine(parts: &[Estimate]) -> Estimate {
             .copied()
             .unwrap_or_else(|| Estimate::nan(0, 0));
         // Every analysis in one variance cluster: say so, as each did.
-        let one_cluster =
-            !parts.is_empty() && parts.iter().all(|d| d.df == super::options::ONE_CLUSTER_DF);
+        let one_cluster = !parts.is_empty()
+            && parts
+                .iter()
+                .all(|d| d.df == super::inference::ONE_CLUSTER_DF);
         let nan = Estimate::nan(e.n, e.n_treated);
         let df = if one_cluster { e.df } else { nan.df };
         return Estimate { df, ..nan };

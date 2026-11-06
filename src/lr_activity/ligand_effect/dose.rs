@@ -94,3 +94,29 @@ pub fn choose_threshold(a: &[f64], opts: &EffectOpts) -> f64 {
         s.iter().rev().copied().find(|&v| v < med).unwrap_or(0.0)
     }
 }
+
+/// η² of `x` by `group` over `rows`: between-group sum of squares over
+/// the total. 1 when `x` is a function of the group, near 0 when unrelated
+/// (biased up by about `(groups − 1) / n`); NaN when `x` is constant.
+pub fn eta_squared(group: &[usize], x: &[f64], rows: &[u32]) -> f64 {
+    if rows.is_empty() {
+        return f64::NAN;
+    }
+    let mean = rows.iter().map(|&i| x[i as usize]).sum::<f64>() / rows.len() as f64;
+    let total: f64 = rows.iter().map(|&i| (x[i as usize] - mean).powi(2)).sum();
+    if total <= 1e-12 {
+        return f64::NAN;
+    }
+    // Ordered, so the sum is the same in every run.
+    let mut by: std::collections::BTreeMap<usize, (f64, usize)> = Default::default();
+    for &i in rows {
+        let e = by.entry(group[i as usize]).or_default();
+        e.0 += x[i as usize];
+        e.1 += 1;
+    }
+    let between: f64 = by
+        .values()
+        .map(|&(s, c)| c as f64 * (s / c as f64 - mean).powi(2))
+        .sum();
+    (between / total).min(1.0)
+}

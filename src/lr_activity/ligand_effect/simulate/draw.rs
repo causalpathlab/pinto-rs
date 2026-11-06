@@ -5,13 +5,13 @@ use super::fields::{confounding, shift_field, SimShared};
 use super::row::SimRow;
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
-use crate::lr_activity::ligand_effect::dose::{choose_threshold, exposed, Exposure};
+use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
 use crate::lr_activity::ligand_effect::effects::Sensitivity;
 use crate::lr_activity::ligand_effect::exposure::competence;
 use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::marginal_correlation;
-use crate::lr_activity::ligand_effect::report::{eta_squared, report};
+use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
 use crate::lr_activity::ligand_effect::response::{expected_bleed, Response};
 use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::thresholds::{
@@ -19,7 +19,6 @@ use crate::lr_activity::ligand_effect::thresholds::{
 };
 use crate::lr_activity::ligand_effect::tissue::Tissue;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
-use crate::lr_activity::ligand_effect::INTERNALS;
 use legume_numeric::matrix::rand_util::mix_seed;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -640,7 +639,7 @@ fn run_verdict(
         (avg.background, avg.over_background),
         n_genes,
     );
-    report(std::slice::from_mut(&mut judged), &INTERNALS.report_opts());
+    report(std::slice::from_mut(&mut judged), &ReportOpts::default());
     judged.verdict
 }
 

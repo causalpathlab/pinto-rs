@@ -136,8 +136,8 @@ fn a_cell_without_a_within_batch_contact_keeps_its_batch() -> anyhow::Result<()>
 /// relabelled so the per-section rows cannot collide with them.
 #[test]
 fn section_labels_never_collide_with_the_pooled_row() {
-    use crate::lr_activity::ligand_effect::rows::ALL_SECTIONS;
     use crate::lr_activity::ligand_effect::tissue::section_label;
+    use crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS;
     assert_eq!(&*section_label("slide1"), "slide1");
     assert_ne!(&*section_label(ALL_SECTIONS), ALL_SECTIONS);
     assert_eq!(&*section_label("type:T"), "section:type:T");

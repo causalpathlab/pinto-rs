@@ -136,7 +136,7 @@ fn a_subset_is_named_by_its_list_not_over_the_full_table() {
     );
     assert_ne!(
         only::table_path("res/run", &short),
-        super::super::lra_path("res/run")
+        super::super::output::lra_path("res/run")
     );
     // A long list is named by a short stable hash.
     let long = list(&["TGFB1:TGFBR1_TGFBR2", "SPP1:CD44", "CXCL12:CXCR4"]);

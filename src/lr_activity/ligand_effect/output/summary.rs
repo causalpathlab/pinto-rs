@@ -29,7 +29,7 @@ pub fn percent_text(pct: f64, lo: f64, hi: f64) -> String {
 pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>) -> String {
     let pooled: Vec<PooledEffect> = rows
         .iter()
-        .filter(|r| &*r.section == crate::lr_activity::ligand_effect::rows::ALL_SECTIONS)
+        .filter(|r| &*r.section == crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS)
         .map(PooledEffect::from)
         .collect();
     let counts: Vec<String> = Verdict::counts(pooled.iter().map(|r| r.verdict))

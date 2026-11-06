@@ -5,7 +5,8 @@ use crate::lr_activity::ligand_effect::averaging::{
     abf_average, abf_summary, background_comparison, combine,
 };
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::options::{EffectOpts, ONE_CLUSTER_DF};
+use crate::lr_activity::ligand_effect::inference::ONE_CLUSTER_DF;
+use crate::lr_activity::ligand_effect::options::EffectOpts;
 
 fn est(theta: f64, se: f64) -> Estimate {
     Estimate {

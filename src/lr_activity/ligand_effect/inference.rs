@@ -3,6 +3,10 @@
 
 use special::{Beta, Error as _};
 
+/// The `df` of a not-estimable estimate whose rows lie in fewer than two
+/// variance clusters, so the verdict can say why.
+pub const ONE_CLUSTER_DF: f64 = 0.0;
+
 /// One subgroup's estimate.
 #[derive(Clone, Copy, Debug)]
 pub struct Estimate {

@@ -5,9 +5,10 @@
 use super::rows_of;
 use super::simulate::fixture;
 use crate::lr_activity::ligand_effect::averaging::AbfSummary;
+use crate::lr_activity::ligand_effect::dose::eta_squared;
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::{t_crit_975, t_two_sided_p, Estimate};
-use crate::lr_activity::ligand_effect::report::{bh, eta_squared, report, simes, ReportOpts};
+use crate::lr_activity::ligand_effect::report::{bh, report, simes, ReportOpts};
 use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::verdict::{verdict, Evidence, Verdict};
 

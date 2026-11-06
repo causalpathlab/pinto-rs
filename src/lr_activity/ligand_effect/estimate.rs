@@ -125,20 +125,19 @@
 
 use super::averaging::combine;
 use super::background::BackgroundPool;
+use super::baselines::coexpression;
 use super::curve::threshold_curve;
-use super::dose::Exposure;
-use super::effects::{Scope, ScopeEffects, Sensitivity};
+use super::dose::{eta_squared, Exposure};
+use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, Rows};
 use super::inference::Estimate;
 use super::options::EffectOpts;
 use super::overlap::marginal_correlation;
-use super::report::eta_squared;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
 use super::thresholds::{aligned, over_thresholds, thresholds};
 use super::timing;
-use super::tissue::Tissue;
-use crate::lr_activity::edge_scores::jeffreys_log_odds;
+use super::tissue::{Scope, Tissue};
 use legume_numeric::matrix::rand_util::{mix_seed, name_seed};
 use rayon::prelude::*;
 
@@ -345,40 +344,4 @@ impl PairReads<'_> {
             .collect();
         set.len()
     }
-}
-
-/// The co-expression log odds over the contacts inside the scope, both
-/// orientations: the Jeffreys log odds ratio of ligand detected in the sender
-/// and receptor detected in the receiver, and its SE.
-pub fn coexpression(
-    tissue: &Tissue,
-    ligand_counts: &[f64],
-    receptor_counts: &[f64],
-    inside: &[bool],
-) -> (f64, f64) {
-    let (mut n, mut n11, mut nl, mut nr) = (0usize, 0usize, 0usize, 0usize);
-    for (i, adj) in tissue.contacts.adj.iter().enumerate() {
-        if !inside[i] {
-            continue;
-        }
-        let l = ligand_counts[i] > 0.0;
-        for &j in adj {
-            let j = j as usize;
-            if !inside[j] {
-                continue;
-            }
-            // Each contact is visited from both ends: one oriented instance
-            // per visit, sender i, receiver j.
-            let r = receptor_counts[j] > 0.0;
-            n += 1;
-            nl += l as usize;
-            nr += r as usize;
-            n11 += (l && r) as usize;
-        }
-    }
-    if n == 0 {
-        return (f64::NAN, f64::NAN);
-    }
-    let (lor, se) = jeffreys_log_odds(n, n11, nl, nr);
-    (lor as f64, se as f64)
 }

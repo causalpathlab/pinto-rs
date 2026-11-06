@@ -18,12 +18,12 @@ use super::render::{Layer, Style};
 use super::StillPair;
 use super::{Base, Level};
 use crate::lr_activity::args::LraMethod;
+use crate::lr_activity::ligand_effect::frame::{Class, PairMap, RunFrame};
+use crate::lr_activity::ligand_effect::only;
 use crate::lr_activity::ligand_effect::output::{
-    percent_text, read_curves, read_pair_rows, CurveRow, Curves, PairRow, Q_SCOPE_ALL,
+    curve_beside, percent_text, read_curves, read_pair_rows, CurveRow, Curves, PairRow, Q_SCOPE_ALL,
 };
-use crate::lr_activity::ligand_effect::receivers::{Class, PairMap, RunFrame};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
-use crate::lr_activity::ligand_effect::{curve_beside, only};
 use crate::util::metadata::{LraOptions, LraSubset};
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};

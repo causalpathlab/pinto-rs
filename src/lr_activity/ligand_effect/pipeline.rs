@@ -7,20 +7,14 @@ use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared, Study};
-use super::tissue::{Tissue, TissueInputs, TissueOpts};
+use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts};
 use super::{
-    background, exposure, lra_simulate_path, only, options, output, receivers, report, rows,
-    timing, RunInputs, Settings, INTERNALS,
+    background, exposure, only, options, output, receivers, report, rows, timing, RunInputs,
+    Settings, INTERNALS,
 };
 use crate::util::common::*;
-use crate::util::feature_axis::FeatureAxis;
-use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
-
-/// The single competence threshold `lra-simulate` plants on
-/// ([`super::Internals::benchmark_competence`]).
-pub(super) const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
 
 /// The shared progress bar over the long stages. Where no bar can draw (the
 /// log of a background programme job, a pipe) each twentieth of the way is logged too.
@@ -93,45 +87,6 @@ impl Prepared {
             .collect();
         scarcest_subunit(&cols)
     }
-}
-
-/// The receivers' identity projection and its bins (`identity_bits` of
-/// it), every row of an `excluded` gene weighted out, so a receiver's
-/// identity is not partly its own outcome.
-pub(super) fn identity_bins(
-    data: &SparseIoVec,
-    axis: &FeatureAxis,
-    excluded: &HashSet<usize>,
-    cell_section: &[Box<str>],
-    block_size: Option<usize>,
-) -> anyhow::Result<(Mat, Vec<usize>)> {
-    let k = INTERNALS;
-    let row_weights: Vec<f32> = (0..data.num_rows())
-        .map(|r| {
-            if excluded.contains(&axis.feature_of_row(r)) {
-                0.0
-            } else {
-                1.0
-            }
-        })
-        .collect();
-    let n_excluded = row_weights.iter().filter(|&&w| w == 0.0).count();
-    if 2 * n_excluded > row_weights.len() {
-        warn!(
-            "Receiver identity leaves out {n_excluded} of {} rows (signalling and \
-             programme genes); on a small panel it rests on few genes",
-            row_weights.len()
-        );
-    }
-    let identity = data.project_columns_weighted(
-        k.identity_dim,
-        block_size,
-        Some(cell_section),
-        &row_weights,
-    )?;
-    let bits = k.identity_bits.min(k.identity_dim);
-    let bins = binary_sort_columns(&identity.proj, bits)?;
-    Ok((identity.proj, bins))
 }
 
 /// The pairs to estimate: all of them, or those `--only` names.
@@ -449,7 +404,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     let mut rows = estimate_pairs(&prep);
-    report::report(&mut rows, &INTERNALS.report_opts());
+    report::report(&mut rows, &report::ReportOpts::default());
     let (path, q_scope) = write_tables(a, &prep, &rows)?;
     print_run_summary(a, &rows, &path, &q_scope);
     Ok(())
@@ -626,7 +581,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     let prep = prepare(inp)?;
     // The benchmark plants on one competence threshold.
     let eopts = &EffectOpts {
-        competences: &BENCHMARK_COMPETENCE,
+        competences: &options::BENCHMARK_COMPETENCE,
         ..prep.eopts
     };
     let order = benchmark_pairs(&prep, eopts, study)?;
@@ -656,7 +611,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         rows.extend(benchmark.pair_runs(k));
     }
     pb.finish();
-    let path = lra_simulate_path(a.out);
+    let path = output::lra_simulate_path(a.out);
     output::write_sim(&path, &rows)?;
     record(a.manifest, |o| {
         o.simulate = Some(crate::lr_activity::recorded(Path::new(&path)))

@@ -106,7 +106,7 @@ pub fn table_path(out: &str, list: &[Box<str>]) -> String {
 
 /// `{out}.lra.only-<tag>.curve.parquet`, its curves.
 pub fn curve_path(out: &str, list: &[Box<str>]) -> String {
-    super::curve_beside(&table_path(out, list))
+    super::output::curve_beside(&table_path(out, list))
 }
 
 /// What a subset table's `q_scope` column says.

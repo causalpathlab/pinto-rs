@@ -136,7 +136,7 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
         }
     };
     let rows = (0..s[0].len())
-        .filter(|&i| &*s[0][i] == crate::lr_activity::ligand_effect::rows::ALL_SECTIONS)
+        .filter(|&i| &*s[0][i] == crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS)
         .map(|i| {
             Ok(PairRow {
                 ligand: s[1][i].clone(),

@@ -13,12 +13,25 @@
 
 use super::confounders::{self, ConfounderInputs, Group};
 use super::crossfit::{CrossFit, Design, DesignPrefix};
-use super::effects::Scope;
 use super::exposure::{median_contact_length, ring_partners, Contacts};
 use super::folds::spatial_folds;
 use super::receivers::{receiver_contacts, size_factors};
-use super::rows::ALL_SECTIONS;
+use super::INTERNALS;
 use crate::util::common::*;
+use crate::util::feature_axis::FeatureAxis;
+use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
+
+/// The section label of the pooled row.
+pub const ALL_SECTIONS: &str = "all";
+
+/// Where an estimand is summed: the whole tissue, one section, or one
+/// receiver cell type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Section(u32),
+    CellType(u32),
+}
 
 /// Settings that shape the tissue, shared by estimation and simulation.
 #[derive(Clone, Debug)]
@@ -126,20 +139,6 @@ pub struct TissueInputs<'a> {
     pub log1p_depth: &'a [f32],
     /// Optional cell-type code per data column; joins the identity group.
     pub cell_type: Option<&'a [u32]>,
-}
-
-/// Rows of the analysis: cells with coordinates and at least one contact
-/// to another such cell. A sender is itself in that set, so contacts stay
-/// inside it.
-pub fn receiver_cells(coords: &[Option<(f32, f32)>], pairs: &[(usize, usize)]) -> Vec<usize> {
-    let mut degree = vec![0usize; coords.len()];
-    for &(i, j) in pairs {
-        if i != j && coords[i].is_some() && coords[j].is_some() {
-            degree[i] += 1;
-            degree[j] += 1;
-        }
-    }
-    (0..coords.len()).filter(|&c| degree[c] > 0).collect()
 }
 
 impl Tissue {
@@ -392,7 +391,7 @@ fn second_neighbours(contacts: &Contacts) -> Vec<Vec<u32>> {
 }
 
 /// A section's row label: its name, unless the name reads as the pooled
-/// row's ([`super::rows::ALL_SECTIONS`]) or a cell type's (`type:…`), which gets a
+/// row's ([`ALL_SECTIONS`]) or a cell type's (`type:…`), which gets a
 /// `section:` prefix so no two kinds of row share a label.
 pub fn section_label(name: &str) -> Box<str> {
     if name == ALL_SECTIONS || name.starts_with("type:") || name.starts_with("section:") {
@@ -451,4 +450,43 @@ pub fn dominant_neighbour_bin(contacts: &Contacts, identity_bin: &[usize]) -> Ve
             best
         })
         .collect()
+}
+
+/// The receivers' identity projection and its bins (`identity_bits` of
+/// it), every row of an `excluded` gene weighted out, so a receiver's
+/// identity is not partly its own outcome.
+pub fn identity_bins(
+    data: &SparseIoVec,
+    axis: &FeatureAxis,
+    excluded: &HashSet<usize>,
+    cell_section: &[Box<str>],
+    block_size: Option<usize>,
+) -> anyhow::Result<(Mat, Vec<usize>)> {
+    let k = INTERNALS;
+    let row_weights: Vec<f32> = (0..data.num_rows())
+        .map(|r| {
+            if excluded.contains(&axis.feature_of_row(r)) {
+                0.0
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let n_excluded = row_weights.iter().filter(|&&w| w == 0.0).count();
+    if 2 * n_excluded > row_weights.len() {
+        warn!(
+            "Receiver identity leaves out {n_excluded} of {} rows (signalling and \
+             programme genes); on a small panel it rests on few genes",
+            row_weights.len()
+        );
+    }
+    let identity = data.project_columns_weighted(
+        k.identity_dim,
+        block_size,
+        Some(cell_section),
+        &row_weights,
+    )?;
+    let bits = k.identity_bits.min(k.identity_dim);
+    let bins = binary_sort_columns(&identity.proj, bits)?;
+    Ok((identity.proj, bins))
 }

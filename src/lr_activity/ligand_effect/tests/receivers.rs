@@ -7,12 +7,10 @@ use super::estimate_pair;
 use crate::lr_activity::ligand_effect::dose::Exposure;
 use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::exposure::competence_grid;
+use crate::lr_activity::ligand_effect::frame::{pair_map, Class};
 use crate::lr_activity::ligand_effect::options::{EffectOpts, COMPETENCE_GRID};
-use crate::lr_activity::ligand_effect::receivers::{
-    pair_map, receiver_contacts, size_factors, Class,
-};
-use crate::lr_activity::ligand_effect::rows::ALL_SECTIONS;
-use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
+use crate::lr_activity::ligand_effect::receivers::{receiver_contacts, size_factors};
+use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts, ALL_SECTIONS};
 use crate::util::common::Mat;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -242,7 +240,7 @@ fn every_receiver_has_one_class_senders_first() {
 /// an `f32`; read back below the median, it must still leave them so.
 #[test]
 fn a_median_threshold_read_back_from_the_table_keeps_the_ties_unexposed() {
-    use crate::lr_activity::ligand_effect::receivers::table_threshold;
+    use crate::lr_activity::ligand_effect::frame::table_threshold;
     let mut found = false;
     for seed in 0..40 {
         let w = small(seed);
