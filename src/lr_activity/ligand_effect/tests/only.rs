@@ -3,7 +3,7 @@
 //! its record in the manifest apart from the full table.
 
 use super::super::only::{self, canonical, edit_distance, parse, tag, Wanted};
-use super::super::{record, Pair, UnitSize};
+use super::super::{record, Pair};
 use crate::util::metadata::{LraOptions, LraSubset, PintoMetadata};
 use data_beans::utilities::name_matching::GeneIndex;
 
@@ -189,21 +189,21 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
     }
     .write(&manifest)
     .unwrap();
-    record(&manifest, UnitSize::Own(Some(9.5)), |o| {
+    record(&manifest, |o| {
         o.table = Some("/r/run.lra.parquet".into());
         o.options = Some(LraOptions::default());
     })
     .unwrap();
-    record(&manifest, UnitSize::Kept, |o| {
+    record(&manifest, |o| {
         o.record_subset(subset("/r/run.lra.only-spp1.parquet", 2))
     })
     .unwrap();
-    record(&manifest, UnitSize::Kept, |o| {
+    record(&manifest, |o| {
         o.record_subset(subset("/r/run.lra.only-cd44.parquet", 1))
     })
     .unwrap();
     // The same subset again replaces its entry.
-    record(&manifest, UnitSize::Kept, |o| {
+    record(&manifest, |o| {
         o.record_subset(subset("/r/run.lra.only-spp1.parquet", 3))
     })
     .unwrap();
@@ -212,9 +212,6 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
     assert_eq!(lra.subsets.len(), 2);
     assert_eq!(lra.subsets[0].pairs, 3);
     assert_eq!(lra.subsets[1].table, "/r/run.lra.only-cd44.parquet");
-    // The full table's unit size is kept through the subsets.
-    let size = lra.settings.as_ref().unwrap()["pseudobulk_mean_unit_size"].clone();
-    assert_eq!(size, serde_json::json!(9.5));
     // A manifest from before subsets reads, and writes none.
     let old: PintoMetadata = serde_json::from_str(
         r#"{"command":"lc","version":"0.16.3","timestamp":"0","prefix":"run","n_cells":1,

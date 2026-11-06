@@ -50,8 +50,7 @@
 //!    `T*` on the response over competent receivers,
 //!    `mean (y(T* = 1) − y(T* = 0))` at the realized ring exposure, defined
 //!    without the estimator: no weights, no detected exposure. It is taken
-//!    on the rows the estimator analyses (cells, or each pseudobulk unit
-//!    with every member set alike, averaged over partitions), the scale the
+//!    on the receivers, the scale the
 //!    response lives on, as measured (with spillover's bleed, below).
 //!    `truth_weighted` is the same contrast under the
 //!    estimator's own overlap weights `h`, the population its weighting
@@ -106,17 +105,17 @@
 //!   contact effect should vanish while confounding at a coarser scale
 //!   still fools the crude contrast.
 
+use rayon::prelude::*;
+
 use super::baselines::{self, baselines, Baselines};
 use super::confounders::fourier_features;
 use super::estimate::{
-    choose_threshold, competent_effect, effects_on, eta_squared, expected_bleed, exposed,
-    exposures, niche_ligand, report, DrawFits, EffectOpts, EffectRow, Exposure, ReportOpts,
-    Response, Rows, ScopeEffects, Sensitivity,
+    choose_threshold, eta_squared, expected_bleed, exposed, indicator, over_thresholds, report,
+    thresholds, EffectOpts, EffectRow, Exposure, Response, Rows, Sensitivity,
 };
 use super::exposure::competence;
 use super::output::Verdict;
 use super::overlap::{crude_difference, Estimate};
-use super::pseudobulk::{combine, draw, draw_limit, stop_drawing, unit_response, UnitTally};
 use super::regression::standardize;
 use super::tissue::Tissue;
 use super::INTERNALS;
@@ -231,9 +230,21 @@ pub struct Scenario {
     pub shift: f64,
     /// Simulate the receptor, driven by the hidden field at strength β.
     pub confound_receptor: bool,
-    /// How much of the field's push on the response (β) reaches the decoy
+    /// How much of the field's push on the response (β) reaches the background programme
     /// programme: 1 the same push, 0 none.
-    pub decoy_confounding: f64,
+    pub background_confounding: f64,
+    /// The planted effect grows with the true dose (a Hill curve) rather than
+    /// being a step at any exposure.
+    pub dose_response: bool,
+    /// Where the dose response is half way, as a quantile of the positive true
+    /// doses, and how sharply it rises (the Hill order).
+    pub dose_midpoint: f64,
+    pub dose_order: i32,
+    /// γ: each cell has a hidden trait that raises its ligand and, by γ per unit
+    /// of its contacts' mean trait, every gene of its competent contacts, background programmes
+    /// included. It acts at contact range on every programme, so neither the
+    /// receptor-negative receivers nor distant cells can show it; 0 for none.
+    pub generic_shift: f64,
     pub rep: usize,
 }
 
@@ -255,7 +266,11 @@ impl Default for Scenario {
             spillover: 0.0,
             shift: 0.0,
             confound_receptor: false,
-            decoy_confounding: 1.0,
+            background_confounding: 1.0,
+            dose_response: false,
+            dose_midpoint: 0.5,
+            dose_order: 2,
+            generic_shift: 0.0,
             rep: 0,
         }
     }
@@ -295,9 +310,17 @@ pub struct GridOpts {
     /// Simulate the receptor in every scenario, driven by the hidden field
     /// at the response's strength; false keeps the real receptor.
     pub confound_receptor: bool,
-    /// How much of the field's push on the response reaches the decoy
+    /// How much of the field's push on the response reaches the background programme
     /// programme: 1 the same push, 0 none.
-    pub decoy_confounding: f64,
+    pub background_confounding: f64,
+    /// Planted effects grow with the true dose.
+    pub dose_response: bool,
+    /// Where it is half way, as a quantile of the positive true doses.
+    pub dose_midpoint: f64,
+    /// How sharply it rises (the Hill order).
+    pub dose_order: i32,
+    /// Each a scenario with a generic contact-range shift of this size.
+    pub generic_shift: Vec<f64>,
 }
 
 impl Default for GridOpts {
@@ -315,7 +338,11 @@ impl Default for GridOpts {
             heterogeneous: true,
             ring_effect: vec![0.3],
             confound_receptor: true,
-            decoy_confounding: 1.0,
+            background_confounding: 1.0,
+            dose_response: false,
+            dose_midpoint: 0.5,
+            dose_order: 2,
+            generic_shift: Vec::new(),
         }
     }
 }
@@ -340,7 +367,10 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
             let plain = Scenario {
                 effect: theta,
                 confound_receptor: g.confound_receptor,
-                decoy_confounding: g.decoy_confounding,
+                background_confounding: g.background_confounding,
+                dose_response: g.dose_response && theta != 0.0,
+                dose_midpoint: g.dose_midpoint,
+                dose_order: g.dose_order,
                 rep,
                 ..Scenario::default()
             };
@@ -379,6 +409,12 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
             }
             for &spillover in &g.spillover {
                 out.push(Scenario { spillover, ..plain });
+            }
+            for &generic_shift in &g.generic_shift {
+                out.push(Scenario {
+                    generic_shift,
+                    ..plain
+                });
             }
             for &ring_effect in &g.ring_effect {
                 out.push(Scenario {
@@ -487,9 +523,14 @@ impl Study {
                      heterogeneous: effect varying by cell type. ring_effect: effect sizes \
                      reaching distant, non-touching cells. confound_receptor: simulate \
                      the receptor too, driven by the same hidden field (false keeps the \
-                     real receptor, which the field cannot touch). decoy_confounding: how \
-                     much of the field's push on the response reaches the decoy programme \
-                     (1 the same push, 0 none)."
+                     real receptor, which the field cannot touch). background_confounding: how \
+                     much of the field's push on the response reaches the background programme \
+                     (1 the same push, 0 none). dose_response: planted effects grow with the \
+                     true dose instead of being a step at any exposure, half way at the \
+                     quantile dose_midpoint of the positive doses and rising with the Hill \
+                     order dose_order. generic_shift: sizes of a contact-range shift of every gene \
+                     in competent receivers, tied to the ligand by a hidden trait of the \
+                     neighbours."
                         .into(),
                 ),
                 ..GridOpts::default()
@@ -509,8 +550,10 @@ pub struct SimRow {
     pub scenario: Scenario,
     /// Sample average effect of the true exposure over competent receivers
     /// on the analysed rows; independent of the estimator.
+    /// Over all competent receivers: under a dose response, those with no true
+    /// dose count at zero, so this sits below the effect among the exposed.
     pub truth: f64,
-    /// The same contrast under the estimator's overlap weights.
+    /// The same contrast under the overlap weights at the headline threshold.
     pub truth_weighted: f64,
     pub estimate: Estimate,
     pub crude: f64,
@@ -528,8 +571,12 @@ pub struct SimRow {
     pub steps: [Estimate; 3],
     /// The competent effect minus the receptor-negative one.
     pub contrast: Estimate,
-    /// The competent effect on the simulated decoy programme.
-    pub decoy: Estimate,
+    /// The competent effect minus the ring effect.
+    pub over_ring: Estimate,
+    /// The competent effect on the simulated background programme.
+    pub background: Estimate,
+    /// The competent effect minus the background's.
+    pub over_background: Estimate,
     /// The verdict `lra` would give this run alone, its q-values being its
     /// p-values: more lenient than a run with many pairs to correct over.
     pub verdict: Verdict,
@@ -541,18 +588,11 @@ pub struct SimRow {
     /// Wall time of the whole run and of its baselines, in seconds.
     pub seconds: f64,
     pub baseline_seconds: f64,
-    /// The pseudobulk partitions drawn, for the run's mean unit size (not
-    /// written).
-    pub units: UnitTally,
 }
 
 impl SimRow {
     pub fn estimable(&self) -> bool {
         self.estimate.theta.is_finite() && self.estimate.se.is_finite()
-    }
-    /// The effect survived the controls ([`Verdict::survived`]).
-    pub fn survived(&self) -> bool {
-        self.verdict.survived()
     }
     /// The estimate rejects at 5%; a run without one does not.
     pub fn rejected(&self) -> bool {
@@ -857,38 +897,32 @@ fn confounding(
 
 // * Simulation
 
-/// A decoy programme matched gene by gene to the real one: the same weights
+/// A background programme matched gene by gene to the real one: the same weights
 /// and bin means, no planted effect, the field's push on the response scaled
-/// by `share`. Counts come from their own stream, so the decoy changes nothing
+/// by `share`, and the `generic` lift of each row. Counts come from their own stream, so the background changes nothing
 /// else in the run.
-pub fn simulate_decoy(
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_background(
     tissue: &Tissue,
     base: &SimBase<'_>,
-    f: &[f64],
-    beta: f64,
-    marker: &[bool],
+    lifts: &[Vec<f64>; 2],
     kappa: f64,
     seed: u64,
 ) -> Vec<Vec<(u32, f32)>> {
     let n = tissue.n();
     let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
     let ng = base.target_weights.len();
-    let norm = |s: f64| (0..n).map(|i| (s * beta * f[i]).exp()).sum::<f64>() / n.max(1) as f64;
-    let norms = [norm(1.0), norm(-1.0)];
     let mut rng = SmallRng::seed_from_u64(seed);
     base.target_weights
         .iter()
         .enumerate()
         .map(|(g, &w)| {
-            let s = if w < 0.0 { -1.0 } else { 1.0 };
-            let nrm = norms[(w < 0.0) as usize];
+            let lift = &lifts[(w < 0.0) as usize];
             let counts: Vec<f64> = (0..n)
                 .map(|i| {
-                    let b = bin[i];
-                    let lift = s * beta * f[i] + if marker[b] { s * MARKER_LIFT } else { 0.0 };
                     poisson(
                         &mut rng,
-                        sf[i] * base.target_bin_means[b * ng + g] * lift.exp() / nrm,
+                        sf[i] * base.target_bin_means[bin[i] * ng + g] * lift[i],
                     )
                 })
                 .collect();
@@ -900,6 +934,28 @@ pub fn simulate_decoy(
             }
         })
         .collect()
+}
+
+/// What multiplies a gene's bin mean at each row, for genes of positive then
+/// of negative weight: the field `f` at strength `beta` (normalized to keep the
+/// mean), the marker types' lift and the shift `generic`. Real and background genes
+/// are generated through this alike.
+pub(super) fn sign_lifts(
+    f: &[f64],
+    beta: f64,
+    generic: &[f64],
+    marker: &[bool],
+    bin: &[usize],
+) -> [Vec<f64>; 2] {
+    [1.0, -1.0].map(|s| {
+        let norm = f.iter().map(|z| (s * beta * z).exp()).sum::<f64>() / f.len().max(1) as f64;
+        (0..f.len())
+            .map(|i| {
+                let m = if marker[bin[i]] { s * MARKER_LIFT } else { 0.0 };
+                (s * beta * f[i] + generic[i] + m).exp() / norm
+            })
+            .collect()
+    })
 }
 
 /// The Poisson quantile at `u`: exact by summing the pmf for small rates,
@@ -992,6 +1048,14 @@ pub fn simulate(
             }
         }
     }
+    // The generic shift's hidden trait, and each row's contacts' mean of it.
+    let trait_z: Vec<f64> = if scen.generic_shift != 0.0 {
+        let mut r = SmallRng::seed_from_u64(mix_seed(seed, 10));
+        (0..n).map(|_| StandardNormal.sample(&mut r)).collect()
+    } else {
+        vec![0.0; n]
+    };
+    let trait_near = tissue.contacts.mean(&trait_z);
     let mut rng = SmallRng::seed_from_u64(mix_seed(seed, 2));
     let lam_true: Vec<f64> = (0..n)
         .map(|i| {
@@ -1000,7 +1064,9 @@ pub fn simulate(
                 0.0
             } else {
                 let q = p.clamp(1e-9, 1.0 - 1e-9);
-                let eta = (q / (1.0 - q)).ln() + scen.confound_ligand * f[i];
+                let eta = (q / (1.0 - q)).ln()
+                    + scen.confound_ligand * f[i]
+                    + scen.generic_shift * trait_z[i];
                 1.0 / (1.0 + (-eta).exp())
             };
             if rng.random::<f64>() < pi {
@@ -1019,6 +1085,25 @@ pub fn simulate(
     let tau_star = choose_threshold(&a_star, opts);
     let t_star = exposed(&a_star, tau_star);
     let r_star = exposed(&tissue.ring_sum(&lam_true), tau_star);
+    // How much of the planted effect each receiver's true dose reaches.
+    let dose_share: Vec<f64> = if scen.dose_response {
+        let mut pos: Vec<f64> = a_star.iter().copied().filter(|&v| v > 0.0).collect();
+        pos.sort_by(f64::total_cmp);
+        let (q, order) = (scen.dose_midpoint, scen.dose_order);
+        let k = pos
+            .get(((pos.len() as f64 - 1.0) * q) as usize)
+            .copied()
+            .unwrap_or(1.0);
+        a_star
+            .iter()
+            .map(|&v| {
+                let (x, m) = (v.powi(order), k.powi(order));
+                x / (x + m).max(1e-300)
+            })
+            .collect()
+    } else {
+        vec![1.0; n]
+    };
 
     // What the estimator sees: detected counts, possibly displaced,
     // possibly with neighbours' ligand bled into the own-ligand covariate.
@@ -1031,7 +1116,7 @@ pub fn simulate(
     };
     // The estimator's own exposure rule on the counts it sees.
     let seen_counts: Vec<f64> = (0..n).map(|i| seen[i] * sf[i]).collect();
-    let (t, t_ring, tau) = exposures(tissue, &seen_counts, opts);
+    let mut exposure = Exposure::build(tissue, &seen_counts, opts);
 
     // The receptor the estimator and the baselines see, and competence read
     // from it by the estimator's own rule.
@@ -1052,7 +1137,6 @@ pub fn simulate(
     let clock = std::time::Instant::now();
     let coexpression_baselines = baselines(tissue, &seen_counts, receptor, mix_seed(seed, 8));
     let baseline_seconds = clock.elapsed().as_secs_f64();
-    let niche = niche_ligand(tissue, &seen);
     let kappa = scen.spillover;
     let own_seen = if kappa > 0.0 {
         let bled = tissue.contacts.sum(&seen_counts);
@@ -1087,8 +1171,7 @@ pub fn simulate(
     // spillover) and potential counts, in T* at the realized ring
     // exposure and in the ring exposure at the realized T*, accumulated
     // into responses. Potential counts carry the realized bleed, so the
-    // truths are on the measured scale. Pseudobulk keeps each gene's
-    // non-zeros.
+    // truths are on the measured scale.
     let total_w: f64 = base
         .target_weights
         .iter()
@@ -1096,10 +1179,17 @@ pub fn simulate(
         .sum::<f64>()
         .max(1e-12);
     let beta = scen.confound_response;
-    let norm = |s: f64| (0..n).map(|i| (s * beta * f[i]).exp()).sum::<f64>() / n as f64;
-    let norms = [norm(1.0), norm(-1.0)];
+    let generic: Vec<f64> = (0..n)
+        .map(|i| {
+            if comp[i] {
+                scen.generic_shift * trait_near[i]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let lifts = sign_lifts(&f, beta, &generic, &marker, bin);
     let ring_on = scen.ring_effect != 0.0;
-    let units_on = opts.pseudobulk > 1;
     let (mut y_seen, mut y1, mut y0) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
     let mut bleed = vec![0.0; n];
     let (mut yd1, mut yd0) = if ring_on {
@@ -1107,7 +1197,6 @@ pub fn simulate(
     } else {
         (Vec::new(), Vec::new())
     };
-    let (mut nz_seen, mut nz1, mut nz0) = (Vec::new(), Vec::new(), Vec::new());
     let (mut c_obs, mut c1, mut c0) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
     let (mut d1, mut d0) = if ring_on {
         (vec![0.0; n], vec![0.0; n])
@@ -1121,14 +1210,16 @@ pub fn simulate(
     }
     for (g, &w) in base.target_weights.iter().enumerate() {
         let s = if w < 0.0 { -1.0 } else { 1.0 };
-        let nrm = norms[(w < 0.0) as usize];
+        let lift = &lifts[(w < 0.0) as usize];
         for i in 0..n {
             let b = bin[i];
-            let lift_base = s * beta * f[i] + if marker[b] { s * MARKER_LIFT } else { 0.0 };
-            let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift_base.exp() / nrm;
+            let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
             let u: f64 = rng.random();
             let (th, thr) = if responds[i] {
-                (s * scen.effect * u_bin[b], s * scen.ring_effect * u_bin[b])
+                (
+                    s * scen.effect * u_bin[b] * dose_share[i],
+                    s * scen.ring_effect * u_bin[b],
+                )
             } else {
                 (0.0, 0.0)
             };
@@ -1194,11 +1285,6 @@ pub fn simulate(
         {
             *o += w * x;
         }
-        if units_on {
-            nz_seen.push(nonzeros(seen_g.iter().copied()));
-            nz1.push(nonzeros(c1.iter().copied()));
-            nz0.push(nonzeros(c0.iter().copied()));
-        }
     }
     drop((c_obs, c1, c0, d1, d0, seen_g));
     for v in [
@@ -1221,216 +1307,118 @@ pub fn simulate(
     drop((yd1, yd0));
     let misclassified = {
         let k = comp.iter().filter(|&&c| c).count();
-        let miss = (0..n).filter(|&i| comp[i] && t[i] != t_star[i]).count();
+        let miss = (0..n)
+            .filter(|&i| comp[i] && exposure.t[i] != t_star[i])
+            .count();
         miss as f64 / k.max(1) as f64
     };
 
-    let tf: Vec<f64> = t.iter().map(|&b| b as u8 as f64).collect();
-    let exposure = Exposure {
-        tau,
-        t,
-        t_ring,
-        own: own_seen.iter().map(|v| v.ln_1p()).collect(),
-        niche,
-    };
+    exposure.own = own_seen.iter().map(|v| v.ln_1p()).collect();
     let response = Response {
         spill: tissue.contacts.mean(&y_seen),
         y: y_seen,
         bleed,
     };
-    let own_counts: Vec<f64> = (0..n).map(|i| own_seen[i] * sf[i]).collect();
-    drop(own_seen);
-    fn weighted<'v>(w: &[f64], nz: &'v [Vec<(u32, f32)>]) -> Vec<(f64, &'v [(u32, f32)])> {
-        w.iter().zip(nz).map(|(&w, v)| (w, v.as_slice())).collect()
-    }
-    let w = base.target_weights;
-    let (targets_seen, targets1, targets0) =
-        (weighted(w, &nz_seen), weighted(w, &nz1), weighted(w, &nz0));
-    let nz_decoy = simulate_decoy(
-        tissue,
-        base,
+    let background_lifts = sign_lifts(
         &f,
-        beta * scen.decoy_confounding,
+        beta * scen.background_confounding,
+        &generic,
         &marker,
-        kappa,
-        mix_seed(seed, 9),
+        bin,
     );
-    let targets_decoy = weighted(w, &nz_decoy);
-    let decoy_response = Response::build(tissue, &targets_decoy);
-
-    // One draw is the cells themselves, or one random pseudobulk partition;
-    // as many draws as `pinto lra` would run, by the same rule.
-    let draws = draw_limit(opts);
-    let mut tally = UnitTally::default();
-    let mut per: Vec<[Estimate; 9]> = Vec::with_capacity(draws);
-    let mut headline: Vec<Estimate> = Vec::with_capacity(draws);
-    let mut truths: Vec<(f64, f64)> = Vec::with_capacity(draws);
-    let mut starts = super::estimate::Starts::default();
-    for d in 0..draws {
-        let units = units_on.then(|| {
-            draw(
-                tissue,
-                &exposure,
-                &own_counts,
-                opts.pseudobulk,
-                mix_seed(seed, 100 + d as u64),
-            )
-        });
-        tally.add(units.as_ref());
-        // Rows, the exposure, response and competence on them, and the
-        // potential responses.
-        let rows = Rows::of(&units, tissue).pooled();
-        let unit_resp = units
-            .as_ref()
-            .map(|u| u.response_of(&response, &targets_seen));
-        let (ex, r, compr) = match &units {
-            Some(u) => (
-                &u.exposure,
-                unit_resp.as_ref().expect("units"),
-                u.of_lead(&comp),
-            ),
-            None => (&exposure, &response, comp.clone()),
-        };
-        let pot = units.as_ref().map(|u| {
-            (
-                unit_response(&targets1, &u.unit_of, &u.size_factor),
-                unit_response(&targets0, &u.unit_of, &u.size_factor),
-            )
-        });
-        let (a1, a0): (&[f64], &[f64]) = match &pot {
-            Some((p1, p0)) => (p1, p0),
-            None => (&y1, &y0),
-        };
-        let sens = Sensitivity::on_draw(d);
-        let sens = Sensitivity {
-            nospill: sens.nospill && kappa > 0.0,
-            ..sens
-        };
-        let levels = std::slice::from_ref(&compr);
-        let fits = DrawFits::new(rows, ex, levels, opts, &mut starts.main)?.with_controls(
-            rows,
-            sens.steps,
-            opts,
-            &mut starts,
-        )?;
-        let varies = units.as_ref().is_some_and(|u| u.random) && fits.reads.competent;
-        let eff = effects_on(rows, &fits, r, sens, opts)?;
-        let e = eff.levels[0].scopes[0];
-        let unit_decoy = units
-            .as_ref()
-            .map(|u| u.response_of(&decoy_response, &targets_decoy));
-        let (decoy_effect, _) = competent_effect(
-            rows,
-            &fits,
-            unit_decoy.as_ref().unwrap_or(&decoy_response),
-            opts,
-        )?;
-        let weighted_truth = {
-            let h = &eff.h;
-            let (mut num, mut den) = (0.0, 0.0);
-            for i in (0..h.len()).filter(|&i| compr[i]) {
-                num += h[i] * (a1[i] - a0[i]);
-                den += h[i];
-            }
-            if den > 0.0 {
-                num / den
-            } else {
-                f64::NAN
-            }
-        };
-        truths.push((sample_effect(a1, a0, &compr), weighted_truth));
-        let no_spill = if kappa > 0.0 {
-            e.nospill
-        } else {
-            Estimate::nan(0, 0)
-        };
-        per.push([
-            e.competent,
-            e.incompetent,
-            e.ring,
-            no_spill,
-            e.steps[0],
-            e.steps[1],
-            e.steps[2],
-            e.effect,
-            decoy_effect,
-        ]);
-        headline.push(e.competent);
-        if stop_drawing(opts, &headline, varies) {
-            break;
-        }
-    }
-    let pool = |k: usize| combine(&per.iter().map(|d| d[k]).collect::<Vec<_>>());
-    let (est, inc, ring, no_spill) = (pool(0), pool(1), pool(2), pool(3));
-    let steps = [pool(4), pool(5), pool(6)];
-    let (contrast, decoy) = (pool(7), pool(8));
-    let mean_of = |g: &dyn Fn(&(f64, f64)) -> f64| {
-        let v: Vec<f64> = truths.iter().map(g).filter(|x| x.is_finite()).collect();
-        if v.is_empty() {
-            f64::NAN
-        } else {
-            v.iter().sum::<f64>() / v.len() as f64
-        }
+    let make_backgrounds = || -> Vec<Response> {
+        (0..opts.background_draws)
+            .into_par_iter()
+            .map(|k| {
+                let seed = mix_seed(mix_seed(seed, 9), k as u64);
+                let nz = simulate_background(tissue, base, &background_lifts, kappa, seed);
+                let genes: Vec<(f64, &[(u32, f32)])> = base
+                    .target_weights
+                    .iter()
+                    .zip(&nz)
+                    .map(|(&w, v)| (w, v.as_slice()))
+                    .collect();
+                Response::build(tissue, &genes)
+            })
+            .collect()
     };
+
+    // The estimands over the exposure thresholds, as `lra` reads them; a fixed
+    // threshold has no others here, no curve being read.
+    let levels = std::slice::from_ref(&comp);
+    let taus = if opts.threshold.is_none() {
+        thresholds(&exposure, levels, opts)
+    } else {
+        Vec::new()
+    };
+    let rows = Rows::cells(tissue).pooled();
+    let avg = over_thresholds(
+        rows,
+        &exposure,
+        &taus,
+        std::slice::from_ref(&response),
+        make_backgrounds,
+        levels,
+        Sensitivity {
+            nospill: kappa > 0.0,
+            steps: true,
+        },
+        opts,
+    )?;
+    let e = avg.scopes[0];
     // The displaced field the estimator sees has no effect.
     let (truth, truth_weighted) = if shifted {
         (0.0, 0.0)
     } else {
-        (mean_of(&|t| t.0), mean_of(&|t| t.1))
+        let (mut num, mut den) = (0.0, 0.0);
+        for i in (0..avg.h.len()).filter(|&i| comp[i]) {
+            num += avg.h[i] * (y1[i] - y0[i]);
+            den += avg.h[i];
+        }
+        let weighted = if den > 0.0 { num / den } else { f64::NAN };
+        (sample_effect(&y1, &y0, &comp), weighted)
     };
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let crude = crude_difference(&response.y, &exposure.t, &comp_rows);
     let crude_se = naive_se(&response.y, &exposure.t, &comp);
-    let all_rows: Vec<u32> = (0..n as u32).collect();
-    let mut judged = EffectRow::for_verdict(
-        ScopeEffects {
-            effect: contrast,
-            competent: est,
-            incompetent: inc,
-            ring,
-            steps,
-            nospill: no_spill,
-            near_determined: f64::NAN,
-        },
+    let mut judged = EffectRow::pending(
+        e,
         (
             coexpression_baselines.coexpr_log_or,
             coexpression_baselines.coexpr_se,
         ),
-        eta_squared(&tissue.neighbour_bin, &tf, &all_rows),
-        decoy,
+        eta_squared(
+            &tissue.neighbour_bin,
+            &indicator(&exposure.leaned_on(e.abf)),
+            &rows.scope_rows[0],
+        ),
+        (avg.background, avg.over_background),
         ng,
     );
-    report(
-        std::slice::from_mut(&mut judged),
-        &ReportOpts {
-            fdr: INTERNALS.fdr,
-            max_exposure_eta2: INTERNALS.max_exposure_eta2,
-            min_arm: INTERNALS.min_arm,
-            units: units_on,
-        },
-    );
+    report(std::slice::from_mut(&mut judged), &INTERNALS.report_opts());
     Ok(SimRow {
         ligand: base.ligand.into(),
         receptor: base.receptor.into(),
         scenario: *scen,
         truth,
         truth_weighted,
-        estimate: est,
+        estimate: e.competent,
         crude,
         crude_se,
-        incompetent: inc,
-        ring,
+        incompetent: e.incompetent,
+        ring: e.ring,
         ring_truth,
-        no_spill,
-        steps,
-        contrast,
-        decoy,
+        no_spill: e.nospill,
+        steps: e.steps,
+        contrast: e.effect,
+        over_ring: e.over_ring,
+        background: avg.background,
+        over_background: avg.over_background,
         verdict: judged.verdict,
         misclassified,
         baselines: coexpression_baselines,
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds,
-        units: tally,
     })
 }
 

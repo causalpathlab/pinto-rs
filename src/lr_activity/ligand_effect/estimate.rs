@@ -4,10 +4,13 @@
 //! |---|---|
 //! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
 //! | `crude` | mean response of exposed minus unexposed competent receivers (association) |
-//! | `effect_competent` | the competent effect, **the headline**: overlap-weighted effect where the receptor is expressed |
+//! | `effect_competent` | the competent effect, **the headline**: overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
+//! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
 //! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
 //! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
 //! | `ring_effect` | the ring effect: effect of ligand on distant, non-touching cells, given the real exposure; a negative control, ≈ 0 |
+//! | `effect_over_ring` | the competent effect − the ring effect, paired over variance clusters |
+//! | `effect_over_background` | the competent effect − the effect on the background programme, paired over variance clusters (pooled row only) |
 //! | `effect_competent_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
 //! | `effect_competent_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |
 //!
@@ -20,14 +23,18 @@
 //! exceed the incompetent one is not called specific to the receptor, which
 //! can also turn away a real effect on two responsive cell types.
 //!
+//! `crude` and the sensitivity fits below (the nested adjustment sets and the
+//! no-spill fit) read the headline threshold alone, while `effect_competent` is
+//! averaged over thresholds, so a gap between them can come from the threshold
+//! as well as the adjustment.
+//!
 //! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
 //! identity, cell type when given); `effect_competent` is the full set,
 //! adding depth. Read left to right with `crude`, it shows how much of an
 //! apparent effect each confounder group explains. The pair's own columns
 //! (own ligand, spillover, bleed, niche ligand, competence) are in every
-//! step, and on pseudobulk so are the unit's pooled depth and member count,
-//! which the pooled response depends on whatever the tissue.
+//! step.
 //!
 //! Exposure `T = 1{Σ_contacts ligand / size factor > τ}`. Response
 //! `Y = Σ_g w_g log1p(x_g / size factor) / Σ_g |w_g|` over the pair's
@@ -50,8 +57,8 @@
 //! - competence.
 //!
 //! The two response-side columns enter the outcome model only, so one
-//! propensity serves every fit of a draw with the same treatment and
-//! design ([`DrawFits`]).
+//! propensity serves every fit at a threshold with the same treatment and
+//! design ([`ThresholdFits`]).
 //!
 //! Neighbours share senders with the receiver, so their response is partly
 //! downstream of the same exposure and adjusting for it can attenuate a
@@ -66,7 +73,7 @@
 //!
 //! **Choices averaged, not asked for.** Where the analysis has a choice
 //! with no right answer it makes each and averages the estimates by
-//! Rubin's rules ([`super::pseudobulk::combine`]), so the spread between
+//! Rubin's rules ([`super::overlap::combine`]), so the spread between
 //! the choices widens the interval instead of a setting picking one:
 //!
 //! - competence, the share of an identity bin that must detect the
@@ -74,9 +81,16 @@
 //!   identity bins (cell types), not of single receivers, so the competent effect compares
 //!   exposed with unexposed receivers among the cell types that carry the
 //!   receptor; the grid moves the line between "carries" and "does not";
-//! - the random pseudobulk partitions, as many as [`effects`] needs
-//!   ([`super::pseudobulk::enough_draws`]);
 //! - the programme's weighting ([`PairData::reweighted`]).
+//!
+//! **The exposure threshold** is averaged too, differently. Each threshold is a
+//! model of how exposure acts, with its own fits, and the estimates are averaged
+//! by their posterior weights under an approximate Bayes factor
+//! ([`super::overlap::abf_average`]), not by Rubin's rules: thresholds are not
+//! exchangeable draws, and which one the data favour is itself of interest. Each
+//! estimand has its own weights. The weights read the estimates they average, so
+//! the average leans toward large z-scores; the verdict's comparison with the
+//! negative controls, averaged the same way, is what guards against that.
 //!
 //! **Threshold–response curve.** The headline τ is chosen per pair
 //! ([`choose_threshold`]). Beside it, the competent effect (pooled) at τ = 0 and at the
@@ -84,11 +98,12 @@
 //! intervals and a simultaneous 95% band ([`sup_t_crit`]): how the effect
 //! grows with dose, and whether the headline rests on one threshold.
 //!
-//! **Decoy programme** ([`DecoyPool`]): the pair's programme with every
-//! target swapped for a gene of matching mean expression outside every
-//! programme and pair, same weights. the competent effect on the decoy should be 0; when
-//! it is not, exposure moves generic expression (activation, depth,
-//! residual confounding) and the pair's own competent effect is no finding.
+//! **Background programmes** ([`BackgroundPool`]): the pair's programme with every
+//! target swapped for a random gene of similar mean expression outside every
+//! programme and pair, same weights, drawn many times. They should show no
+//! effect; when they do, exposure moves generic expression (activation, depth,
+//! residual confounding), and the pair's own competent effect is a finding only
+//! where it stands out from them ([`super::overlap::background_comparison`]).
 //!
 //! **Reading an effect** ([`Moments`]): θ is a difference in the signed
 //! mean `log1p` programme, read as a mean with SD (= SE) and 95% interval,
@@ -100,12 +115,15 @@
 //! one row per type, `section` = `type:<name>`: the estimands among that
 //! type's receivers, from the pooled fit.
 
+use legume_numeric::matrix::rand_util::{mix_seed, name_seed};
+use rayon::prelude::*;
+
 use super::output::Verdict;
 use super::overlap::{
-    crude_difference, difference, overlap_terms_with, propensity, subset_estimate, upper_normal_p,
-    CrossFit, DesignView, Estimate, FoldStarts, NuisanceOpts, OverlapTerms, PairInputs,
+    abf_average, abf_summary, background_comparison, combine, crude_difference, difference,
+    overlap_terms_with, propensity, subset_estimate, upper_normal_p, AbfSummary, CrossFit,
+    DesignView, Estimate, FoldStarts, NuisanceOpts, OverlapTerms, PairInputs,
 };
-use super::pseudobulk::{self, UnitTally};
 use super::regression::standardize;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
@@ -138,9 +156,13 @@ pub struct PairData<'a> {
 /// the receptor).
 pub const COMPETENCE_GRID: [f64; 3] = [0.05, 0.1, 0.2];
 
-/// [`EffectOpts::draws`] for as many pseudobulk draws as the estimate
-/// needs ([`super::pseudobulk::enough_draws`]).
-pub const AUTO_DRAWS: usize = 0;
+/// Prior SD of an effect at one exposure threshold, on the response's scale.
+pub const ABF_PRIOR_SD: f64 = 0.002;
+
+/// Background programmes per pair, and how many of the genes nearest in expression
+/// each background gene is drawn from.
+pub const BACKGROUND_DRAWS: usize = 20;
+const BACKGROUND_NEIGHBOURS: usize = 20;
 
 /// Quantiles of the positive exposures the curve visits beside τ = 0.
 pub const CURVE_QUANTILES: [f64; 3] = [0.25, 0.5, 0.75];
@@ -148,8 +170,8 @@ pub const CURVE_QUANTILES: [f64; 3] = [0.25, 0.5, 0.75];
 /// Multiplier draws for the simultaneous band.
 pub const BAND_DRAWS: usize = 2000;
 
-/// Genes in the decoy pool at most ([`decoy_pool_genes`]).
-pub const DECOY_POOL: usize = 2000;
+/// Genes in the background pool at most ([`background_pool_genes`]).
+pub const BACKGROUND_POOL: usize = 2000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EffectOpts {
@@ -159,7 +181,8 @@ pub struct EffectOpts {
     /// to count as competent, averaged over ([`COMPETENCE_GRID`]); the
     /// benchmark plants on one.
     pub competences: &'static [f64],
-    /// Estimate the threshold–response curve.
+    /// Read the pair beyond its headline threshold: the threshold–response
+    /// curve, and the average over those thresholds ([`over_thresholds`]).
     pub curve: bool,
     pub nuisance: NuisanceOpts,
     /// Fewest receivers in either arm (exposed, unexposed) of a subgroup
@@ -170,11 +193,11 @@ pub struct EffectOpts {
     /// Smallest mean overlap weight `e(1 − e)` (at most 0.25). The effective
     /// sample size cannot see weights that are all tiny alike; this can.
     pub min_overlap: f64,
-    /// Receivers per random pseudobulk unit; 1 estimates on single cells.
-    pub pseudobulk: usize,
-    /// Random partitions averaged by Rubin's rules; [`AUTO_DRAWS`] runs as
-    /// many as the estimate needs.
-    pub draws: usize,
+    /// Prior SD of an effect at one exposure threshold, for the average over
+    /// thresholds ([`abf_average`]).
+    pub abf_prior_sd: f64,
+    /// Background programmes per pair ([`BackgroundPool::draw`]).
+    pub background_draws: usize,
     pub seed: u64,
     /// Run even the fits whose every subset leaves an arm thin
     /// ([`Reads`]), which the guard then reports as not estimable all the
@@ -192,8 +215,8 @@ impl Default for EffectOpts {
             min_arm: 20,
             min_ess: 30.0,
             min_overlap: 0.01,
-            pseudobulk: 1,
-            draws: 1,
+            abf_prior_sd: ABF_PRIOR_SD,
+            background_draws: BACKGROUND_DRAWS,
             seed: 42,
             fit_thin: false,
         }
@@ -230,14 +253,14 @@ impl EffectOpts {
         }
     }
 
-    /// Whether `n` analysis units, `treated` of them exposed, leave an arm
+    /// Whether `n` receivers, `treated` of them exposed, leave an arm
     /// under `min_arm` ([`thin_arm`]).
     pub fn thin_arm(&self, n: usize, treated: usize) -> bool {
         thin_arm(self.min_arm, n, treated)
     }
 }
 
-/// Whether `n` analysis units (receivers, or pseudobulk units), `treated`
+/// Whether `n` receivers, `treated`
 /// of them exposed, leave either arm under `min_arm`: the arm guard
 /// ([`EffectOpts::guard`]), the fits skipped as hopeless ([`Reads`]) and
 /// the verdict note all read this one rule.
@@ -276,15 +299,17 @@ pub struct EffectRow {
     /// many cell types each side of the contrast is made of.
     pub n_competent_bins: usize,
     pub n_incompetent_bins: usize,
-    /// The competent effect on the matched decoy programme (pooled row only; NaN without a
-    /// decoy), and the decoy's gene count.
-    pub decoy_effect: Estimate,
-    pub n_decoy_genes: usize,
+    /// The competent effect on the matched background programme (pooled row only; NaN without a
+    /// background), and the background's gene count.
+    pub background_effect: Estimate,
+    pub n_background_genes: usize,
+    /// The competent effect minus the background's (pooled row only; NaN without a background).
+    pub effect_over_background: Estimate,
     /// The threshold–response curve (pooled row only; empty elsewhere).
     pub curve: Vec<CurvePoint>,
     // From here on filled in by `report`, once every pair is in.
-    /// BH q of the decoy effect, two-sided, within the section.
-    pub decoy_q: f64,
+    /// BH q of the background effect, two-sided, within the section.
+    pub background_q: f64,
     /// Two-sided p of the headline (the competent effect) against the t reference with
     /// clusters − 1 degrees of freedom ([`Estimate::p`]), and its BH q
     /// within the section.
@@ -300,6 +325,10 @@ pub struct EffectRow {
     /// receptor-negative receivers, among the significant effects.
     pub effect_contrast_q: f64,
     pub ring_effect_q: f64,
+    /// BH q of the competent effect over the ring effect and over the background's,
+    /// among the significant effects.
+    pub effect_over_ring_q: f64,
+    pub effect_over_background_q: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
     /// BH q over ligands of the Simes p of each ligand's pairs.
@@ -311,15 +340,15 @@ pub struct EffectRow {
 }
 
 impl EffectRow {
-    /// A pooled row holding what [`report`] reads for its verdict: the
-    /// estimands, co-expression, the exposure's identity share and the decoy.
+    /// A row holding what [`report`] reads for its verdict, the rest blank: the
+    /// estimands, co-expression, the exposure's identity share and the background.
     /// `lra-simulate` judges its runs by the rule `lra` uses through this.
-    pub fn for_verdict(
+    pub fn pending(
         effects: ScopeEffects,
         (coexpr_log_or, coexpr_se): (f64, f64),
         exposure_eta2: f64,
-        decoy_effect: Estimate,
-        n_decoy_genes: usize,
+        (background_effect, effect_over_background): (Estimate, Estimate),
+        n_background_genes: usize,
     ) -> Self {
         Self {
             section: ALL_SECTIONS.into(),
@@ -338,10 +367,11 @@ impl EffectRow {
             exposure_eta2,
             n_competent_bins: 0,
             n_incompetent_bins: 0,
-            decoy_effect,
-            n_decoy_genes,
+            background_effect,
+            n_background_genes,
+            effect_over_background,
             curve: Vec::new(),
-            decoy_q: f64::NAN,
+            background_q: f64::NAN,
             effect_p: f64::NAN,
             effect_q: f64::NAN,
             coexpr_p: f64::NAN,
@@ -349,6 +379,8 @@ impl EffectRow {
             effect_incompetent_q: f64::NAN,
             effect_contrast_q: f64::NAN,
             ring_effect_q: f64::NAN,
+            effect_over_ring_q: f64::NAN,
+            effect_over_background_q: f64::NAN,
             n_pairs_same_ligand: 0,
             ligand_q: f64::NAN,
             verdict: Verdict::InsufficientData,
@@ -439,30 +471,57 @@ pub struct Exposure {
     /// `log1p` of the mean ligand / size factor over second-order
     /// neighbours.
     pub niche: Vec<f64>,
+    /// Ligand / size factor summed over each row's contacts, which the
+    /// threshold is read from.
+    pub dose: Vec<f64>,
+    /// The same over its distant ring. The ring holds as many partners as
+    /// there are contacts, so the same τ means the same dose.
+    pub ring_dose: Vec<f64>,
 }
 
 impl Exposure {
-    /// The exposure side from the ligand counts the estimator sees, and
-    /// each row's contact dose (ligand / size factor summed over its
-    /// contacts), which the threshold is read from.
-    pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> (Self, Vec<f64>) {
-        let (lnorm, a) =
+    /// The exposure side from the ligand counts the estimator sees.
+    pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> Self {
+        let (lnorm, dose) =
             super::receivers::contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
-        let ring = tissue.ring_sum(&lnorm);
-        let tau = choose_threshold(&a, opts);
-        let x = Self {
+        let ring_dose = tissue.ring_sum(&lnorm);
+        let tau = choose_threshold(&dose, opts);
+        Self {
             tau,
-            t: exposed(&a, tau),
-            t_ring: exposed(&ring, tau),
+            t: exposed(&dose, tau),
+            t_ring: exposed(&ring_dose, tau),
             own: lnorm.iter().map(|v| v.ln_1p()).collect(),
             niche: niche_ligand(tissue, &lnorm),
-        };
-        (x, a)
+            dose,
+            ring_dose,
+        }
+    }
+
+    /// The exposure at the threshold an average leaned on, else the headline's.
+    pub fn leaned_on(&self, abf: AbfSummary) -> Vec<bool> {
+        if abf.top_tau.is_finite() && abf.top_tau != self.tau {
+            exposed(&self.dose, abf.top_tau)
+        } else {
+            self.t.clone()
+        }
+    }
+
+    /// The same exposure read at another threshold.
+    pub fn at(&self, tau: f64) -> Self {
+        Self {
+            tau,
+            t: exposed(&self.dose, tau),
+            t_ring: exposed(&self.ring_dose, tau),
+            own: self.own.clone(),
+            niche: self.niche.clone(),
+            dose: self.dose.clone(),
+            ring_dose: self.ring_dose.clone(),
+        }
     }
 }
 
 /// The response side of a pair's per-row quantities: rebuilt for each
-/// programme (each weighting, the decoy).
+/// programme (each weighting, the background).
 pub struct Response {
     pub y: Vec<f64>,
     /// The contact-neighbour mean response.
@@ -605,7 +664,6 @@ pub fn expected_bleed(
     contacts: &super::exposure::Contacts,
     sf: &[f64],
 ) -> Vec<f64> {
-    use rayon::prelude::*;
     contacts
         .adj
         .par_iter()
@@ -618,18 +676,6 @@ pub fn expected_bleed(
             (e / sf[i]).ln_1p()
         })
         .collect()
-}
-
-/// Contact and ring exposure of each row from the ligand counts the
-/// estimator sees, and the τ used. The ring holds as many partners as
-/// there are contacts, so the same τ means the same dose.
-pub fn exposures(
-    tissue: &Tissue,
-    ligand_counts: &[f64],
-    opts: &EffectOpts,
-) -> (Vec<bool>, Vec<bool>, f64) {
-    let (x, _) = Exposure::build(tissue, ligand_counts, opts);
-    (x.t, x.t_ring, x.tau)
 }
 
 pub fn exposed(a: &[f64], tau: f64) -> Vec<bool> {
@@ -661,9 +707,8 @@ pub fn choose_threshold(a: &[f64], opts: &EffectOpts) -> f64 {
     }
 }
 
-/// The rows an effect is estimated on: the tissue's receivers, or one
-/// random partition of them into pseudobulk units; with the rows inside
-/// each scope, pooled first ([`Tissue::scopes`]).
+/// The rows an effect is estimated on: the tissue's receivers, with the rows
+/// inside each scope, pooled first ([`Tissue::scopes`]).
 #[derive(Clone, Copy)]
 pub struct Rows<'a> {
     pub design: &'a super::overlap::Design,
@@ -680,22 +725,6 @@ impl<'a> Rows<'a> {
             cf: &tissue.cf,
             scope_rows: &tissue.scope_rows,
         }
-    }
-
-    pub fn units(u: &'a super::pseudobulk::Units) -> Self {
-        Self {
-            design: &u.design,
-            steps: &u.steps,
-            cf: &u.cf,
-            scope_rows: &u.scope_rows,
-        }
-    }
-
-    /// The units of a draw when there is one, else the cells.
-    pub fn of(units: &'a Option<super::pseudobulk::Units>, tissue: &'a Tissue) -> Self {
-        units
-            .as_ref()
-            .map_or_else(|| Self::cells(tissue), Self::units)
     }
 
     /// The same rows with the pooled scope alone.
@@ -736,19 +765,17 @@ fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate, Vec<f64>) 
     )
 }
 
-/// Which of a draw's fits serve a subset with both arms at `min_arm`
+/// Which of a threshold's fits serve a subset with both arms at `min_arm`
 /// ([`thin_arm`]) on the pooled rows. The main fit is read for the effect in
 /// competent receivers, at the middle competence threshold: a pair resting on a
 /// looser threshold alone has no estimate, whatever those thresholds show. The
-/// no-spill, step, curve and decoy fits read the same subset. The ring fit is
+/// no-spill, step, curve and background fits read the same subset. The ring fit is
 /// read beside it, when one of its own subsets is open.
 ///
 /// A fit not read is skipped, propensity and all, and its estimands are what
 /// the guard would make of them, not estimable with their counts
-/// ([`thin_subset`]): the units of an arm are fixed by the strata whatever the
-/// seed ([`pseudobulk::partition`]), so the skip is the guard read before the
-/// fit, not a second rule. A draw that reads nothing has the same estimates
-/// under every seed ([`super::pseudobulk::stop_drawing`]).
+/// ([`thin_subset`]): the skip is the guard read before the fit, not a second
+/// rule.
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
     pub competent: bool,
@@ -768,7 +795,7 @@ impl Reads {
     }
 }
 
-/// The controls' propensities ([`DrawFits::with_controls`]); `None` for a
+/// The controls' propensities ([`ThresholdFits::with_controls`]); `None` for a
 /// fit skipped as hopeless ([`Reads`]).
 struct Controls {
     ring: Option<Vec<f64>>,
@@ -776,17 +803,17 @@ struct Controls {
     steps: Option<Vec<Vec<f64>>>,
 }
 
-/// One draw's exposure side as its fits read it, built once and shared by
-/// every fit on the draw: the competence indicators (raw, the outcome
+/// One threshold's exposure side as its fits read it, built once and shared by
+/// every fit at it: the competence indicators (raw, the outcome
 /// model's effect modifiers), the pair columns both models carry
 /// (standardized: own ligand, niche, every competence indicator, and the
 /// contact exposure the ring fit adds to them), which fits serve a subset
 /// ([`Reads`]), and the cross-fitted propensities ([`propensity`]) of the
-/// main fit and, with [`DrawFits::with_controls`], of the ring fit and each
+/// main fit and, with [`ThresholdFits::with_controls`], of the ring fit and each
 /// adjustment step. The propensity reads no response-side column
-/// ([`fit_main`]), so one serves every programme weighting, the decoy and
+/// ([`fit_main`]), so one serves every programme weighting, the background and
 /// the no-spill fit.
-pub struct DrawFits<'a> {
+pub struct ThresholdFits<'a> {
     pub exposure: &'a Exposure,
     /// Competence at each threshold, per row.
     pub levels: &'a [Vec<bool>],
@@ -800,22 +827,21 @@ pub struct DrawFits<'a> {
     controls: Option<Controls>,
 }
 
-/// Where one draw's propensities start: the previous draw's solutions, model
-/// by model ([`FoldStarts`]).
+/// Where a threshold's propensities start: the previous threshold's solutions,
+/// model by model ([`FoldStarts`]).
 #[derive(Clone, Debug, Default)]
 pub struct Starts {
     pub(super) main: FoldStarts,
     ring: FoldStarts,
-    steps: Vec<FoldStarts>,
 }
 
-fn indicator(v: &[bool]) -> Vec<f64> {
+pub(super) fn indicator(v: &[bool]) -> Vec<f64> {
     v.iter().map(|&b| b as u8 as f64).collect()
 }
 
-impl<'a> DrawFits<'a> {
+impl<'a> ThresholdFits<'a> {
     /// The columns and the main fit's propensity on `rows`: all the curve
-    /// and the decoy need.
+    /// and the background need.
     pub fn new(
         rows: Rows<'_>,
         exposure: &'a Exposure,
@@ -882,22 +908,15 @@ impl<'a> DrawFits<'a> {
         };
         let steps = if steps && self.runs(self.reads.competent) {
             let extra = self.extra(Fit::Main);
-            // A step's first draw starts from the main fit, the model it nests in.
-            if starts.steps.is_empty() {
-                let p = rows.design.p();
-                starts.steps = rows
-                    .steps
-                    .iter()
-                    .map(|s| starts.main.nested(p, s.design.p()))
-                    .collect();
-            }
+            // A step starts from the main fit, the model it nests in.
+            let p = rows.design.p();
             Some(timing::time(timing::STEPS, || {
                 rows.steps
                     .iter()
-                    .zip(&mut starts.steps)
-                    .map(|(s, start)| {
+                    .map(|s| {
                         let view = s.design.view(rows.design);
-                        propensity(view, rows.cf, &x.t, &extra, &opts.nuisance, start)
+                        let mut start = starts.main.nested(p, s.design.p());
+                        propensity(view, rows.cf, &x.t, &extra, &opts.nuisance, &mut start)
                     })
                     .collect::<anyhow::Result<Vec<_>>>()
             })?)
@@ -924,7 +943,7 @@ impl<'a> DrawFits<'a> {
 
     /// The propensity of the fit `kind` (of adjustment step `step` when
     /// given); an error when it was not fitted: the controls' before
-    /// [`DrawFits::with_controls`], or a fit skipped as hopeless.
+    /// [`ThresholdFits::with_controls`], or a fit skipped as hopeless.
     fn propensity(&self, kind: Fit, step: Option<usize>) -> anyhow::Result<&[f64]> {
         let controls = || {
             self.controls
@@ -945,7 +964,7 @@ impl<'a> DrawFits<'a> {
 }
 
 /// One cross-fitted fit of a pair on `design`, every competence threshold
-/// at once, with its propensity from `fits` ([`DrawFits`]): the main one,
+/// at once, with its propensity from `fits` ([`ThresholdFits`]): the main one,
 /// or adjustment step `step`'s, or the ring's; an error when that one is
 /// not fitted.
 ///
@@ -954,15 +973,15 @@ impl<'a> DrawFits<'a> {
 /// The competent effect at threshold `c` is then the subset estimate over the receivers
 /// competent at `c`. Each single-threshold model is nested in this one, so
 /// each `m_t` stays correctly specified wherever its own was; what changes
-/// is one fit per draw instead of one per threshold.
+/// is one fit instead of one per competence threshold.
 ///
 /// The pair columns: own ligand, niche, every competence indicator, and
 /// under [`Fit::Ring`] the contact exposure, the ring exposure being the
 /// treatment, in both models; spillover and bleed (not under
 /// [`Fit::NoSpill`]) in the outcome model alone. Read off the response,
 /// they would tie the propensity to one programme; without them it depends
-/// on the exposure side only and is fitted once per draw for every
-/// programme weighting, the decoy and the no-spill fit.
+/// on the exposure side only and is fitted once per exposure threshold for every
+/// programme weighting, the background and the no-spill fit.
 ///
 /// That is a trade-off in robustness. The estimator is doubly robust in
 /// the confounders and pair columns both models carry: right when either
@@ -974,7 +993,7 @@ impl<'a> DrawFits<'a> {
 pub fn fit_main(
     design: DesignView<'_>,
     cf: &CrossFit,
-    fits: &DrawFits<'_>,
+    fits: &ThresholdFits<'_>,
     r: &Response,
     kind: Fit,
     step: Option<usize>,
@@ -1016,18 +1035,23 @@ pub struct ScopeEffects {
     pub competent: Estimate,
     pub incompetent: Estimate,
     pub ring: Estimate,
+    /// The competent effect minus the ring effect.
+    pub over_ring: Estimate,
     /// The competent effect under the section, spatial and identity steps (pooled only; NaN
     /// elsewhere).
     pub steps: [Estimate; 3],
     /// The competent effect without the neighbour-response and bleed covariates (pooled
     /// only; NaN elsewhere).
     pub nospill: Estimate,
-    /// Share of the scope's competent rows (units, on pseudobulk) whose
+    /// Share of the scope's competent rows whose
     /// overlap weight is below [`NEAR_DETERMINED_H`] in the main fit; NaN
     /// without competent rows or without the main fit, which is skipped
     /// when the competent subset leaves an arm thin ([`Reads`]), on every
     /// path alike.
     pub near_determined: f64,
+    /// The evidence behind the average of `competent` over thresholds
+    /// ([`abf_average`]).
+    pub abf: AbfSummary,
 }
 
 impl ScopeEffects {
@@ -1047,12 +1071,14 @@ impl ScopeEffects {
             competent: pick(&|e| e.competent),
             incompetent: pick(&|e| e.incompetent),
             ring: pick(&|e| e.ring),
+            over_ring: pick(&|e| e.over_ring),
             steps: [
                 pick(&|e| e.steps[0]),
                 pick(&|e| e.steps[1]),
                 pick(&|e| e.steps[2]),
             ],
             nospill: pick(&|e| e.nospill),
+            abf: AbfSummary::NONE,
             near_determined: if near.is_empty() {
                 f64::NAN
             } else {
@@ -1078,7 +1104,7 @@ pub struct Effects {
 
 /// Which sensitivity fits [`effects_on`] runs beside the main and ring
 /// fits; each serves the pooled scope alone, and an estimand left out is
-/// NaN, which Rubin's rules then leave out of the draws.
+/// NaN, which the average then leaves out.
 #[derive(Clone, Copy, Debug)]
 pub struct Sensitivity {
     /// The fit without the response-side bleed covariates.
@@ -1096,29 +1122,18 @@ impl Sensitivity {
         nospill: false,
         steps: false,
     };
-
-    /// The sensitivity fits run on the first [`MIN_DRAWS`](super::pseudobulk::MIN_DRAWS)
-    /// draws only: they feed diagnostic columns, not the headline, and
-    /// Rubin's rules over those draws are still Rubin's rules.
-    pub fn on_draw(d: usize) -> Self {
-        if d < super::pseudobulk::MIN_DRAWS {
-            Self::ALL
-        } else {
-            Self::NONE
-        }
-    }
 }
 
 /// The estimands on `rows` for each competence threshold
-/// ([`DrawFits::levels`]) and each scope of `rows`, from one fit per
+/// ([`ThresholdFits::levels`]) and each scope of `rows`, from one fit per
 /// adjustment set ([`fit_main`]) of the response `r`; `fits` carries the
-/// controls' propensities ([`DrawFits::with_controls`]). The sensitivity
+/// controls' propensities ([`ThresholdFits::with_controls`]). The sensitivity
 /// fits `sens` asks for serve the pooled scope (the first). A fit none of
 /// whose subsets has both arms at `min_arm` is skipped ([`Reads`]); without
 /// the main fit, the near-determined shares are NaN and `h` is empty.
 pub fn effects_on(
     rows: Rows<'_>,
-    fits: &DrawFits<'_>,
+    fits: &ThresholdFits<'_>,
     r: &Response,
     sens: Sensitivity,
     opts: &EffectOpts,
@@ -1194,7 +1209,8 @@ pub fn effects_on(
                     let (on_incompetent, incompetent_sums) = est(main.as_ref(), t, &incomp);
                     let contrast =
                         difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
-                    let (on_ring, _) = est(ring.as_ref(), t_ring, &comp);
+                    let (on_ring, ring_sums) = est(ring.as_ref(), t_ring, &comp);
+                    let over_ring = difference(&on_competent, &sums, &on_ring, &ring_sums);
                     let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
                     let mut step_est = [nan; 3];
                     let mut without_spill = nan;
@@ -1224,9 +1240,11 @@ pub fn effects_on(
                         competent: on_competent,
                         incompetent: on_incompetent,
                         ring: on_ring,
+                        over_ring,
                         steps: step_est,
                         nospill: without_spill,
                         near_determined,
+                        abf: AbfSummary::NONE,
                     }
                 })
                 .collect();
@@ -1246,10 +1264,10 @@ pub fn effects_on(
 /// The pooled competent effect of the response `r` at the middle threshold with
 /// the cluster sums of its ψ, from one main fit carrying every threshold
 /// ([`fit_main`]); skipped when the subset leaves an arm thin ([`Reads`]). For
-/// the curve and the decoy.
+/// the curve and the background.
 pub fn competent_effect(
     rows: Rows<'_>,
-    fits: &DrawFits<'_>,
+    fits: &ThresholdFits<'_>,
     r: &Response,
     opts: &EffectOpts,
 ) -> anyhow::Result<(Estimate, Vec<f64>)> {
@@ -1268,7 +1286,7 @@ pub fn competent_effect(
     Ok(opts.guard(subset_estimate(&terms, t, &comp, cf)))
 }
 
-/// Each analysis (draw or choice) combined into one by Rubin's rules,
+/// Each analysis combined into one by Rubin's rules,
 /// estimand by estimand, scope by scope.
 pub fn combine_scopes(per: &[Vec<ScopeEffects>]) -> Vec<ScopeEffects> {
     let Some(first) = per.first() else {
@@ -1277,7 +1295,7 @@ pub fn combine_scopes(per: &[Vec<ScopeEffects>]) -> Vec<ScopeEffects> {
     (0..first.len())
         .map(|s| {
             let parts: Vec<ScopeEffects> = per.iter().map(|d| d[s]).collect();
-            ScopeEffects::zip_with(&parts, super::pseudobulk::combine)
+            ScopeEffects::zip_with(&parts, super::overlap::combine)
         })
         .collect()
 }
@@ -1328,7 +1346,7 @@ pub fn curve_taus(a: &[f64], headline: f64, eligible: &[bool], min_arm: usize) -
 /// by a Gaussian multiplier bootstrap over clusters.
 ///
 /// Each row of `stacked` is one cluster's sums of ψ for the `K` estimates
-/// (one row per cluster and analysis, analyses being the draws and choices
+/// (one row per cluster and analysis, analyses being the competence and weighting choices
 /// the estimates average over, so `ΣᵀΣ` is their summed covariance). A
 /// bootstrap draw multiplies each row by an independent standard normal,
 /// `T_k = Σ_r g_r S_rk / √V_kk` with `V_kk = Σ_r S_rk²`, and the critical
@@ -1406,18 +1424,18 @@ pub fn build_curve(
         .collect()
 }
 
-// * Decoy programme
+// * Background programme
 
-/// Genes for the decoy pool: up to [`DECOY_POOL`] of the `n_genes` genes
+/// Genes for the background pool: up to [`BACKGROUND_POOL`] of the `n_genes` genes
 /// not in `exclude` (every ligand, receptor and programme gene), and at
 /// most a fifth of them so a small panel keeps most of its genes for the
 /// identity; drawn at random with `seed`, sorted.
-pub fn decoy_pool_genes(n_genes: usize, exclude: &[usize], seed: u64) -> Vec<usize> {
+pub fn background_pool_genes(n_genes: usize, exclude: &[usize], seed: u64) -> Vec<usize> {
     use rand::seq::SliceRandom;
     use rand::SeedableRng;
     let ex: std::collections::HashSet<usize> = exclude.iter().copied().collect();
     let mut cand: Vec<usize> = (0..n_genes).filter(|g| !ex.contains(g)).collect();
-    let k = DECOY_POOL.min(cand.len() / 5);
+    let k = BACKGROUND_POOL.min(cand.len() / 5);
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed ^ 0x000d_ec07);
     cand.shuffle(&mut rng);
     cand.truncate(k);
@@ -1434,14 +1452,14 @@ pub fn mean_expression(nz: &[(u32, f32)], sf: &[f64]) -> f64 {
 }
 
 /// Genes outside every pair and programme, by mean expression, from which
-/// each pair's decoy programme is matched.
+/// each pair's background programme is matched.
 #[derive(Default)]
-pub struct DecoyPool<'a> {
+pub struct BackgroundPool<'a> {
     /// `(log mean expression, non-zeros)`, sorted by the first.
     genes: Vec<(f64, &'a [(u32, f32)])>,
 }
 
-impl<'a> DecoyPool<'a> {
+impl<'a> BackgroundPool<'a> {
     /// The pool from its genes' non-zero counts on the tissue's rows; genes
     /// never detected are left out.
     pub fn new(sf: &[f64], genes: Vec<&'a [(u32, f32)]>) -> Self {
@@ -1454,45 +1472,58 @@ impl<'a> DecoyPool<'a> {
         Self { genes }
     }
 
-    /// The decoy of a programme: target by target in order of decreasing
-    /// `|w|`, the unused pool gene nearest in log mean expression (ties to
-    /// the lower), with the target's weight. Fewer genes than targets when
-    /// the pool runs out; empty when it holds fewer than half the
-    /// programme.
-    pub fn matched(
-        &self,
-        sf: &[f64],
-        targets: &[(f64, &[(u32, f32)])],
-    ) -> Vec<(f64, &'a [(u32, f32)])> {
+    /// Each target's weight and log mean expression, by decreasing `|w|`: the
+    /// order [`BackgroundPool::draw`] matches them in.
+    pub fn plan(sf: &[f64], targets: &[(f64, &[(u32, f32)])]) -> Vec<(f64, f64)> {
         let mut order: Vec<usize> = (0..targets.len()).collect();
         order.sort_by(|&a, &b| targets[b].0.abs().total_cmp(&targets[a].0.abs()));
+        order
+            .into_iter()
+            .map(|k| {
+                let (w, nz) = targets[k];
+                (w, mean_expression(nz, sf).max(1e-12).ln())
+            })
+            .collect()
+    }
+
+    /// A background programme for a programme: a random unused gene among the
+    /// [`BACKGROUND_NEIGHBOURS`] nearest in log mean expression to each target of
+    /// `plan`, with the target's weight. Fewer genes than targets when the
+    /// pool runs out; empty when it holds fewer than half the programme.
+    pub fn draw(&self, plan: &[(f64, f64)], seed: u64) -> Vec<(f64, &'a [(u32, f32)])> {
+        use rand::{RngExt, SeedableRng};
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
         let mut used = vec![false; self.genes.len()];
-        let mut out = Vec::with_capacity(targets.len());
-        for k in order {
-            let (w, nz) = targets[k];
-            let key = mean_expression(nz, sf).max(1e-12).ln();
+        let mut out = Vec::with_capacity(plan.len());
+        for &(w, key) in plan {
             let at = self.genes.partition_point(|g| g.0 < key);
-            // Nearest unused on each side.
-            let mut lo = at;
-            while lo > 0 && used[lo - 1] {
-                lo -= 1;
+            // The nearest unused, walking outward from the target's place.
+            let (mut lo, mut hi) = (at, at);
+            let mut near: Vec<usize> = Vec::with_capacity(BACKGROUND_NEIGHBOURS);
+            while near.len() < BACKGROUND_NEIGHBOURS && (lo > 0 || hi < used.len()) {
+                let go_low = match (lo > 0, hi < used.len()) {
+                    (true, true) => key - self.genes[lo - 1].0 <= self.genes[hi].0 - key,
+                    (low, _) => low,
+                };
+                let g = if go_low {
+                    lo -= 1;
+                    lo
+                } else {
+                    hi += 1;
+                    hi - 1
+                };
+                if !used[g] {
+                    near.push(g);
+                }
             }
-            let mut hi = at;
-            while hi < used.len() && used[hi] {
-                hi += 1;
+            if near.is_empty() {
+                break;
             }
-            let left = (lo > 0).then(|| lo - 1);
-            let right = (hi < used.len()).then_some(hi);
-            let pick = match (left, right) {
-                (Some(l), Some(r)) if key - self.genes[l].0 <= self.genes[r].0 - key => Some(l),
-                (Some(_), Some(r)) => Some(r),
-                (l, r) => l.or(r),
-            };
-            let Some(j) = pick else { break };
+            let j = near[rng.random_range(0..near.len())];
             used[j] = true;
             out.push((w, self.genes[j].1));
         }
-        if 2 * out.len() < targets.len() || out.is_empty() {
+        if 2 * out.len() < plan.len() || out.is_empty() {
             return Vec::new();
         }
         out
@@ -1501,265 +1532,186 @@ impl<'a> DecoyPool<'a> {
 
 // * One pair
 
-/// Everything the analyses of one programme weighting give, combined.
-struct Analysis {
-    scopes: Vec<ScopeEffects>,
-    curve: Vec<CurvePoint>,
-    decoy: Estimate,
+/// Every estimand of a pair averaged over its exposure thresholds
+/// ([`over_thresholds`]).
+pub struct ThresholdAverage {
+    pub scopes: Vec<ScopeEffects>,
+    pub background: Estimate,
+    pub over_background: Estimate,
+    /// Each threshold fitted, the headline first: its first weighting's
+    /// effect at the middle competence threshold and that effect's cluster
+    /// sums, what a curve reads.
+    pub points: Vec<(f64, Estimate, Vec<f64>)>,
+    /// The main fit's overlap weights at the headline threshold under the
+    /// first weighting; empty when that fit was skipped.
+    pub h: Vec<f64>,
 }
 
-impl Analysis {
-    /// Two weightings of the same pair (same scopes) averaged the way
-    /// pseudobulk draws are: each estimand by Rubin's rules, so the spread
-    /// between them widens its interval. The near-determined shares and
-    /// the curve are the first's; a curve is read under the first
-    /// weighting only.
-    fn average(self, b: Analysis) -> Analysis {
-        let mix = |x: Estimate, y: Estimate| super::pseudobulk::combine(&[x, y]);
-        let scopes = self
-            .scopes
-            .iter()
-            .zip(&b.scopes)
-            .map(|(x, y)| ScopeEffects {
-                near_determined: x.near_determined,
-                ..ScopeEffects::zip_with(&[*x, *y], super::pseudobulk::combine)
-            })
-            .collect();
-        Analysis {
-            scopes,
-            curve: self.curve,
-            decoy: mix(self.decoy, b.decoy),
-        }
+/// The thresholds a pair is read at beyond the headline: none without
+/// [`EffectOpts::curve`], else [`curve_taus`] on the rows competent at some level.
+pub fn thresholds(ex: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Vec<(f64, f64)> {
+    if !opts.curve {
+        return Vec::new();
     }
+    let eligible: Vec<bool> = (0..ex.dose.len())
+        .map(|i| levels.iter().any(|c| c[i]))
+        .collect();
+    curve_taus(&ex.dose, ex.tau, &eligible, opts.min_arm)
 }
 
-/// The mean θ and root mean variance of the estimable `parts`, the rest
-/// NaN; NaN when none is estimable. What the stopping rule reads of a
-/// draw's competence thresholds.
-fn mean_estimate(parts: &[Estimate]) -> Estimate {
-    let ok: Vec<&Estimate> = parts.iter().filter(|e| pseudobulk::usable(e)).collect();
-    if ok.is_empty() {
-        return Estimate::nan(0, 0);
-    }
-    let k = ok.len() as f64;
-    Estimate {
-        theta: ok.iter().map(|e| e.theta).sum::<f64>() / k,
-        se: (ok.iter().map(|e| e.se * e.se).sum::<f64>() / k).sqrt(),
-        df: ok.iter().map(|e| e.df).fold(f64::INFINITY, f64::min),
-        ..Estimate::nan(0, 0)
-    }
-}
-
-/// One weighting of a pair's programme: its targets and its response side
-/// on the receivers.
-struct Weighting<'t> {
-    targets: &'t [(f64, &'t [(u32, f32)])],
-    response: Response,
-}
-
-/// The decoy's programme and its response side on the receivers.
-struct Decoy<'d> {
-    targets: Vec<(f64, &'d [(u32, f32)])>,
-    response: Response,
-}
-
-/// Every analysis of one pair, per programme weighting: for each
-/// pseudobulk draw (or the cells once), the estimands per competence
-/// threshold and scope from one fit per adjustment set ([`effects_on`]);
-/// under the first weighting also the competent effect at each curve threshold and on the
-/// decoy at the middle competence threshold. Draws are combined first,
-/// then competence thresholds, both by Rubin's rules. The weightings share
-/// each draw's partition, design and exposure side; only the response side
-/// is rebuilt per weighting.
+/// Every estimand of a pair over the headline threshold and `taus`: the fits at
+/// each, the estimands combined over competence thresholds and programme
+/// weightings by Rubin's rules, then averaged over the exposure thresholds by
+/// their posterior weights, estimand by estimand ([`abf_average`]), so each
+/// control is averaged by its own evidence and not by the programme's.
 ///
-/// Each weighting's draws stop by [`super::pseudobulk::stop_drawing`] on its
-/// pooled competent effect averaged over the thresholds and on whether the draw could
-/// change under another seed (its partition is random and some fit ran,
-/// [`Reads`]); `lra-simulate` stops its headline by the same rule.
-/// Curve thresholds other than the headline's get their own partitions
-/// (units never mix arms), drawn with the same seeds, and stop by the same
-/// rule on their own estimates and partitions, so a random curve partition
-/// neither adds draws to a fixed headline nor goes without them. With the
-/// tally of every partition drawn.
+/// A fixed [`EffectOpts::threshold`] is not averaged: its estimate is the
+/// headline, and `taus` only the curve. A headline threshold with no estimate
+/// ends the pair: the other thresholds are not fitted, nor are the background programmes made.
+/// `sens` runs at the headline threshold alone, and the background programmes read the middle
+/// competence threshold.
 #[allow(clippy::too_many_arguments)]
-fn effects(
-    tissue: &Tissue,
-    ex: &mut Exposure,
-    weightings: &[Weighting<'_>],
-    decoy: Option<&Decoy<'_>>,
-    ligand_counts: &[f64],
-    comps: &[Vec<bool>],
-    a: &[f64],
+pub fn over_thresholds(
+    rows: Rows<'_>,
+    ex: &Exposure,
     taus: &[(f64, f64)],
+    responses: &[Response],
+    make_backgrounds: impl Fn() -> Vec<Response>,
+    levels: &[Vec<bool>],
+    sens: Sensitivity,
     opts: &EffectOpts,
-) -> anyhow::Result<(Vec<Analysis>, UnitTally)> {
-    use super::pseudobulk::{combine, draw, draw_limit, stop_drawing};
-    use legume_numeric::matrix::rand_util::mix_seed;
-    let nc = comps.len();
-    let mid = nc / 2;
-    let nk = taus.len();
-    let nw = weightings.len();
-    let head_k = taus.iter().position(|&(t, _)| t == ex.tau);
-    let units_on = opts.pseudobulk > 1;
-    let max_draws = draw_limit(opts);
-    let random = |u: &Option<super::pseudobulk::Units>| u.as_ref().is_some_and(|u| u.random);
-    let mut tally = UnitTally::default();
-    // Whether any fit ran, for the run log.
-    let mut fitted = false;
-    // Per weighting: per competence threshold, the scope effects of each
-    // draw; and the headline of each draw.
-    let mut scope_draws: Vec<Vec<Vec<Vec<ScopeEffects>>>> = vec![vec![Vec::new(); nc]; nw];
-    let mut headline: Vec<Vec<Estimate>> = vec![Vec::new(); nw];
-    let mut done = vec![false; nw];
-    let mut decoy_draws: Vec<Estimate> = Vec::new();
-    let mut curve_draws: Vec<Vec<Estimate>> = vec![Vec::new(); nk];
-    // The headline's curve point is read off the first weighting's draws.
-    let mut curve_done: Vec<bool> = (0..nk).map(|k| Some(k) == head_k).collect();
-    let mut stacked: Vec<Vec<f64>> = Vec::new();
+) -> anyhow::Result<ThresholdAverage> {
+    let mid = levels.len() / 2;
+    // The headline first; a curve threshold equal to it is read off its fits.
+    let mut grid: Vec<f64> = vec![ex.tau];
+    grid.extend(taus.iter().map(|t| t.0).filter(|&t| t != ex.tau));
     let mut starts = Starts::default();
-    let mut curve_starts = vec![FoldStarts::default(); nk];
-    for d in 0..max_draws {
-        if done.iter().chain(&curve_done).all(|&x| x) {
+    let mut at_tau: Vec<Vec<ScopeEffects>> = Vec::with_capacity(grid.len());
+    let mut points = Vec::with_capacity(grid.len());
+    let mut h = Vec::new();
+    let mut background_responses: Vec<Response> = Vec::new();
+    let mut background_at: Vec<Vec<Estimate>> = Vec::with_capacity(grid.len());
+    for (g, &tau) in grid.iter().enumerate() {
+        let clock = std::time::Instant::now();
+        let other = (g > 0).then(|| ex.at(tau));
+        let exposure = other.as_ref().unwrap_or(ex);
+        let sens = if g == 0 { sens } else { Sensitivity::NONE };
+        let fits = timing::time(timing::MAIN, || {
+            ThresholdFits::new(rows, exposure, levels, opts, &mut starts.main)
+        })?
+        .with_controls(rows, sens.steps, opts, &mut starts)?;
+        if g == 0 {
+            if fits.runs(fits.reads.competent) {
+                background_responses = timing::time(timing::FRAME, &make_backgrounds);
+            } else {
+                timing::all_skipped();
+            }
+        }
+        let mut per_weighting = Vec::with_capacity(responses.len());
+        for (w, r) in responses.iter().enumerate() {
+            let per_c = effects_on(rows, &fits, r, sens, opts)?;
+            if w == 0 {
+                let head = &per_c.levels[mid];
+                points.push((tau, head.scopes[0].competent, head.pooled_sums.clone()));
+                if g == 0 {
+                    h = per_c.h;
+                }
+            }
+            let scopes: Vec<Vec<ScopeEffects>> =
+                per_c.levels.into_iter().map(|l| l.scopes).collect();
+            let mut combined = combine_scopes(&scopes);
+            // The counts of the level that decides whether a pair is estimable.
+            for (c, m) in combined.iter_mut().zip(&scopes[mid]) {
+                c.competent.n = m.competent.n;
+                c.competent.n_treated = m.competent.n_treated;
+            }
+            per_weighting.push(combined);
+        }
+        at_tau.push(combine_scopes(&per_weighting));
+        if g > 0 {
+            timing::add(timing::THRESHOLDS, clock);
+        }
+        background_at.push(
+            background_responses
+                .iter()
+                .map(|r| {
+                    timing::time(timing::BACKGROUND, || {
+                        competent_effect(rows, &fits, r, opts)
+                    })
+                    .map(|e| e.0)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        );
+        // No estimate at the headline threshold: nothing to average or to put
+        // a curve on.
+        if g == 0 && !fits.reads.competent {
             break;
         }
-        let seed = mix_seed(opts.seed, d as u64);
-        // Cluster sums of ψ per curve threshold, this draw.
-        let mut sums: Vec<Vec<f64>> = vec![Vec::new(); nk];
-        if !done.iter().all(|&x| x) {
-            let units = units_on.then(|| {
-                timing::time(timing::PARTITION, || {
-                    draw(tissue, ex, ligand_counts, opts.pseudobulk, seed)
-                })
-            });
-            tally.add(units.as_ref());
-            let rows = Rows::of(&units, tissue);
-            let unit_levels: Vec<Vec<bool>>;
-            let (exposure, levels): (&Exposure, &[Vec<bool>]) = match &units {
-                Some(u) => {
-                    unit_levels = comps.iter().map(|c| u.of_lead(c)).collect();
-                    (&u.exposure, &unit_levels)
-                }
-                None => (&*ex, comps),
-            };
-            let sens = Sensitivity::on_draw(d);
-            let fits = timing::time(timing::MAIN, || {
-                DrawFits::new(rows, exposure, levels, opts, &mut starts.main)
-            })?
-            .with_controls(rows, sens.steps, opts, &mut starts)?;
-            fitted |= fits.reads.competent;
-            // No estimate at the headline threshold: no curve to put it on.
-            if !fits.reads.competent {
-                curve_done.fill(true);
-            }
-            let varies = random(&units) && fits.reads.competent;
-            // The response side of a programme on this draw's rows.
-            let on_rows = |r: &Response, targets: &[(f64, &[(u32, f32)])]| {
-                units.as_ref().map(|u| u.response_of(r, targets))
-            };
-            for (w, wt) in weightings.iter().enumerate() {
-                if done[w] {
-                    continue;
-                }
-                let own = on_rows(&wt.response, wt.targets);
-                let r = own.as_ref().unwrap_or(&wt.response);
-                let per_c = effects_on(rows, &fits, r, sens, opts)?;
-                if w == 0 {
-                    if let Some(dc) = decoy {
-                        let own = on_rows(&dc.response, &dc.targets);
-                        let r = own.as_ref().unwrap_or(&dc.response);
-                        let (e, _) =
-                            timing::time(timing::DECOY, || competent_effect(rows, &fits, r, opts))?;
-                        decoy_draws.push(e);
-                    }
-                    if let Some(k) = head_k {
-                        curve_draws[k].push(per_c.levels[mid].scopes[0].competent);
-                        sums[k] = per_c.levels[mid].pooled_sums.clone();
-                    }
-                }
-                let pooled: Vec<Estimate> =
-                    per_c.levels.iter().map(|l| l.scopes[0].competent).collect();
-                headline[w].push(mean_estimate(&pooled));
-                for (ci, level) in per_c.levels.into_iter().enumerate() {
-                    scope_draws[w][ci].push(level.scopes);
-                }
-                if stop_drawing(opts, &headline[w], varies) {
-                    done[w] = true;
-                }
-            }
-        }
-        let w0 = &weightings[0];
-        for (k, &(tau, _)) in taus.iter().enumerate() {
-            if curve_done[k] {
-                continue;
-            }
-            let curve_timer = std::time::Instant::now();
-            let t0 = std::mem::replace(&mut ex.t, exposed(a, tau));
-            let units_k = units_on.then(|| draw(tissue, ex, ligand_counts, opts.pseudobulk, seed));
-            tally.add(units_k.as_ref());
-            let (e, s, ran) = match &units_k {
-                Some(u) => {
-                    let rows = Rows::units(u);
-                    let lv: Vec<Vec<bool>> = comps.iter().map(|c| u.of_lead(c)).collect();
-                    let r = u.response_of(&w0.response, w0.targets);
-                    let fits = DrawFits::new(rows, &u.exposure, &lv, opts, &mut curve_starts[k])?;
-                    let (e, s) = competent_effect(rows, &fits, &r, opts)?;
-                    (e, s, fits.reads.competent)
-                }
-                None => {
-                    let rows = Rows::cells(tissue);
-                    let fits = DrawFits::new(rows, ex, comps, opts, &mut curve_starts[k])?;
-                    let (e, s) = competent_effect(rows, &fits, &w0.response, opts)?;
-                    (e, s, fits.reads.competent)
-                }
-            };
-            fitted |= ran;
-            curve_draws[k].push(e);
-            sums[k] = s;
-            ex.t = t0;
-            if stop_drawing(opts, &curve_draws[k], random(&units_k) && ran) {
-                curve_done[k] = true;
-            }
-            timing::add(timing::CURVE, curve_timer);
-        }
-        for c in 0..tissue.cf.n_clusters() {
-            let row: Vec<f64> = sums
-                .iter()
-                .map(|s| s.get(c).copied().unwrap_or(0.0))
-                .collect();
-            if row.iter().any(|&x| x != 0.0) {
-                stacked.push(row);
-            }
-        }
     }
-    if !fitted {
-        timing::all_skipped();
-    }
-    let analyses = (0..nw)
-        .map(|w| {
-            timing::draws(headline[w].len());
-            let per_c: Vec<Vec<ScopeEffects>> =
-                scope_draws[w].iter().map(|d| combine_scopes(d)).collect();
-            let (curve, decoy) = if w == 0 {
-                let curve_est: Vec<Estimate> = curve_draws.iter().map(|d| combine(d)).collect();
-                let curve = if nk == 0 {
-                    Vec::new()
-                } else {
-                    timing::time(timing::BAND, || {
-                        build_curve(taus, &curve_est, &stacked, mix_seed(opts.seed, 0xc0_ffee))
-                    })
-                };
-                (curve, combine(&decoy_draws))
-            } else {
-                (Vec::new(), combine(&[]))
-            };
-            Analysis {
-                scopes: combine_scopes(&per_c),
-                curve,
-                decoy,
+    let prior_var = opts.abf_prior_sd * opts.abf_prior_sd;
+    let averaged = if opts.threshold.is_some() {
+        1
+    } else {
+        at_tau.len()
+    };
+    let scopes: Vec<ScopeEffects> = (0..at_tau[0].len())
+        .map(|s| {
+            let parts: Vec<ScopeEffects> = at_tau[..averaged].iter().map(|a| a[s]).collect();
+            let competent: Vec<Estimate> = parts.iter().map(|p| p.competent).collect();
+            ScopeEffects {
+                near_determined: parts[0].near_determined,
+                abf: abf_summary(&competent, &grid, prior_var),
+                ..ScopeEffects::zip_with(&parts, |p| abf_average(p, prior_var))
             }
         })
         .collect();
-    Ok((analyses, tally))
+    // Each background averaged over the thresholds by its own evidence, as the effect is.
+    let background_means: Vec<Estimate> = (0..background_responses.len())
+        .map(|k| {
+            let parts: Vec<Estimate> = background_at[..averaged].iter().map(|d| d[k]).collect();
+            abf_average(&parts, prior_var)
+        })
+        .collect();
+    let (background, over_background) =
+        background_comparison(&scopes[0].competent, &background_means);
+    Ok(ThresholdAverage {
+        scopes,
+        background,
+        over_background,
+        points,
+        h,
+    })
+}
+
+/// The curve at `taus` from the fitted `points`, in the order of its thresholds:
+/// one row of stacked sums per variance cluster that carries any.
+fn threshold_curve(
+    n_clusters: usize,
+    taus: &[(f64, f64)],
+    points: &[(f64, Estimate, Vec<f64>)],
+    seed: u64,
+) -> Vec<CurvePoint> {
+    if taus.is_empty() {
+        return Vec::new();
+    }
+    let point = |tau: f64| points.iter().find(|p| p.0 == tau);
+    let estimates: Vec<Estimate> = taus
+        .iter()
+        .map(|t| point(t.0).map_or_else(|| combine(&[]), |p| p.1))
+        .collect();
+    let mut stacked: Vec<Vec<f64>> = Vec::new();
+    for c in 0..n_clusters {
+        let row: Vec<f64> = taus
+            .iter()
+            .map(|t| point(t.0).and_then(|p| p.2.get(c).copied()).unwrap_or(0.0))
+            .collect();
+        if row.iter().any(|&x| x != 0.0) {
+            stacked.push(row);
+        }
+    }
+    timing::time(timing::BAND, || {
+        build_curve(taus, &estimates, &stacked, seed)
+    })
 }
 
 /// `b`'s weights on `a`'s genes (0 where `b` leaves a gene out), when
@@ -1780,82 +1732,72 @@ fn aligned(a: &[(f64, &[(u32, f32)])], b: &[(f64, &[(u32, f32)])]) -> Option<Vec
 }
 
 /// Rows for the pooled tissue, each section and each named receiver cell
-/// type, with a decoy programme matched from `pool`. Verdicts and q-values
+/// type, with a background programme matched from `pool`. Verdicts and q-values
 /// are left empty for [`report`], which needs every pair.
 ///
 /// With [`PairData::reweighted`], the two weightings of the programme are
-/// averaged ([`Analysis::average`]); the curve and the decoy describe the
+/// combined ([`over_thresholds`]); the curve and the background describe the
 /// pair, not the weighting, and are read under `targets`. Counts,
 /// co-expression, the crude contrast and the diagnostics read competence
-/// at the middle threshold of the grid. With the tally of the pseudobulk
-/// partitions drawn, for the run's mean unit size.
+/// at the middle threshold of the grid.
 pub fn estimate_pair_with(
     tissue: &Tissue,
     pair: &PairData<'_>,
-    pool: &DecoyPool<'_>,
+    pool: &BackgroundPool<'_>,
     opts: &EffectOpts,
-) -> anyhow::Result<(Vec<EffectRow>, UnitTally)> {
+) -> anyhow::Result<Vec<EffectRow>> {
     let n = tissue.n();
-    let (mut ex, a) = timing::time(timing::FRAME, || {
+    let ex = timing::time(timing::FRAME, || {
         Exposure::build(tissue, pair.ligand_counts, opts)
     });
     let detected: Vec<bool> = pair.receptor_counts.iter().map(|&r| r > 0.0).collect();
     let comps = super::exposure::competence_grid(&tissue.identity_bin, &detected, opts.competences);
-    let taus = if opts.curve {
-        let eligible: Vec<bool> = (0..n).map(|i| comps.iter().any(|c| c[i])).collect();
-        curve_taus(&a, ex.tau, &eligible, opts.min_arm)
-    } else {
-        Vec::new()
-    };
-    let programmes: Vec<&Targets<'_>> = std::iter::once(pair.targets)
-        .chain(pair.reweighted)
-        .collect();
-    let weightings = timing::time(timing::FRAME, || {
-        let responses = match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
+    let taus = thresholds(&ex, &comps, opts);
+    let responses: Vec<Response> = timing::time(timing::FRAME, || {
+        match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
             Some(wb) => {
                 let (genes, wa) = genes_and_weights(pair.targets);
                 Response::build_many(tissue, &genes, &[wa, wb])
             }
-            None => programmes
-                .iter()
+            None => std::iter::once(pair.targets)
+                .chain(pair.reweighted)
                 .map(|p| Response::build(tissue, p))
                 .collect(),
-        };
-        programmes
-            .iter()
-            .zip(responses)
-            .map(|(&targets, response)| Weighting { targets, response })
-            .collect::<Vec<_>>()
+        }
     });
-    let decoy_targets = pool.matched(&tissue.size_factor, pair.targets);
-    let n_decoy_genes = decoy_targets.len();
-    let decoy = (!decoy_targets.is_empty()).then(|| Decoy {
-        response: Response::build(tissue, &decoy_targets),
-        targets: decoy_targets,
-    });
-    let (analyses, tally) = effects(
-        tissue,
-        &mut ex,
-        &weightings,
-        decoy.as_ref(),
-        pair.ligand_counts,
-        &comps,
-        &a,
+    // Seeded by the pair, so a pair's background programmes don't depend on which others run.
+    let pair_seed = name_seed(opts.seed, &format!("{}\0{}", pair.ligand, pair.receptor));
+    let plan = BackgroundPool::plan(&tissue.size_factor, pair.targets);
+    let backgrounds: Vec<_> = (0..opts.background_draws)
+        .map(|k| pool.draw(&plan, mix_seed(pair_seed, k as u64)))
+        .filter(|d| !d.is_empty())
+        .collect();
+    let n_background_genes = backgrounds.first().map_or(0, Vec::len);
+    let eff = over_thresholds(
+        Rows::cells(tissue),
+        &ex,
         &taus,
+        &responses,
+        || {
+            backgrounds
+                .par_iter()
+                .map(|d| Response::build(tissue, d))
+                .collect()
+        },
+        &comps,
+        Sensitivity::ALL,
         opts,
     )?;
-    let mut analyses = analyses.into_iter();
-    let first = analyses.next().expect("one analysis per weighting");
-    let eff = match analyses.next() {
-        Some(b) => first.average(b),
-        None => first,
-    };
+    let mut curve = Some(threshold_curve(
+        tissue.cf.n_clusters(),
+        &taus,
+        &eff.points,
+        mix_seed(opts.seed, 0xc0_ffee),
+    ));
     // The response of each weighting, for the crude contrast.
-    let ys: Vec<Vec<f64>> = weightings.into_iter().map(|w| w.response.y).collect();
+    let ys: Vec<Vec<f64>> = responses.into_iter().map(|r| r.y).collect();
     let competent = &comps[comps.len() / 2];
-    let tf = indicator(&ex.t);
     let mut rows = Vec::with_capacity(tissue.scopes.len());
-    let mut curve = Some(eff.curve);
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
     for (((label, scope), inside_rows), e) in scopes.zip(eff.scopes) {
         let mut inside = vec![false; n];
@@ -1890,6 +1832,18 @@ pub fn estimate_pair_with(
             }
         };
         let pooled = *scope == Scope::All;
+        // How far neighbour identity explains the exposure, at the threshold
+        // the average leans on.
+        let eta2 = eta_squared(
+            &tissue.neighbour_bin,
+            &indicator(&ex.leaned_on(e.abf)),
+            inside_rows,
+        );
+        let (background, over_background) = if pooled {
+            (eff.background, eff.over_background)
+        } else {
+            (Estimate::nan(0, 0), Estimate::nan(0, 0))
+        };
         rows.push(EffectRow {
             section: label.clone(),
             ligand: pair.ligand.into(),
@@ -1900,39 +1854,24 @@ pub fn estimate_pair_with(
             n_competent: comp.len(),
             n_exposed: inside_rows.iter().filter(|&&i| ex.t[i as usize]).count(),
             threshold: ex.tau,
-            coexpr_log_or: lor,
-            coexpr_se: lse,
             crude,
-            effects: e,
-            exposure_eta2: eta_squared(&tissue.neighbour_bin, &tf, inside_rows),
             n_competent_bins: bins(true),
             n_incompetent_bins: bins(false),
-            decoy_effect: if pooled {
-                eff.decoy
-            } else {
-                Estimate::nan(0, 0)
-            },
-            n_decoy_genes: if pooled { n_decoy_genes } else { 0 },
             curve: if pooled {
                 curve.take().unwrap_or_default()
             } else {
                 Vec::new()
             },
-            decoy_q: f64::NAN,
-            effect_p: f64::NAN,
-            effect_q: f64::NAN,
-            coexpr_p: f64::NAN,
-            coexpr_q: f64::NAN,
-            effect_incompetent_q: f64::NAN,
-            effect_contrast_q: f64::NAN,
-            ring_effect_q: f64::NAN,
-            n_pairs_same_ligand: 0,
-            ligand_q: f64::NAN,
-            verdict: Verdict::InsufficientData,
-            warnings: String::new(),
+            ..EffectRow::pending(
+                e,
+                (lor, lse),
+                eta2,
+                (background, over_background),
+                if pooled { n_background_genes } else { 0 },
+            )
         });
     }
-    Ok((rows, tally))
+    Ok(rows)
 }
 
 /// The co-expression log odds over the contacts inside the scope, both orientations: the Jeffreys
@@ -1977,34 +1916,30 @@ pub fn coexpression(
 pub mod timing {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    pub const STAGES: [&str; 10] = [
+    pub const STAGES: [&str; 9] = [
         "frame",
-        "partition",
         "main+ring fits",
         "no-spill fit",
         "step fits",
-        "curve fits",
-        "decoy fit",
+        "other thresholds",
+        "background fit",
         "band",
         "(in fits: outcome ridge",
         "propensity)",
     ];
-    pub const RIDGE: usize = 8;
-    pub const LOGISTIC: usize = 9;
+    pub const RIDGE: usize = 7;
+    pub const LOGISTIC: usize = 8;
     pub const FRAME: usize = 0;
-    pub const PARTITION: usize = 1;
-    pub const MAIN: usize = 2;
-    pub const NOSPILL: usize = 3;
-    pub const STEPS: usize = 4;
-    pub const CURVE: usize = 5;
-    pub const DECOY: usize = 6;
-    pub const BAND: usize = 7;
+    pub const MAIN: usize = 1;
+    pub const NOSPILL: usize = 2;
+    pub const STEPS: usize = 3;
+    pub const THRESHOLDS: usize = 4;
+    pub const BACKGROUND: usize = 5;
+    pub const BAND: usize = 6;
 
     #[allow(clippy::declare_interior_mutable_const)]
     const ZERO: AtomicU64 = AtomicU64::new(0);
-    static NS: [AtomicU64; 10] = [ZERO; 10];
-    static DRAWS: AtomicU64 = AtomicU64::new(0);
-    static ANALYSES: AtomicU64 = AtomicU64::new(0);
+    static NS: [AtomicU64; 9] = [ZERO; 9];
     static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
     static PROPENSITY_FITS: AtomicU64 = AtomicU64::new(0);
     static HESSIANS: AtomicU64 = AtomicU64::new(0);
@@ -2031,18 +1966,12 @@ pub mod timing {
         NS[stage].fetch_add(since.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    /// One analysis (pair × weighting) that used `draws` draws.
-    pub fn draws(draws: usize) {
-        DRAWS.fetch_add(draws as u64, Ordering::Relaxed);
-        ANALYSES.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// One pair none of whose fits ran: every subset left an arm thin.
     pub fn all_skipped() {
         ALL_SKIPPED.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Thread-seconds per stage, the mean draws per analysis and the pairs
+    /// Thread-seconds per stage and the pairs
     /// with every fit skipped.
     pub fn summary() -> String {
         let stages: Vec<String> = STAGES
@@ -2050,13 +1979,11 @@ pub mod timing {
             .zip(&NS)
             .map(|(s, n)| format!("{s} {:.0}s", n.load(Ordering::Relaxed) as f64 * 1e-9))
             .collect();
-        let a = ANALYSES.load(Ordering::Relaxed).max(1) as f64;
         let fits = PROPENSITY_FITS.load(Ordering::Relaxed);
         format!(
-            "{}; {:.1} pseudobulk draws per analysis; {} pairs with every fit skipped (thin \
+            "{}; {} pairs with every fit skipped (thin \
              arms); {} propensity fold fits, {:.1} Hessians each, {} not converged",
             stages.join(", "),
-            DRAWS.load(Ordering::Relaxed) as f64 / a,
             ALL_SKIPPED.load(Ordering::Relaxed),
             fits,
             HESSIANS.load(Ordering::Relaxed) as f64 / fits.max(1) as f64,
@@ -2076,19 +2003,11 @@ pub struct ReportOpts {
     pub max_exposure_eta2: f64,
     /// [`EffectOpts::min_arm`], to say why a pair is not estimable.
     pub min_arm: usize,
-    /// The estimator's points are pseudobulk units ([`EffectOpts::pseudobulk`]
-    /// above 1), not receivers: what the thin-arm note counts.
-    pub units: bool,
 }
 
 impl Default for ReportOpts {
     fn default() -> Self {
-        Self {
-            fdr: 0.05,
-            max_exposure_eta2: 0.8,
-            min_arm: 20,
-            units: false,
-        }
+        super::INTERNALS.report_opts()
     }
 }
 
@@ -2157,9 +2076,8 @@ pub struct Evidence {
     pub effect: bool,
     /// The co-expression q is below the FDR level.
     pub coexpr: bool,
-    /// A control beside a significant effect did not hold: the incompetent,
-    /// ring or decoy effect is significant or could not be checked, or the effect
-    /// does not exceed the incompetent one.
+    /// A control beside a significant effect did not hold: the effect does not
+    /// exceed the incompetent, ring or background effect, or one could not be checked.
     pub control_failed: bool,
     /// `exposure_eta2` reaches the internal guard `max_exposure_eta2`
     /// (`outputs.lra.settings` in the manifest).
@@ -2201,7 +2119,7 @@ pub fn verdict(e: Evidence) -> Verdict {
 /// (`min_r p_(r) k / r` over its `k` pairs, valid under PRDS) and BH runs
 /// over ligands. `n_pairs_same_ligand` is that `k`.
 ///
-/// The controls (receptor-negative receivers, distant cells, the decoy, and
+/// The controls (receptor-negative receivers, distant cells, the background, and
 /// the contrast with the first) are corrected only among the pairs
 /// whose effect is significant, and are NaN for the rest: a control decides a
 /// verdict only beside a significant effect, and over every pair its q would
@@ -2230,7 +2148,9 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
         let q1 = control(&|r| r.effects.effect.p());
         let q3 = control(&|r| r.effects.incompetent.p());
         let q5 = control(&|r| r.effects.ring.p());
-        let qd = control(&|r| r.decoy_effect.p());
+        let qd = control(&|r| r.background_effect.p());
+        let qr = control(&|r| r.effects.over_ring.p());
+        let qo = control(&|r| r.effect_over_background.p());
         let mut by_ligand: std::collections::HashMap<String, Vec<usize>> = Default::default();
         for (k, &i) in idx.iter().enumerate() {
             by_ligand
@@ -2260,7 +2180,9 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
             r.effect_contrast_q = q1[k];
             r.effect_incompetent_q = q3[k];
             r.ring_effect_q = q5[k];
-            r.decoy_q = qd[k];
+            r.background_q = qd[k];
+            r.effect_over_ring_q = qr[k];
+            r.effect_over_background_q = qo[k];
         }
     }
     for r in rows.iter_mut() {
@@ -2273,30 +2195,56 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     let sig = |q: f64| q < opts.fdr;
     let head = row.effects.competent;
     let effect = sig(row.effect_q);
-    // Beside a significant effect a control that could not run has not held,
-    // but for a decoy where none exists (no match in the pool, or a section's
-    // row). The effect must also exceed the one in receptor-negative receivers:
-    // the contrast significant, the same way as the effect.
+    // Beside a significant effect, the effect must exceed each negative
+    // control, the same way, and a comparison that could not run has not held,
+    // but for a background programme where none exists (no match in the pool, or a section's
+    // row). A hidden field moves the controls too, so one being significant
+    // does not rule the effect out: it is reported, and what decides is
+    // whether the effect is larger.
     let unchecked = |q: f64| effect && q.is_nan();
-    let specific = sig(row.effect_contrast_q) && row.effects.effect.theta * head.theta > 0.0;
-    let (e3_q, ring_q, decoy_q) = (row.effect_incompetent_q, row.ring_effect_q, row.decoy_q);
+    let exceeds = |q: f64, over: Estimate| sig(q) && over.theta * head.theta > 0.0;
+    let beaten = |q: f64, over: Estimate| effect && !q.is_nan() && !exceeds(q, over);
+    let (negative_q, ring_q, background_q) = (
+        row.effect_incompetent_q,
+        row.ring_effect_q,
+        row.background_q,
+    );
+    let (over_negative_q, over_ring_q) = (row.effect_contrast_q, row.effect_over_ring_q);
+    let over_background_q = row.effect_over_background_q;
+    let has_background = row.n_background_genes > 0;
     let controls = [
-        (sig(e3_q), "receptor-negative receivers respond"),
         (
-            unchecked(e3_q),
+            unchecked(over_negative_q),
             "receptor-negative receivers could not be checked",
         ),
         (
-            effect && !specific && !unchecked(e3_q),
+            beaten(over_negative_q, row.effects.effect),
             "the effect does not exceed the one in receptor-negative receivers",
         ),
-        (unchecked(ring_q), "distant senders could not be checked"),
         (
-            row.n_decoy_genes > 0 && unchecked(decoy_q),
-            "the matched decoy programme could not be checked",
+            unchecked(over_ring_q),
+            "distant senders could not be checked",
         ),
+        (
+            beaten(over_ring_q, row.effects.over_ring),
+            "the effect does not exceed the one from distant senders",
+        ),
+        (
+            has_background && unchecked(over_background_q),
+            "the matched background programme could not be checked",
+        ),
+        (
+            has_background && beaten(over_background_q, row.effect_over_background),
+            "the effect does not exceed the one on a matched background programme",
+        ),
+    ];
+    let notes = [
+        (sig(negative_q), "receptor-negative receivers respond"),
         (sig(ring_q), "distant senders have an effect"),
-        (sig(decoy_q), "a matched decoy programme responds too"),
+        (
+            sig(background_q),
+            "a matched background programme responds too",
+        ),
     ];
     let ev = Evidence {
         estimable: head.theta.is_finite() && head.se.is_finite(),
@@ -2311,14 +2259,9 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
         w.push(if row.n_competent == 0 {
             "not estimable: no receptor-competent receivers".into()
         } else if thin_arm(opts.min_arm, head.n, head.n_treated) {
-            let (points, guards) = if opts.units {
-                ("pseudobulk units", "pseudobulk and min_arm")
-            } else {
-                ("receivers", "min_arm")
-            };
             format!(
-                "not estimable: thin arm ({} exposed, {} unexposed competent {points}; \
-                 internal guards {guards} {}, see outputs.lra.settings in the manifest)",
+                "not estimable: thin arm ({} exposed, {} unexposed competent receivers; \
+                 internal guard min_arm {}, see outputs.lra.settings in the manifest)",
                 head.n_treated,
                 head.n.saturating_sub(head.n_treated),
                 opts.min_arm
@@ -2344,6 +2287,12 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
             w.push("co-expression is likely a cell-type artefact".into());
         }
     }
-    w.extend(controls.iter().filter(|c| c.0).map(|c| c.1.to_string()));
+    w.extend(
+        controls
+            .iter()
+            .chain(&notes)
+            .filter(|c| c.0)
+            .map(|c| c.1.to_string()),
+    );
     row.warnings = w.join("; ");
 }

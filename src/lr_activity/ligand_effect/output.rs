@@ -24,6 +24,14 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// The pair's effect survived the controls.
+    pub fn survived(self) -> bool {
+        matches!(
+            self,
+            Verdict::Supported | Verdict::EffectWithoutCoexpression
+        )
+    }
+
     /// How many of `verdicts` are each verdict, in [`Verdict::ALL`]'s order.
     pub fn counts(
         verdicts: impl IntoIterator<Item = Verdict>,
@@ -77,8 +85,8 @@ impl Verdict {
         match self {
             Verdict::Supported => {
                 "receivers next to ligand-carrying cells change their response programme, \
-                 ligand and receptor are co-expressed across contacts, and the negative \
-                 controls hold"
+                 ligand and receptor are co-expressed across contacts, and the effect \
+                 exceeds every negative control"
             }
             Verdict::EffectWithoutCoexpression => {
                 "receivers respond to neighbouring ligand, but ligand and receptor are not \
@@ -92,10 +100,9 @@ impl Verdict {
                 "neither a response nor co-expression at this false discovery rate"
             }
             Verdict::ControlFailed => {
-                "an effect appeared, but the negative controls do not hold: receivers \
-                 without the receptor respond as much, distant cells that do not touch or a \
-                 matched decoy programme respond too, or one of these could not be checked: \
-                 likely confounding"
+                "an effect appeared, but it does not exceed a negative control (receivers \
+                 without the receptor, distant cells that do not touch, or a matched background \
+                 programme), or one of these could not be checked: likely confounding"
             }
             Verdict::CelltypeInseparable => {
                 "being exposed to the ligand is nearly the same as having a neighbour of \
@@ -106,16 +113,6 @@ impl Verdict {
                  overlap between them, to estimate an effect"
             }
         }
-    }
-}
-
-impl Verdict {
-    /// The pair's effect survived the controls.
-    pub fn survived(self) -> bool {
-        matches!(
-            self,
-            Verdict::Supported | Verdict::EffectWithoutCoexpression
-        )
     }
 }
 
@@ -262,7 +259,16 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .est("ring_effect", |(r, _)| r.effects.ring)
         .f("ring_effect_q", |(r, _)| r.ring_effect_q)
         .est("effect_contrast", |(r, _)| r.effects.effect)
+        .f("effect_log10_bf", |(r, _)| r.effects.abf.log10_bf)
+        .f("tau_top", |(r, _)| r.effects.abf.top_tau)
+        .f("tau_top_weight", |(r, _)| r.effects.abf.top_weight)
         .f("effect_contrast_q", |(r, _)| r.effect_contrast_q)
+        .est("effect_over_ring", |(r, _)| r.effects.over_ring)
+        .f("effect_over_ring_q", |(r, _)| r.effect_over_ring_q)
+        .est("effect_over_background", |(r, _)| r.effect_over_background)
+        .f("effect_over_background_q", |(r, _)| {
+            r.effect_over_background_q
+        })
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)
@@ -278,10 +284,10 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .f("effect_pct_sd", |(_, m)| m.pct_sd)
         .f("effect_pct_lo", |(_, m)| m.pct_lo)
         .f("effect_pct_hi", |(_, m)| m.pct_hi)
-        .est("decoy_effect", |(r, _)| r.decoy_effect)
-        .f("decoy_effect_df", |(r, _)| r.decoy_effect.df)
-        .f("decoy_q", |(r, _)| r.decoy_q)
-        .i("n_decoy_genes", |(r, _)| r.n_decoy_genes)
+        .est("background_effect", |(r, _)| r.background_effect)
+        .f("background_effect_df", |(r, _)| r.background_effect.df)
+        .f("background_q", |(r, _)| r.background_q)
+        .i("n_background_genes", |(r, _)| r.n_background_genes)
         .s("q_scope", |_| q_scope);
     c.write(path)
 }
@@ -341,6 +347,11 @@ mod sim_cols {
     pub const REP: &str = "rep";
     pub const CONFOUND_RECEPTOR: &str = "confound_receptor";
     pub const ESTIMABLE: &str = "estimable";
+    pub const BACKGROUND_CONFOUNDING: &str = "background_confounding";
+    pub const GENERIC_SHIFT: &str = "generic_shift";
+    pub const DOSE_RESPONSE: &str = "dose_response";
+    pub const DOSE_MIDPOINT: &str = "dose_midpoint";
+    pub const DOSE_ORDER: &str = "dose_order";
 
     /// `{method}_reject`.
     pub fn reject(method: &str) -> String {
@@ -387,10 +398,18 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .est("estimate_spatial", |r| r.steps[1])
         .est("estimate_identity", |r| r.steps[2])
         .est("effect_contrast", |r| r.contrast)
-        .est("decoy_effect", |r| r.decoy)
-        .f("decoy_confounding", |r| r.scenario.decoy_confounding)
+        .est("effect_over_ring", |r| r.over_ring)
+        .est("background_effect", |r| r.background)
+        .est("effect_over_background", |r| r.over_background)
+        .f(BACKGROUND_CONFOUNDING, |r| {
+            r.scenario.background_confounding
+        })
+        .f(GENERIC_SHIFT, |r| r.scenario.generic_shift)
+        .i(DOSE_RESPONSE, |r| r.scenario.dose_response as usize)
+        .f(DOSE_MIDPOINT, |r| r.scenario.dose_midpoint)
+        .i(DOSE_ORDER, |r| r.scenario.dose_order as usize)
         .s("verdict", |r| r.verdict.code())
-        .i("survived", |r| r.survived() as usize)
+        .i("survived", |r| r.verdict.survived() as usize)
         .f("mean_overlap", |r| r.estimate.mean_h)
         .f("misclassified", |r| r.misclassified)
         .i(CONFOUND_RECEPTOR, |r| r.scenario.confound_receptor as usize)
@@ -502,8 +521,14 @@ fn describe(s: &super::simulate::Scenario) -> String {
     } else {
         d += " unconfounded";
     }
+    if s.dose_response {
+        d += " dose";
+    }
     if s.ring_effect != 0.0 {
         d += &format!(" θr={:.2}", s.ring_effect);
+    }
+    if s.generic_shift != 0.0 {
+        d += &format!(" generic={}", s.generic_shift);
     }
     if s.spillover != 0.0 {
         d += &format!(" κ={}", s.spillover);
@@ -597,12 +622,12 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
             share(&v)
         };
         out += &format!(
-            "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, decoy reject {}, verdict survived {}\n",
+            "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, background reject {}, verdict survived {}\n",
             g.len(),
             rej_of(|r| r.ring),
             rej_of(|r| r.no_spill),
-            rej_of(|r| r.decoy),
-            share(&g.iter().map(|r| r.survived()).collect::<Vec<_>>()),
+            rej_of(|r| r.background),
+            share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
         );
         for (name, view) in views {
             let ok: Vec<(f64, f64, f64, f64, f64)> = g
@@ -1081,6 +1106,26 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
         v.to_string().parse().unwrap_or(f64::from(v))
     };
     let flag = |name: &str, i: usize| col(name)[i] != 0.0;
+    // Columns a table from an earlier version lacks: the scenario's default.
+    let later = |name: &str| -> Option<Vec<f64>> {
+        read_table_columns(path, &[], &[name])
+            .ok()
+            .and_then(|(_, mut c)| c.pop())
+    };
+    let plain = Scenario::default();
+    let (background_confounding, generic_shift) =
+        (later(BACKGROUND_CONFOUNDING), later(GENERIC_SHIFT));
+    let (dose_response, dose_midpoint, dose_order) = (
+        later(DOSE_RESPONSE),
+        later(DOSE_MIDPOINT),
+        later(DOSE_ORDER),
+    );
+    let exact = |c: &Option<Vec<f64>>, i: usize, default: f64| -> f64 {
+        c.as_ref().map_or(default, |c| {
+            let v = c[i] as f32;
+            v.to_string().parse().unwrap_or(f64::from(v))
+        })
+    };
     (0..s[0].len())
         .map(|i| {
             let confounder: ConfounderKind = s[0][i]
@@ -1103,7 +1148,15 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
                 shift: num(SHIFT, i),
                 confound_receptor: flag(CONFOUND_RECEPTOR, i),
                 rep: col(REP)[i] as usize,
-                ..Scenario::default()
+                background_confounding: exact(
+                    &background_confounding,
+                    i,
+                    plain.background_confounding,
+                ),
+                generic_shift: exact(&generic_shift, i, plain.generic_shift),
+                dose_response: exact(&dose_response, i, 0.0) != 0.0,
+                dose_midpoint: exact(&dose_midpoint, i, plain.dose_midpoint),
+                dose_order: exact(&dose_order, i, plain.dose_order as f64) as i32,
             };
             let mut hits = [false; 6];
             for (h, name) in hits.iter_mut().zip(&rejects) {

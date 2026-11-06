@@ -6,8 +6,7 @@ use super::run_sim;
 use super::simulate::{base, fixture, opts};
 use crate::lr_activity::ligand_effect::estimate::{niche_ligand, programme_columns};
 use crate::lr_activity::ligand_effect::exposure::Contacts;
-use crate::lr_activity::ligand_effect::overlap::Estimate;
-use crate::lr_activity::ligand_effect::pseudobulk::combine;
+use crate::lr_activity::ligand_effect::overlap::{combine, Estimate};
 use crate::lr_activity::ligand_effect::simulate::Scenario;
 
 // * Bleed

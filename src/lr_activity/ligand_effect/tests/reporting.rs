@@ -6,7 +6,7 @@ use super::rows_of;
 use super::simulate::fixture;
 use crate::lr_activity::ligand_effect::estimate::*;
 use crate::lr_activity::ligand_effect::output::Verdict;
-use crate::lr_activity::ligand_effect::overlap::{t_crit_975, t_two_sided_p, Estimate};
+use crate::lr_activity::ligand_effect::overlap::{t_crit_975, t_two_sided_p, AbfSummary, Estimate};
 
 fn close(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len()
@@ -161,17 +161,20 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
             competent: est(z * 0.05, 0.05),
             incompetent: est(z3 * 0.05, 0.05),
             ring: est(z5 * 0.05, 0.05),
+            over_ring: est((z - z5) * 0.05, 0.05),
             steps: [nan; 3],
             nospill: nan,
             near_determined: 0.0,
+            abf: AbfSummary::NONE,
         },
         exposure_eta2: eta2,
         n_competent_bins: 1,
         n_incompetent_bins: 1,
-        decoy_effect: nan,
-        n_decoy_genes: 0,
+        background_effect: nan,
+        n_background_genes: 0,
+        effect_over_background: nan,
         curve: Vec::new(),
-        decoy_q: f64::NAN,
+        background_q: f64::NAN,
         effect_p: f64::NAN,
         effect_q: f64::NAN,
         coexpr_p: f64::NAN,
@@ -179,6 +182,8 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
         effect_incompetent_q: f64::NAN,
         effect_contrast_q: f64::NAN,
         ring_effect_q: f64::NAN,
+        effect_over_ring_q: f64::NAN,
+        effect_over_background_q: f64::NAN,
         n_pairs_same_ligand: 0,
         ligand_q: f64::NAN,
         verdict: Verdict::InsufficientData,
@@ -320,7 +325,7 @@ fn controls_are_corrected_among_significant_effects() {
     // Alone among the significant, its control's q is its p: unrelated pairs,
     // with controls strong or weak, change neither it nor its verdict.
     let alone = |others: &[f64]| {
-        let mut rows = vec![row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1)];
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 8.5, 0.0, 0.1)];
         for (k, &z3) in others.iter().enumerate() {
             rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.0, 0.1));
         }
@@ -335,6 +340,7 @@ fn controls_are_corrected_among_significant_effects() {
     // A significant effect whose control has no estimate has not held.
     let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
     rows[0].effects.incompetent = Estimate::nan(10, 1);
+    rows[0].effects.effect = Estimate::nan(10, 1);
     report(&mut rows, &ReportOpts::default());
     assert!(e3_q(&rows, 0).is_nan());
     assert_eq!(rows[0].verdict.code(), "control_failed");
@@ -349,9 +355,8 @@ fn controls_are_corrected_among_significant_effects() {
 }
 
 /// Beside a significant effect the conservative verdict: the effect must
-/// exceed the receptor-negative one, the same way, and a control that could
-/// not run has not held,
-/// but for a decoy where the pool matched none.
+/// exceed each negative control, the same way, and a control that could not
+/// run has not held, but for a background programme where the pool matched none.
 #[test]
 fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
     let judged = |change: &dyn Fn(&mut EffectRow)| {
@@ -371,13 +376,48 @@ fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
     let (v, _) = judged(&|r| r.effects.effect = est(-0.5, 0.05));
     assert_eq!(v, "control_failed");
 
-    let (v, w) = judged(&|r| r.effects.incompetent = Estimate::nan(10, 1));
+    // What decides is the comparison: a control can be finite while its
+    // comparison could not run, and that has not held either.
+    let (v, w) = judged(&|r| r.effects.effect = Estimate::nan(10, 1));
     assert_eq!(v, "control_failed");
     assert!(w.contains("receptor-negative receivers could not"), "{w}");
-    let (v, w) = judged(&|r| r.effects.ring = Estimate::nan(10, 1));
+    let (v, w) = judged(&|r| r.effects.over_ring = Estimate::nan(10, 1));
     assert_eq!(v, "control_failed");
     assert!(w.contains("distant senders could not"), "{w}");
-    let (v, w) = judged(&|r| r.n_decoy_genes = 5);
+    let (v, w) = judged(&|r| r.n_background_genes = 5);
     assert_eq!(v, "control_failed");
-    assert!(w.contains("decoy programme could not"), "{w}");
+    assert!(w.contains("background programme could not"), "{w}");
+
+    let (v, w) = judged(&|r| r.effects.over_ring = est(0.05, 0.05));
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("exceed the one from distant senders"), "{w}");
+    let (v, w) = judged(&|r| {
+        r.n_background_genes = 5;
+        r.effect_over_background = est(0.05, 0.05);
+    });
+    assert_eq!(v, "control_failed");
+    assert!(w.contains("exceed the one on a matched background"), "{w}");
+    // Larger than the background, but the wrong way round.
+    let (v, _) = judged(&|r| {
+        r.n_background_genes = 5;
+        r.effect_over_background = est(-0.5, 0.05);
+    });
+    assert_eq!(v, "control_failed");
+}
+
+/// A hidden field moves the controls too, so a significant control does not
+/// rule out an effect that clearly exceeds it: the verdict stands and the
+/// warning says what responded.
+#[test]
+fn a_significant_control_the_effect_exceeds_is_a_warning_not_a_veto() {
+    let mut rows = vec![row("all", "L1", 20.0, 10.0, 5.0, 5.0, 0.1)];
+    rows[0].n_background_genes = 5;
+    rows[0].background_effect = est(0.25, 0.05);
+    rows[0].effect_over_background = est(0.75, 0.05);
+    report(&mut rows, &ReportOpts::default());
+    assert_eq!(rows[0].verdict, Verdict::Supported);
+    let w = &rows[0].warnings;
+    assert!(w.contains("receptor-negative receivers respond"), "{w}");
+    assert!(w.contains("distant senders have an effect"), "{w}");
+    assert!(w.contains("background programme responds too"), "{w}");
 }
