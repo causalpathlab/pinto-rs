@@ -179,7 +179,7 @@ pub struct BuildLock {
 }
 
 /// Age past which a lock file is broken.
-pub const STALE_LOCK: Duration = Duration::from_secs(2 * 3600);
+const STALE_LOCK: Duration = Duration::from_secs(2 * 3600);
 
 impl BuildLock {
     /// Wait for and take the lock `path`.
@@ -228,7 +228,7 @@ impl Drop for BuildLock {
 }
 
 /// Hex sha256 of a file's bytes.
-pub fn sha256_file(path: &Path) -> Result<String> {
+fn sha256_file(path: &Path) -> Result<String> {
     let mut f = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];

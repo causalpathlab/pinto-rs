@@ -7,10 +7,11 @@
 //!
 //! With the rates integrated out under a symmetric Dirichlet(ε), the labels have
 //! the joint [`LinkCommunityStats::log_marginal`], and with `⁻ᵉ` leaving edge e
-//! out of the sums, its conditional is
+//! out of the sums and `n_k` the edges in community k, its conditional is
 //!
 //!   ln p(z_e = k | rest) = Σ_{g: y_eg > 0} [ln Γ(D⁻ᵉ_{kg} + y_eg + ε) − ln Γ(D⁻ᵉ_{kg} + ε)]
-//!                          − [ln Γ(V⁻ᵉ_k + s_e + Mε) − ln Γ(V⁻ᵉ_k + Mε)] + const
+//!                          − [ln Γ(V⁻ᵉ_k + s_e + Mε) − ln Γ(V⁻ᵉ_k + Mε)]
+//!                          + ln(n⁻ᵉ_k + α/K) + const
 //!
 //! The plug-in score
 //!   ℓ = Σ_kg f(D_{kg}) − Σ_k f(V_k),   f(x) = x · ln x
@@ -20,7 +21,7 @@
 //! slices `indices` and `values` hold the non-zero entries. The hot Gibbs
 //! loop iterates these pairs directly, avoiding zero-skip branches.
 
-use crate::link_community::fast_math::{fast_ln, ln_gamma_increment, ln_gamma_increments};
+use crate::link_community::fast_math::{fast_ln, ln_gamma_increment, ln_gamma_increments, LnTable};
 use special::Gamma as SpecialGamma;
 
 /// Prior pseudo-count `ε` of the symmetric Dirichlet on a community's feature
@@ -183,9 +184,9 @@ pub struct LinkCommunityStats {
     /// Per-community edge count.
     pub edge_count: Vec<usize>,
     pub membership: Vec<usize>,
-    /// `feature_sum` plus the prior count, in `f32` and feature-major
-    /// (`prior_x[g*k + k']`): what scoring reads, one short run per feature.
-    pub(crate) prior_x: Vec<f32>,
+    /// `feature_sum` plus the prior count, feature-major (`g*k + k'`): what scoring
+    /// reads, one short run per feature.
+    pub(crate) feature_table: LnTable,
 }
 
 impl LinkCommunityStats {
@@ -201,20 +202,21 @@ impl LinkCommunityStats {
             size_sum,
             edge_count,
             membership: labels.to_vec(),
-            prior_x: vec![0.0; k * m],
+            feature_table: LnTable::new(k * m),
         };
         for t in 0..k {
             for g in 0..m {
-                stats.refresh_prior_x(t, g);
+                stats.refresh_cell(t, g);
             }
         }
         stats
     }
 
-    /// Bring one cell of `prior_x` up to `feature_sum`.
+    /// Bring one cell of the feature table up to `feature_sum`.
     #[inline]
-    fn refresh_prior_x(&mut self, t: usize, g: usize) {
-        self.prior_x[g * self.k + t] = (self.feature_sum[t * self.m + g] + PRIOR_COUNT) as f32;
+    fn refresh_cell(&mut self, t: usize, g: usize) {
+        let x = (self.feature_sum[t * self.m + g] + PRIOR_COUNT) as f32;
+        self.feature_table.set(g * self.k + t, x);
     }
 
     /// Move edge `e` from `old_k` to `new_k`, updating stats incrementally
@@ -236,7 +238,7 @@ impl LinkCommunityStats {
             let g = col as usize;
             for (t, delta) in [(old_k, -f64::from(y)), (new_k, f64::from(y))] {
                 self.feature_sum[t * m + g] += delta;
-                self.refresh_prior_x(t, g);
+                self.refresh_cell(t, g);
             }
         }
 
@@ -308,7 +310,7 @@ impl LinkCommunityStats {
         for (cell, (n, o)) in new.0.iter().zip(old.0).enumerate() {
             if n != o {
                 self.feature_sum[cell] += n - o;
-                self.refresh_prior_x(cell / self.m, cell % self.m);
+                self.refresh_cell(cell / self.m, cell % self.m);
             }
         }
         for c in 0..self.k {
@@ -452,8 +454,7 @@ pub(crate) fn compute_log_probs_for_edge(
     }
     for (&col, &y) in cols.iter().zip(vals.iter()) {
         let g = col as usize;
-        let xs = &stats.prior_x[g * k..(g + 1) * k];
-        ln_gamma_increments(xs, y, increments);
+        ln_gamma_increments(stats.feature_table.run(g * k..(g + 1) * k), y, increments);
         for (lp, &inc) in log_probs.iter_mut().zip(increments.iter()) {
             *lp += f64::from(inc);
         }

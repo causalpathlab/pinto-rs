@@ -122,8 +122,7 @@ impl LinkGibbsSampler {
     /// their own community empty once left out, and trade labels every sweep.
     ///
     /// `alpha` is the Dirichlet concentration on community mixing weights:
-    /// `alpha > 0` enables the prior, `alpha == 0` disables it. Match the prior
-    /// used by the downstream component-EM stage for consistency across levels.
+    /// `alpha > 0` enables the prior, `alpha == 0` disables it.
     ///
     /// Returns the total number of edge moves across all sweeps.
     pub fn run_with_observer<F>(
@@ -296,7 +295,7 @@ impl LinkGibbsSampler {
                         size_sum: global_stats.size_sum.clone(),
                         edge_count: global_stats.edge_count.clone(),
                         membership: indices.iter().map(|&e| membership[e]).collect(),
-                        prior_x: global_stats.prior_x.clone(),
+                        feature_table: global_stats.feature_table.clone(),
                     };
 
                     // Frozen incidence context: the cell scores are a

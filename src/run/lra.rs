@@ -8,11 +8,12 @@ use super::form::check;
 use super::mcp::{as_run, in_background, out_or_free, rooted, spawn};
 use super::script;
 use crate::lr_activity::args::LraMethod;
-use crate::lr_activity::ligand_effect::lra_simulate_path;
 use crate::lr_activity::ligand_effect::output::{
-    self, compare_runs, percent_text, rank_pooled, read_pooled_effects, read_sim_runs, Verdict,
+    self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_pooled_effects,
+    read_sim_runs,
 };
 use crate::lr_activity::ligand_effect::simulate::{Study, COMPARED};
+use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
@@ -597,7 +598,7 @@ fn simulate_reply(argv: &[String], made: &[PathBuf]) -> anyhow::Result<Vec<Conte
 /// planted effects.
 pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
     let c = compare_runs(runs);
-    let rates = |r: &[f64; 6]| -> Value {
+    let rates = |r: &[f64; COMPARED.len()]| -> Value {
         COMPARED
             .iter()
             .zip(r)
@@ -629,7 +630,9 @@ pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
         "scenarios": scenarios,
         "means": means,
         "reading": "reject: share of runs significant at 5% per method. estimate is lra's \
-                    adjusted effect; crude the unadjusted contrast; celltype, moran, contact \
+                    adjusted effect; marginal the correlation of response and contact ligand; \
+                    crude the unadjusted contrast; ipw and outcome the effect by overlap \
+                    weights alone and by the outcome regression alone; celltype, moran, contact \
                     and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
                     NICHES/COMMOT, lra's log odds). Trust lra here when estimate keeps type I \
                     near 0.05 under the confounded nulls and has power at the effect sizes \

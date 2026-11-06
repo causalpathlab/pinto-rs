@@ -100,7 +100,7 @@ fn lr_pairs_with_provenance() {
 #[test]
 fn hcop_keeps_one_to_one_with_evidence() {
     let text = "human_symbol\tmouse_symbol\tsupport\n\
-                GENE1\tTrp53\ta,b,c\n\
+                GENE1\tGene1\ta,b,c\n\
                 ONE\tOne1\ta,b,c\n\
                 ONE\tOne2\ta,b,c,d\n\
                 WEAK\tWeak\ta,b\n\
@@ -110,16 +110,16 @@ fn hcop_keeps_one_to_one_with_evidence() {
                 SHARE2\tShared\ta,b,c\n";
     let h2m = hcop_one_to_one(text, 3).unwrap();
     assert_eq!(h2m.len(), 1, "{h2m:?}");
-    assert_eq!(h2m.get("GENE1").map(|m| &**m), Some("Trp53"));
+    assert_eq!(h2m.get("GENE1").map(|m| &**m), Some("Gene1"));
 }
 
 #[test]
 fn only_transmitted_ligands_are_kept() {
     let ligands = parse_intercell_ligands(
-        "category\tgenesymbol\nligand\tLIGB1\nligand\tCOMPLEX:LIGI1_LIGI2\n",
+        "category\tgenesymbol\nligand\tLIGB1\nligand\tCOMPLEX:LIGF1_LIGF2\n",
     )
     .unwrap();
-    assert!(ligands.contains("LIGI2") && ligands.contains("LIGB1"));
+    assert!(ligands.contains("LIGF2") && ligands.contains("LIGB1"));
     let pair = |l: &str| LrPair {
         ligand: l.into(),
         receptor: "R".into(),
@@ -128,16 +128,16 @@ fn only_transmitted_ligands_are_kept() {
     let (kept, dropped) = transmitted_pairs(
         vec![
             pair("LIGB1"),
-            pair("GENE2"),
-            pair("LIGI1_LIGI2"),
-            pair("LIGI1_RECK1"),
+            pair("LIGH1"),
+            pair("LIGF1_LIGF2"),
+            pair("LIGF1_LIGH2"),
         ],
         &ligands,
         &|s| s.to_string(),
     );
     assert_eq!(dropped, 2);
     let names: Vec<&str> = kept.iter().map(|p| &*p.ligand).collect();
-    assert_eq!(names, ["LIGB1", "LIGI1_LIGI2"]);
+    assert_eq!(names, ["LIGB1", "LIGF1_LIGF2"]);
     // Mouse symbols go through the ortholog map, else compare upper-cased.
     let (kept, _) = transmitted_pairs(vec![pair("Ligb1")], &ligands, &|s| s.to_string());
     assert_eq!(kept.len(), 1);

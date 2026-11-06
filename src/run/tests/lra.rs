@@ -322,7 +322,8 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
     assert_eq!(top[0]["q"], 3.21e-5);
 }
 
-fn run(effect: f64, alpha: f64, rejects: [bool; 6], estimable: bool) -> SimRun {
+/// `rejects` in the order of [`COMPARED`].
+fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool) -> SimRun {
     SimRun {
         scenario: Scenario {
             effect,
@@ -331,7 +332,7 @@ fn run(effect: f64, alpha: f64, rejects: [bool; 6], estimable: bool) -> SimRun {
             ..Scenario::default()
         },
         estimable,
-        rejects,
+        rejects: rejects.map(|hit| hit as u8 as f64),
     }
 }
 
@@ -339,10 +340,10 @@ fn run(effect: f64, alpha: f64, rejects: [bool; 6], estimable: bool) -> SimRun {
 fn the_simulate_reply_is_the_comparison_table() {
     let (t, f) = (true, false);
     let runs = [
-        run(0.0, 0.5, [t, t, f, f, f, f], t),
-        run(0.0, 0.5, [t, f, f, f, f, f], f),
-        run(0.3, 0.0, [t, t, t, t, t, t], t),
-        run(0.3, 0.0, [t, t, t, t, t, f], t),
+        run(0.0, 0.5, [f, t, f, f, t, f, f, f, f], t),
+        run(0.0, 0.5, [f, t, f, f, f, f, f, f, f], f),
+        run(0.3, 0.0, [f, t, f, f, t, t, t, t, t], t),
+        run(0.3, 0.0, [f, t, f, f, t, t, t, t, f], t),
     ];
     let v = comparison_summary(&runs);
     assert_eq!(v["runs"], 4);
@@ -421,7 +422,10 @@ fn simulate_runs_read_back_as_written() {
     assert!(sc.marker && sc.confound_receptor && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
-    assert_eq!(runs[1].rejects, [true, false, false, false, false, false]);
+    assert_eq!(
+        runs[1].rejects,
+        COMPARED.map(|m| (m == "crude") as u8 as f64)
+    );
     // Both replicates are one scenario, worded as the run's summary words it.
     let v = comparison_summary(&runs);
     let s = v["scenarios"].as_array().unwrap();
@@ -434,8 +438,11 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s[0]["reject"]["estimate"], 0.5);
 
     // A table from an earlier version, without the later columns, reads with
-    // the scenario's defaults.
+    // the scenario's defaults, and a method it lacks has no rate.
     let later = [
+        "marginal_reject",
+        "ipw_reject",
+        "outcome_reject",
         "background_confounding",
         "generic_shift",
         "dose_response",
@@ -448,7 +455,11 @@ fn simulate_runs_read_back_as_written() {
         .collect();
     let old = dir.path().join("old.lra-simulate.parquet");
     write_named_table(old.to_str().unwrap(), "row", &names, &kept).unwrap();
-    let sc = read_sim_runs(old.to_str().unwrap()).unwrap()[0].scenario;
+    let old_runs = read_sim_runs(old.to_str().unwrap()).unwrap();
+    let v = comparison_summary(&old_runs);
+    assert_eq!(v["scenarios"][0]["reject"]["crude"], 1.0);
+    assert!(v["scenarios"][0]["reject"]["ipw"].is_null());
+    let sc = old_runs[0].scenario;
     let plain = Scenario::default();
     assert_eq!(sc.background_confounding, plain.background_confounding);
     assert_eq!(sc.generic_shift, plain.generic_shift);

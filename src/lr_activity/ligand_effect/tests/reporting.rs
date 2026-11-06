@@ -4,9 +4,13 @@
 
 use super::rows_of;
 use super::simulate::fixture;
-use crate::lr_activity::ligand_effect::estimate::*;
-use crate::lr_activity::ligand_effect::output::Verdict;
-use crate::lr_activity::ligand_effect::overlap::{t_crit_975, t_two_sided_p, AbfSummary, Estimate};
+use crate::lr_activity::ligand_effect::averaging::AbfSummary;
+use crate::lr_activity::ligand_effect::dose::eta_squared;
+use crate::lr_activity::ligand_effect::effects::ScopeEffects;
+use crate::lr_activity::ligand_effect::inference::{t_crit_975, t_two_sided_p, Estimate};
+use crate::lr_activity::ligand_effect::report::{bh, report, simes, ReportOpts};
+use crate::lr_activity::ligand_effect::rows::EffectRow;
+use crate::lr_activity::ligand_effect::verdict::{verdict, Evidence, Verdict};
 
 fn close(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len()
@@ -23,10 +27,11 @@ fn normal_tails() {
     assert!((t_two_sided_p(1.959_964, inf) - 0.05).abs() < 1e-6);
     assert!((t_two_sided_p(-1.959_964, inf) - 0.05).abs() < 1e-6);
     assert!(
-        (crate::lr_activity::ligand_effect::overlap::upper_normal_p(1.644_854) - 0.05).abs() < 1e-6
+        (crate::lr_activity::ligand_effect::inference::upper_normal_p(1.644_854) - 0.05).abs()
+            < 1e-6
     );
     assert!(
-        (crate::lr_activity::ligand_effect::overlap::upper_normal_p(-1.644_854) - 0.95).abs()
+        (crate::lr_activity::ligand_effect::inference::upper_normal_p(-1.644_854) - 0.95).abs()
             < 1e-6
     );
     assert!(t_two_sided_p(f64::NAN, inf).is_nan());
@@ -155,10 +160,13 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
         threshold: 0.0,
         coexpr_log_or: zc * 0.1,
         coexpr_se: 0.1,
-        crude: 0.0,
+        marginal_cor: nan,
         effects: ScopeEffects {
             effect: est((z - z3) * 0.05, 0.05),
             competent: est(z * 0.05, 0.05),
+            crude: nan,
+            ipw: nan,
+            outcome: nan,
             incompetent: est(z3 * 0.05, 0.05),
             ring: est(z5 * 0.05, 0.05),
             over_ring: est((z - z5) * 0.05, 0.05),

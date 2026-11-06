@@ -103,8 +103,13 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
 pooled row). `effect_competent` is the headline, a log-rate change of the
 response programme (`exp(x) - 1` is the percent change); `verdict` sums up
-the evidence and `verdict_note` says why in words. `pinto view` shows the
-pairs and draws each on the tissue (see `view`, `I`):
+the evidence and `verdict_note` says why in words. For comparison, and in no
+verdict: `marginal_cor` (the correlation of response and contact ligand),
+`crude` (exposed minus unexposed, no adjustment), `effect_ipw` (overlap weights
+alone) and `effect_outcome` (the outcome regression alone), each with `_se`.
+The last three are averaged over exposure thresholds as the headline is, each
+by its own evidence. `pinto view` shows the pairs and draws each on the tissue
+(see `view`, `I`):
 
 | verdict | meaning |
 |---|---|

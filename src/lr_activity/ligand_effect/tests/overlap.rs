@@ -2,7 +2,9 @@
 //! measured confounding the crude contrast keeps, separates subgroups, and
 //! stays finite when exposure is nearly determined.
 
-use super::rows_of;
+use super::{overlap_terms, rows_of};
+use crate::lr_activity::ligand_effect::association::{arm_contrast, marginal_correlation};
+use crate::lr_activity::ligand_effect::crossfit::{CrossFit, Design};
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
 use crate::lr_activity::ligand_effect::overlap::*;
 use nalgebra::DMatrix;
@@ -90,7 +92,7 @@ fn confounding_fools_the_crude_contrast_not_the_estimate() {
     )
     .unwrap();
     let (e, _) = subset_estimate(&terms, &t, &all_rows(t.len()), &w.cf);
-    let crude = crude_difference(&y, &t, &all_rows(t.len()));
+    let crude = arm_contrast(&y, &t, &all_rows(t.len()), &w.cf, |_| 1.0).theta;
     assert!(
         crude > 0.5,
         "crude contrast should be confounded upward: {crude}"
@@ -212,10 +214,82 @@ fn a_group_with_one_arm_is_not_estimable() {
     let terms = OverlapTerms {
         h: vec![0.2; 500],
         num: vec![0.0; 500],
+        outcome: vec![0.0; 500],
+        arm_weight: vec![0.5; 500],
     };
     let (e, _) = subset_estimate(&terms, &t, &all_rows(500), &w.cf);
     assert!(e.theta.is_nan());
-    assert!(crude_difference(&y, &t, &all_rows(500)).is_nan());
+    assert!(arm_contrast(&y, &t, &all_rows(500), &w.cf, |_| 1.0)
+        .theta
+        .is_nan());
+}
+
+/// Each half of the estimator alone: under measured confounding and a known
+/// effect, overlap weights and the outcome regression both shed what the crude
+/// contrast keeps.
+#[test]
+fn ipw_and_outcome_regression_each_adjust() {
+    let w = world(4000, 21);
+    let n = w.z.len();
+    let mut rng = SmallRng::seed_from_u64(22);
+    let t: Vec<bool> =
+        w.z.iter()
+            .map(|z| rng.random::<f64>() < sigmoid(1.5 * z))
+            .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let e: f64 = StandardNormal.sample(&mut rng);
+            w.z[i] + 0.3 * t[i] as u8 as f64 + 0.3 * e
+        })
+        .collect();
+    let terms = overlap_terms(
+        w.design.view(),
+        &w.cf,
+        &PairInputs {
+            t: &t,
+            y: &y,
+            extra: &[],
+            outcome_only: &[],
+            modifiers: &[],
+        },
+        &NuisanceOpts::default(),
+    )
+    .unwrap();
+    let rows = all_rows(n);
+    let (effect, _) = subset_estimate(&terms, &t, &rows, &w.cf);
+    let crude = arm_contrast(&y, &t, &rows, &w.cf, |_| 1.0);
+    let ipw = arm_contrast(&y, &t, &rows, &w.cf, |i| terms.arm_weight[i]);
+    let outcome = outcome_estimate(&terms, &effect, &rows);
+    assert!(crude.theta > 0.6, "crude {:.3}", crude.theta);
+    assert!((ipw.theta - 0.3).abs() < 0.1, "ipw {:.3}", ipw.theta);
+    assert!(
+        (outcome.theta - 0.3).abs() < 0.1,
+        "outcome {:.3}",
+        outcome.theta
+    );
+    assert_eq!(outcome.se, effect.se);
+    assert!(crude.se > 0.0 && ipw.se > 0.0 && ipw.df > 0.0);
+}
+
+/// The clustered correlation agrees with the formula, reads a perfect line
+/// as 1 with no spread, and a constant as nothing.
+#[test]
+fn the_marginal_correlation_is_pearson_with_a_clustered_se() {
+    let w = world(1000, 23);
+    let n = w.z.len();
+    let rows = all_rows(n);
+    let mut rng = SmallRng::seed_from_u64(24);
+    let x: Vec<f64> = (0..n).map(|_| rng.random::<f64>()).collect();
+    let y: Vec<f64> = x.iter().map(|v| v + rng.random::<f64>()).collect();
+    let r = marginal_correlation(&y, &x, &rows, &w.cf);
+    // Two uniforms summed: cor = 1/sqrt(2).
+    assert!((r.theta - 0.707).abs() < 0.06, "{:.3}", r.theta);
+    assert!(r.se > 0.0 && r.se < 0.1, "{:.3}", r.se);
+    let line = marginal_correlation(&x, &x, &rows, &w.cf);
+    assert!((line.theta - 1.0).abs() < 1e-9 && line.se < 1e-9);
+    assert!(marginal_correlation(&vec![1.0; n], &x, &rows, &w.cf)
+        .theta
+        .is_nan());
 }
 
 /// The Hessian kernel against the plain sum.

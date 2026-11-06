@@ -22,8 +22,8 @@
 //!   is a receptor or ligand symbol, or `ligand_receptor` for a pair set. A
 //!   name with `_` is read against the pair list
 //!   ([`TargetSets::settle_gmt_names`]): a name the pair list uses whole for
-//!   a ligand or receptor (a complex, `R1_R2`) keys that gene; else
-//!   the `_` that splits it into a listed pair (`L2_R1_R2`); else
+//!   a ligand or receptor (a complex, `REC1_REC2`) keys that gene; else
+//!   the `_` that splits it into a listed pair (`LIG1_REC1_REC2`); else
 //!   the first `_`.
 
 use crate::util::common::*;
@@ -85,7 +85,7 @@ impl TargetSets {
 
     /// Key the GMT sets whose name has `_` against the pair list: a name
     /// some pair uses whole as its ligand or receptor (a complex such as
-    /// `R1_R2`) keys that gene; else a split at a `_` that names a
+    /// `REC1_REC2`) keys that gene; else a split at a `_` that names a
     /// listed pair; else the split at the first `_`.
     pub fn settle_gmt_names(&mut self, pairs: &[(Box<str>, Box<str>)]) {
         let genes: HashSet<Box<str>> = pairs.iter().flat_map(|(l, r)| [key(l), key(r)]).collect();
@@ -166,7 +166,7 @@ impl TargetSets {
     /// Each target's specificity, `ln((N + 1) / (n_g + 1))` over the `N`
     /// sets, `n_g` of which contain gene `g` (an inverse document
     /// frequency). Literature networks route most receptors to the same
-    /// immediate-early and hub genes (FOS, MYC, BCL2); a programme dominated
+    /// immediate-early and hub genes; a programme dominated
     /// by them responds to any stimulus. A gene in every set scores 0.
     pub fn specificity(&self) -> HashMap<Box<str>, f32> {
         debug_assert!(self.unsettled.is_empty(), "settle the GMT names first");

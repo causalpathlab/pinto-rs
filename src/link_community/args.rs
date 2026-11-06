@@ -63,16 +63,17 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
+        default_value_t = 1.0,
+        value_parser = parse_alpha,
         help = "Dirichlet concentration for community mixing weights",
         long_help = "Concentration α of the symmetric Dirichlet prior.\n\
                      The prior sits on the community mixing weights, integrated out.\n\
+                     It counts edges, and super-edges at the coarser levels.\n\
+                     The default is one pseudo-edge across all K.\n\
                      Small values favor large communities over small ones.\n\
-                     Pass 0 to disable it and use a uniform prior.\n\
-                     \n\
-                     If omitted, α is auto-scaled per level from profile sparsity.\n\
-                     α = mean_size_factor / K, so sparser data gets a smaller α."
+                     Pass 0 to disable it and use a uniform prior."
     )]
-    pub alpha: Option<f32>,
+    pub alpha: f64,
 
     #[arg(
         long,
@@ -276,4 +277,14 @@ pub struct SrtLinkCommunityArgs {
         hide = true
     )]
     pub incidence_b: f64,
+}
+
+/// `α` as `--alpha` takes it: anything else would turn the prior off unannounced.
+fn parse_alpha(text: &str) -> Result<f64, String> {
+    let alpha: f64 = text.parse().map_err(|e| format!("{e}"))?;
+    if alpha.is_finite() && alpha >= 0.0 {
+        Ok(alpha)
+    } else {
+        Err("must be finite and not negative".to_string())
+    }
 }

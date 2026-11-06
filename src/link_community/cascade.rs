@@ -73,7 +73,7 @@ pub struct CascadeConfig {
     pub k: usize,
     pub num_gibbs: usize,
     pub num_greedy: usize,
-    pub user_alpha: Option<f32>,
+    pub alpha: f64,
     pub block_size: Option<usize>,
     pub no_level_outputs: bool,
 }
@@ -106,7 +106,7 @@ pub fn run_cascade(
         k,
         num_gibbs,
         num_greedy,
-        user_alpha,
+        alpha,
         block_size,
         no_level_outputs,
     } = *cfg;
@@ -162,15 +162,6 @@ pub fn run_cascade(
             k,
         );
 
-        let mean_sf = profiles_l.size_factors.iter().sum::<f32>() / n_super_l.max(1) as f32;
-        let alpha_l = user_alpha
-            .map(|v| v as f64)
-            .unwrap_or_else(|| (mean_sf as f64 / k as f64).max(0.01));
-        info!(
-            "  L{}: mean size factor {:.2}, α_l={:.4}",
-            l, mean_sf, alpha_l
-        );
-
         let mut stats_l = LinkCommunityStats::from_profiles(&profiles_l, k, &init_labels);
 
         let sweeps = if is_first_run_level {
@@ -195,7 +186,7 @@ pub fn run_cascade(
         };
 
         let moves =
-            sampler.run_with_observer(&mut stats_l, &profiles_l, sweeps, alpha_l, |_, stats| {
+            sampler.run_with_observer(&mut stats_l, &profiles_l, sweeps, alpha, |_, stats| {
                 push_entry(stats, &mut sweep_cursor)
             });
         info!("  L{}: Gibbs {} sweeps, {} moves", l, sweeps, moves);
@@ -204,7 +195,7 @@ pub fn run_cascade(
             &mut stats_l,
             &profiles_l,
             num_greedy,
-            alpha_l,
+            alpha,
             |_, stats| push_entry(stats, &mut sweep_cursor),
         );
         info!("  L{}: greedy {} moves", l, greedy_moves);

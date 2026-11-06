@@ -28,7 +28,7 @@
 //! (section, smooth, identity, depth), so each adjustment step is a column
 //! prefix of the one matrix and needs no copy of it.
 
-use super::exposure::Contacts;
+use super::contacts::Contacts;
 use legume_numeric::matrix::rand_util::mix_seed;
 use nalgebra::DMatrix;
 use rand::rngs::SmallRng;
@@ -99,7 +99,7 @@ pub struct Group {
     pub cols: std::ops::Range<usize>,
 }
 
-/// Assemble the raw confounder matrix (unstandardized; [`super::overlap::Design`]
+/// Assemble the raw confounder matrix (unstandardized; [`super::crossfit::Design`]
 /// standardizes it) and the column range of each group, in matrix order.
 pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
     let n = inp.coords.len();

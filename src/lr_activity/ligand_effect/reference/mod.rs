@@ -34,10 +34,10 @@
 //! and applies the licence filter, and [`programmes`] builds the networks,
 //! the per-receptor targets and their mouse translation.
 
-pub mod download;
-pub mod programmes;
+mod download;
+mod programmes;
 pub mod sources;
-pub mod table;
+mod table;
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +50,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Edges from a receptor to its farthest TF.
-pub const MAX_STEPS: usize = 3;
+const MAX_STEPS: usize = 3;
 /// Targets kept per receptor.
 pub const TOP: usize = 100;
 /// HCOP resources an ortholog pair needs.
@@ -59,7 +59,7 @@ const HCOP_MIN_EVIDENCE: usize = 3;
 /// Bumped whenever the build changes what it writes, so a cache built by
 /// an older rule is rebuilt instead of reused. 2: ligands must be annotated
 /// as transmitted (OmniPath intercell).
-pub const BUILD_REVISION: u32 = 2;
+const BUILD_REVISION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Species {
