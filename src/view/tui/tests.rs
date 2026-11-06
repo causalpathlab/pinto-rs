@@ -1,4 +1,7 @@
+use super::draw::error_lines;
 use super::*;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 
 #[test]
 fn an_error_popup_wraps_its_message_to_fit() {
