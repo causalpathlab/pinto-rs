@@ -48,7 +48,7 @@ pub fn parse(list: &[Box<str>]) -> anyhow::Result<Vec<Wanted>> {
         anyhow::ensure!(
             parts.next().is_none(),
             "--only {entry:?}: one `:` between ligand and receptor (a complex joins its \
-             subunits with `_`: TGFB1:TGFBR1_TGFBR2)"
+             subunits with `_`: L2:R1_R2)"
         );
         anyhow::ensure!(
             !ligand.is_empty() && receptor.is_none_or(|r| !r.is_empty()),

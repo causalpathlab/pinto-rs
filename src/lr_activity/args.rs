@@ -158,7 +158,7 @@ pub struct SrtLrActivityArgs {
         value_name = "PAIRS",
         help = "Estimate only these pairs: LIGAND:RECEPTOR or a bare LIGAND, comma separated",
         long_help = "Estimate only these pairs (contact-effect), comma separated: LIGAND:RECEPTOR,\n\
-                     a complex joining its subunits with `_` (TGFB1:TGFBR1_TGFBR2), or a\n\
+                     a complex joining its subunits with `_` (L2:R1_R2), or a\n\
                      bare LIGAND for all of its pairs. Matched on genes, case aside, among\n\
                      the reference pairs and --lr-pairs; an entry no pair answers is an\n\
                      error naming the nearest. The subset goes to\n\
@@ -178,7 +178,7 @@ pub struct SrtLrActivityArgs {
                      TSV/CSV: a header with `receptor` and/or `ligand`, `target`, optional\n\
                      `weight` (signed). GMT: set names are a receptor, a ligand, or\n\
                      `ligand_receptor`. A name with `_` that the pair list uses whole for\n\
-                     a ligand or receptor (a complex, TGFBR1_TGFBR2) keys that gene;\n\
+                     a ligand or receptor (a complex, R1_R2) keys that gene;\n\
                      otherwise it splits at the `_` that names a listed pair, else at\n\
                      the first `_`."
     )]

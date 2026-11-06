@@ -58,17 +58,17 @@ dsvd, ...) or data files with coordinates:
 pinto lra --from out/run1.pinto.json          # writes out/run1.lra.parquet
 pinto lra data.zarr --coord cells.csv -o out/lra
 pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv
-pinto lra --from out/run1.pinto.json --only SPP1,TGFB1:TGFBR1_TGFBR2
+pinto lra --from out/run1.pinto.json --only L1,L2:R1_R2
 ```
 
 Pairs and response programmes come from a reference (LIANA+ consensus
 pairs; receptor -> signalling -> TF -> target programmes from OmniPath and
 CollecTRI), downloaded once into a cache. `--lr-pairs` and `--targets` add
-to it. A complex is named by its subunits joined with `_` (`ITGA4_ITGB1`);
+to it. A complex is named by its subunits joined with `_` (`R1_R2`);
 every subunit must be in the data, and the complex counts as its scarcest
 subunit, for ligands and receptors alike. In a `--targets` GMT file a set
 name with `_` keys a ligand or receptor the pair list uses whole
-(`TGFBR1_TGFBR2`), otherwise a `ligand_receptor` pair, split at the `_`
+(`R1_R2`), otherwise a `ligand_receptor` pair, split at the `_`
 that names a listed pair (else the first). `PINTO_REFERENCE_DIR=<dir>`
 moves the cache, `PINTO_OFFLINE=1` never downloads,
 `PINTO_REFERENCE_REFRESH=1` rebuilds it. The analysis's fixed settings are
@@ -82,14 +82,14 @@ clustering behind the labels may have used them.
 
 `--only` estimates a few pairs instead of all of them: comma-separated
 `LIGAND:RECEPTOR` entries (a complex joins its subunits with `_`,
-`TGFB1:TGFBR1_TGFBR2`) or bare ligands for all of their pairs, matched on
+`L2:R1_R2`) or bare ligands for all of their pairs, matched on
 genes (case and subunit order aside) among the reference pairs and
 `--lr-pairs`; an entry no pair answers is an error that names the nearest
 pairs. The receivers and each pair's estimate are those of the full run
 (the receiver identity still leaves out every pair's genes), so a subset
 takes seconds. A subset never writes over the full table: it goes to
 `{out}.lra.only-<tag>.parquet` (and `.curve.parquet`), `<tag>` the list
-itself when short (`spp1+tgfb1`) or a short hash of it, with or without
+itself when short (`l1+l2`) or a short hash of it, with or without
 `-o`, and the manifest records it apart, under `outputs.lra.subsets`, the
 full table staying `outputs.lra.table`. Its q-values are corrected within
 the subset only: the `q_scope` column (`all pairs` in a full table) and each
@@ -282,10 +282,10 @@ pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
 pinto view out --png gene.png --gene SYMBOL     # one gene: observed ln(1+count)
 pinto view out --png gene.png --gene SYMBOL --expected --clip 95
-pinto view out --png pair.png --pair SPP1:CD44  # an lra pair: senders, exposed
+pinto view out --png pair.png --pair L1:R3  # an lra pair: senders, exposed
                                                 # and receptor+ receivers
-pinto view out --png pair.png --pair SPP1:CD44 --pair-show exposure
-pinto view out --png curve.png --pdf curve.pdf --pair SPP1:CD44 --curve
+pinto view out --png pair.png --pair L1:R3 --pair-show exposure
+pinto view out --png curve.png --pdf curve.pdf --pair L1:R3 --curve
 ```
 
 In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
