@@ -25,17 +25,17 @@ fn pair(ligand: &str, receptor: &str, lg: &[usize], rg: &[usize]) -> Pair {
 /// A panel and the pairs resolved on it.
 fn panel() -> (Vec<Box<str>>, GeneIndex, Vec<Pair>) {
     let names: Vec<Box<str>> = [
-        "TGFB1", "TGFBR1", "TGFBR2", "SPP1", "CD44", "ITGB1", "ACVRL1",
+        "LIGB1", "RECE1", "RECE2", "LIGA1", "RECA1", "RECC1", "RECB1",
     ]
     .iter()
     .map(|&g| g.into())
     .collect();
     let index = GeneIndex::build(&names);
     let pairs = vec![
-        pair("TGFB1", "TGFBR1_TGFBR2", &[0], &[1, 2]),
-        pair("TGFB1", "ACVRL1", &[0], &[6]),
-        pair("SPP1", "CD44", &[3], &[4]),
-        pair("SPP1", "ITGB1", &[3], &[5]),
+        pair("LIGB1", "RECE1_RECE2", &[0], &[1, 2]),
+        pair("LIGB1", "RECB1", &[0], &[6]),
+        pair("LIGA1", "RECA1", &[3], &[4]),
+        pair("LIGA1", "RECC1", &[3], &[5]),
     ];
     (names, index, pairs)
 }
@@ -54,22 +54,22 @@ fn select_mask(entries: &[&str]) -> anyhow::Result<Vec<bool>> {
 
 #[test]
 fn entries_are_pairs_or_bare_ligands() {
-    let w = parse(&list(&[" TGFB1:TGFBR1_TGFBR2 ", "spp1", ""])).unwrap();
+    let w = parse(&list(&[" LIGB1:RECE1_RECE2 ", "liga1", ""])).unwrap();
     assert_eq!(
         w,
         [
             Wanted {
-                ligand: "TGFB1".into(),
-                receptor: Some("TGFBR1_TGFBR2".into())
+                ligand: "LIGB1".into(),
+                receptor: Some("RECE1_RECE2".into())
             },
             Wanted {
-                ligand: "spp1".into(),
+                ligand: "liga1".into(),
                 receptor: None
             },
         ]
     );
-    assert_eq!(w[0].to_string(), "TGFB1:TGFBR1_TGFBR2");
-    for bad in ["A:B:C", ":CD44", "SPP1:", ":"] {
+    assert_eq!(w[0].to_string(), "LIGB1:RECE1_RECE2");
+    for bad in ["A:B:C", ":RECA1", "LIGA1:", ":"] {
         let e = parse(&list(&[bad])).unwrap_err().to_string();
         assert!(e.contains("--only"), "{bad}: {e}");
     }
@@ -80,38 +80,38 @@ fn entries_are_pairs_or_bare_ligands() {
 
 #[test]
 fn entries_match_on_genes_case_and_subunit_order_aside() {
-    assert_eq!(select(&["tgfb1:tgfbr2_tgfbr1"]).unwrap(), [0]);
-    assert_eq!(select(&["TGFB1:TGFBR1+TGFBR2"]).unwrap(), [0]);
+    assert_eq!(select(&["ligb1:rece2_rece1"]).unwrap(), [0]);
+    assert_eq!(select(&["LIGB1:RECE1+RECE2"]).unwrap(), [0]);
     // A bare ligand takes all of its pairs; pairs stay in table order.
-    assert_eq!(select(&["SPP1", "tgfb1:acvrl1"]).unwrap(), [1, 2, 3]);
+    assert_eq!(select(&["LIGA1", "ligb1:recb1"]).unwrap(), [1, 2, 3]);
     // Named twice, kept once.
-    assert_eq!(select(&["SPP1:CD44", "spp1"]).unwrap(), [2, 3]);
+    assert_eq!(select(&["LIGA1:RECA1", "liga1"]).unwrap(), [2, 3]);
 }
 
 #[test]
 fn an_entry_no_pair_answers_names_the_nearest() {
-    let e = select(&["SPP1:CD4"]).unwrap_err().to_string();
-    assert!(e.contains("SPP1:CD4: no gene CD4 in the data"), "{e}");
-    assert!(e.contains("nearest: SPP1:CD44"), "{e}");
-    let e = select(&["TGFB2"]).unwrap_err().to_string();
-    assert!(e.contains("no gene TGFB2"), "{e}");
-    assert!(e.contains("nearest: TGFB1"), "{e}");
+    let e = select(&["LIGA1:RECA"]).unwrap_err().to_string();
+    assert!(e.contains("LIGA1:RECA: no gene RECA in the data"), "{e}");
+    assert!(e.contains("nearest: LIGA1:RECA1"), "{e}");
+    let e = select(&["LIGB2"]).unwrap_err().to_string();
+    assert!(e.contains("no gene LIGB2"), "{e}");
+    assert!(e.contains("nearest: LIGB1"), "{e}");
     // Genes known, but no such pair: the ligand's pairs come first.
-    let e = select(&["TGFB1:CD44"]).unwrap_err().to_string();
+    let e = select(&["LIGB1:RECA1"]).unwrap_err().to_string();
     assert!(e.contains("no such pair"), "{e}");
-    assert!(e.contains("TGFB1:ACVRL1"), "{e}");
+    assert!(e.contains("LIGB1:RECB1"), "{e}");
     // Every unknown entry is listed, the known ones are not.
-    let e = select(&["SPP1", "FOO", "BAR:CD44"])
+    let e = select(&["LIGA1", "FOO", "BAR:RECA1"])
         .unwrap_err()
         .to_string();
-    assert!(e.contains("FOO") && e.contains("BAR:CD44"), "{e}");
-    assert!(!e.contains("SPP1: no"), "{e}");
+    assert!(e.contains("FOO") && e.contains("BAR:RECA1"), "{e}");
+    assert!(!e.contains("LIGA1: no"), "{e}");
 }
 
 #[test]
 fn edit_distance_counts_edits() {
     assert_eq!(edit_distance("", ""), 0);
-    assert_eq!(edit_distance("CD4", "CD44"), 1);
+    assert_eq!(edit_distance("RECA", "RECA1"), 1);
     assert_eq!(edit_distance("kitten", "sitting"), 3);
     assert_eq!(edit_distance("abc", ""), 3);
 }
@@ -120,33 +120,33 @@ fn edit_distance_counts_edits() {
 
 #[test]
 fn a_subset_is_named_by_its_list_not_over_the_full_table() {
-    let short = list(&["TGFB1", "spp1"]);
-    assert_eq!(canonical(&short), ["SPP1", "TGFB1"]);
-    assert_eq!(tag(&short), "spp1+tgfb1");
+    let short = list(&["LIGB1", "liga1"]);
+    assert_eq!(canonical(&short), ["LIGA1", "LIGB1"]);
+    assert_eq!(tag(&short), "liga1+ligb1");
     // Order, case and spacing do not change the name.
-    assert_eq!(tag(&list(&[" Spp1", "TGFB1 ", "tgfb1"])), "spp1+tgfb1");
+    assert_eq!(tag(&list(&[" Liga1", "LIGB1 ", "ligb1"])), "liga1+ligb1");
     assert_eq!(
         only::table_path("res/run", &short),
-        "res/run.lra.only-spp1+tgfb1.parquet"
+        "res/run.lra.only-liga1+ligb1.parquet"
     );
     assert_eq!(
         only::curve_path("res/run", &short),
-        "res/run.lra.only-spp1+tgfb1.curve.parquet"
+        "res/run.lra.only-liga1+ligb1.curve.parquet"
     );
     assert_ne!(
         only::table_path("res/run", &short),
         super::super::lra_path("res/run")
     );
     // A long list is named by a short stable hash.
-    let long = list(&["TGFB1:TGFBR1_TGFBR2", "SPP1:CD44", "CXCL12:CXCR4"]);
+    let long = list(&["LIGB1:RECE1_RECE2", "LIGA1:RECA1", "LIGA0:RECD1"]);
     let t = tag(&long);
     assert_eq!(t.len(), 8);
     assert!(t.chars().all(|c| c.is_ascii_hexdigit()), "{t}");
-    let reordered = list(&["cxcl12:cxcr4", "SPP1:CD44", "TGFB1:TGFBR1_TGFBR2"]);
+    let reordered = list(&["liga0:recd1", "LIGA1:RECA1", "LIGB1:RECE1_RECE2"]);
     assert_eq!(tag(&reordered), t);
-    assert_ne!(tag(&list(&["TGFB1:TGFBR1_TGFBR2", "SPP1:CD44"])), t);
+    assert_ne!(tag(&list(&["LIGB1:RECE1_RECE2", "LIGA1:RECA1"])), t);
     // `:` makes a readable `-`.
-    assert_eq!(tag(&list(&["SPP1:CD44"])), "spp1-cd44");
+    assert_eq!(tag(&list(&["LIGA1:RECA1"])), "liga1-reca1");
 }
 
 #[test]
@@ -160,8 +160,8 @@ fn lra_outputs_follow_only() {
     };
     assert_eq!(names(&[]), ["o.lra.parquet", "o.lra.curve.parquet"]);
     assert_eq!(
-        names(&list(&["SPP1"])),
-        ["o.lra.only-spp1.parquet", "o.lra.only-spp1.curve.parquet"]
+        names(&list(&["LIGA1"])),
+        ["o.lra.only-liga1.parquet", "o.lra.only-liga1.curve.parquet"]
     );
 }
 
@@ -169,7 +169,7 @@ fn lra_outputs_follow_only() {
 
 fn subset(table: &str, pairs: usize) -> LraSubset {
     LraSubset {
-        only: vec!["SPP1".into()],
+        only: vec!["LIGA1".into()],
         pairs,
         of: 10,
         table: table.into(),
@@ -195,23 +195,23 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
     })
     .unwrap();
     record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-spp1.parquet", 2))
+        o.record_subset(subset("/r/run.lra.only-liga1.parquet", 2))
     })
     .unwrap();
     record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-cd44.parquet", 1))
+        o.record_subset(subset("/r/run.lra.only-reca1.parquet", 1))
     })
     .unwrap();
     // The same subset again replaces its entry.
     record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-spp1.parquet", 3))
+        o.record_subset(subset("/r/run.lra.only-liga1.parquet", 3))
     })
     .unwrap();
     let lra = PintoMetadata::read(&manifest).unwrap().outputs.lra;
     assert_eq!(lra.table.as_deref(), Some("/r/run.lra.parquet"));
     assert_eq!(lra.subsets.len(), 2);
     assert_eq!(lra.subsets[0].pairs, 3);
-    assert_eq!(lra.subsets[1].table, "/r/run.lra.only-cd44.parquet");
+    assert_eq!(lra.subsets[1].table, "/r/run.lra.only-reca1.parquet");
     // A manifest from before subsets reads, and writes none.
     let old: PintoMetadata = serde_json::from_str(
         r#"{"command":"lc","version":"0.16.3","timestamp":"0","prefix":"run","n_cells":1,

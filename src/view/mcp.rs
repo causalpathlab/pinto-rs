@@ -1016,7 +1016,7 @@ fn drawn(show: Show, at: usize, round: Option<&Round>) -> (Show, usize, Option<&
 }
 
 /// The table `name` names among `tables`: `full`, or a subset by its
-/// list (`SPP1,TGFB1`, order and case aside), or by its path.
+/// list (`L1,L2`, order and case aside), or by its path.
 fn find_table(tables: &[lra_layer::TableRef], name: &str) -> Option<usize> {
     let list: Vec<Box<str>> = name.split(',').map(|s| s.trim().into()).collect();
     let canonical = crate::lr_activity::ligand_effect::only::canonical(&list);
@@ -1148,7 +1148,7 @@ fn specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "table": {"type": "string", "description": "full, a subset by its --only list (SPP1,TGFB1), or a table's path [default: the full table]"},
+                    "table": {"type": "string", "description": "full, a subset by its --only list (L1,L2), or a table's path [default: the full table]"},
                     "verdict": {"type": "string", "description": "List only this verdict (supported, effect_without_coexpression, colocation_only, no_evidence, control_failed, celltype_inseparable, insufficient_data); \"\" lists all"},
                     "search": {"type": "string", "description": "Genes: each word must be in the ligand's or receptor's name; \"\" for all"},
                     "sort": {"enum": ["q", "effect", "name"], "description": "Order of the list [default: q]"},

@@ -1030,14 +1030,14 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
 }
 
 /// Separators of a complex's subunits in a ligand or receptor name
-/// (`ITGA4_ITGB1`, `ITGA4+ITGB1`, `ITGA4:ITGB1`).
+/// (`R1_R2`, `R1+R2`, `R1:R2`).
 const SUBUNIT_SEPARATORS: [char; 3] = ['_', '+', ':'];
 
 /// Gene-axis rows of a ligand or receptor name. A name that is itself a gene
 /// of the panel is that gene; any other name with a subunit separator is a
 /// complex, one row per subunit, and `None` when any subunit is missing.
-/// The split comes first: the gene index, asked for `ITGA4_ITGB1`, would
-/// match its trailing symbol `ITGB1` and lose the complex.
+/// The split comes first: the gene index, asked for `R1_R2`, would
+/// match its trailing symbol `R2` and lose the complex.
 fn subunit_genes(name: &str, gene_names: &[Box<str>], index: &GeneIndex) -> Option<Vec<usize>> {
     let is_complex = name.contains(SUBUNIT_SEPARATORS) && !is_panel_gene(name, gene_names, index);
     if !is_complex {
@@ -1189,7 +1189,7 @@ pub fn read_coords(
 }
 
 /// Human or mouse from the gene names' case: human symbols are upper case
-/// (`TGFB1`), mouse symbols capitalised (`Tgfb1`). Ensembl ids and names
+/// (`GENE1`), mouse symbols capitalised (`Gene1`). Ensembl ids and names
 /// without letters vote for neither.
 fn species_of(gene_names: &[Box<str>]) -> reference::Species {
     let (mut upper, mut title) = (0usize, 0usize);

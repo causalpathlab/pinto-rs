@@ -2,7 +2,7 @@
 //! instead of every pair of the reference and `--lr-pairs`.
 //!
 //! An entry is `LIGAND:RECEPTOR` (a complex joins its subunits with `_`,
-//! `TGFB1:TGFBR1_TGFBR2`) or a bare `LIGAND` for all of its pairs. Entries
+//! `L2:R1_R2`) or a bare `LIGAND` for all of its pairs. Entries
 //! are matched on the genes they resolve to, as the pairs themselves are
 //! ([`super::subunit_genes`]): case aside, subunits in any order. An entry
 //! no pair answers is an error that lists the nearest pairs.
@@ -48,7 +48,7 @@ pub fn parse(list: &[Box<str>]) -> anyhow::Result<Vec<Wanted>> {
         anyhow::ensure!(
             parts.next().is_none(),
             "--only {entry:?}: one `:` between ligand and receptor (a complex joins its \
-             subunits with `_`: TGFB1:TGFBR1_TGFBR2)"
+             subunits with `_`: L2:R1_R2)"
         );
         anyhow::ensure!(
             !ligand.is_empty() && receptor.is_none_or(|r| !r.is_empty()),

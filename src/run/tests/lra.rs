@@ -79,7 +79,7 @@ fn run_lra_builds_pinto_lras_command_line() {
 
 #[test]
 fn run_lra_passes_only_and_writes_the_subset_table() {
-    let a = lra_args(json!({"run": "r", "only": ["SPP1", "TGFB1:TGFBR1_TGFBR2"]}));
+    let a = lra_args(json!({"run": "r", "only": ["LIGA1", "LIGB1:RECE1_RECE2"]}));
     let argv = lra_argv(
         &a,
         LraMethod::ContactEffect,
@@ -88,7 +88,7 @@ fn run_lra_passes_only_and_writes_the_subset_table() {
     );
     assert_eq!(
         argv[argv.len() - 2..],
-        ["--only", "SPP1,TGFB1:TGFBR1_TGFBR2"]
+        ["--only", "LIGA1,LIGB1:RECE1_RECE2"]
     );
     checked(&cli(), &argv).unwrap();
     let made = lra_outputs(LraMethod::ContactEffect, "/p/out", &a.only());
@@ -97,7 +97,7 @@ fn run_lra_passes_only_and_writes_the_subset_table() {
         made[0],
         Path::new(&format!("/p/out.lra.only-{tag}.parquet"))
     );
-    assert!(crate::mcp::parse::<LraToolArgs>(json!({"run": "r", "only": "SPP1"})).is_err());
+    assert!(crate::mcp::parse::<LraToolArgs>(json!({"run": "r", "only": "LIGA1"})).is_err());
 }
 
 #[test]
@@ -254,8 +254,8 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
 fn write_effects(path: &str) {
     let s = |v: &[&str]| -> Vec<Box<str>> { v.iter().map(|&x| x.into()).collect() };
     let section = s(&["all", "all", "all", "s1"]);
-    let ligand = s(&["TGFB1", "WNT5A", "CCL2", "TGFB1"]);
-    let receptor = s(&["TGFBR1", "FZD5", "CCR2", "TGFBR1"]);
+    let ligand = s(&["LIGB1", "LIGE1", "LIGF1", "LIGB1"]);
+    let receptor = s(&["RECE1", "RECG1", "RECH1", "RECE1"]);
     let verdict = s(&["supported", "no_evidence", "insufficient_data", "supported"]);
     let effect = [0.3f32, 0.01, f32::NAN, 0.4];
     let p = [1e-6f32, 0.4, f32::NAN, 1e-4];
@@ -315,8 +315,8 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
     // Only pairs whose effect survived the controls.
     let top = v["top"].as_array().unwrap();
     assert_eq!(top.len(), 1);
-    assert_eq!(top[0]["ligand"], "TGFB1");
-    assert_eq!(top[0]["receptor"], "TGFBR1");
+    assert_eq!(top[0]["ligand"], "LIGB1");
+    assert_eq!(top[0]["receptor"], "RECE1");
     assert_eq!(top[0]["verdict"], "supported");
     assert_eq!(top[0]["change"], "+35% (95% CI +20% to +51%)");
     assert_eq!(top[0]["q"], 3.21e-5);

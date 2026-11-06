@@ -299,17 +299,17 @@ fn names(rows: &[PairRow], shown: &[usize]) -> Vec<String> {
 
 fn rows() -> Vec<PairRow> {
     vec![
-        row("TGFB1", "TGFBR1_TGFBR2", Verdict::NoEvidence, 0.4, -2.0),
-        row("SPP1", "CD44", Verdict::Supported, 0.001, 12.0),
-        row("SPP1", "ITGB1", Verdict::ColocationOnly, 0.03, -30.0),
+        row("LIGB1", "RECE1_RECE2", Verdict::NoEvidence, 0.4, -2.0),
+        row("LIGA1", "RECA1", Verdict::Supported, 0.001, 12.0),
+        row("LIGA1", "RECC1", Verdict::ColocationOnly, 0.03, -30.0),
         row(
-            "CXCL12",
-            "CXCR4",
+            "LIGA0",
+            "RECD1",
             Verdict::InsufficientData,
             f64::NAN,
             f64::NAN,
         ),
-        row("TGFB1", "ACVRL1", Verdict::Supported, 0.02, 5.0),
+        row("LIGB1", "RECB1", Verdict::Supported, 0.02, 5.0),
     ]
 }
 
@@ -331,31 +331,31 @@ fn the_list_sorts_by_q_effect_or_name_unestimable_last() {
     assert_eq!(
         by(Sort::Q),
         [
-            "SPP1:CD44",
-            "TGFB1:ACVRL1",
-            "SPP1:ITGB1",
-            "TGFB1:TGFBR1_TGFBR2",
-            "CXCL12:CXCR4"
+            "LIGA1:RECA1",
+            "LIGB1:RECB1",
+            "LIGA1:RECC1",
+            "LIGB1:RECE1_RECE2",
+            "LIGA0:RECD1"
         ]
     );
     assert_eq!(
         by(Sort::Effect),
         [
-            "SPP1:ITGB1",
-            "SPP1:CD44",
-            "TGFB1:ACVRL1",
-            "TGFB1:TGFBR1_TGFBR2",
-            "CXCL12:CXCR4"
+            "LIGA1:RECC1",
+            "LIGA1:RECA1",
+            "LIGB1:RECB1",
+            "LIGB1:RECE1_RECE2",
+            "LIGA0:RECD1"
         ]
     );
     assert_eq!(
         by(Sort::Name),
         [
-            "CXCL12:CXCR4",
-            "SPP1:CD44",
-            "SPP1:ITGB1",
-            "TGFB1:ACVRL1",
-            "TGFB1:TGFBR1_TGFBR2"
+            "LIGA0:RECD1",
+            "LIGA1:RECA1",
+            "LIGA1:RECC1",
+            "LIGB1:RECB1",
+            "LIGB1:RECE1_RECE2"
         ]
     );
     assert_eq!(Sort::Q.next().next().next(), Sort::Q);
@@ -379,14 +379,14 @@ fn the_list_filters_by_verdict_and_genes() {
     };
     assert_eq!(
         f(Some(Verdict::Supported), ""),
-        ["SPP1:CD44", "TGFB1:ACVRL1"]
+        ["LIGA1:RECA1", "LIGB1:RECB1"]
     );
     // A gene of the ligand or the receptor, a complex's subunit too, case aside.
-    assert_eq!(f(None, "tgfbr2"), ["TGFB1:TGFBR1_TGFBR2"]);
-    assert_eq!(f(None, "spp1"), ["SPP1:CD44", "SPP1:ITGB1"]);
+    assert_eq!(f(None, "rece2"), ["LIGB1:RECE1_RECE2"]);
+    assert_eq!(f(None, "liga1"), ["LIGA1:RECA1", "LIGA1:RECC1"]);
     // Every word must match.
-    assert_eq!(f(None, "spp1 cd44"), ["SPP1:CD44"]);
-    assert_eq!(f(Some(Verdict::Supported), "spp1"), ["SPP1:CD44"]);
+    assert_eq!(f(None, "liga1 reca1"), ["LIGA1:RECA1"]);
+    assert_eq!(f(Some(Verdict::Supported), "liga1"), ["LIGA1:RECA1"]);
     assert!(f(Some(Verdict::ControlFailed), "").is_empty());
     let counts = Verdict::counts(r.iter().map(|r| r.verdict));
     assert_eq!(counts.len(), Verdict::ALL.len());
@@ -485,7 +485,7 @@ fn the_layer_starts_lra_beside_the_run() {
         seed: 7,
         identity_excluded: vec!["G0".into()],
     };
-    let only = vec!["SPP1:CD44".to_string(), "TGFB1".to_string()];
+    let only = vec!["LIGA1:RECA1".to_string(), "LIGB1".to_string()];
     let argv = lra_command(Path::new("run.pinto.json"), &opts, &only);
     assert_eq!(
         argv,
@@ -502,7 +502,7 @@ fn the_layer_starts_lra_beside_the_run() {
             "--seed",
             "7",
             "--only",
-            "SPP1:CD44,TGFB1"
+            "LIGA1:RECA1,LIGB1"
         ]
     );
     // pinto takes it as written.
@@ -511,12 +511,15 @@ fn the_layer_starts_lra_beside_the_run() {
     crate::run::form::check(&cli, &argv).unwrap();
     // The table it writes, beside the run.
     let t = lra_table("/r/run", &only, LraOptions::default());
-    assert_eq!(t.path, Path::new("/r/run.lra.only-spp1-cd44+tgfb1.parquet"));
+    assert_eq!(
+        t.path,
+        Path::new("/r/run.lra.only-liga1-reca1+ligb1.parquet")
+    );
     assert_eq!(
         t.curve.as_deref(),
-        Some(Path::new("/r/run.lra.only-spp1-cd44+tgfb1.curve.parquet"))
+        Some(Path::new("/r/run.lra.only-liga1-reca1+ligb1.curve.parquet"))
     );
-    assert_eq!(t.label(), "only SPP1:CD44,TGFB1");
+    assert_eq!(t.label(), "only LIGA1:RECA1,LIGB1");
     // Without --only, the full table and its curve.
     let t = lra_table("/r/run", &[], LraOptions::default());
     assert_eq!(t.path, Path::new("/r/run.lra.parquet"));

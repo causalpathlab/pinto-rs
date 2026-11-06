@@ -22,8 +22,8 @@
 //!   is a receptor or ligand symbol, or `ligand_receptor` for a pair set. A
 //!   name with `_` is read against the pair list
 //!   ([`TargetSets::settle_gmt_names`]): a name the pair list uses whole for
-//!   a ligand or receptor (a complex, `TGFBR1_TGFBR2`) keys that gene; else
-//!   the `_` that splits it into a listed pair (`TGFB1_TGFBR1_TGFBR2`); else
+//!   a ligand or receptor (a complex, `R1_R2`) keys that gene; else
+//!   the `_` that splits it into a listed pair (`L2_R1_R2`); else
 //!   the first `_`.
 
 use crate::util::common::*;
@@ -85,7 +85,7 @@ impl TargetSets {
 
     /// Key the GMT sets whose name has `_` against the pair list: a name
     /// some pair uses whole as its ligand or receptor (a complex such as
-    /// `TGFBR1_TGFBR2`) keys that gene; else a split at a `_` that names a
+    /// `R1_R2`) keys that gene; else a split at a `_` that names a
     /// listed pair; else the split at the first `_`.
     pub fn settle_gmt_names(&mut self, pairs: &[(Box<str>, Box<str>)]) {
         let genes: HashSet<Box<str>> = pairs.iter().flat_map(|(l, r)| [key(l), key(r)]).collect();
