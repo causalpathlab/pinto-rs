@@ -239,6 +239,9 @@ fn pair_responses(tissue: &Tissue, pair: &PairData<'_>) -> Vec<Response> {
     }
 }
 
+/// One background programme: each gene's weight and counts.
+type BackgroundDraw<'p> = Vec<(f64, &'p [(u32, f32)])>;
+
 /// The pair's background programmes, seeded by the pair, so they don't depend
 /// on which other pairs run; a draw the pool cannot match is left out.
 fn draw_backgrounds<'p>(
@@ -246,7 +249,7 @@ fn draw_backgrounds<'p>(
     pair: &PairData<'_>,
     pool: &BackgroundPool<'p>,
     opts: &EffectOpts,
-) -> Vec<Vec<(f64, &'p [(u32, f32)])>> {
+) -> Vec<BackgroundDraw<'p>> {
     let pair_seed = name_seed(opts.seed, &format!("{}\0{}", pair.ligand, pair.receptor));
     let plan = BackgroundPool::plan(&tissue.size_factor, pair.targets);
     (0..opts.background_draws)
