@@ -174,42 +174,44 @@ fn a_cluster_goes_by_its_id_and_a_type_by_its_whole_name() {
     assert_eq!(got, ["Kx cell", "K2 cell"]);
 }
 
-/// A job of `sh -c script` in `dir`, for `what`.
-fn sh_job(what: JobKind, dir: &Path, script: &str) -> Job {
-    let args = vec!["-c".into(), script.into()];
-    Job::spawn_of("sh".into(), what, dir.to_path_buf(), args, None)
-}
-
 #[test]
 fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    // Its sleep let go of the pipes, so only `sh` holds them.
-    // The sleep is long enough that a stop on a loaded CI runner still
-    // comes well before it ends.
-    let script = "sleep 3 </dev/null >/dev/null 2>&1; echo > written";
-    let written = dir.path().join("written");
 
     // The quit path lets the next round be written whole.
-    let next = sh_job(
+    let next = Job::spawn_of(
+        "sh".into(),
         JobKind::Next(dir.path().join("r.lupin.json")),
-        dir.path(),
-        script,
+        dir.path().to_path_buf(),
+        vec!["-c".into(), "sleep 1; echo > written".into()],
+        None,
     );
     assert!(!next.quit(), "a save is not stopped");
     next.wait();
-    assert!(written.exists(), "the next round is written whole");
-    std::fs::remove_file(&written).unwrap();
+    assert!(
+        dir.path().join("written").exists(),
+        "the next round is written whole"
+    );
 
+    // No shell here: dash can hold an interrupt back while it starts a
+    // foreground command, until that ends, and this stop comes at once.
     for what in [
         JobKind::Annotate(dir.path().join("a.lupin.json")),
         JobKind::Preview,
     ] {
-        let job = sh_job(what, dir.path(), script);
         let start = std::time::Instant::now();
+        let job = Job::spawn_of(
+            "sleep".into(),
+            what,
+            dir.path().to_path_buf(),
+            vec!["60".into()],
+            None,
+        );
         assert!(job.quit(), "anything else is stopped");
         job.wait();
-        assert!(start.elapsed() < std::time::Duration::from_millis(2000));
-        std::thread::sleep(std::time::Duration::from_millis(3500));
-        assert!(!written.exists(), "a stopped job writes nothing more");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "a stopped job ends well before it would have"
+        );
     }
 }
