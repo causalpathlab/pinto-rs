@@ -98,11 +98,10 @@ fn est(e: &Estimate) -> (f64, f64, f64) {
 type View = fn(&SimRow) -> (f64, f64, f64);
 
 /// The lines of a scenario, in print order.
-const VIEWS: [(&str, View); 7] = [
+const VIEWS: [(&str, View); 6] = [
     ("estimate", |r| est(&r.estimate)),
     ("crude", |r| est(&r.crude)),
     ("ipw", |r| est(&r.ipw)),
-    ("outcome", |r| est(&r.outcome)),
     ("section", |r| est(&r.steps[0])),
     ("spatial", |r| est(&r.steps[1])),
     ("identity", |r| est(&r.steps[2])),

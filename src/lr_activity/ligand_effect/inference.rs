@@ -51,6 +51,12 @@ impl Estimate {
         t_crit_975(self.df)
     }
 
+    /// The 95% interval of the t reference.
+    pub fn interval(&self) -> (f64, f64) {
+        let half = self.crit() * self.se;
+        (self.theta - half, self.theta + half)
+    }
+
     /// Whether the 95% interval excludes 0.
     pub fn rejects(&self) -> bool {
         self.z().abs() > self.crit()

@@ -1,9 +1,12 @@
 //! What users see: the verdict vocabulary, the study JSON, file names.
 
+use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::output::percent_text;
-use crate::lr_activity::ligand_effect::output::{lra_path, lra_simulate_path};
-use crate::lr_activity::ligand_effect::rows::Moments;
+use crate::lr_activity::ligand_effect::output::{
+    lra_path, lra_simulate_path, write_effects, Q_SCOPE_ALL,
+};
+use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
 use crate::lr_activity::ligand_effect::verdict;
 use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
@@ -107,6 +110,46 @@ fn an_effect_reads_as_a_percent_change_with_its_interval() {
         ..e
     };
     assert!(percent_change(&e).starts_with("+100%"));
+}
+
+// * The effects table
+
+#[test]
+fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    let ipw = Estimate {
+        theta: 0.2,
+        se: 0.05,
+        df: f64::INFINITY,
+        ..Estimate::nan(100, 50)
+    };
+    let outcome = Estimate { theta: 0.3, ..ipw };
+    let none = Estimate::nan(0, 0);
+    let effects = ScopeEffects {
+        ipw,
+        outcome,
+        ..ScopeEffects::zip_with(&[], |_| none)
+    };
+    let row = EffectRow::pending(effects, (f64::NAN, f64::NAN), f64::NAN, (none, none), 0);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("o.lra.parquet");
+    let path = path.to_str().unwrap();
+    write_effects(path, &[row], Q_SCOPE_ALL).unwrap();
+
+    let names = [
+        "effect_ipw",
+        "effect_ipw_se",
+        "effect_ipw_lo",
+        "effect_ipw_hi",
+        "effect_outcome",
+    ];
+    let (_, x) = read_table_columns(path, &["ligand"], &names).unwrap();
+    let (lo, hi) = ipw.interval();
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(close(x[0][0], 0.2) && close(x[1][0], 0.05));
+    assert!(lo < hi && close(x[2][0], lo) && close(x[3][0], hi));
+    assert!(close(x[4][0], 0.3));
+    assert!(read_table_columns(path, &["ligand"], &["effect_outcome_se"]).is_err());
 }
 
 // * Study

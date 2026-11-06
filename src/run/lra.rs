@@ -631,9 +631,8 @@ pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
         "means": means,
         "reading": "reject: share of runs significant at 5% per method. estimate is lra's \
                     adjusted effect; marginal the correlation of response and contact ligand; \
-                    crude the unadjusted contrast; ipw and outcome the effect by overlap \
-                    weights alone and by the outcome regression alone; celltype, moran, contact \
-                    and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
+                    crude the unadjusted contrast; ipw the effect by overlap weights alone; \
+                    celltype, moran, contact and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
                     NICHES/COMMOT, lra's log odds). Trust lra here when estimate keeps type I \
                     near 0.05 under the confounded nulls and has power at the effect sizes \
                     that matter.",

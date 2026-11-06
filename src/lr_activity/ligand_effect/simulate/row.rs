@@ -22,7 +22,9 @@ pub struct SimRow {
     pub marginal_cor: Estimate,
     pub crude: Estimate,
     pub ipw: Estimate,
-    pub outcome: Estimate,
+    /// The outcome regression alone, a point estimate: it has no interval of
+    /// its own.
+    pub outcome: f64,
     pub incompetent: Estimate,
     pub ring: Estimate,
     /// Sample average effect of the true ring exposure over competent
@@ -70,7 +72,6 @@ impl SimRow {
             self.marginal_cor.rejects(),
             self.crude.rejects(),
             self.ipw.rejects(),
-            self.outcome.rejects(),
             b(0),
             b(1),
             b(2),
@@ -81,9 +82,8 @@ impl SimRow {
 }
 
 /// The methods `lra-simulate` compares at 5%: the marginal correlation, the
-/// crude contrast, overlap weights alone, the outcome regression alone, the
-/// co-expression baselines ([`super::super::baselines::METHODS`]) and the estimator,
-/// which combines the two.
-pub const COMPARED: [&str; 9] = [
-    "marginal", "crude", "ipw", "outcome", "celltype", "moran", "contact", "coexpr", "estimate",
+/// crude contrast, overlap weights alone, the co-expression baselines
+/// ([`super::super::baselines::METHODS`]) and the estimator.
+pub const COMPARED: [&str; 8] = [
+    "marginal", "crude", "ipw", "celltype", "moran", "contact", "coexpr", "estimate",
 ];
