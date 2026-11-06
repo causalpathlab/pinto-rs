@@ -15,7 +15,7 @@
 //!    `p_b` is thus the detection-corrected share of producers and `r_b`
 //!    the mean among them. A bin detected at least as often as Poisson
 //!    with every cell producing gets `p_b = 1`, `r_b = m_b`. The rate is
-//!    floored at [`R_FLOOR`] expected counts at median depth: in a bin of
+//!    floored at `R_FLOOR` expected counts at median depth: in a bin of
 //!    scattered single counts mean and detection cannot tell few producers
 //!    from many weak ones, and without the floor ambient counts would make
 //!    every cell a weak producer. A hidden field moves production:

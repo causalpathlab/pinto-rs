@@ -55,7 +55,7 @@
 //!   and [`only`] pick the pairs from the [`mod@reference`] and [`targets`] reads
 //!   the programmes, [`genes`] reads the needed genes sparsely, [`memory`]
 //!   says how many pairs run at once;
-//! - the tissue: [`exposure`], [`folds`], [`confounders`] and [`receivers`]
+//! - the tissue: [`contacts`], [`folds`], [`confounders`] and [`receivers`]
 //!   build [`tissue::Tissue`];
 //! - one pair: [`estimate`] assembles it from [`dose`] and [`response`],
 //!   [`thresholds`] fits each exposure threshold, [`fits`] holds the nuisance
@@ -63,49 +63,51 @@
 //!   [`background`] add the threshold-response curve and the matched
 //!   programmes, under the [`options`] asked for, into [`rows`];
 //! - the estimator: [`overlap`], [`crossfit`] and [`regression`] estimate,
-//!   [`inference`] and [`averaging`] read and combine the estimates;
+//!   [`association`] reads the unadjusted comparisons, [`inference`] and
+//!   [`averaging`] read and combine the estimates;
 //! - across pairs: [`report`] corrects for multiplicity and [`verdict`] words
 //!   the answer;
 //! - around them: [`baselines`] are the co-expression scores it is compared
 //!   with, [`simulate`] benchmarks the estimator on this tissue with a planted
 //!   effect, [`output`] writes and reads the tables, and [`timing`] sums the
-//!   time per stage for the run log; [`frame`] puts one pair on a run's
+//!   time per stage for the run log; `frame` puts one pair on a run's
 //!   receivers for `pinto view`.
 
-pub mod averaging;
-pub mod background;
-pub mod baselines;
-pub mod confounders;
-pub mod crossfit;
-pub mod curve;
-pub mod dose;
-pub mod effects;
-pub mod estimate;
-pub mod exposure;
-pub mod fits;
-pub mod folds;
+mod association;
+mod averaging;
+mod background;
+mod baselines;
+mod confounders;
+mod contacts;
+mod crossfit;
+mod curve;
+mod dose;
+mod effects;
+mod estimate;
+mod fits;
+mod folds;
 #[cfg(feature = "view")]
 pub mod frame;
-pub mod genes;
+mod genes;
 pub mod inference;
-pub mod memory;
+mod memory;
 pub mod only;
-pub mod options;
+mod options;
 pub mod output;
-pub mod overlap;
-pub mod pairs;
+mod overlap;
+mod pairs;
 pub mod pipeline;
-pub mod receivers;
-pub mod reference;
-pub mod regression;
-pub mod report;
-pub mod response;
-pub mod rows;
+mod receivers;
+mod reference;
+mod regression;
+mod report;
+mod response;
+mod rows;
 pub mod simulate;
-pub mod targets;
-pub mod thresholds;
-pub mod timing;
-pub mod tissue;
+mod targets;
+mod thresholds;
+mod timing;
+mod tissue;
 pub mod verdict;
 
 #[cfg(test)]
@@ -115,6 +117,9 @@ use crate::lr_activity::args::ReferenceSpecies;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use std::path::Path;
+
+/// The target of the commands' log lines, whichever file they come from.
+const LOG_TARGET: &str = module_path!();
 
 /// The fixed choices of the contact-effect analysis. None is a flag: each
 /// is recorded in the manifest (`outputs.lra.settings`) beside the table it

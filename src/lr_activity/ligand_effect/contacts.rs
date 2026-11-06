@@ -1,10 +1,12 @@
-//! Who touches whom, and what each receiver is exposed to.
+//! Who touches whom, the distant ring and receptor competence.
 //!
 //! - [`Contacts`]: each cell's spatial contacts, from the run's adjacent
 //!   (not expression-similar) pairs.
 //! - [`Contacts::sum`] / [`Contacts::mean`]: a receiver's exposure is the
 //!   sum of a per-cell quantity over its contacts; neighbour-average
 //!   confounders use the mean.
+//! - [`median_contact_length`]: the unit for tiles, smooths and the ring, by
+//!   [`upper_median`].
 //! - [`ring_partners`]: the negative-control exposure. For each receiver,
 //!   as many cells as it has contacts, drawn from a ring well beyond
 //!   contact range. They share the receiver's region but cannot signal to

@@ -21,7 +21,7 @@ pub struct EffectRow {
     pub coexpr_log_or: f64,
     pub coexpr_se: f64,
     /// The correlation of the response and `log1p` contact ligand over
-    /// competent receivers ([`super::overlap::marginal_correlation`]), combined
+    /// competent receivers ([`super::association::marginal_correlation`]), combined
     /// over weightings.
     pub marginal_cor: Estimate,
     /// The estimands; the step and no-spill estimates are NaN on

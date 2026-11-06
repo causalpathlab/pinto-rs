@@ -1,46 +1,14 @@
 //! Reading the tables back, for the viewer and for `pinto run`.
 
 use super::compare::SimRun;
+use super::summary::PooledEffect;
 use super::write::sim_cols;
-use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
-use crate::lr_activity::ligand_effect::simulate::COMPARED;
-#[cfg(feature = "view")]
-use crate::lr_activity::ligand_effect::simulate::{ConfoundShape, ConfounderKind, Scenario};
+use crate::lr_activity::ligand_effect::simulate::{
+    ConfoundShape, ConfounderKind, Scenario, COMPARED,
+};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
-/// A pooled row of `{out}.lra.parquet` as a summary reads it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PooledEffect {
-    pub ligand: Box<str>,
-    pub receptor: Box<str>,
-    pub verdict: Verdict,
-    pub effect: f64,
-    pub effect_p: f64,
-    pub effect_q: f64,
-    pub pct: f64,
-    pub pct_lo: f64,
-    pub pct_hi: f64,
-}
-
-impl From<&EffectRow> for PooledEffect {
-    fn from(r: &EffectRow) -> Self {
-        let m = Moments::of(&r.effects.competent);
-        Self {
-            ligand: r.ligand.clone(),
-            receptor: r.receptor.clone(),
-            verdict: r.verdict,
-            effect: r.effects.competent.theta,
-            effect_p: r.effect_p,
-            effect_q: r.effect_q,
-            pct: m.pct,
-            pct_lo: m.pct_lo,
-            pct_hi: m.pct_hi,
-        }
-    }
-}
-
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
-#[cfg(feature = "view")]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PairRow {
     pub ligand: Box<str>,
@@ -69,7 +37,6 @@ pub struct PairRow {
     pub n_exposed: usize,
 }
 
-#[cfg(feature = "view")]
 impl PairRow {
     /// `LIGAND:RECEPTOR`.
     pub fn name(&self) -> String {
@@ -77,7 +44,6 @@ impl PairRow {
     }
 }
 
-#[cfg(feature = "view")]
 impl From<&PairRow> for PooledEffect {
     fn from(r: &PairRow) -> Self {
         Self {
@@ -98,7 +64,6 @@ impl From<&PairRow> for PooledEffect {
 /// pairs its q-values were corrected over (its `q_scope`: [`super::Q_SCOPE_ALL`],
 /// or a `--only` subset's words); a table from before the column says
 /// nothing.
-#[cfg(feature = "view")]
 pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<str>>)> {
     use legume_numeric::matrix::parquet::read_table_columns;
     let strings = [
@@ -167,7 +132,6 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
 
 /// The pooled rows of `{out}.lra.parquet` (section `all`) as a summary
 /// reads them, in table order.
-#[cfg(feature = "view")]
 pub fn read_pooled_effects(path: &str) -> anyhow::Result<Vec<PooledEffect>> {
     Ok(read_pair_rows(path)?
         .0
@@ -178,7 +142,6 @@ pub fn read_pooled_effects(path: &str) -> anyhow::Result<Vec<PooledEffect>> {
 
 /// One point of a pair's threshold–response curve, as
 /// `{out}.lra.curve.parquet` holds it (log rate ratios).
-#[cfg(feature = "view")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveRow {
     pub tau: f64,
@@ -191,11 +154,9 @@ pub struct CurveRow {
 }
 
 /// Each pair's curve points, by `(ligand, receptor)`.
-#[cfg(feature = "view")]
 pub type Curves = std::collections::HashMap<(Box<str>, Box<str>), Vec<CurveRow>>;
 
 /// Every pair's curve, by `(ligand, receptor)`, points in table order.
-#[cfg(feature = "view")]
 pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
     use legume_numeric::matrix::parquet::read_table_columns;
     let (s, x) = read_table_columns(
@@ -222,19 +183,7 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
     Ok(out)
 }
 
-/// The pooled rows ranked as the run summary ranks them: estimable
-/// headline effects by p.
-pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
-    let mut v: Vec<&PooledEffect> = rows
-        .iter()
-        .filter(|r| r.effect.is_finite() && r.effect_p.is_finite() && r.verdict.survived())
-        .collect();
-    v.sort_by(|a, b| a.effect_p.total_cmp(&b.effect_p));
-    v
-}
-
 /// The number columns every `{out}.lra-simulate.parquet` has.
-#[cfg(feature = "view")]
 const SIM_NUMBERS: [&str; 12] = {
     use sim_cols::*;
     [
@@ -255,14 +204,12 @@ const SIM_NUMBERS: [&str; 12] = {
 
 /// The table keeps f32: back to the value as written (0.3, not
 /// 0.30000001), so a scenario reads as the run's summary words it.
-#[cfg(feature = "view")]
 fn as_written(v: f64) -> f64 {
     let v = v as f32;
     v.to_string().parse().unwrap_or(f64::from(v))
 }
 
 /// A column a table from an earlier version lacks.
-#[cfg(feature = "view")]
 fn later_column(path: &str, name: &str) -> Option<Vec<f64>> {
     legume_numeric::matrix::parquet::read_table_columns(path, &[], &[name])
         .ok()
@@ -270,14 +217,12 @@ fn later_column(path: &str, name: &str) -> Option<Vec<f64>> {
 }
 
 /// A later column's value at row `i`, or the scenario's default without it.
-#[cfg(feature = "view")]
 fn later_value(c: &Option<Vec<f64>>, i: usize, default: f64) -> f64 {
     c.as_ref().map_or(default, |c| as_written(c[i]))
 }
 
 /// `{out}.lra-simulate.parquet` as read: confounder and shape, [`SIM_NUMBERS`],
 /// and the columns a table from an earlier version lacks.
-#[cfg(feature = "view")]
 struct SimTable<'p> {
     path: &'p str,
     strings: Vec<Vec<Box<str>>>,
@@ -290,7 +235,6 @@ struct SimTable<'p> {
     dose_order: Option<Vec<f64>>,
 }
 
-#[cfg(feature = "view")]
 impl<'p> SimTable<'p> {
     fn read(path: &'p str) -> anyhow::Result<Self> {
         use sim_cols::*;
@@ -384,7 +328,6 @@ impl<'p> SimTable<'p> {
 
 /// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
 /// each column by its name ([`super::sim_cols`]).
-#[cfg(feature = "view")]
 pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
     let table = SimTable::read(path)?;
     (0..table.strings[0].len()).map(|i| table.run(i)).collect()

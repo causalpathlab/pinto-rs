@@ -2,7 +2,8 @@
 //! measured confounding the crude contrast keeps, separates subgroups, and
 //! stays finite when exposure is nearly determined.
 
-use super::rows_of;
+use super::{overlap_terms, rows_of};
+use crate::lr_activity::ligand_effect::association::{arm_contrast, marginal_correlation};
 use crate::lr_activity::ligand_effect::crossfit::{CrossFit, Design};
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
 use crate::lr_activity::ligand_effect::overlap::*;

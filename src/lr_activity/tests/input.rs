@@ -132,18 +132,6 @@ fn a_cell_without_a_within_batch_contact_keeps_its_batch() -> anyhow::Result<()>
     Ok(())
 }
 
-/// A section literally named like the pooled row, or a cell-type row, is
-/// relabelled so the per-section rows cannot collide with them.
-#[test]
-fn section_labels_never_collide_with_the_pooled_row() {
-    use crate::lr_activity::ligand_effect::tissue::section_label;
-    use crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS;
-    assert_eq!(&*section_label("slide1"), "slide1");
-    assert_ne!(&*section_label(ALL_SECTIONS), ALL_SECTIONS);
-    assert_eq!(&*section_label("type:T"), "section:type:T");
-    assert_ne!(section_label("section:all"), section_label("all"));
-}
-
 /// Cell types are optional: a run with no lupin round beside it has none.
 #[test]
 fn a_run_without_a_lupin_round_has_no_cell_types() {

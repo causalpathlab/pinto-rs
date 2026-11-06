@@ -1,6 +1,5 @@
-//! Comparing methods across simulated runs.
+//! Comparing methods across simulated runs, scenario by scenario.
 
-use super::summary::{is_null, scenario_groups};
 use crate::lr_activity::ligand_effect::simulate::{SimRow, COMPARED};
 
 /// One benchmark run as the comparison reads it: its scenario, whether the
@@ -151,4 +150,68 @@ pub fn comparison(rows: &[SimRow]) -> String {
         100.0 * base / total.max(1e-12)
     );
     out
+}
+
+/// A scenario in words, without its replicate: the summary's grouping key.
+fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String {
+    let mut d = format!("θ={:.2}", s.effect);
+    if s.confound_ligand != 0.0 || s.confound_response != 0.0 {
+        d += &format!(
+            " α={} β={} {}/{}@{}",
+            s.confound_ligand,
+            s.confound_response,
+            s.confounder.label(),
+            s.shape.label(),
+            s.scale
+        );
+    } else {
+        d += " unconfounded";
+    }
+    if s.dose_response {
+        d += " dose";
+    }
+    if s.ring_effect != 0.0 {
+        d += &format!(" θr={:.2}", s.ring_effect);
+    }
+    if s.generic_shift != 0.0 {
+        d += &format!(" generic={}", s.generic_shift);
+    }
+    if s.spillover != 0.0 {
+        d += &format!(" κ={}", s.spillover);
+    }
+    if s.shift != 0.0 {
+        d += &format!(" shift={}", s.shift);
+    }
+    if s.heterogeneous {
+        d += " heterogeneous";
+    }
+    if s.marker {
+        d += " marker";
+    }
+    d
+}
+
+/// Indices of `items` grouped by scenario ([`describe`]), groups in the
+/// order their scenario first appears; one pass with a map.
+pub(super) fn scenario_groups<T>(
+    items: &[T],
+    scenario: impl Fn(&T) -> &crate::lr_activity::ligand_effect::simulate::Scenario,
+) -> Vec<(String, Vec<usize>)> {
+    let mut at: std::collections::HashMap<String, usize> = Default::default();
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, r) in items.iter().enumerate() {
+        let d = describe(scenario(r));
+        let k = *at.entry(d.clone()).or_insert_with(|| {
+            groups.push((d, Vec::new()));
+            groups.len() - 1
+        });
+        groups[k].1.push(i);
+    }
+    groups
+}
+
+/// A null scenario: nothing planted, or the seen field shifted away from
+/// the one receivers respond to.
+pub(super) fn is_null(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> bool {
+    s.effect == 0.0 || s.shift > 0.0
 }

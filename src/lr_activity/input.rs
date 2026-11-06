@@ -212,8 +212,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .map(|b| b.unwrap_or_else(|| crate::lr_activity::fit::BATCH_LABEL_ALL.into()))
         .collect();
     let prefix = &input.run.as_ref().expect("from a run").prefix;
-    let coords =
-        crate::lr_activity::ligand_effect::pipeline::read_coords(prefix, &cell_to_col, n_cells)?;
+    let coords = read_coords(prefix, &cell_to_col, n_cells)?;
     let manifest = &input.run.as_ref().expect("from a run").manifest;
     let cell_type = match newest_round(manifest) {
         Some(round) => match round_cell_types(&round, &cell_to_col, n_cells) {
@@ -241,6 +240,43 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         coords,
         cell_type,
     })
+}
+
+/// Coordinates per data column from the `lc` run: `{prefix}.cells.parquet`
+/// when the run wrote one, else the endpoints in `{prefix}.coord_pairs.parquet`.
+fn read_coords(
+    lc_prefix: &str,
+    cell_to_col: &HashMap<Box<str>, usize>,
+    n_cells: usize,
+) -> anyhow::Result<Vec<Option<(f32, f32)>>> {
+    use crate::util::parquet_io::{read_cells_from_coord_pairs, read_cells_table};
+    let cells = std::path::PathBuf::from(format!("{lc_prefix}.cells.parquet"));
+    let table = if cells.exists() {
+        read_cells_table(&cells, None)?
+    } else {
+        read_cells_from_coord_pairs(
+            std::path::Path::new(&format!("{lc_prefix}.coord_pairs.parquet")),
+            None,
+        )?
+    };
+    let mut out = vec![None; n_cells];
+    let mut found = 0usize;
+    for (name, &xy) in table.names.iter().zip(&table.coords) {
+        if let Some(&c) = cell_to_col.get(name) {
+            out[c] = Some(xy);
+            found += 1;
+        }
+    }
+    anyhow::ensure!(
+        found > 0,
+        "no cell of the data has coordinates in {}",
+        if cells.exists() {
+            cells.display().to_string()
+        } else {
+            format!("{lc_prefix}.coord_pairs.parquet")
+        }
+    );
+    Ok(out)
 }
 
 // * Cell types

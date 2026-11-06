@@ -2,7 +2,7 @@
 //! instead of every pair of the reference and `--lr-pairs`.
 //!
 //! An entry is `LIGAND:RECEPTOR` (a complex joins its subunits with `_`,
-//! `TGFB1:TGFBR1_TGFBR2`) or a bare `LIGAND` for all of its pairs. Entries
+//! `LIG1:REC1_REC2`) or a bare `LIGAND` for all of its pairs. Entries
 //! are matched on the genes they resolve to, as the pairs themselves are
 //! ([`super::pairs::subunit_genes`]): case aside, subunits in any order. An entry
 //! no pair answers is an error that lists the nearest pairs.
@@ -171,7 +171,7 @@ fn explain(w: &Wanted, ligand_known: bool, receptor_known: bool, pairs: &[Pair])
 
 /// The pairs whose name is nearest `w`'s (edit distance, case aside): for
 /// a bare ligand the nearest ligands, each once.
-pub(super) fn near_pairs(w: &Wanted, pairs: &[Pair]) -> Vec<String> {
+fn near_pairs(w: &Wanted, pairs: &[Pair]) -> Vec<String> {
     let names = pairs.iter().map(|p| match w.receptor {
         Some(_) => format!("{}:{}", p.ligand, p.receptor),
         None => p.ligand.to_string(),

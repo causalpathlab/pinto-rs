@@ -1,8 +1,9 @@
-//! The contact dose each receiver gets, and the exposure called from it at a threshold.
+//! The contact dose each receiver gets, the exposure called from it at a
+//! threshold, and how much of it neighbour identity explains.
 
 use super::averaging::AbfSummary;
+use super::contacts::Contacts;
 use super::options::EffectOpts;
-use super::response::niche_ligand;
 use super::tissue::Tissue;
 
 /// The exposure side of a pair's per-row quantities: the same under every
@@ -28,8 +29,7 @@ pub struct Exposure {
 impl Exposure {
     /// The exposure side from the ligand counts the estimator sees.
     pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> Self {
-        let (lnorm, dose) =
-            super::receivers::contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
+        let (lnorm, dose) = contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
         let ring_dose = tissue.ring_sum(&lnorm);
         let tau = choose_threshold(&dose, opts);
         Self {
@@ -119,4 +119,30 @@ pub fn eta_squared(group: &[usize], x: &[f64], rows: &[u32]) -> f64 {
         .map(|&(s, c)| c as f64 * (s / c as f64 - mean).powi(2))
         .sum();
     (between / total).min(1.0)
+}
+
+/// Each row's ligand over its size factor, and its contact dose: that
+/// summed over its contacts, which the exposure threshold reads.
+pub fn contact_dose(
+    contacts: &Contacts,
+    size_factor: &[f64],
+    ligand_counts: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let lnorm: Vec<f64> = ligand_counts
+        .iter()
+        .zip(size_factor)
+        .map(|(c, s)| c / s)
+        .collect();
+    let a = contacts.sum(&lnorm);
+    (lnorm, a)
+}
+
+/// `log1p` of the mean of `lnorm` (ligand / size factor) over each row's
+/// second-order neighbours.
+pub fn niche_ligand(tissue: &Tissue, lnorm: &[f64]) -> Vec<f64> {
+    tissue
+        .second_mean(lnorm)
+        .into_iter()
+        .map(f64::ln_1p)
+        .collect()
 }

@@ -59,16 +59,6 @@ pub(super) fn genes_and_weights<'t>(targets: &Targets<'t>) -> (Vec<Gene<'t>>, Ve
     targets.iter().map(|&(w, nz)| (nz, w)).unzip()
 }
 
-/// `log1p` of the mean of `lnorm` (ligand / size factor) over each row's
-/// second-order neighbours.
-pub fn niche_ligand(tissue: &Tissue, lnorm: &[f64]) -> Vec<f64> {
-    tissue
-        .second_mean(lnorm)
-        .into_iter()
-        .map(f64::ln_1p)
-        .collect()
-}
-
 /// The response and the bleed of each weighting of `genes`, in one pass
 /// over the genes: each gene's `log1p` counts and expected bleed are
 /// computed once and added to every weighting that gives it a non-zero
@@ -93,7 +83,7 @@ pub fn programme_columns(
     genes: &[&[(u32, f32)]],
     weightings: &[Vec<f64>],
     identity_bin: &[usize],
-    contacts: &super::exposure::Contacts,
+    contacts: &super::contacts::Contacts,
     sf: &[f64],
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let n = sf.len();
@@ -147,7 +137,7 @@ pub fn programme_columns(
 pub fn expected_bleed(
     m: &[f64],
     identity_bin: &[usize],
-    contacts: &super::exposure::Contacts,
+    contacts: &super::contacts::Contacts,
     sf: &[f64],
 ) -> Vec<f64> {
     contacts

@@ -123,6 +123,7 @@
 //! one row per type, `section` = `type:<name>`: the estimands among that
 //! type's receivers, from the pooled fit.
 
+use super::association::marginal_correlation;
 use super::averaging::combine;
 use super::background::BackgroundPool;
 use super::baselines::coexpression;
@@ -132,7 +133,6 @@ use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, Rows};
 use super::inference::Estimate;
 use super::options::EffectOpts;
-use super::overlap::marginal_correlation;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
 use super::thresholds::{aligned, over_thresholds, thresholds};
@@ -174,7 +174,7 @@ pub fn estimate_pair_with(
         Exposure::build(tissue, pair.ligand_counts, opts)
     });
     let detected: Vec<bool> = pair.receptor_counts.iter().map(|&r| r > 0.0).collect();
-    let comps = super::exposure::competence_grid(&tissue.identity_bin, &detected, opts.competences);
+    let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
     let backgrounds = draw_backgrounds(tissue, pair, pool, opts);

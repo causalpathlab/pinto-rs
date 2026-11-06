@@ -1,9 +1,8 @@
 //! The text summaries printed after a run.
 
-use super::compare::comparison;
-use super::read::{rank_pooled, PooledEffect};
+use super::compare::{comparison, is_null, scenario_groups};
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::rows::EffectRow;
+use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::SimRow;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
@@ -77,64 +76,6 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
         }
     }
     out
-}
-
-/// A scenario in words, without its replicate: the summary's grouping key.
-fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String {
-    let mut d = format!("θ={:.2}", s.effect);
-    if s.confound_ligand != 0.0 || s.confound_response != 0.0 {
-        d += &format!(
-            " α={} β={} {}/{}@{}",
-            s.confound_ligand,
-            s.confound_response,
-            s.confounder.label(),
-            s.shape.label(),
-            s.scale
-        );
-    } else {
-        d += " unconfounded";
-    }
-    if s.dose_response {
-        d += " dose";
-    }
-    if s.ring_effect != 0.0 {
-        d += &format!(" θr={:.2}", s.ring_effect);
-    }
-    if s.generic_shift != 0.0 {
-        d += &format!(" generic={}", s.generic_shift);
-    }
-    if s.spillover != 0.0 {
-        d += &format!(" κ={}", s.spillover);
-    }
-    if s.shift != 0.0 {
-        d += &format!(" shift={}", s.shift);
-    }
-    if s.heterogeneous {
-        d += " heterogeneous";
-    }
-    if s.marker {
-        d += " marker";
-    }
-    d
-}
-
-/// Indices of `items` grouped by scenario ([`describe`]), groups in the
-/// order their scenario first appears; one pass with a map.
-pub(super) fn scenario_groups<T>(
-    items: &[T],
-    scenario: impl Fn(&T) -> &crate::lr_activity::ligand_effect::simulate::Scenario,
-) -> Vec<(String, Vec<usize>)> {
-    let mut at: std::collections::HashMap<String, usize> = Default::default();
-    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
-    for (i, r) in items.iter().enumerate() {
-        let d = describe(scenario(r));
-        let k = *at.entry(d.clone()).or_insert_with(|| {
-            groups.push((d, Vec::new()));
-            groups.len() - 1
-        });
-        groups[k].1.push(i);
-    }
-    groups
 }
 
 /// The share of `v` that holds, or `-` for none to take it over.
@@ -266,7 +207,7 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
 /// contrast and the partial adjustments, with estimable share, bias and
 /// coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison
-/// ([`super::comparison`]).
+/// ([`super::compare::comparison`]).
 pub fn sim_summary(rows: &[SimRow]) -> String {
     let mut out = sim_legend();
     for (key, idx) in scenario_groups(rows, |r| &r.scenario) {
@@ -281,8 +222,44 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
     out
 }
 
-/// A null scenario: nothing planted, or the seen field shifted away from
-/// the one receivers respond to.
-pub(super) fn is_null(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> bool {
-    s.effect == 0.0 || s.shift > 0.0
+/// A pooled row of `{out}.lra.parquet` as a summary reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PooledEffect {
+    pub ligand: Box<str>,
+    pub receptor: Box<str>,
+    pub verdict: Verdict,
+    pub effect: f64,
+    pub effect_p: f64,
+    pub effect_q: f64,
+    pub pct: f64,
+    pub pct_lo: f64,
+    pub pct_hi: f64,
+}
+
+impl From<&EffectRow> for PooledEffect {
+    fn from(r: &EffectRow) -> Self {
+        let m = Moments::of(&r.effects.competent);
+        Self {
+            ligand: r.ligand.clone(),
+            receptor: r.receptor.clone(),
+            verdict: r.verdict,
+            effect: r.effects.competent.theta,
+            effect_p: r.effect_p,
+            effect_q: r.effect_q,
+            pct: m.pct,
+            pct_lo: m.pct_lo,
+            pct_hi: m.pct_hi,
+        }
+    }
+}
+
+/// The pooled rows ranked as the run summary ranks them: estimable
+/// headline effects by p.
+pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
+    let mut v: Vec<&PooledEffect> = rows
+        .iter()
+        .filter(|r| r.effect.is_finite() && r.effect_p.is_finite() && r.verdict.survived())
+        .collect();
+    v.sort_by(|a, b| a.effect_p.total_cmp(&b.effect_p));
+    v
 }

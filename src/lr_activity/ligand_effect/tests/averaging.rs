@@ -171,7 +171,7 @@ fn opts(competences: &'static [f64], curve: bool) -> EffectOpts {
 /// estimates, so the spread between thresholds widens the interval.
 #[test]
 fn competence_grid_combines_the_single_estimates() {
-    use crate::lr_activity::ligand_effect::exposure::competence;
+    use crate::lr_activity::ligand_effect::contacts::competence;
     let w = world(1, 0.15, false);
     let targets = [(1.0, w.response.as_slice())];
     let pick =
@@ -487,7 +487,7 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
     assert!(rows[0].curve.iter().all(|c| c.effect.theta.is_nan()));
 
     // The fitted guard's counts at the middle threshold, which decides.
-    use crate::lr_activity::ligand_effect::exposure::competence;
+    use crate::lr_activity::ligand_effect::contacts::competence;
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
     let levels: Vec<Vec<bool>> = GRID
         .iter()
@@ -631,7 +631,7 @@ fn control_fits_without_their_propensities_are_an_error() {
     let x = Exposure::build(&w.tissue, &w.ligand, &o);
     let r = Response::build(&w.tissue, &targets);
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
-    let levels = vec![crate::lr_activity::ligand_effect::exposure::competence(
+    let levels = vec![crate::lr_activity::ligand_effect::contacts::competence(
         &w.tissue.identity_bin,
         &detected,
         0.1,

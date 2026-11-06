@@ -21,7 +21,7 @@ pub fn background_pool_genes(n_genes: usize, exclude: &[usize], seed: u64) -> Ve
 }
 
 /// Mean of `x / size factor` over all rows.
-pub fn mean_expression(nz: &[(u32, f32)], sf: &[f64]) -> f64 {
+fn mean_expression(nz: &[(u32, f32)], sf: &[f64]) -> f64 {
     nz.iter()
         .map(|&(r, x)| x as f64 / sf[r as usize])
         .sum::<f64>()

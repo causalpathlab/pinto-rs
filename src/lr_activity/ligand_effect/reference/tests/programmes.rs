@@ -157,7 +157,7 @@ fn regulons_drop_conflicts_and_complex_targets() {
         ("P1", "P5", "TF", "G4", 1, "Free"),
         ("P1", "P5", "TF", "G4", -1, "Free"),
         ("P1", "C1", "TF", "X_Y", 1, "Free"),
-        ("C2", "P2", "JUN_FOS", "G1", 1, "Foo_CollecTRI2"),
+        ("C2", "P2", "TFA_TFB", "G1", 1, "Foo_CollecTRI2"),
         ("P9", "P2", "NCTF", "G1", 1, "NC"),
     ]))
     .unwrap();
@@ -165,7 +165,7 @@ fn regulons_drop_conflicts_and_complex_targets() {
     assert_eq!(reg["TF"].len(), 3);
     assert_eq!(reg["TF"]["G2"], -1);
     assert_eq!(reg["TF"]["G3"], 1, "unsigned regulation counts +1");
-    assert_eq!(reg["JUN_FOS"]["G1"], 1);
+    assert_eq!(reg["TFA_TFB"]["G1"], 1);
     assert!(!reg.contains_key("NCTF"));
     assert_eq!(stats["conflicting_mor_dropped"], 1);
     assert_eq!(stats["complex_target"], 1);

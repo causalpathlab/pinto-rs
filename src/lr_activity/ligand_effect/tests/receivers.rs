@@ -4,9 +4,9 @@
 //! middle of the grid, and the counts and threshold the table's row reports.
 
 use super::estimate_pair;
+use crate::lr_activity::ligand_effect::contacts::competence_grid;
 use crate::lr_activity::ligand_effect::dose::Exposure;
 use crate::lr_activity::ligand_effect::estimate::PairData;
-use crate::lr_activity::ligand_effect::exposure::competence_grid;
 use crate::lr_activity::ligand_effect::frame::{pair_map, Class};
 use crate::lr_activity::ligand_effect::options::{EffectOpts, COMPETENCE_GRID};
 use crate::lr_activity::ligand_effect::receivers::{receiver_contacts, size_factors};

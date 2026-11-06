@@ -123,7 +123,7 @@ pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
     write_named_table(path, "row", &names, &table)
 }
 
-/// Columns of `{out}.lra-simulate.parquet` that [`super::read_sim_runs`] reads
+/// Columns of `{out}.lra-simulate.parquet` that `read_sim_runs` reads
 /// back, shared by the writer and the reader.
 pub(super) mod sim_cols {
     pub const PLANTED_EFFECT: &str = "planted_effect";

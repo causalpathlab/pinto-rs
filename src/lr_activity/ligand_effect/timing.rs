@@ -1,8 +1,9 @@
-//! Wall time per stage summed over calls (and threads), for the run log.
+//! Wall time per stage summed over calls (and threads), and counts of fits and
+//! skipped pairs, for the run log.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const STAGES: [&str; 9] = [
+const STAGES: [&str; 9] = [
     "frame",
     "main+ring fits",
     "no-spill fit",

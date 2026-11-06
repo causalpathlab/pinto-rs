@@ -12,11 +12,12 @@
 //! matrix and owns only its small per-fold Grams.
 
 use super::confounders::{self, ConfounderInputs, Group};
+use super::contacts::{median_contact_length, ring_partners, Contacts};
 use super::crossfit::{CrossFit, Design, DesignPrefix};
-use super::exposure::{median_contact_length, ring_partners, Contacts};
 use super::folds::spatial_folds;
 use super::receivers::{receiver_contacts, size_factors};
 use super::INTERNALS;
+use super::LOG_TARGET;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
@@ -434,7 +435,7 @@ pub fn scope_rows(scopes: &[Scope], section: &[u32], cell_type: Option<&[u32]>) 
 
 /// Each row's dominant-neighbour identity bin: the most common bin among
 /// its contacts, ties to the smaller bin; `usize::MAX` without contacts.
-pub fn dominant_neighbour_bin(contacts: &Contacts, identity_bin: &[usize]) -> Vec<usize> {
+fn dominant_neighbour_bin(contacts: &Contacts, identity_bin: &[usize]) -> Vec<usize> {
     contacts
         .adj
         .par_iter()
@@ -475,6 +476,7 @@ pub fn identity_bins(
     let n_excluded = row_weights.iter().filter(|&&w| w == 0.0).count();
     if 2 * n_excluded > row_weights.len() {
         warn!(
+            target: LOG_TARGET,
             "Receiver identity leaves out {n_excluded} of {} rows (signalling and \
              programme genes); on a small panel it rests on few genes",
             row_weights.len()

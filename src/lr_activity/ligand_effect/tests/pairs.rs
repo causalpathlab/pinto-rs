@@ -14,22 +14,22 @@ fn panel(genes: &[&str]) -> (Vec<Box<str>>, GeneIndex) {
 
 #[test]
 fn a_complex_matches_every_subunit_not_its_trailing_one() {
-    let (names, index) = panel(&["ITGA4", "ITGB1", "VCAM1"]);
+    let (names, index) = panel(&["SUBA4", "SUBB1", "LIGV1"]);
     assert_eq!(
-        subunit_genes("ITGA4_ITGB1", &names, &index),
+        subunit_genes("SUBA4_SUBB1", &names, &index),
         Some(vec![0, 1])
     );
     assert_eq!(
-        subunit_genes("itga4+itgb1", &names, &index),
+        subunit_genes("suba4+subb1", &names, &index),
         Some(vec![0, 1])
     );
-    assert_eq!(subunit_genes("VCAM1", &names, &index), Some(vec![2]));
+    assert_eq!(subunit_genes("LIGV1", &names, &index), Some(vec![2]));
 }
 
 #[test]
 fn a_complex_with_a_missing_subunit_is_absent() {
-    let (names, index) = panel(&["ITGB1", "VCAM1"]);
-    assert_eq!(subunit_genes("ITGA4_ITGB1", &names, &index), None);
+    let (names, index) = panel(&["SUBB1", "LIGV1"]);
+    assert_eq!(subunit_genes("SUBA4_SUBB1", &names, &index), None);
 }
 
 #[test]
@@ -41,8 +41,8 @@ fn a_panel_gene_with_an_underscore_is_one_gene() {
 fn programme() -> TargetSets {
     let mut s = TargetSets::default();
     s.add_table(
-        "receptor\ttarget\nITGA4_ITGB1\tT1\nITGA4_ITGB1\tT2\nITGA4_ITGB1\tT3\n\
-         ITGA4_ITGB1\tT4\nITGA4_ITGB1\tT5\nITGA4_ITGB1\tITGA4\n",
+        "receptor\ttarget\nSUBA4_SUBB1\tT1\nSUBA4_SUBB1\tT2\nSUBA4_SUBB1\tT3\n\
+         SUBA4_SUBB1\tT4\nSUBA4_SUBB1\tT5\nSUBA4_SUBB1\tSUBA4\n",
         false,
     )
     .unwrap();
@@ -52,14 +52,14 @@ fn programme() -> TargetSets {
 #[test]
 fn pairs_resolve_complex_ligands_and_receptors_and_dedup_on_genes() {
     let (names, index) = panel(&[
-        "COL1A1", "COL1A2", "ITGA4", "ITGB1", "T1", "T2", "T3", "T4", "T5",
+        "SUBC1", "SUBC2", "SUBA4", "SUBB1", "T1", "T2", "T3", "T4", "T5",
     ]);
     let raw: Vec<(Box<str>, Box<str>)> = vec![
-        ("COL1A1_COL1A2".into(), "ITGA4_ITGB1".into()),
+        ("SUBC1_SUBC2".into(), "SUBA4_SUBB1".into()),
         // The same genes spelt otherwise: kept once.
-        ("col1a2+col1a1".into(), "ITGB1_ITGA4".into()),
+        ("subc2+subc1".into(), "SUBB1_SUBA4".into()),
         // A subunit absent from the data: dropped.
-        ("COL1A1".into(), "ITGA4_ITGB7".into()),
+        ("SUBC1".into(), "SUBA4_SUBB7".into()),
     ];
     let sets = programme();
     let pairs = resolve_pairs(raw, &names, &index, &sets, &HashMap::default());

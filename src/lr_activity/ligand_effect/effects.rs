@@ -1,12 +1,13 @@
 //! Every estimand read from the fits at one threshold, and their combination
 //! across competence and weightings.
 
+use super::association::arm_contrast;
 use super::averaging::AbfSummary;
 use super::crossfit::{CrossFit, DesignView};
 use super::fits::{arms_open, fit_main, thin_subset, Fit, Rows, ThresholdFits};
 use super::inference::Estimate;
 use super::options::{EffectOpts, NEAR_DETERMINED_H};
-use super::overlap::{arm_contrast, difference, outcome_estimate, subset_estimate, OverlapTerms};
+use super::overlap::{difference, outcome_estimate, subset_estimate, OverlapTerms};
 use super::response::Response;
 use super::timing;
 

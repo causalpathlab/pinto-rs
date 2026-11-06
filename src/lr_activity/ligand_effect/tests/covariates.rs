@@ -5,9 +5,10 @@
 use super::run_sim;
 use super::simulate::{base, fixture, opts};
 use crate::lr_activity::ligand_effect::averaging::combine;
-use crate::lr_activity::ligand_effect::exposure::Contacts;
+use crate::lr_activity::ligand_effect::contacts::Contacts;
+use crate::lr_activity::ligand_effect::dose::niche_ligand;
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::response::{niche_ligand, programme_columns};
+use crate::lr_activity::ligand_effect::response::programme_columns;
 use crate::lr_activity::ligand_effect::simulate::Scenario;
 
 // * Bleed

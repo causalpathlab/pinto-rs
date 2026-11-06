@@ -3,7 +3,7 @@
 //! all, the crude, section-only and spatial estimates are fooled and the
 //! identity step is not. The nested designs share the full matrix.
 
-use super::estimate_pair;
+use super::{estimate_pair, overlap_terms};
 use crate::lr_activity::ligand_effect::crossfit::Design;
 use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::folds::spatial_folds;

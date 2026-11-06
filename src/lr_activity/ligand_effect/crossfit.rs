@@ -1,4 +1,4 @@
-//! Spatial cross-fitting folds and the shared design matrix with its per-fold Grams.
+//! Cross-fitting folds and the shared design matrix with its per-fold Grams.
 
 use nalgebra::DMatrix;
 use rayon::prelude::*;

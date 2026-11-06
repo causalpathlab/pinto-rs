@@ -1,4 +1,5 @@
-//! Co-expression baselines for `pinto lra-simulate`: the ligand–receptor
+//! Co-expression baselines for the `pinto lra-simulate` benchmark, of which
+//! [`coexpression`] is also the column `pinto lra` reports: the ligand–receptor
 //! statistics in common use, none of which adjusts for a confounder, each
 //! asked the same question as the estimator ("is the pair interacting?")
 //! and tested at the same 5% level, one-sided (more co-expression than
@@ -59,7 +60,7 @@ use rand::SeedableRng;
 
 /// Permutations of every permutation baseline. Bonferroni over up to 64
 /// type pairs needs `64 / (1 + P) < 0.05`, so `P ≥ 1280`.
-pub const PERMUTATIONS: usize = 2000;
+const PERMUTATIONS: usize = 2000;
 
 /// Permutations per chunk, each chunk with its own seed.
 const CHUNK: usize = 100;
@@ -68,15 +69,15 @@ const CHUNK: usize = 100;
 const ROUND: usize = 5;
 
 /// Leading identity bits kept as cell types (at most `2^3 = 8` types).
-pub const TYPE_BITS: usize = 3;
+const TYPE_BITS: usize = 3;
 
 /// Least detection share of the ligand in the sender type and of the
 /// receptor in the receiver type for a type pair to be tested
 /// (CellPhoneDB's default threshold).
-pub const MIN_DETECTED: f64 = 0.1;
+const MIN_DETECTED: f64 = 0.1;
 
 /// The level every method is tested at.
-pub const ALPHA: f64 = 0.05;
+const ALPHA: f64 = 0.05;
 
 /// One run's baselines: each statistic and its one-sided p (NaN where the
 /// statistic is undefined, which never rejects).

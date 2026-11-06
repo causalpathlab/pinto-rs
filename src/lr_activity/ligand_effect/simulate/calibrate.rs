@@ -4,7 +4,7 @@
 use crate::lr_activity::ligand_effect::tissue::Tissue;
 
 /// Floor on a producer's true rate, in expected counts at median depth.
-pub const R_FLOOR: f64 = 0.5;
+const R_FLOOR: f64 = 0.5;
 
 /// Log-rate lift of the programme's baseline in the marker type (signed
 /// per gene, about a doubling).

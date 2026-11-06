@@ -9,8 +9,8 @@ use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_gen
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared, Study};
 use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts};
 use super::{
-    background, exposure, only, options, output, receivers, report, rows, timing, RunInputs,
-    Settings, INTERNALS,
+    background, contacts, only, options, output, receivers, report, rows, timing, RunInputs,
+    Settings, INTERNALS, LOG_TARGET,
 };
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
@@ -102,6 +102,7 @@ fn select_only(
     let wanted = only::parse(only_names)?;
     let keep = only::select(&wanted, &all, gene_names, index)?;
     info!(
+        target: LOG_TARGET,
         "--only: {} of {} pairs ({})",
         keep.iter().filter(|&&k| k).count(),
         all.len(),
@@ -198,6 +199,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     let needed = genes_to_read(&pairs, &background_genes);
     let local: HashMap<usize, usize> = needed.iter().enumerate().map(|(k, &g)| (g, k)).collect();
     info!(
+        target: LOG_TARGET,
         "Reading {} genes (ligands, receptors, targets) sparsely over {} receivers...",
         needed.len(),
         receivers.len()
@@ -289,7 +291,7 @@ fn estimate_one(
         n_removed: p.n_removed,
     };
     estimate_pair_with(&prep.tissue, &data, pool, &prep.eopts).unwrap_or_else(|e| {
-        warn!("{}-{}: {e}", p.ligand, p.receptor);
+        warn!(target: LOG_TARGET, "{}-{}: {e}", p.ligand, p.receptor);
         Vec::new()
     })
 }
@@ -306,7 +308,7 @@ fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
     let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
     let concurrent = pairs_at_once(prep);
     if concurrent > 1 {
-        info!("Estimating up to {concurrent} pairs at a time");
+        info!(target: LOG_TARGET, "Estimating up to {concurrent} pairs at a time");
     }
     let t_pairs = std::time::Instant::now();
     let rows = run_bounded(&prep.pairs, concurrent, |p: &Pair| {
@@ -316,6 +318,7 @@ fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
     });
     pb.finish();
     info!(
+        target: LOG_TARGET,
         "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
         prep.pairs.len(),
         t_pairs.elapsed().as_secs_f64(),
@@ -413,7 +416,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
 /// Who is competent for this receptor, by the estimator's own rule.
 fn competent_receivers(tissue: &Tissue, receptor_counts: &[f64], eopts: &EffectOpts) -> Vec<bool> {
     let detected: Vec<bool> = receptor_counts.iter().map(|&r| r > 0.0).collect();
-    exposure::competence(&tissue.identity_bin, &detected, eopts.competence())
+    contacts::competence(&tissue.identity_bin, &detected, eopts.competence())
 }
 
 /// The most abundant distinct ligands among pairs with receivers to estimate
@@ -495,13 +498,16 @@ fn settle_real_gene(
                 .iter()
                 .find(|p| p.ligand_genes == [*g])
                 .map_or_else(|| format!("gene #{g}"), |p| p.ligand.to_string());
-            info!("Real-gene confounder: {name}");
+            info!(target: LOG_TARGET, "Real-gene confounder: {name}");
         }
         None if gopts
             .confounders
             .contains(&simulate::ConfounderKind::RealGene) =>
         {
-            warn!("No gene outside the benchmarked pairs for the real-gene confounder; dropped");
+            warn!(
+                target: LOG_TARGET,
+                "No gene outside the benchmarked pairs for the real-gene confounder; dropped"
+            );
             gopts
                 .confounders
                 .retain(|&c| c != simulate::ConfounderKind::RealGene);
@@ -566,7 +572,7 @@ impl Benchmark<'_> {
             let r = match simulate(tissue, &base, &shared, scen, eopts, seed) {
                 Ok(r) => vec![r],
                 Err(e) => {
-                    warn!("{}-{} scenario {si}: {e}", p.ligand, p.receptor);
+                    warn!(target: LOG_TARGET, "{}-{} scenario {si}: {e}", p.ligand, p.receptor);
                     Vec::new()
                 }
             };
@@ -590,6 +596,7 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     settle_real_gene(&prep.pairs, confounder_gene.as_ref(), &mut gopts);
     let grid = default_grid(&gopts);
     info!(
+        target: LOG_TARGET,
         "Simulating {} scenarios × {} pairs on the real tissue...",
         grid.len(),
         order.len()
@@ -619,41 +626,4 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
     println!("{}", output::sim_summary(&rows));
     println!("lra-simulate: wrote {} runs to {path}", rows.len());
     Ok(())
-}
-
-/// Coordinates per data column from the `lc` run: `{prefix}.cells.parquet`
-/// when the run wrote one, else the endpoints in `{prefix}.coord_pairs.parquet`.
-pub fn read_coords(
-    lc_prefix: &str,
-    cell_to_col: &HashMap<Box<str>, usize>,
-    n_cells: usize,
-) -> anyhow::Result<Vec<Option<(f32, f32)>>> {
-    use crate::util::parquet_io::{read_cells_from_coord_pairs, read_cells_table};
-    let cells = std::path::PathBuf::from(format!("{lc_prefix}.cells.parquet"));
-    let table = if cells.exists() {
-        read_cells_table(&cells, None)?
-    } else {
-        read_cells_from_coord_pairs(
-            std::path::Path::new(&format!("{lc_prefix}.coord_pairs.parquet")),
-            None,
-        )?
-    };
-    let mut out = vec![None; n_cells];
-    let mut found = 0usize;
-    for (name, &xy) in table.names.iter().zip(&table.coords) {
-        if let Some(&c) = cell_to_col.get(name) {
-            out[c] = Some(xy);
-            found += 1;
-        }
-    }
-    anyhow::ensure!(
-        found > 0,
-        "no cell of the data has coordinates in {}",
-        if cells.exists() {
-            cells.display().to_string()
-        } else {
-            format!("{lc_prefix}.coord_pairs.parquet")
-        }
-    );
-    Ok(out)
 }

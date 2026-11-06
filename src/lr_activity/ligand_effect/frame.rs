@@ -3,11 +3,12 @@
 //! whether its identity bin makes it receptor-competent, and whether it
 //! carries the ligand itself.
 
-use super::exposure::{competence, Contacts};
+use super::contacts::{competence, Contacts};
+use super::dose::contact_dose;
 use super::genes::GeneStore;
 use super::options::{self, EffectOpts};
 use super::pairs::{reference_pairs, scarcest_subunit, signalling_genes, subunit_genes};
-use super::receivers::{contact_dose, receiver_contacts, size_factors};
+use super::receivers::{receiver_contacts, size_factors};
 use super::tissue::identity_bins;
 use super::{dose, PairChoices, INTERNALS};
 use crate::lr_activity::args::{LraInputArgs, ReferenceSpecies};

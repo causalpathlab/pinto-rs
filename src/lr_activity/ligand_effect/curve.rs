@@ -99,7 +99,7 @@ pub fn sup_t_crit(stacked: &[Vec<f64>], k: usize, seed: u64) -> f64 {
 /// sums. The bootstrap's critical value is a normal-reference one; with few
 /// clusters each point's is scaled by its t reference over the normal's,
 /// `c_k = c · t_{df_k} / z`, and never below the pointwise `t_{df_k}`.
-pub fn build_curve(
+fn build_curve(
     taus: &[(f64, f64)],
     est: &[Estimate],
     stacked: &[Vec<f64>],

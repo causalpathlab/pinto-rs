@@ -1,7 +1,8 @@
-//! Which ligand-receptor pairs to test: the reference, subunits, and `--only`.
+//! Which ligand-receptor pairs to test: the reference with the user's files on
+//! top, resolved to the data's genes and subunits.
 
 use super::targets::TargetSets;
-use super::{background, reference, PairChoices, INTERNALS};
+use super::{background, reference, PairChoices, INTERNALS, LOG_TARGET};
 use crate::lr_activity::args::ReferenceSpecies;
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
@@ -72,6 +73,7 @@ fn reference(
         );
     } else {
         info!(
+            target: LOG_TARGET,
             "Reference ({species:?}): {} ({})",
             root.display(),
             human_bytes(size)
@@ -92,7 +94,7 @@ fn dir_size(dir: &Path) -> u64 {
         .sum()
 }
 
-pub fn human_bytes(b: u64) -> String {
+fn human_bytes(b: u64) -> String {
     let mb = b as f64 / (1u64 << 20) as f64;
     if mb >= 1024.0 {
         format!("{:.1} GB", mb / 1024.0)
@@ -164,14 +166,14 @@ pub(super) fn signalling_genes(
 }
 
 /// Separators of a complex's subunits in a ligand or receptor name
-/// (`ITGA4_ITGB1`, `ITGA4+ITGB1`, `ITGA4:ITGB1`).
+/// (`SUB1_SUB2`, `SUB1+SUB2`, `SUB1:SUB2`).
 const SUBUNIT_SEPARATORS: [char; 3] = ['_', '+', ':'];
 
 /// Gene-axis rows of a ligand or receptor name. A name that is itself a gene
 /// of the panel is that gene; any other name with a subunit separator is a
 /// complex, one row per subunit, and `None` when any subunit is missing.
-/// The split comes first: the gene index, asked for `ITGA4_ITGB1`, would
-/// match its trailing symbol `ITGB1` and lose the complex.
+/// The split comes first: the gene index, asked for `SUB1_SUB2`, would
+/// match its trailing symbol `SUB2` and lose the complex.
 pub(super) fn subunit_genes(
     name: &str,
     gene_names: &[Box<str>],
@@ -279,6 +281,7 @@ pub(super) fn resolve_pairs(
     }
     if no_gene + no_set + thin > 0 {
         warn!(
+            target: LOG_TARGET,
             "Contact effect: kept {} pairs; dropped {no_gene} with a ligand or receptor (or a \
              subunit of one) not in the data, {no_set} with no response programme, {thin} \
              whose programme has fewer than {} measured genes",
@@ -290,7 +293,7 @@ pub(super) fn resolve_pairs(
 }
 
 /// Human or mouse from the gene names' case: human symbols are upper case
-/// (`TGFB1`), mouse symbols capitalised (`Tgfb1`). Ensembl ids and names
+/// (`GENE1`), mouse symbols capitalised (`Gene1`). Ensembl ids and names
 /// without letters vote for neither.
 fn species_of(gene_names: &[Box<str>]) -> reference::Species {
     let (mut upper, mut title) = (0usize, 0usize);
@@ -316,6 +319,9 @@ fn species_of(gene_names: &[Box<str>]) -> reference::Species {
     } else {
         reference::Species::Human
     };
-    info!("Species from gene names: {species:?} ({upper} upper-case, {title} capitalised symbols)");
+    info!(
+        target: LOG_TARGET,
+        "Species from gene names: {species:?} ({upper} upper-case, {title} capitalised symbols)"
+    );
     species
 }

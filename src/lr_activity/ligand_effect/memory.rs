@@ -1,4 +1,5 @@
-//! How many pairs run at once, from the memory each needs and what the machine has.
+//! How many pairs run at once, from the memory each needs and what the machine
+//! has, and runs them under that bound.
 
 use super::overlap::NuisanceOpts;
 use super::tissue::Tissue;
