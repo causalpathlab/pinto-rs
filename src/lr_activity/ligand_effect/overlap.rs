@@ -347,9 +347,10 @@ pub fn difference(a: &Estimate, sums_a: &[f64], b: &Estimate, sums_b: &[f64]) ->
 }
 
 /// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`, read from the
-/// fit behind `effect`, the augmented estimate on the same rows. Its variance is
-/// `effect`'s: the coefficient's sampling error in a linear model is
-/// `Σ T̃ (Y − m) / Σ T̃²`, and the augmentation term is that with `T̃ = T − e`.
+/// fit behind `effect`, the augmented estimate on the same rows. Reported as a
+/// point estimate. Everything but `theta` is borrowed from `effect`: the `se` and
+/// `df` are first-order for the coefficient's sampling error, and only decide how
+/// the fits and thresholds of the average count ([`super::effects::ScopeEffects::outcome`]).
 pub fn outcome_estimate(terms: &OverlapTerms, effect: &Estimate, rows: &[u32]) -> Estimate {
     let (mut outcome, mut h) = (0.0, 0.0);
     for &i in rows {

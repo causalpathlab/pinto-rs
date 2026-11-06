@@ -24,6 +24,8 @@ pub struct ScopeEffects {
     /// The competent effect by overlap weights alone ([`arm_contrast`]).
     pub ipw: Estimate,
     /// The competent effect by the outcome regression alone ([`outcome_estimate`]).
+    /// Only `theta` is reported: the rest is borrowed for averaging, and must not
+    /// be read as this estimate's own uncertainty.
     pub outcome: Estimate,
     pub incompetent: Estimate,
     pub ring: Estimate,

@@ -153,12 +153,13 @@ impl CurvePoint {
             c
         };
         let (t, se) = (effect.theta, effect.se);
+        let (lo, hi) = effect.interval();
         Self {
             tau,
             quantile,
             effect,
-            lo: t - c * se,
-            hi: t + c * se,
+            lo,
+            hi,
             band_lo: t - b * se,
             band_hi: t + b * se,
         }
@@ -184,8 +185,7 @@ pub struct Moments {
 
 impl Moments {
     pub fn of(e: &Estimate) -> Self {
-        let c = e.crit();
-        let (lo, hi) = (e.theta - c * e.se, e.theta + c * e.se);
+        let (lo, hi) = e.interval();
         let pct = |x: f64| 100.0 * x.exp_m1();
         Self {
             lo,

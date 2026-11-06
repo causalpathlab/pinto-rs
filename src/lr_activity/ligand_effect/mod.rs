@@ -27,7 +27,10 @@
 //! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
 //!   ratio; `marginal_cor`, the correlation of response and contact ligand; `crude`, the
 //!   unadjusted contrast; `effect_ipw` and `effect_outcome`, the headline's two halves,
-//!   overlap weights alone and the outcome regression alone.
+//!   overlap weights alone and the outcome regression alone. `effect_ipw` carries an
+//!   SE and 95% interval, as read for comparison: the average leans to thresholds with
+//!   a large z, and no control guards it. `effect_outcome` is a point estimate only,
+//!   because it can target a different contrast when exposure is misclassified.
 //!
 //! **Inference across pairs** ([`report::report`]): Benjamini–Hochberg q-values
 //! within the pooled rows and within each section, for the competent effect

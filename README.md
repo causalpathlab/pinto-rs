@@ -105,11 +105,14 @@ pooled row). `effect_competent` is the headline, a log-rate change of the
 response programme (`exp(x) - 1` is the percent change); `verdict` sums up
 the evidence and `verdict_note` says why in words. For comparison, and in no
 verdict: `marginal_cor` (the correlation of response and contact ligand),
-`crude` (exposed minus unexposed, no adjustment), `effect_ipw` (overlap weights
-alone) and `effect_outcome` (the outcome regression alone), each with `_se`.
-The last three are averaged over exposure thresholds as the headline is, each
-by its own evidence. `pinto view` shows the pairs and draws each on the tissue
-(see `view`, `I`):
+`crude` (exposed minus unexposed, no adjustment), each with `_se`; `effect_ipw`
+(overlap weights alone) with `_se`, `_lo` and `_hi`, an interval no control
+guards, so not a test of the pair; and `effect_outcome` (the outcome regression
+alone), a point estimate with no SE or interval, because it can target a
+different contrast when exposure is misclassified. `crude`,
+`effect_ipw` and `effect_outcome` are averaged over exposure thresholds as the
+headline is, each by its own evidence. `pinto view` shows the pairs and draws
+each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
 |---|---|

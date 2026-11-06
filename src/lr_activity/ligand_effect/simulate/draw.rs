@@ -801,7 +801,7 @@ pub fn simulate(
         marginal_cor,
         crude: e.crude,
         ipw: e.ipw,
-        outcome: e.outcome,
+        outcome: e.outcome.theta,
         incompetent: e.incompetent,
         ring: e.ring,
         ring_truth,

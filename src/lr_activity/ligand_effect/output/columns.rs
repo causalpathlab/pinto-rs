@@ -58,6 +58,13 @@ impl<'r, T> Columns<'r, T> {
             .f(&format!("{name}_se"), |r| f(r).se)
     }
 
+    /// `name`, `name_se`, and the 95% interval as `name_lo` and `name_hi`.
+    pub(super) fn est_interval(&mut self, name: &str, f: impl Fn(&T) -> Estimate) -> &mut Self {
+        self.est(name, &f)
+            .f(&format!("{name}_lo"), |r| f(r).interval().0)
+            .f(&format!("{name}_hi"), |r| f(r).interval().1)
+    }
+
     pub(super) fn write(&self, path: &str) -> anyhow::Result<()> {
         let table: Vec<(Box<str>, Column<'_>)> = self
             .order

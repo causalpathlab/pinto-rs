@@ -340,10 +340,10 @@ fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool
 fn the_simulate_reply_is_the_comparison_table() {
     let (t, f) = (true, false);
     let runs = [
-        run(0.0, 0.5, [f, t, f, f, t, f, f, f, f], t),
-        run(0.0, 0.5, [f, t, f, f, f, f, f, f, f], f),
-        run(0.3, 0.0, [f, t, f, f, t, t, t, t, t], t),
-        run(0.3, 0.0, [f, t, f, f, t, t, t, t, f], t),
+        run(0.0, 0.5, [f, t, f, t, f, f, f, f], t),
+        run(0.0, 0.5, [f, t, f, f, f, f, f, f], f),
+        run(0.3, 0.0, [f, t, f, t, t, t, t, t], t),
+        run(0.3, 0.0, [f, t, f, t, t, t, t, f], t),
     ];
     let v = comparison_summary(&runs);
     assert_eq!(v["runs"], 4);
@@ -442,7 +442,6 @@ fn simulate_runs_read_back_as_written() {
     let later = [
         "marginal_reject",
         "ipw_reject",
-        "outcome_reject",
         "background_confounding",
         "generic_shift",
         "dose_response",

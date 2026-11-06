@@ -6,7 +6,7 @@
 //! | `marginal_cor` | Pearson correlation of the response and `log1p` contact ligand over competent receivers, on its own scale (association) |
 //! | `crude` | mean response of exposed minus unexposed competent receivers, no adjustment (association) |
 //! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model |
-//! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction |
+//! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction; a point estimate, with no SE or interval |
 //! | `effect_competent` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
 //! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
 //! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
