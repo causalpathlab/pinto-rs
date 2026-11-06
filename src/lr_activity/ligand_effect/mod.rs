@@ -68,7 +68,8 @@
 //!   the answer;
 //! - around them: [`baselines`] are the co-expression scores it is compared
 //!   with, [`simulate`] benchmarks the estimator on this tissue with a planted
-//!   effect, and [`output`] writes and reads the tables.
+//!   effect, [`output`] writes and reads the tables, and [`timing`] sums the
+//!   time per stage for the run log.
 
 pub mod averaging;
 pub mod background;
@@ -100,6 +101,7 @@ pub mod rows;
 pub mod simulate;
 pub mod targets;
 pub mod thresholds;
+pub mod timing;
 pub mod tissue;
 pub mod verdict;
 

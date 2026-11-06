@@ -188,7 +188,7 @@ pub fn propensity(
     opts: &NuisanceOpts,
     starts: &mut FoldStarts,
 ) -> anyhow::Result<Vec<f64>> {
-    use super::estimate::timing;
+    use super::timing;
     let n = design.x.nrows();
     anyhow::ensure!(t.len() == n, "row count mismatch");
     let tf: Vec<f64> = t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
@@ -250,7 +250,7 @@ pub fn overlap_terms_with(
     o_cols.push(&tf);
     o_cols.extend(products.iter().map(|c| c.as_slice()));
 
-    use super::estimate::timing;
+    use super::timing;
     let products = timing::time(timing::RIDGE, || {
         fold_products(design.x, design.p, &o_cols, pair.y, &cf.fold, cf.k)
     });

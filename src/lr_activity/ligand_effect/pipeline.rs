@@ -9,8 +9,8 @@ use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_gen
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared, Study};
 use super::tissue::{Tissue, TissueInputs, TissueOpts};
 use super::{
-    background, estimate, exposure, lra_simulate_path, only, options, output, receivers, report,
-    rows, RunInputs, INTERNALS,
+    background, exposure, lra_simulate_path, only, options, output, receivers, report, rows,
+    timing, RunInputs, INTERNALS,
 };
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
@@ -322,7 +322,7 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         "Estimated {} pairs in {:.0}s ({concurrent} at a time). Thread time: {}",
         prep.pairs.len(),
         t_pairs.elapsed().as_secs_f64(),
-        estimate::timing::summary()
+        timing::summary()
     );
     report::report(&mut rows, &INTERNALS.report_opts());
     let subset = !a.only.is_empty();

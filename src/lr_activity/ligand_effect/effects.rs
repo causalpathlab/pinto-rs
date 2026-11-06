@@ -2,13 +2,13 @@
 //! across competence and weightings.
 
 use super::averaging::AbfSummary;
-use super::crossfit::DesignView;
-use super::estimate::timing;
+use super::crossfit::{CrossFit, DesignView};
 use super::fits::{arms_open, fit_main, thin_subset, Fit, Rows, ThresholdFits};
 use super::inference::Estimate;
 use super::options::{EffectOpts, NEAR_DETERMINED_H};
 use super::overlap::{arm_contrast, difference, outcome_estimate, subset_estimate, OverlapTerms};
 use super::response::Response;
+use super::timing;
 
 /// Where an estimand is summed: the whole tissue, one section, or one
 /// receiver cell type.
@@ -142,44 +142,7 @@ pub fn effects_on(
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
-    use timing::{time, MAIN, NOSPILL, STEPS};
-    let (design, cf) = (rows.design.view(), rows.cf);
-    let reads = fits.reads;
-    let fit = |run: bool, kind: Fit, step: Option<usize>, d: DesignView<'_>| {
-        run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
-            .transpose()
-    };
-    let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
-        Ok((
-            fit(fits.runs(reads.competent), Fit::Main, None, design)?,
-            fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
-        ))
-    })?;
-    let runs_competent = fits.runs(reads.competent);
-    let nospill = time(NOSPILL, || {
-        fit(sens.nospill && runs_competent, Fit::NoSpill, None, design)
-    })?;
-    let steps = if sens.steps && runs_competent {
-        time(STEPS, || {
-            rows.steps
-                .iter()
-                .enumerate()
-                .map(|(k, s)| {
-                    fit_main(
-                        s.design.view(rows.design),
-                        cf,
-                        fits,
-                        r,
-                        Fit::Main,
-                        Some(k),
-                        opts,
-                    )
-                })
-                .collect::<anyhow::Result<Vec<_>>>()
-        })?
-    } else {
-        Vec::new()
-    };
+    let terms = ResponseFits::run(rows, fits, r, sens, opts)?;
     let (t, t_ring) = (&fits.exposure.t, &fits.exposure.t_ring);
     // Per scope, whether the competent effect has an estimate: the middle
     // threshold ([`super::fits::Reads`]).
@@ -189,91 +152,226 @@ pub fn effects_on(
         .iter()
         .map(|inside| arms_open(inside, t, middle, opts))
         .collect();
+    let reader = ScopeReader {
+        cf: rows.cf,
+        t,
+        t_ring,
+        y: &r.y,
+        terms: &terms,
+        sens,
+        opts,
+    };
     let levels = fits
         .levels
         .iter()
-        .map(|competent| {
-            let mut pooled_sums = Vec::new();
-            let scopes = rows
-                .scope_rows
-                .iter()
-                .enumerate()
-                .map(|(k, inside)| {
-                    let (comp, incomp): (Vec<u32>, Vec<u32>) =
-                        inside.iter().partition(|&&i| competent[i as usize]);
-                    let open = headline[k];
-                    // A subset's estimate from `terms`, or the guard's verdict
-                    // on it when the fit was skipped or the scope has no
-                    // headline.
-                    let est = |terms: Option<&OverlapTerms>, t: &[bool], sub: &[u32]| match terms {
-                        Some(terms) if open => opts.guard(subset_estimate(terms, t, sub, cf)),
-                        _ => thin_subset(t, sub, cf),
-                    };
-                    let (on_competent, sums) = est(main.as_ref(), t, &comp);
-                    let (on_incompetent, incompetent_sums) = est(main.as_ref(), t, &incomp);
-                    let contrast =
-                        difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
-                    let (on_ring, ring_sums) = est(ring.as_ref(), t_ring, &comp);
-                    let over_ring = difference(&on_competent, &sums, &on_ring, &ring_sums);
-                    let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
-                    let crude = arm_contrast(&r.y, t, &comp, cf, |_| 1.0);
-                    let (ipw, outcome) = match &main {
-                        Some(m) if on_competent.theta.is_finite() => (
-                            arm_contrast(&r.y, t, &comp, cf, |i| m.arm_weight[i]),
-                            outcome_estimate(m, &on_competent, &comp),
-                        ),
-                        _ => (nan, nan),
-                    };
-                    let mut step_est = [nan; 3];
-                    let mut without_spill = nan;
-                    let near_determined = match &main {
-                        Some(m) if open && !comp.is_empty() => {
-                            let near = comp
-                                .iter()
-                                .filter(|&&i| m.h[i as usize] < NEAR_DETERMINED_H)
-                                .count();
-                            near as f64 / comp.len() as f64
-                        }
-                        _ => f64::NAN,
-                    };
-                    if k == 0 {
-                        if sens.nospill {
-                            without_spill = est(nospill.as_ref(), t, &comp).0;
-                        }
-                        if sens.steps {
-                            for (j, e) in step_est.iter_mut().enumerate() {
-                                *e = est(steps.get(j), t, &comp).0;
-                            }
-                        }
-                        pooled_sums = sums;
-                    }
-                    ScopeEffects {
-                        effect: contrast,
-                        competent: on_competent,
-                        crude,
-                        ipw,
-                        outcome,
-                        incompetent: on_incompetent,
-                        ring: on_ring,
-                        over_ring,
-                        steps: step_est,
-                        nospill: without_spill,
-                        near_determined,
-                        abf: AbfSummary::NONE,
-                    }
-                })
-                .collect();
-            LevelEffects {
-                scopes,
-                pooled_sums,
-            }
-        })
+        .map(|competent| reader.level(rows.scope_rows, competent, &headline))
         .collect();
-    let h = match main {
-        Some(m) if reads.competent => m.h,
+    let h = match terms.main {
+        Some(m) if fits.reads.competent => m.h,
         _ => Vec::new(),
     };
     Ok(Effects { levels, h })
+}
+
+/// The per-row terms of each fit of one response at one threshold; a fit
+/// that was skipped is absent.
+struct ResponseFits {
+    main: Option<OverlapTerms>,
+    ring: Option<OverlapTerms>,
+    nospill: Option<OverlapTerms>,
+    steps: Vec<OverlapTerms>,
+}
+
+impl ResponseFits {
+    /// The main and ring fits where their subsets are open, and the
+    /// sensitivity fits `sens` asks for where the main one is.
+    fn run(
+        rows: Rows<'_>,
+        fits: &ThresholdFits<'_>,
+        r: &Response,
+        sens: Sensitivity,
+        opts: &EffectOpts,
+    ) -> anyhow::Result<Self> {
+        use timing::{time, MAIN, NOSPILL, STEPS};
+        let (design, cf) = (rows.design.view(), rows.cf);
+        let reads = fits.reads;
+        let fit = |run: bool, kind: Fit, step: Option<usize>, d: DesignView<'_>| {
+            run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
+                .transpose()
+        };
+        let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
+            Ok((
+                fit(fits.runs(reads.competent), Fit::Main, None, design)?,
+                fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
+            ))
+        })?;
+        let runs_competent = fits.runs(reads.competent);
+        let nospill = time(NOSPILL, || {
+            fit(sens.nospill && runs_competent, Fit::NoSpill, None, design)
+        })?;
+        let steps = if sens.steps && runs_competent {
+            time(STEPS, || {
+                rows.steps
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| {
+                        fit_main(
+                            s.design.view(rows.design),
+                            cf,
+                            fits,
+                            r,
+                            Fit::Main,
+                            Some(k),
+                            opts,
+                        )
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            main,
+            ring,
+            nospill,
+            steps,
+        })
+    }
+}
+
+/// Reads the estimands of one response at one threshold off its fits.
+struct ScopeReader<'a> {
+    cf: &'a CrossFit,
+    t: &'a [bool],
+    t_ring: &'a [bool],
+    y: &'a [f64],
+    terms: &'a ResponseFits,
+    sens: Sensitivity,
+    opts: &'a EffectOpts,
+}
+
+impl ScopeReader<'_> {
+    /// Every scope at the competence level `competent`; the pooled scope is the
+    /// first, and its competent effect's cluster sums are kept.
+    fn level(
+        &self,
+        scope_rows: &[Vec<u32>],
+        competent: &[bool],
+        headline: &[bool],
+    ) -> LevelEffects {
+        let mut pooled_sums = Vec::new();
+        let scopes = scope_rows
+            .iter()
+            .enumerate()
+            .map(|(k, inside)| {
+                let (effects, sums) = self.scope(inside, competent, headline[k], k == 0);
+                if k == 0 {
+                    pooled_sums = sums;
+                }
+                effects
+            })
+            .collect();
+        LevelEffects {
+            scopes,
+            pooled_sums,
+        }
+    }
+
+    /// Every estimand on the rows `inside`, with the cluster sums of the
+    /// competent effect; `open` says the scope has a headline, and the
+    /// sensitivity estimands are read on the `pooled` scope alone.
+    fn scope(
+        &self,
+        inside: &[u32],
+        competent: &[bool],
+        open: bool,
+        pooled: bool,
+    ) -> (ScopeEffects, Vec<f64>) {
+        let (comp, incomp): (Vec<u32>, Vec<u32>) =
+            inside.iter().partition(|&&i| competent[i as usize]);
+        let main = self.terms.main.as_ref();
+        let (on_competent, sums) = self.subset(main, open, self.t, &comp);
+        let (on_incompetent, incompetent_sums) = self.subset(main, open, self.t, &incomp);
+        let contrast = difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
+        let (on_ring, ring_sums) = self.subset(self.terms.ring.as_ref(), open, self.t_ring, &comp);
+        let over_ring = difference(&on_competent, &sums, &on_ring, &ring_sums);
+        let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
+        let crude = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
+        let (ipw, outcome) = match main {
+            Some(m) if on_competent.theta.is_finite() => (
+                arm_contrast(self.y, self.t, &comp, self.cf, |i| m.arm_weight[i]),
+                outcome_estimate(m, &on_competent, &comp),
+            ),
+            _ => (nan, nan),
+        };
+        let near_determined = match main {
+            Some(m) if open && !comp.is_empty() => near_determined_share(m, &comp),
+            _ => f64::NAN,
+        };
+        let (steps, nospill) = if pooled {
+            self.sensitivity(open, &comp, nan)
+        } else {
+            ([nan; 3], nan)
+        };
+        let effects = ScopeEffects {
+            effect: contrast,
+            competent: on_competent,
+            crude,
+            ipw,
+            outcome,
+            incompetent: on_incompetent,
+            ring: on_ring,
+            over_ring,
+            steps,
+            nospill,
+            near_determined,
+            abf: AbfSummary::NONE,
+        };
+        (effects, sums)
+    }
+
+    /// A subset's estimate from `terms`, or the guard's verdict on it when the
+    /// fit was skipped or the scope has no headline.
+    fn subset(
+        &self,
+        terms: Option<&OverlapTerms>,
+        open: bool,
+        t: &[bool],
+        sub: &[u32],
+    ) -> (Estimate, Vec<f64>) {
+        match terms {
+            Some(terms) if open => self.opts.guard(subset_estimate(terms, t, sub, self.cf)),
+            _ => thin_subset(t, sub, self.cf),
+        }
+    }
+
+    /// The step and no-spill estimands on the competent rows `comp`; an estimand
+    /// not asked for is `nan`.
+    fn sensitivity(&self, open: bool, comp: &[u32], nan: Estimate) -> ([Estimate; 3], Estimate) {
+        let mut steps = [nan; 3];
+        let mut nospill = nan;
+        if self.sens.nospill {
+            nospill = self
+                .subset(self.terms.nospill.as_ref(), open, self.t, comp)
+                .0;
+        }
+        if self.sens.steps {
+            for (j, e) in steps.iter_mut().enumerate() {
+                *e = self.subset(self.terms.steps.get(j), open, self.t, comp).0;
+            }
+        }
+        (steps, nospill)
+    }
+}
+
+/// Share of the rows `comp` whose overlap weight is below
+/// [`NEAR_DETERMINED_H`]; `comp` is not empty.
+fn near_determined_share(terms: &OverlapTerms, comp: &[u32]) -> f64 {
+    let near = comp
+        .iter()
+        .filter(|&&i| terms.h[i as usize] < NEAR_DETERMINED_H)
+        .count();
+    near as f64 / comp.len() as f64
 }
 
 /// The pooled competent effect of the response `r` at the middle threshold with

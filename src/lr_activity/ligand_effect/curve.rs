@@ -1,10 +1,10 @@
 //! The threshold-response curve and its simultaneous band.
 
 use super::averaging::combine;
-use super::estimate::timing;
 use super::inference::Estimate;
 use super::options::{BAND_DRAWS, CURVE_QUANTILES};
 use super::rows::CurvePoint;
+use super::timing;
 
 /// The curve's thresholds as `(τ, quantile)`: τ = 0 (any ligand on a
 /// neighbour), the [`super::options::CURVE_QUANTILES`] of the positive exposures, and the

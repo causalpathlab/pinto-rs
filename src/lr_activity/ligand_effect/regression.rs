@@ -143,7 +143,7 @@ pub(super) fn ridge_bordered(
 }
 
 /// Newton steps a logistic fit may take at most; every step moves, so this
-/// is a guard ([`super::estimate::timing::newton`] counts the fits it stops).
+/// is a guard ([`super::timing::newton`] counts the fits it stops).
 const MAX_NEWTON_STEPS: usize = 500;
 
 /// Largest coefficient change at which a Newton step's Hessian may serve the
@@ -320,7 +320,7 @@ fn newton_on_rows(
     ridge: f64,
     init: Option<&DVector<f64>>,
 ) -> anyhow::Result<DVector<f64>> {
-    use super::estimate::timing;
+    use super::timing;
     let m = t.len();
     let mut beta = match init {
         Some(b) if b.len() == d && b.iter().all(|v| v.is_finite()) => b.clone(),

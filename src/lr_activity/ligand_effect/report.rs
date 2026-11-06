@@ -165,27 +165,39 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
 
 /// Verdict and warnings of one row from its q-values and diagnostics.
 fn judge(row: &mut EffectRow, opts: &ReportOpts) {
+    let head = row.effects.competent;
+    let controls = failed_controls(row, opts);
+    let ev = Evidence {
+        estimable: head.theta.is_finite() && head.se.is_finite(),
+        effect: row.effect_q < opts.fdr,
+        coexpr: row.coexpr_q < opts.fdr,
+        control_failed: controls.iter().any(|c| c.0),
+        confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
+    };
+    row.verdict = verdict(ev);
+    row.warnings = warnings(row, ev, &controls, opts);
+}
+
+/// A condition of a row and the warning it raises when it holds.
+type Flag = (bool, &'static str);
+
+/// Beside a significant effect, the effect must exceed each negative
+/// control, the same way, and a comparison that could not run has not held,
+/// but for a background programme where none exists (no match in the pool,
+/// or a section's row). A hidden field moves the controls too, so one being
+/// significant does not rule the effect out: it is reported ([`control_notes`]),
+/// and what decides is whether the effect is larger.
+fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 6] {
     let sig = |q: f64| q < opts.fdr;
     let head = row.effects.competent;
     let effect = sig(row.effect_q);
-    // Beside a significant effect, the effect must exceed each negative
-    // control, the same way, and a comparison that could not run has not held,
-    // but for a background programme where none exists (no match in the pool,
-    // or a section's row). A hidden field moves the controls too, so one being
-    // significant does not rule the effect out: it is reported, and what
-    // decides is whether the effect is larger.
     let unchecked = |q: f64| effect && q.is_nan();
     let exceeds = |q: f64, over: Estimate| sig(q) && over.theta * head.theta > 0.0;
     let beaten = |q: f64, over: Estimate| effect && !q.is_nan() && !exceeds(q, over);
-    let (negative_q, ring_q, background_q) = (
-        row.effect_incompetent_q,
-        row.ring_effect_q,
-        row.background_q,
-    );
     let (over_negative_q, over_ring_q) = (row.effect_contrast_q, row.effect_over_ring_q);
     let over_background_q = row.effect_over_background_q;
     let has_background = row.n_background_genes > 0;
-    let controls = [
+    [
         (
             unchecked(over_negative_q),
             "receptor-negative receivers could not be checked",
@@ -210,45 +222,56 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
             has_background && beaten(over_background_q, row.effect_over_background),
             "the effect does not exceed the one on a matched background programme",
         ),
-    ];
-    let notes = [
-        (sig(negative_q), "receptor-negative receivers respond"),
-        (sig(ring_q), "distant senders have an effect"),
+    ]
+}
+
+/// The negative controls significant on their own: reported, deciding nothing.
+fn control_notes(row: &EffectRow, opts: &ReportOpts) -> [Flag; 3] {
+    let sig = |q: f64| q < opts.fdr;
+    [
         (
-            sig(background_q),
+            sig(row.effect_incompetent_q),
+            "receptor-negative receivers respond",
+        ),
+        (sig(row.ring_effect_q), "distant senders have an effect"),
+        (
+            sig(row.background_q),
             "a matched background programme responds too",
         ),
-    ];
-    let ev = Evidence {
-        estimable: head.theta.is_finite() && head.se.is_finite(),
-        effect,
-        coexpr: sig(row.coexpr_q),
-        control_failed: controls.iter().any(|c| c.0),
-        confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
-    };
-    row.verdict = verdict(ev);
+    ]
+}
+
+/// Why the row's competent effect has no estimate.
+fn not_estimable_reason(row: &EffectRow, opts: &ReportOpts) -> String {
+    let head = row.effects.competent;
+    if row.n_competent == 0 {
+        "not estimable: no receptor-competent receivers".into()
+    } else if thin_arm(opts.min_arm, head.n, head.n_treated) {
+        format!(
+            "not estimable: thin arm ({} exposed, {} unexposed competent receivers; \
+             internal guard min_arm {}, see outputs.lra.settings in the manifest)",
+            head.n_treated,
+            head.n.saturating_sub(head.n_treated),
+            opts.min_arm
+        )
+    } else if head.df == ONE_CLUSTER_DF {
+        "not estimable: the competent receivers lie in one variance cluster (spatial \
+         tile), so the standard error has no degrees of freedom"
+            .into()
+    } else {
+        "not estimable: low overlap (mean overlap weight or its effective sample size \
+         under the internal guards min_overlap / min_ess, see outputs.lra.settings in the \
+         manifest)"
+            .into()
+    }
+}
+
+/// The row's warnings, joined: why it has no estimate, what confounds it, the
+/// controls it failed, then the controls that respond.
+fn warnings(row: &EffectRow, ev: Evidence, controls: &[Flag], opts: &ReportOpts) -> String {
     let mut w: Vec<String> = Vec::new();
     if !ev.estimable {
-        w.push(if row.n_competent == 0 {
-            "not estimable: no receptor-competent receivers".into()
-        } else if thin_arm(opts.min_arm, head.n, head.n_treated) {
-            format!(
-                "not estimable: thin arm ({} exposed, {} unexposed competent receivers; \
-                 internal guard min_arm {}, see outputs.lra.settings in the manifest)",
-                head.n_treated,
-                head.n.saturating_sub(head.n_treated),
-                opts.min_arm
-            )
-        } else if head.df == ONE_CLUSTER_DF {
-            "not estimable: the competent receivers lie in one variance cluster (spatial \
-             tile), so the standard error has no degrees of freedom"
-                .into()
-        } else {
-            "not estimable: low overlap (mean overlap weight or its effective sample size \
-             under the internal guards min_overlap / min_ess, see outputs.lra.settings in the \
-             manifest)"
-                .into()
-        });
+        w.push(not_estimable_reason(row, opts));
     }
     if ev.confounded {
         w.push(format!(
@@ -263,9 +286,9 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     w.extend(
         controls
             .iter()
-            .chain(&notes)
+            .chain(&control_notes(row, opts))
             .filter(|c| c.0)
             .map(|c| c.1.to_string()),
     );
-    row.warnings = w.join("; ");
+    w.join("; ")
 }

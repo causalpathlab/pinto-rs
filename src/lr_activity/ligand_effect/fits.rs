@@ -2,12 +2,12 @@
 
 use super::crossfit::{CrossFit, DesignView};
 use super::dose::Exposure;
-use super::estimate::timing;
 use super::inference::Estimate;
 use super::options::EffectOpts;
 use super::overlap::{overlap_terms_with, propensity, FoldStarts, OverlapTerms, PairInputs};
 use super::regression::standardize;
 use super::response::Response;
+use super::timing;
 use super::tissue::Tissue;
 
 /// The rows an effect is estimated on: the tissue's receivers, with the rows

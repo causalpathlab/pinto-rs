@@ -127,15 +127,16 @@ use super::averaging::combine;
 use super::background::BackgroundPool;
 use super::curve::threshold_curve;
 use super::dose::Exposure;
-use super::effects::{Scope, Sensitivity};
+use super::effects::{Scope, ScopeEffects, Sensitivity};
 use super::fits::{indicator, Rows};
 use super::inference::Estimate;
 use super::options::EffectOpts;
 use super::overlap::marginal_correlation;
 use super::report::eta_squared;
 use super::response::{genes_and_weights, Response, Targets};
-use super::rows::EffectRow;
+use super::rows::{CurvePoint, EffectRow};
 use super::thresholds::{aligned, over_thresholds, thresholds};
+use super::timing;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
 use legume_numeric::matrix::rand_util::{mix_seed, name_seed};
@@ -170,33 +171,14 @@ pub fn estimate_pair_with(
     pool: &BackgroundPool<'_>,
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<EffectRow>> {
-    let n = tissue.n();
     let ex = timing::time(timing::FRAME, || {
         Exposure::build(tissue, pair.ligand_counts, opts)
     });
     let detected: Vec<bool> = pair.receptor_counts.iter().map(|&r| r > 0.0).collect();
     let comps = super::exposure::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
-    let responses: Vec<Response> = timing::time(timing::FRAME, || {
-        match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
-            Some(wb) => {
-                let (genes, wa) = genes_and_weights(pair.targets);
-                Response::build_many(tissue, &genes, &[wa, wb])
-            }
-            None => std::iter::once(pair.targets)
-                .chain(pair.reweighted)
-                .map(|p| Response::build(tissue, p))
-                .collect(),
-        }
-    });
-    // Seeded by the pair, so a pair's background programmes don't depend on
-    // which others run.
-    let pair_seed = name_seed(opts.seed, &format!("{}\0{}", pair.ligand, pair.receptor));
-    let plan = BackgroundPool::plan(&tissue.size_factor, pair.targets);
-    let backgrounds: Vec<_> = (0..opts.background_draws)
-        .map(|k| pool.draw(&plan, mix_seed(pair_seed, k as u64)))
-        .filter(|d| !d.is_empty())
-        .collect();
+    let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
+    let backgrounds = draw_backgrounds(tissue, pair, pool, opts);
     let n_background_genes = backgrounds.first().map_or(0, Vec::len);
     let eff = over_thresholds(
         Rows::cells(tissue),
@@ -220,36 +202,103 @@ pub fn estimate_pair_with(
         mix_seed(opts.seed, 0xc0_ffee),
     ));
     let log_dose: Vec<f64> = ex.dose.iter().map(|d| d.ln_1p()).collect();
-    let competent = &comps[comps.len() / 2];
+    let reads = PairReads {
+        tissue,
+        pair,
+        ex: &ex,
+        responses: &responses,
+        log_dose: &log_dose,
+        competent: &comps[comps.len() / 2],
+        background: (eff.background, eff.over_background),
+        n_background_genes,
+    };
     let mut rows = Vec::with_capacity(tissue.scopes.len());
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
     for (((label, scope), inside_rows), e) in scopes.zip(eff.scopes) {
-        let mut inside = vec![false; n];
+        let curve = if *scope == Scope::All {
+            curve.take().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        rows.push(reads.row(label, *scope, inside_rows, e, curve));
+    }
+    Ok(rows)
+}
+
+/// The pair's response per weighting of its programme: one joint build when the
+/// reweighted programme lies on the same genes, else one build each.
+fn pair_responses(tissue: &Tissue, pair: &PairData<'_>) -> Vec<Response> {
+    match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
+        Some(wb) => {
+            let (genes, wa) = genes_and_weights(pair.targets);
+            Response::build_many(tissue, &genes, &[wa, wb])
+        }
+        None => std::iter::once(pair.targets)
+            .chain(pair.reweighted)
+            .map(|p| Response::build(tissue, p))
+            .collect(),
+    }
+}
+
+/// The pair's background programmes, seeded by the pair, so they don't depend
+/// on which other pairs run; a draw the pool cannot match is left out.
+fn draw_backgrounds<'p>(
+    tissue: &Tissue,
+    pair: &PairData<'_>,
+    pool: &BackgroundPool<'p>,
+    opts: &EffectOpts,
+) -> Vec<Vec<(f64, &'p [(u32, f32)])>> {
+    let pair_seed = name_seed(opts.seed, &format!("{}\0{}", pair.ligand, pair.receptor));
+    let plan = BackgroundPool::plan(&tissue.size_factor, pair.targets);
+    (0..opts.background_draws)
+        .map(|k| pool.draw(&plan, mix_seed(pair_seed, k as u64)))
+        .filter(|d| !d.is_empty())
+        .collect()
+}
+
+/// What every scope's row reads of one pair.
+struct PairReads<'a> {
+    tissue: &'a Tissue,
+    pair: &'a PairData<'a>,
+    ex: &'a Exposure,
+    responses: &'a [Response],
+    log_dose: &'a [f64],
+    /// Competence at the middle threshold of the grid.
+    competent: &'a [bool],
+    /// The background effect and the effect over it, for the pooled row.
+    background: (Estimate, Estimate),
+    n_background_genes: usize,
+}
+
+impl PairReads<'_> {
+    /// The row of one scope, its verdict and q-values left empty.
+    fn row(
+        &self,
+        label: &str,
+        scope: Scope,
+        inside_rows: &[u32],
+        e: ScopeEffects,
+        curve: Vec<CurvePoint>,
+    ) -> EffectRow {
+        let (tissue, pair, ex) = (self.tissue, self.pair, self.ex);
+        let mut inside = vec![false; tissue.n()];
         for &i in inside_rows {
             inside[i as usize] = true;
         }
         let comp: Vec<u32> = inside_rows
             .iter()
             .copied()
-            .filter(|&i| competent[i as usize])
+            .filter(|&i| self.competent[i as usize])
             .collect();
         let (lor, lse) = coexpression(tissue, pair.ligand_counts, pair.receptor_counts, &inside);
-        let bins = |side: bool| -> usize {
-            let set: std::collections::HashSet<usize> = inside_rows
-                .iter()
-                .map(|&i| i as usize)
-                .filter(|&i| competent[i] == side)
-                .map(|i| tissue.identity_bin[i])
-                .collect();
-            set.len()
-        };
         let marginal_cor = combine(
-            &responses
+            &self
+                .responses
                 .iter()
-                .map(|r| marginal_correlation(&r.y, &log_dose, &comp, &tissue.cf))
+                .map(|r| marginal_correlation(&r.y, self.log_dose, &comp, &tissue.cf))
                 .collect::<Vec<_>>(),
         );
-        let pooled = *scope == Scope::All;
+        let pooled = scope == Scope::All;
         // How far neighbour identity explains the exposure, at the threshold
         // the average leans on.
         let eta2 = eta_squared(
@@ -257,13 +306,13 @@ pub fn estimate_pair_with(
             &indicator(&ex.leaned_on(e.abf)),
             inside_rows,
         );
-        let (background, over_background) = if pooled {
-            (eff.background, eff.over_background)
+        let background = if pooled {
+            self.background
         } else {
             (Estimate::nan(0, 0), Estimate::nan(0, 0))
         };
-        rows.push(EffectRow {
-            section: label.clone(),
+        EffectRow {
+            section: label.into(),
             ligand: pair.ligand.into(),
             receptor: pair.receptor.into(),
             n_targets: pair.targets.len(),
@@ -273,23 +322,29 @@ pub fn estimate_pair_with(
             n_exposed: inside_rows.iter().filter(|&&i| ex.t[i as usize]).count(),
             threshold: ex.tau,
             marginal_cor,
-            n_competent_bins: bins(true),
-            n_incompetent_bins: bins(false),
-            curve: if pooled {
-                curve.take().unwrap_or_default()
-            } else {
-                Vec::new()
-            },
+            n_competent_bins: self.identity_bins(inside_rows, true),
+            n_incompetent_bins: self.identity_bins(inside_rows, false),
+            curve,
             ..EffectRow::pending(
                 e,
                 (lor, lse),
                 eta2,
-                (background, over_background),
-                if pooled { n_background_genes } else { 0 },
+                background,
+                if pooled { self.n_background_genes } else { 0 },
             )
-        });
+        }
     }
-    Ok(rows)
+
+    /// How many identity bins the rows on this `side` of competence fall in.
+    fn identity_bins(&self, inside_rows: &[u32], side: bool) -> usize {
+        let set: std::collections::HashSet<usize> = inside_rows
+            .iter()
+            .map(|&i| i as usize)
+            .filter(|&i| self.competent[i] == side)
+            .map(|i| self.tissue.identity_bin[i])
+            .collect();
+        set.len()
+    }
 }
 
 /// The co-expression log odds over the contacts inside the scope, both
@@ -326,84 +381,4 @@ pub fn coexpression(
     }
     let (lor, se) = jeffreys_log_odds(n, n11, nl, nr);
     (lor as f64, se as f64)
-}
-
-/// Wall time per stage summed over calls (and threads), for the run log.
-pub mod timing {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    pub const STAGES: [&str; 9] = [
-        "frame",
-        "main+ring fits",
-        "no-spill fit",
-        "step fits",
-        "other thresholds",
-        "background fit",
-        "band",
-        "(in fits: outcome ridge",
-        "propensity)",
-    ];
-    pub const RIDGE: usize = 7;
-    pub const LOGISTIC: usize = 8;
-    pub const FRAME: usize = 0;
-    pub const MAIN: usize = 1;
-    pub const NOSPILL: usize = 2;
-    pub const STEPS: usize = 3;
-    pub const THRESHOLDS: usize = 4;
-    pub const BACKGROUND: usize = 5;
-    pub const BAND: usize = 6;
-
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO: AtomicU64 = AtomicU64::new(0);
-    static NS: [AtomicU64; 9] = [ZERO; 9];
-    static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
-    static PROPENSITY_FITS: AtomicU64 = AtomicU64::new(0);
-    static HESSIANS: AtomicU64 = AtomicU64::new(0);
-    static UNCONVERGED: AtomicU64 = AtomicU64::new(0);
-
-    /// One logistic fit that computed `hessians` Hessians; `converged`
-    /// false when it stopped at the step guard, not at the optimum.
-    pub fn newton(hessians: usize, converged: bool) {
-        PROPENSITY_FITS.fetch_add(1, Ordering::Relaxed);
-        HESSIANS.fetch_add(hessians as u64, Ordering::Relaxed);
-        if !converged {
-            UNCONVERGED.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn time<T>(stage: usize, f: impl FnOnce() -> T) -> T {
-        let t = std::time::Instant::now();
-        let out = f();
-        NS[stage].fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        out
-    }
-
-    pub fn add(stage: usize, since: std::time::Instant) {
-        NS[stage].fetch_add(since.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    }
-
-    /// One pair none of whose fits ran: every subset left an arm thin.
-    pub fn all_skipped() {
-        ALL_SKIPPED.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Thread-seconds per stage and the pairs
-    /// with every fit skipped.
-    pub fn summary() -> String {
-        let stages: Vec<String> = STAGES
-            .iter()
-            .zip(&NS)
-            .map(|(s, n)| format!("{s} {:.0}s", n.load(Ordering::Relaxed) as f64 * 1e-9))
-            .collect();
-        let fits = PROPENSITY_FITS.load(Ordering::Relaxed);
-        format!(
-            "{}; {} pairs with every fit skipped (thin \
-             arms); {} propensity fold fits, {:.1} Hessians each, {} not converged",
-            stages.join(", "),
-            ALL_SKIPPED.load(Ordering::Relaxed),
-            fits,
-            HESSIANS.load(Ordering::Relaxed) as f64 / fits.max(1) as f64,
-            UNCONVERGED.load(Ordering::Relaxed)
-        )
-    }
 }
