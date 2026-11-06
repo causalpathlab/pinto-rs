@@ -178,7 +178,7 @@ fn no_effect_under_regional_confounding() {
             "no planted effect means a zero truth"
         );
         est_rej += r.rejected() as usize;
-        crude_rej += r.crude_rejected() as usize;
+        crude_rej += r.crude.rejects() as usize;
         z_sum += r.estimate.z();
     }
     assert!(
@@ -248,9 +248,9 @@ fn spillover_is_absorbed() {
             r.no_spill.theta.is_finite(),
             "the no-spill fit runs under spillover"
         );
-        crude_rej += (r.crude_rejected() && r.crude > 0.0) as usize;
+        crude_rej += (r.crude.rejects() && r.crude.theta > 0.0) as usize;
         est += r.estimate.theta / runs as f64;
-        crude += r.crude / runs as f64;
+        crude += r.crude.theta / runs as f64;
         z_bare += r.no_spill.z() / runs as f64;
     }
     assert!(
@@ -285,10 +285,10 @@ fn a_shifted_field_has_no_contact_effect() {
         r.estimate.z()
     );
     assert!(
-        r.crude / r.crude_se > 3.0,
+        r.crude.z() > 3.0,
         "crude {:.3} ± {:.3}",
-        r.crude,
-        r.crude_se
+        r.crude.theta,
+        r.crude.se
     );
 }
 

@@ -101,10 +101,10 @@ fn a_marker_type_fools_the_crude_contrast() {
         let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 6).unwrap();
         assert_eq!(r.truth, 0.0);
         assert!(
-            r.crude / r.crude_se > 3.0,
+            r.crude.z() > 3.0,
             "crude {:.3} ± {:.3}",
-            r.crude,
-            r.crude_se
+            r.crude.theta,
+            r.crude.se
         );
         assert!(
             !r.estimable() || r.estimate.z().abs() < 3.0,

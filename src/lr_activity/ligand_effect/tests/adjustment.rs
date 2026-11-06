@@ -149,7 +149,7 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
     ];
     let report = format!(
         "crude {:.3}; {}",
-        pooled.crude,
+        pooled.effects.crude.theta,
         STEP_NAMES
             .iter()
             .chain(&["full"])
@@ -158,13 +158,19 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    assert!(pooled.crude > 0.2, "crude contrast not fooled: {report}");
+    assert!(
+        pooled.effects.crude.theta > 0.2,
+        "crude contrast not fooled: {report}"
+    );
     for (name, e) in STEP_NAMES.iter().zip(&steps).take(2) {
         assert!(e.z() > 3.0, "{name} step not fooled: {report}");
     }
     for e in &steps[2..] {
         assert!(e.z().abs() < 3.0, "identity step still biased: {report}");
-        assert!(e.theta.abs() < 0.25 * pooled.crude, "{report}");
+        assert!(
+            e.theta.abs() < 0.25 * pooled.effects.crude.theta,
+            "{report}"
+        );
     }
     for r in &rows[1..] {
         assert!(r.effects.steps[0].theta.is_nan());

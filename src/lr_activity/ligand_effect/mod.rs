@@ -23,8 +23,10 @@
 //!   no headline, but a significant effect must exceed the incompetent one;
 //! - `ring_effect`, the ring effect: effect of ligand on distant non-touching cells given
 //!   the real exposure (≈ 0 is a negative control for spatial confounding);
-//! - `coexpr_log_or` and `crude`: the co-expression log odds ratio and the crude contrast,
-//!   for comparison.
+//! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
+//!   ratio; `marginal_cor`, the correlation of response and contact ligand; `crude`, the
+//!   unadjusted contrast; `effect_ipw` and `effect_outcome`, the headline's two halves,
+//!   overlap weights alone and the outcome regression alone.
 //!
 //! **Inference across pairs** ([`estimate::report`]): Benjamini–Hochberg
 //! q-values within the pooled rows and within each section, for the competent effect

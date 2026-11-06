@@ -287,6 +287,10 @@ pub struct OverlapTerms {
     pub h: Vec<f64>,
     /// `h(m₁ − m₀) + T(1 − e)(Y − m₁) − (1 − T)e(Y − m₀)`.
     pub num: Vec<f64>,
+    /// `h(m₁ − m₀)`, the outcome regression without the augmentation.
+    pub outcome: Vec<f64>,
+    /// The overlap weight of the row's own arm: `1 − e` if exposed, `e` if not.
+    pub arm_weight: Vec<f64>,
 }
 
 /// Per-pair inputs to [`overlap_terms_with`].
@@ -464,6 +468,8 @@ pub fn overlap_terms_with(
     });
     let mut h = vec![0.0; n];
     let mut num = vec![0.0; n];
+    let mut outcome = vec![0.0; n];
+    let mut arm_weight = vec![0.0; n];
     for (k, fold) in products.iter().enumerate() {
         let (train, test) = (&cf.train[k], &cf.test[k]);
         if test.is_empty() {
@@ -488,14 +494,22 @@ pub fn overlap_terms_with(
             let w = ei * (1.0 - ei);
             let yi = pair.y[i];
             h[i] = w;
-            num[i] = if pair.t[i] {
-                w * (m1 - m0) + (1.0 - ei) * (yi - m1)
+            outcome[i] = w * (m1 - m0);
+            if pair.t[i] {
+                arm_weight[i] = 1.0 - ei;
+                num[i] = outcome[i] + (1.0 - ei) * (yi - m1);
             } else {
-                w * (m1 - m0) - ei * (yi - m0)
-            };
+                arm_weight[i] = ei;
+                num[i] = outcome[i] - ei * (yi - m0);
+            }
         });
     }
-    Ok(OverlapTerms { h, num })
+    Ok(OverlapTerms {
+        h,
+        num,
+        outcome,
+        arm_weight,
+    })
 }
 
 /// One subgroup's estimate.
@@ -675,24 +689,111 @@ fn clustered_sd(sums: &[f64]) -> (f64, f64) {
     ((ss * scale).sqrt(), df)
 }
 
-/// The unadjusted contrast `mean(Y | T=1) − mean(Y | T=0)` over `rows`:
-/// what a co-expression style comparison would report on the same scale.
-pub fn crude_difference(y: &[f64], t: &[bool], rows: &[u32]) -> f64 {
-    let (mut s1, mut n1, mut s0, mut n0) = (0.0, 0usize, 0.0, 0usize);
+/// The weighted mean response of the exposed minus that of the unexposed over
+/// `rows`, with its tile-clustered variance. Weight 1 is the crude contrast,
+/// what a co-expression style comparison would report on the same scale; the
+/// overlap weight of a row's own arm ([`OverlapTerms::arm_weight`]) is inverse
+/// probability weighting, with no outcome model.
+pub fn arm_contrast(
+    y: &[f64],
+    t: &[bool],
+    rows: &[u32],
+    cf: &CrossFit,
+    weight: impl Fn(usize) -> f64,
+) -> Estimate {
+    let (mut w1, mut s1, mut w0, mut s0) = (0.0, 0.0, 0.0, 0.0);
+    let mut treated = 0usize;
     for &i in rows {
         let i = i as usize;
+        let w = weight(i);
         if t[i] {
-            s1 += y[i];
-            n1 += 1;
+            treated += 1;
+            w1 += w;
+            s1 += w * y[i];
         } else {
-            s0 += y[i];
-            n0 += 1;
+            w0 += w;
+            s0 += w * y[i];
         }
     }
-    if n1 == 0 || n0 == 0 {
-        return f64::NAN;
+    if w1 <= 1e-12 || w0 <= 1e-12 {
+        return Estimate::nan(rows.len(), treated);
     }
-    s1 / n1 as f64 - s0 / n0 as f64
+    let (m1, m0) = (s1 / w1, s0 / w0);
+    let mut sums = vec![0.0; cf.n_clusters()];
+    for &i in rows {
+        let i = i as usize;
+        sums[cf.cluster[i] as usize] += if t[i] {
+            weight(i) * (y[i] - m1) / w1
+        } else {
+            -weight(i) * (y[i] - m0) / w0
+        };
+    }
+    let (se, df) = clustered_sd(&sums);
+    Estimate {
+        theta: m1 - m0,
+        se,
+        df,
+        ..Estimate::nan(rows.len(), treated)
+    }
+}
+
+/// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`, read from the
+/// fit behind `effect`, the augmented estimate on the same rows. Its variance is
+/// `effect`'s: the coefficient's sampling error in a linear model is
+/// `Σ T̃ (Y − m) / Σ T̃²`, and the augmentation term is that with `T̃ = T − e`.
+pub fn outcome_estimate(terms: &OverlapTerms, effect: &Estimate, rows: &[u32]) -> Estimate {
+    let (mut outcome, mut h) = (0.0, 0.0);
+    for &i in rows {
+        outcome += terms.outcome[i as usize];
+        h += terms.h[i as usize];
+    }
+    Estimate {
+        theta: if h > 1e-12 { outcome / h } else { f64::NAN },
+        ..*effect
+    }
+}
+
+/// Pearson's correlation of `y` and `x` over `rows`, with the tile-clustered
+/// variance of its linearization: the marginal association, no threshold and
+/// no adjustment. A constant `y` or `x` has none.
+pub fn marginal_correlation(y: &[f64], x: &[f64], rows: &[u32], cf: &CrossFit) -> Estimate {
+    let nan = Estimate::nan(rows.len(), 0);
+    let n = rows.len() as f64;
+    let mean = |v: &[f64]| rows.iter().map(|&i| v[i as usize]).sum::<f64>() / n;
+    let (my, mx) = (mean(y), mean(x));
+    let spread = |v: &[f64], m: f64| {
+        (rows
+            .iter()
+            .map(|&i| (v[i as usize] - m).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt()
+    };
+    let (sy, sx) = (spread(y, my), spread(x, mx));
+    if rows.is_empty() || sy <= 1e-12 || sx <= 1e-12 {
+        return nan;
+    }
+    let scaled = |i: u32| ((y[i as usize] - my) / sy, (x[i as usize] - mx) / sx);
+    let r = rows
+        .iter()
+        .map(|&i| {
+            let (a, b) = scaled(i);
+            a * b
+        })
+        .sum::<f64>()
+        / n;
+    let mut sums = vec![0.0; cf.n_clusters()];
+    for &i in rows {
+        let (a, b) = scaled(i);
+        sums[cf.cluster[i as usize] as usize] += (a * b - 0.5 * r * (a * a + b * b)) / n;
+    }
+    let (se, df) = clustered_sd(&sums);
+    Estimate {
+        theta: r,
+        se,
+        df,
+        ..nan
+    }
 }
 
 // * Combining analyses

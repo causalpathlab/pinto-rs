@@ -115,7 +115,7 @@ use super::estimate::{
 };
 use super::exposure::competence;
 use super::output::Verdict;
-use super::overlap::{crude_difference, Estimate};
+use super::overlap::{marginal_correlation, Estimate};
 use super::regression::standardize;
 use super::tissue::Tissue;
 use super::INTERNALS;
@@ -132,10 +132,6 @@ pub const R_FLOOR: f64 = 0.5;
 /// Log-rate lift of the programme's baseline in the marker type (signed
 /// per gene, about a doubling).
 pub const MARKER_LIFT: f64 = 0.7;
-
-/// Two-sided 5% normal critical value, for the crude contrast's naive
-/// interval; the estimates use their t reference ([`Estimate::crit`]).
-pub const Z_CRIT: f64 = super::overlap::Z_975;
 
 // * Scenarios
 
@@ -556,8 +552,10 @@ pub struct SimRow {
     /// The same contrast under the overlap weights at the headline threshold.
     pub truth_weighted: f64,
     pub estimate: Estimate,
-    pub crude: f64,
-    pub crude_se: f64,
+    pub marginal_cor: Estimate,
+    pub crude: Estimate,
+    pub ipw: Estimate,
+    pub outcome: Estimate,
     pub incompetent: Estimate,
     pub ring: Estimate,
     /// Sample average effect of the true ring exposure over competent
@@ -598,14 +596,14 @@ impl SimRow {
     pub fn rejected(&self) -> bool {
         self.estimable() && self.estimate.rejects()
     }
-    pub fn crude_rejected(&self) -> bool {
-        (self.crude / self.crude_se).abs() > Z_CRIT
-    }
     /// Whether each method of [`COMPARED`] rejects at 5%.
-    pub fn rejections(&self) -> [bool; 6] {
+    pub fn rejections(&self) -> [bool; COMPARED.len()] {
         let b = |k: usize| baselines::rejects((baselines::METHODS[k].1)(&self.baselines));
         [
-            self.crude_rejected(),
+            self.marginal_cor.rejects(),
+            self.crude.rejects(),
+            self.ipw.rejects(),
+            self.outcome.rejects(),
             b(0),
             b(1),
             b(2),
@@ -615,10 +613,12 @@ impl SimRow {
     }
 }
 
-/// The methods `lra-simulate` compares at 5%: the crude contrast, the
-/// co-expression baselines ([`super::baselines::METHODS`]) and the estimator.
-pub const COMPARED: [&str; 6] = [
-    "crude", "celltype", "moran", "contact", "coexpr", "estimate",
+/// The methods `lra-simulate` compares at 5%: the marginal correlation, the
+/// crude contrast, overlap weights alone, the outcome regression alone, the
+/// co-expression baselines ([`super::baselines::METHODS`]) and the estimator,
+/// which combines the two.
+pub const COMPARED: [&str; 9] = [
+    "marginal", "crude", "ipw", "outcome", "celltype", "moran", "contact", "coexpr", "estimate",
 ];
 
 // * Real ingredients
@@ -1379,8 +1379,8 @@ pub fn simulate(
         (sample_effect(&y1, &y0, &comp), weighted)
     };
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
-    let crude = crude_difference(&response.y, &exposure.t, &comp_rows);
-    let crude_se = naive_se(&response.y, &exposure.t, &comp);
+    let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
+    let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
     let mut judged = EffectRow::pending(
         e,
         (
@@ -1403,8 +1403,10 @@ pub fn simulate(
         truth,
         truth_weighted,
         estimate: e.competent,
-        crude,
-        crude_se,
+        marginal_cor,
+        crude: e.crude,
+        ipw: e.ipw,
+        outcome: e.outcome,
         incompetent: e.incompetent,
         ring: e.ring,
         ring_truth,
@@ -1495,27 +1497,4 @@ fn shift_field(tissue: &Tissue, v: &[f64], shift: f64, seed: u64) -> Vec<f64> {
             v[best.1]
         })
         .collect()
-}
-
-/// The two-sample standard error a naive comparison would report.
-fn naive_se(y: &[f64], t: &[bool], subset: &[bool]) -> f64 {
-    let group = |arm: bool| -> (f64, f64, usize) {
-        let v: Vec<f64> = (0..y.len())
-            .filter(|&i| subset[i] && t[i] == arm)
-            .map(|i| y[i])
-            .collect();
-        let n = v.len();
-        if n < 2 {
-            return (0.0, 0.0, n);
-        }
-        let m = v.iter().sum::<f64>() / n as f64;
-        let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64;
-        (m, var, n)
-    };
-    let (_, v1, n1) = group(true);
-    let (_, v0, n0) = group(false);
-    if n1 < 2 || n0 < 2 {
-        return f64::NAN;
-    }
-    (v1 / n1 as f64 + v0 / n0 as f64).sqrt()
 }

@@ -241,7 +241,10 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .f("exposure_threshold", |(r, _)| r.threshold)
         .f("coexpr_log_or", |(r, _)| r.coexpr_log_or)
         .f("coexpr_se", |(r, _)| r.coexpr_se)
-        .f("crude", |(r, _)| r.crude)
+        .est("marginal_cor", |(r, _)| r.marginal_cor)
+        .est("crude", |(r, _)| r.effects.crude)
+        .est("effect_ipw", |(r, _)| r.effects.ipw)
+        .est("effect_outcome", |(r, _)| r.effects.outcome)
         .est("effect_competent", |(r, _)| r.effects.competent)
         .f("effect_competent_df", |(r, _)| r.effects.competent.df)
         .f("effect_p", |(r, _)| r.effect_p)
@@ -364,7 +367,7 @@ mod sim_cols {
 /// exposure, `truth_weighted` the same under the estimator's overlap
 /// weights; `estimable` is 0 where the estimate was not reported. The
 /// co-expression baselines ([`super::baselines`]) come with their p and a
-/// 0/1 `_reject` at 5%, beside `crude_reject` and `estimate_reject`.
+/// 0/1 `_reject` at 5%, as have the other methods of [`COMPARED`].
 pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
     use sim_cols::*;
     let mut c = Columns::new(rows);
@@ -388,8 +391,10 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f("estimate", |r| r.estimate.theta)
         .f("se", |r| r.estimate.se)
         .f("df", |r| r.estimate.df)
-        .f("crude", |r| r.crude)
-        .f("crude_se", |r| r.crude_se)
+        .est("marginal_cor", |r| r.marginal_cor)
+        .est("crude", |r| r.crude)
+        .est("effect_ipw", |r| r.ipw)
+        .est("effect_outcome", |r| r.outcome)
         .est("effect_incompetent", |r| r.incompetent)
         .est("ring_effect", |r| r.ring)
         .f("ring_truth", |r| r.ring_truth)
@@ -574,7 +579,6 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
     fn est(e: &Estimate) -> (f64, f64, f64) {
         (e.theta, e.se, e.crit())
     }
-    use super::simulate::Z_CRIT as Z;
     let share = |v: &[bool]| -> String {
         if v.is_empty() {
             "-".into()
@@ -585,12 +589,13 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
             )
         }
     };
-    // (estimate, se, two-sided 5% critical value): the t reference for the
-    // estimates, the normal for the crude contrast's naive interval.
+    // (estimate, se, two-sided 5% critical value of its t reference).
     type View = fn(&SimRow) -> (f64, f64, f64);
-    let views: [(&str, View); 5] = [
+    let views: [(&str, View); 7] = [
         ("estimate", |r| est(&r.estimate)),
-        ("crude", |r| (r.crude, r.crude_se, Z)),
+        ("crude", |r| est(&r.crude)),
+        ("ipw", |r| est(&r.ipw)),
+        ("outcome", |r| est(&r.outcome)),
         ("section", |r| est(&r.steps[0])),
         ("spatial", |r| est(&r.steps[1])),
         ("identity", |r| est(&r.steps[2])),
@@ -697,7 +702,9 @@ fn is_null(s: &super::simulate::Scenario) -> bool {
 pub struct SimRun {
     pub scenario: super::simulate::Scenario,
     pub estimable: bool,
-    pub rejects: [bool; 6],
+    /// Per method of [`COMPARED`]: 1 when it rejects, else 0; NaN when a table
+    /// from an earlier version lacks the method.
+    pub rejects: [f64; COMPARED.len()],
 }
 
 impl From<&SimRow> for SimRun {
@@ -705,7 +712,7 @@ impl From<&SimRow> for SimRun {
         Self {
             scenario: r.scenario,
             estimable: r.estimable(),
-            rejects: r.rejections(),
+            rejects: r.rejections().map(|hit| hit as u8 as f64),
         }
     }
 }
@@ -722,7 +729,7 @@ pub struct ScenarioRates {
     /// Share of runs with a reported estimate.
     pub estimable: f64,
     /// Share of runs rejecting at 5%, per method of [`COMPARED`].
-    pub rates: [f64; 6],
+    pub rates: [f64; COMPARED.len()],
 }
 
 /// The comparison's numbers: per scenario, then the means over the
@@ -731,7 +738,7 @@ pub struct ScenarioRates {
 #[derive(Clone, Debug)]
 pub struct Comparison {
     pub scenarios: Vec<ScenarioRates>,
-    pub means: Vec<(&'static str, usize, [f64; 6])>,
+    pub means: Vec<(&'static str, usize, [f64; COMPARED.len()])>,
 }
 
 /// [`Comparison`] of `runs`, scenarios in the order they first appear. A
@@ -739,16 +746,16 @@ pub struct Comparison {
 /// rejecting.
 pub fn compare_runs(runs: &[SimRun]) -> Comparison {
     let groups = scenario_groups(runs, |r| &r.scenario);
-    let (mut nulls, mut planted): (Vec<[f64; 6]>, Vec<[f64; 6]>) = (Vec::new(), Vec::new());
+    let (mut nulls, mut planted) = (Vec::new(), Vec::new());
     let mut scenarios = Vec::with_capacity(groups.len());
     for (key, idx) in groups {
         let g: Vec<&SimRun> = idx.iter().map(|&i| &runs[i]).collect();
         let s = g[0].scenario;
         let null = is_null(&s);
-        let mut rates = [0.0; 6];
+        let mut rates = [0.0; COMPARED.len()];
         for r in &g {
             for (x, hit) in rates.iter_mut().zip(r.rejects) {
-                *x += hit as u8 as f64 / g.len() as f64;
+                *x += hit / g.len() as f64;
             }
         }
         if !null {
@@ -770,8 +777,8 @@ pub fn compare_runs(runs: &[SimRun]) -> Comparison {
     ]
     .into_iter()
     .filter(|(_, set)| !set.is_empty())
-    .map(|(label, set)| {
-        let mut m = [0.0; 6];
+    .map(|(label, set): (_, &Vec<[f64; COMPARED.len()]>)| {
+        let mut m = [0.0; COMPARED.len()];
         for (k, x) in m.iter_mut().enumerate() {
             *x = set.iter().map(|v| v[k]).sum::<f64>() / set.len() as f64;
         }
@@ -1086,15 +1093,9 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
         REP,
         ESTIMABLE,
     ];
-    let rejects: Vec<String> = COMPARED.iter().map(|m| reject(m)).collect();
-    let numeric: Vec<&str> = NUMBERS
-        .iter()
-        .copied()
-        .chain(rejects.iter().map(String::as_str))
-        .collect();
-    let (s, x) = read_table_columns(path, &[CONFOUNDER, SHAPE], &numeric)?;
+    let (s, x) = read_table_columns(path, &[CONFOUNDER, SHAPE], &NUMBERS)?;
     let col = |name: &str| -> &[f64] {
-        &x[numeric
+        &x[NUMBERS
             .iter()
             .position(|&n| n == name)
             .expect("a column read")]
@@ -1112,6 +1113,7 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
             .ok()
             .and_then(|(_, mut c)| c.pop())
     };
+    let rejects: Vec<Option<Vec<f64>>> = COMPARED.iter().map(|m| later(&reject(m))).collect();
     let plain = Scenario::default();
     let (background_confounding, generic_shift) =
         (later(BACKGROUND_CONFOUNDING), later(GENERIC_SHIFT));
@@ -1158,9 +1160,11 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
                 dose_midpoint: exact(&dose_midpoint, i, plain.dose_midpoint),
                 dose_order: exact(&dose_order, i, plain.dose_order as f64) as i32,
             };
-            let mut hits = [false; 6];
-            for (h, name) in hits.iter_mut().zip(&rejects) {
-                *h = flag(name, i);
+            let mut hits = [f64::NAN; COMPARED.len()];
+            for (h, c) in hits.iter_mut().zip(&rejects) {
+                if let Some(c) = c {
+                    *h = (c[i] != 0.0) as u8 as f64;
+                }
             }
             Ok(SimRun {
                 scenario,
