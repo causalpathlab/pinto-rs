@@ -4,6 +4,8 @@ use super::compare::SimRun;
 use super::write::sim_cols;
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
+#[cfg(feature = "view")]
+use crate::lr_activity::ligand_effect::simulate::{ConfoundShape, ConfounderKind, Scenario};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 /// A pooled row of `{out}.lra.parquet` as a summary reads it.
@@ -231,14 +233,11 @@ pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     v
 }
 
-/// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
-/// each column by its name ([`super::sim_cols`]).
+/// The number columns every `{out}.lra-simulate.parquet` has.
 #[cfg(feature = "view")]
-pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
-    use crate::lr_activity::ligand_effect::simulate::{ConfoundShape, ConfounderKind, Scenario};
-    use legume_numeric::matrix::parquet::read_table_columns;
+const SIM_NUMBERS: [&str; 12] = {
     use sim_cols::*;
-    const NUMBERS: [&str; 12] = [
+    [
         PLANTED_EFFECT,
         RING_EFFECT,
         CONFOUND_LIGAND,
@@ -251,85 +250,142 @@ pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
         CONFOUND_RECEPTOR,
         REP,
         ESTIMABLE,
-    ];
-    let (s, x) = read_table_columns(path, &[CONFOUNDER, SHAPE], &NUMBERS)?;
-    let col = |name: &str| -> &[f64] {
-        &x[NUMBERS
+    ]
+};
+
+/// The table keeps f32: back to the value as written (0.3, not
+/// 0.30000001), so a scenario reads as the run's summary words it.
+#[cfg(feature = "view")]
+fn as_written(v: f64) -> f64 {
+    let v = v as f32;
+    v.to_string().parse().unwrap_or(f64::from(v))
+}
+
+/// A column a table from an earlier version lacks.
+#[cfg(feature = "view")]
+fn later_column(path: &str, name: &str) -> Option<Vec<f64>> {
+    legume_numeric::matrix::parquet::read_table_columns(path, &[], &[name])
+        .ok()
+        .and_then(|(_, mut c)| c.pop())
+}
+
+/// A later column's value at row `i`, or the scenario's default without it.
+#[cfg(feature = "view")]
+fn later_value(c: &Option<Vec<f64>>, i: usize, default: f64) -> f64 {
+    c.as_ref().map_or(default, |c| as_written(c[i]))
+}
+
+/// `{out}.lra-simulate.parquet` as read: confounder and shape, [`SIM_NUMBERS`],
+/// and the columns a table from an earlier version lacks.
+#[cfg(feature = "view")]
+struct SimTable<'p> {
+    path: &'p str,
+    strings: Vec<Vec<Box<str>>>,
+    numbers: Vec<Vec<f64>>,
+    rejects: Vec<Option<Vec<f64>>>,
+    background_confounding: Option<Vec<f64>>,
+    generic_shift: Option<Vec<f64>>,
+    dose_response: Option<Vec<f64>>,
+    dose_midpoint: Option<Vec<f64>>,
+    dose_order: Option<Vec<f64>>,
+}
+
+#[cfg(feature = "view")]
+impl<'p> SimTable<'p> {
+    fn read(path: &'p str) -> anyhow::Result<Self> {
+        use sim_cols::*;
+        let (strings, numbers) = legume_numeric::matrix::parquet::read_table_columns(
+            path,
+            &[CONFOUNDER, SHAPE],
+            &SIM_NUMBERS,
+        )?;
+        let later = |name: &str| later_column(path, name);
+        Ok(Self {
+            path,
+            strings,
+            numbers,
+            rejects: COMPARED.iter().map(|m| later(&reject(m))).collect(),
+            background_confounding: later(BACKGROUND_CONFOUNDING),
+            generic_shift: later(GENERIC_SHIFT),
+            dose_response: later(DOSE_RESPONSE),
+            dose_midpoint: later(DOSE_MIDPOINT),
+            dose_order: later(DOSE_ORDER),
+        })
+    }
+
+    fn col(&self, name: &str) -> &[f64] {
+        &self.numbers[SIM_NUMBERS
             .iter()
             .position(|&n| n == name)
             .expect("a column read")]
-    };
-    // The table keeps f32: back to the value as written (0.3, not
-    // 0.30000001), so a scenario reads as the run's summary words it.
-    let num = |name: &str, i: usize| -> f64 {
-        let v = col(name)[i] as f32;
-        v.to_string().parse().unwrap_or(f64::from(v))
-    };
-    let flag = |name: &str, i: usize| col(name)[i] != 0.0;
-    // Columns a table from an earlier version lacks: the scenario's default.
-    let later = |name: &str| -> Option<Vec<f64>> {
-        read_table_columns(path, &[], &[name])
-            .ok()
-            .and_then(|(_, mut c)| c.pop())
-    };
-    let rejects: Vec<Option<Vec<f64>>> = COMPARED.iter().map(|m| later(&reject(m))).collect();
-    let plain = Scenario::default();
-    let (background_confounding, generic_shift) =
-        (later(BACKGROUND_CONFOUNDING), later(GENERIC_SHIFT));
-    let (dose_response, dose_midpoint, dose_order) = (
-        later(DOSE_RESPONSE),
-        later(DOSE_MIDPOINT),
-        later(DOSE_ORDER),
-    );
-    let exact = |c: &Option<Vec<f64>>, i: usize, default: f64| -> f64 {
-        c.as_ref().map_or(default, |c| {
-            let v = c[i] as f32;
-            v.to_string().parse().unwrap_or(f64::from(v))
+    }
+
+    fn num(&self, name: &str, i: usize) -> f64 {
+        as_written(self.col(name)[i])
+    }
+
+    fn flag(&self, name: &str, i: usize) -> bool {
+        self.col(name)[i] != 0.0
+    }
+
+    /// Row `i`'s scenario.
+    fn scenario(&self, i: usize) -> anyhow::Result<Scenario> {
+        use sim_cols::*;
+        let path = self.path;
+        let plain = Scenario::default();
+        let confounder: ConfounderKind = self.strings[0][i]
+            .parse()
+            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        let shape: ConfoundShape = self.strings[1][i]
+            .parse()
+            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        Ok(Scenario {
+            effect: self.num(PLANTED_EFFECT, i),
+            ring_effect: self.num(RING_EFFECT, i),
+            confound_ligand: self.num(CONFOUND_LIGAND, i),
+            confound_response: self.num(CONFOUND_RESPONSE, i),
+            scale: self.num(SCALE, i),
+            confounder,
+            shape,
+            heterogeneous: self.flag(HETEROGENEOUS, i),
+            marker: self.flag(MARKER, i),
+            spillover: self.num(SPILLOVER, i),
+            shift: self.num(SHIFT, i),
+            confound_receptor: self.flag(CONFOUND_RECEPTOR, i),
+            rep: self.col(REP)[i] as usize,
+            background_confounding: later_value(
+                &self.background_confounding,
+                i,
+                plain.background_confounding,
+            ),
+            generic_shift: later_value(&self.generic_shift, i, plain.generic_shift),
+            dose_response: later_value(&self.dose_response, i, 0.0) != 0.0,
+            dose_midpoint: later_value(&self.dose_midpoint, i, plain.dose_midpoint),
+            dose_order: later_value(&self.dose_order, i, plain.dose_order as f64) as i32,
         })
-    };
-    (0..s[0].len())
-        .map(|i| {
-            let confounder: ConfounderKind = s[0][i]
-                .parse()
-                .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
-            let shape: ConfoundShape = s[1][i]
-                .parse()
-                .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
-            let scenario = Scenario {
-                effect: num(PLANTED_EFFECT, i),
-                ring_effect: num(RING_EFFECT, i),
-                confound_ligand: num(CONFOUND_LIGAND, i),
-                confound_response: num(CONFOUND_RESPONSE, i),
-                scale: num(SCALE, i),
-                confounder,
-                shape,
-                heterogeneous: flag(HETEROGENEOUS, i),
-                marker: flag(MARKER, i),
-                spillover: num(SPILLOVER, i),
-                shift: num(SHIFT, i),
-                confound_receptor: flag(CONFOUND_RECEPTOR, i),
-                rep: col(REP)[i] as usize,
-                background_confounding: exact(
-                    &background_confounding,
-                    i,
-                    plain.background_confounding,
-                ),
-                generic_shift: exact(&generic_shift, i, plain.generic_shift),
-                dose_response: exact(&dose_response, i, 0.0) != 0.0,
-                dose_midpoint: exact(&dose_midpoint, i, plain.dose_midpoint),
-                dose_order: exact(&dose_order, i, plain.dose_order as f64) as i32,
-            };
-            let mut hits = [f64::NAN; COMPARED.len()];
-            for (h, c) in hits.iter_mut().zip(&rejects) {
-                if let Some(c) = c {
-                    *h = (c[i] != 0.0) as u8 as f64;
-                }
+    }
+
+    /// Row `i` as a run.
+    fn run(&self, i: usize) -> anyhow::Result<SimRun> {
+        let scenario = self.scenario(i)?;
+        let mut hits = [f64::NAN; COMPARED.len()];
+        for (h, c) in hits.iter_mut().zip(&self.rejects) {
+            if let Some(c) = c {
+                *h = (c[i] != 0.0) as u8 as f64;
             }
-            Ok(SimRun {
-                scenario,
-                estimable: flag(ESTIMABLE, i),
-                rejects: hits,
-            })
+        }
+        Ok(SimRun {
+            scenario,
+            estimable: self.flag(sim_cols::ESTIMABLE, i),
+            rejects: hits,
         })
-        .collect()
+    }
+}
+
+/// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
+/// each column by its name ([`super::sim_cols`]).
+#[cfg(feature = "view")]
+pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
+    let table = SimTable::read(path)?;
+    (0..table.strings[0].len()).map(|i| table.run(i)).collect()
 }

@@ -137,37 +137,38 @@ pub(super) fn scenario_groups<T>(
     groups
 }
 
-/// Per scenario: a title line (runs, misclassified exposure, ring and
-/// no-spill rejection), then one line each for the estimate, the crude
-/// contrast and the partial adjustments, with estimable share, bias and
-/// coverage against both truths, rejection rate (type I error or power)
-/// and, under a planted effect, attenuation. Then the comparison
-/// ([`super::comparison`]).
-pub fn sim_summary(rows: &[SimRow]) -> String {
-    fn est(e: &Estimate) -> (f64, f64, f64) {
-        (e.theta, e.se, e.crit())
+/// The share of `v` that holds, or `-` for none to take it over.
+fn share(v: &[bool]) -> String {
+    if v.is_empty() {
+        "-".into()
+    } else {
+        format!(
+            "{:.2}",
+            v.iter().filter(|&&b| b).count() as f64 / v.len() as f64
+        )
     }
-    let share = |v: &[bool]| -> String {
-        if v.is_empty() {
-            "-".into()
-        } else {
-            format!(
-                "{:.2}",
-                v.iter().filter(|&&b| b).count() as f64 / v.len() as f64
-            )
-        }
-    };
-    // (estimate, se, two-sided 5% critical value of its t reference).
-    type View = fn(&SimRow) -> (f64, f64, f64);
-    let views: [(&str, View); 7] = [
-        ("estimate", |r| est(&r.estimate)),
-        ("crude", |r| est(&r.crude)),
-        ("ipw", |r| est(&r.ipw)),
-        ("outcome", |r| est(&r.outcome)),
-        ("section", |r| est(&r.steps[0])),
-        ("spatial", |r| est(&r.steps[1])),
-        ("identity", |r| est(&r.steps[2])),
-    ];
+}
+
+fn est(e: &Estimate) -> (f64, f64, f64) {
+    (e.theta, e.se, e.crit())
+}
+
+/// (estimate, se, two-sided 5% critical value of its t reference).
+type View = fn(&SimRow) -> (f64, f64, f64);
+
+/// The lines of a scenario, in print order.
+const VIEWS: [(&str, View); 7] = [
+    ("estimate", |r| est(&r.estimate)),
+    ("crude", |r| est(&r.crude)),
+    ("ipw", |r| est(&r.ipw)),
+    ("outcome", |r| est(&r.outcome)),
+    ("section", |r| est(&r.steps[0])),
+    ("spatial", |r| est(&r.steps[1])),
+    ("identity", |r| est(&r.steps[2])),
+];
+
+/// What the columns mean, and the column headings.
+fn sim_legend() -> String {
     let mut out = String::from(
         "`truth` is the sample average effect of the true exposure over competent \
          receivers (estimator-free); `_w` columns use the estimator-weighted truth. \
@@ -180,77 +181,100 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
         "  {:<9} {:>5}  {:>7} {:>7}  {:>5} {:>7}  {:<6} {:>6}  {:>6}\n",
         "", "estim", "bias", "bias_w", "cover", "cover_w", "rate", "reject", "atten"
     );
+    out
+}
+
+/// The share of `g` whose `e` rejects, among those with an estimate.
+fn reject_share(g: &[&SimRow], e: fn(&SimRow) -> Estimate) -> String {
+    let v: Vec<bool> = g
+        .iter()
+        .map(|r| e(r))
+        .filter(|e| e.theta.is_finite())
+        .map(|e| e.rejects())
+        .collect();
+    share(&v)
+}
+
+/// A scenario's title line: runs, misclassified exposure, and the controls'
+/// rejection and the verdict.
+fn scenario_title(key: &str, g: &[&SimRow]) -> String {
+    let miscl = g.iter().map(|r| r.misclassified).sum::<f64>() / g.len() as f64;
+    format!(
+        "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, background reject {}, verdict survived {}\n",
+        g.len(),
+        reject_share(g, |r| r.ring),
+        reject_share(g, |r| r.no_spill),
+        reject_share(g, |r| r.background),
+        share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
+    )
+}
+
+/// One estimator's line in a scenario: estimable share, bias and coverage
+/// against both truths, rejection rate and attenuation.
+fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
+    let ok: Vec<(f64, f64, f64, f64, f64)> = g
+        .iter()
+        .filter_map(|r| {
+            let (th, se, crit) = view(r);
+            (th.is_finite() && se.is_finite() && crit.is_finite() && r.truth.is_finite())
+                .then_some((th, se, r.truth, r.truth_weighted, crit))
+        })
+        .collect();
+    let estim = ok.len() as f64 / g.len() as f64;
+    if ok.is_empty() {
+        return format!("  {name:<9} {estim:>5.2}  (not estimable)\n");
+    }
+    let n = ok.len() as f64;
+    let bias = ok.iter().map(|o| o.0 - o.2).sum::<f64>() / n;
+    let wv: Vec<f64> = ok
+        .iter()
+        .filter(|o| o.3.is_finite())
+        .map(|o| o.0 - o.3)
+        .collect();
+    let bias_w = if wv.is_empty() {
+        f64::NAN
+    } else {
+        wv.iter().sum::<f64>() / wv.len() as f64
+    };
+    let cover: Vec<bool> = ok.iter().map(|o| (o.0 - o.2).abs() <= o.4 * o.1).collect();
+    let cover_w: Vec<bool> = ok
+        .iter()
+        .filter(|o| o.3.is_finite())
+        .map(|o| (o.0 - o.3).abs() <= o.4 * o.1)
+        .collect();
+    let reject: Vec<bool> = ok.iter().map(|o| (o.0 / o.1).abs() > o.4).collect();
+    let mean_truth = ok.iter().map(|o| o.2).sum::<f64>() / n;
+    let atten = if null || mean_truth.abs() < 1e-12 {
+        "-".to_string()
+    } else {
+        format!(
+            "{:.2}",
+            ok.iter().map(|o| o.0).sum::<f64>() / n / mean_truth
+        )
+    };
+    format!(
+        "  {name:<9} {estim:>5.2}  {bias:>+7.3} {bias_w:>+7.3}  {:>5} {:>7}  {:<6} {:>6}  {atten:>6}\n",
+        share(&cover),
+        share(&cover_w),
+        if null { "type I" } else { "power" },
+        share(&reject),
+    )
+}
+
+/// Per scenario: a title line (runs, misclassified exposure, ring and
+/// no-spill rejection), then one line each for the estimate, the crude
+/// contrast and the partial adjustments, with estimable share, bias and
+/// coverage against both truths, rejection rate (type I error or power)
+/// and, under a planted effect, attenuation. Then the comparison
+/// ([`super::comparison`]).
+pub fn sim_summary(rows: &[SimRow]) -> String {
+    let mut out = sim_legend();
     for (key, idx) in scenario_groups(rows, |r| &r.scenario) {
         let g: Vec<&SimRow> = idx.iter().map(|&i| &rows[i]).collect();
-        let s = g[0].scenario;
-        let null = is_null(&s);
-        let miscl = g.iter().map(|r| r.misclassified).sum::<f64>() / g.len() as f64;
-        let rej_of = |e: fn(&SimRow) -> Estimate| -> String {
-            let v: Vec<bool> = g
-                .iter()
-                .map(|r| e(r))
-                .filter(|e| e.theta.is_finite())
-                .map(|e| e.rejects())
-                .collect();
-            share(&v)
-        };
-        out += &format!(
-            "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, background reject {}, verdict survived {}\n",
-            g.len(),
-            rej_of(|r| r.ring),
-            rej_of(|r| r.no_spill),
-            rej_of(|r| r.background),
-            share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
-        );
-        for (name, view) in views {
-            let ok: Vec<(f64, f64, f64, f64, f64)> = g
-                .iter()
-                .filter_map(|r| {
-                    let (th, se, crit) = view(r);
-                    (th.is_finite() && se.is_finite() && crit.is_finite() && r.truth.is_finite())
-                        .then_some((th, se, r.truth, r.truth_weighted, crit))
-                })
-                .collect();
-            let estim = ok.len() as f64 / g.len() as f64;
-            if ok.is_empty() {
-                out += &format!("  {name:<9} {estim:>5.2}  (not estimable)\n");
-                continue;
-            }
-            let n = ok.len() as f64;
-            let bias = ok.iter().map(|o| o.0 - o.2).sum::<f64>() / n;
-            let wv: Vec<f64> = ok
-                .iter()
-                .filter(|o| o.3.is_finite())
-                .map(|o| o.0 - o.3)
-                .collect();
-            let bias_w = if wv.is_empty() {
-                f64::NAN
-            } else {
-                wv.iter().sum::<f64>() / wv.len() as f64
-            };
-            let cover: Vec<bool> = ok.iter().map(|o| (o.0 - o.2).abs() <= o.4 * o.1).collect();
-            let cover_w: Vec<bool> = ok
-                .iter()
-                .filter(|o| o.3.is_finite())
-                .map(|o| (o.0 - o.3).abs() <= o.4 * o.1)
-                .collect();
-            let reject: Vec<bool> = ok.iter().map(|o| (o.0 / o.1).abs() > o.4).collect();
-            let mean_truth = ok.iter().map(|o| o.2).sum::<f64>() / n;
-            let atten = if null || mean_truth.abs() < 1e-12 {
-                "-".to_string()
-            } else {
-                format!(
-                    "{:.2}",
-                    ok.iter().map(|o| o.0).sum::<f64>() / n / mean_truth
-                )
-            };
-            out += &format!(
-                "  {name:<9} {estim:>5.2}  {bias:>+7.3} {bias_w:>+7.3}  {:>5} {:>7}  {:<6} {:>6}  {atten:>6}\n",
-                share(&cover),
-                share(&cover_w),
-                if null { "type I" } else { "power" },
-                share(&reject),
-            );
+        let null = is_null(&g[0].scenario);
+        out += &scenario_title(&key, &g);
+        for (name, view) in VIEWS {
+            out += &view_line(name, view, &g, null);
         }
     }
     out.push_str(&comparison(rows));
