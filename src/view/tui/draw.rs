@@ -63,8 +63,6 @@ impl App<'_> {
         }
     }
 
-    // ── drawing ─────────────────────────────────────────────────────────
-
     pub(super) fn redraw(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.draw_pending_pair(Some(terminal));
         self.need_panel = false;

@@ -6,8 +6,7 @@ use super::data::Rect;
 use super::gene::{GeneMap, Source};
 use super::legend_swatch;
 use super::markers;
-use super::render::Frame;
-use super::render::{Layer, Style, Viewport};
+use super::render::{Frame, Layer, Style, Viewport};
 use super::thousands;
 use super::{
     color, curve, data, focused, ids, legend_line, lra, parse_focus, pdf, scalebar, value_name,

@@ -382,7 +382,7 @@ impl App<'_> {
     }
 
     /// Fill the panel's marker list for the shown community.
-    pub(super) fn list_markers(&mut self) {
+    fn list_markers(&mut self) {
         self.markers.clear();
         let Some(shown) = self.shown else {
             return;
