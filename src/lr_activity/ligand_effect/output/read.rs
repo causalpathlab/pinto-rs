@@ -53,7 +53,6 @@ pub struct Control {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Controls {
     pub receptor_negative: Control,
-    pub distant: Control,
     pub background: Control,
 }
 
@@ -121,9 +120,6 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
             "effect_incompetent",
             "effect_incompetent_se",
             "effect_contrast_q",
-            "ring_effect",
-            "ring_effect_se",
-            "effect_over_ring_q",
             "background_effect",
             "background_effect_se",
             "effect_over_background_q",
@@ -169,8 +165,7 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
                 n_exposed: count(x[11][i]),
                 controls: controls.as_deref().map(|c| Controls {
                     receptor_negative: control(c, i, 0),
-                    distant: control(c, i, 3),
-                    background: control(c, i, 6),
+                    background: control(c, i, 3),
                 }),
             })
         })
@@ -232,11 +227,10 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 }
 
 /// The number columns every `{out}.lra-simulate.parquet` has.
-const SIM_NUMBERS: [&str; 12] = {
+const SIM_NUMBERS: [&str; 11] = {
     use sim_cols::*;
     [
         PLANTED_EFFECT,
-        RING_EFFECT,
         CONFOUND_LIGAND,
         CONFOUND_RESPONSE,
         SCALE,
@@ -333,7 +327,6 @@ impl<'p> SimTable<'p> {
             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
         Ok(Scenario {
             effect: self.num(PLANTED_EFFECT, i),
-            ring_effect: self.num(RING_EFFECT, i),
             confound_ligand: self.num(CONFOUND_LIGAND, i),
             confound_response: self.num(CONFOUND_RESPONSE, i),
             scale: self.num(SCALE, i),

@@ -28,9 +28,6 @@ pub struct ScopeEffects {
     /// be read as this estimate's own uncertainty.
     pub outcome: Estimate,
     pub incompetent: Estimate,
-    pub ring: Estimate,
-    /// The competent effect minus the ring effect.
-    pub over_ring: Estimate,
     /// The competent effect under the section, spatial and identity steps
     /// (pooled only; NaN elsewhere).
     pub steps: [Estimate; 3],
@@ -67,8 +64,6 @@ impl ScopeEffects {
             ipw: pick(&|e| e.ipw),
             outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
-            ring: pick(&|e| e.ring),
-            over_ring: pick(&|e| e.over_ring),
             steps: [
                 pick(&|e| e.steps[0]),
                 pick(&|e| e.steps[1]),
@@ -99,8 +94,7 @@ pub struct Effects {
     pub arm_weight: Vec<f64>,
 }
 
-/// Which sensitivity fits [`effects_on`] runs beside the main and ring
-/// fits; each serves the pooled scope alone, and an estimand left out is
+/// Which sensitivity fits [`effects_on`] runs beside the main fit; each serves the pooled scope alone, and an estimand left out is
 /// NaN, which the average then leaves out.
 #[derive(Clone, Copy, Debug)]
 pub struct Sensitivity {
@@ -137,7 +131,7 @@ pub fn effects_on(
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
     let terms = ResponseFits::run(rows, fits, r, sens, opts)?;
-    let (t, t_ring) = (&fits.exposure.t, &fits.exposure.t_ring);
+    let t = &fits.exposure.t;
     // Per scope, whether the competent effect has an estimate: the middle
     // threshold ([`super::fits::Reads`]).
     let middle = &fits.levels[fits.levels.len() / 2];
@@ -149,7 +143,6 @@ pub fn effects_on(
     let reader = ScopeReader {
         cf: rows.cf,
         t,
-        t_ring,
         y: &r.y,
         terms: &terms,
         sens,
@@ -171,14 +164,12 @@ pub fn effects_on(
 /// that was skipped is absent.
 struct ResponseFits {
     main: Option<OverlapTerms>,
-    ring: Option<OverlapTerms>,
     nospill: Option<OverlapTerms>,
     steps: Vec<OverlapTerms>,
 }
 
 impl ResponseFits {
-    /// The main and ring fits where their subsets are open, and the
-    /// sensitivity fits `sens` asks for where the main one is.
+    /// The main fit where its subset is open, and the sensitivity fits `sens` asks for where the main one is.
     fn run(
         rows: Rows<'_>,
         fits: &ThresholdFits<'_>,
@@ -193,11 +184,8 @@ impl ResponseFits {
             run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
                 .transpose()
         };
-        let (main, ring) = time(MAIN, || -> anyhow::Result<_> {
-            Ok((
-                fit(fits.runs(reads.competent), Fit::Main, None, design)?,
-                fit(fits.runs(reads.ring), Fit::Ring, None, design)?,
-            ))
+        let main = time(MAIN, || {
+            fit(fits.runs(reads.competent), Fit::Main, None, design)
         })?;
         let runs_competent = fits.runs(reads.competent);
         let nospill = time(NOSPILL, || {
@@ -226,7 +214,6 @@ impl ResponseFits {
         };
         Ok(Self {
             main,
-            ring,
             nospill,
             steps,
         })
@@ -237,7 +224,6 @@ impl ResponseFits {
 struct ScopeReader<'a> {
     cf: &'a CrossFit,
     t: &'a [bool],
-    t_ring: &'a [bool],
     y: &'a [f64],
     terms: &'a ResponseFits,
     sens: Sensitivity,
@@ -287,8 +273,6 @@ impl ScopeReader<'_> {
         let (on_competent, sums) = self.subset(main, open, self.t, &comp);
         let (on_incompetent, incompetent_sums) = self.subset(main, open, self.t, &incomp);
         let contrast = difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
-        let (on_ring, ring_sums) = self.subset(self.terms.ring.as_ref(), open, self.t_ring, &comp);
-        let over_ring = difference(&on_competent, &sums, &on_ring, &ring_sums);
         let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
         let crude = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
         let (ipw, outcome) = match main {
@@ -314,8 +298,6 @@ impl ScopeReader<'_> {
             ipw,
             outcome,
             incompetent: on_incompetent,
-            ring: on_ring,
-            over_ring,
             steps,
             nospill,
             near_determined,

@@ -120,7 +120,7 @@ each on the tissue (see `view`, `I`):
 | `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
 | `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response programme |
 | `no_evidence` | neither a response nor co-expression at this false discovery rate |
-| `control_failed` | an effect appeared, but it does not exceed a negative control (receivers without the receptor, distant cells that do not touch, or a matched background programme), or one of these could not be checked: likely confounding |
+| `control_failed` | an effect appeared, but it does not exceed a negative control (receivers without the receptor, or a matched background programme), or one of these could not be checked: likely confounding |
 | `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
 | `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
 
@@ -137,8 +137,7 @@ which threshold the average leans on most.
 A significant effect then has to exceed every control, the same way, each
 comparison corrected among the pairs with a significant effect (so their q is
 empty for the rest): the effect in receptor-negative receivers
-(`effect_contrast_q`), the effect from distant cells (`effect_over_ring_q`) and
-the effect on matched background programmes (`effect_over_background_q`): many programmes of random
+(`effect_contrast_q`) and the effect on matched background programmes (`effect_over_background_q`): many programmes of random
 genes with similar expression, where the pair has to stand out from their spread. A hidden field can move
 the controls too, so a control that is itself significant does not rule out a
 larger effect; it is named in `warnings`. A control that could not run does not
@@ -543,8 +542,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > receivers show no change in their response programme; no_evidence: neither a
 > response nor co-expression at this false discovery rate; control_failed: an
 > effect appeared, but it does not exceed a negative control (receivers without the
-> receptor, distant cells that do not touch, or a matched background
-> programme), or one of these could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
+> receptor, or a matched background programme), or one of these could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
 > nearly the same as having a neighbour of one cell type, so the ligand cannot
 > be told apart from that cell type; insufficient_data: too few exposed or
 > unexposed receptor-carrying receivers, or too little overlap between them,

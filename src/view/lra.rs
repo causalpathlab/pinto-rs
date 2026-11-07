@@ -299,7 +299,6 @@ pub fn control_lines(row: &PairRow) -> Vec<String> {
     vec![
         format!(" {:<10} {:<15} {}", "control", "change ± SE", "exceeded q"),
         line("receptor−", &c.receptor_negative),
-        line("distant", &c.distant),
         line("background", &c.background),
     ]
 }

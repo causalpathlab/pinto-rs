@@ -545,7 +545,7 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in the
 /// output: for a hopeless pair, and for a pair whose controls alone would be
-/// estimable (no competent effect, so the incompetent effect and the ring are
+/// estimable (no competent effect, so the incompetent effect is
 /// not read either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
@@ -570,9 +570,8 @@ fn skipped_fits_change_no_output() {
     }
 }
 
-/// A thin competent arm skips the fits: the receptor-negative and distant-cell
-/// controls check an estimate the pair does not have, and neither enters its
-/// family's q-values.
+/// A thin competent arm skips the fits: the receptor-negative control checks
+/// an estimate the pair does not have, and does not enter its family's q-values.
 #[test]
 fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);
@@ -589,7 +588,6 @@ fn a_thin_headline_drops_its_controls() {
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
     assert!(row.effects.incompetent.theta.is_nan());
-    assert!(row.effects.ring.theta.is_nan());
     assert!(
         row.effects.incompetent.n > 0,
         "its counts are still reported"
@@ -614,14 +612,13 @@ fn a_pair_empty_at_the_middle_threshold_has_no_estimate() {
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
     assert!(row.effects.incompetent.theta.is_nan());
-    assert!(row.effects.ring.theta.is_nan());
     // The looser threshold alone does estimate this pair.
     static LOOSE: [f64; 1] = [0.05];
     let row = &estimate_pair(&w.tissue, &data(&w, &targets), &opts(&LOOSE, false)).unwrap()[0];
     assert!(row.effects.competent.theta.is_finite());
 }
 
-/// The ring and step fits need the controls' propensities: asked for on
+/// The step fits need the controls' propensities: asked for on
 /// threshold fits built without them, they are an error, not a panic.
 #[test]
 fn control_fits_without_their_propensities_are_an_error() {
@@ -640,7 +637,10 @@ fn control_fits_without_their_propensities_are_an_error() {
     let fits = ThresholdFits::new(rows, &x, &levels, &o, &mut Default::default()).unwrap();
     let (design, cf) = (rows.design.view(), rows.cf);
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, None, &o).is_ok());
-    assert!(fit_main(design, cf, &fits, &r, Fit::Ring, None, &o).is_err());
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, Some(0), &o).is_err());
-    assert!(effects_on(rows, &fits, &r, Sensitivity::NONE, &o).is_err());
+    let steps = Sensitivity {
+        steps: true,
+        ..Sensitivity::NONE
+    };
+    assert!(effects_on(rows, &fits, &r, steps, &o).is_err());
 }

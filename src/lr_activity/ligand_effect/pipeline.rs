@@ -141,7 +141,6 @@ fn build_tissue(
         scales: k.scales.to_vec(),
         tile: k.tile,
         folds: k.folds,
-        ring: k.ring,
         seed: inp.settings.seed,
         ..TissueOpts::default()
     };
@@ -247,12 +246,12 @@ pub(super) fn record(
 /// receiver-length vectors and its propensity design, which bounds how many
 /// run at once ([`super::memory::pair_workers`]). Beside the pair's own
 /// vectors, a threshold's fits ([`super::fits::ThresholdFits`]) hold per competence
-/// threshold an effect modifier and a pair column, and own ligand, niche, the
-/// exposure column and the main, ring and three step propensities.
+/// threshold an effect modifier and a pair column, and own ligand, niche, and
+/// the main and three step propensities.
 fn pairs_at_once(prep: &Prepared) -> usize {
     let (tissue, eopts) = (&prep.tissue, &prep.eopts);
     let nc = eopts.competences.len();
-    let threshold_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
+    let threshold_fits = 2 * nc + 2 + 1 + 3;
     let per_pair = pair_memory(
         34 + threshold_fits + 3 * eopts.background_draws,
         tissue,

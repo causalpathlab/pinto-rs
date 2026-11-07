@@ -373,7 +373,6 @@ fn simulate_runs_read_back_as_written() {
     let f = |v: [f32; 2]| v.to_vec();
     let floats: Vec<(String, Vec<f32>)> = vec![
         ("planted_effect".into(), f([0.3, 0.3])),
-        ("planted_ring_effect".into(), f([0.0, 0.0])),
         ("confound_ligand".into(), f([0.3, 0.3])),
         ("confound_response".into(), f([0.3, 0.3])),
         ("confound_scale".into(), f([16.0, 16.0])),

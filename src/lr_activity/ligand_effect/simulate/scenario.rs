@@ -69,9 +69,6 @@ impl std::str::FromStr for ConfoundShape {
 pub struct Scenario {
     /// θ: log-rate change of the programme in exposed responding receivers.
     pub effect: f64,
-    /// θ_ring: log-rate change in responding receivers whose ring partners
-    /// make ligand; 0 keeps the effect at contact range.
-    pub ring_effect: f64,
     /// α: hidden field's push on ligand production (log odds).
     pub confound_ligand: f64,
     /// β: hidden field's push on the response.
@@ -104,8 +101,7 @@ pub struct Scenario {
     /// γ: each cell has a hidden trait that raises its ligand and, by γ per
     /// unit of its contacts' mean trait, every gene of its competent contacts,
     /// background programmes included. It acts at contact range on every
-    /// programme, so neither the receptor-negative receivers nor distant cells
-    /// can show it; 0 for none.
+    /// programme, so the receptor-negative receivers cannot show it; 0 for none.
     pub generic_shift: f64,
     pub rep: usize,
 }
@@ -117,7 +113,6 @@ impl Default for Scenario {
     fn default() -> Self {
         Self {
             effect: 0.0,
-            ring_effect: 0.0,
             confound_ligand: 0.0,
             confound_response: 0.0,
             scale: 32.0,
@@ -166,9 +161,6 @@ pub struct GridOpts {
     pub marker: bool,
     /// An effect varying by identity bin (planted effects only).
     pub heterogeneous: bool,
-    /// Planted effects that also reach ring range (θ_ring), each its own
-    /// unconfounded scenario.
-    pub ring_effect: Vec<f64>,
     /// Simulate the receptor in every scenario, driven by the hidden field
     /// at the response's strength; false keeps the real receptor.
     pub confound_receptor: bool,
@@ -198,7 +190,6 @@ impl Default for GridOpts {
             shift: vec![4.0],
             marker: true,
             heterogeneous: true,
-            ring_effect: vec![0.3],
             confound_receptor: true,
             background_confounding: 1.0,
             dose_response: false,
@@ -216,8 +207,7 @@ impl Default for GridOpts {
 ///   opposite-sign (`α = 1, β = ±1`), and each nonlinear shape at the
 ///   first scale, same-sign;
 /// - a heterogeneous effect (planted effects only);
-/// - unconfounded segmentation spillover at each κ, and an effect that also
-///   reaches ring range at each θ_ring;
+/// - unconfounded segmentation spillover at each κ;
 /// - the first confounder at the first scale, seen shifted by each shift;
 /// - the marker type, unconfounded.
 pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
@@ -275,12 +265,6 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
             for &generic_shift in &g.generic_shift {
                 out.push(Scenario {
                     generic_shift,
-                    ..plain
-                });
-            }
-            for &ring_effect in &g.ring_effect {
-                out.push(Scenario {
-                    ring_effect,
                     ..plain
                 });
             }
@@ -380,8 +364,7 @@ impl Study {
                      spillover: shares of a neighbour's counts bleeding into \
                      the receiver. shift: displacement of the ligand field, in contact \
                      lengths (a null). marker: effect confined to one cell type. \
-                     heterogeneous: effect varying by cell type. ring_effect: effect sizes \
-                     reaching distant, non-touching cells. confound_receptor: simulate \
+                     heterogeneous: effect varying by cell type. confound_receptor: simulate \
                      the receptor too, driven by the same hidden field (false keeps the \
                      real receptor, which the field cannot touch). background_confounding: how \
                      much of the field's push on the response reaches the background programme \

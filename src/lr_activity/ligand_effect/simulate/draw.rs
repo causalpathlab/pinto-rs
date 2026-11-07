@@ -152,10 +152,6 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    fn ring_on(&self) -> bool {
-        self.scen.ring_effect != 0.0
-    }
-
     /// The estimator sees a displaced ligand field.
     fn shifted(&self) -> bool {
         self.scen.shift > 0.0
@@ -231,8 +227,6 @@ fn draw_ligand(run: &Run<'_>, shared: &SimShared<'_>, rng: &mut SmallRng) -> Tru
 struct LatentExposure {
     /// `T*`, the true contact exposure.
     t: Vec<bool>,
-    /// `T*_ring`, the true ring exposure.
-    ring: Vec<bool>,
     /// How much of the planted effect each receiver's true dose reaches.
     dose_share: Vec<f64>,
 }
@@ -242,7 +236,6 @@ fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
     let dose = tissue.contacts.sum(rate);
     let tau = choose_threshold(&dose, run.opts);
     let t = exposed(&dose, tau);
-    let ring = exposed(&tissue.ring_sum(rate), tau);
     let dose_share: Vec<f64> = if scen.dose_response {
         let mut pos: Vec<f64> = dose.iter().copied().filter(|&v| v > 0.0).collect();
         pos.sort_by(f64::total_cmp);
@@ -260,11 +253,7 @@ fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
     } else {
         vec![1.0; tissue.n()]
     };
-    LatentExposure {
-        t,
-        ring,
-        dose_share,
-    }
+    LatentExposure { t, dose_share }
 }
 
 /// What the estimator sees of the ligand and the receptor.
@@ -381,28 +370,21 @@ fn who_responds(run: &Run<'_>, ligand: &TrueLigand, competent: &[bool]) -> Recei
     }
 }
 
-/// One programme gene's counts: observed, and potential in `T*` at the realized
-/// ring exposure and in the ring exposure at the realized `T*`. The ring's are
-/// left empty when no effect reaches it.
+/// One programme gene's counts: observed, and potential in `T*`.
 struct GeneCounts {
     obs: Vec<f64>,
     c1: Vec<f64>,
     c0: Vec<f64>,
-    d1: Vec<f64>,
-    d0: Vec<f64>,
     /// The observed counts as measured, with spillover.
     measured: Vec<f64>,
 }
 
 impl GeneCounts {
-    fn new(n: usize, ring_on: bool) -> Self {
-        let ring = if ring_on { n } else { 0 };
+    fn new(n: usize) -> Self {
         Self {
             obs: vec![0.0; n],
             c1: vec![0.0; n],
             c0: vec![0.0; n],
-            d1: vec![0.0; ring],
-            d0: vec![0.0; ring],
             measured: vec![0.0; n],
         }
     }
@@ -422,8 +404,7 @@ fn draw_gene(
     let (tissue, base, scen) = (run.tissue, run.base, run.scen);
     let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
     let ng = base.target_weights.len();
-    let ring_on = run.ring_on();
-    let (t_star, r_star) = (&latent.t, &latent.ring);
+    let t_star = &latent.t;
     let w = base.target_weights[g];
     let s = if w < 0.0 { -1.0 } else { 1.0 };
     let lift = &lifts[(w < 0.0) as usize];
@@ -431,60 +412,36 @@ fn draw_gene(
         let b = bin[i];
         let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
         let u: f64 = rng.random();
-        let (th, thr) = if receivers.responds[i] {
-            (
-                s * scen.effect * receivers.u_bin[b] * latent.dose_share[i],
-                s * scen.ring_effect * receivers.u_bin[b],
-            )
+        let th = if receivers.responds[i] {
+            s * scen.effect * receivers.u_bin[b] * latent.dose_share[i]
         } else {
-            (0.0, 0.0)
+            0.0
         };
         let q = |l: f64| poisson_quantile(u, r0 * l.exp());
-        let ring_lift = if r_star[i] { thr } else { 0.0 };
-        let hi = q(th + ring_lift);
-        let lo = if th == 0.0 { hi } else { q(ring_lift) };
+        let hi = q(th);
+        let lo = if th == 0.0 { hi } else { q(0.0) };
         c.c1[i] = hi;
         c.c0[i] = lo;
         c.obs[i] = if t_star[i] { hi } else { lo };
-        if ring_on {
-            let contact = if t_star[i] { th } else { 0.0 };
-            // The count at the ring exposure r* does not have.
-            let other = if thr == 0.0 {
-                c.obs[i]
-            } else {
-                q(contact + if r_star[i] { 0.0 } else { thr })
-            };
-            (c.d1[i], c.d0[i]) = if r_star[i] {
-                (c.obs[i], other)
-            } else {
-                (other, c.obs[i])
-            };
-        }
     }
 }
 
 /// The programme's responses: as measured (`y_seen`), and potential in `T*`
-/// (`y1`, `y0`) and in the ring exposure (`yd1`, `yd0`, empty when no effect
-/// reaches it), with the bleed covariate. Potential counts carry the realized
+/// (`y1`, `y0`), with the bleed covariate. Potential counts carry the realized
 /// bleed, so the truths are on the measured scale.
 struct ProgrammeResponses {
     y_seen: Vec<f64>,
     y1: Vec<f64>,
     y0: Vec<f64>,
-    yd1: Vec<f64>,
-    yd0: Vec<f64>,
     bleed: Vec<f64>,
 }
 
 impl ProgrammeResponses {
-    fn new(n: usize, ring_on: bool) -> Self {
-        let ring = if ring_on { n } else { 0 };
+    fn new(n: usize) -> Self {
         Self {
             y_seen: vec![0.0; n],
             y1: vec![0.0; n],
             y0: vec![0.0; n],
-            yd1: vec![0.0; ring],
-            yd0: vec![0.0; ring],
             bleed: vec![0.0; n],
         }
     }
@@ -497,7 +454,6 @@ impl ProgrammeResponses {
         let n = tissue.n();
         let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
         let kappa = run.scen.spillover;
-        let ring_on = run.ring_on();
         let bled: Vec<f64> = if kappa > 0.0 {
             tissue
                 .contacts
@@ -515,10 +471,6 @@ impl ProgrammeResponses {
             self.y_seen[i] += w * (c.measured[i] / sf[i]).ln_1p();
             self.y1[i] += w * (c.c1[i] / sf[i]).ln_1p();
             self.y0[i] += w * (c.c0[i] / sf[i]).ln_1p();
-            if ring_on {
-                self.yd1[i] += w * ((c.d1[i] + bled[i]) / sf[i]).ln_1p();
-                self.yd0[i] += w * ((c.d0[i] + bled[i]) / sf[i]).ln_1p();
-            }
         }
         // The bleed covariate from the measured counts, as
         // [`super::super::response::programme_columns`] reads them: bin means,
@@ -544,8 +496,6 @@ impl ProgrammeResponses {
             &mut self.y_seen,
             &mut self.y1,
             &mut self.y0,
-            &mut self.yd1,
-            &mut self.yd0,
             &mut self.bleed,
         ] {
             for x in v.iter_mut() {
@@ -569,8 +519,8 @@ fn draw_programme(
     for &b in tissue.identity_bin.iter() {
         bin_cells[b] += 1;
     }
-    let mut counts = GeneCounts::new(n, run.ring_on());
-    let mut out = ProgrammeResponses::new(n, run.ring_on());
+    let mut counts = GeneCounts::new(n);
+    let mut out = ProgrammeResponses::new(n);
     for (g, &w) in weights.iter().enumerate() {
         draw_gene(run, g, lifts, latent, receivers, &mut counts, rng);
         out.add_gene(run, w, &bin_cells, &mut counts);
@@ -734,16 +684,8 @@ pub fn simulate(
         y_seen,
         y1,
         y0,
-        yd1,
-        yd0,
         bleed,
     } = draw_programme(&run, &lifts, &latent, &receivers, &mut rng);
-    let ring_truth = if run.shifted() || !run.ring_on() {
-        0.0
-    } else {
-        sample_effect(&yd1, &yd0, comp)
-    };
-    drop((yd1, yd0));
     let misclassified = misclassified_share(comp, &exposure.t, &latent.t);
 
     let response = Response {
@@ -803,12 +745,9 @@ pub fn simulate(
         ipw: e.ipw,
         outcome: e.outcome.theta,
         incompetent: e.incompetent,
-        ring: e.ring,
-        ring_truth,
         no_spill: e.nospill,
         steps: e.steps,
         contrast: e.effect,
-        over_ring: e.over_ring,
         background: avg.background,
         over_background: avg.over_background,
         verdict: run_verdict(tissue, rows, &seen, &avg, ng),

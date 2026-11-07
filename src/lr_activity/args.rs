@@ -315,7 +315,7 @@ pub struct LraSimulateArgs {
         help = "Study design: scenarios, replicates, pairs [default: the built-in study]",
         long_help = "Study design as JSON: the scenario grid (confounder kinds, length\n\
                      scales, shapes, effect sizes, spillover, field shift, marker,\n\
-                     heterogeneous and ring scenarios), replicates and pairs. Fields left\n\
+                     heterogeneous scenarios), replicates and pairs. Fields left\n\
                      out keep the built-in study's values. See --example-study."
     )]
     pub study: Option<Box<str>>,

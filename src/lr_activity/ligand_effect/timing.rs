@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const STAGES: [&str; 9] = [
     "frame",
-    "main+ring fits",
+    "main fit",
     "no-spill fit",
     "step fits",
     "other thresholds",

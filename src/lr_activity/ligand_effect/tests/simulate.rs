@@ -4,7 +4,7 @@
 //! estimate should track the truth while the crude contrast is fooled.
 
 use super::run_sim;
-use crate::lr_activity::ligand_effect::contacts::{competence, ring_partners, Contacts};
+use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
 use crate::lr_activity::ligand_effect::simulate::{
@@ -131,7 +131,7 @@ pub(super) fn base(f: &Fixture) -> SimBase<'_> {
 }
 
 #[test]
-fn contacts_ring_and_competence() {
+fn contacts_and_competence() {
     let c = Contacts::from_pairs(4, &[(0, 1), (1, 0), (1, 2), (2, 2)]);
     assert_eq!(c.adj[1], [0, 2], "symmetric, deduplicated, no self loops");
     assert_eq!(c.sum(&[1.0, 10.0, 100.0, 0.0])[1], 101.0);
@@ -141,15 +141,6 @@ fn contacts_ring_and_competence() {
     let t = &f.tissue;
     let unit = t.unit[0];
     assert!((unit - 10.0).abs() < 1e-6, "median contact length {unit}");
-    let ring = ring_partners(&t.coords, &t.section, &t.unit, &t.contacts, 2.0, 4.0, 1);
-    for (i, r) in ring.iter().enumerate().take(500) {
-        assert!(r.len() <= t.contacts.degree(i));
-        for &j in r {
-            let (a, b) = (t.coords[i], t.coords[j as usize]);
-            let d = (((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)) as f64).sqrt();
-            assert!((20.0..=40.0).contains(&d), "ring partner at {d}");
-        }
-    }
     assert_eq!(
         competence(&[0, 0, 1, 1], &[true, false, false, false], 0.5),
         [true, true, false, false]
@@ -215,8 +206,6 @@ fn a_planted_effect_is_recovered_on_the_tissue() {
         r.truth
     );
     assert!(r.incompetent.theta.is_nan() || (r.incompetent.z()).abs() < 3.0);
-    assert_eq!(r.ring_truth, 0.0, "a contact-only effect has no ring truth");
-    assert!(r.ring.z().abs() < 3.0, "ring z {:.2}", r.ring.z());
 }
 
 /// Segmentation spillover from senders that carry the programme
@@ -289,36 +278,6 @@ fn a_shifted_field_has_no_contact_effect() {
         "crude {:.3} ± {:.3}",
         r.crude.theta,
         r.crude.se
-    );
-}
-
-/// An effect from ring partners alone: the ring estimate finds it, the
-/// contact estimate does not.
-#[test]
-fn an_effect_at_ring_range_is_seen_by_the_ring_estimate() {
-    let f = fixture();
-    let scen = Scenario {
-        ring_effect: 0.5,
-        ..Scenario::default()
-    };
-    let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 51).unwrap();
-    assert!(
-        r.truth.abs() < 1e-12 && r.ring_truth > 0.05,
-        "truths {} {}",
-        r.truth,
-        r.ring_truth
-    );
-    assert!(
-        r.estimate.z().abs() < 3.0,
-        "contact z {:.2}",
-        r.estimate.z()
-    );
-    assert!(
-        ((r.ring.theta - r.ring_truth) / r.ring.se).abs() < 3.0,
-        "ring {:.3} ± {:.3}, truth {:.3}",
-        r.ring.theta,
-        r.ring.se,
-        r.ring_truth
     );
 }
 
