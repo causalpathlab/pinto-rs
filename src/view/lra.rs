@@ -21,7 +21,8 @@ use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::frame::{Class, PairMap, RunFrame};
 use crate::lr_activity::ligand_effect::only;
 use crate::lr_activity::ligand_effect::output::{
-    curve_beside, percent_text, read_curves, read_pair_rows, CurveRow, Curves, PairRow, Q_SCOPE_ALL,
+    curve_beside, percent_digits, percent_text, read_curves, read_pair_rows, Control, CurveRow,
+    Curves, PairRow, Q_SCOPE_ALL,
 };
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::metadata::{LraOptions, LraSubset};
@@ -275,6 +276,32 @@ pub fn change(row: &PairRow) -> String {
     } else {
         "not estimable".into()
     }
+}
+
+/// The panel's lines for a row's negative controls: each one's percent change
+/// ± SE (the delta-method SD `effect_pct_sd` uses), and the q of the headline
+/// exceeding it. An SE, not an interval: the table keeps no df for two of them.
+pub fn control_lines(row: &PairRow) -> Vec<String> {
+    let Some(c) = &row.controls else {
+        return Vec::new();
+    };
+    let line = |name: &str, c: &Control| {
+        let change = if c.effect.is_finite() {
+            let pct = 100.0 * c.effect.exp_m1();
+            let sd = 100.0 * c.effect.exp() * c.se;
+            let d = percent_digits(pct, sd, sd);
+            format!("{pct:+.d$}% ±{sd:.d$}")
+        } else {
+            "not run".into()
+        };
+        format!(" {name:<10} {change:<15} {}", q_text(c.exceeded_q))
+    };
+    vec![
+        format!(" {:<10} {:<15} {}", "control", "change ± SE", "exceeded q"),
+        line("receptor−", &c.receptor_negative),
+        line("distant", &c.distant),
+        line("background", &c.background),
+    ]
 }
 
 /// A q-value in a few characters.

@@ -35,6 +35,26 @@ pub struct PairRow {
     pub n_receivers: usize,
     pub n_competent: usize,
     pub n_exposed: usize,
+    /// The negative controls the effect has to exceed; `None` for a table
+    /// from before these columns.
+    pub controls: Option<Controls>,
+}
+
+/// A negative control: its effect (log rate ratio) and SE, and the q of the
+/// headline exceeding it, empty unless the headline is significant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Control {
+    pub effect: f64,
+    pub se: f64,
+    pub exceeded_q: f64,
+}
+
+/// The controls of a pooled row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Controls {
+    pub receptor_negative: Control,
+    pub distant: Control,
+    pub background: Control,
 }
 
 impl PairRow {
@@ -93,6 +113,29 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
     let (s, x) = read_table_columns(path, &strings, &numbers)
         .or_else(|_| read_table_columns(path, &strings[..strings.len() - 1], &numbers))?;
     let q_scope = s.get(6).and_then(|v| v.first().cloned());
+    // Each control's effect, SE and q of being exceeded; older tables have none.
+    let controls = read_table_columns(
+        path,
+        &[],
+        &[
+            "effect_incompetent",
+            "effect_incompetent_se",
+            "effect_contrast_q",
+            "ring_effect",
+            "ring_effect_se",
+            "effect_over_ring_q",
+            "background_effect",
+            "background_effect_se",
+            "effect_over_background_q",
+        ],
+    )
+    .ok()
+    .map(|(_, c)| c);
+    let control = |c: &[Vec<f64>], i: usize, first: usize| Control {
+        effect: c[first][i],
+        se: c[first + 1][i],
+        exceeded_q: c[first + 2][i],
+    };
     let count = |v: f64| {
         if v.is_finite() && v > 0. {
             v as usize
@@ -124,6 +167,11 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
                 n_receivers: count(x[9][i]),
                 n_competent: count(x[10][i]),
                 n_exposed: count(x[11][i]),
+                controls: controls.as_deref().map(|c| Controls {
+                    receptor_negative: control(c, i, 0),
+                    distant: control(c, i, 3),
+                    background: control(c, i, 6),
+                }),
             })
         })
         .collect::<anyhow::Result<_>>()?;

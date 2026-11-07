@@ -10,7 +10,8 @@
 
 use super::super::gene::GeneMap;
 use super::super::lra::{
-    change, lra_command, lra_table, next_verdict, q_text, Filter, LraView, PairShow, TableRef,
+    change, control_lines, lra_command, lra_table, next_verdict, q_text, Filter, LraView, PairShow,
+    TableRef,
 };
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
@@ -555,6 +556,16 @@ impl App<'_> {
                 )),
                 None,
             ));
+            for (k, l) in control_lines(row).into_iter().enumerate() {
+                tail.push((
+                    if k == 0 {
+                        Line::styled(l, dim)
+                    } else {
+                        Line::raw(l)
+                    },
+                    None,
+                ));
+            }
             for l in style::wrap(&row.note, width, width).into_iter().take(3) {
                 tail.push((Line::styled(format!(" {l}"), dim), None));
             }

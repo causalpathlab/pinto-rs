@@ -347,7 +347,9 @@ colocation_only, no_evidence, control_failed, celltype_inseparable,
 insufficient_data, or all), and `/` keeps the pairs naming a gene. `↑`/`↓` (or a click) pick a
 pair: the panel gives its effect as a percent change (`exp(x) - 1`) with its
 95% CI, q, coexpression q, threshold, counts and verdict note (a subset's q
-marked subset-corrected), and the map draws it, computed as lra computes it:
+marked subset-corrected), each negative control's percent change ± SE with the
+q of the effect exceeding it (empty unless the effect is significant), and the
+map draws it, computed as lra computes it:
 senders (cells carrying the ligand), and receivers exposed or not (their
 contact exposure to the ligand above the table's threshold) and
 receptor-competent or not (their identity bin detects the receptor). `e`
