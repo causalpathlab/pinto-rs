@@ -8,19 +8,23 @@
 use super::color::{hex, Theme};
 use super::data::{Rect, NO_CLUSTER};
 use super::gene::{GeneMap, Source};
-use super::lra::{self as lra_layer, LraView, PairShow, Sort};
+use super::lra::{self as lra_layer, LraView, PairShow};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
-use crate::lr_activity::ligand_effect::output::Q_SCOPE_ALL;
-use crate::lr_activity::ligand_effect::verdict::Verdict;
-use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::{parse, shown_path};
 use clap::ValueEnum;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use specs::specs;
 use std::path::Path;
+
+mod lra;
+mod specs;
+
+#[cfg(test)]
+pub(super) use lra::LraArgs;
 
 /// Width of a map drawn without one: enough to read a tissue by, small
 /// enough to keep the image cheap for the agent.
@@ -170,21 +174,6 @@ struct ExportArgs {
     overwrite: bool,
     curve: bool,
 }
-
-#[derive(Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct LraArgs {
-    table: Option<String>,
-    verdict: Option<String>,
-    search: Option<String>,
-    sort: Option<String>,
-    limit: Option<usize>,
-    pair: Option<String>,
-    show: Option<String>,
-}
-
-/// Pairs `view_lra` lists without a limit.
-const LIST: usize = 20;
 
 impl Open {
     pub(super) fn new(prefix: &str, level: Option<&str>) -> anyhow::Result<Self> {
@@ -707,197 +696,6 @@ impl Open {
         }))])
     }
 
-    /// `view_lra`: the run's contact-effect tables and their pairs, listed
-    /// as asked; with `pair`, that pair on the map from now on. What it is
-    /// given stays set, as `view_map`'s arguments do.
-    fn lra(&mut self, a: LraArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
-        let reply = self.lra_with(a, &|msg| cx.progress(msg))?;
-        Ok(vec![Content::Json(reply)])
-    }
-
-    /// [`Open::lra`]'s work and reply, telling `progress` what it reads.
-    pub(super) fn lra_with(
-        &mut self,
-        a: LraArgs,
-        progress: &dyn Fn(&str),
-    ) -> anyhow::Result<Value> {
-        // As the manifest says now: a run_lra may have ended since it was opened.
-        let run = &self.base.run;
-        let tables =
-            super::data::Run::open(&run.prefix).map_or_else(|_| run.tables(), |now| now.tables());
-        match self.lra.as_mut() {
-            Some(v) => v.add_tables(tables),
-            None => {
-                let view = LraView::new(tables)?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "{} has no lra table: run_lra on {} first",
-                        run.name(),
-                        run.manifest
-                            .as_deref()
-                            .map_or_else(|| run.prefix.clone(), shown_path)
-                    )
-                })?;
-                self.lra = Some(view);
-            }
-        }
-        // What changes, checked before any of it is kept.
-        let v = self.lra.as_mut().expect("read above");
-        let mut filter = v.filter().clone();
-        if let Some(code) = a.verdict.as_deref() {
-            filter.verdict = match code {
-                "" | "all" => None,
-                code => Some(code.parse().map_err(|_| {
-                    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
-                    anyhow::anyhow!(
-                        "verdict {code:?}: one of {}, or \"\" for all",
-                        codes.join(", ")
-                    )
-                })?),
-            };
-        }
-        if let Some(search) = &a.search {
-            filter.search = search.trim().to_string();
-        }
-        if let Some(sort) = a.sort.as_deref() {
-            filter.sort = value_enum::<Sort>(sort, "sort")?;
-        }
-        let show = a
-            .show
-            .as_deref()
-            .map(|s| value_enum::<PairShow>(s, "show"))
-            .transpose()?;
-        let staged = match a.table.as_deref() {
-            Some(t) => Some(match find_table(&v.tables, t) {
-                Some(at) => v.stage(lra_layer::Which::At(at))?,
-                None => v.stage(lra_layer::Which::Path(Box::new(lra_layer::TableRef::at(
-                    Path::new(t),
-                    &self.base.run,
-                ))))?,
-            }),
-            None => None,
-        };
-        // The pair selected from now on, in the table shown from now on.
-        let table = staged.as_ref().map_or_else(|| v.table(), |s| v.staged(s));
-        let selected = match a.pair.as_deref() {
-            Some(name) => LraView::resolve(table, name)?,
-            None => v.selection_in(table),
-        };
-        // A pair asked for is drawn, and one drawn stays drawn in the
-        // table switched to: drawn before anything is kept, as it is the
-        // one thing left that can fail.
-        let draw = selected.is_some() && (a.pair.is_some() || self.pair_drawn);
-        if let (true, Some(i)) = (draw, selected) {
-            let (row, options) = (table.rows[i].clone(), table.r.options.clone());
-            if v.needs_receivers_for(&options) {
-                progress("reading the run's receivers as lra saw them");
-            }
-            v.draw(&self.base, &options, &row, self.at)?;
-        }
-        if let Some(s) = staged {
-            v.commit(s);
-        }
-        v.selected = selected;
-        self.pair_drawn = draw;
-        v.set_filter(filter);
-        if let Some(show) = show {
-            v.show = show;
-        }
-        Ok(self.lra_reply(a.limit.unwrap_or(LIST)))
-    }
-
-    /// The lra layer as `view_lra` says it: the table, the verdict counts,
-    /// the pairs listed, and the pair selected.
-    fn lra_reply(&self, limit: usize) -> Value {
-        let v = self.lra.as_ref().expect("the layer is read");
-        let table = v.table();
-        let rows = &table.rows;
-        let counts: serde_json::Map<String, Value> =
-            Verdict::counts(rows.iter().map(|r| r.verdict))
-                .iter()
-                .map(|(v, n)| (v.code().into(), (*n).into()))
-                .collect();
-        let shown = v.visible();
-        let list: Vec<Value> = shown
-            .iter()
-            .take(limit)
-            .map(|&i| {
-                let r = &rows[i];
-                json!({
-                    "pair": r.name(),
-                    "verdict": r.verdict.code(),
-                    "change": lra_layer::change(r),
-                    "q": opt_finite(r.effect_q),
-                    "marked": v.marked.contains(&r.name()),
-                })
-            })
-            .collect();
-        let q_scope: String = match &table.q_scope {
-            _ if !table.subset_corrected() => Q_SCOPE_ALL.into(),
-            Some(scope) => scope.to_string(),
-            None => "q corrected within the --only subset".into(),
-        };
-        let selected = v.selected_row().map(|r| {
-            let mut out = json!({
-                "pair": r.name(),
-                "verdict": r.verdict.code(),
-                "note": r.note,
-                "warnings": r.warnings,
-                "change": lra_layer::change(r),
-                "effect": opt_finite(r.effect),
-                "effect_se": opt_finite(r.effect_se),
-                "q": opt_finite(r.effect_q),
-                "coexpr_q": opt_finite(r.coexpr_q),
-                "subset_corrected": table.subset_corrected(),
-                "threshold": opt_finite(r.threshold),
-                "receivers": r.n_receivers,
-                "competent": r.n_competent,
-                "exposed": r.n_exposed,
-                "curve_points": table.curve(v.selected.expect("selected")).len(),
-            });
-            if let Some(on) = v.shown() {
-                let classes: serde_json::Map<_, _> = on
-                    .legend()
-                    .iter()
-                    .map(|(name, _, n)| ((*name).to_string(), Value::from(*n)))
-                    .collect();
-                let count = |f: &[bool]| f.iter().filter(|&&x| x).count();
-                out["map"] = json!({
-                    "classes": classes,
-                    "exposed": count(&on.map.exposed),
-                    "competent": count(&on.map.competent),
-                    "threshold": on.map.threshold,
-                    "competence": on.map.competence,
-                });
-                out["drawn"] = self.pair_drawn.into();
-            }
-            out
-        });
-        let f = v.filter();
-        json!({
-            "table": table.r.label(),
-            "path": shown_path(&table.r.path),
-            "q_scope": q_scope,
-            "tables": v.tables.iter().map(|t| json!({"table": t.label(), "path": shown_path(&t.path)})).collect::<Vec<_>>(),
-            "pairs": rows.len(),
-            "verdicts": counts,
-            "filter": {
-                "verdict": f.verdict.map(|v| v.code()),
-                "search": f.search,
-                "sort": f.sort.name(),
-            },
-            "shown": shown.len(),
-            "list": list,
-            "selected": selected,
-            "show": super::value_name(&v.show),
-            "reading": "change: the headline effect as a percent change (exp(effect) - 1) with \
-                        its 95% CI; q: Benjamini-Hochberg over the table's pairs (q_scope). With \
-                        a pair, view_map draws it: senders (ligand+), receivers exposed or not \
-                        (contact exposure above threshold) and receptor+ or not; show: exposure \
-                        draws the exposure itself. view_export curve: true writes its \
-                        threshold-response curve.",
-        })
-    }
-
     fn nearest(&self, at: (f32, f32), radius: f32) -> anyhow::Result<usize> {
         let geom = &self.base.geom;
         self.base
@@ -1016,21 +814,6 @@ fn drawn(show: Show, at: usize, round: Option<&Round>) -> (Show, usize, Option<&
     }
 }
 
-/// The table `name` names among `tables`: `full`, or a subset by its
-/// list (`L1,L2`, order and case aside), or by its path.
-fn find_table(tables: &[lra_layer::TableRef], name: &str) -> Option<usize> {
-    let list: Vec<Box<str>> = name.split(',').map(|s| s.trim().into()).collect();
-    let canonical = crate::lr_activity::ligand_effect::only::canonical(&list);
-    let path = shown_path(Path::new(name));
-    tables.iter().position(|t| {
-        shown_path(&t.path) == path
-            || match &t.subset {
-                None => name.eq_ignore_ascii_case("full"),
-                Some(s) => s.only == canonical,
-            }
-    })
-}
-
 /// `v` as `--focus` spells a group: a name, or a number.
 fn group_id(v: &Value) -> anyhow::Result<Box<str>> {
     match v {
@@ -1049,133 +832,4 @@ fn value_enum<T: ValueEnum>(s: &str, what: &str) -> anyhow::Result<T> {
 
 fn rect(r: Rect) -> [f32; 4] {
     [r.x0, r.y0, r.x1, r.y1]
-}
-
-fn specs() -> Vec<ToolSpec> {
-    let spec = ToolSpec::new;
-    let group = json!({
-        "type": ["string", "integer"],
-        "description": "C3 or 3 for a community; a lupin cluster id (K3 or 3) or a cell type when a round is shown",
-    });
-    vec![
-        spec(
-            "view_open",
-            "Open a pinto run and summarize it: cells, coordinates, bounds, batches, \
-             levels, the level's groups with their map colours, data files and lupin rounds. \
-             Opening another run closes the one open.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "prefix": {"type": "string", "description": "Output prefix of the run (the -o it was fit with) or its .pinto.json"},
-                    "level": {"type": "string", "description": "Level tag to show (L1, L2, …, final) [default: the last]"},
-                },
-                "required": ["prefix"],
-                "additionalProperties": false,
-            }),
-        ),
-        spec(
-            "view_map",
-            "Draw the map as a PNG, with the state and legend as JSON. Every argument is \
-             optional and stays set until changed; with none, the same view is drawn again.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "level": {"type": "string", "description": "Level tag; shows its communities"},
-                    "round": {"type": "string", "description": "A lupin round ({out}.lupin.json); shows its clusters unless show says otherwise"},
-                    "show": {"enum": ["communities", "types", "clusters"], "description": "What groups the cells; types and clusters are the round's (the newest round when none is given)"},
-                    "layer": {
-                        "anyOf": [
-                            {"enum": ["argmax", "soft", "entropy"]},
-                            {"type": "string", "pattern": "^[Cc]?[0-9]+$"},
-                        ],
-                        "description": "argmax (most likely group), soft (colours mixed by propensity), entropy (propensity entropy / ln K), or C<k> (one community's propensity, e.g. C3)",
-                    },
-                    "focus": {"type": "array", "items": group, "description": "Groups to show; the rest are dimmed. [] shows every group"},
-                    "gene": {"type": "string", "description": "Colour cells by one feature, by symbol or full name; \"\" shows the groups again"},
-                    "source": {"enum": ["observed", "expected"], "description": "The gene's observed ln(1+count), or the model's expected level"},
-                    "clip": {"type": "number", "minimum": 50, "maximum": 100, "description": "Top of the gene's colour ramp, a percentile of its positive values [default: 99]"},
-                    "edges": {"type": "boolean", "description": "Draw adjacent cell pairs by link community, where zoomed in far enough"},
-                    "point_size": {"type": "number", "minimum": 0.25, "maximum": 8, "description": "Cell disc size, × the default"},
-                    "theme": {"enum": ["dark", "light"], "description": "Map colours for a dark or light background [default: dark]"},
-                    "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "World window [x0, y0, x1, y1]"},
-                    "fit": {"type": "boolean", "description": "true: the whole tissue"},
-                    "batch": {"type": "string", "description": "Fit one batch, by the name view_open lists"},
-                    "center": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Move the window's centre to this world point"},
-                    "zoom": {"type": "number", "exclusiveMinimum": 0, "description": "Magnify the window about its centre: 2 zooms in, 0.5 out"},
-                    "width": {"type": "integer", "minimum": 1, "maximum": MAX_SIDE, "description": "Image width in pixels, this call only [default: 1024]"},
-                },
-                "additionalProperties": false,
-            }),
-        ),
-        spec(
-            "view_markers",
-            "A group's top marker features, by fold over the other groups.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "group": group,
-                    "n": {"type": "integer", "minimum": 1, "description": "How many [default: 12]"},
-                },
-                "required": ["group"],
-                "additionalProperties": false,
-            }),
-        ),
-        spec(
-            "view_cell",
-            "The cell nearest a pixel of the last map, a world point, or by name: \
-             its batch, position, group, strongest propensities and entropy.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "px": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[column, row] pixel of the last view_map image"},
-                    "at": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[x, y] world point"},
-                    "name": {"type": "string", "description": "Cell name"},
-                },
-                "additionalProperties": false,
-            }),
-        ),
-        spec(
-            "view_lra",
-            "The run's ligand-receptor tables (pinto lra: the full table and any --only \
-             subsets) and their pooled pairs: verdict counts and a list filtered by verdict \
-             and gene, sorted by q, effect or name, each with its change (percent, exp(effect) \
-             - 1, with 95% CI) and q. With pair, returns that pair's row (verdict, note, \
-             threshold, receivers) and view_map draws it from then on: senders (ligand+), \
-             receivers exposed or not (contact exposure above the table's threshold) and \
-             receptor-competent or not, as lra computed them (show: exposure draws the \
-             exposure itself). Arguments stay set until changed. A subset's q is corrected \
-             within the subset only (q_scope). view_export curve: true writes the pair's \
-             threshold-response curve.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "full, a subset by its --only list (L1,L2), or a table's path [default: the full table]"},
-                    "verdict": {"type": "string", "description": "List only this verdict (supported, effect_without_coexpression, colocation_only, no_evidence, control_failed, celltype_inseparable, insufficient_data); \"\" lists all"},
-                    "search": {"type": "string", "description": "Genes: each word must be in the ligand's or receptor's name; \"\" for all"},
-                    "sort": {"enum": ["q", "effect", "name"], "description": "Order of the list [default: q]"},
-                    "limit": {"type": "integer", "minimum": 0, "description": "Pairs listed, this call only [default: 20]"},
-                    "pair": {"type": "string", "description": "LIGAND:RECEPTOR to select and draw on the map; \"\" draws groups again"},
-                    "show": {"enum": ["classes", "exposure"], "description": "What the pair's map shows [default: classes]"},
-                },
-                "additionalProperties": false,
-            }),
-        ),
-        spec(
-            "view_export",
-            "Write the current view as a PNG and/or a one-page PDF figure (title, scale \
-             bar, legend, focused groups' markers); with curve, the selected lra pair's \
-             threshold-response curve instead. Refuses to replace a file unless overwrite.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "png": {"type": "string", "description": "PNG path, ending .png"},
-                    "pdf": {"type": "string", "description": "PDF path, ending .pdf"},
-                    "width": {"type": "integer", "minimum": 1, "maximum": MAX_SIDE, "description": "Image width in pixels [default: 2400]"},
-                    "overwrite": {"type": "boolean", "description": "Replace files that exist"},
-                    "curve": {"type": "boolean", "description": "Write the selected lra pair's threshold-response curve (view_lra pair) instead of the map"},
-                },
-                "additionalProperties": false,
-            }),
-        ),
-    ]
 }
