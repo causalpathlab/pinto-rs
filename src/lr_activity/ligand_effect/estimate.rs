@@ -11,8 +11,6 @@
 //! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
 //! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
 //! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
-//! | `ring_effect` | the ring effect: effect of ligand on distant, non-touching cells, given the real exposure; a negative control, ≈ 0 |
-//! | `effect_over_ring` | the competent effect − the ring effect, paired over variance clusters |
 //! | `effect_over_background` | the competent effect − the effect on the background programme, paired over variance clusters (pooled row only) |
 //! | `effect_competent_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
 //! | `effect_competent_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |

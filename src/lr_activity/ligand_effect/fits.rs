@@ -39,13 +39,12 @@ impl<'a> Rows<'a> {
     }
 }
 
-/// Which fit of a pair: the main one, the main one without the
-/// response-side bleed columns (spillover, bleed), or the ring control.
+/// Which fit of a pair: the main one, or the main one without the
+/// response-side bleed columns (spillover, bleed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     Main,
     NoSpill,
-    Ring,
 }
 
 /// Whether the competent ones (`level`) among the rows `inside` leave both arms
@@ -73,7 +72,7 @@ pub(super) fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate,
 /// the effect in competent receivers, at the middle competence threshold: a
 /// pair resting on a looser threshold alone has no estimate, whatever those
 /// thresholds show. The no-spill, step, curve and background fits read the same
-/// subset. The ring fit is read beside it, when one of its own subsets is open.
+/// subset.
 ///
 /// A fit not read is skipped, propensity and all, and its estimands are what
 /// the guard would make of them, not estimable with their counts
@@ -82,7 +81,6 @@ pub(super) fn thin_subset(t: &[bool], rows: &[u32], cf: &CrossFit) -> (Estimate,
 #[derive(Clone, Copy, Debug)]
 pub struct Reads {
     pub competent: bool,
-    pub ring: bool,
 }
 
 impl Reads {
@@ -91,17 +89,13 @@ impl Reads {
         let competent = levels
             .get(levels.len() / 2)
             .is_some_and(|c| arms_open(pooled, &x.t, c, opts));
-        Self {
-            competent,
-            ring: competent && levels.iter().any(|c| arms_open(pooled, &x.t_ring, c, opts)),
-        }
+        Self { competent }
     }
 }
 
 /// The controls' propensities ([`ThresholdFits::with_controls`]); `None` for a
 /// fit skipped as hopeless ([`Reads`]).
 struct Controls {
-    ring: Option<Vec<f64>>,
     /// Each adjustment step's, when asked for and the competent effect is read.
     steps: Option<Vec<Vec<f64>>>,
 }
@@ -109,11 +103,10 @@ struct Controls {
 /// One threshold's exposure side as its fits read it, built once and shared by
 /// every fit at it: the competence indicators (raw, the outcome
 /// model's effect modifiers), the pair columns both models carry
-/// (standardized: own ligand, niche, every competence indicator, and the
-/// contact exposure the ring fit adds to them), which fits serve a subset
-/// ([`Reads`]), and the cross-fitted propensities ([`propensity`]) of the
-/// main fit and, with [`ThresholdFits::with_controls`], of the ring fit and each
-/// adjustment step. The propensity reads no response-side column
+/// (standardized: own ligand, niche, every competence indicator), which fits
+/// serve a subset ([`Reads`]), and the cross-fitted propensities
+/// ([`propensity`]) of the main fit and, with [`ThresholdFits::with_controls`],
+/// of each adjustment step. The propensity reads no response-side column
 /// ([`fit_main`]), so one serves every programme weighting, the background and
 /// the no-spill fit.
 pub struct ThresholdFits<'a> {
@@ -125,7 +118,6 @@ pub struct ThresholdFits<'a> {
     force: bool,
     modifiers: Vec<Vec<f64>>,
     extra: Vec<Vec<f64>>,
-    exposed: Vec<f64>,
     main: Option<Vec<f64>>,
     controls: Option<Controls>,
 }
@@ -135,7 +127,6 @@ pub struct ThresholdFits<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct Starts {
     pub(super) main: FoldStarts,
-    ring: FoldStarts,
 }
 
 pub(super) fn indicator(v: &[bool]) -> Vec<f64> {
@@ -165,12 +156,11 @@ impl<'a> ThresholdFits<'a> {
             force: opts.fit_thin,
             modifiers,
             extra,
-            exposed: standardize(&indicator(&exposure.t)),
             main: None,
             controls: None,
         };
         if fits.runs(fits.reads.competent) {
-            let extra = fits.extra(Fit::Main);
+            let extra = fits.extra();
             let main = propensity(
                 rows.design.view(),
                 rows.cf,
@@ -184,8 +174,7 @@ impl<'a> ThresholdFits<'a> {
         Ok(fits)
     }
 
-    /// Also the ring fit's propensity and, when `steps`, each adjustment
-    /// step's: what [`super::effects::effects_on`] needs.
+    /// Also, when `steps`, each adjustment step's propensity: what [`super::effects::effects_on`] needs.
     pub fn with_controls(
         mut self,
         rows: Rows<'_>,
@@ -194,23 +183,8 @@ impl<'a> ThresholdFits<'a> {
         starts: &mut Starts,
     ) -> anyhow::Result<Self> {
         let x = self.exposure;
-        let ring = if self.runs(self.reads.ring) {
-            let extra = self.extra(Fit::Ring);
-            Some(timing::time(timing::MAIN, || {
-                propensity(
-                    rows.design.view(),
-                    rows.cf,
-                    &x.t_ring,
-                    &extra,
-                    &opts.nuisance,
-                    &mut starts.ring,
-                )
-            })?)
-        } else {
-            None
-        };
         let steps = if steps && self.runs(self.reads.competent) {
-            let extra = self.extra(Fit::Main);
+            let extra = self.extra();
             // A step starts from the main fit, the model it nests in.
             let p = rows.design.p();
             Some(timing::time(timing::STEPS, || {
@@ -226,7 +200,7 @@ impl<'a> ThresholdFits<'a> {
         } else {
             None
         };
-        self.controls = Some(Controls { ring, steps });
+        self.controls = Some(Controls { steps });
         Ok(self)
     }
 
@@ -235,40 +209,32 @@ impl<'a> ThresholdFits<'a> {
         read || self.force
     }
 
-    /// The pair columns of both models under `kind`.
-    fn extra(&self, kind: Fit) -> Vec<&[f64]> {
-        let mut cols: Vec<&[f64]> = self.extra.iter().map(|c| c.as_slice()).collect();
-        if kind == Fit::Ring {
-            cols.push(&self.exposed);
-        }
-        cols
+    /// The pair columns of both models.
+    fn extra(&self) -> Vec<&[f64]> {
+        self.extra.iter().map(|c| c.as_slice()).collect()
     }
 
-    /// The propensity of the fit `kind` (of adjustment step `step` when
-    /// given); an error when it was not fitted: the controls' before
+    /// The main fit's propensity, or adjustment step `step`'s when given; an error when it was not fitted: the controls' before
     /// [`ThresholdFits::with_controls`], or a fit skipped as hopeless.
-    fn propensity(&self, kind: Fit, step: Option<usize>) -> anyhow::Result<&[f64]> {
-        let controls = || {
-            self.controls
+    fn propensity(&self, step: Option<usize>) -> anyhow::Result<&[f64]> {
+        let e = match step {
+            Some(s) => self
+                .controls
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("the controls' propensities are not fitted"))
-        };
-        let e = match (kind, step) {
-            (Fit::Ring, _) => controls()?.ring.as_deref(),
-            (_, Some(s)) => controls()?
+                .ok_or_else(|| anyhow::anyhow!("the controls' propensities are not fitted"))?
                 .steps
                 .as_ref()
                 .and_then(|v| v.get(s))
                 .map(Vec::as_slice),
-            _ => self.main.as_deref(),
+            None => self.main.as_deref(),
         };
-        e.ok_or_else(|| anyhow::anyhow!("the {kind:?} propensity (step {step:?}) is not fitted"))
+        e.ok_or_else(|| anyhow::anyhow!("the propensity (step {step:?}) is not fitted"))
     }
 }
 
 /// One cross-fitted fit of a pair on `design`, every competence threshold
 /// at once, with its propensity from `fits` ([`ThresholdFits`]): the main one,
-/// or adjustment step `step`'s, or the ring's; an error when that one is
+/// or adjustment step `step`'s; an error when that one is
 /// not fitted.
 ///
 /// The thresholds give nested indicators `C_c`. One outcome model carries
@@ -278,9 +244,8 @@ impl<'a> ThresholdFits<'a> {
 /// each `m_t` stays correctly specified wherever its own was; what changes
 /// is one fit instead of one per competence threshold.
 ///
-/// The pair columns: own ligand, niche, every competence indicator, and
-/// under [`Fit::Ring`] the contact exposure, the ring exposure being the
-/// treatment, in both models; spillover and bleed (not under
+/// The pair columns: own ligand, niche and every competence indicator, in
+/// both models; spillover and bleed (not under
 /// [`Fit::NoSpill`]) in the outcome model alone. Read off the response,
 /// they would tie the propensity to one programme; without them it depends
 /// on the exposure side only and is fitted once per exposure threshold for every
@@ -302,16 +267,16 @@ pub fn fit_main(
     step: Option<usize>,
     opts: &EffectOpts,
 ) -> anyhow::Result<OverlapTerms> {
-    let e = fits.propensity(kind, step)?;
+    let e = fits.propensity(step)?;
     let x = fits.exposure;
-    let extra = fits.extra(kind);
+    let extra = fits.extra();
     let outcome_only: Vec<&[f64]> = match kind {
         Fit::NoSpill => Vec::new(),
-        Fit::Main | Fit::Ring => vec![&r.spill, &r.bleed],
+        Fit::Main => vec![&r.spill, &r.bleed],
     };
     let modifiers: Vec<&[f64]> = fits.modifiers.iter().map(|c| c.as_slice()).collect();
     let inputs = PairInputs {
-        t: if kind == Fit::Ring { &x.t_ring } else { &x.t },
+        t: &x.t,
         y: &r.y,
         extra: &extra,
         outcome_only: &outcome_only,

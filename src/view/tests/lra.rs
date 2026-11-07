@@ -337,9 +337,6 @@ fn a_row_reads_each_control_from_its_own_columns() {
             ("effect_incompetent", 0.1),
             ("effect_incompetent_se", 0.2),
             ("effect_contrast_q", 0.3),
-            ("ring_effect", 0.4),
-            ("ring_effect_se", 0.5),
-            ("effect_over_ring_q", 0.6),
             ("background_effect", 0.7),
             ("background_effect_se", 0.8),
             ("effect_over_background_q", 0.9),
@@ -356,7 +353,6 @@ fn a_row_reads_each_control_from_its_own_columns() {
         );
     };
     near(c.receptor_negative, [0.1, 0.2, 0.3]);
-    near(c.distant, [0.4, 0.5, 0.6]);
     near(c.background, [0.7, 0.8, 0.9]);
 }
 
@@ -384,11 +380,10 @@ fn the_panel_words_each_control_as_a_percent_with_its_q() {
     };
     r.controls = Some(Controls {
         receptor_negative: c(0.0005, 0.0002, 0.012),
-        distant: c(0.0953, 0.05, f64::NAN),
-        background: c(f64::NAN, f64::NAN, f64::NAN),
+        background: c(0.0953, 0.05, f64::NAN),
     });
     let lines = control_lines(&r);
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 3);
     assert!(
         lines[1].contains("receptor−") && lines[1].contains("+0.05% ±0.02"),
         "{}",
@@ -401,11 +396,13 @@ fn the_panel_words_each_control_as_a_percent_with_its_q() {
         "{}",
         lines[2]
     );
-    assert!(
-        lines[3].contains("not run") && lines[3].ends_with('—'),
-        "{}",
-        lines[3]
-    );
+    // A control that could not run says so.
+    r.controls = Some(Controls {
+        receptor_negative: c(f64::NAN, f64::NAN, f64::NAN),
+        background: c(0.0953, 0.05, f64::NAN),
+    });
+    let lines = control_lines(&r);
+    assert!(lines[1].contains("not run"), "{}", lines[1]);
 }
 
 #[test]

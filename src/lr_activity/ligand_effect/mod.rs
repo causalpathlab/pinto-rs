@@ -22,8 +22,6 @@
 //!   receivers are different cell types by construction and the contrast
 //!   conflates the receptor with cell type; it is no headline, but a
 //!   significant effect must exceed the incompetent one;
-//! - `ring_effect`, the ring effect: effect of ligand on distant non-touching cells given
-//!   the real exposure (≈ 0 is a negative control for spatial confounding);
 //! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
 //!   ratio; `marginal_cor`, the correlation of response and contact ligand; `crude`, the
 //!   unadjusted contrast; `effect_ipw` and `effect_outcome`, the headline's two halves,
@@ -155,8 +153,6 @@ pub struct Internals {
     pub identity_bits: usize,
     /// Fewest measured genes in a pair's response programme.
     pub min_targets: usize,
-    /// Negative-control ring, inner and outer, in median contact lengths.
-    pub ring: (f64, f64),
     /// Length scales of the regional confounder smooth, in contact lengths.
     pub scales: [f64; 2],
     /// Tile width for cross-fitting folds and variance clusters.
@@ -177,7 +173,6 @@ pub const INTERNALS: Internals = Internals {
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,
-    ring: (15.0, 30.0),
     scales: [8.0, 32.0],
     tile: 25.0,
     folds: 5,

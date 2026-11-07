@@ -29,7 +29,7 @@
 //!    exposure and attenuates its estimate (column `misclassified`).
 //! 2. **Response from the real programme.** Each programme gene `g`, with
 //!    signed weight `w_g` (sign `s_g`), is drawn per receiver as
-//!    `Poisson(sf · μ_{b,g} · e^{s_g β f(Z)} · e^{s_g (θ_b C T* + θ_ring,b C T*_ring)})`,
+//!    `Poisson(sf · μ_{b,g} · e^{s_g β f(Z)} · e^{s_g θ_b C T*})`,
 //!    with `μ_{b,g}` the real gene's mean count / size factor in the bin and
 //!    `C` whether the receiver responds. The response is the signed
 //!    weighted programme the estimator uses,
@@ -48,7 +48,7 @@
 //!    and neighbours' identities are correlated.
 //! 4. **Truths**, two of them, on the scale the response lives on, as measured
 //!    (with spillover's bleed, below). `truth` is what the estimate targets: the
-//!    realized effect `T* (y(1) − y(0))`, at the realized ring exposure,
+//!    realized effect `T* (y(1) − y(0))`,
 //!    contrasted between the arms the estimator sees under its arm weights at
 //!    each threshold, then averaged over thresholds by the estimate's own
 //!    weights. Misclassified exposure is thus part of the target, so coverage
@@ -94,9 +94,6 @@
 //!   unbled truth would charge that compression to the estimator). The
 //!   neighbour-response and bleed covariates are what should absorb it,
 //!   and a fit without them is reported beside.
-//! - **Reach** `θ_ring`: a second effect from ring partners (`T*_ring`).
-//!   At 0 the effect is contact-only and the ring estimate should sit at
-//!   0; its truth is the same sample average contrast, in `T*_ring`.
 //! - **Shift**: the estimator sees the detected ligand field displaced by
 //!   a few contact lengths (each cell reads the cell nearest its point plus
 //!   the offset, in its own section). Receivers still respond to the

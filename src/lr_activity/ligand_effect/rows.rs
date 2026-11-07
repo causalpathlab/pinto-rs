@@ -56,16 +56,12 @@ pub struct EffectRow {
     /// and its BH q within the section.
     pub coexpr_p: f64,
     pub coexpr_q: f64,
-    /// BH q of the controls (incompetent effect, ring effect), two-sided,
-    /// within the section.
+    /// BH q of the incompetent effect, two-sided, within the section.
     pub effect_incompetent_q: f64,
     /// BH q of the contrast between the effects in competent and in
     /// receptor-negative receivers, among the significant effects.
     pub effect_contrast_q: f64,
-    pub ring_effect_q: f64,
-    /// BH q of the competent effect over the ring effect and over the background's,
-    /// among the significant effects.
-    pub effect_over_ring_q: f64,
+    /// BH q of the competent effect over the background's, among the significant effects.
     pub effect_over_background_q: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
@@ -117,8 +113,6 @@ impl EffectRow {
             coexpr_q: f64::NAN,
             effect_incompetent_q: f64::NAN,
             effect_contrast_q: f64::NAN,
-            ring_effect_q: f64::NAN,
-            effect_over_ring_q: f64::NAN,
             effect_over_background_q: f64::NAN,
             n_pairs_same_ligand: 0,
             ligand_q: f64::NAN,

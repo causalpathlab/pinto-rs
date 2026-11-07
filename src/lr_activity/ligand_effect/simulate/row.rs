@@ -26,10 +26,6 @@ pub struct SimRow {
     /// its own.
     pub outcome: f64,
     pub incompetent: Estimate,
-    pub ring: Estimate,
-    /// Sample average effect of the true ring exposure over competent
-    /// receivers.
-    pub ring_truth: f64,
     /// The competent-receiver estimate without the neighbour-response and
     /// bleed covariates; fitted only under spillover, NaN otherwise.
     pub no_spill: Estimate,
@@ -38,8 +34,6 @@ pub struct SimRow {
     pub steps: [Estimate; 3],
     /// The competent effect minus the receptor-negative one.
     pub contrast: Estimate,
-    /// The competent effect minus the ring effect.
-    pub over_ring: Estimate,
     /// The competent effect on the simulated background programme.
     pub background: Estimate,
     /// The competent effect minus the background's.
