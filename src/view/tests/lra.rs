@@ -5,14 +5,16 @@
 
 use crate::lr_activity::input::Contacts;
 use crate::lr_activity::ligand_effect::frame::RunFrame;
-use crate::lr_activity::ligand_effect::output::{PairRow, Q_SCOPE_ALL};
+use crate::lr_activity::ligand_effect::output::{
+    read_pair_rows, Control, Controls, PairRow, Q_SCOPE_ALL,
+};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::metadata::{LraOptions, LraSubset};
 use crate::view::color::Theme;
 use crate::view::curve::{self, ticks, Curve};
 use crate::view::lra::{
-    lra_command, lra_table, next_verdict, visible, Filter, LraView, Receivers, Sort,
+    control_lines, lra_command, lra_table, next_verdict, visible, Filter, LraView, Receivers, Sort,
 };
 use crate::view::Base;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -31,6 +33,16 @@ fn strs(v: &[&str]) -> Vec<Box<str>> {
 /// threshold), each pooled, with a section row that is not; `scope` its
 /// `q_scope`.
 fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &str) {
+    write_table_with(path, rows, scope, &[]);
+}
+
+/// [`write_table`] with `extra` columns, one value for every row.
+fn write_table_with(
+    path: &Path,
+    rows: &[(&str, &str, &str, f32, f32, f32)],
+    scope: &str,
+    extra: &[(&str, f32)],
+) {
     let n = rows.len() + 1;
     fn col(n: usize, f: impl Fn(usize) -> String) -> Vec<Box<str>> {
         (0..n).map(|i| f(i).into()).collect()
@@ -55,33 +67,30 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
     let hi = num(&|i| at(i).4 + 5.0);
     let counts = num(&|_| 10.0);
     let names: Vec<Box<str>> = (0..n).map(|i| i.to_string().into()).collect();
-    write_named_table(
-        &path.to_string_lossy(),
-        "row",
-        &names,
-        &[
-            ("section".into(), Column::Str(&section)),
-            ("ligand".into(), Column::Str(&ligand)),
-            ("receptor".into(), Column::Str(&receptor)),
-            ("verdict".into(), Column::Str(&verdict)),
-            ("verdict_note".into(), Column::Str(&note)),
-            ("warnings".into(), Column::Str(&warnings)),
-            ("effect_competent".into(), Column::F32(&effect)),
-            ("effect_competent_se".into(), Column::F32(&se)),
-            ("effect_p".into(), Column::F32(&q)),
-            ("effect_q".into(), Column::F32(&q)),
-            ("coexpr_q".into(), Column::F32(&q)),
-            ("effect_pct".into(), Column::F32(&pct)),
-            ("effect_pct_lo".into(), Column::F32(&lo)),
-            ("effect_pct_hi".into(), Column::F32(&hi)),
-            ("exposure_threshold".into(), Column::F32(&tau)),
-            ("n_receivers".into(), Column::F32(&counts)),
-            ("n_competent".into(), Column::F32(&counts)),
-            ("n_exposed".into(), Column::F32(&counts)),
-            ("q_scope".into(), Column::Str(&scope)),
-        ],
-    )
-    .unwrap();
+    let extras: Vec<(&str, Vec<f32>)> = extra.iter().map(|&(c, v)| (c, vec![v; n])).collect();
+    let mut table: Vec<(Box<str>, Column<'_>)> = vec![
+        ("section".into(), Column::Str(&section)),
+        ("ligand".into(), Column::Str(&ligand)),
+        ("receptor".into(), Column::Str(&receptor)),
+        ("verdict".into(), Column::Str(&verdict)),
+        ("verdict_note".into(), Column::Str(&note)),
+        ("warnings".into(), Column::Str(&warnings)),
+        ("effect_competent".into(), Column::F32(&effect)),
+        ("effect_competent_se".into(), Column::F32(&se)),
+        ("effect_p".into(), Column::F32(&q)),
+        ("effect_q".into(), Column::F32(&q)),
+        ("coexpr_q".into(), Column::F32(&q)),
+        ("effect_pct".into(), Column::F32(&pct)),
+        ("effect_pct_lo".into(), Column::F32(&lo)),
+        ("effect_pct_hi".into(), Column::F32(&hi)),
+        ("exposure_threshold".into(), Column::F32(&tau)),
+        ("n_receivers".into(), Column::F32(&counts)),
+        ("n_competent".into(), Column::F32(&counts)),
+        ("n_exposed".into(), Column::F32(&counts)),
+        ("q_scope".into(), Column::Str(&scope)),
+    ];
+    table.extend(extras.iter().map(|(c, v)| ((*c).into(), Column::F32(v))));
+    write_named_table(&path.to_string_lossy(), "row", &names, &table).unwrap();
 }
 
 /// `{out}.lra.curve.parquet`: four thresholds for `pair`, the last not
@@ -291,6 +300,7 @@ fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> Pair
         n_receivers: 100,
         n_competent: 40,
         n_exposed: 20,
+        controls: None,
     }
 }
 
@@ -312,6 +322,90 @@ fn rows() -> Vec<PairRow> {
         ),
         row("LIGB1", "RECB1", Verdict::Supported, 0.02, 5.0),
     ]
+}
+
+#[test]
+fn a_row_reads_each_control_from_its_own_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.lra.parquet");
+    let one = [("LIGA1", "RECA1", "control_failed", 0.01, 2.0, 0.0)];
+    write_table_with(
+        &path,
+        &one,
+        Q_SCOPE_ALL,
+        &[
+            ("effect_incompetent", 0.1),
+            ("effect_incompetent_se", 0.2),
+            ("effect_contrast_q", 0.3),
+            ("ring_effect", 0.4),
+            ("ring_effect_se", 0.5),
+            ("effect_over_ring_q", 0.6),
+            ("background_effect", 0.7),
+            ("background_effect_se", 0.8),
+            ("effect_over_background_q", 0.9),
+        ],
+    );
+    let (rows, _) = read_pair_rows(&path.to_string_lossy()).unwrap();
+    assert_eq!(rows.len(), 1);
+    let c = rows[0].controls.expect("the table has them");
+    let near = |c: Control, want: [f64; 3]| {
+        let got = [c.effect, c.se, c.exceeded_q];
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6),
+            "{got:?}"
+        );
+    };
+    near(c.receptor_negative, [0.1, 0.2, 0.3]);
+    near(c.distant, [0.4, 0.5, 0.6]);
+    near(c.background, [0.7, 0.8, 0.9]);
+}
+
+#[test]
+fn a_table_from_before_the_controls_still_reads_and_shows_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.lra.parquet");
+    write_table(
+        &path,
+        &[("LIGA1", "RECA1", "supported", 0.01, 2.0, 0.0)],
+        Q_SCOPE_ALL,
+    );
+    let (rows, _) = read_pair_rows(&path.to_string_lossy()).unwrap();
+    assert_eq!(rows[0].controls, None);
+    assert!(control_lines(&rows[0]).is_empty());
+}
+
+#[test]
+fn the_panel_words_each_control_as_a_percent_with_its_q() {
+    let mut r = row("LIGA1", "RECA1", Verdict::ControlFailed, 0.01, 2.0);
+    let c = |effect: f64, se: f64, exceeded_q: f64| Control {
+        effect,
+        se,
+        exceeded_q,
+    };
+    r.controls = Some(Controls {
+        receptor_negative: c(0.0005, 0.0002, 0.012),
+        distant: c(0.0953, 0.05, f64::NAN),
+        background: c(f64::NAN, f64::NAN, f64::NAN),
+    });
+    let lines = control_lines(&r);
+    assert_eq!(lines.len(), 4);
+    assert!(
+        lines[1].contains("receptor−") && lines[1].contains("+0.05% ±0.02"),
+        "{}",
+        lines[1]
+    );
+    assert!(lines[1].ends_with("0.012"), "{}", lines[1]);
+    // A large change takes the headline's whole percents, and no q is a dash.
+    assert!(
+        lines[2].contains("+10% ±5") && lines[2].ends_with('—'),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[3].contains("not run") && lines[3].ends_with('—'),
+        "{}",
+        lines[3]
+    );
 }
 
 #[test]
@@ -836,7 +930,6 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
 #[test]
 #[ignore]
 fn real_tissue_maps_count_what_the_table_counts() {
-    use crate::lr_activity::ligand_effect::output::read_pair_rows;
     use crate::util::metadata::PintoMetadata;
     let Ok(manifest) = std::env::var("PINTO_LRA_MANIFEST") else {
         eprintln!("PINTO_LRA_MANIFEST unset: nothing to check");
