@@ -7,8 +7,12 @@ use super::run_sim;
 use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
+use crate::lr_activity::ligand_effect::simulate::communities::{
+    between_sum, draw_communities, on_boundary,
+};
 use crate::lr_activity::ligand_effect::simulate::{
-    sign_lifts, simulate_background, ConfounderKind, Scenario, SimBase,
+    default_grid, sign_lifts, simulate_background, CommunityLayout, ConfounderKind, GridOpts,
+    Scenario, SimBase, Study,
 };
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
@@ -401,4 +405,154 @@ fn a_dose_response_truth_tracks_the_estimate_and_keeps_the_exposed_effect_apart(
         r.estimate.se,
         r.truth
     );
+}
+
+fn layout(number: usize, dominant: f64, mixing: f64) -> CommunityLayout {
+    CommunityLayout {
+        number,
+        dominant,
+        mixing,
+    }
+}
+
+/// Number, skew and mixing each do what the layout says, whatever the seed.
+#[test]
+fn community_layouts_follow_their_settings() {
+    let f = fixture();
+    let n = f.tissue.n() as f64;
+    let share = |labels: &[u32], c: u32| labels.iter().filter(|&&l| l == c).count() as f64 / n;
+    let boundary = |labels: &[u32]| {
+        let on = on_boundary(&f.tissue.contacts, labels);
+        on.iter().filter(|&&b| b).count() as f64 / n
+    };
+    for seed in [1, 2, 3] {
+        let plain = draw_communities(&f.tissue, &layout(4, 0.0, 0.0), seed);
+        assert!(plain.iter().all(|&l| l < 4));
+        let skewed = draw_communities(&f.tissue, &layout(4, 0.7, 0.0), seed);
+        assert!((share(&skewed, 0) - 0.7).abs() < 0.01);
+        let mixed = draw_communities(&f.tissue, &layout(4, 0.0, 0.3), seed);
+        assert!(boundary(&mixed) > boundary(&plain));
+    }
+}
+
+#[test]
+fn between_sum_counts_only_contacts_in_another_community() {
+    let contacts = Contacts::from_pairs(4, &[(0, 1), (0, 2), (2, 3)]);
+    let labels = [0, 0, 1, 1];
+    let v = [1.0, 10.0, 100.0, 1000.0];
+    assert_eq!(between_sum(&contacts, &labels, &v), [100.0, 0.0, 1.0, 0.0]);
+    assert_eq!(on_boundary(&contacts, &labels), [true, false, true, false]);
+}
+
+/// A planted effect through contacts between communities leaves everyone else
+/// untouched, so today's arms over all contacts see less of it than an effect
+/// through every contact.
+#[test]
+fn an_effect_between_communities_reaches_fewer_receivers() {
+    let f = fixture();
+    let every = Scenario {
+        effect: 0.5,
+        ..Scenario::default()
+    };
+    let between = Scenario {
+        layout: Some(layout(4, 0.0, 0.0)),
+        ..every
+    };
+    let (a, b) = (
+        run_sim(&f.tissue, &base(&f), &every, &opts(), 31).unwrap(),
+        run_sim(&f.tissue, &base(&f), &between, &opts(), 31).unwrap(),
+    );
+    assert!(a.boundary_share.is_nan());
+    assert!(b.boundary_share > 0.0 && b.boundary_share < 1.0);
+    assert!(
+        b.truth_exposed > 0.0,
+        "truth among exposed {}",
+        b.truth_exposed
+    );
+    assert!(b.truth < a.truth, "between {} every {}", b.truth, a.truth);
+}
+
+#[test]
+fn community_fields_need_a_layout() {
+    let f = fixture();
+    let scen = Scenario {
+        confounder: ConfounderKind::Boundary,
+        confound_ligand: 1.0,
+        confound_response: 1.0,
+        ..Scenario::default()
+    };
+    assert!(run_sim(&f.tissue, &base(&f), &scen, &opts(), 5).is_err());
+    let with_layout = Scenario {
+        layout: Some(layout(4, 0.0, 0.0)),
+        ..scen
+    };
+    assert!(run_sim(&f.tissue, &base(&f), &with_layout, &opts(), 5).is_ok());
+}
+
+/// A layout adds its own scenarios and changes none of the rest.
+#[test]
+fn the_grid_adds_three_scenarios_per_layout_and_rep() {
+    let plain = GridOpts {
+        reps: 1,
+        effect_sizes: vec![],
+        ..GridOpts::default()
+    };
+    let with = GridOpts {
+        communities: vec![layout(4, 0.0, 0.0), layout(12, 0.6, 0.2)],
+        ..plain.clone()
+    };
+    let (a, b) = (default_grid(&plain), default_grid(&with));
+    assert_eq!(b.len(), a.len() + 6);
+    assert!(a.iter().all(|s| s.layout.is_none()));
+    assert_eq!(b.iter().filter(|s| s.layout.is_some()).count(), 6);
+}
+
+#[test]
+fn a_study_rejects_an_impossible_layout() {
+    for bad in [
+        r#"{"scenarios":{"communities":[{"number":1}]}}"#,
+        r#"{"scenarios":{"communities":[{"number":4,"dominant":1.0}]}}"#,
+        r#"{"scenarios":{"communities":[{"number":4,"mixing":1.5}]}}"#,
+        r#"{"scenarios":{"communities":[{"number":4,"share":0.5}]}}"#,
+    ] {
+        assert!(Study::from_json(bad).is_err(), "{bad}");
+    }
+    assert!(Study::from_json(r#"{"scenarios":{"communities":[{"number":4}]}}"#).is_ok());
+}
+
+/// At community boundaries the comparison targets the effect through contacts
+/// between communities, and recovers it; under no effect it stays at zero.
+#[test]
+fn the_boundary_comparison_tracks_its_own_truth() {
+    let f = fixture();
+    for (effect, seed) in [(0.5, 41), (0.0, 43)] {
+        let scen = Scenario {
+            effect,
+            layout: Some(layout(6, 0.0, 0.1)),
+            ..Scenario::default()
+        };
+        let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), seed).unwrap();
+        let b = r.boundary;
+        assert!(b.estimate.n_treated > 0 && b.estimate.n > b.estimate.n_treated);
+        let z = (b.estimate.theta - b.truth) / b.estimate.se;
+        assert!(
+            z.abs() < 3.0,
+            "effect {effect}: boundary {:.4} ± {:.4}, truth {:.4}",
+            b.estimate.theta,
+            b.estimate.se,
+            b.truth
+        );
+        if effect > 0.0 {
+            assert!(
+                b.truth > r.truth,
+                "boundary truth {} vs {}",
+                b.truth,
+                r.truth
+            );
+        } else {
+            assert_eq!(b.truth, 0.0);
+        }
+    }
+    let plain = run_sim(&f.tissue, &base(&f), &Scenario::default(), &opts(), 3).unwrap();
+    assert!(plain.boundary.estimate.theta.is_nan() && plain.boundary.truth.is_nan());
 }

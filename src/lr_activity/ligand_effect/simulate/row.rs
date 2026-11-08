@@ -44,6 +44,11 @@ pub struct SimRow {
     /// Share of competent receivers whose seen exposure is not their true
     /// exposure.
     pub misclassified: f64,
+    /// Share of cells touching another synthetic community; NaN without a
+    /// layout.
+    pub boundary_share: f64,
+    /// The comparison at community boundaries, with its own truth.
+    pub boundary: super::communities::BoundaryResult,
     /// The co-expression baselines on the seen ligand and the receptor.
     pub baselines: Baselines,
     /// Wall time of the whole run and of its baselines, in seconds.

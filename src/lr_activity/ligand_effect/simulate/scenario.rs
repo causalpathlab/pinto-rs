@@ -10,6 +10,12 @@ pub enum ConfounderKind {
     Bumps,
     /// A real gene outside the benchmarked pairs, smoothed over contacts
     RealGene,
+    /// A random value per synthetic community, so communities differ in
+    /// ligand and in baseline response
+    Community,
+    /// Whether a cell touches another synthetic community, so position at the
+    /// boundary raises ligand and response whatever the ligand does
+    Boundary,
 }
 
 impl ConfounderKind {
@@ -18,6 +24,8 @@ impl ConfounderKind {
             Self::Fourier => "fourier",
             Self::Bumps => "bumps",
             Self::RealGene => "realgene",
+            Self::Community => "community",
+            Self::Boundary => "boundary",
         }
     }
 }
@@ -27,10 +35,16 @@ impl std::str::FromStr for ConfounderKind {
 
     /// A kind by its [`label`](Self::label).
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        [Self::Fourier, Self::Bumps, Self::RealGene]
-            .into_iter()
-            .find(|k| k.label() == s)
-            .ok_or_else(|| anyhow::anyhow!("unknown confounder {s:?}"))
+        [
+            Self::Fourier,
+            Self::Bumps,
+            Self::RealGene,
+            Self::Community,
+            Self::Boundary,
+        ]
+        .into_iter()
+        .find(|k| k.label() == s)
+        .ok_or_else(|| anyhow::anyhow!("unknown confounder {s:?}"))
     }
 }
 
@@ -63,6 +77,21 @@ impl std::str::FromStr for ConfoundShape {
             .find(|k| k.label() == s)
             .ok_or_else(|| anyhow::anyhow!("unknown confound shape {s:?}"))
     }
+}
+
+/// How synthetic communities are laid out ([`super::communities`]).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommunityLayout {
+    /// Communities per section, at least two.
+    pub number: usize,
+    /// The first community's share of each section; 0 leaves it its nearest
+    /// cells like the others.
+    #[serde(default)]
+    pub dominant: f64,
+    /// Share of cells relabelled at random, which scatters the boundaries.
+    #[serde(default)]
+    pub mixing: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +132,9 @@ pub struct Scenario {
     /// background programmes included. It acts at contact range on every
     /// programme, so the receptor-negative receivers cannot show it; 0 for none.
     pub generic_shift: f64,
+    /// Synthetic communities. With them, the effect travels only through
+    /// contacts between communities: `T*` reads the dose over those contacts.
+    pub layout: Option<CommunityLayout>,
     pub rep: usize,
 }
 
@@ -128,6 +160,7 @@ impl Default for Scenario {
             dose_midpoint: 0.5,
             dose_order: 2,
             generic_shift: 0.0,
+            layout: None,
             rep: 0,
         }
     }
@@ -175,6 +208,9 @@ pub struct GridOpts {
     pub dose_order: i32,
     /// Each a scenario with a generic contact-range shift of this size.
     pub generic_shift: Vec<f64>,
+    /// Each layout runs unconfounded, with communities differing in ligand and
+    /// baseline, and with the boundary itself raising both.
+    pub communities: Vec<CommunityLayout>,
 }
 
 impl Default for GridOpts {
@@ -196,6 +232,7 @@ impl Default for GridOpts {
             dose_midpoint: 0.5,
             dose_order: 2,
             generic_shift: Vec::new(),
+            communities: Vec::new(),
         }
     }
 }
@@ -209,7 +246,9 @@ impl Default for GridOpts {
 /// - a heterogeneous effect (planted effects only);
 /// - unconfounded segmentation spillover at each κ;
 /// - the first confounder at the first scale, seen shifted by each shift;
-/// - the marker type, unconfounded.
+/// - the marker type, unconfounded;
+/// - per community layout: the effect through contacts between communities,
+///   unconfounded and under each community-tied field.
 pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
     let mut out = Vec::new();
     let first_scale = g.scales.first().copied().unwrap_or(32.0);
@@ -286,6 +325,21 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
                     ..plain
                 });
             }
+            for &layout in &g.communities {
+                let local = Scenario {
+                    layout: Some(layout),
+                    ..plain
+                };
+                out.push(local);
+                for confounder in [ConfounderKind::Community, ConfounderKind::Boundary] {
+                    out.push(Scenario {
+                        confounder,
+                        confound_ligand: 1.0,
+                        confound_response: 1.0,
+                        ..local
+                    });
+                }
+            }
         }
     }
     out
@@ -333,6 +387,16 @@ impl Study {
             s.scenarios.scales.iter().all(|&x| x > 0.0),
             "scenarios.scales must be positive contact lengths"
         );
+        for l in &s.scenarios.communities {
+            anyhow::ensure!(
+                l.number >= 2,
+                "a community layout needs at least 2 communities"
+            );
+            anyhow::ensure!(
+                (0.0..1.0).contains(&l.dominant) && (0.0..=1.0).contains(&l.mixing),
+                "a community layout's dominant must be in [0, 1) and its mixing in [0, 1]"
+            );
+        }
         Ok(s)
     }
 
@@ -373,7 +437,11 @@ impl Study {
                      quantile dose_midpoint of the positive doses and rising with the Hill \
                      order dose_order. generic_shift: sizes of a contact-range shift of every gene \
                      in competent receivers, tied to the ligand by a hidden trait of the \
-                     neighbours."
+                     neighbours. communities: layouts of synthetic communities, each \
+                     {number, dominant, mixing}: communities per section, the first one's \
+                     share of each section (0 for none), and the share of cells relabelled \
+                     at random. With a layout the effect travels only through contacts \
+                     between communities."
                         .into(),
                 ),
                 ..GridOpts::default()

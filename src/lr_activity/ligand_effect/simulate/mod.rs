@@ -83,7 +83,7 @@
 //! Every run also scores the co-expression baselines of
 //! [`super::baselines`] on the ligand and receptor the estimator sees.
 //!
-//! Three departures, each off by default:
+//! Four departures, each off by default:
 //!
 //! - **Spillover** κ: segmentation hands each receiver a share κ of every
 //!   contact neighbour's programme counts, and of their ligand counts in
@@ -100,8 +100,15 @@
 //!   undisplaced field, so the seen exposure has no effect (truths 0); a
 //!   contact effect should vanish while confounding at a coarser scale
 //!   still fools the crude contrast.
+//! - **Communities** ([`CommunityLayout`]): synthetic labels of a chosen number,
+//!   skew and mixing. The effect then travels only through contacts between
+//!   communities, so `T*` reads the dose over those contacts alone, and the
+//!   truths follow it. Hidden fields tied to the labels make communities differ
+//!   in ligand and baseline ([`ConfounderKind::Community`]) or make the boundary
+//!   itself raise both ([`ConfounderKind::Boundary`]).
 
 mod calibrate;
+pub mod communities;
 mod draw;
 mod fields;
 mod row;

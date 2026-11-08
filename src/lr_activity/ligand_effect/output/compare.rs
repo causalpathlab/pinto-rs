@@ -185,6 +185,12 @@ fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String
     if s.marker {
         d += " marker";
     }
+    if let Some(l) = s.layout {
+        d += &format!(
+            " communities={} dominant={} mixing={}",
+            l.number, l.dominant, l.mixing
+        );
+    }
     d
 }
 

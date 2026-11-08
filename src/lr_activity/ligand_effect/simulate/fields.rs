@@ -1,6 +1,7 @@
 //! The hidden spatial fields and how they enter a scenario.
 
 use super::calibrate::{Producers, SimBase};
+use super::communities::on_boundary;
 use super::scenario::{ConfoundShape, ConfounderKind, Scenario};
 use crate::lr_activity::ligand_effect::confounders::fourier_features;
 use crate::lr_activity::ligand_effect::regression::standardize;
@@ -116,19 +117,46 @@ pub fn gene_fields(tissue: &Tissue, gene: Option<&[f64]>, scales: &[f64]) -> Vec
     out
 }
 
+/// A random normal value per community, standardized over the rows.
+fn community_field(labels: &[u32], seed: u64) -> Vec<f64> {
+    let k = labels.iter().copied().max().map_or(0, |l| l as usize + 1);
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let values: Vec<f64> = (0..k).map(|_| StandardNormal.sample(&mut rng)).collect();
+    let z: Vec<f64> = labels.iter().map(|&l| values[l as usize]).collect();
+    standardize(&z)
+}
+
+/// A unit step at the boundaries, centred: not standardized, so the step is
+/// the same however few rows touch another community.
+fn boundary_field(touching: &[bool]) -> Vec<f64> {
+    let share = touching.iter().filter(|&&b| b).count() as f64 / touching.len().max(1) as f64;
+    touching.iter().map(|&b| b as u8 as f64 - share).collect()
+}
+
 /// The scenario's hidden field through its shape: `f(Z)` per row.
 pub(super) fn confounding(
     tissue: &Tissue,
     base: &SimBase<'_>,
     shared: &SimShared<'_>,
     scen: &Scenario,
+    communities: Option<&[u32]>,
     seed: u64,
 ) -> anyhow::Result<Vec<f64>> {
     let n = tissue.n();
     if scen.confound_ligand == 0.0 && scen.confound_response == 0.0 {
         return Ok(vec![0.0; n]);
     }
+    let labels = || {
+        communities.ok_or_else(|| {
+            anyhow::anyhow!(
+                "confounder {} needs a community layout",
+                scen.confounder.label()
+            )
+        })
+    };
     let z = match scen.confounder {
+        ConfounderKind::Community => community_field(labels()?, seed),
+        ConfounderKind::Boundary => boundary_field(&on_boundary(&tissue.contacts, labels()?)),
         ConfounderKind::Fourier => fourier_field(tissue, scen.scale, seed),
         ConfounderKind::Bumps => bump_field(tissue, scen.scale, seed),
         ConfounderKind::RealGene => {

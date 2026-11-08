@@ -20,6 +20,9 @@ pub struct Exposure {
     /// Ligand / size factor summed over each row's contacts, which the
     /// threshold is read from.
     pub dose: Vec<f64>,
+    /// Further pair columns both models carry, on the raw scale; none in
+    /// `pinto lra`.
+    pub covariates: Vec<Vec<f64>>,
 }
 
 impl Exposure {
@@ -33,6 +36,7 @@ impl Exposure {
             own: lnorm.iter().map(|v| v.ln_1p()).collect(),
             niche: niche_ligand(tissue, &lnorm),
             dose,
+            covariates: Vec::new(),
         }
     }
 
@@ -53,6 +57,7 @@ impl Exposure {
             own: self.own.clone(),
             niche: self.niche.clone(),
             dose: self.dose.clone(),
+            covariates: self.covariates.clone(),
         }
     }
 }

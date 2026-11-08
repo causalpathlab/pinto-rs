@@ -166,6 +166,23 @@ contact co-expression score `Σ L_i R_j` (NICHES, Raredon 2022; COMMOT, Cang
 of each method's type I error and power per scenario, their means over the
 confounded nulls and the planted effects, and the baselines' run time.
 
+A study can also lay synthetic communities over the tissue (`communities`, each
+`{number, dominant, mixing}`: communities per section, the first one's share of
+each section, and the share of cells relabelled at random). The effect then
+travels only through contacts between communities, and each layout runs
+unconfounded, with communities differing in ligand and baseline, and with the
+boundary itself raising both. The labels come from the coordinates, not from
+expression, so these scenarios cannot show bias from conditioning on communities
+built from expression.
+
+With a layout, each run also reports the boundary comparison (`boundary_estimate`,
+`boundary_truth` and their companions): among competent receivers touching another
+community, those reached by ligand from it against those not, with the ligand from
+their own community and their community as covariates. Its nuisance fits and its
+exposure threshold read only the cells touching another community, since a fit
+pooled with interior cells learns whatever being at a boundary brings and carries
+it into the comparison.
+
 ```sh
 pinto lra-simulate --from out/run1.pinto.json
 pinto lra-simulate --example-study > study.json   # edit, then:

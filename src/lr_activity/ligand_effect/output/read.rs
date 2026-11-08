@@ -4,7 +4,7 @@ use super::compare::SimRun;
 use super::summary::PooledEffect;
 use super::write::sim_cols;
 use crate::lr_activity::ligand_effect::simulate::{
-    ConfoundShape, ConfounderKind, Scenario, COMPARED,
+    CommunityLayout, ConfoundShape, ConfounderKind, Scenario, COMPARED,
 };
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
@@ -275,6 +275,9 @@ struct SimTable<'p> {
     dose_response: Option<Vec<f64>>,
     dose_midpoint: Option<Vec<f64>>,
     dose_order: Option<Vec<f64>>,
+    communities: Option<Vec<f64>>,
+    dominant: Option<Vec<f64>>,
+    mixing: Option<Vec<f64>>,
 }
 
 impl<'p> SimTable<'p> {
@@ -296,6 +299,9 @@ impl<'p> SimTable<'p> {
             dose_response: later(DOSE_RESPONSE),
             dose_midpoint: later(DOSE_MIDPOINT),
             dose_order: later(DOSE_ORDER),
+            communities: later(COMMUNITIES),
+            dominant: later(DOMINANT),
+            mixing: later(MIXING),
         })
     }
 
@@ -347,6 +353,14 @@ impl<'p> SimTable<'p> {
             dose_response: later_value(&self.dose_response, i, 0.0) != 0.0,
             dose_midpoint: later_value(&self.dose_midpoint, i, plain.dose_midpoint),
             dose_order: later_value(&self.dose_order, i, plain.dose_order as f64) as i32,
+            layout: match later_value(&self.communities, i, 0.0) as usize {
+                0 => None,
+                number => Some(CommunityLayout {
+                    number,
+                    dominant: later_value(&self.dominant, i, 0.0),
+                    mixing: later_value(&self.mixing, i, 0.0),
+                }),
+            },
         })
     }
 

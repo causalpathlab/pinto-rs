@@ -146,6 +146,7 @@ impl<'a> ThresholdFits<'a> {
         let modifiers: Vec<Vec<f64>> = levels.iter().map(|c| indicator(c)).collect();
         let extra = [&exposure.own, &exposure.niche]
             .into_iter()
+            .chain(&exposure.covariates)
             .chain(&modifiers)
             .map(|c| standardize(c))
             .collect();

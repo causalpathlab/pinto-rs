@@ -1,6 +1,9 @@
 //! Drawing counts and running one simulated pair.
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
+use super::communities::{
+    between_sum, boundary_estimate, draw_communities, on_boundary, BoundaryResult,
+};
 use super::fields::{confounding, shift_field, SimShared};
 use super::row::SimRow;
 use super::scenario::Scenario;
@@ -149,6 +152,8 @@ struct Run<'a> {
     seed: u64,
     /// The hidden field.
     f: Vec<f64>,
+    /// Each row's synthetic community, with a layout.
+    communities: Option<Vec<u32>>,
 }
 
 impl Run<'_> {
@@ -233,7 +238,10 @@ struct LatentExposure {
 
 fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
     let (tissue, scen) = (run.tissue, run.scen);
-    let dose = tissue.contacts.sum(rate);
+    let dose = match &run.communities {
+        Some(labels) => between_sum(&tissue.contacts, labels, rate),
+        None => tissue.contacts.sum(rate),
+    };
     let tau = choose_threshold(&dose, run.opts);
     let t = exposed(&dose, tau);
     let dose_share: Vec<f64> = if scen.dose_response {
@@ -259,6 +267,8 @@ fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
 /// What the estimator sees of the ligand and the receptor.
 struct SeenByEstimator {
     exposure: Exposure,
+    /// The seen ligand over size factor, before any bleed.
+    lnorm: Vec<f64>,
     /// Competence read from the receptor the estimator sees.
     competent: Vec<bool>,
     baselines: Baselines,
@@ -281,6 +291,7 @@ fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
     // The estimator's own exposure rule on the counts it sees.
     let seen_counts: Vec<f64> = (0..n).map(|i| seen[i] * sf[i]).collect();
     let mut exposure = Exposure::build(tissue, &seen_counts, opts);
+    let seen_lnorm = seen.clone();
 
     // The receptor the estimator and the baselines see, and competence read
     // from it by the estimator's own rule.
@@ -313,6 +324,7 @@ fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
     exposure.own = own_seen.iter().map(|v| v.ln_1p()).collect();
     SeenByEstimator {
         exposure,
+        lnorm: seen_lnorm,
         competent,
         baselines: coexpression_baselines,
         baseline_seconds,
@@ -659,7 +671,21 @@ pub fn simulate(
         base.target_bin_means.len()
     );
     let seed = mix_seed(seed, scen.rep as u64);
-    let f = confounding(tissue, base, shared, scen, mix_seed(seed, 1))?;
+    let communities = scen
+        .layout
+        .map(|layout| draw_communities(tissue, &layout, mix_seed(seed, 11)));
+    let f = confounding(
+        tissue,
+        base,
+        shared,
+        scen,
+        communities.as_deref(),
+        mix_seed(seed, 1),
+    )?;
+    let boundary_share = communities.as_deref().map_or(f64::NAN, |labels| {
+        let on = on_boundary(&tissue.contacts, labels);
+        on.iter().filter(|&&b| b).count() as f64 / n as f64
+    });
     let run = Run {
         tissue,
         base,
@@ -667,6 +693,7 @@ pub fn simulate(
         opts,
         seed,
         f,
+        communities,
     };
 
     // The ligand and the programme draw from this one stream, ligand first.
@@ -730,6 +757,30 @@ pub fn simulate(
     } else {
         effect_truths(&y1, &y0, &latent.t, comp, &exposure.dose, &avg, opts)
     };
+    let boundary = match &run.communities {
+        Some(labels) => {
+            let b = boundary_estimate(
+                tissue,
+                labels,
+                &seen.lnorm,
+                &seen.exposure,
+                comp,
+                &response,
+                rows,
+                opts,
+            )?;
+            let (truth, _) = if run.shifted() {
+                (0.0, 0.0)
+            } else {
+                effect_truths(&y1, &y0, &latent.t, &b.receivers, &b.dose, &b.avg, opts)
+            };
+            BoundaryResult {
+                estimate: b.avg.scopes[0].competent,
+                truth,
+            }
+        }
+        None => BoundaryResult::none(),
+    };
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
     let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
@@ -752,6 +803,8 @@ pub fn simulate(
         over_background: avg.over_background,
         verdict: run_verdict(tissue, rows, &seen, &avg, ng),
         misclassified,
+        boundary_share,
+        boundary,
         baselines: seen.baselines,
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds: seen.baseline_seconds,

@@ -140,6 +140,9 @@ pub(super) mod sim_cols {
     pub const DOSE_RESPONSE: &str = "dose_response";
     pub const DOSE_MIDPOINT: &str = "dose_midpoint";
     pub const DOSE_ORDER: &str = "dose_order";
+    pub const COMMUNITIES: &str = "communities";
+    pub const DOMINANT: &str = "community_dominant";
+    pub const MIXING: &str = "community_mixing";
 
     /// `{method}_reject`.
     pub fn reject(method: &str) -> String {
@@ -194,6 +197,15 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .i(DOSE_RESPONSE, |r| r.scenario.dose_response as usize)
         .f(DOSE_MIDPOINT, |r| r.scenario.dose_midpoint)
         .i(DOSE_ORDER, |r| r.scenario.dose_order as usize)
+        .i(COMMUNITIES, |r| r.scenario.layout.map_or(0, |l| l.number))
+        .f(DOMINANT, |r| r.scenario.layout.map_or(0.0, |l| l.dominant))
+        .f(MIXING, |r| r.scenario.layout.map_or(0.0, |l| l.mixing))
+        .f("boundary_share", |r| r.boundary_share)
+        .est("boundary_estimate", |r| r.boundary.estimate)
+        .f("boundary_df", |r| r.boundary.estimate.df)
+        .i("boundary_n", |r| r.boundary.estimate.n)
+        .i("boundary_n_exposed", |r| r.boundary.estimate.n_treated)
+        .f("boundary_truth", |r| r.boundary.truth)
         .s("verdict", |r| r.verdict.code())
         .i("survived", |r| r.verdict.survived() as usize)
         .f("mean_overlap", |r| r.estimate.mean_h)
