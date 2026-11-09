@@ -720,7 +720,7 @@ fn effect_truths(
         .map(|i| if t_star[i] { y1[i] - y0[i] } else { 0.0 })
         .collect();
     let parts: Vec<_> = avg.points[..averaged].iter().map(|p| p.1).collect();
-    let (weights, _) = abf_weights(&parts, opts.abf_prior_sd * opts.abf_prior_sd);
+    let (weights, _) = abf_weights(&parts, opts.abf_prior_scale);
     let truth = if weights.is_empty() {
         f64::NAN
     } else {

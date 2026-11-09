@@ -5,7 +5,7 @@
 //! moments and the per-cell-type rows.
 
 use super::{estimate_pair, fitted_effects};
-use crate::lr_activity::ligand_effect::averaging::{abf_average, combine};
+use crate::lr_activity::ligand_effect::averaging::{abf_average, abf_weights, combine};
 use crate::lr_activity::ligand_effect::background::{background_pool_genes, BackgroundPool};
 use crate::lr_activity::ligand_effect::curve::{curve_taus, sup_t_crit};
 use crate::lr_activity::ligand_effect::dose::Exposure;
@@ -233,7 +233,7 @@ fn the_headline_averages_over_the_exposure_thresholds() {
     let r = &estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[0];
     assert!(r.curve.len() >= 2, "{} thresholds", r.curve.len());
     let points: Vec<Estimate> = r.curve.iter().map(|p| p.effect).collect();
-    let want = abf_average(&points, o.abf_prior_sd * o.abf_prior_sd);
+    let want = abf_average(&points, o.abf_prior_scale);
     let got = r.effects.competent;
     assert!((got.theta - want.theta).abs() < 1e-12, "{got:?} {want:?}");
     assert!((got.se - want.se).abs() < 1e-12);
@@ -643,4 +643,73 @@ fn control_fits_without_their_propensities_are_an_error() {
     assert!(fit_main(design, cf, &fits, &r, Fit::Ring, None, &o).is_err());
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, Some(0), &o).is_err());
     assert!(effects_on(rows, &fits, &r, Sensitivity::NONE, &o).is_err());
+}
+
+/// The prior is set in multiples of the estimand's own standard error, so the
+/// weights over thresholds do not depend on the response's units: the same
+/// estimates on a scale a thousand times larger weigh the same.
+#[test]
+fn threshold_weights_do_not_depend_on_the_response_units() {
+    let parts = [
+        est(0.004, 0.002, 30.0),
+        est(0.006, 0.0025, 30.0),
+        est(0.001, 0.0015, 30.0),
+    ];
+    let scaled = parts.map(|e| est(1000.0 * e.theta, 1000.0 * e.se, e.df));
+    let scale = EffectOpts::default().abf_prior_scale;
+    let (a, _) = abf_weights(&parts, scale);
+    let (b, _) = abf_weights(&scaled, scale);
+    assert_eq!((a.len(), b.len()), (parts.len(), parts.len()));
+    for ((ka, wa), (kb, wb)) in a.iter().zip(&b) {
+        assert_eq!(ka, kb);
+        assert!((wa - wb).abs() < 1e-12, "{wa} vs {wb}");
+    }
+}
+
+/// With the prior a multiple `c` of the median standard error, each threshold's
+/// log Bayes factor is `½ ln(1 − s) + ½ z² s` with `s = c² m / (se² + c² m)`,
+/// `m` the median squared standard error: the weights are those factors,
+/// normalized.
+#[test]
+fn threshold_weights_follow_the_relative_prior() {
+    let parts = [
+        est(0.004, 0.002, 30.0),
+        est(0.009, 0.003, 30.0),
+        est(-0.001, 0.001, 30.0),
+    ];
+    let c: f64 = 10.0;
+    let m = 0.002f64.powi(2);
+    let log_bf: Vec<f64> = parts
+        .iter()
+        .map(|e| {
+            let s = c * c * m / (e.se * e.se + c * c * m);
+            0.5 * (1.0 - s).ln() + 0.5 * e.z() * e.z() * s
+        })
+        .collect();
+    let top = log_bf.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let total: f64 = log_bf.iter().map(|l| (l - top).exp()).sum();
+    let (w, _) = abf_weights(&parts, c);
+    assert_eq!(w.len(), parts.len());
+    for ((k, got), l) in w.iter().zip(&log_bf) {
+        let want = (l - top).exp() / total;
+        assert!((got - want).abs() < 1e-12, "threshold {k}: {got} vs {want}");
+    }
+}
+
+/// Thresholds whose standard error is zero cannot set the prior's scale: the
+/// scale comes from the positive ones, and the weights stay finite.
+#[test]
+fn a_zero_standard_error_leaves_the_weights_finite() {
+    let parts = [
+        est(0.0, 0.0, 30.0),
+        est(0.0, 0.0, 30.0),
+        est(0.3, 0.1, 30.0),
+    ];
+    let (w, log10_bf) = abf_weights(&parts, 10.0);
+    assert!(
+        !w.is_empty() && w.iter().all(|&(_, x)| x.is_finite()),
+        "{w:?}"
+    );
+    assert!(log10_bf.is_finite(), "{log10_bf}");
+    assert!(abf_average(&parts, 10.0).theta.is_finite());
 }

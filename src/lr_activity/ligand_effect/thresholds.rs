@@ -120,17 +120,16 @@ pub fn over_thresholds(
             break;
         }
     }
-    let prior_var = opts.abf_prior_sd * opts.abf_prior_sd;
     let averaged = if opts.threshold.is_some() {
         1
     } else {
         at_tau.len()
     };
-    let scopes = average_scopes(&at_tau[..averaged], &grid, prior_var);
+    let scopes = average_scopes(&at_tau[..averaged], &grid, opts.abf_prior_scale);
     let background_means = average_backgrounds(
         &background_at[..averaged],
         background_responses.len(),
-        prior_var,
+        opts.abf_prior_scale,
     );
     let (background, over_background) =
         background_comparison(&scopes[0].competent, &background_means);
@@ -182,15 +181,19 @@ fn background_effects(
 /// Each scope's estimands averaged over the thresholds `at_tau` by their own
 /// evidence; the near-determined share is the headline threshold's, and `grid`
 /// names the thresholds in the evidence summary.
-fn average_scopes(at_tau: &[Vec<ScopeEffects>], grid: &[f64], prior_var: f64) -> Vec<ScopeEffects> {
+fn average_scopes(
+    at_tau: &[Vec<ScopeEffects>],
+    grid: &[f64],
+    prior_scale: f64,
+) -> Vec<ScopeEffects> {
     (0..at_tau[0].len())
         .map(|s| {
             let parts: Vec<ScopeEffects> = at_tau.iter().map(|a| a[s]).collect();
             let competent: Vec<Estimate> = parts.iter().map(|p| p.competent).collect();
             ScopeEffects {
                 near_determined: parts[0].near_determined,
-                abf: abf_summary(&competent, grid, prior_var),
-                ..ScopeEffects::zip_with(&parts, |p| abf_average(p, prior_var))
+                abf: abf_summary(&competent, grid, prior_scale),
+                ..ScopeEffects::zip_with(&parts, |p| abf_average(p, prior_scale))
             }
         })
         .collect()
@@ -198,11 +201,11 @@ fn average_scopes(at_tau: &[Vec<ScopeEffects>], grid: &[f64], prior_var: f64) ->
 
 /// Each of the `n` background programmes averaged over the thresholds by its own
 /// evidence, as the effect is.
-fn average_backgrounds(at_tau: &[Vec<Estimate>], n: usize, prior_var: f64) -> Vec<Estimate> {
+fn average_backgrounds(at_tau: &[Vec<Estimate>], n: usize, prior_scale: f64) -> Vec<Estimate> {
     (0..n)
         .map(|k| {
             let parts: Vec<Estimate> = at_tau.iter().map(|d| d[k]).collect();
-            abf_average(&parts, prior_var)
+            abf_average(&parts, prior_scale)
         })
         .collect()
 }

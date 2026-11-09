@@ -169,7 +169,7 @@ fn effect_opts(seed: u64) -> EffectOpts {
         keep_arm_weights: false,
         threshold: None,
         min_overlap: k.min_overlap,
-        abf_prior_sd: k.abf_prior_sd,
+        abf_prior_scale: k.abf_prior_scale,
         background_draws: k.background_draws,
         seed,
         competences: &options::COMPETENCE_GRID,

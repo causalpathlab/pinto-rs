@@ -1,6 +1,7 @@
 //! Putting estimates together: Rubin's rules across choices, approximate Bayes
 //! factors across thresholds, and the comparison to background programmes.
 
+use super::contacts::upper_median;
 use super::inference::{usable, Estimate};
 
 /// Rubin's rules over analyses: mean estimate, variance = mean within-analysis
@@ -88,21 +89,31 @@ impl AbfSummary {
 
 /// Each usable estimate's posterior weight under a uniform prior over them,
 /// from its approximate Bayes factor against no effect (Wakefield 2009): the
-/// estimate as `N(θ, se²)` with the prior `θ ~ N(0, prior_var)`.
-pub fn abf_weights(parts: &[Estimate], prior_var: f64) -> (Vec<(usize, f64)>, f64) {
-    let log_bf: Vec<(usize, f64)> = parts
+/// estimate as `N(θ, se²)` with the prior `θ ~ N(0, σ²)`, `σ²` being
+/// `prior_scale²` times the upper median of the usable estimates' squared
+/// standard errors. Scaled so, the weights do not depend on the response's
+/// units. An estimate with a zero standard error has no z and takes no weight
+/// (a guard: the pipeline's estimates with one variance cluster are already
+/// unusable).
+pub fn abf_weights(parts: &[Estimate], prior_scale: f64) -> (Vec<(usize, f64)>, f64) {
+    let scored: Vec<(usize, f64, f64)> = parts
         .iter()
         .enumerate()
-        .filter(|(_, e)| usable(e))
-        .map(|(k, e)| {
-            let v = e.se * e.se;
+        .filter(|(_, e)| usable(e) && e.se > 0.0)
+        .map(|(k, e)| (k, e.se * e.se, e.z()))
+        .collect();
+    let mut variances: Vec<f64> = scored.iter().map(|x| x.1).collect();
+    let Some(median) = upper_median(&mut variances) else {
+        return (Vec::new(), f64::NAN);
+    };
+    let prior_var = prior_scale * prior_scale * median;
+    let log_bf: Vec<(usize, f64)> = scored
+        .iter()
+        .map(|&(k, v, z)| {
             let shrink = prior_var / (v + prior_var);
-            (k, 0.5 * (1.0 - shrink).ln() + 0.5 * e.z() * e.z() * shrink)
+            (k, 0.5 * (1.0 - shrink).ln() + 0.5 * z * z * shrink)
         })
         .collect();
-    if log_bf.is_empty() {
-        return (Vec::new(), f64::NAN);
-    }
     let top = log_bf.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
     let relative: Vec<f64> = log_bf.iter().map(|x| (x.1 - top).exp()).collect();
     let total: f64 = relative.iter().sum();
@@ -124,8 +135,8 @@ fn heaviest(weights: &[(usize, f64)]) -> (usize, f64) {
 }
 
 /// The evidence behind [`abf_average`] of `parts`, the estimates at `taus`.
-pub fn abf_summary(parts: &[Estimate], taus: &[f64], prior_var: f64) -> AbfSummary {
-    let (weights, log10_bf) = abf_weights(parts, prior_var);
+pub fn abf_summary(parts: &[Estimate], taus: &[f64], prior_scale: f64) -> AbfSummary {
+    let (weights, log10_bf) = abf_weights(parts, prior_scale);
     if weights.is_empty() {
         return AbfSummary::NONE;
     }
@@ -146,8 +157,8 @@ pub fn abf_summary(parts: &[Estimate], taus: &[f64], prior_var: f64) -> AbfSumma
 /// The weights read the estimates they average, so the average leans toward
 /// the largest z: its null is not the t reference's, which is why a finding also
 /// has to exceed negative controls averaged the same way.
-pub fn abf_average(parts: &[Estimate], prior_var: f64) -> Estimate {
-    let (weights, _) = abf_weights(parts, prior_var);
+pub fn abf_average(parts: &[Estimate], prior_scale: f64) -> Estimate {
+    let (weights, _) = abf_weights(parts, prior_scale);
     if weights.is_empty() {
         return combine(parts);
     }

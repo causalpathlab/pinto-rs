@@ -59,7 +59,9 @@ fn one_variance_cluster_is_not_estimable() {
     assert!((mixed.theta - 0.11).abs() < 1e-12);
 }
 
-const PRIOR: f64 = 0.04;
+/// The prior SD in multiples of the median standard error: with standard
+/// errors of 0.1, a prior variance of 0.04.
+const PRIOR: f64 = 2.0;
 
 #[test]
 fn the_average_is_the_mixture_of_its_thresholds() {
@@ -89,9 +91,10 @@ fn the_average_is_the_mixture_of_its_thresholds() {
 #[test]
 fn the_weights_follow_the_evidence() {
     let parts = [est(0.0, 0.1), est(0.5, 0.1)];
+    let prior_var = PRIOR * PRIOR * 0.1 * 0.1;
     let bf = |e: &Estimate| {
         let (v, z) = (e.se * e.se, e.theta / e.se);
-        (v / (v + PRIOR)).sqrt() * (0.5 * z * z * PRIOR / (v + PRIOR)).exp()
+        (v / (v + prior_var)).sqrt() * (0.5 * z * z * prior_var / (v + prior_var)).exp()
     };
     let (b0, b1) = (bf(&parts[0]), bf(&parts[1]));
     let w1 = b1 / (b0 + b1);
