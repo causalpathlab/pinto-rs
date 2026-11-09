@@ -5,14 +5,14 @@
 
 use crate::lr_activity::input::Contacts;
 use crate::lr_activity::ligand_effect::frame::RunFrame;
-use crate::lr_activity::ligand_effect::output::{PairRow, Q_SCOPE_ALL};
+use crate::lr_activity::ligand_effect::output::{Control, PairRow, Q_SCOPE_ALL};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::metadata::{LraOptions, LraSubset};
 use crate::view::color::Theme;
 use crate::view::curve::{self, ticks, Curve};
 use crate::view::lra::{
-    lra_command, lra_table, next_verdict, visible, Filter, LraView, Receivers, Sort,
+    lra_command, lra_table, next_verdict, q_text, visible, Filter, LraView, Receivers, Sort,
 };
 use crate::view::Base;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -27,10 +27,22 @@ fn strs(v: &[&str]) -> Vec<Box<str>> {
     v.iter().map(|&x| x.into()).collect()
 }
 
+/// The reasons a pair of the fixture's full table gives in `warnings`.
+pub(crate) const WARNING: &str = "the effect does not exceed the one in receptor-negative receivers; a matched background programme responds too";
+
 /// `{out}.lra.parquet` of `rows` (ligand, receptor, verdict, q, pct,
 /// threshold), each pooled, with a section row that is not; `scope` its
-/// `q_scope`.
-fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &str) {
+/// `q_scope`. With `averaged`, as lra writes it now: the threshold the
+/// average leans on most (2, at weight 0.8), the effect minus each control
+/// with its q (0.1 at 0.5 over receptor-negative receivers; -0.05 at 0.01
+/// over the ring, significantly short of it; none over the background) and
+/// [`WARNING`]; without, a table from before those columns.
+fn write_table(
+    path: &Path,
+    rows: &[(&str, &str, &str, f32, f32, f32)],
+    scope: &str,
+    averaged: bool,
+) {
     let n = rows.len() + 1;
     fn col(n: usize, f: impl Fn(usize) -> String) -> Vec<Box<str>> {
         (0..n).map(|i| f(i).into()).collect()
@@ -43,7 +55,13 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
     let receptor = col(n, |i| at(i).1.into());
     let verdict = col(n, |i| at(i).2.into());
     let note = col(n, |i| at(i).2.parse::<Verdict>().unwrap().note().into());
-    let warnings = col(n, |_| String::new());
+    let warnings = col(n, |_| {
+        if averaged {
+            WARNING.into()
+        } else {
+            String::new()
+        }
+    });
     let scope = col(n, |_| scope.into());
     let num = |f: &dyn Fn(usize) -> f32| -> Vec<f32> { (0..n).map(f).collect() };
     let q = num(&|i| at(i).3);
@@ -55,6 +73,23 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
     let hi = num(&|i| at(i).4 + 5.0);
     let counts = num(&|_| 10.0);
     let names: Vec<Box<str>> = (0..n).map(|i| i.to_string().into()).collect();
+    let (top, weight) = (num(&|_| 2.0), num(&|_| 0.8));
+    let (contrast, ring, nan) = (num(&|_| 0.1), num(&|_| -0.05), num(&|_| f32::NAN));
+    let (contrast_q, ring_q) = (num(&|_| 0.5), num(&|_| 0.01));
+    let later = [
+        ("tau_top", &top),
+        ("tau_top_weight", &weight),
+        ("effect_contrast", &contrast),
+        ("effect_contrast_q", &contrast_q),
+        ("effect_over_ring", &ring),
+        ("effect_over_ring_q", &ring_q),
+        ("effect_over_background", &nan),
+        ("effect_over_background_q", &nan),
+    ];
+    let later = later
+        .iter()
+        .filter(|_| averaged)
+        .map(|(name, v)| ((*name).into(), Column::F32(v)));
     write_named_table(
         &path.to_string_lossy(),
         "row",
@@ -79,7 +114,10 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
             ("n_competent".into(), Column::F32(&counts)),
             ("n_exposed".into(), Column::F32(&counts)),
             ("q_scope".into(), Column::Str(&scope)),
-        ],
+        ]
+        .into_iter()
+        .chain(later)
+        .collect::<Vec<_>>(),
     )
     .unwrap();
 }
@@ -188,6 +226,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
             ),
         ],
         Q_SCOPE_ALL,
+        true,
     );
     write_curve(Path::new(&curve), ("L1", "R1"));
     let only = format!("{prefix}.lra.only-l1-r1.parquet");
@@ -195,6 +234,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
         Path::new(&only),
         &[("L1", "R1", "supported", 0.01, 25.0, 0.0)],
         "q corrected within the --only subset (1 of 3 pairs)",
+        false,
     );
     let subset = LraSubset {
         only: vec!["L1:R1".into()],
@@ -291,6 +331,12 @@ fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> Pair
         n_receivers: 100,
         n_competent: 40,
         n_exposed: 20,
+        tau_top: 0.0,
+        tau_top_weight: 1.0,
+        controls: [Control {
+            over: f64::NAN,
+            q: f64::NAN,
+        }; 3],
     }
 }
 
@@ -434,7 +480,8 @@ fn the_curve_draws_whatever_its_points() {
         let c = Curve {
             title: format!("case {k}"),
             points: pts,
-            headline: Some(0.0),
+            top: Some(0.0),
+            average: Some(0.05),
         };
         for (w, h) in [(1, 1), (40, 12), (600, 360)] {
             let f = curve::render(&c, (w, h), Theme::Dark, 16.);
@@ -449,7 +496,8 @@ fn the_curve_draws_whatever_its_points() {
     let c = Curve {
         title: "x".into(),
         points: &pts,
-        headline: None,
+        top: None,
+        average: None,
     };
     let f = curve::render(&c, (400, 240), Theme::Dark, 12.);
     let bg = Theme::Dark.background();
@@ -460,6 +508,41 @@ fn the_curve_draws_whatever_its_points() {
         .count();
     assert!(coloured > 50, "{coloured} blue pixels");
     assert!(f.rgba.chunks(4).any(|p| p[..3] == bg));
+}
+
+/// The table's average is drawn on the curve's axes even where no
+/// threshold's point reaches it.
+#[test]
+fn the_curves_range_holds_the_average() {
+    use crate::lr_activity::ligand_effect::output::CurveRow;
+    let pts = [CurveRow {
+        tau: 0.0,
+        quantile: 0.0,
+        effect: 0.1,
+        lo: 0.0,
+        hi: 0.2,
+        band_lo: -0.05,
+        band_hi: 0.25,
+    }];
+    let c = |average| Curve {
+        title: "x".into(),
+        points: &pts,
+        top: None,
+        average,
+    };
+    let (lo, _) = curve::y_range(&c(None)).unwrap();
+    assert!(lo > -10.0, "{lo}");
+    let (lo, _) = curve::y_range(&c(Some(-0.5))).unwrap();
+    assert!(lo < (-0.5f64).exp_m1() * 100.0, "{lo}");
+}
+
+#[test]
+fn q_values_read_in_a_few_characters() {
+    assert_eq!(q_text(0.0123), "0.012");
+    assert_eq!(q_text(2e-5), "2e-5");
+    // One too small for the table's f32 still reads as small, not as `0e0`.
+    assert_eq!(q_text(0.0), "<1e-45");
+    assert_eq!(q_text(f64::NAN), "—");
 }
 
 #[test]
@@ -552,6 +635,13 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     let e = v.select("L1:R2").unwrap_err().to_string();
     assert!(e.contains("nearest: L1:R1"), "{e}");
     assert_eq!(v.curve().unwrap().points.len(), 4);
+    // The curve rings the threshold the table's average leans on most, and
+    // draws that average, not a point of its own.
+    let row = v.selected_row().unwrap();
+    assert_eq!((row.tau_top, row.tau_top_weight), (2.0, 0.8_f32 as f64));
+    let c = v.curve().unwrap();
+    assert_eq!(c.top, Some(2.0));
+    assert_eq!(c.average, Some(row.effect));
     // The subset keeps the pair selected, its q subset-corrected.
     v.load(1).unwrap();
     assert_eq!(v.selected_row().unwrap().name(), "L1:R1");
@@ -559,6 +649,15 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     assert!(v.table().q_scope.as_deref() != Some(Q_SCOPE_ALL));
     assert!(v.curve().unwrap().points.is_empty());
     assert!(v.curve().unwrap().title.contains("subset"));
+    // It is from before the averaging columns: read, with none.
+    assert!(v.selected_row().unwrap().tau_top.is_nan());
+    assert!(v.selected_row().unwrap().controls[1].q.is_nan());
+    assert_eq!(v.curve().unwrap().top, None);
+    assert_eq!(
+        v.curve().unwrap().average,
+        None,
+        "its effect is a point, not an average"
+    );
     // A run without a table has no layer.
     assert!(LraView::new(Vec::new()).unwrap().is_none());
 }
@@ -814,6 +913,21 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     assert_eq!(r["show"], "classes");
     assert_eq!(r["selected"]["pair"], "L1:R1");
     assert_eq!(r["selected"]["drawn"], true);
+    // The threshold the average weighs most.
+    assert_eq!(r["selected"]["tau_top"], 2.0);
+    // The effect minus each control, signed, with its q.
+    let c = &r["selected"]["controls"];
+    let near = |v: &serde_json::Value, x: f64| (v.as_f64().unwrap() - x).abs() < 1e-6;
+    assert_eq!(c[1]["control"], "ring", "{c}");
+    assert!(
+        near(&c[1]["effect_minus_control"], -0.05) && near(&c[1]["q"], 0.01),
+        "{c}"
+    );
+    assert!(near(&c[0]["q"], 0.5), "{c}");
+    assert!(
+        c[2]["q"].is_null() && c[2]["effect_minus_control"].is_null(),
+        "{c}"
+    );
 
     // Another table of the pair, at another threshold: drawn there too.
     let other = dir.path().join("other.lra.only-l1-r1.parquet");
@@ -821,6 +935,7 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
         &other,
         &[("L1", "R1", "supported", 0.01, 25.0, 0.5)],
         "q corrected within the --only subset (1 of 3 pairs)",
+        false,
     );
     let r = call(&mut open, json!({"table": other.to_string_lossy()})).unwrap();
     assert_eq!(r["selected"]["pair"], "L1:R1");

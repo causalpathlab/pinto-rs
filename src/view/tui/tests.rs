@@ -25,7 +25,7 @@ fn an_error_popup_wraps_its_message_to_fit() {
 /// map, and the list filters by verdict and genes.
 #[test]
 fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
-    use super::super::tests::lra::{lra_run, receivers};
+    use super::super::tests::lra::{lra_run, receivers, WARNING};
     use clap::Parser;
     #[derive(Parser)]
     struct Args {
@@ -62,6 +62,18 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
         .filter(|(_, p)| matches!(p, Pick::Pair(_)))
         .count();
     assert_eq!(pairs, 3);
+    // Its columns line up whatever the verdict: each verdict starts its
+    // column's width from the row's end, after a space.
+    use super::lra::VERDICT_W;
+    let (lines, _) = app.panel(48);
+    for (at, _) in picks.iter().filter(|(_, p)| matches!(p, Pick::Pair(_))) {
+        let row: Vec<char> = lines[*at].to_string().chars().collect();
+        let start = row.len() - VERDICT_W;
+        assert!(
+            row[start - 1] == ' ' && row[start].is_alphabetic(),
+            "{row:?}"
+        );
+    }
     assert!(app.lra_drawn().is_none(), "nothing picked yet");
 
     // ↓ picks the first pair, by q; it is drawn in its classes.
@@ -79,6 +91,23 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     assert!(all.contains("L1 → R1  supported"), "{all}");
     assert!(all.contains("+25% (95% CI +20% to +30%)"), "{all}");
     assert!(all.contains("sender (ligand+)"), "{all}");
+    // Every line fits the panel, its words whole: the pair's reasons read
+    // in full, and which threshold the average leans on.
+    let room = usize::from(app.side.width) - 1;
+    for l in text(&app) {
+        assert!(l.chars().count() <= room, "{l:?} is wider than {room}");
+    }
+    let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains(WARNING), "{all}");
+    assert!(flat.contains("weighs τ 2 most (80%)"), "{all}");
+    // The effect against each control, signed: a small q can mean it
+    // falls short of one, as here of the ring.
+    assert!(
+        flat.contains(
+            "effect − control: receptor− +11% q 0.500 · ring -4.9% q 0.010 · background —"
+        ),
+        "{all}"
+    );
     let (level, style) = app.drawn();
     assert_eq!(level.comm.tag, "L1:R1");
     let vp = app.viewport();

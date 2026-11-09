@@ -6,20 +6,52 @@ use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::SimRow;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
-/// Decimals to print a percent change and its interval with: under a percent,
-/// whole percents would read as +0% to +0%.
-pub fn percent_digits(pct: f64, lo: f64, hi: f64) -> usize {
-    if pct.abs().max(lo.abs()).max(hi.abs()) < 1.0 {
-        2
+/// Decimals to print a percent change and its interval with, from the
+/// largest of them: two under a percent (whole percents would read +0% to
+/// +0%), one under ten, none above.
+fn percent_digits(pct: f64, lo: f64, hi: f64) -> usize {
+    match pct.abs().max(lo.abs()).max(hi.abs()) {
+        m if m < 1.0 => 2,
+        m if m < 10.0 => 1,
+        _ => 0,
+    }
+}
+
+/// `x` percent at `d` decimals, signed; one that rounds to zero reads `+0`,
+/// never `-0`.
+fn signed_percent(x: f64, d: usize) -> String {
+    let text = format!("{x:+.d$}");
+    match text.strip_prefix('-') {
+        Some(digits) if digits.chars().all(|c| c == '0' || c == '.') => format!("+{digits}%"),
+        _ => format!("{text}%"),
+    }
+}
+
+/// `s`, a number, without the trailing zeros of its decimals (nor a bare
+/// point): `6.030` → `6.03`, `2.000` → `2`.
+pub fn strip_zeros(s: &str) -> &str {
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.')
     } else {
-        0
+        s
     }
 }
 
 /// A percent change and its 95% interval, as the summaries word them.
 pub fn percent_text(pct: f64, lo: f64, hi: f64) -> String {
     let d = percent_digits(pct, lo, hi);
-    format!("{pct:+.d$}% (95% CI {lo:+.d$}% to {hi:+.d$}%)")
+    let [l, h] = [lo, hi].map(|x| signed_percent(x, d));
+    format!("{} (95% CI {l} to {h})", percent_short(pct, lo, hi))
+}
+
+/// A percent change alone, at the digits [`percent_text`] gives it; `—`
+/// when it is not finite.
+pub fn percent_short(pct: f64, lo: f64, hi: f64) -> String {
+    if pct.is_finite() {
+        signed_percent(pct, percent_digits(pct, lo, hi))
+    } else {
+        "—".into()
+    }
 }
 
 /// The few lines a run ends with: verdict counts over the pooled pairs,

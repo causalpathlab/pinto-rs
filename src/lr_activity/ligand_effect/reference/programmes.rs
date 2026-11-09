@@ -15,6 +15,7 @@
 
 use super::sources::{Interaction, Licences, LrPair};
 use super::LicenceMode;
+use crate::lr_activity::ligand_effect::output::strip_zeros;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
@@ -409,13 +410,5 @@ pub fn fmt_g(x: f64) -> String {
         format!("{}e{sign}{:02}", strip_zeros(mant), exp.abs())
     } else {
         strip_zeros(&format!("{:.*}", (P - 1 - exp) as usize, x)).into()
-    }
-}
-
-fn strip_zeros(s: &str) -> &str {
-    if s.contains('.') {
-        s.trim_end_matches('0').trim_end_matches('.')
-    } else {
-        s
     }
 }

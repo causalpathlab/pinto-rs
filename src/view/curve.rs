@@ -2,7 +2,9 @@
 //! exposure threshold, as a percent change, with its pointwise 95%
 //! intervals as whiskers and the simultaneous 95% band over the
 //! thresholds shaded behind. The x axis is the threshold's quantile among
-//! the positive exposures; the threshold the table's row used is ringed.
+//! the positive exposures. The table's effect is the average over these
+//! thresholds, weighted by their evidence: it is drawn dashed across the
+//! plot, and the threshold it leans on most is ringed.
 //!
 //! Drawn into legume-tui's raster frame as the structure plot is: on screen
 //! and in a PNG as pixels, in a PDF with its text kept as text.
@@ -20,12 +22,15 @@ use legume_tui::map::text::{self, Font};
 pub struct Curve<'a> {
     pub title: String,
     pub points: &'a [CurveRow],
-    /// The threshold τ of the table's row, ringed when it is a point.
-    pub headline: Option<f64>,
+    /// The threshold τ the table's average leans on most, ringed when it
+    /// is a point.
+    pub top: Option<f64>,
+    /// The table's effect (log rate ratio): the average over thresholds.
+    pub average: Option<f64>,
 }
 
 /// A log rate ratio as a percent change.
-fn pct(x: f64) -> f64 {
+pub(super) fn pct(x: f64) -> f64 {
     x.exp_m1() * 100.
 }
 
@@ -63,9 +68,17 @@ pub fn ticks(lo: f64, hi: f64) -> Vec<f64> {
     (first..=last).map(|k| k as f64 * step).collect()
 }
 
+/// The y range `c` is drawn over, in percent: its points' and the
+/// average's, with 0, padded; `None` when no threshold has a point.
+#[cfg(test)]
+pub fn y_range(c: &Curve) -> Option<(f64, f64)> {
+    layout(c).1
+}
+
 /// The points that can be drawn, by quantile, as percent changes; their
-/// y range (with 0), padded.
-fn layout(points: &[CurveRow]) -> (Vec<CurveRow>, Option<(f64, f64)>) {
+/// y range (with 0 and the average), padded.
+fn layout(c: &Curve) -> (Vec<CurveRow>, Option<(f64, f64)>) {
+    let points = c.points;
     // In percent from here on.
     let mut pts: Vec<CurveRow> = points
         .iter()
@@ -83,6 +96,7 @@ fn layout(points: &[CurveRow]) -> (Vec<CurveRow>, Option<(f64, f64)>) {
     let ys = pts
         .iter()
         .flat_map(|p| [p.effect, p.lo, p.hi, p.band_lo, p.band_hi])
+        .chain(c.average.map(pct))
         .filter(|v| v.is_finite())
         .chain(std::iter::once(0.));
     let (lo, hi) = ys.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), y| {
@@ -103,7 +117,7 @@ pub fn draw(frame: &mut Raster, c: &Curve, theme: Theme, font: Font, bold: Font)
     let (w, h) = (frame.w as i32, frame.h as i32);
     let lh = font.line_height() as i32;
     text::draw(frame, bold, &c.title, lh / 2, lh / 4, text_ink, bg);
-    let (pts, range) = layout(c.points);
+    let (pts, range) = layout(c);
     let Some((y_lo, y_hi)) = range else {
         let msg = "no threshold-response curve: not estimable at any threshold";
         text::draw(frame, font, msg, lh / 2, 2 * lh, text_ink, bg);
@@ -117,7 +131,7 @@ pub fn draw(frame: &mut Raster, c: &Curve, theme: Theme, font: Font, bold: Font)
         .max()
         .unwrap_or(0)
         + lh * 2;
-    let (top, bottom, right) = (lh * 2, lh * 4, lh);
+    let (top, bottom, right) = (lh * 2, lh * 5, lh);
     let (x0, x1, y0, y1) = (
         left,
         (w - right).max(left + 2),
@@ -138,10 +152,15 @@ pub fn draw(frame: &mut Raster, c: &Curve, theme: Theme, font: Font, bold: Font)
         [x0 as usize, y0 as usize, x0 as usize + 1, y1 as usize + 1],
         dim,
     );
-    let zero = py(0.) as usize;
-    for x in (x0..x1).step_by(4) {
-        frame.fill([x as usize, zero, x as usize + 2, zero + 1], dim);
-    }
+    // A dashed line across the plot at `y`: dashes `dash` long, gaps as
+    // long, `thick` pixels.
+    let dashed = |frame: &mut Raster, y: usize, dash: i32, thick: usize, ink: Lin| {
+        for x in (x0..x1).step_by(2 * dash as usize) {
+            let end = (x + dash).min(x1);
+            frame.fill([x as usize, y, end as usize, y + thick], ink);
+        }
+    };
+    dashed(frame, py(0.) as usize, 2, 1, dim);
     for (&y, s) in ys.iter().zip(&y_labels) {
         let at = py(y) as i32;
         frame.fill(
@@ -225,27 +244,30 @@ pub fn draw(frame: &mut Raster, c: &Curve, theme: Theme, font: Font, bold: Font)
         );
         raster::edge(frame, pa, pb, (0., 0.), line, 1.);
     }
+    // The table's average, dashed across the plot.
+    if let Some(avg) = c.average.map(pct).filter(|v| v.is_finite()) {
+        dashed(frame, py(avg) as usize, (lh / 2).max(4), 2, text_ink);
+    }
     for p in &pts {
         let (x, y) = (px(p.quantile), py(p.effect));
         raster::stamp(frame, x, y, r, Shape::Circle, line, 1.);
-        let headline = c
-            .headline
+        let ringed = c
+            .top
             .is_some_and(|t| (t - p.tau).abs() <= 1e-6 * t.abs().max(1.));
-        if headline {
+        if ringed {
             raster::ring(frame, x, y, r + 1.5, text_ink);
         }
     }
-    let key = "line: effect; whiskers: pointwise 95%; shade: simultaneous 95% band; ring: the table's threshold";
-    if font.width(key) as i32 <= w - lh {
-        text::draw(
-            frame,
-            font,
-            key,
-            lh / 2,
-            h - lh - lh / 4,
-            to_linear(page.hint),
-            bg,
-        );
+    let key = [
+        "line: effect at each threshold; whiskers: pointwise 95%; shade: simultaneous 95% band",
+        "dashed: the table's effect, averaged over thresholds; ring: the threshold it weighs most",
+    ];
+    // Both lines or neither: the dashes and the ring need the second.
+    if key.iter().all(|line| font.width(line) as i32 <= w - lh) {
+        for (k, line) in key.iter().enumerate() {
+            let y = h - (2 - k as i32) * lh - lh / 4;
+            text::draw(frame, font, line, lh / 2, y, to_linear(page.hint), bg);
+        }
     }
 }
 

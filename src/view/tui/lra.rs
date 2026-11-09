@@ -15,7 +15,7 @@ use super::super::lra::{
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
 use super::{rgb, App, Pick};
-use crate::lr_activity::ligand_effect::output::{percent_digits, PairRow};
+use crate::lr_activity::ligand_effect::output::{percent_short, strip_zeros, CONTROLS};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
@@ -52,8 +52,22 @@ impl LraJob {
     }
 }
 
+/// Columns of the list's verdict column: the longest [`short`] name (each
+/// is ASCII, so its bytes are its columns).
+pub(super) const VERDICT_W: usize = {
+    let (mut k, mut widest) = (0, 0);
+    while k < Verdict::ALL.len() {
+        let w = short(Verdict::ALL[k]).len();
+        if w > widest {
+            widest = w;
+        }
+        k += 1;
+    }
+    widest
+};
+
 /// A verdict in a few letters, for the list.
-fn short(v: Verdict) -> &'static str {
+pub(super) const fn short(v: Verdict) -> &'static str {
     match v {
         Verdict::Supported => "supported",
         Verdict::EffectWithoutCoexpression => "effect",
@@ -65,15 +79,17 @@ fn short(v: Verdict) -> &'static str {
     }
 }
 
-/// A percent change in a few characters.
-fn pct_short(r: &PairRow) -> String {
-    if r.pct.is_finite() {
-        let d = percent_digits(r.pct, r.pct_lo, r.pct_hi);
-        format!("{:+.d$}%", r.pct)
-    } else {
-        "—".into()
-    }
+/// Lines of a pair's reasons the panel gives, the last marked when cut.
+const WHY_LINES: usize = 5;
+
+/// An exposure threshold at three decimals, trailing zeros dropped: `0`,
+/// `0.004`, `6.03`.
+fn tau_text(t: f64) -> String {
+    strip_zeros(&format!("{t:.3}")).to_string()
 }
+
+/// Columns of a table's label in a status line or the panel's header.
+const LABEL_WIDTH: usize = 32;
 
 impl App<'_> {
     // * Opening
@@ -104,7 +120,10 @@ impl App<'_> {
         }
         self.lra_on = true;
         self.status = match &self.lra {
-            Some(v) => format!("{}: ↑ ↓ choose a pair", v.tables[v.at].label()),
+            Some(v) => format!(
+                "{}: ↑ ↓ choose a pair",
+                style::middle(&v.tables[v.at].label(), LABEL_WIDTH)
+            ),
             None => "no lra table for this run: L runs pinto lra on it".into(),
         };
         self.pair_pending = self.lra.as_ref().is_some_and(|v| v.selected.is_some());
@@ -358,7 +377,7 @@ impl App<'_> {
             return Ok(());
         }
         let next = (v.at + 1) % v.tables.len();
-        let label = v.tables[next].label();
+        let label = style::middle(&v.tables[next].label(), LABEL_WIDTH);
         self.busy_maybe(terminal, &format!("reading {label} ..."))?;
         let v = self.lra.as_mut().expect("checked");
         match v.load(next) {
@@ -469,7 +488,11 @@ impl App<'_> {
         out.push((
             Line::from(vec![
                 Span::styled(" pairs ", bold),
-                Span::raw(format!("{} · {}", v.tables[v.at].label(), rows.len())),
+                Span::raw(format!(
+                    "{} · {}",
+                    style::middle(&v.tables[v.at].label(), LABEL_WIDTH),
+                    rows.len()
+                )),
                 Span::styled(
                     if v.tables.len() > 1 {
                         format!("  T {}/{}", v.at + 1, v.tables.len())
@@ -538,31 +561,87 @@ impl App<'_> {
                 ]),
                 None,
             ));
-            tail.push((Line::raw(format!(" {}", change(row))), None));
+            // Prose, wrapped between words to the panel, at most `most`
+            // lines, a cut marked.
+            let mut prose = |text: &str, style: TStyle, most: usize| {
+                let wrapped = legume_tui::cli::wrap(text, width);
+                let lines: Vec<&str> = wrapped.lines().collect();
+                for (k, l) in lines.iter().take(most).enumerate() {
+                    let cut = k + 1 == most && lines.len() > most;
+                    // A word longer than the panel is cut too.
+                    let l = if cut {
+                        style::short(&format!("{l}…"), width)
+                    } else {
+                        style::short(l, width)
+                    };
+                    tail.push((Line::styled(format!(" {l}"), style), None));
+                }
+            };
+            let plain = TStyle::default();
+            prose(&change(row), plain, 2);
             let corrected = if subset { " (subset-corrected)" } else { "" };
-            tail.push((
-                Line::raw(format!(
-                    " q {}{corrected} · coexpr q {}",
+            prose(
+                &format!(
+                    "q {}{corrected} · coexpr q {}",
                     q_text(row.effect_q),
                     q_text(row.coexpr_q)
-                )),
-                None,
-            ));
-            tail.push((
-                Line::raw(format!(
-                    " τ {:.3} · {} competent, {} exposed of {}",
-                    row.threshold, row.n_competent, row.n_exposed, row.n_receivers
-                )),
-                None,
-            ));
-            for l in style::wrap(&row.note, width, width).into_iter().take(3) {
-                tail.push((Line::styled(format!(" {l}"), dim), None));
+                ),
+                plain,
+                2,
+            );
+            if row.tau_top.is_finite() {
+                prose(
+                    &format!(
+                        "weighs τ {} most ({:.0}%)",
+                        tau_text(row.tau_top),
+                        100.0 * row.tau_top_weight
+                    ),
+                    plain,
+                    2,
+                );
             }
-            if !row.warnings.is_empty() {
-                for l in style::wrap(&row.warnings, width, width).into_iter().take(2) {
-                    tail.push((Line::styled(format!(" {l}"), dim), None));
-                }
+            prose(
+                &format!(
+                    "{} receivers · {} competent · {} exposed (τ {})",
+                    row.n_receivers,
+                    row.n_competent,
+                    row.n_exposed,
+                    tau_text(row.threshold)
+                ),
+                plain,
+                2,
+            );
+            // The effect against each control, signed, with its two-sided
+            // q: the verdict and the reasons say whether it passed.
+            if row.controls.iter().any(|c| c.q.is_finite()) {
+                let each: Vec<String> = CONTROLS
+                    .iter()
+                    .zip(&row.controls)
+                    .map(|(spec, c)| {
+                        let name = spec.short;
+                        if c.over.is_finite() && c.q.is_finite() {
+                            let pct = super::super::curve::pct(c.over);
+                            let change = percent_short(pct, pct, pct);
+                            format!("{name} {change} q {}", q_text(c.q))
+                        } else {
+                            format!("{name} —")
+                        }
+                    })
+                    .collect();
+                prose(
+                    &format!("effect − control{corrected}: {}", each.join(" · ")),
+                    plain,
+                    3,
+                );
             }
+            // The pair's own reasons in full; the verdict's meaning when
+            // it has none.
+            let why = if row.warnings.is_empty() {
+                &row.note
+            } else {
+                &row.warnings
+            };
+            prose(why, dim, WHY_LINES);
             match (v.shown(), v.show) {
                 (Some(on), PairShow::Classes) => {
                     tail.push((Line::styled(" map  e: exposure", dim), None));
@@ -594,7 +673,6 @@ impl App<'_> {
         let fit = room.saturating_sub(out.len() + tail.len()).max(3);
         // The window of the list that holds the cursor.
         let first = style::first_row(self.lra_cursor, fit, shown.len());
-        let name_w = width.saturating_sub(20).max(8);
         for (k, &i) in shown.iter().enumerate().skip(first).take(fit) {
             let r = &rows[i];
             let at = v.selected == Some(i);
@@ -603,14 +681,17 @@ impl App<'_> {
             } else {
                 " "
             };
-            let name = style::middle(&r.name(), name_w);
-            let text = format!(
-                "{}{mark}{name:<name_w$} {:>5} {:>6} {}",
-                if at { "▸" } else { " " },
-                pct_short(r),
+            // The columns first, the name in what they leave of the line
+            // (`width + 1`, as the lines starting with a space).
+            let right = format!(
+                " {:>7} {:>7} {:<VERDICT_W$}",
+                percent_short(r.pct, r.pct_lo, r.pct_hi),
                 q_text(r.effect_q),
                 short(r.verdict),
             );
+            let name_w = (width + 1).saturating_sub(2 + right.chars().count()).max(8);
+            let name = style::middle(&r.name(), name_w);
+            let text = format!("{}{mark}{name:<name_w$}{right}", if at { "▸" } else { " " },);
             let style = if at {
                 bold
             } else if r.verdict == Verdict::Supported {
@@ -763,7 +844,7 @@ impl App<'_> {
             Ok(run) => TableRef::at(table, run),
             Err(_) => TableRef::at(table, &self.base.run),
         };
-        let label = r.label();
+        let label = style::middle(&r.label(), LABEL_WIDTH);
         let loaded = match self.lra.as_mut() {
             Some(v) => v.load_path(r),
             None => LraView::new(vec![r]).map(|v| self.lra = v),
