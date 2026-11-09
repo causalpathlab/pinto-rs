@@ -207,7 +207,7 @@ impl RunFrame {
 
     /// The genes the identity left out, for a manifest that does not
     /// record them: every pair's of the reference and of the options'
-    /// files, read again (the background programmes drawn again with the seed).
+    /// files, read again.
     fn excluded_from_files(
         options: &LraOptions,
         gene_names: &[Box<str>],
@@ -222,7 +222,7 @@ impl RunFrame {
         };
         let (pairs, _) = reference_pairs(&choices, gene_names, index)
             .map_err(|e| e.context("reading the pairs the lra table was made with"))?;
-        Ok(signalling_genes(&pairs, gene_names.len(), options.seed).0)
+        Ok(signalling_genes(&pairs))
     }
 
     /// The receivers of `run` (`genes`, its names and their index), the

@@ -611,7 +611,7 @@ impl App<'_> {
                 plain,
                 2,
             );
-            // The effect against each control, signed, with its two-sided
+            // The effect against the control, signed, with its two-sided
             // q: the verdict and the reasons say whether it passed.
             if row.controls.iter().any(|c| c.q.is_finite()) {
                 let each: Vec<String> = CONTROLS

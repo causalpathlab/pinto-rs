@@ -22,8 +22,6 @@
 //!   receivers are different cell types by construction and the contrast
 //!   conflates the receptor with cell type; it is no headline, but a
 //!   significant effect must exceed the incompetent one;
-//! - `ring_effect`, the ring effect: effect of ligand on distant non-touching cells given
-//!   the real exposure (≈ 0 is a negative control for spatial confounding);
 //! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
 //!   ratio; `marginal_cor`, the correlation of response and contact ligand; `crude`, the
 //!   unadjusted contrast; `effect_ipw` and `effect_outcome`, the headline's two halves,
@@ -34,7 +32,7 @@
 //!
 //! **Inference across pairs** ([`report::report`]): Benjamini–Hochberg q-values
 //! within the pooled rows and within each section, for the competent effect
-//! (two-sided), co-expression (one-sided, positive) and the controls, and a
+//! (two-sided), co-expression (one-sided, positive) and the control, and a
 //! per-ligand q (Simes over the ligand's pairs, BH over ligands); the verdict
 //! ([`verdict::Verdict`]) reads q at [`Internals::fdr`]. When the ligand marks
 //! a cell type, exposure is nearly "has a neighbour of that type" and cannot be
@@ -50,7 +48,7 @@
 //! neighbours only through `T`, (2) no unmeasured confounding given the
 //! confounders, (3) overlap, which the overlap weights make a matter of
 //! target population rather than of variance, and (4) consistency in that
-//! stochastic sense. The negative controls probe (2).
+//! stochastic sense. The negative control probes (2).
 //!
 //! Layout:
 //!
@@ -62,9 +60,9 @@
 //!   build [`tissue::Tissue`];
 //! - one pair: [`estimate`] assembles it from [`dose`] and [`response`],
 //!   [`thresholds`] fits each exposure threshold, [`fits`] holds the nuisance
-//!   fits there, [`effects`] reads every estimand from them, [`curve`] and
-//!   [`background`] add the threshold-response curve and the matched
-//!   programmes, under the [`options`] asked for, into [`rows`];
+//!   fits there, [`effects`] reads every estimand from them, [`curve`] adds
+//!   the threshold-response curve, under the [`options`] asked for, into
+//!   [`rows`];
 //! - the estimator: [`overlap`], [`crossfit`] and [`regression`] estimate,
 //!   [`association`] reads the unadjusted comparisons, [`inference`] and
 //!   [`averaging`] read and combine the estimates;
@@ -78,7 +76,6 @@
 
 mod association;
 mod averaging;
-mod background;
 mod baselines;
 mod confounders;
 mod contacts;
@@ -137,8 +134,6 @@ pub struct Internals {
     /// Prior SD in multiples of the median standard error
     /// ([`options::ABF_PRIOR_SCALE`]).
     pub abf_prior_scale: f64,
-    /// Background programmes per pair.
-    pub background_draws: usize,
     /// Fewest exposed and fewest unexposed receivers of a reported subgroup.
     pub min_arm: usize,
     /// Smallest effective sample size of a subgroup's overlap weights.
@@ -155,8 +150,6 @@ pub struct Internals {
     pub identity_bits: usize,
     /// Fewest measured genes in a pair's response programme.
     pub min_targets: usize,
-    /// Negative-control ring, inner and outer, in median contact lengths.
-    pub ring: (f64, f64),
     /// Length scales of the regional confounder smooth, in contact lengths.
     pub scales: [f64; 2],
     /// Tile width for cross-fitting folds and variance clusters.
@@ -168,7 +161,6 @@ pub const INTERNALS: Internals = Internals {
     competence_grid: options::COMPETENCE_GRID,
     benchmark_competence: options::BENCHMARK_COMPETENCE[0],
     abf_prior_scale: options::ABF_PRIOR_SCALE,
-    background_draws: options::BACKGROUND_DRAWS,
     min_arm: 20,
     min_ess: 30.0,
     min_overlap: 0.01,
@@ -177,7 +169,6 @@ pub const INTERNALS: Internals = Internals {
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,
-    ring: (15.0, 30.0),
     scales: [8.0, 32.0],
     tile: 25.0,
     folds: 5,

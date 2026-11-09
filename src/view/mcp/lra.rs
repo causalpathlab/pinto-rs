@@ -222,9 +222,8 @@ impl Open {
                         (one threshold when lra was given --threshold); \
                         tau_top: the threshold the average weighs most, at weight \
                         tau_top_weight; threshold: the one the counts and the map read; \
-                        controls: the effect minus each negative control \
-                        (receptor-negative receivers, the ring of distant cells, matched \
-                        background programmes) as a log rate ratio, with its two-sided q \
+                        controls: the effect minus the negative control \
+                        (receptor-negative receivers) as a log rate ratio, with its two-sided q \
                         (so a small q with a negative difference falls short of the \
                         control; verdict and warnings give the call), tested among the \
                         pairs with an effect: null for the rest, for a control that could \

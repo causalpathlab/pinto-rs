@@ -1,25 +1,17 @@
-//! Who touches whom, the distant ring and receptor competence.
+//! Who touches whom and receptor competence.
 //!
 //! - [`Contacts`]: each cell's spatial contacts, from the run's adjacent
 //!   (not expression-similar) pairs.
 //! - [`Contacts::sum`] / [`Contacts::mean`]: a receiver's exposure is the
 //!   sum of a per-cell quantity over its contacts; neighbour-average
 //!   confounders use the mean.
-//! - [`median_contact_length`]: the unit for tiles, smooths and the ring, by
+//! - [`median_contact_length`]: the unit for tiles and smooths, by
 //!   [`upper_median`].
-//! - [`ring_partners`]: the negative-control exposure. For each receiver,
-//!   as many cells as it has contacts, drawn from a ring well beyond
-//!   contact range. They share the receiver's region but cannot signal to
-//!   it by contact.
 //! - [`competence`]: whether a receiver's cell type expresses the receptor,
 //!   read from its identity bin rather than its own count, which the
 //!   ligand itself could change.
 
 use crate::util::common::*;
-use legume_numeric::matrix::rand_util::mix_seed;
-use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 /// Each row's contact partners (row indices), symmetric and deduplicated.
 pub struct Contacts {
@@ -67,8 +59,8 @@ impl Contacts {
     }
 }
 
-/// Median contact length per section, the unit for tiles, smooths and the
-/// ring. Sections without contacts get the overall median.
+/// Median contact length per section, the unit for tiles and smooths.
+/// Sections without contacts get the overall median.
 pub fn median_contact_length(
     coords: &[(f32, f32)],
     section: &[u32],
@@ -110,69 +102,6 @@ pub fn upper_median(v: &mut [f64]) -> Option<f64> {
     }
     let mid = v.len() / 2;
     Some(*v.select_nth_unstable_by(mid, f64::total_cmp).1)
-}
-
-/// For each row, `degree(i)` partners at distance in `[inner, outer]` (in
-/// that section's contact lengths), drawn without replacement, seeded per
-/// row. Fewer when the ring holds fewer cells.
-pub fn ring_partners(
-    coords: &[(f32, f32)],
-    section: &[u32],
-    unit: &[f64],
-    contacts: &Contacts,
-    inner: f64,
-    outer: f64,
-    seed: u64,
-) -> Vec<Vec<u32>> {
-    let n = coords.len();
-    // Grid of cell side `outer` per section: the ring of any point lies in
-    // its own and the eight surrounding grid cells.
-    let mut grid: HashMap<(u32, i64, i64), Vec<u32>> = HashMap::default();
-    let key = |i: usize| {
-        let s = outer * unit[section[i] as usize];
-        (
-            section[i],
-            (coords[i].0 as f64 / s).floor() as i64,
-            (coords[i].1 as f64 / s).floor() as i64,
-        )
-    };
-    for i in 0..n {
-        grid.entry(key(i)).or_default().push(i as u32);
-    }
-    (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let want = contacts.degree(i);
-            if want == 0 {
-                return Vec::new();
-            }
-            let u = unit[section[i] as usize];
-            let (lo, hi) = ((inner * u).powi(2), (outer * u).powi(2));
-            let (b, gx, gy) = key(i);
-            let mut cand: Vec<u32> = Vec::new();
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    if let Some(cell) = grid.get(&(b, gx + dx, gy + dy)) {
-                        for &j in cell {
-                            let j_ = j as usize;
-                            let (ex, ey) = (
-                                (coords[i].0 - coords[j_].0) as f64,
-                                (coords[i].1 - coords[j_].1) as f64,
-                            );
-                            let d2 = ex * ex + ey * ey;
-                            if d2 >= lo && d2 <= hi {
-                                cand.push(j);
-                            }
-                        }
-                    }
-                }
-            }
-            let mut rng = SmallRng::seed_from_u64(mix_seed(seed, i as u64));
-            cand.shuffle(&mut rng);
-            cand.truncate(want);
-            cand
-        })
-        .collect()
 }
 
 /// `true` where the share of cells in a row's identity bin detecting the

@@ -145,8 +145,8 @@ fn est(theta: f64, se: f64) -> Estimate {
     }
 }
 
-/// A row with a headline z, a co-expression z, control z's and η².
-fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64) -> EffectRow {
+/// A row with a headline z, a co-expression z, the receptor-negative z and η².
+fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> EffectRow {
     let nan = Estimate::nan(0, 0);
     EffectRow {
         section: section.into(),
@@ -168,8 +168,6 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
             ipw: nan,
             outcome: nan,
             incompetent: est(z3 * 0.05, 0.05),
-            ring: est(z5 * 0.05, 0.05),
-            over_ring: est((z - z5) * 0.05, 0.05),
             steps: [nan; 3],
             nospill: nan,
             near_determined: 0.0,
@@ -178,20 +176,13 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
         exposure_eta2: eta2,
         n_competent_bins: 1,
         n_incompetent_bins: 1,
-        background_effect: nan,
-        n_background_genes: 0,
-        effect_over_background: nan,
         curve: Vec::new(),
-        background_q: f64::NAN,
         effect_p: f64::NAN,
         effect_q: f64::NAN,
         coexpr_p: f64::NAN,
         coexpr_q: f64::NAN,
         effect_incompetent_q: f64::NAN,
         effect_contrast_q: f64::NAN,
-        ring_effect_q: f64::NAN,
-        effect_over_ring_q: f64::NAN,
-        effect_over_background_q: f64::NAN,
         n_pairs_same_ligand: 0,
         ligand_q: f64::NAN,
         verdict: Verdict::InsufficientData,
@@ -202,16 +193,15 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, z5: f64, eta2: f64
 #[test]
 fn report_labels_and_overrides() {
     let mut rows = vec![
-        row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1),
-        row("all", "L1", 10.0, 10.0, 10.0, 0.0, 0.1),
-        row("all", "L2", 10.0, 10.0, 0.0, 0.0, 0.9),
-        row("all", "L3", f64::NAN, 10.0, 0.0, 0.0, 0.1),
-        row("all", "L4", 0.1, 0.0, 0.0, 0.0, 0.1),
-        row("all", "L5", 10.0, -3.0, 0.0, 0.0, 0.1),
-        row("all", "L6", 0.0, 10.0, 0.0, 0.0, 0.1),
-        row("all", "L7", 10.0, 0.0, 0.0, 10.0, 0.1),
+        row("all", "L1", 10.0, 10.0, 0.0, 0.1),
+        row("all", "L1", 10.0, 10.0, 10.0, 0.1),
+        row("all", "L2", 10.0, 10.0, 0.0, 0.9),
+        row("all", "L3", f64::NAN, 10.0, 0.0, 0.1),
+        row("all", "L4", 0.1, 0.0, 0.0, 0.1),
+        row("all", "L5", 10.0, -3.0, 0.0, 0.1),
+        row("all", "L6", 0.0, 10.0, 0.0, 0.1),
         // Alone in its section, so its q is its p.
-        row("s1", "L1", 1.0, 0.0, 0.0, 0.0, 0.1),
+        row("s1", "L1", 1.0, 0.0, 0.0, 0.1),
     ];
     rows[3].effects.competent = Estimate::nan(400, 3);
     report(&mut rows, &ReportOpts::default());
@@ -226,7 +216,6 @@ fn report_labels_and_overrides() {
             "no_evidence",
             "effect_without_coexpression",
             "colocation_only",
-            "control_failed",
             "no_evidence",
         ]
     );
@@ -239,17 +228,16 @@ fn report_labels_and_overrides() {
         "{}",
         rows[3].warnings
     );
-    assert!(rows[7].warnings.contains("distant senders"));
 
     // Ligand families within a section; the s1 row is its own family.
     assert_eq!(rows[0].n_pairs_same_ligand, 2);
     assert_eq!(rows[1].n_pairs_same_ligand, 2);
     assert_eq!(rows[2].n_pairs_same_ligand, 1);
-    assert_eq!(rows[8].n_pairs_same_ligand, 1);
-    assert!((rows[8].effect_q - rows[8].effect_p).abs() < 1e-12);
-    assert!((rows[8].effect_p - t_two_sided_p(1.0, f64::INFINITY)).abs() < 1e-9);
-    assert!((rows[8].ligand_q - rows[8].effect_p).abs() < 1e-12);
-    // The NaN headline is out of the family: 7 finite p in "all".
+    assert_eq!(rows[7].n_pairs_same_ligand, 1);
+    assert!((rows[7].effect_q - rows[7].effect_p).abs() < 1e-12);
+    assert!((rows[7].effect_p - t_two_sided_p(1.0, f64::INFINITY)).abs() < 1e-9);
+    assert!((rows[7].ligand_q - rows[7].effect_p).abs() < 1e-12);
+    // The NaN headline is out of the family: 6 finite p in "all".
     assert!(rows[3].effect_p.is_nan() && rows[3].effect_q.is_nan());
     // z = 0 is the largest p (1) of the family, and keeps q = p.
     assert!((rows[6].effect_q - 1.0).abs() < 1e-12);
@@ -260,7 +248,7 @@ fn report_labels_and_overrides() {
 #[test]
 fn fdr_level_moves_verdicts() {
     // z = 2.2 gives p ≈ 0.028: significant alone at 0.05, not at 0.01.
-    let mut rows = vec![row("all", "L1", 2.2, 0.0, 0.0, 0.0, 0.1)];
+    let mut rows = vec![row("all", "L1", 2.2, 0.0, 0.0, 0.1)];
     report(&mut rows, &ReportOpts::default());
     assert_eq!(rows[0].verdict, Verdict::EffectWithoutCoexpression);
     report(
@@ -273,9 +261,9 @@ fn fdr_level_moves_verdicts() {
     assert_eq!(rows[0].verdict, Verdict::NoEvidence);
     // Many nulls beside it: BH no longer lets it through at 0.05.
     let mut rows: Vec<EffectRow> = (0..20)
-        .map(|k| row("all", &format!("N{k}"), 0.05 * k as f64, 0.0, 0.0, 0.0, 0.1))
+        .map(|k| row("all", &format!("N{k}"), 0.05 * k as f64, 0.0, 0.0, 0.1))
         .collect();
-    rows.push(row("all", "L1", 2.2, 0.0, 0.0, 0.0, 0.1));
+    rows.push(row("all", "L1", 2.2, 0.0, 0.0, 0.1));
     report(&mut rows, &ReportOpts::default());
     assert_eq!(rows[20].verdict, Verdict::NoEvidence);
 }
@@ -320,9 +308,9 @@ fn exposure_eta2_tracks_neighbour_identity() {
 fn controls_are_corrected_among_significant_effects() {
     let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_incompetent_q;
     // No significant effect: no control is read, however strong.
-    let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 10.0, 0.1)];
+    let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 0.1)];
     report(&mut rows, &ReportOpts::default());
-    assert!(e3_q(&rows, 0).is_nan() && rows[0].ring_effect_q.is_nan());
+    assert!(e3_q(&rows, 0).is_nan() && rows[0].effect_contrast_q.is_nan());
     assert_eq!(rows[0].verdict.code(), "no_evidence");
     assert!(
         !rows[0].warnings.contains("respond"),
@@ -333,9 +321,9 @@ fn controls_are_corrected_among_significant_effects() {
     // Alone among the significant, its control's q is its p: unrelated pairs,
     // with controls strong or weak, change neither it nor its verdict.
     let alone = |others: &[f64]| {
-        let mut rows = vec![row("all", "L1", 10.0, 10.0, 8.5, 0.0, 0.1)];
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 8.5, 0.1)];
         for (k, &z3) in others.iter().enumerate() {
-            rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.0, 0.1));
+            rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.1));
         }
         report(&mut rows, &ReportOpts::default());
         (e3_q(&rows, 0), rows[0].verdict.code())
@@ -346,7 +334,7 @@ fn controls_are_corrected_among_significant_effects() {
     assert_eq!((q, verdict), alone(&[0.0; 20]));
 
     // A significant effect whose control has no estimate has not held.
-    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
+    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
     rows[0].effects.incompetent = Estimate::nan(10, 1);
     rows[0].effects.effect = Estimate::nan(10, 1);
     report(&mut rows, &ReportOpts::default());
@@ -355,20 +343,20 @@ fn controls_are_corrected_among_significant_effects() {
 
     // Each section is its own family.
     let mut rows = vec![
-        row("all", "L1", 10.0, 10.0, 2.5, 0.0, 0.1),
-        row("s1", "L1", 0.0, 10.0, 2.5, 0.0, 0.1),
+        row("all", "L1", 10.0, 10.0, 2.5, 0.1),
+        row("s1", "L1", 0.0, 10.0, 2.5, 0.1),
     ];
     report(&mut rows, &ReportOpts::default());
     assert!(e3_q(&rows, 0) < 0.05 && e3_q(&rows, 1).is_nan());
 }
 
 /// Beside a significant effect the conservative verdict: the effect must
-/// exceed each negative control, the same way, and a control that could not
-/// run has not held, but for a background programme where the pool matched none.
+/// exceed the negative control, the same way, and a control that could not
+/// run has not held.
 #[test]
-fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
+fn a_verdict_needs_a_specific_effect_and_the_control_checked() {
     let judged = |change: &dyn Fn(&mut EffectRow)| {
-        let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.0, 0.1)];
+        let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
         change(&mut rows[0]);
         report(&mut rows, &ReportOpts::default());
         (rows[0].verdict.code(), rows[0].warnings.clone())
@@ -389,43 +377,26 @@ fn a_verdict_needs_a_specific_effect_and_every_control_checked() {
     let (v, w) = judged(&|r| r.effects.effect = Estimate::nan(10, 1));
     assert_eq!(v, "control_failed");
     assert!(w.contains("receptor-negative receivers could not"), "{w}");
-    let (v, w) = judged(&|r| r.effects.over_ring = Estimate::nan(10, 1));
-    assert_eq!(v, "control_failed");
-    assert!(w.contains("distant senders could not"), "{w}");
-    let (v, w) = judged(&|r| r.n_background_genes = 5);
-    assert_eq!(v, "control_failed");
-    assert!(w.contains("background programme could not"), "{w}");
-
-    let (v, w) = judged(&|r| r.effects.over_ring = est(0.05, 0.05));
-    assert_eq!(v, "control_failed");
-    assert!(w.contains("exceed the one from distant senders"), "{w}");
-    let (v, w) = judged(&|r| {
-        r.n_background_genes = 5;
-        r.effect_over_background = est(0.05, 0.05);
-    });
-    assert_eq!(v, "control_failed");
-    assert!(w.contains("exceed the one on a matched background"), "{w}");
-    // Larger than the background, but the wrong way round.
-    let (v, _) = judged(&|r| {
-        r.n_background_genes = 5;
-        r.effect_over_background = est(-0.5, 0.05);
-    });
-    assert_eq!(v, "control_failed");
 }
 
-/// A hidden field moves the controls too, so a significant control does not
+/// One control decides: an effect that exceeds the receptor-negative
+/// receivers' is supported, with nothing else to check.
+#[test]
+fn an_effect_exceeding_the_receptor_negative_control_is_supported() {
+    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
+    report(&mut rows, &ReportOpts::default());
+    assert_eq!(rows[0].verdict, Verdict::Supported, "{}", rows[0].warnings);
+    assert!(rows[0].warnings.is_empty(), "{}", rows[0].warnings);
+}
+
+/// A hidden field moves the control too, so a significant control does not
 /// rule out an effect that clearly exceeds it: the verdict stands and the
 /// warning says what responded.
 #[test]
 fn a_significant_control_the_effect_exceeds_is_a_warning_not_a_veto() {
-    let mut rows = vec![row("all", "L1", 20.0, 10.0, 5.0, 5.0, 0.1)];
-    rows[0].n_background_genes = 5;
-    rows[0].background_effect = est(0.25, 0.05);
-    rows[0].effect_over_background = est(0.75, 0.05);
+    let mut rows = vec![row("all", "L1", 20.0, 10.0, 5.0, 0.1)];
     report(&mut rows, &ReportOpts::default());
     assert_eq!(rows[0].verdict, Verdict::Supported);
     let w = &rows[0].warnings;
     assert!(w.contains("receptor-negative receivers respond"), "{w}");
-    assert!(w.contains("distant senders have an effect"), "{w}");
-    assert!(w.contains("background programme responds too"), "{w}");
 }

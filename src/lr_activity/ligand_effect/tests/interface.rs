@@ -152,7 +152,7 @@ fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
         outcome,
         ..ScopeEffects::zip_with(&[], |_| none)
     };
-    let row = EffectRow::pending(effects, (f64::NAN, f64::NAN), f64::NAN, (none, none), 0);
+    let row = EffectRow::pending(effects, (f64::NAN, f64::NAN), f64::NAN);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("o.lra.parquet");
     let path = path.to_str().unwrap();
@@ -172,6 +172,27 @@ fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
     assert!(lo < hi && close(x[2][0], lo) && close(x[3][0], hi));
     assert!(close(x[4][0], 0.3));
     assert!(read_table_columns(path, &["ligand"], &["effect_outcome_se"]).is_err());
+    // The ring and background controls were removed: none of their columns
+    // are written.
+    for gone in [
+        "ring_effect",
+        "ring_effect_q",
+        "effect_over_ring",
+        "effect_over_ring_q",
+        "background_effect",
+        "background_effect_se",
+        "background_effect_df",
+        "background_q",
+        "effect_over_background",
+        "effect_over_background_se",
+        "effect_over_background_q",
+        "n_background_genes",
+    ] {
+        assert!(
+            read_table_columns(path, &["ligand"], &[gone]).is_err(),
+            "{gone}"
+        );
+    }
 }
 
 // * Study
@@ -216,9 +237,23 @@ fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
     // A study from before PVE says what replaced its sizes.
     let old = Study::from_json(r#"{"scenarios": {"effect_sizes": [0.2]}}"#).unwrap_err();
     assert!(old.to_string().contains("shares of variance"), "{old}");
-    // The background's field share counts against the budget too.
-    let too_much = r#"{"scenarios": {"field_pve": 0.5, "background_confounding": 2.0}}"#;
-    assert!(Study::from_json(too_much).is_err());
+    // A study planting a ring effect says the ring control was removed.
+    let ring = Study::from_json(r#"{"scenarios": {"ring_effect": [0.1]}}"#).unwrap_err();
+    assert!(
+        ring.to_string().contains("ring control was removed"),
+        "{ring}"
+    );
+    // So do the scenarios that only tested the background control.
+    for key in [
+        r#""background_confounding": 0.5"#,
+        r#""generic_shift": [0.5]"#,
+    ] {
+        let gone = Study::from_json(&format!(r#"{{"scenarios": {{{key}}}}}"#)).unwrap_err();
+        assert!(
+            gone.to_string().contains("background control was removed"),
+            "{gone}"
+        );
+    }
 }
 
 // * Files

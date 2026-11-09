@@ -1,15 +1,14 @@
 //! One pair across exposure thresholds: each estimand fitted at each, then
 //! averaged by its own evidence.
 
-use super::averaging::{abf_average, abf_summary, background_comparison};
+use super::averaging::{abf_average, abf_summary};
 use super::curve::curve_taus;
 use super::dose::Exposure;
-use super::effects::{
-    combine_scopes, competent_effect, effects_on, LevelEffects, ScopeEffects, Sensitivity,
-};
-use super::fits::{Rows, Starts, ThresholdFits};
+use super::effects::{combine_scopes, effects_on, LevelEffects, ScopeEffects, Sensitivity};
+use super::fits::{Rows, ThresholdFits};
 use super::inference::Estimate;
 use super::options::EffectOpts;
+use super::overlap::FoldStarts;
 use super::response::Response;
 use super::timing;
 use rayon::prelude::*;
@@ -18,8 +17,6 @@ use rayon::prelude::*;
 /// ([`over_thresholds`]).
 pub struct ThresholdAverage {
     pub scopes: Vec<ScopeEffects>,
-    pub background: Estimate,
-    pub over_background: Estimate,
     /// Each threshold fitted, the headline first: its first weighting's
     /// effect at the middle competence threshold and that effect's cluster
     /// sums, what a curve reads.
@@ -46,48 +43,39 @@ pub fn thresholds(ex: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Vec
 /// each, the estimands combined over competence thresholds and programme
 /// weightings by Rubin's rules, then averaged over the exposure thresholds by
 /// their posterior weights, estimand by estimand
-/// ([`super::averaging::abf_average`]), so each control is averaged by its own
+/// ([`super::averaging::abf_average`]), so the control is averaged by its own
 /// evidence and not by the programme's.
 ///
 /// A fixed [`super::options::EffectOpts::threshold`] is not averaged: its
 /// estimate is the headline, and `taus` only the curve. A headline threshold
-/// with no estimate ends the pair: the other thresholds are not fitted, nor are
-/// the background programmes made. `sens` runs at the headline threshold alone,
-/// and the background programmes read the middle competence threshold.
-#[allow(clippy::too_many_arguments)]
+/// with no estimate ends the pair: the other thresholds are not fitted. `sens`
+/// runs at the headline threshold alone.
 pub fn over_thresholds(
     rows: Rows<'_>,
     ex: &Exposure,
     taus: &[(f64, f64)],
     responses: &[Response],
-    make_backgrounds: impl Fn() -> Vec<Response>,
     levels: &[Vec<bool>],
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<ThresholdAverage> {
     let mid = levels.len() / 2;
     let grid = threshold_grid(ex, taus);
-    let mut starts = Starts::default();
+    let mut starts = FoldStarts::default();
     let mut at_tau: Vec<Vec<ScopeEffects>> = Vec::with_capacity(grid.len());
     let mut points = Vec::with_capacity(grid.len());
     let mut arm_weights = Vec::new();
-    let mut background_responses: Vec<Response> = Vec::new();
-    let mut background_at: Vec<Vec<Estimate>> = Vec::with_capacity(grid.len());
     for (g, &tau) in grid.iter().enumerate() {
         let clock = std::time::Instant::now();
         let other = (g > 0).then(|| ex.at(tau));
         let exposure = other.as_ref().unwrap_or(ex);
         let sens = if g == 0 { sens } else { Sensitivity::NONE };
         let fits = timing::time(timing::MAIN, || {
-            ThresholdFits::new(rows, exposure, levels, opts, &mut starts.main)
+            ThresholdFits::new(rows, exposure, levels, opts, &mut starts)
         })?
-        .with_controls(rows, sens.steps, opts, &mut starts)?;
-        if g == 0 {
-            if fits.runs(fits.reads.competent) {
-                background_responses = timing::time(timing::FRAME, &make_backgrounds);
-            } else {
-                timing::all_skipped();
-            }
+        .with_steps(rows, sens.steps, opts, &starts)?;
+        if g == 0 && !fits.runs_competent() {
+            timing::all_skipped();
         }
         let per_response: Vec<_> = responses
             .par_iter()
@@ -108,12 +96,6 @@ pub fn over_thresholds(
         if g > 0 {
             timing::add(timing::THRESHOLDS, clock);
         }
-        background_at.push(background_effects(
-            rows,
-            &fits,
-            &background_responses,
-            opts,
-        )?);
         // No estimate at the headline threshold: nothing to average or to put
         // a curve on.
         if g == 0 && !fits.reads.competent {
@@ -126,17 +108,8 @@ pub fn over_thresholds(
         at_tau.len()
     };
     let scopes = average_scopes(&at_tau[..averaged], &grid, opts.abf_prior_scale);
-    let background_means = average_backgrounds(
-        &background_at[..averaged],
-        background_responses.len(),
-        opts.abf_prior_scale,
-    );
-    let (background, over_background) =
-        background_comparison(&scopes[0].competent, &background_means);
     Ok(ThresholdAverage {
         scopes,
-        background,
-        over_background,
         points,
         arm_weights,
     })
@@ -162,22 +135,6 @@ fn combine_levels(levels: Vec<LevelEffects>, mid: usize) -> Vec<ScopeEffects> {
     combined
 }
 
-/// The competent effect of each background programme at one threshold.
-fn background_effects(
-    rows: Rows<'_>,
-    fits: &ThresholdFits<'_>,
-    responses: &[Response],
-    opts: &EffectOpts,
-) -> anyhow::Result<Vec<Estimate>> {
-    // Programmes are independent: fit them side by side.
-    responses
-        .par_iter()
-        .map(|r| {
-            timing::time(timing::BACKGROUND, || competent_effect(rows, fits, r, opts)).map(|e| e.0)
-        })
-        .collect()
-}
-
 /// Each scope's estimands averaged over the thresholds `at_tau` by their own
 /// evidence; the near-determined share is the headline threshold's, and `grid`
 /// names the thresholds in the evidence summary.
@@ -195,17 +152,6 @@ fn average_scopes(
                 abf: abf_summary(&competent, grid, prior_scale),
                 ..ScopeEffects::zip_with(&parts, |p| abf_average(p, prior_scale))
             }
-        })
-        .collect()
-}
-
-/// Each of the `n` background programmes averaged over the thresholds by its own
-/// evidence, as the effect is.
-fn average_backgrounds(at_tau: &[Vec<Estimate>], n: usize, prior_scale: f64) -> Vec<Estimate> {
-    (0..n)
-        .map(|k| {
-            let parts: Vec<Estimate> = at_tau.iter().map(|d| d[k]).collect();
-            abf_average(&parts, prior_scale)
         })
         .collect()
 }

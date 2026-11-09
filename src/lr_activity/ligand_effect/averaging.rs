@@ -1,5 +1,5 @@
-//! Putting estimates together: Rubin's rules across choices, approximate Bayes
-//! factors across thresholds, and the comparison to background programmes.
+//! Putting estimates together: Rubin's rules across choices and approximate Bayes
+//! factors across thresholds.
 
 use super::contacts::upper_median;
 use super::inference::{usable, Estimate};
@@ -156,7 +156,7 @@ pub fn abf_summary(parts: &[Estimate], taus: &[f64], prior_scale: f64) -> AbfSum
 ///
 /// The weights read the estimates they average, so the average leans toward
 /// the largest z: its null is not the t reference's, which is why a finding also
-/// has to exceed negative controls averaged the same way.
+/// has to exceed the negative control averaged the same way.
 pub fn abf_average(parts: &[Estimate], prior_scale: f64) -> Estimate {
     let (weights, _) = abf_weights(parts, prior_scale);
     if weights.is_empty() {
@@ -180,46 +180,4 @@ pub fn abf_average(parts: &[Estimate], prior_scale: f64) -> Estimate {
         ess: sum(&|e| e.ess),
         df: 1.0 / sum(&|e| 1.0 / e.df),
     }
-}
-
-/// A pair's background programmes against its effect: their mean, and the
-/// effect over that mean as one more draw from what programmes like it show,
-/// with the variance `s² (1 + 1/K)` and `K − 1` degrees of freedom of a
-/// predictive test. The spread never reads below the background programmes' own
-/// sampling variance, so identical background programmes are not taken for
-/// certainty. Fewer than two usable background programmes say nothing.
-pub fn background_comparison(effect: &Estimate, backgrounds: &[Estimate]) -> (Estimate, Estimate) {
-    let ok: Vec<&Estimate> = backgrounds.iter().filter(|e| usable(e)).collect();
-    let nan = Estimate::nan(effect.n, effect.n_treated);
-    if ok.len() < 2 {
-        return (nan, nan);
-    }
-    let k = ok.len() as f64;
-    let mean = ok.iter().map(|e| e.theta).sum::<f64>() / k;
-    let between = ok.iter().map(|e| (e.theta - mean).powi(2)).sum::<f64>() / (k - 1.0);
-    let within = ok.iter().map(|e| e.se * e.se).sum::<f64>() / k;
-    let var = between.max(within);
-    // The effect's own uncertainty sets the width when it is the larger: its
-    // analyses can disagree in a way the background programmes, read on one, cannot show.
-    let effect_var = effect.se * effect.se;
-    let (over_var, over_df) = if effect_var > var {
-        (effect_var, effect.df)
-    } else {
-        (var, k - 1.0)
-    };
-    let of = |theta: f64, v: f64| Estimate {
-        theta,
-        se: v.sqrt(),
-        df: k - 1.0,
-        ..nan
-    };
-    let over = if effect.theta.is_finite() {
-        Estimate {
-            df: over_df,
-            ..of(effect.theta - mean, over_var + var / k)
-        }
-    } else {
-        nan
-    };
-    (of(mean, var / k), over)
 }

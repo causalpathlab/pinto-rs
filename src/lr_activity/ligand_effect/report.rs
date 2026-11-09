@@ -72,11 +72,11 @@ pub fn simes(p: &[f64]) -> f64 {
 /// (`min_r p_(r) k / r` over its `k` pairs, valid under PRDS) and BH runs
 /// over ligands. `n_pairs_same_ligand` is that `k`.
 ///
-/// The controls (receptor-negative receivers, distant cells, the background, and
-/// the contrast with the first) are corrected only among the pairs
-/// whose effect is significant, and are NaN for the rest: a control decides a
-/// verdict only beside a significant effect, and over every pair its q would
-/// rest on what unrelated pairs in the table happen to show.
+/// The control (receptor-negative receivers, and the contrast with them) is
+/// corrected only among the pairs whose effect is significant, and is NaN
+/// for the rest: a control decides a verdict only beside a significant
+/// effect, and over every pair its q would rest on what unrelated pairs in
+/// the table happen to show.
 pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
     let mut by_section: std::collections::HashMap<Box<str>, Vec<usize>> = Default::default();
     for (i, r) in rows.iter().enumerate() {
@@ -100,10 +100,6 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
         };
         let q1 = control(&|r| r.effects.effect.p());
         let q3 = control(&|r| r.effects.incompetent.p());
-        let q5 = control(&|r| r.effects.ring.p());
-        let qd = control(&|r| r.background_effect.p());
-        let qr = control(&|r| r.effects.over_ring.p());
-        let qo = control(&|r| r.effect_over_background.p());
         let mut by_ligand: std::collections::HashMap<String, Vec<usize>> = Default::default();
         for (k, &i) in idx.iter().enumerate() {
             by_ligand
@@ -132,10 +128,6 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
             r.coexpr_q = qc[k];
             r.effect_contrast_q = q1[k];
             r.effect_incompetent_q = q3[k];
-            r.ring_effect_q = q5[k];
-            r.background_q = qd[k];
-            r.effect_over_ring_q = qr[k];
-            r.effect_over_background_q = qo[k];
         }
     }
     for r in rows.iter_mut() {
@@ -161,22 +153,19 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
 /// A condition of a row and the warning it raises when it holds.
 type Flag = (bool, &'static str);
 
-/// Beside a significant effect, the effect must exceed each negative
-/// control, the same way, and a comparison that could not run has not held,
-/// but for a background programme where none exists (no match in the pool,
-/// or a section's row). A hidden field moves the controls too, so one being
-/// significant does not rule the effect out: it is reported ([`control_notes`]),
-/// and what decides is whether the effect is larger.
-fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 6] {
+/// Beside a significant effect, the effect must exceed the negative
+/// control, the same way, and a comparison that could not run has not held.
+/// A hidden field moves the control too, so its being significant does not
+/// rule the effect out: it is reported ([`control_notes`]), and what decides
+/// is whether the effect is larger.
+fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 2] {
     let sig = |q: f64| q < opts.fdr;
     let head = row.effects.competent;
     let effect = sig(row.effect_q);
     let unchecked = |q: f64| effect && q.is_nan();
     let exceeds = |q: f64, over: Estimate| sig(q) && over.theta * head.theta > 0.0;
     let beaten = |q: f64, over: Estimate| effect && !q.is_nan() && !exceeds(q, over);
-    let (over_negative_q, over_ring_q) = (row.effect_contrast_q, row.effect_over_ring_q);
-    let over_background_q = row.effect_over_background_q;
-    let has_background = row.n_background_genes > 0;
+    let over_negative_q = row.effect_contrast_q;
     [
         (
             unchecked(over_negative_q),
@@ -186,39 +175,15 @@ fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 6] {
             beaten(over_negative_q, row.effects.effect),
             "the effect does not exceed the one in receptor-negative receivers",
         ),
-        (
-            unchecked(over_ring_q),
-            "distant senders could not be checked",
-        ),
-        (
-            beaten(over_ring_q, row.effects.over_ring),
-            "the effect does not exceed the one from distant senders",
-        ),
-        (
-            has_background && unchecked(over_background_q),
-            "the matched background programme could not be checked",
-        ),
-        (
-            has_background && beaten(over_background_q, row.effect_over_background),
-            "the effect does not exceed the one on a matched background programme",
-        ),
     ]
 }
 
-/// The negative controls significant on their own: reported, deciding nothing.
-fn control_notes(row: &EffectRow, opts: &ReportOpts) -> [Flag; 3] {
-    let sig = |q: f64| q < opts.fdr;
-    [
-        (
-            sig(row.effect_incompetent_q),
-            "receptor-negative receivers respond",
-        ),
-        (sig(row.ring_effect_q), "distant senders have an effect"),
-        (
-            sig(row.background_q),
-            "a matched background programme responds too",
-        ),
-    ]
+/// The negative control significant on its own: reported, deciding nothing.
+fn control_notes(row: &EffectRow, opts: &ReportOpts) -> [Flag; 1] {
+    [(
+        row.effect_incompetent_q < opts.fdr,
+        "receptor-negative receivers respond",
+    )]
 }
 
 /// Why the row's competent effect has no estimate.
@@ -247,7 +212,7 @@ fn not_estimable_reason(row: &EffectRow, opts: &ReportOpts) -> String {
 }
 
 /// The row's warnings, joined: why it has no estimate, what confounds it, the
-/// controls it failed, then the controls that respond.
+/// control it failed, then the control responding.
 fn warnings(row: &EffectRow, ev: Evidence, controls: &[Flag], opts: &ReportOpts) -> String {
     let mut w: Vec<String> = Vec::new();
     if !ev.estimable {

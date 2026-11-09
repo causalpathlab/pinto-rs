@@ -49,19 +49,11 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .est("effect_competent_nospill", |(r, _)| r.effects.nospill)
         .est("effect_incompetent", |(r, _)| r.effects.incompetent)
         .f("effect_incompetent_q", |(r, _)| r.effect_incompetent_q)
-        .est("ring_effect", |(r, _)| r.effects.ring)
-        .f("ring_effect_q", |(r, _)| r.ring_effect_q)
         .est("effect_contrast", |(r, _)| r.effects.effect)
         .f("effect_log10_bf", |(r, _)| r.effects.abf.log10_bf)
         .f("tau_top", |(r, _)| r.effects.abf.top_tau)
         .f("tau_top_weight", |(r, _)| r.effects.abf.top_weight)
         .f("effect_contrast_q", |(r, _)| r.effect_contrast_q)
-        .est("effect_over_ring", |(r, _)| r.effects.over_ring)
-        .f("effect_over_ring_q", |(r, _)| r.effect_over_ring_q)
-        .est("effect_over_background", |(r, _)| r.effect_over_background)
-        .f("effect_over_background_q", |(r, _)| {
-            r.effect_over_background_q
-        })
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)
@@ -77,10 +69,6 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .f("effect_pct_sd", |(_, m)| m.pct_sd)
         .f("effect_pct_lo", |(_, m)| m.pct_lo)
         .f("effect_pct_hi", |(_, m)| m.pct_hi)
-        .est("background_effect", |(r, _)| r.background_effect)
-        .f("background_effect_df", |(r, _)| r.background_effect.df)
-        .f("background_q", |(r, _)| r.background_q)
-        .i("n_background_genes", |(r, _)| r.n_background_genes)
         .s("q_scope", |_| q_scope);
     c.write(path)
 }
@@ -127,7 +115,6 @@ pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
 /// back, shared by the writer and the reader.
 pub(super) mod sim_cols {
     pub const EFFECT_PVE: &str = "effect_pve";
-    pub const RING_EFFECT: &str = "planted_ring_effect";
     pub const LIGAND_FIELD_PVE: &str = "ligand_field_pve";
     pub const RESPONSE_FIELD_PVE: &str = "response_field_pve";
     pub const SCALE: &str = "confound_scale";
@@ -139,8 +126,6 @@ pub(super) mod sim_cols {
     pub const SHIFT: &str = "shift";
     pub const REP: &str = "rep";
     pub const ESTIMABLE: &str = "estimable";
-    pub const BACKGROUND_CONFOUNDING: &str = "background_confounding";
-    pub const GENERIC_SHIFT: &str = "generic_shift";
     pub const DOSE_RESPONSE: &str = "dose_response";
     pub const DOSE_MIDPOINT: &str = "dose_midpoint";
     pub const DOSE_ORDER: &str = "dose_order";
@@ -170,7 +155,6 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .s(SHAPE, |r| r.scenario.shape.label())
         .i(HETEROGENEOUS, |r| r.scenario.heterogeneous as usize)
         .i(MARKER, |r| r.scenario.marker as usize)
-        .f(RING_EFFECT, |r| r.scenario.ring_effect)
         .f(SPILLOVER, |r| r.scenario.spillover)
         .f(SHIFT, |r| r.scenario.shift)
         .i(REP, |r| r.scenario.rep)
@@ -185,20 +169,11 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .est_interval("effect_ipw", |r| r.ipw)
         .f("effect_outcome", |r| r.outcome)
         .est("effect_incompetent", |r| r.incompetent)
-        .est("ring_effect", |r| r.ring)
-        .f("ring_truth", |r| r.ring_truth)
         .est("estimate_no_spill", |r| r.no_spill)
         .est("estimate_section", |r| r.steps[0])
         .est("estimate_spatial", |r| r.steps[1])
         .est("estimate_identity", |r| r.steps[2])
         .est("effect_contrast", |r| r.contrast)
-        .est("effect_over_ring", |r| r.over_ring)
-        .est("background_effect", |r| r.background)
-        .est("effect_over_background", |r| r.over_background)
-        .f(BACKGROUND_CONFOUNDING, |r| {
-            r.scenario.background_confounding
-        })
-        .f(GENERIC_SHIFT, |r| r.scenario.generic_shift)
         .i(DOSE_RESPONSE, |r| r.scenario.dose_response as usize)
         .f(DOSE_MIDPOINT, |r| r.scenario.dose_midpoint)
         .i(DOSE_ORDER, |r| r.scenario.dose_order as usize)

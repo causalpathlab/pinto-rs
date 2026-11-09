@@ -11,9 +11,6 @@
 //! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
 //! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
 //! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
-//! | `ring_effect` | the ring effect: effect of ligand on distant, non-touching cells, given the real exposure; a negative control, ≈ 0 |
-//! | `effect_over_ring` | the competent effect − the ring effect, paired over variance clusters |
-//! | `effect_over_background` | the competent effect − the effect on the background programme, paired over variance clusters (pooled row only) |
 //! | `effect_competent_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
 //! | `effect_competent_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |
 //!
@@ -96,7 +93,7 @@
 //! exchangeable draws, and which one the data favour is itself of interest. Each
 //! estimand has its own weights. The weights read the estimates they average, so
 //! the average leans toward large z-scores; the verdict's comparison with the
-//! negative controls, averaged the same way, is what guards against that.
+//! negative control, averaged the same way, is what guards against that.
 //!
 //! **Threshold–response curve.** The headline τ is chosen per pair
 //! ([`super::dose::choose_threshold`]). Beside it, the competent effect
@@ -104,14 +101,6 @@
 //! ([`super::curve::curve_taus`]) with pointwise intervals and a simultaneous
 //! 95% band ([`super::curve::sup_t_crit`]): how the effect grows with dose, and
 //! whether the headline rests on one threshold.
-//!
-//! **Background programmes** ([`super::background::BackgroundPool`]): the
-//! pair's programme with every target swapped for a random gene of similar mean
-//! expression outside every programme and pair, same weights, drawn many times.
-//! They should show no effect; when they do, exposure moves generic expression
-//! (activation, depth, residual confounding), and the pair's own competent
-//! effect is a finding only where it stands out from them
-//! ([`super::averaging::background_comparison`]).
 //!
 //! **Reading an effect** ([`super::rows::Moments`]): θ is a difference in the signed
 //! mean `log1p` programme, read as a mean with SD (= SE) and 95% interval,
@@ -125,21 +114,18 @@
 
 use super::association::marginal_correlation;
 use super::averaging::combine;
-use super::background::BackgroundPool;
 use super::baselines::coexpression;
 use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, Rows};
-use super::inference::Estimate;
 use super::options::EffectOpts;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
 use super::thresholds::{aligned, over_thresholds, thresholds};
 use super::timing;
 use super::tissue::{Scope, Tissue};
-use legume_numeric::matrix::rand_util::{mix_seed, name_seed};
-use rayon::prelude::*;
+use legume_numeric::matrix::rand_util::mix_seed;
 
 /// A pair's raw data on the tissue's rows.
 pub struct PairData<'a> {
@@ -156,18 +142,17 @@ pub struct PairData<'a> {
 }
 
 /// Rows for the pooled tissue, each section and each named receiver cell
-/// type, with a background programme matched from `pool`. Verdicts and q-values
+/// type. Verdicts and q-values
 /// are left empty for [`super::report::report`], which needs every pair.
 ///
 /// With [`PairData::reweighted`], the two weightings of the programme are
-/// combined ([`super::thresholds::over_thresholds`]); the curve and the
-/// background describe the pair, not the weighting, and are read under
-/// `targets`. Counts, co-expression, the marginal correlation and the
-/// diagnostics read competence at the middle threshold of the grid.
-pub fn estimate_pair_with(
+/// combined ([`super::thresholds::over_thresholds`]); the curve
+/// describes the pair, not the weighting, and is read under `targets`.
+/// Counts, co-expression, the marginal correlation and the diagnostics read
+/// competence at the middle threshold of the grid.
+pub fn estimate_pair(
     tissue: &Tissue,
     pair: &PairData<'_>,
-    pool: &BackgroundPool<'_>,
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<EffectRow>> {
     let ex = timing::time(timing::FRAME, || {
@@ -177,19 +162,11 @@ pub fn estimate_pair_with(
     let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
-    let backgrounds = draw_backgrounds(tissue, pair, pool, opts);
-    let n_background_genes = backgrounds.first().map_or(0, Vec::len);
     let eff = over_thresholds(
         Rows::cells(tissue),
         &ex,
         &taus,
         &responses,
-        || {
-            backgrounds
-                .par_iter()
-                .map(|d| Response::build(tissue, d))
-                .collect()
-        },
         &comps,
         Sensitivity::ALL,
         opts,
@@ -208,8 +185,6 @@ pub fn estimate_pair_with(
         responses: &responses,
         log_dose: &log_dose,
         competent: &comps[comps.len() / 2],
-        background: (eff.background, eff.over_background),
-        n_background_genes,
     };
     let mut rows = Vec::with_capacity(tissue.scopes.len());
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
@@ -219,7 +194,7 @@ pub fn estimate_pair_with(
         } else {
             Vec::new()
         };
-        rows.push(reads.row(label, *scope, inside_rows, e, curve));
+        rows.push(reads.row(label, inside_rows, e, curve));
     }
     Ok(rows)
 }
@@ -239,25 +214,6 @@ fn pair_responses(tissue: &Tissue, pair: &PairData<'_>) -> Vec<Response> {
     }
 }
 
-/// One background programme: each gene's weight and counts.
-type BackgroundDraw<'p> = Vec<(f64, &'p [(u32, f32)])>;
-
-/// The pair's background programmes, seeded by the pair, so they don't depend
-/// on which other pairs run; a draw the pool cannot match is left out.
-fn draw_backgrounds<'p>(
-    tissue: &Tissue,
-    pair: &PairData<'_>,
-    pool: &BackgroundPool<'p>,
-    opts: &EffectOpts,
-) -> Vec<BackgroundDraw<'p>> {
-    let pair_seed = name_seed(opts.seed, &format!("{}\0{}", pair.ligand, pair.receptor));
-    let plan = BackgroundPool::plan(&tissue.size_factor, pair.targets);
-    (0..opts.background_draws)
-        .map(|k| pool.draw(&plan, mix_seed(pair_seed, k as u64)))
-        .filter(|d| !d.is_empty())
-        .collect()
-}
-
 /// What every scope's row reads of one pair.
 struct PairReads<'a> {
     tissue: &'a Tissue,
@@ -267,9 +223,6 @@ struct PairReads<'a> {
     log_dose: &'a [f64],
     /// Competence at the middle threshold of the grid.
     competent: &'a [bool],
-    /// The background effect and the effect over it, for the pooled row.
-    background: (Estimate, Estimate),
-    n_background_genes: usize,
 }
 
 impl PairReads<'_> {
@@ -277,7 +230,6 @@ impl PairReads<'_> {
     fn row(
         &self,
         label: &str,
-        scope: Scope,
         inside_rows: &[u32],
         e: ScopeEffects,
         curve: Vec<CurvePoint>,
@@ -300,7 +252,6 @@ impl PairReads<'_> {
                 .map(|r| marginal_correlation(&r.y, self.log_dose, &comp, &tissue.cf))
                 .collect::<Vec<_>>(),
         );
-        let pooled = scope == Scope::All;
         // How far neighbour identity explains the exposure, at the threshold
         // the average leans on.
         let eta2 = eta_squared(
@@ -308,11 +259,6 @@ impl PairReads<'_> {
             &indicator(&ex.leaned_on(e.abf)),
             inside_rows,
         );
-        let background = if pooled {
-            self.background
-        } else {
-            (Estimate::nan(0, 0), Estimate::nan(0, 0))
-        };
         EffectRow {
             section: label.into(),
             ligand: pair.ligand.into(),
@@ -327,13 +273,7 @@ impl PairReads<'_> {
             n_competent_bins: self.identity_bins(inside_rows, true),
             n_incompetent_bins: self.identity_bins(inside_rows, false),
             curve,
-            ..EffectRow::pending(
-                e,
-                (lor, lse),
-                eta2,
-                background,
-                if pooled { self.n_background_genes } else { 0 },
-            )
+            ..EffectRow::pending(e, (lor, lse), eta2)
         }
     }
 

@@ -35,18 +35,9 @@ pub struct EffectRow {
     /// many cell types each side of the contrast is made of.
     pub n_competent_bins: usize,
     pub n_incompetent_bins: usize,
-    /// The competent effect on the matched background programme (pooled row
-    /// only; NaN without a background), and the background's gene count.
-    pub background_effect: Estimate,
-    pub n_background_genes: usize,
-    /// The competent effect minus the background's (pooled row only; NaN
-    /// without a background).
-    pub effect_over_background: Estimate,
     /// The threshold–response curve (pooled row only; empty elsewhere).
     pub curve: Vec<CurvePoint>,
     // From here on filled in by `report`, once every pair is in.
-    /// BH q of the background effect, two-sided, within the section.
-    pub background_q: f64,
     /// Two-sided p of the headline (the competent effect) against the t reference with
     /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its BH q
     /// within the section.
@@ -56,17 +47,12 @@ pub struct EffectRow {
     /// and its BH q within the section.
     pub coexpr_p: f64,
     pub coexpr_q: f64,
-    /// BH q of the controls (incompetent effect, ring effect), two-sided,
-    /// within the section.
+    /// BH q of the incompetent effect, a control, two-sided, among the
+    /// significant effects.
     pub effect_incompetent_q: f64,
     /// BH q of the contrast between the effects in competent and in
     /// receptor-negative receivers, among the significant effects.
     pub effect_contrast_q: f64,
-    pub ring_effect_q: f64,
-    /// BH q of the competent effect over the ring effect and over the background's,
-    /// among the significant effects.
-    pub effect_over_ring_q: f64,
-    pub effect_over_background_q: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
     /// BH q over ligands of the Simes p of each ligand's pairs.
@@ -79,15 +65,13 @@ pub struct EffectRow {
 
 impl EffectRow {
     /// A row holding what [`super::report::report`] reads for its verdict, the
-    /// rest blank: the estimands, co-expression, the exposure's identity share
-    /// and the background. `lra-simulate` judges its runs by the rule `lra`
+    /// rest blank: the estimands, co-expression and the exposure's identity
+    /// share. `lra-simulate` judges its runs by the rule `lra`
     /// uses through this.
     pub fn pending(
         effects: ScopeEffects,
         (coexpr_log_or, coexpr_se): (f64, f64),
         exposure_eta2: f64,
-        (background_effect, effect_over_background): (Estimate, Estimate),
-        n_background_genes: usize,
     ) -> Self {
         Self {
             section: ALL_SECTIONS.into(),
@@ -106,20 +90,13 @@ impl EffectRow {
             exposure_eta2,
             n_competent_bins: 0,
             n_incompetent_bins: 0,
-            background_effect,
-            n_background_genes,
-            effect_over_background,
             curve: Vec::new(),
-            background_q: f64::NAN,
             effect_p: f64::NAN,
             effect_q: f64::NAN,
             coexpr_p: f64::NAN,
             coexpr_q: f64::NAN,
             effect_incompetent_q: f64::NAN,
             effect_contrast_q: f64::NAN,
-            ring_effect_q: f64::NAN,
-            effect_over_ring_q: f64::NAN,
-            effect_over_background_q: f64::NAN,
             n_pairs_same_ligand: 0,
             ligand_q: f64::NAN,
             verdict: Verdict::InsufficientData,

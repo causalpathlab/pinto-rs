@@ -12,7 +12,6 @@ pub struct Exposure {
     /// The exposure threshold used.
     pub tau: f64,
     pub t: Vec<bool>,
-    pub t_ring: Vec<bool>,
     /// `log1p` of the receiver's own ligand / size factor.
     pub own: Vec<f64>,
     /// `log1p` of the mean ligand / size factor over second-order
@@ -21,25 +20,19 @@ pub struct Exposure {
     /// Ligand / size factor summed over each row's contacts, which the
     /// threshold is read from.
     pub dose: Vec<f64>,
-    /// The same over its distant ring. The ring holds as many partners as
-    /// there are contacts, so the same τ means the same dose.
-    pub ring_dose: Vec<f64>,
 }
 
 impl Exposure {
     /// The exposure side from the ligand counts the estimator sees.
     pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> Self {
         let (lnorm, dose) = contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
-        let ring_dose = tissue.ring_sum(&lnorm);
         let tau = choose_threshold(&dose, opts);
         Self {
             tau,
             t: exposed(&dose, tau),
-            t_ring: exposed(&ring_dose, tau),
             own: lnorm.iter().map(|v| v.ln_1p()).collect(),
             niche: niche_ligand(tissue, &lnorm),
             dose,
-            ring_dose,
         }
     }
 
@@ -57,11 +50,9 @@ impl Exposure {
         Self {
             tau,
             t: exposed(&self.dose, tau),
-            t_ring: exposed(&self.ring_dose, tau),
             own: self.own.clone(),
             niche: self.niche.clone(),
             dose: self.dose.clone(),
-            ring_dose: self.ring_dose.clone(),
         }
     }
 }

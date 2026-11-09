@@ -8,7 +8,7 @@ use rayon::prelude::*;
 pub type Targets<'a> = [(f64, &'a [(u32, f32)])];
 
 /// The response side of a pair's per-row quantities: rebuilt for each
-/// programme (each weighting, the background).
+/// programme weighting.
 pub struct Response {
     pub y: Vec<f64>,
     /// The contact-neighbour mean response, standardized.

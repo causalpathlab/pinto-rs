@@ -4,12 +4,13 @@
 //! identity step is not. The nested designs share the full matrix.
 
 use super::{estimate_pair, overlap_terms};
-use crate::lr_activity::ligand_effect::confounders::{depth_basis, DEPTH_COLS};
+use crate::lr_activity::ligand_effect::confounders::{depth_basis, freq_per_section, DEPTH_COLS};
 use crate::lr_activity::ligand_effect::crossfit::Design;
 use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::*;
+use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts, STEP_NAMES};
 use crate::util::common::Mat;
 use nalgebra::DMatrix;
@@ -33,6 +34,21 @@ struct World {
 /// The identity projection is pure noise; type enters only through
 /// `cell_type`.
 fn world(seed: u64) -> World {
+    world_confounded_by(Confounder::Receiver, seed)
+}
+
+/// Whose cell type drives the response.
+#[derive(Clone, Copy, PartialEq)]
+enum Confounder {
+    /// The receiver's own, in clumps ([`world`]).
+    Receiver,
+    /// The neighbours': type is drawn cell by cell, type 1 makes the ligand,
+    /// and a receiver responds by the share of type 1 among its contacts,
+    /// whatever its own type.
+    Sender,
+}
+
+fn world_confounded_by(kind: Confounder, seed: u64) -> World {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n = SIDE * SIDE;
     let half = SIDE / 2;
@@ -57,8 +73,19 @@ fn world(seed: u64) -> World {
         .map(|_| (rng.random::<f64>() < 0.5) as u32)
         .collect();
     let ty: Vec<u32> = (0..n)
-        .map(|i| clump_type[(i / SIDE / 2) * clumps + (i % SIDE) / 2])
+        .map(|i| match kind {
+            Confounder::Receiver => clump_type[(i / SIDE / 2) * clumps + (i % SIDE) / 2],
+            Confounder::Sender => (rng.random::<f64>() < 0.5) as u32,
+        })
         .collect();
+    // Share of type 1 among each cell's contacts.
+    let mut near = vec![(0.0f64, 0.0f64); n];
+    for &(i, j) in &pairs {
+        for (a, b) in [(i, j), (j, i)] {
+            near[a].0 += ty[b] as f64;
+            near[a].1 += 1.0;
+        }
+    }
     let identity = Mat::from_fn(4, n, |_, _| {
         let e: f64 = StandardNormal.sample(&mut rng);
         e as f32
@@ -105,7 +132,11 @@ fn world(seed: u64) -> World {
         .filter_map(|(i, &t)| {
             // Overdispersed, so a neighbour mean (the spillover column) is
             // a poor proxy for a receiver's type.
-            let mean = if t == 1 { 6.0 } else { 1.5 };
+            let mean = match kind {
+                Confounder::Receiver if t == 1 => 6.0,
+                Confounder::Receiver => 1.5,
+                Confounder::Sender => 1.5 + 4.5 * near[i].0 / near[i].1,
+            };
             let rate: f64 = Gamma::new(1.0, mean).unwrap().sample(&mut rng);
             let x = Poisson::new(rate.max(1e-9)).unwrap().sample(&mut rng) as f32;
             (x > 0.0).then_some((i as u32, x))
@@ -119,11 +150,10 @@ fn world(seed: u64) -> World {
     }
 }
 
-#[test]
-fn cell_type_confounding_is_removed_by_the_identity_step() {
-    let w = world(7);
+/// The pooled row of a world's one pair.
+fn pooled_effects(w: &World) -> Vec<EffectRow> {
     let targets = [(1.0, w.response.as_slice())];
-    let rows = estimate_pair(
+    estimate_pair(
         &w.tissue,
         &PairData {
             ligand: "L",
@@ -141,7 +171,35 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
             ..EffectOpts::default()
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// The crude contrast of the pooled row shows an effect where none is
+/// planted, and the full adjustment removes it.
+fn assert_fooled_then_adjusted(rows: &[EffectRow]) {
+    let (crude, full) = (rows[0].effects.crude, rows[0].effects.competent);
+    let report = format!(
+        "crude {:.3}, full {:.3} ± {:.3}",
+        crude.theta, full.theta, full.se
+    );
+    assert!(crude.theta > 0.1, "crude contrast not fooled: {report}");
+    assert!(full.z().abs() < 3.0, "still biased: {report}");
+    assert!(full.theta.abs() < 0.25 * crude.theta, "{report}");
+}
+
+/// Sender cell type is a measured confounder: where the neighbours' type
+/// drives both the exposure and the response, and the receiver's own type
+/// and the identity projection say nothing of it, the neighbours' type
+/// shares in the design remove what the crude contrast shows.
+#[test]
+fn sender_cell_type_confounding_is_removed() {
+    let w = world_confounded_by(Confounder::Sender, 11);
+    assert_fooled_then_adjusted(&pooled_effects(&w));
+}
+
+#[test]
+fn cell_type_confounding_is_removed_by_the_identity_step() {
+    let rows = pooled_effects(&world(7));
     assert_eq!(rows.len(), 3, "pooled plus two sections");
     let pooled = &rows[0];
     let steps = [
@@ -183,6 +241,96 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
     }
 }
 
+/// Two sections on the same coordinates (each slide has its own frame), with
+/// opposite smooth fields that raise both the ligand and the response; the
+/// ligand does nothing.
+fn opposite_fields_world(seed: u64) -> World {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let side = 44;
+    let per = side * side;
+    let n = 2 * per;
+    let at = |i: usize| ((i % per) % side, (i % per) / side);
+    let coords: Vec<Option<(f32, f32)>> = (0..n)
+        .map(|i| Some((at(i).0 as f32 * 10.0, at(i).1 as f32 * 10.0)))
+        .collect();
+    let section: Vec<Box<str>> = (0..n)
+        .map(|i| if i < per { "a" } else { "b" }.into())
+        .collect();
+    let mut pairs = Vec::new();
+    for i in 0..n {
+        let (x, y) = at(i);
+        if x + 1 < side {
+            pairs.push((i, i + 1));
+        }
+        if y + 1 < side {
+            pairs.push((i, i + side));
+        }
+    }
+    let field: Vec<f64> = (0..n)
+        .map(|i| {
+            let wave = (std::f64::consts::TAU * at(i).0 as f64 / side as f64).sin();
+            if i < per {
+                wave
+            } else {
+                -wave
+            }
+        })
+        .collect();
+    let identity = Mat::from_fn(4, n, |_, _| {
+        let e: f64 = StandardNormal.sample(&mut rng);
+        e as f32
+    });
+    let identity_bin: Vec<usize> = (0..n).map(|i| (i % 3 == 0) as usize).collect();
+    let receptor: Vec<f64> = identity_bin
+        .iter()
+        .map(|&b| (b == 0) as u8 as f64)
+        .collect();
+    let log1p_depth = vec![(500.0f32).ln_1p(); n];
+    let tissue = Tissue::build(
+        &TissueInputs {
+            coords: &coords,
+            section: &section,
+            pairs: &pairs,
+            identity: &identity,
+            identity_bin: &identity_bin,
+            log1p_depth: &log1p_depth,
+            cell_type: None,
+        },
+        &TissueOpts {
+            folds: 4,
+            tile: 6.0,
+            ..TissueOpts::default()
+        },
+    )
+    .unwrap();
+    let ligand: Vec<f64> = field
+        .iter()
+        .map(|&f| (rng.random::<f64>() < 0.05 + 0.15 * (f + 1.0)) as u8 as f64 * 3.0)
+        .collect();
+    let response: Vec<(u32, f32)> = field
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &f)| {
+            let rate: f64 = Gamma::new(1.0, 3.0 * f.exp()).unwrap().sample(&mut rng);
+            let x = Poisson::new(rate.max(1e-9)).unwrap().sample(&mut rng) as f32;
+            (x > 0.0).then_some((i as u32, x))
+        })
+        .collect();
+    World {
+        tissue,
+        ligand,
+        receptor,
+        response,
+    }
+}
+
+/// Each section has its own smooth field: one shared across sections that
+/// overlap in coordinates would fit their average and leave the rest.
+#[test]
+fn a_smooth_field_is_adjusted_for_within_each_section() {
+    assert_fooled_then_adjusted(&pooled_effects(&opposite_fields_world(13)));
+}
+
 /// The steps are nested column prefixes of the one matrix: each view
 /// borrows `design.x` (no other `n × p` matrix exists; a step owns only its
 /// `p × p` Grams), and the cell-type columns sit inside the identity step.
@@ -191,11 +339,13 @@ fn steps_are_nested_prefixes_of_one_matrix() {
     let w = world(3);
     let t = &w.tissue;
     let o = TissueOpts::default();
-    // Intercept and one section indicator; then the smooths; then receiver
-    // and neighbour identity (4 + 4) and one cell-type indicator; depth last.
+    // Intercept and one section indicator; then each section's smooths,
+    // the two sharing the frequencies of one; then receiver and neighbour
+    // identity (4 + 4), one cell-type indicator and the neighbours' share
+    // of that type; depth last.
     let section = 2;
-    let spatial = section + o.scales.len() * o.n_freq;
-    let identity = spatial + 4 + 4 + 1;
+    let spatial = section + o.scales.len() * 2 * freq_per_section(o.n_freq, 2);
+    let identity = spatial + 4 + 4 + 1 + 1;
     let widths: Vec<usize> = t.steps.iter().map(|s| s.design.p()).collect();
     assert_eq!(widths, [section, spatial, identity]);
     assert_eq!(t.design.p(), identity + DEPTH_COLS);

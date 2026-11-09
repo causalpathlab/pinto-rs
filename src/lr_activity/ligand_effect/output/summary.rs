@@ -168,16 +168,14 @@ fn reject_share(g: &[&SimRow], e: fn(&SimRow) -> Estimate) -> String {
     share(&v)
 }
 
-/// A scenario's title line: runs, misclassified exposure, and the controls'
+/// A scenario's title line: runs, misclassified exposure, the no-spill fit's
 /// rejection and the verdict.
 fn scenario_title(key: &str, g: &[&SimRow]) -> String {
     let miscl = g.iter().map(|r| r.misclassified).sum::<f64>() / g.len() as f64;
     format!(
-        "{key}: {} runs, misclassified exposure {miscl:.2}, ring reject {}, no-spill reject {}, background reject {}, verdict survived {}\n",
+        "{key}: {} runs, misclassified exposure {miscl:.2}, no-spill reject {}, verdict survived {}\n",
         g.len(),
-        reject_share(g, |r| r.ring),
         reject_share(g, |r| r.no_spill),
-        reject_share(g, |r| r.background),
         share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
     )
 }
@@ -234,8 +232,8 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
     )
 }
 
-/// Per scenario: a title line (runs, misclassified exposure, ring and
-/// no-spill rejection), then one line each for the estimate, the crude
+/// Per scenario: a title line (runs, misclassified exposure, no-spill
+/// rejection, verdict survival), then one line each for the estimate, the crude
 /// contrast and the partial adjustments, with estimable share, bias and
 /// coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison

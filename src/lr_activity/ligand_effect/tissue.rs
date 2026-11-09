@@ -1,18 +1,18 @@
 //! The tissue as every ligand-receptor pair sees it, built once per run:
 //! which cells are receivers, who touches whom (and whom their contacts
 //! touch), the confounder matrix with its cross-fitting folds, size
-//! factors, identity bins and the distant ring partners of the negative
-//! control.
+//! factors and identity bins.
 //!
 //! Besides the full design it keeps the nested designs of the sequential
 //! adjustment, which show how much of an apparent effect each confounder
 //! group explains: (a) section, (b) + spatial smooth, (c) + cell identity
-//! (receiver and neighbour identity, and cell type when given); the full
-//! design adds depth. Each is a column prefix of the one standardized
+//! (receiver and neighbour identity, and when cell types are given the
+//! receiver's type and the share of each type among its neighbours); the
+//! full design adds depth. Each is a column prefix of the one standardized
 //! matrix and owns only its small per-fold Grams.
 
 use super::confounders::{self, ConfounderInputs, Group};
-use super::contacts::{median_contact_length, ring_partners, Contacts};
+use super::contacts::{median_contact_length, Contacts};
 use super::crossfit::{CrossFit, Design, DesignPrefix};
 use super::folds::spatial_folds;
 use super::receivers::{receiver_contacts, size_factors};
@@ -44,8 +44,6 @@ pub struct TissueOpts {
     /// Tile width for folds and clusters, in contact lengths.
     pub tile: f64,
     pub folds: usize,
-    /// Ring of the negative control, in contact lengths.
-    pub ring: (f64, f64),
     pub seed: u64,
 }
 
@@ -56,7 +54,6 @@ impl Default for TissueOpts {
             n_freq: 64,
             tile: 25.0,
             folds: 5,
-            ring: (15.0, 30.0),
             seed: 42,
         }
     }
@@ -74,7 +71,6 @@ pub struct Tissue {
     /// Second-order neighbours: contacts of contacts that are neither the
     /// row nor one of its own contacts.
     pub second: Vec<Vec<u32>>,
-    pub ring: Vec<Vec<u32>>,
     pub cf: CrossFit,
     pub design: Design,
     /// Nested adjustment steps, coarsest first, all short of the full
@@ -120,8 +116,13 @@ fn step_widths(groups: &[Group]) -> [usize; 3] {
     };
     let section = end_of(&|g| g == "intercept" || g == "section");
     let spatial = end_of(&|g| g.starts_with("smooth@")).max(section);
-    let identity =
-        end_of(&|g| matches!(g, "identity" | "neighbour identity" | "cell type")).max(spatial);
+    let identity = end_of(&|g| {
+        matches!(
+            g,
+            "identity" | "neighbour identity" | "cell type" | "neighbour cell type"
+        )
+    })
+    .max(spatial);
     [section, spatial, identity]
 }
 
@@ -258,30 +259,6 @@ impl Tissue {
             design.p()
         );
 
-        let ring = ring_partners(
-            &coords,
-            &section,
-            &unit,
-            &contacts,
-            opts.ring.0,
-            opts.ring.1,
-            opts.seed,
-        );
-        let short = ring
-            .iter()
-            .enumerate()
-            .filter(|(i, r)| r.len() < contacts.degree(*i))
-            .count();
-        if short > 0 {
-            info!(
-                "{short} of {} receivers have fewer ring partners than contacts \
-                 (sparse tissue {}–{} contact lengths away)",
-                cell.len(),
-                opts.ring.0,
-                opts.ring.1
-            );
-        }
-
         let neighbour_bin = dominant_neighbour_bin(&contacts, &identity_bin);
         let mut tissue = Self {
             cell,
@@ -291,7 +268,6 @@ impl Tissue {
             unit,
             contacts,
             second,
-            ring,
             cf,
             design,
             steps,
@@ -361,14 +337,6 @@ impl Tissue {
                     r.iter().map(|&j| v[j as usize]).sum::<f64>() / r.len() as f64
                 }
             })
-            .collect()
-    }
-
-    /// Sum of `v` over each row's ring partners.
-    pub fn ring_sum(&self, v: &[f64]) -> Vec<f64> {
-        self.ring
-            .par_iter()
-            .map(|r| r.iter().map(|&j| v[j as usize]).sum())
             .collect()
     }
 }

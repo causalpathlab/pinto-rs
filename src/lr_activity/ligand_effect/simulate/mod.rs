@@ -53,9 +53,8 @@
 //!    and neighbours' identities are correlated.
 //! 4. **Truths**, two of them, on the scale the response lives on, as measured
 //!    (with spillover's bleed, below). `truth` is what the estimate targets: the
-//!    realized effect `T* (y(1) − y(0))`, at the realized ring exposure,
-//!    contrasted between the arms the estimator sees under its arm weights at
-//!    each threshold, then averaged over thresholds by the estimate's own
+//!    realized effect `T* (y(1) − y(0))`, contrasted between the arms the
+//!    estimator sees under its arm weights at each threshold, then averaged over thresholds by the estimate's own
 //!    weights. Misclassified exposure is thus part of the target, so coverage
 //!    tests the estimator alone. `truth_exposed` is the mean effect among the
 //!    truly exposed competent receivers, without the estimator; `estimate` far
@@ -91,7 +90,7 @@
 //! Every run also scores the co-expression baselines of
 //! [`super::baselines`] on the ligand and receptor the estimator sees.
 //!
-//! Three departures, each off by default:
+//! Two departures, each off by default:
 //!
 //! - **Spillover** κ: segmentation hands each receiver a share κ of every
 //!   contact neighbour's programme counts, and of their ligand counts in
@@ -102,9 +101,6 @@
 //!   unbled truth would charge that compression to the estimator). The
 //!   neighbour-response and bleed covariates are what should absorb it,
 //!   and a fit without them is reported beside.
-//! - **Reach** `θ_ring`: a second effect from ring partners (`T*_ring`).
-//!   At 0 the effect is contact-only and the ring estimate should sit at
-//!   0; its truth is the same sample average contrast, in `T*_ring`.
 //! - **Shift**: the estimator sees the detected ligand field displaced by
 //!   a few contact lengths (each cell reads the cell nearest its point plus
 //!   the offset, in its own section). Receivers still respond to the

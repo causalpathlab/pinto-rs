@@ -1,6 +1,6 @@
-//! The pair columns aimed at segmentation bleed and at a fine niche, the
-//! ring bounds, the t reference after Rubin's rules, and the simulator's
-//! truth on the measured scale under spillover.
+//! The pair columns aimed at segmentation bleed and at a fine niche, the t
+//! reference after Rubin's rules, and the simulator's truth on the measured
+//! scale under spillover.
 
 use super::run_sim;
 use super::simulate::{base, fixture, opts};

@@ -3,30 +3,28 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const STAGES: [&str; 9] = [
+const STAGES: [&str; 8] = [
     "frame",
-    "main+ring fits",
+    "main fits",
     "no-spill fit",
     "step fits",
     "other thresholds",
-    "background fit",
     "band",
     "(in fits: outcome ridge",
     "propensity)",
 ];
-pub const RIDGE: usize = 7;
-pub const LOGISTIC: usize = 8;
+pub const RIDGE: usize = 6;
+pub const LOGISTIC: usize = 7;
 pub const FRAME: usize = 0;
 pub const MAIN: usize = 1;
 pub const NOSPILL: usize = 2;
 pub const STEPS: usize = 3;
 pub const THRESHOLDS: usize = 4;
-pub const BACKGROUND: usize = 5;
-pub const BAND: usize = 6;
+pub const BAND: usize = 5;
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);
-static NS: [AtomicU64; 9] = [ZERO; 9];
+static NS: [AtomicU64; 8] = [ZERO; 8];
 static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
 static PROPENSITY_FITS: AtomicU64 = AtomicU64::new(0);
 static HESSIANS: AtomicU64 = AtomicU64::new(0);

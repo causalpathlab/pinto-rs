@@ -100,12 +100,10 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains(WARNING), "{all}");
     assert!(flat.contains("weighs τ 2 most (80%)"), "{all}");
-    // The effect against each control, signed: a small q can mean it
-    // falls short of one, as here of the ring.
+    // The effect against the control, signed: a small q can mean it
+    // falls short of it, as here of the receptor-negative receivers.
     assert!(
-        flat.contains(
-            "effect − control: receptor− +11% q 0.500 · ring -4.9% q 0.010 · background —"
-        ),
+        flat.contains("effect − control: receptor− -4.9% q 0.010") && !flat.contains("background"),
         "{all}"
     );
     let (level, style) = app.drawn();

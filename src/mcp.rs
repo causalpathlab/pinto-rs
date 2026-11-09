@@ -34,7 +34,7 @@ Ligand-receptor analysis: `run_lra` on a run asks, per ligand-receptor pair, \
 whether receivers touching ligand-carrying neighbours change their response \
 programme compared with similar cells that do not (adjusted for region, \
 section, cell identity, neighbour make-up, depth and segmentation bleed, with \
-negative controls); `run_lra_simulate` plants effects of known size on the \
+a negative control); `run_lra_simulate` plants effects of known size on the \
 same tissue and reports, per scenario, power and type I error beside the \
 co-expression baselines (`example_study: true` returns the study it takes). \
 Run lra-simulate to check power and calibration before trusting lra on a new \

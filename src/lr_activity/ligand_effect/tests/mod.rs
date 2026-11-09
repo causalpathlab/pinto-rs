@@ -16,11 +16,10 @@ mod targets;
 
 // * Shared helpers
 
-use super::background::BackgroundPool;
 use super::crossfit::{CrossFit, DesignView};
 use super::dose::Exposure;
 use super::effects::{effects_on, Effects, Sensitivity};
-use super::estimate::{estimate_pair_with, PairData};
+use super::estimate::estimate_pair;
 use super::fits::{Rows, ThresholdFits};
 use super::options::EffectOpts;
 use super::overlap::{
@@ -28,18 +27,8 @@ use super::overlap::{
 };
 use super::regression::standardize;
 use super::response::Response;
-use super::rows::EffectRow;
 use super::simulate::{calibrate_producers, Scenario, SimBase, SimRow, SimShared};
 use super::tissue::Tissue;
-
-/// One pair's rows without a background.
-pub(super) fn estimate_pair(
-    tissue: &Tissue,
-    pair: &PairData<'_>,
-    opts: &EffectOpts,
-) -> anyhow::Result<Vec<EffectRow>> {
-    estimate_pair_with(tissue, pair, &BackgroundPool::default(), opts)
-}
 
 /// [`crate::lr_activity::ligand_effect::effects::effects_on`] with the
 /// threshold's propensities fitted for it.
@@ -51,13 +40,9 @@ pub(super) fn fitted_effects(
     sens: Sensitivity,
     opts: &EffectOpts,
 ) -> anyhow::Result<Effects> {
-    let mut starts = crate::lr_activity::ligand_effect::fits::Starts::default();
-    let fits = ThresholdFits::new(rows, x, levels, opts, &mut starts.main)?.with_controls(
-        rows,
-        sens.steps,
-        opts,
-        &mut starts,
-    )?;
+    let mut starts = Default::default();
+    let fits = ThresholdFits::new(rows, x, levels, opts, &mut starts)?
+        .with_steps(rows, sens.steps, opts, &starts)?;
     effects_on(rows, &fits, r, sens, opts)
 }
 

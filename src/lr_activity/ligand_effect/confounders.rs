@@ -3,10 +3,11 @@
 //! | Columns | Stands for |
 //! |---|---|
 //! | intercept, section indicators | batch, donor |
-//! | random Fourier features of the coordinates | region, microenvironment: smooth fields |
+//! | random Fourier features of the coordinates, per section | region: smooth fields |
 //! | receiver identity (random projection) | cell type and state |
 //! | contact-neighbour mean identity | neighbour composition |
 //! | cell-type indicators (optional) | annotated cell type |
+//! | share of each cell type among contacts (optional) | annotated sender cell type |
 //! | receiver log depth (piecewise linear), neighbour mean log depth | detection |
 //!
 //! The smooth fields stand in for unmeasured regional confounders because
@@ -15,9 +16,12 @@
 //! Their length scales are therefore set well above one contact length;
 //! a smooth at contact scale would absorb the exposure itself. Composition,
 //! identity and depth vary at the fine scale, so they are measured
-//! directly instead. Link communities are deliberately absent: they are
-//! built from expression that includes the ligand and the targets, so
-//! conditioning on them could open a collider path.
+//! directly instead. Sections do not share a coordinate frame, so each has
+//! smooth columns of its own, and the sections split the frequencies of one
+//! ([`freq_per_section`]) so the matrix does not widen with them. Link
+//! communities are deliberately absent: they are built from expression that
+//! includes the ligand and the targets, so conditioning on them could open a
+//! collider path.
 //!
 //! The identity projection is computed with ligand, receptor and target
 //! genes weighted out, so a receiver's identity is not partly its outcome.
@@ -37,8 +41,8 @@ use rand_distr::{Distribution, StandardNormal, Uniform};
 
 /// Random Fourier features approximating a squared-exponential field of
 /// length `scale × unit[section]`: `√2 cos(ω·s / ℓ + b)`, with `ω` standard
-/// normal and `b` uniform on `[0, 2π)`. Frequencies are shared across
-/// sections, scaled by each section's unit.
+/// normal and `b` uniform on `[0, 2π)`. A feature runs over every section,
+/// scaled by each section's unit; [`build`] keeps it within one at a time.
 pub fn fourier_features(
     coords: &[(f32, f32)],
     section: &[u32],
@@ -73,6 +77,18 @@ pub fn fourier_features(
         .collect()
 }
 
+/// The fewest frequencies a section's smooth field is given.
+const MIN_SECTION_FREQ: usize = 16;
+
+/// Frequencies of each section's smooth field at one scale: `n_freq` split
+/// across the sections, so the columns stay near `n_freq` per scale, and at
+/// least [`MIN_SECTION_FREQ`] (or `n_freq`, if smaller) each.
+pub fn freq_per_section(n_freq: usize, n_sections: usize) -> usize {
+    (n_freq / n_sections.max(1))
+        .max(MIN_SECTION_FREQ)
+        .min(n_freq)
+}
+
 pub struct ConfounderInputs<'a> {
     pub coords: &'a [(f32, f32)],
     pub section: &'a [u32],
@@ -84,7 +100,8 @@ pub struct ConfounderInputs<'a> {
     pub identity: &'a nalgebra::DMatrix<f32>,
     pub log_depth: &'a [f64],
     /// Optional cell-type code per row; one-hot columns (first level
-    /// dropped) join the identity block.
+    /// dropped) and the share of each of those types among the row's
+    /// contacts join the identity block.
     pub cell_type: Option<&'a [u32]>,
     /// Smooth length scales in contact lengths.
     pub scales: &'a [f64],
@@ -112,7 +129,14 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         l
     });
     let n_type_cols = levels.len().saturating_sub(1);
-    let p = 1 + n_section_cols + inp.scales.len() * inp.n_freq + 2 * k + n_type_cols + DEPTH_COLS;
+    let n_fields = inp.n_sections.max(1);
+    let n_freq = freq_per_section(inp.n_freq, n_fields);
+    let p = 1
+        + n_section_cols
+        + inp.scales.len() * n_fields * n_freq
+        + 2 * k
+        + 2 * n_type_cols
+        + DEPTH_COLS;
     // Filled column by column, so the only full-size allocation is the
     // matrix itself.
     let mut x = DMatrix::<f32>::zeros(n, p);
@@ -150,13 +174,21 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
             inp.section,
             inp.unit,
             scale,
-            inp.n_freq,
+            n_freq,
             mix_seed(inp.seed, si as u64),
         );
-        for col in &f {
-            put(&mut x, col);
+        // A field of its own per section: each feature is kept within one
+        // section and is zero, before standardizing, in the others.
+        let mut within = vec![0.0; n];
+        for field in 0..n_fields as u32 {
+            for col in &f {
+                for ((w, &v), &s) in within.iter_mut().zip(col).zip(inp.section) {
+                    *w = if s == field { v } else { 0.0 };
+                }
+                put(&mut x, &within);
+            }
         }
-        close(&mut groups, format!("smooth@{scale}"), f.len());
+        close(&mut groups, format!("smooth@{scale}"), n_fields * n_freq);
     }
 
     for r in 0..k {
@@ -171,11 +203,18 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
     close(&mut groups, "neighbour identity".into(), k);
 
     if let Some(ct) = inp.cell_type {
-        for &level in levels.iter().skip(1) {
-            let col: Vec<f64> = ct.iter().map(|&c| (c == level) as u8 as f64).collect();
-            put(&mut x, &col);
+        // The receiver's type, then the senders': the share of each type
+        // among its contacts.
+        let is =
+            |level: u32| -> Vec<f64> { ct.iter().map(|&c| (c == level) as u8 as f64).collect() };
+        for &level in &levels[1..] {
+            put(&mut x, &is(level));
         }
         close(&mut groups, "cell type".into(), n_type_cols);
+        for &level in &levels[1..] {
+            put(&mut x, &inp.contacts.mean(&is(level)));
+        }
+        close(&mut groups, "neighbour cell type".into(), n_type_cols);
     }
 
     for col in depth_basis(inp.log_depth) {
