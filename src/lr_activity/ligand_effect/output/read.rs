@@ -184,19 +184,18 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 }
 
 /// The number columns every `{out}.lra-simulate.parquet` has.
-const SIM_NUMBERS: [&str; 12] = {
+const SIM_NUMBERS: [&str; 11] = {
     use sim_cols::*;
     [
-        PLANTED_EFFECT,
+        EFFECT_PVE,
         RING_EFFECT,
-        CONFOUND_LIGAND,
-        CONFOUND_RESPONSE,
+        LIGAND_FIELD_PVE,
+        RESPONSE_FIELD_PVE,
         SCALE,
         HETEROGENEOUS,
         MARKER,
         SPILLOVER,
         SHIFT,
-        CONFOUND_RECEPTOR,
         REP,
         ESTIMABLE,
     ]
@@ -238,12 +237,16 @@ struct SimTable<'p> {
 impl<'p> SimTable<'p> {
     fn read(path: &'p str) -> anyhow::Result<Self> {
         use sim_cols::*;
+        let later = |name: &str| later_column(path, name);
+        anyhow::ensure!(
+            later(EFFECT_PVE).is_some() || later("planted_effect").is_none(),
+            "{path} is from before effect sizes were set by PVE: run lra-simulate again"
+        );
         let (strings, numbers) = legume_numeric::matrix::parquet::read_table_columns(
             path,
             &[CONFOUNDER, SHAPE],
             &SIM_NUMBERS,
         )?;
-        let later = |name: &str| later_column(path, name);
         Ok(Self {
             path,
             strings,
@@ -284,10 +287,10 @@ impl<'p> SimTable<'p> {
             .parse()
             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
         Ok(Scenario {
-            effect: self.num(PLANTED_EFFECT, i),
+            effect_pve: self.num(EFFECT_PVE, i),
             ring_effect: self.num(RING_EFFECT, i),
-            confound_ligand: self.num(CONFOUND_LIGAND, i),
-            confound_response: self.num(CONFOUND_RESPONSE, i),
+            ligand_field_pve: self.num(LIGAND_FIELD_PVE, i),
+            response_field_pve: self.num(RESPONSE_FIELD_PVE, i),
             scale: self.num(SCALE, i),
             confounder,
             shape,
@@ -295,7 +298,6 @@ impl<'p> SimTable<'p> {
             marker: self.flag(MARKER, i),
             spillover: self.num(SPILLOVER, i),
             shift: self.num(SHIFT, i),
-            confound_receptor: self.flag(CONFOUND_RECEPTOR, i),
             rep: self.col(REP)[i] as usize,
             background_confounding: later_value(
                 &self.background_confounding,

@@ -37,10 +37,12 @@ impl Progress {
         let total = self.bar.length().unwrap_or(done).max(1);
         if self.bar.is_hidden() && done * 20 / total > (done - 1) * 20 / total {
             // Not through the log, whose default level would hide it.
+            let elapsed = self.bar.elapsed().as_secs_f64();
+            // The rate so far, which for runs of like cost is the honest guess.
+            let left = elapsed * (total - done) as f64 / done as f64;
             eprintln!(
-                "{done}/{total} {} ({:.0}s)",
+                "{done}/{total} {} ({elapsed:.0}s, about {left:.0}s left)",
                 self.bar.message(),
-                self.bar.elapsed().as_secs_f64()
             );
         }
     }

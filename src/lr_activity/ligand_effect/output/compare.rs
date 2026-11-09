@@ -67,7 +67,7 @@ pub fn compare_runs(runs: &[SimRun]) -> Comparison {
         }
         if !null {
             planted.push(rates);
-        } else if s.confound_ligand != 0.0 || s.confound_response != 0.0 {
+        } else if s.ligand_field_pve != 0.0 || s.response_field_pve != 0.0 {
             nulls.push(rates);
         }
         scenarios.push(ScenarioRates {
@@ -154,12 +154,12 @@ pub fn comparison(rows: &[SimRow]) -> String {
 
 /// A scenario in words, without its replicate: the summary's grouping key.
 fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String {
-    let mut d = format!("θ={:.2}", s.effect);
-    if s.confound_ligand != 0.0 || s.confound_response != 0.0 {
+    let mut d = format!("effect PVE={}", s.effect_pve);
+    if s.ligand_field_pve != 0.0 || s.response_field_pve != 0.0 {
         d += &format!(
-            " α={} β={} {}/{}@{}",
-            s.confound_ligand,
-            s.confound_response,
+            " field PVE ligand={} response={} {}/{}@{}",
+            s.ligand_field_pve,
+            s.response_field_pve,
             s.confounder.label(),
             s.shape.label(),
             s.scale
@@ -213,5 +213,5 @@ pub(super) fn scenario_groups<T>(
 /// A null scenario: nothing planted, or the seen field shifted away from
 /// the one receivers respond to.
 pub(super) fn is_null(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> bool {
-    s.effect == 0.0 || s.shift > 0.0
+    s.effect_pve == 0.0 || s.shift > 0.0
 }

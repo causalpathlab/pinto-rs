@@ -85,7 +85,6 @@ fn confounding_fools_the_crude_contrast_not_the_estimate() {
             t: &t,
             y: &y,
             extra: &[],
-            outcome_only: &[],
             modifiers: &[],
         },
         &NuisanceOpts::default(),
@@ -116,7 +115,6 @@ fn a_planted_effect_is_recovered() {
             t: &t,
             y: &y,
             extra: &[],
-            outcome_only: &[],
             modifiers: &[],
         },
         &NuisanceOpts::default(),
@@ -144,7 +142,6 @@ fn subgroups_and_their_difference() {
             t: &t,
             y: &y,
             extra: &[&w.c],
-            outcome_only: &[],
             modifiers: &[&w.c],
         },
         &NuisanceOpts::default(),
@@ -188,7 +185,6 @@ fn nearly_determined_exposure_stays_finite() {
             t: &t,
             y: &y,
             extra: &[],
-            outcome_only: &[],
             modifiers: &[],
         },
         &NuisanceOpts::default(),
@@ -249,7 +245,6 @@ fn ipw_and_outcome_regression_each_adjust() {
             t: &t,
             y: &y,
             extra: &[],
-            outcome_only: &[],
             modifiers: &[],
         },
         &NuisanceOpts::default(),
@@ -316,15 +311,95 @@ fn weighted_gram_is_the_plain_sum() {
 /// A fit from the marginal log-odds and one from a distant start reach the
 /// one optimum of the penalized likelihood.
 #[test]
-fn logistic_ridge_reaches_one_optimum_from_any_start() {
-    use crate::lr_activity::ligand_effect::regression::logistic_ridge;
+fn logistic_fit_reaches_one_optimum_from_any_start() {
+    use crate::lr_activity::ligand_effect::regression::logistic_base;
     let w = world(900, 5);
     let (t, _) = draw(&w, 1.5, 0.0, 0.0, 0.0, 6);
     let tf: Vec<f64> = t.iter().map(|&t| t as u8 as f64).collect();
     let rows: Vec<usize> = (0..tf.len()).collect();
     let x = &w.design.x;
-    let cold = logistic_ridge(x, 2, &[], &tf, &rows, 1.0, None).unwrap();
+    let cold = logistic_base(x, 2, &[], &tf, &rows, 1.0, None)
+        .unwrap()
+        .beta;
     let far = nalgebra::DVector::from_vec(vec![3.0, -4.0]);
-    let warm = logistic_ridge(x, 2, &[], &tf, &rows, 1.0, Some(&far)).unwrap();
+    let warm = logistic_base(x, 2, &[], &tf, &rows, 1.0, Some(&far))
+        .unwrap()
+        .beta;
     assert!((cold - warm).amax() < 1e-6);
+}
+
+/// Exposure on the design's confounder and two further columns, which a
+/// refit adds to a fit without them.
+fn bordered_problem(seed: u64) -> (World, Vec<f64>, [Vec<f64>; 2]) {
+    let w = world(900, seed);
+    let mut rng = SmallRng::seed_from_u64(seed ^ 0x5eed);
+    let n = w.z.len();
+    let v: Vec<f64> = (0..n)
+        .map(|i| {
+            let e: f64 = StandardNormal.sample(&mut rng);
+            (i as f64 / 70.0).sin() + 0.3 * e
+        })
+        .collect();
+    let added = [
+        crate::lr_activity::ligand_effect::regression::standardize(&v),
+        crate::lr_activity::ligand_effect::regression::standardize(&w.c),
+    ];
+    let t: Vec<f64> = (0..n)
+        .map(|i| {
+            let eta = 1.2 * w.z[i] + 0.8 * added[0][i] - 0.6 * added[1][i];
+            (rng.random::<f64>() < sigmoid(eta)) as u8 as f64
+        })
+        .collect();
+    (w, t, added)
+}
+
+/// A refit with two columns added, started from the fit without them with
+/// its Hessian bordered by the new columns, reaches the cold fit's optimum
+/// without computing a fresh Hessian.
+#[test]
+fn bordered_logistic_reaches_the_cold_optimum_without_a_fresh_hessian() {
+    use crate::lr_activity::ligand_effect::regression::{logistic_base, logistic_bordered};
+    for seed in [5, 6, 7] {
+        let (w, t, added) = bordered_problem(seed);
+        let rows: Vec<usize> = (0..t.len()).collect();
+        let x = &w.design.x;
+        let cols: Vec<&[f64]> = added.iter().map(|c| c.as_slice()).collect();
+        let base = logistic_base(x, 2, &[], &t, &rows, 1.0, None).unwrap();
+        let (warm, hessians) = logistic_bordered(x, 2, &[], &cols, &t, &rows, &base).unwrap();
+        let cold = logistic_base(x, 2, &cols, &t, &rows, 1.0, None)
+            .unwrap()
+            .beta;
+        assert!(
+            (&cold - &warm).amax() < 1e-7,
+            "seed {seed}: {cold} vs {warm}"
+        );
+        assert_eq!(hessians, 0, "seed {seed}");
+    }
+}
+
+/// The bordered factor solves the base fit's Hessian bordered by the added
+/// columns' cross-products at the base weights: the dense system's solution.
+#[test]
+fn bordered_factor_solves_the_bordered_hessian() {
+    use crate::lr_activity::ligand_effect::regression::{
+        logistic_base, penalized_hessian, Bordered,
+    };
+    let (w, t, added) = bordered_problem(5);
+    let rows: Vec<usize> = (0..t.len()).collect();
+    let x = &w.design.x;
+    let base = logistic_base(x, 2, &[], &t, &rows, 1.0, None).unwrap();
+    let d = 4;
+    let z: Vec<f64> = rows
+        .iter()
+        .flat_map(|&i| [x[(i, 0)] as f64, x[(i, 1)] as f64, added[0][i], added[1][i]])
+        .collect();
+    let h = penalized_hessian(&z, d, &base.weights, 1.0).unwrap();
+    let border = Bordered::new(&z, d, &base).unwrap();
+    let g = nalgebra::DVector::from_vec(vec![0.3, -1.2, 0.7, 2.0]);
+    let dense = h.solve(&g);
+    let got = border.solve(&g);
+    assert!(
+        (&got - &dense).amax() < 1e-9 * dense.amax().max(1.0),
+        "{got} vs {dense}"
+    );
 }

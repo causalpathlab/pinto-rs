@@ -30,18 +30,19 @@ fn available_memory() -> Option<usize> {
     (left > 0).then_some(left as usize)
 }
 
-/// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_ridge`]) on
+/// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_base`]) on
 /// `p` confounders: those and the pair's own columns.
 fn propensity_bytes(rows: usize, p: usize) -> usize {
     rows * (p + 8) * 8
 }
 
 /// Memory one live pair (or benchmark scenario) holds: `vectors` receiver-length
-/// vectors and
-/// the propensity's rows ([`super::regression::logistic_ridge`]).
+/// vectors and the propensity's rows ([`super::regression::logistic_base`])
+/// for every fold, since its folds are fitted side by side.
 pub(super) fn pair_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
     let (n, p) = (tissue.n(), tissue.design.p());
-    n * 8 * vectors + propensity_bytes(nuisance.max_propensity_rows, p)
+    let rows = n.min(nuisance.max_propensity_rows);
+    n * 8 * vectors + tissue.cf.k * propensity_bytes(rows, p)
 }
 
 /// A propensity fit's rows, in bytes, that stay in a core's share of the

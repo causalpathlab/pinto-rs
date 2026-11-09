@@ -326,9 +326,9 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
 fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool) -> SimRun {
     SimRun {
         scenario: Scenario {
-            effect,
-            confound_ligand: alpha,
-            confound_response: alpha,
+            effect_pve: effect,
+            ligand_field_pve: alpha,
+            response_field_pve: alpha,
             ..Scenario::default()
         },
         estimable,
@@ -372,10 +372,10 @@ fn simulate_runs_read_back_as_written() {
     let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |v: [f32; 2]| v.to_vec();
     let floats: Vec<(String, Vec<f32>)> = vec![
-        ("planted_effect".into(), f([0.3, 0.3])),
+        ("effect_pve".into(), f([0.3, 0.3])),
         ("planted_ring_effect".into(), f([0.0, 0.0])),
-        ("confound_ligand".into(), f([0.3, 0.3])),
-        ("confound_response".into(), f([0.3, 0.3])),
+        ("ligand_field_pve".into(), f([0.3, 0.3])),
+        ("response_field_pve".into(), f([0.3, 0.3])),
         ("confound_scale".into(), f([16.0, 16.0])),
         ("spillover".into(), f([0.1, 0.1])),
         ("shift".into(), f([0.0, 0.0])),
@@ -386,7 +386,6 @@ fn simulate_runs_read_back_as_written() {
     let mut ints: Vec<(String, Vec<i32>)> = vec![
         ("heterogeneous".into(), vec![0, 0]),
         ("marker".into(), vec![1, 1]),
-        ("confound_receptor".into(), vec![1, 1]),
         ("rep".into(), vec![0, 1]),
         ("estimable".into(), vec![1, 0]),
         ("dose_response".into(), vec![1, 1]),
@@ -414,12 +413,12 @@ fn simulate_runs_read_back_as_written() {
     let runs = read_sim_runs(path.to_str().unwrap()).unwrap();
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
-    assert_eq!(sc.confound_ligand, 0.3, "the value as written, not f32's");
+    assert_eq!(sc.ligand_field_pve, 0.3, "the value as written, not f32's");
     assert_eq!(sc.background_confounding, 0.5);
     assert_eq!(sc.generic_shift, 0.25);
     assert!(sc.dose_response);
     assert_eq!((sc.dose_midpoint, sc.dose_order), (0.75, 8));
-    assert!(sc.marker && sc.confound_receptor && !sc.heterogeneous);
+    assert!(sc.marker && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
     assert_eq!(
@@ -432,7 +431,7 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0]["scenario"],
-        "θ=0.30 α=0.3 β=0.3 realgene/quadratic@16 dose generic=0.25 κ=0.1 marker"
+        "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose generic=0.25 κ=0.1 marker"
     );
     assert_eq!(s[0]["reject"]["crude"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);

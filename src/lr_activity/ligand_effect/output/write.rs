@@ -126,10 +126,10 @@ pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
 /// Columns of `{out}.lra-simulate.parquet` that `read_sim_runs` reads
 /// back, shared by the writer and the reader.
 pub(super) mod sim_cols {
-    pub const PLANTED_EFFECT: &str = "planted_effect";
+    pub const EFFECT_PVE: &str = "effect_pve";
     pub const RING_EFFECT: &str = "planted_ring_effect";
-    pub const CONFOUND_LIGAND: &str = "confound_ligand";
-    pub const CONFOUND_RESPONSE: &str = "confound_response";
+    pub const LIGAND_FIELD_PVE: &str = "ligand_field_pve";
+    pub const RESPONSE_FIELD_PVE: &str = "response_field_pve";
     pub const SCALE: &str = "confound_scale";
     pub const CONFOUNDER: &str = "confounder";
     pub const SHAPE: &str = "confound_shape";
@@ -138,7 +138,6 @@ pub(super) mod sim_cols {
     pub const SPILLOVER: &str = "spillover";
     pub const SHIFT: &str = "shift";
     pub const REP: &str = "rep";
-    pub const CONFOUND_RECEPTOR: &str = "confound_receptor";
     pub const ESTIMABLE: &str = "estimable";
     pub const BACKGROUND_CONFOUNDING: &str = "background_confounding";
     pub const GENERIC_SHIFT: &str = "generic_shift";
@@ -163,9 +162,9 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
     let mut c = Columns::new(rows);
     c.s("ligand", |r| &r.ligand)
         .s("receptor", |r| &r.receptor)
-        .f(PLANTED_EFFECT, |r| r.scenario.effect)
-        .f(CONFOUND_LIGAND, |r| r.scenario.confound_ligand)
-        .f(CONFOUND_RESPONSE, |r| r.scenario.confound_response)
+        .f(EFFECT_PVE, |r| r.scenario.effect_pve)
+        .f(LIGAND_FIELD_PVE, |r| r.scenario.ligand_field_pve)
+        .f(RESPONSE_FIELD_PVE, |r| r.scenario.response_field_pve)
         .f(SCALE, |r| r.scenario.scale)
         .s(CONFOUNDER, |r| r.scenario.confounder.label())
         .s(SHAPE, |r| r.scenario.shape.label())
@@ -207,7 +206,6 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .i("survived", |r| r.verdict.survived() as usize)
         .f("mean_overlap", |r| r.estimate.mean_h)
         .f("misclassified", |r| r.misclassified)
-        .i(CONFOUND_RECEPTOR, |r| r.scenario.confound_receptor as usize)
         .i("celltype_tested", |r| r.baselines.celltype_tested);
     let b = |f: fn(&Baselines) -> f64| move |r: &SimRow| f(&r.baselines);
     c.f("celltype_score", b(|x| x.celltype_score))

@@ -1,6 +1,6 @@
 //! The co-expression baselines: calibrated when ligand and receptor are
-//! unrelated, fooled when a hidden field drives both, and blind to a
-//! planted response effect (they score co-expression, not response).
+//! unrelated, fooled by cell-type expression, and blind to a planted
+//! response effect (they score co-expression, not response).
 
 use super::run_sim;
 use super::simulate::{base, fixture, opts, Fixture};
@@ -57,12 +57,11 @@ fn even(f: &Fixture) -> (Vec<f64>, Vec<f64>) {
 
 fn confounded(effect: f64, rep: usize) -> Scenario {
     Scenario {
-        effect,
-        confound_ligand: 1.5,
-        confound_response: 1.5,
+        effect_pve: effect,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         confounder: ConfounderKind::Bumps,
         scale: 32.0,
-        confound_receptor: true,
         rep,
         ..Scenario::default()
     }
@@ -87,30 +86,6 @@ fn null_rejections(
     (hits, est)
 }
 
-/// A regional field driving ligand, receptor and response, nothing
-/// planted: the contact baselines read the shared field as an interaction,
-/// the estimator does not. The cell-type baseline, blind to place, is not
-/// fooled by a field that ignores cell type.
-#[test]
-fn a_confounded_receptor_fools_the_baselines_not_the_estimator() {
-    let f = fixture();
-    let (l, r) = even(&f);
-    let b = SimBase {
-        ligand_counts: &l,
-        receptor_counts: &r,
-        ..base(&f)
-    };
-    let runs = 4;
-    let (hits, est) = null_rejections(&f, &b, confounded(0.0, 0), runs);
-    assert!(est <= 1, "the estimate rejected {est}/{runs} null runs");
-    for ((name, _), h) in METHODS.iter().zip(hits).skip(1) {
-        assert!(
-            h >= 3,
-            "{name} should be fooled by the shared field ({h}/{runs})"
-        );
-    }
-}
-
 /// Ligand made by one cell type and receptor carried by the other, nothing
 /// planted and no field: the cell-type baseline reads the types'
 /// expression as an interaction; the estimator, adjusting for identity,
@@ -119,10 +94,7 @@ fn a_confounded_receptor_fools_the_baselines_not_the_estimator() {
 #[test]
 fn cell_type_expression_fools_the_cell_type_baseline_not_the_estimator() {
     let f = fixture();
-    let scen = Scenario {
-        confound_receptor: true,
-        ..Scenario::default()
-    };
+    let scen = Scenario::default();
     let runs = 4;
     let (hits, est) = null_rejections(&f, &base(&f), scen, runs);
     assert!(est <= 1, "the estimate rejected {est}/{runs} null runs");
@@ -146,7 +118,7 @@ fn a_planted_effect_leaves_the_baselines_unchanged() {
         ..base(&f)
     };
     let none = run_sim(&f.tissue, &b, &confounded(0.0, 0), &opts(), 71).unwrap();
-    let some = run_sim(&f.tissue, &b, &confounded(0.5, 0), &opts(), 71).unwrap();
+    let some = run_sim(&f.tissue, &b, &confounded(0.2, 0), &opts(), 71).unwrap();
     assert!(some.truth > 0.05, "truth {}", some.truth);
     for (name, p) in METHODS {
         assert_eq!(p(&none.baselines), p(&some.baselines), "{name}");

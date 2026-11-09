@@ -8,7 +8,8 @@ pub enum ConfounderKind {
     Fourier,
     /// Random Gaussian bumps of width `scale` contact lengths, random signs
     Bumps,
-    /// A real gene outside the benchmarked pairs, smoothed over contacts
+    /// A real gene outside the benchmarked pairs, smoothed by a Gaussian of
+    /// width `scale` contact lengths
     RealGene,
 }
 
@@ -67,20 +68,30 @@ impl std::str::FromStr for ConfoundShape {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Scenario {
-    /// θ: log-rate change of the programme in exposed responding receivers.
-    pub effect: f64,
+    /// Share of each programme gene's log-rate variance (beyond the receiver's
+    /// cell type) that the contact effect explains: the effect is
+    /// `√pve / sd(x)` times the exposure term `x` (true exposure × the bin's
+    /// share × the dose share), its variance taken over responding receivers
+    /// within their identity bins. Effect, field and log-rate noise share a
+    /// unit variance, so the PVE also sets the noise and hence power.
+    pub effect_pve: f64,
     /// θ_ring: log-rate change in responding receivers whose ring partners
-    /// make ligand; 0 keeps the effect at contact range.
+    /// make ligand; 0 keeps the effect at contact range. A log-scale size
+    /// outside the PVE budget, as are `generic_shift` and the marker lift.
     pub ring_effect: f64,
-    /// α: hidden field's push on ligand production (log odds).
-    pub confound_ligand: f64,
-    /// β: hidden field's push on the response.
-    pub confound_response: f64,
+    /// Share of the producer log odds' variance (beyond the cell type) that
+    /// the hidden field explains; the rest is noise.
+    pub ligand_field_pve: f64,
+    /// Share of each programme gene's log-rate variance (beyond the cell
+    /// type) that the hidden field explains, signed: negative pushes the
+    /// response against the ligand. Effect, field and noise share the
+    /// variance, so `effect_pve + |response_field_pve| ≤ 1`.
+    pub response_field_pve: f64,
     /// Hidden field's length scale, in contact lengths.
     pub scale: f64,
     pub confounder: ConfounderKind,
     pub shape: ConfoundShape,
-    /// θ varies by identity bin, `θ u_b` with `u_b ~ U[0.5, 1.5]`.
+    /// The effect varies by identity bin, scaled by `u_b ~ U[0.5, 1.5]`.
     pub heterogeneous: bool,
     /// Ligand, response and programme baseline confined to a marker type.
     pub marker: bool,
@@ -89,10 +100,8 @@ pub struct Scenario {
     /// Displacement of the ligand field the estimator sees, in contact
     /// lengths; 0 for none.
     pub shift: f64,
-    /// Simulate the receptor, driven by the hidden field at strength β.
-    pub confound_receptor: bool,
-    /// How much of the field's push on the response (β) reaches the background programme
-    /// programme: 1 the same push, 0 none.
+    /// How much of the field's push on the response reaches the background
+    /// programme: 1 the same push, 0 none (its field PVE is this squared).
     pub background_confounding: f64,
     /// The planted effect grows with the true dose (a Hill curve) rather than
     /// being a step at any exposure.
@@ -110,16 +119,34 @@ pub struct Scenario {
     pub rep: usize,
 }
 
+impl Scenario {
+    /// Effect, field and noise share a unit variance: each PVE at least 0,
+    /// the response's two summing to at most 1, the ligand's below 1.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.effect_pve >= 0.0
+                && self.effect_pve + self.response_field_pve.abs() <= 1.0
+                && (0.0..1.0).contains(&self.ligand_field_pve),
+            "PVE out of range: effect {}, response field {}, ligand field {} (each a share of \
+             variance; effect and |response field| sum to at most 1, ligand field below 1)",
+            self.effect_pve,
+            self.response_field_pve,
+            self.ligand_field_pve
+        );
+        Ok(())
+    }
+}
+
 impl Default for Scenario {
     /// No effect, no confounding, no departure. The confounder kind only
-    /// matters once `α` or `β` is set: Fourier, the original field, unless
+    /// matters once a field PVE is set: Fourier, the original field, unless
     /// a scenario names another (the grids name theirs).
     fn default() -> Self {
         Self {
-            effect: 0.0,
+            effect_pve: 0.0,
             ring_effect: 0.0,
-            confound_ligand: 0.0,
-            confound_response: 0.0,
+            ligand_field_pve: 0.0,
+            response_field_pve: 0.0,
             scale: 32.0,
             confounder: ConfounderKind::Fourier,
             shape: ConfoundShape::Linear,
@@ -127,7 +154,6 @@ impl Default for Scenario {
             marker: false,
             spillover: 0.0,
             shift: 0.0,
-            confound_receptor: false,
             background_confounding: 1.0,
             dose_response: false,
             dose_midpoint: 0.5,
@@ -146,9 +172,12 @@ impl Default for Scenario {
 pub struct GridOpts {
     #[serde(rename = "_doc", skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
-    /// Planted effects θ, as log-rate changes of the programme; each runs
-    /// beside θ = 0.
-    pub effect_sizes: Vec<f64>,
+    /// Planted effects as PVE of the programme genes' log rates
+    /// ([`Scenario::effect_pve`]); each runs beside no effect.
+    pub effect_pve: Vec<f64>,
+    /// PVE of the hidden field on ligand production and on the response
+    /// in confounded scenarios ([`Scenario::response_field_pve`]).
+    pub field_pve: f64,
     /// Replicates of every scenario (set from the study's `reps`).
     #[serde(skip)]
     pub reps: usize,
@@ -169,11 +198,8 @@ pub struct GridOpts {
     /// Planted effects that also reach ring range (θ_ring), each its own
     /// unconfounded scenario.
     pub ring_effect: Vec<f64>,
-    /// Simulate the receptor in every scenario, driven by the hidden field
-    /// at the response's strength; false keeps the real receptor.
-    pub confound_receptor: bool,
-    /// How much of the field's push on the response reaches the background programme
-    /// programme: 1 the same push, 0 none.
+    /// How much of the field's push on the response reaches the background
+    /// programme: 1 the same push, 0 none (its field PVE is this squared).
     pub background_confounding: f64,
     /// Planted effects grow with the true dose.
     pub dose_response: bool,
@@ -189,7 +215,8 @@ impl Default for GridOpts {
     fn default() -> Self {
         Self {
             doc: None,
-            effect_sizes: vec![0.3],
+            effect_pve: vec![0.02],
+            field_pve: 0.25,
             reps: 5,
             confounders: vec![ConfounderKind::Bumps, ConfounderKind::RealGene],
             scales: vec![32.0, 4.0],
@@ -199,7 +226,6 @@ impl Default for GridOpts {
             marker: true,
             heterogeneous: true,
             ring_effect: vec![0.3],
-            confound_receptor: true,
             background_confounding: 1.0,
             dose_response: false,
             dose_midpoint: 0.5,
@@ -213,7 +239,7 @@ impl Default for GridOpts {
 ///
 /// - no confounding;
 /// - per confounder kind: linear confounding at every scale, same-sign and
-///   opposite-sign (`α = 1, β = ±1`), and each nonlinear shape at the
+///   opposite-sign (field PVE `field_pve`, response sign ±), and each nonlinear shape at the
 ///   first scale, same-sign;
 /// - a heterogeneous effect (planted effects only);
 /// - unconfounded segmentation spillover at each κ, and an effect that also
@@ -223,12 +249,11 @@ impl Default for GridOpts {
 pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
     let mut out = Vec::new();
     let first_scale = g.scales.first().copied().unwrap_or(32.0);
-    let thetas = std::iter::once(0.0).chain(g.effect_sizes.iter().copied().filter(|&t| t != 0.0));
+    let thetas = std::iter::once(0.0).chain(g.effect_pve.iter().copied().filter(|&t| t != 0.0));
     for theta in thetas {
         for rep in 0..g.reps {
             let plain = Scenario {
-                effect: theta,
-                confound_receptor: g.confound_receptor,
+                effect_pve: theta,
                 background_confounding: g.background_confounding,
                 dose_response: g.dose_response && theta != 0.0,
                 dose_midpoint: g.dose_midpoint,
@@ -240,8 +265,8 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
             for &confounder in &g.confounders {
                 let conf = Scenario {
                     confounder,
-                    confound_ligand: 1.0,
-                    confound_response: 1.0,
+                    ligand_field_pve: g.field_pve,
+                    response_field_pve: g.field_pve,
                     ..plain
                 };
                 for (k, &scale) in g.scales.iter().enumerate() {
@@ -250,7 +275,7 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
                             out.push(Scenario { scale, ..conf });
                             out.push(Scenario {
                                 scale,
-                                confound_response: -1.0,
+                                response_field_pve: -g.field_pve,
                                 ..conf
                             });
                         } else if k == 0 {
@@ -288,8 +313,8 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
                 for &shift in &g.shift {
                     out.push(Scenario {
                         confounder,
-                        confound_ligand: 1.0,
-                        confound_response: 1.0,
+                        ligand_field_pve: g.field_pve,
+                        response_field_pve: g.field_pve,
                         scale: first_scale,
                         shift,
                         ..plain
@@ -349,6 +374,10 @@ impl Study {
             s.scenarios.scales.iter().all(|&x| x > 0.0),
             "scenarios.scales must be positive contact lengths"
         );
+        for scen in default_grid(&s.grid()) {
+            scen.validate()
+                .map_err(|e| anyhow::anyhow!("scenarios: {e}"))?;
+        }
         Ok(s)
     }
 
@@ -373,17 +402,19 @@ impl Study {
             ),
             scenarios: GridOpts {
                 doc: Some(
-                    "Each effect size runs beside no effect. effect_sizes: log-rate change \
-                     of the response programme (0.3 is about +35%). confounders: hidden \
+                    "Strengths are PVE, shares of a programme gene's log-rate variance beyond \
+                     its cell type (generalized linear model): effect, field and noise sum to 1. \
+                     Each effect runs beside no effect. effect_pve: the contact effect's share. \
+                     field_pve: the hidden field's share, on ligand production (log odds) and \
+                     on the response, in confounded scenarios. ring_effect and generic_shift \
+                     are log-scale sizes outside that budget. confounders: hidden \
                      field kinds (bumps, realgene, fourier). scales: their length scales in \
                      contact lengths. shapes: how the field acts (linear, quadratic). \
                      spillover: shares of a neighbour's counts bleeding into \
                      the receiver. shift: displacement of the ligand field, in contact \
                      lengths (a null). marker: effect confined to one cell type. \
                      heterogeneous: effect varying by cell type. ring_effect: effect sizes \
-                     reaching distant, non-touching cells. confound_receptor: simulate \
-                     the receptor too, driven by the same hidden field (false keeps the \
-                     real receptor, which the field cannot touch). background_confounding: how \
+                     reaching distant, non-touching cells. background_confounding: how \
                      much of the field's push on the response reaches the background programme \
                      (1 the same push, 0 none). dose_response: planted effects grow with the \
                      true dose instead of being a step at any exposure, half way at the \

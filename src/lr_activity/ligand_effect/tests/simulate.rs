@@ -162,9 +162,9 @@ fn contacts_ring_and_competence() {
 fn no_effect_under_regional_confounding() {
     let f = fixture();
     let scen = Scenario {
-        effect: 0.0,
-        confound_ligand: 1.5,
-        confound_response: 1.5,
+        effect_pve: 0.0,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         confounder: ConfounderKind::Bumps,
         scale: 32.0,
         ..Scenario::default()
@@ -200,9 +200,9 @@ fn no_effect_under_regional_confounding() {
 fn a_planted_effect_is_recovered_on_the_tissue() {
     let f = fixture();
     let scen = Scenario {
-        effect: 0.5,
-        confound_ligand: 1.0,
-        confound_response: 1.0,
+        effect_pve: 0.1,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         ..Scenario::default()
     };
     let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 21).unwrap();
@@ -271,9 +271,9 @@ fn spillover_is_absorbed() {
 fn a_shifted_field_has_no_contact_effect() {
     let f = fixture();
     let scen = Scenario {
-        effect: 0.5,
-        confound_ligand: 1.5,
-        confound_response: 1.5,
+        effect_pve: 0.1,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         shift: 4.0,
         ..Scenario::default()
     };
@@ -332,7 +332,7 @@ fn the_background_sees_the_field_and_not_the_effect() {
     let run = |scen: &Scenario, seed: u64| run_sim(&f.tissue, &b, scen, &opts(), seed).unwrap();
 
     let planted = Scenario {
-        effect: 0.6,
+        effect_pve: 0.12,
         ..Scenario::default()
     };
     let r = run(&planted, 11);
@@ -341,8 +341,8 @@ fn the_background_sees_the_field_and_not_the_effect() {
     assert!(r.background.z().abs() < 3.0, "{:?}", r.background);
 
     let field = |background_confounding: f64| Scenario {
-        confound_ligand: 1.0,
-        confound_response: 1.0,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         background_confounding,
         ..Scenario::default()
     };
@@ -367,7 +367,7 @@ fn the_background_counts_follow_the_field_they_are_given() {
             &[false; 64],
             &f.tissue.identity_bin,
         );
-        let nz = simulate_background(&f.tissue, &b, &lifts, 0.0, 5);
+        let nz = simulate_background(&f.tissue, &b, &lifts, 0.0, 0.0, 5);
         let (mut high, mut all) = (0.0, 0.0);
         for (genes, &w) in nz.iter().zip(b.target_weights) {
             let up = w > 0.0;
@@ -422,7 +422,7 @@ fn the_truth_contrasts_the_realized_effect_between_seen_arms() {
 fn a_dose_response_truth_tracks_the_estimate_and_keeps_the_exposed_effect_apart() {
     let f = fixture();
     let scen = Scenario {
-        effect: 0.5,
+        effect_pve: 0.1,
         dose_response: true,
         dose_midpoint: 0.5,
         dose_order: 2,
@@ -442,4 +442,50 @@ fn a_dose_response_truth_tracks_the_estimate_and_keeps_the_exposed_effect_apart(
         r.estimate.se,
         r.truth
     );
+}
+
+/// A field PVE is its share of the linear predictor's variance: on a log
+/// rate the coefficient's square, on a logit beside the logistic's own
+/// `π²/3`; the sign of a log-rate PVE is the direction of the push.
+#[test]
+fn field_coefficients_give_their_share_of_variance() {
+    use crate::lr_activity::ligand_effect::simulate::{log_rate_coef, logit_coef};
+    let logistic = std::f64::consts::PI.powi(2) / 3.0;
+    for pve in [0.05, 0.25, 0.5, 0.9] {
+        let a = logit_coef(pve);
+        assert!(
+            (a * a / (a * a + logistic) - pve).abs() < 1e-12,
+            "logit {pve}"
+        );
+        let b = log_rate_coef(pve);
+        assert!((b * b - pve).abs() < 1e-12, "log rate {pve}");
+        assert_eq!(log_rate_coef(-pve), -b);
+    }
+    assert_eq!(logit_coef(0.0), 0.0);
+}
+
+/// The effect coefficient gives the exposure term `effect_pve` of the log
+/// rate's variance among responding receivers, beyond their identity bin:
+/// bin offsets and non-responders do not count.
+#[test]
+fn the_effect_coefficient_explains_its_pve_within_bins() {
+    use crate::lr_activity::ligand_effect::simulate::effect_coef;
+    // Two bins with different exposure rates, and non-responders exposed too.
+    let n = 400;
+    let bin: Vec<usize> = (0..n).map(|i| i % 2).collect();
+    let responds: Vec<bool> = (0..n).map(|i| i % 5 != 0).collect();
+    let x: Vec<f64> = (0..n)
+        .map(|i| if (i % 7) < 2 + 3 * bin[i] { 1.0 } else { 0.0 })
+        .collect();
+    let pve = 0.04;
+    let theta = effect_coef(pve, &x, &responds, &bin);
+    let rows: Vec<usize> = (0..n).filter(|&i| responds[i]).collect();
+    let mut ss = 0.0;
+    for b in 0..2 {
+        let r: Vec<usize> = rows.iter().copied().filter(|&i| bin[i] == b).collect();
+        let m = r.iter().map(|&i| x[i]).sum::<f64>() / r.len() as f64;
+        ss += r.iter().map(|&i| (theta * (x[i] - m)).powi(2)).sum::<f64>();
+    }
+    assert!((ss / rows.len() as f64 - pve).abs() < 1e-12);
+    assert_eq!(effect_coef(0.0, &x, &responds, &bin), 0.0);
 }

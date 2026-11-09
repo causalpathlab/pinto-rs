@@ -10,6 +10,7 @@ use legume_numeric::matrix::rand_util::mix_seed;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
+use rayon::prelude::*;
 
 /// Random Fourier features at `scale` contact lengths.
 fn fourier_field(tissue: &Tissue, scale: f64, seed: u64) -> Vec<f64> {
@@ -77,19 +78,56 @@ fn bump_field(tissue: &Tissue, scale: f64, seed: u64) -> Vec<f64> {
     standardize(&z)
 }
 
-/// A real gene's `log1p(count / sf)`, smoothed by `scale / 2` rounds of
-/// averaging each row with its contacts.
+/// A real gene's `log1p(count / sf)`, smoothed by a Gaussian of width
+/// `scale` contact lengths (the bump field's kernel), cut at three widths,
+/// within each section.
 fn gene_field(tissue: &Tissue, counts: &[f64], scale: f64) -> Vec<f64> {
     let n = tissue.n();
     let sf = &tissue.size_factor;
-    let mut v: Vec<f64> = (0..n).map(|i| (counts[i] / sf[i]).ln_1p()).collect();
-    for _ in 0..((scale / 2.0).round() as usize).max(1) {
-        let s = tissue.contacts.sum(&v);
-        for i in 0..n {
-            v[i] = (v[i] + s[i]) / (1 + tissue.contacts.degree(i)) as f64;
+    let v: Vec<f64> = (0..n).map(|i| (counts[i] / sf[i]).ln_1p()).collect();
+    let mut z = vec![0.0; n];
+    for s in 0..tissue.unit.len() {
+        let w = scale * tissue.unit[s];
+        let cut = 3.0 * w;
+        let key = |i: usize| {
+            let (x, y) = tissue.coords[i];
+            (
+                (x as f64 / cut).floor() as i64,
+                (y as f64 / cut).floor() as i64,
+            )
+        };
+        let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::default();
+        for i in (0..n).filter(|&i| tissue.section[i] as usize == s) {
+            grid.entry(key(i)).or_default().push(i);
+        }
+        let rows: Vec<usize> = grid.values().flatten().copied().collect();
+        let smoothed: Vec<(usize, f64)> = rows
+            .par_iter()
+            .map(|&i| {
+                let (x, y) = (tissue.coords[i].0 as f64, tissue.coords[i].1 as f64);
+                let (gx, gy) = key(i);
+                let (mut num, mut den) = (0.0, 0.0);
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for &j in grid.get(&(gx + dx, gy + dy)).into_iter().flatten() {
+                            let d2 = (x - tissue.coords[j].0 as f64).powi(2)
+                                + (y - tissue.coords[j].1 as f64).powi(2);
+                            if d2 < cut * cut {
+                                let k = (-d2 / (2.0 * w * w)).exp();
+                                num += k * v[j];
+                                den += k;
+                            }
+                        }
+                    }
+                }
+                (i, num / den)
+            })
+            .collect();
+        for (i, x) in smoothed {
+            z[i] = x;
         }
     }
-    standardize(&v)
+    standardize(&z)
 }
 
 /// What every scenario of a pair shares: its calibrated producers
@@ -116,7 +154,8 @@ pub fn gene_fields(tissue: &Tissue, gene: Option<&[f64]>, scales: &[f64]) -> Vec
     out
 }
 
-/// The scenario's hidden field through its shape: `f(Z)` per row.
+/// The scenario's hidden field through its shape, standardized: `f(Z)` per
+/// row, so a field PVE sets its share of variance whatever the shape.
 pub(super) fn confounding(
     tissue: &Tissue,
     base: &SimBase<'_>,
@@ -125,7 +164,7 @@ pub(super) fn confounding(
     seed: u64,
 ) -> anyhow::Result<Vec<f64>> {
     let n = tissue.n();
-    if scen.confound_ligand == 0.0 && scen.confound_response == 0.0 {
+    if scen.ligand_field_pve == 0.0 && scen.response_field_pve == 0.0 {
         return Ok(vec![0.0; n]);
     }
     let z = match scen.confounder {
@@ -141,12 +180,13 @@ pub(super) fn confounding(
             }
         }
     };
-    Ok((0..n)
+    let shaped: Vec<f64> = (0..n)
         .map(|i| match scen.shape {
             ConfoundShape::Linear => z[i],
             ConfoundShape::Quadratic => z[i] * z[i] - 1.0,
         })
-        .collect())
+        .collect();
+    Ok(standardize(&shaped))
 }
 
 /// `v` read at each row's point plus an offset of `shift` contact lengths

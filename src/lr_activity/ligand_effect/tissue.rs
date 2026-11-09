@@ -53,7 +53,7 @@ impl Default for TissueOpts {
     fn default() -> Self {
         Self {
             scales: vec![8.0, 32.0],
-            n_freq: 16,
+            n_freq: 64,
             tile: 25.0,
             folds: 5,
             ring: (15.0, 30.0),
