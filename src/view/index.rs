@@ -8,6 +8,9 @@
 use super::data::{Communities, Edges, Rect, NO_CLUSTER};
 use crate::util::common::*;
 
+/// Cells [`Grid::pitch`] measures, at most.
+const PITCH_SAMPLE: usize = 2000;
+
 /// Square bins over the world bounds, cells stored bin by bin.
 pub struct Grid {
     pub origin: (f32, f32),
@@ -64,19 +67,71 @@ impl Grid {
     pub fn nearest(&self, x: &[f32], y: &[f32], at: (f32, f32), radius: f32) -> Option<usize> {
         let (ix0, iy0) = self.bin_of(at.0 - radius, at.1 - radius);
         let (ix1, iy1) = self.bin_of(at.0 + radius, at.1 + radius);
+        self.nearest_in(x, y, at, (ix0, iy0, ix1, iy1), None)
+            .filter(|&(d, _)| d <= radius)
+            .map(|(_, i)| i)
+    }
+
+    /// The cell nearest `at` among the bins `ix0..=ix1` × `iy0..=iy1`,
+    /// leaving out `except`, with its distance.
+    fn nearest_in(
+        &self,
+        x: &[f32],
+        y: &[f32],
+        at: (f32, f32),
+        (ix0, iy0, ix1, iy1): (usize, usize, usize, usize),
+        except: Option<usize>,
+    ) -> Option<(f32, usize)> {
         let mut best: Option<(f32, usize)> = None;
         for iy in iy0..=iy1 {
             for ix in ix0..=ix1 {
                 for &i in self.cells(ix, iy) {
                     let i = i as usize;
                     let d = (x[i] - at.0).hypot(y[i] - at.1);
-                    if d <= radius && best.is_none_or(|(bd, _)| d < bd) {
+                    if Some(i) != except && best.is_none_or(|(bd, _)| d < bd) {
                         best = Some((d, i));
                     }
                 }
             }
         }
-        best.map(|(_, i)| i)
+        best
+    }
+
+    /// The cells' pitch: the median distance from a cell to its nearest
+    /// other, over up to [`PITCH_SAMPLE`] cells spread through the data;
+    /// `None` with fewer than two cells.
+    pub fn pitch(&self, x: &[f32], y: &[f32]) -> Option<f32> {
+        let n = x.len();
+        if n < 2 {
+            return None;
+        }
+        let step = n.div_ceil(PITCH_SAMPLE);
+        let mut d: Vec<f32> = (0..n)
+            .step_by(step)
+            .filter_map(|i| self.nearest_other(x, y, i))
+            .collect();
+        let mid = d.len().checked_sub(1)? / 2;
+        Some(*d.select_nth_unstable_by(mid, f32::total_cmp).1)
+    }
+
+    /// The distance from cell `i` to its nearest other cell: the bins
+    /// around it, ring by ring, until a nearer cell can lie no further out
+    /// or the whole grid has been searched.
+    fn nearest_other(&self, x: &[f32], y: &[f32], i: usize) -> Option<f32> {
+        let (cx, cy) = self.bin_of(x[i], y[i]);
+        let mut ring = 1;
+        loop {
+            let (ix0, iy0) = (cx.saturating_sub(ring), cy.saturating_sub(ring));
+            let (ix1, iy1) = ((cx + ring).min(self.nx - 1), (cy + ring).min(self.ny - 1));
+            let best = self.nearest_in(x, y, (x[i], y[i]), (ix0, iy0, ix1, iy1), Some(i));
+            let whole = ix0 == 0 && iy0 == 0 && ix1 == self.nx - 1 && iy1 == self.ny - 1;
+            // Cells beyond this ring are at least `ring` bins away.
+            match best {
+                Some((d, _)) if whole || d <= ring as f32 * self.bin => return Some(d),
+                None if whole => return None,
+                _ => ring += 1,
+            }
+        }
     }
 
     /// Bins holding at least one cell.

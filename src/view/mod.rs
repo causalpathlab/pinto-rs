@@ -155,9 +155,13 @@ impl Base {
         let run = Run::open(prefix)?;
         let t = Instant::now();
         let geom = run.load_geometry()?;
-        let units = Units::parse(units, &geom.coord_names)?;
         log::info!("cells: {} in {:.2?}", geom.n(), t.elapsed());
         let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), CELLS_PER_BIN);
+        let coord_file = run.single_coord_file();
+        let units =
+            Units::for_coordinates(units, &geom.coord_names, coord_file.as_deref(), || {
+                grid.pitch(&geom.x, &geom.y)
+            })?;
 
         // Spacing over occupied bins only: the bounding box of a tissue
         // section is mostly empty around the edges.

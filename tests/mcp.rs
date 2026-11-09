@@ -204,6 +204,12 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     let img = img.unwrap();
     assert_eq!((img.width(), img.height()), (1024, 1024));
     assert_eq!(state["image"], json!([1024, 1024]));
+    // The scale as the panel says it, with its unit.
+    assert!(
+        state["scale"].as_str().unwrap().ends_with("/px"),
+        "{}",
+        state["scale"]
+    );
     let groups = state["legend"]["groups"].as_array().unwrap();
     assert!(groups
         .iter()

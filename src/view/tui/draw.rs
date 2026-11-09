@@ -234,7 +234,14 @@ impl App<'_> {
                 format!("{}  K={}", thousands(self.base.geom.n()), comm.k),
             ),
             row("show", self.show_line()),
-            row("scale", format!("{:.3} /px  {}", self.cam.upp(), self.mode)),
+            row(
+                "scale",
+                format!(
+                    "{}  {}",
+                    scalebar::per_pixel(self.base.units, self.cam.upp()),
+                    self.mode
+                ),
+            ),
             row("point", format!("×{:.2}  < >", self.point)),
             row(
                 "bar",

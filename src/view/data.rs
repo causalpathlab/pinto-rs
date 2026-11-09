@@ -219,6 +219,13 @@ impl Run {
         Ok(Geometry::from_cells(cells))
     }
 
+    /// The one coordinate file the run was fit with, where it is now: `None`
+    /// when it had none, several (kept comma-joined, one image each), or
+    /// the file is not found beside the manifest or from here.
+    pub fn single_coord_file(&self) -> Option<PathBuf> {
+        single_coord_file(self.meta.coord_file.as_deref(), self.manifest.as_deref())
+    }
+
     /// For runs written before the cells table: `coord_pairs` only names
     /// cells with an edge, and the coordinate file the run was fit with has
     /// every cell; add the rest from it. Only for a
@@ -655,5 +662,15 @@ impl Edges {
 
     pub fn len(&self) -> usize {
         self.a.len()
+    }
+}
+
+/// [`Run::single_coord_file`] of a manifest's `coord_file`.
+/// Several files are kept comma-joined, which names no file, so none.
+pub fn single_coord_file(coord_file: Option<&str>, manifest: Option<&Path>) -> Option<PathBuf> {
+    let file = coord_file?;
+    match manifest {
+        Some(m) => crate::util::metadata::resolve_beside(m, file),
+        None => Some(PathBuf::from(file)).filter(|p| p.is_file()),
     }
 }
