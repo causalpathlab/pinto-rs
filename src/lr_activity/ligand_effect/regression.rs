@@ -150,10 +150,28 @@ const MAX_NEWTON_STEPS: usize = 500;
 /// next step: close to the optimum the weights barely move.
 const REUSE_HESSIAN_BELOW: f64 = 0.05;
 
+/// Largest ratio of successive step sizes at which a bordered factor
+/// ([`logistic_bordered`]) is kept.
+const BORDERED_KEEP_BELOW: f64 = 0.9;
+
 thread_local! {
     /// A logistic fit's rows, kept between fits: allocating them anew for
     /// every fit costs a page fault per page, and many workers fault at once.
     static LOGISTIC_ROWS: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A converged logistic fit with what a refit adding columns reuses
+/// ([`logistic_bordered`]): the factor of the last penalized Hessian its
+/// Newton steps computed, near the optimum, and the weights `e(1 − e)` over
+/// the rows it was computed at.
+pub(super) struct LogisticBase {
+    pub beta: DVector<f64>,
+    hessian: nalgebra::Cholesky<f64, nalgebra::Dyn>,
+    pub weights: Vec<f64>,
+    /// The rows it was fitted on, which the bordered refit fits on too.
+    rows: Vec<usize>,
+    /// The ridge it was fitted with, which the bordered refit shares.
+    ridge: f64,
 }
 
 /// Logistic ridge by iteratively reweighted least squares on `[X | cols]`
@@ -168,7 +186,9 @@ thread_local! {
 /// Hessian's factor, which moves the iterate as far toward the same optimum
 /// (the gradient is exact) at a fraction of the cost, for as long as steps
 /// keep shrinking.
-pub(super) fn logistic_ridge(
+///
+/// Returns the fit with what [`logistic_bordered`] reuses.
+pub(super) fn logistic_base(
     x: &DMatrix<f32>,
     p: usize,
     cols: &[&[f64]],
@@ -176,14 +196,172 @@ pub(super) fn logistic_ridge(
     rows: &[usize],
     ridge: f64,
     init: Option<&DVector<f64>>,
-) -> anyhow::Result<DVector<f64>> {
-    debug_assert!(p <= x.ncols());
+) -> anyhow::Result<LogisticBase> {
     let d = p + cols.len();
     LOGISTIC_ROWS.with_borrow_mut(|z| {
         gather_design_rows(x, p, cols, rows, z);
         let tt: Vec<f64> = rows.iter().map(|&i| t[i]).collect();
-        newton_on_rows(z, d, &tt, ridge, init)
+        let fit = newton_on_rows(z, d, &tt, ridge, init, None)?;
+        let (hessian, weights) = fit.last_fresh.expect("a fit given no factor computes one");
+        Ok(LogisticBase {
+            beta: fit.beta,
+            hessian,
+            weights,
+            rows: rows.to_vec(),
+            ridge,
+        })
     })
+}
+
+/// The logistic ridge on `[X | cols | added]` over `base.rows` (`base`
+/// being its fit on `[X | cols]`), started from `base`'s solution with zeros
+/// for `added`. Its Newton steps use `base`'s Hessian bordered by the added
+/// columns' cross-products at `base`'s weights, solved through the Schur
+/// complement of the added block: `O(m q d)` to set up and `O(m d)` a step,
+/// where a fresh Hessian costs `O(m d²)`. The gradient is exact, so the steps
+/// reach the same optimum a cold fit does; a fresh Hessian is computed only
+/// when the bordered one stops pointing uphill. Returns the solution and the
+/// count of fresh Hessians.
+pub(super) fn logistic_bordered(
+    x: &DMatrix<f32>,
+    p: usize,
+    cols: &[&[f64]],
+    added: &[&[f64]],
+    t: &[f64],
+    base: &LogisticBase,
+) -> anyhow::Result<(DVector<f64>, usize)> {
+    let (ridge, rows) = (base.ridge, &base.rows);
+    let d0 = p + cols.len();
+    anyhow::ensure!(base.beta.len() == d0, "base fit has another design");
+    let mut all: Vec<&[f64]> = cols.to_vec();
+    all.extend_from_slice(added);
+    let d = d0 + added.len();
+    LOGISTIC_ROWS.with_borrow_mut(|z| {
+        gather_design_rows(x, p, &all, rows, z);
+        let tt: Vec<f64> = rows.iter().map(|&i| t[i]).collect();
+        let border = Bordered::new(z, d, base)?;
+        let mut init = DVector::<f64>::zeros(d);
+        init.rows_mut(0, d0).copy_from(&base.beta);
+        let fit = newton_on_rows(
+            z,
+            d,
+            &tt,
+            ridge,
+            Some(&init),
+            Some(Factor::Bordered(border)),
+        )?;
+        Ok((fit.beta, fit.hessians))
+    })
+}
+
+/// `ZᵀWZ + λD`, factored, with the jitter every Newton Hessian carries.
+pub(super) fn penalized_hessian(
+    z: &[f64],
+    d: usize,
+    weights: &[f64],
+    ridge: f64,
+) -> anyhow::Result<nalgebra::Cholesky<f64, nalgebra::Dyn>> {
+    let mut hmat = weighted_gram(z, d, weights);
+    for j in 1..d {
+        hmat[(j, j)] += ridge;
+    }
+    for j in 0..d {
+        hmat[(j, j)] += 1e-9 * weights.len() as f64;
+    }
+    factor_spd(hmat)
+}
+
+/// A base fit's Hessian `A` bordered by added columns `S`:
+/// `[[A, B], [Bᵀ, C]]` with `B = Z₀ᵀWS`, `C = SᵀWS + λI` at the base weights,
+/// solved through `A⁻¹B` and the Schur complement `C − BᵀA⁻¹B`.
+pub(super) struct Bordered<'a> {
+    a: &'a nalgebra::Cholesky<f64, nalgebra::Dyn>,
+    a_inv_b: DMatrix<f64>,
+    b: DMatrix<f64>,
+    schur: nalgebra::Cholesky<f64, nalgebra::Dyn>,
+}
+
+impl<'a> Bordered<'a> {
+    pub(super) fn new(z: &[f64], d: usize, base: &'a LogisticBase) -> anyhow::Result<Self> {
+        let d0 = base.beta.len();
+        let q = d - d0;
+        let m = base.weights.len();
+        let mut b = DMatrix::<f64>::zeros(d0, q);
+        let mut c = DMatrix::<f64>::zeros(q, q);
+        for (zr, &w) in z.chunks_exact(d).zip(&base.weights) {
+            let (head, tail) = zr.split_at(d0);
+            for (k, &s) in tail.iter().enumerate() {
+                let ws = w * s;
+                for (j, &a) in head.iter().enumerate() {
+                    b[(j, k)] += a * ws;
+                }
+                for (l, &s2) in tail.iter().enumerate() {
+                    c[(l, k)] += s2 * ws;
+                }
+            }
+        }
+        for k in 0..q {
+            c[(k, k)] += base.ridge + 1e-9 * m as f64;
+        }
+        let a_inv_b = base.hessian.solve(&b);
+        let schur = factor_spd(c - b.transpose() * &a_inv_b)?;
+        Ok(Self {
+            a: &base.hessian,
+            a_inv_b,
+            b,
+            schur,
+        })
+    }
+
+    pub(super) fn solve(&self, g: &DVector<f64>) -> DVector<f64> {
+        let d0 = self.a_inv_b.nrows();
+        let q = self.a_inv_b.ncols();
+        let u = self.a.solve(&g.rows(0, d0).into_owned());
+        let rhs = g.rows(d0, q) - self.b.transpose() * &u;
+        let lower = self.schur.solve(&rhs);
+        let upper = u - &self.a_inv_b * &lower;
+        let mut out = DVector::<f64>::zeros(d0 + q);
+        out.rows_mut(0, d0).copy_from(&upper);
+        out.rows_mut(d0, q).copy_from(&lower);
+        out
+    }
+}
+
+/// The factor a Newton step solves with.
+enum Factor<'a> {
+    /// The Hessian at an iterate.
+    Fresh(nalgebra::Cholesky<f64, nalgebra::Dyn>),
+    /// A base fit's Hessian bordered by added columns ([`logistic_bordered`]).
+    Bordered(Bordered<'a>),
+}
+
+impl Factor<'_> {
+    fn solve(&self, g: &DVector<f64>) -> DVector<f64> {
+        match self {
+            Self::Fresh(c) => c.solve(g),
+            Self::Bordered(b) => b.solve(g),
+        }
+    }
+}
+
+/// Drop the factor in use, keeping it in `last_fresh` when it is a fresh one.
+fn retire(
+    factor: &mut Option<Factor<'_>>,
+    last_fresh: &mut Option<nalgebra::Cholesky<f64, nalgebra::Dyn>>,
+) {
+    if let Some(Factor::Fresh(c)) = factor.take() {
+        *last_fresh = Some(c);
+    }
+}
+
+/// What [`newton_on_rows`] returns.
+struct NewtonFit {
+    beta: DVector<f64>,
+    /// The last fresh Hessian's factor and the weights it was computed at;
+    /// `None` when every step used the factor it was given.
+    last_fresh: Option<(nalgebra::Cholesky<f64, nalgebra::Dyn>, Vec<f64>)>,
+    /// Fresh Hessians computed.
+    hessians: usize,
 }
 
 /// Rows `rows` of `[X | cols]`, row-major, gathered a cache-sized block at a
@@ -312,14 +490,17 @@ fn row_pass_avx2(
     row_pass(z, t, beta, gradient, weights)
 }
 
-/// Newton on rows `z` (row-major, `d` columns); see [`logistic_ridge`].
-fn newton_on_rows(
+/// Newton on rows `z` (row-major, `d` columns); see [`logistic_base`].
+/// `first`, when given, is the factor the first steps solve with
+/// ([`logistic_bordered`]), kept for as long as its steps keep shrinking.
+fn newton_on_rows<'a>(
     z: &[f64],
     d: usize,
     t: &[f64],
     ridge: f64,
     init: Option<&DVector<f64>>,
-) -> anyhow::Result<DVector<f64>> {
+    first: Option<Factor<'a>>,
+) -> anyhow::Result<NewtonFit> {
     use super::timing;
     let m = t.len();
     let mut beta = match init {
@@ -337,28 +518,36 @@ fn newton_on_rows(
     let mut next = RowPass::new(m, d);
     at.at(z, t, beta.as_slice(), ridge);
     let mut trial = beta.clone();
-    let mut factor = None;
+    let mut factor = first;
     let mut last_amax = f64::INFINITY;
     let mut hessians = 0usize;
+    let mut last_fresh = None;
+    // The weights the factor last computed fresh was computed at.
+    let mut fresh_weights = Vec::new();
     let mut converged = false;
+    // Curvature pairs `(s, y, 1/sᵀy)` of the steps taken with a bordered
+    // factor, which refine it into a quasi-Newton inverse ([`lbfgs_direction`]).
+    let mut pairs: std::collections::VecDeque<(DVector<f64>, DVector<f64>, f64)> =
+        std::collections::VecDeque::new();
     for _ in 0..MAX_NEWTON_STEPS {
         let reused = factor.is_some();
-        let chol: &nalgebra::Cholesky<f64, nalgebra::Dyn> = match &factor {
+        let chol: &Factor = match &factor {
             Some(c) => c,
             None => {
                 hessians += 1;
                 // Newton step: (ZᵀWZ + λD) Δ = Zᵀ(t − e) − λDβ.
-                let mut hmat = weighted_gram(z, d, &at.weights);
-                for j in 1..d {
-                    hmat[(j, j)] += ridge;
-                }
-                for j in 0..d {
-                    hmat[(j, j)] += 1e-9 * m as f64;
-                }
-                factor.insert(factor_spd(hmat)?)
+                let fresh = penalized_hessian(z, d, &at.weights, ridge)?;
+                fresh_weights.clone_from(&at.weights);
+                factor.insert(Factor::Fresh(fresh))
             }
         };
-        let mut step = chol.solve(&DVector::from_column_slice(&at.gradient));
+        let bordered = matches!(chol, Factor::Bordered(_));
+        let gradient = DVector::from_column_slice(&at.gradient);
+        let mut step = if bordered {
+            lbfgs_direction(chol, &pairs, gradient)
+        } else {
+            chol.solve(&gradient)
+        };
         // Halve the step until the objective does not fall: undamped Newton
         // can oscillate on a nearly separated fold and never converge;
         // halving keeps every step uphill on the concave objective, so the
@@ -380,13 +569,27 @@ fn newton_on_rows(
             // A reused factor may point poorly: only a fresh one that finds
             // no ascent at machine precision says this is the optimum.
             if reused {
-                factor = None;
+                retire(&mut factor, &mut last_fresh);
+                pairs.clear();
                 continue;
             }
             converged = true;
             break;
         }
         let gain = next.objective - at.objective;
+        if bordered {
+            // The objective is strictly concave, so `sᵀy > 0` for every step
+            // but one lost to rounding.
+            let y = DVector::from_column_slice(&at.gradient)
+                - DVector::from_column_slice(&next.gradient);
+            let sy = step.dot(&y);
+            if sy > 1e-12 * step.norm() * y.norm() {
+                if pairs.len() == LBFGS_MEMORY {
+                    pairs.pop_front();
+                }
+                pairs.push_back((step.clone(), y, 1.0 / sy));
+            }
+        }
         std::mem::swap(&mut beta, &mut trial);
         std::mem::swap(&mut at, &mut next);
         let amax = step.amax();
@@ -399,56 +602,87 @@ fn newton_on_rows(
             converged = true;
             break;
         }
-        // Keep the factor only while the steps shrink fast.
-        let shrinking = amax < REUSE_HESSIAN_BELOW && amax < 0.5 * last_amax && !halved;
+        // Keep the factor only while the steps shrink fast. A bordered
+        // factor is kept from the first step, and while its steps shrink at
+        // all: at width d one fresh Hessian costs about d/2 of its steps,
+        // so even slow linear convergence is the cheaper way to the optimum.
+        let shrinking = !halved
+            && if bordered {
+                amax < BORDERED_KEEP_BELOW * last_amax
+            } else {
+                amax < REUSE_HESSIAN_BELOW && amax < 0.5 * last_amax
+            };
         if !shrinking {
-            factor = None;
+            retire(&mut factor, &mut last_fresh);
+            pairs.clear();
         }
         last_amax = amax;
     }
     timing::newton(hessians, converged);
-    Ok(beta)
+    retire(&mut factor, &mut last_fresh);
+    Ok(NewtonFit {
+        beta,
+        last_fresh: last_fresh.map(|c| (c, fresh_weights)),
+        hessians,
+    })
 }
 
-/// `Σ_r w_r z_r z_rᵀ`, the `z_r` contiguous in `rows`: each row adds to the
-/// upper triangle, which is then mirrored. Every entry is a sum over the rows
-/// in order, without fused multiply-add, so wider vectors give the same bits.
-pub(super) fn weighted_gram(rows: &[f64], d: usize, w: &[f64]) -> DMatrix<f64> {
-    let mut h = vec![0.0; d * d];
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        // SAFETY: the check above found the feature the function enables.
-        unsafe { accumulate_gram_avx2(rows, d, w, &mut h) };
-        return mirrored(h, d);
+/// Curvature pairs a bordered fit keeps ([`lbfgs_direction`]).
+const LBFGS_MEMORY: usize = 5;
+
+/// The L-BFGS step for gradient `g` (two-loop recursion; Nocedal & Wright
+/// 2006, Algorithm 7.4) with `factor` as the initial inverse Hessian: the
+/// bordered factor's step, corrected by the curvature the steps since have
+/// seen. With an exact gradient the steps reach the same optimum; the
+/// corrections make the convergence superlinear where the factor alone
+/// converges linearly.
+fn lbfgs_direction(
+    factor: &Factor,
+    pairs: &std::collections::VecDeque<(DVector<f64>, DVector<f64>, f64)>,
+    mut q: DVector<f64>,
+) -> DVector<f64> {
+    let mut alpha = Vec::with_capacity(pairs.len());
+    for (s, y, rho) in pairs.iter().rev() {
+        let a = rho * s.dot(&q);
+        q.axpy(-a, y, 1.0);
+        alpha.push(a);
     }
-    accumulate_gram(rows, d, w, &mut h);
-    mirrored(h, d)
+    let mut r = factor.solve(&q);
+    for ((s, y, rho), a) in pairs.iter().zip(alpha.iter().rev()) {
+        let b = rho * y.dot(&r);
+        r.axpy(a - b, s, 1.0);
+    }
+    r
 }
 
-#[inline(always)]
-fn accumulate_gram(rows: &[f64], d: usize, w: &[f64], h: &mut [f64]) {
-    for (z, &wr) in rows.chunks_exact(d.max(1)).zip(w) {
-        for a in 0..d {
-            let za = wr * z[a];
-            let out = &mut h[a * d + a..(a + 1) * d];
-            for (o, &zb) in out.iter_mut().zip(&z[a..]) {
-                *o += za * zb;
+/// Rows of a [`weighted_gram`] tile: the tile and its weighted copy stay in
+/// cache while one matrix product adds them in.
+const GRAM_TILE: usize = 256;
+
+/// `Σ_r w_r z_r z_rᵀ`, the `z_r` contiguous in `rows`, a tile of rows at a
+/// time as one matrix product `Z_tᵀ (W_t Z_t)`: a blocked kernel instead of
+/// one rank-one update per row, so each entry of the result is loaded once
+/// per tile rather than once per row.
+pub(super) fn weighted_gram(rows: &[f64], d: usize, w: &[f64]) -> DMatrix<f64> {
+    let mut h = DMatrix::<f64>::zeros(d, d);
+    if d == 0 {
+        return h;
+    }
+    let mut scaled = vec![0.0; GRAM_TILE * d];
+    for (tile, wt) in rows.chunks(GRAM_TILE * d).zip(w.chunks(GRAM_TILE)) {
+        let r = wt.len();
+        for ((s, z), &wr) in scaled.chunks_exact_mut(d).zip(tile.chunks_exact(d)).zip(wt) {
+            for (a, &b) in s.iter_mut().zip(z) {
+                *a = wr * b;
             }
         }
+        // Column-major views: `zt` is `d × r` (row r of the tile is its
+        // column r), `zw` the `r × d` weighted rows.
+        let zt = nalgebra::DMatrixView::from_slice(tile, d, r);
+        let zw = nalgebra::DMatrixView::from_slice_with_strides(&scaled[..r * d], r, d, d, 1);
+        h.gemm(1.0, &zt, &zw, 1.0);
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-fn accumulate_gram_avx2(rows: &[f64], d: usize, w: &[f64], h: &mut [f64]) {
-    accumulate_gram(rows, d, w, h);
-}
-
-/// The symmetric matrix of `h`, of which only one triangle was accumulated.
-fn mirrored(h: Vec<f64>, d: usize) -> DMatrix<f64> {
-    let mut m = DMatrix::from_vec(d, d, h);
-    m.fill_upper_triangle_with_lower_triangle();
-    m
+    h
 }
 
 /// `log(1 + e^x)` without overflow.

@@ -19,13 +19,13 @@ fn grid_and_calibration() {
     assert!(grid.len() <= 40, "{} scenarios per replicate", grid.len());
     let has = |p: &dyn Fn(&Scenario) -> bool| grid.iter().any(p);
     assert!(has(&|s| s.marker));
-    assert!(has(&|s| s.heterogeneous && s.effect > 0.0));
+    assert!(has(&|s| s.heterogeneous && s.effect_pve > 0.0));
     assert!(has(
         &|s| s.confounder == ConfounderKind::RealGene && s.scale == 4.0
     ));
     assert!(has(&|s| s.shape == ConfoundShape::Quadratic));
     assert!(!has(
-        &|s| s.confounder == ConfounderKind::Fourier && s.confound_ligand != 0.0
+        &|s| s.confounder == ConfounderKind::Fourier && s.ligand_field_pve != 0.0
     ));
 
     // Six counts in a third of type 1: a minority of strong producers, not
@@ -66,7 +66,7 @@ fn truth_is_free_of_the_estimator() {
         ..base(&f)
     };
     let scen = Scenario {
-        effect: 0.5,
+        effect_pve: 0.1,
         ..Scenario::default()
     };
     let plain = run_sim(&f.tissue, &b, &scen, &opts(), 5).unwrap();
@@ -103,8 +103,10 @@ fn a_marker_type_fools_the_crude_contrast() {
         };
         let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 6).unwrap();
         assert_eq!(r.truth, 0.0);
+        // The response's own noise (the variance no field or effect
+        // explains) keeps the crude z modest; it still rejects at 5%.
         assert!(
-            r.crude.z() > 3.0,
+            r.crude.z() > 1.96,
             "crude {:.3} ± {:.3}",
             r.crude.theta,
             r.crude.se
@@ -123,8 +125,8 @@ fn a_marker_type_fools_the_crude_contrast() {
 fn a_real_gene_confounder_is_adjusted() {
     let f = fixture();
     let scen = Scenario {
-        confound_ligand: 1.0,
-        confound_response: 1.0,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
         confounder: ConfounderKind::RealGene,
         shape: ConfoundShape::Quadratic,
         scale: 32.0,

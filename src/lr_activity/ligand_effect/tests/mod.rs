@@ -92,7 +92,7 @@ pub(super) fn overlap_terms(
         extra: &extra,
         ..*pair
     };
-    let e = propensity(design, cf, pair.t, &extra, opts, &mut FoldStarts::default())?;
+    let e = propensity(design, cf, pair.t, &extra, opts, &mut FoldStarts::default())?.e;
     overlap_terms_with(design, cf, &pair, &e, opts)
 }
 

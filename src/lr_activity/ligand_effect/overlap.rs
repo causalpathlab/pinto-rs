@@ -38,15 +38,19 @@
 //! a linear ridge for `m`, both on a shared confounder matrix. Double
 //! robustness means either one being right is enough for consistency;
 //! plainness is what lets one Gram matrix per fold serve every
-//! ligand-receptor pair. Confounders read off the response enter `m` alone
-//! ([`PairInputs::outcome_only`]), so one fitted `e` ([`propensity`])
-//! serves every fit with the same exposure side ([`overlap_terms_with`]).
+//! ligand-receptor pair. A fit whose confounders read off the response
+//! borders the shared exposure-side propensity ([`propensity`]) with those
+//! columns rather than refitting it ([`logistic_bordered`]).
 
 use super::crossfit::{gather_rows, CrossFit, DesignView, DEFAULT_RIDGE, ROW_BLOCK};
+use super::fits::indicator;
 use super::inference::{clustered_sd, Estimate};
 use super::regression::{
-    fold_products, logistic_ridge, ridge_bordered, sigmoid, standardize, subsample,
+    fold_products, logistic_base, logistic_bordered, ridge_bordered, sigmoid, subsample,
+    LogisticBase,
 };
+use nalgebra::DVector;
+use rayon::prelude::*;
 
 /// Options for the nuisance fits.
 #[derive(Clone, Copy, Debug)]
@@ -87,15 +91,8 @@ pub struct PairInputs<'a> {
     pub t: &'a [bool],
     pub y: &'a [f64],
     /// Extra confounders specific to this pair, standardized
-    /// ([`standardize`]). They enter both nuisance models.
+    /// ([`super::regression::standardize`]). They enter both nuisance models.
     pub extra: &'a [&'a [f64]],
-    /// Extra confounders of the outcome model alone (raw scale;
-    /// standardized here): those read off the response (the neighbours'
-    /// response, bleed). They leave the propensity a function of the
-    /// exposure side, so one fit serves every programme ([`propensity`]);
-    /// the estimator stays doubly robust, consistent when the outcome model
-    /// holds.
-    pub outcome_only: &'a [&'a [f64]],
     /// Effect modifiers: the outcome model carries `T · m` for each, so
     /// `m₁ − m₀` can differ between subgroups estimated from these terms.
     pub modifiers: &'a [&'a [f64]],
@@ -156,7 +153,7 @@ impl FoldStarts {
 }
 
 /// The cross-fitted propensity `e` of each row: a logistic ridge of `t` on
-/// the design and `extra` (standardized, [`standardize`]), fitted per fold
+/// the design and `extra` (standardized, [`super::regression::standardize`]), fitted per fold
 /// on the other folds' rows, each from its entry in `starts`, which it
 /// updates.
 pub fn propensity(
@@ -166,35 +163,88 @@ pub fn propensity(
     extra: &[&[f64]],
     opts: &NuisanceOpts,
     starts: &mut FoldStarts,
+) -> anyhow::Result<Propensity> {
+    use super::timing;
+    let n = design.x.nrows();
+    anyhow::ensure!(t.len() == n, "row count mismatch");
+    let tf = indicator(t);
+    let p = design.p;
+    starts.0.resize(cf.k, None);
+    // Folds are independent: fit them side by side on this worker's pool.
+    let folds: Vec<Option<LogisticBase>> = (0..cf.k)
+        .into_par_iter()
+        .map(|k| {
+            let (train, test) = (&cf.train[k], &cf.test[k]);
+            if test.is_empty() {
+                return Ok(None);
+            }
+            anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
+            let rows = subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64);
+            let start = starts.0[k].as_ref();
+            timing::time(timing::LOGISTIC, || {
+                logistic_base(design.x, p, extra, &tf, &rows, opts.ridge, start)
+            })
+            .map(Some)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let mut e = vec![0.0; n];
+    for (k, base) in folds.iter().enumerate() {
+        let Some(base) = base else { continue };
+        linear_predictor(
+            design,
+            &cf.test[k],
+            base.beta.as_slice(),
+            extra,
+            |i, eta| e[i] = sigmoid(eta),
+        );
+        starts.0[k] = Some(base.beta.clone());
+    }
+    Ok(Propensity { e, folds })
+}
+
+/// A cross-fitted propensity ([`propensity`]) with each fold's fit, from
+/// which a propensity with further columns starts ([`propensity_bordered`]).
+pub struct Propensity {
+    pub e: Vec<f64>,
+    folds: Vec<Option<LogisticBase>>,
+}
+
+/// The cross-fitted propensity on the design, `extra` and `added`, each fold
+/// fitted from `base`'s fit of the same fold on the design and `extra`
+/// ([`logistic_bordered`]): the optimum [`propensity`] would reach on all
+/// the columns, at a fraction of the cost.
+pub fn propensity_bordered(
+    design: DesignView<'_>,
+    cf: &CrossFit,
+    t: &[bool],
+    extra: &[&[f64]],
+    added: &[&[f64]],
+    base: &Propensity,
 ) -> anyhow::Result<Vec<f64>> {
     use super::timing;
     let n = design.x.nrows();
     anyhow::ensure!(t.len() == n, "row count mismatch");
-    let tf: Vec<f64> = t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
-    let p = design.p;
+    anyhow::ensure!(base.folds.len() == cf.k, "base propensity has other folds");
+    let tf = indicator(t);
+    let mut all: Vec<&[f64]> = extra.to_vec();
+    all.extend_from_slice(added);
+    let betas: Vec<Option<DVector<f64>>> = base
+        .folds
+        .par_iter()
+        .map(|fold| {
+            let Some(fold) = fold else { return Ok(None) };
+            timing::time(timing::LOGISTIC, || {
+                logistic_bordered(design.x, design.p, extra, added, &tf, fold)
+            })
+            .map(|(beta, _)| Some(beta))
+        })
+        .collect::<anyhow::Result<_>>()?;
     let mut e = vec![0.0; n];
-    starts.0.resize(cf.k, None);
-    for k in 0..cf.k {
-        let (train, test) = (&cf.train[k], &cf.test[k]);
-        if test.is_empty() {
-            continue;
-        }
-        anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
-        let beta = timing::time(timing::LOGISTIC, || {
-            logistic_ridge(
-                design.x,
-                p,
-                extra,
-                &tf,
-                &subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64),
-                opts.ridge,
-                starts.0[k].as_ref(),
-            )
-        })?;
-        linear_predictor(design, test, beta.as_slice(), extra, |i, eta| {
+    for (k, beta) in betas.iter().enumerate() {
+        let Some(beta) = beta else { continue };
+        linear_predictor(design, &cf.test[k], beta.as_slice(), &all, |i, eta| {
             e[i] = sigmoid(eta)
         });
-        starts.0[k] = Some(beta);
     }
     Ok(e)
 }
@@ -214,18 +264,16 @@ pub fn overlap_terms_with(
         pair.t.len() == n && pair.y.len() == n && e.len() == n,
         "row count mismatch"
     );
-    let outcome_only: Vec<Vec<f64>> = pair.outcome_only.iter().map(|c| standardize(c)).collect();
     let modifiers = pair.modifiers;
-    let tf: Vec<f64> = pair.t.iter().map(|&t| if t { 1.0 } else { 0.0 }).collect();
+    let tf = indicator(pair.t);
     let products: Vec<Vec<f64>> = modifiers
         .iter()
         .map(|m| m.iter().zip(&tf).map(|(a, b)| a * b).collect())
         .collect();
 
-    // Outcome model columns beyond X: extra (both kinds), T, T·modifier.
-    let n_extra = pair.extra.len() + outcome_only.len();
+    // Outcome model columns beyond X: extra, T, T·modifier.
+    let n_extra = pair.extra.len();
     let mut o_cols: Vec<&[f64]> = pair.extra.to_vec();
-    o_cols.extend(outcome_only.iter().map(|c| c.as_slice()));
     o_cols.push(&tf);
     o_cols.extend(products.iter().map(|c| c.as_slice()));
 

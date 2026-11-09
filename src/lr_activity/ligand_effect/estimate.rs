@@ -61,9 +61,9 @@
 //!   signalling it is no exposure itself;
 //! - competence.
 //!
-//! The two response-side columns enter the outcome model only, so one
-//! propensity serves every fit at a threshold with the same treatment and
-//! design ([`super::fits::ThresholdFits`]).
+//! The two response-side columns enter both models; the propensity of each
+//! response borders the one exposure-side fit shared at a threshold
+//! ([`super::fits::ThresholdFits`]) rather than refitting it.
 //!
 //! Neighbours share senders with the receiver, so their response is partly
 //! downstream of the same exposure and adjusting for it can attenuate a

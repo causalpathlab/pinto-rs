@@ -115,7 +115,7 @@ fn spillover_truth_is_on_the_measured_scale() {
     let f = fixture();
     let b = base(&f);
     let planted = Scenario {
-        effect: 0.5,
+        effect_pve: 0.1,
         ..Scenario::default()
     };
     let clean = run_sim(&f.tissue, &b, &planted, &opts(), 3).unwrap();

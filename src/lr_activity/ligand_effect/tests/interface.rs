@@ -172,7 +172,7 @@ fn the_example_study_round_trips_to_the_default() {
 #[test]
 fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
     let s = Study::from_json(
-        r#"{"reps": 2, "scenarios": {"effect_sizes": [0.2, 0.5], "confounders": ["fourier"],
+        r#"{"reps": 2, "scenarios": {"effect_pve": [0.2, 0.5], "confounders": ["fourier"],
             "shapes": ["linear", "quadratic"], "marker": false}}"#,
     )
     .unwrap();
@@ -180,17 +180,23 @@ fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
     assert_eq!(s.pairs, Study::default().pairs);
     assert_eq!(s.scenarios.scales, Study::default().scenarios.scales);
     let grid = default_grid(&s.grid());
-    assert!(grid.iter().any(|x| x.effect == 0.5) && grid.iter().any(|x| x.effect == 0.0));
+    assert!(grid.iter().any(|x| x.effect_pve == 0.5) && grid.iter().any(|x| x.effect_pve == 0.0));
     assert!(grid.iter().all(|x| !x.marker));
     assert!(grid
         .iter()
-        .filter(|x| x.confound_ligand != 0.0)
+        .filter(|x| x.ligand_field_pve != 0.0)
         .all(|x| x.confounder == ConfounderKind::Fourier));
     assert!(Study::from_json(r#"{"scenarios": {"effect_size": [0.2]}}"#).is_err());
     assert!(Study::from_json(r#"{"repz": 2}"#).is_err());
     assert!(Study::from_json(r#"{"scenarios": {"shapes": ["interaction"]}}"#).is_err());
     assert!(Study::from_json(r#"{"reps": 0}"#).is_err());
     assert!(Study::from_json(r#"{"scenarios": {"shapes": ["cubic"]}}"#).is_err());
+    // A study from before PVE says what replaced its sizes.
+    let old = Study::from_json(r#"{"scenarios": {"effect_sizes": [0.2]}}"#).unwrap_err();
+    assert!(old.to_string().contains("shares of variance"), "{old}");
+    // The background's field share counts against the budget too.
+    let too_much = r#"{"scenarios": {"field_pve": 0.5, "background_confounding": 2.0}}"#;
+    assert!(Study::from_json(too_much).is_err());
 }
 
 // * Files

@@ -19,7 +19,8 @@
 //!    scattered single counts mean and detection cannot tell few producers
 //!    from many weak ones, and without the floor ambient counts would make
 //!    every cell a weak producer. A hidden field moves production:
-//!    `logit p_i = logit p_b + α f(Z_i)`.
+//!    `logit p_i = logit p_b + a f(Z_i)`, with `a` giving the field its PVE
+//!    of the latent logistic variance (`ligand_field_pve`, beside `π²/3`).
 //!
 //!    The **true exposure** is the dose version
 //!    `T* = 1{Σ_contacts λ_j > τ*}`, with `τ*` from the estimator's
@@ -29,9 +30,13 @@
 //!    exposure and attenuates its estimate (column `misclassified`).
 //! 2. **Response from the real programme.** Each programme gene `g`, with
 //!    signed weight `w_g` (sign `s_g`), is drawn per receiver as
-//!    `Poisson(sf · μ_{b,g} · e^{s_g β f(Z)} · e^{s_g (θ_b C T* + θ_ring,b C T*_ring)})`,
-//!    with `μ_{b,g}` the real gene's mean count / size factor in the bin and
-//!    `C` whether the receiver responds. The response is the signed
+//!    `Poisson(sf · μ_{b,g} · e^{s_g (b f(Z) + θ_b C T* + θ_ring,b C T*_ring) + √v ε − v/2})`,
+//!    with `μ_{b,g}` the real gene's mean count / size factor in the bin,
+//!    `C` whether the receiver responds and `ε` standard normal per cell and
+//!    gene. Strengths are PVE of the log rate beyond the cell type
+//!    (a generalized linear model): `b = ±√response_field_pve`,
+//!    `θ = √effect_pve / sd(T*)` over responding receivers within bins, and
+//!    noise `v = 1 − effect_pve − |response_field_pve|`. The response is the signed
 //!    weighted programme the estimator uses,
 //!    `Σ_g w_g log1p(x_g / sf) / Σ_g |w_g|`. Potential outcomes are drawn
 //!    from one shared uniform per receiver and gene, so their difference is
@@ -39,7 +44,7 @@
 //! 3. **Hidden confounder** `Z`, standardized, never shown to the estimator
 //!    ([`ConfounderKind`]): random Fourier features (the adjustment's own
 //!    basis: a best case), random Gaussian bumps at random centres, or a
-//!    real gene's expression smoothed over contacts (a field from neither
+//!    real gene's expression smoothed by a Gaussian of the same width (a field from neither
 //!    the adjustment's basis nor its identity, which leaves the pair genes
 //!    out). It enters through a shape ([`ConfoundShape`]): `Z` or `Z² − 1`.
 //!    It acts alike in every cell type: a field that differs by cell type is
@@ -67,18 +72,21 @@
 //!    marker type (not estimable, or near 0 under no effect), and power
 //!    under an effect is low.
 //!
-//! 7. **Confounded receptor** (on in every scenario of the default grid,
-//!    `confound_receptor`; off in [`Scenario::default`], which keeps the
-//!    real receptor). The receptor is simulated too, so the hidden field
-//!    that drives ligand and response also drives the receptor:
-//!    `Poisson(sf · ρ_b · e^{β f(Z)} / mean e^{β f(Z)})`, with `ρ_b` the real
-//!    receptor's mean count / size factor in the bin and `β` the response's
-//!    confounding strength. Without it the co-expression baselines
-//!    ([`super::baselines`]) would see a receptor the field never touches
-//!    and could not be fooled by it. The receptor does nothing to the
-//!    response: competence (who responds, and whom the estimator calls
-//!    competent) is read by the estimator's own rule from the simulated
-//!    receptor's detection, as `pinto lra` reads it from the real one.
+//! 7. **Receptor**: the real one. The field never touches it, so competence
+//!    (who responds, and whom the estimator calls competent) is a fixed set
+//!    of identity bins, read by the estimator's own rule.
+//!
+//! The causal graph under the null: senders' identity and the field set who
+//! produces ligand, hence the seen exposure `T` (contacts' detected ligand);
+//! the receiver's identity and the field set its response `Y` (the receptor's
+//! programme); sender and receiver identities, which may differ, are tied by
+//! the tissue's layout. The estimator adjusts for both identities, depth and
+//! a spatial smooth of the field. What it assumes, and this benchmark does not
+//! test: no hidden field at or below contact scale (indistinguishable from a
+//! contact effect), none that differs by cell type, none that drives receptor
+//! detection (competence would become a collider of field and cell type), and
+//! no collider bias from identity axes learned from all genes. Scale-4 fields
+//! remain in the grid as a stress test of the first assumption.
 //!
 //! Every run also scores the co-expression baselines of
 //! [`super::baselines`] on the ligand and receptor the estimator sees.

@@ -7,7 +7,6 @@ use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
 use crate::lr_activity::ligand_effect::averaging::abf_weights;
 use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
-use crate::lr_activity::ligand_effect::contacts::competence;
 use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
 use crate::lr_activity::ligand_effect::effects::Sensitivity;
 use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
@@ -29,13 +28,15 @@ use special::Error as _;
 
 /// A background programme matched gene by gene to the real one: the same
 /// weights and bin means, no planted effect, the field's push on the response
-/// scaled by `share`, and the `generic` lift of each row. Counts come from
+/// scaled by `share`, the `generic` lift of each row, and log-rate noise of
+/// variance `noise_var`. Counts come from
 /// their own stream, so the background changes nothing else in the run.
 #[allow(clippy::too_many_arguments)]
 pub fn simulate_background(
     tissue: &Tissue,
     base: &SimBase<'_>,
     lifts: &[Vec<f64>; 2],
+    noise_var: f64,
     kappa: f64,
     seed: u64,
 ) -> Vec<Vec<(u32, f32)>> {
@@ -50,9 +51,10 @@ pub fn simulate_background(
             let lift = &lifts[(w < 0.0) as usize];
             let counts: Vec<f64> = (0..n)
                 .map(|i| {
+                    let noise = noise_lift(&mut rng, noise_var);
                     poisson(
                         &mut rng,
-                        sf[i] * base.target_bin_means[bin[i] * ng + g] * lift[i],
+                        sf[i] * base.target_bin_means[bin[i] * ng + g] * lift[i] * noise,
                     )
                 })
                 .collect();
@@ -86,6 +88,26 @@ pub fn sign_lifts(
             })
             .collect()
     })
+}
+
+/// The coefficient on a standardized field that gives it `pve` of a
+/// logistic model's latent variance, whose noise is the logistic's `π²/3`.
+pub fn logit_coef(pve: f64) -> f64 {
+    let pve = pve.clamp(0.0, 1.0 - 1e-9);
+    (pve * std::f64::consts::PI.powi(2) / 3.0 / (1.0 - pve)).sqrt()
+}
+
+/// The coefficient on a standardized field that gives it `|pve|` of a log
+/// rate's variance, carrying the sign of `pve`.
+pub fn log_rate_coef(pve: f64) -> f64 {
+    pve.signum() * pve.abs().sqrt()
+}
+
+/// Per-cell, per-gene log-rate noise of variance `var`, mean-preserving:
+/// the multiplier `e^{√var ε − var/2}`.
+fn noise_lift(rng: &mut SmallRng, var: f64) -> f64 {
+    let e: f64 = StandardNormal.sample(rng);
+    (var.sqrt() * e - 0.5 * var).exp()
 }
 
 /// The Poisson quantile at `u`: exact by summing the pmf for small rates,
@@ -199,6 +221,7 @@ fn draw_ligand(run: &Run<'_>, shared: &SimShared<'_>, rng: &mut SmallRng) -> Tru
         vec![0.0; n]
     };
     let trait_near = tissue.contacts.mean(&trait_z);
+    let alpha = logit_coef(scen.ligand_field_pve);
     let rate: Vec<f64> = (0..n)
         .map(|i| {
             let Producers { p, r, .. } = cal[bin[i]];
@@ -206,9 +229,7 @@ fn draw_ligand(run: &Run<'_>, shared: &SimShared<'_>, rng: &mut SmallRng) -> Tru
                 0.0
             } else {
                 let q = p.clamp(1e-9, 1.0 - 1e-9);
-                let eta = (q / (1.0 - q)).ln()
-                    + scen.confound_ligand * f[i]
-                    + scen.generic_shift * trait_z[i];
+                let eta = (q / (1.0 - q)).ln() + alpha * f[i] + scen.generic_shift * trait_z[i];
                 1.0 / (1.0 + (-eta).exp())
             };
             if rng.random::<f64>() < pi {
@@ -267,11 +288,9 @@ fn latent_exposure(run: &Run<'_>, rate: &[f64]) -> LatentExposure {
     }
 }
 
-/// What the estimator sees of the ligand and the receptor.
+/// What the estimator sees: the detected ligand's exposure, and the baselines.
 struct SeenByEstimator {
     exposure: Exposure,
-    /// Competence read from the receptor the estimator sees.
-    competent: Vec<bool>,
     baselines: Baselines,
     baseline_seconds: f64,
 }
@@ -282,7 +301,7 @@ struct SeenByEstimator {
 fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
     let (tissue, base, scen, opts) = (run.tissue, run.base, run.scen, run.opts);
     let n = tissue.n();
-    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let sf = &tissue.size_factor;
     let lnorm: Vec<f64> = (0..n).map(|i| ligand_counts[i] / sf[i]).collect();
     let seen = if run.shifted() {
         shift_field(tissue, &lnorm, scen.shift, mix_seed(run.seed, 3))
@@ -293,24 +312,15 @@ fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
     let seen_counts: Vec<f64> = (0..n).map(|i| seen[i] * sf[i]).collect();
     let mut exposure = Exposure::build(tissue, &seen_counts, opts);
 
-    // The receptor the estimator and the baselines see, and competence read
-    // from it by the estimator's own rule.
-    let sim_receptor;
-    let (receptor, competent): (&[f64], Vec<bool>) = if scen.confound_receptor {
-        sim_receptor = simulate_receptor(
-            tissue,
-            base.receptor_counts,
-            &run.f,
-            scen.confound_response,
-            mix_seed(run.seed, 6),
-        );
-        let detected: Vec<bool> = sim_receptor.iter().map(|&r| r > 0.0).collect();
-        (&sim_receptor, competence(bin, &detected, opts.competence()))
-    } else {
-        (base.receptor_counts, base.competent.to_vec())
-    };
+    // The receptor is the real one: the hidden field never touches it, so
+    // competence is a fixed set of identity bins.
     let clock = std::time::Instant::now();
-    let coexpression_baselines = baselines(tissue, &seen_counts, receptor, mix_seed(run.seed, 8));
+    let coexpression_baselines = baselines(
+        tissue,
+        &seen_counts,
+        base.receptor_counts,
+        mix_seed(run.seed, 8),
+    );
     let baseline_seconds = clock.elapsed().as_secs_f64();
     let kappa = scen.spillover;
     let own_seen: Vec<f64> = if kappa > 0.0 {
@@ -324,7 +334,6 @@ fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
     exposure.own = own_seen.iter().map(|v| v.ln_1p()).collect();
     SeenByEstimator {
         exposure,
-        competent,
         baselines: coexpression_baselines,
         baseline_seconds,
     }
@@ -408,6 +417,14 @@ impl GeneCounts {
     }
 }
 
+/// Each receiver's planted log-rate lifts, before the gene's sign: under
+/// `T*` (`θ · u_bin · dose share`) and under the ring exposure; zero for a
+/// receiver that does not respond.
+struct Planted {
+    contact: Vec<f64>,
+    ring: Vec<f64>,
+}
+
 /// Draw gene `g`'s counts from one shared uniform per receiver, so that
 /// potential counts differ by the effect alone.
 fn draw_gene(
@@ -415,7 +432,7 @@ fn draw_gene(
     g: usize,
     lifts: &[Vec<f64>; 2],
     latent: &LatentExposure,
-    receivers: &Receivers,
+    planted: &Planted,
     c: &mut GeneCounts,
     rng: &mut SmallRng,
 ) {
@@ -427,18 +444,13 @@ fn draw_gene(
     let w = base.target_weights[g];
     let s = if w < 0.0 { -1.0 } else { 1.0 };
     let lift = &lifts[(w < 0.0) as usize];
+    let noise_var = log_rate_noise(scen.effect_pve, scen.response_field_pve);
     for i in 0..tissue.n() {
         let b = bin[i];
-        let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
+        let noise = noise_lift(rng, noise_var);
+        let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i] * noise;
         let u: f64 = rng.random();
-        let (th, thr) = if receivers.responds[i] {
-            (
-                s * scen.effect * receivers.u_bin[b] * latent.dose_share[i],
-                s * scen.ring_effect * receivers.u_bin[b],
-            )
-        } else {
-            (0.0, 0.0)
-        };
+        let (th, thr) = (s * planted.contact[i], s * planted.ring[i]);
         let q = |l: f64| poisson_quantile(u, r0 * l.exp());
         let ring_lift = if r_star[i] { thr } else { 0.0 };
         let hi = q(th + ring_lift);
@@ -569,10 +581,34 @@ fn draw_programme(
     for &b in tissue.identity_bin.iter() {
         bin_cells[b] += 1;
     }
+    let bin = &tissue.identity_bin;
+    let x: Vec<f64> = (0..n)
+        .map(|i| {
+            if latent.t[i] {
+                receivers.u_bin[bin[i]] * latent.dose_share[i]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let theta = effect_coef(run.scen.effect_pve, &x, &receivers.responds, bin);
+    let share = |i: usize, size: f64| {
+        if receivers.responds[i] {
+            size * receivers.u_bin[bin[i]]
+        } else {
+            0.0
+        }
+    };
+    let planted = Planted {
+        contact: (0..n)
+            .map(|i| share(i, theta) * latent.dose_share[i])
+            .collect(),
+        ring: (0..n).map(|i| share(i, run.scen.ring_effect)).collect(),
+    };
     let mut counts = GeneCounts::new(n, run.ring_on());
     let mut out = ProgrammeResponses::new(n, run.ring_on());
     for (g, &w) in weights.iter().enumerate() {
-        draw_gene(run, g, lifts, latent, receivers, &mut counts, rng);
+        draw_gene(run, g, lifts, latent, &planted, &mut counts, rng);
         out.add_gene(run, w, &bin_cells, &mut counts);
     }
     let total_w: f64 = weights.iter().map(|w| w.abs()).sum::<f64>().max(1e-12);
@@ -589,6 +625,40 @@ fn misclassified_share(comp: &[bool], seen: &[bool], truth: &[bool]) -> f64 {
     miss as f64 / k.max(1) as f64
 }
 
+/// Log-rate noise of a programme gene: what the effect's and the field's
+/// shares leave of its variance. The real programme carries both; a
+/// background one no effect and the field scaled by `background_confounding²`.
+fn log_rate_noise(effect_pve: f64, field_pve: f64) -> f64 {
+    (1.0 - effect_pve - field_pve.abs()).max(0.0)
+}
+
+/// The effect's log-rate coefficient: `√effect_pve` over the standard
+/// deviation of the exposure term `x` (true exposure × the bin's share × the
+/// dose share) across responding receivers, centred within identity bin, so
+/// it explains `effect_pve` of a gene's log-rate variance beyond the cell type.
+pub fn effect_coef(effect_pve: f64, x: &[f64], responds: &[bool], bin: &[usize]) -> f64 {
+    if effect_pve <= 0.0 {
+        return 0.0;
+    }
+    let nb = bin.iter().copied().max().map_or(0, |b| b + 1);
+    let (mut sum, mut cnt) = (vec![0.0; nb], vec![0usize; nb]);
+    for i in (0..x.len()).filter(|&i| responds[i]) {
+        sum[bin[i]] += x[i];
+        cnt[bin[i]] += 1;
+    }
+    let (mut ss, mut n) = (0.0, 0usize);
+    for i in (0..x.len()).filter(|&i| responds[i]) {
+        ss += (x[i] - sum[bin[i]] / cnt[bin[i]] as f64).powi(2);
+        n += 1;
+    }
+    let var = ss / n.max(1) as f64;
+    if var > 0.0 {
+        (effect_pve / var).sqrt()
+    } else {
+        0.0
+    }
+}
+
 /// The run's background programmes, each from its own stream.
 fn background_responses(run: &Run<'_>, lifts: &[Vec<f64>; 2]) -> Vec<Response> {
     let (tissue, base) = (run.tissue, run.base);
@@ -596,7 +666,14 @@ fn background_responses(run: &Run<'_>, lifts: &[Vec<f64>; 2]) -> Vec<Response> {
         .into_par_iter()
         .map(|k| {
             let seed = mix_seed(mix_seed(run.seed, 9), k as u64);
-            let nz = simulate_background(tissue, base, lifts, run.scen.spillover, seed);
+            let nz = simulate_background(
+                tissue,
+                base,
+                lifts,
+                log_rate_noise(0.0, run.scen.background_field_pve()),
+                run.scen.spillover,
+                seed,
+            );
             let genes: Vec<(f64, &[(u32, f32)])> = base
                 .target_weights
                 .iter()
@@ -702,6 +779,7 @@ pub fn simulate(
     let bin = &tissue.identity_bin;
     let nb = n_bins(tissue);
     let ng = base.target_weights.len();
+    scen.validate()?;
     anyhow::ensure!(ng > 0, "the programme has no genes");
     anyhow::ensure!(
         base.target_bin_means.len() == nb * ng,
@@ -725,10 +803,10 @@ pub fn simulate(
     let latent = latent_exposure(&run, &ligand.rate);
     let seen = seen_by_estimator(&run, &ligand.counts);
     let exposure = &seen.exposure;
-    let receivers = who_responds(&run, &ligand, &seen.competent);
+    let receivers = who_responds(&run, &ligand, run.base.competent);
     let comp = &receivers.comp;
 
-    let beta = scen.confound_response;
+    let beta = log_rate_coef(scen.response_field_pve);
     let lifts = sign_lifts(&run.f, beta, &receivers.generic, &ligand.marker, bin);
     let ProgrammeResponses {
         y_seen,
@@ -746,11 +824,7 @@ pub fn simulate(
     drop((yd1, yd0));
     let misclassified = misclassified_share(comp, &exposure.t, &latent.t);
 
-    let response = Response {
-        spill: tissue.contacts.mean(&y_seen),
-        y: y_seen,
-        bleed,
-    };
+    let response = Response::new(tissue, y_seen, &bleed);
     let background_lifts = sign_lifts(
         &run.f,
         beta * scen.background_confounding,
@@ -817,26 +891,4 @@ pub fn simulate(
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds: seen.baseline_seconds,
     })
-}
-
-/// The receptor driven by the hidden field: `Poisson(sf · ρ_b · e^{γ f} /
-/// mean e^{γ f})`, `ρ_b` the real receptor's mean count / size factor in
-/// identity bin `b`.
-fn simulate_receptor(tissue: &Tissue, real: &[f64], f: &[f64], gamma: f64, seed: u64) -> Vec<f64> {
-    let n = tissue.n();
-    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
-    let nb = n_bins(tissue);
-    let (mut rho, mut cells) = (vec![0.0; nb], vec![0usize; nb]);
-    for i in 0..n {
-        rho[bin[i]] += real[i] / sf[i];
-        cells[bin[i]] += 1;
-    }
-    for (r, &c) in rho.iter_mut().zip(&cells) {
-        *r /= c.max(1) as f64;
-    }
-    let norm = f.iter().map(|z| (gamma * z).exp()).sum::<f64>() / n.max(1) as f64;
-    let mut rng = SmallRng::seed_from_u64(seed);
-    (0..n)
-        .map(|i| poisson(&mut rng, sf[i] * rho[bin[i]] * (gamma * f[i]).exp() / norm))
-        .collect()
 }

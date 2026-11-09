@@ -4,7 +4,10 @@ use super::crossfit::{CrossFit, DesignView};
 use super::dose::Exposure;
 use super::inference::Estimate;
 use super::options::EffectOpts;
-use super::overlap::{overlap_terms_with, propensity, FoldStarts, OverlapTerms, PairInputs};
+use super::overlap::{
+    overlap_terms_with, propensity, propensity_bordered, FoldStarts, OverlapTerms, PairInputs,
+    Propensity,
+};
 use super::regression::standardize;
 use super::response::Response;
 use super::timing;
@@ -101,9 +104,9 @@ impl Reads {
 /// The controls' propensities ([`ThresholdFits::with_controls`]); `None` for a
 /// fit skipped as hopeless ([`Reads`]).
 struct Controls {
-    ring: Option<Vec<f64>>,
+    ring: Option<Propensity>,
     /// Each adjustment step's, when asked for and the competent effect is read.
-    steps: Option<Vec<Vec<f64>>>,
+    steps: Option<Vec<Propensity>>,
 }
 
 /// One threshold's exposure side as its fits read it, built once and shared by
@@ -113,9 +116,9 @@ struct Controls {
 /// contact exposure the ring fit adds to them), which fits serve a subset
 /// ([`Reads`]), and the cross-fitted propensities ([`propensity`]) of the
 /// main fit and, with [`ThresholdFits::with_controls`], of the ring fit and each
-/// adjustment step. The propensity reads no response-side column
-/// ([`fit_main`]), so one serves every programme weighting, the background and
-/// the no-spill fit.
+/// adjustment step. These read no response-side column, so one serves every
+/// programme weighting, the background and the no-spill fit; a fit that adds
+/// spillover and bleed borders it ([`fit_main`]).
 pub struct ThresholdFits<'a> {
     pub exposure: &'a Exposure,
     /// Competence at each threshold, per row.
@@ -126,7 +129,7 @@ pub struct ThresholdFits<'a> {
     modifiers: Vec<Vec<f64>>,
     extra: Vec<Vec<f64>>,
     exposed: Vec<f64>,
-    main: Option<Vec<f64>>,
+    main: Option<Propensity>,
     controls: Option<Controls>,
 }
 
@@ -247,20 +250,16 @@ impl<'a> ThresholdFits<'a> {
     /// The propensity of the fit `kind` (of adjustment step `step` when
     /// given); an error when it was not fitted: the controls' before
     /// [`ThresholdFits::with_controls`], or a fit skipped as hopeless.
-    fn propensity(&self, kind: Fit, step: Option<usize>) -> anyhow::Result<&[f64]> {
+    fn propensity(&self, kind: Fit, step: Option<usize>) -> anyhow::Result<&Propensity> {
         let controls = || {
             self.controls
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("the controls' propensities are not fitted"))
         };
         let e = match (kind, step) {
-            (Fit::Ring, _) => controls()?.ring.as_deref(),
-            (_, Some(s)) => controls()?
-                .steps
-                .as_ref()
-                .and_then(|v| v.get(s))
-                .map(Vec::as_slice),
-            _ => self.main.as_deref(),
+            (Fit::Ring, _) => controls()?.ring.as_ref(),
+            (_, Some(s)) => controls()?.steps.as_ref().and_then(|v| v.get(s)),
+            _ => self.main.as_ref(),
         };
         e.ok_or_else(|| anyhow::anyhow!("the {kind:?} propensity (step {step:?}) is not fitted"))
     }
@@ -280,18 +279,12 @@ impl<'a> ThresholdFits<'a> {
 ///
 /// The pair columns: own ligand, niche, every competence indicator, and
 /// under [`Fit::Ring`] the contact exposure, the ring exposure being the
-/// treatment, in both models; spillover and bleed (not under
-/// [`Fit::NoSpill`]) in the outcome model alone. Read off the response,
-/// they would tie the propensity to one programme; without them it depends
-/// on the exposure side only and is fitted once per exposure threshold for every
-/// programme weighting, the background and the no-spill fit.
-///
-/// That is a trade-off in robustness. The estimator is doubly robust in
-/// the confounders and pair columns both models carry: right when either
-/// the propensity or the outcome model is. For spillover and bleed it
-/// relies on the outcome model alone: the propensity does not balance
-/// them, so if they confound exposure and the outcome model gets them
-/// wrong, the estimate is biased.
+/// treatment, in both models; and spillover and bleed (not under
+/// [`Fit::NoSpill`]), in both models too, so the estimator is doubly robust
+/// in them as well. Read off the response, they would tie the propensity to
+/// one programme, so it is not refitted: the threshold's shared
+/// exposure-side fit is bordered with these two columns
+/// ([`propensity_bordered`]).
 #[allow(clippy::too_many_arguments)]
 pub fn fit_main(
     design: DesignView<'_>,
@@ -302,19 +295,29 @@ pub fn fit_main(
     step: Option<usize>,
     opts: &EffectOpts,
 ) -> anyhow::Result<OverlapTerms> {
-    let e = fits.propensity(kind, step)?;
     let x = fits.exposure;
-    let extra = fits.extra(kind);
-    let outcome_only: Vec<&[f64]> = match kind {
+    let t = if kind == Fit::Ring { &x.t_ring } else { &x.t };
+    let mut extra = fits.extra(kind);
+    let modifiers: Vec<&[f64]> = fits.modifiers.iter().map(|c| c.as_slice()).collect();
+    // Spillover and bleed in both models, so the propensity of this
+    // response balances them.
+    let added: Vec<&[f64]> = match kind {
         Fit::NoSpill => Vec::new(),
         Fit::Main | Fit::Ring => vec![&r.spill, &r.bleed],
     };
-    let modifiers: Vec<&[f64]> = fits.modifiers.iter().map(|c| c.as_slice()).collect();
+    let shared = fits.propensity(kind, step)?;
+    let own;
+    let e = if added.is_empty() {
+        shared.e.as_slice()
+    } else {
+        own = propensity_bordered(design, cf, t, &extra, &added, shared)?;
+        extra.extend(added);
+        own.as_slice()
+    };
     let inputs = PairInputs {
-        t: if kind == Fit::Ring { &x.t_ring } else { &x.t },
+        t,
         y: &r.y,
         extra: &extra,
-        outcome_only: &outcome_only,
         modifiers: &modifiers,
     };
     overlap_terms_with(design, cf, &inputs, e, &opts.nuisance)

@@ -12,6 +12,7 @@ use super::inference::Estimate;
 use super::options::EffectOpts;
 use super::response::Response;
 use super::timing;
+use rayon::prelude::*;
 
 /// Every estimand of a pair averaged over its exposure thresholds
 /// ([`over_thresholds`]).
@@ -88,9 +89,12 @@ pub fn over_thresholds(
                 timing::all_skipped();
             }
         }
+        let per_response: Vec<_> = responses
+            .par_iter()
+            .map(|r| effects_on(rows, &fits, r, sens, opts))
+            .collect::<anyhow::Result<_>>()?;
         let mut per_weighting = Vec::with_capacity(responses.len());
-        for (w, r) in responses.iter().enumerate() {
-            let per_c = effects_on(rows, &fits, r, sens, opts)?;
+        for (w, per_c) in per_response.into_iter().enumerate() {
             if w == 0 {
                 let head = &per_c.levels[mid];
                 points.push((tau, head.scopes[0].competent, head.pooled_sums.clone()));
@@ -166,8 +170,9 @@ fn background_effects(
     responses: &[Response],
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<Estimate>> {
+    // Programmes are independent: fit them side by side.
     responses
-        .iter()
+        .par_iter()
         .map(|r| {
             timing::time(timing::BACKGROUND, || competent_effect(rows, fits, r, opts)).map(|e| e.0)
         })

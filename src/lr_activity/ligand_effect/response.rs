@@ -1,5 +1,6 @@
 //! The response programme and the response-side covariates read from it.
 
+use super::regression::standardize;
 use super::tissue::Tissue;
 use rayon::prelude::*;
 
@@ -10,14 +11,24 @@ pub type Targets<'a> = [(f64, &'a [(u32, f32)])];
 /// programme (each weighting, the background).
 pub struct Response {
     pub y: Vec<f64>,
-    /// The contact-neighbour mean response.
+    /// The contact-neighbour mean response, standardized.
     pub spill: Vec<f64>,
     /// The neighbours' expected programme counts on the receiver's scale
-    /// ([`programme_columns`]).
+    /// ([`programme_columns`]), standardized.
     pub bleed: Vec<f64>,
 }
 
 impl Response {
+    /// The response `y` with its spillover and the given bleed, both
+    /// standardized once here for every fit that reads them.
+    pub fn new(tissue: &Tissue, y: Vec<f64>, bleed: &[f64]) -> Self {
+        Self {
+            spill: standardize(&tissue.contacts.mean(&y)),
+            bleed: standardize(bleed),
+            y,
+        }
+    }
+
     pub fn build(tissue: &Tissue, targets: &Targets<'_>) -> Self {
         let (genes, weights) = genes_and_weights(targets);
         Self::build_many(tissue, &genes, &[weights])
@@ -42,11 +53,7 @@ impl Response {
         );
         ys.into_iter()
             .zip(bleeds)
-            .map(|(y, bleed)| Self {
-                spill: tissue.contacts.mean(&y),
-                y,
-                bleed,
-            })
+            .map(|(y, bleed)| Self::new(tissue, y, &bleed))
             .collect()
     }
 }

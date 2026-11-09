@@ -154,10 +154,8 @@ confounders, and reports power, type I error, bias and coverage per
 scenario. It writes `{out}.lra-simulate.parquet`, and `pinto lra` on the
 same run then points to it.
 
-By default the hidden field drives the receptor too (`confound_receptor` in
-the study): the receptor is simulated per identity bin from the real one,
-scaled by `e^{βZ}` at the response's confounding strength β, and competence
-is read from it as `pinto lra` reads it. Every run also scores the
+The receptor stays the real one: the hidden field never touches it, so the
+receivers analysed are a fixed set of cell types. Every run also scores the
 co-expression statistics that do not adjust for confounders, each tested at
 5%: cell-type label permutation (CellPhoneDB v2, Efremova 2020; CellChat's
 product score, Jin 2021; identity bins coarsened to ≤ 8 types, Bonferroni

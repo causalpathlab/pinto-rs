@@ -1,6 +1,7 @@
 //! The threshold-response curve and its simultaneous band.
 
 use super::averaging::combine;
+use super::contacts::quantile_sorted;
 use super::inference::Estimate;
 use super::options::{BAND_DRAWS, CURVE_QUANTILES};
 use super::rows::CurvePoint;
@@ -17,7 +18,7 @@ pub fn curve_taus(a: &[f64], headline: f64, eligible: &[bool], min_arm: usize) -
         return Vec::new();
     }
     pos.sort_by(f64::total_cmp);
-    let at = |q: f64| pos[(q * (pos.len() - 1) as f64).round() as usize];
+    let at = |q: f64| quantile_sorted(&pos, q).expect("pos is not empty");
     let mut cand: Vec<f64> = std::iter::once(0.0)
         .chain(CURVE_QUANTILES.iter().map(|&q| at(q)))
         .chain(std::iter::once(headline))
