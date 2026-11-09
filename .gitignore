@@ -4,6 +4,9 @@
 temp*/
 *.pinto.json
 
+# The viewer's saved figures, kept where it runs
+.pinto-view/
+
 # Not tracked; resolved fresh on each build
 Cargo.lock
 /target-test
