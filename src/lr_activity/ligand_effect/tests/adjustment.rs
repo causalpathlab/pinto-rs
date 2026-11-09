@@ -4,6 +4,7 @@
 //! identity step is not. The nested designs share the full matrix.
 
 use super::{estimate_pair, overlap_terms};
+use crate::lr_activity::ligand_effect::confounders::{depth_basis, DEPTH_COLS};
 use crate::lr_activity::ligand_effect::crossfit::Design;
 use crate::lr_activity::ligand_effect::estimate::PairData;
 use crate::lr_activity::ligand_effect::folds::spatial_folds;
@@ -197,7 +198,7 @@ fn steps_are_nested_prefixes_of_one_matrix() {
     let identity = spatial + 4 + 4 + 1;
     let widths: Vec<usize> = t.steps.iter().map(|s| s.design.p()).collect();
     assert_eq!(widths, [section, spatial, identity]);
-    assert_eq!(t.design.p(), identity + 2);
+    assert_eq!(t.design.p(), identity + DEPTH_COLS);
     for s in &t.steps {
         assert!(std::ptr::eq(s.design.view(&t.design).x, &t.design.x));
     }
@@ -245,4 +246,24 @@ fn prefix_terms_match_a_copied_design() {
     }
     let differs = (0..n).any(|i| (a.num[i] - c.num[i]).abs() > 1e-3);
     assert!(differs, "dropping a confounder changes the fit");
+}
+
+/// The receiver's depth enters piecewise linearly: the log depth, then a
+/// hinge at each knot that is zero up to it and rises with slope one past
+/// it, so a curved effect of depth is adjusted for, not only its slope.
+#[test]
+fn depth_basis_is_hinged_at_its_quantiles() {
+    let d: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let basis = depth_basis(&d);
+    assert_eq!(basis.len(), DEPTH_COLS - 1);
+    assert_eq!(basis[0], d);
+    for (col, knot) in basis[1..].iter().zip([2.0, 4.0, 6.0, 8.0]) {
+        for (&v, &x) in col.iter().zip(&d) {
+            assert!(
+                (v - (x - knot).max(0.0)).abs() < 1e-9,
+                "knot {knot} at {x}: {v}"
+            );
+        }
+    }
+    assert!(depth_basis(&[]).iter().all(|c| c.is_empty()));
 }

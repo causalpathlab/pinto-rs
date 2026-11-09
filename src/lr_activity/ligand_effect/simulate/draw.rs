@@ -670,10 +670,7 @@ fn background_responses(run: &Run<'_>, lifts: &[Vec<f64>; 2]) -> Vec<Response> {
                 tissue,
                 base,
                 lifts,
-                log_rate_noise(
-                    0.0,
-                    run.scen.background_confounding.powi(2) * run.scen.response_field_pve,
-                ),
+                log_rate_noise(0.0, run.scen.background_field_pve()),
                 run.scen.spillover,
                 seed,
             );

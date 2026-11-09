@@ -7,7 +7,7 @@
 //! | receiver identity (random projection) | cell type and state |
 //! | contact-neighbour mean identity | neighbour composition |
 //! | cell-type indicators (optional) | annotated cell type |
-//! | receiver log depth, neighbour mean log depth | detection |
+//! | receiver log depth (piecewise linear), neighbour mean log depth | detection |
 //!
 //! The smooth fields stand in for unmeasured regional confounders because
 //! contact exposure varies at the scale of one cell while they vary over
@@ -28,7 +28,7 @@
 //! (section, smooth, identity, depth), so each adjustment step is a column
 //! prefix of the one matrix and needs no copy of it.
 
-use super::contacts::Contacts;
+use super::contacts::{quantile_sorted, Contacts};
 use legume_numeric::matrix::rand_util::mix_seed;
 use nalgebra::DMatrix;
 use rand::rngs::SmallRng;
@@ -112,7 +112,7 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         l
     });
     let n_type_cols = levels.len().saturating_sub(1);
-    let p = 1 + n_section_cols + inp.scales.len() * inp.n_freq + 2 * k + n_type_cols + 2;
+    let p = 1 + n_section_cols + inp.scales.len() * inp.n_freq + 2 * k + n_type_cols + DEPTH_COLS;
     // Filled column by column, so the only full-size allocation is the
     // matrix itself.
     let mut x = DMatrix::<f32>::zeros(n, p);
@@ -178,10 +178,36 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         close(&mut groups, "cell type".into(), n_type_cols);
     }
 
-    put(&mut x, inp.log_depth);
+    for col in depth_basis(inp.log_depth) {
+        put(&mut x, &col);
+    }
     put(&mut x, &inp.contacts.mean(inp.log_depth));
-    close(&mut groups, "depth".into(), 2);
+    close(&mut groups, "depth".into(), DEPTH_COLS);
     debug_assert_eq!(at, p);
     debug_assert_eq!(groups.last().map(|g| g.cols.end), Some(p));
     (x, groups)
+}
+
+/// Knots of the receiver's depth basis, as quantiles of its log depth.
+const DEPTH_KNOTS: [f64; 4] = [0.2, 0.4, 0.6, 0.8];
+
+/// The depth group's width: the receiver's depth basis and the neighbours'
+/// mean log depth.
+pub const DEPTH_COLS: usize = DEPTH_KNOTS.len() + 2;
+
+/// The receiver's log depth, piecewise linear: the log depth and a hinge
+/// `max(0, d − q)` at each knot. Depth drives detection, so both the
+/// response and the pair columns read off counts (own ligand, competence)
+/// depend on it nonlinearly; one slope leaves a remainder that conditioning
+/// on those pair columns ties to exposure.
+pub(super) fn depth_basis(log_depth: &[f64]) -> Vec<Vec<f64>> {
+    let mut sorted = log_depth.to_vec();
+    sorted.sort_unstable_by(f64::total_cmp);
+    let at = |q: f64| quantile_sorted(&sorted, q).unwrap_or(0.0);
+    std::iter::once(log_depth.to_vec())
+        .chain(DEPTH_KNOTS.iter().map(|&q| {
+            let k = at(q);
+            log_depth.iter().map(|&d| (d - k).max(0.0)).collect()
+        }))
+        .collect()
 }

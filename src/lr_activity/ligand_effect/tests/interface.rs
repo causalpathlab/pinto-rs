@@ -191,6 +191,12 @@ fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
     assert!(Study::from_json(r#"{"scenarios": {"shapes": ["interaction"]}}"#).is_err());
     assert!(Study::from_json(r#"{"reps": 0}"#).is_err());
     assert!(Study::from_json(r#"{"scenarios": {"shapes": ["cubic"]}}"#).is_err());
+    // A study from before PVE says what replaced its sizes.
+    let old = Study::from_json(r#"{"scenarios": {"effect_sizes": [0.2]}}"#).unwrap_err();
+    assert!(old.to_string().contains("shares of variance"), "{old}");
+    // The background's field share counts against the budget too.
+    let too_much = r#"{"scenarios": {"field_pve": 0.5, "background_confounding": 2.0}}"#;
+    assert!(Study::from_json(too_much).is_err());
 }
 
 // * Files

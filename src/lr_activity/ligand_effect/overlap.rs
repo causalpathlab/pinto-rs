@@ -179,7 +179,7 @@ pub fn propensity(
                 return Ok(None);
             }
             anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
-            let rows = propensity_rows(train, k, opts);
+            let rows = subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64);
             let start = starts.0[k].as_ref();
             timing::time(timing::LOGISTIC, || {
                 logistic_base(design.x, p, extra, &tf, &rows, opts.ridge, start)
@@ -209,11 +209,6 @@ pub struct Propensity {
     folds: Vec<Option<LogisticBase>>,
 }
 
-/// The training rows a fold's propensity is fitted on.
-fn propensity_rows(train: &[usize], k: usize, opts: &NuisanceOpts) -> Vec<usize> {
-    subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64)
-}
-
 /// The cross-fitted propensity on the design, `extra` and `added`, each fold
 /// fitted from `base`'s fit of the same fold on the design and `extra`
 /// ([`logistic_bordered`]): the optimum [`propensity`] would reach on all
@@ -225,7 +220,6 @@ pub fn propensity_bordered(
     extra: &[&[f64]],
     added: &[&[f64]],
     base: &Propensity,
-    opts: &NuisanceOpts,
 ) -> anyhow::Result<Vec<f64>> {
     use super::timing;
     let n = design.x.nrows();
@@ -237,12 +231,10 @@ pub fn propensity_bordered(
     let betas: Vec<Option<DVector<f64>>> = base
         .folds
         .par_iter()
-        .enumerate()
-        .map(|(k, fold)| {
+        .map(|fold| {
             let Some(fold) = fold else { return Ok(None) };
-            let rows = propensity_rows(&cf.train[k], k, opts);
             timing::time(timing::LOGISTIC, || {
-                logistic_bordered(design.x, design.p, extra, added, &tf, &rows, fold)
+                logistic_bordered(design.x, design.p, extra, added, &tf, fold)
             })
             .map(|(beta, _)| Some(beta))
         })

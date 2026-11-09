@@ -310,7 +310,7 @@ pub fn fit_main(
     let e = if added.is_empty() {
         shared.e.as_slice()
     } else {
-        own = propensity_bordered(design, cf, t, &extra, &added, shared, &opts.nuisance)?;
+        own = propensity_bordered(design, cf, t, &extra, &added, shared)?;
         extra.extend(added);
         own.as_slice()
     };

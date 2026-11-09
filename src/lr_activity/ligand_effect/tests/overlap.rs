@@ -365,7 +365,7 @@ fn bordered_logistic_reaches_the_cold_optimum_without_a_fresh_hessian() {
         let x = &w.design.x;
         let cols: Vec<&[f64]> = added.iter().map(|c| c.as_slice()).collect();
         let base = logistic_base(x, 2, &[], &t, &rows, 1.0, None).unwrap();
-        let (warm, hessians) = logistic_bordered(x, 2, &[], &cols, &t, &rows, &base).unwrap();
+        let (warm, hessians) = logistic_bordered(x, 2, &[], &cols, &t, &base).unwrap();
         let cold = logistic_base(x, 2, &cols, &t, &rows, 1.0, None)
             .unwrap()
             .beta;

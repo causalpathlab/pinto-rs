@@ -239,7 +239,7 @@ impl<'p> SimTable<'p> {
         use sim_cols::*;
         let later = |name: &str| later_column(path, name);
         anyhow::ensure!(
-            later(EFFECT_PVE).is_some() || later("planted_effect").is_none(),
+            later("planted_effect").is_none(),
             "{path} is from before effect sizes were set by PVE: run lra-simulate again"
         );
         let (strings, numbers) = legume_numeric::matrix::parquet::read_table_columns(

@@ -120,18 +120,27 @@ pub struct Scenario {
 }
 
 impl Scenario {
+    /// The field's share of a background programme's log-rate variance:
+    /// the response field's, scaled by `background_confounding²`.
+    pub fn background_field_pve(&self) -> f64 {
+        self.background_confounding.powi(2) * self.response_field_pve
+    }
+
     /// Effect, field and noise share a unit variance: each PVE at least 0,
     /// the response's two summing to at most 1, the ligand's below 1.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.effect_pve >= 0.0
                 && self.effect_pve + self.response_field_pve.abs() <= 1.0
-                && (0.0..1.0).contains(&self.ligand_field_pve),
-            "PVE out of range: effect {}, response field {}, ligand field {} (each a share of \
-             variance; effect and |response field| sum to at most 1, ligand field below 1)",
+                && (0.0..1.0).contains(&self.ligand_field_pve)
+                && self.background_field_pve().abs() <= 1.0,
+            "PVE out of range: effect {}, response field {}, ligand field {}, background \
+             confounding {} (each a share of variance; effect and |response field| sum to at \
+             most 1, ligand field below 1, background confounding² × |response field| at most 1)",
             self.effect_pve,
             self.response_field_pve,
-            self.ligand_field_pve
+            self.ligand_field_pve,
+            self.background_confounding
         );
         Ok(())
     }
@@ -234,6 +243,9 @@ impl Default for GridOpts {
         }
     }
 }
+
+/// Scenario keys of studies from before sizes were shares of variance.
+const RETIRED_SCENARIO_KEYS: [&str; 2] = ["effect_sizes", "confound_receptor"];
 
 /// The grid: no effect and each planted one, each with
 ///
@@ -367,7 +379,17 @@ impl Study {
     }
 
     pub fn from_json(text: &str) -> anyhow::Result<Self> {
-        let s: Study = serde_json::from_str(text)?;
+        let value: serde_json::Value = serde_json::from_str(text)?;
+        if let Some(k) = RETIRED_SCENARIO_KEYS
+            .iter()
+            .find(|k| value["scenarios"].get(**k).is_some())
+        {
+            anyhow::bail!(
+                "scenarios.{k} is retired: effect and field sizes are now shares of variance \
+                 explained (effect_pve, field_pve), not log-rate sizes; see the example study"
+            );
+        }
+        let s: Study = serde_json::from_value(value)?;
         anyhow::ensure!(s.reps > 0, "reps must be at least 1");
         anyhow::ensure!(s.pairs > 0, "pairs must be at least 1");
         anyhow::ensure!(

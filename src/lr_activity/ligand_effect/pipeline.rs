@@ -39,7 +39,7 @@ impl Progress {
             // Not through the log, whose default level would hide it.
             let elapsed = self.bar.elapsed().as_secs_f64();
             // The rate so far, which for runs of like cost is the honest guess.
-            let left = elapsed * (total - done) as f64 / done as f64;
+            let left = elapsed * total.saturating_sub(done) as f64 / done as f64;
             eprintln!(
                 "{done}/{total} {} ({elapsed:.0}s, about {left:.0}s left)",
                 self.bar.message(),

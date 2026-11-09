@@ -95,6 +95,13 @@ pub fn median_contact_length(
         .collect()
 }
 
+/// The `q` quantile of `sorted` (ascending), the element at
+/// `round(q (len − 1))`; `None` when empty.
+pub fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    sorted.get((q * last as f64).round() as usize).copied()
+}
+
 /// The element at `len / 2` of `v` sorted (the upper median), found by
 /// selection; `None` when empty. Reorders `v`.
 pub fn upper_median(v: &mut [f64]) -> Option<f64> {

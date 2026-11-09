@@ -168,6 +168,8 @@ pub(super) struct LogisticBase {
     pub beta: DVector<f64>,
     hessian: nalgebra::Cholesky<f64, nalgebra::Dyn>,
     pub weights: Vec<f64>,
+    /// The rows it was fitted on, which the bordered refit fits on too.
+    rows: Vec<usize>,
     /// The ridge it was fitted with, which the bordered refit shares.
     ridge: f64,
 }
@@ -205,14 +207,15 @@ pub(super) fn logistic_base(
             beta: fit.beta,
             hessian,
             weights,
+            rows: rows.to_vec(),
             ridge,
         })
     })
 }
 
-/// The logistic ridge on `[X | cols | added]` over the rows `base` was fitted
-/// on (its fit on `[X | cols]`), started from `base`'s solution with zeros for
-/// `added`. Its Newton steps use `base`'s Hessian bordered by the added
+/// The logistic ridge on `[X | cols | added]` over `base.rows` (`base`
+/// being its fit on `[X | cols]`), started from `base`'s solution with zeros
+/// for `added`. Its Newton steps use `base`'s Hessian bordered by the added
 /// columns' cross-products at `base`'s weights, solved through the Schur
 /// complement of the added block: `O(m q d)` to set up and `O(m d)` a step,
 /// where a fresh Hessian costs `O(m d²)`. The gradient is exact, so the steps
@@ -225,13 +228,11 @@ pub(super) fn logistic_bordered(
     cols: &[&[f64]],
     added: &[&[f64]],
     t: &[f64],
-    rows: &[usize],
     base: &LogisticBase,
 ) -> anyhow::Result<(DVector<f64>, usize)> {
-    let ridge = base.ridge;
+    let (ridge, rows) = (base.ridge, &base.rows);
     let d0 = p + cols.len();
     anyhow::ensure!(base.beta.len() == d0, "base fit has another design");
-    anyhow::ensure!(base.weights.len() == rows.len(), "base fit has other rows");
     let mut all: Vec<&[f64]> = cols.to_vec();
     all.extend_from_slice(added);
     let d = d0 + added.len();
