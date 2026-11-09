@@ -347,14 +347,16 @@ a time with `v`/`V` (supported, effect_without_coexpression,
 colocation_only, no_evidence, control_failed, celltype_inseparable,
 insufficient_data, or all), and `/` keeps the pairs naming a gene. `↑`/`↓` (or a click) pick a
 pair: the panel gives its effect as a percent change (`exp(x) - 1`) with its
-95% CI, q, coexpression q, threshold, counts and verdict note (a subset's q
-marked subset-corrected), and the map draws it, computed as lra computes it:
+95% CI, q, coexpression q, the threshold its average weighs most, counts,
+and its warnings (else the verdict's note; a subset's q marked
+subset-corrected), and the map draws it, computed as lra computes it:
 senders (cells carrying the ligand), and receivers exposed or not (their
 contact exposure to the ligand above the table's threshold) and
 receptor-competent or not (their identity bin detects the receptor). `e`
 draws the exposure itself instead; `c` puts the pair's threshold–response
 curve (the effect at each exposure threshold, pointwise 95% whiskers,
-simultaneous 95% band, the table's threshold ringed) under the map. The
+simultaneous 95% band; the table's effect, averaged over thresholds, dashed
+across it, and the threshold that average weighs most ringed) under the map. The
 first pair drawn reads the run's receivers once (a pass over its data); each
 pair after that reads two genes.
 

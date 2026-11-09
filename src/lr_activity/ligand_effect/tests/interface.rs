@@ -2,10 +2,10 @@
 
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::output::percent_text;
 use crate::lr_activity::ligand_effect::output::{
     lra_path, lra_simulate_path, write_effects, Q_SCOPE_ALL,
 };
+use crate::lr_activity::ligand_effect::output::{percent_short, percent_text};
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
 use crate::lr_activity::ligand_effect::verdict;
@@ -110,6 +110,28 @@ fn an_effect_reads_as_a_percent_change_with_its_interval() {
         ..e
     };
     assert!(percent_change(&e).starts_with("+100%"));
+}
+
+/// The digits follow the size of the numbers, so a column of small effects
+/// does not round some to whole percents, and nothing reads `-0`.
+#[test]
+fn a_percent_change_keeps_its_digits_and_never_reads_minus_zero() {
+    assert_eq!(
+        percent_text(-0.6, -1.5, 0.3),
+        "-0.6% (95% CI -1.5% to +0.3%)"
+    );
+    assert_eq!(
+        percent_text(0.59, 0.25, 0.9),
+        "+0.59% (95% CI +0.25% to +0.90%)"
+    );
+    assert_eq!(percent_text(12.4, 3.0, 22.0), "+12% (95% CI +3% to +22%)");
+    assert_eq!(
+        percent_text(-0.001, -0.004, 0.002),
+        "+0.00% (95% CI +0.00% to +0.00%)"
+    );
+    assert_eq!(percent_short(-0.3, -1.2, 0.6), "-0.3%");
+    assert_eq!(percent_short(-0.2, -9.0, 30.0), "+0%");
+    assert_eq!(percent_short(f64::NAN, 0.0, 0.0), "—");
 }
 
 // * The effects table

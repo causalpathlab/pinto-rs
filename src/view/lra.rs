@@ -277,10 +277,14 @@ pub fn change(row: &PairRow) -> String {
     }
 }
 
-/// A q-value in a few characters.
+/// A q-value in a few characters; one too small for the table's f32 reads
+/// as below the smallest it holds.
 pub fn q_text(q: f64) -> String {
     if !q.is_finite() {
         "—".into()
+    } else if q == 0.0 {
+        // Stored as f32, below whose smallest it reads as 0.
+        "<1e-45".into()
     } else if q < 1e-3 {
         format!("{q:.0e}")
     } else {
@@ -784,7 +788,10 @@ impl LraView {
         Some(Curve {
             title,
             points: table.curve(i),
-            headline: row.threshold.is_finite().then_some(row.threshold),
+            top: row.tau_top.is_finite().then_some(row.tau_top),
+            // A table from before the average has no tau_top: its effect is
+            // a point of the curve, not drawn again.
+            average: row.tau_top.is_finite().then_some(row.effect),
         })
     }
 

@@ -25,7 +25,7 @@ fn an_error_popup_wraps_its_message_to_fit() {
 /// map, and the list filters by verdict and genes.
 #[test]
 fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
-    use super::super::tests::lra::{lra_run, receivers};
+    use super::super::tests::lra::{lra_run, receivers, WARNING};
     use clap::Parser;
     #[derive(Parser)]
     struct Args {
@@ -79,6 +79,15 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     assert!(all.contains("L1 → R1  supported"), "{all}");
     assert!(all.contains("+25% (95% CI +20% to +30%)"), "{all}");
     assert!(all.contains("sender (ligand+)"), "{all}");
+    // Every line fits the panel, its words whole: the pair's reasons read
+    // in full, and which threshold the average leans on.
+    let room = usize::from(app.side.width) - 1;
+    for l in text(&app) {
+        assert!(l.chars().count() <= room, "{l:?} is wider than {room}");
+    }
+    let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains(WARNING), "{all}");
+    assert!(flat.contains("weighs τ 2 most (80%)"), "{all}");
     let (level, style) = app.drawn();
     assert_eq!(level.comm.tag, "L1:R1");
     let vp = app.viewport();

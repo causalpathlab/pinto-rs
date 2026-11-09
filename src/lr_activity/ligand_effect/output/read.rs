@@ -30,8 +30,13 @@ pub struct PairRow {
     pub pct: f64,
     pub pct_lo: f64,
     pub pct_hi: f64,
-    /// The exposure threshold τ the pair used.
+    /// The headline exposure threshold τ: the one the counts and the
+    /// sensitivity fits read.
     pub threshold: f64,
+    /// The threshold the average over thresholds leans on most, and its
+    /// weight; NaN in a table from before the average.
+    pub tau_top: f64,
+    pub tau_top_weight: f64,
     pub n_receivers: usize,
     pub n_competent: usize,
     pub n_exposed: usize,
@@ -93,6 +98,9 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
     let (s, x) = read_table_columns(path, &strings, &numbers)
         .or_else(|_| read_table_columns(path, &strings[..strings.len() - 1], &numbers))?;
     let q_scope = s.get(6).and_then(|v| v.first().cloned());
+    // Tables from before the average over thresholds have none.
+    let [tau_top, tau_top_weight] = ["tau_top", "tau_top_weight"]
+        .map(|n| later_column(path, n).unwrap_or_else(|| vec![f64::NAN; s[0].len()]));
     let count = |v: f64| {
         if v.is_finite() && v > 0. {
             v as usize
@@ -124,6 +132,8 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
                 n_receivers: count(x[9][i]),
                 n_competent: count(x[10][i]),
                 n_exposed: count(x[11][i]),
+                tau_top: tau_top[i],
+                tau_top_weight: tau_top_weight[i],
             })
         })
         .collect::<anyhow::Result<_>>()?;

@@ -170,6 +170,8 @@ impl Open {
                 "coexpr_q": opt_finite(r.coexpr_q),
                 "subset_corrected": table.subset_corrected(),
                 "threshold": opt_finite(r.threshold),
+                "tau_top": opt_finite(r.tau_top),
+                "tau_top_weight": opt_finite(r.tau_top_weight),
                 "receivers": r.n_receivers,
                 "competent": r.n_competent,
                 "exposed": r.n_exposed,
@@ -211,7 +213,11 @@ impl Open {
             "selected": selected,
             "show": super::super::value_name(&v.show),
             "reading": "change: the headline effect as a percent change (exp(effect) - 1) with \
-                        its 95% CI; q: Benjamini-Hochberg over the table's pairs (q_scope). With \
+                        its 95% CI, averaged over exposure thresholds by their evidence \
+                        (one threshold when lra was given --threshold); \
+                        tau_top: the threshold the average weighs most, at weight \
+                        tau_top_weight; threshold: the one the counts and the map read; \
+                        q: Benjamini-Hochberg over the table's pairs (q_scope). With \
                         a pair, view_map draws it: senders (ligand+), receivers exposed or not \
                         (contact exposure above threshold) and receptor+ or not; show: exposure \
                         draws the exposure itself. view_export curve: true writes its \
