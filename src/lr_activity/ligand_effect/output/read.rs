@@ -8,6 +8,50 @@ use crate::lr_activity::ligand_effect::simulate::{
 };
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
+/// The effect against one negative control: the effect minus the
+/// control's (log rate ratio), and the two-sided q of that difference, so a
+/// small q can also mean the effect falls short of the control. Tested
+/// among the pairs with an effect, so NaN for the rest, for a control that
+/// could not be checked, and in a table from before these columns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Control {
+    pub over: f64,
+    pub q: f64,
+}
+
+/// One negative control as the viewer reads it.
+pub struct ControlSpec {
+    /// Its name in the panel.
+    pub short: &'static str,
+    /// Its name for agents.
+    pub key: &'static str,
+    /// The columns of the effect minus it, and of that difference's q.
+    pub column: &'static str,
+    pub column_q: &'static str,
+}
+
+/// The negative controls of [`PairRow::controls`], in its order.
+pub const CONTROLS: [ControlSpec; 3] = [
+    ControlSpec {
+        short: "receptor−",
+        key: "receptor_negative",
+        column: "effect_contrast",
+        column_q: "effect_contrast_q",
+    },
+    ControlSpec {
+        short: "ring",
+        key: "ring",
+        column: "effect_over_ring",
+        column_q: "effect_over_ring_q",
+    },
+    ControlSpec {
+        short: "background",
+        key: "background",
+        column: "effect_over_background",
+        column_q: "effect_over_background_q",
+    },
+];
+
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PairRow {
@@ -37,6 +81,8 @@ pub struct PairRow {
     /// weight; NaN in a table from before the average.
     pub tau_top: f64,
     pub tau_top_weight: f64,
+    /// The effect against each negative control, in [`CONTROLS`] order.
+    pub controls: [Control; 3],
     pub n_receivers: usize,
     pub n_competent: usize,
     pub n_exposed: usize,
@@ -98,9 +144,20 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
     let (s, x) = read_table_columns(path, &strings, &numbers)
         .or_else(|_| read_table_columns(path, &strings[..strings.len() - 1], &numbers))?;
     let q_scope = s.get(6).and_then(|v| v.first().cloned());
-    // Tables from before the average over thresholds have none.
-    let [tau_top, tau_top_weight] = ["tau_top", "tau_top_weight"]
-        .map(|n| later_column(path, n).unwrap_or_else(|| vec![f64::NAN; s[0].len()]));
+    // Tables from before the average over thresholds and the controls'
+    // columns have none.
+    let rows = s[0].len();
+    let [tau_top, tau_top_weight] = &later_columns(path, &["tau_top", "tau_top_weight"], rows)[..]
+    else {
+        unreachable!("two columns asked, two read")
+    };
+    let control_columns: Vec<&str> = CONTROLS
+        .iter()
+        .flat_map(|c| [c.column, c.column_q])
+        .collect();
+    let controls = later_columns(path, &control_columns, rows);
+    // Each control's difference and its q.
+    let controls: Vec<&[Vec<f64>]> = controls.chunks(2).collect();
     let count = |v: f64| {
         if v.is_finite() && v > 0. {
             v as usize
@@ -134,6 +191,10 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
                 n_exposed: count(x[11][i]),
                 tau_top: tau_top[i],
                 tau_top_weight: tau_top_weight[i],
+                controls: std::array::from_fn(|c| Control {
+                    over: controls[c][0][i],
+                    q: controls[c][1][i],
+                }),
             })
         })
         .collect::<anyhow::Result<_>>()?;
@@ -216,6 +277,19 @@ const SIM_NUMBERS: [&str; 11] = {
 fn as_written(v: f64) -> f64 {
     let v = v as f32;
     v.to_string().parse().unwrap_or(f64::from(v))
+}
+
+/// The columns `names` a table from an earlier version may lack, in one
+/// read when it has them all, else one by one, each missing one NaN.
+fn later_columns(path: &str, names: &[&str], rows: usize) -> Vec<Vec<f64>> {
+    legume_numeric::matrix::parquet::read_table_columns(path, &[], names)
+        .map(|(_, x)| x)
+        .unwrap_or_else(|_| {
+            names
+                .iter()
+                .map(|n| later_column(path, n).unwrap_or_else(|| vec![f64::NAN; rows]))
+                .collect()
+        })
 }
 
 /// A column a table from an earlier version lacks.

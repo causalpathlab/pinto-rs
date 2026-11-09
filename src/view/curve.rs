@@ -30,7 +30,7 @@ pub struct Curve<'a> {
 }
 
 /// A log rate ratio as a percent change.
-fn pct(x: f64) -> f64 {
+pub(super) fn pct(x: f64) -> f64 {
     x.exp_m1() * 100.
 }
 

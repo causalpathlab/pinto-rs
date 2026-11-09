@@ -15,7 +15,7 @@ use super::super::lra::{
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
 use super::{rgb, App, Pick};
-use crate::lr_activity::ligand_effect::output::{percent_short, strip_zeros};
+use crate::lr_activity::ligand_effect::output::{percent_short, strip_zeros, CONTROLS};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
@@ -52,8 +52,22 @@ impl LraJob {
     }
 }
 
+/// Columns of the list's verdict column: the longest [`short`] name (each
+/// is ASCII, so its bytes are its columns).
+pub(super) const VERDICT_W: usize = {
+    let (mut k, mut widest) = (0, 0);
+    while k < Verdict::ALL.len() {
+        let w = short(Verdict::ALL[k]).len();
+        if w > widest {
+            widest = w;
+        }
+        k += 1;
+    }
+    widest
+};
+
 /// A verdict in a few letters, for the list.
-fn short(v: Verdict) -> &'static str {
+pub(super) const fn short(v: Verdict) -> &'static str {
     match v {
         Verdict::Supported => "supported",
         Verdict::EffectWithoutCoexpression => "effect",
@@ -597,6 +611,29 @@ impl App<'_> {
                 plain,
                 2,
             );
+            // The effect against each control, signed, with its two-sided
+            // q: the verdict and the reasons say whether it passed.
+            if row.controls.iter().any(|c| c.q.is_finite()) {
+                let each: Vec<String> = CONTROLS
+                    .iter()
+                    .zip(&row.controls)
+                    .map(|(spec, c)| {
+                        let name = spec.short;
+                        if c.over.is_finite() && c.q.is_finite() {
+                            let pct = super::super::curve::pct(c.over);
+                            let change = percent_short(pct, pct, pct);
+                            format!("{name} {change} q {}", q_text(c.q))
+                        } else {
+                            format!("{name} —")
+                        }
+                    })
+                    .collect();
+                prose(
+                    &format!("effect − control{corrected}: {}", each.join(" · ")),
+                    plain,
+                    3,
+                );
+            }
             // The pair's own reasons in full; the verdict's meaning when
             // it has none.
             let why = if row.warnings.is_empty() {
@@ -647,7 +684,7 @@ impl App<'_> {
             // The columns first, the name in what they leave of the line
             // (`width + 1`, as the lines starting with a space).
             let right = format!(
-                " {:>7} {:>7} {}",
+                " {:>7} {:>7} {:<VERDICT_W$}",
                 percent_short(r.pct, r.pct_lo, r.pct_hi),
                 q_text(r.effect_q),
                 short(r.verdict),

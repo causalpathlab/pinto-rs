@@ -3,7 +3,7 @@
 
 use super::super::lra::{self as lra_layer, LraView, PairShow, Sort};
 use super::{value_enum, Open};
-use crate::lr_activity::ligand_effect::output::Q_SCOPE_ALL;
+use crate::lr_activity::ligand_effect::output::{CONTROLS, Q_SCOPE_ALL};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::shown_path;
@@ -172,6 +172,11 @@ impl Open {
                 "threshold": opt_finite(r.threshold),
                 "tau_top": opt_finite(r.tau_top),
                 "tau_top_weight": opt_finite(r.tau_top_weight),
+                "controls": CONTROLS.iter().zip(&r.controls).map(|(spec, c)| json!({
+                    "control": spec.key,
+                    "effect_minus_control": opt_finite(c.over),
+                    "q": opt_finite(c.q),
+                })).collect::<Vec<_>>(),
                 "receivers": r.n_receivers,
                 "competent": r.n_competent,
                 "exposed": r.n_exposed,
@@ -217,6 +222,13 @@ impl Open {
                         (one threshold when lra was given --threshold); \
                         tau_top: the threshold the average weighs most, at weight \
                         tau_top_weight; threshold: the one the counts and the map read; \
+                        controls: the effect minus each negative control \
+                        (receptor-negative receivers, the ring of distant cells, matched \
+                        background programmes) as a log rate ratio, with its two-sided q \
+                        (so a small q with a negative difference falls short of the \
+                        control; verdict and warnings give the call), tested among the \
+                        pairs with an effect: null for the rest, for a control that could \
+                        not be checked, and in a table from before them; \
                         q: Benjamini-Hochberg over the table's pairs (q_scope). With \
                         a pair, view_map draws it: senders (ligand+), receivers exposed or not \
                         (contact exposure above threshold) and receptor+ or not; show: exposure \
