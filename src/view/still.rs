@@ -90,7 +90,8 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     )?;
     let took = t.elapsed();
     print_written(args);
-    println!("{}×{}, {:.3} units/px, in {took:.2?}", vp.w, vp.h, vp.upp);
+    let scale = scalebar::per_pixel(base.units, vp.upp);
+    println!("{}×{}, {scale}, in {took:.2?}", vp.w, vp.h);
     if matches!(args.layer, Layer::Argmax | Layer::Soft) {
         for &c in &level.comm.by_size {
             println!("{}", legend_line(&level.comm, c, level.palette[c]));
@@ -327,10 +328,10 @@ fn figure<'a>(
     let comm = &level.comm;
     let focused = focused(style.focus);
     let mut subtitle = format!(
-        "{} cells · K={} · {:.3} units/px",
+        "{} cells · K={} · {}",
         thousands(base.geom.n()),
         comm.k,
-        vp.upp
+        scalebar::per_pixel(base.units, vp.upp)
     );
     if !focused.is_empty() {
         subtitle.push_str(&format!(" · focus {}", ids(comm, &focused, " ")));

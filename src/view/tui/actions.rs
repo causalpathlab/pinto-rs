@@ -338,7 +338,8 @@ impl App<'_> {
         writeln!(out, "run      {}", self.base.run.source()).ok();
         writeln!(out, "level    {tag} (K={})", comm.k).ok();
         writeln!(out, "layer    {}", style.layer).ok();
-        writeln!(out, "scale    {:.4} units/px", vp.upp).ok();
+        let scale = super::super::scalebar::per_pixel(self.base.units, vp.upp);
+        writeln!(out, "scale    {scale}").ok();
         if !focused.is_empty() {
             writeln!(out, "focus    {}", ids(comm, &focused, " ")).ok();
         }

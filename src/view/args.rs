@@ -51,8 +51,10 @@ pub struct ViewArgs {
         default_value = "auto",
         help = "Coordinate units for the scale bar: auto, um, px, or none",
         long_help = "Coordinate units for the scale bar:\n\
-                     \x20 auto  px for Space Ranger pxl_* columns, µm for Xenium\n\
-                     \x20       centroids, otherwise a bare number\n\
+                     \x20 auto  µm for Space Ranger pxl_* columns when its\n\
+                     \x20       scalefactors_json.json sits beside the coordinates\n\
+                     \x20       (or in spatial/), else px; µm for Xenium centroids;\n\
+                     \x20       otherwise a bare number\n\
                      \x20 um    micrometres (1000 µm shows as 1 mm)\n\
                      \x20 px    image pixels\n\
                      \x20 none  no scale bar"

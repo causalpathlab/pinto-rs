@@ -48,3 +48,30 @@ fn pyramid_preserves_totals_at_every_level() {
         }
     }
 }
+
+/// The cells' pitch: the median distance to each one's nearest neighbour.
+#[test]
+fn the_pitch_is_the_median_nearest_neighbour_distance() {
+    use crate::view::data::Rect;
+    use crate::view::index::Grid;
+    // A hexagonal lattice of pitch 10, as Visium spots lie.
+    let (mut x, mut y) = (Vec::new(), Vec::new());
+    for row in 0..30 {
+        for col in 0..30 {
+            let shift = if row % 2 == 0 { 0. } else { 5. };
+            x.push(col as f32 * 10. + shift);
+            y.push(row as f32 * 10. * 3f32.sqrt() / 2.);
+        }
+    }
+    let bounds = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 300.,
+        y1: 270.,
+    };
+    let grid = Grid::build(&x, &y, bounds, 4.);
+    let pitch = grid.pitch(&x, &y).unwrap();
+    assert!((pitch - 10.).abs() < 1e-3, "{pitch}");
+    let one = Grid::build(&[1.], &[1.], bounds, 4.);
+    assert_eq!(one.pitch(&[1.], &[1.]), None);
+}

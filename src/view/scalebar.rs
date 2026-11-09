@@ -7,12 +7,15 @@
 
 use super::color::Theme;
 use super::render::{Frame, Viewport};
+use std::path::{Path, PathBuf};
 
 /// What one world unit is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Units {
     Micron,
     Pixel,
+    /// Image pixels of a known size, µm each: the bar reads in µm.
+    PixelMicron(f32),
     /// Unknown: the bar is labelled with a bare number.
     Plain,
 }
@@ -46,6 +49,101 @@ impl Units {
             other => anyhow::bail!("--units {other:?}: use auto, um, px or none"),
         })
     }
+
+    /// [`Units::parse`] for coordinates read from `coord_file`: `auto`
+    /// reads image pixels in µm when Space Ranger's scale factors beside
+    /// that file give their size ([`scalefactors_beside`],
+    /// [`microns_per_pixel`], `pitch_px` the coordinates' pitch); without
+    /// that file (`None`: the run's coordinates came from several files, or
+    /// it is not found) they stay in pixels.
+    pub fn for_coordinates(
+        choice: &str,
+        coord_names: &[Box<str>],
+        coord_file: Option<&Path>,
+        pitch_px: impl FnOnce() -> Option<f32>,
+    ) -> anyhow::Result<Option<Units>> {
+        let units = Units::parse(choice, coord_names)?;
+        if choice != "auto" || units != Some(Units::Pixel) {
+            return Ok(units);
+        }
+        let Some(factors) = coord_file.and_then(scalefactors_beside) else {
+            return Ok(units);
+        };
+        let size = std::fs::read_to_string(&factors)
+            .ok()
+            .and_then(|text| microns_per_pixel(&text, pitch_px));
+        if let Some(um) = size {
+            log::info!("scale bar: {um:.4} µm a pixel, from {}", factors.display());
+        }
+        Ok(Some(size.map_or(Units::Pixel, Units::PixelMicron)))
+    }
+
+    /// World units in these units' terms: µm per world unit and µm for
+    /// pixels of a known size, else one and the units themselves.
+    fn resolved(self) -> (f32, Units) {
+        match self {
+            Units::PixelMicron(um) => (um, Units::Micron),
+            other => (1., other),
+        }
+    }
+}
+
+/// A view's scale, `upp` world units a pixel, in µm where `units` know
+/// their size, and in image pixels for those; its digits kept whatever the
+/// zoom.
+pub fn per_pixel(units: Option<Units>, upp: f32) -> String {
+    let (per_unit, units) = units.map_or((1., None), |u| {
+        let (k, base) = u.resolved();
+        (k, Some(base))
+    });
+    let v = upp * per_unit;
+    let unit = match units {
+        Some(Units::Micron) => "µm/px",
+        Some(Units::Pixel) => "px/px",
+        _ => "units/px",
+    };
+    if v != 0. && v.abs() < 0.001 {
+        format!("{v:.2e} {unit}")
+    } else {
+        format!("{v:.3} {unit}")
+    }
+}
+
+/// Centre-to-centre distance of standard Visium spots, µm.
+const VISIUM_PITCH_UM: f32 = 100.;
+
+/// The size of a full-resolution image pixel, µm, from Space Ranger's
+/// `scalefactors_json.json`: its `microns_per_pixel` (Visium HD); else, for
+/// standard Visium (a spot lattice, no `bin_size_um`), the spots' 100 µm
+/// pitch over `pitch_px`, the coordinates' pitch in pixels. The file's spot
+/// diameter is not used: it is not the physical spot's.
+pub fn microns_per_pixel(
+    scalefactors: &str,
+    pitch_px: impl FnOnce() -> Option<f32>,
+) -> Option<f32> {
+    let v: serde_json::Value = serde_json::from_str(scalefactors).ok()?;
+    if let Some(um) = v
+        .get("microns_per_pixel")
+        .and_then(serde_json::Value::as_f64)
+    {
+        return (um.is_finite() && um > 0.).then_some(um as f32);
+    }
+    if v.get("spot_diameter_fullres").is_none() || v.get("bin_size_um").is_some() {
+        return None;
+    }
+    pitch_px()
+        .filter(|p| p.is_finite() && *p > 0.)
+        .map(|p| VISIUM_PITCH_UM / p)
+}
+
+/// Space Ranger's `scalefactors_json.json` for the coordinates in
+/// `coord_file`: beside it, or in `spatial/` beside it.
+pub fn scalefactors_beside(coord_file: &Path) -> Option<PathBuf> {
+    let dir = coord_file.parent()?;
+    [dir.to_path_buf(), dir.join("spatial")]
+        .into_iter()
+        .map(|d| d.join("scalefactors_json.json"))
+        .find(|f| f.is_file())
 }
 
 /// A bar of `length` world units and its label.
@@ -55,9 +153,11 @@ pub struct Bar {
     pub label: String,
 }
 
-/// The largest 1, 2 or 5 × 10ⁿ no longer than a fifth of `view_width`.
+/// The largest 1, 2 or 5 × 10ⁿ no longer than a fifth of `view_width`; for
+/// pixels of a known size, round in µm, its length in pixels.
 pub fn bar_for(view_width: f32, units: Units) -> Bar {
-    let target = (view_width / 5.).max(f32::MIN_POSITIVE);
+    let (per_unit, units) = units.resolved();
+    let target = (view_width * per_unit / 5.).max(f32::MIN_POSITIVE);
     let mag = 10f32.powf(target.log10().floor());
     let length = [5., 2., 1.]
         .iter()
@@ -74,10 +174,14 @@ pub fn bar_for(view_width: f32, units: Units) -> Bar {
     let label = match units {
         Units::Micron if length >= 1000. => format!("{} mm", number(length / 1000.)),
         Units::Micron => format!("{} µm", number(length)),
+        Units::PixelMicron(_) => unreachable!("resolved to µm above"),
         Units::Pixel => format!("{} px", number(length)),
         Units::Plain => number(length),
     };
-    Bar { length, label }
+    Bar {
+        length: length / per_unit,
+        label,
+    }
 }
 
 /// Burn the bar into `frame` at its bottom left, with its label above it

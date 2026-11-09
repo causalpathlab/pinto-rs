@@ -302,7 +302,9 @@ features, then click a marker to map that gene (`g`/`G` step through them,
 `o` switches observed/model-expected, `p` the ramp top p99/p95); `s` exports
 the current view as PNG, PDF, and a `.txt` with
 the command that redraws it. The scale bar's units are guessed from the
-coordinate columns (`--units um|px|none` to override). Map colours follow the
+coordinate columns; Space Ranger's image pixels read in µm when its
+`scalefactors_json.json` sits beside the coordinates or in `spatial/`
+(`--units um|px|none` to override). Map colours follow the
 terminal's background (`--theme light|dark` to choose; images default to dark);
 `t` switches between dark and a light background for paper, and what `s`
 saves is drawn in it.
