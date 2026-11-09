@@ -15,8 +15,9 @@ pub const COMPETENCE_GRID: [f64; 3] = [0.05, 0.1, 0.2];
 /// ([`super::Internals::benchmark_competence`]).
 pub const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
 
-/// Prior SD of an effect at one exposure threshold, on the response's scale.
-pub const ABF_PRIOR_SD: f64 = 0.002;
+/// Prior SD of an effect at one exposure threshold, in multiples of the
+/// estimand's median standard error ([`super::averaging::abf_weights`]).
+pub const ABF_PRIOR_SCALE: f64 = 10.0;
 
 /// Background programmes per pair, and how many of the genes nearest in expression
 /// each background gene is drawn from.
@@ -57,9 +58,8 @@ pub struct EffectOpts {
     /// Smallest mean overlap weight `e(1 − e)` (at most 0.25). The effective
     /// sample size cannot see weights that are all tiny alike; this can.
     pub min_overlap: f64,
-    /// Prior SD of an effect at one exposure threshold, for the average over
-    /// thresholds ([`super::averaging::abf_average`]).
-    pub abf_prior_sd: f64,
+    /// Prior SD in multiples of the median standard error ([`ABF_PRIOR_SCALE`]).
+    pub abf_prior_scale: f64,
     /// Background programmes per pair ([`super::background::BackgroundPool::draw`]).
     pub background_draws: usize,
     pub seed: u64,
@@ -80,7 +80,7 @@ impl Default for EffectOpts {
             min_arm: 20,
             min_ess: 30.0,
             min_overlap: 0.01,
-            abf_prior_sd: ABF_PRIOR_SD,
+            abf_prior_scale: ABF_PRIOR_SCALE,
             background_draws: BACKGROUND_DRAWS,
             seed: 42,
             fit_thin: false,

@@ -130,9 +130,12 @@ The threshold on neighbouring ligand is not chosen: each pair is estimated at
 any detected ligand and at the quartiles of its positive doses, and those
 estimates are averaged by their approximate Bayes factors, so doses that fit the
 response better count for more and disagreement between them widens the
-interval. Each control is averaged by its own evidence. `effect_log10_bf` is the
-evidence for an effect at any threshold, and `tau_top` and `tau_top_weight` say
-which threshold the average leans on most.
+interval. Each control is averaged by its own evidence. The prior on an effect
+is set from the pair's own standard errors (ten times their median over the
+thresholds), so the weights do not depend on the response's units.
+`effect_log10_bf` is the evidence for an effect at any threshold against that
+prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
+on most.
 
 A significant effect then has to exceed every control, the same way, each
 comparison corrected among the pairs with a significant effect (so their q is

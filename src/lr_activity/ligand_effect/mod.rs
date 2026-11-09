@@ -134,9 +134,9 @@ pub struct Internals {
     pub competence_grid: [f64; 3],
     /// The single competence threshold `lra-simulate` plants on.
     pub benchmark_competence: f64,
-    /// Prior SD of an effect at one exposure threshold, for the average over
-    /// thresholds.
-    pub abf_prior_sd: f64,
+    /// Prior SD in multiples of the median standard error
+    /// ([`options::ABF_PRIOR_SCALE`]).
+    pub abf_prior_scale: f64,
     /// Background programmes per pair.
     pub background_draws: usize,
     /// Fewest exposed and fewest unexposed receivers of a reported subgroup.
@@ -167,7 +167,7 @@ pub struct Internals {
 pub const INTERNALS: Internals = Internals {
     competence_grid: options::COMPETENCE_GRID,
     benchmark_competence: options::BENCHMARK_COMPETENCE[0],
-    abf_prior_sd: options::ABF_PRIOR_SD,
+    abf_prior_scale: options::ABF_PRIOR_SCALE,
     background_draws: options::BACKGROUND_DRAWS,
     min_arm: 20,
     min_ess: 30.0,
