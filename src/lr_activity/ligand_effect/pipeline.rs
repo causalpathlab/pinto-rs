@@ -1,6 +1,6 @@
 //! The commands from input to tables: `pinto lra` and `pinto lra-simulate`.
 
-use super::estimate::{estimate_pair_with, PairData};
+use super::estimate::{estimate_pair, PairData};
 use super::genes::GeneStore;
 use super::memory::{pair_memory, pair_workers, run_bounded};
 use super::options::EffectOpts;
@@ -9,15 +9,15 @@ use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_gen
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared, Study};
 use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts};
 use super::{
-    background, contacts, only, options, output, receivers, report, rows, timing, RunInputs,
-    Settings, INTERNALS, LOG_TARGET,
+    contacts, only, options, output, receivers, report, rows, timing, RunInputs, Settings,
+    INTERNALS, LOG_TARGET,
 };
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
 
 /// The shared progress bar over the long stages. Where no bar can draw (the
-/// log of a background programme job, a pipe) each twentieth of the way is logged too.
+/// log of a background job, a pipe) each twentieth of the way is logged too.
 struct Progress {
     bar: indicatif::ProgressBar,
     done: std::sync::atomic::AtomicU64,
@@ -62,8 +62,6 @@ struct Prepared {
     local: HashMap<usize, usize>,
     eopts: EffectOpts,
     reference_record: Option<std::path::PathBuf>,
-    /// Genes of the background pool ([`background::BackgroundPool`]), in `local`.
-    background_genes: Vec<usize>,
     /// The genes the receivers' identity leaves out, by name, sorted.
     identity_excluded: Vec<String>,
 }
@@ -121,16 +119,6 @@ fn select_only(
         .collect())
 }
 
-/// The genes estimated pairs read, and the background programmes, sorted
-/// and distinct.
-fn genes_to_read(pairs: &[Pair], background_genes: &[usize]) -> Vec<usize> {
-    let mut needed = pair_genes(pairs);
-    needed.extend(background_genes);
-    needed.sort_unstable();
-    needed.dedup();
-    needed
-}
-
 /// The tissue the receivers live in, at the fixed scales and folds.
 fn build_tissue(
     inp: &RunInputs<'_>,
@@ -143,7 +131,6 @@ fn build_tissue(
         scales: k.scales.to_vec(),
         tile: k.tile,
         folds: k.folds,
-        ring: k.ring,
         seed: inp.settings.seed,
         ..TissueOpts::default()
     };
@@ -170,7 +157,6 @@ fn effect_opts(seed: u64) -> EffectOpts {
         threshold: None,
         min_overlap: k.min_overlap,
         abf_prior_scale: k.abf_prior_scale,
-        background_draws: k.background_draws,
         seed,
         competences: &options::COMPETENCE_GRID,
         curve: true,
@@ -189,7 +175,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     let gene_names = inp.axis.feature_names().to_vec();
     let index = GeneIndex::build(&gene_names);
     let (all, record) = reference_pairs(&a.choices(), &gene_names, &index)?;
-    let (excluded, background_genes) = signalling_genes(&all, gene_names.len(), a.seed);
+    let excluded = signalling_genes(&all);
     let mut identity_excluded: Vec<String> = excluded
         .iter()
         .map(|&g| gene_names[g].to_string())
@@ -199,7 +185,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     let pairs = select_only(a.only, all, &gene_names, &index)?;
 
     let (receivers, row_of_cell) = receivers::receiver_rows(inp.coords, inp.pairs);
-    let needed = genes_to_read(&pairs, &background_genes);
+    let needed = pair_genes(&pairs);
     let local: HashMap<usize, usize> = needed.iter().enumerate().map(|(k, &g)| (g, k)).collect();
     info!(
         target: LOG_TARGET,
@@ -227,7 +213,6 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         local,
         eopts: effect_opts(a.seed),
         reference_record: Some(record),
-        background_genes,
         identity_excluded,
     })
 }
@@ -249,26 +234,18 @@ pub(super) fn record(
 /// receiver-length vectors and its propensity design, which bounds how many
 /// run at once ([`super::memory::pair_workers`]). Beside the pair's own
 /// vectors, a threshold's fits ([`super::fits::ThresholdFits`]) hold per competence
-/// threshold an effect modifier and a pair column, and own ligand, niche, the
-/// exposure column and the main, ring and three step propensities.
+/// threshold an effect modifier and a pair column, and own ligand, niche and
+/// the main and three step propensities.
 fn pairs_at_once(prep: &Prepared) -> usize {
     let (tissue, eopts) = (&prep.tissue, &prep.eopts);
     let nc = eopts.competences.len();
-    let threshold_fits = 2 * nc + 2 + 1 + 1 + 1 + 3;
-    let per_pair = pair_memory(
-        34 + threshold_fits + 3 * eopts.background_draws,
-        tissue,
-        &eopts.nuisance,
-    );
+    let threshold_fits = 2 * nc + 2 + 1 + 3;
+    let per_pair = pair_memory(34 + threshold_fits, tissue, &eopts.nuisance);
     pair_workers(per_pair, tissue, &eopts.nuisance).min(prep.pairs.len())
 }
 
 /// One pair's rows; a pair that fails is warned about and has none.
-fn estimate_one(
-    prep: &Prepared,
-    pool: &background::BackgroundPool<'_>,
-    p: &Pair,
-) -> Vec<rows::EffectRow> {
+fn estimate_one(prep: &Prepared, p: &Pair) -> Vec<rows::EffectRow> {
     let (store, local) = (&prep.store, &prep.local);
     let lig = prep.ligand_counts(p);
     let rec = prep.receptor_counts(p);
@@ -293,7 +270,7 @@ fn estimate_one(
         reweighted: (specific.len() >= INTERNALS.min_targets).then_some(specific.as_slice()),
         n_removed: p.n_removed,
     };
-    estimate_pair_with(&prep.tissue, &data, pool, &prep.eopts).unwrap_or_else(|e| {
+    estimate_pair(&prep.tissue, &data, &prep.eopts).unwrap_or_else(|e| {
         warn!(target: LOG_TARGET, "{}-{}: {e}", p.ligand, p.receptor);
         Vec::new()
     })
@@ -301,13 +278,6 @@ fn estimate_one(
 
 /// Every pair's rows, in pair order.
 fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
-    let pool = background::BackgroundPool::new(
-        &prep.tissue.size_factor,
-        prep.background_genes
-            .iter()
-            .map(|g| prep.store.nonzeros(prep.local[g]))
-            .collect(),
-    );
     let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
     let concurrent = pairs_at_once(prep);
     if concurrent > 1 {
@@ -315,7 +285,7 @@ fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
     }
     let t_pairs = std::time::Instant::now();
     let rows = run_bounded(&prep.pairs, concurrent, |p: &Pair| {
-        let out = estimate_one(prep, &pool, p);
+        let out = estimate_one(prep, p);
         pb.inc();
         out
     });
@@ -564,7 +534,7 @@ impl Benchmark<'_> {
         };
         // Scenarios are independent: run as many at once as the memory
         // budget allows (each holds about a pair's worth of vectors).
-        let per_run = pair_memory(50 + 3 * eopts.background_draws, tissue, &eopts.nuisance);
+        let per_run = pair_memory(50, tissue, &eopts.nuisance);
         let concurrent = pair_workers(per_run, tissue, &eopts.nuisance);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         run_bounded(&jobs, concurrent, |&(si, scen)| {

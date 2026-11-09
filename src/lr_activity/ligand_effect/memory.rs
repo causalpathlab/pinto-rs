@@ -36,9 +36,9 @@ fn propensity_bytes(rows: usize, p: usize) -> usize {
     rows * (p + 8) * 8
 }
 
-/// Propensities a threshold keeps for its bordered refits: the main, the
-/// ring and each adjustment step's ([`super::fits::ThresholdFits`]).
-const PROPENSITIES_KEPT: usize = 2 + super::tissue::STEP_NAMES.len();
+/// Propensities a threshold keeps for its bordered refits: the main and
+/// each adjustment step's ([`super::fits::ThresholdFits`]).
+const PROPENSITIES_KEPT: usize = 1 + super::tissue::STEP_NAMES.len();
 
 /// Memory one live pair (or benchmark scenario) holds: `vectors` receiver-length
 /// vectors, the propensity's rows ([`super::regression::logistic_base`])

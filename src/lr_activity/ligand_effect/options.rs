@@ -19,20 +19,11 @@ pub const BENCHMARK_COMPETENCE: [f64; 1] = [0.1];
 /// estimand's median standard error ([`super::averaging::abf_weights`]).
 pub const ABF_PRIOR_SCALE: f64 = 10.0;
 
-/// Background programmes per pair, and how many of the genes nearest in expression
-/// each background gene is drawn from.
-pub const BACKGROUND_DRAWS: usize = 20;
-
-pub(super) const BACKGROUND_NEIGHBOURS: usize = 20;
-
 /// Quantiles of the positive exposures the curve visits beside τ = 0.
 pub const CURVE_QUANTILES: [f64; 3] = [0.25, 0.5, 0.75];
 
 /// Multiplier draws for the simultaneous band.
 pub const BAND_DRAWS: usize = 2000;
-
-/// Genes in the background pool at most ([`super::background::background_pool_genes`]).
-pub const BACKGROUND_POOL: usize = 2000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EffectOpts {
@@ -60,8 +51,6 @@ pub struct EffectOpts {
     pub min_overlap: f64,
     /// Prior SD in multiples of the median standard error ([`ABF_PRIOR_SCALE`]).
     pub abf_prior_scale: f64,
-    /// Background programmes per pair ([`super::background::BackgroundPool::draw`]).
-    pub background_draws: usize,
     pub seed: u64,
     /// Run even the fits whose every subset leaves an arm thin
     /// ([`super::fits::Reads`]), which the guard then reports as not estimable all the
@@ -81,7 +70,6 @@ impl Default for EffectOpts {
             min_ess: 30.0,
             min_overlap: 0.01,
             abf_prior_scale: ABF_PRIOR_SCALE,
-            background_draws: BACKGROUND_DRAWS,
             seed: 42,
             fit_thin: false,
         }

@@ -31,26 +31,12 @@ pub struct ControlSpec {
 }
 
 /// The negative controls of [`PairRow::controls`], in its order.
-pub const CONTROLS: [ControlSpec; 3] = [
-    ControlSpec {
-        short: "receptor−",
-        key: "receptor_negative",
-        column: "effect_contrast",
-        column_q: "effect_contrast_q",
-    },
-    ControlSpec {
-        short: "ring",
-        key: "ring",
-        column: "effect_over_ring",
-        column_q: "effect_over_ring_q",
-    },
-    ControlSpec {
-        short: "background",
-        key: "background",
-        column: "effect_over_background",
-        column_q: "effect_over_background_q",
-    },
-];
+pub const CONTROLS: [ControlSpec; 1] = [ControlSpec {
+    short: "receptor−",
+    key: "receptor_negative",
+    column: "effect_contrast",
+    column_q: "effect_contrast_q",
+}];
 
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -82,7 +68,7 @@ pub struct PairRow {
     pub tau_top: f64,
     pub tau_top_weight: f64,
     /// The effect against each negative control, in [`CONTROLS`] order.
-    pub controls: [Control; 3],
+    pub controls: [Control; 1],
     pub n_receivers: usize,
     pub n_competent: usize,
     pub n_exposed: usize,
@@ -255,11 +241,10 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 }
 
 /// The number columns every `{out}.lra-simulate.parquet` has.
-const SIM_NUMBERS: [&str; 11] = {
+const SIM_NUMBERS: [&str; 10] = {
     use sim_cols::*;
     [
         EFFECT_PVE,
-        RING_EFFECT,
         LIGAND_FIELD_PVE,
         RESPONSE_FIELD_PVE,
         SCALE,
@@ -311,12 +296,19 @@ struct SimTable<'p> {
     strings: Vec<Vec<Box<str>>>,
     numbers: Vec<Vec<f64>>,
     rejects: Vec<Option<Vec<f64>>>,
-    background_confounding: Option<Vec<f64>>,
-    generic_shift: Option<Vec<f64>>,
     dose_response: Option<Vec<f64>>,
     dose_midpoint: Option<Vec<f64>>,
     dose_order: Option<Vec<f64>>,
+    /// Columns of scenarios made for a control since removed.
+    retired: Vec<Vec<f64>>,
 }
+
+/// Columns an earlier version wrote for scenarios that tested a control since
+/// removed. A run with one set is not the plain scenario its other columns
+/// describe, so it is left out. A study's keys for them are refused
+/// (`RETIRED_SCENARIO_KEYS`); `background_confounding` is not here, since
+/// every earlier run wrote it.
+const RETIRED_SCENARIO_COLUMNS: [&str; 2] = ["planted_ring_effect", "generic_shift"];
 
 impl<'p> SimTable<'p> {
     fn read(path: &'p str) -> anyhow::Result<Self> {
@@ -336,12 +328,19 @@ impl<'p> SimTable<'p> {
             strings,
             numbers,
             rejects: COMPARED.iter().map(|m| later(&reject(m))).collect(),
-            background_confounding: later(BACKGROUND_CONFOUNDING),
-            generic_shift: later(GENERIC_SHIFT),
             dose_response: later(DOSE_RESPONSE),
             dose_midpoint: later(DOSE_MIDPOINT),
             dose_order: later(DOSE_ORDER),
+            retired: RETIRED_SCENARIO_COLUMNS
+                .iter()
+                .filter_map(|c| later(c))
+                .collect(),
         })
+    }
+
+    /// Whether row `i` is of a scenario made for a control since removed.
+    fn retired(&self, i: usize) -> bool {
+        self.retired.iter().any(|c| c[i] != 0.0)
     }
 
     fn col(&self, name: &str) -> &[f64] {
@@ -372,7 +371,6 @@ impl<'p> SimTable<'p> {
             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
         Ok(Scenario {
             effect_pve: self.num(EFFECT_PVE, i),
-            ring_effect: self.num(RING_EFFECT, i),
             ligand_field_pve: self.num(LIGAND_FIELD_PVE, i),
             response_field_pve: self.num(RESPONSE_FIELD_PVE, i),
             scale: self.num(SCALE, i),
@@ -383,12 +381,6 @@ impl<'p> SimTable<'p> {
             spillover: self.num(SPILLOVER, i),
             shift: self.num(SHIFT, i),
             rep: self.col(REP)[i] as usize,
-            background_confounding: later_value(
-                &self.background_confounding,
-                i,
-                plain.background_confounding,
-            ),
-            generic_shift: later_value(&self.generic_shift, i, plain.generic_shift),
             dose_response: later_value(&self.dose_response, i, 0.0) != 0.0,
             dose_midpoint: later_value(&self.dose_midpoint, i, plain.dose_midpoint),
             dose_order: later_value(&self.dose_order, i, plain.dose_order as f64) as i32,
@@ -413,8 +405,12 @@ impl<'p> SimTable<'p> {
 }
 
 /// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
-/// each column by its name ([`super::sim_cols`]).
+/// each column by its name ([`super::sim_cols`]), without the runs of
+/// scenarios made for a control since removed.
 pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
     let table = SimTable::read(path)?;
-    (0..table.strings[0].len()).map(|i| table.run(i)).collect()
+    (0..table.strings[0].len())
+        .filter(|&i| !table.retired(i))
+        .map(|i| table.run(i))
+        .collect()
 }

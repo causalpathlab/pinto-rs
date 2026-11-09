@@ -162,7 +162,7 @@ pub fn lra_long_about() -> String {
          \x20   Do cells touching ligand-carrying neighbours change their response\n\
          \x20   programme, compared with similar cells that do not? Adjusted for\n\
          \x20   region, section, cell identity, neighbour make-up, depth and\n\
-         \x20   segmentation bleed, with negative controls. Writes {{out}}.lra.parquet.\n\
+         \x20   segmentation bleed, with a negative control. Writes {{out}}.lra.parquet.\n\
          \x20 --method coexpression-test\n\
          \x20   Permutation test of ligand-receptor co-expression within each link\n\
          \x20   community (needs an lc run and --lr-pairs).\n\

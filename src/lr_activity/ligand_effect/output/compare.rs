@@ -170,12 +170,6 @@ fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String
     if s.dose_response {
         d += " dose";
     }
-    if s.ring_effect != 0.0 {
-        d += &format!(" θr={:.2}", s.ring_effect);
-    }
-    if s.generic_shift != 0.0 {
-        d += &format!(" generic={}", s.generic_shift);
-    }
     if s.spillover != 0.0 {
         d += &format!(" κ={}", s.spillover);
     }

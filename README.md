@@ -74,7 +74,8 @@ moves the cache, `PINTO_OFFLINE=1` never downloads,
 `PINTO_REFERENCE_REFRESH=1` rebuilds it. The analysis's fixed settings are
 recorded in the manifest under `outputs.lra.settings`.
 With `--from`, cell types of the run's newest lupin round, when it has
-one, adjust the estimate as confounders and strata and add one row per
+one, adjust the estimate as confounders (the receiver's own type and the
+share of each type among its neighbours) and strata and add one row per
 receiver cell type (`type:<name>`); without a round there are none. The
 labels come from expression-derived clusters: the receiver identity
 projection leaves the ligand, receptor and target genes out, but the
@@ -120,7 +121,7 @@ each on the tissue (see `view`, `I`):
 | `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
 | `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response programme |
 | `no_evidence` | neither a response nor co-expression at this false discovery rate |
-| `control_failed` | an effect appeared, but it does not exceed a negative control (receivers without the receptor, distant cells that do not touch, or a matched background programme), or one of these could not be checked: likely confounding |
+| `control_failed` | an effect appeared, but it does not exceed the negative control (receivers without the receptor), or that could not be checked: likely confounding |
 | `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
 | `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
 
@@ -130,23 +131,19 @@ The threshold on neighbouring ligand is not chosen: each pair is estimated at
 any detected ligand and at the quartiles of its positive doses, and those
 estimates are averaged by their approximate Bayes factors, so doses that fit the
 response better count for more and disagreement between them widens the
-interval. Each control is averaged by its own evidence. The prior on an effect
+interval. The control is averaged by its own evidence. The prior on an effect
 is set from the pair's own standard errors (ten times their median over the
 thresholds), so the weights do not depend on the response's units.
 `effect_log10_bf` is the evidence for an effect at any threshold against that
 prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
 on most.
 
-A significant effect then has to exceed every control, the same way, each
-comparison corrected among the pairs with a significant effect (so their q is
-empty for the rest): the effect in receptor-negative receivers
-(`effect_contrast_q`), the effect from distant cells (`effect_over_ring_q`) and
-the effect on matched background programmes (`effect_over_background_q`): many programmes of random
-genes with similar expression, where the pair has to stand out from their spread. A hidden field can move
-the controls too, so a control that is itself significant does not rule out a
-larger effect; it is named in `warnings`. A control that could not run does not
-pass, except a background programme where none exists: no match in the pool, or a section's
-row, which has none.
+A significant effect then has to exceed the negative control, the same way:
+the effect in receptor-negative receivers (`effect_contrast_q`), the
+comparison corrected among the pairs with a significant effect (so its q is
+empty for the rest). A hidden field can move the control too, so a control
+that is itself significant does not rule out a larger effect; it is named in
+`warnings`. A control that could not run does not pass.
 
 ### `lra-simulate`: power and calibration check
 
@@ -350,7 +347,7 @@ colocation_only, no_evidence, control_failed, celltype_inseparable,
 insufficient_data, or all), and `/` keeps the pairs naming a gene. `↑`/`↓` (or a click) pick a
 pair: the panel gives its effect as a percent change (`exp(x) - 1`) with its
 95% CI, q, coexpression q, the threshold its average weighs most, counts,
-the effect minus each control with its two-sided q, and its warnings (else the verdict's note; a subset's q marked
+the effect minus the control with its two-sided q, and its warnings (else the verdict's note; a subset's q marked
 subset-corrected), and the map draws it, computed as lra computes it:
 senders (cells carrying the ligand), and receivers exposed or not (their
 contact exposure to the ligand above the table's threshold) and
@@ -527,7 +524,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > a run asks, per ligand-receptor pair, whether receivers touching
 > ligand-carrying neighbours change their response programme compared with
 > similar cells that do not (adjusted for region, section, cell identity,
-> neighbour make-up, depth and segmentation bleed, with negative controls);
+> neighbour make-up, depth and segmentation bleed, with a negative control);
 > `run_lra_simulate` plants effects of known size on the same tissue and
 > reports, per scenario, power and type I error beside the co-expression
 > baselines (`example_study: true` returns the study it takes). Run
@@ -545,9 +542,8 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > colocation_only: ligand and receptor sit together across contacts, but
 > receivers show no change in their response programme; no_evidence: neither a
 > response nor co-expression at this false discovery rate; control_failed: an
-> effect appeared, but it does not exceed a negative control (receivers without the
-> receptor, distant cells that do not touch, or a matched background
-> programme), or one of these could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
+> effect appeared, but it does not exceed the negative control (receivers without the
+> receptor), or that could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
 > nearly the same as having a neighbour of one cell type, so the ligand cannot
 > be told apart from that cell type; insufficient_data: too few exposed or
 > unexposed receptor-carrying receivers, or too little overlap between them,

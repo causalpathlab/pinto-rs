@@ -28,14 +28,15 @@ fn strs(v: &[&str]) -> Vec<Box<str>> {
 }
 
 /// The reasons a pair of the fixture's full table gives in `warnings`.
-pub(crate) const WARNING: &str = "the effect does not exceed the one in receptor-negative receivers; a matched background programme responds too";
+pub(crate) const WARNING: &str =
+    "the effect does not exceed the one in receptor-negative receivers";
 
 /// `{out}.lra.parquet` of `rows` (ligand, receptor, verdict, q, pct,
 /// threshold), each pooled, with a section row that is not; `scope` its
 /// `q_scope`. With `averaged`, as lra writes it now: the threshold the
-/// average leans on most (2, at weight 0.8), the effect minus each control
-/// with its q (0.1 at 0.5 over receptor-negative receivers; -0.05 at 0.01
-/// over the ring, significantly short of it; none over the background) and
+/// average leans on most (2, at weight 0.8), the effect minus the control
+/// with its q (-0.05 at 0.01 over receptor-negative receivers, significantly
+/// short of them) and
 /// [`WARNING`]; without, a table from before those columns.
 fn write_table(
     path: &Path,
@@ -74,17 +75,12 @@ fn write_table(
     let counts = num(&|_| 10.0);
     let names: Vec<Box<str>> = (0..n).map(|i| i.to_string().into()).collect();
     let (top, weight) = (num(&|_| 2.0), num(&|_| 0.8));
-    let (contrast, ring, nan) = (num(&|_| 0.1), num(&|_| -0.05), num(&|_| f32::NAN));
-    let (contrast_q, ring_q) = (num(&|_| 0.5), num(&|_| 0.01));
+    let (contrast, contrast_q) = (num(&|_| -0.05), num(&|_| 0.01));
     let later = [
         ("tau_top", &top),
         ("tau_top_weight", &weight),
         ("effect_contrast", &contrast),
         ("effect_contrast_q", &contrast_q),
-        ("effect_over_ring", &ring),
-        ("effect_over_ring_q", &ring_q),
-        ("effect_over_background", &nan),
-        ("effect_over_background_q", &nan),
     ];
     let later = later
         .iter()
@@ -336,7 +332,7 @@ fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> Pair
         controls: [Control {
             over: f64::NAN,
             q: f64::NAN,
-        }; 3],
+        }; 1],
     }
 }
 
@@ -651,7 +647,7 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     assert!(v.curve().unwrap().title.contains("subset"));
     // It is from before the averaging columns: read, with none.
     assert!(v.selected_row().unwrap().tau_top.is_nan());
-    assert!(v.selected_row().unwrap().controls[1].q.is_nan());
+    assert!(v.selected_row().unwrap().controls[0].q.is_nan());
     assert_eq!(v.curve().unwrap().top, None);
     assert_eq!(
         v.curve().unwrap().average,
@@ -915,19 +911,15 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     assert_eq!(r["selected"]["drawn"], true);
     // The threshold the average weighs most.
     assert_eq!(r["selected"]["tau_top"], 2.0);
-    // The effect minus each control, signed, with its q.
+    // The effect minus the control, signed, with its q.
     let c = &r["selected"]["controls"];
     let near = |v: &serde_json::Value, x: f64| (v.as_f64().unwrap() - x).abs() < 1e-6;
-    assert_eq!(c[1]["control"], "ring", "{c}");
+    assert_eq!(c[0]["control"], "receptor_negative", "{c}");
     assert!(
-        near(&c[1]["effect_minus_control"], -0.05) && near(&c[1]["q"], 0.01),
+        near(&c[0]["effect_minus_control"], -0.05) && near(&c[0]["q"], 0.01),
         "{c}"
     );
-    assert!(near(&c[0]["q"], 0.5), "{c}");
-    assert!(
-        c[2]["q"].is_null() && c[2]["effect_minus_control"].is_null(),
-        "{c}"
-    );
+    assert!(c[1].is_null(), "one control: {c}");
 
     // Another table of the pair, at another threshold: drawn there too.
     let other = dir.path().join("other.lra.only-l1-r1.parquet");

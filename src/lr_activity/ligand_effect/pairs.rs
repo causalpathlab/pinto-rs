@@ -2,7 +2,7 @@
 //! top, resolved to the data's genes and subunits.
 
 use super::targets::TargetSets;
-use super::{background, reference, PairChoices, INTERNALS, LOG_TARGET};
+use super::{reference, PairChoices, INTERNALS, LOG_TARGET};
 use crate::lr_activity::args::ReferenceSpecies;
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
@@ -151,18 +151,9 @@ pub(super) fn pair_genes(pairs: &[Pair]) -> Vec<usize> {
 
 /// The genes the receivers' identity leaves out, for every pair of `all`
 /// whichever are estimated, so a subset (`--only`) sees the receivers the
-/// full analysis sees; and the background pool ([`background::BackgroundPool`]), genes
-/// outside every pair and programme, read with them and left out like
-/// them.
-pub(super) fn signalling_genes(
-    all: &[Pair],
-    n_genes: usize,
-    seed: u64,
-) -> (HashSet<usize>, Vec<usize>) {
-    let needed = pair_genes(all);
-    let backgrounds = background::background_pool_genes(n_genes, &needed, seed);
-    let excluded = needed.iter().chain(&backgrounds).copied().collect();
-    (excluded, backgrounds)
+/// full analysis sees.
+pub(super) fn signalling_genes(all: &[Pair]) -> HashSet<usize> {
+    pair_genes(all).into_iter().collect()
 }
 
 /// Separators of a complex's subunits in a ligand or receptor name

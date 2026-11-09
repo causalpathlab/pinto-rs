@@ -10,7 +10,7 @@ pub struct Evidence {
     /// The co-expression q is below the FDR level.
     pub coexpr: bool,
     /// A control beside a significant effect did not hold: the effect does not
-    /// exceed the incompetent, ring or background effect, or one could not be checked.
+    /// exceed the incompetent effect, or that could not be checked.
     pub control_failed: bool,
     /// `exposure_eta2` reaches the internal guard `max_exposure_eta2`
     /// (`outputs.lra.settings` in the manifest).
@@ -129,9 +129,8 @@ impl Verdict {
                 "neither a response nor co-expression at this false discovery rate"
             }
             Verdict::ControlFailed => {
-                "an effect appeared, but it does not exceed a negative control (receivers \
-                 without the receptor, distant cells that do not touch, or a matched background \
-                 programme), or one of these could not be checked: likely confounding"
+                "an effect appeared, but it does not exceed the negative control (receivers \
+                 without the receptor), or that could not be checked: likely confounding"
             }
             Verdict::CelltypeInseparable => {
                 "being exposed to the ligand is nearly the same as having a neighbour of \

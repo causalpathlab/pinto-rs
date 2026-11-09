@@ -371,51 +371,61 @@ fn simulate_runs_read_back_as_written() {
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
     let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |v: [f32; 2]| v.to_vec();
-    let floats: Vec<(String, Vec<f32>)> = vec![
-        ("effect_pve".into(), f([0.3, 0.3])),
-        ("planted_ring_effect".into(), f([0.0, 0.0])),
-        ("ligand_field_pve".into(), f([0.3, 0.3])),
-        ("response_field_pve".into(), f([0.3, 0.3])),
-        ("confound_scale".into(), f([16.0, 16.0])),
-        ("spillover".into(), f([0.1, 0.1])),
-        ("shift".into(), f([0.0, 0.0])),
-        ("background_confounding".into(), f([0.5, 0.5])),
-        ("generic_shift".into(), f([0.25, 0.25])),
-        ("dose_midpoint".into(), f([0.75, 0.75])),
-    ];
-    let mut ints: Vec<(String, Vec<i32>)> = vec![
-        ("heterogeneous".into(), vec![0, 0]),
-        ("marker".into(), vec![1, 1]),
-        ("rep".into(), vec![0, 1]),
-        ("estimable".into(), vec![1, 0]),
-        ("dose_response".into(), vec![1, 1]),
-        ("dose_order".into(), vec![8, 8]),
-    ];
-    for m in COMPARED {
-        ints.push((format!("{m}_reject"), vec![1, (m == "crude") as i32]));
-    }
-    let names: Vec<Box<str>> = vec!["0".into(), "1".into()];
-    let mut table: Vec<(Box<str>, Column)> = vec![
-        ("confounder".into(), Column::Str(&confounder)),
-        ("confound_shape".into(), Column::Str(&shape)),
-    ];
-    table.extend(
-        floats
-            .iter()
-            .map(|(k, v)| (k.as_str().into(), Column::F32(v))),
-    );
-    table.extend(
-        ints.iter()
-            .map(|(k, v)| (k.as_str().into(), Column::I32(v))),
-    );
-    write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
+    // The table with `removed` in a column of a control since removed, and
+    // without the columns `without`.
+    let write = |path: &std::path::Path, removed: [f32; 2], without: &[&str]| {
+        let floats: Vec<(String, Vec<f32>)> = vec![
+            ("effect_pve".into(), f([0.3, 0.3])),
+            ("ligand_field_pve".into(), f([0.3, 0.3])),
+            ("response_field_pve".into(), f([0.3, 0.3])),
+            ("confound_scale".into(), f([16.0, 16.0])),
+            ("spillover".into(), f([0.1, 0.1])),
+            ("shift".into(), f([0.0, 0.0])),
+            ("background_confounding".into(), f([0.5, 0.5])),
+            ("generic_shift".into(), f(removed)),
+            ("dose_midpoint".into(), f([0.75, 0.75])),
+        ];
+        let mut ints: Vec<(String, Vec<i32>)> = vec![
+            ("heterogeneous".into(), vec![0, 0]),
+            ("marker".into(), vec![1, 1]),
+            ("rep".into(), vec![0, 1]),
+            ("estimable".into(), vec![1, 0]),
+            ("dose_response".into(), vec![1, 1]),
+            ("dose_order".into(), vec![8, 8]),
+        ];
+        for m in COMPARED {
+            ints.push((format!("{m}_reject"), vec![1, (m == "crude") as i32]));
+        }
+        let names: Vec<Box<str>> = vec!["0".into(), "1".into()];
+        let mut table: Vec<(Box<str>, Column)> = vec![
+            ("confounder".into(), Column::Str(&confounder)),
+            ("confound_shape".into(), Column::Str(&shape)),
+        ];
+        table.extend(
+            floats
+                .iter()
+                .map(|(k, v)| (k.as_str().into(), Column::F32(v))),
+        );
+        table.extend(
+            ints.iter()
+                .map(|(k, v)| (k.as_str().into(), Column::I32(v))),
+        );
+        table.retain(|(k, _)| !without.contains(&k.as_ref()));
+        write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
+    };
+    // A run of a scenario the removed control was made for is not read as
+    // the plain scenario beside it: it is left out.
+    let old = dir.path().join("old.lra-simulate.parquet");
+    write(&old, [0.25, 0.0], &[]);
+    let kept = read_sim_runs(old.to_str().unwrap()).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].scenario.rep, 1);
 
+    write(&path, [0.0, 0.0], &[]);
     let runs = read_sim_runs(path.to_str().unwrap()).unwrap();
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
     assert_eq!(sc.ligand_field_pve, 0.3, "the value as written, not f32's");
-    assert_eq!(sc.background_confounding, 0.5);
-    assert_eq!(sc.generic_shift, 0.25);
     assert!(sc.dose_response);
     assert_eq!((sc.dose_midpoint, sc.dose_order), (0.75, 8));
     assert!(sc.marker && !sc.heterogeneous);
@@ -431,7 +441,7 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0]["scenario"],
-        "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose generic=0.25 κ=0.1 marker"
+        "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose κ=0.1 marker"
     );
     assert_eq!(s[0]["reject"]["crude"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);
@@ -441,25 +451,14 @@ fn simulate_runs_read_back_as_written() {
     let later = [
         "marginal_reject",
         "ipw_reject",
-        "background_confounding",
-        "generic_shift",
         "dose_response",
         "dose_midpoint",
         "dose_order",
     ];
-    let kept: Vec<(Box<str>, Column)> = table
-        .into_iter()
-        .filter(|(k, _)| !later.contains(&k.as_ref()))
-        .collect();
-    let old = dir.path().join("old.lra-simulate.parquet");
-    write_named_table(old.to_str().unwrap(), "row", &names, &kept).unwrap();
+    write(&old, [0.0, 0.0], &later);
     let old_runs = read_sim_runs(old.to_str().unwrap()).unwrap();
     let v = comparison_summary(&old_runs);
     assert_eq!(v["scenarios"][0]["reject"]["crude"], 1.0);
     assert!(v["scenarios"][0]["reject"]["ipw"].is_null());
-    let sc = old_runs[0].scenario;
-    let plain = Scenario::default();
-    assert_eq!(sc.background_confounding, plain.background_confounding);
-    assert_eq!(sc.generic_shift, plain.generic_shift);
-    assert!(!sc.dose_response);
+    assert!(!old_runs[0].scenario.dose_response);
 }

@@ -1,9 +1,7 @@
 //! Combining analyses: Rubin's rules over fixed choices, and the Bayesian
 //! average over exposure thresholds.
 
-use crate::lr_activity::ligand_effect::averaging::{
-    abf_average, abf_summary, background_comparison, combine,
-};
+use crate::lr_activity::ligand_effect::averaging::{abf_average, abf_summary, combine};
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::inference::ONE_CLUSTER_DF;
 use crate::lr_activity::ligand_effect::options::EffectOpts;
@@ -121,33 +119,4 @@ fn a_control_is_averaged_by_its_own_evidence() {
     assert!(
         (abf_average(&programme, PRIOR).theta - abf_average(&control, PRIOR).theta).abs() < 1e-12
     );
-}
-
-/// The effect against its background programmes is a predictive test: the
-/// spread of the background programmes, with `K − 1` degrees of freedom; their
-/// sampling variance is its floor.
-#[test]
-fn the_effect_is_compared_with_the_spread_of_its_backgrounds() {
-    let backgrounds = [est(0.0, 0.01), est(0.2, 0.01), est(0.4, 0.01)];
-    let (mean, over) = background_comparison(&est(1.0, 0.01), &backgrounds);
-    assert!((mean.theta - 0.2).abs() < 1e-12);
-    // s² = 0.04, K = 3.
-    assert!((over.theta - 0.8).abs() < 1e-12);
-    assert!((over.se - (0.04f64 * 4.0 / 3.0).sqrt()).abs() < 1e-12);
-    assert!((mean.se - (0.04f64 / 3.0).sqrt()).abs() < 1e-12);
-    assert_eq!(over.df, 2.0);
-    // Identical background programmes are not certainty.
-    let (_, over) = background_comparison(&est(1.0, 0.1), &[est(0.2, 0.1); 4]);
-    assert!((over.se - (0.01f64 * 1.25).sqrt()).abs() < 1e-12);
-    // An effect less certain than its background programmes sets the width and df.
-    let (_, over) = background_comparison(&est(1.0, 0.5), &backgrounds);
-    assert!((over.se - (0.25f64 + 0.04 / 3.0).sqrt()).abs() < 1e-12);
-    assert_eq!(over.df, 50.0);
-    // Too few usable background programmes, or no effect, compare nothing.
-    assert!(background_comparison(&est(1.0, 0.1), &[est(0.2, 0.1)])
-        .1
-        .theta
-        .is_nan());
-    let (mean, over) = background_comparison(&est(f64::NAN, f64::NAN), &backgrounds);
-    assert!(mean.theta.is_finite() && over.theta.is_nan());
 }

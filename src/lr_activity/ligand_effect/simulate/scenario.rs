@@ -75,10 +75,6 @@ pub struct Scenario {
     /// within their identity bins. Effect, field and log-rate noise share a
     /// unit variance, so the PVE also sets the noise and hence power.
     pub effect_pve: f64,
-    /// θ_ring: log-rate change in responding receivers whose ring partners
-    /// make ligand; 0 keeps the effect at contact range. A log-scale size
-    /// outside the PVE budget, as are `generic_shift` and the marker lift.
-    pub ring_effect: f64,
     /// Share of the producer log odds' variance (beyond the cell type) that
     /// the hidden field explains; the rest is noise.
     pub ligand_field_pve: f64,
@@ -100,9 +96,6 @@ pub struct Scenario {
     /// Displacement of the ligand field the estimator sees, in contact
     /// lengths; 0 for none.
     pub shift: f64,
-    /// How much of the field's push on the response reaches the background
-    /// programme: 1 the same push, 0 none (its field PVE is this squared).
-    pub background_confounding: f64,
     /// The planted effect grows with the true dose (a Hill curve) rather than
     /// being a step at any exposure.
     pub dose_response: bool,
@@ -110,37 +103,22 @@ pub struct Scenario {
     /// doses, and how sharply it rises (the Hill order).
     pub dose_midpoint: f64,
     pub dose_order: i32,
-    /// γ: each cell has a hidden trait that raises its ligand and, by γ per
-    /// unit of its contacts' mean trait, every gene of its competent contacts,
-    /// background programmes included. It acts at contact range on every
-    /// programme, so neither the receptor-negative receivers nor distant cells
-    /// can show it; 0 for none.
-    pub generic_shift: f64,
     pub rep: usize,
 }
 
 impl Scenario {
-    /// The field's share of a background programme's log-rate variance:
-    /// the response field's, scaled by `background_confounding²`.
-    pub fn background_field_pve(&self) -> f64 {
-        self.background_confounding.powi(2) * self.response_field_pve
-    }
-
     /// Effect, field and noise share a unit variance: each PVE at least 0,
     /// the response's two summing to at most 1, the ligand's below 1.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.effect_pve >= 0.0
                 && self.effect_pve + self.response_field_pve.abs() <= 1.0
-                && (0.0..1.0).contains(&self.ligand_field_pve)
-                && self.background_field_pve().abs() <= 1.0,
-            "PVE out of range: effect {}, response field {}, ligand field {}, background \
-             confounding {} (each a share of variance; effect and |response field| sum to at \
-             most 1, ligand field below 1, background confounding² × |response field| at most 1)",
+                && (0.0..1.0).contains(&self.ligand_field_pve),
+            "PVE out of range: effect {}, response field {}, ligand field {} (each a share \
+             of variance; effect and |response field| sum to at most 1, ligand field below 1)",
             self.effect_pve,
             self.response_field_pve,
-            self.ligand_field_pve,
-            self.background_confounding
+            self.ligand_field_pve
         );
         Ok(())
     }
@@ -153,7 +131,6 @@ impl Default for Scenario {
     fn default() -> Self {
         Self {
             effect_pve: 0.0,
-            ring_effect: 0.0,
             ligand_field_pve: 0.0,
             response_field_pve: 0.0,
             scale: 32.0,
@@ -163,11 +140,9 @@ impl Default for Scenario {
             marker: false,
             spillover: 0.0,
             shift: 0.0,
-            background_confounding: 1.0,
             dose_response: false,
             dose_midpoint: 0.5,
             dose_order: 2,
-            generic_shift: 0.0,
             rep: 0,
         }
     }
@@ -204,20 +179,12 @@ pub struct GridOpts {
     pub marker: bool,
     /// An effect varying by identity bin (planted effects only).
     pub heterogeneous: bool,
-    /// Planted effects that also reach ring range (θ_ring), each its own
-    /// unconfounded scenario.
-    pub ring_effect: Vec<f64>,
-    /// How much of the field's push on the response reaches the background
-    /// programme: 1 the same push, 0 none (its field PVE is this squared).
-    pub background_confounding: f64,
     /// Planted effects grow with the true dose.
     pub dose_response: bool,
     /// Where it is half way, as a quantile of the positive true doses.
     pub dose_midpoint: f64,
     /// How sharply it rises (the Hill order).
     pub dose_order: i32,
-    /// Each a scenario with a generic contact-range shift of this size.
-    pub generic_shift: Vec<f64>,
 }
 
 impl Default for GridOpts {
@@ -234,18 +201,32 @@ impl Default for GridOpts {
             shift: vec![4.0],
             marker: true,
             heterogeneous: true,
-            ring_effect: vec![0.3],
-            background_confounding: 1.0,
             dose_response: false,
             dose_midpoint: 0.5,
             dose_order: 2,
-            generic_shift: Vec::new(),
         }
     }
 }
 
-/// Scenario keys of studies from before sizes were shares of variance.
-const RETIRED_SCENARIO_KEYS: [&str; 2] = ["effect_sizes", "confound_receptor"];
+/// Scenario keys a study may no longer set, each with what replaced it.
+/// The columns the removed controls' scenarios wrote are
+/// `RETIRED_SCENARIO_COLUMNS` of the table's reader.
+const RETIRED_SCENARIO_KEYS: [(&str, &str); 5] = [
+    ("effect_sizes", SIZES_ARE_PVE),
+    ("confound_receptor", SIZES_ARE_PVE),
+    (
+        "ring_effect",
+        "the ring control was removed, so no effect is planted at ring range",
+    ),
+    ("background_confounding", BACKGROUND_REMOVED),
+    ("generic_shift", BACKGROUND_REMOVED),
+];
+
+const BACKGROUND_REMOVED: &str = "the background control was removed, and with it the scenarios \
+                                  made to test it";
+
+const SIZES_ARE_PVE: &str = "effect and field sizes are now shares of variance explained \
+                             (effect_pve, field_pve), not log-rate sizes";
 
 /// The grid: no effect and each planted one, each with
 ///
@@ -254,8 +235,7 @@ const RETIRED_SCENARIO_KEYS: [&str; 2] = ["effect_sizes", "confound_receptor"];
 ///   opposite-sign (field PVE `field_pve`, response sign ±), and each nonlinear shape at the
 ///   first scale, same-sign;
 /// - a heterogeneous effect (planted effects only);
-/// - unconfounded segmentation spillover at each κ, and an effect that also
-///   reaches ring range at each θ_ring;
+/// - unconfounded segmentation spillover at each κ;
 /// - the first confounder at the first scale, seen shifted by each shift;
 /// - the marker type, unconfounded.
 pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
@@ -266,7 +246,6 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
         for rep in 0..g.reps {
             let plain = Scenario {
                 effect_pve: theta,
-                background_confounding: g.background_confounding,
                 dose_response: g.dose_response && theta != 0.0,
                 dose_midpoint: g.dose_midpoint,
                 dose_order: g.dose_order,
@@ -308,18 +287,6 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
             }
             for &spillover in &g.spillover {
                 out.push(Scenario { spillover, ..plain });
-            }
-            for &generic_shift in &g.generic_shift {
-                out.push(Scenario {
-                    generic_shift,
-                    ..plain
-                });
-            }
-            for &ring_effect in &g.ring_effect {
-                out.push(Scenario {
-                    ring_effect,
-                    ..plain
-                });
             }
             if let Some(&confounder) = g.confounders.first() {
                 for &shift in &g.shift {
@@ -380,14 +347,11 @@ impl Study {
 
     pub fn from_json(text: &str) -> anyhow::Result<Self> {
         let value: serde_json::Value = serde_json::from_str(text)?;
-        if let Some(k) = RETIRED_SCENARIO_KEYS
+        if let Some((k, why)) = RETIRED_SCENARIO_KEYS
             .iter()
-            .find(|k| value["scenarios"].get(**k).is_some())
+            .find(|(k, _)| value["scenarios"].get(*k).is_some())
         {
-            anyhow::bail!(
-                "scenarios.{k} is retired: effect and field sizes are now shares of variance \
-                 explained (effect_pve, field_pve), not log-rate sizes; see the example study"
-            );
+            anyhow::bail!("scenarios.{k} is retired: {why}; see the example study");
         }
         let s: Study = serde_json::from_value(value)?;
         anyhow::ensure!(s.reps > 0, "reps must be at least 1");
@@ -428,22 +392,17 @@ impl Study {
                      its cell type (generalized linear model): effect, field and noise sum to 1. \
                      Each effect runs beside no effect. effect_pve: the contact effect's share. \
                      field_pve: the hidden field's share, on ligand production (log odds) and \
-                     on the response, in confounded scenarios. ring_effect and generic_shift \
-                     are log-scale sizes outside that budget. confounders: hidden \
+                     on the response, in confounded scenarios. confounders: hidden \
                      field kinds (bumps, realgene, fourier). scales: their length scales in \
                      contact lengths. shapes: how the field acts (linear, quadratic). \
                      spillover: shares of a neighbour's counts bleeding into \
                      the receiver. shift: displacement of the ligand field, in contact \
                      lengths (a null). marker: effect confined to one cell type. \
-                     heterogeneous: effect varying by cell type. ring_effect: effect sizes \
-                     reaching distant, non-touching cells. background_confounding: how \
-                     much of the field's push on the response reaches the background programme \
-                     (1 the same push, 0 none). dose_response: planted effects grow with the \
+                     heterogeneous: effect varying by cell type. dose_response: \
+                     planted effects grow with the \
                      true dose instead of being a step at any exposure, half way at the \
                      quantile dose_midpoint of the positive doses and rising with the Hill \
-                     order dose_order. generic_shift: sizes of a contact-range shift of every gene \
-                     in competent receivers, tied to the ligand by a hidden trait of the \
-                     neighbours."
+                     order dose_order."
                         .into(),
                 ),
                 ..GridOpts::default()

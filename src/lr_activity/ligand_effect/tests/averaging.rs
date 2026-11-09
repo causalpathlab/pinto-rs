@@ -1,12 +1,11 @@
 //! Choices averaged rather than asked for, and what each pair reports
 //! beside its headline: the competence grid combined by Rubin's rules, the
 //! average over exposure thresholds, the threshold–response curve with
-//! its simultaneous band, the matched background programme, the two-scale
+//! its simultaneous band, the two-scale
 //! moments and the per-cell-type rows.
 
 use super::{estimate_pair, fitted_effects};
 use crate::lr_activity::ligand_effect::averaging::{abf_average, abf_weights, combine};
-use crate::lr_activity::ligand_effect::background::{background_pool_genes, BackgroundPool};
 use crate::lr_activity::ligand_effect::curve::{curve_taus, sup_t_crit};
 use crate::lr_activity::ligand_effect::dose::Exposure;
 use crate::lr_activity::ligand_effect::effects::{effects_on, Sensitivity};
@@ -42,8 +41,6 @@ struct World {
     ligand: Vec<f64>,
     receptor: Vec<f64>,
     response: Vec<(u32, f32)>,
-    /// Genes unrelated to the ligand, at a spread of mean levels.
-    noise: Vec<Vec<(u32, f32)>>,
 }
 
 fn poisson(rng: &mut SmallRng, rate: f64) -> f32 {
@@ -124,23 +121,11 @@ fn world(seed: u64, dose: f64, named: bool) -> World {
             (x > 0.0).then_some((i as u32, x))
         })
         .collect();
-    let noise: Vec<Vec<(u32, f32)>> = (0..30)
-        .map(|g| {
-            let rate = 0.2 * 1.15f64.powi(g);
-            (0..n)
-                .filter_map(|i| {
-                    let x = poisson(&mut rng, rate);
-                    (x > 0.0).then_some((i as u32, x))
-                })
-                .collect()
-        })
-        .collect();
     World {
         tissue,
         ligand,
         receptor,
         response,
-        noise,
     }
 }
 
@@ -334,97 +319,6 @@ fn curve_rises_with_dose_and_band_covers_pointwise() {
     assert!(c.last().unwrap().effect.theta > c[0].effect.theta);
 }
 
-// * Background programme
-
-#[test]
-fn background_genes_are_matched_by_expression_and_used_once() {
-    let n = 100;
-    let sf = vec![1.0; n];
-    let gene =
-        |count: usize, x: f32| -> Vec<(u32, f32)> { (0..count).map(|r| (r as u32, x)).collect() };
-    // Pool means 0.1, 0.2, 0.4, 0.8 (count rows of 1 over 100 rows).
-    let pool_genes: Vec<Vec<(u32, f32)>> = [10, 20, 40, 80].iter().map(|&c| gene(c, 1.0)).collect();
-    let pool = BackgroundPool::new(&sf, pool_genes.iter().map(|g| g.as_slice()).collect());
-    let t1 = gene(38, 1.0);
-    let t2 = gene(42, 1.0);
-    let targets = [(2.0, t1.as_slice()), (-1.0, t2.as_slice())];
-    let d = pool.draw(&BackgroundPool::plan(&sf, &targets), 1);
-    assert_eq!(d.len(), 2);
-    assert_eq!(
-        (d[0].0, d[1].0),
-        (2.0, -1.0),
-        "heaviest target first, same weight"
-    );
-    assert_ne!(d[0].1.len(), d[1].1.len(), "a gene is used once");
-    assert_eq!(
-        pool.draw(&BackgroundPool::plan(&sf, &targets), 1)
-            .iter()
-            .map(|g| g.1.len())
-            .collect::<Vec<_>>(),
-        d.iter().map(|g| g.1.len()).collect::<Vec<_>>(),
-        "seeded"
-    );
-    // A large pool: picks stay near the target's expression, and draws differ.
-    let many: Vec<Vec<(u32, f32)>> = (1..=100).map(|c| gene(c, 1.0)).collect();
-    let big = BackgroundPool::new(&sf, many.iter().map(|g| g.as_slice()).collect());
-    let t = gene(50, 1.0);
-    let one = [(1.0, t.as_slice())];
-    let sizes: std::collections::HashSet<usize> = (0..50)
-        .map(|seed| big.draw(&BackgroundPool::plan(&sf, &one), seed)[0].1.len())
-        .collect();
-    assert!(sizes.len() > 5, "{sizes:?}");
-    assert!(sizes.iter().all(|&c| (39..=61).contains(&c)), "{sizes:?}");
-    // A pool holding fewer than half the programme gives no background.
-    let small = BackgroundPool::new(&sf, vec![pool_genes[0].as_slice()]);
-    let three = [
-        (1.0, t1.as_slice()),
-        (1.0, t1.as_slice()),
-        (1.0, t2.as_slice()),
-    ];
-    assert!(small.draw(&BackgroundPool::plan(&sf, &three), 1).is_empty());
-    let picks = background_pool_genes(1000, &[1, 2, 3], 7);
-    assert_eq!(picks.len(), 199);
-    assert!(picks.windows(2).all(|w| w[0] < w[1]) && !picks.contains(&2));
-    assert_eq!(picks, background_pool_genes(1000, &[1, 2, 3], 7), "seeded");
-}
-
-/// Genes unrelated to the ligand make a null background beside a real effect;
-/// a background programme that responds fails the control.
-#[test]
-fn background_is_null_on_unrelated_genes_and_fails_the_control_when_not() {
-    let w = world(4, 0.3, false);
-    let programme: Vec<(f64, &[(u32, f32)])> = vec![(1.0, w.response.as_slice()); 3];
-    let pool = BackgroundPool::new(
-        &w.tissue.size_factor,
-        w.noise.iter().map(|g| g.as_slice()).collect(),
-    );
-    let o = opts(&[0.1], false);
-    let mut rows = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
-    let r = &rows[0];
-    assert_eq!(r.n_background_genes, 3);
-    assert!(r.effects.competent.z() > 4.0, "{:?}", r.effects.competent);
-    assert!(
-        r.background_effect.z().abs() < 3.0,
-        "background {:?}",
-        r.background_effect
-    );
-    report(&mut rows, &ReportOpts::default());
-    assert!(
-        !rows[0].warnings.contains("background"),
-        "{}",
-        rows[0].warnings
-    );
-
-    // The responding programme itself in the pool: its background responds.
-    let pool = BackgroundPool::new(&w.tissue.size_factor, vec![w.response.as_slice(); 3]);
-    let mut rows = estimate_pair_with(&w.tissue, &data(&w, &programme), &pool, &o).unwrap();
-    report(&mut rows, &ReportOpts::default());
-    assert!(rows[0].background_q < 0.05);
-    assert!(rows[0]
-        .warnings
-        .contains("a matched background programme responds too"));
-}
-
 // * Moments
 
 #[test]
@@ -457,7 +351,7 @@ fn named_cell_types_add_one_row_each() {
     for r in &rows[1..] {
         assert!(r.effects.competent.theta.is_finite(), "{}", r.section);
         assert!(r.effects.steps[0].theta.is_nan(), "steps pooled only");
-        assert!(r.curve.is_empty() && r.background_effect.theta.is_nan());
+        assert!(r.curve.is_empty());
     }
     // Without names, no type rows.
     let w = world(5, 0.15, false);
@@ -529,14 +423,9 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
 /// ([`crate::lr_activity::ligand_effect::options::EffectOpts::fit_thin`]).
 fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
     let targets = [(1.0, w.response.as_slice())];
-    let pool = BackgroundPool::new(
-        &w.tissue.size_factor,
-        w.noise.iter().map(|g| g.as_slice()).collect(),
-    );
     let run = |fit_thin: bool| {
         let o = EffectOpts { fit_thin, ..*o };
-        let mut rows = estimate_pair_with(&w.tissue, &data(w, &targets), &pool, &o).unwrap();
-        assert!(rows[0].n_background_genes > 0, "a background is matched");
+        let mut rows = estimate_pair(&w.tissue, &data(w, &targets), &o).unwrap();
         report(&mut rows, &ReportOpts::default());
         format!("{rows:#?}")
     };
@@ -545,8 +434,8 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
 
 /// Skipping a fit whose every subset leaves an arm thin changes nothing in the
 /// output: for a hopeless pair, and for a pair whose controls alone would be
-/// estimable (no competent effect, so the incompetent effect and the ring are
-/// not read either); every fit is skipped for both.
+/// estimable (no competent effect, so the incompetent effect is not read
+/// either); every fit is skipped for both.
 #[test]
 fn skipped_fits_change_no_output() {
     let mut hopeless = world(7, 0.3, true);
@@ -570,9 +459,9 @@ fn skipped_fits_change_no_output() {
     }
 }
 
-/// A thin competent arm skips the fits: the receptor-negative and distant-cell
-/// controls check an estimate the pair does not have, and neither enters its
-/// family's q-values.
+/// A thin competent arm skips the fits: the receptor-negative control checks
+/// an estimate the pair does not have, and does not enter its family's
+/// q-values.
 #[test]
 fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);
@@ -589,7 +478,6 @@ fn a_thin_headline_drops_its_controls() {
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
     assert!(row.effects.incompetent.theta.is_nan());
-    assert!(row.effects.ring.theta.is_nan());
     assert!(
         row.effects.incompetent.n > 0,
         "its counts are still reported"
@@ -614,17 +502,16 @@ fn a_pair_empty_at_the_middle_threshold_has_no_estimate() {
     assert_eq!(row.n_competent, 0);
     assert!(row.effects.competent.theta.is_nan());
     assert!(row.effects.incompetent.theta.is_nan());
-    assert!(row.effects.ring.theta.is_nan());
     // The looser threshold alone does estimate this pair.
     static LOOSE: [f64; 1] = [0.05];
     let row = &estimate_pair(&w.tissue, &data(&w, &targets), &opts(&LOOSE, false)).unwrap()[0];
     assert!(row.effects.competent.theta.is_finite());
 }
 
-/// The ring and step fits need the controls' propensities: asked for on
-/// threshold fits built without them, they are an error, not a panic.
+/// The step fits need the steps' propensities: asked for on threshold
+/// fits built without them, they are an error, not a panic.
 #[test]
-fn control_fits_without_their_propensities_are_an_error() {
+fn step_fits_without_their_propensities_are_an_error() {
     let w = world(1, 0.3, false);
     let targets = [(1.0, w.response.as_slice())];
     let o = opts(&[0.1], false);
@@ -640,9 +527,9 @@ fn control_fits_without_their_propensities_are_an_error() {
     let fits = ThresholdFits::new(rows, &x, &levels, &o, &mut Default::default()).unwrap();
     let (design, cf) = (rows.design.view(), rows.cf);
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, None, &o).is_ok());
-    assert!(fit_main(design, cf, &fits, &r, Fit::Ring, None, &o).is_err());
     assert!(fit_main(design, cf, &fits, &r, Fit::Main, Some(0), &o).is_err());
-    assert!(effects_on(rows, &fits, &r, Sensitivity::NONE, &o).is_err());
+    assert!(effects_on(rows, &fits, &r, Sensitivity::NONE, &o).is_ok());
+    assert!(effects_on(rows, &fits, &r, Sensitivity::ALL, &o).is_err());
 }
 
 /// The prior is set in multiples of the estimand's own standard error, so the
