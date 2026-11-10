@@ -22,9 +22,7 @@ pub const STEPS: usize = 3;
 pub const THRESHOLDS: usize = 4;
 pub const BAND: usize = 5;
 
-#[allow(clippy::declare_interior_mutable_const)]
-const ZERO: AtomicU64 = AtomicU64::new(0);
-static NS: [AtomicU64; 8] = [ZERO; 8];
+static NS: [AtomicU64; STAGES.len()] = [const { AtomicU64::new(0) }; STAGES.len()];
 static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);
 static PROPENSITY_FITS: AtomicU64 = AtomicU64::new(0);
 static HESSIANS: AtomicU64 = AtomicU64::new(0);

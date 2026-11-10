@@ -11,7 +11,7 @@ use super::lupin::{self, Panel, Reviewed};
 use super::markers::FeatureRates;
 use super::{Base, Level};
 use crate::util::common::*;
-use crate::util::parquet_io::{read_keyed_column, read_labelled_matrix};
+use crate::util::parquet_io::{read_keyed_columns, read_labelled_matrix};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -179,9 +179,9 @@ pub fn round_name(path: &Path) -> String {
 
 /// Per geometry cell, its cluster id in `path` (`None` when absent or NaN).
 fn cell_ids(path: &Path, geom: &Geometry) -> anyhow::Result<Vec<Option<i64>>> {
-    let (cells, values) = read_keyed_column(path, "cluster")?;
+    let (cells, values) = read_keyed_columns(path, &["cluster"])?;
     let mut out = vec![None; geom.n()];
-    for (name, v) in cells.iter().zip(values) {
+    for (name, &v) in cells.iter().zip(&values[0]) {
         if let (Some(&i), true) = (geom.index.get(name), v.is_finite()) {
             out[i] = Some(v as i64);
         }

@@ -33,7 +33,7 @@ use crate::link_community::incidence::{
 use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
 use crate::link_community::outputs::{
     fit_partition, link_community_histogram, write_dict_cut, write_dict_merges, write_partition,
-    write_partition_outputs, write_score_trace, ScoreEntry,
+    write_partition_outputs, write_score_trace, PartitionInputs, ScoreEntry,
 };
 use crate::link_community::profiles::*;
 use crate::util::cell_pairs::*;
@@ -339,21 +339,24 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         num_gibbs: args.num_gibbs,
         num_greedy: args.num_greedy,
         alpha: args.alpha,
-        block_size: c.block_size,
         no_level_outputs: args.no_level_outputs,
+    };
+    let partition_inputs = PartitionInputs {
+        edges,
+        edge_kind,
+        cell_names: &cell_names,
+        data_vec: &data_vec,
+        feature_weights: Some(&feature_weights),
+        axis: &feature_axis,
+        block_size: c.block_size,
     };
     let cascade_result = run_cascade(
         &c.out,
-        edges,
+        &partition_inputs,
         &ml.all_cell_labels,
-        &data_vec,
         &profile_mode,
         &cascade_cfg,
         &mut sampler,
-        &cell_names,
-        Some(&feature_weights),
-        &feature_axis,
-        edge_kind,
     )?;
 
     let mut current_labels = cascade_result.fine_labels;
@@ -467,16 +470,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // result at `{out}.*` when nothing collapses, else at `{out}.draft.*`
     // beside the merged one.
     let draft_prefix = format!("{}.draft", c.out);
-    let draft = fit_partition(
-        edges,
-        &final_membership,
-        n_cells,
-        k,
-        &data_vec,
-        Some(&feature_weights),
-        &feature_axis,
-        c.block_size,
-    )?;
+    let draft = fit_partition(&partition_inputs, &final_membership, k)?;
     let write_draft = |prefix: &str| {
         info!(
             "Writing {} outputs (propensity, feature_community, link_community) → {}.*",
@@ -487,15 +481,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             },
             prefix
         );
-        write_partition(
-            prefix,
-            &draft,
-            edges,
-            &final_membership,
-            &cell_names,
-            &feature_axis,
-            edge_kind,
-        )
+        write_partition(prefix, &draft, &partition_inputs, &final_membership)
     };
 
     info!("Writing score trace...");
@@ -599,16 +585,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 );
                 write_partition_outputs(
                     &c.out,
-                    edges,
+                    &partition_inputs,
                     &consensus_membership,
-                    n_cells,
                     n_consensus,
-                    &cell_names,
-                    &data_vec,
-                    Some(&feature_weights),
-                    &feature_axis,
-                    c.block_size,
-                    edge_kind,
                 )?;
                 merge_present_with_consensus = true;
             } else {

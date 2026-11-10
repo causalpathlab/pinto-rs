@@ -109,25 +109,51 @@ pub(crate) fn testable_weighted_cov(l: &[f32], r: &[f32], w: &[f32]) -> Option<f
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What every stratum of one run is scored with: the pairs, the pseudobulk
+/// samples and the permutation settings.
+pub(super) struct ScoreInputs<'a> {
+    pub real_pairs: &'a [(Box<str>, Box<str>, usize, usize)],
+    pub gene_to_local: &'a HashMap<usize, usize>,
+    pub gene_names: &'a [Box<str>],
+    pub collapse: &'a CollapseOut,
+    pub fisher_lr: &'a [f32],
+    pub strata_map: &'a CommunityStrata,
+    pub sample_batch_label: &'a [Box<str>],
+    pub sample_propbin: &'a [usize],
+    pub shuffle_stratify_dim: usize,
+    pub n_perm: usize,
+}
+
+/// One stratum to score: a community among the samples of one batch, or of
+/// every batch pooled.
+pub(super) struct StratumJob {
+    pub batch_label: Box<str>,
+    pub stratum: u32,
+    pub samples: Vec<usize>,
+    /// Pooled over batches: samples are then shuffled within their own batch.
+    pub pooled: bool,
+}
+
 pub(super) fn score_pairs_for_stratum(
-    batch_label: &str,
-    stratum: u32,
-    samples_in_stratum: &[usize],
-    sample_propbin: &[usize],
-    real_pairs: &[(Box<str>, Box<str>, usize, usize)],
-    gene_to_local: &HashMap<usize, usize>,
-    gene_names: &[Box<str>],
-    collapse: &CollapseOut,
-    fisher_lr: &[f32],
-    n_perm: usize,
+    inp: &ScoreInputs<'_>,
+    job: &StratumJob,
     base_seed: u64,
     stratum_id: usize,
-    shuffle_within_batch: bool,
-    sample_batch_label: &[Box<str>],
-    shuffle_stratify_dim: usize,
-    strata_map: &CommunityStrata,
 ) -> Vec<LrActivityRow> {
+    let (batch_label, stratum) = (job.batch_label.as_ref(), job.stratum);
+    let (samples_in_stratum, shuffle_within_batch) = (job.samples.as_slice(), job.pooled);
+    let ScoreInputs {
+        real_pairs,
+        gene_to_local,
+        gene_names,
+        collapse,
+        fisher_lr,
+        strata_map,
+        sample_batch_label,
+        sample_propbin,
+        shuffle_stratify_dim,
+        n_perm,
+    } = *inp;
     let c = stratum as usize;
     let n_s = samples_in_stratum.len();
     if n_s < MIN_SAMPLES_PER_STRATUM {

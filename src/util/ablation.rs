@@ -58,15 +58,7 @@ pub enum AblationKind {
     CellMask,
 }
 
-// `ALL` and `flag` serve the MCP tools, which only the `view` build has.
-#[cfg_attr(not(feature = "view"), allow(dead_code))]
 impl AblationKind {
-    pub const ALL: [AblationKind; 3] = [
-        AblationKind::CoordPermutation,
-        AblationKind::FeatureDrop,
-        AblationKind::CellMask,
-    ];
-
     /// Its name in the manifest's `ablation.kind`.
     pub fn name(self) -> &'static str {
         match self {
@@ -75,6 +67,16 @@ impl AblationKind {
             AblationKind::CellMask => "cell_mask",
         }
     }
+}
+
+/// For the MCP tools, which only the `view` build has.
+#[cfg(feature = "view")]
+impl AblationKind {
+    pub const ALL: [AblationKind; 3] = [
+        AblationKind::CoordPermutation,
+        AblationKind::FeatureDrop,
+        AblationKind::CellMask,
+    ];
 
     /// The flag that asks for it, without its dashes.
     pub fn flag(self) -> &'static str {

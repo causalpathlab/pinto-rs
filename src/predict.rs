@@ -34,7 +34,7 @@ use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, CellLatent, PairBatchDivisor, PairLatent, PairProjectionArgs, PairScore,
     PairSolver,
 };
-use crate::link_community::outputs::write_partition_outputs;
+use crate::link_community::outputs::{write_partition_outputs, PartitionInputs};
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
 use crate::util::device::ComputeDevice;
@@ -695,23 +695,25 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
          model and this sample share features (see the coverage line above)"
     );
 
-    let (propensity, _feature_community) = write_partition_outputs(
+    let propensity = write_partition_outputs(
         &c.out,
-        &kept_edges,
+        &PartitionInputs {
+            edges: &kept_edges,
+            // The edge-kind column is per-EDGE and `kept_edges` is a subset, so it can
+            // only be forwarded when nothing abstained.
+            edge_kind: (n_abstain == 0)
+                .then_some(srt_cell_pairs.edge_kind.as_deref())
+                .flatten(),
+            cell_names: &cell_names,
+            data_vec: &data_vec,
+            feature_weights: feature_weights.as_deref(),
+            axis: &feature_axis,
+            block_size: c.block_size,
+        },
         &labels,
-        n_cells,
         k,
-        &cell_names,
-        &data_vec,
-        feature_weights.as_deref(),
-        &feature_axis,
-        c.block_size,
-        // The edge-kind column is per-EDGE and `kept_edges` is a subset, so it can only
-        // be forwarded when nothing abstained.
-        (n_abstain == 0)
-            .then_some(srt_cell_pairs.edge_kind.as_deref())
-            .flatten(),
-    )?;
+    )?
+    .propensity;
 
     // Every cell's own placement, by the same map as the pairs — what cage writes.
     cell_latent.to_parquet_with_names(

@@ -2,14 +2,12 @@
 //!
 //! Thin wrappers over `legume_numeric::matrix` primitives. The
 //! pinto-specific piece is [`read_cells_from_coord_pairs`], which
-//! dedupes `coord_pairs.parquet` into a per-cell table `(name, x, y,
-//! optional batch)`.
+//! dedupes `coord_pairs.parquet` into a per-cell table `(name, x, y)`,
+//! with the batch and the rest of what the viewer draws in its build.
 
 use crate::util::common::*;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef};
-use data_beans::hdf5_io::strip_backend_suffix;
-use legume_numeric::matrix::common_io::basename;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -223,18 +221,12 @@ pub(crate) fn read_labelled_matrix(path: &Path) -> anyhow::Result<MatWithNames<M
     })
 }
 
-/// One numeric column of a table keyed by its first column: row names and
-/// the values (e.g. a lupin round's `cell`, `cluster`, with NaN for none).
-pub fn read_keyed_column(path: &Path, column: &str) -> anyhow::Result<(Vec<Box<str>>, Vec<f32>)> {
-    let (rows, mut values) = read_keyed_columns(path, &[column])?;
-    Ok((rows, values.remove(0)))
-}
-
 /// Row keys, and each requested float column.
 pub type KeyedColumns = (Vec<Box<str>>, Vec<Vec<f32>>);
 
-/// [`read_keyed_column`] for several float columns in one pass: the key
-/// column (the first) and each named column, in order.
+/// Several float columns of a table keyed by its first column, in one pass:
+/// the keys and each named column, in order (e.g. a lupin round's `cell`
+/// and `cluster`, with NaN for none).
 pub fn read_keyed_columns(path: &Path, columns: &[&str]) -> anyhow::Result<KeyedColumns> {
     let fields = field_names(path)?;
     let key = fields
@@ -338,59 +330,67 @@ pub fn read_cells_table(
     let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
     let mut wanted = vec![fields[0].as_ref(), x.as_str(), y.as_str()];
     for extra in ["batch", "in_graph"] {
-        if has(extra) {
+        // Only the viewer reads these.
+        if cfg!(feature = "view") && has(extra) {
             wanted.push(extra);
         }
     }
     let cols = read_named_columns(path, &wanted)?;
-    let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
     let names = labels(&cols[0])?;
     let (xs, ys) = (floats(&cols[1])?, floats(&cols[2])?);
-    let batches = column("batch").map(|c| labels(c)).transpose()?;
-    let in_graph = column("in_graph")
-        .map(|c| ints(c).map(|v| v.into_iter().map(|k| k != 0).collect::<Vec<_>>()))
-        .transpose()?
-        .filter(|v| v.iter().any(|&k| !k));
-    let index = names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.clone(), i))
-        .collect();
+    #[cfg(feature = "view")]
+    let (batches, in_graph, index) = {
+        let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
+        let batches = column("batch").map(|c| labels(c)).transpose()?;
+        let in_graph = column("in_graph")
+            .map(|c| ints(c).map(|v| v.into_iter().map(|k| k != 0).collect::<Vec<_>>()))
+            .transpose()?
+            .filter(|v| v.iter().any(|&k| !k));
+        let index = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i))
+            .collect();
+        (batches, in_graph, index)
+    };
     Ok(CellTable {
         names,
         coords: xs.into_iter().zip(ys).collect(),
+        #[cfg(feature = "view")]
         batches,
+        #[cfg(feature = "view")]
         index,
+        #[cfg(feature = "view")]
         in_graph,
+        #[cfg(feature = "view")]
         coord_col_names: vec![x.into_boxed_str(), y.into_boxed_str()],
     })
 }
 
 /// One row per cell. `batch` is `None` if the fit was single-batch
-/// (i.e. `coord_pairs.parquet` lacks a `left_batch` column).
+/// (i.e. `coord_pairs.parquet` lacks a `left_batch` column). Everything past
+/// the names and coordinates is for the viewer, and read only in its build.
 pub struct CellTable {
     /// Cell barcode, unique and stable-ordered.
     pub names: Vec<Box<str>>,
     /// (x, y) coordinate per cell.
     pub coords: Vec<(f32, f32)>,
     /// Optional batch label per cell.
+    #[cfg(feature = "view")]
     pub batches: Option<Vec<Box<str>>>,
     /// `name → index into names/coords/batches`
+    #[cfg(feature = "view")]
     pub index: HashMap<Box<str>, usize>,
     /// Whether each cell became a graph node (`false`: QC dropped it, or it
     /// has no neighbours); `None` when every cell did.
+    #[cfg(feature = "view")]
     pub in_graph: Option<Vec<bool>>,
     /// Bare coordinate column names (without `left_`/`right_` prefix).
     /// Pass-through from `coord_pairs.parquet` so downstream readers
     /// (e.g. `read_propensity`) can exclude coord trailers that
     /// `pinto prop` may append to `.propensity.parquet`.
+    #[cfg(feature = "view")]
     pub coord_col_names: Vec<Box<str>>,
-}
-
-impl CellTable {
-    pub fn n(&self) -> usize {
-        self.names.len()
-    }
 }
 
 /// Read `{prefix}.coord_pairs.parquet`, union left+right, dedupe.
@@ -444,7 +444,9 @@ pub fn read_cells_from_coord_pairs(
     let x_col_right: Box<str> = format!("right_{x_bare}").into_boxed_str();
     let y_col_right: Box<str> = format!("right_{y_bare}").into_boxed_str();
 
-    let has_batch = fields.iter().any(|f| f.as_ref() == "left_batch")
+    // Only the viewer reads the batches.
+    let has_batch = cfg!(feature = "view")
+        && fields.iter().any(|f| f.as_ref() == "left_batch")
         && fields.iter().any(|f| f.as_ref() == "right_batch");
 
     // Column-wise: millions of pairs read in a fraction of the time the
@@ -497,15 +499,17 @@ pub fn read_cells_from_coord_pairs(
         }
     }
 
-    let batches = if has_batch { Some(batches) } else { None };
-    let coord_col_names = vec![x_bare.into_boxed_str(), y_bare.into_boxed_str()];
     Ok(CellTable {
         names,
         coords,
-        batches,
+        #[cfg(feature = "view")]
+        batches: has_batch.then_some(batches),
+        #[cfg(feature = "view")]
         index,
+        #[cfg(feature = "view")]
         in_graph: None,
-        coord_col_names,
+        #[cfg(feature = "view")]
+        coord_col_names: vec![x_bare.into_boxed_str(), y_bare.into_boxed_str()],
     })
 }
 
@@ -659,92 +663,4 @@ fn argmax_row(mat: &Mat, row: usize, cols: &[usize]) -> i64 {
         }
     }
     best_j as i64
-}
-
-/// Map "0","1",… numeric batch labels to the friendly basenames of the
-/// upstream input files (`.pinto.json::data_files`).
-///
-/// `pinto svd` assigns string-of-integer batch labels (`"0"`, `"1"`, …)
-/// when the user passes multiple data files without an explicit
-/// `--batch-files`, and these labels propagate through
-/// `coord_pairs.parquet` into the plot. The user-facing batch name is
-/// the input file's basename (without the `.zarr` / `.h5` / `.zarr.zip`
-/// extension), which is what the data-beans merger uses internally —
-/// reusing that here keeps the plot dirs consistent with how the
-/// upstream code names batches.
-///
-/// Returns the resolved name table when all current labels parse as
-/// non-negative integers `< data_files.len()`. `None` means the labels
-/// are already strings (user supplied real batch names) or the
-/// metadata is missing — no remap is applied in either case.
-pub fn resolve_batch_name_map(
-    cells_batches: &[Box<str>],
-    data_files: &[String],
-) -> Option<Vec<Box<str>>> {
-    if data_files.is_empty() {
-        return None;
-    }
-    // Every existing label must be a non-negative integer that indexes
-    // into `data_files`; one non-numeric label is enough to bail (the
-    // user already supplied human-readable batch names).
-    for b in cells_batches {
-        let parsed: Result<usize, _> = b.parse();
-        match parsed {
-            Ok(i) if i < data_files.len() => {}
-            _ => return None,
-        }
-    }
-    Some(unique_batch_names_from_data_files(data_files))
-}
-
-/// Apply the index→name table from `resolve_batch_name_map` to a slice
-/// of batch labels. Caller owns the slice; labels that don't parse are
-/// left as-is (defensive — `resolve_batch_name_map` already guards).
-pub fn remap_batch_labels(labels: &mut [Box<str>], name_map: &[Box<str>]) {
-    for b in labels.iter_mut() {
-        if let Ok(i) = b.parse::<usize>() {
-            if let Some(friendly) = name_map.get(i) {
-                *b = friendly.clone();
-            }
-        }
-    }
-}
-
-/// Mirror of `data_beans::handlers::merging::generate_unique_batch_names`,
-/// reimplemented here because that helper sits inside a non-public
-/// `handlers` module. Strips backend suffixes from each file's
-/// basename and disambiguates duplicates with a `_{n}` counter so the
-/// returned vector is index-aligned with `data_files`.
-fn unique_batch_names_from_data_files(data_files: &[String]) -> Vec<Box<str>> {
-    let bare: Vec<Box<str>> = data_files
-        .iter()
-        .map(|f| {
-            basename(f)
-                .map(|b| {
-                    let stripped = strip_backend_suffix(&b);
-                    if stripped.len() == b.len() {
-                        b
-                    } else {
-                        stripped.into()
-                    }
-                })
-                .unwrap_or_else(|_| f.clone().into_boxed_str())
-        })
-        .collect();
-    let mut counts: HashMap<Box<str>, usize> = HashMap::default();
-    for n in &bare {
-        *counts.entry(n.clone()).or_insert(0) += 1;
-    }
-    let mut counters: HashMap<Box<str>, usize> = HashMap::default();
-    bare.iter()
-        .map(|n| match counts.get(n).copied().unwrap_or(0) {
-            0 | 1 => n.clone(),
-            _ => {
-                let c = counters.entry(n.clone()).or_insert(0);
-                let out = format!("{n}_{c}").into_boxed_str();
-                *c += 1;
-                out
-            }
-        })
-        .collect()
 }

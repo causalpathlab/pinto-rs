@@ -63,7 +63,7 @@ use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::membership::GeneIndexResolver;
 use pseudobulk::{assign_samples, collapse_pseudobulk, load_edges, stratum_present};
-use score::score_pairs_for_stratum;
+use score::{score_pairs_for_stratum, ScoreInputs, StratumJob};
 
 mod pseudobulk;
 mod score;
@@ -454,7 +454,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
 
     let base_seed = args.input.seed;
 
-    let mut plan: Vec<(Box<str>, u32, Vec<usize>, bool)> = Vec::new();
+    let mut plan: Vec<StratumJob> = Vec::new();
     for batch_label in &unique_batches {
         let samples_in_batch: Vec<usize> = (0..n_samples)
             .filter(|&s| sample_batch_label[s].as_ref() == batch_label.as_ref())
@@ -469,12 +469,12 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             if !stratum_present(&collapse, stratum as usize, &samples_in_batch) {
                 continue;
             }
-            plan.push((
-                batch_label.clone(),
+            plan.push(StratumJob {
+                batch_label: batch_label.clone(),
                 stratum,
-                samples_in_batch.clone(),
-                false,
-            ));
+                samples: samples_in_batch.clone(),
+                pooled: false,
+            });
         }
     }
     if n_real_batches > 1 {
@@ -487,7 +487,12 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             if !stratum_present(&collapse, stratum as usize, &all_samples) {
                 continue;
             }
-            plan.push((meta_label.clone(), stratum, all_samples.clone(), true));
+            plan.push(StratumJob {
+                batch_label: meta_label.clone(),
+                stratum,
+                samples: all_samples.clone(),
+                pooled: true,
+            });
         }
     }
 
@@ -504,11 +509,24 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // of all cores; a second parallel axis here would chase the remainder
     // while multiplying the in-flight posterior draws, which are what set
     // peak memory.
+    let score_inputs = ScoreInputs {
+        real_pairs: &real_pairs,
+        gene_to_local: &gene_to_local,
+        gene_names: &gene_names,
+        collapse: &collapse,
+        fisher_lr: &fisher_lr,
+        strata_map: &strata_map,
+        sample_batch_label: &sample_batch_label,
+        sample_propbin: &sample_propbin,
+        shuffle_stratify_dim: args.shuffle_stratify_dim,
+        n_perm: args.n_permutations,
+    };
     let pb = new_progress_bar(n_strata as u64).with_message("strata");
-    for (k, (batch_label, stratum, samples, is_meta)) in plan.into_iter().enumerate() {
+    for (k, job) in plan.into_iter().enumerate() {
+        let (batch_label, stratum, is_meta) = (&job.batch_label, job.stratum, job.pooled);
         let stratum_id = strata.len();
         strata.push(stratum_entry(
-            &batch_label,
+            batch_label,
             stratum as usize,
             &strata_map,
             &edges,
@@ -527,31 +545,14 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             base_seed.wrapping_add(stratum as u64 * 1_000_003)
         };
         let t0 = std::time::Instant::now();
-        let mut br = score_pairs_for_stratum(
-            &batch_label,
-            stratum,
-            &samples,
-            &sample_propbin,
-            &real_pairs,
-            &gene_to_local,
-            &gene_names,
-            &collapse,
-            &fisher_lr,
-            args.n_permutations,
-            seed,
-            stratum_id,
-            /*shuffle_within_batch=*/ is_meta,
-            &sample_batch_label,
-            args.shuffle_stratify_dim,
-            &strata_map,
-        );
+        let mut br = score_pairs_for_stratum(&score_inputs, &job, seed, stratum_id);
         info!(
             "  [{}/{}] batch={} stratum={} n_samples={} → {} rows ({:.1}s)",
             k + 1,
             n_strata,
             batch_label,
             strata_map.label(stratum as usize),
-            samples.len(),
+            job.samples.len(),
             br.len(),
             t0.elapsed().as_secs_f32()
         );
