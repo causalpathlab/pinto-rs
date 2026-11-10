@@ -54,11 +54,14 @@ fn cells_table_round_trips_every_cell() {
     let cells = read_cells_table(&path, None).unwrap();
     assert_eq!(cells.names, names);
     assert_eq!(cells.coords, vec![(1., 10.), (2., 20.), (3., 30.)]);
-    assert_eq!(cells.batches.unwrap(), batches);
-    assert_eq!(cells.index["c"], 2);
-    assert_eq!(cells.in_graph, Some(vec![true, false, true]));
-    assert_eq!(
-        cells.coord_col_names,
-        ["x_um", "y_um"].map(Box::from).to_vec()
-    );
+    #[cfg(feature = "view")]
+    {
+        assert_eq!(cells.batches.unwrap(), batches);
+        assert_eq!(cells.index["c"], 2);
+        assert_eq!(cells.in_graph, Some(vec![true, false, true]));
+        assert_eq!(
+            cells.coord_col_names,
+            ["x_um", "y_um"].map(Box::from).to_vec()
+        );
+    }
 }

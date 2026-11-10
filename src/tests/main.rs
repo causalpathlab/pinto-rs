@@ -31,7 +31,7 @@ fn lra(extra: &[&str]) -> Result<SrtLrActivityArgs, clap::Error> {
     let mut argv = vec!["pinto", "lra"];
     argv.extend_from_slice(extra);
     match Cli::try_parse_from(argv)?.commands {
-        Commands::LrActivity(a) => Ok(a),
+        Commands::LrActivity(a) => Ok(*a),
         _ => panic!("not lra"),
     }
 }

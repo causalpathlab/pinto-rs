@@ -278,25 +278,33 @@ pub struct Partition {
     pub feature_community: GammaMatrix,
 }
 
+/// What every partition of one run is fitted on and written with: the pair
+/// graph, the cells and their data. The labels and `k` vary by partition.
+pub struct PartitionInputs<'a> {
+    pub edges: &'a [(usize, usize)],
+    /// Per edge, where the pair came from; `None` omits the column.
+    pub edge_kind: Option<&'a [i32]>,
+    pub cell_names: &'a [Box<str>],
+    pub data_vec: &'a SparseIoVec,
+    /// Precomputed feature weights, so no partition re-fits their trend.
+    pub feature_weights: Option<&'a [f32]>,
+    pub axis: &'a FeatureAxis,
+    pub block_size: Option<usize>,
+}
+
 /// Fit the propensity and feature-community stats of an edge partition.
-#[allow(clippy::too_many_arguments)]
 pub fn fit_partition(
-    edges: &[(usize, usize)],
+    inp: &PartitionInputs<'_>,
     fine_labels: &[usize],
-    n_cells: usize,
     k: usize,
-    data_vec: &SparseIoVec,
-    feature_weights: Option<&[f32]>,
-    axis: &FeatureAxis,
-    block_size: Option<usize>,
 ) -> anyhow::Result<Partition> {
-    let propensity = compute_node_membership(edges, fine_labels, n_cells, k);
+    let propensity = compute_node_membership(inp.edges, fine_labels, inp.data_vec.num_columns(), k);
     let feature_community = fit_feature_community_param(
         &propensity,
-        data_vec,
-        feature_weights,
-        Some(axis),
-        block_size,
+        inp.data_vec,
+        inp.feature_weights,
+        Some(inp.axis),
+        inp.block_size,
     )?;
     Ok(Partition {
         propensity,
@@ -309,95 +317,29 @@ pub fn fit_partition(
 pub fn write_partition(
     prefix: &str,
     part: &Partition,
-    edges: &[(usize, usize)],
+    inp: &PartitionInputs<'_>,
     fine_labels: &[usize],
-    cell_names: &[Box<str>],
-    axis: &FeatureAxis,
-    edge_kind: Option<&[i32]>,
 ) -> anyhow::Result<()> {
     write_link_communities(
         &format!("{}.link_community.parquet", prefix),
-        edges,
+        inp.edges,
         fine_labels,
-        cell_names,
-        edge_kind,
+        inp.cell_names,
+        inp.edge_kind,
     )?;
-    write_propensity_matrix(prefix, &part.propensity, cell_names)?;
-    write_feature_community_param(&part.feature_community, axis.feature_names(), prefix)
+    write_propensity_matrix(prefix, &part.propensity, inp.cell_names)?;
+    write_feature_community_param(&part.feature_community, inp.axis.feature_names(), prefix)
 }
 
 /// Fit and write the full per-partition output triple under a shared
-/// prefix ([`fit_partition`], then [`write_partition`]). Returns the
-/// propensity matrix and the fitted feature-community posterior so callers
-/// can reuse them.
-#[allow(clippy::too_many_arguments)]
+/// prefix ([`fit_partition`], then [`write_partition`]). Returns the fit.
 pub fn write_partition_outputs(
     prefix: &str,
-    edges: &[(usize, usize)],
+    inp: &PartitionInputs<'_>,
     fine_labels: &[usize],
-    n_cells: usize,
     k: usize,
-    cell_names: &[Box<str>],
-    data_vec: &SparseIoVec,
-    feature_weights: Option<&[f32]>,
-    axis: &FeatureAxis,
-    block_size: Option<usize>,
-    edge_kind: Option<&[i32]>,
-) -> anyhow::Result<(Mat, GammaMatrix)> {
-    let part = fit_partition(
-        edges,
-        fine_labels,
-        n_cells,
-        k,
-        data_vec,
-        feature_weights,
-        axis,
-        block_size,
-    )?;
-    write_partition(
-        prefix,
-        &part,
-        edges,
-        fine_labels,
-        cell_names,
-        axis,
-        edge_kind,
-    )?;
-    Ok((part.propensity, part.feature_community))
-}
-
-/// Write one cascade level's outputs: `.L{l}.link_community.parquet`,
-/// `.L{l}.propensity.parquet`, `.L{l}.feature_community.parquet`. The fine-edge
-/// labels here are the super-edge assignment broadcast through
-/// `transfer_labels`, so every per-level file is keyed on the same edge
-/// list as the final output.
-#[allow(clippy::too_many_arguments)]
-pub fn write_level_outputs(
-    out_prefix: &str,
-    level_idx: usize,
-    edges: &[(usize, usize)],
-    fine_labels: &[usize],
-    n_cells: usize,
-    k: usize,
-    cell_names: &[Box<str>],
-    data_vec: &SparseIoVec,
-    feature_weights: Option<&[f32]>,
-    axis: &FeatureAxis,
-    block_size: Option<usize>,
-    edge_kind: Option<&[i32]>,
-) -> anyhow::Result<()> {
-    write_partition_outputs(
-        &format!("{}.L{}", out_prefix, level_idx),
-        edges,
-        fine_labels,
-        n_cells,
-        k,
-        cell_names,
-        data_vec,
-        feature_weights,
-        axis,
-        block_size,
-        edge_kind,
-    )?;
-    Ok(())
+) -> anyhow::Result<Partition> {
+    let part = fit_partition(inp, fine_labels, k)?;
+    write_partition(prefix, &part, inp, fine_labels)?;
+    Ok(part)
 }

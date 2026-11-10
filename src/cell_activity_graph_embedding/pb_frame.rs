@@ -40,7 +40,6 @@ pub struct PbFrame {
 /// guarantees it; violated input is an error, not a warning). Batch
 /// purity is NOT guaranteed for user-supplied batch labels, so the
 /// batch id is a majority vote and impurity is only warned about.
-#[allow(clippy::type_complexity)]
 pub fn build_pb_frame(
     ml: &MultiLevelCoarsenResult,
     graph: &KnnGraph,

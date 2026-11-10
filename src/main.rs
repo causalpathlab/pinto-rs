@@ -111,12 +111,6 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-// Measured, not assumed: this fires only since `cage` gained `--eval-block-file` — removing
-// the attribute reproduces the warning, and it did not fire before that flag. The variants
-// are clap arg structs, exactly one is constructed per process at startup, and clap's
-// `Subcommand` derive cannot take a boxed payload, so the layout cost the lint is about
-// does not exist here.
-#[allow(clippy::large_enum_variant)]
 enum Commands {
     #[command(
         alias = "dsvd",
@@ -177,7 +171,7 @@ enum Commands {
                       - {out}.pinto.json: information-flow manifest used by\n\
                       \x20 `pinto lra --from` (lists every parquet)."
     )]
-    DeltaSvd(SrtDeltaSvdArgs),
+    DeltaSvd(Box<SrtDeltaSvdArgs>),
 
     #[command(
         alias = "prop",
@@ -221,7 +215,7 @@ enum Commands {
                       - {out}.pinto.json: information-flow manifest used by\n\
                       \x20 downstream tools."
     )]
-    Propensity(SrtPropensityArgs),
+    Propensity(Box<SrtPropensityArgs>),
 
     #[command(
         alias = "lc",
@@ -316,7 +310,7 @@ enum Commands {
                       \x20                                pinto lra) its tables.\n\
                       \x20                                Pass this path to `pinto lra --from`."
     )]
-    LinkCommunity(SrtLinkCommunityArgs),
+    LinkCommunity(Box<SrtLinkCommunityArgs>),
 
     #[command(
         alias = "cge",
@@ -398,7 +392,7 @@ enum Commands {
                       \x20                                optional `--cnv-clones` on the δ path)\n\
                       \x20 {out}.pinto.json           manifest"
     )]
-    Cage(CellActivityGraphEmbeddingArgs),
+    Cage(Box<CellActivityGraphEmbeddingArgs>),
 
     #[command(
         visible_alias = "cage-annotate",
@@ -490,7 +484,7 @@ enum Commands {
                       and a sample has far more pairs than cells. Pass the same\n\
                       file to both commands."
     )]
-    Predict(PredictArgs),
+    Predict(Box<PredictArgs>),
 
     #[command(
         about = "Impute full-feature counts for a new sample by kNN over community propensities.",
@@ -512,7 +506,7 @@ enum Commands {
                       \n\
                       Writes {out}.imputed.parquet (N_query × n_ref_features)."
     )]
-    Impute(ImputeArgs),
+    Impute(Box<ImputeArgs>),
 
     #[command(
         name = "lra",
@@ -520,14 +514,14 @@ enum Commands {
         about = "Ligand-receptor analysis: does neighbouring ligand change the receiving cells?",
         long_about = lr_activity::lra_long_about()
     )]
-    LrActivity(SrtLrActivityArgs),
+    LrActivity(Box<SrtLrActivityArgs>),
 
     #[command(
         name = "lra-simulate",
         about = "Power and calibration check for lra on this tissue",
         long_about = lr_activity::lra_simulate_long_about()
     )]
-    LraSimulate(LraSimulateArgs),
+    LraSimulate(Box<LraSimulateArgs>),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",

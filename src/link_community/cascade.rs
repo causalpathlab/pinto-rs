@@ -13,10 +13,9 @@
 
 use crate::link_community::gibbs::LinkGibbsSampler;
 use crate::link_community::model::*;
-use crate::link_community::outputs::{write_level_outputs, ScoreEntry};
+use crate::link_community::outputs::{write_partition_outputs, PartitionInputs, ScoreEntry};
 use crate::link_community::profiles::*;
 use crate::util::common::*;
-use crate::util::feature_axis::FeatureAxis;
 
 /// Per-cell module-pair state carried across cascade levels.
 ///
@@ -74,28 +73,17 @@ pub struct CascadeConfig {
     pub num_gibbs: usize,
     pub num_greedy: usize,
     pub alpha: f64,
-    pub block_size: Option<usize>,
     pub no_level_outputs: bool,
 }
 
 /// Run Gibbs + greedy at every pyramid level, emitting per-level outputs.
-///
-/// `feature_weights` is the precomputed NB Fisher-info weight vector; when
-/// `Some` it is forwarded into per-level `compute_feature_community_stat` calls
-/// to avoid re-fitting the dispersion trend at every cascade level.
-#[allow(clippy::too_many_arguments)]
 pub fn run_cascade(
     out_prefix: &str,
-    edges: &[(usize, usize)],
+    inp: &PartitionInputs<'_>,
     level_cell_labels: &[Vec<usize>],
-    data_vec: &SparseIoVec,
     mode: &ProfileMode<'_>,
     cfg: &CascadeConfig,
     sampler: &mut LinkGibbsSampler,
-    cell_names: &[Box<str>],
-    feature_weights: Option<&[f32]>,
-    feature_axis: &FeatureAxis,
-    edge_kind: Option<&[i32]>,
 ) -> anyhow::Result<CascadeResult> {
     anyhow::ensure!(
         !level_cell_labels.is_empty(),
@@ -107,11 +95,10 @@ pub fn run_cascade(
         num_gibbs,
         num_greedy,
         alpha,
-        block_size,
         no_level_outputs,
     } = *cfg;
+    let (edges, data_vec) = (inp.edges, inp.data_vec);
 
-    let n_cells = data_vec.num_columns();
     let n_levels = level_cell_labels.len();
     let mut score_trace: Vec<ScoreEntry> =
         Vec::with_capacity(n_levels * (num_gibbs + num_greedy + 1));
@@ -218,21 +205,10 @@ pub fn run_cascade(
         let labels_l = stats_l.membership.clone();
 
         if !no_level_outputs {
+            // The `.L{l}.*` files carry the super-edge assignment broadcast to
+            // the fine edges, so each is keyed on the final output's edge list.
             let fine_labels_l = transfer_labels(&fine_to_super_l, &labels_l);
-            write_level_outputs(
-                out_prefix,
-                l,
-                edges,
-                &fine_labels_l,
-                n_cells,
-                k,
-                cell_names,
-                data_vec,
-                feature_weights,
-                feature_axis,
-                block_size,
-                edge_kind,
-            )?;
+            write_partition_outputs(&format!("{out_prefix}.L{l}"), inp, &fine_labels_l, k)?;
             written_level_indices.push(l);
         }
 
@@ -260,7 +236,6 @@ pub fn run_cascade(
 }
 
 /// Dispatch to module-pair vs projection profile building at a level.
-#[allow(clippy::too_many_arguments)]
 fn build_level_profiles(
     data: &SparseIoVec,
     super_edges: &[(usize, usize)],

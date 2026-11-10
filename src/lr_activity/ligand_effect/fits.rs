@@ -235,7 +235,6 @@ impl<'a> ThresholdFits<'a> {
 /// one programme, so it is not refitted: the threshold's shared
 /// exposure-side fit is bordered with these two columns
 /// ([`propensity_bordered`]).
-#[allow(clippy::too_many_arguments)]
 pub fn fit_main(
     design: DesignView<'_>,
     cf: &CrossFit,

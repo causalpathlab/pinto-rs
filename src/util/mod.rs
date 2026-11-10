@@ -14,7 +14,6 @@ pub mod input;
 pub mod knn_graph;
 pub mod lupin_rounds;
 pub mod metadata;
-#[allow(dead_code)] // helpers kept for non-plot consumers / future viz
 pub mod parquet_io;
 pub mod profile_match;
 pub mod score_trace;

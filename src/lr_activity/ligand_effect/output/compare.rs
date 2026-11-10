@@ -31,7 +31,7 @@ pub struct ScenarioRates {
     pub scenario: String,
     /// Nothing planted (or the field shifted): the rates are type I error.
     pub null: bool,
-    #[cfg_attr(not(feature = "view"), allow(dead_code))]
+    #[cfg(feature = "view")]
     pub runs: usize,
     /// Share of runs with a reported estimate.
     pub estimable: f64,
@@ -73,6 +73,7 @@ pub fn compare_runs(runs: &[SimRun]) -> Comparison {
         scenarios.push(ScenarioRates {
             scenario: key,
             null,
+            #[cfg(feature = "view")]
             runs: g.len(),
             estimable: g.iter().filter(|r| r.estimable).count() as f64 / g.len() as f64,
             rates,
