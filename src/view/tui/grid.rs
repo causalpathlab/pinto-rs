@@ -616,6 +616,7 @@ impl App<'_> {
             .collect();
         let (level, style) = self.drawn();
         let (base, gene) = (self.base, self.drawn_gene());
+        let labelled = self.gfx.shows_images();
         let maps: Vec<Frame> = jobs
             .par_iter()
             .map(|&(b, _, vp, point)| {
@@ -625,7 +626,7 @@ impl App<'_> {
                 let keep = base.geom.tiles[b].bounds.grow(base.spacing * point.max(1.));
                 clip(&mut f, &vp, keep);
                 if let Some(units) = base.units {
-                    scalebar::draw(&mut f, &vp, units, false);
+                    scalebar::draw(&mut f, &vp, units, labelled);
                 }
                 let px = ((f.h.min(f.w) as f32 / 300.).round() as i64).clamp(1, 4);
                 scalebar::label(&mut f, (3 * px, 3 * px), px, &(b + 1).to_string());

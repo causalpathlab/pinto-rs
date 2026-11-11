@@ -40,7 +40,7 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
 };
 use data_beans::qc::suggest_nnz_cutoff;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -67,6 +67,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         coordinates,
         coordinate_names,
         batch_membership,
+        seeding,
         batch_effects: _,
         graph,
         knn,
@@ -80,7 +81,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_stats,
         n_cells,
         n_rows,
-        graph_coordinates,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
@@ -97,7 +97,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_kind: None,
         cell_projection: true,
     })?;
-    let has_coords = c.has_coordinates();
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
     let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
     let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
@@ -222,12 +221,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
-            // The positions the graph was built on: under --permute-coords
-            // the scrambled ones, so the seeding follows the graph.
-            seeding: has_coords.then(|| SeedingParams {
-                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
-                batch_membership: Some(&batch_membership),
-            }),
+            seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: (args.modularity_gamma > 0.0).then_some(ModularityVeto {
                 gamma: args.modularity_gamma,
             }),

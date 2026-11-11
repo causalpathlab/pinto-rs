@@ -140,6 +140,13 @@ impl Gfx {
         (gfx, px, background)
     }
 
+    /// Whether the map reaches the screen as an image, so small text burnt
+    /// into it (the scale bar's label) stays legible; block characters
+    /// would smear it.
+    fn shows_images(&self) -> bool {
+        !matches!(self, Gfx::Cells(..))
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Gfx::Kitty(k) => Resolved::Kitty {
