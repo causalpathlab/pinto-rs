@@ -12,8 +12,8 @@
 
 use crate::util::ablation::{
     cell_keep, cells_in_regions, feature_keep, induced_subgraph, is_region_file, permute_blocks,
-    permute_within, plane_columns, read_cell_list, read_regions, sections, Ablation, AblationArgs,
-    AblationKind, MaskMode, PermuteCoords,
+    permute_within, plane_columns, read_cell_list, read_regions, sections, seeding_inputs,
+    Ablation, AblationArgs, AblationKind, MaskMode, PermuteCoords,
 };
 use crate::util::batch_effects::{
     estimate_and_write_batch_effects, load_cnv_cell_strata, EstimateBatchArgs,
@@ -24,6 +24,7 @@ use crate::util::cell_pairs::{
 };
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
+use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
     KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
@@ -81,11 +82,31 @@ pub enum FeatureAxisMode {
     Lenient,
 }
 
+/// Spatial seeding's inputs (see [`seeding_inputs`]).
+pub struct Seeding {
+    pub plane: Mat,
+    pub groups: Vec<u32>,
+}
+
+impl Seeding {
+    pub fn params(&self) -> SeedingParams<'_> {
+        SeedingParams {
+            coordinates: &self.plane,
+            groups: Some(&self.groups),
+        }
+    }
+}
+
 pub struct SrtPreprocessed {
     pub data_vec: SparseIoVec,
     pub coordinates: Mat,
     pub coordinate_names: Vec<Box<str>>,
     pub batch_membership: Vec<Box<str>>,
+    /// What spatial seeding grids over, for a run with coordinates and
+    /// enough cells to be seeded. Under `--permute-coords` its positions are
+    /// the scrambled ones the graph was built on, or real-space structure
+    /// would leak into the ablation; `coordinates` stays the cells' own.
+    pub seeding: Option<Seeding>,
     /// Posterior batch-effect mean `[n_features × n_batches]`. `None`
     /// when single-batch.
     pub batch_effects: Option<Mat>,
@@ -132,11 +153,6 @@ pub struct SrtPreprocessed {
     pub n_cells: usize,
     /// Matrix rows. Equal to the feature count only on a non-channelized axis.
     pub n_rows: usize,
-    /// Under `--permute-coords`: the scrambled positions the graph was built
-    /// on. Anything else that reads positions to build the fit (the
-    /// coarsening's spatial seeding) must read these, or real-space structure
-    /// leaks into the ablation; `coordinates` stays the cells' own, for output.
-    pub graph_coordinates: Option<Mat>,
     /// What `--permute-coords`, `--drop-features` or `--mask-cells` did, for
     /// the manifest's `ablation` block. `None` on an ordinary fit.
     pub ablation: Option<Ablation>,
@@ -218,17 +234,11 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let mut dropped: Option<DroppedCells> = None;
     let mut ablation: Option<Ablation> = None;
 
-    // A permutation keeps cells inside their section: one id per data file
-    // and batch label, taken while the cells are still in file order.
-    let mut section_of: Option<Vec<u32>> = ab
-        .permute_coords
-        .map(|_| -> anyhow::Result<_> {
-            Ok(sections(
-                &data_vec.num_columns_by_data()?,
-                &batch_membership,
-            ))
-        })
-        .transpose()?;
+    // Each cell's section: one id per data file and batch label, taken while
+    // the cells are still in file order (QC may later empty a section and
+    // leave its id unused), and kept in step with the cells from here on. A permutation keeps cells inside their section, and
+    // spatial seeding lays a grid over each section's own frame.
+    let mut section_ids: Vec<u32> = sections(&data_vec.num_columns_by_data()?, &batch_membership);
 
     // Dropped features never reach QC, so the cells it keeps are judged on
     // the features the ablation fits.
@@ -304,9 +314,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             data_vec.mask_columns(&report.train_keep)?;
             batch_membership =
                 data_beans::qc_lib::filter_by_keep(&batch_membership, &report.train_keep);
-            if let Some(s) = section_of.as_mut() {
-                *s = data_beans::qc_lib::filter_by_keep(s, &report.train_keep);
-            }
+            section_ids = data_beans::qc_lib::filter_by_keep(&section_ids, &report.train_keep);
         }
     }
 
@@ -363,6 +371,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 &mut coordinates,
                 &coordinate_names,
                 &mut batch_membership,
+                &mut section_ids,
                 has_coords.then_some(&mut dropped),
             )?;
         }
@@ -379,20 +388,21 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let base_knn = knn.base;
 
     // The positions the graph is built on: the cells' own, or scrambled ones
-    // under `--permute-coords`. Only the graph sees the scrambled ones.
-    let permuted: Option<Mat> = match (ab.permute_coords, section_of.as_deref()) {
-        (Some(mode), Some(section_of)) => {
+    // under `--permute-coords`. The graph and spatial seeding see the
+    // scrambled ones; `coordinates` stays the cells' own, for output.
+    let permuted: Option<Mat> = match ab.permute_coords {
+        Some(mode) => {
             let seed = ab.seed(c.seed);
-            let n_sections = section_of.iter().collect::<HashSet<_>>().len();
+            let n_sections = section_ids.iter().collect::<HashSet<_>>().len();
             let (moved, spec) = match mode {
                 PermuteCoords::WithinBatch => (
-                    permute_within(&coordinates, section_of, seed),
+                    permute_within(&coordinates, &section_ids, seed),
                     serde_json::json!({ "mode": "within-batch", "n_sections": n_sections }),
                 ),
                 PermuteCoords::Block => {
                     let xy = plane_columns(&coordinate_names)?;
                     let (moved, n_tiles) =
-                        permute_blocks(&coordinates, xy, section_of, ab.permute_block, seed);
+                        permute_blocks(&coordinates, xy, &section_ids, ab.permute_block, seed);
                     (
                         moved,
                         serde_json::json!({
@@ -453,6 +463,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 &mut coordinates,
                 &coordinate_names,
                 &mut batch_membership,
+                &mut section_ids,
                 Some(&mut dropped),
             )?;
             info!(
@@ -620,6 +631,18 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         }
     }
 
+    // Each section's own plane, crossed with the final batch labels; under
+    // --permute-coords, the scrambled positions the graph was built on.
+    let seeding = (has_coords && n_cells > SEEDING_THRESHOLD).then(|| {
+        let (plane, groups) = seeding_inputs(
+            permuted.as_ref().unwrap_or(&coordinates),
+            &coordinate_names,
+            &section_ids,
+            &batch_membership,
+        );
+        Seeding { plane, groups }
+    });
+
     if has_coords {
         write_cells_table(
             &c.out,
@@ -636,6 +659,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         coordinates,
         coordinate_names,
         batch_membership,
+        seeding,
         batch_effects,
         graph,
         knn,
@@ -649,7 +673,6 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         feature_stats,
         n_cells,
         n_rows,
-        graph_coordinates: permuted,
         ablation,
     })
 }
@@ -663,6 +686,7 @@ fn mask_cells(
     coordinates: &mut Mat,
     coordinate_names: &[Box<str>],
     batch_membership: &mut Vec<Box<str>>,
+    section_ids: &mut Vec<u32>,
     dropped: Option<&mut Option<DroppedCells>>,
 ) -> anyhow::Result<()> {
     // `dropped` is given exactly when the run has coordinates. Without them
@@ -696,6 +720,7 @@ fn mask_cells(
     }
     data_vec.mask_columns(keep)?;
     *batch_membership = data_beans::qc_lib::filter_by_keep(batch_membership, keep);
+    *section_ids = data_beans::qc_lib::filter_by_keep(section_ids, keep);
     Ok(())
 }
 

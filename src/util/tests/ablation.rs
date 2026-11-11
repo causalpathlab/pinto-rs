@@ -262,3 +262,25 @@ fn polygons_pick_cells_of_their_own_section() {
         vec![2]
     );
 }
+
+#[test]
+fn seeding_sees_the_plane_per_section_and_batch() {
+    // Columns x, the batch offset and y; two sections, the second split
+    // into two batches (as `--auto-batch` components would be).
+    let coords = Mat::from_fn(4, 3, |i, j| (10 * i + j) as f32);
+    let batches: Vec<Box<str>> = ["a", "a", "b", "c"].iter().map(|&s| s.into()).collect();
+    let (plane, groups) = seeding_inputs(
+        &coords,
+        &names(&["x", "batch", "y"]),
+        &[0, 0, 1, 1],
+        &batches,
+    );
+    assert_eq!(plane.ncols(), 2);
+    for i in 0..4 {
+        assert_eq!(
+            (plane[(i, 0)], plane[(i, 1)]),
+            (coords[(i, 0)], coords[(i, 2)])
+        );
+    }
+    assert_eq!(groups, [0, 0, 1, 2]);
+}

@@ -5,7 +5,7 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
 };
 use data_beans::alg::cell_pairs::CellPairs;
 use data_beans::alg::random_projection::*;
@@ -137,6 +137,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         coordinates,
         coordinate_names,
         batch_membership,
+        seeding,
         batch_effects: batch_db,
         graph,
         knn,
@@ -150,7 +151,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         feature_stats: _,
         n_cells,
         n_rows: n_features,
-        graph_coordinates,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
@@ -171,7 +171,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         cell_projection: false,
         feature_kind: None,
     })?;
-    let has_coords = c.has_coordinates();
     let feature_names = data_vec.row_names()?;
 
     // Wrap graph with data for pair-level operations
@@ -210,12 +209,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
-            // The positions the graph was built on: under --permute-coords
-            // the scrambled ones, so the seeding follows the graph.
-            seeding: has_coords.then(|| SeedingParams {
-                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
-                batch_membership: Some(&batch_membership),
-            }),
+            seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: None,
             dc_poisson: None,
         },

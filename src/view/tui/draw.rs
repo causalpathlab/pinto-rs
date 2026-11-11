@@ -87,9 +87,11 @@ impl App<'_> {
             let (level, style) = self.drawn();
             let scene = self.base.scene(level);
             let mut frame = self.base.render(level, &style, self.drawn_gene(), &vp);
-            // Unlabelled: the panel states the bar's length as text.
+            // Labelled with its length and unit, as in an exported PNG, so
+            // the map says what the bar measures; on block characters the
+            // label would smear, and the panel states it instead.
             if let Some(units) = self.base.units {
-                scalebar::draw(&mut frame, &vp, units, false);
+                scalebar::draw(&mut frame, &vp, units, self.gfx.shows_images());
             }
             let mode = render::mode(&scene, &vp, self.point);
             if self.bars.height > 0 {

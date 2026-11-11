@@ -299,55 +299,38 @@ pub fn compute_level_n_clusters(n_clusters: usize, num_levels: usize) -> Vec<usi
 }
 
 /// Threshold: if n_nodes > this, use spatial seeding pre-pass.
-const SEEDING_THRESHOLD: usize = 20_000;
+pub const SEEDING_THRESHOLD: usize = 20_000;
 
 /// Assign cells to spatially-seeded super-nodes via BFS flood-fill.
 ///
-/// Places seeds on a regular grid over each batch's bounding box
-/// (different batches have independent coordinate systems), then
-/// expands all seeds simultaneously along graph edges.
+/// Places seeds on a regular grid over each group's bounding box (groups,
+/// such as sections, have independent coordinate systems), then expands
+/// all seeds simultaneously along graph edges.
 ///
 /// Returns `(labels, num_super_nodes)` where `labels[cell] = super_node_id`.
 pub(super) fn spatial_seed_labels(
     coordinates: &Mat,
     graph: &KnnGraph,
     target_super: usize,
-    batch_membership: Option<&[Box<str>]>,
+    groups: Option<&[u32]>,
 ) -> (Vec<usize>, usize) {
     let n = graph.n_nodes;
     let n_dims = coordinates.ncols();
 
-    // Partition cells by batch (single pass over cells)
-    let n_batches: usize;
-    let mut batch_cells: Vec<Vec<usize>>;
-    if let Some(batches) = batch_membership {
-        let mut batch_map: HashMap<&str, usize> = Default::default();
-        let mut next_id = 0usize;
-        batch_cells = Vec::new();
-        for (i, b) in batches.iter().enumerate() {
-            let bid = *batch_map.entry(b.as_ref()).or_insert_with(|| {
-                let id = next_id;
-                next_id += 1;
-                batch_cells.push(Vec::new());
-                id
-            });
-            batch_cells[bid].push(i);
-        }
-        n_batches = next_id;
-    } else {
-        batch_cells = vec![(0..n).collect()];
-        n_batches = 1;
-    }
+    // Partition cells by group (dense ids, single pass over cells)
+    let group_cells: Vec<Vec<usize>> =
+        groups.map_or_else(|| vec![(0..n).collect()], crate::util::ablation::group);
+    let n_groups = group_cells.len();
 
     let mut seeds: Vec<usize> = Vec::new();
     let mut labels = vec![usize::MAX; n];
     let mut num_super = 0usize;
 
-    for cells in &batch_cells {
-        let batch_target = (target_super as f64 * cells.len() as f64 / n as f64).ceil() as usize;
-        let batch_target = batch_target.max(1);
+    for cells in &group_cells {
+        let group_target = (target_super as f64 * cells.len() as f64 / n as f64).ceil() as usize;
+        let group_target = group_target.max(1);
 
-        // Bounding box for this batch
+        // Bounding box for this group
         let mut mins = vec![f32::INFINITY; n_dims];
         let mut maxs = vec![f32::NEG_INFINITY; n_dims];
         for &i in cells {
@@ -363,7 +346,7 @@ pub(super) fn spatial_seed_labels(
         }
 
         // Grid dimensions
-        let side = (batch_target as f64).powf(1.0 / n_dims as f64).ceil() as usize;
+        let side = (group_target as f64).powf(1.0 / n_dims as f64).ceil() as usize;
         let side = side.max(1);
         let mut tile_strides = vec![1usize; n_dims];
         for d in (0..n_dims - 1).rev() {
@@ -371,7 +354,7 @@ pub(super) fn spatial_seed_labels(
         }
         let total_tiles = tile_strides[0] * side;
 
-        // Assign cells in this batch to tiles, pick one seed per tile
+        // Assign cells in this group to tiles, pick one seed per tile
         let mut tile_seed: Vec<Option<usize>> = vec![None; total_tiles];
         for &i in cells {
             let mut tile_id = 0usize;
@@ -446,8 +429,8 @@ pub(super) fn spatial_seed_labels(
     }
 
     info!(
-        "Spatial seeding: {} cells, {} batches → {} super-nodes (target {})",
-        n, n_batches, num_super, target_super
+        "Spatial seeding: {} cells, {} groups → {} super-nodes (target {})",
+        n, n_groups, num_super, target_super
     );
 
     (labels, num_super)
@@ -547,8 +530,10 @@ pub(crate) fn build_super_graph(
 
 /// Optional spatial seeding parameters for large datasets.
 pub struct SeedingParams<'a> {
+    /// Positions in the tissue plane (no batch offset column).
     pub coordinates: &'a Mat,
-    pub batch_membership: Option<&'a [Box<str>]>,
+    /// Each cell's group, seeded on its own grid: dense ids, 0..k.
+    pub groups: Option<&'a [u32]>,
 }
 
 /// Inputs required to run DC-Poisson refinement per level.
@@ -668,7 +653,7 @@ pub fn graph_coarsen_multilevel(
     if let Some(sp) = seeding.filter(|_| n_original > SEEDING_THRESHOLD) {
         let target_super = (n_clusters * 8).min(n_original / 4).max(n_clusters + 1);
         let (labels, num_super) =
-            spatial_seed_labels(sp.coordinates, graph, target_super, sp.batch_membership);
+            spatial_seed_labels(sp.coordinates, graph, target_super, sp.groups);
         let (super_graph, mut super_features, _) =
             build_super_graph(&labels, num_super, graph, cell_features);
 

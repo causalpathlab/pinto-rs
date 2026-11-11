@@ -58,13 +58,11 @@ use crate::link_community::profiles::{
 };
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
-use crate::util::graph_coarsen::{
-    graph_coarsen_multilevel, CoarsenConfig, DcPoissonConfig, SeedingParams,
-};
+use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig, DcPoissonConfig};
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
 use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
 };
 
 use data_beans::alg::gene_weighting::save_fisher_weights;
@@ -167,6 +165,7 @@ pub fn fit_cell_activity_graph_embedding(
         coordinates,
         coordinate_names,
         batch_membership,
+        seeding,
         batch_effects: batch_db,
         graph,
         knn,
@@ -180,7 +179,6 @@ pub fn fit_cell_activity_graph_embedding(
         feature_stats: _,
         n_cells,
         n_rows,
-        graph_coordinates,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
@@ -192,7 +190,6 @@ pub fn fit_cell_activity_graph_embedding(
         feature_kind: Some(feature_kind.clone()),
     })?;
 
-    let has_coords = c.has_coordinates();
     let cell_names = data_vec.column_names()?;
     let row_names = data_vec.row_names()?;
 
@@ -353,12 +350,7 @@ pub fn fit_cell_activity_graph_embedding(
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             refine_iterations: c.refine_iterations,
-            // The positions the graph was built on: under --permute-coords
-            // the scrambled ones, so the seeding follows the graph.
-            seeding: has_coords.then(|| SeedingParams {
-                coordinates: graph_coordinates.as_ref().unwrap_or(&coordinates),
-                batch_membership: Some(&batch_membership),
-            }),
+            seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: None,
             // Second-opinion refinement on RAW counts, matching `pinto lc`.
             // cage was the only caller passing `None` here, so its levels were

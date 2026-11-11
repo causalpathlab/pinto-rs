@@ -558,20 +558,48 @@ pub fn cell_keep(names: &[Box<str>], listed: &HashSet<Box<str>>) -> anyhow::Resu
 /// Each cell's section: one id per (data file, batch label) pair, numbered in
 /// order of first appearance.
 pub fn sections(file_sizes: &[usize], batches: &[Box<str>]) -> Vec<u32> {
-    let mut ids: HashMap<(usize, &str), u32> = HashMap::default();
-    let mut out = Vec::with_capacity(batches.len());
-    let mut i = 0;
-    for (f, &n) in file_sizes.iter().enumerate() {
-        for b in &batches[i..i + n] {
-            let next = ids.len() as u32;
-            out.push(*ids.entry((f, b.as_ref())).or_insert(next));
-        }
-        i += n;
-    }
-    out
+    let file_of = file_sizes
+        .iter()
+        .enumerate()
+        .flat_map(|(f, &n)| std::iter::repeat_n(f, n));
+    dense_ids(file_of.zip(batches.iter().map(|b| b.as_ref())))
 }
 
-fn group(sections: &[u32]) -> Vec<Vec<usize>> {
+/// One id per distinct key, numbered 0..k in order of first appearance.
+pub fn dense_ids<K: std::hash::Hash + Eq>(keys: impl Iterator<Item = K>) -> Vec<u32> {
+    let mut ids: HashMap<K, u32> = HashMap::default();
+    keys.map(|k| {
+        let next = ids.len() as u32;
+        *ids.entry(k).or_insert(next)
+    })
+    .collect()
+}
+
+/// The coordinate columns in the tissue plane: every one but the `batch`
+/// offset `read_data_with_coordinates` appends to keep groups apart.
+pub fn non_batch_columns(names: &[Box<str>]) -> Vec<usize> {
+    (0..names.len())
+        .filter(|&j| names[j].as_ref() != "batch")
+        .collect()
+}
+
+/// What spatial seeding sees: positions in the tissue plane, and each cell's
+/// group: its section crossed with its batch label (ids in order of first
+/// appearance, 0..k), so sections drawn in one frame, and `--auto-batch`
+/// components within one, are each seeded on their own grid.
+pub fn seeding_inputs(
+    coordinates: &Mat,
+    names: &[Box<str>],
+    sections: &[u32],
+    batches: &[Box<str>],
+) -> (Mat, Vec<u32>) {
+    let plane = coordinates.select_columns(&non_batch_columns(names));
+    let groups = dense_ids(sections.iter().zip(batches.iter().map(|b| b.as_ref())));
+    (plane, groups)
+}
+
+/// The cells of each id, ids dense in 0..k.
+pub fn group(sections: &[u32]) -> Vec<Vec<usize>> {
     let n = sections.iter().map(|&s| s as usize + 1).max().unwrap_or(0);
     let mut groups = vec![Vec::new(); n];
     for (i, &s) in sections.iter().enumerate() {
@@ -652,11 +680,7 @@ pub fn permute_blocks(
 /// The plane's two columns: the first two coordinate columns that are not
 /// the batch offset.
 pub fn plane_columns(names: &[Box<str>]) -> anyhow::Result<(usize, usize)> {
-    let mut cols = names
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.as_ref() != "batch")
-        .map(|(j, _)| j);
+    let mut cols = non_batch_columns(names).into_iter();
     match (cols.next(), cols.next()) {
         (Some(x), Some(y)) => Ok((x, y)),
         _ => anyhow::bail!("--permute-coords block needs two coordinate columns"),

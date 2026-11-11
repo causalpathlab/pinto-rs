@@ -213,7 +213,7 @@ fn test_spatial_seeding() {
     let pairs: Vec<(usize, usize)> = edges.clone();
     let sp = SeedingParams {
         coordinates: &coords,
-        batch_membership: None,
+        groups: None,
     };
     let ml = graph_coarsen_multilevel(
         &graph,
@@ -474,5 +474,49 @@ fn levels_stay_nested_under_refinement() {
         (worst - 1.0).abs() < 1e-6,
         "refine=5 broke nesting (worst purity {worst}) — the parent constraint \
          in refine_labels is not holding"
+    );
+}
+
+/// Two 10×10 sections drawn in one frame (the same positions), with no edge
+/// between them: grouped, each is seeded on its own grid.
+#[test]
+fn spatial_seeding_seeds_each_group_in_its_own_frame() {
+    let side = 10;
+    let per = side * side;
+    let n = 2 * per;
+    let mut coords = Mat::zeros(n, 2);
+    let mut edges = Vec::new();
+    for s in 0..2 {
+        for i in 0..per {
+            let (row, col) = (i / side, i % side);
+            let c = s * per + i;
+            coords[(c, 0)] = col as f32;
+            coords[(c, 1)] = row as f32;
+            if col + 1 < side {
+                edges.push((c, c + 1));
+            }
+            if row + 1 < side {
+                edges.push((c, c + side));
+            }
+        }
+    }
+    let graph = make_test_graph(n, edges);
+    let groups: Vec<u32> = (0..n).map(|c| (c / per) as u32).collect();
+
+    let (labels, num_super) = spatial_seed_labels(&coords, &graph, 32, Some(&groups));
+    // Each section's grid gets half the seeds, and no super-node crosses.
+    let in_group = |g: usize| {
+        let mut l: Vec<usize> = labels[g * per..(g + 1) * per].to_vec();
+        l.sort();
+        l.dedup();
+        l
+    };
+    let (a, b) = (in_group(0), in_group(1));
+    assert!(a.iter().all(|l| !b.contains(l)));
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.len() + b.len(), num_super);
+    assert!(
+        num_super <= 40,
+        "{num_super} super-nodes for a target of 32"
     );
 }
