@@ -210,7 +210,7 @@ fn the_record_carries_parent_and_seed() {
 fn geojson_features_carry_their_section() {
     let v: serde_json::Value = serde_json::from_str(
         r#"{"type":"FeatureCollection","features":[
-            {"type":"Feature","properties":{"section":"zh1007nec"},
+            {"type":"Feature","properties":{"section":"S1"},
              "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}},
             {"type":"Feature","properties":{"sample":"s2","name":"Tumor"},
              "geometry":{"type":"MultiPolygon","coordinates":[[[[5,5],[6,5],[6,6]]],[[[7,7],[8,7],[8,8]]]]}}
@@ -219,7 +219,7 @@ fn geojson_features_carry_their_section() {
     .unwrap();
     let r = parse_regions(&v).unwrap();
     assert_eq!(r.len(), 3);
-    assert_eq!(r[0].section.as_deref(), Some("zh1007nec"));
+    assert_eq!(r[0].section.as_deref(), Some("S1"));
     assert_eq!(
         r[2].section.as_deref(),
         Some("s2"),

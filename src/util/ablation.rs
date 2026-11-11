@@ -456,7 +456,7 @@ pub fn section_of(name: &str) -> &str {
 }
 
 /// Whether a region's section name picks out a cell's section: the same, or
-/// its `_`-separated end (`zh1007nec` picks `GSM7596594_zh1007nec`).
+/// its `_`-separated end (`S1` picks `ID1_S1`).
 pub fn section_matches(cell_section: &str, wanted: &str) -> bool {
     cell_section == wanted
         || cell_section

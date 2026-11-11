@@ -6,6 +6,7 @@
 //! and `link_community` for the per-edge labels.
 
 use super::markers::FeatureRates;
+use crate::util::ablation::section_of;
 use crate::util::common::*;
 use crate::util::input::read_one_coord_file;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
@@ -203,7 +204,12 @@ impl Run {
             let path = self.resolve(table);
             if path.exists() {
                 match read_cells_table(&path, coord_columns) {
-                    Ok(cells) => return Ok(Geometry::from_cells(cells)),
+                    Ok(mut cells) => {
+                        if self.meta.data_files.as_ref().is_some_and(|f| f.len() > 1) {
+                            tile_by_section(&mut cells);
+                        }
+                        return Ok(Geometry::from_cells(cells));
+                    }
                     Err(e) => log::warn!("{}: {e}; reading coord_pairs instead", path.display()),
                 }
             }
@@ -371,6 +377,43 @@ impl Geometry {
             .reduce(|a, b| a.union(&b))
             .unwrap_or(Rect::UNIT)
     }
+}
+
+/// A run fit on several data files keeps each (file, batch) group apart in
+/// its graph, but its batch labels alone may not: one fit without batch
+/// correction labels every cell alike, and a batch can span files. Tile such
+/// a run by group instead (the section, the data file each cell name ends
+/// with, joined to the batch where a batch spans several), so its sections
+/// sit side by side rather than in one frame.
+pub fn tile_by_section(cells: &mut CellTable) {
+    let sections: Vec<&str> = cells.names.iter().map(|n| section_of(n)).collect();
+    let batches = cells.batches.as_deref();
+    let batch = |i: usize| batches.map_or("", |b| b[i].as_ref());
+    let mut section_of_batch: HashMap<&str, &str> = HashMap::default();
+    let mut spans_several = false;
+    for (i, &s) in sections.iter().enumerate() {
+        spans_several |= *section_of_batch.entry(batch(i)).or_insert(s) != s;
+    }
+    if !spans_several {
+        return;
+    }
+    // One name per distinct tile, shared by its cells.
+    let mut names: HashMap<(&str, &str), Box<str>> = HashMap::default();
+    let one_batch = section_of_batch.len() == 1;
+    let tiles = (0..sections.len())
+        .map(|i| {
+            let key = (batch(i), sections[i]);
+            let name = names.entry(key).or_insert_with(|| {
+                if one_batch {
+                    key.1.into()
+                } else {
+                    format!("{} {}", key.0, key.1).into()
+                }
+            });
+            name.clone()
+        })
+        .collect();
+    cells.batches = Some(tiles);
 }
 
 /// Map labels to dense ids in sorted label order.
