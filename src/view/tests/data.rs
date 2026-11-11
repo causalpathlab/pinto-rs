@@ -1,6 +1,7 @@
 use super::fixture::synth_cells;
 use crate::util::common::*;
-use crate::view::data::{Communities, Edges, Geometry, Run, NO_CLUSTER};
+use crate::util::parquet_io::CellTable;
+use crate::view::data::{tile_by_section, Communities, Edges, Geometry, Run, NO_CLUSTER};
 
 #[test]
 fn single_batch_keeps_coordinates() {
@@ -32,6 +33,49 @@ fn batches_are_tiled_without_overlap() {
         assert!(t.x0 <= geom.x[i] && geom.x[i] <= t.x1);
         assert!(t.y0 <= geom.y[i] && geom.y[i] <= t.y1);
     }
+}
+
+/// `synth_cells` with each name tagged with one of two sections.
+fn two_section_cells(n: usize, n_batches: usize) -> CellTable {
+    let mut cells = synth_cells(n, n_batches);
+    cells.names = (0..n).map(|i| format!("c{i}@S{}", i % 2).into()).collect();
+    cells
+}
+
+fn tile_names(cells: CellTable) -> Vec<Box<str>> {
+    Geometry::from_cells(cells)
+        .tiles
+        .into_iter()
+        .map(|t| t.name)
+        .collect()
+}
+
+#[test]
+fn unbatched_sections_are_tiled_by_section() {
+    let mut cells = two_section_cells(10, 1);
+    tile_by_section(&mut cells);
+    assert_eq!(tile_names(cells), ["S0".into(), "S1".into()]);
+
+    let mut cells = two_section_cells(10, 1);
+    cells.batches = Some(vec!["all".into(); 10]);
+    tile_by_section(&mut cells);
+    assert_eq!(tile_names(cells), ["S0".into(), "S1".into()]);
+}
+
+#[test]
+fn a_batch_per_section_keeps_its_batch_tiles() {
+    let mut cells = two_section_cells(12, 2);
+    tile_by_section(&mut cells);
+    assert_eq!(tile_names(cells), ["b0".into(), "b1".into()]);
+}
+
+#[test]
+fn batches_across_sections_are_tiled_by_both() {
+    let mut cells = two_section_cells(12, 3);
+    tile_by_section(&mut cells);
+    let names = tile_names(cells);
+    assert_eq!(names.len(), 6);
+    assert!(names.contains(&"b0 S0".into()));
 }
 
 #[test]

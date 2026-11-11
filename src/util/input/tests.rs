@@ -6,7 +6,7 @@ mod reading {
     #[test]
     fn test_append_batch_coordinate_single_batch() {
         let coords = Mat::from_vec(3, 2, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-        let batches = vec!["A", "A", "A"];
+        let batches = [0u32, 0, 0];
         let result = append_batch_coordinate(&coords, &batches).unwrap();
         assert_eq!(result.nrows(), 3);
         assert_eq!(result.ncols(), 3); // original 2 + 1 batch
@@ -19,7 +19,7 @@ mod reading {
     #[test]
     fn test_append_batch_coordinate_two_batches() {
         let coords = Mat::from_vec(4, 2, vec![0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0]);
-        let batches = vec!["A", "A", "B", "B"];
+        let batches = [0u32, 0, 1, 1];
         let result = append_batch_coordinate(&coords, &batches).unwrap();
         assert_eq!(result.ncols(), 3);
         // Batch coordinates should differ between A and B
@@ -38,7 +38,7 @@ mod reading {
     fn test_append_batch_coordinate_scaling() {
         // Width = max - min of all coords
         let coords = Mat::from_vec(2, 1, vec![0.0, 10.0]);
-        let batches = vec!["X", "Y"];
+        let batches = [0u32, 1];
         let result = append_batch_coordinate(&coords, &batches).unwrap();
         // Width = 10.0, one batch at 0*width, other at 1*width
         let vals: Vec<f32> = (0..2).map(|i| result[(i, 1)]).collect();
@@ -54,7 +54,7 @@ mod reading {
     #[test]
     fn test_append_batch_coordinate_mismatch() {
         let coords = Mat::from_vec(2, 1, vec![0.0, 1.0]);
-        let batches = vec!["A"]; // wrong length
+        let batches = [0u32]; // wrong length
         assert!(append_batch_coordinate(&coords, &batches).is_err());
     }
 
@@ -271,5 +271,18 @@ mod row_alignment {
         let coord = vec![write_coord(&dir, "a"), write_coord(&dir, "b")];
         assert!(read_data_with_coordinates(args(data.clone(), coord)).is_err());
         assert!(read_data_without_coordinates(args(data, vec![])).is_err());
+    }
+}
+
+mod separation {
+    use super::super::*;
+
+    #[test]
+    fn files_under_one_label_get_their_own_offsets() {
+        let one: Vec<Box<str>> = vec!["all".into(); 4];
+        let keys = crate::util::ablation::sections(&[2, 2], &one);
+        let out = append_batch_coordinate(&Mat::from_vec(4, 2, vec![0.0; 8]), &keys).unwrap();
+        assert_eq!(out[(0, 2)], out[(1, 2)]);
+        assert_ne!(out[(0, 2)], out[(2, 2)]);
     }
 }

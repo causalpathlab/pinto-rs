@@ -116,6 +116,41 @@ fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
     Ok(data_vec)
 }
 
+/// Each cell's batch label, with each data file's cell count: from the
+/// batch files (one label per line, one file per data file), else one batch
+/// per data file.
+fn read_batch_membership(
+    args: &SRTReadArgs,
+    data_vec: &SparseIoVec,
+) -> anyhow::Result<(Vec<Box<str>>, Vec<usize>)> {
+    let cells_per_file = data_vec.num_columns_by_data()?;
+    let mut batch_membership: Vec<Box<str>> = Vec::with_capacity(data_vec.num_columns());
+    if let Some(batch_files) = &args.batch_files {
+        anyhow::ensure!(
+            batch_files.len() == args.data_files.len(),
+            "# batch files != # of data files"
+        );
+        for (batch_file, &nn) in batch_files.iter().zip(&cells_per_file) {
+            info!("Reading batch file: {}", batch_file);
+            let lines = read_lines(batch_file)?;
+            anyhow::ensure!(
+                lines.len() == nn,
+                "{batch_file}: {} labels for its data file's {nn} cells",
+                lines.len()
+            );
+            batch_membership.extend(lines);
+        }
+    } else {
+        if cells_per_file.len() > 1 {
+            info!("Each data file will be considered a different batch.");
+        }
+        for (id, &nn) in cells_per_file.iter().enumerate() {
+            batch_membership.extend(vec![id.to_string().into_boxed_str(); nn]);
+        }
+    }
+    Ok((batch_membership, cells_per_file))
+}
+
 pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
     anyhow::ensure!(
         args.coord_files.len() == args.data_files.len(),
@@ -188,46 +223,17 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
 
     let coord_nk = concatenate_vertical(&coord_vec)?;
 
-    // will incorporate batch label as an additional coordinate
-    let mut batch_membership = Vec::with_capacity(data_vec.len());
+    let (batch_membership, cells_per_file) = read_batch_membership(&args, &data_vec)?;
 
-    if let Some(batch_files) = &args.batch_files {
-        if batch_files.len() != args.data_files.len() {
-            return Err(anyhow::anyhow!("# batch files != # of data files"));
-        }
-
-        for batch_file in batch_files.iter() {
-            info!("Reading batch file: {}", batch_file);
-            for s in read_lines(batch_file)? {
-                batch_membership.push(s.to_string().into_boxed_str());
-            }
-        }
-    } else if data_vec.len() > 1 {
-        info!("Each data file will be considered a different batch.");
-        for (id, &nn) in data_vec.num_columns_by_data()?.iter().enumerate() {
-            batch_membership.extend(vec![id.to_string().into_boxed_str(); nn]);
-        }
-    } else {
-        // Single data file, single batch — uniform label
-        let nn = data_vec.num_columns();
-        batch_membership.extend(vec!["0".to_string().into_boxed_str(); nn]);
-    }
-
-    if batch_membership.len() != data_vec.num_columns() {
-        return Err(anyhow::anyhow!(
-            "# batch membership {} != # of columns {}",
-            batch_membership.len(),
-            data_vec.num_columns()
-        ));
-    }
-
-    // use batch index as another coordinate
-    let uniq_batches = batch_membership.par_iter().cloned().collect::<HashSet<_>>();
-    let n_batches = uniq_batches.len();
-    let coord_nk = if n_batches > 1 {
-        info!("attaching {} batch index coordinate(s)", n_batches);
+    // Push every (data file, batch label) group apart in the spatial KNN:
+    // files can share one (x, y) frame, and a batch file that gives them all
+    // one label (to skip batch correction) must not fold them into one.
+    let keys = crate::util::ablation::sections(&cells_per_file, &batch_membership);
+    let n_keys = keys.iter().max().map_or(0, |&m| m as usize + 1);
+    let coord_nk = if n_keys > 1 {
+        info!("attaching a batch index coordinate ({n_keys} groups)");
         coord_column_names.push("batch".to_string().into_boxed_str());
-        append_batch_coordinate(&coord_nk, &batch_membership)?
+        append_batch_coordinate(&coord_nk, &keys)?
     } else {
         coord_nk
     };
@@ -253,37 +259,7 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
 pub fn read_data_without_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
     let data_vec = open_data_files(&args)?;
 
-    // Parse batch membership
-    let mut batch_membership = Vec::with_capacity(data_vec.len());
-
-    if let Some(batch_files) = &args.batch_files {
-        if batch_files.len() != args.data_files.len() {
-            return Err(anyhow::anyhow!("# batch files != # of data files"));
-        }
-
-        for batch_file in batch_files.iter() {
-            info!("Reading batch file: {}", batch_file);
-            for s in read_lines(batch_file)? {
-                batch_membership.push(s.to_string().into_boxed_str());
-            }
-        }
-    } else if data_vec.len() > 1 {
-        info!("Each data file will be considered a different batch.");
-        for (id, &nn) in data_vec.num_columns_by_data()?.iter().enumerate() {
-            batch_membership.extend(vec![id.to_string().into_boxed_str(); nn]);
-        }
-    } else {
-        let nn = data_vec.num_columns();
-        batch_membership.extend(vec!["0".to_string().into_boxed_str(); nn]);
-    }
-
-    if batch_membership.len() != data_vec.num_columns() {
-        return Err(anyhow::anyhow!(
-            "# batch membership {} != # of columns {}",
-            batch_membership.len(),
-            data_vec.num_columns()
-        ));
-    }
+    let (batch_membership, _) = read_batch_membership(&args, &data_vec)?;
 
     let n_cells = data_vec.num_columns();
 
@@ -616,38 +592,17 @@ fn detect_header_row(
     }
 }
 
-fn append_batch_coordinate<T>(coords: &Mat, batch_membership: &[T]) -> anyhow::Result<Mat>
-where
-    T: Sync + Send + Clone + Eq + std::hash::Hash + std::fmt::Debug,
-{
-    if coords.nrows() != batch_membership.len() {
-        return Err(anyhow::anyhow!("incompatible batch membership"));
-    }
-
-    let minval = coords.min();
-    let maxval = coords.max();
-    let width = (maxval - minval).max(1.);
-
-    let uniq_batches = batch_membership.iter().collect::<HashSet<_>>();
-
-    let batch_index = uniq_batches
-        .into_iter()
-        .enumerate()
-        .map(|(k, v)| (v, k))
-        .collect::<HashMap<_, _>>();
-
-    let batch_coord = batch_membership
-        .iter()
-        .map(|k| {
-            let b = *batch_index
-                .get(k)
-                .ok_or_else(|| anyhow::anyhow!("batch key {:?} not found in index", k))?;
-            Ok(width * (b as f32))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
+/// `coords` with one more column: `keys[i]` (dense ids from
+/// `ablation::sections`) times the coordinates' full span, so groups sit
+/// far apart in the spatial KNN.
+fn append_batch_coordinate(coords: &Mat, keys: &[u32]) -> anyhow::Result<Mat> {
+    anyhow::ensure!(
+        coords.nrows() == keys.len(),
+        "incompatible batch membership"
+    );
+    let width = (coords.max() - coords.min()).max(1.);
+    let batch_coord = keys.iter().map(|&k| width * k as f32).collect();
     let bb = Mat::from_vec(coords.nrows(), 1, batch_coord);
-
     concatenate_horizontal(&[coords.clone(), bb])
 }
 
