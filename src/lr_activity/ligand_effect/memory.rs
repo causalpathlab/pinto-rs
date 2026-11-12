@@ -40,15 +40,34 @@ fn propensity_bytes(rows: usize, p: usize) -> usize {
 /// each adjustment step's ([`super::fits::ThresholdFits`]).
 const PROPENSITIES_KEPT: usize = 1 + super::tissue::STEP_NAMES.len();
 
-/// Memory one live pair (or benchmark scenario) holds: `vectors` receiver-length
-/// vectors, the propensity's rows ([`super::regression::logistic_base`])
-/// for every fold, since its folds are fitted side by side, and per fold of
-/// each propensity kept its Hessian factor, weights and rows.
-pub(super) fn pair_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
-    let (n, p) = (tissue.n(), tissue.design.p());
+/// Base propensities a ligand's share keeps ([`super::fits::LigandShare`]):
+/// the main fit at each threshold of the grid (τ = 0, the curve quantiles and
+/// the headline) and each adjustment step's at the headline.
+const SHARED_BASES: usize =
+    2 + super::options::CURVE_QUANTILES.len() + super::tissue::STEP_NAMES.len();
+
+/// Memory held beside the data: `vectors` receiver-length vectors, a
+/// propensity's rows ([`super::regression::logistic_base`]) for every fold,
+/// since its folds are fitted side by side, and `kept` propensities, each
+/// with its propensity vector and per fold its Hessian factor, weights and
+/// rows.
+fn held(vectors: usize, kept: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    let (n, p, k) = (tissue.n(), tissue.design.p(), tissue.cf.k);
     let rows = n.min(nuisance.max_propensity_rows);
-    let kept = PROPENSITIES_KEPT * tissue.cf.k * (p * p + 2 * rows) * 8;
-    n * 8 * vectors + tissue.cf.k * propensity_bytes(rows, p) + kept
+    let propensity = (n + k * (p * p + 2 * rows)) * 8;
+    n * 8 * vectors + k * propensity_bytes(rows, p) + kept * propensity
+}
+
+/// Memory one live pair (or benchmark scenario) fitting its own
+/// propensities holds ([`held`]).
+pub(super) fn pair_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    held(vectors, PROPENSITIES_KEPT, tissue, nuisance)
+}
+
+/// Memory one live ligand holds: its live pair, whose propensities are its
+/// ligand's shared bases, and those bases ([`held`]).
+pub(super) fn ligand_memory(vectors: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+    held(vectors, SHARED_BASES, tissue, nuisance)
 }
 
 /// A propensity fit's rows, in bytes, that stay in a core's share of the

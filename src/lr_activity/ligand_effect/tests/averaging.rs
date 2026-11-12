@@ -15,6 +15,7 @@ use crate::lr_activity::ligand_effect::inference::{Estimate, Z_975};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
 use crate::lr_activity::ligand_effect::response::Response;
+use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::rows::Moments;
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
@@ -599,4 +600,103 @@ fn a_zero_standard_error_leaves_the_weights_finite() {
     );
     assert!(log10_bf.is_finite(), "{log10_bf}");
     assert!(abf_average(&parts, 10.0).theta.is_finite());
+}
+
+// * Sharing a ligand's propensity
+
+/// Every estimand of `a` and `b`, theta and se, equal up to the solver's
+/// tolerance (NaN only where the other is NaN too).
+fn assert_same_effects(what: &str, a: &EffectRow, b: &EffectRow) {
+    let pick = |r: &EffectRow| -> Vec<(&'static str, Estimate)> {
+        use crate::lr_activity::ligand_effect::tissue::STEP_NAMES;
+        let e = &r.effects;
+        let mut all = vec![
+            ("effect", e.effect),
+            ("competent", e.competent),
+            ("unadjusted_diff", e.unadjusted_diff),
+            ("ipw", e.ipw),
+            ("outcome", e.outcome),
+            ("incompetent", e.incompetent),
+            ("nospill", e.nospill),
+        ];
+        all.extend(STEP_NAMES.into_iter().zip(e.steps));
+        all
+    };
+    for ((name, x), (_, y)) in pick(a).into_iter().zip(pick(b)) {
+        for (part, u, v) in [("theta", x.theta, y.theta), ("se", x.se, y.se)] {
+            let same = (u.is_nan() && v.is_nan()) || (u - v).abs() <= 1e-6 * (1.0 + u.abs());
+            assert!(same, "{what} {name}.{part}: alone {u} vs shared {v}");
+        }
+    }
+}
+
+/// Pairs that share a ligand share its propensity: one fit per threshold on
+/// the design and the ligand's own columns, which each pair borders with its
+/// receptor's competence columns. Bordering reaches the optimum the pair's
+/// own fit reaches, so every estimand agrees with the pair fitted alone. The
+/// bases start cold, so a pair's estimates are the same bits whichever of
+/// the ligand's pairs ran first; and a later pair whose thresholds the first
+/// already fitted adds no base of its own.
+#[test]
+fn a_ligands_shared_propensity_is_each_pairs_own() {
+    use crate::lr_activity::ligand_effect::estimate::estimate_pair_shared;
+    use crate::lr_activity::ligand_effect::fits::LigandShare;
+    let w = world(31, 0.3, false);
+    let targets = [(1.0, w.response.as_slice())];
+    // A second receptor of the same ligand, detected in other bins.
+    let other: Vec<f64> = w
+        .tissue
+        .identity_bin
+        .iter()
+        .map(|&b| (b != 1) as u8 as f64)
+        .collect();
+    let pairs = [
+        data(&w, &targets),
+        PairData {
+            receptor: "R2",
+            receptor_counts: &other,
+            ..data(&w, &targets)
+        },
+    ];
+    let o = opts(&[0.05, 0.1, 0.2], true);
+    let alone: Vec<Vec<EffectRow>> = pairs
+        .iter()
+        .map(|p| estimate_pair(&w.tissue, p, &o).unwrap())
+        .collect();
+    // Each pair's shared rows, the pairs run in `order`.
+    let shared_in = |order: [usize; 2]| -> Vec<Vec<EffectRow>> {
+        let share = LigandShare::default();
+        let mut out: Vec<Vec<EffectRow>> = vec![Vec::new(), Vec::new()];
+        for (i, &k) in order.iter().enumerate() {
+            let before = share.fits();
+            out[k] = estimate_pair_shared(&w.tissue, &pairs[k], &o, &share).unwrap();
+            if i == 0 {
+                assert!(share.fits() > 0, "the first pair fits the ligand's bases");
+            } else {
+                assert_eq!(share.fits(), before, "pair {k} reuses every base");
+            }
+        }
+        out
+    };
+    let (forward, backward) = (shared_in([0, 1]), shared_in([1, 0]));
+    for k in 0..2 {
+        assert_eq!(alone[k].len(), forward[k].len());
+        for (a, b) in alone[k].iter().zip(&forward[k]) {
+            assert_same_effects(&format!("pair {k} {}", a.section), a, b);
+        }
+        for (f, b) in forward[k].iter().zip(&backward[k]) {
+            let bits = |r: &EffectRow| {
+                (
+                    r.effects.competent.theta.to_bits(),
+                    r.effects.competent.se.to_bits(),
+                )
+            };
+            assert_eq!(
+                bits(f),
+                bits(b),
+                "pair {k} {} depends on the order",
+                f.section
+            );
+        }
+    }
 }
