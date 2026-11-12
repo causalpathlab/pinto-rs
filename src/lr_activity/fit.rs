@@ -636,45 +636,33 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
 /// calibration check on this tissue.
 pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
     use crate::lr_activity::ligand_effect::pipeline::run_simulate;
-    use crate::lr_activity::ligand_effect::simulate::Study;
     use crate::lr_activity::ligand_effect::{RunInputs, Settings};
-    if args.example_study {
-        println!("{}", Study::example_json());
-        return Ok(());
-    }
-    let study = match args.study.as_deref() {
-        Some(path) => Study::read(path)?,
-        None => Study::default(),
-    };
     let input = args.input.resolve()?;
     let out = input.out(args.out.as_deref())?;
     mkdir_parent(&out)?;
     let contacts = load_contacts(&input)?;
     let manifest = record_manifest(&input, &out, &contacts)?;
-    run_simulate(
-        &RunInputs {
-            settings: Settings {
-                out: &out,
-                manifest: &manifest,
-                lr_pairs: None,
-                targets: &[],
-                species: args.species,
-                seed: args.input.seed,
-                block_size: input.block_size,
-                only: &[],
-            },
-            data: &contacts.data,
-            axis: &contacts.axis,
-            pairs: &contacts.pairs,
-            cell_section: &contacts.cell_section,
-            coords: &contacts.coords,
-            cell_type: contacts
-                .cell_type
-                .as_ref()
-                .map(|(c, n)| (c.as_slice(), n.as_slice())),
+    run_simulate(&RunInputs {
+        settings: Settings {
+            out: &out,
+            manifest: &manifest,
+            lr_pairs: None,
+            targets: &[],
+            species: args.species,
+            seed: args.input.seed,
+            block_size: input.block_size,
+            only: &[],
         },
-        &study,
-    )
+        data: &contacts.data,
+        axis: &contacts.axis,
+        pairs: &contacts.pairs,
+        cell_section: &contacts.cell_section,
+        coords: &contacts.coords,
+        cell_type: contacts
+            .cell_type
+            .as_ref()
+            .map(|(c, n)| (c.as_slice(), n.as_slice())),
+    })
 }
 
 pub(super) fn stratum_entry(

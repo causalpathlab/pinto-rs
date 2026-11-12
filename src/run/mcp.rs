@@ -213,10 +213,7 @@ impl Tools {
         let out = shown_path(Path::new(&out));
         let made = outputs(Path::new(""), &out);
         if let Some(there) = made.iter().find(|p| p.exists()) {
-            anyhow::bail!(
-                "{} exists: a run is not written over; give another out",
-                shown_path(there)
-            );
+            anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
         }
         let argv = method.argv(&data, &coords, &batches, &out);
         check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
@@ -311,6 +308,10 @@ pub(super) fn as_run(input: &str) -> String {
 /// The output prefix: `out` when given (from the root), else a free name
 /// after `base` in today's results folder; refused when one of the outputs
 /// `plan` names exists or a running job holds it.
+/// What a tool says when its outputs are already there: no run's outputs
+/// are written over.
+pub(super) const NOT_WRITTEN_OVER: &str = "nothing is written over; give another out";
+
 pub(super) fn out_or_free(
     cx: &Call,
     out: Option<&str>,
@@ -326,10 +327,7 @@ pub(super) fn out_or_free(
         _ => cx.free_prefix(base, &plan, |_| false)?,
     };
     if let Some(there) = made.iter().find(|p| p.exists()) {
-        anyhow::bail!(
-            "{} exists: nothing is written over; give another out",
-            shown_path(there)
-        );
+        anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
     }
     cx.ensure_free(&made)?;
     Ok((out, made))
@@ -806,17 +804,12 @@ fn specs() -> Vec<ToolSpec> {
              rejecting at 5% (type I error where nothing is planted, power elsewhere) beside \
              the co-expression baselines, the estimable share, and the means over the \
              confounded nulls and the planted effects. Writes {out}.lra-simulate.parquet and \
-             records it in the run's manifest (slot lra.simulate). study is the design as a \
-             JSON object (written beside the output as {out}.study.json and passed as \
-             --study); example_study: true returns the built-in study to start from and runs \
-             nothing. Runs as a background job unless asked; called again with the same run \
+             records it in the run's manifest (slot lra.simulate). Runs as a background job unless asked; called again with the same run \
              and out once done, it reads the table instead of running.",
             with_lra_input(json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
-                    "study": {"type": "object", "description": "Study design: reps, pairs, scenarios (fields left out keep the built-in values; see example_study)"},
-                    "example_study": {"type": "boolean", "description": "Return the built-in study as JSON and run nothing"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},

@@ -132,7 +132,7 @@ type View = fn(&SimRow) -> (f64, f64, f64);
 /// The lines of a scenario, in print order.
 const VIEWS: [(&str, View); 6] = [
     ("estimate", |r| est(&r.estimate)),
-    ("crude", |r| est(&r.crude)),
+    ("unadjusted_diff", |r| est(&r.unadjusted_diff)),
     ("ipw", |r| est(&r.ipw)),
     ("section", |r| est(&r.steps[0])),
     ("spatial", |r| est(&r.steps[1])),
@@ -146,36 +146,22 @@ fn sim_legend() -> String {
          sees, averaged over thresholds by its weights; `_x` columns use the mean \
          effect among the truly exposed. \
          `estim` is the share of runs with a reported estimate; `reject` the share \
-         significant at 5%: type I error where nothing is planted (or the field is \
-         shifted), power elsewhere; `atten` mean estimate / mean effect among the \
+         significant at 5%: type I error where nothing is planted, power elsewhere; `atten` mean estimate / mean effect among the \
          exposed under a planted effect. section/spatial/identity are the partial adjustments.\n",
     );
     out += &format!(
-        "  {:<9} {:>5}  {:>7} {:>7}  {:>5} {:>7}  {:<6} {:>6}  {:>6}\n",
+        "  {:<15} {:>5}  {:>7} {:>7}  {:>5} {:>7}  {:<6} {:>6}  {:>6}\n",
         "", "estim", "bias", "bias_x", "cover", "cover_x", "rate", "reject", "atten"
     );
     out
 }
 
-/// The share of `g` whose `e` rejects, among those with an estimate.
-fn reject_share(g: &[&SimRow], e: fn(&SimRow) -> Estimate) -> String {
-    let v: Vec<bool> = g
-        .iter()
-        .map(|r| e(r))
-        .filter(|e| e.theta.is_finite())
-        .map(|e| e.rejects())
-        .collect();
-    share(&v)
-}
-
-/// A scenario's title line: runs, misclassified exposure, the no-spill fit's
-/// rejection and the verdict.
+/// A scenario's title line: runs, misclassified exposure and the verdict.
 fn scenario_title(key: &str, g: &[&SimRow]) -> String {
     let miscl = g.iter().map(|r| r.misclassified).sum::<f64>() / g.len() as f64;
     format!(
-        "{key}: {} runs, misclassified exposure {miscl:.2}, no-spill reject {}, verdict survived {}\n",
+        "{key}: {} runs, misclassified exposure {miscl:.2}, verdict survived {}\n",
         g.len(),
-        reject_share(g, |r| r.no_spill),
         share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
     )
 }
@@ -193,7 +179,7 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
         .collect();
     let estim = ok.len() as f64 / g.len() as f64;
     if ok.is_empty() {
-        return format!("  {name:<9} {estim:>5.2}  (not estimable)\n");
+        return format!("  {name:<15} {estim:>5.2}  (not estimable)\n");
     }
     let n = ok.len() as f64;
     let bias = ok.iter().map(|o| o.0 - o.2).sum::<f64>() / n;
@@ -232,9 +218,9 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
     )
 }
 
-/// Per scenario: a title line (runs, misclassified exposure, no-spill
-/// rejection, verdict survival), then one line each for the estimate, the crude
-/// contrast and the partial adjustments, with estimable share, bias and
+/// Per scenario: a title line (runs, misclassified exposure, verdict
+/// survival), then one line each for the estimate, the unadjusted
+/// difference and the partial adjustments, with estimable share, bias and
 /// coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison
 /// ([`super::compare::comparison`]).

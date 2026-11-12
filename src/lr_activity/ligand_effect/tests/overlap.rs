@@ -1,5 +1,5 @@
 //! The overlap estimator on data whose effect is known: it removes
-//! measured confounding the crude contrast keeps, separates subgroups, and
+//! measured confounding the unadjusted difference keeps, separates subgroups, and
 //! stays finite when exposure is nearly determined.
 
 use super::{overlap_terms, rows_of};
@@ -75,7 +75,7 @@ fn all_rows(n: usize) -> Vec<u32> {
 }
 
 #[test]
-fn confounding_fools_the_crude_contrast_not_the_estimate() {
+fn confounding_fools_the_unadjusted_difference_not_the_estimate() {
     let w = world(4000, 1);
     let (t, y) = draw(&w, 1.5, 1.0, 0.0, 0.0, 2);
     let terms = overlap_terms(
@@ -91,10 +91,10 @@ fn confounding_fools_the_crude_contrast_not_the_estimate() {
     )
     .unwrap();
     let (e, _) = subset_estimate(&terms, &t, &all_rows(t.len()), &w.cf);
-    let crude = arm_contrast(&y, &t, &all_rows(t.len()), &w.cf, |_| 1.0).theta;
+    let unadjusted_diff = arm_contrast(&y, &t, &all_rows(t.len()), &w.cf, |_| 1.0).theta;
     assert!(
-        crude > 0.5,
-        "crude contrast should be confounded upward: {crude}"
+        unadjusted_diff > 0.5,
+        "unadjusted difference should be confounded upward: {unadjusted_diff}"
     );
     assert!(
         e.z().abs() < 3.0,
@@ -221,8 +221,8 @@ fn a_group_with_one_arm_is_not_estimable() {
 }
 
 /// Each half of the estimator alone: under measured confounding and a known
-/// effect, overlap weights and the outcome regression both shed what the crude
-/// contrast keeps.
+/// effect, overlap weights and the outcome regression both shed what the unadjusted
+/// difference keeps.
 #[test]
 fn ipw_and_outcome_regression_each_adjust() {
     let w = world(4000, 21);
@@ -252,10 +252,14 @@ fn ipw_and_outcome_regression_each_adjust() {
     .unwrap();
     let rows = all_rows(n);
     let (effect, _) = subset_estimate(&terms, &t, &rows, &w.cf);
-    let crude = arm_contrast(&y, &t, &rows, &w.cf, |_| 1.0);
+    let unadjusted_diff = arm_contrast(&y, &t, &rows, &w.cf, |_| 1.0);
     let ipw = arm_contrast(&y, &t, &rows, &w.cf, |i| terms.arm_weight[i]);
     let outcome = outcome_estimate(&terms, &effect, &rows);
-    assert!(crude.theta > 0.6, "crude {:.3}", crude.theta);
+    assert!(
+        unadjusted_diff.theta > 0.6,
+        "unadjusted_diff {:.3}",
+        unadjusted_diff.theta
+    );
     assert!((ipw.theta - 0.3).abs() < 0.1, "ipw {:.3}", ipw.theta);
     assert!(
         (outcome.theta - 0.3).abs() < 0.1,
@@ -263,7 +267,7 @@ fn ipw_and_outcome_regression_each_adjust() {
         outcome.theta
     );
     assert_eq!(outcome.se, effect.se);
-    assert!(crude.se > 0.0 && ipw.se > 0.0 && ipw.df > 0.0);
+    assert!(unadjusted_diff.se > 0.0 && ipw.se > 0.0 && ipw.df > 0.0);
 }
 
 /// The clustered correlation agrees with the formula, reads a perfect line

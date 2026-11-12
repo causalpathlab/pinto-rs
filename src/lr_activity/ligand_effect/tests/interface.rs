@@ -1,4 +1,4 @@
-//! What users see: the verdict vocabulary, the study JSON, file names.
+//! What users see: the verdict vocabulary and file names.
 
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::Estimate;
@@ -7,7 +7,6 @@ use crate::lr_activity::ligand_effect::output::{
 };
 use crate::lr_activity::ligand_effect::output::{percent_short, percent_text};
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
-use crate::lr_activity::ligand_effect::simulate::{default_grid, ConfounderKind, Study};
 use crate::lr_activity::ligand_effect::verdict;
 use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
 
@@ -190,67 +189,6 @@ fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
     ] {
         assert!(
             read_table_columns(path, &["ligand"], &[gone]).is_err(),
-            "{gone}"
-        );
-    }
-}
-
-// * Study
-
-#[test]
-fn the_example_study_round_trips_to_the_default() {
-    let text = Study::example_json();
-    let mut back = Study::from_json(&text).unwrap();
-    assert!(back.doc.is_some() && back.scenarios.doc.is_some());
-    back.doc = None;
-    back.scenarios.doc = None;
-    assert_eq!(back.grid(), Study::default().grid());
-    assert_eq!((back.reps, back.pairs), (3, 3));
-    assert_eq!(
-        default_grid(&back.grid()).len(),
-        default_grid(&Study::default().grid()).len()
-    );
-}
-
-#[test]
-fn a_partial_study_keeps_the_defaults_and_a_typo_is_refused() {
-    let s = Study::from_json(
-        r#"{"reps": 2, "scenarios": {"effect_pve": [0.2, 0.5], "confounders": ["fourier"],
-            "shapes": ["linear", "quadratic"], "marker": false}}"#,
-    )
-    .unwrap();
-    assert_eq!(s.reps, 2);
-    assert_eq!(s.pairs, Study::default().pairs);
-    assert_eq!(s.scenarios.scales, Study::default().scenarios.scales);
-    let grid = default_grid(&s.grid());
-    assert!(grid.iter().any(|x| x.effect_pve == 0.5) && grid.iter().any(|x| x.effect_pve == 0.0));
-    assert!(grid.iter().all(|x| !x.marker));
-    assert!(grid
-        .iter()
-        .filter(|x| x.ligand_field_pve != 0.0)
-        .all(|x| x.confounder == ConfounderKind::Fourier));
-    assert!(Study::from_json(r#"{"scenarios": {"effect_size": [0.2]}}"#).is_err());
-    assert!(Study::from_json(r#"{"repz": 2}"#).is_err());
-    assert!(Study::from_json(r#"{"scenarios": {"shapes": ["interaction"]}}"#).is_err());
-    assert!(Study::from_json(r#"{"reps": 0}"#).is_err());
-    assert!(Study::from_json(r#"{"scenarios": {"shapes": ["cubic"]}}"#).is_err());
-    // A study from before PVE says what replaced its sizes.
-    let old = Study::from_json(r#"{"scenarios": {"effect_sizes": [0.2]}}"#).unwrap_err();
-    assert!(old.to_string().contains("shares of variance"), "{old}");
-    // A study planting a ring effect says the ring control was removed.
-    let ring = Study::from_json(r#"{"scenarios": {"ring_effect": [0.1]}}"#).unwrap_err();
-    assert!(
-        ring.to_string().contains("ring control was removed"),
-        "{ring}"
-    );
-    // So do the scenarios that only tested the background control.
-    for key in [
-        r#""background_confounding": 0.5"#,
-        r#""generic_shift": [0.5]"#,
-    ] {
-        let gone = Study::from_json(&format!(r#"{{"scenarios": {{{key}}}}}"#)).unwrap_err();
-        assert!(
-            gone.to_string().contains("background control was removed"),
             "{gone}"
         );
     }

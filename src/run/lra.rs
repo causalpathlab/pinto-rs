@@ -5,14 +5,14 @@
 //! reply is read from the tables the child wrote.
 
 use super::form::check;
-use super::mcp::{as_run, in_background, out_or_free, rooted, spawn};
+use super::mcp::{as_run, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
     self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_pooled_effects,
     read_sim_runs,
 };
-use crate::lr_activity::ligand_effect::simulate::{Study, COMPARED};
+use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
@@ -97,10 +97,6 @@ pub(super) struct LraSimulateToolArgs {
     pub knn_spatial: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub study: Option<Value>,
-    #[serde(default, skip_serializing)]
-    pub example_study: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,12 +282,11 @@ pub(super) fn lra_argv(
 }
 
 /// `pinto lra-simulate` reading `run` (or its data files), writing under
-/// `out`, with the study file when one was given.
+/// `out`.
 pub(super) fn lra_simulate_argv(
     a: &LraSimulateToolArgs,
     run: Option<&str>,
     out: &str,
-    study: Option<&Path>,
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["lra-simulate".into()];
     if let Some(run) = run {
@@ -302,29 +297,10 @@ pub(super) fn lra_simulate_argv(
     if let Some(seed) = a.seed {
         argv.extend(["--seed".into(), seed.to_string()]);
     }
-    if let Some(p) = study {
-        argv.extend(["--study".into(), shown_path(p)]);
-    }
     if let Some(s) = &a.species {
         argv.extend(["--species".into(), s.clone()]);
     }
     argv
-}
-
-/// The study file written beside `{out}`'s outputs.
-pub(super) fn study_path(out: &str) -> PathBuf {
-    format!("{out}.study.json").into()
-}
-
-/// `study` as the file `--study` reads, once checked as pinto reads it.
-pub(super) fn study_text(study: &Value) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        study.is_object(),
-        "study: a JSON object (example_study: true shows one)"
-    );
-    let text = serde_json::to_string_pretty(study)?;
-    Study::from_json(&text).map_err(|e| anyhow::anyhow!("study: {e}"))?;
-    Ok(text + "\n")
 }
 
 /// The command line checked as pinto parses it.
@@ -336,6 +312,24 @@ fn checked(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
 /// step, whose reply is read rather than run again.
 fn finished(cx: &Call, made: &[PathBuf]) -> bool {
     made.iter().all(|p| p.is_file()) && cx.ensure_free(made).is_ok()
+}
+
+/// The reply from the tables a finished run left at `made`, read, not run
+/// again; `None` when there are none. Tables that cannot be read are not
+/// written over either.
+fn read_finished(
+    cx: &Call,
+    made: &[PathBuf],
+    reply: impl FnOnce() -> anyhow::Result<Vec<Content>>,
+) -> Option<anyhow::Result<Vec<Content>>> {
+    finished(cx, made).then(|| {
+        let mut reply = reply().map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
+        push_note(
+            &mut reply,
+            "read from the tables already there; nothing was run",
+        );
+        Ok(reply)
+    })
 }
 
 /// Run `argv` making `made`: in the background (the reply is the job), or
@@ -378,14 +372,11 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = lra_outputs(method, &o, &only);
-        if finished(cx, &made) {
-            let argv = lra_argv(&a, method, run, &o);
-            let mut reply = lra_reply(method, &argv, &input, run, &made)?;
-            push_note(
-                &mut reply,
-                "read from the tables already there; nothing was run",
-            );
-            return Ok(reply);
+        let argv = lra_argv(&a, method, run, &o);
+        if let Some(reply) =
+            read_finished(cx, &made, || lra_reply(method, &argv, &input, run, &made))
+        {
+            return reply;
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
@@ -500,56 +491,29 @@ fn share(x: f64) -> Value {
 
 // * run_lra_simulate
 
-/// `run_lra_simulate`; with `example_study`, the built-in study instead.
+/// `run_lra_simulate`.
 pub(super) fn lra_simulate(
     cli: &clap::Command,
     a: LraSimulateToolArgs,
     cx: &Call,
 ) -> anyhow::Result<Vec<Content>> {
-    if a.example_study {
-        return Ok(vec![Content::Json(example_study()?)]);
-    }
     let input = a.input();
-    let run = input
-        .run()
-        .map_err(|e| anyhow::anyhow!("{e} (or example_study: true)"))?;
+    let run = input.run()?;
     let run = run.as_deref();
-    let study = a.study.as_ref().map(study_text).transpose()?;
     let out = named_out(a.out.as_deref());
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = vec![PathBuf::from(lra_simulate_path(&o))];
-        if finished(cx, &made) {
-            let file = study.is_some().then(|| study_path(&o));
-            let argv = lra_simulate_argv(&a, run, &o, file.as_deref());
-            let mut reply = simulate_reply(&argv, &made)?;
-            push_note(
-                &mut reply,
-                "read from the table already there; nothing was run",
-            );
-            return Ok(reply);
+        let argv = lra_simulate_argv(&a, run, &o);
+        if let Some(reply) = read_finished(cx, &made, || simulate_reply(&argv, &made)) {
+            return reply;
         }
     }
-    let with_study = study.is_some();
-    let (out, mut made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
-        let mut m = vec![PathBuf::from(lra_simulate_path(o))];
-        if with_study {
-            m.push(study_path(o));
-        }
-        Ok(m)
+    let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
+        Ok(vec![PathBuf::from(lra_simulate_path(o))])
     })?;
-    // The study is the step's input, not its output: written before it
-    // runs, and kept in the records as the file it is.
-    let file = made.get(1).cloned();
-    made.truncate(1);
-    let argv = lra_simulate_argv(&a, run, &out, file.as_deref());
+    let argv = lra_simulate_argv(&a, run, &out);
     checked(cli, &argv)?;
-    if let (Some(path), Some(text)) = (&file, &study) {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        cx.write_file(path, text)?;
-    }
     let summary = format!(
         "lra-simulate power and calibration check of {}",
         input.source(run)
@@ -571,16 +535,6 @@ pub(super) fn lra_simulate(
         return Ok(vec![Content::Json(job)]);
     }
     simulate_reply(&argv, &made)
-}
-
-/// The built-in study, each section explained in its `_doc`.
-pub(super) fn example_study() -> anyhow::Result<Value> {
-    let study: Value = serde_json::from_str(&Study::example_json())?;
-    Ok(json!({
-        "study": study,
-        "note": "edit it and pass it as study to run_lra_simulate; fields left out keep these \
-                 values, _doc fields are ignored. Nothing was run.",
-    }))
 }
 
 /// The reply to a finished `pinto lra-simulate`: the comparison table.
@@ -631,7 +585,7 @@ pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
         "means": means,
         "reading": "reject: share of runs significant at 5% per method. estimate is lra's \
                     adjusted effect; marginal the correlation of response and contact ligand; \
-                    crude the unadjusted contrast; ipw the effect by overlap weights alone; \
+                    unadjusted_diff the difference in mean response, exposed minus unexposed, with no adjustment; ipw the effect by overlap weights alone; \
                     celltype, moran, contact and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
                     NICHES/COMMOT, lra's log odds). Trust lra here when estimate keeps type I \
                     near 0.05 under the confounded nulls and has power at the effect sizes \

@@ -1,7 +1,7 @@
 //! End to end on a synthetic tissue: a grid of cells touching their four
 //! neighbours, two cell types in patches, uneven depth. The simulator
 //! plants or withholds an effect under a hidden regional confounder; the
-//! estimate should track the truth while the crude contrast is fooled.
+//! estimate should track the truth while the unadjusted difference is fooled.
 
 use super::run_sim;
 use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
@@ -158,7 +158,7 @@ fn no_effect_under_regional_confounding() {
         scale: 32.0,
         ..Scenario::default()
     };
-    let (mut est_rej, mut crude_rej, mut z_sum) = (0, 0, 0.0);
+    let (mut est_rej, mut unadjusted_rej, mut z_sum) = (0, 0, 0.0);
     let runs = 4;
     for rep in 0..runs {
         let r = run_sim(&f.tissue, &base(&f), &Scenario { rep, ..scen }, &opts(), 11).unwrap();
@@ -167,12 +167,12 @@ fn no_effect_under_regional_confounding() {
             "no planted effect means a zero truth"
         );
         est_rej += r.rejected() as usize;
-        crude_rej += r.crude.rejects() as usize;
+        unadjusted_rej += r.unadjusted_diff.rejects() as usize;
         z_sum += r.estimate.z();
     }
     assert!(
-        crude_rej >= 3,
-        "the crude contrast should be fooled most runs ({crude_rej}/{runs})"
+        unadjusted_rej >= 3,
+        "the unadjusted difference should be fooled most runs ({unadjusted_rej}/{runs})"
     );
     assert!(
         est_rej <= 1,
@@ -204,79 +204,6 @@ fn a_planted_effect_is_recovered_on_the_tissue() {
         r.truth
     );
     assert!(r.incompetent.theta.is_nan() || (r.incompetent.z()).abs() < 3.0);
-}
-
-/// Segmentation spillover from senders that carry the programme
-/// themselves: receivers touching them measure it, which the crude
-/// contrast reads as an effect. Nothing is planted. Neighbour identity
-/// already accounts for how much programme bleeds in, so the fit without
-/// the neighbour-response covariate stays at zero; the full fit removes
-/// most of the spurious contrast, though that covariate, which carries the
-/// receiver's own counts bled back, leaves it slightly below zero here.
-#[test]
-fn spillover_is_absorbed() {
-    let f = fixture();
-    let sender_heavy = vec![3.0, 12.0];
-    let b = SimBase {
-        target_bin_means: &sender_heavy,
-        ..base(&f)
-    };
-    let (mut crude_rej, mut est, mut crude, mut z_bare) = (0, 0.0, 0.0, 0.0);
-    let runs = 3;
-    for rep in 0..runs {
-        let scen = Scenario {
-            spillover: 0.3,
-            rep,
-            ..Scenario::default()
-        };
-        let r = run_sim(&f.tissue, &b, &scen, &opts(), 31).unwrap();
-        assert!(r.truth.abs() < 1e-12, "spillover is not an effect");
-        assert!(
-            r.no_spill.theta.is_finite(),
-            "the no-spill fit runs under spillover"
-        );
-        crude_rej += (r.crude.rejects() && r.crude.theta > 0.0) as usize;
-        est += r.estimate.theta / runs as f64;
-        crude += r.crude.theta / runs as f64;
-        z_bare += r.no_spill.z() / runs as f64;
-    }
-    assert!(
-        crude_rej >= 2,
-        "spillover should fool the crude contrast ({crude_rej}/{runs})"
-    );
-    assert!(
-        est.abs() < 0.5 * crude,
-        "mean estimate {est:.3} against crude {crude:.3}"
-    );
-    assert!(z_bare.abs() < 2.5, "no-spill mean z {z_bare:.2}");
-}
-
-/// The estimator sees the ligand field displaced by four contact lengths:
-/// under the regional confounder the crude contrast still finds an
-/// association, but the planted contact effect is out of reach.
-#[test]
-fn a_shifted_field_has_no_contact_effect() {
-    let f = fixture();
-    let scen = Scenario {
-        effect_pve: 0.1,
-        ligand_field_pve: 0.5,
-        response_field_pve: 0.5,
-        shift: 4.0,
-        ..Scenario::default()
-    };
-    let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 41).unwrap();
-    assert_eq!(r.truth, 0.0, "the seen exposure has no effect");
-    assert!(
-        r.estimate.z().abs() < 3.0,
-        "estimate z {:.2}",
-        r.estimate.z()
-    );
-    assert!(
-        r.crude.z() > 3.0,
-        "crude {:.3} ± {:.3}",
-        r.crude.theta,
-        r.crude.se
-    );
 }
 
 #[test]

@@ -121,14 +121,10 @@ fn each_method_declares_what_it_writes() {
 }
 
 #[test]
-fn a_study_becomes_the_file_study_reads() {
+fn a_simulate_call_becomes_its_command_line() {
     let a: LraSimulateToolArgs =
-        crate::mcp::parse(json!({"run": "r", "study": {"reps": 2}, "species": "human"})).unwrap();
-    let text = study_text(a.study.as_ref().unwrap()).unwrap();
-    assert_eq!(Study::from_json(&text).unwrap().reps, 2);
-    let path = study_path("/p/out");
-    assert_eq!(path, Path::new("/p/out.study.json"));
-    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out", Some(&path));
+        crate::mcp::parse(json!({"run": "r", "species": "human"})).unwrap();
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
     assert_eq!(
         argv,
         [
@@ -137,29 +133,19 @@ fn a_study_becomes_the_file_study_reads() {
             "/p/r.pinto.json",
             "-o",
             "/p/out",
-            "--study",
-            "/p/out.study.json",
             "--species",
             "human"
         ]
     );
     checked(&cli(), &argv).unwrap();
-    // A study pinto would refuse is refused before anything is written.
-    let e = study_text(&json!({"replicates": 2}))
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("replicates"), "{e}");
-    assert!(study_text(&json!([1])).is_err());
-    assert!(study_text(&json!({"reps": 0})).is_err());
-}
-
-#[test]
-fn the_example_study_parses_as_the_built_in_study() {
-    let v = example_study().unwrap();
-    let study = Study::from_json(&v["study"].to_string()).unwrap();
-    assert_eq!(study, Study::from_json(&Study::example_json()).unwrap());
-    assert_eq!(study.reps, Study::default().reps);
-    assert!(v["note"].as_str().unwrap().contains("Nothing was run"));
+    // The study and its example are gone from the tool as from the CLI.
+    for gone in ["study", "example_study"] {
+        let call = json!({"run": "r", gone: true});
+        assert!(
+            crate::mcp::parse::<LraSimulateToolArgs>(call).is_err(),
+            "{gone}"
+        );
+    }
 }
 
 #[test]
@@ -243,7 +229,7 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
         "seed": 3,
     }))
     .unwrap();
-    let argv = lra_simulate_argv(&s, None, "o", None);
+    let argv = lra_simulate_argv(&s, None, "o");
     assert!(argv.iter().any(|w| w == "--seed"), "{argv:?}");
     checked(&cli(), &argv).unwrap();
 }
@@ -332,7 +318,7 @@ fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool
             ..Scenario::default()
         },
         estimable,
-        rejects: rejects.map(|hit| hit as u8 as f64),
+        rejects,
     }
 }
 
@@ -352,7 +338,7 @@ fn the_simulate_reply_is_the_comparison_table() {
     assert_eq!(s.len(), 2);
     assert_eq!(s[0]["rate"], "type I");
     assert_eq!(s[0]["estimable"], 0.5);
-    assert_eq!(s[0]["reject"]["crude"], 1.0);
+    assert_eq!(s[0]["reject"]["unadjusted_diff"], 1.0);
     assert_eq!(s[0]["reject"]["celltype"], 0.5);
     assert_eq!(s[0]["reject"]["estimate"], 0.0);
     assert_eq!(s[1]["rate"], "power");
@@ -370,20 +356,16 @@ fn simulate_runs_read_back_as_written() {
     let n = 2;
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
     let (confounder, shape) = (s("realgene"), s("quadratic"));
-    let f = |v: [f32; 2]| v.to_vec();
-    // The table with `removed` in a column of a control since removed, and
-    // without the columns `without`.
-    let write = |path: &std::path::Path, removed: [f32; 2], without: &[&str]| {
+    let f = |x: f32| vec![x; n];
+    // The table, with the unadjusted difference's rejections under its old
+    // name when `old_name`, and without the columns `without`.
+    let write = |path: &std::path::Path, old_name: bool, without: &[&str]| {
         let floats: Vec<(String, Vec<f32>)> = vec![
-            ("effect_pve".into(), f([0.3, 0.3])),
-            ("ligand_field_pve".into(), f([0.3, 0.3])),
-            ("response_field_pve".into(), f([0.3, 0.3])),
-            ("confound_scale".into(), f([16.0, 16.0])),
-            ("spillover".into(), f([0.1, 0.1])),
-            ("shift".into(), f([0.0, 0.0])),
-            ("background_confounding".into(), f([0.5, 0.5])),
-            ("generic_shift".into(), f(removed)),
-            ("dose_midpoint".into(), f([0.75, 0.75])),
+            ("effect_pve".into(), f(0.3)),
+            ("ligand_field_pve".into(), f(0.3)),
+            ("response_field_pve".into(), f(0.3)),
+            ("confound_scale".into(), f(16.0)),
+            ("dose_midpoint".into(), f(0.75)),
         ];
         let mut ints: Vec<(String, Vec<i32>)> = vec![
             ("heterogeneous".into(), vec![0, 0]),
@@ -394,7 +376,15 @@ fn simulate_runs_read_back_as_written() {
             ("dose_order".into(), vec![8, 8]),
         ];
         for m in COMPARED {
-            ints.push((format!("{m}_reject"), vec![1, (m == "crude") as i32]));
+            let m = if old_name && m == "unadjusted_diff" {
+                "crude"
+            } else {
+                m
+            };
+            ints.push((
+                format!("{m}_reject"),
+                vec![1, (m == "unadjusted_diff") as i32],
+            ));
         }
         let names: Vec<Box<str>> = vec!["0".into(), "1".into()];
         let mut table: Vec<(Box<str>, Column)> = vec![
@@ -413,15 +403,15 @@ fn simulate_runs_read_back_as_written() {
         table.retain(|(k, _)| !without.contains(&k.as_ref()));
         write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
     };
-    // A run of a scenario the removed control was made for is not read as
-    // the plain scenario beside it: it is left out.
+    // A table from before the rename, as every earlier table is, is refused,
+    // not read with that method missing.
     let old = dir.path().join("old.lra-simulate.parquet");
-    write(&old, [0.25, 0.0], &[]);
-    let kept = read_sim_runs(old.to_str().unwrap()).unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].scenario.rep, 1);
-
-    write(&path, [0.0, 0.0], &[]);
+    write(&old, true, &[]);
+    let e = read_sim_runs(old.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("not a table this version"), "{e}");
+    write(&path, false, &[]);
     let runs = read_sim_runs(path.to_str().unwrap()).unwrap();
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
@@ -431,34 +421,22 @@ fn simulate_runs_read_back_as_written() {
     assert!(sc.marker && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
-    assert_eq!(
-        runs[1].rejects,
-        COMPARED.map(|m| (m == "crude") as u8 as f64)
-    );
+    assert_eq!(runs[1].rejects, COMPARED.map(|m| m == "unadjusted_diff"));
     // Both replicates are one scenario, worded as the run's summary words it.
     let v = comparison_summary(&runs);
     let s = v["scenarios"].as_array().unwrap();
     assert_eq!(s.len(), 1);
     assert_eq!(
         s[0]["scenario"],
-        "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose κ=0.1 marker"
+        "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose marker"
     );
-    assert_eq!(s[0]["reject"]["crude"], 1.0);
+    assert_eq!(s[0]["reject"]["unadjusted_diff"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);
 
-    // A table from an earlier version, without the later columns, reads with
-    // the scenario's defaults, and a method it lacks has no rate.
-    let later = [
-        "marginal_reject",
-        "ipw_reject",
-        "dose_response",
-        "dose_midpoint",
-        "dose_order",
-    ];
-    write(&old, [0.0, 0.0], &later);
-    let old_runs = read_sim_runs(old.to_str().unwrap()).unwrap();
-    let v = comparison_summary(&old_runs);
-    assert_eq!(v["scenarios"][0]["reject"]["crude"], 1.0);
-    assert!(v["scenarios"][0]["reject"]["ipw"].is_null());
-    assert!(!old_runs[0].scenario.dose_response);
+    // A table without a column it is read for is an error, not read with a
+    // default in its place.
+    for gone in ["ipw_reject", "dose_order"] {
+        write(&old, false, &[gone]);
+        assert!(read_sim_runs(old.to_str().unwrap()).is_err(), "{gone}");
+    }
 }

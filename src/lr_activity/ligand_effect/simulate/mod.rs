@@ -1,5 +1,5 @@
 //! Semi-synthetic benchmark: can the estimator recover a known effect on
-//! this tissue, and does the crude contrast get fooled?
+//! this tissue, and does the unadjusted difference get fooled?
 //!
 //! The tissue stays real: coordinates, contacts, the confounder matrix,
 //! identity bins, depth, receptor competence, and the per-bin levels of the
@@ -51,8 +51,7 @@
 //!    not simulated, so these results do not speak to it (future work).
 //!    Composition confounding comes free: `p_b`, `r_b` and `μ_{b,g}` follow identity,
 //!    and neighbours' identities are correlated.
-//! 4. **Truths**, two of them, on the scale the response lives on, as measured
-//!    (with spillover's bleed, below). `truth` is what the estimate targets: the
+//! 4. **Truths**, two of them, on the scale the response lives on, as measured. `truth` is what the estimate targets: the
 //!    realized effect `T* (y(1) − y(0))`, contrasted between the arms the
 //!    estimator sees under its arm weights at each threshold, then averaged over thresholds by the estimate's own
 //!    weights. Misclassified exposure is thus part of the target, so coverage
@@ -66,7 +65,7 @@
 //!    carries a programme baseline raised by [`MARKER_LIFT`]; contacts stay
 //!    real, so the type's homotypic contacts make its cells the exposed
 //!    ones. The receptor call the estimator uses is the real one plus the
-//!    marker type. Exposure then tracks cell type: the crude contrast should
+//!    marker type. Exposure then tracks cell type: the unadjusted difference should
 //!    reject almost always, the estimator should find no overlap in the
 //!    marker type (not estimable, or near 0 under no effect), and power
 //!    under an effect is low.
@@ -89,24 +88,6 @@
 //!
 //! Every run also scores the co-expression baselines of
 //! [`super::baselines`] on the ligand and receptor the estimator sees.
-//!
-//! Two departures, each off by default:
-//!
-//! - **Spillover** κ: segmentation hands each receiver a share κ of every
-//!   contact neighbour's programme counts, and of their ligand counts in
-//!   its own-ligand covariate. It changes the measurement, not the effect:
-//!   the truths are the same contrasts on the measured scale, each
-//!   potential count carrying the realized bleed from the neighbours'
-//!   observed counts (bleed inside `log1p` compresses a contrast, and an
-//!   unbled truth would charge that compression to the estimator). The
-//!   neighbour-response and bleed covariates are what should absorb it,
-//!   and a fit without them is reported beside.
-//! - **Shift**: the estimator sees the detected ligand field displaced by
-//!   a few contact lengths (each cell reads the cell nearest its point plus
-//!   the offset, in its own section). Receivers still respond to the
-//!   undisplaced field, so the seen exposure has no effect (truths 0); a
-//!   contact effect should vanish while confounding at a coarser scale
-//!   still fools the crude contrast.
 
 mod calibrate;
 mod draw;

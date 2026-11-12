@@ -209,6 +209,19 @@ pub struct Propensity {
     folds: Vec<Option<LogisticBase>>,
 }
 
+impl Propensity {
+    /// Each fold's solution, as the warm start of a fit that nests in or
+    /// follows this one.
+    pub fn starts(&self) -> FoldStarts {
+        FoldStarts(
+            self.folds
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.beta.clone()))
+                .collect(),
+        )
+    }
+}
+
 /// The cross-fitted propensity on the design, `extra` and `added`, each fold
 /// fitted from `base`'s fit of the same fold on the design and `extra`
 /// ([`logistic_bordered`]): the optimum [`propensity`] would reach on all

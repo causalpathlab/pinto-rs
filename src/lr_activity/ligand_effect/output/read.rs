@@ -240,8 +240,9 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
     Ok(out)
 }
 
-/// The number columns every `{out}.lra-simulate.parquet` has.
-const SIM_NUMBERS: [&str; 10] = {
+/// The number columns of `{out}.lra-simulate.parquet` read back, besides
+/// the rejections.
+const SIM_NUMBERS: [&str; 11] = {
     use sim_cols::*;
     [
         EFFECT_PVE,
@@ -250,10 +251,11 @@ const SIM_NUMBERS: [&str; 10] = {
         SCALE,
         HETEROGENEOUS,
         MARKER,
-        SPILLOVER,
-        SHIFT,
         REP,
         ESTIMABLE,
+        DOSE_RESPONSE,
+        DOSE_MIDPOINT,
+        DOSE_ORDER,
     ]
 };
 
@@ -277,70 +279,45 @@ fn later_columns(path: &str, names: &[&str], rows: usize) -> Vec<Vec<f64>> {
         })
 }
 
-/// A column a table from an earlier version lacks.
+/// Column `name` of the table, or None where it has none.
 fn later_column(path: &str, name: &str) -> Option<Vec<f64>> {
     legume_numeric::matrix::parquet::read_table_columns(path, &[], &[name])
         .ok()
         .and_then(|(_, mut c)| c.pop())
 }
 
-/// A later column's value at row `i`, or the scenario's default without it.
-fn later_value(c: &Option<Vec<f64>>, i: usize, default: f64) -> f64 {
-    c.as_ref().map_or(default, |c| as_written(c[i]))
-}
-
-/// `{out}.lra-simulate.parquet` as read: confounder and shape, [`SIM_NUMBERS`],
-/// and the columns a table from an earlier version lacks.
+/// `{out}.lra-simulate.parquet` as read: confounder and shape,
+/// [`SIM_NUMBERS`] and each compared method's rejections.
 struct SimTable<'p> {
     path: &'p str,
     strings: Vec<Vec<Box<str>>>,
     numbers: Vec<Vec<f64>>,
-    rejects: Vec<Option<Vec<f64>>>,
-    dose_response: Option<Vec<f64>>,
-    dose_midpoint: Option<Vec<f64>>,
-    dose_order: Option<Vec<f64>>,
-    /// Columns of scenarios made for a control since removed.
-    retired: Vec<Vec<f64>>,
+    rejects: Vec<Vec<f64>>,
 }
 
-/// Columns an earlier version wrote for scenarios that tested a control since
-/// removed. A run with one set is not the plain scenario its other columns
-/// describe, so it is left out. A study's keys for them are refused
-/// (`RETIRED_SCENARIO_KEYS`); `background_confounding` is not here, since
-/// every earlier run wrote it.
-const RETIRED_SCENARIO_COLUMNS: [&str; 2] = ["planted_ring_effect", "generic_shift"];
-
 impl<'p> SimTable<'p> {
+    /// The table at `path`, in one read. A table from an earlier version
+    /// lacks columns read here and is refused.
     fn read(path: &'p str) -> anyhow::Result<Self> {
+        use anyhow::Context;
         use sim_cols::*;
-        let later = |name: &str| later_column(path, name);
-        anyhow::ensure!(
-            later("planted_effect").is_none(),
-            "{path} is from before effect sizes were set by PVE: run lra-simulate again"
-        );
-        let (strings, numbers) = legume_numeric::matrix::parquet::read_table_columns(
-            path,
-            &[CONFOUNDER, SHAPE],
-            &SIM_NUMBERS,
-        )?;
+        let reject_names = COMPARED.map(reject);
+        let names: Vec<&str> = SIM_NUMBERS
+            .into_iter()
+            .chain(reject_names.iter().map(String::as_str))
+            .collect();
+        let (strings, mut numbers) =
+            legume_numeric::matrix::parquet::read_table_columns(path, &[CONFOUNDER, SHAPE], &names)
+                .with_context(|| {
+                    format!("{path} is not a table this version of lra-simulate wrote")
+                })?;
+        let rejects = numbers.split_off(SIM_NUMBERS.len());
         Ok(Self {
             path,
             strings,
             numbers,
-            rejects: COMPARED.iter().map(|m| later(&reject(m))).collect(),
-            dose_response: later(DOSE_RESPONSE),
-            dose_midpoint: later(DOSE_MIDPOINT),
-            dose_order: later(DOSE_ORDER),
-            retired: RETIRED_SCENARIO_COLUMNS
-                .iter()
-                .filter_map(|c| later(c))
-                .collect(),
+            rejects,
         })
-    }
-
-    /// Whether row `i` is of a scenario made for a control since removed.
-    fn retired(&self, i: usize) -> bool {
-        self.retired.iter().any(|c| c[i] != 0.0)
     }
 
     fn col(&self, name: &str) -> &[f64] {
@@ -362,7 +339,6 @@ impl<'p> SimTable<'p> {
     fn scenario(&self, i: usize) -> anyhow::Result<Scenario> {
         use sim_cols::*;
         let path = self.path;
-        let plain = Scenario::default();
         let confounder: ConfounderKind = self.strings[0][i]
             .parse()
             .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
@@ -378,39 +354,27 @@ impl<'p> SimTable<'p> {
             shape,
             heterogeneous: self.flag(HETEROGENEOUS, i),
             marker: self.flag(MARKER, i),
-            spillover: self.num(SPILLOVER, i),
-            shift: self.num(SHIFT, i),
             rep: self.col(REP)[i] as usize,
-            dose_response: later_value(&self.dose_response, i, 0.0) != 0.0,
-            dose_midpoint: later_value(&self.dose_midpoint, i, plain.dose_midpoint),
-            dose_order: later_value(&self.dose_order, i, plain.dose_order as f64) as i32,
+            dose_response: self.flag(DOSE_RESPONSE, i),
+            dose_midpoint: self.num(DOSE_MIDPOINT, i),
+            dose_order: self.col(DOSE_ORDER)[i] as i32,
         })
     }
 
     /// Row `i` as a run.
     fn run(&self, i: usize) -> anyhow::Result<SimRun> {
         let scenario = self.scenario(i)?;
-        let mut hits = [f64::NAN; COMPARED.len()];
-        for (h, c) in hits.iter_mut().zip(&self.rejects) {
-            if let Some(c) = c {
-                *h = (c[i] != 0.0) as u8 as f64;
-            }
-        }
         Ok(SimRun {
             scenario,
             estimable: self.flag(sim_cols::ESTIMABLE, i),
-            rejects: hits,
+            rejects: std::array::from_fn(|k| self.rejects[k][i] != 0.0),
         })
     }
 }
 
 /// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
-/// each column by its name ([`super::sim_cols`]), without the runs of
-/// scenarios made for a control since removed.
+/// each column by its name ([`super::sim_cols`]).
 pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {
     let table = SimTable::read(path)?;
-    (0..table.strings[0].len())
-        .filter(|&i| !table.retired(i))
-        .map(|i| table.run(i))
-        .collect()
+    (0..table.strings[0].len()).map(|i| table.run(i)).collect()
 }

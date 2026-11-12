@@ -1,8 +1,7 @@
-//! What to simulate: the scenarios, the default grid, and the study file.
+//! What to simulate: the scenarios and the built-in grid.
 
 /// The hidden confounder's spatial form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfounderKind {
     /// Random Fourier features, the adjustment smooth's own basis
     Fourier,
@@ -36,8 +35,7 @@ impl std::str::FromStr for ConfounderKind {
 }
 
 /// How the hidden field enters ligand production and response.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfoundShape {
     /// Z
     Linear,
@@ -91,11 +89,6 @@ pub struct Scenario {
     pub heterogeneous: bool,
     /// Ligand, response and programme baseline confined to a marker type.
     pub marker: bool,
-    /// κ: share of each contact neighbour's counts measured in the receiver.
-    pub spillover: f64,
-    /// Displacement of the ligand field the estimator sees, in contact
-    /// lengths; 0 for none.
-    pub shift: f64,
     /// The planted effect grows with the true dose (a Hill curve) rather than
     /// being a step at any exposure.
     pub dose_response: bool,
@@ -138,8 +131,6 @@ impl Default for Scenario {
             shape: ConfoundShape::Linear,
             heterogeneous: false,
             marker: false,
-            spillover: 0.0,
-            shift: 0.0,
             dose_response: false,
             dose_midpoint: 0.5,
             dose_order: 2,
@@ -148,33 +139,25 @@ impl Default for Scenario {
     }
 }
 
-/// The choices a benchmark grid is built from: the `scenarios` section of
-/// a study. Fields left out of the JSON keep their defaults; unknown ones
-/// are an error, so a misspelt field does not silently fall back.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// The built-in benchmark: the choices its grid is built from, its
+/// replicates, and how many pairs it runs on.
+#[derive(Debug)]
 pub struct GridOpts {
-    #[serde(rename = "_doc", skip_serializing_if = "Option::is_none")]
-    pub doc: Option<String>,
     /// Planted effects as PVE of the programme genes' log rates
     /// ([`Scenario::effect_pve`]); each runs beside no effect.
     pub effect_pve: Vec<f64>,
     /// PVE of the hidden field on ligand production and on the response
     /// in confounded scenarios ([`Scenario::response_field_pve`]).
     pub field_pve: f64,
-    /// Replicates of every scenario (set from the study's `reps`).
-    #[serde(skip)]
+    /// Replicates of every scenario.
     pub reps: usize,
+    /// Pairs benchmarked: the most abundant distinct ligands.
+    pub pairs: usize,
     pub confounders: Vec<ConfounderKind>,
     /// Confounder length scales, in contact lengths; the first is the one
-    /// the nonlinear shapes and the shifted field use.
+    /// the nonlinear shapes use.
     pub scales: Vec<f64>,
     pub shapes: Vec<ConfoundShape>,
-    /// Segmentation spillover shares κ, each its own unconfounded scenario.
-    pub spillover: Vec<f64>,
-    /// Displacements of the ligand field the estimator sees, in contact
-    /// lengths, each with the first confounder at the first scale.
-    pub shift: Vec<f64>,
     /// Ligand, response and programme confined to one cell type.
     pub marker: bool,
     /// An effect varying by identity bin (planted effects only).
@@ -190,15 +173,13 @@ pub struct GridOpts {
 impl Default for GridOpts {
     fn default() -> Self {
         Self {
-            doc: None,
             effect_pve: vec![0.02],
             field_pve: 0.25,
-            reps: 5,
+            reps: 3,
+            pairs: 3,
             confounders: vec![ConfounderKind::Bumps, ConfounderKind::RealGene],
             scales: vec![32.0, 4.0],
             shapes: vec![ConfoundShape::Linear, ConfoundShape::Quadratic],
-            spillover: vec![0.1],
-            shift: vec![4.0],
             marker: true,
             heterogeneous: true,
             dose_response: false,
@@ -208,26 +189,6 @@ impl Default for GridOpts {
     }
 }
 
-/// Scenario keys a study may no longer set, each with what replaced it.
-/// The columns the removed controls' scenarios wrote are
-/// `RETIRED_SCENARIO_COLUMNS` of the table's reader.
-const RETIRED_SCENARIO_KEYS: [(&str, &str); 5] = [
-    ("effect_sizes", SIZES_ARE_PVE),
-    ("confound_receptor", SIZES_ARE_PVE),
-    (
-        "ring_effect",
-        "the ring control was removed, so no effect is planted at ring range",
-    ),
-    ("background_confounding", BACKGROUND_REMOVED),
-    ("generic_shift", BACKGROUND_REMOVED),
-];
-
-const BACKGROUND_REMOVED: &str = "the background control was removed, and with it the scenarios \
-                                  made to test it";
-
-const SIZES_ARE_PVE: &str = "effect and field sizes are now shares of variance explained \
-                             (effect_pve, field_pve), not log-rate sizes";
-
 /// The grid: no effect and each planted one, each with
 ///
 /// - no confounding;
@@ -235,12 +196,9 @@ const SIZES_ARE_PVE: &str = "effect and field sizes are now shares of variance e
 ///   opposite-sign (field PVE `field_pve`, response sign ±), and each nonlinear shape at the
 ///   first scale, same-sign;
 /// - a heterogeneous effect (planted effects only);
-/// - unconfounded segmentation spillover at each κ;
-/// - the first confounder at the first scale, seen shifted by each shift;
 /// - the marker type, unconfounded.
 pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
     let mut out = Vec::new();
-    let first_scale = g.scales.first().copied().unwrap_or(32.0);
     let thetas = std::iter::once(0.0).chain(g.effect_pve.iter().copied().filter(|&t| t != 0.0));
     for theta in thetas {
         for rep in 0..g.reps {
@@ -285,21 +243,6 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
                     ..plain
                 });
             }
-            for &spillover in &g.spillover {
-                out.push(Scenario { spillover, ..plain });
-            }
-            if let Some(&confounder) = g.confounders.first() {
-                for &shift in &g.shift {
-                    out.push(Scenario {
-                        confounder,
-                        ligand_field_pve: g.field_pve,
-                        response_field_pve: g.field_pve,
-                        scale: first_scale,
-                        shift,
-                        ..plain
-                    });
-                }
-            }
             if g.marker {
                 out.push(Scenario {
                     marker: true,
@@ -309,106 +252,4 @@ pub fn default_grid(g: &GridOpts) -> Vec<Scenario> {
         }
     }
     out
-}
-
-/// A `pinto lra-simulate` study: the scenario grid, its replicates, and how
-/// many pairs (the most abundant distinct ligands) it runs on.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Study {
-    #[serde(rename = "_doc", skip_serializing_if = "Option::is_none")]
-    pub doc: Option<String>,
-    /// Replicates of every scenario.
-    pub reps: usize,
-    /// Pairs benchmarked: the most abundant distinct ligands.
-    pub pairs: usize,
-    pub scenarios: GridOpts,
-}
-
-impl Default for Study {
-    fn default() -> Self {
-        Self {
-            doc: None,
-            reps: 3,
-            pairs: 3,
-            scenarios: GridOpts::default(),
-        }
-    }
-}
-
-impl Study {
-    /// The grid options with the study's replicates.
-    pub fn grid(&self) -> GridOpts {
-        GridOpts {
-            reps: self.reps,
-            ..self.scenarios.clone()
-        }
-    }
-
-    pub fn from_json(text: &str) -> anyhow::Result<Self> {
-        let value: serde_json::Value = serde_json::from_str(text)?;
-        if let Some((k, why)) = RETIRED_SCENARIO_KEYS
-            .iter()
-            .find(|(k, _)| value["scenarios"].get(*k).is_some())
-        {
-            anyhow::bail!("scenarios.{k} is retired: {why}; see the example study");
-        }
-        let s: Study = serde_json::from_value(value)?;
-        anyhow::ensure!(s.reps > 0, "reps must be at least 1");
-        anyhow::ensure!(s.pairs > 0, "pairs must be at least 1");
-        anyhow::ensure!(
-            s.scenarios.scales.iter().all(|&x| x > 0.0),
-            "scenarios.scales must be positive contact lengths"
-        );
-        for scen in default_grid(&s.grid()) {
-            scen.validate()
-                .map_err(|e| anyhow::anyhow!("scenarios: {e}"))?;
-        }
-        Ok(s)
-    }
-
-    pub fn read(path: &str) -> anyhow::Result<Self> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("--study {path}: {e}"))?;
-        Self::from_json(&text).map_err(|e| anyhow::anyhow!("--study {path}: {e}"))
-    }
-
-    /// The built-in study as JSON, each section explained in its `_doc`
-    /// (JSON has no comments). It parses back to [`Study::default`].
-    pub fn example_json() -> String {
-        let study = Study {
-            doc: Some(
-                "pinto lra-simulate study. Plants ligand effects of known size on this \
-                 tissue, with and without hidden spatial confounders, and checks whether \
-                 lra finds them (power) and stays quiet when there is nothing (type I \
-                 error). reps: replicates of every scenario. pairs: how many ligand-receptor \
-                 pairs to plant on (the most abundant distinct ligands). Fields left out \
-                 keep these values; _doc fields are ignored."
-                    .into(),
-            ),
-            scenarios: GridOpts {
-                doc: Some(
-                    "Strengths are PVE, shares of a programme gene's log-rate variance beyond \
-                     its cell type (generalized linear model): effect, field and noise sum to 1. \
-                     Each effect runs beside no effect. effect_pve: the contact effect's share. \
-                     field_pve: the hidden field's share, on ligand production (log odds) and \
-                     on the response, in confounded scenarios. confounders: hidden \
-                     field kinds (bumps, realgene, fourier). scales: their length scales in \
-                     contact lengths. shapes: how the field acts (linear, quadratic). \
-                     spillover: shares of a neighbour's counts bleeding into \
-                     the receiver. shift: displacement of the ligand field, in contact \
-                     lengths (a null). marker: effect confined to one cell type. \
-                     heterogeneous: effect varying by cell type. dose_response: \
-                     planted effects grow with the \
-                     true dose instead of being a step at any exposure, half way at the \
-                     quantile dose_midpoint of the positive doses and rising with the Hill \
-                     order dose_order."
-                        .into(),
-                ),
-                ..GridOpts::default()
-            },
-            ..Study::default()
-        };
-        serde_json::to_string_pretty(&study).expect("a study serializes")
-    }
 }

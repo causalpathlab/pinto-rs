@@ -20,15 +20,12 @@ pub struct SimRow {
     pub truth_exposed: f64,
     pub estimate: Estimate,
     pub marginal_cor: Estimate,
-    pub crude: Estimate,
+    pub unadjusted_diff: Estimate,
     pub ipw: Estimate,
     /// The outcome regression alone, a point estimate: it has no interval of
     /// its own.
     pub outcome: f64,
     pub incompetent: Estimate,
-    /// The competent-receiver estimate without the neighbour-response and
-    /// bleed covariates; fitted only under spillover, NaN otherwise.
-    pub no_spill: Estimate,
     /// The competent-receiver estimate under the partial adjustments:
     /// section only, plus the spatial smooth, plus cell identity.
     pub steps: [Estimate; 3],
@@ -60,7 +57,7 @@ impl SimRow {
         let b = |k: usize| baselines::rejects((baselines::METHODS[k].1)(&self.baselines));
         [
             self.marginal_cor.rejects(),
-            self.crude.rejects(),
+            self.unadjusted_diff.rejects(),
             self.ipw.rejects(),
             b(0),
             b(1),
@@ -72,8 +69,15 @@ impl SimRow {
 }
 
 /// The methods `lra-simulate` compares at 5%: the marginal correlation, the
-/// crude contrast, overlap weights alone, the co-expression baselines
+/// unadjusted difference, overlap weights alone, the co-expression baselines
 /// ([`super::super::baselines::METHODS`]) and the estimator.
 pub const COMPARED: [&str; 8] = [
-    "marginal", "crude", "ipw", "celltype", "moran", "contact", "coexpr", "estimate",
+    "marginal",
+    "unadjusted_diff",
+    "ipw",
+    "celltype",
+    "moran",
+    "contact",
+    "coexpr",
+    "estimate",
 ];

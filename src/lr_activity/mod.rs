@@ -198,15 +198,12 @@ pub fn lra_simulate_long_about() -> String {
      without hidden spatial confounders. Then runs the contact-effect\n\
      analysis and reports, per scenario, how often it finds a planted effect\n\
      (power), how often it calls one where none was planted (type I error),\n\
-     its bias and its interval coverage, beside the naive contrast.\n\
+     its bias and its interval coverage, beside the unadjusted difference.\n\
      \n\
-     The study (scenarios, replicates, pairs) is JSON: --example-study prints\n\
-     the built-in one to start from. Writes {out}.lra-simulate.parquet and\n\
-     prints the summary; `pinto lra` on the same run then notes the check.\n\
+     Writes {out}.lra-simulate.parquet and prints the summary; `pinto lra`\n\
+     on the same run then notes the check.\n\
      \n\
      Example:\n\
-     \x20 pinto lra-simulate --from out/run1.pinto.json\n\
-     \x20 pinto lra-simulate --example-study > study.json\n\
-     \x20 pinto lra-simulate --from out/run1.pinto.json --study study.json"
+     \x20 pinto lra-simulate --from out/run1.pinto.json"
         .to_string()
 }

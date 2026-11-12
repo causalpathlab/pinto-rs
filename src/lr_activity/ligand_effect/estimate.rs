@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
 //! | `marginal_cor` | Pearson correlation of the response and `log1p` contact ligand over competent receivers, on its own scale (association) |
-//! | `crude` | mean response of exposed minus unexposed competent receivers, no adjustment (association) |
+//! | `unadjusted_diff` | the unadjusted difference: mean response of the exposed minus mean response of the unexposed, over competent receivers, every receiver weighted 1 and nothing adjusted for (association) |
 //! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model |
 //! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction; a point estimate, with no SE or interval |
 //! | `effect_competent` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
@@ -23,7 +23,7 @@
 //! exceed the incompetent one is not called specific to the receptor, which
 //! can also turn away a real effect on two responsive cell types.
 //!
-//! `crude`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
+//! `unadjusted_diff`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
 //! the headline is, each by its own evidence, and read for comparison: they
 //! enter no verdict. The sensitivity fits below (the nested adjustment sets
 //! and the no-spill fit) read the headline threshold alone, so a gap between
@@ -33,7 +33,7 @@
 //! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
 //! identity, cell type when given); `effect_competent` is the full set,
-//! adding depth. Read left to right with `crude`, it shows how much of an
+//! adding depth. Read left to right with `unadjusted_diff`, it shows how much of an
 //! apparent effect each confounder group explains. The pair's own columns
 //! (own ligand, spillover, bleed, niche ligand, competence) are in every
 //! step.
@@ -118,7 +118,7 @@ use super::baselines::coexpression;
 use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
-use super::fits::{indicator, Rows};
+use super::fits::{indicator, LigandShare, Rows};
 use super::options::EffectOpts;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
@@ -150,7 +150,34 @@ pub struct PairData<'a> {
 /// describes the pair, not the weighting, and is read under `targets`.
 /// Counts, co-expression, the marginal correlation and the diagnostics read
 /// competence at the middle threshold of the grid.
+///
+/// The pair is one of its ligand's, and its propensities are bordered from
+/// the ligand's `share`: the base fits are made once for all of the ligand's
+/// pairs ([`LigandShare`]), and each pair reaches the optimum it would on its
+/// own.
+pub fn estimate_pair_shared(
+    tissue: &Tissue,
+    pair: &PairData<'_>,
+    opts: &EffectOpts,
+    share: &LigandShare,
+) -> anyhow::Result<Vec<EffectRow>> {
+    estimate_on(Rows::cells(tissue).shared(share), tissue, pair, opts)
+}
+
+/// [`estimate_pair_shared`] with every propensity fitted on all of its
+/// columns, as a pair alone: the reference the shared fits are tested
+/// against.
+#[cfg(test)]
 pub fn estimate_pair(
+    tissue: &Tissue,
+    pair: &PairData<'_>,
+    opts: &EffectOpts,
+) -> anyhow::Result<Vec<EffectRow>> {
+    estimate_on(Rows::cells(tissue), tissue, pair, opts)
+}
+
+fn estimate_on(
+    rows: Rows<'_>,
     tissue: &Tissue,
     pair: &PairData<'_>,
     opts: &EffectOpts,
@@ -162,15 +189,7 @@ pub fn estimate_pair(
     let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
-    let eff = over_thresholds(
-        Rows::cells(tissue),
-        &ex,
-        &taus,
-        &responses,
-        &comps,
-        Sensitivity::ALL,
-        opts,
-    )?;
+    let eff = over_thresholds(rows, &ex, &taus, &responses, &comps, Sensitivity::ALL, opts)?;
     let mut curve = Some(threshold_curve(
         tissue.cf.n_clusters(),
         &taus,

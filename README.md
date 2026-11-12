@@ -106,11 +106,12 @@ pooled row). `effect_competent` is the headline, a log-rate change of the
 response programme (`exp(x) - 1` is the percent change); `verdict` sums up
 the evidence and `verdict_note` says why in words. For comparison, and in no
 verdict: `marginal_cor` (the correlation of response and contact ligand),
-`crude` (exposed minus unexposed, no adjustment), each with `_se`; `effect_ipw`
+`unadjusted_diff` (the mean response of exposed competent receivers minus that
+of unexposed ones, every receiver weighted 1 and nothing adjusted for), each with `_se`; `effect_ipw`
 (overlap weights alone) with `_se`, `_lo` and `_hi`, an interval no control
 guards, so not a test of the pair; and `effect_outcome` (the outcome regression
 alone), a point estimate with no SE or interval, because it can target a
-different contrast when exposure is misclassified. `crude`,
+different contrast when exposure is misclassified. `unadjusted_diff`,
 `effect_ipw` and `effect_outcome` are averaged over exposure thresholds as the
 headline is, each by its own evidence. `pinto view` shows the pairs and draws
 each on the tissue (see `view`, `I`):
@@ -167,8 +168,6 @@ confounded nulls and the planted effects, and the baselines' run time.
 
 ```sh
 pinto lra-simulate --from out/run1.pinto.json
-pinto lra-simulate --example-study > study.json   # edit, then:
-pinto lra-simulate --from out/run1.pinto.json --study study.json
 ```
 
 ### Ablations, `compare` and held-out scoring
@@ -527,7 +526,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > neighbour make-up, depth and segmentation bleed, with a negative control);
 > `run_lra_simulate` plants effects of known size on the same tissue and
 > reports, per scenario, power and type I error beside the co-expression
-> baselines (`example_study: true` returns the study it takes). Run
+> baselines. Run
 > lra-simulate to check power and calibration before trusting lra on a new
 > tissue. `run_lra` with `only` estimates a few pairs into a subset table of
 > its own (its q corrected within the subset). `view_lra` lists a run's pairs
@@ -566,7 +565,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
-| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `study` (a JSON object, written as `{out}.study.json` and passed as `--study`), `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `example_study: true` returns the built-in study and runs nothing |
+| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
@@ -587,8 +586,7 @@ organizing computational biology projects [1] (see
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
   with paths relative to the project. Each `run_fit` is its `pinto lc` (or
-  `cage`, `dsvd`) command, each `run_lra` its `pinto lra` command (the study
-  file `run_lra_simulate` writes kept as a heredoc), and each `view_export`
+  `cage`, `dsvd`) command, each `run_lra` its `pinto lra` command, and each `view_export`
   its `pinto view --png/--pdf` command, so `bash results/<day>/runall.sh`
   makes the fits and figures again without the agent.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
