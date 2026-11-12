@@ -1,4 +1,4 @@
-use super::loss::cage_nce_loss_per_feature_level;
+use super::loss::{cage_nce_loss_per_feature_level, CageLossOut};
 use graph_embedding_util::loss::{NceObjective, UnitChainBatch};
 use graph_embedding_util::model::{JointEmbedModel, ModelArgs, ModelInit};
 use legume_numeric::candle::candle_core::Device;
@@ -41,6 +41,16 @@ fn model_with_e_feat(
     .unwrap()
 }
 
+/// The loss on one block (every row's block label 0), on CPU.
+fn loss(
+    m: &JointEmbedModel,
+    bs: Vec<UnitChainBatch>,
+    ids: &[u32],
+    objective: NceObjective,
+) -> legume_numeric::candle::candle_core::Result<CageLossOut> {
+    cage_nce_loss_per_feature_level(m, bs, ids, &vec![0; ids.len()], objective, &Device::Cpu)
+}
+
 fn model(varmap: &VarMap, dev: &Device) -> JointEmbedModel {
     model_with_e_feat(varmap, dev, None)
 }
@@ -78,7 +88,7 @@ fn returns_one_loss_per_feature_and_level() {
     let m = model(&varmap, &dev);
     let (bs, ids) = batches();
 
-    let out = cage_nce_loss_per_feature_level(&m, bs, &ids, NceObjective::Logistic, &dev).unwrap();
+    let out = loss(&m, bs, &ids, NceObjective::Logistic).unwrap();
     assert_eq!(out.per_feature_level.dims(), &[N_FEATURES, L]);
     assert_eq!(
         out.mean_abs_pair.dims().len(),
@@ -99,8 +109,7 @@ fn pair_magnitude_reports_a_dead_feature_embedding() {
     let vm_live = VarMap::new();
     let live_m = model(&vm_live, &dev);
     let (bs, ids) = batches();
-    let live =
-        cage_nce_loss_per_feature_level(&live_m, bs, &ids, NceObjective::Logistic, &dev).unwrap();
+    let live = loss(&live_m, bs, &ids, NceObjective::Logistic).unwrap();
     let live_pair: f32 = live.mean_abs_pair.to_scalar().unwrap();
     assert!(
         live_pair > 0.0,
@@ -111,8 +120,7 @@ fn pair_magnitude_reports_a_dead_feature_embedding() {
     let zeros = DMatrix::<f32>::zeros(N_FEATURES, DIM);
     let dead_m = model_with_e_feat(&vm_dead, &dev, Some(&zeros));
     let (bs2, ids2) = batches();
-    let dead =
-        cage_nce_loss_per_feature_level(&dead_m, bs2, &ids2, NceObjective::Logistic, &dev).unwrap();
+    let dead = loss(&dead_m, bs2, &ids2, NceObjective::Logistic).unwrap();
     let dead_pair: f32 = dead.mean_abs_pair.to_scalar().unwrap();
     assert_eq!(dead_pair, 0.0, "a zeroed e_feat must kill the pair term");
     assert!(live_pair > dead_pair);
@@ -156,7 +164,7 @@ fn score_is_exactly_the_raw_feature_embedding() {
     }
     let expected = (acc / n as f64) as f32;
 
-    let out = cage_nce_loss_per_feature_level(&m, bs, &ids, NceObjective::Logistic, &dev).unwrap();
+    let out = loss(&m, bs, &ids, NceObjective::Logistic).unwrap();
     let got: f32 = out.mean_abs_pair.to_scalar().unwrap();
     assert!(
         (got - expected).abs() <= 1e-5 * expected.abs().max(1e-6),
@@ -173,7 +181,7 @@ fn backward_reaches_the_feature_embedding() {
     let m = model(&varmap, &dev);
     let (bs, ids) = batches();
 
-    let out = cage_nce_loss_per_feature_level(&m, bs, &ids, NceObjective::Logistic, &dev).unwrap();
+    let out = loss(&m, bs, &ids, NceObjective::Logistic).unwrap();
     let grads = out.per_feature_level.sum_all().unwrap().backward().unwrap();
 
     let g = grads
@@ -196,7 +204,7 @@ fn objective_selects_a_different_loss() {
 
     let mean_per_level = |obj| {
         let (bs, ids) = batches();
-        cage_nce_loss_per_feature_level(&m, bs, &ids, obj, &dev)
+        loss(&m, bs, &ids, obj)
             .unwrap()
             .per_feature_level
             .mean_all()
@@ -243,8 +251,7 @@ fn per_level_shape_tracks_features_and_levels() {
         for cb in &mut bs {
             cb.per_level_neg.truncate(n_levels);
         }
-        let out =
-            cage_nce_loss_per_feature_level(&m, bs, &ids, NceObjective::Softmax, &dev).unwrap();
+        let out = loss(&m, bs, &ids, NceObjective::Softmax).unwrap();
         assert_eq!(
             out.per_feature_level.dims(),
             &[ids.len(), n_levels],
