@@ -318,7 +318,7 @@ fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool
             ..Scenario::default()
         },
         estimable,
-        rejects: rejects.map(|hit| hit as u8 as f64),
+        rejects,
     }
 }
 
@@ -356,32 +356,16 @@ fn simulate_runs_read_back_as_written() {
     let n = 2;
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
     let (confounder, shape) = (s("realgene"), s("quadratic"));
-    let f = |v: [f32; 2]| v.to_vec();
-    // The table with `retired` set to the given values (the column of a
-    // control since removed, the others 0), with the unadjusted difference's
-    // rejections under its old name when `old_name`, and
-    // without the columns `without`.
-    let write = |path: &std::path::Path,
-                 (retired, removed): (&str, [f32; 2]),
-                 old_name: bool,
-                 without: &[&str]| {
-        let set = |name: &str| {
-            if name == retired {
-                f(removed)
-            } else {
-                f([0.0, 0.0])
-            }
-        };
+    let f = |x: f32| vec![x; n];
+    // The table, with the unadjusted difference's rejections under its old
+    // name when `old_name`, and without the columns `without`.
+    let write = |path: &std::path::Path, old_name: bool, without: &[&str]| {
         let floats: Vec<(String, Vec<f32>)> = vec![
-            ("effect_pve".into(), f([0.3, 0.3])),
-            ("ligand_field_pve".into(), f([0.3, 0.3])),
-            ("response_field_pve".into(), f([0.3, 0.3])),
-            ("confound_scale".into(), f([16.0, 16.0])),
-            ("spillover".into(), set("spillover")),
-            ("shift".into(), set("shift")),
-            ("background_confounding".into(), f([0.5, 0.5])),
-            ("generic_shift".into(), set("generic_shift")),
-            ("dose_midpoint".into(), f([0.75, 0.75])),
+            ("effect_pve".into(), f(0.3)),
+            ("ligand_field_pve".into(), f(0.3)),
+            ("response_field_pve".into(), f(0.3)),
+            ("confound_scale".into(), f(16.0)),
+            ("dose_midpoint".into(), f(0.75)),
         ];
         let mut ints: Vec<(String, Vec<i32>)> = vec![
             ("heterogeneous".into(), vec![0, 0]),
@@ -419,23 +403,15 @@ fn simulate_runs_read_back_as_written() {
         table.retain(|(k, _)| !without.contains(&k.as_ref()));
         write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
     };
-    // A run of a scenario a removed control was made for is not read as the
-    // plain scenario beside it: it is left out.
+    // A table from before the rename, as every earlier table is, is refused,
+    // not read with that method missing.
     let old = dir.path().join("old.lra-simulate.parquet");
-    for retired in ["generic_shift", "spillover", "shift"] {
-        write(&old, (retired, [0.25, 0.0]), false, &[]);
-        let kept = read_sim_runs(old.to_str().unwrap()).unwrap();
-        assert_eq!(kept.len(), 1, "{retired}");
-        assert_eq!(kept[0].scenario.rep, 1, "{retired}");
-    }
-    // A table from before the rename is refused, not read with that method
-    // missing.
-    write(&old, ("generic_shift", [0.0, 0.0]), true, &[]);
+    write(&old, true, &[]);
     let e = read_sim_runs(old.to_str().unwrap())
         .unwrap_err()
         .to_string();
-    assert!(e.contains("unadjusted_diff"), "{e}");
-    write(&path, ("generic_shift", [0.0, 0.0]), false, &[]);
+    assert!(e.contains("not a table this version"), "{e}");
+    write(&path, false, &[]);
     let runs = read_sim_runs(path.to_str().unwrap()).unwrap();
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
@@ -445,10 +421,7 @@ fn simulate_runs_read_back_as_written() {
     assert!(sc.marker && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
-    assert_eq!(
-        runs[1].rejects,
-        COMPARED.map(|m| (m == "unadjusted_diff") as u8 as f64)
-    );
+    assert_eq!(runs[1].rejects, COMPARED.map(|m| m == "unadjusted_diff"));
     // Both replicates are one scenario, worded as the run's summary words it.
     let v = comparison_summary(&runs);
     let s = v["scenarios"].as_array().unwrap();
@@ -460,19 +433,10 @@ fn simulate_runs_read_back_as_written() {
     assert_eq!(s[0]["reject"]["unadjusted_diff"], 1.0);
     assert_eq!(s[0]["reject"]["estimate"], 0.5);
 
-    // A table from an earlier version, without the later columns, reads with
-    // the scenario's defaults, and a method it lacks has no rate.
-    let later = [
-        "marginal_reject",
-        "ipw_reject",
-        "dose_response",
-        "dose_midpoint",
-        "dose_order",
-    ];
-    write(&old, ("generic_shift", [0.0, 0.0]), false, &later);
-    let old_runs = read_sim_runs(old.to_str().unwrap()).unwrap();
-    let v = comparison_summary(&old_runs);
-    assert_eq!(v["scenarios"][0]["reject"]["unadjusted_diff"], 1.0);
-    assert!(v["scenarios"][0]["reject"]["ipw"].is_null());
-    assert!(!old_runs[0].scenario.dose_response);
+    // A table without a column it is read for is an error, not read with a
+    // default in its place.
+    for gone in ["ipw_reject", "dose_order"] {
+        write(&old, false, &[gone]);
+        assert!(read_sim_runs(old.to_str().unwrap()).is_err(), "{gone}");
+    }
 }

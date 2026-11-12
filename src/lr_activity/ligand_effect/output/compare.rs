@@ -9,9 +9,8 @@ use crate::lr_activity::ligand_effect::simulate::{SimRow, COMPARED};
 pub struct SimRun {
     pub scenario: crate::lr_activity::ligand_effect::simulate::Scenario,
     pub estimable: bool,
-    /// Per method of [`super::super::simulate::COMPARED`]: 1 when it rejects,
-    /// else 0; NaN when a table from an earlier version lacks the method.
-    pub rejects: [f64; COMPARED.len()],
+    /// Per method of [`super::super::simulate::COMPARED`]: whether it rejects.
+    pub rejects: [bool; COMPARED.len()],
 }
 
 impl From<&SimRow> for SimRun {
@@ -19,7 +18,7 @@ impl From<&SimRow> for SimRun {
         Self {
             scenario: r.scenario,
             estimable: r.estimable(),
-            rejects: r.rejections().map(|hit| hit as u8 as f64),
+            rejects: r.rejections(),
         }
     }
 }
@@ -59,12 +58,9 @@ pub fn compare_runs(runs: &[SimRun]) -> Comparison {
         let g: Vec<&SimRun> = idx.iter().map(|&i| &runs[i]).collect();
         let s = g[0].scenario;
         let null = is_null(&s);
-        let mut rates = [0.0; COMPARED.len()];
-        for r in &g {
-            for (x, hit) in rates.iter_mut().zip(r.rejects) {
-                *x += hit / g.len() as f64;
-            }
-        }
+        let rates = std::array::from_fn(|k| {
+            g.iter().filter(|r| r.rejects[k]).count() as f64 / g.len() as f64
+        });
         if !null {
             planted.push(rates);
         } else if s.ligand_field_pve != 0.0 || s.response_field_pve != 0.0 {

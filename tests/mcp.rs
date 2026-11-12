@@ -583,5 +583,10 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
         msg.contains("give run, a run's .pinto.json, or data_files with coord_files"),
         "{msg}"
     );
+    // A table already at out that cannot be read is not written over: the
+    // reply says how to run anew.
+    std::fs::write(dir.path().join("old.lra-simulate.parquet"), "").unwrap();
+    let msg = c.fails("run_lra_simulate", json!({"run": run, "out": "old"}));
+    assert!(msg.contains("give another out"), "{msg}");
     assert!(!dir.path().join("x.lra.parquet").exists());
 }

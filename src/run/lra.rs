@@ -5,7 +5,7 @@
 //! reply is read from the tables the child wrote.
 
 use super::form::check;
-use super::mcp::{as_run, in_background, out_or_free, rooted, spawn};
+use super::mcp::{as_run, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
@@ -314,6 +314,24 @@ fn finished(cx: &Call, made: &[PathBuf]) -> bool {
     made.iter().all(|p| p.is_file()) && cx.ensure_free(made).is_ok()
 }
 
+/// The reply from the tables a finished run left at `made`, read, not run
+/// again; `None` when there are none. Tables that cannot be read are not
+/// written over either.
+fn read_finished(
+    cx: &Call,
+    made: &[PathBuf],
+    reply: impl FnOnce() -> anyhow::Result<Vec<Content>>,
+) -> Option<anyhow::Result<Vec<Content>>> {
+    finished(cx, made).then(|| {
+        let mut reply = reply().map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
+        push_note(
+            &mut reply,
+            "read from the tables already there; nothing was run",
+        );
+        Ok(reply)
+    })
+}
+
 /// Run `argv` making `made`: in the background (the reply is the job), or
 /// to its end (`None`, and the caller reads the tables).
 fn start(
@@ -354,14 +372,11 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = lra_outputs(method, &o, &only);
-        if finished(cx, &made) {
-            let argv = lra_argv(&a, method, run, &o);
-            let mut reply = lra_reply(method, &argv, &input, run, &made)?;
-            push_note(
-                &mut reply,
-                "read from the tables already there; nothing was run",
-            );
-            return Ok(reply);
+        let argv = lra_argv(&a, method, run, &o);
+        if let Some(reply) =
+            read_finished(cx, &made, || lra_reply(method, &argv, &input, run, &made))
+        {
+            return reply;
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
@@ -489,14 +504,9 @@ pub(super) fn lra_simulate(
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = vec![PathBuf::from(lra_simulate_path(&o))];
-        if finished(cx, &made) {
-            let argv = lra_simulate_argv(&a, run, &o);
-            let mut reply = simulate_reply(&argv, &made)?;
-            push_note(
-                &mut reply,
-                "read from the table already there; nothing was run",
-            );
-            return Ok(reply);
+        let argv = lra_simulate_argv(&a, run, &o);
+        if let Some(reply) = read_finished(cx, &made, || simulate_reply(&argv, &made)) {
+            return reply;
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {

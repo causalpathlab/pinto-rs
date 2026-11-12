@@ -213,10 +213,7 @@ impl Tools {
         let out = shown_path(Path::new(&out));
         let made = outputs(Path::new(""), &out);
         if let Some(there) = made.iter().find(|p| p.exists()) {
-            anyhow::bail!(
-                "{} exists: a run is not written over; give another out",
-                shown_path(there)
-            );
+            anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
         }
         let argv = method.argv(&data, &coords, &batches, &out);
         check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
@@ -311,6 +308,10 @@ pub(super) fn as_run(input: &str) -> String {
 /// The output prefix: `out` when given (from the root), else a free name
 /// after `base` in today's results folder; refused when one of the outputs
 /// `plan` names exists or a running job holds it.
+/// What a tool says when its outputs are already there: no run's outputs
+/// are written over.
+pub(super) const NOT_WRITTEN_OVER: &str = "nothing is written over; give another out";
+
 pub(super) fn out_or_free(
     cx: &Call,
     out: Option<&str>,
@@ -326,10 +327,7 @@ pub(super) fn out_or_free(
         _ => cx.free_prefix(base, &plan, |_| false)?,
     };
     if let Some(there) = made.iter().find(|p| p.exists()) {
-        anyhow::bail!(
-            "{} exists: nothing is written over; give another out",
-            shown_path(there)
-        );
+        anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
     }
     cx.ensure_free(&made)?;
     Ok((out, made))
