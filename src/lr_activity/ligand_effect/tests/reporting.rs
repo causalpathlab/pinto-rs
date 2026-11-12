@@ -164,7 +164,7 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> Effe
         effects: ScopeEffects {
             effect: est((z - z3) * 0.05, 0.05),
             competent: est(z * 0.05, 0.05),
-            crude: nan,
+            unadjusted_diff: nan,
             ipw: nan,
             outcome: nan,
             incompetent: est(z3 * 0.05, 0.05),

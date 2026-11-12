@@ -1,15 +1,12 @@
-//! The pair columns aimed at segmentation bleed and at a fine niche, the t
-//! reference after Rubin's rules, and the simulator's truth on the measured
-//! scale under spillover.
+//! The pair columns aimed at segmentation bleed and at a fine niche, and the
+//! t reference after Rubin's rules.
 
-use super::run_sim;
-use super::simulate::{base, fixture, opts};
+use super::simulate::fixture;
 use crate::lr_activity::ligand_effect::averaging::combine;
 use crate::lr_activity::ligand_effect::contacts::Contacts;
 use crate::lr_activity::ligand_effect::dose::niche_ligand;
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::response::programme_columns;
-use crate::lr_activity::ligand_effect::simulate::Scenario;
 
 // * Bleed
 
@@ -102,51 +99,4 @@ fn rubin_degrees_of_freedom() {
     let apart = combine(&[est(0.0, 0.05, 40.0), est(0.2, 0.05, 40.0)]);
     assert!(apart.df < same.df, "{} vs {}", apart.df, same.df);
     assert!(apart.crit() > same.crit());
-}
-
-// * Measured-scale truth
-
-/// Bleed adds the neighbours' counts inside `log1p`, which compresses a
-/// contrast: the truth under spillover is the measured one, smaller than
-/// without bleed on the same draws, and still exactly 0 with nothing
-/// planted.
-#[test]
-fn spillover_truth_is_on_the_measured_scale() {
-    let f = fixture();
-    let b = base(&f);
-    let planted = Scenario {
-        effect_pve: 0.1,
-        ..Scenario::default()
-    };
-    let clean = run_sim(&f.tissue, &b, &planted, &opts(), 3).unwrap();
-    let bled = run_sim(
-        &f.tissue,
-        &b,
-        &Scenario {
-            spillover: 0.3,
-            ..planted
-        },
-        &opts(),
-        3,
-    )
-    .unwrap();
-    assert!(clean.truth > 0.0 && bled.truth > 0.0);
-    assert!(
-        bled.truth < clean.truth,
-        "measured truth {:.4} should be below the unbled {:.4}",
-        bled.truth,
-        clean.truth
-    );
-    let null = run_sim(
-        &f.tissue,
-        &b,
-        &Scenario {
-            spillover: 0.3,
-            ..Scenario::default()
-        },
-        &opts(),
-        3,
-    )
-    .unwrap();
-    assert!(null.truth.abs() < 1e-12 && null.truth_exposed.abs() < 1e-12);
 }

@@ -806,17 +806,12 @@ fn specs() -> Vec<ToolSpec> {
              rejecting at 5% (type I error where nothing is planted, power elsewhere) beside \
              the co-expression baselines, the estimable share, and the means over the \
              confounded nulls and the planted effects. Writes {out}.lra-simulate.parquet and \
-             records it in the run's manifest (slot lra.simulate). study is the design as a \
-             JSON object (written beside the output as {out}.study.json and passed as \
-             --study); example_study: true returns the built-in study to start from and runs \
-             nothing. Runs as a background job unless asked; called again with the same run \
+             records it in the run's manifest (slot lra.simulate). Runs as a background job unless asked; called again with the same run \
              and out once done, it reads the table instead of running.",
             with_lra_input(json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
-                    "study": {"type": "object", "description": "Study design: reps, pairs, scenarios (fields left out keep the built-in values; see example_study)"},
-                    "example_study": {"type": "boolean", "description": "Return the built-in study as JSON and run nothing"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},

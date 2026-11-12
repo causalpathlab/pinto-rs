@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
 //! | `marginal_cor` | Pearson correlation of the response and `log1p` contact ligand over competent receivers, on its own scale (association) |
-//! | `crude` | mean response of exposed minus unexposed competent receivers, no adjustment (association) |
+//! | `unadjusted_diff` | the unadjusted difference: mean response of the exposed minus mean response of the unexposed, over competent receivers, every receiver weighted 1 and nothing adjusted for (association) |
 //! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model |
 //! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction; a point estimate, with no SE or interval |
 //! | `effect_competent` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
@@ -23,7 +23,7 @@
 //! exceed the incompetent one is not called specific to the receptor, which
 //! can also turn away a real effect on two responsive cell types.
 //!
-//! `crude`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
+//! `unadjusted_diff`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
 //! the headline is, each by its own evidence, and read for comparison: they
 //! enter no verdict. The sensitivity fits below (the nested adjustment sets
 //! and the no-spill fit) read the headline threshold alone, so a gap between
@@ -33,7 +33,7 @@
 //! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
 //! identity, cell type when given); `effect_competent` is the full set,
-//! adding depth. Read left to right with `crude`, it shows how much of an
+//! adding depth. Read left to right with `unadjusted_diff`, it shows how much of an
 //! apparent effect each confounder group explains. The pair's own columns
 //! (own ligand, spillover, bleed, niche ligand, competence) are in every
 //! step.

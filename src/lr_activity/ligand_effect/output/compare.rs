@@ -29,7 +29,7 @@ impl From<&SimRow> for SimRun {
 pub struct ScenarioRates {
     /// The scenario in words, without its replicate.
     pub scenario: String,
-    /// Nothing planted (or the field shifted): the rates are type I error.
+    /// Nothing planted: the rates are type I error.
     pub null: bool,
     #[cfg(feature = "view")]
     pub runs: usize,
@@ -113,15 +113,17 @@ pub fn comparison(rows: &[SimRow]) -> String {
         .unwrap_or(0)
         .max(8);
     let mut out = format!(
-        "\nComparison at 5%: share of runs rejecting (type I where nothing is planted or the \
-         field is shifted, power elsewhere). celltype: cell-type label permutation \
+        "\nComparison at 5%: share of runs rejecting (type I where nothing is planted, \
+         power elsewhere). celltype: cell-type label permutation \
          (CellPhoneDB/CellChat); moran: bivariate Moran's I (SpatialDM); contact: contact \
          co-expression score (NICHES/COMMOT); coexpr: lra's co-expression log odds.\n  \
          {:<width$} {:<6} {:>5} ",
         "scenario", "rate", "estim"
     );
-    for m in COMPARED {
-        out += &format!(" {m:>8}");
+    // Each method's column is as wide as its name, at least 8.
+    let col: Vec<usize> = COMPARED.iter().map(|m| m.len().max(8)).collect();
+    for (m, w) in COMPARED.iter().zip(&col) {
+        out += &format!(" {m:>w$}");
     }
     out += "\n";
     for s in &c.scenarios {
@@ -131,16 +133,16 @@ pub fn comparison(rows: &[SimRow]) -> String {
             if s.null { "type I" } else { "power" },
             s.estimable
         );
-        for x in s.rates {
-            out += &format!(" {x:>8.2}");
+        for (x, w) in s.rates.iter().zip(&col) {
+            out += &format!(" {x:>w$.2}");
         }
         out += "\n";
     }
     for (label, n, m) in &c.means {
         let head = format!("{label} ({n})");
         out += &format!("  {head:<w$} ", w = width + 14);
-        for x in m {
-            out += &format!(" {x:>8.2}");
+        for (x, w) in m.iter().zip(&col) {
+            out += &format!(" {x:>w$.2}");
         }
         out += "\n";
     }
@@ -171,12 +173,6 @@ fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String
     if s.dose_response {
         d += " dose";
     }
-    if s.spillover != 0.0 {
-        d += &format!(" κ={}", s.spillover);
-    }
-    if s.shift != 0.0 {
-        d += &format!(" shift={}", s.shift);
-    }
     if s.heterogeneous {
         d += " heterogeneous";
     }
@@ -205,8 +201,7 @@ pub(super) fn scenario_groups<T>(
     groups
 }
 
-/// A null scenario: nothing planted, or the seen field shifted away from
-/// the one receivers respond to.
+/// A null scenario: nothing planted.
 pub(super) fn is_null(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> bool {
-    s.effect_pve == 0.0 || s.shift > 0.0
+    s.effect_pve == 0.0
 }

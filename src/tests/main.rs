@@ -94,11 +94,13 @@ fn lra_simulate_parses_its_study_flags() {
             _ => panic!("not lra-simulate"),
         }
     };
-    let a = parse(&["--example-study"]);
-    assert!(a.example_study && a.study.is_none());
-    let a = parse(&["--from", "r.pinto.json", "--study", "s.json", "-o", "x"]);
-    assert_eq!(a.study.as_deref(), Some("s.json"));
+    let a = parse(&["--from", "r.pinto.json", "-o", "x"]);
     assert_eq!(a.out.as_deref(), Some("x"));
+    // The study file and its example are gone.
+    for flag in [&["--study", "s.json"][..], &["--example-study"][..]] {
+        let argv = [&["pinto", "lra-simulate", "--from", "r"][..], flag].concat();
+        assert!(Cli::try_parse_from(argv).is_err(), "{flag:?} still parses");
+    }
     let mut cli = Cli::try_parse_from(["pinto", "lra-simulate", "-f", "r", "-o", "res/"]).unwrap();
     name_folder_out(&mut cli.commands);
     assert_eq!(cli.commands.out_mut().unwrap().0.as_ref(), "res/lra");

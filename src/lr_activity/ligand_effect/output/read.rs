@@ -241,7 +241,7 @@ pub fn read_curves(path: &str) -> anyhow::Result<Curves> {
 }
 
 /// The number columns every `{out}.lra-simulate.parquet` has.
-const SIM_NUMBERS: [&str; 10] = {
+const SIM_NUMBERS: [&str; 8] = {
     use sim_cols::*;
     [
         EFFECT_PVE,
@@ -250,8 +250,6 @@ const SIM_NUMBERS: [&str; 10] = {
         SCALE,
         HETEROGENEOUS,
         MARKER,
-        SPILLOVER,
-        SHIFT,
         REP,
         ESTIMABLE,
     ]
@@ -305,10 +303,10 @@ struct SimTable<'p> {
 
 /// Columns an earlier version wrote for scenarios that tested a control since
 /// removed. A run with one set is not the plain scenario its other columns
-/// describe, so it is left out. A study's keys for them are refused
-/// (`RETIRED_SCENARIO_KEYS`); `background_confounding` is not here, since
+/// describe, so it is left out. `background_confounding` is not here, since
 /// every earlier run wrote it.
-const RETIRED_SCENARIO_COLUMNS: [&str; 2] = ["planted_ring_effect", "generic_shift"];
+const RETIRED_SCENARIO_COLUMNS: [&str; 4] =
+    ["planted_ring_effect", "generic_shift", "spillover", "shift"];
 
 impl<'p> SimTable<'p> {
     fn read(path: &'p str) -> anyhow::Result<Self> {
@@ -317,6 +315,10 @@ impl<'p> SimTable<'p> {
         anyhow::ensure!(
             later("planted_effect").is_none(),
             "{path} is from before effect sizes were set by PVE: run lra-simulate again"
+        );
+        anyhow::ensure!(
+            later("crude_reject").is_none(),
+            "{path} is from before `crude` was renamed `unadjusted_diff`: run lra-simulate again"
         );
         let (strings, numbers) = legume_numeric::matrix::parquet::read_table_columns(
             path,
@@ -378,8 +380,6 @@ impl<'p> SimTable<'p> {
             shape,
             heterogeneous: self.flag(HETEROGENEOUS, i),
             marker: self.flag(MARKER, i),
-            spillover: self.num(SPILLOVER, i),
-            shift: self.num(SHIFT, i),
             rep: self.col(REP)[i] as usize,
             dose_response: later_value(&self.dose_response, i, 0.0) != 0.0,
             dose_midpoint: later_value(&self.dose_midpoint, i, plain.dose_midpoint),

@@ -1,6 +1,6 @@
 //! The benchmark's own guarantees: its truth does not come from the
 //! estimator, the grid stays small, the ligand calibration reads producers
-//! out of the real counts, and the marker type fools the crude contrast.
+//! out of the real counts, and the marker type fools the unadjusted difference.
 
 use super::run_sim;
 use super::simulate::{base, fixture, opts};
@@ -50,8 +50,7 @@ fn grid_and_calibration() {
 /// The truth is fixed by what receivers respond to: changing the
 /// estimator (a far heavier ridge on its nuisance models, on a sparse
 /// ligand that dropout misclassifies) leaves it bit for bit, while the
-/// estimator-weighted truth moves. Spillover, which changes the
-/// measurement, moves both (`covariates::spillover_truth_is_on_the_measured_scale`).
+/// estimator-weighted truth moves.
 #[test]
 fn truth_is_free_of_the_estimator() {
     let f = fixture();
@@ -89,11 +88,11 @@ fn truth_is_free_of_the_estimator() {
     );
 }
 
-/// Ligand, response and a raised programme confined to one type: the crude
-/// contrast reads cell type as an effect; the estimator, adjusting for
+/// Ligand, response and a raised programme confined to one type: the unadjusted
+/// difference reads cell type as an effect; the estimator, adjusting for
 /// identity, does not (or has no overlap to try).
 #[test]
-fn a_marker_type_fools_the_crude_contrast() {
+fn a_marker_type_fools_the_unadjusted_difference() {
     let f = fixture();
     for rep in 0..2 {
         let scen = Scenario {
@@ -104,12 +103,12 @@ fn a_marker_type_fools_the_crude_contrast() {
         let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 6).unwrap();
         assert_eq!(r.truth, 0.0);
         // The response's own noise (the variance no field or effect
-        // explains) keeps the crude z modest; it still rejects at 5%.
+        // explains) keeps the unadjusted difference's z modest; it still rejects at 5%.
         assert!(
-            r.crude.z() > 1.96,
-            "crude {:.3} ± {:.3}",
-            r.crude.theta,
-            r.crude.se
+            r.unadjusted_diff.z() > 1.96,
+            "unadjusted_diff {:.3} ± {:.3}",
+            r.unadjusted_diff.theta,
+            r.unadjusted_diff.se
         );
         assert!(
             !r.estimable() || r.estimate.z().abs() < 3.0,

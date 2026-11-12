@@ -1,7 +1,7 @@
 //! Drawing counts and running one simulated pair.
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
-use super::fields::{confounding, shift_field, SimShared};
+use super::fields::{confounding, SimShared};
 use super::row::SimRow;
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
@@ -115,13 +115,6 @@ struct Run<'a> {
     f: Vec<f64>,
 }
 
-impl Run<'_> {
-    /// The estimator sees a displaced ligand field.
-    fn shifted(&self) -> bool {
-        self.scen.shift > 0.0
-    }
-}
-
 /// Who truly makes ligand, and what is detected of it.
 struct TrueLigand {
     /// The identity bins of the marker type; none without a marker scenario.
@@ -215,43 +208,22 @@ struct SeenByEstimator {
     baseline_seconds: f64,
 }
 
-/// Detected counts, possibly displaced, possibly with neighbours' ligand bled
-/// into the own-ligand covariate; the estimator's own exposure rule on them;
-/// and the co-expression baselines on the same counts.
+/// The detected counts; the estimator's own exposure rule on them; and the
+/// co-expression baselines on the same counts.
 fn seen_by_estimator(run: &Run<'_>, ligand_counts: &[f64]) -> SeenByEstimator {
-    let (tissue, base, scen, opts) = (run.tissue, run.base, run.scen, run.opts);
-    let n = tissue.n();
-    let sf = &tissue.size_factor;
-    let lnorm: Vec<f64> = (0..n).map(|i| ligand_counts[i] / sf[i]).collect();
-    let seen = if run.shifted() {
-        shift_field(tissue, &lnorm, scen.shift, mix_seed(run.seed, 3))
-    } else {
-        lnorm
-    };
-    // The estimator's own exposure rule on the counts it sees.
-    let seen_counts: Vec<f64> = (0..n).map(|i| seen[i] * sf[i]).collect();
-    let mut exposure = Exposure::build(tissue, &seen_counts, opts);
+    let (tissue, base, opts) = (run.tissue, run.base, run.opts);
+    let exposure = Exposure::build(tissue, ligand_counts, opts);
 
     // The receptor is the real one: the hidden field never touches it, so
     // competence is a fixed set of identity bins.
     let clock = std::time::Instant::now();
     let coexpression_baselines = baselines(
         tissue,
-        &seen_counts,
+        ligand_counts,
         base.receptor_counts,
         mix_seed(run.seed, 8),
     );
     let baseline_seconds = clock.elapsed().as_secs_f64();
-    let kappa = scen.spillover;
-    let own_seen: Vec<f64> = if kappa > 0.0 {
-        let bled = tissue.contacts.sum(&seen_counts);
-        (0..n)
-            .map(|i| (seen_counts[i] + kappa * bled[i]) / sf[i])
-            .collect()
-    } else {
-        seen
-    };
-    exposure.own = own_seen.iter().map(|v| v.ln_1p()).collect();
     SeenByEstimator {
         exposure,
         baselines: coexpression_baselines,
@@ -303,8 +275,6 @@ struct GeneCounts {
     obs: Vec<f64>,
     c1: Vec<f64>,
     c0: Vec<f64>,
-    /// The observed counts as measured, with spillover.
-    measured: Vec<f64>,
 }
 
 impl GeneCounts {
@@ -313,7 +283,6 @@ impl GeneCounts {
             obs: vec![0.0; n],
             c1: vec![0.0; n],
             c0: vec![0.0; n],
-            measured: vec![0.0; n],
         }
     }
 }
@@ -354,9 +323,8 @@ fn draw_gene(
     }
 }
 
-/// The programme's responses: as measured (`y_seen`), and potential in `T*`
-/// (`y1`, `y0`), with the bleed covariate. Potential counts carry the realized
-/// bleed, so the truths are on the measured scale.
+/// The programme's responses: as observed (`y_seen`), and potential in `T*`
+/// (`y1`, `y0`), with the estimator's bleed covariate.
 struct ProgrammeResponses {
     y_seen: Vec<f64>,
     y1: Vec<f64>,
@@ -374,38 +342,20 @@ impl ProgrammeResponses {
         }
     }
 
-    /// Accumulate a gene of weight `w`, its counts first taking the bleed from
-    /// the neighbours' observed counts, shared by every potential count of the
-    /// receiver.
-    fn add_gene(&mut self, run: &Run<'_>, w: f64, bin_cells: &[usize], c: &mut GeneCounts) {
+    /// Accumulate a gene of weight `w`.
+    fn add_gene(&mut self, run: &Run<'_>, w: f64, bin_cells: &[usize], c: &GeneCounts) {
         let tissue = run.tissue;
-        let n = tissue.n();
         let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
-        let kappa = run.scen.spillover;
-        let bled: Vec<f64> = if kappa > 0.0 {
-            tissue
-                .contacts
-                .sum(&c.obs)
-                .into_iter()
-                .map(|b| kappa * b)
-                .collect()
-        } else {
-            vec![0.0; n]
-        };
-        for i in 0..n {
-            c.measured[i] = c.obs[i] + bled[i];
-            c.c1[i] += bled[i];
-            c.c0[i] += bled[i];
-            self.y_seen[i] += w * (c.measured[i] / sf[i]).ln_1p();
-            self.y1[i] += w * (c.c1[i] / sf[i]).ln_1p();
-            self.y0[i] += w * (c.c0[i] / sf[i]).ln_1p();
-        }
-        // The bleed covariate from the measured counts, as
+        // The bleed covariate from the observed counts, as
         // [`super::super::response::programme_columns`] reads them: bin means,
         // then expected neighbour counts.
         let mut m = vec![0.0; bin_cells.len()];
-        for i in 0..n {
-            m[bin[i]] += c.measured[i] / sf[i];
+        for (i, s) in sf.iter().enumerate() {
+            let obs = c.obs[i] / s;
+            self.y_seen[i] += w * obs.ln_1p();
+            self.y1[i] += w * (c.c1[i] / s).ln_1p();
+            self.y0[i] += w * (c.c0[i] / s).ln_1p();
+            m[bin[i]] += obs;
         }
         for (mb, &k) in m.iter_mut().zip(bin_cells) {
             *mb /= k.max(1) as f64;
@@ -472,7 +422,7 @@ fn draw_programme(
     let mut out = ProgrammeResponses::new(n);
     for (g, &w) in weights.iter().enumerate() {
         draw_gene(run, g, lifts, latent, &planted, &mut counts, rng);
-        out.add_gene(run, w, &bin_cells, &mut counts);
+        out.add_gene(run, w, &bin_cells, &counts);
     }
     let total_w: f64 = weights.iter().map(|w| w.abs()).sum::<f64>().max(1e-12);
     out.divide_by(total_w);
@@ -666,19 +616,12 @@ pub fn simulate(
         &taus,
         std::slice::from_ref(&response),
         levels,
-        Sensitivity {
-            nospill: scen.spillover > 0.0,
-            steps: true,
-        },
+        Sensitivity::STEPS,
         opts,
     )?;
     let e = avg.scopes[0];
-    // The displaced field the estimator sees has no effect.
-    let (truth, truth_exposed) = if run.shifted() {
-        (0.0, 0.0)
-    } else {
-        effect_truths(&y1, &y0, &latent.t, comp, &exposure.dose, &avg, opts)
-    };
+    let (truth, truth_exposed) =
+        effect_truths(&y1, &y0, &latent.t, comp, &exposure.dose, &avg, opts);
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
     let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
@@ -690,11 +633,10 @@ pub fn simulate(
         truth_exposed,
         estimate: e.competent,
         marginal_cor,
-        crude: e.crude,
+        unadjusted_diff: e.unadjusted_diff,
         ipw: e.ipw,
         outcome: e.outcome.theta,
         incompetent: e.incompetent,
-        no_spill: e.nospill,
         steps: e.steps,
         contrast: e.effect,
         verdict: run_verdict(tissue, rows, &seen, &avg),

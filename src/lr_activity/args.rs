@@ -310,25 +310,6 @@ pub struct LraSimulateArgs {
 
     #[arg(
         long,
-        value_name = "JSON",
-        value_hint = ValueHint::FilePath,
-        help = "Study design: scenarios, replicates, pairs [default: the built-in study]",
-        long_help = "Study design as JSON: the scenario grid (confounder kinds, length\n\
-                     scales, shapes, effect sizes, spillover, field shift, marker,\n\
-                     heterogeneous scenarios), replicates and pairs. Fields left out\n\
-                     keep the built-in study's values. See --example-study."
-    )]
-    pub study: Option<Box<str>>,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        help = "Print the built-in study as commented JSON and exit"
-    )]
-    pub example_study: bool,
-
-    #[arg(
-        long,
         value_enum,
         default_value_t = ReferenceSpecies::Auto,
         help = "Species of the reference; auto reads it from the gene-name case"

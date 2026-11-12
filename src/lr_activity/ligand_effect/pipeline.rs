@@ -6,7 +6,7 @@ use super::memory::{pair_memory, pair_workers, run_bounded};
 use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
-use super::simulate::{self, default_grid, simulate, SimBase, SimShared, Study};
+use super::simulate::{self, default_grid, simulate, SimBase, SimShared};
 use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts};
 use super::{
     contacts, only, options, output, receivers, report, rows, timing, RunInputs, Settings,
@@ -400,7 +400,7 @@ fn competent_receivers(tissue: &Tissue, receptor_counts: &[f64], eopts: &EffectO
 fn benchmark_pairs(
     prep: &Prepared,
     eopts: &EffectOpts,
-    study: &Study,
+    n_pairs: usize,
 ) -> anyhow::Result<Vec<usize>> {
     let pairs = &prep.pairs;
     let mut order: Vec<usize> = (0..pairs.len()).collect();
@@ -424,7 +424,7 @@ fn benchmark_pairs(
             let ligand = pairs[k].ligand_genes.as_slice();
             !seen_ligand.contains(ligand) && has_receivers(k) && seen_ligand.insert(ligand)
         })
-        .take(study.pairs)
+        .take(n_pairs)
         .collect();
     anyhow::ensure!(
         !order.is_empty(),
@@ -555,7 +555,7 @@ impl Benchmark<'_> {
     }
 }
 
-pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
+pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     // The benchmark plants on one competence threshold.
@@ -563,9 +563,9 @@ pub fn run_simulate(inp: &RunInputs<'_>, study: &Study) -> anyhow::Result<()> {
         competences: &options::BENCHMARK_COMPETENCE,
         ..prep.eopts
     };
-    let order = benchmark_pairs(&prep, eopts, study)?;
+    let mut gopts = simulate::GridOpts::default();
+    let order = benchmark_pairs(&prep, eopts, gopts.pairs)?;
     let confounder_gene = real_gene_confounder(&prep, &order);
-    let mut gopts = study.grid();
     settle_real_gene(&prep.pairs, confounder_gene.as_ref(), &mut gopts);
     let grid = default_grid(&gopts);
     info!(

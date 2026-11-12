@@ -32,7 +32,7 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .f("coexpr_log_or", |(r, _)| r.coexpr_log_or)
         .f("coexpr_se", |(r, _)| r.coexpr_se)
         .est("marginal_cor", |(r, _)| r.marginal_cor)
-        .est("crude", |(r, _)| r.effects.crude)
+        .est("unadjusted_diff", |(r, _)| r.effects.unadjusted_diff)
         .est_interval("effect_ipw", |(r, _)| r.effects.ipw)
         .f("effect_outcome", |(r, _)| r.effects.outcome.theta)
         .est("effect_competent", |(r, _)| r.effects.competent)
@@ -122,8 +122,6 @@ pub(super) mod sim_cols {
     pub const SHAPE: &str = "confound_shape";
     pub const HETEROGENEOUS: &str = "heterogeneous";
     pub const MARKER: &str = "marker";
-    pub const SPILLOVER: &str = "spillover";
-    pub const SHIFT: &str = "shift";
     pub const REP: &str = "rep";
     pub const ESTIMABLE: &str = "estimable";
     pub const DOSE_RESPONSE: &str = "dose_response";
@@ -155,8 +153,6 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .s(SHAPE, |r| r.scenario.shape.label())
         .i(HETEROGENEOUS, |r| r.scenario.heterogeneous as usize)
         .i(MARKER, |r| r.scenario.marker as usize)
-        .f(SPILLOVER, |r| r.scenario.spillover)
-        .f(SHIFT, |r| r.scenario.shift)
         .i(REP, |r| r.scenario.rep)
         .f("truth", |r| r.truth)
         .f("truth_exposed", |r| r.truth_exposed)
@@ -165,11 +161,10 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f("se", |r| r.estimate.se)
         .f("df", |r| r.estimate.df)
         .est("marginal_cor", |r| r.marginal_cor)
-        .est("crude", |r| r.crude)
+        .est("unadjusted_diff", |r| r.unadjusted_diff)
         .est_interval("effect_ipw", |r| r.ipw)
         .f("effect_outcome", |r| r.outcome)
         .est("effect_incompetent", |r| r.incompetent)
-        .est("estimate_no_spill", |r| r.no_spill)
         .est("estimate_section", |r| r.steps[0])
         .est("estimate_spatial", |r| r.steps[1])
         .est("estimate_identity", |r| r.steps[2])

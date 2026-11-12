@@ -1,6 +1,6 @@
 //! Sequential adjustment: on a tissue where cell type drives both who is
 //! exposed and how strongly a receiver responds, with no ligand effect at
-//! all, the crude, section-only and spatial estimates are fooled and the
+//! all, the unadjusted difference, the section-only and spatial estimates are fooled and the
 //! identity step is not. The nested designs share the full matrix.
 
 use super::{estimate_pair, overlap_terms};
@@ -174,23 +174,26 @@ fn pooled_effects(w: &World) -> Vec<EffectRow> {
     .unwrap()
 }
 
-/// The crude contrast of the pooled row shows an effect where none is
+/// The unadjusted difference of the pooled row shows an effect where none is
 /// planted, and the full adjustment removes it.
 fn assert_fooled_then_adjusted(rows: &[EffectRow]) {
-    let (crude, full) = (rows[0].effects.crude, rows[0].effects.competent);
+    let (unadjusted_diff, full) = (rows[0].effects.unadjusted_diff, rows[0].effects.competent);
     let report = format!(
-        "crude {:.3}, full {:.3} ± {:.3}",
-        crude.theta, full.theta, full.se
+        "unadjusted_diff {:.3}, full {:.3} ± {:.3}",
+        unadjusted_diff.theta, full.theta, full.se
     );
-    assert!(crude.theta > 0.1, "crude contrast not fooled: {report}");
+    assert!(
+        unadjusted_diff.theta > 0.1,
+        "unadjusted difference not fooled: {report}"
+    );
     assert!(full.z().abs() < 3.0, "still biased: {report}");
-    assert!(full.theta.abs() < 0.25 * crude.theta, "{report}");
+    assert!(full.theta.abs() < 0.25 * unadjusted_diff.theta, "{report}");
 }
 
 /// Sender cell type is a measured confounder: where the neighbours' type
 /// drives both the exposure and the response, and the receiver's own type
 /// and the identity projection say nothing of it, the neighbours' type
-/// shares in the design remove what the crude contrast shows.
+/// shares in the design remove what the unadjusted difference shows.
 #[test]
 fn sender_cell_type_confounding_is_removed() {
     let w = world_confounded_by(Confounder::Sender, 11);
@@ -209,8 +212,8 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
         pooled.effects.competent,
     ];
     let report = format!(
-        "crude {:.3}; {}",
-        pooled.effects.crude.theta,
+        "unadjusted_diff {:.3}; {}",
+        pooled.effects.unadjusted_diff.theta,
         STEP_NAMES
             .iter()
             .chain(&["full"])
@@ -220,8 +223,8 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
             .join(", ")
     );
     assert!(
-        pooled.effects.crude.theta > 0.2,
-        "crude contrast not fooled: {report}"
+        pooled.effects.unadjusted_diff.theta > 0.2,
+        "unadjusted difference not fooled: {report}"
     );
     for (name, e) in STEP_NAMES.iter().zip(&steps).take(2) {
         assert!(e.z() > 3.0, "{name} step not fooled: {report}");
@@ -229,7 +232,7 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
     for e in &steps[2..] {
         assert!(e.z().abs() < 3.0, "identity step still biased: {report}");
         assert!(
-            e.theta.abs() < 0.25 * pooled.effects.crude.theta,
+            e.theta.abs() < 0.25 * pooled.effects.unadjusted_diff.theta,
             "{report}"
         );
     }

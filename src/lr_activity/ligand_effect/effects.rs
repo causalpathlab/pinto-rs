@@ -19,8 +19,18 @@ pub struct ScopeEffects {
     pub effect: Estimate,
     /// The competent effect, the headline.
     pub competent: Estimate,
-    /// The unadjusted contrast over competent receivers ([`arm_contrast`]).
-    pub crude: Estimate,
+    /// The unadjusted difference: over the competent receivers `C`, the mean
+    /// response of the exposed minus the mean response of the unexposed,
+    ///
+    /// `Σ_{i∈C, T_i=1} y_i / n_1 − Σ_{i∈C, T_i=0} y_i / n_0`,
+    ///
+    /// every receiver weighted 1 ([`arm_contrast`] with unit weights). Nothing
+    /// is adjusted for: no cell type, space, depth or bleed covariates, no
+    /// weights and no outcome model. Its SE is clustered by tile, and like the
+    /// headline it is averaged over exposure thresholds. It is the answer a
+    /// comparison without adjustment would give, the reference the adjusted
+    /// estimates are read against, and it enters no verdict.
+    pub unadjusted_diff: Estimate,
     /// The competent effect by overlap weights alone ([`arm_contrast`]).
     pub ipw: Estimate,
     /// The competent effect by the outcome regression alone ([`outcome_estimate`]).
@@ -60,7 +70,7 @@ impl ScopeEffects {
         Self {
             effect: pick(&|e| e.effect),
             competent: pick(&|e| e.competent),
-            crude: pick(&|e| e.crude),
+            unadjusted_diff: pick(&|e| e.unadjusted_diff),
             ipw: pick(&|e| e.ipw),
             outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
@@ -113,6 +123,12 @@ impl Sensitivity {
     pub const NONE: Self = Self {
         nospill: false,
         steps: false,
+    };
+    /// The adjustment steps alone: what the simulator reads, having no
+    /// spillover for the no-spill fit to measure.
+    pub const STEPS: Self = Self {
+        nospill: false,
+        steps: true,
     };
 }
 
@@ -273,7 +289,7 @@ impl ScopeReader<'_> {
         let (on_incompetent, incompetent_sums) = self.subset(main, open, &incomp);
         let contrast = difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
         let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
-        let crude = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
+        let unadjusted_diff = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
         let (ipw, outcome) = match main {
             Some(m) if on_competent.theta.is_finite() => (
                 arm_contrast(self.y, self.t, &comp, self.cf, |i| m.arm_weight[i]),
@@ -293,7 +309,7 @@ impl ScopeReader<'_> {
         let effects = ScopeEffects {
             effect: contrast,
             competent: on_competent,
-            crude,
+            unadjusted_diff,
             ipw,
             outcome,
             incompetent: on_incompetent,

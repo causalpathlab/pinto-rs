@@ -541,19 +541,14 @@ fn an_agent_marks_a_region_to_mask() {
     assert!(msg.contains("--no-such"), "{msg}");
 }
 
-/// lra over the server: the study to start from, and calls refused as
-/// pinto would refuse them, before anything runs.
+/// lra over the server: calls refused as pinto would refuse them, before
+/// anything runs.
 #[test]
 fn an_agent_sets_up_a_ligand_receptor_analysis() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = common::write_run(dir.path(), 100);
     let mut c = Client::start(dir.path());
     c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
-
-    let (example, _) = c.ok("run_lra_simulate", json!({"example_study": true}));
-    let study = &example["study"];
-    assert!(study["reps"].as_u64().unwrap() > 0, "{example}");
-    assert!(study["scenarios"].is_object(), "{example}");
 
     let run = format!("{prefix}.pinto.json");
     let msg = c.fails("run_lra", json!({"run": run, "fdr_level": 0.1}));
@@ -578,12 +573,15 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
     );
     let msg = c.fails("view_export", json!({"png": "c.png", "curve": true}));
     assert!(msg.contains("no lra pair"), "{msg}");
-    let msg = c.fails(
-        "run_lra_simulate",
-        json!({"run": run, "study": {"replicates": 2}}),
-    );
-    assert!(msg.contains("replicates"), "{msg}");
+    // The study and its example were removed.
+    for gone in ["study", "example_study"] {
+        let msg = c.fails("run_lra_simulate", json!({"run": run, gone: true}));
+        assert!(msg.contains(&format!("unknown field `{gone}`")), "{msg}");
+    }
     let msg = c.fails("run_lra_simulate", json!({}));
-    assert!(msg.contains("example_study"), "{msg}");
+    assert!(
+        msg.contains("give run, a run's .pinto.json, or data_files with coord_files"),
+        "{msg}"
+    );
     assert!(!dir.path().join("x.lra.parquet").exists());
 }
