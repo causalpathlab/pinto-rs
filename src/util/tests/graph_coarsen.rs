@@ -1,6 +1,7 @@
 use crate::test_support::make_test_graph;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
+use crate::util::knn_graph::KnnGraph;
 
 #[test]
 fn test_graph_coarsen_small() {
@@ -13,7 +14,7 @@ fn test_graph_coarsen_small() {
         features[(i, i)] = 1.0;
     }
 
-    let result = graph_coarsen(&graph, &mut features, None);
+    let result = graph_coarsen(&graph, &mut features, None, None);
     assert_eq!(result.n_nodes, 6);
     assert_eq!(result.merges.len(), 5);
 
@@ -32,10 +33,8 @@ fn test_graph_coarsen_small() {
         CoarsenConfig {
             n_clusters: 3,
             num_levels: 1,
-            refine_iterations: 0,
             seeding: None,
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
     let unique: HashSet<usize> = ml.all_pair_to_sample[0].iter().cloned().collect();
@@ -67,10 +66,8 @@ fn test_graph_coarsen_two_cliques() {
         CoarsenConfig {
             n_clusters: 2,
             num_levels: 1,
-            refine_iterations: 0,
             seeding: None,
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
     // With 2 clusters the two cliques should separate
@@ -133,10 +130,8 @@ fn test_graph_coarsen_multilevel() {
         CoarsenConfig {
             n_clusters: 3,
             num_levels: 2,
-            refine_iterations: 0,
             seeding: None,
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
 
@@ -162,10 +157,8 @@ fn test_graph_coarsen_multilevel() {
         CoarsenConfig {
             n_clusters: 3,
             num_levels: 1,
-            refine_iterations: 0,
             seeding: None,
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
     assert_eq!(ml1.all_pair_to_sample.len(), 1);
@@ -222,10 +215,8 @@ fn test_spatial_seeding() {
         CoarsenConfig {
             n_clusters: 10,
             num_levels: 2,
-            refine_iterations: 0,
             seeding: Some(sp),
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
     assert_eq!(ml.all_cell_labels.len(), 2);
@@ -288,45 +279,6 @@ fn test_spatial_seeding_capacity_limit() {
 }
 
 #[test]
-fn test_refine_labels_in_multilevel() {
-    // Two-clique setup — coarsening + refinement integration.
-    let edges = vec![(0, 1), (0, 2), (1, 2), (2, 3), (3, 4), (3, 5), (4, 5)];
-    let graph = make_test_graph(6, edges.clone());
-
-    let dim = 4;
-    let mut features = Mat::zeros(dim, 6);
-    for i in 0..3 {
-        features[(0, i)] = 1.0;
-    }
-    for i in 3..6 {
-        features[(3, i)] = 1.0;
-    }
-
-    let pairs: Vec<(usize, usize)> = edges.clone();
-
-    let ml = graph_coarsen_multilevel(
-        &graph,
-        &mut features,
-        &pairs,
-        CoarsenConfig {
-            n_clusters: 2,
-            num_levels: 1,
-            refine_iterations: 5,
-            seeding: None,
-            modularity_veto: None,
-            dc_poisson: None,
-        },
-    );
-    // Must still produce the expected (A,A), (B,B), (A,B) sample structure.
-    assert_eq!(ml.all_num_samples[0], 3);
-    let p2s = &ml.all_pair_to_sample[0];
-    assert_eq!(p2s[0], p2s[1]);
-    assert_eq!(p2s[0], p2s[2]);
-    assert_eq!(p2s[4], p2s[5]);
-    assert_ne!(p2s[0], p2s[4]);
-}
-
-#[test]
 fn test_modularity_veto_rejects_bridge() {
     // Two triangles {0,1,2} and {3,4,5} joined by one bridge (2,3). Intra-clique
     // features are nearly identical (high sim) while the bridge endpoints sit
@@ -348,7 +300,7 @@ fn test_modularity_veto_rejects_bridge() {
     // Without the veto, the greedy coarsener will eventually cross the
     // bridge — confirm the baseline produces only a single cluster when
     // asked for one.
-    let result_no_veto = graph_coarsen(&graph, &mut features.clone(), None);
+    let result_no_veto = graph_coarsen(&graph, &mut features.clone(), None, None);
     assert_eq!(
         result_no_veto.merges.len(),
         5,
@@ -360,7 +312,7 @@ fn test_modularity_veto_rejects_bridge() {
     // internally (5 intra-clique merges → 2 clusters) but the bridge itself
     // is never taken.
     let veto = ModularityVeto { gamma: 1.0 };
-    let result_with_veto = graph_coarsen(&graph, &mut features, Some(&veto));
+    let result_with_veto = graph_coarsen(&graph, &mut features, None, Some(&veto));
     assert_eq!(
         result_with_veto.merges.len(),
         4,
@@ -368,113 +320,63 @@ fn test_modularity_veto_rejects_bridge() {
     );
 }
 
-/// Coarsening levels MUST nest: each finer cluster lies inside exactly one
-/// coarser cluster. Before the two-pass fix they did not, and this test
-/// measured the breakage; it now pins the guarantee.
+/// Every level is one merge sequence cut short, so each finer cluster lies in
+/// exactly one coarser cluster, and a level holds the count asked for.
 ///
-/// `selection::build_pseudobulks` depends on this: it reads the sparse matrix
-/// once at the finest level and sums columns upward via the parent map. That is
-/// only correct while the levels nest.
-///
-/// Measured as a paired contrast on one graph, refinement off vs on. Sized so
-/// the levels are genuinely DIFFERENT partitions: `compute_level_n_clusters`
-/// floors the coarsest level at `min(16, n_clusters)`, so a small `n_clusters`
-/// collapses every level onto the same 16 groups and makes nesting hold
-/// trivially.
+/// The fixture has to yield levels that are really different partitions: a
+/// target count high enough that the three cuts differ.
 #[test]
-fn levels_stay_nested_under_refinement() {
+fn levels_are_nested_and_hold_the_counts_asked_for() {
     const N: usize = 240;
-    // Ring plus chords, so clusters are not forced and refinement has real
-    // choices to make.
+    // Ring plus chords: one connected piece, and clusters are not forced.
     let mut edges: Vec<(usize, usize)> = (0..N).map(|i| (i, (i + 1) % N)).collect();
     for i in (0..N).step_by(3) {
         edges.push((i, (i + 7) % N));
     }
 
-    let features = || {
-        let mut f = Mat::zeros(4, N);
-        let mut lcg: u64 = 0x2545F491_4F6CDD1D;
-        for i in 0..N {
-            let th = (i as f32) * std::f32::consts::TAU / (N as f32);
-            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let jitter = ((lcg >> 33) as f32 / (1u64 << 31) as f32) - 0.5;
-            f[(0, i)] = th.cos() + 0.6 * jitter;
-            f[(1, i)] = th.sin() - 0.6 * jitter;
-            f[(2, i)] = 0.8 * jitter;
-            f[(3, i)] = 0.8 * (1.0 - jitter);
-        }
-        f
-    };
+    let mut features = Mat::zeros(4, N);
+    let mut lcg: u64 = 0x2545F491_4F6CDD1D;
+    for i in 0..N {
+        let th = (i as f32) * std::f32::consts::TAU / (N as f32);
+        lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let jitter = ((lcg >> 33) as f32 / (1u64 << 31) as f32) - 0.5;
+        features[(0, i)] = th.cos() + 0.6 * jitter;
+        features[(1, i)] = th.sin() - 0.6 * jitter;
+        features[(2, i)] = 0.8 * jitter;
+        features[(3, i)] = 0.8 * (1.0 - jitter);
+    }
 
-    // Fraction of finer-level clusters whose members all share ONE coarser
-    // label. 1.0 == perfectly nested.
-    let nested_frac = |coarse: &[usize], fine: &[usize]| -> f32 {
-        let n_fine = fine.iter().max().copied().map_or(0, |m| m + 1);
-        let mut parents: Vec<HashSet<usize>> = vec![Default::default(); n_fine];
-        for (cell, &f) in fine.iter().enumerate() {
-            parents[f].insert(coarse[cell]);
-        }
-        let pure = parents.iter().filter(|p| p.len() == 1).count();
-        pure as f32 / n_fine as f32
-    };
+    let ml = graph_coarsen_multilevel(
+        &make_test_graph(N, edges.clone()),
+        &mut features,
+        &edges,
+        CoarsenConfig {
+            n_clusters: 64,
+            num_levels: 3,
+            seeding: None,
+            modularity_veto: None,
+        },
+    );
 
-    let run = |refine: usize| {
-        graph_coarsen_multilevel(
-            &make_test_graph(N, edges.clone()),
-            &mut features(),
-            &edges,
-            CoarsenConfig {
-                n_clusters: 64,
-                num_levels: 3,
-                refine_iterations: refine,
-                seeding: None,
-                modularity_veto: None,
-                dc_poisson: None,
-            },
-        )
-    };
-
-    let off = run(0);
-    let on = run(5);
-
-    // The contrast is only meaningful if the levels really are different
-    // partitions and refinement really did move nodes.
-    let sizes: Vec<usize> = off
+    let counts: Vec<usize> = ml
         .all_cell_labels
         .iter()
         .map(|l| l.iter().max().copied().map_or(0, |m| m + 1))
         .collect();
-    assert!(
-        sizes.windows(2).any(|w| w[0] != w[1]),
-        "levels collapsed onto one partition ({sizes:?}); raise n_clusters or \
-         the nesting question is vacuous"
-    );
-    let moved: usize = off
-        .all_cell_labels
-        .iter()
-        .zip(on.all_cell_labels.iter())
-        .map(|(a, b)| a.iter().zip(b.iter()).filter(|(x, y)| x != y).count())
-        .sum();
-    assert!(moved > 0, "refinement moved nothing; nesting is untested");
+    assert_eq!(counts, compute_level_n_clusters(64, 3));
 
-    // Positive control: the bare UF cut nests perfectly.
-    for l in 1..off.all_cell_labels.len() {
-        let frac = nested_frac(&off.all_cell_labels[l - 1], &off.all_cell_labels[l]);
+    for (l, pair) in ml.all_cell_labels.windows(2).enumerate() {
+        let (coarse, fine) = (&pair[0], &pair[1]);
+        let mut parents: Vec<HashSet<usize>> = vec![Default::default(); counts[l + 1]];
+        for (cell, &f) in fine.iter().enumerate() {
+            parents[f].insert(coarse[cell]);
+        }
         assert!(
-            (frac - 1.0).abs() < 1e-6,
-            "refine=0 level {l} should nest perfectly, got {frac}"
+            parents.iter().all(|p| p.len() == 1),
+            "a cluster of level {} straddles two clusters of level {l}",
+            l + 1
         );
     }
-
-    let worst = (1..on.all_cell_labels.len())
-        .map(|l| nested_frac(&on.all_cell_labels[l - 1], &on.all_cell_labels[l]))
-        .fold(f32::MAX, f32::min);
-    println!("level sizes {sizes:?}, {moved} labels moved, worst nesting purity {worst}");
-    assert!(
-        (worst - 1.0).abs() < 1e-6,
-        "refine=5 broke nesting (worst purity {worst}) — the parent constraint \
-         in refine_labels is not holding"
-    );
 }
 
 /// Two 10×10 sections drawn in one frame (the same positions), with no edge
@@ -519,4 +421,204 @@ fn spatial_seeding_seeds_each_group_in_its_own_frame() {
         num_super <= 40,
         "{num_super} super-nodes for a target of 32"
     );
+}
+
+//////////////////////////////////////////////
+// balance of the clusters a cut hands back //
+//////////////////////////////////////////////
+
+/// The edges of a `side × side` four-neighbour grid, cells numbered by row.
+fn grid_edges(side: usize) -> Vec<(usize, usize)> {
+    let mut edges = Vec::new();
+    for r in 0..side {
+        for c in 0..side {
+            let i = r * side + c;
+            if c + 1 < side {
+                edges.push((i, i + 1));
+            }
+            if r + 1 < side {
+                edges.push((i, i + side));
+            }
+        }
+    }
+    edges
+}
+
+/// Unit columns `(1, tilt)`: neighbours on a path that differ a little, the
+/// second a little more like the first than like the third.
+const TILT: [f32; 3] = [0.0, 0.1, 0.22];
+fn tilted(tilt_of: impl Iterator<Item = f32>) -> Mat {
+    let tilts: Vec<f32> = tilt_of.collect();
+    let mut features = Mat::zeros(2, tilts.len());
+    for (c, t) in tilts.into_iter().enumerate() {
+        features[(0, c)] = 1.0;
+        features[(1, c)] = t;
+    }
+    features.normalize_columns_inplace();
+    features
+}
+
+/// A `side × side` four-neighbour grid whose left and right halves hold two
+/// orthogonal profiles, each cell its half's profile plus noise of about
+/// twice the signal's norm: `(graph, [dim × n] unit columns, half of cell)`.
+fn noisy_two_region_grid(side: usize, dim: usize, seed: u64) -> (KnnGraph, Mat, Vec<usize>) {
+    use rand::{rngs::SmallRng, SeedableRng};
+    use rand_distr::{Distribution, StandardNormal};
+    let n = side * side;
+    let edges = grid_edges(side);
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut features = Mat::zeros(dim, n);
+    let mut half = vec![0usize; n];
+    let noise = 2.0 / (dim as f32).sqrt();
+    for i in 0..n {
+        half[i] = usize::from(i % side >= side / 2);
+        for d in 0..dim {
+            let z: f32 = StandardNormal.sample(&mut rng);
+            features[(d, i)] = f32::from(d == half[i]) + noise * z;
+        }
+        features.column_mut(i).normalize_mut();
+    }
+    (make_test_graph(n, edges), features, half)
+}
+
+/// The cluster of every cell when the grid is cut at `k` clusters.
+fn cut_at(graph: &KnnGraph, features: &Mat, k: usize) -> Vec<usize> {
+    let ml = graph_coarsen_multilevel(
+        graph,
+        &mut features.clone(),
+        &graph.edges,
+        CoarsenConfig {
+            n_clusters: k,
+            num_levels: 1,
+            seeding: None,
+            modularity_veto: None,
+        },
+    );
+    ml.all_cell_labels[0].clone()
+}
+
+fn sizes(labels: &[usize]) -> Vec<usize> {
+    let k = labels.iter().max().map_or(0, |m| m + 1);
+    let mut s = vec![0usize; k];
+    labels.iter().for_each(|&l| s[l] += 1);
+    s
+}
+
+/// A noisy cell is more like an averaged cluster than like another noisy
+/// cell, so a coarsening that only ever takes a cluster's most similar
+/// neighbour feeds a few clusters one cell a round and leaves the rest as
+/// single cells: a cut then hands back giants and singletons, never groups
+/// of about `n / k`.
+#[test]
+fn a_cut_hands_back_clusters_of_about_equal_size() {
+    let (side, k) = (30, 100);
+    let (graph, features, _) = noisy_two_region_grid(side, 16, 7);
+    let s = sizes(&cut_at(&graph, &features, k));
+    let mean = side * side / k;
+    assert_eq!(s.len(), k);
+    let largest = *s.iter().max().unwrap();
+    assert!(
+        largest <= 4 * mean,
+        "largest cluster {largest} of mean {mean}"
+    );
+    let single = s.iter().filter(|&&x| x == 1).count();
+    assert!(
+        single * 10 <= k,
+        "{single} of {k} clusters are single cells"
+    );
+}
+
+/// Balance must not cost the clusters their meaning: a cluster stays inside
+/// one half of the grid.
+#[test]
+fn balanced_clusters_stay_inside_one_region() {
+    let (side, k) = (30, 100);
+    let (graph, features, half) = noisy_two_region_grid(side, 16, 7);
+    let labels = cut_at(&graph, &features, k);
+    let mut in_half = vec![[0usize; 2]; k];
+    for (i, &l) in labels.iter().enumerate() {
+        in_half[l][half[i]] += 1;
+    }
+    let majority: usize = in_half.iter().map(|c| c[0].max(c[1])).sum();
+    let pure = majority as f64 / labels.len() as f64;
+    assert!(
+        pure > 0.95,
+        "{pure:.3} of cells sit with their region's majority"
+    );
+}
+
+/// Two triangles of identical cells, orthogonal to each other, joined by one
+/// bridge between cells no merge inside a triangle has to wait for. A round
+/// that merged whatever two clusters were still free would take the bridge;
+/// a cut at two clusters must hand back the triangles.
+#[test]
+fn a_bridge_between_two_groups_is_the_last_edge_taken() {
+    let edges = vec![(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5), (2, 5)];
+    let graph = make_test_graph(6, edges);
+    let mut features = Mat::zeros(2, 6);
+    for i in 0..6 {
+        features[(i / 3, i)] = 1.0;
+    }
+    let labels = cut_at(&graph, &features, 2);
+    assert_eq!(labels[0], labels[1]);
+    assert_eq!(labels[0], labels[2]);
+    assert_eq!(labels[3], labels[4]);
+    assert_eq!(labels[3], labels[5]);
+    assert_ne!(labels[0], labels[3]);
+}
+
+/// The size term counts CELLS. On a path of three equally similar nodes
+/// where the first already stands for a hundred cells (a spatial seed), the
+/// two single cells merge first.
+#[test]
+fn a_node_that_stands_for_many_cells_pays_for_them() {
+    let graph = make_test_graph(3, vec![(0, 1), (1, 2)]);
+    let mut features = tilted(TILT.into_iter());
+    // Node 1 is a little more like node 0 than like node 2, so with every
+    // node one cell the first merge is (0, 1).
+    let by_count = graph_coarsen(&graph, &mut features.clone(), None, None);
+    assert_eq!(by_count.merges[0], (0, 1));
+    let by_cells = graph_coarsen(&graph, &mut features, Some(&[100.0, 1.0, 1.0]), None);
+    assert_eq!(by_cells.merges[0], (1, 2));
+}
+
+/// Two neighbouring cells with no signal at all average to a zero centroid,
+/// which has no direction to normalize: the merge must not leave a NaN that
+/// stops every later merge with that cluster.
+#[test]
+fn cells_with_no_signal_do_not_stall_the_coarsening() {
+    let graph = make_test_graph(4, vec![(0, 1), (1, 2), (2, 3)]);
+    let mut features = Mat::zeros(2, 4);
+    features[(0, 2)] = 1.0;
+    features[(0, 3)] = 1.0;
+    let result = graph_coarsen(&graph, &mut features, None, None);
+    assert_eq!(
+        result.merges.len(),
+        3,
+        "a connected graph merges down to one"
+    );
+    assert!(features.iter().all(|v| v.is_finite()));
+}
+
+/// The same through the seeded path: a seed of a hundred cells next to two
+/// seeds of one cell each.
+#[test]
+fn a_seed_weighs_the_cells_behind_it() {
+    let n = 102usize;
+    let labels: Vec<usize> = (0..n).map(|c| c.saturating_sub(99)).collect();
+    let edges: Vec<(usize, usize)> = (0..n - 1).map(|c| (c, c + 1)).collect();
+    let graph = make_test_graph(n, edges);
+    let features = tilted(labels.iter().map(|&l| TILT[l]));
+    let result = graph_coarsen_seeds(&labels, 3, &graph, &features, None);
+    assert_eq!(result.merges[0], (1, 2));
+}
+
+/// A cut can stop partway through a round, so within a round the cheapest
+/// merge comes first: here the pair of identical cells, not the lower pair.
+#[test]
+fn within_a_round_the_cheapest_merge_comes_first() {
+    let graph = make_test_graph(4, vec![(0, 1), (2, 3)]);
+    let mut features = tilted([0.0, 0.3, 0.0, 0.0].into_iter());
+    let result = graph_coarsen(&graph, &mut features, None, None);
+    assert_eq!(result.merges, vec![(2, 3), (0, 1)]);
 }

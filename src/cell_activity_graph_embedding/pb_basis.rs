@@ -105,10 +105,9 @@ pub fn build_pseudobulks(args: PseudobulkArgs<'_>) -> anyhow::Result<Pseudobulks
 
     // Read the sparse matrix ONCE, at the finest level, then PROPAGATE upward:
     // a coarser level's counts are the column-sums of the finer level's, driven
-    // by the parent map. This is only valid because
-    // `graph_coarsen_multilevel` now guarantees levels nest — before that fix a
-    // coarse super-cell was not a union of fine ones and this would have
-    // silently produced wrong counts.
+    // by the parent map. This is only valid because the levels of
+    // `graph_coarsen_multilevel` nest: a coarse super-cell is a union of fine
+    // ones.
     //
     // Cost: was one full zarr decompression per level (4 passes on a real run), each
     // materializing every block's `[n_features x n_pb]` partial at once. Now one

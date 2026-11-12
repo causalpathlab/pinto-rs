@@ -36,8 +36,9 @@ pub struct PbFrame {
 /// through it — it is `O(n_fine_edges)` and needed exactly once.
 ///
 /// Nesting is required: every finest PB must map to exactly one
-/// super-cell at each coarser level (the coarsener's pass-2 re-nesting
-/// guarantees it; violated input is an error, not a warning). Batch
+/// super-cell at each coarser level (the coarsener's levels are one merge
+/// sequence cut short, which guarantees it; violated input is an error,
+/// not a warning). Batch
 /// purity is NOT guaranteed for user-supplied batch labels, so the
 /// batch id is a majority vote and impurity is only warned about.
 pub fn build_pb_frame(

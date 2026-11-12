@@ -102,22 +102,6 @@ pub struct CellActivityGraphEmbeddingArgs {
 
     #[arg(
         long,
-        help = "Skip the degree-corrected Poisson refinement of the coarsening levels",
-        long_help = "Each coarsening level gets a second-opinion refinement.\n\
-                     It runs on RAW counts, degree-corrected Poisson.\n\
-                     It is the same pass `pinto lc` runs. Without it,\n\
-                     levels are cut on cosine-of-projection alone,\n\
-                     which ignores depth and over-dispersion in the counts.\n\
-                     \n\
-                     Set this to skip that pass.\n\
-                     The context build reads the count matrix once more up front,\n\
-                     so this is the lever if that I/O matters.",
-        hide = true
-    )]
-    pub no_dc_poisson: bool,
-
-    #[arg(
-        long,
         value_name = "H",
         default_value_t = graph_embedding_util::EmbeddingDim::Auto,
         value_name = "H|auto",

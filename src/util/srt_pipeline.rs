@@ -483,7 +483,11 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
     }
 
-    let batch_effects = if cfg.batch_effects {
+    // `--ignore-batch` drops the estimate, and with it every use of one
+    // (the projection's correction below, a model's own divide). The labels
+    // stay: they also say which section a cell is in, for the pair table,
+    // the viewer and the models' own bookkeeping.
+    let batch_effects = if cfg.batch_effects && !c.ignore_batch {
         let batch_sort_dim = c.proj_dim.min(10);
         let strata = match c.cnv_clones.as_deref() {
             Some(path) => Some(load_cnv_cell_strata(path, &data_vec)?),

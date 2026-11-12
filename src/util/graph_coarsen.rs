@@ -1,18 +1,9 @@
 use crate::util::common::*;
-use crate::util::graph_refine::refine_labels;
 use crate::util::knn_graph::KnnGraph;
 use data_beans::alg::cell_pairs::collapse_pairs;
 use data_beans::alg::union_find::UnionFind;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
-use std::cmp::Ordering;
 use std::collections::VecDeque;
-
-#[derive(Clone)]
-struct CoarsenLevelResult {
-    pair_to_sample: Vec<usize>,
-    num_samples: usize,
-    cell_labels: Vec<usize>,
-}
 
 /// Result of graph coarsening: a sequence of merges forming a dendrogram.
 pub struct CoarsenResult {
@@ -44,224 +35,185 @@ impl Default for ModularityVeto {
     }
 }
 
-/// Build symmetric adjacency lists from edge pairs.
-fn build_adjacency(n: usize, edges: &[(usize, usize)]) -> Vec<Vec<usize>> {
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for &(i, j) in edges {
-        adj[i].push(j);
-        adj[j].push(i);
-    }
-    for a in adj.iter_mut() {
-        a.sort_unstable();
-        a.dedup();
-    }
-    adj
-}
-
 /// Parallel graph-constrained agglomerative coarsening.
 ///
-/// Uses a Leiden-style parallel sweep strategy:
-/// 1. Each active root finds its best neighbor by cosine similarity (parallel)
-/// 2. Greedy matching accepts non-conflicting merges sorted by similarity
-/// 3. Batch-apply merges: update Union-Find, features, adjacency
-/// 4. Repeat until no more merges possible
+/// Each round merges every pair of neighbouring clusters that are each
+/// other's cheapest merge:
+/// 1. Every edge between two clusters is scored by the Ward cost of merging
+///    them, `n_a · n_b / (n_a + n_b) · (1 − cos)` (parallel), `n` counting
+///    cells.
+/// 2. Each cluster names its cheapest neighbour; a pair that names each
+///    other merges.
+/// 3. The merges are applied: Union-Find, size-weighted centroids, edges.
+/// 4. Repeat until no pair is left to merge.
+///
+/// The size term is what keeps a cut balanced. A centroid is an average, so
+/// less noisy than a cell, and a noisy cell is therefore more like a large
+/// cluster than like another cell. Scored on similarity alone, the clusters
+/// around a large one all ask for it, one wins the round and the rest wait:
+/// the large one grows a cell a round, and a cut hands back a few giants
+/// and a crowd of single cells. With the size term a large cluster pays for
+/// its size, so the sizes grow together.
+///
+/// Both ideas are adopted from existing work:
+/// - The merge cost is Ward's: the rise in within-cluster sum of squares,
+///   `n_a · n_b / (n_a + n_b) · ‖μ_a − μ_b‖²`. Here the centroids are unit
+///   vectors, so `‖μ_a − μ_b‖² = 2 (1 − cos)`, and the constant 2 is dropped.
+///   Ward, J. H. (1963). Hierarchical grouping to optimize an objective
+///   function. Journal of the American Statistical Association, 58(301),
+///   236-244. <https://doi.org/10.1080/01621459.1963.10500845>
+/// - Merging reciprocal nearest neighbours, many pairs at once: for a
+///   linkage like Ward's, a pair that are each other's nearest stays so
+///   whatever else merges, so such pairs can be merged in any order, or
+///   together, and give the hierarchy one merge at a time would. Taken here
+///   on the graph's edges only, and with the cosine form of the cost, for
+///   which that is an approximation.
+///   Murtagh, F. (1983). A survey of recent advances in hierarchical
+///   clustering algorithms. The Computer Journal, 26(4), 354-359.
+///   <https://doi.org/10.1093/comjnl/26.4.354>
 ///
 /// * `graph` - spatial KNN graph
-/// * `cell_features` - `[proj_dim × n_cells]` matrix with L2-normalized columns;
+/// * `cell_features` - `[proj_dim × n_nodes]` matrix with L2-normalized columns;
 ///   mutated in place as merged centroids replace absorbed columns.
-/// * `veto` - optional [`ModularityVeto`] — when supplied, proposals are
-///   rejected if their similarity is no better than expected given each
-///   endpoint's weighted degree in the current super-graph.
+/// * `sizes` - the cells each node stands for (spatial seeds); one apiece
+///   when `None`.
+/// * `veto` - optional [`ModularityVeto`]: when supplied, an edge is left
+///   out if its similarity is no better than expected given each endpoint's
+///   weighted degree in the current super-graph.
 pub fn graph_coarsen(
     graph: &KnnGraph,
     cell_features: &mut Mat,
+    sizes: Option<&[f32]>,
     veto: Option<&ModularityVeto>,
 ) -> CoarsenResult {
     let n = graph.n_nodes;
     let dim = cell_features.nrows();
 
     let mut uf = UnionFind::new(n);
-    let mut adj = build_adjacency(n, &graph.edges);
-
-    let mut alive = vec![true; n];
+    // Cells per cluster, read at a cluster's root.
+    let mut size: Vec<f32> = sizes.map_or_else(|| vec![1.0; n], <[f32]>::to_vec);
+    debug_assert_eq!(size.len(), n);
     let max_merges = n.saturating_sub(1);
     let mut merges = Vec::with_capacity(max_merges);
 
     let prog_bar = new_progress_bar(max_merges as u64).with_message("coarsening merges");
 
+    // The super-graph's edges between cluster roots, each once as
+    // `(min, max)`, sorted.
     let mut edges: Vec<(usize, usize)> = graph.edges.clone();
-    let mut edge_set: HashSet<(usize, usize)> = HashSet::default();
+    let root_edges = |edges: &mut Vec<(usize, usize)>, uf: &UnionFind| {
+        edges.par_iter_mut().for_each(|e| {
+            let (a, b) = (uf.parent(e.0), uf.parent(e.1));
+            *e = (a.min(b), a.max(b));
+        });
+        edges.retain(|&(a, b)| a != b);
+        edges.par_sort_unstable();
+        edges.dedup();
+    };
+    root_edges(&mut edges, &uf);
 
-    let mut active: Vec<usize> = (0..n).filter(|&i| !adj[i].is_empty()).collect();
-    let mut taken = vec![false; n];
+    // Each cluster's cheapest merge this round: `(cost, neighbour)`.
+    const NONE: (f32, usize) = (f32::INFINITY, usize::MAX);
+    let mut cheapest = vec![NONE; n];
+    let mut sims: Vec<f32> = Vec::new();
     let mut deg_cos = vec![0.0f32; n];
-    let mut total_w = 0.0f32;
     let mut total_vetoed = 0usize;
     let mut n_rounds = 0u32;
 
-    loop {
-        if active.is_empty() {
-            break;
-        }
+    while !edges.is_empty() {
+        let features_ref = &*cell_features;
+        edges
+            .par_iter()
+            .map(|&(i, j)| features_ref.column(i).dot(&features_ref.column(j)))
+            .collect_into_vec(&mut sims);
 
-        // Recompute per-node weighted degree and total_w from the current
-        // super-graph edge list. Negative cosines clamp to zero so the null
-        // model doesn't credit anti-correlated neighborhoods.
+        // Per-node weighted degree and total weight of the current
+        // super-graph. Negative cosines clamp to zero so the null model
+        // doesn't credit anti-correlated neighborhoods.
+        let mut total_w = 0.0f32;
         if veto.is_some() {
-            for d in deg_cos.iter_mut().take(n) {
-                *d = 0.0;
-            }
-            total_w = 0.0;
-            for &(i, j) in &edges {
-                let s = cell_features
-                    .column(i)
-                    .dot(&cell_features.column(j))
-                    .max(0.0);
+            deg_cos.fill(0.0);
+            for (&(i, j), &sim) in edges.iter().zip(&sims) {
+                let s = sim.max(0.0);
                 deg_cos[i] += s;
                 deg_cos[j] += s;
                 total_w += s;
             }
         }
 
-        let features_ref = &*cell_features;
-        let adj_ref = &adj;
-        let veto_ref = veto;
-        let deg_ref = &deg_cos;
-        let total_w_ref = total_w;
-
-        let proposals: Vec<(usize, usize, f32)> = active
-            .par_iter()
-            .filter_map(|&i| {
-                let mut best_j = 0usize;
-                let mut best_sim = f32::NEG_INFINITY;
-                for &j in &adj_ref[i] {
-                    let sim = features_ref.column(i).dot(&features_ref.column(j));
-                    if sim > best_sim || (sim == best_sim && j < best_j) {
-                        best_sim = sim;
-                        best_j = j;
-                    }
+        cheapest.fill(NONE);
+        for (&(i, j), &sim) in edges.iter().zip(&sims) {
+            if !sim.is_finite() {
+                continue;
+            }
+            // Degree-corrected modularity-gain veto. Require strictly
+            // positive similarity (no merging anti-correlated or orthogonal
+            // pairs) AND strict gain over the null rate.
+            // `total_w` is positive whenever some `sim` is.
+            if let Some(v) = veto {
+                if sim <= 0.0 || sim <= v.gamma * deg_cos[i] * deg_cos[j] / (2.0 * total_w) {
+                    total_vetoed += 1;
+                    continue;
                 }
-                if !best_sim.is_finite() {
-                    return None;
-                }
-                // Degree-corrected modularity-gain veto. Require strictly
-                // positive similarity (no merging anti-correlated or
-                // orthogonal pairs) AND strict gain over the null rate.
-                if let Some(v) = veto_ref {
-                    if best_sim <= 0.0 {
-                        return None;
-                    }
-                    let expected = if total_w_ref > 0.0 {
-                        v.gamma * deg_ref[i] * deg_ref[best_j] / (2.0 * total_w_ref)
-                    } else {
-                        0.0
-                    };
-                    if best_sim <= expected {
-                        return None;
-                    }
-                }
-                Some((i, best_j, best_sim))
-            })
-            .collect();
-
-        let n_accepted_proposals = proposals.len();
-        if veto.is_some() {
-            total_vetoed += active.len() - n_accepted_proposals;
-        }
-
-        let mut sorted = proposals;
-        sorted.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
-
-        let mut round_merges: Vec<(usize, usize)> = Vec::new();
-        for (a, b, _) in sorted {
-            if !taken[a] && !taken[b] {
-                taken[a] = true;
-                taken[b] = true;
-                round_merges.push((a, b));
+            }
+            // A dot product of unit vectors can round above 1; a negative
+            // distance would turn the size term into a reward.
+            let cost = size[i] * size[j] / (size[i] + size[j]) * (1.0 - sim).max(0.0);
+            // Ties go to the lower index, so the cheapest edge overall is
+            // always named from both ends and a round always merges.
+            if (cost, j) < cheapest[i] {
+                cheapest[i] = (cost, j);
+            }
+            if (cost, i) < cheapest[j] {
+                cheapest[j] = (cost, i);
             }
         }
-        for &(a, b) in &round_merges {
-            taken[a] = false;
-            taken[b] = false;
-        }
 
+        // Pairs that name each other, cheapest first: a cut may stop partway
+        // through a round.
+        let mut round_merges: Vec<(f32, usize, usize)> = edges
+            .iter()
+            .filter(|&&(i, j)| cheapest[i].1 == j && cheapest[j].1 == i)
+            .map(|&(i, j)| (cheapest[i].0, i, j))
+            .collect();
         if round_merges.is_empty() {
             break;
         }
+        round_merges.sort_unstable_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
 
         // UF merges + feature updates (sequential)
-        for &(a, b) in &round_merges {
+        for &(_, a, b) in &round_merges {
             merges.push((a, b));
             prog_bar.inc(1);
 
-            let size_a = uf.size(a) as f32;
-            let size_b = uf.size(b) as f32;
+            let (size_a, size_b) = (size[a], size[b]);
             let total = size_a + size_b;
-
             let new_rep = uf.union(a, b);
-            let absorbed = if new_rep == a { b } else { a };
+            size[new_rep] = total;
 
             for r in 0..dim {
                 cell_features[(r, new_rep)] =
                     (cell_features[(r, a)] * size_a + cell_features[(r, b)] * size_b) / total;
             }
-            cell_features.column_mut(new_rep).normalize_mut();
-
-            alive[absorbed] = false;
+            // Cells with no signal average to zero, which has no direction:
+            // left at zero, it is merely unlike everything.
+            cell_features
+                .column_mut(new_rep)
+                .try_normalize_mut(f32::MIN_POSITIVE);
         }
 
-        uf.flatten();
-
-        // Rebuild edge list Leiden-style: resolve endpoints, drop intra-cluster
-        // edges, dedupe — the HashSet is retained across rounds to amortize its
-        // capacity, since edge counts fall geometrically.
-        edge_set.clear();
-        let mut write = 0;
-        for read in 0..edges.len() {
-            let (i, j) = edges[read];
-            let ri = uf.parent(i);
-            let rj = uf.parent(j);
-            if ri == rj {
-                continue;
-            }
-            let key = (ri.min(rj), ri.max(rj));
-            if edge_set.insert(key) {
-                edges[write] = key;
-                write += 1;
-            }
-        }
-        edges.truncate(write);
-
-        for &i in &active {
-            adj[i].clear();
-        }
-        for &(i, j) in &edges {
-            adj[i].push(j);
-            adj[j].push(i);
-        }
-
-        active.retain(|&i| alive[i] && !adj[i].is_empty());
+        // Each merged cluster is one hop from its new root.
+        root_edges(&mut edges, &uf);
 
         n_rounds += 1;
     }
 
     prog_bar.finish_and_clear();
-    if veto.is_some() {
-        info!(
-            "Graph coarsening: {} nodes, {} merges in {} rounds ({} proposals vetoed)",
-            n,
-            merges.len(),
-            n_rounds,
-            total_vetoed
-        );
-    } else {
-        info!(
-            "Graph coarsening: {} nodes, {} merges in {} rounds",
-            n,
-            merges.len(),
-            n_rounds
-        );
-    }
+    let vetoed = veto.map_or_else(String::new, |_| format!(" ({total_vetoed} edges vetoed)"));
+    info!(
+        "Graph coarsening: {n} nodes, {} merges in {n_rounds} rounds{vetoed}",
+        merges.len()
+    );
 
     CoarsenResult { merges, n_nodes: n }
 }
@@ -536,16 +488,24 @@ pub struct SeedingParams<'a> {
     pub groups: Option<&'a [u32]>,
 }
 
-/// Inputs required to run DC-Poisson refinement per level.
-///
-/// Bundled as a single struct so the three fields — scoring params, raw
-/// counts, and feature count — are either all present or all absent. No
-/// runtime check needed: `CoarsenConfig::dc_poisson: Option<DcPoissonConfig>`
-/// makes the joint nature explicit in the type.
-pub struct DcPoissonConfig<'a> {
-    pub params: data_beans::alg::dc_poisson::RefineParams,
-    pub data: &'a SparseIoVec,
-    pub num_features: usize,
+/// [`graph_coarsen`] over spatial seeds: `labels[cell]` is the cell's seed,
+/// one of `num_super`, and `cell_features` has unit columns. The merges are
+/// over seeds, each weighing the cells behind it, so the size term still
+/// counts cells.
+pub fn graph_coarsen_seeds(
+    labels: &[usize],
+    num_super: usize,
+    graph: &KnnGraph,
+    cell_features: &Mat,
+    veto: Option<&ModularityVeto>,
+) -> CoarsenResult {
+    // A seed's centroid: the mean of its cells' unit columns, made unit.
+    let (super_graph, mut super_features, _) =
+        build_super_graph(labels, num_super, graph, cell_features);
+    super_features.normalize_columns_inplace();
+    let mut seed_cells = vec![0.0f32; num_super];
+    labels.iter().for_each(|&l| seed_cells[l] += 1.0);
+    graph_coarsen(&super_graph, &mut super_features, Some(&seed_cells), veto)
 }
 
 /// Configuration for multi-level graph coarsening.
@@ -554,15 +514,11 @@ pub struct CoarsenConfig<'a> {
     pub n_clusters: usize,
     /// Number of dendrogram cuts to extract, linearly spaced coarsest → finest.
     pub num_levels: usize,
-    /// Leiden-style refinement sweeps run at each extracted level (0 disables).
-    pub refine_iterations: usize,
     /// Spatial grid seeding pre-pass for large datasets (see [`SeedingParams`]).
     pub seeding: Option<SeedingParams<'a>>,
     /// Optional degree-corrected modularity-gain veto on merge proposals.
     /// `None` disables the veto (legacy behaviour — accept any sim).
     pub modularity_veto: Option<ModularityVeto>,
-    /// Optional feature-level DC-Poisson refinement per level.
-    pub dc_poisson: Option<DcPoissonConfig<'a>>,
 }
 
 /// Multi-level graph coarsening result.
@@ -577,9 +533,9 @@ pub struct MultiLevelCoarsenResult {
 
 /// Graph-constrained agglomerative coarsening with multi-level extraction.
 ///
-/// Coarsens cells along KNN graph edges prioritized by cosine similarity,
-/// then cuts the dendrogram at `config.num_levels` linearly-spaced cluster
-/// counts from coarsest to `config.n_clusters`.
+/// Coarsens cells along KNN graph edges ([`graph_coarsen`]), then cuts the
+/// merge sequence at `config.num_levels` linearly-spaced cluster counts from
+/// coarsest to `config.n_clusters`.
 ///
 /// When `config.seeding` is provided and n > 20k, a spatial grid seeding
 /// pre-pass reduces the problem to ~8× n_clusters super-nodes before
@@ -588,42 +544,26 @@ pub struct MultiLevelCoarsenResult {
 /// Returns per-level pair-to-sample mappings ready for the fused or
 /// per-sample visitors.
 ///
-/// # CELLS are collapsed and refined; edges are INDUCED
+/// # CELLS are collapsed; edges are INDUCED
 ///
-/// Everything here operates on the node axis: [`refine_labels`] moves CELLS
-/// between clusters to improve cosine-to-centroid, with the KNN graph only
-/// RESTRICTING which moves are legal (graph-adjacent clusters, plus a
-/// connectivity guard that rejects moves splitting the source cluster).
-///
-/// No edge is ever collapsed or refined directly. Cell-cell edges become
+/// No edge is ever collapsed directly. Cell-cell edges become
 /// super-cell↔super-cell edges as a CONSEQUENCE of the cell partition, via
 /// [`cell_labels_to_pair_samples`] here and `build_super_edges` downstream. So
 /// the pseudobulk unit is a super-CELL, and super-edges are derived from it —
 /// which is why `cage`'s sampler conditions on a per-super-cell `e_pb`.
 ///
-/// # Levels are NESTED, and that takes two passes in opposite orders
+/// # Levels are NESTED, and hold the cluster counts asked for
 ///
-/// Each finer cluster lies inside exactly one coarser cluster. The two halves
-/// of the algorithm require OPPOSITE traversal orders, which is why they cannot
-/// share a loop:
+/// Every level is the same merge sequence stopped at a different point, so
+/// each finer cluster lies inside exactly one coarser cluster, and a level
+/// asked for `k` clusters has `k`. It has more only where the merging ran
+/// out first: the graph has more than `k` connected pieces, or the veto
+/// refused every edge that was left.
 ///
-/// - **Pass 1 (cut) — finest → coarsest.** Forced: `merge_idx` only advances,
-///   so the union-find can add merges but never undo one. Produces perfectly
-///   nested raw cuts, one merge sequence stopped at different points.
-/// - **Pass 2 (refine) — coarsest → finest.** Forced the other way: a level can
-///   only be constrained by a parent that already exists in final form.
-///
-/// Interleaving them is the bug this structure exists to prevent — a node
-/// refined at a fine level could move into a cluster whose coarse parent
-/// differed, and nothing put it back. Measured before the fix: worst-level
-/// nesting purity 0.925 on a synthetic ring; on a real spatial section the
-/// finest level held 1024 super-cells non-nested vs 1402 nested.
-///
-/// Note the re-nesting step at the top of pass 2: refining a PARENT moves nodes
-/// out of the clusters its child cut was carved from, so the child violates
-/// nesting BEFORE any sweep runs. The child cut is therefore intersected with
-/// the refined parent first, splitting straddlers. The refine-time constraint
-/// alone cannot repair a violation that is already present at entry.
+/// Nothing moves a cell after the cut: a moved cell would break the
+/// nesting, and putting it back means splitting clusters at their parents'
+/// boundaries, which leaves a level with more and smaller clusters than it
+/// was asked for.
 pub fn graph_coarsen_multilevel(
     graph: &KnnGraph,
     cell_features: &mut Mat,
@@ -633,272 +573,80 @@ pub fn graph_coarsen_multilevel(
     let CoarsenConfig {
         n_clusters,
         num_levels,
-        refine_iterations,
         seeding,
         modularity_veto,
-        dc_poisson,
     } = config;
     let veto_ref = modularity_veto.as_ref();
     let n_original = graph.n_nodes;
 
-    // Optional seeding pre-pass for large datasets.
-    // We snapshot the L2-normalised pre-agglomeration features and (if seeded)
-    // the super-graph so refinement can run on the same level the agglomeration
-    // ran on.
-    let seed_labels: Option<Vec<usize>>;
-    let coarsen_result;
-    let coarsen_features: Mat;
-    let coarsen_graph_owned: Option<KnnGraph>;
+    // Unit columns, for the seeds' centroids as for the cells'.
+    cell_features.normalize_columns_inplace();
 
-    if let Some(sp) = seeding.filter(|_| n_original > SEEDING_THRESHOLD) {
-        let target_super = (n_clusters * 8).min(n_original / 4).max(n_clusters + 1);
-        let (labels, num_super) =
-            spatial_seed_labels(sp.coordinates, graph, target_super, sp.groups);
-        let (super_graph, mut super_features, _) =
-            build_super_graph(&labels, num_super, graph, cell_features);
-
-        super_features.normalize_columns_inplace();
-        let snapshot = super_features.clone();
-
-        coarsen_result = graph_coarsen(&super_graph, &mut super_features, veto_ref);
-        coarsen_features = snapshot;
-        seed_labels = Some(labels);
-        coarsen_graph_owned = Some(super_graph);
-    } else {
-        cell_features.normalize_columns_inplace();
-        let snapshot = cell_features.clone();
-
-        coarsen_result = graph_coarsen(graph, cell_features, veto_ref);
-        coarsen_features = snapshot;
-        seed_labels = None;
-        coarsen_graph_owned = None;
-    }
-
-    let coarsen_graph: &KnnGraph = coarsen_graph_owned.as_ref().unwrap_or(graph);
-
-    let level_n_clusters = compute_level_n_clusters(n_clusters, num_levels);
-
-    // Extract all levels with a single incremental UF pass.
-    let n_coarsen = coarsen_result.n_nodes; // super-nodes if seeded, cells otherwise
-    let mut sorted: Vec<(usize, usize)> = level_n_clusters
-        .iter()
-        .enumerate()
-        .map(|(i, &nc)| (nc, i))
-        .collect();
-    sorted.sort_unstable_by_key(|a| std::cmp::Reverse(a.0)); // descending n_clusters
-
-    let mut uf = UnionFind::new(n_coarsen);
-    let mut merge_idx = 0usize;
-    let mut results: Vec<Option<CoarsenLevelResult>> = vec![None; level_n_clusters.len()];
-
-    // Build DC-Poisson context once if configured. The entity axis (super-
-    // nodes when seeded, cells otherwise) and the raw-count-derived profiles
-    // + guard are identical across all levels, so pay the I/O cost once.
-    let dc_poisson_ctx: Option<crate::util::graph_dc_poisson_refine::DcPoissonContext<'_>> =
-        if let Some(cfg) = dc_poisson.as_ref() {
-            let cell_to_entity: Vec<usize> = if let Some(ref sl) = seed_labels {
-                sl.clone()
-            } else {
-                (0..n_original).collect()
-            };
-            Some(
-                crate::util::graph_dc_poisson_refine::DcPoissonContext::build(
-                    cfg.data,
-                    graph,
-                    cell_to_entity,
-                    n_coarsen,
-                    cfg.num_features,
-                    cfg.params.feature_weighting,
-                )
-                .expect("DC-Poisson context build failed"),
-            )
+    // Optional seeding pre-pass for large datasets: the agglomeration then
+    // runs on the seeds' super-graph, and `seed_labels` maps cells to seeds.
+    let (coarsen_result, seed_labels) =
+        if let Some(sp) = seeding.filter(|_| n_original > SEEDING_THRESHOLD) {
+            let target_super = (n_clusters * 8).min(n_original / 4).max(n_clusters + 1);
+            let (labels, num_super) =
+                spatial_seed_labels(sp.coordinates, graph, target_super, sp.groups);
+            let merged = graph_coarsen_seeds(&labels, num_super, graph, cell_features, veto_ref);
+            (merged, Some(labels))
         } else {
-            None
+            (graph_coarsen(graph, cell_features, None, veto_ref), None)
         };
 
-    // PASS 1 — cut the dendrogram at every level. This MUST run finest →
-    // coarsest: `merge_idx` only ever advances, so the union-find can add
-    // merges but never undo one. The cuts are perfectly nested by construction,
-    // being one merge sequence stopped at different points.
-    //
-    // Refinement is deliberately NOT done here. It has to run in the opposite
-    // order (see pass 2), and interleaving the two is what silently broke the
-    // hierarchy: a node refined at a fine level could move into a cluster whose
-    // coarse parent differed, and nothing put it back.
-    let mut raw_cuts: Vec<(usize, Vec<usize>)> = Vec::with_capacity(sorted.len());
-    for (nc, orig_idx) in sorted {
+    // One incremental UF pass over the levels, finest → coarsest:
+    // `merge_idx` only ever advances, so the union-find can add merges but
+    // never undo one.
+    let n_coarsen = coarsen_result.n_nodes; // super-nodes if seeded, cells otherwise
+    let level_n_clusters = compute_level_n_clusters(n_clusters, num_levels);
+    let mut uf = UnionFind::new(n_coarsen);
+    let mut merge_idx = 0usize;
+    let mut out = MultiLevelCoarsenResult {
+        all_pair_to_sample: Vec::with_capacity(level_n_clusters.len()),
+        all_num_samples: Vec::with_capacity(level_n_clusters.len()),
+        all_cell_labels: Vec::with_capacity(level_n_clusters.len()),
+    };
+
+    for &nc in level_n_clusters.iter().rev() {
         let target = n_coarsen
             .saturating_sub(nc)
             .min(coarsen_result.merges.len());
-        while merge_idx < target {
-            let (a, b) = coarsen_result.merges[merge_idx];
+        for &(a, b) in &coarsen_result.merges[merge_idx..target.max(merge_idx)] {
             uf.union(a, b);
-            merge_idx += 1;
         }
+        merge_idx = target.max(merge_idx);
+
         // Compact labels at the coarsened level
         let mut rep_to_label: HashMap<usize, usize> = Default::default();
-        let mut next_label = 0usize;
-        let cut: Vec<usize> = (0..n_coarsen)
+        let coarse_labels: Vec<usize> = (0..n_coarsen)
             .map(|i| {
-                let r = uf.find(i);
-                *rep_to_label.entry(r).or_insert_with(|| {
-                    let l = next_label;
-                    next_label += 1;
-                    l
-                })
+                let next = rep_to_label.len();
+                *rep_to_label.entry(uf.find(i)).or_insert(next)
             })
             .collect();
-        raw_cuts.push((orig_idx, cut));
-    }
-
-    // PASS 2 — refine COARSEST → FINEST, each level nesting inside the parent
-    // that was just refined. This is the order the sibling constraint needs:
-    // a level can only be constrained by a parent that already exists in final
-    // form. `parent_labels = None` at the coarsest level, which genuinely has
-    // no parent.
-    // The refined parent, in the coarsen-entity space. `None` for the coarsest.
-    let mut parent_entity_labels: Option<Vec<usize>> = None;
-
-    for (orig_idx, mut coarse_labels) in raw_cuts.into_iter().rev() {
-        // Re-nest this level's raw cut inside the parent as ALREADY REFINED.
-        // The raw cuts nest in each other, but refining the parent moved nodes
-        // out of the clusters the child cut was carved from, so the child is no
-        // longer nested in it. Intersecting restores that: a child cluster
-        // straddling two refined parents is SPLIT at the boundary.
-        //
-        // This only ever splits, never merges, so the level stays at least as
-        // fine as its target. Skipping it and relying on the refine-time
-        // constraint alone is not enough — the violation is present before a
-        // single sweep runs.
-        if let Some(parents) = parent_entity_labels.as_deref() {
-            let mut key_to_label: HashMap<(usize, usize), usize> = Default::default();
-            let mut next = 0usize;
-            for (i, lab) in coarse_labels.iter_mut().enumerate() {
-                let key = (*lab, parents[i]);
-                *lab = *key_to_label.entry(key).or_insert_with(|| {
-                    let l = next;
-                    next += 1;
-                    l
-                });
-            }
-        }
-
-        // Refine this level's clustering. Per-level seed keeps levels
-        // reproducible; the parent constraint keeps them NESTED, so "coarsest →
-        // finest" describes a real hierarchy rather than three independent
-        // clusterings that happen to differ in size.
-        if refine_iterations > 0 {
-            let seed = (orig_idx as u64).wrapping_mul(0x9E3779B97F4A7C15);
-            refine_labels(
-                &coarsen_features,
-                coarsen_graph,
-                &mut coarse_labels,
-                refine_iterations,
-                seed,
-                parent_entity_labels.as_deref(),
-            );
-        }
-
-        // Feature-level DC-Poisson refinement (second opinion on raw counts).
-        if let (Some(ctx), Some(cfg)) = (dc_poisson_ctx.as_ref(), dc_poisson.as_ref()) {
-            use rand::SeedableRng;
-            let level_seed = cfg
-                .params
-                .seed
-                .wrapping_add((orig_idx as u64).wrapping_mul(0x9E3779B97F4A7C15));
-            let mut rng = rand::rngs::SmallRng::seed_from_u64(level_seed);
-            let level_label = format!(
-                "DC-Poisson L{}/{}",
-                level_n_clusters.len() - orig_idx,
-                level_n_clusters.len()
-            );
-            let moves = crate::util::graph_dc_poisson_refine::refine_level_dc_poisson(
-                ctx,
-                &mut coarse_labels,
-                parent_entity_labels.as_deref(),
-                &cfg.params,
-                &mut rng,
-                &level_label,
-            );
-            info!("  level {} DC-Poisson refined: {} moves", orig_idx, moves);
-        }
-
-        // This level becomes the parent of the next (finer) one. Set for EVERY
-        // level, not just the DC-Poisson path — that assignment used to live
-        // inside the `if let` above, so the constraint was unreachable unless
-        // `--dc-poisson` was on.
-        parent_entity_labels = Some(coarse_labels.clone());
 
         // Compose with seed labels to get original-cell-level labels
-        let cell_labels: Vec<usize> = if let Some(ref sl) = seed_labels {
-            (0..n_original).map(|i| coarse_labels[sl[i]]).collect()
-        } else {
-            coarse_labels
+        let cell_labels: Vec<usize> = match seed_labels.as_deref() {
+            Some(seed_of) => seed_of.iter().map(|&s| coarse_labels[s]).collect(),
+            None => coarse_labels,
         };
 
-        let (p2s, ns) = cell_labels_to_pair_samples(&cell_labels, pairs);
-        results[orig_idx] = Some(CoarsenLevelResult {
-            pair_to_sample: p2s,
-            num_samples: ns,
-            cell_labels,
-        });
+        let (pair_to_sample, num_samples) = cell_labels_to_pair_samples(&cell_labels, pairs);
+        out.all_pair_to_sample.push(pair_to_sample);
+        out.all_num_samples.push(num_samples);
+        out.all_cell_labels.push(cell_labels);
     }
-
-    let mut all_pair_to_sample = Vec::with_capacity(level_n_clusters.len());
-    let mut all_num_samples = Vec::with_capacity(level_n_clusters.len());
-    let mut all_cell_labels = Vec::with_capacity(level_n_clusters.len());
-    for slot in results {
-        let r = slot.unwrap();
-        all_pair_to_sample.push(r.pair_to_sample);
-        all_num_samples.push(r.num_samples);
-        all_cell_labels.push(r.cell_labels);
-    }
+    // Levels are reported coarse → fine.
+    out.all_pair_to_sample.reverse();
+    out.all_num_samples.reverse();
+    out.all_cell_labels.reverse();
 
     info!(
         "Multi-level coarsening: {} levels, samples per level: {:?}",
         level_n_clusters.len(),
-        all_num_samples
+        out.all_num_samples
     );
 
-    // Verify the nesting guarantee on the ACTUAL data, not just in the unit
-    // test. Every finer cluster must sit inside exactly one coarser cluster;
-    // anything below 1.000 means a level is not a refinement of its parent and
-    // the hierarchy is a fiction. Cheap (one pass per level) and it is the only
-    // place the property is observable on a real run.
-    for l in 1..all_cell_labels.len() {
-        let coarse = &all_cell_labels[l - 1];
-        let fine = &all_cell_labels[l];
-        let n_fine = fine.iter().max().copied().map_or(0, |m| m + 1);
-        let mut parent_of = vec![usize::MAX; n_fine];
-        let mut straddlers = 0usize;
-        let mut counted = vec![false; n_fine];
-        for (cell, &f) in fine.iter().enumerate() {
-            if parent_of[f] == usize::MAX {
-                parent_of[f] = coarse[cell];
-            } else if parent_of[f] != coarse[cell] && !counted[f] {
-                counted[f] = true;
-                straddlers += 1;
-            }
-        }
-        let purity = 1.0 - (straddlers as f64 / n_fine.max(1) as f64);
-        // Silent when healthy: nesting is guaranteed by construction (pass 2's
-        // re-nest + the parent constraint), so a per-level "purity 1.000" line
-        // is pure noise. The check itself stays — it is one pass per level, and
-        // it is the only thing that would catch a regression on real data.
-        if straddlers == 0 {
-            log::debug!("  level {l} nests in level {}: purity 1.000", l - 1);
-        } else {
-            warn!(
-                "  level {l} does NOT nest in level {}: purity {purity:.3} \
-                 ({straddlers} of {n_fine} clusters straddle two parents)",
-                l - 1
-            );
-        }
-    }
-
-    MultiLevelCoarsenResult {
-        all_pair_to_sample,
-        all_num_samples,
-        all_cell_labels,
-    }
+    out
 }

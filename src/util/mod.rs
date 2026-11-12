@@ -8,8 +8,6 @@ pub mod dictionary_rows;
 pub mod edge_clustering;
 pub mod feature_axis;
 pub mod graph_coarsen;
-pub mod graph_dc_poisson_refine;
-pub mod graph_refine;
 pub mod input;
 pub mod knn_graph;
 pub mod lupin_rounds;

@@ -220,24 +220,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
-            refine_iterations: c.refine_iterations,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: (args.modularity_gamma > 0.0).then_some(ModularityVeto {
                 gamma: args.modularity_gamma,
-            }),
-            dc_poisson: Some(DcPoissonConfig {
-                params: data_beans::alg::dc_poisson::RefineParams {
-                    num_gibbs: 10,
-                    num_greedy: 5,
-                    feature_weighting: data_beans::alg::dc_poisson::FeatureWeighting::FisherInfoNb,
-                    seed: c.seed,
-                    gibbs_stagnation: 0.005,
-                    profile_source: data_beans::alg::dc_poisson::ProfileSource::Raw,
-                    ..Default::default()
-                },
-                data: &data_vec,
-                // Reads the matrix, so this is a row count.
-                num_features: n_rows,
             }),
         },
     );

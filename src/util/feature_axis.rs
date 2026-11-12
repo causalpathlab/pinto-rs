@@ -12,8 +12,7 @@
 //!   projection basis, count filter, dictionary and merge cutoff, and `lra`'s
 //!   ligand and receptor lookup. All of these fold through this type.
 //! - **Mean ROW.** Anything that reads the matrix directly and reports what it
-//!   read: the degree-corrected Poisson refinement's blocking dimension, the
-//!   saved per-row NB precisions, `dsvd`'s two stacked channels.
+//!   read: the saved per-row NB precisions, `dsvd`'s two stacked channels.
 //!
 //! The NB-Fisher weights need BOTH, and they are the reason
 //! `Self::broadcast_to_rows` exists: the weight is a function of abundance

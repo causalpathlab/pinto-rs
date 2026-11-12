@@ -159,9 +159,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         batch_effects: true,
         feature_axis: FeatureAxisMode::Rows,
         // `dsvd` takes its own projection because it asks for a different one:
-        // it batch-corrects unconditionally, where preprocessing corrects only
-        // when batch effects were estimated. On a single-batch run those two
-        // are not the same projection, so sharing would quietly change results.
+        // it batch-corrects whenever `--ignore-batch` is not given, where
+        // preprocessing corrects only when batch effects were estimated. On a
+        // single-batch run those two are not the same projection, so sharing
+        // would quietly change results.
         //
         // Note this is a request, not a contract: preprocessing still takes one
         // when `--knn-expr` needs it for the expression graph, and that one is
@@ -189,7 +190,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     let mut cell_proj = data_vec.project_columns_with_batch_correction(
         c.proj_dim,
         c.block_size,
-        Some(&batch_membership),
+        (!c.ignore_batch).then_some(batch_membership.as_slice()),
     )?;
 
     // 5. Graph-constrained coarsening + multi-level assignment
@@ -199,6 +200,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     );
 
     let batch_ref = batch_db.as_ref();
+    let has_batch_effects = batch_db.is_some();
 
     let topology = topology_graph(&graph, &spatial_graph);
     let ml = graph_coarsen_multilevel(
@@ -208,10 +210,8 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
-            refine_iterations: c.refine_iterations,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: None,
-            dc_poisson: None,
         },
     );
 
@@ -338,18 +338,21 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     {
         use crate::util::metadata::{create_dsvd_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let meta = create_dsvd_metadata(&RunInputs {
-            prefix: &c.out,
-            data_files: &c.data_files,
-            coord_file: coord_file_str.as_deref(),
-            coord_columns: &coordinate_names,
-            n_cells,
-            n_features: data_vec.num_rows(),
-            n_edges: edges.len(),
-            graph: (&knn).into(),
-            ablation,
-            k: n_clusters,
-        });
+        let meta = create_dsvd_metadata(
+            has_batch_effects,
+            &RunInputs {
+                prefix: &c.out,
+                data_files: &c.data_files,
+                coord_file: coord_file_str.as_deref(),
+                coord_columns: &coordinate_names,
+                n_cells,
+                n_features: data_vec.num_rows(),
+                n_edges: edges.len(),
+                graph: (&knn).into(),
+                ablation,
+                k: n_clusters,
+            },
+        );
         let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

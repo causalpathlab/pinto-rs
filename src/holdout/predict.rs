@@ -80,6 +80,12 @@ pub fn predict_profiles(
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     let h = &args.holdout;
+    // `--ignore-batch`: no δ here either.
+    let delta_iters = if c.ignore_batch {
+        0
+    } else {
+        h.holdout_delta_iters
+    };
     let model = args.model.as_ref();
     mkdir_parent(&c.out)?;
 
@@ -307,11 +313,11 @@ pub fn predict_profiles(
     };
     let mut profs = build(&delta);
 
-    for round in 0..h.holdout_delta_iters {
+    for round in 0..delta_iters {
         info!(
             "δ round {}/{} over the fitting parts ({} batches)...",
             round + 1,
-            h.holdout_delta_iters,
+            delta_iters,
             n_batches
         );
         // Per batch: observed counts per feature, and Σ_u n_u π_u (the
@@ -358,7 +364,7 @@ pub fn predict_profiles(
         }
         profs = build(&delta);
     }
-    if h.holdout_delta_iters == 0 {
+    if delta_iters == 0 {
         notes.push(
             "no δ: the model's profiles are applied unshifted, so a batch shift of this \
              sample counts against the model"
@@ -368,7 +374,7 @@ pub fn predict_profiles(
         notes.push(format!(
             "δ per batch from the fitting parts only ({} rounds); features hidden by \
              --ablate-features keep δ = 1",
-            h.holdout_delta_iters
+            delta_iters
         ));
     }
 
@@ -433,7 +439,7 @@ pub fn predict_profiles(
         n_features_scored: scored.iter().filter(|&&s| s).count(),
         n_features_ablated: ablated.as_ref().map(|a| a.iter().filter(|&&x| x).count()),
         null_from,
-        delta_iters: h.holdout_delta_iters,
+        delta_iters,
         eval_count: total.count,
         eval_llik_per_count: total.per_count(total.llik),
         eval_null_llik_per_count: total.per_count(total.null),

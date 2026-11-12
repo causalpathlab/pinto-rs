@@ -690,8 +690,9 @@ fn coord_columns_field(cols: &[Box<str>]) -> Option<Vec<String>> {
 }
 
 /// Helper for `pinto dsvd` runs. Only one "final" level is produced;
-/// the cascade does not run.
-pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
+/// the cascade does not run. `has_batch_effects` is `true` when the run
+/// estimated batch effects and so wrote `delta.parquet`.
+pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> PintoMetadata {
     let prefix = inputs.prefix;
     let levels = vec![final_level_info(prefix, 0)];
 
@@ -714,7 +715,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
-            batch_effects: Some(format!("{prefix}.delta.parquet")),
+            batch_effects: has_batch_effects.then(|| format!("{prefix}.delta.parquet")),
             ..Default::default()
         },
         levels: Some(levels),
