@@ -1,8 +1,9 @@
 //! The commands from input to tables: `pinto lra` and `pinto lra-simulate`.
 
-use super::estimate::{estimate_pair, PairData};
+use super::estimate::{estimate_pair_shared, PairData};
+use super::fits::LigandShare;
 use super::genes::GeneStore;
-use super::memory::{pair_memory, pair_workers, run_bounded};
+use super::memory::{ligand_memory, pair_memory, pair_workers, run_bounded};
 use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
@@ -230,22 +231,31 @@ pub(super) fn record(
     Ok(())
 }
 
-/// How many pairs to estimate at once. Each live pair holds a few dozen
-/// receiver-length vectors and its propensity design, which bounds how many
+/// How many ligands to estimate at once, each its pairs one after another.
+/// A live pair holds a few dozen receiver-length vectors and its propensity
+/// design, and its ligand the shared base propensities, which bounds how many
 /// run at once ([`super::memory::pair_workers`]). Beside the pair's own
 /// vectors, a threshold's fits ([`super::fits::ThresholdFits`]) hold per competence
 /// threshold an effect modifier and a pair column, and own ligand, niche and
 /// the main and three step propensities.
-fn pairs_at_once(prep: &Prepared) -> usize {
+fn ligands_at_once(prep: &Prepared, ligands: usize) -> usize {
     let (tissue, eopts) = (&prep.tissue, &prep.eopts);
     let nc = eopts.competences.len();
     let threshold_fits = 2 * nc + 2 + 1 + 3;
-    let per_pair = pair_memory(34 + threshold_fits, tissue, &eopts.nuisance);
-    pair_workers(per_pair, tissue, &eopts.nuisance).min(prep.pairs.len())
+    let per_ligand = ligand_memory(34 + threshold_fits, tissue, &eopts.nuisance);
+    pair_workers(per_ligand, tissue, &eopts.nuisance).min(ligands)
 }
 
-/// One pair's rows; a pair that fails is warned about and has none.
-fn estimate_one(prep: &Prepared, p: &Pair) -> Vec<rows::EffectRow> {
+/// The pairs grouped by ligand (its genes, so a complex is one ligand), each
+/// group in pair order.
+fn ligand_groups(pairs: &[Pair]) -> Vec<Vec<usize>> {
+    use crate::util::ablation::{dense_ids, group};
+    group(&dense_ids(pairs.iter().map(|p| p.ligand_genes.as_slice())))
+}
+
+/// One pair's rows, its propensities bordered from its ligand's `share`; a
+/// pair that fails is warned about and has none.
+fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::EffectRow> {
     let (store, local) = (&prep.store, &prep.local);
     let lig = prep.ligand_counts(p);
     let rec = prep.receptor_counts(p);
@@ -270,25 +280,39 @@ fn estimate_one(prep: &Prepared, p: &Pair) -> Vec<rows::EffectRow> {
         reweighted: (specific.len() >= INTERNALS.min_targets).then_some(specific.as_slice()),
         n_removed: p.n_removed,
     };
-    estimate_pair(&prep.tissue, &data, &prep.eopts).unwrap_or_else(|e| {
+    estimate_pair_shared(&prep.tissue, &data, &prep.eopts, share).unwrap_or_else(|e| {
         warn!(target: LOG_TARGET, "{}-{}: {e}", p.ligand, p.receptor);
         Vec::new()
     })
 }
 
-/// Every pair's rows, in pair order.
+/// Every pair's rows, in pair order. The pairs of one ligand run one after
+/// another on one worker and share its base propensities
+/// ([`LigandShare`]); ligands run side by side.
 fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
     let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
-    let concurrent = pairs_at_once(prep);
+    // Largest first, so a ligand with many pairs does not start last and
+    // set the finishing time; the rows are put back in pair order below.
+    let mut groups = ligand_groups(&prep.pairs);
+    groups.sort_by_key(|g| std::cmp::Reverse(g.len()));
+    let concurrent = ligands_at_once(prep, groups.len());
     if concurrent > 1 {
-        info!(target: LOG_TARGET, "Estimating up to {concurrent} pairs at a time");
+        info!(target: LOG_TARGET, "Estimating up to {concurrent} ligands at a time");
     }
     let t_pairs = std::time::Instant::now();
-    let rows = run_bounded(&prep.pairs, concurrent, |p: &Pair| {
-        let out = estimate_one(prep, p);
-        pb.inc();
-        out
+    let mut by_pair = run_bounded(&groups, concurrent, |group: &Vec<usize>| {
+        let share = LigandShare::default();
+        group
+            .iter()
+            .map(|&k| {
+                let out = estimate_one(prep, &prep.pairs[k], &share);
+                pb.inc();
+                (k, out)
+            })
+            .collect()
     });
+    by_pair.sort_by_key(|(k, _)| *k);
+    let rows: Vec<rows::EffectRow> = by_pair.into_iter().flat_map(|(_, r)| r).collect();
     pb.finish();
     info!(
         target: LOG_TARGET,

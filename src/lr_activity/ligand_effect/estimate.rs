@@ -118,7 +118,7 @@ use super::baselines::coexpression;
 use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
-use super::fits::{indicator, Rows};
+use super::fits::{indicator, LigandShare, Rows};
 use super::options::EffectOpts;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
@@ -150,7 +150,34 @@ pub struct PairData<'a> {
 /// describes the pair, not the weighting, and is read under `targets`.
 /// Counts, co-expression, the marginal correlation and the diagnostics read
 /// competence at the middle threshold of the grid.
+///
+/// The pair is one of its ligand's, and its propensities are bordered from
+/// the ligand's `share`: the base fits are made once for all of the ligand's
+/// pairs ([`LigandShare`]), and each pair reaches the optimum it would on its
+/// own.
+pub fn estimate_pair_shared(
+    tissue: &Tissue,
+    pair: &PairData<'_>,
+    opts: &EffectOpts,
+    share: &LigandShare,
+) -> anyhow::Result<Vec<EffectRow>> {
+    estimate_on(Rows::cells(tissue).shared(share), tissue, pair, opts)
+}
+
+/// [`estimate_pair_shared`] with every propensity fitted on all of its
+/// columns, as a pair alone: the reference the shared fits are tested
+/// against.
+#[cfg(test)]
 pub fn estimate_pair(
+    tissue: &Tissue,
+    pair: &PairData<'_>,
+    opts: &EffectOpts,
+) -> anyhow::Result<Vec<EffectRow>> {
+    estimate_on(Rows::cells(tissue), tissue, pair, opts)
+}
+
+fn estimate_on(
+    rows: Rows<'_>,
     tissue: &Tissue,
     pair: &PairData<'_>,
     opts: &EffectOpts,
@@ -162,15 +189,7 @@ pub fn estimate_pair(
     let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
-    let eff = over_thresholds(
-        Rows::cells(tissue),
-        &ex,
-        &taus,
-        &responses,
-        &comps,
-        Sensitivity::ALL,
-        opts,
-    )?;
+    let eff = over_thresholds(rows, &ex, &taus, &responses, &comps, Sensitivity::ALL, opts)?;
     let mut curve = Some(threshold_curve(
         tissue.cf.n_clusters(),
         &taus,
