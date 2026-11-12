@@ -24,6 +24,8 @@ mod feature_gating_tests;
 mod pb_frame_tests;
 
 #[cfg(test)]
+mod loss_block_tests;
+#[cfg(test)]
 mod loss_tests;
 
 #[cfg(test)]

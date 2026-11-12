@@ -58,7 +58,7 @@ fn probe_forward(
         model,
         dev,
     } = *inputs;
-    let mut mini: Vec<(usize, graph_embedding_util::loss::UnitChainBatch)> =
+    let mut mini: Vec<(usize, u32, graph_embedding_util::loss::UnitChainBatch)> =
         Vec::with_capacity(n_probe_features);
     let mut features_sampled = 0usize;
     'fill: for &g in trainable_features
@@ -69,7 +69,7 @@ fn probe_forward(
         let before = mini.len();
         for b in 0..n_exp_batches {
             if let Some((cb, _)) = sampler.sample(g, b, probe_rng) {
-                mini.push((g, cb));
+                mini.push((g, b as u32, cb));
             }
         }
         if mini.len() > before {
@@ -84,12 +84,15 @@ fn probe_forward(
             "probe sampled nothing".into(),
         ));
     }
-    let (feature_ids, cbs): (Vec<usize>, Vec<_>) = mini.into_iter().unzip();
-    let feature_ids_u32: Vec<u32> = feature_ids.iter().map(|&g| g as u32).collect();
+    let (feature_ids_u32, (row_blocks, cbs)): (Vec<u32>, (Vec<u32>, Vec<_>)) = mini
+        .into_iter()
+        .map(|(g, b, cb)| (g as u32, (b, cb)))
+        .unzip();
     let out = cage_nce_loss_per_feature_level(
         model,
         cbs,
         &feature_ids_u32,
+        &row_blocks,
         args.nce_objective.to_ge(),
         dev,
     )?;
@@ -268,7 +271,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             }
             // (a) Parallel sampling — pure CPU, no candle.
             let t_sample = std::time::Instant::now();
-            let mini: Vec<(usize, _)> = chunk
+            let mini: Vec<(usize, u32, _)> = chunk
                 .par_iter()
                 .flat_map_iter(|&g| {
                     let seed = c
@@ -279,7 +282,9 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     let mut rng = SmallRng::seed_from_u64(seed);
                     (0..n_exp_batches)
                         .filter_map(move |b| {
-                            sampler.sample(g, b, &mut rng).map(|(cb, _st)| (g, cb))
+                            sampler
+                                .sample(g, b, &mut rng)
+                                .map(|(cb, _st)| (g, b as u32, cb))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -297,7 +302,8 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 continue;
             }
 
-            let (feature_ids, cb_batches): (Vec<usize>, Vec<_>) = mini.into_iter().unzip();
+            let (feature_ids, (row_blocks, cb_batches)): (Vec<usize>, (Vec<u32>, Vec<_>)) =
+                mini.into_iter().map(|(g, b, cb)| (g, (b, cb))).unzip();
             sample_count += feature_ids.len();
             let t_fwd = std::time::Instant::now();
 
@@ -314,6 +320,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 model,
                 cb_batches,
                 &feature_ids_u32,
+                &row_blocks,
                 args.nce_objective.to_ge(),
                 dev,
             )?; // [G, L]
