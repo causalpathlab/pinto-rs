@@ -279,7 +279,23 @@ impl Run {
     ) -> anyhow::Result<Communities> {
         let exclude: HashSet<Box<str>> = geom.coord_names.iter().cloned().collect();
         let read = read_propensity(&self.resolve(&level.propensity), &exclude)?;
-        Ok(Communities::join(geom, &level.tag, read))
+        let mut comm = Communities::join(geom, &level.tag, read);
+        // names the manifest gives this level's communities, one per community
+        if let Some(names) = level.community_names.as_ref() {
+            if names.len() == comm.k {
+                comm.names = Some(names.iter().map(|n| n.as_str().into()).collect());
+            } else {
+                log::warn!(
+                    "level {}: the manifest names {} communities, its propensity has {}; \
+                     showing C0..C{}",
+                    level.tag,
+                    names.len(),
+                    comm.k,
+                    comm.k.saturating_sub(1)
+                );
+            }
+        }
+        Ok(comm)
     }
 
     pub fn load_feature_rates(&self, level: &LevelInfo) -> anyhow::Result<FeatureRates> {

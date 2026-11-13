@@ -4,10 +4,15 @@
 //! ```text
 //! {out}/sections/S1.zarr            counts, genes × spots
 //! {out}/sections/S1.coords.parquet  spot, row_um, col_um
-//! {out}/truth/spots.parquet         per spot: section, donor, domain and its owner, state, depth, mixture
+//! {out}/truth/spots.parquet         per spot: section, donor, domain and its owner, state, depth, mixture;
+//!                                   `cell` as pinto names it (`barcode@section`, or the
+//!                                   bare barcode with one section), to join onto fits
 //! {out}/truth/domains.parquet       owner (empty: shared), composition
 //! {out}/truth/states.parquet        owner (empty: shared)
 //! {out}/truth/genes.parquet         baseline, dispersion, programmes
+//! {out}/truth/truth.pinto.json      the truth as a run `pinto view` opens:
+//!                                   truth.cells.parquet and the domain, state
+//!                                   and donor levels (truth.*.propensity.parquet)
 //! {out}/manifest.json               every parameter, and the realised PVE
 //! ```
 
@@ -18,6 +23,31 @@ use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 fn f32s(v: impl Iterator<Item = f64>) -> Vec<f32> {
     v.map(|x| x as f32).collect()
+}
+
+/// Every spot as `(section, spot)`, in section order, with its cell name as
+/// pinto names it: `{barcode}@{section}`, or the bare barcode when there is
+/// one section (pinto adds the file stem only with several data files).
+pub fn spot_index(sim: &Sim) -> (Vec<(usize, usize)>, Vec<Box<str>>) {
+    let several = sim.sections.len() > 1;
+    let spots: Vec<(usize, usize)> = sim
+        .sections
+        .iter()
+        .enumerate()
+        .flat_map(|(s, sec)| (0..sec.n()).map(move |i| (s, i)))
+        .collect();
+    let cells = spots
+        .iter()
+        .map(|&(s, i)| {
+            let sec = &sim.sections[s];
+            if several {
+                format!("{}@{}", sec.barcodes[i], sec.name).into()
+            } else {
+                sec.barcodes[i].clone()
+            }
+        })
+        .collect();
+    (spots, cells)
 }
 
 fn owner(info: &Info) -> Box<str> {
@@ -60,19 +90,13 @@ pub fn write_coords(path: &str, sec: &Section) -> anyhow::Result<()> {
 
 pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
     let t = &sim.truth;
-    let spots: Vec<(usize, usize)> = sim
-        .sections
-        .iter()
-        .enumerate()
-        .flat_map(|(s, sec)| (0..sec.n()).map(move |i| (s, i)))
-        .collect();
+    let (spots, cell) = spot_index(sim);
     let strs = |f: &dyn Fn(usize, usize) -> Box<str>| -> Vec<Box<str>> {
         spots.iter().map(|&(s, i)| f(s, i)).collect()
     };
     let nums =
         |f: &dyn Fn(usize, usize) -> f64| -> Vec<f32> { f32s(spots.iter().map(|&(s, i)| f(s, i))) };
     let sec = |s: usize| &sim.sections[s];
-    let cell = strs(&|s, i| format!("{}@{}", sec(s).barcodes[i], sec(s).name).into());
     let barcode = strs(&|s, i| sec(s).barcodes[i].clone());
     let section = strs(&|s, _| sec(s).name.clone());
     let donor = strs(&|s, _| donor_label(sec(s).donor));
@@ -145,4 +169,94 @@ pub fn write_genes(path: &str, sim: &Sim) -> anyhow::Result<()> {
         cols.push((format!("programme_{}", st.label).into(), Column::F32(v)));
     }
     write_named_table(path, "gene", &g.names, &cols)
+}
+
+/// The truth as a run `pinto view` opens like a fit: `{dir}/truth.pinto.json`
+/// lists a cells table and three levels, `domain` (one-hot), `state` (each
+/// spot's planted mixture) and `donor` (one-hot), with the section backends
+/// as its data files so genes can be shown too. Community `C{k}` of a level
+/// is named in the manifest by the labels of `domains.parquet`,
+/// `states.parquet` or the donors, and the viewer shows those names.
+/// `data_files` are relative to `dir`, so the outputs can be moved whole.
+pub fn write_truth_run(dir: &str, sim: &Sim, data_files: &[String]) -> anyhow::Result<()> {
+    use crate::link_community::outputs::write_propensity_matrix;
+    use crate::util::common::Mat;
+    use crate::util::metadata::{now_secs, LevelInfo, OutputFiles, PintoMetadata};
+    use crate::util::parquet_io::{cells_table_path, write_cells_table};
+    let prefix = format!("{dir}/truth");
+    let t = &sim.truth;
+    let (spots, cells) = spot_index(sim);
+    let mut coords = Mat::zeros(cells.len(), 2);
+    for (r, &(s, i)) in spots.iter().enumerate() {
+        let (x, y) = sim.sections[s].coords[i];
+        coords[(r, 0)] = x as f32;
+        coords[(r, 1)] = y as f32;
+    }
+    let sections: Vec<Box<str>> = spots
+        .iter()
+        .map(|&(s, _)| sim.sections[s].name.clone())
+        .collect();
+    let coord_names = ["row_um", "col_um"];
+    let coord_boxed: Vec<Box<str>> = coord_names.iter().map(|&c| c.into()).collect();
+    write_cells_table(
+        &prefix,
+        &cells,
+        &coords,
+        &coord_boxed,
+        &sections,
+        &vec![true; cells.len()],
+    )?;
+
+    // a level: each spot's weight on each of its communities, in the shared
+    // propensity schema, named in the manifest
+    let level =
+        |j: usize, tag: &str, names: Vec<String>, weight: &dyn Fn(usize, usize, usize) -> f64| {
+            let mut m = Mat::zeros(cells.len(), names.len());
+            for (r, &(s, i)) in spots.iter().enumerate() {
+                for c in 0..names.len() {
+                    m[(r, c)] = weight(s, i, c) as f32;
+                }
+            }
+            let level_prefix = format!("{prefix}.{tag}");
+            write_propensity_matrix(&level_prefix, &m, &cells).map(|()| LevelInfo {
+                tag: tag.to_string(),
+                level_index: j,
+                propensity: format!("{level_prefix}.propensity.parquet"),
+                link_community: None,
+                feature_community: None,
+                entropy_present: Some(true),
+                community_names: Some(names),
+            })
+        };
+    let one_hot = |a: usize, b: usize| if a == b { 1.0 } else { 0.0 };
+    let labels = |infos: &[Info]| infos.iter().map(|x| x.label.to_string()).collect();
+    let donors = (0..sim.p.n_donors)
+        .map(|d| donor_label(d).to_string())
+        .collect();
+    let levels = vec![
+        level(0, "domain", labels(&t.domains), &|s, i, c| {
+            one_hot(t.domain[s][i], c)
+        })?,
+        level(1, "state", labels(&t.states), &|s, i, c| t.mixture[s][i][c])?,
+        level(2, "donor", donors, &|s, _, c| {
+            one_hot(sim.sections[s].donor, c)
+        })?,
+    ];
+    let meta = PintoMetadata {
+        command: "srt-simulate".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        timestamp: now_secs(),
+        prefix: prefix.clone(),
+        data_files: Some(data_files.to_vec()),
+        n_cells: cells.len(),
+        n_features: sim.p.n_genes,
+        outputs: OutputFiles {
+            cells: Some(cells_table_path(&prefix)),
+            coord_columns: Some(coord_names.iter().map(|c| c.to_string()).collect()),
+            ..Default::default()
+        },
+        levels: Some(levels),
+        ..Default::default()
+    };
+    meta.write(std::path::Path::new(&format!("{prefix}.pinto.json")))
 }

@@ -1,6 +1,11 @@
 use crate::simulate::run::{run_simulate, SimulateArgs};
 use data_beans::sparse_io::open_sparse_matrix_by_path;
 
+fn truth_meta(out: &str) -> crate::util::metadata::PintoMetadata {
+    let path = std::path::PathBuf::from(format!("{out}/truth/truth.pinto.json"));
+    crate::util::metadata::PintoMetadata::read(&path).unwrap()
+}
+
 fn args(out: &str, scenario: &str, extra: &[&str]) -> SimulateArgs {
     let mut set: Vec<String> = ["grid_side=12", "n_genes=60", "programme_genes=8", "seed=3"]
         .iter()
@@ -65,4 +70,80 @@ fn an_impossible_setting_is_refused_before_anything_is_written() {
     let out = dir.path().join("bad").to_string_lossy().to_string();
     assert!(run_simulate(&args(&out, "L0", &["pve_donor=0.9"])).is_err());
     assert!(!std::path::Path::new(&out).exists());
+}
+
+/// The truth is written as a run with a cells table and the domain, state
+/// and donor levels.
+#[test]
+fn the_truth_is_written_as_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("sim").to_string_lossy().to_string();
+    run_simulate(&args(&out, "L2", &[])).unwrap();
+    let meta = truth_meta(&out);
+    let tags: Vec<String> = meta.levels.unwrap().iter().map(|l| l.tag.clone()).collect();
+    assert_eq!(tags, ["domain", "state", "donor"]);
+    assert_eq!(meta.n_cells, 6 * 144);
+    assert_eq!(meta.data_files.unwrap().len(), 6);
+}
+
+/// The manifest's data files resolve beside it, and every backend column,
+/// read the way pinto reads data files, names a truth cell: with one section
+/// (bare barcodes) and with several (`barcode@section`).
+#[test]
+fn backend_columns_join_onto_the_truth_cells() {
+    use crate::util::input::read_expr_data;
+    use crate::util::metadata::resolve_beside;
+    for (tag, extra) in [
+        ("one", vec!["n_donors=1", "sections_per_donor=1"]),
+        ("six", vec![]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join(tag).to_string_lossy().to_string();
+        run_simulate(&args(&out, "L0", &extra)).unwrap();
+        let manifest = std::path::PathBuf::from(format!("{out}/truth/truth.pinto.json"));
+        let files: Vec<Box<str>> = truth_meta(&out)
+            .data_files
+            .unwrap()
+            .iter()
+            .map(|f| {
+                assert!(std::path::Path::new(f).is_relative(), "{f}");
+                let p = resolve_beside(&manifest, f).expect("a data file beside the manifest");
+                p.to_string_lossy().into()
+            })
+            .collect();
+        let columns = read_expr_data(&files).unwrap().column_names().unwrap();
+        let cells: std::collections::HashSet<Box<str>> = {
+            use legume_numeric::matrix::parquet::read_parquet_string_column;
+            read_parquet_string_column(&format!("{out}/truth/truth.cells.parquet"), 0)
+                .unwrap()
+                .into_iter()
+                .collect()
+        };
+        assert_eq!(columns.len(), cells.len(), "{tag}");
+        assert!(columns.iter().all(|c| cells.contains(c)), "{tag}");
+    }
+}
+
+/// `pinto view` opens the truth run, places every spot, and names the
+/// communities of each level as the truth tables do.
+#[cfg(feature = "view")]
+#[test]
+fn the_viewer_opens_the_truth() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("sim").to_string_lossy().to_string();
+    run_simulate(&args(&out, "L2", &[])).unwrap();
+    let run = crate::view::data::Run::open(&format!("{out}/truth/truth")).unwrap();
+    let geometry = run.load_geometry().unwrap();
+    assert_eq!(geometry.names.len(), 6 * 144);
+    assert_eq!(geometry.tiles.len(), 6);
+    let levels = run.meta.level_list();
+    let domain = run.load_communities(&geometry, &levels[0]).unwrap();
+    let names: Vec<&str> = domain
+        .names
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_ref())
+        .collect();
+    assert_eq!(names, ["DM1", "DM2", "DM3", "DM4", "DM5"]);
 }

@@ -5,6 +5,7 @@ use super::params::{SimParams, SCENARIOS};
 use super::sim::Sim;
 use super::write::{
     write_backend, write_coords, write_domains, write_genes, write_spots, write_states,
+    write_truth_run,
 };
 use log::info;
 use serde_json::json;
@@ -78,12 +79,8 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     for (s, sec) in sim.sections.iter().enumerate() {
         let triplets = sim.counts(s);
         let nnz = triplets.len();
-        write_backend(
-            &format!("{out}/sections/{}.zarr", sec.name),
-            &sim.genes.names,
-            &sec.barcodes,
-            triplets,
-        )?;
+        let backend = format!("{out}/sections/{}.zarr", sec.name);
+        write_backend(&backend, &sim.genes.names, &sec.barcodes, triplets)?;
         write_coords(&format!("{out}/sections/{}.coords.parquet", sec.name), sec)?;
         info!("{}: {} spots, {} nonzero counts", sec.name, sec.n(), nnz);
     }
@@ -91,6 +88,13 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     write_domains(&format!("{out}/truth/domains.parquet"), &sim)?;
     write_states(&format!("{out}/truth/states.parquet"), &sim)?;
     write_genes(&format!("{out}/truth/genes.parquet"), &sim)?;
+    // relative to the truth run's manifest, so the outputs can be moved whole
+    let data_files: Vec<String> = sim
+        .sections
+        .iter()
+        .map(|sec| format!("../sections/{}.zarr", sec.name))
+        .collect();
+    write_truth_run(&format!("{out}/truth"), &sim, &data_files)?;
 
     let pve = sim.realised_pve();
     let names = ["type", "donor", "inter", "section", "noise"];
@@ -112,5 +116,6 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         serde_json::to_string_pretty(&manifest)?,
     )?;
     info!("Wrote {out}/sections, {out}/truth and {out}/manifest.json");
+    info!("See the truth with: pinto view {out}/truth/truth.pinto.json");
     Ok(())
 }
