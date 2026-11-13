@@ -11,12 +11,16 @@ use rand::SeedableRng;
 
 /// 3 donors × 2 sections of a 24 × 24 grid, 200 genes.
 fn small(p: SimParams) -> Sim {
-    let p = SimParams {
+    sim_of(SimParams {
         grid_side: 24,
         n_genes: 200,
         programme_genes: 20,
         ..p
-    };
+    })
+}
+
+/// A simulation of `p` on its own grid, every setting as given.
+fn sim_of(p: SimParams) -> Sim {
     let g = grid(p.grid_side, p.grid_spacing_um);
     Sim::new(p, &[g])
 }
@@ -232,7 +236,14 @@ fn rotation_gives_the_requested_cosine_at_the_same_norm() {
 /// reports what a run realises.)
 #[test]
 fn realised_pve_matches_the_targets() {
-    let sim = small(SimParams {
+    // enough programme genes that the pooled nuisance shares sit near their
+    // expectation: with three donors each gene's donor variance has 2
+    // degrees of freedom, so over 200 genes the donor share spreads by about
+    // 0.014; the tolerance is 2.5 times that
+    let sim = sim_of(SimParams {
+        grid_side: 24,
+        n_genes: 2000,
+        programme_genes: 200,
         dominant: 1.0,
         pve_type: 0.3,
         pve_donor: 0.2,
@@ -243,7 +254,7 @@ fn realised_pve_matches_the_targets() {
     let r = sim.realised_pve();
     let want = [0.3, 0.2, 0.1, 0.05, sim.p.pve_noise()];
     for (k, (got, want)) in r.iter().zip(want).enumerate() {
-        assert!((got - want).abs() < 0.02, "term {k}: {got} vs {want}");
+        assert!((got - want).abs() < 0.035, "term {k}: {got} vs {want}");
     }
 }
 
@@ -434,4 +445,64 @@ fn a_gene_keeps_its_draws_when_the_gene_count_changes() {
     let a = Latent::new(&p, 0, 50).gene(7, 2);
     let more = SimParams { n_genes: 5000, ..p };
     assert_eq!(a, Latent::new(&more, 0, 50).gene(7, 2));
+}
+
+/// No gene's nuisance term is far outside its target spread. A gene whose
+/// few donor or section draws happen to lie close together must not get a
+/// huge scale (and a huge offset): over a thousand genes, every scaled term
+/// stays within a few multiples of √(pve · V), with and without a clean donor.
+#[test]
+fn no_gene_gets_an_outsized_nuisance_term() {
+    for name in ["L1", "clean-one"] {
+        let sim = sim_of(SimParams {
+            grid_side: 12,
+            ..SimParams::scenario(name).unwrap()
+        });
+        let (p, nu, sc) = (&sim.p, &sim.nuisance, &sim.scaling);
+        let bound = |pve: f64| 6.0 * (pve * p.log_rate_var).sqrt();
+        for g in 0..p.n_genes {
+            for d in 0..p.n_donors {
+                assert!(
+                    (sc.donor * nu.donor[g][d]).abs() <= bound(p.pve_donor),
+                    "{name} gene {g} donor {d}"
+                );
+                for x in &nu.inter[g] {
+                    assert!(
+                        (sc.inter * x[d]).abs() <= bound(p.pve_inter),
+                        "{name} gene {g} inter"
+                    );
+                }
+            }
+            for s in 0..p.n_sections() {
+                assert!(
+                    (sc.section * nu.section[g][s]).abs() <= bound(p.pve_section),
+                    "{name} gene {g} section {s}"
+                );
+            }
+        }
+    }
+}
+
+/// A gene's scaled nuisance terms depend on its own draws alone, not on how
+/// many other genes there are: a contract, so that no later change scales a
+/// nuisance term from other genes' draws.
+#[test]
+fn a_gene_keeps_its_nuisance_when_the_gene_count_changes() {
+    let base = SimParams {
+        grid_side: 12,
+        ..SimParams::scenario("L1").unwrap()
+    };
+    let a = sim_of(SimParams {
+        n_genes: 200,
+        ..base.clone()
+    });
+    let b = sim_of(SimParams {
+        n_genes: 600,
+        ..base
+    });
+    for g in 0..200 {
+        let (ca, cb) = (a.components(0, g), b.components(0, g));
+        assert_eq!((ca.donor, ca.section), (cb.donor, cb.section), "gene {g}");
+        assert_eq!(ca.inter, cb.inter, "gene {g}");
+    }
 }

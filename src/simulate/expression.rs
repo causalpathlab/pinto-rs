@@ -8,16 +8,18 @@
 //!
 //! `T` is the cell-type effect, `D` donor-wide nuisance, `X` donor by type,
 //! `S` per section, `E` spot noise; `i` spot, `c` state, `d` donor, `s`
-//! section, `w` the spot's mixture. Each term is scaled so its variance
-//! over spots (at each spot's dominant state) is `pve · V`, `V` being
-//! `log_rate_var`, and `E` takes `1 − Σ pve`: for a pure spot the shares
-//! are exact, the convention `pinto lra-simulate` uses. `T` is also centred,
-//! its level belonging to `a`. The nuisance terms are only scaled, so a
-//! clean donor or section keeps exactly 0. Genes outside every programme
-//! have no `T` and carry the other terms at the same absolute variance, so
+//! section, `w` the spot's mixture. Each term has variance `pve · V` over
+//! spots (at each spot's dominant state), `V` being `log_rate_var`, and `E`
+//! takes `1 − Σ pve`, the convention `pinto lra-simulate` uses. The type
+//! term is scaled per gene, exactly, and centred (its level belongs to `a`).
+//! A nuisance term is a few draws per gene, so it gets one scale from its
+//! expected variance `Σ w (1 − w)` over the groups that are not clean (`w`
+//! their shares of the spots): `pve · V` in expectation over genes, with a
+//! gene's terms depending on its own draws alone. Nuisance terms are not
+//! centred, so a clean donor or section keeps exactly 0. Genes outside every
+//! programme have no `T` and carry the other terms at the same variance, so
 //! nuisance is genome-wide.
 
-use super::field::mean_sd;
 use super::panel::Section;
 use super::params::SimParams;
 use super::rng::{rng, Stream};
@@ -201,56 +203,74 @@ pub fn spot_noise(p: &SimParams, s: usize, g: usize, n: usize) -> Vec<f64> {
     normals(rng(p.seed, Stream::Noise, &[s, g]), n)
 }
 
-/// Per gene: the type term's `(shift, scale)` and the nuisance terms'
-/// scales, so each scaled term has variance `pve · V` over spots.
+/// The type term's `(shift, scale)` per gene, and one scale per nuisance
+/// term, so each term has variance `pve · V` over spots: exactly for the
+/// type term of each gene, and in expectation for a nuisance term.
 pub struct Scaling {
     pub ty: Vec<(f64, f64)>,
-    pub donor: Vec<f64>,
-    pub inter: Vec<f64>,
-    pub section: Vec<f64>,
+    pub donor: f64,
+    pub inter: f64,
+    pub section: f64,
     pub noise: f64,
 }
 
-pub fn scaling(
-    p: &SimParams,
-    sections: &[Section],
-    truth: &Truth,
-    genes: &Genes,
-    nu: &Nuisance,
-) -> Scaling {
-    use rayon::prelude::*;
+/// Expected variance over spots of a term that is iid N(0, 1) per group,
+/// the groups holding shares `w` of the spots (a clean group's share set to
+/// 0, its term being 0): `E[Σ w z² − (Σ w z)²] = Σ_g w_g (1 − w_g)`.
+fn expected_variance(w: &[f64]) -> f64 {
+    w.iter().map(|x| x * (1.0 - x)).sum()
+}
+
+pub fn scaling(p: &SimParams, sections: &[Section], truth: &Truth, genes: &Genes) -> Scaling {
     let v = p.log_rate_var;
-    let scale = |pve: f64, sd: f64| if sd > 0.0 { (pve * v).sqrt() / sd } else { 0.0 };
-    // a term's values over every spot, at the spot's dominant state
-    let over_spots = |f: &dyn Fn(usize, usize, usize, usize) -> f64| -> Vec<f64> {
-        sections
-            .iter()
-            .enumerate()
-            .flat_map(|(s, sec)| (0..sec.n()).map(move |i| (s, sec.donor, i)))
-            .map(|(s, d, i)| f(s, d, i, truth.dominant[s][i]))
-            .collect()
+    let n_states = truth.n_states();
+    // shares of the spots by state, and by donor, section and (state, donor)
+    // with clean groups at 0
+    let n: f64 = sections.iter().map(|s| s.n()).sum::<usize>() as f64;
+    let mut by_state = vec![0.0; n_states];
+    let mut by_donor = vec![0.0; p.n_donors];
+    let mut by_section = vec![0.0; sections.len()];
+    let mut by_state_donor = vec![0.0; n_states * p.n_donors];
+    for (s, sec) in sections.iter().enumerate() {
+        let share = sec.n() as f64 / n;
+        let donor_on = !p.clean_donors.contains(&sec.donor);
+        if !p.clean_sections.contains(&s) {
+            by_section[s] = share;
+        }
+        if donor_on {
+            by_donor[sec.donor] += share;
+        }
+        for &c in &truth.dominant[s] {
+            by_state[c] += 1.0 / n;
+            if donor_on {
+                by_state_donor[c * p.n_donors + sec.donor] += 1.0 / n;
+            }
+        }
+    }
+    let scale = |pve: f64, var: f64| {
+        if var > 0.0 {
+            (pve * v / var).sqrt()
+        } else {
+            0.0
+        }
     };
-    let per_gene: Vec<[f64; 5]> = (0..p.n_genes)
-        .into_par_iter()
+    // the type term per gene, from the states' shares of the spots
+    let ty = (0..p.n_genes)
         .map(|g| {
-            let (mt, st) = mean_sd(&over_spots(&|_, _, _, c| genes.programme[c][g]));
-            let (_, sd) = mean_sd(&over_spots(&|_, d, _, _| nu.donor[g][d]));
-            let (_, sx) = mean_sd(&over_spots(&|_, d, _, c| nu.inter[g][c][d]));
-            let (_, ss) = mean_sd(&over_spots(&|s, _, _, _| nu.section[g][s]));
-            [
-                mt,
-                scale(p.pve_type, st),
-                scale(p.pve_donor, sd),
-                scale(p.pve_inter, sx),
-                scale(p.pve_section, ss),
-            ]
+            let mean: f64 = (0..n_states)
+                .map(|c| by_state[c] * genes.programme[c][g])
+                .sum();
+            let var: f64 = (0..n_states)
+                .map(|c| by_state[c] * (genes.programme[c][g] - mean).powi(2))
+                .sum();
+            (mean, scale(p.pve_type, var))
         })
         .collect();
     Scaling {
-        ty: per_gene.iter().map(|t| (t[0], t[1])).collect(),
-        donor: per_gene.iter().map(|t| t[2]).collect(),
-        inter: per_gene.iter().map(|t| t[3]).collect(),
-        section: per_gene.iter().map(|t| t[4]).collect(),
+        ty,
+        donor: scale(p.pve_donor, expected_variance(&by_donor)),
+        inter: scale(p.pve_inter, expected_variance(&by_state_donor)),
+        section: scale(p.pve_section, expected_variance(&by_section)),
         noise: (p.pve_noise() * v).sqrt(),
     }
 }

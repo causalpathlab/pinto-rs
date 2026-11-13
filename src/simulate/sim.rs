@@ -29,7 +29,7 @@ impl Sim {
         let truth = plant(&p, &sections);
         let genes = draw_genes(&p, &truth);
         let nuisance = draw_nuisance(&p, truth.n_states());
-        let scaling = scaling(&p, &sections, &truth, &genes, &nuisance);
+        let scaling = scaling(&p, &sections, &truth, &genes);
         let depth = draw_depth(&p, &sections);
         Self {
             p,
@@ -54,9 +54,9 @@ impl Sim {
                 .iter()
                 .map(|prog| scale * (prog[g] - shift))
                 .collect(),
-            inter: nu.inter[g].iter().map(|x| sc.inter[g] * x[d]).collect(),
-            donor: sc.donor[g] * nu.donor[g][d],
-            section: sc.section[g] * nu.section[g][s],
+            inter: nu.inter[g].iter().map(|x| sc.inter * x[d]).collect(),
+            donor: sc.donor * nu.donor[g][d],
+            section: sc.section * nu.section[g][s],
             noise: spot_noise(&self.p, s, g, self.sections[s].n())
                 .into_iter()
                 .map(|z| sc.noise * z)
@@ -94,15 +94,18 @@ impl Sim {
     }
 
     /// Realised PVE of each term over programme genes, from the drawn log
-    /// rates (depth out): the variance over spots with that term alone, over
-    /// the variance with every term the run keeps, averaged over genes.
+    /// rates (depth out): the variance over spots with that term alone,
+    /// summed over genes, over the variance with every term the run keeps,
+    /// summed over genes. Pooled, since a nuisance term's share varies from
+    /// gene to gene and matches its target in expectation.
     /// Terms the run drops read 0.
     pub fn realised_pve(&self) -> [f64; 5] {
         let run = active(&self.p);
         let prog: Vec<usize> = (0..self.p.n_genes)
             .filter(|&g| self.genes.programme_of[g].is_some())
             .collect();
-        let shares: Vec<[f64; 5]> = prog
+        // per gene: each term's variance alone, and the total's
+        let per_gene: Vec<([f64; 5], f64)> = prog
             .par_iter()
             .map(|&g| {
                 let parts: Vec<Components> = (0..self.sections.len())
@@ -116,18 +119,19 @@ impl Sim {
                         .collect();
                     mean_sd(&v).1.powi(2)
                 };
-                let total = var(run);
-                std::array::from_fn(|k| {
-                    let alone: Terms = std::array::from_fn(|j| j == k && run[j]);
-                    if total > 0.0 {
-                        var(alone) / total
-                    } else {
-                        0.0
-                    }
-                })
+                let only = |k: usize| -> Terms { std::array::from_fn(|j| j == k && run[j]) };
+                let alone = std::array::from_fn(|k| var(only(k)));
+                (alone, var(run))
             })
             .collect();
-        let n = shares.len().max(1) as f64;
-        std::array::from_fn(|k| shares.iter().map(|s| s[k]).sum::<f64>() / n)
+        // pooled over genes: a term's variance summed, over the total's
+        let total: f64 = per_gene.iter().map(|t| t.1).sum();
+        std::array::from_fn(|k| {
+            if total > 0.0 {
+                per_gene.iter().map(|t| t.0[k]).sum::<f64>() / total
+            } else {
+                0.0
+            }
+        })
     }
 }
