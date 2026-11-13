@@ -25,7 +25,10 @@
 use crate::feature_network::graph::*;
 use crate::feature_network::modules::{kcore_trim, leiden_feature_modules};
 use crate::link_community::cascade::{run_cascade, CascadeConfig, ModulePairContext, ProfileMode};
-use crate::link_community::dict_merge::{cosine_cut, cosine_merge};
+use crate::link_community::dict_merge::{
+    community_group_shares, cosine_cut, cosine_merge, groups_with_own_mean, occupied_communities,
+    remove_group_means,
+};
 use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler};
 use crate::link_community::incidence::{
     cell_incidence_scores, fit_log_incidence, pack_propensity_row_major,
@@ -67,6 +70,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids,
         seeding,
         batch_effects: _,
         graph,
@@ -220,24 +224,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
-            refine_iterations: c.refine_iterations,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: (args.modularity_gamma > 0.0).then_some(ModularityVeto {
                 gamma: args.modularity_gamma,
-            }),
-            dc_poisson: Some(DcPoissonConfig {
-                params: data_beans::alg::dc_poisson::RefineParams {
-                    num_gibbs: 10,
-                    num_greedy: 5,
-                    feature_weighting: data_beans::alg::dc_poisson::FeatureWeighting::FisherInfoNb,
-                    seed: c.seed,
-                    gibbs_stagnation: 0.005,
-                    profile_source: data_beans::alg::dc_poisson::ProfileSource::Raw,
-                    ..Default::default()
-                },
-                data: &data_vec,
-                // Reads the matrix, so this is a row count.
-                num_features: n_rows,
             }),
         },
     );
@@ -481,12 +470,13 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     info!("Writing score trace...");
     write_score_trace(&(c.out.to_string() + ".scores.parquet"), &score_trace)?;
 
+    // Whether a cut collapsed communities, so the draft was written apart
+    // from the final partition.
     let mut merge_present_with_consensus = false;
-    // Only meaningful when the merge ran AND collapsed something — that is
-    // exactly when the manifest has merge paths to hang it on.
+    // Set whenever the merge tree is written, so the manifest points at it.
+    // Records the feature cutoff: the auto cutoff is data-dependent, so a run
+    // is not reproducible from its outputs without it.
     let mut merge_summary: Option<crate::util::metadata::DictMergeSummary> = None;
-    // Recorded in the manifest: the auto cutoff is data-dependent, so a run is
-    // not reproducible from its outputs without it.
 
     {
         use legume_numeric::param::traits::Inference;
@@ -540,63 +530,102 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 "Running cosine dictionary merge (average linkage) over K={} communities...",
                 k
             );
-            let merges = cosine_merge(
-                draft.feature_community.posterior_log_mean(),
-                Some(&keep_features),
-            );
+            // Across sections, communities are compared within their section
+            // (see `remove_group_means`); also under --ignore-batch. The shift
+            // is removed here, in the comparison, and not from the model's
+            // rates: dividing lc's edge profiles by a batch estimate lowered
+            // the partition's purity when measured, while centring the
+            // comparison did not.
+            let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
+            let share =
+                community_group_shares(&final_membership, k, edges, &section_ids, n_sections);
+            // sections holding an edge end, and those centred on their own mean
+            let n_present = (0..n_sections)
+                .filter(|&g| share.column(g).sum() > 0.0)
+                .count();
+            let n_own = groups_with_own_mean(&share);
+            let centred_sections = (n_present > 1).then_some(n_own);
+            if let Some(n_own) = centred_sections {
+                info!(
+                    "Dictionary merge: the mean profile of {} of {} sections is removed first{}",
+                    n_own,
+                    n_present,
+                    if n_own < n_present {
+                        "; the rest are held by about one community and are compared \
+                         against the overall mean"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            // with one section this only centres each feature over the
+            // communities with an edge
+            let centred = remove_group_means(draft.feature_community.posterior_log_mean(), &share);
+            let occupied = occupied_communities(&share);
+            let n_occupied = occupied.iter().filter(|&&o| o).count();
+            let merges = cosine_merge(&centred, Some(&keep_features), Some(&occupied));
             write_dict_merges(&(c.out.to_string() + ".dict_merges.parquet"), &merges)?;
 
-            let labels = cosine_cut(&merges, k, args.merge_cut);
-            let n_consensus = labels
-                .iter()
-                .filter(|&&v| v >= 0)
-                .map(|&v| v as usize)
-                .max()
-                .map_or(0, |m| m + 1);
-            info!(
-                "Dictionary cut (cosine ≥ {:.3}): {} merged communities",
-                args.merge_cut, n_consensus
-            );
-            write_dict_cut(&(c.out.to_string() + ".dict_merges.cut.parquet"), &labels)?;
-
-            if n_consensus > 0 && n_consensus < k {
-                let consensus_membership: Vec<usize> = final_membership
+            if let Some(cut) = args.merge_cut {
+                let labels = cosine_cut(&merges, k, cut);
+                let n_consensus = labels
                     .iter()
-                    .map(|&orig| {
-                        let lab = labels[orig];
-                        debug_assert!(
-                            lab >= 0,
-                            "non-empty community {} has no consensus label",
-                            orig
-                        );
-                        lab as usize
-                    })
-                    .collect();
-                write_draft(&draft_prefix)?;
+                    .filter(|&&v| v >= 0)
+                    .map(|&v| v as usize)
+                    .max()
+                    .map_or(0, |m| m + 1);
                 info!(
-                    "Writing final outputs (propensity, feature_community, link_community) → {}.*",
-                    c.out
+                    "Dictionary cut (cosine ≥ {:.3}): {} merged communities",
+                    cut, n_consensus
                 );
-                write_partition_outputs(
-                    &c.out,
-                    &partition_inputs,
-                    &consensus_membership,
-                    n_consensus,
-                )?;
-                merge_present_with_consensus = true;
+                write_dict_cut(&(c.out.to_string() + ".dict_merges.cut.parquet"), &labels)?;
+
+                // a community with no edge has no label, so a cut that joins
+                // nothing still leaves `n_consensus < k`
+                if n_consensus > 0 && n_consensus < n_occupied {
+                    let consensus_membership: Vec<usize> = final_membership
+                        .iter()
+                        .map(|&orig| {
+                            let lab = labels[orig];
+                            debug_assert!(
+                                lab >= 0,
+                                "non-empty community {} has no consensus label",
+                                orig
+                            );
+                            lab as usize
+                        })
+                        .collect();
+                    write_draft(&draft_prefix)?;
+                    info!(
+                        "Writing final outputs (propensity, feature_community, link_community) → {}.*",
+                        c.out
+                    );
+                    write_partition_outputs(
+                        &c.out,
+                        &partition_inputs,
+                        &consensus_membership,
+                        n_consensus,
+                    )?;
+                    merge_present_with_consensus = true;
+                } else {
+                    info!(
+                        "Dictionary merge produced no collapses at cosine ≥ {:.3}; \
+                         the draft partition is the final result",
+                        cut
+                    );
+                }
             } else {
                 info!(
-                    "Dictionary merge produced no collapses at cosine ≥ {:.3}; \
-                     the draft partition is the final result",
-                    args.merge_cut
+                    "Dictionary merge tree written, not cut (no --merge-cut); \
+                     the draft partition is the final result"
                 );
             }
-            if merge_present_with_consensus {
-                merge_summary = Some(crate::util::metadata::DictMergeSummary {
-                    min_nnz,
-                    features_scored: n_keep,
-                });
-            }
+            merge_summary = Some(crate::util::metadata::DictMergeSummary {
+                min_nnz,
+                features_scored: n_keep,
+                cut_cosine: args.merge_cut,
+                centred_sections,
+            });
         }
     }
     if !merge_present_with_consensus {

@@ -102,6 +102,9 @@ pub struct SrtPreprocessed {
     pub coordinates: Mat,
     pub coordinate_names: Vec<Box<str>>,
     pub batch_membership: Vec<Box<str>>,
+    /// Each kept cell's section: one per data file, crossed with the
+    /// --batch-files labels as read (not the --auto-batch components).
+    pub section_ids: Vec<u32>,
     /// What spatial seeding grids over, for a run with coordinates and
     /// enough cells to be seeded. Under `--permute-coords` its positions are
     /// the scrambled ones the graph was built on, or real-space structure
@@ -483,7 +486,11 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
     }
 
-    let batch_effects = if cfg.batch_effects {
+    // `--ignore-batch` drops the estimate, and with it every use of one
+    // (the projection's correction below, a model's own divide). The labels
+    // stay: they also say which section a cell is in, for the pair table,
+    // the viewer and the models' own bookkeeping.
+    let batch_effects = if cfg.batch_effects && !c.ignore_batch {
         let batch_sort_dim = c.proj_dim.min(10);
         let strata = match c.cnv_clones.as_deref() {
             Some(path) => Some(load_cnv_cell_strata(path, &data_vec)?),
@@ -659,6 +666,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids,
         seeding,
         batch_effects,
         graph,

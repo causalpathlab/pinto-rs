@@ -27,9 +27,7 @@ fn test_from_profiles_basic() {
     assert_eq!(stats.m, 6);
 
     // Each community should have roughly n_edges/k edges
-    for c in 0..3 {
-        assert!(stats.edge_count[c] > 0);
-    }
+    assert!(stats.edge_count.iter().all(|&n| n > 0));
     let total_count: usize = stats.edge_count.iter().sum();
     assert_eq!(total_count, 20);
 }

@@ -6,6 +6,44 @@
 
 use crate::util::metadata::*;
 
+/// Without `--merge-cut` the merge tree is still written and the manifest
+/// points at it, but there is no cut, so no cut file is named.
+#[test]
+fn an_lc_run_without_a_cut_names_the_tree_and_no_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let data_files: Vec<Box<str>> = vec!["a.h5".into()];
+    let meta = create_lc_metadata(
+        &RunInputs {
+            prefix: &prefix,
+            data_files: &data_files,
+            coord_file: None,
+            coord_columns: &[],
+            n_cells: 10,
+            n_features: 20,
+            n_edges: 30,
+            k: 4,
+            graph: GraphParams::default(),
+            ablation: None,
+        },
+        Some(DictMergeSummary {
+            min_nnz: 1,
+            features_scored: 10,
+            cut_cosine: None,
+            centred_sections: None,
+        }),
+        None,
+        &[0],
+    );
+    let path = dir.path().join("run.pinto.json");
+    meta.write(&path).unwrap();
+    let back = PintoMetadata::read(&path).unwrap();
+    let merge = back.outputs.dict_merge.as_ref().expect("dict_merge");
+    assert!(merge.merges.ends_with("run.dict_merges.parquet"));
+    assert!(merge.cut.is_none());
+    assert!(merge.cut_cosine.is_none());
+}
+
 #[test]
 fn metadata_roundtrip_lc() {
     let dir = tempfile::tempdir().unwrap();
@@ -28,6 +66,8 @@ fn metadata_roundtrip_lc() {
         Some(DictMergeSummary {
             min_nnz: 1,
             features_scored: 10,
+            cut_cosine: Some(0.25),
+            centred_sections: Some(3),
         }),
         // A channelized `lc` run reports the structural fact of its feature
         // axis.
@@ -51,7 +91,13 @@ fn metadata_roundtrip_lc() {
     assert_eq!(levels[0].tag, "L0");
     assert_eq!(levels[3].tag, "final");
     assert_eq!(levels[3].entropy_present, Some(true));
-    assert!(back.outputs.dict_merge.is_some());
+    let merge = back.outputs.dict_merge.as_ref().expect("dict_merge");
+    assert_eq!(merge.cut_cosine, Some(0.25));
+    assert!(merge
+        .cut
+        .as_deref()
+        .is_some_and(|c| c.ends_with("run.dict_merges.cut.parquet")));
+    assert_eq!(merge.centred_sections, Some(3));
     assert!(back.outputs.lr_activity.is_none());
     assert_eq!(
         back.outputs.coord_columns.as_deref(),

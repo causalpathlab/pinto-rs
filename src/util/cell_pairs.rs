@@ -404,7 +404,6 @@ fn force_directed_layout(embedding: &Mat, graph: &KnnGraph) -> anyhow::Result<Ma
     use rand::SeedableRng;
 
     let n = graph.n_nodes;
-    let n_edges = graph.edges.len();
 
     // Initialize from PCA
     let mut coords = pca_2d(embedding)?;
@@ -439,9 +438,7 @@ fn force_directed_layout(embedding: &Mat, graph: &KnnGraph) -> anyhow::Result<Ma
         let lr = lr.max(initial_lr * 0.01);
 
         // Attractive forces: pull edge endpoints together
-        for e in 0..n_edges {
-            let (i, j) = graph.edges[e];
-
+        for &(i, j) in &graph.edges {
             let dx = coords[(i, 0)] - coords[(j, 0)];
             let dy = coords[(i, 1)] - coords[(j, 1)];
             let dist_sq = dx * dx + dy * dy + min_dist;
@@ -459,8 +456,7 @@ fn force_directed_layout(embedding: &Mat, graph: &KnnGraph) -> anyhow::Result<Ma
         }
 
         // Repulsive forces: push random non-neighbours apart
-        for e in 0..n_edges {
-            let (i, _) = graph.edges[e];
+        for &(i, _) in &graph.edges {
             for _ in 0..neg_samples_per_edge {
                 let k = rng.random_range(0..n);
                 if k == i {

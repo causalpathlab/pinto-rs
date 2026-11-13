@@ -426,11 +426,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // Under weighted_cov, per-gene scalars on each side stack as `w_L · w_R`
     // on stat_obs; precomputing here saves an n_pairs × n_samples mul per
     // stratum.
-    for c in 0..n_strata_total {
-        if !active_strata.contains(&(c as u32)) {
-            continue;
-        }
-        apply_feature_weights(&mut collapse.log_mean[c], &fisher_lr);
+    for &c in &active_strata {
+        apply_feature_weights(&mut collapse.log_mean[c as usize], &fisher_lr);
     }
 
     ////////////////////////////////////////////////////

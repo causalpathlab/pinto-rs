@@ -117,6 +117,18 @@ pub struct SrtInputArgs {
 
     #[arg(
         long,
+        default_value_t = false,
+        conflicts_with = "auto_batch",
+        help = "Estimate and remove no batch effects",
+        long_help = "Estimate no batch effects, so none are removed anywhere.\n\
+                     Data files (and --batch-files labels) still keep their cells\n\
+                     apart, in the spatial graph and in the outputs; only the\n\
+                     correction goes."
+    )]
+    pub ignore_batch: bool,
+
+    #[arg(
+        long,
         short,
         required = true,
         help = "Output file prefix (e.g., results/my_run)"
@@ -153,21 +165,6 @@ pub struct SrtInputArgs {
         hide = true
     )]
     pub num_levels: usize,
-
-    #[arg(
-        long,
-        default_value_t = 5,
-        help = "Refinement sweeps per coarsening level (0 to disable)",
-        long_help = "Leiden-style local-moving sweeps per coarsening level.\n\
-                     They run after the dendrogram cut.\n\
-                     A sweep moves nodes to graph-adjacent clusters.\n\
-                     A move must improve cosine similarity to the centroid.\n\
-                     Moves that would disconnect the source cluster are rejected.\n\
-                     Sweeping stops early once no node moves. 5 is usually enough;\n\
-                     0 skips refinement.",
-        hide = true
-    )]
-    pub refine_iterations: usize,
 
     #[arg(
         long,
@@ -232,7 +229,7 @@ pub struct SrtInputArgs {
         help = "Target number of pseudobulk samples at coarsest level",
         long_help = "Target number of pseudobulk cell groups at the coarsest level.\n\
                      Coarsening merges cells until roughly this many remain.\n\
-                     They feed Poisson-Gamma estimation and refinement.\n\
+                     They feed Poisson-Gamma estimation.\n\
                      Larger values give finer granularity. They also coarsen more slowly."
     )]
     pub n_pseudobulk: usize,

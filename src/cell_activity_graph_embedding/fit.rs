@@ -58,7 +58,7 @@ use crate::link_community::profiles::{
 };
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
-use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig, DcPoissonConfig};
+use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig};
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
 use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
@@ -165,6 +165,7 @@ pub fn fit_cell_activity_graph_embedding(
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids: _,
         seeding,
         batch_effects: batch_db,
         graph,
@@ -204,16 +205,16 @@ pub fn fit_cell_activity_graph_embedding(
 
     // Persist the NB-Fisher precision weights (when computed) so downstream
     // tools can reload them, matching the senna/chickpea convention. These are
-    // per-ROW NB precisions, consumed by the projection and the Poisson
-    // refinement, both of which read the matrix — so they keep the row names.
+    // per-ROW NB precisions, consumed by the projection, which reads the
+    // matrix, so they keep the row names.
     if let Some(w) = fisher_weights.as_ref() {
         save_fisher_weights(&c.out, w, &row_names)?;
     }
 
     // Fisher weights, on the axis each consumer actually indexes.
     //
-    // `fisher_weights` is per ROW and stays that way: the projection and the
-    // degree-corrected Poisson refinement both read the matrix. The TRAINING
+    // `fisher_weights` is per ROW and stays that way: the projection reads
+    // the matrix. The TRAINING
     // LOOP does not — it weights a per-FEATURE loss and indexes by feature id — so on
     // a channelized matrix `w[g]` would hand feature `g` an unrelated row's
     // precision, silently, because `n_features < n_rows` means it never goes out
@@ -349,35 +350,8 @@ pub fn fit_cell_activity_graph_embedding(
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
-            refine_iterations: c.refine_iterations,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: None,
-            // Second-opinion refinement on RAW counts, matching `pinto lc`.
-            // cage was the only caller passing `None` here, so its levels were
-            // cut on cosine-of-projection alone while `lc` got a degree-corrected
-            // Poisson pass over the actual counts.
-            //
-            // This is also the path that consumes the parent labels for its
-            // sibling constraint, and those were fed the WRONG level until the
-            // coarsening loop was split into cut-then-refine passes — so
-            // enabling it before that fix would have constrained moves against
-            // the finer level rather than the coarser one.
-            //
-            // Opt out with `--no-dc-poisson`; the context build reads the count
-            // matrix once, then every level reuses it.
-            dc_poisson: (!args.no_dc_poisson).then(|| DcPoissonConfig {
-                params: data_beans::alg::dc_poisson::RefineParams {
-                    num_gibbs: 10,
-                    num_greedy: 5,
-                    feature_weighting: data_beans::alg::dc_poisson::FeatureWeighting::FisherInfoNb,
-                    seed: c.seed,
-                    gibbs_stagnation: 0.005,
-                    profile_source: data_beans::alg::dc_poisson::ProfileSource::Raw,
-                    ..Default::default()
-                },
-                data: &data_vec,
-                num_features: n_rows,
-            }),
         },
     );
 

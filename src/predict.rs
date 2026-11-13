@@ -396,6 +396,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids: _,
         batch_effects,
         graph,
         knn,
