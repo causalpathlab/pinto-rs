@@ -29,7 +29,9 @@ impl Default for Tools {
 
 impl Handler for Tools {
     fn tools(&self) -> Vec<ToolSpec> {
-        specs()
+        let mut tools = specs();
+        tools.extend(super::sim::specs());
+        tools
     }
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
@@ -41,6 +43,9 @@ impl Handler for Tools {
             "run_region" => region(parse(args)?, cx),
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
+            "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
+            "run_sim_score" => super::sim::sim_score(parse(args)?),
+            "run_sim_baseline" => super::sim::baseline(&self.cli, parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
@@ -222,30 +227,65 @@ impl Tools {
         })?;
 
         let manifest = made[0].clone();
-        let mut reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
-        let paths = vec![shown_path(&manifest)];
-        match spawn(
+        let reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
+        let mut reply = launch(
             cx,
             &argv,
             std::slice::from_ref(&manifest),
             summary,
             a.background,
-        )? {
-            Some(job) => {
-                reply["writes"] = paths.into();
-                reply["note"] = format!(
-                    "job_wait (id {job}) or job_status until it ends, then view_open {out}"
-                )
-                .into();
-                reply["job"] = job.into();
-            }
-            None => {
-                reply["written"] = paths.into();
-                reply["note"] = format!("view_open {out} to look at it").into();
-            }
-        }
+            reply,
+            &format!("view_open {out}"),
+        )?;
+        let key = if reply.get("job").is_some() {
+            "writes"
+        } else {
+            "written"
+        };
+        reply[key] = vec![shown_path(&manifest)].into();
         Ok((reply, manifest))
     }
+}
+
+/// The command line checked as pinto parses it.
+pub(super) fn checked(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
+    check(cli, argv).map_err(|e| anyhow::anyhow!("pinto {}: {e}", argv[0]))
+}
+
+/// The command line checked, then parsed into its command's arguments, as
+/// the child pinto will parse them.
+pub(super) fn parsed<T: clap::FromArgMatches>(
+    cli: &clap::Command,
+    argv: &[String],
+) -> anyhow::Result<T> {
+    checked(cli, argv)?;
+    let command = cli
+        .find_subcommand(&argv[0])
+        .ok_or_else(|| anyhow::anyhow!("pinto has no `{}` command", argv[0]))?;
+    let matches = command.clone().try_get_matches_from(argv)?;
+    Ok(T::from_arg_matches(&matches)?)
+}
+
+/// `argv` run as a child pinto making `made` (a job when `background`),
+/// and `reply` with the job and a note on what to do `then`.
+pub(super) fn launch(
+    cx: &Call,
+    argv: &[String],
+    made: &[std::path::PathBuf],
+    summary: &str,
+    background: bool,
+    mut reply: Value,
+    then: &str,
+) -> anyhow::Result<Value> {
+    match spawn(cx, argv, made, summary, background)? {
+        Some(job) => {
+            reply["note"] =
+                format!("job_wait (id {job}) or job_status until it ends, then {then}").into();
+            reply["job"] = job.into();
+        }
+        None => reply["note"] = then.into(),
+    }
+    Ok(reply)
 }
 
 /// Run a child pinto for `argv` making `made`, at the log level `pinto run`

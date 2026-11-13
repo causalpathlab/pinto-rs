@@ -181,3 +181,43 @@ fn scoring_the_truth_and_the_donors() {
     assert_eq!(s.consistency, 0.0);
     assert!((s.donor_dependence - 1.0).abs() < 1e-9);
 }
+
+/// The outputs appear at `out` only once all are written: they are written
+/// to `{out}.partial` and moved, and a partial folder an earlier stopped run
+/// left is replaced.
+#[test]
+fn a_simulation_appears_only_when_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("sim");
+    let partial = dir.path().join("sim.partial");
+    std::fs::create_dir_all(partial.join("sections")).unwrap();
+    std::fs::write(partial.join("sections/stale"), "").unwrap();
+    crate::simulate::run::run_simulate(&args(&out.to_string_lossy(), "L0", &[])).unwrap();
+    assert!(out.join("manifest.json").is_file());
+    assert!(!out.join("sections/stale").exists());
+    assert!(!partial.exists());
+    let run = std::fs::read_to_string(out.join("truth/truth.pinto.json")).unwrap();
+    assert!(
+        !run.contains("partial"),
+        "the run names where it was moved: {run}"
+    );
+}
+
+/// An out given with a trailing slash, or already there as an empty folder
+/// (as the records' replay script makes it), still gets the whole run, and
+/// no partial folder is left beside it.
+#[test]
+fn a_simulation_into_a_slashed_or_empty_out_is_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let slashed = dir.path().join("a");
+    crate::simulate::run::run_simulate(&args(&format!("{}/", slashed.display()), "L0", &[]))
+        .unwrap();
+    assert!(slashed.join("manifest.json").is_file());
+    let empty = dir.path().join("b");
+    std::fs::create_dir(&empty).unwrap();
+    crate::simulate::run::run_simulate(&args(&empty.to_string_lossy(), "L0", &[])).unwrap();
+    assert!(empty.join("truth/truth.pinto.json").is_file());
+    for left in ["a.partial", "b.partial", "a/.partial"] {
+        assert!(!dir.path().join(left).exists(), "{left} left behind");
+    }
+}

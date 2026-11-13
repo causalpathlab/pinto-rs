@@ -11,7 +11,8 @@
 //! with [`match_to_reference`].
 
 use super::harmony::{harmonize, HarmonyParams};
-use super::score::TruthSpots;
+use super::run::{domains_path, truth_run_path};
+use super::score::{sim_folder, TruthSpots};
 use crate::util::common::HashMap;
 use crate::util::metadata::Run;
 use legume_numeric::matrix::pca::pc_scores;
@@ -404,7 +405,8 @@ pub enum Method {
 
 #[derive(clap::Args, Debug)]
 pub struct BaselineArgs {
-    /// The simulation's output directory (as given to srt-simulate -o)
+    /// The simulation: its output directory (as given to srt-simulate -o),
+    /// its truth folder, or its truth run
     #[arg(long)]
     pub truth: Box<str>,
 
@@ -445,7 +447,7 @@ pub struct BaselineArgs {
 /// The simulation's counts (genes × spots) and cell names, as pinto reads
 /// the truth manifest's data files.
 pub(crate) fn read_counts(truth: &str) -> anyhow::Result<(CscMatrix<f32>, Vec<Box<str>>)> {
-    let run = Run::open(&format!("{truth}/truth/truth"))?;
+    let run = Run::open(&truth_run_path(&sim_folder(truth)))?;
     let files = run
         .meta
         .data_files
@@ -496,8 +498,20 @@ impl BaselineArgs {
     }
 }
 
+/// What the baseline reads of the simulation `truth` names, there: its
+/// truth run, which lists the section data, and its domains table. Cheap:
+/// the files are found, not read.
+pub fn check_inputs(truth: &str) -> anyhow::Result<()> {
+    let folder = sim_folder(truth);
+    for f in [truth_run_path(&folder), domains_path(&folder)] {
+        anyhow::ensure!(std::path::Path::new(&f).is_file(), "{f}: not found");
+    }
+    Ok(())
+}
+
 pub fn run_baseline(args: &BaselineArgs) -> anyhow::Result<()> {
     args.validate()?;
+    check_inputs(&args.truth)?;
     let truth = TruthSpots::read(&args.truth)?;
     let (mut log, cells) = read_counts(&args.truth)?;
     normalise_log(&mut log);
@@ -535,6 +549,9 @@ pub fn run_baseline(args: &BaselineArgs) -> anyhow::Result<()> {
                 .map(|(c, l)| format!("{c}\tC{}\n", l + 1)),
         )
         .collect();
+    if let Some(dir) = std::path::Path::new(args.out.as_ref()).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     std::fs::write(args.out.as_ref(), text)?;
     Ok(())
 }

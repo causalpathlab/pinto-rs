@@ -40,11 +40,35 @@ pub struct TruthSpots {
     pub n_donors: usize,
 }
 
+/// The simulation `truth` names: its out folder, its `truth` folder, or the
+/// truth run in it, by its manifest `truth/truth.pinto.json` or its prefix
+/// `truth/truth`.
+pub(crate) fn sim_folder(truth: &str) -> String {
+    use crate::util::metadata::{run_manifest, run_prefix};
+    use std::path::Path;
+    let prefix = Path::new(run_prefix(truth));
+    let folder = if prefix.ends_with("truth/truth") && Path::new(&run_manifest(truth)).is_file() {
+        prefix.parent().and_then(Path::parent)
+    } else if prefix.ends_with("truth") && !prefix.join("truth").is_dir() {
+        prefix.parent()
+    } else {
+        return truth.into();
+    };
+    match folder {
+        Some(p) if p.as_os_str().is_empty() => ".".into(),
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => truth.into(),
+    }
+}
+
 impl TruthSpots {
-    /// From a simulation's `{out}/truth/spots.parquet` and `domains.parquet`.
+    /// From a simulation's `{out}/truth/spots.parquet` and `domains.parquet`;
+    /// `out` may also be given as its truth folder or truth run.
     pub fn read(out: &str) -> anyhow::Result<Self> {
+        anyhow::ensure!(!out.trim().is_empty(), "no truth given");
+        let out = &sim_folder(out);
         let dom = read_parquet_string_columns_by_name(
-            &format!("{out}/truth/domains.parquet"),
+            &super::run::domains_path(out),
             &["domain", "owner_donor"],
         )?;
         let donor_index = |d: &str| -> anyhow::Result<usize> {
@@ -352,10 +376,9 @@ pub struct SimScoreArgs {
     pub out: Option<Box<str>>,
 }
 
-pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
-    let t = TruthSpots::read(&args.truth)?;
-    let mut all = Vec::new();
-    println!(
+/// The table's header line, as `srt-sim-score` prints it.
+pub fn table_header() -> String {
+    format!(
         "{:<40} {:>7} {:>10} {:>10} {:>11} {:>6} {:>6} {:>6} {:>6}",
         "labels",
         "scored",
@@ -366,7 +389,43 @@ pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
         "f1",
         "prec",
         "owner"
+    )
+}
+
+/// A labelling's rows of the table: one per donor-specific domain, or one
+/// when there is none. The labelling goes by its file and folder.
+pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
+    let path = std::path::Path::new(input);
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|p| p.to_string_lossy());
+    let file = path
+        .file_name()
+        .map_or_else(|| input.to_string(), |f| f.to_string_lossy().to_string());
+    let name = parent.map_or(file.clone(), |p| format!("{p}/{file}"));
+    let head = format!(
+        "{:<40} {:>7} {:>10.3} {:>10.3} {:>11.3}",
+        name, s.n_scored, s.shared_ari, s.donor_dependence, s.consistency
     );
+    if s.patches.is_empty() {
+        return vec![head];
+    }
+    s.patches
+        .iter()
+        .map(|p| {
+            format!(
+                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}",
+                p.domain, p.f1, p.precision, p.owner_share
+            )
+        })
+        .collect()
+}
+
+pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
+    let t = TruthSpots::read(&args.truth)?;
+    let mut all = Vec::new();
+    println!("{}", table_header());
     let mut failed = 0;
     for input in &args.labels {
         let s =
@@ -378,27 +437,8 @@ pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
                     continue;
                 }
             };
-        let path = std::path::Path::new(input.as_ref());
-        let parent = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|p| p.to_string_lossy());
-        let file = path
-            .file_name()
-            .map_or_else(|| input.to_string(), |f| f.to_string_lossy().to_string());
-        let name = parent.map_or(file.clone(), |p| format!("{p}/{file}"));
-        let head = format!(
-            "{:<40} {:>7} {:>10.3} {:>10.3} {:>11.3}",
-            name, s.n_scored, s.shared_ari, s.donor_dependence, s.consistency
-        );
-        if s.patches.is_empty() {
-            println!("{head}");
-        }
-        for p in &s.patches {
-            println!(
-                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}",
-                p.domain, p.f1, p.precision, p.owner_share
-            );
+        for row in table_rows(input, &s) {
+            println!("{row}");
         }
         all.push(serde_json::json!({ "labels": input.as_ref(), "level": args.level, "score": s }));
     }

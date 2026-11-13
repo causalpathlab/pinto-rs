@@ -4,8 +4,7 @@
 //! the project's records (a background job unless asked otherwise). The
 //! reply is read from the tables the child wrote.
 
-use super::form::check;
-use super::mcp::{as_run, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
+use super::mcp::{as_run, checked, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
@@ -301,11 +300,6 @@ pub(super) fn lra_simulate_argv(
         argv.extend(["--species".into(), s.clone()]);
     }
     argv
-}
-
-/// The command line checked as pinto parses it.
-fn checked(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
-    check(cli, argv).map_err(|e| anyhow::anyhow!("pinto {}: {e}", argv[0]))
 }
 
 /// Whether every output of a step is there and no job holds it: a finished

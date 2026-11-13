@@ -59,12 +59,17 @@ pub fn read_coords(path: &str, names: &[Box<str>]) -> anyhow::Result<Coords> {
         .collect())
 }
 
+/// Section `s`'s name, counting from `S1`.
+pub fn section_name(s: usize) -> Box<str> {
+    format!("S{}", s + 1).into()
+}
+
 /// Sections `S1..` in donor order, `sections_per_donor` each; geometries are
 /// used in turn, cycling when there are fewer than sections.
 pub fn build_panel(p: &SimParams, geometries: &[Coords]) -> Vec<Section> {
     (0..p.n_sections())
         .map(|s| {
-            let name: Box<str> = format!("S{}", s + 1).into();
+            let name = section_name(s);
             let coords = geometries[s % geometries.len()].clone();
             let barcodes = (0..coords.len())
                 .map(|i| format!("{name}_{:05}", i + 1).into())

@@ -21,6 +21,9 @@ use super::sim::Sim;
 use super::truth::Info;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
+/// The coordinate columns of every coordinate table written here.
+pub const COORD_COLUMNS: [&str; 2] = ["row_um", "col_um"];
+
 fn f32s(v: impl Iterator<Item = f64>) -> Vec<f32> {
     v.map(|x| x as f32).collect()
 }
@@ -82,8 +85,8 @@ pub fn write_coords(path: &str, sec: &Section) -> anyhow::Result<()> {
         "spot",
         &sec.barcodes,
         &[
-            ("row_um".into(), Column::F32(&x)),
-            ("col_um".into(), Column::F32(&y)),
+            (COORD_COLUMNS[0].into(), Column::F32(&x)),
+            (COORD_COLUMNS[1].into(), Column::F32(&y)),
         ],
     )
 }
@@ -117,8 +120,8 @@ pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
         ("domain_owner".into(), Column::Str(&domain_owner)),
         ("state".into(), Column::Str(&state)),
         ("depth".into(), Column::F32(&depth)),
-        ("row_um".into(), Column::F32(&x)),
-        ("col_um".into(), Column::F32(&y)),
+        (COORD_COLUMNS[0].into(), Column::F32(&x)),
+        (COORD_COLUMNS[1].into(), Column::F32(&y)),
     ];
     for (st, m) in t.states.iter().zip(&mix) {
         cols.push((format!("w_{}", st.label).into(), Column::F32(m)));
@@ -178,12 +181,20 @@ pub fn write_genes(path: &str, sim: &Sim) -> anyhow::Result<()> {
 /// is named in the manifest by the labels of `domains.parquet`,
 /// `states.parquet` or the donors, and the viewer shows those names.
 /// `data_files` are relative to `dir`, so the outputs can be moved whole.
-pub fn write_truth_run(dir: &str, sim: &Sim, data_files: &[String]) -> anyhow::Result<()> {
+/// The files are written in `dir` and the manifest names them in `named`,
+/// where `dir` is to be moved once written.
+pub fn write_truth_run(
+    dir: &str,
+    named: &str,
+    sim: &Sim,
+    data_files: &[String],
+) -> anyhow::Result<()> {
     use crate::link_community::outputs::write_propensity_matrix;
     use crate::util::common::Mat;
     use crate::util::metadata::{now_secs, LevelInfo, OutputFiles, PintoMetadata};
     use crate::util::parquet_io::{cells_table_path, write_cells_table};
     let prefix = format!("{dir}/truth");
+    let recorded = format!("{named}/truth");
     let t = &sim.truth;
     let (spots, cells) = spot_index(sim);
     let mut coords = Mat::zeros(cells.len(), 2);
@@ -196,8 +207,7 @@ pub fn write_truth_run(dir: &str, sim: &Sim, data_files: &[String]) -> anyhow::R
         .iter()
         .map(|&(s, _)| sim.sections[s].name.clone())
         .collect();
-    let coord_names = ["row_um", "col_um"];
-    let coord_boxed: Vec<Box<str>> = coord_names.iter().map(|&c| c.into()).collect();
+    let coord_boxed: Vec<Box<str>> = COORD_COLUMNS.iter().map(|&c| c.into()).collect();
     write_cells_table(
         &prefix,
         &cells,
@@ -217,11 +227,10 @@ pub fn write_truth_run(dir: &str, sim: &Sim, data_files: &[String]) -> anyhow::R
                     m[(r, c)] = weight(s, i, c) as f32;
                 }
             }
-            let level_prefix = format!("{prefix}.{tag}");
-            write_propensity_matrix(&level_prefix, &m, &cells).map(|()| LevelInfo {
+            write_propensity_matrix(&format!("{prefix}.{tag}"), &m, &cells).map(|()| LevelInfo {
                 tag: tag.to_string(),
                 level_index: j,
-                propensity: format!("{level_prefix}.propensity.parquet"),
+                propensity: format!("{recorded}.{tag}.propensity.parquet"),
                 link_community: None,
                 feature_community: None,
                 entropy_present: Some(true),
@@ -246,13 +255,13 @@ pub fn write_truth_run(dir: &str, sim: &Sim, data_files: &[String]) -> anyhow::R
         command: "srt-simulate".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         timestamp: now_secs(),
-        prefix: prefix.clone(),
+        prefix: recorded.clone(),
         data_files: Some(data_files.to_vec()),
         n_cells: cells.len(),
         n_features: sim.p.n_genes,
         outputs: OutputFiles {
-            cells: Some(cells_table_path(&prefix)),
-            coord_columns: Some(coord_names.iter().map(|c| c.to_string()).collect()),
+            cells: Some(cells_table_path(&recorded)),
+            coord_columns: Some(COORD_COLUMNS.iter().map(|c| c.to_string()).collect()),
             ..Default::default()
         },
         levels: Some(levels),

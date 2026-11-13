@@ -47,6 +47,39 @@ fn scenario_help() -> String {
     s
 }
 
+/// A section's counts under the simulation folder `out`.
+pub fn backend_path(out: &str, section: &str) -> String {
+    format!("{out}/sections/{section}.zarr")
+}
+
+/// A section's spot coordinates under `out`.
+pub fn coords_path(out: &str, section: &str) -> String {
+    format!("{out}/sections/{section}.coords.parquet")
+}
+
+/// The manifest under `out`.
+pub fn manifest_path(out: &str) -> String {
+    format!("{out}/manifest.json")
+}
+
+/// The truth run under `out`, as `pinto view` opens it.
+pub fn truth_run_path(out: &str) -> String {
+    format!("{out}/truth/truth.pinto.json")
+}
+
+/// The domains table under `out`.
+pub fn domains_path(out: &str) -> String {
+    format!("{out}/truth/domains.parquet")
+}
+
+/// Where a simulation into `out` is written before it is moved to `out`
+/// whole, so a stopped one leaves no `out` behind: `{out}.partial` beside it.
+fn partial_path(out: &std::path::Path) -> std::path::PathBuf {
+    let mut name = out.file_name().unwrap_or_default().to_os_string();
+    name.push(".partial");
+    out.with_file_name(name)
+}
+
 pub fn resolve_params(args: &SimulateArgs) -> anyhow::Result<SimParams> {
     let p = SimParams::scenario(&args.scenario)?.with_overrides(&args.set)?;
     p.validate()?;
@@ -63,6 +96,29 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     if geometries.is_empty() {
         geometries.push(grid(p.grid_side, p.grid_spacing_um));
     }
+
+    // its components, so a trailing slash names the same folder
+    let done_path: std::path::PathBuf = std::path::Path::new(args.out.as_ref())
+        .components()
+        .collect();
+    let done = done_path.to_string_lossy().into_owned();
+    // a partial folder is only ever an earlier stopped run's
+    let staged = partial_path(&done_path).to_string_lossy().into_owned();
+    if std::path::Path::new(&staged).exists() {
+        std::fs::remove_dir_all(&staged)?;
+    }
+    // written in place only over a folder that already holds something;
+    // missing or empty, the run is staged and moved there whole
+    let in_place = done_path.read_dir().is_ok_and(|mut d| d.next().is_some());
+    let out = if in_place {
+        done.as_str()
+    } else {
+        staged.as_str()
+    };
+    // made before simulating, so an out that cannot be made fails at once
+    std::fs::create_dir_all(format!("{out}/sections"))?;
+    std::fs::create_dir_all(format!("{out}/truth"))?;
+
     let sim = Sim::new(p, &geometries);
     let p = &sim.p;
     info!(
@@ -73,28 +129,30 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         p.n_genes
     );
 
-    let out = args.out.as_ref();
-    std::fs::create_dir_all(format!("{out}/sections"))?;
-    std::fs::create_dir_all(format!("{out}/truth"))?;
     for (s, sec) in sim.sections.iter().enumerate() {
         let triplets = sim.counts(s);
         let nnz = triplets.len();
-        let backend = format!("{out}/sections/{}.zarr", sec.name);
+        let backend = backend_path(out, &sec.name);
         write_backend(&backend, &sim.genes.names, &sec.barcodes, triplets)?;
-        write_coords(&format!("{out}/sections/{}.coords.parquet", sec.name), sec)?;
+        write_coords(&coords_path(out, &sec.name), sec)?;
         info!("{}: {} spots, {} nonzero counts", sec.name, sec.n(), nnz);
     }
     write_spots(&format!("{out}/truth/spots.parquet"), &sim)?;
-    write_domains(&format!("{out}/truth/domains.parquet"), &sim)?;
+    write_domains(&domains_path(out), &sim)?;
     write_states(&format!("{out}/truth/states.parquet"), &sim)?;
     write_genes(&format!("{out}/truth/genes.parquet"), &sim)?;
     // relative to the truth run's manifest, so the outputs can be moved whole
     let data_files: Vec<String> = sim
         .sections
         .iter()
-        .map(|sec| format!("../sections/{}.zarr", sec.name))
+        .map(|sec| backend_path("..", &sec.name))
         .collect();
-    write_truth_run(&format!("{out}/truth"), &sim, &data_files)?;
+    write_truth_run(
+        &format!("{out}/truth"),
+        &format!("{done}/truth"),
+        &sim,
+        &data_files,
+    )?;
 
     let pve = sim.realised_pve();
     let names = ["type", "donor", "inter", "section", "noise"];
@@ -111,11 +169,14 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
             "n_spots": sec.n(),
         })).collect::<Vec<_>>(),
     });
-    std::fs::write(
-        format!("{out}/manifest.json"),
-        serde_json::to_string_pretty(&manifest)?,
-    )?;
-    info!("Wrote {out}/sections, {out}/truth and {out}/manifest.json");
-    info!("See the truth with: pinto view {out}/truth/truth.pinto.json");
+    std::fs::write(manifest_path(out), serde_json::to_string_pretty(&manifest)?)?;
+    if !in_place {
+        if done_path.exists() {
+            std::fs::remove_dir(&done_path)?;
+        }
+        std::fs::rename(out, &done_path)?;
+    }
+    info!("Wrote {done}/sections, {done}/truth and {done}/manifest.json");
+    info!("See the truth with: pinto view {}", truth_run_path(&done));
     Ok(())
 }

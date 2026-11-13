@@ -190,3 +190,30 @@ fn the_best_match_is_by_f1_not_overlap() {
     assert!((p.f1 - 0.4).abs() < 1e-12, "{}", p.f1);
     assert_eq!(p.precision, 1.0);
 }
+
+/// An empty truth is refused, not read from the filesystem root.
+#[test]
+fn an_empty_truth_is_refused() {
+    for given in ["", "  "] {
+        let Err(e) = TruthSpots::read(given) else {
+            panic!("{given:?} was read");
+        };
+        let e = e.to_string();
+        assert!(e.contains("no truth given"), "{e}");
+    }
+}
+
+/// A simulation is named by its out folder, its truth folder, its truth
+/// run's manifest or that run's prefix.
+#[test]
+fn a_simulation_is_named_any_way_a_run_is() {
+    use crate::simulate::score::sim_folder;
+    let dir = tempfile::tempdir().unwrap();
+    let sim = dir.path().join("sim");
+    std::fs::create_dir_all(sim.join("truth")).unwrap();
+    std::fs::write(sim.join("truth/truth.pinto.json"), "{}").unwrap();
+    let want = sim.to_string_lossy().to_string();
+    for given in ["", "/truth", "/truth/truth.pinto.json", "/truth/truth"] {
+        assert_eq!(sim_folder(&format!("{want}{given}")), want, "{given:?}");
+    }
+}
