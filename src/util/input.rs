@@ -84,18 +84,29 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
 /// lists them: a feature one sample never measured is not a zero there.
 /// Other kinds canonicalize names first and keep their union, as before.
 fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
-    let attach_data_name = args.data_files.len() > 1;
+    open_fit_data(&args.data_files, &args.feature_kind, args.preload_data)
+}
+
+/// [`open_data_files`] on its own: the files as a fit reads them, so their
+/// rows and their cell names (`{barcode}@{base}` with several files) are a
+/// fit's. `pinto residual` reads a run's data back this way.
+pub fn open_fit_data(
+    data_files: &[Box<str>],
+    feature_kind: &FeatureNameKind,
+    preload_data: bool,
+) -> anyhow::Result<SparseIoVec> {
+    let attach_data_name = data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
-    if let Some(canon) = args.feature_kind.clone().into_canonicalizer() {
+    if let Some(canon) = feature_kind.clone().into_canonicalizer() {
         data_vec = data_vec.with_row_canonicalizer(move |name| canon(name))?;
     } else {
         data_vec = data_vec.with_row_alignment(RowAlignment::Intersect)?;
     }
 
-    for data_file in args.data_files.iter() {
+    for data_file in data_files.iter() {
         info!("Importing data file: {}", data_file);
 
-        let data = open_sparse(data_file, args.preload_data)?;
+        let data = open_sparse(data_file, preload_data)?;
         let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
 
         data_vec.push(Arc::from(data), data_name)?;
@@ -104,9 +115,9 @@ fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
     anyhow::ensure!(data_vec.num_rows() > 0, "the data files share no row name");
     // Rows spelled differently across files (`ENSG..._GENE1` against
     // `GENE1`) leave few shared: say so, rather than fit on what is left.
-    if args.feature_kind.is_exact() {
+    if feature_kind.is_exact() {
         let shared = data_vec.num_rows();
-        for (j, file) in args.data_files.iter().enumerate() {
+        for (j, file) in data_files.iter().enumerate() {
             let own = data_vec[j].num_rows().unwrap_or(0);
             if 2 * shared < own {
                 log::warn!("{file}: only {shared} of its {own} rows are in every data file");

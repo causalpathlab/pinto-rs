@@ -63,7 +63,6 @@ pub fn dir_or_cwd(p: &Path) -> PathBuf {
 }
 
 /// Whether `a` and `b` are one file, through links.
-#[cfg(feature = "view")]
 pub fn same_file(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
 }

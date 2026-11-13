@@ -11,7 +11,7 @@ use serde_json::Value;
 /// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(
-        "{FITS} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
+        "{FITS} {SIMULATE} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
         crate::lr_activity::ligand_effect::verdict::verdict_line()
     )
 }
@@ -28,6 +28,14 @@ over a run. Ablations are fits with run_fit's ablation flags \
 `run_compare` sets two runs' communities against each other (ARI, NMI, \
 matched communities, and which vanish, split or merge); `run_predict` scores \
 held-out cells on a fitted lc model.";
+
+const SIMULATE: &str = "\
+Simulation with a planted truth: `run_simulate` writes donors' sections \
+(a background job); `view_open` its `<out>/truth/truth.pinto.json` shows the \
+planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
+`fit.coords` (the sections and their coordinates, in order) as its data and \
+coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, and \
+`run_sim_baseline` writes a standard pipeline's labels to score next to them.";
 
 const LRA: &str = "\
 Ligand-receptor analysis: `run_lra` on a run asks, per ligand-receptor pair, \

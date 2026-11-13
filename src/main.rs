@@ -11,8 +11,10 @@ mod mcp;
 mod paired;
 mod predict;
 mod propensity;
+mod residual;
 #[cfg(feature = "view")]
 mod run;
+mod simulate;
 mod svd;
 #[cfg(feature = "view")]
 mod tui;
@@ -509,6 +511,25 @@ enum Commands {
     Impute(Box<ImputeArgs>),
 
     #[command(
+        about = "Write the counts a fitted run leaves unexplained, as new data files.",
+        long_about = "Stage 2 of a residual fit. Conditioning on an lc, cage or dsvd run\n\
+                      (its per-cell propensities, from which raw-count community\n\
+                      profiles p_k are refitted, and per-cell EM proportions θ_i),\n\
+                      each cell's expectation is n_i Σ_k θ_ik p_k(g); no batch fold\n\
+                      from the run enters it. Per data file it writes\n  \
+                      {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n  \
+                      {out}/{stem}.coords.parquet  the run's coordinates of its cells\n\
+                      and {out}/residual.json, so lc, cage and dsvd fit the residual\n\
+                      as they fit data.\n\n\
+                      Limits: no donor or batch effect is removed, so donor nuisance\n\
+                      stays in the residual. A residual community confined to one\n\
+                      donor is evidence of donor-specific biology only when the\n\
+                      donors carry no such nuisance; a mix of shared cell states\n\
+                      unique to one donor is not recovered."
+    )]
+    Residual(Box<residual::ResidualArgs>),
+
+    #[command(
         name = "lra",
         aliases = ["lr-activity", "test-lr"],
         about = "Ligand-receptor analysis: does neighbouring ligand change the receiving cells?",
@@ -522,6 +543,61 @@ enum Commands {
         long_about = lr_activity::lra_simulate_long_about()
     )]
     LraSimulate(Box<LraSimulateArgs>),
+
+    #[command(
+        name = "srt-simulate",
+        about = "Simulate multi-donor spatial data with a planted truth",
+        long_about = "Simulate several donors' sections with a planted truth.\n\n\
+                      Location sets a spot's domain, the domain its likely cell states, and\n\
+                      the states its expression. Donor and section nuisance (to be removed)\n\
+                      and a domain one donor alone has (to be kept) are set as proportions\n\
+                      of the log rate's variance; spot noise is what the shares leave, so\n\
+                      raising one share with the others fixed shrinks the noise (the log\n\
+                      says what a setting implies). Counts are negative binomial through a\n\
+                      low-rank Gaussian copula, from keyed random numbers: --set\n\
+                      nuisance_off=true with the same seed draws the exact counterfactual.\n\n\
+                      Writes:\n\
+                      \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
+                      \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\
+                      \x20 {out}/truth/*.parquet            spots, domains, states, genes\n\
+                      \x20 {out}/manifest.json              every parameter and the realised read-outs"
+    )]
+    SrtSimulate(Box<simulate::SimulateArgs>),
+
+    #[command(
+        name = "srt-sim-score",
+        about = "Score labellings against a simulation's planted truth",
+        long_about = "Score how well labellings recover an srt-simulate run's planted truth,\n\
+                      as two tests.\n\n\
+                      1. Donor-invariant domains, on spots of shared domains: shared_ari\n\
+                      \x20  (labels against domains), donor_dep (how much the labels depend on\n\
+                      \x20  the donor within a domain: conditional mutual information, 0 to 1)\n\
+                      \x20  and consistency (share of shared domains whose most common label is\n\
+                      \x20  the same in every donor).\n\
+                      2. Donor-specific domains, each against its best-matching label: f1,\n\
+                      \x20  precision (low: shared spots absorbed), recall, and owner share (1:\n\
+                      \x20  the label is confined to the owning donor).\n\n\
+                      Labellings are pinto runs at --level, or tables with a cell column\n\
+                      (--label-column names the labels)."
+    )]
+    SrtSimScore(Box<simulate::SimScoreArgs>),
+
+    #[command(
+        name = "srt-sim-baseline",
+        about = "Label a simulation with a standard pipeline, as a baseline",
+        long_about = "Label an srt-simulate run's spots with the standard scanpy recipe, as a\n\
+                      baseline for srt-sim-score: total-count normalisation to 1e4, log1p,\n\
+                      highly variable genes by normalised dispersion, scaling, PCA, a kNN\n\
+                      graph and Leiden tuned toward --k clusters (default: the simulation's\n\
+                      domains).\n\n\
+                      --method pooled runs all sections together, with no batch handling;\n\
+                      --method harmony corrects the PCs for the donor with Harmony\n\
+                      (Korsunsky et al. 2019) before the kNN graph; --method per-donor\n\
+                      runs each donor alone and gives each cluster the label of the most\n\
+                      correlated cluster of the largest donor (marker-correlation matching).\n\
+                      Writes a cell<TAB>label table."
+    )]
+    SrtSimBaseline(Box<simulate::BaselineArgs>),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",
@@ -758,6 +834,10 @@ fn main() -> anyhow::Result<()> {
         Commands::LraSimulate(args) => {
             fit_lra_simulate(args)?;
         }
+        Commands::Residual(args) => residual::run_residual(args)?,
+        Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
+        Commands::SrtSimScore(args) => simulate::run_score(args)?,
+        Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {

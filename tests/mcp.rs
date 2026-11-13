@@ -7,6 +7,7 @@ mod common;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 struct Client {
@@ -156,7 +157,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..13],
+        names[..16],
         [
             "run_methods",
             "run_fit",
@@ -165,6 +166,9 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_compare",
             "run_lra",
             "run_lra_simulate",
+            "run_simulate",
+            "run_sim_score",
+            "run_sim_baseline",
             "view_open",
             "view_map",
             "view_markers",
@@ -589,4 +593,155 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
     let msg = c.fails("run_lra_simulate", json!({"run": run, "out": "old"}));
     assert!(msg.contains("give another out"), "{msg}");
     assert!(!dir.path().join("x.lra.parquet").exists());
+}
+
+/// A simulation over the server: settings checked before anything runs, the
+/// simulation a background job that never writes over one, its truth run
+/// opened in the viewer, and the truth scored against itself.
+#[test]
+fn an_agent_simulates_looks_and_scores() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    let tiny = json!(["grid_side=8", "n_genes=40", "programme_genes=5"]);
+
+    let msg = c.fails("run_simulate", json!({"set": ["pve_type=0"], "out": "bad"}));
+    assert!(msg.contains("pve_type must be positive"), "{msg}");
+    assert!(!dir.path().join("bad").exists(), "refused before it ran");
+
+    let (job, _) = c.ok(
+        "run_simulate",
+        json!({"scenario": "L2", "set": tiny, "out": "sim"}),
+    );
+    let id = job["job"].as_str().unwrap().to_string();
+    let truth = job["truth"].as_str().unwrap().to_string();
+    // The reply spells out the variance shares, noise as the remainder.
+    assert!(job["shares"]["noise"].as_f64().unwrap() > 0.0, "{job}");
+    assert!(
+        job["shares_note"]
+            .as_str()
+            .unwrap()
+            .contains("(the remainder)"),
+        "{job}"
+    );
+    assert!(truth.ends_with("sim/truth/truth.pinto.json"), "{job}");
+    assert!(job["note"].as_str().unwrap().contains("view_open"), "{job}");
+    let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
+    assert_eq!(waited["state"], "done", "{waited}");
+    assert!(
+        waited["summary"].as_str().unwrap().contains(&truth),
+        "the finished job names the truth run: {waited}"
+    );
+    assert!(dir.path().join("sim/manifest.json").is_file());
+    // The reply lists the sections to fit, with their coordinates in the
+    // same order, all written; the finished job names them too.
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("sim/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    let sections = manifest["sections"].as_array().unwrap();
+    let (data, coords) = (
+        job["fit"]["data"].as_array().unwrap(),
+        job["fit"]["coords"].as_array().unwrap(),
+    );
+    assert_eq!(
+        (data.len(), coords.len()),
+        (sections.len(), sections.len()),
+        "{job}"
+    );
+    for ((d, xy), sec) in data.iter().zip(coords).zip(sections) {
+        let name = sec["section"].as_str().unwrap();
+        let (d, xy) = (d.as_str().unwrap(), xy.as_str().unwrap());
+        assert!(d.ends_with(&format!("sim/sections/{name}.zarr")), "{d}");
+        assert!(
+            xy.ends_with(&format!("sim/sections/{name}.coords.parquet")),
+            "{xy}"
+        );
+        assert!(Path::new(d).exists() && Path::new(xy).is_file(), "{d} {xy}");
+    }
+    assert!(!dir.path().join("sim.partial").exists(), "{job}");
+
+    let msg = c.fails("run_simulate", json!({"set": tiny, "out": "sim"}));
+    assert!(
+        msg.contains("exists") && msg.contains("give another out"),
+        "{msg}"
+    );
+
+    let (opened, _) = c.ok("view_open", json!({"prefix": truth}));
+    assert!(
+        opened["levels"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("domain")),
+        "{opened}"
+    );
+    let batches: Vec<&Value> = opened["batches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| &b["batch"])
+        .collect();
+    let names: Vec<&Value> = sections.iter().map(|s| &s["section"]).collect();
+    assert_eq!(batches, names, "one batch per section: {opened}");
+
+    // The reply's truth is what run_sim_score takes, as is the out folder.
+    for given in [truth.as_str(), "sim"] {
+        let (scored, _) = c.ok(
+            "run_sim_score",
+            json!({"truth": given, "labels": [truth], "level": "domain"}),
+        );
+        let s = &scored["scores"][0]["score"];
+        assert_eq!(s["shared_ari"], 1.0, "{scored}");
+        assert_eq!(s["donor_dependence"], 0.0, "{scored}");
+        assert_eq!(s["patches"][0]["f1"], 1.0, "{scored}");
+    }
+    // A baseline runs on the reply's truth and its table scores like a fit;
+    // its out may sit in a folder not made yet. A bad setting, or a
+    // simulation the baseline cannot read, is refused before any job.
+    let msg = c.fails("run_sim_baseline", json!({"truth": truth, "k": 0}));
+    assert!(msg.contains("k must be at least 1"), "{msg}");
+    std::fs::create_dir_all(dir.path().join("half/truth")).unwrap();
+    let msg = c.fails("run_sim_baseline", json!({"truth": "half"}));
+    assert!(msg.contains("give run_simulate's truth"), "{msg}");
+    let (base, _) = c.ok(
+        "run_sim_baseline",
+        json!({"truth": truth, "method": "per-donor", "out": "later/base", "background": false}),
+    );
+    assert!(dir.path().join("later/base.tsv").is_file(), "{base}");
+    let table = base["labels"].as_str().unwrap().to_string();
+    assert!(Path::new(&table).is_file(), "{base}");
+    assert!(
+        base["note"].as_str().unwrap().contains("run_sim_score"),
+        "{base}"
+    );
+    let (scored, _) = c.ok("run_sim_score", json!({"truth": truth, "labels": [table]}));
+    assert_eq!(scored["scores"].as_array().unwrap().len(), 1, "{scored}");
+
+    // A labelling that cannot be scored is named; the others are scored.
+    let (scored, _) = c.ok(
+        "run_sim_score",
+        json!({"truth": truth, "labels": [truth, "nowhere.tsv"], "level": "domain"}),
+    );
+    assert_eq!(scored["scores"].as_array().unwrap().len(), 1, "{scored}");
+    assert_eq!(scored["failed"][0]["labels"], "nowhere.tsv", "{scored}");
+    let msg = c.fails(
+        "run_sim_score",
+        json!({"truth": truth, "labels": ["nowhere.tsv"]}),
+    );
+    assert!(msg.contains("nowhere.tsv"), "{msg}");
+    let msg = c.fails("run_sim_score", json!({"truth": " ", "labels": [truth]}));
+    assert!(msg.contains("give run_simulate's truth"), "{msg}");
+
+    // A simulation that fails once launched says so through its job, or at
+    // once when waited on, and leaves its out free for a retry.
+    std::fs::write(dir.path().join("blocker"), "").unwrap();
+    let (job, _) = c.ok("run_simulate", json!({"set": tiny, "out": "blocker/sim"}));
+    let id = job["job"].as_str().unwrap().to_string();
+    let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
+    assert_eq!(waited["state"], "failed", "{waited}");
+    let msg = c.fails(
+        "run_simulate",
+        json!({"set": tiny, "out": "blocker/sim", "background": false}),
+    );
+    assert!(!msg.contains("give another out"), "{msg}");
 }

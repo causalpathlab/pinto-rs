@@ -259,15 +259,21 @@ fn cage_propensities(
     // run keeps only the cells it could place (those with coordinates, for
     // one) and the files hold every cell.
     let data_cells = ref_data.column_names()?;
-    let ref_prop = align_to_columns(&ref_prop_path, ref_prop, &ref_cells, &data_cells)?;
+    let ref_prop =
+        align_to_columns(&ref_prop_path, ref_prop, &ref_cells, &data_cells).map_err(|e| {
+            anyhow::anyhow!(
+            "{e:#}; pass the training run's own data files (in training order) as --reference-data"
+        )
+        })?;
     Ok((query_prop, query_cells, ref_prop, ref_data))
 }
 
 /// `prop`'s rows, named `prop_cells`, moved onto the axis `data_cells`: a
 /// data cell the run never placed gets a zero row, which the retrieval never
 /// returns; a propensity cell absent from the data means the files are not
-/// the run's. The identity when the two axes already agree.
-fn align_to_columns(
+/// the run's. The identity when the two axes already agree. Callers add
+/// which files to pass instead.
+pub(crate) fn align_to_columns(
     path: &str,
     prop: Mat,
     prop_cells: &[Box<str>],
@@ -283,9 +289,8 @@ fn align_to_columns(
         .collect();
     anyhow::ensure!(
         col_of.len() == data_cells.len(),
-        "{path}: the reference data's cell names are not unique, so its cells cannot be \
-         paired with the propensity's by name — pass the training run's own data files \
-         (in training order) as --reference-data"
+        "{path}: the data's cell names are not unique, so its cells cannot be paired \
+         with the propensity's by name"
     );
     let mut aligned = Mat::zeros(data_cells.len(), prop.ncols());
     let mut missing = 0usize;
@@ -297,8 +302,7 @@ fn align_to_columns(
     }
     anyhow::ensure!(
         missing == 0,
-        "{path}: {missing} of its {} cells are not in the reference data — pass the \
-         training run's own data files as --reference-data",
+        "{path}: {missing} of its {} cells are not in the data",
         prop_cells.len()
     );
     let unplaced = data_cells.len() - prop_cells.len();

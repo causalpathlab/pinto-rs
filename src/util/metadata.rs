@@ -446,6 +446,11 @@ pub struct LevelInfo {
     /// `entropy` column (post-Phase-1 runs). `None` for older runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entropy_present: Option<bool>,
+    /// A name per community, `C{k}` → `community_names[k]`, for levels
+    /// whose communities have names of their own (a simulation's planted
+    /// domains). Absent: the viewer names them `C{k}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community_names: Option<Vec<String>>,
 }
 
 impl PintoMetadata {
@@ -503,6 +508,7 @@ impl PintoMetadata {
                     link_community: self.outputs.link_community.clone(),
                     feature_community: self.outputs.feature_community.clone(),
                     entropy_present: None,
+                    community_names: None,
                 })
                 .collect(),
         }
@@ -555,6 +561,7 @@ impl PintoMetadata {
                     keep(Some(format!("{stem}.gene_topic.parquet")))
                 }),
                 entropy_present: None,
+                community_names: None,
                 ..l
             })
             .collect();
@@ -595,6 +602,7 @@ pub fn lc_level_info(prefix: &str, level_index: usize) -> LevelInfo {
         link_community: Some(format!("{prefix}.{tag}.link_community.parquet")),
         feature_community: Some(format!("{prefix}.{tag}.feature_community.parquet")),
         entropy_present: Some(true),
+        community_names: None,
     }
 }
 
@@ -612,6 +620,7 @@ pub fn final_level_info(prefix: &str, level_index: usize) -> LevelInfo {
         link_community: Some(format!("{prefix}.link_community.parquet")),
         feature_community: Some(format!("{prefix}.feature_community.parquet")),
         entropy_present: Some(true),
+        community_names: None,
     }
 }
 
@@ -822,6 +831,7 @@ pub fn create_prop_metadata(
         link_community: Some(format!("{prefix}.link_community.parquet")),
         feature_community: None,
         entropy_present: Some(true),
+        community_names: None,
     }];
 
     PintoMetadata {

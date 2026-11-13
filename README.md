@@ -170,6 +170,153 @@ confounded nulls and the planted effects, and the baselines' run time.
 pinto lra-simulate --from out/run1.pinto.json
 ```
 
+### `srt-simulate`, `srt-sim-score`, `srt-sim-baseline`: multi-donor data with a planted truth
+
+Do methods find the same domains in every donor, and keep a domain that
+only one donor has, when donor effects are as large as cell-type effects?
+`pinto srt-simulate` makes several donors' sections with a known answer,
+`pinto srt-sim-score` scores any labelling against it, and
+`pinto srt-sim-baseline` runs the two usual workflows (pool every donor, or
+analyse each donor alone) for comparison.
+
+**What is simulated.** Location sets a spot's domain (smooth random fields
+on real or grid coordinates), the domain sets its mix of cell states, and
+the states set expression. One donor can own an extra domain, a new cell
+state or a new mix of shared ones, which is biology to keep. Counts are
+negative binomial through a low-rank Gaussian copula. With one donor and no
+nuisance this reduces to SRTsim's reference-free domains (Zhu, Shang and
+Zhou 2023); the copula follows scDesign3 (Song et al. 2023) in form.
+`--set nuisance_off=true` with the same seed draws the exact counterfactual
+without donor or section effects.
+
+**The variance shares.** Each spot's log rate is a sum of terms, each
+holding a set share of the log rate's variance:
+
+| dial | share of |
+|---|---|
+| `pve_type` | the cell states, the signal that defines domains |
+| `pve_donor` | donor-wide effects, the same in every cell state |
+| `pve_inter` | donor-by-cell-state effects |
+| `pve_section` | per-section effects |
+| (none) | spot noise: what the four shares leave |
+
+Noise is the remainder, so raising one share with the others fixed shrinks
+the noise, not the other shares. A sweep over the nuisance shares
+(`N = pve_donor + pve_inter + pve_section`) has to choose what gives way,
+and the choice changes what a trend along N means:
+
+| held fixed | set | as N grows |
+|---|---|---|
+| `pve_type` | `pve_type = t` | the noise shrinks; the cell-type signal grows against it |
+| the type-to-noise ratio | `pve_type = t × (1 − N)` | type and noise shrink together |
+| the noise share | `pve_type = 1 − noise − N` | the cell-type signal shrinks |
+
+Every run logs the shares it has, noise spelt out as the remainder. A
+nuisance share that is set but off is named with the reason: with
+`nuisance_off`, or when it has nothing to vary across (one donor or
+section, or every one clean), the term is dropped and its share does not
+pass to the noise. With nuisance on, the log gives the type-to-noise ratio
+here and with the nuisance shares at 0. The `nuisance_off` counterfactual
+keeps the noise share, so its ratio is the run's own. The manifest records
+the shares realised on the programme genes. Donors and sections can be made clean of nuisance
+(`clean_donors`, `clean_sections`). Named scenarios (`L0`, `L1`, `L2`,
+`L2-mix`, `clean-one`, `null-shift`) set the rest; `--set key=value`
+changes any parameter, and `pinto srt-simulate --help` lists the scenarios.
+
+```sh
+pinto srt-simulate --scenario L2 --set pve_donor=0.2 --set seed=2 -o sim
+pinto view sim/truth/truth.pinto.json          # the planted domains, states and donors
+```
+
+**Outputs.** `sim/sections/S*.zarr` (counts) and `S*.coords.parquet`
+(`row_um`, `col_um`) per section; `sim/truth/` with each spot's section,
+donor, domain and its owner, state and mixture, and the truth as a run that
+`pinto view` opens; `sim/manifest.json` with every parameter. A missing or
+empty `sim` is written as `sim.partial` and moved into place once whole, so
+a stopped run leaves no `sim`; a `sim` that already holds files is written
+in place.
+
+**Scoring.** `pinto srt-sim-score --truth sim --labels <runs or tables>`
+runs two tests:
+
+1. *Donor-invariant domains*, on spots of shared domains: `shared_ari`
+   (labels against domains), `donor_dependence` (`donor_dep` in the table:
+   how much the labels depend on the donor within a domain, as conditional
+   mutual information, 0 to 1) and
+   `consistency` (share of shared domains whose most common label is the
+   same in every donor).
+2. *Donor-specific domains*, each against its best-matching label: `f1`,
+   `precision` (`prec` in the table; low: shared spots absorbed), `recall`
+   (in the `-o` JSON), and `owner_share` (`owner`; 1: the label is confined
+   to the owning donor).
+
+**Scoring another method.** Any tool can be scored:
+
+1. Export the sections, e.g. `data-beans to-h5ad` or `data-beans to-mtx` on
+   each `sim/sections/S*.zarr`, and fit them with that tool.
+2. Write a table with a `cell` column and a label column (`--label-column`,
+   default `label`). With several sections a cell is named
+   `barcode@section` (e.g. `S1_00001@S1`), as pinto names them; with one,
+   the bare barcode. `sim/truth/spots.parquet` lists every name.
+3. `pinto srt-sim-score --truth sim --labels that.tsv`. Unlabelled cells
+   (empty, `NA`, `-1`, `unassigned`) are left out and counted.
+
+**Baselines.** `pinto srt-sim-baseline --truth sim --method <m> -o m.tsv`
+writes such a table:
+
+- `pooled`: the scanpy recipe (Wolf, Angerer and Theis 2018) on all
+  sections together, no batch handling: normalisation, seurat-flavour HVGs
+  (Satija et al. 2015), scaling, PCA, a kNN graph and Leiden (Traag,
+  Waltman and van Eck 2019) toward the true number of domains;
+- `harmony`: the same with the PCs corrected for the donor by Harmony
+  (Korsunsky et al. 2019);
+- `per-donor`: the recipe on each donor alone, toward the domains that
+  donor holds, then each cluster labelled by marker correlation with the
+  largest donor's clusters, as scmap-cluster projects onto reference
+  centroids (Kiselev, Yiu and Hemberg 2018).
+
+Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score` and
+`run_sim_baseline` (see `mcp` below).
+
+### `residual`: what a fitted run leaves unexplained
+
+`pinto residual --run FIT -o OUT` takes an lc, cage or dsvd run and writes
+the counts its communities do not explain, as new data files that `lc`,
+`cage` and `dsvd` fit as they fit data: the second stage of a two-stage
+fit, meant to pick up structure the first stage absorbed, such as a domain
+only one donor has.
+
+From the run's per-cell propensities it refits raw-count community profiles
+`p_k` (lc's feature-community statistic with unit weights) and each cell's
+proportions `θ_i` (the per-cell EM of `pinto impute`), so a cell's
+expectation is `μ_gi = n_i Σ_k θ_ik p_k(g)`. Per data file it writes the
+excess `round(max(y − μ, 0))` (or the floor, `--excess floor`) on the rows
+every file shares as `{OUT}/{stem}.zarr`, the run's coordinates of its
+cells as
+`{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` with the counts in
+and out. Data is read as the fit read it: exactly by name for lc and dsvd,
+and for a cage run with the `--feature-names` mode it was fitted with. The
+run must be an lc, cage or dsvd run; every file's name must be distinct,
+and nothing at `OUT` is written over.
+
+**Limits.** No donor or batch effect is removed from `μ`, so donor nuisance
+stays in the residual. A residual community confined to one donor is
+evidence of donor-specific biology only when the donors carry no such
+nuisance; a mix of shared cell states unique to one donor is not
+recovered.
+
+```sh
+pinto residual --run out/lc1 -o out/resid
+pinto lc out/resid/S1.zarr,out/resid/S2.zarr \
+  -c out/resid/S1.coords.parquet,out/resid/S2.coords.parquet \
+  --coord-column-names x,y -o out/lc2   # the first run's coordinate names
+```
+
+Each coordinate file holds the run's first two coordinates under the run's
+column names (with a `spot` column first), so the second fit reads them by
+those names: `--coord-column-names` with the run's names, whatever columns
+the first fit picked them from.
+
 ### Ablations, `compare` and held-out scoring
 
 An ablation is a fit with one thing taken away or scrambled. Set it against
@@ -519,7 +666,14 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > `run_region` turns a polygon into the cell list mask-cells takes;
 > `run_compare` sets two runs' communities against each other (ARI, NMI,
 > matched communities, and which vanish, split or merge); `run_predict` scores
-> held-out cells on a fitted lc model. Ligand-receptor analysis: `run_lra` on
+> held-out cells on a fitted lc model. Simulation with a planted truth:
+> `run_simulate` writes donors' sections (a background job); `view_open` its
+> `<out>/truth/truth.pinto.json` shows the planted domains; fit with `run_fit`,
+> passing the reply's `fit.data` and `fit.coords` (the sections and their
+> coordinates, in order) as its data and coords, and `fit.flags` as its
+> flags; `run_sim_score` scores the fits' labels against the reply's truth,
+> and `run_sim_baseline` writes a standard pipeline's labels to score next to
+> them. Ligand-receptor analysis: `run_lra` on
 > a run asks, per ligand-receptor pair, whether receivers touching
 > ligand-carrying neighbours change their response programme compared with
 > similar cells that do not (adjusted for region, section, cell identity,
@@ -566,6 +720,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
 | `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects |
+| `run_simulate` | `pinto srt-simulate` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
+| `run_sim_score` | `pinto srt-sim-score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_baseline` | `pinto srt-sim-baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `k`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score` |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
@@ -573,7 +730,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: verdict counts and a list filtered by `verdict` and `search` (genes), `sort`ed by q, effect or name, each with its percent change and q; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns; with `curve: true`, the selected lra pair's threshold-response curve |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
-| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`) in the background, or stop it |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.
