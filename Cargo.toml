@@ -7,7 +7,6 @@ license = "MIT"
 authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
 description = "Proximity-based Interaction Network analysis for Tissue Organization"
 repository = "https://github.com/causalpathlab/pinto-rs"
-homepage = "https://github.com/causalpathlab/pinto-rs"
 readme = "README.md"
 keywords = ["genomics", "spatial", "single-cell", "link-community"]
 categories = ["science", "command-line-utilities"]

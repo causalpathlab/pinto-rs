@@ -473,9 +473,9 @@ fn no_gene_gets_an_outsized_nuisance_term() {
                     );
                 }
             }
-            for s in 0..p.n_sections() {
+            for (s, x) in nu.section[g].iter().take(p.n_sections()).enumerate() {
                 assert!(
-                    (sc.section * nu.section[g][s]).abs() <= bound(p.pve_section),
+                    (sc.section * x).abs() <= bound(p.pve_section),
                     "{name} gene {g} section {s}"
                 );
             }
