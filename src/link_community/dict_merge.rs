@@ -21,9 +21,106 @@
 //! `n_samples`-weighted mean of `(left, o)` and `(right, o)` similarities,
 //! which is equivalent to the average pairwise similarity between leaves.
 
-use crate::util::common::Mat;
+use crate::util::common::{DVec, Mat};
 pub use data_beans::alg::bhc::{bhc_cut as cosine_cut, BhcMerge};
 use legume_numeric::matrix::traits::MatOps;
+
+/// The effective number of communities, below which a group has no mean of its
+/// own in [`remove_group_means`]: closer to one community than to two.
+const MIN_EFFECTIVE_COMMUNITIES: f32 = 1.5;
+
+/// Each community's share of its edge ends in each group: `[k × n_groups]`,
+/// rows summing to 1 (or to 0 for a community with no edge). `edges` is
+/// parallel to `membership`, and `group_of[cell]` is a cell's group; an edge
+/// between two groups counts half for each.
+pub fn community_group_shares(
+    membership: &[usize],
+    k: usize,
+    edges: &[(usize, usize)],
+    group_of: &[u32],
+    n_groups: usize,
+) -> Mat {
+    debug_assert_eq!(membership.len(), edges.len());
+    let mut count = vec![0.0f64; k * n_groups];
+    for (&c, &(u, v)) in membership.iter().zip(edges) {
+        count[c * n_groups + group_of[u] as usize] += 0.5;
+        count[c * n_groups + group_of[v] as usize] += 0.5;
+    }
+    let mut share = Mat::zeros(k, n_groups);
+    for c in 0..k {
+        let row = &count[c * n_groups..(c + 1) * n_groups];
+        let total: f64 = row.iter().sum();
+        if total > 0.0 {
+            for (g, &x) in row.iter().enumerate() {
+                share[(c, g)] = (x / total) as f32;
+            }
+        }
+    }
+    share
+}
+
+/// The dictionary with each group's mean profile taken out of the
+/// communities it holds, for [`cosine_merge`] across sections.
+///
+/// A section shifts every community it holds the same way (depth, a batch
+/// effect, its own composition), and that shared shift is often larger than
+/// the difference between two cell types. Compared as they stand, two types
+/// in one section then look more alike than one type in two sections, and
+/// the merge collapses types within a section before it ever joins a type
+/// across sections. With the section's mean removed, a community is compared
+/// by how it differs from its own section.
+///
+/// `share[(c, g)]` is community `c`'s share in group `g`
+/// ([`community_group_shares`]); a community with no share anywhere has no
+/// edge. A group's mean counts each community by its share there, not by its
+/// size, so one large community does not become the mean. A community alone
+/// in its group would be its group's mean and come out as nothing, so a group
+/// whose effective number of communities (the inverse Simpson index of its
+/// shares, `(Σ s)² / Σ s²`) is below [`MIN_EFFECTIVE_COMMUNITIES`] is
+/// compared against the mean over all communities with an edge instead: a
+/// stray edge end of a second community does not give a group a mean of its
+/// own. A community spread over several groups loses the mix of their means
+/// in its own proportions.
+///
+/// A community with no edge comes out as zeros. Its log-rates are the
+/// prior's, on another scale from the centred profiles, and left in they
+/// would shift the merge's per-feature centring of every other community.
+/// With one group this only centres each feature, which the merge does anyway.
+pub fn remove_group_means(post_log_mean: &Mat, share: &Mat) -> Mat {
+    let (n_features, k) = (post_log_mean.nrows(), post_log_mean.ncols());
+    debug_assert_eq!(share.nrows(), k);
+    let n_groups = share.ncols();
+    let occupied: Vec<usize> = (0..k).filter(|&c| share.row(c).sum() > 0.0).collect();
+    // the mean over occupied communities, each counted once
+    let mut overall = DVec::zeros(n_features);
+    for &c in &occupied {
+        overall += post_log_mean.column(c);
+    }
+    overall /= occupied.len().max(1) as f32;
+    // `[n_features × n_groups]`: each group's mean profile
+    let mut mean = Mat::zeros(n_features, n_groups);
+    for g in 0..n_groups {
+        let weight: f32 = share.column(g).sum();
+        let effective = weight * weight / share.column(g).norm_squared();
+        let mut col = mean.column_mut(g);
+        if weight == 0.0 || effective < MIN_EFFECTIVE_COMMUNITIES {
+            col.copy_from(&overall);
+            continue;
+        }
+        for c in (0..k).filter(|&c| share[(c, g)] > 0.0) {
+            col.axpy(share[(c, g)] / weight, &post_log_mean.column(c), 1.0);
+        }
+    }
+    let mut out = Mat::zeros(n_features, k);
+    for &c in &occupied {
+        let mut col = out.column_mut(c);
+        col.copy_from(&post_log_mean.column(c));
+        for g in (0..n_groups).filter(|&g| share[(c, g)] > 0.0) {
+            col.axpy(-share[(c, g)], &mean.column(g), 1.0);
+        }
+    }
+    out
+}
 
 /// Build an agglomerative average-linkage merge tree over the K columns of
 /// `post_log_mean` (feature × community posterior log-mean) using cosine
@@ -32,7 +129,7 @@ use legume_numeric::matrix::traits::MatOps;
 /// Returns `K - 1` merges in increasing-id order. Each merge records the
 /// cosine similarity at which the two children were joined in `log_bf`.
 /// The resulting tree can be cut with `data_beans::alg::bhc::bhc_cut`
-/// using a cosine-similarity threshold (e.g. 0.9 = collapse columns whose
+/// using a cosine-similarity threshold (e.g. 0.4 = collapse columns whose
 /// merge happened at cosine ≥ 0.9).
 ///
 /// `keep_features` is a per-row mask of features to score on, indexed like

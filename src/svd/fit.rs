@@ -137,6 +137,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids: _,
         seeding,
         batch_effects: batch_db,
         graph,

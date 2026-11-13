@@ -25,7 +25,9 @@
 use crate::feature_network::graph::*;
 use crate::feature_network::modules::{kcore_trim, leiden_feature_modules};
 use crate::link_community::cascade::{run_cascade, CascadeConfig, ModulePairContext, ProfileMode};
-use crate::link_community::dict_merge::{cosine_cut, cosine_merge};
+use crate::link_community::dict_merge::{
+    community_group_shares, cosine_cut, cosine_merge, remove_group_means,
+};
 use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler};
 use crate::link_community::incidence::{
     cell_incidence_scores, fit_log_incidence, pack_propensity_row_major,
@@ -67,6 +69,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids,
         seeding,
         batch_effects: _,
         graph,
@@ -525,10 +528,30 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 "Running cosine dictionary merge (average linkage) over K={} communities...",
                 k
             );
-            let merges = cosine_merge(
-                draft.feature_community.posterior_log_mean(),
-                Some(&keep_features),
-            );
+            // Across sections, communities are compared within their section
+            // (see `remove_group_means`); also under --ignore-batch. The shift
+            // is removed here, in the comparison, and not from the model's
+            // rates: dividing lc's edge profiles by a batch estimate lowered
+            // the partition's purity when measured, while centring the
+            // comparison did not.
+            let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
+            let share =
+                community_group_shares(&final_membership, k, edges, &section_ids, n_sections);
+            // sections holding an edge end
+            let n_present = (0..n_sections)
+                .filter(|&g| share.column(g).sum() > 0.0)
+                .count();
+            let centred_sections = (n_present > 1).then_some(n_present);
+            if let Some(n) = centred_sections {
+                info!(
+                    "Dictionary merge: the mean profile of each of {} sections is removed first",
+                    n
+                );
+            }
+            // with one section this only centres each feature over the
+            // communities with an edge
+            let centred = remove_group_means(draft.feature_community.posterior_log_mean(), &share);
+            let merges = cosine_merge(&centred, Some(&keep_features));
             write_dict_merges(&(c.out.to_string() + ".dict_merges.parquet"), &merges)?;
 
             let labels = cosine_cut(&merges, k, args.merge_cut);
@@ -580,6 +603,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 merge_summary = Some(crate::util::metadata::DictMergeSummary {
                     min_nnz,
                     features_scored: n_keep,
+                    cut_cosine: args.merge_cut,
+                    centred_sections,
                 });
             }
         }

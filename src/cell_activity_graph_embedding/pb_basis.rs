@@ -222,9 +222,10 @@ pub fn build_pseudobulks(args: PseudobulkArgs<'_>) -> anyhow::Result<Pseudobulks
     // size: every feature loads positively on it, it carries no community
     // structure, and it crowds out a dimension. Centring each feature by its own
     // mean across pseudobulks makes cosine on the result equal Pearson on the
-    // log-rates — the same reason `dict_merge.rs:47-53` centres before its
-    // cosine merge. `scale_columns` alone does NOT fix this: measured, it
-    // still leaves the first singular value several times the second.
+    // log-rates, the same reason `link_community::dict_merge::cosine_merge`
+    // centres before its cosine merge. `scale_columns` alone does NOT fix
+    // this: measured, it still leaves the first singular value several times
+    // the second.
     // Feature means come from the FINEST level and are reused for every level's
     // projection. Centring each level by its OWN means would put each level in
     // a different affine frame while they share one basis and one pooled

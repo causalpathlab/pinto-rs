@@ -102,6 +102,9 @@ pub struct SrtPreprocessed {
     pub coordinates: Mat,
     pub coordinate_names: Vec<Box<str>>,
     pub batch_membership: Vec<Box<str>>,
+    /// Each kept cell's section: one per data file, crossed with the
+    /// --batch-files labels as read (not the --auto-batch components).
+    pub section_ids: Vec<u32>,
     /// What spatial seeding grids over, for a run with coordinates and
     /// enough cells to be seeded. Under `--permute-coords` its positions are
     /// the scrambled ones the graph was built on, or real-space structure
@@ -663,6 +666,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids,
         seeding,
         batch_effects,
         graph,

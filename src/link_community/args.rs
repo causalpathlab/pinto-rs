@@ -169,25 +169,27 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        default_value_t = 0.9,
-        help = "Cosine similarity cutoff for the dictionary-merge consensus cut",
+        default_value_t = 0.4,
+        help = "Cosine similarity cutoff for the dictionary-merge cut",
         long_help = "Merges at or above this cosine collapse into one community.\n\
                      Merges below the cutoff stay separate.\n\
                      \n\
-                     Cosine runs on per-feature-centred log-rates of the feature-community posterior,\n\
-                     restricted to detected features (see --merge-min-nnz).\n\
-                     Centring is per FEATURE only, so this is not a Pearson\n\
-                     correlation between communities, which would also centre\n\
-                     each community.\n\
+                     Cosine runs on per-feature-centred log-rates of the\n\
+                     feature-community posterior, restricted to detected features\n\
+                     (see --merge-min-nnz). With several sections (data files,\n\
+                     crossed with --batch-files labels), each section's mean\n\
+                     profile is removed first, so communities are compared by\n\
+                     how they differ from their own section. This holds under\n\
+                     --ignore-batch too: it is how communities are compared, not\n\
+                     a batch effect.\n\
                      \n\
-                     The default of 0.90 is moderately conservative.\n\
-                     It collapses obviously redundant programs.\n\
-                     It keeps closely-related cell-state distinctions.\n\
-                     Try 0.95 for a finer partition. Try 0.85 for an aggressive collapse.\n\
+                     The default of 0.4 joins communities whose departures from\n\
+                     their section's mean point the same way. Raise it for a\n\
+                     finer partition, lower it for a coarser one.\n\
                      \n\
-                     If the cut collapses far more than expected,\n\
-                     check the feature filter before raising this.\n\
-                     Undetected features inflate every pairwise cosine.\n\
+                     If the cut collapses far more than expected, check the\n\
+                     feature filter before setting a cut: undetected features\n\
+                     inflate every pairwise cosine.\n\
                      \n\
                      The cut lands in <out>.dict_merges.cut.parquet.\n\
                      Its columns are (community, consensus).\n\

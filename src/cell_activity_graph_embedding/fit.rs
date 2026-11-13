@@ -165,6 +165,7 @@ pub fn fit_cell_activity_graph_embedding(
         coordinates,
         coordinate_names,
         batch_membership,
+        section_ids: _,
         seeding,
         batch_effects: batch_db,
         graph,

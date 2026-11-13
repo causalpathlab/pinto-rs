@@ -28,6 +28,8 @@ fn metadata_roundtrip_lc() {
         Some(DictMergeSummary {
             min_nnz: 1,
             features_scored: 10,
+            cut_cosine: 0.25,
+            centred_sections: Some(3),
         }),
         // A channelized `lc` run reports the structural fact of its feature
         // axis.
@@ -51,7 +53,9 @@ fn metadata_roundtrip_lc() {
     assert_eq!(levels[0].tag, "L0");
     assert_eq!(levels[3].tag, "final");
     assert_eq!(levels[3].entropy_present, Some(true));
-    assert!(back.outputs.dict_merge.is_some());
+    let merge = back.outputs.dict_merge.as_ref().expect("dict_merge");
+    assert_eq!(merge.cut_cosine, Some(0.25));
+    assert_eq!(merge.centred_sections, Some(3));
     assert!(back.outputs.lr_activity.is_none());
     assert_eq!(
         back.outputs.coord_columns.as_deref(),

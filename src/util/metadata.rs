@@ -392,6 +392,10 @@ pub struct OutputFiles {
 pub struct DictMergeSummary {
     pub min_nnz: usize,
     pub features_scored: usize,
+    /// The cosine the merge tree was cut at.
+    pub cut_cosine: f64,
+    /// Sections whose mean profile was removed before the merge, if any.
+    pub centred_sections: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -408,6 +412,13 @@ pub struct DictMergeFiles {
     /// How many features cleared that cutoff.
     #[serde(alias = "genes_scored", skip_serializing_if = "Option::is_none")]
     pub features_scored: Option<usize>,
+    /// The cosine the tree was cut at (`--merge-cut`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_cosine: Option<f64>,
+    /// Sections whose mean profile was removed before the merge; absent
+    /// when the communities were compared as they stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub centred_sections: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -638,6 +649,8 @@ pub fn create_lc_metadata(
         cut: format!("{prefix}.dict_merges.cut.parquet"),
         min_nnz: Some(m.min_nnz),
         features_scored: Some(m.features_scored),
+        cut_cosine: Some(m.cut_cosine),
+        centred_sections: m.centred_sections,
     });
 
     let mut levels: Vec<LevelInfo> = cascade_level_indices
