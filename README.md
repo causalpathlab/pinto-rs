@@ -278,6 +278,45 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score` and
 `run_sim_baseline` (see `mcp` below).
 
+### `residual`: what a fitted run leaves unexplained
+
+`pinto residual --run FIT -o OUT` takes an lc, cage or dsvd run and writes
+the counts its communities do not explain, as new data files that `lc`,
+`cage` and `dsvd` fit as they fit data: the second stage of a two-stage
+fit, meant to pick up structure the first stage absorbed, such as a domain
+only one donor has.
+
+From the run's per-cell propensities it refits raw-count community profiles
+`p_k` (lc's feature-community statistic with unit weights) and each cell's
+proportions `θ_i` (the per-cell EM of `pinto impute`), so a cell's
+expectation is `μ_gi = n_i Σ_k θ_ik p_k(g)`. Per data file it writes the
+excess `round(max(y − μ, 0))` (or the floor, `--excess floor`) on the rows
+every file shares as `{OUT}/{stem}.zarr`, the run's coordinates of its
+cells as
+`{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` with the counts in
+and out. Data is read as the fit read it: exactly by name for lc and dsvd,
+and for a cage run with the `--feature-names` mode it was fitted with. The
+run must be an lc, cage or dsvd run; every file's name must be distinct,
+and nothing at `OUT` is written over.
+
+**Limits.** No donor or batch effect is removed from `μ`, so donor nuisance
+stays in the residual. A residual community confined to one donor is
+evidence of donor-specific biology only when the donors carry no such
+nuisance; a mix of shared cell states unique to one donor is not
+recovered.
+
+```sh
+pinto residual --run out/lc1 -o out/resid
+pinto lc out/resid/S1.zarr,out/resid/S2.zarr \
+  -c out/resid/S1.coords.parquet,out/resid/S2.coords.parquet \
+  --coord-column-names x,y -o out/lc2   # the first run's coordinate names
+```
+
+Each coordinate file holds the run's first two coordinates under the run's
+column names (with a `spot` column first), so the second fit reads them by
+those names: `--coord-column-names` with the run's names, whatever columns
+the first fit picked them from.
+
 ### Ablations, `compare` and held-out scoring
 
 An ablation is a fit with one thing taken away or scrambled. Set it against

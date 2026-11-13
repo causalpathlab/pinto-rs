@@ -11,6 +11,7 @@ mod mcp;
 mod paired;
 mod predict;
 mod propensity;
+mod residual;
 #[cfg(feature = "view")]
 mod run;
 mod simulate;
@@ -510,6 +511,25 @@ enum Commands {
     Impute(Box<ImputeArgs>),
 
     #[command(
+        about = "Write the counts a fitted run leaves unexplained, as new data files.",
+        long_about = "Stage 2 of a residual fit. Conditioning on an lc, cage or dsvd run\n\
+                      (its per-cell propensities, from which raw-count community\n\
+                      profiles p_k are refitted, and per-cell EM proportions θ_i),\n\
+                      each cell's expectation is n_i Σ_k θ_ik p_k(g); no batch fold\n\
+                      from the run enters it. Per data file it writes\n  \
+                      {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n  \
+                      {out}/{stem}.coords.parquet  the run's coordinates of its cells\n\
+                      and {out}/residual.json, so lc, cage and dsvd fit the residual\n\
+                      as they fit data.\n\n\
+                      Limits: no donor or batch effect is removed, so donor nuisance\n\
+                      stays in the residual. A residual community confined to one\n\
+                      donor is evidence of donor-specific biology only when the\n\
+                      donors carry no such nuisance; a mix of shared cell states\n\
+                      unique to one donor is not recovered."
+    )]
+    Residual(Box<residual::ResidualArgs>),
+
+    #[command(
         name = "lra",
         aliases = ["lr-activity", "test-lr"],
         about = "Ligand-receptor analysis: does neighbouring ligand change the receiving cells?",
@@ -814,6 +834,7 @@ fn main() -> anyhow::Result<()> {
         Commands::LraSimulate(args) => {
             fit_lra_simulate(args)?;
         }
+        Commands::Residual(args) => residual::run_residual(args)?,
         Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
