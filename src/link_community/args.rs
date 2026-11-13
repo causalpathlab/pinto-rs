@@ -169,10 +169,15 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        default_value_t = 0.4,
-        help = "Cosine similarity cutoff for the dictionary-merge cut",
+        help = "Cosine cutoff for cutting the dictionary-merge tree (unset = no cut)",
         long_help = "Merges at or above this cosine collapse into one community.\n\
                      Merges below the cutoff stay separate.\n\
+                     \n\
+                     Unset (the default), the tree is not cut: the merge tree is\n\
+                     written to <out>.dict_merges.parquet and the draft partition\n\
+                     is the final result, so no community is lost to a threshold.\n\
+                     The tree says which communities are alike, and a cut can be\n\
+                     taken from it later.\n\
                      \n\
                      Cosine runs on per-feature-centred log-rates of the\n\
                      feature-community posterior, restricted to detected features\n\
@@ -183,20 +188,15 @@ pub struct SrtLinkCommunityArgs {
                      --ignore-batch too: it is how communities are compared, not\n\
                      a batch effect.\n\
                      \n\
-                     The default of 0.4 joins communities whose departures from\n\
-                     their section's mean point the same way. Raise it for a\n\
-                     finer partition, lower it for a coarser one.\n\
+                     If a cut collapses far more than expected, check the\n\
+                     feature filter: undetected features inflate every pairwise\n\
+                     cosine.\n\
                      \n\
-                     If the cut collapses far more than expected, check the\n\
-                     feature filter before setting a cut: undetected features\n\
-                     inflate every pairwise cosine.\n\
-                     \n\
-                     The cut lands in <out>.dict_merges.cut.parquet.\n\
+                     A cut lands in <out>.dict_merges.cut.parquet.\n\
                      Its columns are (community, consensus).\n\
-                     Empty communities get consensus = −1.",
-        hide = true
+                     Empty communities get consensus = −1."
     )]
-    pub merge_cut: f64,
+    pub merge_cut: Option<f64>,
 
     #[arg(
         long,

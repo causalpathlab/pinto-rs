@@ -301,9 +301,9 @@ enum Commands {
                       \x20 {out}.delta.parquet           Batch effects (multi-sample only)\n\
                       \x20 {out}.feature_graph.parquet      Feature-feature pairs (feature-pair mode only)\n\
                       \x20 {out}.L{l}.*.parquet          Per-cascade-level outputs (unless --no-level-outputs)\n\
-                      \x20 {out}.draft.*.parquet         Pre-merge fine partition (when dictionary merge collapsed)\n\
+                      \x20 {out}.draft.*.parquet         Pre-merge fine partition (when a --merge-cut collapsed)\n\
                       \x20 {out}.dict_merges.parquet     Cosine merge tree over the feature-community dictionary\n\
-                      \x20 {out}.dict_merges.cut.parquet Fine→super community remap at the merge cut\n\
+                      \x20 {out}.dict_merges.cut.parquet Fine→super community remap (with --merge-cut)\n\
                       \x20 {out}.pinto.json           Information-flow manifest:\n\
                       \x20                                lists every parquet, level tags,\n\
                       \x20                                dict-merge presence, and (when set by\n\

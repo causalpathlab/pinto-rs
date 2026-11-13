@@ -59,6 +59,28 @@ pub fn community_group_shares(
     share
 }
 
+/// The communities with an edge: those with a share in some group.
+pub fn occupied_communities(share: &Mat) -> Vec<bool> {
+    (0..share.nrows())
+        .map(|c| share.row(c).sum() > 0.0)
+        .collect()
+}
+
+/// Group `g`'s total share, when it is held by enough communities for a mean
+/// of its own: an effective number of at least [`MIN_EFFECTIVE_COMMUNITIES`].
+fn own_mean_weight(share: &Mat, g: usize) -> Option<f32> {
+    let weight: f32 = share.column(g).sum();
+    (weight > 0.0 && weight * weight / share.column(g).norm_squared() >= MIN_EFFECTIVE_COMMUNITIES)
+        .then_some(weight)
+}
+
+/// How many groups [`remove_group_means`] centres on a mean of their own.
+pub fn groups_with_own_mean(share: &Mat) -> usize {
+    (0..share.ncols())
+        .filter(|&g| own_mean_weight(share, g).is_some())
+        .count()
+}
+
 /// The dictionary with each group's mean profile taken out of the
 /// communities it holds, for [`cosine_merge`] across sections.
 ///
@@ -76,21 +98,33 @@ pub fn community_group_shares(
 /// size, so one large community does not become the mean. A community alone
 /// in its group would be its group's mean and come out as nothing, so a group
 /// whose effective number of communities (the inverse Simpson index of its
-/// shares, `(Σ s)² / Σ s²`) is below [`MIN_EFFECTIVE_COMMUNITIES`] is
+/// shares, `(Σ s)² / Σ s²`; Simpson 1949, doi:10.1038/163688a0, and Hill
+/// 1973, doi:10.2307/1934352) is below [`MIN_EFFECTIVE_COMMUNITIES`] is
 /// compared against the mean over all communities with an edge instead: a
 /// stray edge end of a second community does not give a group a mean of its
-/// own. A community spread over several groups loses the mix of their means
-/// in its own proportions.
+/// own ([`groups_with_own_mean`] counts the rest). A community spread over
+/// several groups loses the mix of their means in its own proportions.
+///
+/// Two limits. A community alone in its group keeps that group's shift,
+/// since nothing else there tells the shift from its profile. And a group's
+/// mean is also its mix of communities, so one type held with different
+/// company in two groups is centred differently in each; separating the
+/// shift from the mix needs a joint fit of community and group.
 ///
 /// A community with no edge comes out as zeros. Its log-rates are the
-/// prior's, on another scale from the centred profiles, and left in they
-/// would shift the merge's per-feature centring of every other community.
+/// prior's, on another scale from the centred profiles; what keeps it out of
+/// the tree is the `occupied` mask of [`cosine_merge`]
+/// ([`occupied_communities`]), not the zeros.
 /// With one group this only centres each feature, which the merge does anyway.
 pub fn remove_group_means(post_log_mean: &Mat, share: &Mat) -> Mat {
     let (n_features, k) = (post_log_mean.nrows(), post_log_mean.ncols());
     debug_assert_eq!(share.nrows(), k);
     let n_groups = share.ncols();
-    let occupied: Vec<usize> = (0..k).filter(|&c| share.row(c).sum() > 0.0).collect();
+    let occupied: Vec<usize> = occupied_communities(share)
+        .iter()
+        .enumerate()
+        .filter_map(|(c, &o)| o.then_some(c))
+        .collect();
     // the mean over occupied communities, each counted once
     let mut overall = DVec::zeros(n_features);
     for &c in &occupied {
@@ -100,13 +134,11 @@ pub fn remove_group_means(post_log_mean: &Mat, share: &Mat) -> Mat {
     // `[n_features × n_groups]`: each group's mean profile
     let mut mean = Mat::zeros(n_features, n_groups);
     for g in 0..n_groups {
-        let weight: f32 = share.column(g).sum();
-        let effective = weight * weight / share.column(g).norm_squared();
         let mut col = mean.column_mut(g);
-        if weight == 0.0 || effective < MIN_EFFECTIVE_COMMUNITIES {
+        let Some(weight) = own_mean_weight(share, g) else {
             col.copy_from(&overall);
             continue;
-        }
+        };
         for c in (0..k).filter(|&c| share[(c, g)] > 0.0) {
             col.axpy(share[(c, g)] / weight, &post_log_mean.column(c), 1.0);
         }
@@ -128,9 +160,8 @@ pub fn remove_group_means(post_log_mean: &Mat, share: &Mat) -> Mat {
 ///
 /// Returns `K - 1` merges in increasing-id order. Each merge records the
 /// cosine similarity at which the two children were joined in `log_bf`.
-/// The resulting tree can be cut with `data_beans::alg::bhc::bhc_cut`
-/// using a cosine-similarity threshold (e.g. 0.4 = collapse columns whose
-/// merge happened at cosine ≥ 0.9).
+/// The tree can be cut with [`cosine_cut`]: a cut at `t` collapses the
+/// merges made at cosine ≥ `t`.
 ///
 /// `keep_features` is a per-row mask of features to score on, indexed like
 /// `post_log_mean`'s rows; `None` uses every row. Its length must equal
@@ -138,8 +169,46 @@ pub fn remove_group_means(post_log_mean: &Mat, share: &Mat) -> Mat {
 /// Passing the detected-feature mask is strongly recommended — see the comment on
 /// step 0 for what leaving undetected features in does to the similarity.
 ///
-/// Returns an empty vector for `K < 2`, or when the mask keeps no features.
-pub fn cosine_merge(post_log_mean: &Mat, keep_features: Option<&[bool]>) -> Vec<BhcMerge> {
+/// `occupied` marks the columns to merge (`None`: every column), as
+/// [`occupied_communities`] gives for communities with an edge. A column
+/// left out appears in no merge, so a cut gives it no label (`-1`), and it
+/// takes no part in the per-feature centring or the averages of the rest.
+/// Leaves keep their column ids and internal ids run on from `K`, as
+/// [`cosine_cut`] expects, so `K - 1` becomes one less than the number of
+/// occupied columns.
+///
+/// Returns an empty vector for fewer than two columns to merge, or when the
+/// mask keeps no features.
+pub fn cosine_merge(
+    post_log_mean: &Mat,
+    keep_features: Option<&[bool]>,
+    occupied: Option<&[bool]>,
+) -> Vec<BhcMerge> {
+    let Some(occupied) = occupied else {
+        return merge_columns(post_log_mean, keep_features);
+    };
+    let k = post_log_mean.ncols();
+    debug_assert_eq!(occupied.len(), k);
+    let cols: Vec<usize> = (0..k).filter(|&c| occupied[c]).collect();
+    let n = cols.len();
+    // a node of the tree over `cols`, named in the tree over all `k`
+    let name = |id: i32| {
+        let id = id as usize;
+        (if id < n { cols[id] } else { k + id - n }) as i32
+    };
+    merge_columns(&post_log_mean.select_columns(&cols), keep_features)
+        .into_iter()
+        .map(|m| BhcMerge {
+            id: name(m.id),
+            left: name(m.left),
+            right: name(m.right),
+            ..m
+        })
+        .collect()
+}
+
+/// [`cosine_merge`] over every column.
+fn merge_columns(post_log_mean: &Mat, keep_features: Option<&[bool]>) -> Vec<BhcMerge> {
     let k = post_log_mean.ncols();
     if k < 2 {
         return Vec::new();

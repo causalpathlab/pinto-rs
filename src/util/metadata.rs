@@ -305,10 +305,11 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_effects: Option<String>,
 
-    /// Cosine dictionary-merge artifacts: the merge tree and its consensus
-    /// cut. Absent when no collapses pass `--merge-cut` (in that case the
-    /// draft is the final partition). The merged consensus partition itself
-    /// is published under the bare prefix
+    /// Cosine dictionary-merge artifacts: the merge tree, and its consensus
+    /// cut when `--merge-cut` was given. Absent when the merge did not run.
+    /// Without a cut, or when the cut collapses nothing, the draft is the
+    /// final partition. A merged consensus partition is published under the
+    /// bare prefix
     /// (`{prefix}.{propensity,link_community,feature_community}.parquet`), so this
     /// struct only points at the auxiliary tree + cut files.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,16 +386,19 @@ pub struct OutputFiles {
     pub clusters: Option<String>,
 }
 
-/// What the dictionary merge actually did, when it ran. `None` when it was
-/// skipped or produced no collapses, which is also when `DictMergeFiles` has no
-/// paths to point at.
+/// What the dictionary merge actually did, when it wrote its tree. `None`
+/// when it was skipped. Present also when the tree was not cut, or when the
+/// cut collapsed nothing; the `.draft.*` files exist only when a cut
+/// collapsed communities.
 #[derive(Clone, Copy, Debug)]
 pub struct DictMergeSummary {
     pub min_nnz: usize,
     pub features_scored: usize,
-    /// The cosine the merge tree was cut at.
-    pub cut_cosine: f64,
-    /// Sections whose mean profile was removed before the merge, if any.
+    /// The cosine the merge tree was cut at (`--merge-cut`); `None` when
+    /// it was not cut.
+    pub cut_cosine: Option<f64>,
+    /// Sections centred on a mean of their own before the merge, when more
+    /// than one section holds an edge.
     pub centred_sections: Option<usize>,
 }
 
@@ -402,8 +406,11 @@ pub struct DictMergeSummary {
 pub struct DictMergeFiles {
     /// Full agglomerative merge tree (one row per merge step).
     pub merges: String,
-    /// Per-fine-community consensus label produced by the cut.
-    pub cut: String,
+    /// Per-fine-community consensus label produced by the cut; absent when
+    /// the tree was not cut (no `--merge-cut`), so present exactly when
+    /// `cut_cosine` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
     /// Detection cutoff the merge scored on. Chosen from the data when
     /// `--merge-min-nnz` is unset, so a run is not reproducible from its
     /// outputs without it.
@@ -412,11 +419,12 @@ pub struct DictMergeFiles {
     /// How many features cleared that cutoff.
     #[serde(alias = "genes_scored", skip_serializing_if = "Option::is_none")]
     pub features_scored: Option<usize>,
-    /// The cosine the tree was cut at (`--merge-cut`).
+    /// The cosine the tree was cut at (`--merge-cut`); absent when it was
+    /// not cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_cosine: Option<f64>,
-    /// Sections whose mean profile was removed before the merge; absent
-    /// when the communities were compared as they stand.
+    /// Sections centred on a mean of their own before the merge; absent
+    /// with a single section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub centred_sections: Option<usize>,
 }
@@ -635,8 +643,8 @@ pub struct RunInputs<'a> {
 /// `{prefix}.L{l}.*` files were actually written by the cascade
 /// (skipped levels are absent — the cascade drops levels with too few
 /// super-edges, so indices need not be contiguous and may not start at 0).
-/// `merge_present` is `true` when the dictionary-merge step produced a
-/// consensus collapse and its tree + cut files were written.
+/// `merge` is `Some` when the dictionary merge wrote its tree, with the cut
+/// it was cut at, if any.
 pub fn create_lc_metadata(
     inputs: &RunInputs<'_>,
     merge: Option<DictMergeSummary>,
@@ -646,10 +654,12 @@ pub fn create_lc_metadata(
     let prefix = inputs.prefix;
     let dict_merge = merge.map(|m| DictMergeFiles {
         merges: format!("{prefix}.dict_merges.parquet"),
-        cut: format!("{prefix}.dict_merges.cut.parquet"),
+        cut: m
+            .cut_cosine
+            .map(|_| format!("{prefix}.dict_merges.cut.parquet")),
         min_nnz: Some(m.min_nnz),
         features_scored: Some(m.features_scored),
-        cut_cosine: Some(m.cut_cosine),
+        cut_cosine: m.cut_cosine,
         centred_sections: m.centred_sections,
     });
 
