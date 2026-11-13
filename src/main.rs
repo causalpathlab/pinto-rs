@@ -13,6 +13,7 @@ mod predict;
 mod propensity;
 #[cfg(feature = "view")]
 mod run;
+mod simulate;
 mod svd;
 #[cfg(feature = "view")]
 mod tui;
@@ -524,6 +525,24 @@ enum Commands {
     LraSimulate(Box<LraSimulateArgs>),
 
     #[command(
+        name = "srt-simulate",
+        about = "Simulate multi-donor spatial data with a planted truth",
+        long_about = "Simulate several donors' sections with a planted truth.\n\n\
+                      Location sets a spot's domain, the domain its likely cell states, and\n\
+                      the states its expression. Donor and section nuisance (to be removed)\n\
+                      and a domain one donor alone has (to be kept) are set as proportions\n\
+                      of the log rate's variance. Counts are negative binomial through a\n\
+                      low-rank Gaussian copula, from keyed random numbers: --nuisance-off\n\
+                      with the same seed draws the exact counterfactual.\n\n\
+                      Writes:\n\
+                      \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
+                      \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\
+                      \x20 {out}/truth/*.parquet            spots, domains, states, genes\n\
+                      \x20 {out}/manifest.json              every parameter and the realised read-outs"
+    )]
+    SrtSimulate(Box<simulate::SimulateArgs>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -758,6 +777,7 @@ fn main() -> anyhow::Result<()> {
         Commands::LraSimulate(args) => {
             fit_lra_simulate(args)?;
         }
+        Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
