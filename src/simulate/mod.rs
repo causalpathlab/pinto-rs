@@ -23,6 +23,7 @@ pub mod panel;
 pub mod params;
 pub mod rng;
 pub mod run;
+pub mod score;
 pub mod sim;
 pub mod truth;
 pub mod write;
@@ -31,3 +32,4 @@ pub mod write;
 mod tests;
 
 pub use run::{run_simulate, SimulateArgs};
+pub use score::{run_score, SimScoreArgs};

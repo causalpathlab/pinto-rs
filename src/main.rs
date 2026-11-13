@@ -543,6 +543,24 @@ enum Commands {
     SrtSimulate(Box<simulate::SimulateArgs>),
 
     #[command(
+        name = "srt-sim-score",
+        about = "Score labellings against a simulation's planted truth",
+        long_about = "Score how well labellings recover an srt-simulate run's planted truth,\n\
+                      as two tests.\n\n\
+                      1. Donor-invariant domains, on spots of shared domains: shared_ari\n\
+                      \x20  (labels against domains), donor_dep (how much the labels depend on\n\
+                      \x20  the donor within a domain: conditional mutual information, 0 to 1)\n\
+                      \x20  and consistency (share of shared domains whose most common label is\n\
+                      \x20  the same in every donor).\n\
+                      2. Donor-specific domains, each against its best-matching label: f1,\n\
+                      \x20  precision (low: shared spots absorbed), recall, and owner share (1:\n\
+                      \x20  the label is confined to the owning donor).\n\n\
+                      Labellings are pinto runs at --level, or tables with a cell column\n\
+                      (--label-column names the labels)."
+    )]
+    SrtSimScore(Box<simulate::SimScoreArgs>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -778,6 +796,7 @@ fn main() -> anyhow::Result<()> {
             fit_lra_simulate(args)?;
         }
         Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
+        Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {

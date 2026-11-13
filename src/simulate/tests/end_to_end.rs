@@ -147,3 +147,37 @@ fn the_viewer_opens_the_truth() {
         .collect();
     assert_eq!(names, ["DM1", "DM2", "DM3", "DM4", "DM5"]);
 }
+
+/// Scoring a simulation's own truth, written as a cell<TAB>label table,
+/// gives perfect scores on both tests; labels that follow the donor fail
+/// the first.
+#[test]
+fn scoring_the_truth_and_the_donors() {
+    use crate::simulate::panel::donor_label;
+    use crate::simulate::score::{read_labels, score, TruthSpots};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("sim").to_string_lossy().to_string();
+    run_simulate(&args(&out, "L2", &[])).unwrap();
+    let t = TruthSpots::read(&out).unwrap();
+    let write = |name: &str, f: &dyn Fn(usize) -> String| -> String {
+        let path = dir.path().join(name).to_string_lossy().to_string();
+        let text: String = std::iter::once("cell\tlabel\n".to_string())
+            .chain((0..t.cells.len()).map(|i| format!("{}\t{}\n", t.cells[i], f(i))))
+            .collect();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    let truth = write("truth.tsv", &|i| t.domain_labels[t.domain[i]].to_string());
+    let donors = write("donors.tsv", &|i| donor_label(t.donor[i]).to_string());
+    let s = score(&t, &read_labels(&truth, "final", "label").unwrap()).unwrap();
+    assert_eq!(
+        (s.n_scored, s.consistency, s.donor_dependence),
+        (t.cells.len(), 1.0, 0.0)
+    );
+    assert!((s.shared_ari - 1.0).abs() < 1e-12);
+    assert_eq!(s.patches.len(), 1);
+    assert_eq!(s.patches[0].f1, 1.0);
+    let s = score(&t, &read_labels(&donors, "final", "label").unwrap()).unwrap();
+    assert_eq!(s.consistency, 0.0);
+    assert!((s.donor_dependence - 1.0).abs() < 1e-9);
+}

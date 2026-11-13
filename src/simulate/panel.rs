@@ -24,6 +24,15 @@ pub fn donor_label(d: usize) -> Box<str> {
     format!("D{}", d + 1).into()
 }
 
+/// The donor a [`donor_label`] names.
+pub fn parse_donor_label(label: &str) -> Option<usize> {
+    label
+        .strip_prefix('D')
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .map(|n| n - 1)
+}
+
 /// A square grid, `side × side` spots `spacing_um` apart.
 pub fn grid(side: usize, spacing_um: f64) -> Coords {
     (0..side * side)
