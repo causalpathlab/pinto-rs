@@ -16,9 +16,11 @@
 //! doi:10.1186/s13059-023-02879-z): domains whose genes differ by a fold
 //! change. The cell-state layer and the donor terms are what it adds.
 
+pub mod baseline;
 pub mod draw;
 pub mod expression;
 pub mod field;
+pub mod harmony;
 pub mod panel;
 pub mod params;
 pub mod rng;
@@ -31,5 +33,6 @@ pub mod write;
 #[cfg(test)]
 mod tests;
 
+pub use baseline::{run_baseline, BaselineArgs};
 pub use run::{run_simulate, SimulateArgs};
 pub use score::{run_score, SimScoreArgs};

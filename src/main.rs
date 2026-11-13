@@ -561,6 +561,23 @@ enum Commands {
     SrtSimScore(Box<simulate::SimScoreArgs>),
 
     #[command(
+        name = "srt-sim-baseline",
+        about = "Label a simulation with a standard pipeline, as a baseline",
+        long_about = "Label an srt-simulate run's spots with the standard scanpy recipe, as a\n\
+                      baseline for srt-sim-score: total-count normalisation to 1e4, log1p,\n\
+                      highly variable genes by normalised dispersion, scaling, PCA, a kNN\n\
+                      graph and Leiden tuned toward --k clusters (default: the simulation's\n\
+                      domains).\n\n\
+                      --method pooled runs all sections together, with no batch handling;\n\
+                      --method harmony corrects the PCs for the donor with Harmony\n\
+                      (Korsunsky et al. 2019) before the kNN graph; --method per-donor\n\
+                      runs each donor alone and gives each cluster the label of the most\n\
+                      correlated cluster of the largest donor (marker-correlation matching).\n\
+                      Writes a cell<TAB>label table."
+    )]
+    SrtSimBaseline(Box<simulate::BaselineArgs>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -797,6 +814,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
+        Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
