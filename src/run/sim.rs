@@ -10,7 +10,7 @@ use super::script;
 use crate::mcp::shown_path;
 use crate::simulate::baseline::{check_inputs, BaselineArgs};
 use crate::simulate::panel::{read_coords, section_name};
-use crate::simulate::params::{SimParams, SCENARIOS};
+use crate::simulate::params::{SimParams, SCENARIOS, TERMS};
 use crate::simulate::run::{
     backend_path, coords_path, manifest_path, resolve_params, truth_run_path, SimulateArgs,
 };
@@ -104,6 +104,16 @@ pub(super) fn simulation(
     Ok((argv, args, p))
 }
 
+/// The variance shares the run has, as shares_note spells them out, to six
+/// places.
+fn shares_json(p: &SimParams) -> serde_json::Value {
+    let shares = TERMS
+        .iter()
+        .zip(p.effective_shares())
+        .map(|(&k, x)| (k.to_string(), json!((x * 1e6).round() / 1e6)));
+    serde_json::Value::Object(shares.collect())
+}
+
 /// The sections a simulation with `p` writes at `out`, as `run_fit` takes
 /// them: data files and their coordinates, in the same order.
 pub(super) fn fit_lists(out: &str, p: &SimParams) -> serde_json::Value {
@@ -170,6 +180,8 @@ pub(super) fn simulate(
         "out": out,
         "truth": truth,
         "fit": fit,
+        "shares": shares_json(&p),
+        "shares_note": p.shares_summary(),
     });
     let open = format!(
         "view_open {truth} to see the planted domains; pass fit.data, fit.coords and fit.flags \
@@ -293,7 +305,10 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             "Simulate several donors' spatial sections with a planted truth (pinto \
              srt-simulate): location sets a spot's domain, the domain its likely cell states, \
              the states its expression; donor and section nuisance (to be removed) and a domain \
-             one donor alone has (to be kept) are set as shares of the log rate's variance. \
+             one donor alone has (to be kept) are set as shares of the log rate's variance, and \
+             spot noise is what the shares leave: raising one share with the others fixed \
+             shrinks the noise. The reply's shares and shares_note spell out what a setting \
+             implies; relay shares_note to the user whenever a share is set. \
              Writes {out}/sections/S*.zarr with S*.coords.parquet (row_um, col_um), the truth \
              tables and run in {out}/truth (view_open {out}/truth/truth.pinto.json), and \
              {out}/manifest.json. The reply's fit.data and fit.coords list the sections for \

@@ -506,3 +506,146 @@ fn a_gene_keeps_its_nuisance_when_the_gene_count_changes() {
         assert_eq!(ca.inter, cb.inter, "gene {g}");
     }
 }
+
+fn shares_at(donor: f64, inter: f64, section: f64) -> SimParams {
+    SimParams {
+        pve_type: 0.3,
+        pve_donor: donor,
+        pve_inter: inter,
+        pve_section: section,
+        ..SimParams::default()
+    }
+}
+
+/// With no nuisance the shares read type and noise, noise as the remainder.
+#[test]
+fn the_variance_shares_are_spelt_out() {
+    let s = shares_at(0.0, 0.0, 0.0).shares_summary();
+    assert!(s.contains("type 0.300"), "{s}");
+    assert!(s.contains("noise 0.700 (the remainder)"), "{s}");
+    assert!(!s.contains("comes out of the noise"), "{s}");
+}
+
+/// With nuisance on, the note says it came out of the noise and gives the
+/// type-to-noise ratio with and without it; it suggests no setting.
+#[test]
+fn nuisance_shares_are_said_to_come_out_of_the_noise() {
+    let p = shares_at(0.3, 0.2, 0.1);
+    let s = p.shares_summary();
+    assert!(s.contains("noise 0.100 (the remainder)"), "{s}");
+    assert!(s.contains("comes out of the noise"), "{s}");
+    // type to noise: 0.3 / 0.1 here, 0.3 / 0.7 with the nuisance shares at 0
+    assert!(
+        s.contains("3.000 here, 0.429 with the nuisance shares at 0"),
+        "{s}"
+    );
+    assert!(!s.contains("pve_type="), "no setting is suggested: {s}");
+    let e = p.effective_shares();
+    for (got, want) in e.iter().zip([0.3, 0.3, 0.2, 0.1, 0.1]) {
+        assert!((got - want).abs() < 1e-12, "{e:?}");
+    }
+}
+
+/// A share set but off is named with its reason and carries none; the
+/// noise keeps its own share. A donor-by-type term still varies across cell
+/// states with one donor.
+#[test]
+fn a_share_set_but_off_is_named() {
+    let off = SimParams {
+        nuisance_off: true,
+        ..shares_at(0.3, 0.2, 0.1)
+    };
+    let s = off.shares_summary();
+    assert!(s.contains("pve_donor is set but off (nuisance_off)"), "{s}");
+    assert!(!s.contains("comes out of the noise"), "{s}");
+    let e = off.effective_shares();
+    assert!(
+        (e[0] - 0.75).abs() < 1e-12 && (e[4] - 0.25).abs() < 1e-12,
+        "{e:?}"
+    );
+    assert_eq!(e[1..4], [0.0; 3]);
+
+    let alone = SimParams {
+        n_donors: 1,
+        sections_per_donor: 1,
+        ..shares_at(0.3, 0.2, 0.1)
+    };
+    let s = alone.shares_summary();
+    assert!(s.contains("pve_donor is set but off (one donor)"), "{s}");
+    assert!(
+        s.contains("pve_section is set but off (one section)"),
+        "{s}"
+    );
+    let e = alone.effective_shares();
+    assert_eq!((e[1], e[3]), (0.0, 0.0), "{e:?}");
+    assert!(e[2] > 0.0, "{e:?}");
+}
+
+/// No noise at all reads as such, not as a huge ratio.
+#[test]
+fn no_noise_reads_as_none() {
+    let p = SimParams {
+        pve_type: 0.5,
+        pve_donor: 0.5,
+        pve_inter: 0.0,
+        pve_section: 0.0,
+        ..SimParams::default()
+    };
+    let s = p.shares_summary();
+    assert!(s.contains("no noise"), "{s}");
+}
+
+/// What the note calls off is what the simulator drops: across panels with
+/// one or several donors and sections, clean ones and nuisance_off, a
+/// nuisance term is off in the note exactly when the simulator gives it no
+/// scale or switches it off.
+#[test]
+fn the_note_and_the_simulator_agree_on_which_terms_are_off() {
+    let base = SimParams {
+        grid_side: 6,
+        n_genes: 30,
+        programme_genes: 4,
+        ..shares_at(0.2, 0.1, 0.05)
+    };
+    let cases = [
+        base.clone(),
+        SimParams {
+            n_donors: 1,
+            sections_per_donor: 1,
+            ..base.clone()
+        },
+        SimParams {
+            n_donors: 1,
+            sections_per_donor: 2,
+            ..base.clone()
+        },
+        SimParams {
+            clean_donors: vec![0, 1, 2],
+            ..base.clone()
+        },
+        SimParams {
+            clean_donors: vec![0, 2],
+            ..base.clone()
+        },
+        SimParams {
+            clean_sections: (0..6).collect(),
+            ..base.clone()
+        },
+        SimParams {
+            nuisance_off: true,
+            ..base.clone()
+        },
+    ];
+    for p in cases {
+        let sim = Sim::new(p.clone(), &[grid(p.grid_side, p.grid_spacing_um)]);
+        let sc = &sim.scaling;
+        let on = crate::simulate::expression::active(&p);
+        let simulator = [
+            on[1] && sc.donor > 0.0,
+            on[2] && sc.inter > 0.0,
+            on[3] && sc.section > 0.0,
+        ];
+        let note = p.nuisance_terms().map(|(_, _, off)| off.is_none());
+        assert_eq!(note, simulator, "{p:?}");
+    }
+}

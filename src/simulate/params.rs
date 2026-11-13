@@ -61,11 +61,26 @@ pub struct SimParams {
     /// For a new state: cosine of its programme to the first shared state's.
     pub patch_cosine: f64,
 
-    // log rate, as proportions of variance explained (PVE) of `log_rate_var`
+    // The log rate, as proportions of variance explained (PVE).
+    //
+    // The four shares below and spot noise split `log_rate_var` between
+    // them, and noise is what they leave: `1 - type - donor - inter -
+    // section`. Raising one share with the others fixed therefore shrinks
+    // the noise, not the other shares. A sweep over the nuisance shares has
+    // to choose what gives way: with `pve_type` fixed, the noise shrinks and
+    // the cell-type signal grows against it; with `pve_type = t (1 - N)`, N
+    // the nuisance total, type and noise shrink together and keep their
+    // ratio; with the noise fixed, the cell-type share shrinks.
+    // [`SimParams::shares_summary`] spells out what a setting implies.
+    /// Total variance of the log rate around its gene baselines.
     pub log_rate_var: f64,
+    /// Share of the cell states (the signal that defines domains).
     pub pve_type: f64,
+    /// Share of donor-wide effects, the same in every cell state.
     pub pve_donor: f64,
+    /// Share of donor-by-cell-state effects.
     pub pve_inter: f64,
+    /// Share of per-section effects.
     pub pve_section: f64,
     /// Donors and sections (0-based, in panel order) that carry no nuisance.
     pub clean_donors: Vec<usize>,
@@ -79,6 +94,24 @@ pub struct SimParams {
     /// Draw the same spots with every nuisance term removed: the exact
     /// counterfactual of the run with the same seed.
     pub nuisance_off: bool,
+}
+
+/// The log rate's terms, in the order every share array uses.
+pub const TERMS: [&str; 5] = ["type", "donor", "inter", "section", "noise"];
+
+/// Of groups `0..n`, those not in `clean`.
+fn on_count(n: usize, clean: &[usize]) -> usize {
+    (0..n).filter(|i| !clean.contains(i)).count()
+}
+
+/// Why a term that varies across `n` groups, `on` of them not clean, has
+/// nothing to vary across, if so.
+fn why_alone(n: usize, on: usize, one: &'static str, all: &'static str) -> Option<&'static str> {
+    match (n, on) {
+        (1, _) => Some(one),
+        (_, 0) => Some(all),
+        _ => None,
+    }
 }
 
 impl Default for SimParams {
@@ -230,6 +263,83 @@ impl SimParams {
     /// The share of spot noise in the log rate: what the PVE terms leave.
     pub fn pve_noise(&self) -> f64 {
         1.0 - self.pve_type - self.pve_donor - self.pve_inter - self.pve_section
+    }
+
+    /// The nuisance terms (donor, donor x type, section): each one's
+    /// parameter name, its share as set, and why it is off, if it is:
+    /// `nuisance_off` (as [`crate::simulate::expression::active`] decides),
+    /// or nothing for it to vary across (one donor or section, or every one
+    /// clean), where `expression::scaling` gives it no scale. A donor-by-type
+    /// term still varies across cell states with one donor. A test holds the
+    /// two in step.
+    pub fn nuisance_terms(&self) -> [(&'static str, f64, Option<&'static str>); 3] {
+        let off = if crate::simulate::expression::active(self)[1] {
+            let donors = on_count(self.n_donors, &self.clean_donors);
+            let sections = on_count(self.n_sections(), &self.clean_sections);
+            [
+                why_alone(self.n_donors, donors, "one donor", "every donor clean"),
+                (donors == 0).then_some("every donor clean"),
+                why_alone(
+                    self.n_sections(),
+                    sections,
+                    "one section",
+                    "every section clean",
+                ),
+            ]
+        } else {
+            [Some("nuisance_off"); 3]
+        };
+        let set = [self.pve_donor, self.pve_inter, self.pve_section];
+        let names = ["pve_donor", "pve_inter", "pve_section"];
+        [0, 1, 2].map(|k| (names[k], set[k], off[k]))
+    }
+
+    /// The shares of the log rate's variance the run is set to have, in
+    /// [`TERMS`] order and summing to 1: a nuisance term that is off carries
+    /// none, and its share does not pass to the noise. A target, before
+    /// drawing; `Sim::realised_pve` measures what the draws hold.
+    pub fn effective_shares(&self) -> [f64; 5] {
+        let mut s = [self.pve_type, 0.0, 0.0, 0.0, self.pve_noise()];
+        for (k, (_, set, off)) in self.nuisance_terms().into_iter().enumerate() {
+            if off.is_none() {
+                s[k + 1] = set;
+            }
+        }
+        let total: f64 = s.iter().sum();
+        s.map(|x| x / total)
+    }
+
+    /// The variance shares the run has, noise as the remainder, and what
+    /// they imply: a share set but off, and with nuisance on, that it came
+    /// out of the noise, with the type-to-noise ratio here and with the
+    /// nuisance shares at 0. It describes; it suggests no setting.
+    pub fn shares_summary(&self) -> String {
+        let [t, d, i, sec, noise] = self.effective_shares();
+        let mut s = format!(
+            "variance shares of the log rate: type {t:.3}, donor {d:.3}, donor x type {i:.3}, \
+             section {sec:.3}, noise {noise:.3} (the remainder)"
+        );
+        for (name, set, off) in self.nuisance_terms() {
+            if let (true, Some(why)) = (set > 0.0, off) {
+                s.push_str(&format!(". {name} is set but off ({why})"));
+            }
+        }
+        let nuisance = d + i + sec;
+        if nuisance > 0.0 {
+            let here = if noise > 0.0 {
+                format!("{:.3}", t / noise)
+            } else {
+                "unbounded (no noise)".into()
+            };
+            s.push_str(&format!(
+                ". The nuisance ({nuisance:.3}) comes out of the noise, not the type share: \
+                 type to noise is {here} here, {:.3} with the nuisance shares at 0",
+                self.pve_type / (1.0 - self.pve_type)
+            ));
+        } else if noise == 0.0 {
+            s.push_str(". There is no noise");
+        }
+        s
     }
 
     pub fn n_sections(&self) -> usize {

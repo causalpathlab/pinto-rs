@@ -531,9 +531,11 @@ enum Commands {
                       Location sets a spot's domain, the domain its likely cell states, and\n\
                       the states its expression. Donor and section nuisance (to be removed)\n\
                       and a domain one donor alone has (to be kept) are set as proportions\n\
-                      of the log rate's variance. Counts are negative binomial through a\n\
-                      low-rank Gaussian copula, from keyed random numbers: --nuisance-off\n\
-                      with the same seed draws the exact counterfactual.\n\n\
+                      of the log rate's variance; spot noise is what the shares leave, so\n\
+                      raising one share with the others fixed shrinks the noise (the log\n\
+                      says what a setting implies). Counts are negative binomial through a\n\
+                      low-rank Gaussian copula, from keyed random numbers: --set\n\
+                      nuisance_off=true with the same seed draws the exact counterfactual.\n\n\
                       Writes:\n\
                       \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
                       \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\

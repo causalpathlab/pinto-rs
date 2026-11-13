@@ -119,6 +119,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(format!("{out}/sections"))?;
     std::fs::create_dir_all(format!("{out}/truth"))?;
 
+    info!("{}", p.shares_summary());
     let sim = Sim::new(p, &geometries);
     let p = &sim.p;
     info!(
@@ -155,7 +156,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     )?;
 
     let pve = sim.realised_pve();
-    let names = ["type", "donor", "inter", "section", "noise"];
+    let names = super::params::TERMS;
     let manifest = json!({
         "command": "srt-simulate",
         "version": env!("CARGO_PKG_VERSION"),

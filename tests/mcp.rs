@@ -615,6 +615,15 @@ fn an_agent_simulates_looks_and_scores() {
     );
     let id = job["job"].as_str().unwrap().to_string();
     let truth = job["truth"].as_str().unwrap().to_string();
+    // The reply spells out the variance shares, noise as the remainder.
+    assert!(job["shares"]["noise"].as_f64().unwrap() > 0.0, "{job}");
+    assert!(
+        job["shares_note"]
+            .as_str()
+            .unwrap()
+            .contains("(the remainder)"),
+        "{job}"
+    );
     assert!(truth.ends_with("sim/truth/truth.pinto.json"), "{job}");
     assert!(job["note"].as_str().unwrap().contains("view_open"), "{job}");
     let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
