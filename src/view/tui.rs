@@ -34,8 +34,9 @@ use super::gene::{GeneMap, Source};
 use super::lupin::Job;
 use super::render::{self, Frame, Layer, Mode, Viewport};
 use super::round::Round;
-use super::{focus_name, legend_line, thousands, Base, Level, Show, ViewArgs, FIT_MARGIN};
-use clap::ValueEnum;
+use super::{
+    focus_name, legend_line, thousands, value_name, Base, Level, Show, ViewArgs, FIT_MARGIN,
+};
 use legume_tui::chrome::rgb;
 use legume_tui::map::kitty::cellart::{Cells, Glyphs};
 use legume_tui::map::kitty::{Kitty, MapGraphics, Resolved};
@@ -475,8 +476,7 @@ impl<'a> App<'a> {
         let theme = self.base.theme().other();
         self.theme = Some(theme);
         self.retheme(theme);
-        let name = theme.to_possible_value().expect("no skipped variants");
-        self.status = format!("{} background  t: the other", name.get_name());
+        self.status = format!("{} background  t: the other", value_name(&theme));
     }
 
     /// Draw in `theme` from here on: every palette and plot made in the

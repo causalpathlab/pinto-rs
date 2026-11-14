@@ -10,6 +10,7 @@ use crate::cell_activity_graph_embedding::pair_projection::encoder::{
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, PairDictionary, PairProjectionArgs, PairSolver,
 };
+use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use legume_numeric::candle::candle_core::Device;
@@ -73,12 +74,14 @@ fn random_pairs(n_cells: usize, n_pairs: usize, seed: u64) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Small steps: training takes at least a fixed number of optimizer steps,
+/// so on this fixture the step's size, not the epoch count, sets the cost.
 fn spec(epochs: usize) -> PairEncoderSpec {
     PairEncoderSpec {
         trunk_width: 32,
         n_experts: 4,
         epochs,
-        batch: 128,
+        batch: 16,
         ridge: RIDGE,
     }
 }
@@ -106,8 +109,10 @@ fn trained() -> &'static Trained {
         let cells = planted_cells(N_TRAIN_CELLS, 1);
         let corpus = corpus_of(&dict, &cells);
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
-        let enc = PairEncoder::build(&dict, &corpus, &spec(20), 7, &Device::Cpu).unwrap();
-        enc.train(&corpus, &edges, &spec(20), 7).unwrap();
+        // One epoch asked for: the floor of optimizer steps decides.
+        let train_spec = spec(1);
+        let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
+        enc.train(&corpus, &edges, &train_spec, 7).unwrap();
         Trained {
             dict,
             cells,
@@ -285,20 +290,14 @@ fn planted_data(dir: &tempfile::TempDir, cells: &[PlantedCell]) -> anyhow::Resul
         .enumerate()
         .flat_map(|(c, (profile, _))| profile.iter().map(move |&(g, n)| (g as u64, c as u64, n)))
         .collect();
-    let path = dir.path().join("planted.zarr");
-    let mut backend = create_sparse_from_triplets(
+    let rows = numbered("G", N_FEATURES);
+    Ok(sparse_vec(
+        dir.path(),
+        "planted",
+        &rows,
+        &numbered("c", cells.len()),
         &triplets,
-        (N_FEATURES, cells.len(), triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )?;
-    let rows: Vec<Box<str>> = (0..N_FEATURES).map(|g| format!("G{g}").into()).collect();
-    backend.register_row_names_vec(&rows);
-    let names: Vec<Box<str>> = (0..cells.len()).map(|c| format!("c{c}").into()).collect();
-    backend.register_column_names_vec(&names);
-    let mut v = SparseIoVec::new();
-    v.push(std::sync::Arc::from(backend), None)?;
-    Ok(v)
+    ))
 }
 
 #[test]
@@ -313,7 +312,8 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
     let edges = random_pairs(60, 300, 3);
     let saved = dir.path().join("run.pair_encoder.safetensors");
     let saved = saved.to_str().unwrap();
-    let spec = spec(15);
+    // As in `trained`, the floor of optimizer steps decides.
+    let spec = spec(1);
     let fitted = project_pairs(
         &data,
         &edges,

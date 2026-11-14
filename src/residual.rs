@@ -697,14 +697,17 @@ fn residual_marker(
 }
 
 fn summary_path(out: &str) -> String {
-    format!("{out}/residual.json")
+    in_dir(out, "residual.json")
 }
 
 /// Each data file's residual zarr under `out`, checked not to be its input.
 fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
     let outputs: Vec<String> = files
         .iter()
-        .map(|f| Ok(format!("{out}/{}.zarr", basename(f.trim_end_matches('/'))?)))
+        .map(|f| {
+            let stem = basename(f.trim_end_matches('/'))?;
+            Ok(in_dir(out, &format!("{stem}.zarr")))
+        })
         .collect::<anyhow::Result<_>>()?;
     for (o, f) in outputs.iter().zip(files) {
         anyhow::ensure!(

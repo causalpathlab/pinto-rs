@@ -29,11 +29,11 @@ use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
     KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
-use crate::util::knn_graph::KnnGraph;
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
 use data_beans::alg::sparse_streaming::streaming_sparse_running_stats;
 use data_beans::aux::feature_names::FeatureNameKind;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 use legume_numeric::matrix::knn_graph::{DistanceMerge, EdgeSource};
 
 ///////////////////////////

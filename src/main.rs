@@ -1,7 +1,6 @@
 mod annotate;
 mod cell_activity_graph_embedding;
 mod compare;
-mod feature_network;
 mod holdout;
 mod impute;
 mod link_community;
@@ -110,6 +109,15 @@ struct Cli {
 
     #[command(subcommand)]
     commands: Commands,
+}
+
+/// pinto's command line, built as clap builds it to parse.
+#[cfg(any(feature = "view", test))]
+pub(crate) fn built_cli() -> clap::Command {
+    use clap::CommandFactory;
+    let mut cli = Cli::command();
+    cli.build();
+    cli
 }
 
 #[derive(Subcommand, Debug)]
@@ -888,10 +896,7 @@ fn main() -> anyhow::Result<()> {
         )?,
         #[cfg(feature = "view")]
         Commands::Run(args) => {
-            use clap::CommandFactory;
-            let mut cli = Cli::command();
-            cli.build();
-            run::tui::run(cli, args)?;
+            run::tui::run(built_cli(), args)?;
         }
         #[cfg(feature = "view")]
         Commands::Attach(args) => legume_tui::cli::attach(&tui::TOOL, args)?,

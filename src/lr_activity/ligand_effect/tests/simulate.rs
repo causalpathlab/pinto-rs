@@ -3,7 +3,7 @@
 //! plants or withholds an effect under a hidden regional confounder; the
 //! estimate should track the truth while the unadjusted difference is fooled.
 
-use super::run_sim;
+use super::{lattice, run_sim};
 use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
@@ -29,19 +29,7 @@ pub(super) struct Fixture {
 
 pub(super) fn fixture() -> Fixture {
     let n = SIDE * SIDE;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some(((i % SIDE) as f32 * 10.0, (i / SIDE) as f32 * 10.0)))
-        .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        let (x, y) = (i % SIDE, i / SIDE);
-        if x + 1 < SIDE {
-            pairs.push((i, i + 1));
-        }
-        if y + 1 < SIDE {
-            pairs.push((i, i + SIDE));
-        }
-    }
+    let (coords, pairs) = lattice(SIDE);
     // Two types in 10×10 patches; type 1 makes the ligand, type 0 expresses
     // the receptor more.
     let ty: Vec<usize> = (0..n)

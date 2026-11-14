@@ -38,6 +38,7 @@ fn a_section_named_like_a_region_row_is_prefixed() {
 
 // * Planting in one region (`lra-simulate --plant-region`)
 
+use super::lattice;
 use crate::lr_activity::input::UNASSIGNED;
 use crate::lr_activity::ligand_effect::baselines::Baselines;
 use crate::lr_activity::ligand_effect::inference::Estimate;
@@ -52,18 +53,7 @@ use crate::util::common::Mat;
 fn region_tissue() -> Tissue {
     let side = 30;
     let n = side * side;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some(((i % side) as f32 * 10.0, (i / side) as f32 * 10.0)))
-        .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        if i % side + 1 < side {
-            pairs.push((i, i + 1));
-        }
-        if i / side + 1 < side {
-            pairs.push((i, i + side));
-        }
-    }
+    let (coords, pairs) = lattice(side);
     let bin: Vec<usize> = (0..n).map(|i| (i / side) / 10).collect();
     let identity = Mat::from_fn(2, n, |k, i| bin[i] as f32 * (k as f32 + 1.0));
     let section: Vec<Box<str>> = vec!["s0".into(); n];

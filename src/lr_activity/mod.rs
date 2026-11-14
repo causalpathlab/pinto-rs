@@ -93,7 +93,7 @@ pub fn lra_outputs(
     }
 }
 
-/// `pinto lra --from {from}` with `method` and `options` (`-o out` when
+/// `pinto lra --from {from}` with `method` and `options` (`--out` when
 /// given, else beside the run), each choice that is not lra's default,
 /// then `--only only` when not empty: the one command line `run_lra` and
 /// the viewer start.
@@ -106,27 +106,26 @@ impl crate::util::metadata::LraOptions {
         method: args::LraMethod,
         only: &[String],
     ) -> Vec<String> {
-        use clap::ValueEnum;
+        use crate::tui::flag_value;
         let mut argv: Vec<String> = vec!["lra".into()];
         if let Some(from) = from {
-            argv.extend(["--from".into(), from.into()]);
+            argv.push(flag_value("--from", from));
         }
         if let Some(o) = out {
-            argv.extend(["-o".into(), o.into()]);
+            argv.push(flag_value("--out", o));
         }
         if self.marginal_baselines.is_some() {
             argv.push("--marginal-baselines".into());
             if let Some(n) = self.marginal_permutations {
                 if n != crate::lr_activity::ligand_effect::PERMUTATIONS {
-                    argv.extend(["--marginal-permutations".into(), n.to_string()]);
+                    argv.push(flag_value("--marginal-permutations", n));
                 }
             }
         }
-        let mut flag = |name: &str, value: String| argv.extend([name.into(), value]);
+        // each value in its flag's word, so a negative one reaches lra's check
+        let mut flag = |name: &str, value: String| argv.push(flag_value(name, value));
         if method != args::LraMethod::default() {
-            if let Some(m) = method.to_possible_value() {
-                flag("--method", m.get_name().into());
-            }
+            flag("--method", crate::util::cli::value_name(&method));
         }
         if let Some(p) = &self.lr_pairs {
             flag("--lr-pairs", p.clone());
@@ -160,12 +159,7 @@ impl crate::util::metadata::LraOptions {
 /// `path` as every lra method records it in the `--from` run's manifest:
 /// absolute, so it reads the same from the manifest's directory and from
 /// wherever lra ran.
-pub fn recorded(path: &std::path::Path) -> String {
-    std::path::absolute(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
+pub use crate::util::paths::shown_path as recorded;
 
 /// `pinto lra --help`: the three methods, the reference, the verdicts.
 pub fn lra_long_about() -> String {

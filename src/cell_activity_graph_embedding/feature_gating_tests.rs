@@ -7,9 +7,9 @@
 //! activities of the single-channel matrix whose counts are its per-feature sums.
 
 use super::feature_gating::{build_feature_active_fine_edges, ActivityNorm, FeatureActiveEdges};
+use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
-use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
 
 const N_CELLS: usize = 6;
 const EDGES: [(u32, u32); 5] = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5)];
@@ -35,24 +35,12 @@ fn write(
     tag: &str,
     rows: &[Box<str>],
     triplets: &[(u64, u64, f32)],
-) -> anyhow::Result<SparseIoVec> {
-    let path = dir.path().join(format!("{tag}.zarr"));
-    let mut backend = create_sparse_from_triplets(
-        triplets,
-        (rows.len(), N_CELLS, triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )?;
-    backend.register_row_names_vec(rows);
-    let cells: Vec<Box<str>> = (0..N_CELLS).map(|i| format!("c{i}").into()).collect();
-    backend.register_column_names_vec(&cells);
-    let mut v = SparseIoVec::new();
-    v.push(std::sync::Arc::from(backend), None)?;
-    Ok(v)
+) -> SparseIoVec {
+    sparse_vec(dir.path(), tag, rows, &numbered("c", N_CELLS), triplets)
 }
 
 /// One row per feature, holding `spliced + unspliced`.
-fn pooled_input(dir: &tempfile::TempDir) -> anyhow::Result<SparseIoVec> {
+fn pooled_input(dir: &tempfile::TempDir) -> SparseIoVec {
     let rows: Vec<Box<str>> = (0..3).map(|g| format!("FEATURE{g}").into()).collect();
     let triplets: Vec<(u64, u64, f32)> = COUNTS
         .iter()
@@ -64,7 +52,7 @@ fn pooled_input(dir: &tempfile::TempDir) -> anyhow::Result<SparseIoVec> {
 /// Two rows per feature. The row ORDER is interleaved and puts a feature's nascent row
 /// before its mature one, because nothing about the grammar promises otherwise
 /// and a fold that only works on sorted rows would pass a friendlier fixture.
-fn channelized_input(dir: &tempfile::TempDir) -> anyhow::Result<SparseIoVec> {
+fn channelized_input(dir: &tempfile::TempDir) -> SparseIoVec {
     let mut rows: Vec<Box<str>> = Vec::new();
     for g in 0..3 {
         rows.push(format!("FEATURE{g}/count/unspliced").into());
@@ -93,8 +81,8 @@ fn activities(data: &SparseIoVec, norm: ActivityNorm) -> anyhow::Result<FeatureA
 #[test]
 fn two_channels_give_exactly_the_pooled_single_channel_activities() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let pooled = pooled_input(&dir)?;
-    let channelized = channelized_input(&dir)?;
+    let pooled = pooled_input(&dir);
+    let channelized = channelized_input(&dir);
 
     // The axis itself, first: same features, same order, from row names alone.
     let axis = FeatureAxis::resolve(&channelized.row_names()?)?;
@@ -125,7 +113,7 @@ fn two_channels_give_exactly_the_pooled_single_channel_activities() -> anyhow::R
 #[test]
 fn pooling_happens_on_counts_not_on_log1p_activities() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let a = activities(&channelized_input(&dir)?, ActivityNorm::Log1p)?;
+    let a = activities(&channelized_input(&dir), ActivityNorm::Log1p)?;
 
     // FEATURE0 at cell 0 is (spliced 5, unspliced 2); edge (0,1) has FEATURE0 active
     // at both endpoints, where cell 1 is (3, 0).

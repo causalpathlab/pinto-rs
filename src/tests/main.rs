@@ -110,9 +110,7 @@ fn lra_simulate_parses_its_study_flags() {
 
 #[test]
 fn lra_help_lists_every_verdict() {
-    use clap::CommandFactory;
-    let mut cli = Cli::command();
-    let help = cli
+    let help = built_cli()
         .find_subcommand_mut("lra")
         .expect("lra")
         .render_long_help()
@@ -134,9 +132,7 @@ fn lra_help_lists_every_verdict() {
 #[cfg(feature = "view")]
 #[test]
 fn run_help_names_the_methods_on_a_run() {
-    use clap::CommandFactory;
-    let mut cli = Cli::command();
-    let help = cli
+    let help = built_cli()
         .find_subcommand_mut("run")
         .expect("run")
         .render_long_help()

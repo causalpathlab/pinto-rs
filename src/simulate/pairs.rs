@@ -30,7 +30,7 @@
 use super::panel::donor_label;
 use super::score::{sim_folder, TruthSpots, NAME_WIDTH};
 use crate::compare::propensity_path;
-use crate::util::common::{HashMap, HashSet, Mat};
+use crate::util::common::{in_dir, HashMap, HashSet, Mat};
 use crate::util::parquet_io::{read_keyed_columns, read_propensity};
 use legume_numeric::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
 use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
@@ -52,7 +52,7 @@ impl SpotLayout {
     /// From the simulation's `truth/spots.parquet` (`out` named as
     /// [`TruthSpots::read`] takes it), checked against `t`.
     pub fn read(out: &str, t: &TruthSpots) -> anyhow::Result<Self> {
-        let path = format!("{}/truth/spots.parquet", sim_folder(out));
+        let path = in_dir(&sim_folder(out), "truth/spots.parquet");
         let (cells, xy) = read_keyed_columns(Path::new(&path), &["row_um", "col_um"])?;
         anyhow::ensure!(
             cells == t.cells,

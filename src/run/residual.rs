@@ -9,6 +9,8 @@ use super::mcp::{as_run, in_background, launch, out_or_free, parsed, rooted};
 use super::script;
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::residual::{Adapt, Excess, Plan, ResidualArgs};
+use crate::tui::flag_value;
+use crate::util::cli::choices;
 use crate::util::metadata::Run;
 use legume_mcp::{Call, Content, ToolSpec};
 use serde::Deserialize;
@@ -40,12 +42,10 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
     if let Some(f) = a.data_files.iter().find(|f| f.contains(',')) {
         anyhow::bail!("{f:?} has a comma: give each data file as its own entry");
     }
-    let mut argv: Vec<String> = vec!["residual".into(), "--from".into(), as_run(&a.run)];
+    let mut argv: Vec<String> = vec!["residual".into(), flag_value("--from", as_run(&a.run))];
     if !a.data_files.is_empty() {
-        argv.extend(["--data-files".into(), rooted(&a.data_files).join(",")]);
+        argv.push(flag_value("--data-files", rooted(&a.data_files).join(",")));
     }
-    // each `--flag=value` one token, so a negative number reaches the
-    // command's own check rather than reading as a flag
     for (flag, value) in [
         ("--excess", a.excess.clone()),
         ("--adapt", a.adapt.clone()),
@@ -53,10 +53,10 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
         ("--feature-names", a.feature_names.clone()),
     ] {
         if let Some(v) = value {
-            argv.push(format!("{flag}={v}"));
+            argv.push(flag_value(flag, v));
         }
     }
-    argv.extend(["-o".into(), out.into()]);
+    argv.push(flag_value("--out", out));
     Ok(argv)
 }
 
@@ -98,7 +98,7 @@ pub(super) fn residual(
         plan.files.len()
     );
     let reply = json!({
-        "command": format!("pinto {}", script::line(&argv)),
+        "command": script::pinto_line(&argv),
         "out": out,
         "record": plan.summary,
         "fit": fit_lists(&plan),
@@ -115,15 +115,6 @@ pub(super) fn residual(
         reply,
         then,
     )?)])
-}
-
-/// The values a flag of type `T` takes, as the command line names them.
-fn choices<T: clap::ValueEnum>() -> Vec<String> {
-    T::value_variants()
-        .iter()
-        .filter_map(|v| v.to_possible_value())
-        .map(|p| p.get_name().to_string())
-        .collect()
 }
 
 pub(super) fn specs() -> Vec<ToolSpec> {

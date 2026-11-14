@@ -8,6 +8,7 @@ use super::form::{blamed, check, Kind, Method};
 use super::script::{self, is_header, outputs, under};
 use super::METHODS;
 use crate::mcp::{parse, shown_path};
+use crate::tui::flag_value;
 use anyhow::Context as _;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
@@ -21,10 +22,9 @@ pub struct Tools {
 
 impl Default for Tools {
     fn default() -> Self {
-        use clap::CommandFactory;
-        let mut cli = crate::Cli::command();
-        cli.build();
-        Tools { cli }
+        Tools {
+            cli: crate::built_cli(),
+        }
     }
 }
 
@@ -40,7 +40,7 @@ impl Handler for Tools {
         match name {
             "run_methods" => self.methods(parse(args)?),
             "run_fit" => self.fit(parse(args)?, cx),
-            "run_compare" => compare(parse(args)?, cx),
+            "run_compare" => compare(&self.cli, parse(args)?, cx),
             "run_predict" => self.predict(parse(args)?, cx),
             "run_region" => region(parse(args)?, cx),
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
@@ -232,7 +232,7 @@ impl Tools {
         })?;
 
         let manifest = made[0].clone();
-        let reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
+        let reply = json!({ "command": script::pinto_line(&argv) });
         let mut reply = launch(
             cx,
             &argv,
@@ -389,10 +389,7 @@ fn reply_from(path: &Path, drop: &[&str], argv: &[String]) -> anyhow::Result<Map
     for key in drop {
         reply.remove(*key);
     }
-    reply.insert(
-        "command".into(),
-        format!("pinto {}", script::line(argv)).into(),
-    );
+    reply.insert("command".into(), script::pinto_line(argv).into());
     Ok(reply)
 }
 
@@ -415,7 +412,7 @@ fn default_name(a: &CompareArgs) -> String {
 
 /// `run_compare` with `paired`: two models' held-out scores, each side one or
 /// more `pinto predict` runs (folds), tested over donors.
-fn compare_paired(a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
+fn compare_paired(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
     use crate::compare::paired_path;
     anyhow::ensure!(
         a.level_a.is_none() && a.level_b.is_none() && a.tau.is_none(),
@@ -434,15 +431,15 @@ fn compare_paired(a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         "--paired".into(),
         run_a.clone(),
         run_b.clone(),
-        "-o".into(),
-        out,
+        flag_value("--out", out),
     ];
     if let Some(m) = &a.donor_map {
-        argv.extend(["--donor-map".into(), shown_path(Path::new(m))]);
+        argv.push(flag_value("--donor-map", shown_path(Path::new(m))));
     }
     if let Some(n) = a.bootstrap {
-        argv.extend(["--bootstrap".into(), n.to_string()]);
+        argv.push(flag_value("--bootstrap", n));
     }
+    checked(cli, &argv)?;
     let summary = format!("paired held-out comparison of {run_a} vs {run_b}");
     cx.run_making(legume_mcp::own_command(&argv)?, &made, &summary)?;
 
@@ -474,13 +471,13 @@ impl From<OneOrMany> for Runs {
 
 /// `run_compare`: `pinto compare` as a child pinto, recorded with what it
 /// writes. It reads two propensity tables, so it runs in the call.
-fn compare(a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
+fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
     anyhow::ensure!(
         !a.a.0.is_empty() && !a.b.0.is_empty(),
         "give at least one run on each side"
     );
     if a.paired {
-        return compare_paired(a, cx);
+        return compare_paired(cli, a, cx);
     }
     use crate::compare::{contingency_path, json_path};
     anyhow::ensure!(
@@ -495,16 +492,22 @@ fn compare(a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         Ok(vec![json_path(out).into(), contingency_path(out).into()])
     })?;
     let (run_a, run_b) = (as_run(&a.a.0[0]), as_run(&a.b.0[0]));
-    let mut argv: Vec<String> = vec!["compare".into(), run_a.clone(), run_b.clone()];
-    argv.extend(["-o".into(), out.clone()]);
+    let mut argv: Vec<String> = vec![
+        "compare".into(),
+        run_a.clone(),
+        run_b.clone(),
+        flag_value("--out", out),
+    ];
     for (flag, value) in [("--level-a", &a.level_a), ("--level-b", &a.level_b)] {
         if let Some(v) = value {
-            argv.extend([flag.into(), v.clone()]);
+            argv.push(flag_value(flag, v));
         }
     }
     if let Some(tau) = a.tau {
-        argv.extend(["--tau".into(), tau.to_string()]);
+        argv.push(flag_value("--tau", tau));
     }
+    // checked as the child parses it, so a value it refuses says why here
+    checked(cli, &argv)?;
     let summary = format!("community comparison of {run_a} vs {run_b}");
     let cmd = legume_mcp::own_command(&argv)?;
     cx.run_making(cmd, &made, &summary)?;

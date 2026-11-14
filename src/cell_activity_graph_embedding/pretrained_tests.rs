@@ -8,6 +8,7 @@
 //! if it were a dictionary. Each test pins one of those with exact values.
 
 use super::pretrained::{load_pretrained_feature_embedding, InitKind, PretrainedArgs};
+use crate::test_support::boxed;
 use crate::util::common::Mat;
 use data_beans::aux::feature_names::FeatureNameKind;
 use legume_numeric::matrix::traits::IoOps;
@@ -33,10 +34,6 @@ fn write_dictionary(
     Ok(path)
 }
 
-fn names(list: &[&str]) -> Vec<Box<str>> {
-    list.iter().map(|s| (*s).into()).collect()
-}
-
 /// The run's feature axis, deliberately in a different order from the
 /// dictionary, with an UNMATCHED feature first so the matched positions are
 /// shifted: an implementation that writes dictionary rows at their compact
@@ -44,10 +41,10 @@ fn names(list: &[&str]) -> Vec<Box<str>> {
 #[test]
 fn rows_follow_the_runs_feature_axis_not_the_dictionarys() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G3", "G1", "G2"]);
+    let dict_features = boxed(&["G3", "G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 4, 100.0)?;
 
-    let run_features = names(&["G9", "G1", "G2", "G3"]);
+    let run_features = boxed(&["G9", "G1", "G2", "G3"]);
     let profiles = Mat::zeros(4, 2);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -80,10 +77,10 @@ fn rows_follow_the_runs_feature_axis_not_the_dictionarys() -> anyhow::Result<()>
 #[test]
 fn unmatched_feature_takes_the_closest_matched_profile_neighbor() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 3, 0.0)?;
 
-    let run_features = names(&["G1", "G2", "G9"]);
+    let run_features = boxed(&["G1", "G2", "G9"]);
     // G9's profile is parallel to G2's (cosine 1) and orthogonal to G1's.
     let profiles = Mat::from_row_slice(
         3,
@@ -123,10 +120,10 @@ fn unmatched_feature_takes_the_closest_matched_profile_neighbor() -> anyhow::Res
 #[test]
 fn track_suffixed_rows_are_rejected_with_the_offending_name() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1/count/spliced", "G1/count/unspliced"]);
+    let dict_features = boxed(&["G1/count/spliced", "G1/count/unspliced"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 2, 0.0)?;
 
-    let run_features = names(&["G1"]);
+    let run_features = boxed(&["G1"]);
     let profiles = Mat::zeros(1, 2);
     let err = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -151,10 +148,10 @@ fn track_suffixed_rows_are_rejected_with_the_offending_name() -> anyhow::Result<
 #[test]
 fn zero_profile_feature_takes_the_matched_mean() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 2, 0.0)?;
 
-    let run_features = names(&["G1", "G2", "G9"]);
+    let run_features = boxed(&["G1", "G2", "G9"]);
     let profiles = Mat::from_row_slice(3, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -181,7 +178,7 @@ fn zero_profile_feature_takes_the_matched_mean() -> anyhow::Result<()> {
 #[test]
 fn bias_loads_for_matched_features_and_zeros_elsewhere() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 2, 0.0)?;
     let bias = Mat::from_row_slice(2, 1, &[7.0, 8.0]);
     let bias_path = dir
@@ -192,10 +189,10 @@ fn bias_loads_for_matched_features_and_zeros_elsewhere() -> anyhow::Result<()> {
     bias.to_parquet_with_names(
         &bias_path,
         (Some(&dict_features), Some("feature")),
-        Some(&names(&["bias"])),
+        Some(&boxed(&["bias"])),
     )?;
 
-    let run_features = names(&["G2", "G9"]);
+    let run_features = boxed(&["G2", "G9"]);
     let profiles = Mat::from_row_slice(2, 2, &[1.0, 0.0, 1.0, 0.0]);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -214,10 +211,10 @@ fn bias_loads_for_matched_features_and_zeros_elsewhere() -> anyhow::Result<()> {
 #[test]
 fn zero_matched_features_is_a_hard_error() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 2, 0.0)?;
 
-    let run_features = names(&["G8", "G9"]);
+    let run_features = boxed(&["G8", "G9"]);
     let profiles = Mat::zeros(2, 2);
     assert!(load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -266,7 +263,7 @@ fn restore_puts_frozen_rows_back_and_leaves_trainable_rows_alone() -> anyhow::Re
 fn unmatched_feature_is_initialized_through_the_modules_when_tables_exist() -> anyhow::Result<()> {
     use graph_embedding_util::transfer::AlignKnobs;
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     // π: G1 → module 0, G2 → module 1; μ: two distinct rows; ρ = π μ.
     let pi = Mat::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
     let mu = Mat::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -283,7 +280,7 @@ fn unmatched_feature_is_initialized_through_the_modules_when_tables_exist() -> a
         Some(&cols),
     )?;
     let mcols: Vec<Box<str>> = (0..2).map(|c| format!("m{c}").into()).collect();
-    let mnames = names(&["m0", "m1"]);
+    let mnames = boxed(&["m0", "m1"]);
     pi.to_parquet_with_names(
         &dir.path()
             .join("run.module_membership.parquet")
@@ -299,7 +296,7 @@ fn unmatched_feature_is_initialized_through_the_modules_when_tables_exist() -> a
         Some(&cols),
     )?;
 
-    let run_features = names(&["G1", "G2", "G9"]);
+    let run_features = boxed(&["G1", "G2", "G9"]);
     // Depth-equal pseudobulks; G9's profile is G2's shape.
     let profiles = Mat::from_row_slice(
         3,
@@ -342,9 +339,9 @@ fn unmatched_feature_is_initialized_through_the_modules_when_tables_exist() -> a
 fn membership_init_without_tables_falls_back_to_the_neighbour_rule() -> anyhow::Result<()> {
     use graph_embedding_util::transfer::AlignKnobs;
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["G1", "G2"]);
+    let dict_features = boxed(&["G1", "G2"]);
     let path = write_dictionary(&dir, "dict", &dict_features, 3, 0.0)?;
-    let run_features = names(&["G1", "G2", "G9"]);
+    let run_features = boxed(&["G1", "G2", "G9"]);
     let profiles = Mat::from_row_slice(3, 2, &[1.0, 0.0, 0.0, 1.0, 0.0, 2.0]);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,
@@ -366,7 +363,7 @@ fn membership_init_without_tables_falls_back_to_the_neighbour_rule() -> anyhow::
 #[test]
 fn dictionary_width_counts_the_value_columns() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = write_dictionary(&dir, "dict", &names(&["G1", "G2"]), 5, 0.0)?;
+    let path = write_dictionary(&dir, "dict", &boxed(&["G1", "G2"]), 5, 0.0)?;
     assert_eq!(super::pretrained::dictionary_width(&path)?, 5);
     Ok(())
 }
@@ -377,16 +374,16 @@ fn dictionary_width_counts_the_value_columns() -> anyhow::Result<()> {
 #[test]
 fn only_the_gene_rows_of_a_mixed_table_match() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let dict_features = names(&["GENE1", "CT1/CT2/CT3", "GENE1", "GENE2"]);
+    let dict_features = boxed(&["GENE1", "CT1/CT2/CT3", "GENE1", "GENE2"]);
     let path = write_dictionary(&dir, "fne", &dict_features, 2, 0.0)?;
     let prefix = path.strip_suffix(".parquet").unwrap();
     data_beans::aux::feature_types::write_feature_types(
         prefix,
         &dict_features,
-        &names(&["cell_type", "cell_type", "gene", "gene"]),
+        &boxed(&["cell_type", "cell_type", "gene", "gene"]),
     )?;
 
-    let run_features = names(&["GENE1", "GENE2"]);
+    let run_features = boxed(&["GENE1", "GENE2"]);
     let profiles = Mat::zeros(2, 2);
     let out = load_pretrained_feature_embedding(PretrainedArgs {
         dictionary_path: &path,

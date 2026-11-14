@@ -78,7 +78,7 @@ pub struct PseudobulkArgs<'a> {
     /// The fine cell graph; read per level only to count internal fine
     /// edges for the resolution diagnostic (the super-edge fold itself
     /// lives in the training frame, `pb_frame`).
-    pub graph: &'a crate::util::knn_graph::KnnGraph,
+    pub graph: &'a legume_numeric::matrix::knn_graph::KnnGraph,
     /// Latent dimensionality `D` — the number of communities.
     pub embedding_dim: usize,
     /// How a matrix row maps onto the feature axis.

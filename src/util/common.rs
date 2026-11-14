@@ -15,6 +15,15 @@ pub use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub use std::sync::{Arc, Mutex};
 
+/// `name` under the folder `dir`, joined as a path: one `/` between them
+/// whether or not `dir` ends in one.
+pub fn in_dir(dir: &str, name: &str) -> String {
+    std::path::Path::new(dir)
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
 // Logging and progress bars come from `data_beans::aux::logging`, which draws
 // through the workspace-wide `legume_numeric::matrix::progress::MULTI_PROGRESS`. A second
 // `MultiProgress` here would leave its bars unbridged from the log output — see
