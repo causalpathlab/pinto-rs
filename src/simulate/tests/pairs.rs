@@ -302,3 +302,45 @@ fn a_simulations_truth_run_scores_one() {
     assert_eq!(s.patches.len(), 1);
     assert_eq!(s.patches[0].pairs.auroc, 1.0);
 }
+
+/// Long patch and closest-domain names leave the columns after them where
+/// the header puts them.
+#[test]
+fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
+    use crate::simulate::pairs::{pairs_header, pairs_rows, PairSet, PatchPairs};
+    let set = PairSet {
+        n_pairs: 1,
+        n_positive: 1,
+        prevalence: 0.5,
+        auroc: 1.0,
+        auprc: 1.0,
+    };
+    let s = PairScore {
+        n_spots: 4,
+        n_scored: 4,
+        cross_donor: set.clone(),
+        within_donor: set.clone(),
+        donor_gap: 0.0,
+        patches: vec![PatchPairs {
+            domain: "D1_specific_domain_1".into(),
+            owner: "D1".into(),
+            n_spots: 4,
+            pairs: set.clone(),
+            closest_domain: "D2_specific_domain_11".into(),
+            closest_auroc: 1.0,
+        }],
+        spatial: set,
+    };
+    let header = super::score::spans(&pairs_header());
+    let rows = pairs_rows("run", &s);
+    let row = super::score::spans(&rows[0]);
+    let show = format!("{}\n{}", pairs_header(), rows[0]);
+    // patch and closest start where their names do; auroc and c_auroc end
+    // where their values do
+    for f in [6, 8] {
+        assert_eq!(header[f].0, row[f].0, "field {f}\n{show}");
+    }
+    for f in [7, 9] {
+        assert_eq!(header[f].1, row[f].1, "field {f}\n{show}");
+    }
+}

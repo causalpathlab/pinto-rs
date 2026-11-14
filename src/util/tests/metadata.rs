@@ -426,6 +426,29 @@ fn lra_identity_genes_are_one_line_and_read_back() {
     assert!(!serde_json::to_string(&old).unwrap().contains("identity"));
 }
 
+/// `--marginal-baselines` is recorded with where its cell types came from
+/// and its permutations; a run without it records neither, and a manifest
+/// from before it reads as without.
+#[test]
+fn lra_marginal_baselines_are_recorded_only_when_asked() {
+    let without = serde_json::to_string(&LraOptions::default()).unwrap();
+    assert!(!without.contains("marginal"), "{without}");
+    let with = LraOptions {
+        marginal_baselines: Some("cell-types".into()),
+        marginal_permutations: Some(500),
+        ..LraOptions::default()
+    };
+    let json = serde_json::to_string(&with).unwrap();
+    assert!(
+        json.contains(r#""marginal_baselines":"cell-types""#),
+        "{json}"
+    );
+    assert!(json.contains(r#""marginal_permutations":500"#), "{json}");
+    assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), with);
+    let old: LraOptions = serde_json::from_str(r#"{"seed": 42}"#).unwrap();
+    assert_eq!(old.marginal_baselines, None);
+}
+
 /// A subset's identity genes are stored once: a subset made as the full
 /// table was keeps no copy and reads the full list back; one made with
 /// other pairs keeps its own; a subset recorded before any full table

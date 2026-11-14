@@ -145,3 +145,24 @@ fn run_help_names_the_methods_on_a_run() {
         assert!(help.contains(m), "{m} missing from run --help");
     }
 }
+
+/// `--knn-spatial 0` is refused as it is parsed, by lra and lra-simulate
+/// alike, rather than quietly built as one contact per cell.
+#[test]
+fn lra_needs_a_contact_per_cell_at_least() {
+    for cmd in ["lra", "lra-simulate"] {
+        let parse = |k: &str| {
+            Cli::try_parse_from([
+                "pinto",
+                cmd,
+                "d.zarr",
+                "--coord",
+                "c.csv",
+                "--knn-spatial",
+                k,
+            ])
+        };
+        assert!(parse("0").is_err(), "{cmd}");
+        assert!(parse("1").is_ok(), "{cmd}");
+    }
+}

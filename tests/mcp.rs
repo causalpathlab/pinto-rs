@@ -601,6 +601,34 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
     let msg = c.fails("run_lra_simulate", json!({"run": run, "out": "old"}));
     assert!(msg.contains("give another out"), "{msg}");
     assert!(!dir.path().join("x.lra.parquet").exists());
+    // A call is checked as pinto parses it before any finished table at its
+    // out is read: a value pinto does not take is refused as such.
+    for f in ["old.lra.parquet", "old.lra.curve.parquet"] {
+        std::fs::write(dir.path().join(f), "").unwrap();
+    }
+    for tool in ["run_lra", "run_lra_simulate"] {
+        let msg = c.fails(
+            tool,
+            json!({"run": run, "out": "old", "species": "martian"}),
+        );
+        assert!(
+            msg.contains("martian") && msg.contains("pinto lra"),
+            "{tool}: {msg}"
+        );
+    }
+    // Permutations of baselines not asked for, or with a co-expression
+    // method, are refused before anything runs.
+    let msg = c.fails(
+        "run_lra",
+        json!({"run": run, "out": "y", "marginal_permutations": 500}),
+    );
+    assert!(msg.contains("marginal_baselines"), "{msg}");
+    let msg = c.fails(
+        "run_lra",
+        json!({"run": run, "out": "y", "method": "coexpression-test", "marginal_baselines": true}),
+    );
+    assert!(msg.contains("--marginal-baselines applies to"), "{msg}");
+    assert!(!dir.path().join("y.lr_activity.parquet").exists());
 }
 
 /// A simulation over the server: settings checked before anything runs, the

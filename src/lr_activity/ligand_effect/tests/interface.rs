@@ -155,7 +155,7 @@ fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("o.lra.parquet");
     let path = path.to_str().unwrap();
-    write_effects(path, &[row], Q_SCOPE_ALL).unwrap();
+    write_effects(path, &[row], Q_SCOPE_ALL, false).unwrap();
 
     let names = [
         "effect_ipw",

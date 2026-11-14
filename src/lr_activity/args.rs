@@ -133,6 +133,7 @@ pub struct LraInputArgs {
         long = "knn-spatial",
         short = 'k',
         default_value_t = 5,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
         help_heading = "Input",
         help = "Spatial contacts per cell when building them from coordinates"
     )]
@@ -217,8 +218,9 @@ pub struct SrtLrActivityArgs {
                      bare LIGAND for all of its pairs. Matched on genes, case aside, among\n\
                      the reference pairs and --lr-pairs; an entry no pair answers is an\n\
                      error naming the nearest. The subset goes to\n\
-                     {out}.lra.only-<tag>.parquet (and .curve.parquet), never over the full\n\
-                     table, and is recorded apart in the manifest (outputs.lra.subsets).\n\
+                     {out}.lra.only-<tag>.parquet (and .curve.parquet, and .celltype.parquet\n\
+                     with --marginal-baselines), never over the full table, and is recorded\n\
+                     apart in the manifest (outputs.lra.subsets).\n\
                      Its q-values are corrected within the subset only (column q_scope).\n\
                      The receivers and each pair's estimate are those of the full run."
     )]
@@ -246,6 +248,41 @@ pub struct SrtLrActivityArgs {
         help = "Species of the reference; auto reads it from the gene-name case"
     )]
     pub species: ReferenceSpecies,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Also report the unadjusted co-expression baselines per pair (permutations: slow)",
+        long_help = "Also report, per pair (contact-effect), the co-expression statistics\n\
+                     lra-simulate benchmarks the estimate against, none of which adjusts for\n\
+                     confounding: the cell-type label permutation test (CellPhoneDB v2,\n\
+                     CellChat's product score) on the run's cell types (--cell-types or its\n\
+                     lupin round; the identity bins, coarsened to at most 8, when it has\n\
+                     none), bivariate Moran's I over contacts (SpatialDM) and the contact\n\
+                     co-expression score (NICHES, COMMOT). The pooled rows gain\n\
+                     celltype_score, celltype_p, celltype_tested, moran_i, moran_p,\n\
+                     contact_score and contact_p, and {out}.lra.celltype.parquet holds\n\
+                     every tested sender type x receiver type (recorded in the manifest as\n\
+                     outputs.lra.celltype). Off by default: the permutations cost more than\n\
+                     the estimate on a full reference."
+    )]
+    pub marginal_baselines: bool,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::lr_activity::ligand_effect::PERMUTATIONS,
+        requires = "marginal_baselines",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help = "Permutations of each --marginal-baselines test",
+        long_help = "Permutations of each --marginal-baselines permutation test (needs\n\
+                     --marginal-baselines). Moran's I and the contact score stop early once\n\
+                     their verdict at 5% is settled; the cell-type test runs all N, since\n\
+                     its per-type-pair table's p and q need them. Its summary is\n\
+                     Bonferroni-corrected over the type pairs, so with m tested type pairs\n\
+                     it can reject only when m / (1 + N) < 0.05: many types need more."
+    )]
+    pub marginal_permutations: usize,
 
     // * Co-expression methods
     #[arg(

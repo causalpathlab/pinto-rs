@@ -341,7 +341,7 @@ pub fn load_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         )
         .map_err(|e| e.context(format!("--cell-types {f}")))?;
         info!("Cell types from {f}: {} types", t.1.len());
-        warn!("{CELL_TYPE_CAVEAT}");
+        warn!("{}", cell_type_caveat(&format!("--cell-types {f}")));
         c.cell_type = Some(t);
     }
     if let Some(f) = &input.region {
@@ -450,7 +450,10 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
                     round.display(),
                     t.1.len()
                 );
-                warn!("{CELL_TYPE_CAVEAT}");
+                warn!(
+                    "{}",
+                    cell_type_caveat(&format!("lupin round {}", round.display()))
+                );
                 Some(t)
             }
             Err(e) => {
@@ -510,14 +513,17 @@ fn read_coords(
 
 // * Cell types
 
-/// What cell types read from a lupin round mean for the estimate. They are
-/// optional: a run without a round has no cell-type confounders, strata or
-/// rows.
-pub const CELL_TYPE_CAVEAT: &str =
-    "cell types from the lupin round adjust the estimate (confounder \
-     columns, pseudobulk strata, per-type rows); they come from expression-derived clusters, \
-     and while the receiver identity projection leaves the ligand, receptor and target genes \
-     out, the labels may have been called on them";
+/// What cell types read from `source` (a lupin round, a `--cell-types`
+/// file) mean for the estimate. They are optional: a run without them has
+/// no cell-type confounders, strata or rows.
+pub fn cell_type_caveat(source: &str) -> String {
+    format!(
+        "cell types from {source} adjust the estimate (confounder columns, pseudobulk \
+         strata, per-type rows); they come from expression-derived clusters, and while the \
+         receiver identity projection leaves the ligand, receptor and target genes out, the \
+         labels may have been called on them"
+    )
+}
 
 /// The newest lupin round (`*.lupin.json`) made from the run at `manifest`:
 /// among the rounds whose `annotate.source` chain leads back to it, the

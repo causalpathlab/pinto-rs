@@ -145,7 +145,16 @@ fn the_viewer_opens_the_truth() {
         .iter()
         .map(|n| n.as_ref())
         .collect();
-    assert_eq!(names, ["DM1", "DM2", "DM3", "DM4", "DM5"]);
+    assert_eq!(
+        names,
+        [
+            "shared_domain_1",
+            "shared_domain_2",
+            "shared_domain_3",
+            "shared_domain_4",
+            "D3_specific_domain_1"
+        ]
+    );
 }
 
 /// Scoring a simulation's own truth, written as a cell<TAB>label table,

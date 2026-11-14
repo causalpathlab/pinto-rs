@@ -227,3 +227,51 @@ fn a_simulation_is_named_any_way_a_run_is() {
         assert_eq!(sim_folder(&format!("{want}{given}")), want, "{given:?}");
     }
 }
+
+/// Each whitespace-separated field of `line`, as its start and end column.
+pub(super) fn spans(line: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, ch) in line.chars().chain(std::iter::once(' ')).enumerate() {
+        match (ch == ' ', start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                out.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A long patch name leaves the columns after it where the header puts
+/// them: `patch` starts where the name does, and f1, prec and owner end
+/// where their values do.
+#[test]
+fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
+    use crate::simulate::score::{table_header, table_rows, PatchScore, Score};
+    let s = Score {
+        n_spots: 4,
+        n_scored: 4,
+        shared_ari: 1.0,
+        donor_dependence: 0.0,
+        donor_dependence_by_domain: Vec::new(),
+        patches: vec![PatchScore {
+            domain: "D1_specific_domain_1".into(),
+            owner: "D1".into(),
+            f1: 1.0,
+            precision: 1.0,
+            recall: 1.0,
+            owner_share: 1.0,
+        }],
+    };
+    let header = spans(&table_header());
+    let rows = table_rows("run", &s);
+    let row = spans(&rows[0]);
+    let show = format!("{}\n{}", table_header(), rows[0]);
+    assert_eq!(header[4].0, row[4].0, "patch\n{show}");
+    for f in 5..8 {
+        assert_eq!(header[f].1, row[f].1, "field {f}\n{show}");
+    }
+}

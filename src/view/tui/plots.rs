@@ -110,7 +110,16 @@ pub fn chart_key(key: ratatui::crossterm::event::KeyEvent) -> bool {
 const HEAT_HEAD: usize = 4;
 
 /// Characters of a group name written down a heatmap column.
-const NAME_ROWS: usize = 8;
+pub(super) const NAME_ROWS: usize = 8;
+
+/// Group `c`'s name as its heatmap column writes it, top to bottom: a
+/// round cluster by its id (`K3 CT1_a` → `K3`), a long name cut in the
+/// middle so names sharing a prefix still differ.
+pub(super) fn column_name(comm: &super::super::data::Communities, c: usize) -> Vec<char> {
+    style::middle(&super::focus_name(comm, c), NAME_ROWS)
+        .chars()
+        .collect()
+}
 
 impl App<'_> {
     /// `H`: map → map with the structure plot under it → heatmap → map.
@@ -419,19 +428,12 @@ impl App<'_> {
             heat_key(),
         ];
         // Group names written down their columns.
-        // A round cluster by its id: `K3 CT1_a` → `K3`.
-        let short = |c: usize| -> Vec<char> { super::focus_name(comm, c).chars().collect() };
-        let tallest = heat
-            .groups
-            .iter()
-            .map(|&c| short(c).len())
-            .max()
-            .unwrap_or(0)
-            .min(NAME_ROWS);
+        let names: Vec<Vec<char>> = heat.groups.iter().map(|&c| column_name(comm, c)).collect();
+        let tallest = names.iter().map(Vec::len).max().unwrap_or(0);
         for r in 0..tallest {
             let mut text = " ".repeat(label_w);
-            for &c in &heat.groups {
-                let ch = short(c).get(r).copied().unwrap_or(' ');
+            for name in &names {
+                let ch = name.get(r).copied().unwrap_or(' ');
                 text.push(ch);
                 if cw == 2 {
                     text.push(' ');
