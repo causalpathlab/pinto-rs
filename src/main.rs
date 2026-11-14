@@ -409,16 +409,16 @@ enum Commands {
                       same model and outputs.\n\n\
                       Each cell is its own unit and each within-batch spatial cell pair\n\
                       a positive; negatives are other cells of the same batch, never\n\
-                      the pair's own two. Nothing is pseudobulked: no coarsening\n\
-                      hierarchy, no pseudobulk SVD warm start (the cell table starts at\n\
-                      random), and no batch-effect estimate, so no batch correction is\n\
-                      applied, and `pinto predict` applies none to a query either.\n\
+                      the pair's own two. Nothing is trained on pseudobulks: no\n\
+                      coarsening hierarchy and no pseudobulk SVD warm start (the cell\n\
+                      table starts at random). Batch effects are estimated and removed\n\
+                      as in cage; --ignore-batch leaves them in, as STAGATE does.\n\
                       --n-pseudobulk, --num-levels, --batch-knn and the HVG flags do\n\
                       nothing here (a warning says so); --chain-levels, --cnv-clones,\n\
                       --feature-modules and --feature-embedding are refused.\n\
                       --embedding-l2 defaults to 0 here.\n\n\
-                      Writes what cage writes, without {out}.delta.parquet and\n\
-                      {out}.pseudobulk_cells.parquet; its manifest says `cell_level`.",
+                      Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
+                      its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0"))
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
@@ -868,6 +868,15 @@ fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
+    // At most 16 worker threads unless RAYON_NUM_THREADS says otherwise.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let env = std::env::var("RAYON_NUM_THREADS").ok();
+    if let Some(n) = util::common::default_threads(env.as_deref(), cores) {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()?;
     }
 
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {

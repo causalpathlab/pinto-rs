@@ -195,8 +195,9 @@ pub fn fit_cell_activity_graph_embedding(
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: !args.no_fisher_weights,
-        // the batch-effect estimate is fitted on pseudobulk samples
-        batch_effects: !args.cell_level,
+        // cage-cell too: the estimate is preprocessing (fitted on data-beans'
+        // pseudobulk samples), not training; --ignore-batch turns it off
+        batch_effects: true,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && !args.cell_level,
         feature_kind: Some(feature_kind.clone()),

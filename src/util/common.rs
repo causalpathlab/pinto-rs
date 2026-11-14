@@ -47,3 +47,17 @@ pub fn non_negative_f64(text: &str) -> Result<f64, String> {
         Err("must be finite and not negative".to_string())
     }
 }
+
+/// Most worker threads a pinto command takes by default: a shared machine
+/// is not a command's to fill, and past this the fits gain little.
+pub const MAX_DEFAULT_THREADS: usize = 16;
+
+/// The worker threads to start with: `min(MAX_DEFAULT_THREADS, cores)`,
+/// unless `RAYON_NUM_THREADS` (`rayon_env`) is set, when rayon's own choice
+/// stands (`None`).
+pub fn default_threads(rayon_env: Option<&str>, cores: usize) -> Option<usize> {
+    match rayon_env {
+        Some(v) if !v.trim().is_empty() => None,
+        _ => Some(cores.clamp(1, MAX_DEFAULT_THREADS)),
+    }
+}

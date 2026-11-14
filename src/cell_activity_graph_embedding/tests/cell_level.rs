@@ -130,39 +130,8 @@ fn cell_level_of(prefix: &str) -> bool {
         .cell_level
 }
 
-/// `pinto predict` of `model` on the files it was fitted on; returns the
-/// output prefix.
-fn predict(dir: &std::path::Path, data: &str, coords: &str, model: &str) -> String {
-    #[derive(Parser)]
-    struct Cli {
-        #[command(flatten)]
-        predict: crate::predict::PredictArgs,
-    }
-    let out = dir.join("predicted").to_str().unwrap().to_string();
-    let argv = [
-        "x",
-        data,
-        "-c",
-        coords,
-        "--coord-column-names",
-        "x,y",
-        "--model",
-        model,
-        "-o",
-        &out,
-    ];
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict).unwrap();
-    out
-}
-
-fn cell_embedding(prefix: &str) -> Mat {
-    Mat::from_parquet(&format!("{prefix}.cell_embedding.parquet"))
-        .unwrap()
-        .mat
-}
-
 #[test]
-fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
+fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let dir = tempfile::tempdir().unwrap();
     let (data, coords) = two_sections(dir.path(), 8);
     let n_cells = 2 * 8 * 8;
@@ -170,24 +139,31 @@ fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
     let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
     let trained = Mat::from_parquet(&format!("{cell}.pb_embedding.parquet")).unwrap();
     assert_eq!(trained.mat.nrows(), n_cells, "one trained row per cell");
-    for skipped in ["delta", "pseudobulk_cells"] {
-        assert!(
-            !std::path::Path::new(&format!("{cell}.{skipped}.parquet")).exists(),
-            "--cell-level wrote {skipped}.parquet"
-        );
-    }
+    assert!(
+        !std::path::Path::new(&format!("{cell}.pseudobulk_cells.parquet")).exists(),
+        "cage-cell wrote pseudobulk_cells.parquet"
+    );
+    // batch effects are estimated and removed, as in cage, unless asked not to
+    assert!(
+        std::path::Path::new(&format!("{cell}.delta.parquet")).exists(),
+        "cage-cell estimated no batch effects"
+    );
+    assert!(std::path::Path::new(&format!("{cell}.pinto.json")).exists());
+    let raw = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "cell_raw",
+        &["cell", "--ignore-batch"],
+    );
+    assert!(
+        !std::path::Path::new(&format!("{raw}.delta.parquet")).exists(),
+        "--ignore-batch still estimated batch effects"
+    );
     assert!(
         cell_level_of(&cell),
         "the manifest says the run is cell-level"
     );
-
-    // Predicted on its own training files, a cell-level model places the
-    // cells where it trained them: the query is not batch-corrected, as
-    // the training was not.
-    let predicted = predict(dir.path(), &data, &coords, &cell);
-    let (fitted, placed) = (cell_embedding(&cell), cell_embedding(&predicted));
-    let diff = (&fitted - &placed).abs().max();
-    assert!(diff < 1e-4, "predict moved the cells by up to {diff}");
 
     // the same data without the flag trains on pseudobulks, and builds both
     let pb = fit(dir.path(), &data, &coords, "pb", &[]);
