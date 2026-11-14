@@ -117,14 +117,15 @@ pub struct LraInputArgs {
         long_help = "How a --region row whose effect, or contrast with the rest, has p < 0.2\n\
                      is checked by a delete-one-tile jackknife over the tiles of its\n\
                      sections; its SEs are widened by the jackknife over the clustered SE,\n\
-                     never narrowed. On srt-simulate L2, a one-donor region (DM5) with a\n\
-                     planted effect at PVE 0.02, over 5 seeds:\n\
+                     never narrowed.\n\
                      no-refit (default): the tile leaves the averages alone, the nuisance\n\
-                     fits kept, all replicates read from one pass of them. Nulls rejected\n\
-                     7.6% (10.5% without a jackknife), power 0.79 (0.84).\n\
+                     fits kept, all replicates read from one pass of them.\n\
                      refit: each replicate refits the nuisance models without the tile,\n\
-                     so their own error counts. Conservative: 0% of nulls rejected, power\n\
-                     0.13 (2 seeds), at one refit per tile."
+                     so their own error counts. Conservative, at a large cost in power and\n\
+                     one refit per tile.\n\
+                     Neither removes confounding finer than the spatial smooth follows: a\n\
+                     hidden field at that scale, driving both ligand and response inside a\n\
+                     region, biases its row as it biases the pooled one."
     )]
     pub region_jackknife: RegionJackknife,
 

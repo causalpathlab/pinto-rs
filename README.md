@@ -91,7 +91,11 @@ that on every other receiver, from the same fit, the test that an effect is
 the region's or the donor's own. A region row with p < 0.2 is checked by a
 delete-one-tile jackknife over its sections, which widens its SEs and never
 narrows them (`jackknife_ratio`); `--region-jackknife no-refit` (the default)
-keeps the nuisance fits, `refit` refits them per tile and is conservative. A
+keeps the nuisance fits, `refit` refits them per tile and is conservative.
+Neither removes confounding finer than the smooth fields follow: a hidden
+spatial field at that scale that drives both a ligand and its response
+inside a region biases the region's row, as it biases the pooled row, so a
+region row carries the same limit as every other. A
 `--from` run fitted on a residual fit's excess counts is read on its raw
 counts, and its cell types come from the stage-1 run.
 
