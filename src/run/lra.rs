@@ -14,6 +14,7 @@ use crate::lr_activity::ligand_effect::output::{
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
+use crate::tui::flag_value;
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
 use serde::{Deserialize, Serialize};
@@ -256,22 +257,22 @@ impl Input<'_> {
             argv.push(shown(self.data_files));
         }
         if !self.coord_files.is_empty() {
-            argv.extend(["--coord".into(), shown(self.coord_files)]);
+            argv.push(flag_value("--coord", shown(self.coord_files)));
         }
         if !self.batch_files.is_empty() {
-            argv.extend(["--batch-files".into(), shown(self.batch_files)]);
+            argv.push(flag_value("--batch-files", shown(self.batch_files)));
         }
         if let Some(k) = self.knn_spatial {
-            argv.extend(["--knn-spatial".into(), k.to_string()]);
+            argv.push(flag_value("--knn-spatial", k));
         }
         if let Some(c) = self.cell_types {
-            argv.extend(["--cell-types".into(), shown_path(Path::new(c))]);
+            argv.push(flag_value("--cell-types", shown_path(Path::new(c))));
         }
         if let Some(r) = self.region {
-            argv.extend(["--region".into(), shown_path(Path::new(r))]);
+            argv.push(flag_value("--region", shown_path(Path::new(r))));
         }
         if let Some(j) = self.region_jackknife {
-            argv.extend(["--region-jackknife".into(), j.into()]);
+            argv.push(flag_value("--region-jackknife", j));
         }
         argv
     }
@@ -370,18 +371,18 @@ pub(super) fn lra_argv(
     let mut argv = options.argv(run, Some(out), method, &a.only);
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {
-        argv.extend(["--n-permutations".into(), n.to_string()]);
+        argv.push(flag_value("--n-permutations", n));
     }
     if let Some(x) = a.json_fwer_threshold {
-        argv.extend(["--json-fwer-threshold".into(), x.to_string()]);
+        argv.push(flag_value("--json-fwer-threshold", x));
     }
     if let Some(x) = a.min_gene_count {
-        argv.extend(["--min-gene-count".into(), x.to_string()]);
+        argv.push(flag_value("--min-gene-count", x));
     }
     if a.marginal_baselines {
         argv.push("--marginal-baselines".into());
         if let Some(n) = a.marginal_permutations {
-            argv.extend(["--marginal-permutations".into(), n.to_string()]);
+            argv.push(flag_value("--marginal-permutations", n));
         }
     }
     argv
@@ -396,25 +397,25 @@ pub(super) fn lra_simulate_argv(
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["lra-simulate".into()];
     if let Some(run) = run {
-        argv.extend(["--from".into(), run.into()]);
+        argv.push(flag_value("--from", run));
     }
-    argv.extend(["-o".into(), out.into()]);
+    argv.push(flag_value("--out", out));
     argv.extend(a.input().flags());
     if let Some(seed) = a.seed {
-        argv.extend(["--seed".into(), seed.to_string()]);
+        argv.push(flag_value("--seed", seed));
     }
     if let Some(s) = &a.species {
-        argv.extend(["--species".into(), s.clone()]);
+        argv.push(flag_value("--species", s));
     }
     if let Some(p) = &a.lr_pairs {
-        argv.extend(["--lr-pairs".into(), shown_path(Path::new(p))]);
+        argv.push(flag_value("--lr-pairs", shown_path(Path::new(p))));
     }
     if !a.targets.is_empty() {
         let t: Vec<String> = a.targets.iter().map(|t| shown_path(Path::new(t))).collect();
-        argv.extend(["--targets".into(), t.join(",")]);
+        argv.push(flag_value("--targets", t.join(",")));
     }
     if let Some(r) = &a.plant_region {
-        argv.extend(["--plant-region".into(), r.clone()]);
+        argv.push(flag_value("--plant-region", r));
     }
     argv
 }

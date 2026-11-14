@@ -241,9 +241,10 @@ impl Still<'_> {
     pub(super) fn args(&self, png: Option<&str>, pdf: Option<&str>) -> Vec<String> {
         let (style, win) = (&self.style, self.window);
         let mut args = vec!["view".into(), self.prefix.to_string()];
+        // each value in its flag's word, so a negative one is not read as
+        // a flag
         let mut flag = |name: &str, value: Option<String>| {
-            args.push(name.into());
-            args.extend(value);
+            args.push(value.map_or_else(|| name.into(), |v| crate::tui::flag_value(name, v)));
         };
         for (name, path) in [("--png", png), ("--pdf", pdf)] {
             if let Some(path) = path {
@@ -253,10 +254,9 @@ impl Still<'_> {
         flag("--units", Some(self.units.into()));
         flag("--width", Some(self.vp.w.to_string()));
         flag("--height", Some(self.vp.h.to_string()));
-        // `{}` prints the shortest text that parses back to the same f32;
-        // one word, so a negative X0 is not read as a flag.
-        let bbox = format!("--bbox={},{},{},{}", win.x0, win.y0, win.x1, win.y1);
-        flag(&bbox, None);
+        // `{}` prints the shortest text that parses back to the same f32
+        let bbox = format!("{},{},{},{}", win.x0, win.y0, win.x1, win.y1);
+        flag("--bbox", Some(bbox));
         flag("--level", Some(self.tag().into()));
         flag("--layer", Some(style.layer.to_string()));
         let focused = focused(style.focus);

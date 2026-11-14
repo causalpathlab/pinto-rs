@@ -559,7 +559,7 @@ fn ticks_are_round_and_cover_the_range() {
 fn the_layer_starts_lra_beside_the_run() {
     let opts = LraOptions::default();
     let argv = lra_command(Path::new("run.pinto.json"), &opts, &[]);
-    assert_eq!(argv, ["lra", "--from", "run.pinto.json"]);
+    assert_eq!(argv, ["lra", "--from=run.pinto.json"]);
     let opts = LraOptions {
         lr_pairs: Some("/p/pairs.tsv".into()),
         targets: vec!["/p/a.gmt".into(), "/p/b.tsv".into()],
@@ -574,18 +574,12 @@ fn the_layer_starts_lra_beside_the_run() {
         argv,
         [
             "lra",
-            "--from",
-            "run.pinto.json",
-            "--lr-pairs",
-            "/p/pairs.tsv",
-            "--targets",
-            "/p/a.gmt,/p/b.tsv",
-            "--species",
-            "mouse",
-            "--seed",
-            "7",
-            "--only",
-            "LIGA1:RECA1,LIGB1"
+            "--from=run.pinto.json",
+            "--lr-pairs=/p/pairs.tsv",
+            "--targets=/p/a.gmt,/p/b.tsv",
+            "--species=mouse",
+            "--seed=7",
+            "--only=LIGA1:RECA1,LIGB1"
         ]
     );
     // pinto takes it as written.
