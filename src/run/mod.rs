@@ -15,7 +15,7 @@ pub(crate) mod tui;
 
 /// The methods `pinto run` sets up, in the order listed, each as typed:
 /// the short alias of its subcommand.
-pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
+pub const METHODS: [&str; 4] = ["lc", "cage", "cage-cell", "dsvd"];
 
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power

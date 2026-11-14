@@ -701,8 +701,7 @@ fn text(v: &Value) -> String {
 }
 
 fn specs() -> Vec<ToolSpec> {
-    let methods =
-        json!({"enum": METHODS, "description": "lc (link community, recommended), cage, or dsvd"});
+    let methods = json!({"enum": METHODS, "description": "lc (link community, recommended), cage, cage-cell (cage on cells, no pseudobulks) or dsvd"});
     vec![
         ToolSpec::new(
             "run_methods",

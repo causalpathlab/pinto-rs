@@ -329,6 +329,25 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     pub chain_levels: Option<Vec<usize>>,
 
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "chain_levels",
+        hide = true,
+        help = "Train on cells and cell pairs: no pseudobulks, no coarsening (as `pinto cage-cell`)",
+        long_help = "Train on cells and cell pairs, as cell-level methods\n\
+                     (STAGATE, BANKSY) do, for a like-for-like comparison.\n\
+                     Each cell is its own unit and each spatial cell pair a\n\
+                     positive; negatives are other cells of the same batch.\n\
+                     Nothing is pseudobulked: no coarsening hierarchy, no\n\
+                     pseudobulk SVD warm start (the cell table starts at\n\
+                     random), and no batch-effect estimate (it is fitted on\n\
+                     pseudobulk samples), so no correction is applied.\n\
+                     --n-pseudobulk, --num-levels and --chain-levels do not\n\
+                     apply."
+    )]
+    pub cell_level: bool,
+
     /// HVG selection: senna-style shared CLI (`--n-hvg`,
     /// `--feature-list-file`). cage **weights the random projection** with it,
     /// exactly as `senna bge` and `senna gem` do — non-selected features get

@@ -855,8 +855,11 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     a.browser = None;
     a.editor = None;
     let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
-    assert_eq!(names[..5], ["lc", "cage", "dsvd", "lra", "lra-simulate"]);
-    let lra = 3;
+    assert_eq!(
+        names[..6],
+        ["lc", "cage", "cage-cell", "dsvd", "lra", "lra-simulate"]
+    );
+    let lra = 4;
     assert!(a.rows[lra].form.from_run && !a.rows[lra].form.takes_coords());
 
     a.rows[lra].on = true;
@@ -929,7 +932,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     assert!(text.contains("bash lra.cmd.sh"), "{text}");
 
     // lra-simulate: its own table.
-    let sim = 4;
+    let sim = lra + 1;
     a.rows[lra].on = false;
     a.rows[sim].on = true;
     a.rows[sim].out = "sim".into();
@@ -1070,6 +1073,7 @@ fn the_residual_row_is_listed_only_where_pinto_has_the_command() {
         [
             "lc",
             "cage",
+            "cage-cell",
             "dsvd",
             "lra",
             "lra-simulate",

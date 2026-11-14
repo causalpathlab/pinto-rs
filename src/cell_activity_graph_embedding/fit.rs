@@ -103,6 +103,8 @@ pub fn fit_cell_activity_graph_embedding(
     // three coarser levels); explicit values are checked here, where a
     // mistake costs milliseconds rather than a full collapse.
     let chain_levels: Vec<usize> = match &args.chain_levels {
+        // one level above the cells: their batch
+        None if args.cell_level => vec![0],
         Some(levels) => {
             for &lvl in levels {
                 anyhow::ensure!(
@@ -125,10 +127,14 @@ pub fn fit_cell_activity_graph_embedding(
             (0..(c.num_levels - 1).min(3)).collect()
         }
     };
-    info!(
-        "Chain levels: {:?} of {} coarsening levels (finest = trained unit)",
-        chain_levels, c.num_levels
-    );
+    if args.cell_level {
+        info!("Cell level: cells are the trained unit; negatives within each batch");
+    } else {
+        info!(
+            "Chain levels: {:?} of {} coarsening levels (finest = trained unit)",
+            chain_levels, c.num_levels
+        );
+    }
     anyhow::ensure!(args.epochs > 0, "epochs must be > 0");
     anyhow::ensure!(!chain_levels.is_empty(), "chain-levels must be non-empty");
     // Opt-in on cage.
@@ -185,9 +191,10 @@ pub fn fit_cell_activity_graph_embedding(
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: !args.no_fisher_weights,
-        batch_effects: true,
+        // the batch-effect estimate is fitted on pseudobulk samples
+        batch_effects: !args.cell_level,
         feature_axis: FeatureAxisMode::Strict,
-        cell_projection: !hvg_enabled,
+        cell_projection: !hvg_enabled && !args.cell_level,
         feature_kind: Some(feature_kind.clone()),
     })?;
 
@@ -284,76 +291,82 @@ pub fn fit_cell_activity_graph_embedding(
     /////////////////////////////////////////
     // 4. HVG-weighted proj -> coarsening //
     /////////////////////////////////////////
-    let batch_arg: Option<&[Box<str>]> = if batch_db.is_some() {
-        Some(&batch_membership)
+    let ml = if args.cell_level {
+        cell_level_hierarchy(&batch_membership, srt_cell_pairs.inner.pairs())
     } else {
-        None
-    };
-    // HVG selection WEIGHTS this projection; it does not subset the trained
-    // feature axis. Non-selected features get projection weight 0, so they sit out
-    // the basis the coarsening hierarchy is built from, but they stay on the
-    // feature axis, still trained. The selection shapes WHERE the pseudobulks
-    // land rather than which features the model may use — matching `senna bge`
-    // and `senna gem`.
-    let must_train = data_beans::alg::hvg::load_must_train(
-        args.hvg.must_train_features.as_deref(),
-        hvg_enabled,
-    )?;
-    let hvg_weights: Option<Vec<f32>> = if hvg_enabled {
-        let hvg = select_hvg_streaming(
-            &data_vec,
-            (args.hvg.n_hvg > 0).then_some(args.hvg.n_hvg),
-            args.hvg.feature_list_file.as_deref(),
-            must_train.as_ref(),
-            c.block_size,
+        let batch_arg: Option<&[Box<str>]> = if batch_db.is_some() {
+            Some(&batch_membership)
+        } else {
+            None
+        };
+        // HVG selection WEIGHTS this projection; it does not subset the trained
+        // feature axis. Non-selected features get projection weight 0, so they sit out
+        // the basis the coarsening hierarchy is built from, but they stay on the
+        // feature axis, still trained. The selection shapes WHERE the pseudobulks
+        // land rather than which features the model may use — matching `senna bge`
+        // and `senna gem`.
+        let must_train = data_beans::alg::hvg::load_must_train(
+            args.hvg.must_train_features.as_deref(),
+            hvg_enabled,
         )?;
-        // Selection ranks ROWS, and the projection it weights reads rows, so
-        // both stay on the row axis. What cannot stay there is a feature: picking a
-        // feature's spliced row without its unspliced one would weight half a feature
-        // into the basis the coarsening hierarchy is cut from, so the weights are
-        // promoted to whole features. `--n-hvg N` therefore still counts N ROWS —
-        // between N/2 and N features on a channelized matrix — which is what the
-        // realized count below reports.
-        let mut w = hvg.row_weights(n_rows);
-        let n_weighted = feature_axis.promote_row_weights(&mut w);
-        info!(
-            "HVG-weighted projection: {} of {} features weighted ({} of {} rows); \
+        let hvg_weights: Option<Vec<f32>> = if hvg_enabled {
+            let hvg = select_hvg_streaming(
+                &data_vec,
+                (args.hvg.n_hvg > 0).then_some(args.hvg.n_hvg),
+                args.hvg.feature_list_file.as_deref(),
+                must_train.as_ref(),
+                c.block_size,
+            )?;
+            // Selection ranks ROWS, and the projection it weights reads rows, so
+            // both stay on the row axis. What cannot stay there is a feature: picking a
+            // feature's spliced row without its unspliced one would weight half a feature
+            // into the basis the coarsening hierarchy is cut from, so the weights are
+            // promoted to whole features. `--n-hvg N` therefore still counts N ROWS —
+            // between N/2 and N features on a channelized matrix — which is what the
+            // realized count below reports.
+            let mut w = hvg.row_weights(n_rows);
+            let n_weighted = feature_axis.promote_row_weights(&mut w);
+            info!(
+                "HVG-weighted projection: {} of {} features weighted ({} of {} rows); \
              all stay on the trained axis",
-            n_weighted,
-            n_features,
-            w.iter().filter(|&&x| x > 0.0).count(),
-            n_rows
-        );
-        Some(w)
-    } else {
-        None
-    };
+                n_weighted,
+                n_features,
+                w.iter().filter(|&&x| x > 0.0).count(),
+                n_rows
+            );
+            Some(w)
+        } else {
+            None
+        };
 
-    let cell_proj = match hvg_weights.as_deref() {
-        // HVG weighting makes this a genuinely different projection, so the
-        // shared one cannot stand in for it. Preprocessing skips taking one in
-        // this case, and with `--knn-expr` off there is nothing to drop. When
-        // it IS asked for, preprocessing takes an unweighted projection for the
-        // expression graph, and this drops it rather than carry a second full
-        // matrix through training.
-        Some(w) => {
-            drop(shared_cell_proj);
-            data_vec.project_columns_weighted(c.proj_dim, c.block_size, batch_arg, w)?
-        }
-        None => shared_cell_proj.expect("preprocessing takes the projection whenever HVG is off"),
+        let cell_proj = match hvg_weights.as_deref() {
+            // HVG weighting makes this a genuinely different projection, so the
+            // shared one cannot stand in for it. Preprocessing skips taking one in
+            // this case, and with `--knn-expr` off there is nothing to drop. When
+            // it IS asked for, preprocessing takes an unweighted projection for the
+            // expression graph, and this drops it rather than carry a second full
+            // matrix through training.
+            Some(w) => {
+                drop(shared_cell_proj);
+                data_vec.project_columns_weighted(c.proj_dim, c.block_size, batch_arg, w)?
+            }
+            None => {
+                shared_cell_proj.expect("preprocessing takes the projection whenever HVG is off")
+            }
+        };
+        let topology = topology_graph(&graph, &spatial_graph);
+        graph_coarsen_multilevel(
+            topology,
+            &mut cell_proj.proj.clone(),
+            srt_cell_pairs.inner.pairs(),
+            CoarsenConfig {
+                n_clusters: c.n_pseudobulk,
+                num_levels: c.num_levels,
+                seeding: seeding.as_ref().map(Seeding::params),
+                modularity_veto: None,
+            },
+        )
     };
-    let topology = topology_graph(&graph, &spatial_graph);
-    let ml = graph_coarsen_multilevel(
-        topology,
-        &mut cell_proj.proj.clone(),
-        srt_cell_pairs.inner.pairs(),
-        CoarsenConfig {
-            n_clusters: c.n_pseudobulk,
-            num_levels: c.num_levels,
-            seeding: seeding.as_ref().map(Seeding::params),
-            modularity_veto: None,
-        },
-    );
 
     // Batch ids + the PB TRAINING FRAME, built BEFORE the pseudobulk basis:
     // its nesting / density / batch checks are cheap, and failing them
@@ -384,20 +397,27 @@ pub fn fit_cell_activity_graph_embedding(
     // Collapse cells into super-cells per coarsening level and fit one shared
     // SVD over them: the WARM START of the trained PB table, and the basis the
     // `pseudobulk_cells.parquet` diagnostic exports.
-    let basis = crate::cell_activity_graph_embedding::pb_basis::build_pseudobulks(
-        crate::cell_activity_graph_embedding::pb_basis::PseudobulkArgs {
-            data: &data_vec,
-            all_cell_labels: &ml.all_cell_labels,
-            graph: &graph,
-            embedding_dim,
-            feature_axis: &feature_axis,
-        },
-    )?;
+    // Cell level: no pseudobulks, so no basis and a random start.
+    let basis = if args.cell_level {
+        None
+    } else {
+        Some(
+            crate::cell_activity_graph_embedding::pb_basis::build_pseudobulks(
+                crate::cell_activity_graph_embedding::pb_basis::PseudobulkArgs {
+                    data: &data_vec,
+                    all_cell_labels: &ml.all_cell_labels,
+                    graph: &graph,
+                    embedding_dim,
+                    feature_axis: &feature_axis,
+                },
+            )?,
+        )
+    };
     let mut e_pb_warm: Option<Mat> = None;
     // Diagnostic export: per CELL, its spatial coords, its finest-level
     // super-cell id, and that super-cell's embedding. Lets the basis be
     // inspected as a UMAP and as a spatial map before anything is built on it.
-    if let Some(fine) = basis.levels.last() {
+    if let Some(fine) = basis.as_ref().and_then(|b| b.levels.last()) {
         e_pb_warm = Some(fine.e_pb_svd.clone());
         let d = fine.e_pb_svd.ncols();
         let mut out = Mat::zeros(n_cells, 3 + d);
@@ -825,6 +845,32 @@ pub fn fit_cell_activity_graph_embedding(
 }
 
 /// Min / median / max of a fitted intercept vector, as one log line.
+/// The two-level "hierarchy" of `--cell-level`: each cell's batch, then the
+/// cell itself, so the trained unit is the cell, every within-batch spatial
+/// pair is a positive super edge, and negatives are other cells of the same
+/// batch. Nothing is coarsened.
+pub(crate) fn cell_level_hierarchy(
+    batch_membership: &[Box<str>],
+    pairs: &[(usize, usize)],
+) -> crate::util::graph_coarsen::MultiLevelCoarsenResult {
+    use crate::util::graph_coarsen::cell_labels_to_pair_samples;
+    let batch: Vec<usize> =
+        crate::util::ablation::dense_ids(batch_membership.iter().map(|b| b.as_ref()))
+            .into_iter()
+            .map(|b| b as usize)
+            .collect();
+    let cells: Vec<usize> = (0..batch_membership.len()).collect();
+    let (all_pair_to_sample, all_num_samples) = [&batch, &cells]
+        .iter()
+        .map(|labels| cell_labels_to_pair_samples(labels, pairs))
+        .unzip();
+    crate::util::graph_coarsen::MultiLevelCoarsenResult {
+        all_pair_to_sample,
+        all_num_samples,
+        all_cell_labels: vec![batch, cells],
+    }
+}
+
 fn log_intercept_spread(what: &str, values: Vec<f32>) {
     if !values.is_empty() {
         let q = legume_numeric::matrix::utils::quantiles(&values, &[0.0, 0.5, 1.0]);

@@ -397,6 +397,24 @@ enum Commands {
     Cage(Box<CellActivityGraphEmbeddingArgs>),
 
     #[command(
+        name = "cage-cell",
+        about = "cage trained on cells and cell pairs, with no pseudobulks",
+        long_about = "`pinto cage --cell-level`: the same model, flags and outputs as cage,\n\
+                      trained on cells instead of super-cells, as cell-level methods\n\
+                      (STAGATE, BANKSY) are, for a like-for-like comparison.\n\n\
+                      Each cell is its own unit and each within-batch spatial cell pair\n\
+                      a positive; negatives are other cells of the same batch. Nothing\n\
+                      is pseudobulked: no coarsening hierarchy, no pseudobulk SVD warm\n\
+                      start (the cell table starts at random), and no batch-effect\n\
+                      estimate (it is fitted on pseudobulk samples), so no batch\n\
+                      correction is applied. --n-pseudobulk, --num-levels and\n\
+                      --chain-levels do not apply.\n\n\
+                      Writes what cage writes, without {out}.delta.parquet and\n\
+                      {out}.pseudobulk_cells.parquet."
+    )]
+    CageCell(Box<CellActivityGraphEmbeddingArgs>),
+
+    #[command(
         visible_alias = "cage-annotate",
         about = "Marker-set cell-type annotation by projection (any embedding run)",
         long_about = "Moved to `lupin annotate`. Run `lupin annotate --help`."
@@ -788,6 +806,7 @@ impl Commands {
             Commands::DeltaSvd(a) => (&mut a.common.out, "dsvd"),
             Commands::LinkCommunity(a) => (&mut a.common.out, "lc"),
             Commands::Cage(a) => (&mut a.common.out, "cage"),
+            Commands::CageCell(a) => (&mut a.common.out, "cage_cell"),
             Commands::Predict(a) => (&mut a.common.out, "predict"),
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
@@ -845,6 +864,11 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Cage(args) => {
             fit_cell_activity_graph_embedding(args)?;
+        }
+        Commands::CageCell(args) => {
+            let mut args = args.clone();
+            args.cell_level = true;
+            fit_cell_activity_graph_embedding(&args)?;
         }
         Commands::Annotate(_args) => {
             eprintln!(
