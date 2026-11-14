@@ -5,7 +5,9 @@
 
 use crate::util::ablation;
 use crate::util::common::Mat;
-use crate::util::input::{read_data_with_coordinates, SRTReadArgs, PRELOAD_HELP};
+use crate::util::input::{
+    read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
+};
 use data_beans::aux::feature_names::FeatureNameKind;
 use nalgebra_sparse::CscMatrix;
 
@@ -29,7 +31,7 @@ pub struct SpatialInputArgs {
     #[arg(
         long = "coord-column-names",
         value_delimiter(','),
-        default_value = "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid"
+        default_value = COORD_COLUMN_NAMES
     )]
     pub coord_column_names: Vec<Box<str>>,
 

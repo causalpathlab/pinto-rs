@@ -7,6 +7,7 @@ use crate::lr_activity::input::Contacts;
 use crate::lr_activity::ligand_effect::frame::RunFrame;
 use crate::lr_activity::ligand_effect::output::{Control, PairRow, Q_SCOPE_ALL};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
+use crate::test_support::boxed;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::metadata::{LraOptions, LraSubset};
 use crate::view::color::Theme;
@@ -22,10 +23,6 @@ use std::path::Path;
 
 /// Grid side of the fixture's cells.
 const SIDE: usize = 10;
-
-fn strs(v: &[&str]) -> Vec<Box<str>> {
-    v.iter().map(|&x| x.into()).collect()
-}
 
 /// The reasons a pair of the fixture's full table gives in `warnings`.
 pub(crate) const WARNING: &str =
@@ -121,8 +118,8 @@ fn write_table(
 /// `{out}.lra.curve.parquet`: four thresholds for `pair`, the last not
 /// estimable.
 fn write_curve(path: &Path, pair: (&str, &str)) {
-    let ligand = strs(&[pair.0; 4]);
-    let receptor = strs(&[pair.1; 4]);
+    let ligand = boxed(&[pair.0; 4]);
+    let receptor = boxed(&[pair.1; 4]);
     let tau = [0.0f32, 1.0, 2.0, 3.0];
     let quantile = [0.0f32, 0.25, 0.5, 0.75];
     let effect = [0.1f32, 0.2, 0.25, f32::NAN];
@@ -130,7 +127,7 @@ fn write_curve(path: &Path, pair: (&str, &str)) {
     let hi = [0.2f32, 0.3, 0.4, f32::NAN];
     let band_lo = [-0.05f32, 0.05, 0.05, f32::NAN];
     let band_hi = [0.25f32, 0.35, 0.45, f32::NAN];
-    let names = strs(&["0", "1", "2", "3"]);
+    let names = boxed(&["0", "1", "2", "3"]);
     write_named_table(
         &path.to_string_lossy(),
         "row",
@@ -189,7 +186,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
     xy.to_parquet_with_names(
         &format!("{prefix}.cells.parquet"),
         (Some(&names), Some("cell")),
-        Some(&strs(&["x", "y"])),
+        Some(&boxed(&["x", "y"])),
     )
     .unwrap();
     let prop = nalgebra::DMatrix::<f32>::from_fn(n, 2, |i, j| {
@@ -202,7 +199,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
     prop.to_parquet_with_names(
         &format!("{prefix}.propensity.parquet"),
         (Some(&names), Some("cell")),
-        Some(&strs(&["C0", "C1"])),
+        Some(&boxed(&["C0", "C1"])),
     )
     .unwrap();
     let table = format!("{prefix}.lra.parquet");
@@ -559,7 +556,7 @@ fn ticks_are_round_and_cover_the_range() {
 fn the_layer_starts_lra_beside_the_run() {
     let opts = LraOptions::default();
     let argv = lra_command(Path::new("run.pinto.json"), &opts, &[]);
-    assert_eq!(argv, ["lra", "--from", "run.pinto.json"]);
+    assert_eq!(argv, ["lra", "--from=run.pinto.json"]);
     let opts = LraOptions {
         lr_pairs: Some("/p/pairs.tsv".into()),
         targets: vec!["/p/a.gmt".into(), "/p/b.tsv".into()],
@@ -574,18 +571,12 @@ fn the_layer_starts_lra_beside_the_run() {
         argv,
         [
             "lra",
-            "--from",
-            "run.pinto.json",
-            "--lr-pairs",
-            "/p/pairs.tsv",
-            "--targets",
-            "/p/a.gmt,/p/b.tsv",
-            "--species",
-            "mouse",
-            "--seed",
-            "7",
-            "--only",
-            "LIGA1:RECA1,LIGB1"
+            "--from=run.pinto.json",
+            "--lr-pairs=/p/pairs.tsv",
+            "--targets=/p/a.gmt,/p/b.tsv",
+            "--species=mouse",
+            "--seed=7",
+            "--only=LIGA1:RECA1,LIGB1"
         ]
     );
     // pinto takes it as written.

@@ -1,5 +1,6 @@
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::input::SpatialData;
+use crate::test_support::{boxed, numbered};
 use crate::util::common::Mat;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
@@ -8,10 +9,10 @@ pub(crate) fn toy(xy: &[(f32, f32)], section: &[usize]) -> SpatialData {
     let counts = CscMatrix::from(&CooMatrix::<f32>::new(1, n));
     SpatialData {
         counts,
-        genes: vec!["g".into()],
-        cells: (0..n).map(|i| format!("c{i}").into()).collect(),
+        genes: boxed(&["GENE1"]),
+        cells: numbered("c", n),
         xy: Mat::from_fn(n, 2, |i, j| if j == 0 { xy[i].0 } else { xy[i].1 }),
-        coord_names: vec!["x".into(), "y".into()],
+        coord_names: boxed(&["x", "y"]),
         batches: section.iter().map(|s| format!("S{s}").into()).collect(),
         section: section.to_vec(),
         n_sections: section.iter().max().map_or(0, |&m| m + 1),

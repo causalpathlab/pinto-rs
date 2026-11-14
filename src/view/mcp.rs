@@ -836,8 +836,8 @@ fn group_id(v: &Value) -> anyhow::Result<Box<str>> {
 
 fn value_enum<T: ValueEnum>(s: &str, what: &str) -> anyhow::Result<T> {
     T::from_str(s, true).map_err(|_| {
-        let names: Vec<String> = T::value_variants().iter().map(super::value_name).collect();
-        anyhow::anyhow!("{what} {s:?}: one of {}", names.join(", "))
+        let names = crate::util::cli::choices::<T>().join(", ");
+        anyhow::anyhow!("{what} {s:?}: one of {names}")
     })
 }
 

@@ -16,7 +16,7 @@
 //! only tutorials T7 and T8 use it, while T1-T6 and T9 run the TF package.
 //! The training here is pyG's, chosen deliberately: it is the faster build
 //! and the one maintained alongside PyG. Preprocessing and clustering are
-//! the tutorials' (stagate.readthedocs.io): with `--n-clusters`, T1_DLPFC's
+//! the tutorials' (stagate.readthedocs.io): with `--n-clusters`, T1's
 //! (no gene filter, mclust EEE), which trains with the TF trainer; without
 //! it, T7_pyG's (Louvain at 0.5; T7 filters genes at `min_cells=50`, which
 //! `--min-cells 50` gives).
@@ -25,7 +25,7 @@
 //!
 //! 0. Genes in fewer than `--min-cells` cells are dropped
 //!    (`sc.pp.filter_genes(min_cells)`, [`filter_genes`]); default 0, as
-//!    T1_DLPFC; T3, T7 and T8 use 50.
+//!    T1; T3, T7 and T8 use 50.
 //! 1. Genes: `sc.pp.highly_variable_genes(flavor="seurat_v3",
 //!    n_top_genes=3000)` on the raw counts ([`seurat_v3_hvg`], after
 //!    scanpy's `_highly_variable_genes_seurat_v3`): per gene the mean and
@@ -130,7 +130,7 @@
 //!   layer), so device memory grows with the edge count. Around 10⁵ spots at
 //!   `--k-cutoff 6` this passes a 10 GB card; the reference's `Batch_Data`
 //!   mini-batch path, which splits the tissue into tiles, is not ported.
-//! - Training follows pyG, not the TF trainer that T1_DLPFC (the source of
+//! - Training follows pyG, not the TF trainer that T1 (the source of
 //!   the mclust and radius-150 pipeline) runs. The TF defaults not followed
 //!   (`Train_STAGATE.py:train_STAGATE`, `model.py:GATE.__call__`): loss
 //!   `sqrt(sum of squares)` plus `1e-4 * l2_loss` of the last weight only,
@@ -181,8 +181,8 @@ pub struct Args {
     #[command(flatten)]
     pub input: SpatialInputArgs,
 
-    /// Number of domains. Given, the embedding is clustered as T1_DLPFC
-    /// does, by mclust's EEE Gaussian mixture with this many components
+    /// Number of domains. Given, the embedding is clustered as tutorial
+    /// T1 does, by mclust's EEE Gaussian mixture with this many components
     /// (EM from mclust's hc VVV start on a 2000-cell subset); not given, by
     /// Leiden at --resolution on the unweighted 15-NN graph (the pyG
     /// tutorial's Louvain at 0.5), which picks its own number. No tuning
@@ -209,7 +209,7 @@ pub struct Args {
 
     /// Drop genes expressed (nonzero) in fewer than this many cells before
     /// gene selection (sc.pp.filter_genes min_cells). The default 0 follows
-    /// T1_DLPFC, the mclust pipeline; the Louvain tutorials T3, T7 (pyG)
+    /// T1, the mclust pipeline; the Louvain tutorials T3, T7 (pyG)
     /// and T8 use 50
     #[arg(long, default_value_t = 0)]
     pub min_cells: usize,

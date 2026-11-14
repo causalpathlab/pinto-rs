@@ -1,6 +1,6 @@
-use crate::feature_network::graph::test_graph_from_edges;
 use crate::link_community::profiles::*;
 use crate::util::common::*;
+use legume_numeric::matrix::pair_graph::test_graph_from_edges;
 
 #[test]
 fn test_transfer_labels() {
@@ -135,7 +135,7 @@ fn test_module_pair_profiles_residual() {
     assert!((vals[0] - 4.5).abs() < 1e-5, "got y = {}", vals[0]);
 }
 
-use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
+use crate::test_support::{numbered, sparse_vec};
 use data_beans::sparse_io_vector::SparseIoVec;
 
 /// Build a tiny on-disk backend from triplets, deduplicated by `(row, col)`.
@@ -150,22 +150,8 @@ fn backend_from(
         *merged.entry((r, c)).or_insert(0.0) += v;
     }
     let triplets: Vec<(u64, u64, f32)> = merged.into_iter().map(|((r, c), v)| (r, c, v)).collect();
-
-    let path = dir.path().join("coarsen_alignment.zarr");
-    let mut backend = create_sparse_from_triplets(
-        &triplets,
-        (n_rows, n_cols, triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )
-    .unwrap();
-    let rows: Vec<Box<str>> = (0..n_rows).map(|g| format!("FEATURE{g}").into()).collect();
-    backend.register_row_names_vec(&rows);
-    let cols: Vec<Box<str>> = (0..n_cols).map(|i| format!("c{i}").into()).collect();
-    backend.register_column_names_vec(&cols);
-    let mut data = SparseIoVec::new();
-    data.push(std::sync::Arc::from(backend), None).unwrap();
-    data
+    let (rows, cols) = (numbered("FEATURE", n_rows), numbered("c", n_cols));
+    sparse_vec(dir.path(), "coarsen_alignment", &rows, &cols, &triplets)
 }
 
 /// Jobs are keyed by a chunk of pb-samples while `par_chunks_mut` splits the

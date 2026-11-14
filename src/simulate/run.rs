@@ -7,6 +7,7 @@ use super::write::{
     write_backend, write_coords, write_domains, write_genes, write_spots, write_states,
     write_truth_run,
 };
+use crate::util::common::in_dir;
 use log::info;
 use serde_json::json;
 
@@ -49,27 +50,27 @@ fn scenario_help() -> String {
 
 /// A section's counts under the simulation folder `out`.
 pub fn backend_path(out: &str, section: &str) -> String {
-    format!("{out}/sections/{section}.zarr")
+    in_dir(out, &format!("sections/{section}.zarr"))
 }
 
 /// A section's spot coordinates under `out`.
 pub fn coords_path(out: &str, section: &str) -> String {
-    format!("{out}/sections/{section}.coords.parquet")
+    in_dir(out, &format!("sections/{section}.coords.parquet"))
 }
 
 /// The manifest under `out`.
 pub fn manifest_path(out: &str) -> String {
-    format!("{out}/manifest.json")
+    in_dir(out, "manifest.json")
 }
 
 /// The truth run under `out`, as `pinto view` opens it.
 pub fn truth_run_path(out: &str) -> String {
-    format!("{out}/truth/truth.pinto.json")
+    in_dir(out, "truth/truth.pinto.json")
 }
 
 /// The domains table under `out`.
 pub fn domains_path(out: &str) -> String {
-    format!("{out}/truth/domains.parquet")
+    in_dir(out, "truth/domains.parquet")
 }
 
 /// Where a simulation into `out` is written before it is moved to `out`
@@ -116,8 +117,8 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         staged.as_str()
     };
     // made before simulating, so an out that cannot be made fails at once
-    std::fs::create_dir_all(format!("{out}/sections"))?;
-    std::fs::create_dir_all(format!("{out}/truth"))?;
+    std::fs::create_dir_all(in_dir(out, "sections"))?;
+    std::fs::create_dir_all(in_dir(out, "truth"))?;
 
     info!("{}", p.shares_summary());
     let sim = Sim::new(p, &geometries);
@@ -138,10 +139,10 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         write_coords(&coords_path(out, &sec.name), sec)?;
         info!("{}: {} spots, {} nonzero counts", sec.name, sec.n(), nnz);
     }
-    write_spots(&format!("{out}/truth/spots.parquet"), &sim)?;
+    write_spots(&in_dir(out, "truth/spots.parquet"), &sim)?;
     write_domains(&domains_path(out), &sim)?;
-    write_states(&format!("{out}/truth/states.parquet"), &sim)?;
-    write_genes(&format!("{out}/truth/genes.parquet"), &sim)?;
+    write_states(&in_dir(out, "truth/states.parquet"), &sim)?;
+    write_genes(&in_dir(out, "truth/genes.parquet"), &sim)?;
     // relative to the truth run's manifest, so the outputs can be moved whole
     let data_files: Vec<String> = sim
         .sections
@@ -149,8 +150,8 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         .map(|sec| backend_path("..", &sec.name))
         .collect();
     write_truth_run(
-        &format!("{out}/truth"),
-        &format!("{done}/truth"),
+        &in_dir(out, "truth"),
+        &in_dir(&done, "truth"),
         &sim,
         &data_files,
     )?;

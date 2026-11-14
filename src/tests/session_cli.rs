@@ -62,9 +62,7 @@ fn a_target_named_skips_the_resume_picker() {
 
 /// The long help of `name`, as `pinto <name> --help` prints it.
 fn long_help(name: &str) -> String {
-    use clap::CommandFactory;
-    let mut cli = Cli::command();
-    cli.build();
+    let cli = built_cli();
     let sub = cli.find_subcommand(name).unwrap();
     sub.get_long_about().unwrap().to_string()
 }

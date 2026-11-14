@@ -870,8 +870,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > ports of published methods to compare pinto against: spatialde2
 > (SpatialDE2's tissue segmentation) and stagate (STAGATE);
 > run_fit runs them as it runs lc, and each writes a run with its labels and
-> a cell embedding. Ablations are fits with run_fit's ablation flags
-> (permute-coords, drop-features, mask-cells with ablation-parent);
+> a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's
+> ablation flags (permute-coords, drop-features, mask-cells with
+> ablation-parent; the baselines have none);
 > `run_region` turns a polygon into the cell list mask-cells takes;
 > `run_compare` sets two runs' communities against each other (ARI, NMI,
 > matched communities, and which vanish, split or merge); `run_predict` scores

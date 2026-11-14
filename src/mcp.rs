@@ -26,8 +26,9 @@ over a run. Its methods also hold two spatial baselines, model-level \
 ports of published methods to compare pinto against: spatialde2 \
 (SpatialDE2's tissue segmentation) and stagate (STAGATE); \
 run_fit runs them as it runs lc, and each writes a run with its labels and \
-a cell embedding. Ablations are fits with run_fit's ablation flags \
-(permute-coords, drop-features, mask-cells with ablation-parent); \
+a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's \
+ablation flags (permute-coords, drop-features, mask-cells with \
+ablation-parent; the baselines have none); \
 `run_region` turns a polygon into the cell list mask-cells takes; \
 `run_compare` sets two runs' communities against each other (ARI, NMI, \
 matched communities, and which vanish, split or merge); `run_predict` scores \
@@ -100,15 +101,5 @@ impl Handler for Server {
     }
 }
 
-/// The arguments of a call, or what is wrong with them.
-pub fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
-}
-
-/// `p` as results give paths: from the root.
-pub fn shown_path(p: &std::path::Path) -> String {
-    std::path::absolute(p)
-        .unwrap_or_else(|_| p.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
+pub use crate::util::paths::shown_path;
+pub use legume_mcp::parse_args as parse;

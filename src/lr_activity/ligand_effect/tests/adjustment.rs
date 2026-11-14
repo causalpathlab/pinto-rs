@@ -3,7 +3,7 @@
 //! all, the unadjusted difference, the section-only and spatial estimates are fooled and the
 //! identity step is not. The nested designs share the full matrix.
 
-use super::{estimate_pair, overlap_terms};
+use super::{estimate_pair, lattice, lattice_contacts, lattice_cut, overlap_terms};
 use crate::lr_activity::ligand_effect::confounders::{depth_basis, freq_per_section, DEPTH_COLS};
 use crate::lr_activity::ligand_effect::crossfit::Design;
 use crate::lr_activity::ligand_effect::estimate::PairData;
@@ -52,22 +52,11 @@ fn world_confounded_by(kind: Confounder, seed: u64) -> World {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n = SIDE * SIDE;
     let half = SIDE / 2;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some(((i % SIDE) as f32 * 10.0, (i / SIDE) as f32 * 10.0)))
-        .collect();
+    // No contact crosses between the two halves.
+    let (coords, pairs) = lattice_cut(SIDE, |i, j| j == i + 1 && j % SIDE == half);
     let section: Vec<Box<str>> = (0..n)
         .map(|i| if i % SIDE < half { "a" } else { "b" }.into())
         .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        let (x, y) = (i % SIDE, i / SIDE);
-        if x + 1 < SIDE && x + 1 != half {
-            pairs.push((i, i + 1));
-        }
-        if y + 1 < SIDE {
-            pairs.push((i, i + SIDE));
-        }
-    }
     let clumps = SIDE / 2;
     let clump_type: Vec<u32> = (0..clumps * clumps)
         .map(|_| (rng.random::<f64>() < 0.5) as u32)
@@ -254,22 +243,12 @@ fn opposite_fields_world(seed: u64) -> World {
     let per = side * side;
     let n = 2 * per;
     let at = |i: usize| ((i % per) % side, (i % per) / side);
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some((at(i).0 as f32 * 10.0, at(i).1 as f32 * 10.0)))
-        .collect();
+    let (grid, _) = lattice(side);
+    let coords = [grid.clone(), grid].concat();
     let section: Vec<Box<str>> = (0..n)
         .map(|i| if i < per { "a" } else { "b" }.into())
         .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        let (x, y) = at(i);
-        if x + 1 < side {
-            pairs.push((i, i + 1));
-        }
-        if y + 1 < side {
-            pairs.push((i, i + side));
-        }
-    }
+    let pairs = lattice_contacts(side, 2);
     let field: Vec<f64> = (0..n)
         .map(|i| {
             let wave = (std::f64::consts::TAU * at(i).0 as f64 / side as f64).sin();

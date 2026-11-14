@@ -6,7 +6,7 @@
 use crate::link_community::model::*;
 use crate::util::cell_pairs::connected_components;
 use crate::util::common::new_progress_bar;
-use crate::util::knn_graph::KnnGraph;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 use log::info;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
