@@ -20,8 +20,13 @@ pub(crate) mod tui;
 /// write a run of the same shape.
 pub const METHODS: [&str; 6] = ["lc", "cage", "dsvd", "banksy", "spatialde2", "stagate"];
 
+/// pinto's own models among [`METHODS`].
+pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;
+
 /// The spatial baselines among [`METHODS`].
-pub const BASELINES: &[&str] = METHODS.split_at(3).1;
+pub const BASELINES: &[&str] = METHODS.split_at(N_MODELS).1;
+
+const N_MODELS: usize = 3;
 
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power

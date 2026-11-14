@@ -29,27 +29,49 @@ impl Neighbours {
     /// The same graph with every edge in both directions, each listed once
     /// per cell, neighbours re-sorted by distance (ties by index).
     pub fn symmetrised(&self) -> Neighbours {
-        let n = self.n_cells();
-        let mut index: Vec<Vec<usize>> = self.index.clone();
-        let mut dist: Vec<Vec<f32>> = self.dist.clone();
-        for i in 0..n {
-            for (k, &j) in self.index[i].iter().enumerate() {
-                if !self.index[j].contains(&i) {
-                    index[j].push(i);
-                    dist[j].push(self.dist[i][k]);
-                }
+        let sorted: Vec<Vec<usize>> = self
+            .index
+            .par_iter()
+            .map(|js| {
+                let mut s = js.clone();
+                s.sort_unstable();
+                s
+            })
+            .collect();
+        // each edge i → j whose reverse is missing, as (j, i, d)
+        let mut reverse: Vec<(usize, usize, f32)> = (0..self.n_cells())
+            .into_par_iter()
+            .flat_map_iter(|i| {
+                let sorted = &sorted;
+                self.index[i]
+                    .iter()
+                    .zip(&self.dist[i])
+                    .filter(move |(&j, _)| sorted[j].binary_search(&i).is_err())
+                    .map(move |(&j, &d)| (j, i, d))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        reverse.par_sort_unstable_by_key(|&(j, i, _)| (j, i));
+        let mut at = 0;
+        let mut lists: Vec<Vec<(f32, usize)>> = Vec::with_capacity(self.n_cells());
+        for (i, (js, ds)) in self.index.iter().zip(&self.dist).enumerate() {
+            let mut l: Vec<(f32, usize)> = ds.iter().copied().zip(js.iter().copied()).collect();
+            while at < reverse.len() && reverse[at].0 == i {
+                l.push((reverse[at].2, reverse[at].1));
+                at += 1;
             }
+            lists.push(l);
         }
-        for i in 0..n {
-            let mut order: Vec<usize> = (0..index[i].len()).collect();
-            order.sort_by(|&a, &b| {
-                dist[i][a]
-                    .total_cmp(&dist[i][b])
-                    .then(index[i][a].cmp(&index[i][b]))
-            });
-            index[i] = order.iter().map(|&a| index[i][a]).collect();
-            dist[i] = order.iter().map(|&a| dist[i][a]).collect();
-        }
+        lists
+            .par_iter_mut()
+            .for_each(|l| l.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))));
+        let (index, dist) = lists
+            .into_iter()
+            .map(|l| {
+                let (d, j): (Vec<f32>, Vec<usize>) = l.into_iter().unzip();
+                (j, d)
+            })
+            .unzip();
         Neighbours { index, dist }
     }
 }

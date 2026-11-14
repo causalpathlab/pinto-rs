@@ -235,14 +235,7 @@ pub fn median_gaussian_weights(dist: &[f32]) -> Vec<f32> {
     if dist.is_empty() {
         return Vec::new();
     }
-    let mut s = dist.to_vec();
-    s.sort_by(f32::total_cmp);
-    let h = s.len() / 2;
-    let med = if s.len() % 2 == 1 {
-        s[h]
-    } else {
-        0.5 * (s[h - 1] + s[h])
-    };
+    let med = legume_numeric::matrix::utils::median(dist);
     let w: Vec<f32> = if med > 0.0 {
         dist.iter().map(|d| (-(d / med).powi(2)).exp()).collect()
     } else {

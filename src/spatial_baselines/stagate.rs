@@ -383,7 +383,7 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 
 /// `sc.pp.filter_genes(min_cells)`: the rows (genes) of `counts` nonzero in
 /// at least `min_cells` columns (cells), in order.
-pub fn filter_genes(counts: &CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
+pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
     let mut nnz = vec![0usize; counts.nrows()];
     for (g, _, &v) in counts.triplet_iter() {
         if v != 0.0 {
@@ -399,7 +399,7 @@ pub fn filter_genes(counts: &CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32>
         }
     }
     if kept == counts.nrows() {
-        return counts.clone();
+        return counts;
     }
     let mut coo = nalgebra_sparse::CooMatrix::new(kept, counts.ncols());
     for (g, c, &v) in counts.triplet_iter() {
@@ -1073,15 +1073,17 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     if let Some(k) = args.n_clusters {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
-    let data = args.input.read()?;
+    let mut data = args.input.read()?;
     let n = data.cells.len();
 
-    let counts = filter_genes(&data.counts, args.min_cells);
-    if counts.nrows() < data.counts.nrows() {
+    // the model reads its own copy from here on
+    let raw = std::mem::replace(&mut data.counts, CscMatrix::zeros(0, 0));
+    let counts = filter_genes(raw, args.min_cells);
+    if counts.nrows() < data.genes.len() {
         info!(
             "{} of {} genes in at least {} cells",
             counts.nrows(),
-            data.counts.nrows(),
+            data.genes.len(),
             args.min_cells
         );
     }
@@ -1182,7 +1184,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
             settings,
         },
     )?;
-    info!("wrote {}", args.input.out);
     Ok(())
 }
 

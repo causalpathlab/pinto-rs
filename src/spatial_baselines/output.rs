@@ -17,25 +17,26 @@ use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
 use crate::util::metadata::{now_secs, OutputFiles, PintoMetadata};
 use crate::util::parquet_io::{cells_table_path, write_cells_table};
-use legume_numeric::matrix::parquet::{write_named_table, Column};
+use legume_numeric::matrix::common_io::mkdir_parent;
+use legume_numeric::matrix::traits::IoOps;
 
-pub fn labels_path(prefix: &str) -> String {
+fn labels_path(prefix: &str) -> String {
     format!("{prefix}.labels.tsv")
 }
 
-pub fn embedding_path(prefix: &str) -> String {
+fn embedding_path(prefix: &str) -> String {
     format!("{prefix}.cell_embedding.parquet")
 }
 
-pub fn propensity_path(prefix: &str) -> String {
+fn propensity_path(prefix: &str) -> String {
     format!("{prefix}.propensity.parquet")
 }
 
-pub fn settings_path(prefix: &str) -> String {
+fn settings_path(prefix: &str) -> String {
     format!("{prefix}.baseline.json")
 }
 
-pub fn manifest_path(prefix: &str) -> String {
+fn manifest_path(prefix: &str) -> String {
     format!("{prefix}.pinto.json")
 }
 
@@ -55,21 +56,12 @@ pub struct Fitted<'a> {
 }
 
 /// One-hot rows of 0-based `labels` over `k` labels.
-pub fn one_hot(labels: &[usize], k: usize) -> Mat {
+fn one_hot(labels: &[usize], k: usize) -> Mat {
     let mut m = Mat::zeros(labels.len(), k);
     for (i, &l) in labels.iter().enumerate() {
         m[(i, l)] = 1.0;
     }
     m
-}
-
-fn ensure_parent(prefix: &str) -> anyhow::Result<()> {
-    if let Some(dir) = std::path::Path::new(prefix).parent() {
-        if !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir)?;
-        }
-    }
-    Ok(())
 }
 
 fn write_labels(prefix: &str, cells: &[Box<str>], labels: &[usize]) -> anyhow::Result<()> {
@@ -85,15 +77,11 @@ fn write_embedding(prefix: &str, cells: &[Box<str>], x: &Mat, name: &str) -> any
     let names: Vec<Box<str>> = (1..=x.ncols())
         .map(|j| format!("{name}_{j}").into())
         .collect();
-    let cols: Vec<Vec<f32>> = (0..x.ncols())
-        .map(|j| x.column(j).iter().copied().collect())
-        .collect();
-    let columns: Vec<(Box<str>, Column<'_>)> = names
-        .iter()
-        .zip(&cols)
-        .map(|(n, c)| (n.clone(), Column::F32(c)))
-        .collect();
-    write_named_table(&embedding_path(prefix), "cell", cells, &columns)
+    x.to_parquet_with_names(
+        &embedding_path(prefix),
+        (Some(cells), Some("cell")),
+        Some(&names),
+    )
 }
 
 /// Write every output of a fitted baseline under `input.out`.
@@ -107,17 +95,22 @@ pub fn write_run(
     anyhow::ensure!(fit.labels.len() == n, "one label per cell");
     anyhow::ensure!(fit.embedding.nrows() == n, "one embedding row per cell");
     let k = fit.labels.iter().max().map_or(0, |&m| m + 1);
+    log::info!("{}: {k} clusters", fit.method);
+    let one_hot_labels;
     let membership = match fit.membership {
         Some(m) => {
             anyhow::ensure!(m.nrows() == n, "one membership row per cell");
-            m.clone()
+            m
         }
-        None => one_hot(fit.labels, k),
+        None => {
+            one_hot_labels = one_hot(fit.labels, k);
+            &one_hot_labels
+        }
     };
-    ensure_parent(prefix)?;
+    mkdir_parent(prefix)?;
     write_labels(prefix, &data.cells, fit.labels)?;
     write_embedding(prefix, &data.cells, fit.embedding, fit.embedding_name)?;
-    write_propensity_matrix(prefix, &membership, &data.cells)?;
+    write_propensity_matrix(prefix, membership, &data.cells)?;
     write_cells_table(
         prefix,
         &data.cells,
@@ -133,6 +126,7 @@ pub fn write_run(
         "coord_files": input.coord_files,
         "batch_files": input.batch_files,
         "seed": input.seed,
+        "n_clusters_found": k,
         "settings": fit.settings,
     });
     std::fs::write(
@@ -145,6 +139,7 @@ pub fn write_run(
         timestamp: now_secs(),
         prefix: prefix.into(),
         data_files: Some(input.data_files.iter().map(|f| f.to_string()).collect()),
+        coord_file: Some(input.coord_files.join(",")),
         n_cells: n,
         n_features: data.genes.len(),
         n_communities: Some(membership.ncols()),
@@ -157,5 +152,7 @@ pub fn write_run(
         },
         ..Default::default()
     };
-    meta.write(std::path::Path::new(&manifest_path(prefix)))
+    meta.write(std::path::Path::new(&manifest_path(prefix)))?;
+    log::info!("wrote {}", manifest_path(prefix));
+    Ok(())
 }

@@ -281,11 +281,11 @@ fn filter_genes_keeps_genes_in_enough_cells() {
     coo.push(2, 0, 2.0);
     coo.push(2, 1, 2.0);
     let counts = CscMatrix::from(&coo);
-    let kept = filter_genes(&counts, 2);
+    let kept = filter_genes(counts.clone(), 2);
     assert_eq!(kept.nrows(), 2);
     let t: Vec<(usize, usize, f32)> = kept.triplet_iter().map(|(r, c, &v)| (r, c, v)).collect();
     assert!(t.contains(&(1, 1, 2.0)) && !t.iter().any(|&(_, c, _)| c == 3));
-    assert_eq!(filter_genes(&counts, 0).nnz(), counts.nnz());
+    assert_eq!(filter_genes(counts.clone(), 0).nnz(), counts.nnz());
 }
 
 /// `n` points in `d` dimensions around `k` well-separated centres, in

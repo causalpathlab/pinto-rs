@@ -3,6 +3,7 @@
 //! named, ordered and split into sections exactly as `lc`, `dsvd` and `cage`
 //! name, order and split them.
 
+use crate::util::ablation;
 use crate::util::common::Mat;
 use crate::util::input::{read_data_with_coordinates, SRTReadArgs, PRELOAD_HELP};
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -96,23 +97,22 @@ impl SpatialInputArgs {
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
         let counts = srt.data.read_columns_csc(0..cells.len())?;
-        // the reader appends a section index column when there are several
-        let has_batch = srt.coordinate_names.last().map(|c| c.as_ref()) == Some("batch");
-        let d = srt.coordinates.ncols() - usize::from(has_batch);
-        anyhow::ensure!(d >= 1, "no spatial coordinate columns");
-        let xy = srt.coordinates.columns(0, d).into_owned();
-        let section: Vec<usize> = if has_batch {
-            let keys = srt.coordinates.column(d);
-            let ids: Vec<u32> = keys.iter().map(|&v| v.to_bits()).collect();
-            crate::util::ablation::dense_ids(ids.into_iter())
+        // a section is a (data file, batch label) pair, as the reader keeps
+        // them apart; its appended `batch` offset column is not a coordinate
+        let section: Vec<usize> =
+            ablation::sections(&srt.data.num_columns_by_data()?, &srt.batches)
                 .into_iter()
                 .map(|s| s as usize)
-                .collect()
-        } else {
-            vec![0; cells.len()]
-        };
+                .collect();
+        let plane = ablation::non_batch_columns(&srt.coordinate_names);
+        let d = plane.len();
+        anyhow::ensure!(d >= 1, "no spatial coordinate columns");
+        let xy = srt.coordinates.select_columns(&plane);
+        let coord_names: Vec<Box<str>> = plane
+            .iter()
+            .map(|&j| srt.coordinate_names[j].clone())
+            .collect();
         let n_sections = section.iter().max().map_or(0, |&m| m + 1);
-        let coord_names = srt.coordinate_names[..d].to_vec();
         log::info!(
             "{} cells, {} genes, {} sections, {d}-D coordinates",
             cells.len(),

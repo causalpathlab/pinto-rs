@@ -385,23 +385,29 @@ impl WeightedGraph {
 
 /// `p_x_neighborhood` for one cell: `log p(x_n = c | x̂_N(n))` over the
 /// `k` classes, the log-normalised `-Σ_m w_nm [x̂_m ≠ c]`.
-pub fn neighbourhood_log_prior(
+/// One cell's spatial log prior, written into `row` (one entry per class).
+pub fn neighbourhood_log_prior_into(
     graph: &WeightedGraph,
     labels: &[usize],
     i: usize,
-    k: usize,
-) -> Vec<f64> {
-    let mut same = vec![0.0; k];
+    row: &mut [f64],
+) {
+    let k = row.len();
+    row.fill(0.0);
     let mut total = 0.0;
     for (j, w) in graph.neighbours(i) {
         total += w;
         if labels[j] < k {
-            same[labels[j]] += w;
+            row[labels[j]] += w;
         }
     }
-    let e: Vec<f64> = same.iter().map(|&s| -(total - s)).collect();
-    let lse = logsumexp(&e);
-    e.into_iter().map(|v| v - lse).collect()
+    for r in row.iter_mut() {
+        *r = -(total - *r);
+    }
+    let lse = logsumexp(row);
+    for r in row.iter_mut() {
+        *r -= lse;
+    }
 }
 
 fn logsumexp(x: &[f64]) -> f64 {
@@ -481,11 +487,14 @@ pub struct Update {
 }
 
 /// One `_segment` update. `k0` is the starting class count (`fnclasses`).
+/// `scratch` is reused for the new posteriors (the update never reads the
+/// old ones), so only one n × k buffer lives between updates. `prior` is
+/// the spatial graph with the current labels (none: no spatial prior).
 pub fn update(
+    scratch: Vec<f64>,
     counts: &CellCounts,
     sizefactors: &[f64],
-    graph: Option<&WeightedGraph>,
-    labels: &[usize],
+    prior: Option<(&WeightedGraph, &[usize])>,
     st: &State,
     k0: usize,
     p: &Params,
@@ -515,13 +524,15 @@ pub fn update(
     let alphahat = (eta_1_nclasses - 1.0) / st.eta_hat_2;
 
     // φ, π̂ = softmax φ, and logsumexp φ per cell
-    let mut pi = vec![0.0; n * k];
+    let mut pi = scratch;
+    pi.clear();
+    pi.resize(n * k, 0.0);
     let lse: Vec<f64> = pi
         .par_chunks_mut(k)
         .enumerate()
         .map(|(i, row)| {
-            if let Some(gr) = graph {
-                row.copy_from_slice(&neighbourhood_log_prior(gr, labels, i, k));
+            if let Some((gr, labels)) = prior {
+                neighbourhood_log_prior_into(gr, labels, i, row);
             }
             for (r, (&v, &l)) in row.iter_mut().zip(vsum.iter().zip(&lam1_sum)) {
                 *r += v - sizefactors[i] * l;
@@ -730,7 +741,15 @@ pub fn segment(
     let mut niter = 0;
     for i in 0..p.maxiter {
         niter = i;
-        let u = update(counts, sizefactors, graph, &labels, &st, k0, p);
+        let u = update(
+            std::mem::take(&mut pi),
+            counts,
+            sizefactors,
+            graph.map(|g| (g, labels.as_slice())),
+            &st,
+            k0,
+            p,
+        );
         pi = u.pi;
         st = u.state;
         labels = argmax_rows(&pi, st.k);

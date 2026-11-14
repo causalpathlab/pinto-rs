@@ -80,7 +80,8 @@ fn neighbourhood_prior_is_normalised_and_favours_neighbours() {
     // centre's four nearest neighbours (weight 2 each) carry label 1, the
     // four diagonals (weight 1 each) label 0
     let labels = vec![0, 1, 0, 1, 2, 1, 0, 1, 0];
-    let lp = neighbourhood_log_prior(&g, &labels, 4, 3);
+    let mut lp = vec![0.0; 3];
+    neighbourhood_log_prior_into(&g, &labels, 4, &mut lp);
     let total: f64 = lp.iter().map(|v| v.exp()).sum();
     assert!((total - 1.0).abs() < 1e-12);
     // energies -(W - same): W = 12; class 0: -8, class 1: -4, class 2: -12
@@ -111,7 +112,15 @@ fn posteriors_sum_to_one_and_statistics_add_up() {
     let p = Params::default();
     let st = State::init(3, counts.n_genes, p.eta_1);
     let labels: Vec<usize> = (0..16).map(|i| i % 3).collect();
-    let u = update(&counts, &sf, Some(&g), &labels, &st, 3, &p);
+    let u = update(
+        Vec::new(),
+        &counts,
+        &sf,
+        Some((&g, labels.as_slice())),
+        &st,
+        3,
+        &p,
+    );
     for row in u.pi.chunks(3) {
         // φ is ~1e7 at the 1e-6 starting rates: logsumexp keeps ~1e-9
         assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-6, "{row:?}");
