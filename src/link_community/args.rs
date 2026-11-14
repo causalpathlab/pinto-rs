@@ -282,7 +282,7 @@ pub struct SrtLinkCommunityArgs {
 }
 
 /// `α` as `--alpha` takes it: anything else would turn the prior off unannounced.
-fn parse_alpha(text: &str) -> Result<f64, String> {
+pub(crate) fn parse_alpha(text: &str) -> Result<f64, String> {
     let alpha: f64 = text.parse().map_err(|e| format!("{e}"))?;
     if alpha.is_finite() && alpha >= 0.0 {
         Ok(alpha)
