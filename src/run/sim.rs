@@ -1,14 +1,18 @@
-//! `run_simulate`, `run_sim_score` and `run_sim_baseline` for `pinto mcp`:
+//! `run_simulate`, `run_sim_score`, `run_sim_pairs` and `run_sim_baseline`
+//! for `pinto mcp`:
 //! `pinto srt-simulate` and `pinto srt-sim-baseline` set up as the command
 //! line takes them, checked before anything runs, and run as a child pinto
 //! in the project's records (a background job unless asked otherwise); and
-//! `pinto srt-sim-score`'s two tests, computed in the call, as they take a
-//! moment.
+//! `pinto srt-sim-score`'s two tests and `pinto srt-sim-pairs`'s pair sets,
+//! computed in the call, as they take a moment.
 
 use super::mcp::{in_background, launch, out_or_free, parsed, rooted};
 use super::script;
 use crate::mcp::shown_path;
 use crate::simulate::baseline::{check_inputs, BaselineArgs};
+use crate::simulate::pairs::{
+    pairs_header, score_input, PairOptions, SpotLayout, DEFAULT_KNN, DEFAULT_PAIRS, DEFAULT_SEED,
+};
 use crate::simulate::panel::{read_coords, section_name};
 use crate::simulate::params::{SimParams, SCENARIOS, TERMS};
 use crate::simulate::run::{
@@ -49,6 +53,21 @@ pub(super) struct SimScoreToolArgs {
     pub level: String,
     #[serde(default = "label_column")]
     pub label_column: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SimPairsToolArgs {
+    pub truth: String,
+    pub vectors: Vec<String>,
+    #[serde(default = "final_level")]
+    pub level: String,
+    #[serde(default)]
+    pub pairs: Option<usize>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub knn: Option<usize>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -235,6 +254,41 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     Ok(vec![Content::Text(lines.join("\n")), Content::Json(reply)])
 }
 
+// * run_sim_pairs
+
+/// `run_sim_pairs`: each input's vectors scored on the pair sets, as a
+/// table (one row per input and donor-specific domain) and as JSON, with
+/// `pinto srt-sim-pairs`'s defaults for what is not given. One that cannot
+/// be scored is listed with its error and the rest are scored; the call
+/// fails only when none can be.
+pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
+    anyhow::ensure!(!a.vectors.is_empty(), "give vectors: runs or vector tables");
+    let o = PairOptions::new(
+        a.pairs.unwrap_or(DEFAULT_PAIRS),
+        a.seed.unwrap_or(DEFAULT_SEED),
+        a.knn.unwrap_or(DEFAULT_KNN),
+    )?;
+    let t = TruthSpots::read(&a.truth).map_err(|e| bad_truth(&a.truth, e))?;
+    let layout = SpotLayout::read(&a.truth, &t).map_err(|e| bad_truth(&a.truth, e))?;
+    let mut lines = vec![pairs_header()];
+    let (mut scores, mut failed) = (Vec::new(), Vec::new());
+    for input in &a.vectors {
+        match score_input(&t, &layout, input, &a.level, &o) {
+            Ok((rows, record)) => {
+                lines.extend(rows);
+                scores.push(record);
+            }
+            Err(e) => failed.push(json!({ "vectors": input, "error": format!("{e:#}") })),
+        }
+    }
+    anyhow::ensure!(!scores.is_empty(), "no vectors could be scored: {failed:?}");
+    let mut reply = json!({ "truth": shown_path(Path::new(&a.truth)), "scores": scores });
+    if !failed.is_empty() {
+        reply["failed"] = failed.into();
+    }
+    Ok(vec![Content::Text(lines.join("\n")), Content::Json(reply)])
+}
+
 // * run_sim_baseline
 
 /// `pinto srt-sim-baseline` for `a` on the simulation `truth`, writing the
@@ -333,8 +387,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             "Score labellings against a run_simulate truth (pinto srt-sim-score), as two tests. \
              1, donor-invariant domains, on spots of shared domains: shared_ari (labels against \
              domains), donor_dependence (how much the labels depend on the donor within a \
-             domain, 0 to 1) and consistency (share of shared domains whose most common label \
-             is the same in every donor). 2, each donor-specific domain against its \
+             domain, 0 to 1, pooled and for each shared domain as donor_dependence_by_domain). 2, each donor-specific domain against its \
              best-matching label: f1, precision (low: shared spots absorbed), recall, \
              owner_share (1: the label is confined to the owning donor). Returns a table, one \
              row per labelling and donor-specific domain, and the scores as JSON. Fast: runs in \
@@ -348,6 +401,34 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "label_column": {"type": "string", "description": "Label column of a table (lupin's rounds: cell_type) [default: label]"},
                 },
                 "required": ["truth", "labels"],
+                "additionalProperties": false,
+            }),
+        )
+        .read_only(),
+        ToolSpec::new(
+            "run_sim_pairs",
+            "Score per-cell vectors (a latent mapping) against a run_simulate truth on pairs of \
+             spots, with no clustering (pinto srt-sim-pairs): the cosine of two spots' vectors, \
+             by AUROC and AUPRC, each set with its prevalence (the AUPRC of chance). \
+             cross_donor: shared-domain spots of two donors, positive when they share a domain; \
+             within_donor: the same within one donor, the reference; donor_gap: within less \
+             cross, what the donor costs the mapping. patches, one per donor-specific domain: \
+             pairs of its spots (positive) against one of its spots with one outside it \
+             (negative); closest_domain and closest_auroc: the domain it is told apart from \
+             worst (0.5: folded into it). spatial: each spot's knn nearest neighbours in its \
+             section, positive when they share a domain. Returns a table of the AUROCs, one row \
+             per input and donor-specific domain, and every number as JSON. Runs in the call.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "truth": {"type": "string", "description": "The simulation: run_simulate's truth (its truth run) or out folder"},
+                    "vectors": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Per-cell vectors: pinto runs (prefix or .pinto.json, their propensity at level), or tables (TSV or parquet, a cage run's {prefix}.cell_embedding.parquet among them) with a cell column and numeric columns"},
+                    "level": {"type": "string", "description": "Level of a run's propensity: final, draft, or L1, L2, ... (the truth run itself: domain, donor or state) [default: final]"},
+                    "pairs": {"type": "integer", "minimum": 2, "description": format!("Pairs drawn for each sampled set [default: {DEFAULT_PAIRS}]")},
+                    "seed": {"type": "integer", "minimum": 0, "description": format!("Seed of the pair draws [default: {DEFAULT_SEED}]")},
+                    "knn": {"type": "integer", "minimum": 1, "description": format!("Spatial neighbours of each spot, within its section [default: {DEFAULT_KNN}]")},
+                },
+                "required": ["truth", "vectors"],
                 "additionalProperties": false,
             }),
         )

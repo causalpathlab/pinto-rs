@@ -21,6 +21,14 @@ fn truth() -> TruthSpots {
     }
 }
 
+/// Each shared domain's dependence, rounded to 12 places.
+fn by_domain(s: &crate::simulate::score::Score) -> Vec<Option<f64>> {
+    s.donor_dependence_by_domain
+        .iter()
+        .map(|d| d.dependence.map(|x| (x * 1e12).round() / 1e12))
+        .collect()
+}
+
 fn labels_from(t: &TruthSpots, f: impl Fn(usize) -> i64) -> Vec<(Box<str>, i64)> {
     t.cells
         .iter()
@@ -34,8 +42,8 @@ fn the_truth_itself_scores_perfectly() {
     let t = truth();
     let s = score(&t, &labels_from(&t, |i| t.domain[i] as i64)).unwrap();
     assert!((s.shared_ari - 1.0).abs() < 1e-12);
-    assert_eq!(s.consistency, 1.0);
     assert_eq!(s.donor_dependence, 0.0);
+    assert_eq!(by_domain(&s), [Some(0.0), Some(0.0)]);
     let p = &s.patches[0];
     assert_eq!(
         (p.f1, p.precision, p.recall, p.owner_share),
@@ -43,13 +51,13 @@ fn the_truth_itself_scores_perfectly() {
     );
 }
 
-/// Labels that follow the donor: no shared domain gets one label across
-/// donors, and the labels depend wholly on the donor within each domain.
+/// Labels that follow the donor depend wholly on the donor within each
+/// domain.
 #[test]
 fn labels_that_follow_the_donor_fail_test_one() {
     let t = truth();
     let s = score(&t, &labels_from(&t, |i| t.donor[i] as i64)).unwrap();
-    assert_eq!(s.consistency, 0.0);
+    assert_eq!(by_domain(&s), [Some(1.0), Some(1.0)]);
     assert!(
         (s.donor_dependence - 1.0).abs() < 1e-12,
         "{}",
@@ -74,7 +82,7 @@ fn a_patch_folded_into_a_shared_domain_fails_test_two() {
         }),
     )
     .unwrap();
-    assert_eq!(s.consistency, 1.0);
+    assert_eq!(s.donor_dependence, 0.0);
     // test one looks at shared spots only: the folded patch does not count
     assert!((s.shared_ari - 1.0).abs() < 1e-12, "{}", s.shared_ari);
     let p = &s.patches[0];
@@ -83,9 +91,9 @@ fn a_patch_folded_into_a_shared_domain_fails_test_two() {
     assert_eq!(p.recall, 1.0);
 }
 
-/// Domain A split by donor (its own label in each): A is not consistent,
-/// and the dependence is A's donor entropy over the shared domains' total,
-/// B adding entropy but no information.
+/// Domain A split by donor (its own label in each): A's own dependence is
+/// 1 and B's 0, and the pooled dependence is A's donor entropy over the
+/// shared domains' total, B adding entropy but no information.
 #[test]
 fn a_shared_domain_split_by_donor_is_flagged() {
     let t = truth();
@@ -97,7 +105,7 @@ fn a_shared_domain_split_by_donor_is_flagged() {
         }),
     )
     .unwrap();
-    assert_eq!(s.consistency, 0.5);
+    assert_eq!(by_domain(&s), [Some(1.0), Some(0.0)]);
     // A: 10 + 10 spots, labels set by donor; B: 10 + 6 spots, labels not
     let h = |p: f64| -p * p.ln() - (1.0 - p) * (1.0 - p).ln();
     let want = 20.0 * h(0.5) / (20.0 * h(0.5) + 16.0 * h(10.0 / 16.0));
@@ -117,7 +125,7 @@ fn unlabelled_spots_are_left_out() {
     l.pop();
     let s = score(&t, &l).unwrap();
     assert_eq!(s.n_scored, t.cells.len() - 2);
-    assert_eq!(s.consistency, 1.0);
+    assert_eq!(s.donor_dependence, 0.0);
 }
 
 /// A domain that truly sits mostly in one donor is not a split: the truth
@@ -144,6 +152,8 @@ fn a_domain_mostly_in_one_donor_is_not_a_split() {
     };
     let s = score(&one, &labels_from(&one, |i| one.domain[i] as i64)).unwrap();
     assert_eq!(s.donor_dependence, 0.0);
+    // in one donor a domain has no donor entropy: no dependence to give
+    assert_eq!(by_domain(&s), [None, None]);
 }
 
 /// A table is read by its `cell` and label columns; empty, NA, -1 and

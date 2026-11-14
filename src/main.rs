@@ -571,9 +571,8 @@ enum Commands {
                       as two tests.\n\n\
                       1. Donor-invariant domains, on spots of shared domains: shared_ari\n\
                       \x20  (labels against domains), donor_dep (how much the labels depend on\n\
-                      \x20  the donor within a domain: conditional mutual information, 0 to 1)\n\
-                      \x20  and consistency (share of shared domains whose most common label is\n\
-                      \x20  the same in every donor).\n\
+                      \x20  the donor within a domain: conditional mutual information, 0 to 1),\n\
+                      \x20  pooled and for each shared domain.\n\
                       2. Donor-specific domains, each against its best-matching label: f1,\n\
                       \x20  precision (low: shared spots absorbed), recall, and owner share (1:\n\
                       \x20  the label is confined to the owning donor).\n\n\
@@ -581,6 +580,27 @@ enum Commands {
                       (--label-column names the labels)."
     )]
     SrtSimScore(Box<simulate::SimScoreArgs>),
+
+    #[command(
+        name = "srt-sim-pairs",
+        about = "Score per-cell vectors against a simulation's planted truth, on pairs",
+        long_about = "Score how well per-cell vectors (a latent mapping) recover an\n\
+                      srt-simulate run's planted truth, on pairs of spots and with no\n\
+                      clustering: the cosine of two spots' vectors, by AUROC and AUPRC, on\n\
+                      four sets of pairs, each with its prevalence.\n\n\
+                      cross: shared-domain spots of two donors, positive when they share a\n\
+                      \x20 domain. within: the same within one donor, the reference; gap is\n\
+                      \x20 within less cross, what the donor costs the mapping.\n\
+                      patch: for each donor-specific domain, pairs of its spots (positive)\n\
+                      \x20 against one of its spots with a spot outside it (negative); closest\n\
+                      \x20 is the domain it is told apart from worst (0.5: folded into it).\n\
+                      spatial: each spot's --knn nearest neighbours in its section,\n\
+                      \x20 positive when they share a domain.\n\n\
+                      Vectors are pinto runs (their propensity at --level), a cage run's\n\
+                      cell_embedding table, or any table with a cell column and numeric\n\
+                      columns. Pairs are drawn from --seed, --pairs per sampled set."
+    )]
+    SrtSimPairs(Box<simulate::SimPairsArgs>),
 
     #[command(
         name = "srt-sim-baseline",
@@ -837,6 +857,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Residual(args) => residual::run_residual(args)?,
         Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
+        Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]

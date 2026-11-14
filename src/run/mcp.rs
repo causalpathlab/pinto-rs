@@ -45,6 +45,7 @@ impl Handler for Tools {
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
             "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
             "run_sim_score" => super::sim::sim_score(parse(args)?),
+            "run_sim_pairs" => super::sim::sim_pairs(parse(args)?),
             "run_sim_baseline" => super::sim::baseline(&self.cli, parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
