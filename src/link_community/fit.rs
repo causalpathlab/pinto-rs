@@ -530,7 +530,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 }),
             &cascade_level_indices,
         );
-        let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", c.out));
+        let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());
     }

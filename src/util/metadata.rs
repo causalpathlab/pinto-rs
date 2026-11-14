@@ -41,7 +41,13 @@ pub fn run_stem(run: &str) -> String {
 
 /// A run named by its prefix or by its manifest: the manifest's path.
 pub fn run_manifest(run: &str) -> String {
-    format!("{}.pinto.json", run_prefix(run))
+    manifest_path(run_prefix(run))
+}
+
+/// The manifest a run writes under the output prefix `prefix`, taken as
+/// given.
+pub fn manifest_path(prefix: &str) -> String {
+    format!("{prefix}.pinto.json")
 }
 
 /// A prior run, opened by its prefix or its manifest.

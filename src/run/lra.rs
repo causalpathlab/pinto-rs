@@ -18,7 +18,7 @@ use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::tui::flag_value;
 use crate::util::cli::{choices, value_name};
-use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
+use crate::util::metadata::{manifest_path, run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -635,7 +635,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
         checked_lra(cli, &argv)?;
-        let manifest = run.map_or_else(|| PathBuf::from(format!("{o}.pinto.json")), PathBuf::from);
+        let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
         if let Some(reply) = read_finished(
             cx,
             &made,

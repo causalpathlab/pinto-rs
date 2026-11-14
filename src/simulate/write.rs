@@ -270,5 +270,7 @@ pub fn write_truth_run(
         levels: Some(levels),
         ..Default::default()
     };
-    meta.write(std::path::Path::new(&format!("{prefix}.pinto.json")))
+    meta.write(std::path::Path::new(&crate::util::metadata::manifest_path(
+        &prefix,
+    )))
 }

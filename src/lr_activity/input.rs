@@ -695,7 +695,7 @@ pub fn record_manifest(
     if let Some(r) = &input.run {
         return Ok(r.manifest.clone());
     }
-    let path = PathBuf::from(format!("{out}.pinto.json"));
+    let path = PathBuf::from(crate::util::metadata::manifest_path(out));
     PintoMetadata {
         command: "lra".into(),
         version: env!("CARGO_PKG_VERSION").into(),

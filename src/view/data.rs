@@ -104,7 +104,7 @@ impl Run {
         let (prefix, manifest) = match prefix_or_manifest.strip_suffix(".pinto.json") {
             Some(prefix) => (prefix.to_string(), Some(PathBuf::from(prefix_or_manifest))),
             None => {
-                let path = PathBuf::from(format!("{prefix_or_manifest}.pinto.json"));
+                let path = PathBuf::from(crate::util::metadata::manifest_path(prefix_or_manifest));
                 (
                     prefix_or_manifest.to_string(),
                     path.exists().then_some(path),
