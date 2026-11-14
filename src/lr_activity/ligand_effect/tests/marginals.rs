@@ -458,8 +458,10 @@ fn a_rerun_keeps_the_marginal_baselines() {
     };
     let argv = o.argv(Some("r.pinto.json"), None, LraMethod::default(), &[]);
     assert!(argv.iter().any(|a| a == "--marginal-baselines"), "{argv:?}");
-    let at = argv.iter().position(|a| a == "--marginal-permutations");
-    assert_eq!(at.map(|i| argv[i + 1].as_str()), Some("500"), "{argv:?}");
+    assert!(
+        argv.iter().any(|a| a == "--marginal-permutations=500"),
+        "{argv:?}"
+    );
     let plain = LraOptions::default().argv(Some("r.pinto.json"), None, LraMethod::default(), &[]);
     assert!(
         !plain.iter().any(|a| a.starts_with("--marginal")),

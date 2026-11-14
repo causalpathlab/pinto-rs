@@ -97,18 +97,12 @@ fn a_simulate_call_becomes_its_command_line() {
     );
     let want: Vec<String> = [
         "srt-simulate",
-        "--scenario",
-        "L2",
-        "--set",
-        "grid_side=8",
-        "--set",
-        "seed=2",
-        "--coords",
-        &coords,
-        "--coord-column-names",
-        "x,y",
-        "-o",
-        "/p/sim",
+        "--scenario=L2",
+        "--set=grid_side=8",
+        "--set=seed=2",
+        &format!("--coords={coords}"),
+        "--coord-column-names=x,y",
+        "--out=/p/sim",
     ]
     .map(String::from)
     .to_vec();
@@ -116,7 +110,7 @@ fn a_simulate_call_becomes_its_command_line() {
     checked(&cli(), &argv).unwrap();
     // Only what was given: no scenario (the command's default), no other flag.
     let bare = simulate_argv(&sim_args(json!({})), "o");
-    assert_eq!(bare, ["srt-simulate", "-o", "o"]);
+    assert_eq!(bare, ["srt-simulate", "--out=o"]);
     // column names name the columns of given coordinate files only
     let names_alone = sim_args(json!({"coord_column_names": ["-x", "y"]}));
     assert_eq!(simulate_argv(&names_alone, "o"), bare);
@@ -148,6 +142,25 @@ fn the_reply_lists_the_sections_to_fit_in_order() {
     // the sections' columns are not among run_fit's default coordinate names
     let flags = json!({"coord-column-names": "row_um,col_um"});
     assert_eq!(fit, json!({"data": data, "coords": coords, "flags": flags}));
+}
+
+/// An `out` given as a folder, ending in `/`, names the sections, the
+/// manifest and the truth run once under it.
+#[test]
+fn a_folder_out_names_its_files_without_a_doubled_slash() {
+    let p = params(json!({"scenario": "L2", "set": TINY})).unwrap();
+    let fit = fit_lists("/p/sim/", &p);
+    assert_eq!(fit["data"][0], "/p/sim/sections/S1.zarr");
+    assert_eq!(fit["coords"][0], "/p/sim/sections/S1.coords.parquet");
+    // as text: two paths that differ only by a doubled slash compare equal
+    let made: Vec<String> = sim_outputs("/p/sim/")[1..]
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        made,
+        ["/p/sim/manifest.json", "/p/sim/truth/truth.pinto.json"]
+    );
 }
 
 #[test]
@@ -325,16 +338,11 @@ fn the_baseline_command_line_has_only_what_was_given() {
         argv,
         [
             "srt-sim-baseline",
-            "--truth",
-            "/p/sim",
-            "--method",
-            "per-donor",
-            "--k",
-            "5",
-            "--seed",
-            "2",
-            "-o",
-            "/p/out.tsv",
+            "--truth=/p/sim",
+            "--method=per-donor",
+            "--k=5",
+            "--seed=2",
+            "--out=/p/out.tsv",
         ]
     );
     checked(&cli(), &argv).unwrap();
@@ -345,7 +353,7 @@ fn the_baseline_command_line_has_only_what_was_given() {
     );
     assert_eq!(
         bare,
-        ["srt-sim-baseline", "--truth", "/p/sim", "-o", "/p/out.tsv"]
+        ["srt-sim-baseline", "--truth=/p/sim", "--out=/p/out.tsv"]
     );
     checked(&cli(), &bare).unwrap();
     let scvi = args::<SimBaselineToolArgs>(json!({"truth": "t", "method": "scvi"}));

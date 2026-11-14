@@ -93,7 +93,7 @@ pub fn lra_outputs(
     }
 }
 
-/// `pinto lra --from {from}` with `method` and `options` (`-o out` when
+/// `pinto lra --from {from}` with `method` and `options` (`--out` when
 /// given, else beside the run), each choice that is not lra's default,
 /// then `--only only` when not empty: the one command line `run_lra` and
 /// the viewer start.
@@ -106,23 +106,25 @@ impl crate::util::metadata::LraOptions {
         method: args::LraMethod,
         only: &[String],
     ) -> Vec<String> {
+        use crate::tui::flag_value;
         use clap::ValueEnum;
         let mut argv: Vec<String> = vec!["lra".into()];
         if let Some(from) = from {
-            argv.extend(["--from".into(), from.into()]);
+            argv.push(flag_value("--from", from));
         }
         if let Some(o) = out {
-            argv.extend(["-o".into(), o.into()]);
+            argv.push(flag_value("--out", o));
         }
         if self.marginal_baselines.is_some() {
             argv.push("--marginal-baselines".into());
             if let Some(n) = self.marginal_permutations {
                 if n != crate::lr_activity::ligand_effect::PERMUTATIONS {
-                    argv.extend(["--marginal-permutations".into(), n.to_string()]);
+                    argv.push(flag_value("--marginal-permutations", n));
                 }
             }
         }
-        let mut flag = |name: &str, value: String| argv.extend([name.into(), value]);
+        // each value in its flag's word, so a negative one reaches lra's check
+        let mut flag = |name: &str, value: String| argv.push(flag_value(name, value));
         if method != args::LraMethod::default() {
             if let Some(m) = method.to_possible_value() {
                 flag("--method", m.get_name().into());

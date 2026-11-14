@@ -219,3 +219,19 @@ fn run_predict_refuses_a_model_that_is_not_there() {
     );
     assert!(said.contains("not there"), "{said}");
 }
+
+/// A tau `pinto compare` refuses is refused with its reason: the negative
+/// number reaches its check as the flag's value, not as a flag of its own.
+#[test]
+fn run_compare_refuses_a_negative_tau_with_the_command_s_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = square_run(dir.path());
+    let out = dir.path().join("cmp");
+    let (failed, said) = call_once(
+        "run_compare",
+        json!({"a": run, "b": run, "tau": -0.5, "out": out.to_str().unwrap()}),
+    );
+    assert!(failed, "{said}");
+    assert!(said.contains("-0.5 is not in (0, 1]"), "{said}");
+    assert!(!said.contains("unexpected argument"), "{said}");
+}

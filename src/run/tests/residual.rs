@@ -66,11 +66,9 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     assert_eq!(
         bare,
         [
-            "residual",
-            "--from",
-            &shown_path(Path::new("r")),
-            "-o",
-            "/p/res"
+            "residual".to_string(),
+            format!("--from={}", shown_path(Path::new("r"))),
+            "--out=/p/res".into()
         ]
     );
     checked(&cli(), &bare).unwrap();
@@ -91,16 +89,13 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     let argv = residual_argv(&full, "o").unwrap();
     let want: Vec<String> = [
         "residual",
-        "--from",
-        &shown_path(Path::new("r")),
-        "--data-files",
-        &files,
+        &format!("--from={}", shown_path(Path::new("r"))),
+        &format!("--data-files={files}"),
         "--excess=floor",
         "--adapt=none",
         "--adapt-cells=20",
         "--feature-names=gene",
-        "-o",
-        "o",
+        "--out=o",
     ]
     .map(String::from)
     .to_vec();
@@ -146,7 +141,7 @@ fn the_run_is_named_by_the_commands_own_flag() {
         .unwrap();
     assert!(run.ends_with("(--from; --run also works)"), "{run}");
     let argv = residual_argv(&args(json!({"run": "r"})), "o").unwrap();
-    assert_eq!(argv[1], "--from");
+    assert!(argv[1].starts_with("--from="), "{argv:?}");
 }
 
 /// Only an lc, cage or dsvd run is taken, refused while the call is set up.

@@ -173,6 +173,69 @@ mod reading {
         assert_eq!(r.cols, vec![Box::from("a"), Box::from("b")]);
     }
 
+    /// The hint names the file's own columns and the two it can read as
+    /// coordinates, by name and by position, not some other file's layout.
+    #[test]
+    fn the_hint_suggests_the_coordinate_columns_the_parquet_has() {
+        use legume_numeric::matrix::traits::IoOps;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.parquet").to_string_lossy().into_owned();
+        let rows: Vec<Box<str>> = vec!["s1".into(), "s2".into()];
+        let cols: Vec<Box<str>> = vec!["row_um".into(), "col_um".into()];
+        Mat::from_fn(2, 2, |i, j| (i * 10 + j) as f32)
+            .to_parquet_with_names(&path, (Some(&rows), Some("spot")), Some(&cols))
+            .unwrap();
+        let names: Vec<Box<str>> = vec!["nope_x".into(), "nope_y".into()];
+        let err = match read_one_coord_file(&path, &[], &names, None) {
+            Ok(r) => panic!("read {:?} for {names:?}", r.cols),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains(r#"["spot", "row_um", "col_um"]"#), "{err}");
+        assert!(
+            err.contains("--coord-column-names row_um,col_um")
+                && err.contains("--coord-column-indices 1,2"),
+            "{err}"
+        );
+        assert!(!err.contains("4,5"), "{err}");
+    }
+
+    /// A headerless text file has no names to give: the hint lists the
+    /// positions of its numeric fields.
+    #[test]
+    fn the_hint_gives_positions_for_a_headerless_file() {
+        let f = write_csv(
+            "cell_a,1,0,100.5,200.5\n\
+             cell_b,1,1,300.5,400.5\n",
+        );
+        let names: Vec<Box<str>> = vec!["nope_x".into(), "nope_y".into()];
+        let Err(err) = read_one_coord_file(f.path().to_str().unwrap(), &[], &names, None) else {
+            panic!("columns that resolve to nothing must not be guessed at");
+        };
+        let err = format!("{err:#}");
+        assert!(err.contains("no header"), "{err}");
+        assert!(err.contains("1, 2, 3, 4"), "{err}");
+        assert!(!err.contains("--coord-column-names"), "{err}");
+    }
+
+    /// An empty field keeps its place, as the reader keeps it: the
+    /// positions the hint gives are the reader's.
+    #[test]
+    fn the_hint_counts_an_empty_field_as_the_reader_does() {
+        let f = write_csv(
+            "cell,label,u,v\n\
+             cell_a,,1.5,2.5\n",
+        );
+        let names: Vec<Box<str>> = vec!["nope_x".into(), "nope_y".into()];
+        let Err(err) = read_one_coord_file(f.path().to_str().unwrap(), &[], &names, None) else {
+            panic!("columns that resolve to nothing must not be guessed at");
+        };
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("--coord-column-names u,v") && err.contains("--coord-column-indices 2,3"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn a_quoted_header_is_read_by_its_names() {
         let f = write_csv(
