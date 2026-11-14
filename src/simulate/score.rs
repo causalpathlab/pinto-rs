@@ -377,10 +377,14 @@ pub struct SimScoreArgs {
     pub out: Option<Box<str>>,
 }
 
+/// Width of a domain-name column in the score and pair tables: room for
+/// `D3_specific_domain_1` and its like.
+pub const NAME_WIDTH: usize = 22;
+
 /// The table's header line, as `srt-sim-score` prints it.
 pub fn table_header() -> String {
     format!(
-        "{:<40} {:>7} {:>10} {:>10} {:>6} {:>6} {:>6} {:>6}  {}",
+        "{:<40} {:>7} {:>10} {:>10} {:<NAME_WIDTH$} {:>6} {:>6} {:>6}  {}",
         "labels",
         "scored",
         "shared_ari",
@@ -432,7 +436,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
     let by_domain = by_domain_cell(s);
     if s.patches.is_empty() {
         return vec![format!(
-            "{head} {:>6} {:>6} {:>6} {:>6}  {by_domain}",
+            "{head} {:<NAME_WIDTH$} {:>6} {:>6} {:>6}  {by_domain}",
             "", "", "", ""
         )];
     }
@@ -440,7 +444,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
         .iter()
         .map(|p| {
             format!(
-                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
+                "{head} {:<NAME_WIDTH$} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
                 p.domain, p.f1, p.precision, p.owner_share
             )
         })

@@ -153,7 +153,7 @@ fn a_simulate_call_becomes_its_command_line() {
     // A region benchmark on data no reference names.
     let a: LraSimulateToolArgs = crate::mcp::parse(json!({
         "run": "r", "lr_pairs": "/p/pairs.tsv", "targets": ["/p/t.tsv"],
-        "region": "/p/region.tsv", "plant_region": "DM5"
+        "region": "/p/region.tsv", "plant_region": "D3_specific_domain_1"
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
@@ -168,7 +168,7 @@ fn a_simulate_call_becomes_its_command_line() {
             "--targets",
             "/p/t.tsv",
             "--plant-region",
-            "DM5"
+            "D3_specific_domain_1"
         ]
     );
     checked(&cli(), &argv).unwrap();

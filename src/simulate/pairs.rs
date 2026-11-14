@@ -28,7 +28,7 @@
 //! `cell` column and numeric columns.
 
 use super::panel::donor_label;
-use super::score::{sim_folder, TruthSpots};
+use super::score::{sim_folder, TruthSpots, NAME_WIDTH};
 use crate::compare::propensity_path;
 use crate::util::common::{HashMap, HashSet, Mat};
 use crate::util::parquet_io::{read_keyed_columns, read_propensity};
@@ -523,7 +523,7 @@ pub struct SimPairsArgs {
 /// set (AUPRC and prevalence are in the JSON).
 pub fn pairs_header() -> String {
     format!(
-        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:>6} {:>7} {:>7} {:>7}",
+        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:<NAME_WIDTH$} {:>7} {:<NAME_WIDTH$} {:>7}",
         "vectors",
         "scored",
         "cross",
@@ -556,7 +556,7 @@ pub fn pairs_rows(input: &str, s: &PairScore) -> Vec<String> {
         .iter()
         .map(|p| {
             format!(
-                "{head} {:>6} {:>7.3} {:>7} {:>7.3}",
+                "{head} {:<NAME_WIDTH$} {:>7.3} {:<NAME_WIDTH$} {:>7.3}",
                 p.domain, p.pairs.auroc, p.closest_domain, p.closest_auroc
             )
         })

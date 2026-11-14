@@ -114,11 +114,21 @@ fn dirichlet(comp: &[f64], kappa: f64, r: &mut SmallRng) -> Vec<f64> {
 fn catalogue(p: &SimParams) -> (Vec<Info>, Vec<Info>, Vec<Vec<f64>>) {
     let n_shared = p.n_domains;
     let n_states = n_shared + (p.patch_kind == PatchKind::NewState) as usize;
-    let label = |prefix: &str, k: usize| -> Box<str> { format!("{prefix}{}", k + 1).into() };
     let owned = |o: bool| o.then_some(p.patch_owner);
+    // names that say what they are: shared ones by kind, donor-specific ones
+    // by their owner too (`shared_domain_1`, `D3_specific_domain_1`; states
+    // `CT1`, `D3_specific_CT1`)
+    let owner = super::panel::donor_label(p.patch_owner);
+    let name = |shared: &str, specific: &str, k: usize| -> Box<str> {
+        if k < n_shared {
+            format!("{shared}{}", k + 1).into()
+        } else {
+            format!("{owner}_specific_{specific}{}", k - n_shared + 1).into()
+        }
+    };
     let states = (0..n_states)
         .map(|c| Info {
-            label: label("CT", c),
+            label: name("CT", "CT", c),
             owner: owned(c >= n_shared),
         })
         .collect();
@@ -146,7 +156,7 @@ fn catalogue(p: &SimParams) -> (Vec<Info>, Vec<Info>, Vec<Vec<f64>>) {
     }
     let domains = (0..composition.len())
         .map(|k| Info {
-            label: label("DM", k),
+            label: name("shared_domain_", "domain_", k),
             owner: owned(k >= n_shared),
         })
         .collect();

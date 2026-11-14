@@ -192,7 +192,7 @@ confounded nulls and the planted effects, and the baselines' run time.
 
 ```sh
 pinto lra-simulate --from out/run1.pinto.json
-pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region patch
+pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region D3_specific_domain_1
 ```
 
 `--lr-pairs` and `--targets` add pairs and programmes as for `pinto lra` (for

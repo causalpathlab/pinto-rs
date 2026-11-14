@@ -1,3 +1,4 @@
+use super::super::data::Communities;
 use super::draw::error_lines;
 use super::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -263,4 +264,59 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
 
 fn level_of<'a>(app: &'a App) -> &'a Level {
     app.drawn().0
+}
+
+/// Long names sharing a prefix, as a simulation names its domains.
+fn long_names() -> Communities {
+    let names = [
+        "shared_domain_1",
+        "shared_domain_11",
+        "D1_specific_domain_1",
+        "D1_specific_domain_11",
+    ];
+    Communities::from_groups(
+        "t",
+        vec![0, 1, 2, 3],
+        names.iter().map(|&n| n.into()).collect(),
+    )
+}
+
+/// Each long name, as `cut` fits it in `n` characters, is cut in the
+/// middle (keeping its start and end), and no two come out the same.
+fn cut_in_the_middle(n: usize, cut: impl Fn(&Communities, usize) -> String) {
+    let comm = long_names();
+    let cuts: Vec<String> = (0..comm.k).map(|c| cut(&comm, c)).collect();
+    for (c, got) in cuts.iter().enumerate() {
+        assert_eq!(
+            *got,
+            crate::tui::style::middle(&comm.name(c), n),
+            "{cuts:?}"
+        );
+    }
+    let distinct: std::collections::HashSet<&String> = cuts.iter().collect();
+    assert_eq!(distinct.len(), cuts.len(), "{cuts:?}");
+}
+
+/// The legend cuts a long name in the middle, so names sharing a long
+/// prefix stay apart.
+#[test]
+fn legend_names_keep_their_start_and_end() {
+    use super::draw::LEGEND_NAME;
+    cut_in_the_middle(LEGEND_NAME, |comm, c| {
+        let text: String = legend_text(comm, c, 1)
+            .chars()
+            .skip(1)
+            .take(LEGEND_NAME)
+            .collect();
+        text.trim_end().to_string()
+    });
+}
+
+/// The heatmap writes a long name down its column cut in the middle, so
+/// columns of names sharing a prefix differ.
+#[test]
+fn heatmap_column_names_keep_their_start_and_end() {
+    cut_in_the_middle(plots::NAME_ROWS, |comm, c| {
+        plots::column_name(comm, c).into_iter().collect()
+    });
 }

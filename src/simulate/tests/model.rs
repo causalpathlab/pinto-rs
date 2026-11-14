@@ -649,3 +649,23 @@ fn the_note_and_the_simulator_agree_on_which_terms_are_off() {
         assert_eq!(note, simulator, "{p:?}");
     }
 }
+
+/// A donor-specific cell state is named with its owner, after the shared
+/// ones: `CT1` to `CT4`, then `D3_specific_CT1`.
+#[test]
+fn a_donor_specific_state_is_named_with_its_owner() {
+    let p = SimParams {
+        grid_side: 6,
+        n_genes: 30,
+        programme_genes: 4,
+        patch_kind: PatchKind::NewState,
+        ..SimParams::default()
+    };
+    let sim = Sim::new(p.clone(), &[grid(p.grid_side, p.grid_spacing_um)]);
+    let states: Vec<&str> = sim.truth.states.iter().map(|s| s.label.as_ref()).collect();
+    let owner = crate::simulate::panel::donor_label(p.patch_owner);
+    let specific = format!("{owner}_specific_CT1");
+    let mut want: Vec<&str> = vec!["CT1", "CT2", "CT3", "CT4"];
+    want.push(&specific);
+    assert_eq!(states, want);
+}
