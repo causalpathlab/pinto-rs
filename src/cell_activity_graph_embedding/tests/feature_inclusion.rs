@@ -2,7 +2,8 @@
 //! features get high inclusion and noise none, and sampling respects π.
 
 use crate::cell_activity_graph_embedding::feature_inclusion::{
-    jackknife_moran, sample_included, section_sums, tile_of, two_group_inclusion,
+    inclusion_of, jackknife_moran, normalised_profiles, sample_included, section_jack, tile_of,
+    tree_blocks, two_group_inclusion, UnitGraph,
 };
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -52,6 +53,26 @@ fn moran_brute(sections: &[Section]) -> f64 {
     (n / w) * num / den
 }
 
+/// The jackknife SE of [`moran_brute`] over the same `edges` in every
+/// section, deleting each of `n_blocks` blocks of each section in turn.
+fn brute_jackknife_se(xs: &[Vec<f64>], edges: &Edges, block: &[usize], n_blocks: usize) -> f64 {
+    let all = vec![true; block.len()];
+    let mut loo = Vec::new();
+    for s in 0..xs.len() {
+        for k in 0..n_blocks {
+            let keep: Vec<bool> = block.iter().map(|&b| b != k).collect();
+            let secs: Vec<Section> = (0..xs.len())
+                .map(|r| {
+                    let k = if r == s { keep.clone() } else { all.clone() };
+                    (xs[r].clone(), edges.clone(), k)
+                })
+                .collect();
+            loo.push(moran_brute(&secs));
+        }
+    }
+    crate::util::common::jackknife_se(&loo)
+}
+
 #[test]
 fn the_jackknife_deletes_a_tile_exactly() {
     let mut rng = SmallRng::seed_from_u64(3);
@@ -71,7 +92,7 @@ fn the_jackknife_deletes_a_tile_exactly() {
         .map(|x| {
             let profiles: Vec<Vec<(u32, f32)>> =
                 x.iter().map(|&v| vec![(0u32, v as f32)]).collect();
-            section_sums(1, &profiles, &tile, &edges)
+            section_jack(1, &profiles, &tile, &edges)
         })
         .collect();
     let (moran, se, _) = jackknife_moran(&sums);
@@ -81,26 +102,7 @@ fn the_jackknife_deletes_a_tile_exactly() {
         (xs[1].clone(), edges.clone(), all.clone()),
     ]);
     assert!((moran[0] - full).abs() < 1e-4, "{} vs {full}", moran[0]);
-    // the jackknife's leave-one-out values, from scratch
-    let mut loo = Vec::new();
-    for s in 0..2 {
-        for k in 0..4 {
-            let keep: Vec<bool> = tile.iter().map(|&t| t != k).collect();
-            let secs: Vec<_> = (0..2)
-                .map(|r| {
-                    (
-                        xs[r].clone(),
-                        edges.clone(),
-                        if r == s { keep.clone() } else { all.clone() },
-                    )
-                })
-                .collect();
-            loo.push(moran_brute(&secs));
-        }
-    }
-    let m = loo.len() as f64;
-    let mean = loo.iter().sum::<f64>() / m;
-    let brute_se = ((m - 1.0) / m * loo.iter().map(|v| (v - mean).powi(2)).sum::<f64>()).sqrt();
+    let brute_se = brute_jackknife_se(&xs, &edges, &tile, 4);
     assert!((se[0] - brute_se).abs() < 1e-4, "{} vs {brute_se}", se[0]);
 }
 
@@ -127,7 +129,7 @@ fn spatial_features_are_included_and_noise_is_not() {
                 .collect()
         })
         .collect();
-    let (_, _, t) = jackknife_moran(&[section_sums(g, &profiles, &tile, &edges)]);
+    let (_, _, t) = jackknife_moran(&[section_jack(g, &profiles, &tile, &edges)]);
     let (pi, pi0) = two_group_inclusion(&t);
     let signal = pi[..n_signal].iter().sum::<f32>() / n_signal as f32;
     let null = pi[n_signal..].iter().sum::<f32>() / (g - n_signal) as f32;
@@ -179,11 +181,7 @@ fn sampling_follows_pi() {
     );
 }
 
-// ---- units, PB-tree blocks and epochs (written before the code) ---------
-
-use crate::cell_activity_graph_embedding::feature_inclusion::{
-    inclusion_of, normalised_profiles, tree_blocks, UnitGraph,
-};
+// ---- units, PB-tree blocks and epochs ------------------------------------
 
 /// Any blocks, not only tiles: a checkerboard over two sections, deleted
 /// one at a time, matches Moran's I recomputed from scratch.
@@ -206,7 +204,7 @@ fn the_jackknife_deletes_any_block_exactly() {
         profiles: (0..2 * n)
             .map(|u| vec![(0u32, x[u % n] as f32 * (1 + u / n) as f32)])
             .collect(),
-        section: (0..2 * n).map(|u| u / n).collect(),
+        section: (0..2 * n).map(|u| (u / n) as u32).collect(),
         block: (0..2 * n).map(|u| checker[u % n] + 3 * (u / n)).collect(),
         edges: edges
             .iter()
@@ -217,26 +215,7 @@ fn the_jackknife_deletes_any_block_exactly() {
     let xs: Vec<Vec<f64>> = (0..2)
         .map(|s| x.iter().map(|v| v * (1 + s) as f64).collect())
         .collect();
-    let all = vec![true; n];
-    let mut loo = Vec::new();
-    for s in 0..2 {
-        for k in 0..3 {
-            let keep: Vec<bool> = checker.iter().map(|&b| b != k).collect();
-            let secs: Vec<Section> = (0..2)
-                .map(|r| {
-                    (
-                        xs[r].clone(),
-                        edges.clone(),
-                        if r == s { keep.clone() } else { all.clone() },
-                    )
-                })
-                .collect();
-            loo.push(moran_brute(&secs));
-        }
-    }
-    let m = loo.len() as f64;
-    let mean = loo.iter().sum::<f64>() / m;
-    let brute_se = ((m - 1.0) / m * loo.iter().map(|v| (v - mean).powi(2)).sum::<f64>()).sqrt();
+    let brute_se = brute_jackknife_se(&xs, &edges, &checker, 3);
     assert!(
         (inc.se[0] - brute_se).abs() < 1e-4,
         "{} vs {brute_se}",
@@ -266,7 +245,7 @@ fn blocks_come_from_the_pb_tree() {
         vec![0, 0, 1, 1, 2, 2, 3, 3],
         vec![0, 1, 2, 3, 4, 5, 6, 7],
     ];
-    let section = vec![0, 0, 0, 0, 1, 1, 1, 1];
+    let section = vec![0u32, 0, 0, 0, 1, 1, 1, 1];
     // two blocks per section: level 0 already gives two once split by section
     let b = tree_blocks(&levels, &section, 2);
     assert_eq!(b, vec![0, 0, 1, 1, 2, 2, 3, 3]);
@@ -285,4 +264,37 @@ fn an_epoch_is_never_empty() {
         sample_included(&mut f, &pi, &mut rng);
         assert_eq!(f.len(), 1);
     }
+}
+
+/// Inclusion and modules are two ways to handle uninformative features; on
+/// the simulations together they did worse than either, so cage takes one.
+#[test]
+fn inclusion_and_modules_are_exclusive() {
+    use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
+    use crate::cell_activity_graph_embedding::fit::fit_cell_activity_graph_embedding;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        cage: CellActivityGraphEmbeddingArgs,
+    }
+    let a = Cli::try_parse_from([
+        "x",
+        "-o",
+        "out",
+        "d.zarr",
+        "--feature-inclusion",
+        "moran",
+        "--feature-modules",
+        "20",
+    ])
+    .unwrap()
+    .cage;
+    let e = fit_cell_activity_graph_embedding(&a)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("--feature-inclusion") && e.contains("--feature-modules"),
+        "{e}"
+    );
 }

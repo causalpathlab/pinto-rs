@@ -142,6 +142,12 @@ pub fn fit_cell_activity_graph_embedding(
     anyhow::ensure!(!chain_levels.is_empty(), "chain-levels must be non-empty");
     // Opt-in on cage.
     let module_cfg = args.modules.resolve(None)?;
+    // Two ways to handle uninformative features; on the simulations they
+    // did worse together than either alone, so a run takes one.
+    anyhow::ensure!(
+        !(module_cfg.is_some() && args.feature_inclusion == FeatureInclusionMode::Moran),
+        "--feature-inclusion moran and --feature-modules are alternatives; pick one"
+    );
 
     anyhow::ensure!(
         !(module_cfg.is_some() && args.feature_embedding.is_some()),
@@ -401,40 +407,6 @@ pub fn fit_cell_activity_graph_embedding(
     )?;
     let n_pb = pb_frame.n_pb;
 
-    // Each feature's probability of spatial signal, which each epoch
-    // samples features by (`--feature-inclusion moran`): over the PB tree's
-    // finest super-cells and super edges, with coarse super-cells as
-    // jackknife blocks; on cells (cage-cell, no pseudobulks) over cells and
-    // spatial edges, with geometric tiles as blocks.
-    let inclusion = match args.feature_inclusion {
-        FeatureInclusionMode::All => None,
-        FeatureInclusionMode::Moran => {
-            use crate::cell_activity_graph_embedding::feature_inclusion::{
-                cell_inclusion, pb_inclusion,
-            };
-            anyhow::ensure!(
-                !c.coord_files.is_empty(),
-                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
-            );
-            let inc = if args.cell_level {
-                let plane = coordinates
-                    .select_columns(&crate::util::ablation::non_batch_columns(&coordinate_names));
-                cell_inclusion(
-                    &data_vec,
-                    &feature_axis,
-                    &plane,
-                    &section_ids,
-                    &topology_graph(&graph, &spatial_graph).edges,
-                    args.inclusion_blocks,
-                )?
-            } else {
-                pb_inclusion(&data_vec, &feature_axis, &pb_frame, args.inclusion_blocks)?
-            };
-            write_feature_inclusion(&c.out, &feature_names, &inc)?;
-            Some(inc)
-        }
-    };
-
     // Collapse cells into super-cells per coarsening level and fit one shared
     // SVD over them: the WARM START of the trained PB table, and the basis the
     // `pseudobulk_cells.parquet` diagnostic exports.
@@ -480,6 +452,60 @@ pub fn fit_cell_activity_graph_embedding(
         )?;
         info!("Wrote {}.pseudobulk_cells.parquet", c.out);
     }
+
+    // Each feature's probability of spatial signal, which each epoch
+    // samples features by (`--feature-inclusion moran`): on the finest PB
+    // super-cells (the basis's pooled counts) and the spatial edges between
+    // them, coarse super-cells of the tree as jackknife blocks; on cells
+    // under cage-cell (no pseudobulks), geometric tiles as blocks.
+    let inclusion = match args.feature_inclusion {
+        FeatureInclusionMode::All => None,
+        FeatureInclusionMode::Moran => {
+            use crate::cell_activity_graph_embedding::feature_inclusion::{
+                cell_inclusion, pb_inclusion, PbUnits,
+            };
+            anyhow::ensure!(
+                !c.coord_files.is_empty(),
+                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
+            );
+            let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
+            let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
+                None => {
+                    let plane = coordinates.select_columns(
+                        &crate::util::ablation::non_batch_columns(&coordinate_names),
+                    );
+                    cell_inclusion(
+                        &data_vec,
+                        &feature_axis,
+                        &plane,
+                        &section_ids,
+                        spatial_edges,
+                        args.inclusion_blocks,
+                    )?
+                }
+                Some(fine) => {
+                    anyhow::ensure!(
+                        fine.cell_labels == pb_frame.cell_to_finest_pb,
+                        "feature inclusion: the basis's finest level is not the PB frame's"
+                    );
+                    let units = PbUnits {
+                        counts: &fine.counts,
+                        cell_to_pb: &pb_frame.cell_to_finest_pb,
+                        parents: &pb_frame.pb_parent_maps,
+                    };
+                    pb_inclusion(
+                        &feature_axis,
+                        &units,
+                        &section_ids,
+                        spatial_edges,
+                        args.inclusion_blocks,
+                    )
+                }
+            };
+            write_feature_inclusion(&c.out, &feature_names, &inc)?;
+            Some(inc)
+        }
+    };
 
     let n_chain_levels = chain_levels.len();
 
@@ -585,6 +611,10 @@ pub fn fit_cell_activity_graph_embedding(
     // List of features with at least one cached (feature, batch) entry — used
     // to skip empty features in every epoch's permutation. Computed now so
     // we can free `activities` afterwards.
+    // Features with π = 0 under --feature-inclusion stay on this list: they
+    // are never drawn, but taking them off changed results on the simulations
+    // (5 seeds, one donor's new-state domain: ARI 0.86 → 0.74) for a reason
+    // not yet understood, so the list is the same with or without inclusion.
     let trainable_features: Vec<usize> = (0..n_features)
         .filter(|&g| cache.entries[g].iter().any(|e| e.is_some()))
         .collect();
@@ -598,7 +628,18 @@ pub fn fit_cell_activity_graph_embedding(
     // total. See `FeatureGatedChainSampler::batch_size` for why the budget is not
     // split per-feature.
     let positives_per_feature_exp_batch = match args.positives_per_epoch {
-        Some(total) => (total / (trainable_features.len() * n_exp_batches).max(1)).max(1),
+        // per feature actually visited: all of them, or Σπ under inclusion
+        Some(total) => {
+            let visits = match &inclusion {
+                Some(inc) => trainable_features
+                    .iter()
+                    .map(|&g| inc.pi[g])
+                    .sum::<f32>()
+                    .round() as usize,
+                None => trainable_features.len(),
+            };
+            (total / (visits.max(1) * n_exp_batches).max(1)).max(1)
+        }
         None => args.per_feature_batch,
     };
     info!(

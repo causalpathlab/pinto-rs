@@ -48,6 +48,7 @@ use super::thresholds::over_thresholds;
 pub use super::thresholds::PairFit;
 use super::tissue::Tissue;
 use crate::lr_activity::args::RegionJackknife;
+pub use crate::util::common::jackknife_se;
 use crate::util::common::*;
 
 /// A scope's headline p below which its region rows are jackknifed: above
@@ -195,17 +196,6 @@ pub fn jackknife(
         versus_rest: jackknife_se(&versus_rest) / full.versus_rest.se,
         replicates: tiles.len(),
     })
-}
-
-/// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`; NaN
-/// with a non-finite replicate or fewer than two.
-pub fn jackknife_se(v: &[f64]) -> f64 {
-    let g = v.len() as f64;
-    if v.len() < 2 || v.iter().any(|x| !x.is_finite()) {
-        return f64::NAN;
-    }
-    let mean = v.iter().sum::<f64>() / g;
-    ((g - 1.0) / g * v.iter().map(|x| (x - mean).powi(2)).sum::<f64>()).sqrt()
 }
 
 /// The rows of each tile of the sections `inside` lies in, ascending, one

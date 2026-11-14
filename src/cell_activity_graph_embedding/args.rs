@@ -7,9 +7,6 @@ use data_beans::aux::feature_names::FeatureNameKind;
 
 use crate::util::device::ComputeDevice;
 
-/// CLI mirror of [`graph_embedding_util::loss::NceObjective`] (that crate keeps
-/// its model enums clap-free, so every consumer carries its own wrapper — see
-/// `senna/src/bge/mod.rs` and `faba/src/gem/common.rs`).
 /// Which features each epoch trains (`--feature-inclusion`).
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 #[clap(rename_all = "lowercase")]
@@ -21,6 +18,9 @@ pub enum FeatureInclusionMode {
     Moran,
 }
 
+/// CLI mirror of [`graph_embedding_util::loss::NceObjective`] (that crate keeps
+/// its model enums clap-free, so every consumer carries its own wrapper — see
+/// `senna/src/bge/mod.rs` and `faba/src/gem/common.rs`).
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 #[clap(rename_all = "lowercase")]
 pub enum NceObjectiveArg {
@@ -356,7 +356,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      model on the t statistics gives π_g = 1 − local fdr, with\n\
                      no threshold to choose. Features are weighted, not cut:\n\
                      the expected objective is Σ π_g L_g, and the likely-noise\n\
-                     features mostly cost nothing. Writes\n\
+                     features mostly cost nothing. An alternative to\n\
+                     --feature-modules, not a companion: a run takes one. Writes\n\
                      {out}.feature_inclusion.parquet."
     )]
     pub feature_inclusion: FeatureInclusionMode,

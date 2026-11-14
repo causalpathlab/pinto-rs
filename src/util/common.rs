@@ -61,3 +61,14 @@ pub fn default_threads(rayon_env: Option<&str>, cores: usize) -> Option<usize> {
         _ => Some(cores.clamp(1, MAX_DEFAULT_THREADS)),
     }
 }
+
+/// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`; NaN
+/// with a non-finite replicate or fewer than two.
+pub fn jackknife_se(v: &[f64]) -> f64 {
+    let g = v.len() as f64;
+    if v.len() < 2 || v.iter().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
+    let mean = v.iter().sum::<f64>() / g;
+    ((g - 1.0) / g * v.iter().map(|x| (x - mean).powi(2)).sum::<f64>()).sqrt()
+}
