@@ -1,6 +1,6 @@
-use crate::feature_network::graph::test_graph_from_edges;
 use crate::link_community::profiles::*;
 use crate::util::common::*;
+use legume_numeric::matrix::pair_graph::test_graph_from_edges;
 
 #[test]
 fn test_transfer_labels() {

@@ -1,7 +1,7 @@
 use crate::test_support::make_test_graph;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
-use crate::util::knn_graph::KnnGraph;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 
 #[test]
 fn test_graph_coarsen_small() {

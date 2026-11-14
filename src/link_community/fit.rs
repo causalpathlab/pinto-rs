@@ -22,13 +22,12 @@
 //!   9. Final outputs (propensity, feature_community, link_community, scores,
 //!      cosine dictionary merge)
 
-use crate::feature_network::graph::*;
-use crate::feature_network::modules::{kcore_trim, leiden_feature_modules};
 use crate::link_community::cascade::{run_cascade, CascadeConfig, ModulePairContext, ProfileMode};
 use crate::link_community::dict_merge::{
     community_group_shares, cosine_cut, cosine_merge, groups_with_own_mean, occupied_communities,
     remove_group_means,
 };
+use crate::link_community::feature_modules::{kcore_trim, leiden_feature_modules};
 use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler};
 use crate::link_community::incidence::{
     cell_incidence_scores, fit_log_incidence, pack_propensity_row_major,
@@ -47,6 +46,7 @@ use crate::util::srt_pipeline::{
 };
 use data_beans::qc::suggest_nnz_cutoff;
 use legume_numeric::matrix::common_io::mkdir_parent;
+use legume_numeric::matrix::pair_graph::FeaturePairGraph;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 

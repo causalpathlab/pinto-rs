@@ -21,11 +21,11 @@
 //! parent run it is to be set against.
 
 use crate::util::common::*;
-use crate::util::knn_graph::KnnGraph;
 use crate::util::metadata::run_manifest;
 use clap::{Args, ValueEnum};
 use legume_numeric::matrix::common_io::read_name_list;
 use legume_numeric::matrix::knn_graph::symmetric_adjacency;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;

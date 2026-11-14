@@ -9,7 +9,6 @@ pub mod edge_clustering;
 pub mod feature_axis;
 pub mod graph_coarsen;
 pub mod input;
-pub mod knn_graph;
 pub mod lupin_rounds;
 pub mod metadata;
 pub mod parquet_io;

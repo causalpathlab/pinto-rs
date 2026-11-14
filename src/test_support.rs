@@ -1,4 +1,4 @@
-use crate::util::knn_graph::KnnGraph;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
 /// Build a simple undirected `KnnGraph` from an edge list, with unit distances.

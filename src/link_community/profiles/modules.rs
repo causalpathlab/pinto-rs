@@ -1,8 +1,8 @@
 //! Feature-module expression and module-pair profiles.
 
-use crate::feature_network::graph::FeaturePairGraph;
 use crate::link_community::model::LinkProfileStore;
 use crate::util::common::*;
+use legume_numeric::matrix::pair_graph::FeaturePairGraph;
 use legume_numeric::matrix::utils::generate_minibatch_intervals;
 use rayon::prelude::*;
 

@@ -1,7 +1,7 @@
 use crate::util::ablation::*;
 use crate::util::common::*;
-use crate::util::knn_graph::KnnGraph;
 use legume_numeric::matrix::knn_graph::symmetric_adjacency;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 
 fn names(v: &[&str]) -> Vec<Box<str>> {
     v.iter().map(|&s| s.into()).collect()

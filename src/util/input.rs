@@ -1,9 +1,9 @@
 use crate::util::cell_pairs::connected_components;
 use crate::util::common::*;
-use crate::util::knn_graph::KnnGraph;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::convert::try_open_or_convert;
 use data_beans::sparse_io_vector::data_name_of;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
 pub use args::{ResolvedKnn, SrtInputArgs};

@@ -1,7 +1,6 @@
 mod annotate;
 mod cell_activity_graph_embedding;
 mod compare;
-mod feature_network;
 mod holdout;
 mod impute;
 mod link_community;

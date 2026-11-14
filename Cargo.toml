@@ -44,7 +44,7 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.12", default-features = false, features = ["aux", "alg", "ndarray", "tensor"] }
+data-beans = { version = "0.12", default-features = false, features = ["aux", "alg", "tensor"] }
 legume-numeric = { version = "0.10", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.12", package = "legume-graph-embedding" }
 parquet = "59"
@@ -57,13 +57,10 @@ dashmap = { version = "6.1.0", features = ["rayon"] }
 anyhow = "1.0"
 clap = { version = "4.5.20", features = ["derive"] }
 rayon = "1.10.0"
-tempfile = "3.2"
 rand = "0.10.1"
-ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
 rand_distr = "0.6"
 nalgebra = "0.34"
 nalgebra-sparse = "0.11"
-wide = "0.7"
 
 special = "0.13"
 indicatif = { version = "^0.18", features = ["rayon"] }
@@ -91,7 +88,7 @@ pdf-writer = { version = "0.15", optional = true }
 # characters, the structure plot and heatmap and their PDF figures, the
 # save field and the gallery of saved figures. The same floor as in
 # [dev-dependencies].
-legume-tui = { version = "0.3", optional = true, features = ["style", "save", "gallery", "map-kitty", "chart", "export"] }
+legume-tui = { version = "0.3", optional = true, features = ["save", "gallery", "map-kitty", "chart", "export"] }
 
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads.
@@ -104,3 +101,4 @@ libc = "0.2"
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
 legume-tui = { version = "0.3", default-features = false, features = ["testing"] }
+tempfile = "3.2"
