@@ -67,7 +67,7 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
         bare,
         [
             "residual",
-            "--run",
+            "--from",
             &shown_path(Path::new("r")),
             "-o",
             "/p/res"
@@ -91,18 +91,14 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     let argv = residual_argv(&full, "o").unwrap();
     let want: Vec<String> = [
         "residual",
-        "--run",
+        "--from",
         &shown_path(Path::new("r")),
         "--data-files",
         &files,
-        "--excess",
-        "floor",
-        "--adapt",
-        "none",
-        "--adapt-cells",
-        "20",
-        "--feature-names",
-        "gene",
+        "--excess=floor",
+        "--adapt=none",
+        "--adapt-cells=20",
+        "--feature-names=gene",
         "-o",
         "o",
     ]
@@ -116,9 +112,41 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
 
     let comma = args(json!({"run": "r", "data_files": ["a,b.zarr"]}));
     assert!(residual_argv(&comma, "o").is_err());
-    // a value the command refuses is refused as it parses it
-    let bad = args(json!({"run": "r", "adapt_cells": -1.0}));
-    assert!(residual_plan(&cli(), &bad, "o").is_err());
+}
+
+/// A value the command refuses is refused by the command's own parser,
+/// with its own reason: a negative number is one token, not read as a
+/// flag.
+#[test]
+fn a_value_the_command_refuses_is_refused_with_its_reason() {
+    for x in [-1.0, -0.5] {
+        let bad = args(json!({"run": "r", "adapt_cells": x}));
+        let argv = residual_argv(&bad, "o").unwrap();
+        let err = parsed::<ResidualArgs>(&cli(), &argv)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be finite and not negative"), "{err}");
+        assert!(err.contains("adapt-cells"), "{err}");
+    }
+    let good = args(json!({"run": "r", "adapt_cells": 0.5}));
+    let argv = residual_argv(&good, "o").unwrap();
+    let parsed: ResidualArgs = parsed(&cli(), &argv).unwrap();
+    assert_eq!(parsed.adapt_cells, 0.5);
+}
+
+/// The run is named by `--from`, the command's own flag; the schema says
+/// `--run` works too.
+#[test]
+fn the_run_is_named_by_the_commands_own_flag() {
+    let tools = specs();
+    let spec = tools.iter().find(|t| t.name == "run_residual").unwrap();
+    let run = spec.input_schema["properties"]["run"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(run.ends_with("(--from; --run also works)"), "{run}");
+    let argv = residual_argv(&args(json!({"run": "r"})), "o").unwrap();
+    assert_eq!(argv[1], "--from");
 }
 
 /// Only an lc, cage or dsvd run is taken, refused while the call is set up.

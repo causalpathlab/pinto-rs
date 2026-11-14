@@ -1,8 +1,8 @@
 //! `run_residual` for `pinto mcp`: `pinto residual` set up as the command
 //! line takes it, its run checked as the command checks it before anything
-//! runs (an lc, cage or dsvd run, its data files found, nothing written
-//! over), and run as a child pinto in the project's records, a background
-//! job unless asked otherwise. The reply lists the residual's files for
+//! runs (an lc, cage or dsvd run on raw counts, its data files found, `-o`
+//! a folder, nothing written over), and run as a child pinto in the
+//! project's records, a background job unless asked otherwise. The reply lists the residual's files for
 //! `run_fit`, the second stage of the two-stage fit.
 
 use super::mcp::{as_run, in_background, launch, out_or_free, parsed, rooted};
@@ -40,10 +40,12 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
     if let Some(f) = a.data_files.iter().find(|f| f.contains(',')) {
         anyhow::bail!("{f:?} has a comma: give each data file as its own entry");
     }
-    let mut argv: Vec<String> = vec!["residual".into(), "--run".into(), as_run(&a.run)];
+    let mut argv: Vec<String> = vec!["residual".into(), "--from".into(), as_run(&a.run)];
     if !a.data_files.is_empty() {
         argv.extend(["--data-files".into(), rooted(&a.data_files).join(",")]);
     }
+    // each `--flag=value` one token, so a negative number reaches the
+    // command's own check rather than reading as a flag
     for (flag, value) in [
         ("--excess", a.excess.clone()),
         ("--adapt", a.adapt.clone()),
@@ -51,7 +53,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
         ("--feature-names", a.feature_names.clone()),
     ] {
         if let Some(v) = value {
-            argv.extend([flag.into(), v]);
+            argv.push(format!("{flag}={v}"));
         }
     }
     argv.extend(["-o".into(), out.into()]);
@@ -142,7 +144,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         json!({
             "type": "object",
             "properties": {
-                "run": {"type": "string", "description": "The stage-1 run: an lc, cage or dsvd run's prefix or .pinto.json (--run)"},
+                "run": {"type": "string", "description": "The stage-1 run: an lc, cage or dsvd run's prefix or .pinto.json (--from; --run also works)"},
                 "out": {"type": "string", "description": "Output folder (-o); left out, a free residual name in today's results folder"},
                 "data_files": {"type": "array", "items": {"type": "string"}, "description": "The run's own data files, all of them in its order, when they have moved from where its manifest records them (--data-files)"},
                 "excess": {"type": "string", "enum": choices::<Excess>(), "description": "How y - mu becomes a count (--excess) [default: round]"},

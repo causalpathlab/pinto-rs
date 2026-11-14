@@ -152,6 +152,11 @@ fn excess_marker(path: &Path) -> Option<(PathBuf, serde_json::Value)> {
     (block.counts == "excess" && !raw).then_some((marker, value))
 }
 
+/// Whether data file `path` holds excess counts, by the marker beside it.
+pub(crate) fn is_excess(path: &Path) -> bool {
+    excess_marker(path).is_some()
+}
+
 /// `run` as a residual fit: its manifest's `residual` block, else the
 /// marker beside its first data file; `None` for a run on raw counts.
 pub fn residual_of(run: &Run) -> anyhow::Result<Option<ResidualInput>> {
