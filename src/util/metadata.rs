@@ -8,7 +8,8 @@
 
 use crate::util::parquet_io::cells_table_path;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod lra;
 pub use lra::{LraFiles, LraOptions, LraSubset};
@@ -180,8 +181,8 @@ pub struct PintoMetadata {
 ///
 /// Every field is `#[serde(default)]`: this block gains fields over time, and
 /// a manifest written by an older build must stay readable rather than
-/// failing the WHOLE file — `PintoMetadata::backfill_output` swallows a read
-/// error at debug level, so a hard failure here is silent.
+/// failing the WHOLE file: `PintoMetadata::backfill_output` leaves a manifest
+/// it cannot read as it was, so a hard failure here loses every later record.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
 pub struct GraphParams {
@@ -454,20 +455,17 @@ pub struct LevelInfo {
 }
 
 impl PintoMetadata {
-    /// Read a run's manifest, change it, write it back; a missing or
-    /// unreadable manifest is left alone (at debug level), a failed write
-    /// warned about.
-    pub fn backfill(path: &std::path::Path, set: impl FnOnce(&mut PintoMetadata)) {
-        match Self::read(path) {
-            Ok(mut meta) => {
-                set(&mut meta);
-                if let Err(e) = meta.write(path) {
-                    log::warn!("could not update {}: {e}", path.display());
-                }
-            }
-            Err(e) => {
-                log::debug!("no upstream manifest at {} to update: {e}", path.display());
-            }
+    /// Read a run's manifest, change it, write it back, holding the
+    /// manifest's lock throughout ([`PintoMetadata::update`]). A missing
+    /// manifest is left alone (at debug level); one that cannot be read or
+    /// written is warned about and left as it was.
+    pub fn backfill(path: &Path, set: impl FnOnce(&mut PintoMetadata)) {
+        if !path.exists() {
+            log::debug!("no upstream manifest at {} to update", path.display());
+            return;
+        }
+        if let Err(e) = Self::update(path, set) {
+            log::warn!("could not update {}: {e:#}", path.display());
         }
     }
 
@@ -476,14 +474,42 @@ impl PintoMetadata {
     /// Both `lr-activity` modes back-fill the upstream manifest this way;
     /// keeping it in one place stops the two call sites from drifting on
     /// error handling (one used to swallow write failures silently).
-    pub fn backfill_output(path: &std::path::Path, set: impl FnOnce(&mut OutputFiles)) {
+    pub fn backfill_output(path: &Path, set: impl FnOnce(&mut OutputFiles)) {
         Self::backfill(path, |m| set(&mut m.outputs));
     }
 
+    /// Read the manifest at `path`, change it and write it back as one step:
+    /// the manifest's lock is held from the read to the write, so runs that
+    /// update one manifest at once (lra and its power check on one fit, a
+    /// sweep's cells) each see the others' changes and lose none.
+    pub fn update(path: &Path, set: impl FnOnce(&mut PintoMetadata)) -> anyhow::Result<()> {
+        locked(path, |path| {
+            let mut meta = Self::read(path)?;
+            set(&mut meta);
+            replace(path, &meta.json()?)
+        })
+    }
+
+    /// Write the manifest at `path`, under its lock and whole (a reader
+    /// sees the old manifest or the new one, never part of one).
     pub fn write(&self, path: &Path) -> anyhow::Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
-        Ok(())
+        let json = self.json()?;
+        locked(path, |path| replace(path, &json))
+    }
+
+    /// [`PintoMetadata::write`] when no manifest is at `path`; one that is
+    /// there, even one written since the caller looked, is kept.
+    pub fn write_if_missing(&self, path: &Path) -> anyhow::Result<()> {
+        locked(path, |path| {
+            if !path.exists() {
+                replace(path, &self.json()?)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
     }
 
     pub fn read(path: &Path) -> anyhow::Result<Self> {
@@ -582,6 +608,134 @@ impl PintoMetadata {
             ..Default::default()
         })
     }
+}
+
+/// `.{name}` for the file `path` names: hidden, so a folder listing (the
+/// viewer's run browser among them) passes by the lock and temporary files
+/// named from it.
+fn hidden_name(path: &Path) -> String {
+    format!(
+        ".{}",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    )
+}
+
+/// Replace the manifest at `path` with `json`, whole: write a temporary
+/// file beside it, flush it to disk and rename it over `path`, so a reader
+/// sees the old manifest or the new one. A manifest [`in_place`] says to
+/// keep is written in place instead, still under the lock; so is one in a
+/// folder that takes no new file. Call it under the lock ([`locked`]).
+fn replace(path: &Path, json: &str) -> anyhow::Result<()> {
+    use std::io::{ErrorKind, Write};
+    let fail = |e: std::io::Error| anyhow::anyhow!("writing {}: {e}", path.display());
+    let write_in_place = || std::fs::write(path, json).map_err(fail);
+    let old = match std::fs::metadata(path) {
+        Ok(m) => Some(m),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return Err(fail(e)),
+    };
+    if old.as_ref().is_some_and(in_place) {
+        return write_in_place();
+    }
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let mut tmp = match tempfile::Builder::new()
+        .prefix(&format!("{}.", hidden_name(path)))
+        .suffix(".tmp")
+        .tempfile_in(dir)
+    {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => return write_in_place(),
+        Err(e) => return Err(fail(e)),
+    };
+    // A manifest rewritten keeps its permissions, as one written in place
+    // did.
+    if let Some(m) = &old {
+        tmp.as_file()
+            .set_permissions(m.permissions())
+            .map_err(fail)?;
+    }
+    tmp.write_all(json.as_bytes()).map_err(fail)?;
+    tmp.as_file().sync_all().map_err(fail)?;
+    tmp.persist(path).map_err(|e| fail(e.error))?;
+    Ok(())
+}
+
+/// The file `path` names: through links (to a file not made yet among
+/// them), the name at the end of the chain, so a rename over it keeps
+/// every link.
+fn through_link(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    let mut at = path.to_path_buf();
+    // As many hops as the system follows before it gives up on a loop.
+    for _ in 0..40 {
+        match std::fs::read_link(&at) {
+            Ok(target) => at = at.parent().unwrap_or(Path::new("")).join(target),
+            Err(_) => break,
+        }
+    }
+    at
+}
+
+/// Whether the manifest `m` describes is written in place rather than
+/// replaced by a rename: a read-only one (refused, as a write in place
+/// was), one another user owns (a rename would make it this user's and
+/// shut its owner out), or one with other hard links (a rename would leave
+/// them on the old manifest).
+fn in_place(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if m.uid() != unsafe { libc::geteuid() } || m.nlink() > 1 {
+            return true;
+        }
+    }
+    m.permissions().readonly()
+}
+
+/// Run `then` on the manifest at `path` ([`through_link`]) holding the
+/// manifest's lock: an exclusive lock on `.{name}.lock` beside it, released
+/// when `then` returns. The lock file is kept, since removing it would let
+/// a run that opened it before the removal and one that made it anew both
+/// hold "the" lock; one made by another user is locked read-only. A lock
+/// that cannot be had (a file system without locks) is warned about once,
+/// and `then` runs without it.
+fn locked<T>(path: &Path, then: impl FnOnce(&Path) -> anyhow::Result<T>) -> anyhow::Result<T> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let path = through_link(path);
+    let lock_path = path.with_file_name(format!("{}.lock", hidden_name(&path)));
+    let open = |write: bool| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(write)
+            .create(write)
+            .truncate(false)
+            .open(&lock_path)
+    };
+    // No lock file can be made where the folder is missing or takes no new
+    // file: the read or write that follows reports that itself.
+    let _lock = open(true)
+        .or_else(|_| open(false))
+        .ok()
+        .and_then(|f| match f.lock() {
+            Ok(()) => Some(f),
+            Err(e) => {
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    log::warn!(
+                        "{}: no lock ({e}); manifests are written without one, so runs \
+                     updating one manifest at once may lose updates",
+                        lock_path.display()
+                    );
+                }
+                None
+            }
+        });
+    then(&path)
 }
 
 pub(crate) fn now_secs() -> String {
