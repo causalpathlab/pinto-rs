@@ -25,9 +25,8 @@
 //!    Deviation: the R multi-sample vignette (`vignettes/multi-sample.Rmd`)
 //!    takes the union of Seurat's `vst` HVGs per sample; this port pools the
 //!    sections for one "seurat"-flavour list (pinto's [`hvg`]), as Python does.
-//! 3. Neighbours ([`banksy_weights`]): per section (the R multi-sample
-//!    usage, `R/reduction.R:runBanksyPCA` with `group`: neighbours are
-//!    found within each sample), the `k_geom` (15) nearest cells by
+//! 3. Neighbours ([`banksy_weights`]): per section, the `k_geom` (15)
+//!    nearest cells by
 //!    Euclidean distance, the cell itself excluded (`dbscan::kNN`), weighted
 //!    by the median-scaled Gaussian `exp(-d² / median(d)²)` over the cell's
 //!    own neighbour distances, then summed to one
@@ -39,7 +38,14 @@
 //!    the R examples' `computeBanksy(..., M = 1, k_geom = c(15, 30))`; R's
 //!    bare default would reuse 15 for every harmonic. The angle of each
 //!    neighbour is `atan2(dy, dx)` over the first two coordinates
-//!    (`R/computation.R:getPhi`).
+//!    (`R/computation.R:getPhi`). Within each section: on the `M ≥ 1` path
+//!    `R/computation.R:computeBanksy` finds neighbours over all cells'
+//!    coordinates with no grouping, and the multi-sample vignettes keep
+//!    samples apart by staggering their coordinates first
+//!    (`vignettes/batch-correction.Rmd`, "Stagger spatial coordinates");
+//!    per-section kNN is equivalent to that, and is what
+//!    `R/reduction.R:runBanksyPCA` does with `group` on its lazy path
+//!    (which itself accepts only `M = 0`).
 //! 4. Neighbourhood matrices ([`neighbour_features`],
 //!    `R/computation.R:computeHarmonics`): `H0 = |Σ_j w_ij x_j|`, the
 //!    weighted neighbour mean, and for `m ≥ 1` the AGF
@@ -62,14 +68,17 @@
 //!    domain scripts; 0.2 is cell typing (R's `runBanksyPCA` default), and
 //!    the README advises 0.2 for domains on Visium-scale (55-100 um) spots.
 //! 7. PCA (`R/reduction.R:runBanksyPCA`, non-lazy path): the concatenated
-//!    `[own, H0, H1, ...]`, centred and not rescaled, `npcs = 20` (R and
+//!    `[own, H0, H1, ...]`, centred and not rescaled, `npcs = 20` (`--n-pcs`; R and
 //!    Python default), by randomized SVD (R uses `irlba`). R drops
 //!    zero-SD features first; a zero-SD feature is zero once centred and
 //!    does not move the PCs, so it is kept here.
 //! 8. Clustering ([`cluster_pcs`], `R/cluster.R:clusterBanksy` with
-//!    `algo = "leiden"` and `getGraph`): the 50 (`k_neighbors`) nearest
+//!    `algo = "leiden"` and `getGraph`): the 50 (`k_neighbors`, `--knn`) nearest
 //!    cells in PC space; each kNN edge `i → j` carries the shared count
-//!    `|N(i) ∩ N(j)|` (`dbscan::sNN`) and weight `1 / (1 + d_ij)`; a cell keeps
+//!    `|N(i) ∩ N(j)|`, plus 1 when `i ∈ N(j)` (`dbscan::sNN`,
+//!    `src/JP.cpp:SNN_sim_int`, dbscan commit
+//!    `61f64a55d5c0563d508ca1caca1f753e45dfe8bb`) and weight
+//!    `1 / (1 + d_ij)`; a cell keeps
 //!    its 3 edges with most shared neighbours and every edge with 5 or more;
 //!    the kept edges become undirected with summed weights
 //!    (`igraph::as_undirected`); Leiden with the modularity
@@ -104,9 +113,9 @@ use rayon::prelude::*;
 pub const LAMBDA: f32 = 0.8;
 pub const K_GEOM: usize = 15;
 pub const MAX_M: usize = 1;
-pub const PCA_DIMS: usize = 20;
+pub const N_PCS: usize = 20;
 pub const N_HVG: usize = 2000;
-pub const K_NEIGHBORS: usize = 50;
+pub const KNN: usize = 50;
 pub const RESOLUTION: f64 = 1.0;
 /// `getGraph`: an edge is kept when among a cell's top 3 by shared
 /// neighbours, or sharing at least 5.
@@ -133,9 +142,10 @@ pub struct Args {
     #[arg(long = "max-m", default_value_t = MAX_M)]
     pub max_m: usize,
 
-    /// Principal components of the BANKSY matrix (the embedding written)
-    #[arg(long = "pca-dims", default_value_t = PCA_DIMS)]
-    pub pca_dims: usize,
+    /// Principal components of the BANKSY matrix (the embedding written;
+    /// R's npcs)
+    #[arg(long, default_value_t = N_PCS)]
+    pub n_pcs: usize,
 
     /// Highly variable genes ("seurat" flavour on log1p; fewer if fewer
     /// genes vary)
@@ -143,8 +153,9 @@ pub struct Args {
     pub n_hvg: usize,
 
     /// Nearest neighbours in PC space for the shared-nearest-neighbour graph
-    #[arg(long = "k-neighbors", default_value_t = K_NEIGHBORS)]
-    pub k_neighbors: usize,
+    /// (R's k_neighbors)
+    #[arg(long, default_value_t = KNN)]
+    pub knn: usize,
 
     /// Leiden modularity resolution, used when --n-clusters is not given
     #[arg(long, default_value_t = RESOLUTION)]
@@ -163,9 +174,9 @@ impl Args {
             "--lambda must be in [0, 1]"
         );
         anyhow::ensure!(self.k_geom >= 1, "--k-geom must be at least 1");
-        anyhow::ensure!(self.pca_dims >= 1, "--pca-dims must be at least 1");
+        anyhow::ensure!(self.n_pcs >= 1, "--n-pcs must be at least 1");
         anyhow::ensure!(self.n_hvg >= 2, "--n-hvg must be at least 2");
-        anyhow::ensure!(self.k_neighbors >= 1, "--k-neighbors must be at least 1");
+        anyhow::ensure!(self.knn >= 1, "--knn must be at least 1");
         anyhow::ensure!(self.resolution > 0.0, "--resolution must be positive");
         anyhow::ensure!(
             self.n_clusters != Some(0),
@@ -383,16 +394,14 @@ pub fn scale_by_section(
         });
 }
 
-/// R's `getGraph` on the rows of `pcs`: the kNN graph (`k` neighbours,
-/// self excluded) with each edge weighted `1 / (1 + d)`, filtered by shared
-/// neighbours (a cell keeps its top [`SNN_MAX_RANK`] edges by shared count,
-/// ties in distance order, and every edge sharing [`SNN_MIN_SHARED`] or
-/// more), as undirected edges `(i < j)` with the weights of both
-/// directions summed.
-pub fn snn_graph(pcs: &Mat, k: usize) -> Vec<(usize, usize, f32)> {
-    let (idx, dist) = knn_rows(pcs, k);
-    let n = idx.len();
-    let mut sorted: Vec<Vec<usize>> = idx.clone();
+/// dbscan's `sNN` count for each kNN edge `i → idx[i][e]`
+/// (`src/JP.cpp:SNN_sim_int`): `|N(i) ∩ N(j)|`, each point outside its own
+/// list, plus 1 when `i ∈ N(j)` (a mutual edge); then `getGraph`'s filter:
+/// a cell keeps its top [`SNN_MAX_RANK`] edges by that count (ties in
+/// distance order, as `setorder` is stable) and every edge counting
+/// [`SNN_MIN_SHARED`] or more.
+pub fn snn_kept(idx: &[Vec<usize>]) -> Vec<Vec<bool>> {
+    let mut sorted: Vec<Vec<usize>> = idx.to_vec();
     sorted.par_iter_mut().for_each(|v| v.sort_unstable());
     let shared = |a: &[usize], b: &[usize]| -> usize {
         let (mut i, mut j, mut c) = (0, 0, 0);
@@ -409,21 +418,39 @@ pub fn snn_graph(pcs: &Mat, k: usize) -> Vec<(usize, usize, f32)> {
         }
         c
     };
-    let mut edges: Vec<(usize, usize, f32)> = (0..n)
+    (0..idx.len())
         .into_par_iter()
-        .flat_map_iter(|i| {
+        .map(|i| {
             let s: Vec<usize> = idx[i]
                 .iter()
-                .map(|&j| shared(&sorted[i], &sorted[j]))
+                .map(|&j| {
+                    let mutual = sorted[j].binary_search(&i).is_ok();
+                    shared(&sorted[i], &sorted[j]) + usize::from(mutual)
+                })
                 .collect();
-            let mut order: Vec<usize> = (0..idx[i].len()).collect();
+            let mut order: Vec<usize> = (0..s.len()).collect();
             // stable: equal counts stay in distance order
             order.sort_by(|&a, &b| s[b].cmp(&s[a]));
-            let mut keep = vec![false; order.len()];
+            let mut keep = vec![false; s.len()];
             for (rank, &e) in order.iter().enumerate() {
                 keep[e] = rank < SNN_MAX_RANK || s[e] >= SNN_MIN_SHARED;
             }
-            let (js, ds) = (&idx[i], &dist[i]);
+            keep
+        })
+        .collect()
+}
+
+/// R's `getGraph` on the rows of `pcs`: the kNN graph (`k` neighbours,
+/// self excluded) with each edge weighted `1 / (1 + d)`, filtered by
+/// [`snn_kept`], as undirected edges `(i < j)` with the weights of both
+/// directions summed (`igraph::as_undirected`).
+pub fn snn_graph(pcs: &Mat, k: usize) -> Vec<(usize, usize, f32)> {
+    let (idx, dist) = knn_rows(pcs, k);
+    let kept = snn_kept(&idx);
+    let mut edges: Vec<(usize, usize, f32)> = (0..idx.len())
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let (js, ds, keep) = (&idx[i], &dist[i], &kept[i]);
             (0..js.len())
                 .filter(move |&e| keep[e])
                 .map(move |e| {
@@ -502,7 +529,7 @@ pub fn banksy_pcs(data: &SpatialData, args: &Args) -> anyhow::Result<(Mat, Vec<u
     drop(x);
     let weights = lambda_weights(args.lambda, harmonics.len());
     scale_by_section(&mut joint, &data.section_cells(), genes.len(), &weights);
-    let dims = args.pca_dims.min(joint.nrows()).min(joint.ncols());
+    let dims = args.n_pcs.min(joint.nrows()).min(joint.ncols());
     let pcs = pca(joint, dims)?;
     info!("BANKSY matrix to {} PCs", pcs.ncols());
     Ok((pcs, genes))
@@ -514,7 +541,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     let (pcs, genes) = banksy_pcs(&data, args)?;
     let labels = cluster_pcs(
         &pcs,
-        args.k_neighbors,
+        args.knn,
         args.resolution,
         args.n_clusters,
         args.input.seed,
@@ -526,10 +553,10 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         "k_geom": args.k_geom,
         "max_m": args.max_m,
         "spatial_mode": "kNN_median",
-        "pca_dims": pcs.ncols(),
+        "n_pcs": pcs.ncols(),
         "n_hvg": args.n_hvg,
         "n_genes_used": genes.len(),
-        "k_neighbors": args.k_neighbors,
+        "knn": args.knn,
         "resolution": args.resolution,
         "n_clusters": args.n_clusters,
         "n_clusters_found": k,

@@ -128,11 +128,33 @@ fn snn_graph_is_undirected_and_summed() {
     let e = snn_graph(&pcs, 5);
     assert!(e.iter().all(|&(i, j, _)| i < j));
     assert!(e.windows(2).all(|p| (p[0].0, p[0].1) < (p[1].0, p[1].1)));
-    // within a group every pair shares 4 of 5 neighbours: top 3 kept per
-    // cell; no edge crosses the groups
+    // within a group every pair shares 4 of 5 neighbours and is mutual
+    // (count 5): all kept; no edge crosses the groups
     assert!(e.iter().all(|&(i, j, _)| (i < 6) == (j < 6)));
     // a mutual edge carries both directions' weights
     assert!(e.iter().any(|&(_, _, w)| w > 1.0));
+}
+
+#[test]
+fn snn_counts_a_mutual_edge_one_more() {
+    // cell 0's kNN (k = 6) in distance order: 1, 2, 3 share 5 of its
+    // neighbours and are mutual (count 6); 4 shares 4 and is mutual (5:
+    // kept by the >= 5 rule at rank 4); 5 shares 4 one way (4: dropped);
+    // 6 shares none
+    let mut idx = vec![
+        vec![1, 2, 3, 4, 5, 6],
+        vec![2, 3, 4, 5, 6, 0],
+        vec![1, 3, 4, 5, 6, 0],
+        vec![1, 2, 4, 5, 6, 0],
+        vec![1, 2, 3, 5, 0, 7],
+        vec![1, 2, 3, 4, 7, 8],
+        vec![7, 8, 9, 10, 11, 12],
+    ];
+    for i in 7..13 {
+        idx.push((7..13).filter(|&j| j != i).chain([0]).collect());
+    }
+    let kept = snn_kept(&idx);
+    assert_eq!(kept[0], vec![true, true, true, true, false, false]);
 }
 
 /// Two domains on a 12 × 12 grid per section, two sections: left half
@@ -187,16 +209,7 @@ fn test_args(n_clusters: Option<usize>) -> Args {
         #[command(flatten)]
         a: Args,
     }
-    let mut argv = vec![
-        "x",
-        "d.zarr",
-        "-c",
-        "d.parquet",
-        "-o",
-        "o",
-        "--k-neighbors",
-        "15",
-    ];
+    let mut argv = vec!["x", "d.zarr", "-c", "d.parquet", "-o", "o", "--knn", "15"];
     let k = n_clusters.map(|k| k.to_string());
     if let Some(k) = k.as_deref() {
         argv.extend(["--n-clusters", k]);
@@ -210,7 +223,7 @@ fn defaults_follow_the_reference() {
     assert_eq!(a.lambda, 0.8);
     assert_eq!(a.k_geom, 15);
     assert_eq!(a.max_m, 1);
-    assert_eq!(a.pca_dims, 20);
+    assert_eq!(a.n_pcs, 20);
     assert_eq!(a.resolution, 1.0);
     assert!(a.validate().is_ok());
 }
