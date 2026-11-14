@@ -874,7 +874,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
             "method": "lc",
             "data": sim["fit"]["data"],
             "coords": sim["fit"]["coords"],
-            "flags": sim["fit"]["flags"],
+            "flags": small_fit(
+                &sim["fit"]["flags"],
+                json!({"n-communities": 5, "num-gibbs": 10})
+            ),
             "out": "fits/lc1",
             "background": false,
         }),
@@ -946,7 +949,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
             "method": "dsvd",
             "data": job["fit"]["data"],
             "coords": job["fit"]["coords"],
-            "flags": job["fit"]["flags"],
+            "flags": small_fit(
+                &job["fit"]["flags"],
+                json!({"n-latent-topics": 5, "leiden-runs": 1, "leiden-knn": 10})
+            ),
             "out": "fits/dsvd2",
             "background": false,
         }),
@@ -990,4 +996,18 @@ fn an_agent_fits_the_residual_of_a_simulation() {
         !read.is_empty() && read.iter().all(|l| l.contains("/sim/sections/")),
         "the simulation's own sections, not the excess: {read:?}"
     );
+}
+
+/// The flags a reply gives `run_fit`, with a narrow projection and the
+/// method's own `extra` on top: a fit this test only plumbs through, kept
+/// quick, never one whose quality it reads.
+fn small_fit(flags: &Value, extra: Value) -> Value {
+    let mut flags = flags.clone();
+    let merged = flags.as_object_mut().unwrap();
+    merged.insert("proj-dim".into(), json!(16));
+    let Value::Object(extra) = extra else {
+        panic!("flags are an object: {extra}")
+    };
+    merged.extend(extra);
+    flags
 }
