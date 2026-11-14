@@ -32,6 +32,11 @@ pub struct SpatialInputArgs {
     )]
     pub coord_column_names: Vec<Box<str>>,
 
+    /// Batch label files, one per data file (as `pinto lc -b`): each
+    /// (file, batch) is a section of its own
+    #[arg(long, short = 'b', value_delimiter(','))]
+    pub batch_files: Option<Vec<Box<str>>>,
+
     /// Header row index in coordinate files (default: detected)
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
@@ -56,6 +61,10 @@ pub struct SpatialData {
     pub cells: Vec<Box<str>>,
     /// Spatial coordinates, cells × dimensions (no batch column).
     pub xy: Mat,
+    /// The coordinate columns' names.
+    pub coord_names: Vec<Box<str>>,
+    /// Each cell's batch label, as the reader gives it.
+    pub batches: Vec<Box<str>>,
     /// Each cell's section, 0..n_sections, in order of first appearance.
     pub section: Vec<usize>,
     pub n_sections: usize,
@@ -80,7 +89,7 @@ impl SpatialInputArgs {
             preload_data: self.preload_data,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
-            batch_files: None,
+            batch_files: self.batch_files.clone(),
             header_in_coord: self.coord_header_row,
             feature_kind: FeatureNameKind::Exact,
         })?;
@@ -103,6 +112,7 @@ impl SpatialInputArgs {
             vec![0; cells.len()]
         };
         let n_sections = section.iter().max().map_or(0, |&m| m + 1);
+        let coord_names = srt.coordinate_names[..d].to_vec();
         log::info!(
             "{} cells, {} genes, {} sections, {d}-D coordinates",
             cells.len(),
@@ -114,6 +124,8 @@ impl SpatialInputArgs {
             genes,
             cells,
             xy,
+            coord_names,
+            batches: srt.batches,
             section,
             n_sections,
         })
