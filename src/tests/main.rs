@@ -419,7 +419,11 @@ fn annotate_is_no_command() {
         let err = built_cli()
             .try_get_matches_from(["pinto", name])
             .expect_err(name);
-        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand, "{name}");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::InvalidSubcommand,
+            "{name}"
+        );
     }
 }
 

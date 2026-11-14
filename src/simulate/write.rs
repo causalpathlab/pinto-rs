@@ -237,7 +237,6 @@ pub fn write_truth_run(
                 propensity: format!("{recorded}.{tag}.propensity.parquet"),
                 link_community: None,
                 feature_community: None,
-                entropy_present: Some(true),
                 community_names: Some(names),
             })
         };

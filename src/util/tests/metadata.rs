@@ -90,7 +90,6 @@ fn metadata_roundtrip_lc() {
     assert_eq!(levels.len(), 4);
     assert_eq!(levels[0].tag, "L0");
     assert_eq!(levels[3].tag, "final");
-    assert_eq!(levels[3].entropy_present, Some(true));
     let merge = back.outputs.dict_merge.as_ref().expect("dict_merge");
     assert_eq!(merge.cut_cosine, Some(0.25));
     assert!(merge
@@ -175,7 +174,6 @@ fn metadata_roundtrip_cage() {
     assert_eq!(splice.n_delta_identified, 15000);
     assert_eq!(splice.delta_base, "spliced");
     assert!(back.outputs.batch_effects.is_some());
-    assert!(back.outputs.clusters.is_none());
     let levels = back.levels.expect("levels");
     assert_eq!(levels.len(), 1);
     assert_eq!(levels[0].tag, "final");
@@ -193,7 +191,6 @@ fn metadata_roundtrip_cage() {
         .as_deref()
         .unwrap()
         .ends_with(".feature_community.parquet"));
-    assert_eq!(levels[0].entropy_present, Some(true));
 }
 
 #[test]
@@ -517,4 +514,53 @@ fn lra_subset_identity_genes_are_stored_once() {
     f.record_options(options(&["A"], None));
     f.subsets.push(subset("/old", options(&[], Some("/p.tsv"))));
     assert!(genes(&f, 0).is_empty());
+}
+
+/// The manifest names no slot nothing reads: no `outputs.clusters` and no
+/// per-level `entropy_present` (readers find the entropy column in the
+/// propensity table). A manifest an older build wrote with them still reads.
+#[test]
+fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let data_files: Vec<Box<str>> = vec!["a.h5".into()];
+    let meta = create_lc_metadata(
+        &RunInputs {
+            prefix: &prefix,
+            data_files: &data_files,
+            coord_file: None,
+            coord_columns: &[],
+            n_cells: 10,
+            n_features: 20,
+            n_edges: 30,
+            k: 4,
+            graph: GraphParams::default(),
+            ablation: None,
+        },
+        None,
+        None,
+        &[0, 1],
+    );
+    let path = dir.path().join("run.pinto.json");
+    meta.write(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(written["levels"].as_array().is_some_and(|l| !l.is_empty()));
+    assert!(!text.contains("entropy_present"), "{text}");
+    assert!(written["outputs"].get("clusters").is_none(), "{text}");
+
+    let old = r#"{
+        "command": "lc",
+        "version": "0.6.9",
+        "timestamp": "0",
+        "prefix": "run",
+        "n_cells": 10,
+        "n_features": 10,
+        "outputs": {"clusters": "run.clusters.parquet"},
+        "levels": [{"tag": "final", "level_index": 0,
+                    "propensity": "run.propensity.parquet",
+                    "entropy_present": true}]
+    }"#;
+    let back: PintoMetadata = serde_json::from_str(old).expect("an old manifest reads");
+    assert_eq!(back.levels.expect("levels")[0].tag, "final");
 }

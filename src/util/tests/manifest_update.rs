@@ -16,7 +16,6 @@ fn level(tag: String) -> LevelInfo {
         propensity: String::new(),
         link_community: None,
         feature_community: None,
-        entropy_present: None,
         community_names: None,
     }
 }
