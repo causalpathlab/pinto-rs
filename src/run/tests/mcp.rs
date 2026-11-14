@@ -43,7 +43,7 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
 
 #[test]
 fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     for name in ["run_lra", "run_lra_simulate"] {
         let spec = tools
             .iter()
@@ -77,7 +77,7 @@ fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
 fn the_lra_tools_take_every_flag_the_command_line_shows() {
     use clap::CommandFactory;
     let cli = crate::Cli::command();
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     for (tool, command) in [("run_lra", "lra"), ("run_lra_simulate", "lra-simulate")] {
         let spec = tools.iter().find(|t| t.name == tool).unwrap();
         let props = spec.input_schema["properties"].as_object().unwrap();
@@ -270,7 +270,10 @@ fn run_methods_lists_the_baselines_as_it_lists_lc() {
 /// lc's is: an unknown flag is refused, and so is a run already there.
 #[test]
 fn run_fit_takes_a_baseline_as_it_takes_lc() {
-    let spec = specs().into_iter().find(|t| t.name == "run_fit").unwrap();
+    let spec = specs(&crate::built_cli())
+        .into_iter()
+        .find(|t| t.name == "run_fit")
+        .unwrap();
     assert_eq!(
         spec.input_schema["properties"]["method"]["enum"],
         json!(METHODS)
@@ -310,4 +313,72 @@ fn run_compare_refuses_a_negative_tau_with_the_command_s_reason() {
     assert!(failed, "{said}");
     assert!(said.contains("-0.5 is not in (0, 1]"), "{said}");
     assert!(!said.contains("unexpected argument"), "{said}");
+}
+
+/// The lra and residual tools describe each flag they pass as clap does:
+/// its help, then the flag, then clap's default. Every default a
+/// description states is clap's.
+#[test]
+fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
+    let cli = crate::built_cli();
+    let mut tools = specs(&cli);
+    tools.extend(super::super::residual::specs(&cli));
+    for (tool, command) in [
+        ("run_lra", "lra"),
+        ("run_lra_simulate", "lra-simulate"),
+        ("run_residual", "residual"),
+    ] {
+        let spec = tools.iter().find(|t| t.name == tool).unwrap();
+        let props = spec.input_schema["properties"].as_object().unwrap();
+        let sub = cli.find_subcommand(command).unwrap();
+        let mut described = 0;
+        for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
+            let id = arg.get_id().as_str();
+            // The run and where it is written are the tool's own to explain.
+            if matches!(id, "from" | "run" | "out") {
+                continue;
+            }
+            let Some(p) = props.get(id) else { continue };
+            let said = p["description"].as_str().unwrap();
+            let help = arg
+                .get_long_help()
+                .or_else(|| arg.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                said.starts_with(&help),
+                "{tool}.{id}: {said:?} is not {help:?}"
+            );
+            let default: Vec<String> = arg
+                .get_default_values()
+                .iter()
+                .map(|v| v.to_string_lossy().into_owned())
+                .collect();
+            for (at, _) in said.match_indices("[default: ") {
+                let stated = &said[at + "[default: ".len()..];
+                let stated = &stated[..stated.find(']').unwrap()];
+                assert!(
+                    stated == default.join(",") || help.contains(&format!("[default: {stated}]")),
+                    "{tool}.{id} states default {stated}, clap's is {default:?}"
+                );
+            }
+            if !default.is_empty() {
+                assert!(
+                    said.ends_with(&format!("[default: {}]", default.join(","))),
+                    "{tool}.{id}: {said:?} leaves out clap's default"
+                );
+            }
+            described += 1;
+        }
+        assert!(described > 3, "{tool}: {described} flags described");
+    }
+    let lra = tools.iter().find(|t| t.name == "run_lra").unwrap();
+    let seed = lra.input_schema["properties"]["seed"]["description"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        seed,
+        "Random seed for reproducibility (--seed) [default: 42]"
+    );
 }
