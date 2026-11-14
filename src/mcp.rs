@@ -34,7 +34,8 @@ Simulation with a planted truth: `run_simulate` writes donors' sections \
 (a background job); `view_open` its `<out>/truth/truth.pinto.json` shows the \
 planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
 `fit.coords` (the sections and their coordinates, in order) as its data and \
-coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, and \
+coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, \
+`run_sim_pairs` scores their per-cell vectors on pairs of spots, with no clustering, and \
 `run_sim_baseline` writes a standard pipeline's labels to score next to them.";
 
 const LRA: &str = "\

@@ -21,6 +21,7 @@ pub mod draw;
 pub mod expression;
 pub mod field;
 pub mod harmony;
+pub mod pairs;
 pub mod panel;
 pub mod params;
 pub mod rng;
@@ -34,5 +35,6 @@ pub mod write;
 mod tests;
 
 pub use baseline::{run_baseline, BaselineArgs};
+pub use pairs::{run_pairs, SimPairsArgs};
 pub use run::{run_simulate, SimulateArgs};
 pub use score::{run_score, SimScoreArgs};
