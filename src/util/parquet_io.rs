@@ -12,7 +12,6 @@ use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
-use parquet::record::{Row, RowAccessor};
 use std::fs::File;
 use std::path::Path;
 
@@ -21,31 +20,9 @@ mod community;
 pub(crate) use community::visit_link_community;
 pub use community::{read_feature_community, read_link_community, read_link_community_labels};
 
-/// Read a column as a label string, regardless of physical type.
-///
-/// `pinto svd --coord` writes whatever coordinate columns the user
-/// supplied as FLOAT, including a "batch" column that's actually a
-/// numeric batch index. The plot pipeline still wants a `Box<str>`
-/// label, so accept any numeric/string type and stringify.
-pub(crate) fn row_label(row: &Row, idx: usize) -> anyhow::Result<Box<str>> {
-    if let Ok(s) = row.get_string(idx) {
-        return Ok(s.clone().into_boxed_str());
-    }
-    if let Ok(v) = row.get_float(idx) {
-        return Ok(stringify_numeric(v as f64));
-    }
-    if let Ok(v) = row.get_double(idx) {
-        return Ok(stringify_numeric(v));
-    }
-    if let Ok(v) = row.get_long(idx) {
-        return Ok(v.to_string().into_boxed_str());
-    }
-    if let Ok(v) = row.get_int(idx) {
-        return Ok(v.to_string().into_boxed_str());
-    }
-    anyhow::bail!("column {idx} has no string/numeric value");
-}
-
+/// A number read as a label. Some writers store a label column as numbers
+/// (`pinto svd --coord` writes a numeric batch index as FLOAT), so an
+/// integral value reads without its fraction, `3` rather than `3.0`.
 fn stringify_numeric(v: f64) -> Box<str> {
     if v.is_finite() && v.fract() == 0.0 {
         format!("{}", v as i64).into_boxed_str()
@@ -54,32 +31,12 @@ fn stringify_numeric(v: f64) -> Box<str> {
     }
 }
 
-/// Read a column that holds a small integer code, whatever width the writer
-/// chose for it.
-///
-/// pinto writes these from more than one place and the parquet type has not
-/// always agreed: `community` is a float in one table, `edge_kind` an int in
-/// another. Rather than have each reader guess the order to try, they all come
-/// through here.
-pub(crate) fn row_int_like(row: &Row, idx: usize) -> anyhow::Result<i64> {
-    if let Ok(v) = row.get_int(idx) {
-        return Ok(v as i64);
-    }
-    if let Ok(v) = row.get_long(idx) {
-        return Ok(v);
-    }
-    if let Ok(v) = row.get_float(idx) {
-        return Ok(v as i64);
-    }
-    if let Ok(v) = row.get_double(idx) {
-        return Ok(v as i64);
-    }
-    anyhow::bail!("column {idx} is not an integer-like type")
-}
-
 /// Named columns of a parquet file, read column-wise through Arrow: each as
 /// the chunks (record batches) it came in, in the order of `names`.
-fn read_named_columns(path: &Path, names: &[&str]) -> anyhow::Result<Vec<Vec<ArrayRef>>> {
+pub(crate) fn read_named_columns(
+    path: &Path,
+    names: &[&str],
+) -> anyhow::Result<Vec<Vec<ArrayRef>>> {
     let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
     let schema = builder.parquet_schema();
     let leaves = names
@@ -116,8 +73,8 @@ fn read_named_columns(path: &Path, names: &[&str]) -> anyhow::Result<Vec<Vec<Arr
 }
 
 /// A column's values as labels, borrowed from the Arrow arrays when they
-/// are strings (no string per value), written as [`row_label`] writes them
-/// when they are numbers.
+/// are strings (no string per value), written as [`stringify_numeric`]
+/// writes them when they are numbers.
 enum LabelColumn<'a> {
     Borrowed(Vec<&'a str>),
     Owned(Vec<Box<str>>),
@@ -157,7 +114,7 @@ fn label_column(chunks: &[ArrayRef]) -> anyhow::Result<LabelColumn<'_>> {
 }
 
 /// A column as owned labels.
-fn labels(chunks: &[ArrayRef]) -> anyhow::Result<Vec<Box<str>>> {
+pub(crate) fn labels(chunks: &[ArrayRef]) -> anyhow::Result<Vec<Box<str>>> {
     let col = label_column(chunks)?;
     Ok((0..col.len()).map(|i| Box::from(col.get(i))).collect())
 }
@@ -186,12 +143,12 @@ fn floats(chunks: &[ArrayRef]) -> anyhow::Result<Vec<f32>> {
     numeric(chunks, |v| v as f32)
 }
 
-fn ints(chunks: &[ArrayRef]) -> anyhow::Result<Vec<i64>> {
+pub(crate) fn ints(chunks: &[ArrayRef]) -> anyhow::Result<Vec<i64>> {
     numeric(chunks, |v| v as i64)
 }
 
 /// Column names of a parquet file.
-fn field_names(path: &Path) -> anyhow::Result<Vec<Box<str>>> {
+pub(crate) fn field_names(path: &Path) -> anyhow::Result<Vec<Box<str>>> {
     peek_parquet_field_names(
         path.to_str()
             .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?,
