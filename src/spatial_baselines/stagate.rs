@@ -147,6 +147,7 @@ use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
+use legume_numeric::candle::candle_nn::ops::sigmoid;
 use legume_numeric::candle::fast_index::{gather_rows, index_add_rows};
 use log::info;
 use nalgebra::{DMatrix, DVector};
@@ -482,8 +483,11 @@ pub fn attention(
     let s = h.matmul(a_src)?;
     let d = h.matmul(a_dst)?;
     let logit = (gather_rows(&s, &g.src)? + gather_rows(&d, &g.dst)?)?;
-    let sig = (logit.neg()?.exp()? + 1.0)?.recip()?;
-    // sigmoid lies in (0, 1): no max to subtract before exp
+    // one op whose backward reads its output, s (1 - s), as torch.sigmoid's
+    // does: composed from exp and recip, the backward pass gives 0 · inf =
+    // NaN once exp(-x) overflows f32 (x below about -88.7)
+    let sig = sigmoid(&logit)?;
+    // sigmoid lies in [0, 1]: no max to subtract before exp
     let e = sig.exp()?;
     let zeros = Tensor::zeros((g.n_nodes, 1), DType::F32, h.device())?;
     let denom = index_add_rows(&zeros, &g.dst, &e)?;

@@ -128,6 +128,20 @@ pub(crate) fn built_cli() -> clap::Command {
     cli
 }
 
+/// The spatial baselines' outputs, as `spatial_baselines/output.rs`
+/// writes them, for their `long_about`.
+macro_rules! baseline_outputs {
+    () => {
+        "The output is a pinto run, which `pinto view`, compare and lra read\n\
+         as they read an lc run: the manifest {out}.pinto.json (rerunning into\n\
+         the same --out overwrites it), {out}.propensity.parquet (cells x K:\n\
+         the method's posteriors when it has them, else one-hot labels),\n\
+         {out}.cells.parquet (cells with coordinates), {out}.labels.tsv (for\n\
+         srt-sim-score --labels), {out}.cell_embedding.parquet (the method's\n\
+         per-cell vectors) and {out}.baseline.json (the settings as run)."
+    };
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     #[command(
@@ -645,18 +659,21 @@ enum Commands {
 
     #[command(
         about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
-        long_about = "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
-                      faithful to its reference code at the model level, on pinto's inputs.\n\
-                      Writes {out}.labels.tsv, {out}.cell_embedding.parquet and\n\
-                      {out}.baseline.json."
+        long_about = concat!(
+            "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
+             faithful to its reference code at the model level, on pinto's inputs.\n\n",
+            baseline_outputs!()
+        )
     )]
     Spatialde2(Box<spatial_baselines::spatialde2::Args>),
 
     #[command(
         about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
-        long_about = "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
-                      model level, on pinto's inputs. Writes {out}.labels.tsv,\n\
-                      {out}.cell_embedding.parquet and {out}.baseline.json."
+        long_about = concat!(
+            "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
+             model level, on pinto's inputs.\n\n",
+            baseline_outputs!()
+        )
     )]
     Stagate(Box<spatial_baselines::stagate::Args>),
 

@@ -2,7 +2,7 @@ use super::graph::toy;
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::stagate::*;
 use crate::util::common::Mat;
-use legume_numeric::candle::candle_core::{Device, Tensor};
+use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
 #[test]
@@ -146,6 +146,67 @@ fn aggregation_keeps_a_constant_signal_on_a_ring() {
             assert!((v - 3.0).abs() < 1e-5);
         }
     }
+}
+
+#[test]
+fn attention_gradient_stays_finite_at_very_negative_logits() {
+    // edge logits -100 and -50: exp(-logit) overflows f32, where torch's
+    // sigmoid has a finite (vanishing) gradient
+    let dev = Device::Cpu;
+    let g = EdgeIndex::new(&[0, 1, 0, 1], &[0, 0, 1, 1], 2, &dev).unwrap();
+    let h = Tensor::from_vec(vec![1f32, 0.5], (2, 1), &dev).unwrap();
+    let a_src = Var::from_tensor(&Tensor::from_vec(vec![-100f32], (1, 1), &dev).unwrap()).unwrap();
+    let a_dst = Var::from_tensor(&Tensor::zeros((1, 1), DType::F32, &dev).unwrap()).unwrap();
+    let alpha = attention(&h, a_src.as_tensor(), a_dst.as_tensor(), &g).unwrap();
+    let a: Vec<f32> = alpha.flatten_all().unwrap().to_vec1().unwrap();
+    for v in &a {
+        assert!((v - 0.5).abs() < 1e-6, "{a:?}");
+    }
+    let w = Tensor::from_vec(vec![1f32, 2.0, 3.0, 4.0], (4, 1), &dev).unwrap();
+    let grads = (alpha * w).unwrap().sum_all().unwrap().backward().unwrap();
+    for p in [&a_src, &a_dst] {
+        let gr: Vec<f32> = grads
+            .get(p.as_tensor())
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
+        assert!(gr.iter().all(|v| v.is_finite()), "{gr:?}");
+    }
+}
+
+#[test]
+fn aggregation_sums_messages_at_the_target_of_directed_edges() {
+    // a chain 0 -> 1 -> 2 -> 3 plus self loops: node 0 hears only itself,
+    // node i > 0 itself and i - 1; a direction swap would mix in i + 1
+    let dev = Device::Cpu;
+    let src = [0u32, 0, 1, 1, 2, 2, 3];
+    let dst = [0u32, 1, 1, 2, 2, 3, 3];
+    let g = EdgeIndex::new(&src, &dst, 4, &dev).unwrap();
+    let hv = [1f32, 10.0, 100.0, 1000.0];
+    let h = Tensor::from_vec(hv.to_vec(), (4, 1), &dev).unwrap();
+    let a_src = Tensor::from_vec(vec![1e-3f32], (1, 1), &dev).unwrap();
+    let a_dst = Tensor::from_vec(vec![-2e-3f32], (1, 1), &dev).unwrap();
+    let alpha = attention(&h, &a_src, &a_dst, &g).unwrap();
+    let av: Vec<f32> = alpha.flatten_all().unwrap().to_vec1().unwrap();
+    let out: Vec<f32> = aggregate(&alpha, &h, &g)
+        .unwrap()
+        .flatten_all()
+        .unwrap()
+        .to_vec1()
+        .unwrap();
+    for (i, &o) in out.iter().enumerate() {
+        let want: f32 = (0..src.len())
+            .filter(|&e| dst[e] as usize == i)
+            .map(|e| av[e] * hv[src[e] as usize])
+            .sum();
+        assert!(
+            (o - want).abs() < 1e-4 * want.abs(),
+            "node {i}: {o} vs {want}"
+        );
+    }
+    assert!((out[0] - 1.0).abs() < 1e-6);
 }
 
 fn toy_model_input(dev: &Device) -> (Tensor, EdgeIndex) {
@@ -333,4 +394,87 @@ fn mclust_eee_subsamples_and_labels_every_cell() {
     let mut seen: Vec<usize> = of_blob.into_iter().flatten().collect();
     seen.sort_unstable();
     assert_eq!(seen, vec![0, 1, 2]);
+}
+
+/// One forward pass and 20 training steps of a torch replica of
+/// STAGATE_pyG (`STAGATE.py`, `gat_conv.py`, `Train_STAGATE.py` at the
+/// commit named in the module doc: the `.data =` weight tie, torch's
+/// multi-tensor Adam with weight decay, `clip_grad_norm_`), float32, on
+/// synthetic counts with a 3-NN graph that is not symmetric, plus self
+/// loops. Weight decay and clipping are set high enough to act on every
+/// step.
+#[derive(serde::Deserialize)]
+struct Parity {
+    n: usize,
+    p: usize,
+    hidden: usize,
+    latent: usize,
+    lr: f64,
+    weight_decay: f64,
+    gradient_clipping: f64,
+    src: Vec<u32>,
+    dst: Vec<u32>,
+    x: Vec<f32>,
+    w1: Vec<f32>,
+    a_src: Vec<f32>,
+    a_dst: Vec<f32>,
+    w2: Vec<f32>,
+    z_init: Vec<f32>,
+    recon_init: Vec<f32>,
+    losses: Vec<f32>,
+    z_final: Vec<f32>,
+    recon_final: Vec<f32>,
+}
+
+fn flat(t: &Tensor) -> Vec<f32> {
+    t.flatten_all().unwrap().to_vec1().unwrap()
+}
+
+fn assert_close(what: &str, got: &[f32], want: &[f32], tol: f32) {
+    assert_eq!(got.len(), want.len(), "{what}");
+    for (i, (a, b)) in got.iter().zip(want).enumerate() {
+        assert!(
+            (a - b).abs() <= tol * (1.0 + b.abs()),
+            "{what}[{i}]: {a} vs {b}"
+        );
+    }
+}
+
+#[test]
+fn model_and_training_match_a_torch_replica() {
+    let f: Parity = serde_json::from_str(include_str!("stagate_parity.json")).unwrap();
+    let dev = Device::Cpu;
+    let g = EdgeIndex::new(&f.src, &f.dst, f.n, &dev).unwrap();
+    let x = Tensor::from_vec(f.x.clone(), (f.n, f.p), &dev).unwrap();
+    let mut m = Stagate::new(f.p, f.hidden, f.latent, 0, &dev).unwrap();
+    let set = |v: &Var, w: &[f32], r: usize, c: usize| {
+        v.set(&Tensor::from_vec(w.to_vec(), (r, c), &dev).unwrap())
+            .unwrap()
+    };
+    set(&m.w1, &f.w1, f.p, f.hidden);
+    set(&m.a_src, &f.a_src, f.hidden, 1);
+    set(&m.a_dst, &f.a_dst, f.hidden, 1);
+    set(&m.w2, &f.w2, f.hidden, f.latent);
+    let out = m.forward(&x, &g).unwrap();
+    assert_close("z at init", &flat(&out.z), &f.z_init, 1e-5);
+    assert_close("recon at init", &flat(&out.recon), &f.recon_init, 1e-5);
+    let opts = TrainOpts {
+        n_epochs: f.losses.len(),
+        lr: f.lr,
+        weight_decay: f.weight_decay,
+        gradient_clipping: f.gradient_clipping,
+    };
+    let losses = m.fit(&x, &g, &opts).unwrap();
+    // looser after training: Adam's early steps are about lr · sign(g), so
+    // rounding that differs between matmul backends moves the weights
+    // more than it moves one forward pass
+    assert_close("losses", &losses, &f.losses, 1e-4);
+    let out = m.forward(&x, &g).unwrap();
+    assert_close("z after training", &flat(&out.z), &f.z_final, 1e-4);
+    assert_close(
+        "recon after training",
+        &flat(&out.recon),
+        &f.recon_final,
+        1e-4,
+    );
 }

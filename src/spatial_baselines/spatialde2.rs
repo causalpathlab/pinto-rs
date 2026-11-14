@@ -32,7 +32,8 @@
 //!   cell's total count over *all* genes (computed before the gene subset).
 //! - **Spatial energy** (`tissue_segmentation`, Supplementary eq. 2): the
 //!   pairwise weight is `w_nm = 2 · smoothness_factor · min d² / d²_nm`,
-//!   `min d²` the smallest squared distance among the graph's pairs, and
+//!   `min d²` the smallest squared distance among the graph's pairs (here
+//!   within each section; see Sections below), and
 //!   `E(x_n = c) = Σ_m w_nm [x̂_m ≠ c]`; `smoothness_factor` defaults to 2.
 //!   The kNN graph is symmetrised (`tensor_scatter_nd_update` on the
 //!   transposed indices).
@@ -61,7 +62,9 @@
 //!   whose posterior exceeds `class_prune_threshold = 1e-6` in no cell are
 //!   dropped and the labels renumbered; `α̂` keeps the retained indices but
 //!   the last (`idx[:-1]`). At the end the posteriors of the retained classes
-//!   are renormalised to sum to 1 per cell.
+//!   are renormalised to sum to 1 per cell. (Two cases differ from
+//!   `prune_labels`, where only leading classes die and where a label's own
+//!   class is pruned; see Deliberate deviations.)
 //!
 //! Two quirks of the reference code are kept as they are, since they are
 //! the model as it runs: the stick-breaking sum is `vsum_c = v̂₂_c +
@@ -100,10 +103,27 @@
 //!   order, so a given `--seed` gives the same ELBO trace and labels on
 //!   every run.
 //! - **Sections.** All sections are fitted as one model (one set of region
-//!   rate profiles), neighbours taken only within a section; `min d²` is the
-//!   smallest over all sections. Coincident cells (distance 0) take the
-//!   weight of the smallest positive distance, where the reference divides
-//!   by zero.
+//!   rate profiles), neighbours taken only within a section; `min d²` is
+//!   taken within each section, since the reference sees one dataset: a
+//!   section's weights do not depend on another section's spot spacing.
+//!   Coincident cells (distance 0) take the weight of the smallest positive
+//!   distance, where the reference divides by zero.
+//! - **Pruning when only leading classes die.** When the retained classes
+//!   have no gap but do not start at 0 (say class 0 dies and 1 to 4 live),
+//!   the reference's `prune_labels` takes its no-gap branch: it returns
+//!   `idx = range(len)` (0 to 3) and leaves the labels as they are. So it
+//!   keeps the dead class's `γ̂` and `α̂`, drops the last live class, and
+//!   leaves labels past `nclasses`. The port keeps the retained classes
+//!   (1 to 4) and renumbers, as the gap branch does. The reference loses a
+//!   live class at each such prune and so under-counts the regions; since
+//!   the `vsum` quirk gives class 0 no prior advantage over class 1, class
+//!   0 dies often enough for this to show, most of all with
+//!   `--neighbors 0`. This is a bug fix, not the model as it runs.
+//! - **A label on a pruned class.** With `--class-prune-threshold` at or
+//!   above `1/K` a cell's most probable class can be pruned; its label moves
+//!   to its most probable retained class (the reference's renumbering
+//!   shifts it with the labels above it, which can leave it negative or
+//!   past the last class).
 //! - **ELBO terms.** The reference's three terms `Σ π̂ log p(c|x̂)`,
 //!   `Σ π̂ (φ - log p(c|x̂))` and `-Σ π̂ φ` sum to zero exactly and are not
 //!   computed.
@@ -654,21 +674,25 @@ fn add(a: &mut [f64], b: &[f64]) {
 /// Each cell's most probable class (first on ties, as `tf.math.argmax`).
 pub fn argmax_rows(pi: &[f64], k: usize) -> Vec<usize> {
     pi.chunks(k)
-        .map(|row| {
-            let mut best = 0;
-            for (c, &v) in row.iter().enumerate() {
-                if v > row[best] {
-                    best = c;
-                }
-            }
-            best
-        })
+        .map(|row| argmax(row.iter().copied()))
         .collect()
+}
+
+/// The position of the largest value, the first on ties (0 when empty).
+fn argmax(values: impl Iterator<Item = f64>) -> usize {
+    let mut best = (0, f64::NEG_INFINITY);
+    for (c, v) in values.enumerate() {
+        if v > best.1 {
+            best = (c, v);
+        }
+    }
+    best.0
 }
 
 /// `prune_components(..., everything=True)`: the classes whose posterior
 /// exceeds `threshold` in some cell, in order, and the labels renumbered
-/// onto them.
+/// onto them. A label on a dropped class (possible once `threshold` is at
+/// least `1/k`) moves to the cell's most probable retained class.
 pub fn prune(pi: &[f64], k: usize, labels: &[usize], threshold: f64) -> (Vec<usize>, Vec<usize>) {
     let mut keep = vec![false; k];
     for row in pi.chunks(k) {
@@ -681,7 +705,15 @@ pub fn prune(pi: &[f64], k: usize, labels: &[usize], threshold: f64) -> (Vec<usi
     for (a, &c) in idx.iter().enumerate() {
         new[c] = a;
     }
-    (idx, labels.iter().map(|&l| new[l]).collect())
+    let labels = labels
+        .iter()
+        .zip(pi.chunks(k))
+        .map(|(&l, row)| match new[l] {
+            usize::MAX => argmax(idx.iter().map(|&c| row[c])),
+            a => a,
+        })
+        .collect();
+    (idx, labels)
 }
 
 const ALL_PRUNED: &str = "spatialde2: every region fell below --class-prune-threshold";
