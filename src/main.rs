@@ -641,7 +641,10 @@ enum Commands {
         long_about = concat!(
             "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
              model level, on pinto's inputs: the data, -c, -b, -o and --seed flags\n\
-             lc takes.\n\n",
+             lc takes. Its embedding is clustered by pinto's own methods: seeded\n\
+             k-means into --n-clusters domains, or Leiden without it. With\n\
+             --n-clusters this differs from the STAGATE tutorial, which fits a\n\
+             Gaussian mixture in R at that step.\n\n",
             baseline_outputs!()
         )
     )]

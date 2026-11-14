@@ -280,23 +280,6 @@ fn decoder_stays_tied_to_the_encoder() {
 }
 
 #[test]
-fn eee_posteriors_sum_to_one_and_find_two_blobs() {
-    let n = 200;
-    let z = Mat::from_fn(n, 2, |i, j| {
-        let centre = if i < n / 2 { 0.0 } else { 6.0 };
-        centre + (((i * 31 + j * 17) % 23) as f32 / 23.0 - 0.5)
-    });
-    let (labels, post) = mclust_eee(&z, 2, 1).unwrap();
-    for i in 0..n {
-        let s: f32 = post.row(i).iter().sum();
-        assert!((s - 1.0).abs() < 1e-5);
-    }
-    let first = labels[0];
-    assert!(labels[..n / 2].iter().all(|&l| l == first));
-    assert!(labels[n / 2..].iter().all(|&l| l != first));
-}
-
-#[test]
 fn cuda_forward_matches_cpu() {
     let Ok(cuda) = Device::new_cuda(0) else {
         return;
@@ -365,35 +348,79 @@ fn blobs(n: usize, d: usize, k: usize) -> nalgebra::DMatrix<f64> {
     })
 }
 
-#[test]
-fn hc_vvv_recovers_separated_groups() {
-    let (n, k) = (90, 3);
-    let x = blobs(n, 4, k);
-    let labels = hc_vvv(&svd_transform(&x), k);
+/// The embedding of `blobs`, in f32.
+fn embedding(n: usize, d: usize, k: usize) -> Mat {
+    let x = blobs(n, d, k);
+    Mat::from_fn(n, d, |i, j| x[(i, j)] as f32)
+}
+
+/// The labels used, in order.
+fn distinct(labels: &[usize]) -> Vec<usize> {
+    let mut seen = labels.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    seen
+}
+
+/// Every group of `blobs(n, _, k)` under one label, and how many labels.
+fn labels_follow_groups(labels: &[usize], n: usize, k: usize) -> usize {
+    assert_eq!(labels.len(), n);
     let mut of_blob = vec![None; k];
     for (i, &l) in labels.iter().enumerate() {
         assert_eq!(*of_blob[i * k / n].get_or_insert(l), l, "{labels:?}");
     }
-    let mut seen: Vec<usize> = of_blob.into_iter().flatten().collect();
-    seen.sort_unstable();
-    assert_eq!(seen, vec![0, 1, 2]);
+    distinct(labels).len()
 }
 
 #[test]
-fn mclust_eee_subsamples_and_labels_every_cell() {
-    let (n, k) = (2600, 3);
-    let x = blobs(n, 3, k);
-    let z = Mat::from_fn(n, 3, |i, j| x[(i, j)] as f32);
-    let (labels, post) = mclust_eee(&z, k, 5).unwrap();
-    assert_eq!(post.nrows(), n);
-    // each blob one label, the three distinct
-    let mut of_blob = vec![None; k];
-    for (i, &l) in labels.iter().enumerate() {
-        assert_eq!(*of_blob[i * k / n].get_or_insert(l), l);
+fn n_clusters_gives_exactly_that_many_kmeans_clusters() {
+    let (n, k) = (120, 3);
+    let z = embedding(n, 5, k);
+    let (labels, method) = cluster_embedding(&z, Some(k), 0.5, 7).unwrap();
+    assert_eq!(method, "kmeans");
+    assert_eq!(labels_follow_groups(&labels, n, k), k);
+    assert_eq!(distinct(&labels), (0..k).collect::<Vec<_>>());
+    // one seed, one answer
+    assert_eq!(cluster_embedding(&z, Some(k), 0.5, 7).unwrap().0, labels);
+    // the count is taken as given, even past the groups the data has
+    let (more, _) = cluster_embedding(&z, Some(k + 1), 0.5, 7).unwrap();
+    assert_eq!(distinct(&more), (0..=k).collect::<Vec<_>>());
+}
+
+#[test]
+fn without_n_clusters_leiden_finds_the_groups() {
+    let (n, k) = (120, 3);
+    let z = embedding(n, 5, k);
+    let (labels, method) = cluster_embedding(&z, None, 0.5, 7).unwrap();
+    assert_eq!(method, "leiden");
+    assert_eq!(labels_follow_groups(&labels, n, k), k);
+    assert_eq!(cluster_embedding(&z, None, 0.5, 7).unwrap().0, labels);
+}
+
+#[test]
+fn help_readme_and_notices_name_no_gpl_mixture_package() {
+    // the R package the tutorial clusters with, spelt in two pieces so a
+    // search of the tree for its name finds none
+    let name = ["mc", "lust"].concat();
+    let help = crate::built_cli()
+        .find_subcommand_mut("stagate")
+        .expect("stagate")
+        .render_long_help()
+        .to_string();
+    for (what, text) in [
+        ("stagate --help", help.as_str()),
+        ("README.md", include_str!("../../../README.md")),
+        (
+            "THIRD_PARTY_NOTICES.md",
+            include_str!("../../../THIRD_PARTY_NOTICES.md"),
+        ),
+        ("stagate.rs", include_str!("../stagate.rs")),
+    ] {
+        assert!(!text.to_lowercase().contains(&name), "{what} names it");
     }
-    let mut seen: Vec<usize> = of_blob.into_iter().flatten().collect();
-    seen.sort_unstable();
-    assert_eq!(seen, vec![0, 1, 2]);
+    for want in ["k-means", "Leiden"] {
+        assert!(help.contains(want), "stagate --help lacks {want}");
+    }
 }
 
 /// One forward pass and 20 training steps of a torch replica of

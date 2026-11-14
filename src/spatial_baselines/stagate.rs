@@ -1,6 +1,10 @@
 // Ported from STAGATE_pyG (https://github.com/QIFEIDKN/STAGATE_pyG), MIT
-// License, Copyright (c) 2021 Kangning Dong. Its license and the commit
-// followed are in THIRD_PARTY_NOTICES.md at the crate root.
+// License, Copyright (c) 2021 Kangning Dong, read against STAGATE
+// (https://github.com/zhanglabtools/STAGATE), MIT License, Copyright (c)
+// 2021 Kangning Dong; the gene filter and seurat_v3 gene selection follow
+// scanpy (https://github.com/scverse/scanpy), BSD 3-Clause License. Their
+// licenses and the commits followed are in THIRD_PARTY_NOTICES.md at the
+// crate root.
 
 //! STAGATE (Dong and Zhang 2022, "Deciphering spatial domains from
 //! spatially resolved transcriptomics with an adaptive graph attention
@@ -15,11 +19,14 @@
 //! (its README: about 10 times faster, without the cell type-aware module);
 //! only tutorials T7 and T8 use it, while T1-T6 and T9 run the TF package.
 //! The training here is pyG's, chosen deliberately: it is the faster build
-//! and the one maintained alongside PyG. Preprocessing and clustering are
-//! the tutorials' (stagate.readthedocs.io): with `--n-clusters`, T1's
-//! (no gene filter, mclust EEE), which trains with the TF trainer; without
-//! it, T7_pyG's (Louvain at 0.5; T7 filters genes at `min_cells=50`, which
-//! `--min-cells 50` gives).
+//! and the one maintained alongside PyG. Preprocessing follows the
+//! tutorials (stagate.readthedocs.io): with `--n-clusters`, T1's (no gene
+//! filter), which trains with the TF trainer; without it, T7_pyG's (T7
+//! filters genes at `min_cells=50`, which `--min-cells 50` gives).
+//! Clustering is pinto's own: k-means into `--n-clusters` domains, Leiden
+//! without it. With `--n-clusters` this differs from tutorial T1, whose
+//! last step fits a Gaussian mixture of K components through an R package
+//! under the GPL; that step is not ported (step 9).
 //!
 //! Each step, with the file and function it follows:
 //!
@@ -30,12 +37,16 @@
 //!    n_top_genes=3000)` on the raw counts ([`seurat_v3_hvg`], after
 //!    scanpy's `_highly_variable_genes_seurat_v3`): per gene the mean and
 //!    unbiased variance of the counts; a degree-2 loess (span 0.3, tricube
-//!    weights, Gaussian family) of log10 variance on log10 mean over the
-//!    genes with any variance ([`loess_quadratic`]); each count clipped at
-//!    `mean + sqrt(N) * reg_sd`, `reg_sd = sqrt(10^fit)`; the variance of the
-//!    clipped counts standardised by `reg_sd²`; the `n_top_genes` largest
-//!    (all genes when there are fewer). Sections are pooled (no
-//!    `batch_key`), as in the tutorials.
+//!    weights, Gaussian family; Cleveland and Devlin 1988, "Locally weighted
+//!    regression: an approach to regression analysis by local fitting",
+//!    JASA 83:596, doi:10.1080/01621459.1988.10478639) of log10 variance on
+//!    log10 mean over the genes with any variance ([`loess_quadratic`],
+//!    written from that definition: no loess library's code is translated,
+//!    and scikit-misc's is only the behaviour compared against); each count
+//!    clipped at `mean + sqrt(N) * reg_sd`, `reg_sd = sqrt(10^fit)`; the
+//!    variance of the clipped counts standardised by `reg_sd²`; the
+//!    `n_top_genes` largest (all genes when there are fewer). Sections are
+//!    pooled (no `batch_key`), as in the tutorials.
 //! 2. `sc.pp.normalize_total(target_sum=1e4)` then `sc.pp.log1p` on every
 //!    gene ([`normalise_log`]), then the variable genes only
 //!    (`Train_STAGATE.py:train_STAGATE`, `adata[:, highly_variable]`), dense.
@@ -74,25 +85,20 @@
 //!    norm), both with weight decay on the pre-step values (torch's
 //!    multi-tensor Adam). [`Stagate::step`] does exactly that.
 //! 8. The embedding: `h2` from a last forward pass after training.
-//! 9. Clustering. With `--n-clusters K`, T1's `mclust_R(num_cluster = K,
-//!    modelNames='EEE', random_seed=2020)` (`utils.py:mclust_R`), that is
-//!    `Mclust(G = K, "EEE")` of mclust 6.1.3 ([`mclust_eee`]), whose
-//!    initialisation follows `R/mclust.R:Mclust` and `R/mbahc.R`: with more
-//!    than 2000 cells (`mclust.options("subset")`) a seeded random subset of
-//!    2000 (all cells otherwise); `hc(modelName = "VVV", use = "SVD")` on it
-//!    ([`svd_transform`]: centred, scaled, `X V diag(1/sqrt(d))`; then
-//!    [`hc_vvv`], mclust's `hcVVV` criterion `l log(det(W/l) + β(tr W +
-//!    α)/l)` per group, determinant only when `l > p`, `α = tr(scatter)/(n
-//!    p)`, `β = 1`, greedy least-cost merges, a fixed O(2000²) cost) cut at
-//!    K groups (`hclass`); `mstep` on the subset from that partition,
-//!    `estep` on every cell, then `me` on every cell ([`eee_em`],
-//!    `mclust.f:meeee`): one full covariance shared by all components, M
-//!    then E steps until the log-likelihood changes by at most 1e-5 of
-//!    `1 + |loglik|` (`emControl` `tol`). Without `--n-clusters`, T7's
-//!    `sc.pp.neighbors(use_rep='STAGATE')` (15 neighbours, the cell
-//!    counted) and `sc.tl.louvain(resolution=0.5)` with its default
-//!    `use_weights=False`: modularity at resolution 0.5 on the unweighted
-//!    connectivity pattern, by Leiden.
+//! 9. Clustering, pinto's own. With `--n-clusters K`, k-means into exactly
+//!    K domains ([`cluster_embedding`]): legume-numeric's seeded k-means
+//!    (k-means++ start from `--seed`, then Lloyd rounds until no cell
+//!    moves, at most 300; Euclidean; an emptied cluster re-seeded from the
+//!    cell worst served). Tutorial T1 instead fits a K-component Gaussian
+//!    mixture with a shared full covariance through R (`utils.py`'s R
+//!    bridge); that package is GPL, so its model, initialisation and EM are
+//!    not ported, and the domains can differ from the tutorial's. Without
+//!    `--n-clusters`, T7's `sc.pp.neighbors(use_rep='STAGATE')` (15
+//!    neighbours, the cell counted) and `sc.tl.louvain(resolution=0.5)`
+//!    with its default `use_weights=False`: modularity at resolution 0.5 on
+//!    the unweighted connectivity pattern, by Leiden (Traag, Waltman and van
+//!    Eck 2019, "From Louvain to Leiden: guaranteeing well-connected
+//!    communities", Scientific Reports 9:5233, doi:10.1038/s41598-019-41721-w).
 //!
 //! Memory is linear in the cells: the input is dense cells × variable genes,
 //! as in the reference, and the graph, attention and messages live on the
@@ -108,10 +114,7 @@
 //!   mean) only when the window is rank-deficient (fewer than three
 //!   distinct weighted points); netlib loess keeps degree 2 there through a
 //!   pseudo-inverse. That case needs ties in log10 mean, so it is rare.
-//! - mclust's subset is drawn with pinto's seed and generator, not R's
-//!   `set.seed(2020)`; `hc`'s merge ties are broken by scan order, not
-//!   mclust's; a singular EEE covariance gets a small ridge where mclust
-//!   would return NA; EM is capped at 100000 rounds (mclust: no cap).
+//! - With `--n-clusters`, k-means replaces T1's Gaussian mixture (step 9).
 //! - Louvain is replaced by Leiden (the one pinto has); both maximise
 //!   modularity of the same unweighted graph at the same resolution.
 //! - The default spatial network is `KNN` with `k_cutoff = 6`, the
@@ -131,7 +134,7 @@
 //!   `--k-cutoff 6` this passes a 10 GB card; the reference's `Batch_Data`
 //!   mini-batch path, which splits the tissue into tiles, is not ported.
 //! - Training follows pyG, not the TF trainer that T1 (the source of
-//!   the mclust and radius-150 pipeline) runs. The TF defaults not followed
+//!   the fixed-K and radius-150 pipeline) runs. The TF defaults not followed
 //!   (`Train_STAGATE.py:train_STAGATE`, `model.py:GATE.__call__`): loss
 //!   `sqrt(sum of squares)` plus `1e-4 * l2_loss` of the last weight only,
 //!   `lr = 1e-4`, 500 epochs, Glorot uniform initialisation, seed 2020, and
@@ -149,8 +152,8 @@ use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
 use legume_numeric::candle::fast_index::{gather_rows, index_add_rows};
+use legume_numeric::matrix::kmeans::kmeans_centroids_seeded;
 use log::info;
-use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::CscMatrix;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -173,21 +176,19 @@ const K_CUTOFF: usize = 6;
 const RADIUS_MAX_K: usize = 256;
 const LOUVAIN_RESOLUTION: f64 = 0.5;
 const SCANPY_NEIGHBOURS: usize = 15;
-const MCLUST_TOL: f64 = 1e-5;
-const EM_MAX_ROUNDS: usize = 100_000;
-const MCLUST_SUBSET: usize = 2000;
+const KMEANS_MAX_ITER: usize = 300;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
     #[command(flatten)]
     pub input: SpatialInputArgs,
 
-    /// Number of domains. Given, the embedding is clustered as tutorial
-    /// T1 does, by mclust's EEE Gaussian mixture with this many components
-    /// (EM from mclust's hc VVV start on a 2000-cell subset); not given, by
-    /// Leiden at --resolution on the unweighted 15-NN graph (the pyG
-    /// tutorial's Louvain at 0.5), which picks its own number. No tuning
-    /// toward a count: the original takes K directly
+    /// Number of domains. Given, the embedding is clustered by pinto's
+    /// seeded k-means (k-means++ from --seed, then Lloyd) into exactly this
+    /// many; this differs from tutorial T1, which fits a Gaussian mixture
+    /// in R at this step. Not given, by Leiden at --resolution on the
+    /// unweighted 15-NN graph (the pyG tutorial's Louvain at 0.5), which
+    /// picks its own number
     #[arg(long)]
     pub n_clusters: Option<usize>,
 
@@ -210,7 +211,7 @@ pub struct Args {
 
     /// Drop genes expressed (nonzero) in fewer than this many cells before
     /// gene selection (sc.pp.filter_genes min_cells). The default 0 follows
-    /// T1, the mclust pipeline; the Louvain tutorials T3, T7 (pyG)
+    /// T1, the fixed-K tutorial; the Louvain tutorials T3, T7 (pyG)
     /// and T8 use 50
     #[arg(long, default_value_t = 0)]
     pub min_cells: usize,
@@ -701,346 +702,28 @@ impl Stagate {
 
 // ---------------------------------------------------------------- clusters
 
-/// mclust's `Mclust(z, G = k, modelNames = "EEE")` as `mclust_R` calls it
-/// (`R/mclust.R:Mclust`): with more than `MCLUST_SUBSET` cells, a seeded
-/// random subset of that many; model-based agglomerative clustering (`hc`,
-/// VVV, `use = "SVD"`) of the subset cut at `k` groups (`hclass`); an M step
-/// on the subset from that hard partition, an E step on every cell, then EEE
-/// EM on every cell ([`eee_em`]). Returns the hard classification and the
-/// posterior (cells × K).
-pub fn mclust_eee(z: &Mat, k: usize, seed: u64) -> anyhow::Result<(Vec<usize>, Mat)> {
-    use rand::seq::SliceRandom;
-    let n = z.nrows();
-    anyhow::ensure!(k >= 1 && n >= k, "EEE mixture needs at least {k} cells");
-    let x: DMatrix<f64> = z.map(f64::from);
-    let subset: Vec<usize> = if n > MCLUST_SUBSET {
-        let mut idx: Vec<usize> = (0..n).collect();
-        idx.shuffle(&mut SmallRng::seed_from_u64(seed));
-        idx.truncate(MCLUST_SUBSET);
-        idx.sort_unstable();
-        idx
-    } else {
-        (0..n).collect()
-    };
-    let xs = x.select_rows(&subset);
-    let init = hc_vvv(&svd_transform(&xs), k);
-    let mut z0 = DMatrix::<f64>::zeros(subset.len(), k);
-    for (i, &l) in init.iter().enumerate() {
-        z0[(i, l)] = 1.0;
-    }
-    let (post, _) = eee_mstep(&xs, &z0)?.estep(&x);
-    let (post, loglik, rounds) = eee_em(&x, post)?;
-    info!(
-        "EEE mixture: hc VVV on {} cells, EM {rounds} rounds, log-likelihood {loglik:.3}",
-        subset.len()
-    );
-    let labels: Vec<usize> = (0..n).map(|i| post.row(i).transpose().argmax().0).collect();
-    Ok((labels, post.map(|v| v as f32)))
-}
-
-/// `hc(use = "SVD")`'s transform (`R/mbahc.R:hc`): columns centred and
-/// scaled to unit standard deviation (constant columns dropped), then
-/// `Z = X V diag(1 / sqrt(d))` from the SVD `X = U diag(d) Vᵀ`. Components
-/// of zero singular value are dropped, where mclust would divide by zero.
-pub fn svd_transform(x: &DMatrix<f64>) -> DMatrix<f64> {
-    let n = x.nrows();
-    let mut cols = Vec::new();
-    for j in 0..x.ncols() {
-        let c = x.column(j);
-        let m = c.mean();
-        let sd =
-            (c.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (n as f64 - 1.0).max(1.0)).sqrt();
-        if sd > 0.0 && sd.is_finite() {
-            cols.push(c.map(|v| (v - m) / sd));
+/// The domains of the embedding `z` (cells × latent): with `n_clusters`,
+/// seeded k-means into that many clusters ([`kmeans_centroids_seeded`]:
+/// k-means++ then Lloyd rounds until no cell moves, at most
+/// `KMEANS_MAX_ITER`); without, Leiden at `resolution` ([`leiden_at`]).
+/// The labels and the method's name.
+pub fn cluster_embedding(
+    z: &Mat,
+    n_clusters: Option<usize>,
+    resolution: f64,
+    seed: u64,
+) -> anyhow::Result<(Vec<usize>, &'static str)> {
+    Ok(match n_clusters {
+        Some(k) => {
+            anyhow::ensure!(
+                k >= 1 && z.nrows() >= k,
+                "k-means into {k} clusters needs at least {k} cells"
+            );
+            let (_, labels) = kmeans_centroids_seeded(z, k, KMEANS_MAX_ITER, seed);
+            (labels, "kmeans")
         }
-    }
-    if cols.is_empty() {
-        return DMatrix::zeros(n, 1);
-    }
-    let xs = DMatrix::from_columns(&cols);
-    let svd = xs.clone().svd(false, true);
-    let vt = svd.v_t.expect("v_t requested");
-    let dmax = svd.singular_values.max();
-    let keep: Vec<usize> = (0..svd.singular_values.len())
-        .filter(|&i| svd.singular_values[i] > dmax * 1e-12)
-        .collect();
-    let mut out = DMatrix::<f64>::zeros(n, keep.len());
-    for (c, &i) in keep.iter().enumerate() {
-        let v = vt.row(i).transpose();
-        out.set_column(c, &((&xs * v) / svd.singular_values[i].sqrt()));
-    }
-    out
-}
-
-/// One group of the VVV agglomeration: its size, mean and scatter matrix
-/// `W = Σ (x - mean)(x - mean)ᵀ`.
-struct HcGroup {
-    n: usize,
-    mean: DVector<f64>,
-    w: DMatrix<f64>,
-    trace: f64,
-    term: f64,
-}
-
-/// mclust's `hcVVV` (`R/mbahc.R:hcVVV`, Fortran `mclust.f:hcvvv` and
-/// `vvvtij`), cut at `g` groups as `hclass` does: from singletons, merge
-/// the pair whose merge changes the criterion `Σ term` least, where a group
-/// of `l` cells with scatter `W` has
-/// `term = l log(det(W / l) + β (tr W + α) / l)` (the determinant only
-/// when `l > p`), `β = 1`, `α = tr(scatter of z) / (n p)`. The group of
-/// each row, `0..g`. The cost matrix is n × n, so this is meant for
-/// mclust's subset (at most `MCLUST_SUBSET` rows), a fixed cost.
-pub fn hc_vvv(z: &DMatrix<f64>, g: usize) -> Vec<usize> {
-    let (n, p) = z.shape();
-    let means = z.row_mean();
-    let ss: f64 = z
-        .row_iter()
-        .map(|r| (r - &means).norm_squared())
-        .sum::<f64>();
-    let alpha = (ss / (n * p) as f64).max(f64::EPSILON);
-    let beta = 1.0;
-    let term = |l: usize, w: Option<&DMatrix<f64>>, trace: f64| -> f64 {
-        let lf = l as f64;
-        let t = beta * (trace + alpha) / lf;
-        let v = if l <= p {
-            t.ln()
-        } else if trace == 0.0 {
-            (alpha * beta / lf).ln()
-        } else {
-            match w.and_then(|w| (w / lf).cholesky()) {
-                Some(c) => {
-                    let detlog = 2.0 * c.l_dirty().diagonal().map(f64::ln).sum();
-                    if detlog <= 0.0 {
-                        (detlog.exp() + t).ln()
-                    } else {
-                        (-detlog).exp().mul_add(t, 1.0).ln() + detlog
-                    }
-                }
-                None => t.ln(),
-            }
-        };
-        lf * v
-    };
-    let merged = |a: &HcGroup, b: &HcGroup| -> HcGroup {
-        let l = a.n + b.n;
-        let f = (a.n * b.n) as f64 / l as f64;
-        let delta = &a.mean - &b.mean;
-        let trace = a.trace + b.trace + f * delta.norm_squared();
-        let mean = (&a.mean * a.n as f64 + &b.mean * b.n as f64) / l as f64;
-        let w = &a.w + &b.w + (&delta * delta.transpose()) * f;
-        let term = term(l, Some(&w), trace);
-        HcGroup {
-            n: l,
-            mean,
-            w,
-            trace,
-            term,
-        }
-    };
-    // the change in the criterion; a merge of at most p cells needs only
-    // the trace
-    let cost = |a: &HcGroup, b: &HcGroup| -> f64 {
-        let l = a.n + b.n;
-        let t = if l <= p {
-            let f = (a.n * b.n) as f64 / l as f64;
-            term(
-                l,
-                None,
-                a.trace + b.trace + f * (&a.mean - &b.mean).norm_squared(),
-            )
-        } else {
-            merged(a, b).term
-        };
-        t - a.term - b.term
-    };
-    let mut groups: Vec<HcGroup> = (0..n)
-        .map(|i| HcGroup {
-            n: 1,
-            mean: z.row(i).transpose(),
-            w: DMatrix::zeros(p, p),
-            trace: 0.0,
-            term: term(1, None, 0.0),
-        })
-        .collect();
-    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
-    let mut active = vec![true; n];
-    let mut d = vec![f64::INFINITY; n * n];
-    d.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
-        for (j, v) in row.iter_mut().enumerate() {
-            if j != i {
-                *v = cost(&groups[i], &groups[j]);
-            }
-        }
-    });
-    let row_best = |d: &[f64], active: &[bool], i: usize| -> (usize, f64) {
-        let mut best = (usize::MAX, f64::INFINITY);
-        for (j, &v) in d[i * n..(i + 1) * n].iter().enumerate() {
-            if j != i && active[j] && v <= best.1 {
-                best = (j, v);
-            }
-        }
-        best
-    };
-    let mut best: Vec<(usize, f64)> = (0..n)
-        .into_par_iter()
-        .map(|i| row_best(&d, &active, i))
-        .collect();
-    let mut n_groups = n;
-    while n_groups > g.max(1) {
-        let a = (0..n)
-            .filter(|&i| active[i])
-            .min_by(|&a, &b| best[a].1.total_cmp(&best[b].1))
-            .expect("an active group");
-        let (i, j) = (a.min(best[a].0), a.max(best[a].0));
-        groups[i] = merged(&groups[i], &groups[j]);
-        let moved = std::mem::take(&mut members[j]);
-        members[i].extend(moved);
-        active[j] = false;
-        n_groups -= 1;
-        let others: Vec<usize> = (0..n).filter(|&k| active[k] && k != i).collect();
-        let row: Vec<f64> = others
-            .par_iter()
-            .map(|&k| cost(&groups[i], &groups[k]))
-            .collect();
-        for (&k, &c) in others.iter().zip(&row) {
-            d[i * n + k] = c;
-            d[k * n + i] = c;
-        }
-        best[i] = row_best(&d, &active, i);
-        let stale: Vec<usize> = others
-            .iter()
-            .copied()
-            .filter(|&k| best[k].0 == i || best[k].0 == j)
-            .collect();
-        let fresh: Vec<(usize, f64)> = stale
-            .par_iter()
-            .map(|&k| row_best(&d, &active, k))
-            .collect();
-        for (&k, b) in stale.iter().zip(fresh) {
-            best[k] = b;
-        }
-        for &k in &others {
-            if d[k * n + i] < best[k].1 {
-                best[k] = (i, d[k * n + i]);
-            }
-        }
-    }
-    let mut labels = vec![0usize; n];
-    for (c, m) in members.iter().filter(|m| !m.is_empty()).enumerate() {
-        for &i in m {
-            labels[i] = c;
-        }
-    }
-    labels
-}
-
-/// The EEE parameters of one M step (`mclust.f:meeee`): component means,
-/// the Cholesky factor of the shared covariance, log mixing proportions.
-pub struct EeeParams {
-    mu: Vec<DVector<f64>>,
-    chol: nalgebra::Cholesky<f64, nalgebra::Dyn>,
-    log_pro: Vec<f64>,
-    cst: f64,
-}
-
-/// M step of the EEE mixture from posterior `post` (rows × K): weighted
-/// means, the pooled within-component scatter over the rows, proportions.
-pub fn eee_mstep(x: &DMatrix<f64>, post: &DMatrix<f64>) -> anyhow::Result<EeeParams> {
-    let (n, d) = (x.nrows(), x.ncols());
-    let k = post.ncols();
-    let nk: Vec<f64> = (0..k).map(|c| post.column(c).sum()).collect();
-    let mu: Vec<DVector<f64>> = (0..k)
-        .map(|c| x.tr_mul(&post.column(c)) / nk[c].max(1e-300))
-        .collect();
-    let mut cov = DMatrix::<f64>::zeros(d, d);
-    for (c, m) in mu.iter().enumerate() {
-        let mut xc = x.clone();
-        for (i, mut row) in xc.row_iter_mut().enumerate() {
-            let w = post[(i, c)].sqrt();
-            for j in 0..d {
-                row[j] = (row[j] - m[j]) * w;
-            }
-        }
-        cov += xc.tr_mul(&xc);
-    }
-    cov /= n as f64;
-    let chol = match cov.clone().cholesky() {
-        Some(c) => c,
-        None => {
-            let ridge = 1e-6 * cov.diagonal().mean().max(1e-12);
-            (cov + DMatrix::identity(d, d) * ridge)
-                .cholesky()
-                .context("EEE covariance is singular")?
-        }
-    };
-    let logdet = 2.0 * chol.l_dirty().diagonal().map(f64::ln).sum();
-    let log_pro: Vec<f64> = nk.iter().map(|v| (v / n as f64).max(1e-300).ln()).collect();
-    let cst = -0.5 * (d as f64 * (2.0 * std::f64::consts::PI).ln() + logdet);
-    Ok(EeeParams {
-        mu,
-        chol,
-        log_pro,
-        cst,
+        None => (leiden_at(z, resolution, seed)?, "leiden"),
     })
-}
-
-impl EeeParams {
-    /// E step on the rows of `x`: the posterior and the log-likelihood.
-    pub fn estep(&self, x: &DMatrix<f64>) -> (DMatrix<f64>, f64) {
-        let (n, d) = (x.nrows(), x.ncols());
-        let k = self.mu.len();
-        let rows: Vec<(Vec<f64>, f64)> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let xi = x.row(i).transpose();
-                let lp: Vec<f64> = (0..k)
-                    .map(|c| {
-                        let y = self
-                            .chol
-                            .l_dirty()
-                            .solve_lower_triangular(&(&xi - &self.mu[c]))
-                            .unwrap_or_else(|| DVector::from_element(d, f64::INFINITY));
-                        self.log_pro[c] + self.cst - 0.5 * y.norm_squared()
-                    })
-                    .collect();
-                let mx = lp.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                let s: f64 = lp.iter().map(|v| (v - mx).exp()).sum();
-                let lse = mx + s.ln();
-                (lp.iter().map(|v| (v - lse).exp()).collect(), lse)
-            })
-            .collect();
-        let mut post = DMatrix::<f64>::zeros(n, k);
-        let mut loglik = 0.0;
-        for (i, (p, l)) in rows.into_iter().enumerate() {
-            loglik += l;
-            for (c, v) in p.into_iter().enumerate() {
-                post[(i, c)] = v;
-            }
-        }
-        (post, loglik)
-    }
-}
-
-/// mclust's `me(modelName = "EEE")` (`mclust.f:meeee`) from posterior
-/// `post`: M and E steps until the log-likelihood changes by at most
-/// `MCLUST_TOL` of `1 + |loglik|`; the posterior, the log-likelihood and the
-/// number of rounds.
-pub fn eee_em(
-    x: &DMatrix<f64>,
-    mut post: DMatrix<f64>,
-) -> anyhow::Result<(DMatrix<f64>, f64, usize)> {
-    let mut loglik_old = f64::MAX / 2.0;
-    for round in 1..=EM_MAX_ROUNDS {
-        let (p, loglik) = eee_mstep(x, &post)?.estep(x);
-        post = p;
-        let err = (loglik - loglik_old).abs() / (1.0 + loglik.abs());
-        loglik_old = loglik;
-        if err <= MCLUST_TOL {
-            return Ok((post, loglik, round));
-        }
-    }
-    log::warn!("EEE mixture: stopped after {EM_MAX_ROUNDS} rounds");
-    Ok((post, loglik_old, EM_MAX_ROUNDS))
 }
 
 /// `sc.pp.neighbors` (15 neighbours, the cell counted) then modularity
@@ -1142,17 +825,8 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     let z = model.forward(&xt, &g)?.z.to_vec2::<f32>()?;
     let emb = Mat::from_fn(n, args.hidden_dims[1], |i, j| z[i][j]);
 
-    let (labels, membership, clustering) = match args.n_clusters {
-        Some(k) => {
-            let (l, p) = mclust_eee(&emb, k, args.input.seed)?;
-            (l, Some(p), "mclust EEE")
-        }
-        None => (
-            leiden_at(&emb, args.resolution, args.input.seed)?,
-            None,
-            "leiden",
-        ),
-    };
+    let (labels, clustering) =
+        cluster_embedding(&emb, args.n_clusters, args.resolution, args.input.seed)?;
     let found = labels.iter().max().map_or(0, |&m| m + 1);
     info!("{clustering}: {found} domains");
 
@@ -1177,6 +851,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         "final_loss": losses.last(),
         "clustering": clustering,
         "n_clusters": args.n_clusters,
+        "kmeans_max_iter": args.n_clusters.is_some().then_some(KMEANS_MAX_ITER),
         "resolution": args.n_clusters.is_none().then_some(args.resolution),
         "n_domains": found,
     });
@@ -1186,7 +861,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         Fitted {
             method: "stagate",
             labels: &labels,
-            membership: membership.as_ref(),
+            membership: None,
             embedding: &emb,
             embedding_name: "STAGATE",
             settings,

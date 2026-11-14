@@ -38,6 +38,15 @@ pinto lc data.h5 -c coords.csv -o out --n-communities 25
 pinto lc data.h5 -o out   # expression-only
 ```
 
+A fit is reproducible at a fixed `--seed` and thread count
+(`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
+the edges by connected component, which does not depend on the thread count,
+then splits any component larger than the edge count over the thread count
+(at least 256 edges) into blocks of that size. Each block draws its own
+random stream and sees the other blocks' moves only at the end of a sweep,
+so a different thread count gives different blocks and different draws. Set
+`RAYON_NUM_THREADS` to the same value to repeat a run exactly.
+
 ### `dsvd` (delta-svd)
 
 ```sh
@@ -455,16 +464,20 @@ can be scored beside `lc`, `cage` and `dsvd`:
 - `spatialde2`: SpatialDE2's tissue segmentation, a Poisson hidden Markov
   random field with a Dirichlet-process prior over regions (Kats,
   Vento-Tormo and Stegle 2021, bioRxiv 10.1101/2021.10.27.466045);
-- `stagate`: a graph-attention autoencoder over the spatial graph, its
-  embedding clustered (STAGATE; Dong and Zhang 2022, Nature Communications
-  13:1739).
+- `stagate`: a graph-attention autoencoder over the spatial graph (STAGATE;
+  Dong and Zhang 2022, Nature Communications 13:1739), its embedding
+  clustered by pinto's own methods: seeded k-means into exactly
+  `--n-clusters` domains, or Leiden when `--n-clusters` is not given. With
+  `--n-clusters` this differs from the STAGATE tutorial, which fits a
+  Gaussian mixture in R (a GPL package, not ported) at that step.
 
 Each is a model-level port of its reference code: the same preprocessing,
-model, loss or updates, defaults, stopping rule and clustering step, not
-bit-for-bit output; each module's documentation names the repository and
-commit read, the function behind each step, and every deliberate
-deviation. SpatialDE's and STAGATE_pyG's MIT license texts, with their
-copyright lines, are in `THIRD_PARTY_NOTICES.md`. They take the flags `lc`
+model, loss or updates, defaults, stopping rule and clustering step (but
+for stagate's fixed-K clustering, above), not bit-for-bit output; each
+module's documentation names the repository and commit read, the function
+behind each step, and every deliberate deviation. The license texts of
+SpatialDE, STAGATE_pyG and STAGATE (MIT) and of scanpy (BSD 3-Clause), with
+their copyright lines, are in `THIRD_PARTY_NOTICES.md`. They take the flags `lc`
 does for its inputs: the data files (one section each), `-c` coordinate
 files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 `--seed`; spatial graphs are built within a section only. `--n-clusters`
