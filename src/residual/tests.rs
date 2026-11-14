@@ -196,6 +196,40 @@ fn a_run_writes_each_files_excess_and_coordinates() {
     assert!(Path::new(&format!("{out}/residual.json")).exists());
 }
 
+/// The plan names what a run writes, all of it: each file's zarr and
+/// coordinates, in the run's order, then residual.json, and nothing else
+/// in the output folder.
+#[test]
+fn the_plan_names_every_file_a_run_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let out = format!("{d}/resid");
+    let a = args(&prefix, &out, None);
+    let plan = Plan::new(&Run::open(&prefix).unwrap(), &a).unwrap();
+    assert_eq!(
+        plan.made(),
+        [
+            "S1.zarr",
+            "S1.coords.parquet",
+            "S2.zarr",
+            "S2.coords.parquet",
+            "residual.json"
+        ]
+        .map(|f| std::path::PathBuf::from(format!("{out}/{f}")))
+    );
+    assert_eq!(plan.coord_names, ["row_um".into(), "col_um".into()]);
+    run_residual(&a).unwrap();
+    let mut written: Vec<std::path::PathBuf> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    written.sort();
+    let mut made = plan.made();
+    made.sort();
+    assert_eq!(written, made);
+}
+
 /// A subset of the run's files is refused: a fit names its cells by its
 /// files, so the subset could not find the run's cells.
 #[test]
