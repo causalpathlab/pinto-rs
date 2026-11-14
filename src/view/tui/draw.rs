@@ -523,11 +523,14 @@ impl App<'_> {
     }
 }
 
+/// Characters of a group name in a legend row.
+pub(super) const LEGEND_NAME: usize = 17;
+
 /// A legend row's text: the name and cell count, fitted to the panel.
 pub(super) fn legend_text(comm: &super::super::data::Communities, c: usize, n: usize) -> String {
     // a long name keeps its start and end, so names sharing a prefix differ
-    let name = legume_tui::chrome::middle(&comm.name(c), 17);
-    let width = if comm.names.is_some() { 17 } else { 4 };
+    let name = style::middle(&comm.name(c), LEGEND_NAME);
+    let width = if comm.names.is_some() { LEGEND_NAME } else { 4 };
     format!(" {name:<width$} {:>9}", thousands(n))
 }
 
