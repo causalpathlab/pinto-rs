@@ -125,8 +125,9 @@ and receptor over the contacts (SpatialDM, Li 2023); and the contact
 co-expression score `Σ L_i R_j` (NICHES, Raredon 2022; COMMOT, Cang 2023).
 Each is one-sided, its null the cell-type labels (or, for the contact
 statistics, the ligand within each section) permuted up to
-`--marginal-permutations` times (default 2000, stopping early once the verdict
-at 5% is settled). The cell types are the run's own (`--cell-types` or the
+`--marginal-permutations` times (default 2000; Moran's I and the contact
+score stop early once their verdict at 5% is settled, while the cell-type
+test runs every permutation, since its per-type-pair p and q need them). The cell types are the run's own (`--cell-types` or the
 lupin round), `unassigned` permuted with the rest but never a tested type;
 a run with none falls back to the identity bins coarsened to at most 8 types,
 as `lra-simulate` does, and the manifest's lra options (`marginal_baselines`:
