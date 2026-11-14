@@ -540,3 +540,27 @@ fn batch_adaptation_absorbs_a_community_wide_shift_and_keeps_a_local_one() {
         "the community-wide shift is absorbed ({all}, {one})"
     );
 }
+
+/// A data file given that does not exist is refused while planning, before
+/// any count is read or a job started, and nothing is written.
+#[test]
+fn a_missing_data_file_is_refused_while_planning() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, files) = fixture(d);
+    let out = format!("{d}/resid");
+    let given = Some(vec![
+        files[0].clone().into(),
+        format!("{d}/nowhere/S2.zarr").into(),
+    ]);
+    let a = args(&prefix, &out, given);
+    let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(
+        e.contains("nowhere/S2.zarr") && e.contains("not found"),
+        "{e}"
+    );
+    assert!(!Path::new(&out).exists());
+}

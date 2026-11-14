@@ -282,7 +282,15 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
         run.meta.command
     );
     let files: Vec<Box<str>> = match &args.data_files {
-        Some(f) => f.clone(),
+        Some(f) => {
+            for file in f {
+                anyhow::ensure!(
+                    Path::new(file.as_ref()).exists(),
+                    "--data-files {file}: not found"
+                );
+            }
+            f.clone()
+        }
         None => run
             .meta
             .data_files
