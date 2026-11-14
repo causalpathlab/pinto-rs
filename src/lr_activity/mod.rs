@@ -126,7 +126,16 @@ impl crate::util::metadata::LraOptions {
         if !self.targets.is_empty() {
             flag("--targets", self.targets.join(","));
         }
+        if let Some(c) = &self.cell_types {
+            flag("--cell-types", c.clone());
+        }
+        if let Some(r) = &self.region {
+            flag("--region", r.clone());
+        }
         let d = Self::default();
+        if self.region_jackknife != d.region_jackknife {
+            flag("--region-jackknife", self.region_jackknife.clone());
+        }
         if self.species != d.species {
             flag("--species", self.species.clone());
         }

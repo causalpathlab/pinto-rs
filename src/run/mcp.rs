@@ -853,6 +853,9 @@ fn specs() -> Vec<ToolSpec> {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
+                    "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference pairs the benchmark picks from (--lr-pairs); needed for gene names no reference knows"},
+                    "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
+                    "plant_region": {"type": "string", "description": "Plant every effect only in this region of region (--plant-region), and read it on that region's row beside the pooled one"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
@@ -869,7 +872,10 @@ fn with_lra_input(mut schema: Value) -> Value {
                     "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
                     "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
                     "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
-                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"}
+                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
+                    "cell_types": {"type": "string", "description": "Cell types per cell, a table with cell and cell_type columns (--cell-types), in place of the run's lupin round; for a residual fit, the stage-1 types"},
+                    "region": {"type": "string", "description": "Region per cell, a table with cell and region columns (--region): adjusted for within each section, and a row per region (section region:<name>); for a residual fit, its communities"},
+                    "region_jackknife": {"enum": ["refit", "no-refit"], "description": "How a region row near significance (p < 0.2) is jackknifed over its sections' tiles, its SEs widened, never narrowed (--region-jackknife): no-refit keeps the nuisance fits and reads every replicate from one pass of them (on srt-simulate L2, 7.6% of one-donor nulls rejected against 10.5% without, power 0.79 against 0.84 at effect PVE 0.02); refit refits them per tile and is conservative (0% rejected, power 0.13) at one refit per tile [default: no-refit]"}
     });
     if let (Some(props), Value::Object(shared)) = (schema["properties"].as_object_mut(), shared) {
         props.extend(shared);

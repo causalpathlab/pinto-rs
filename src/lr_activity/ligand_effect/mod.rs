@@ -64,6 +64,7 @@
 //!   the threshold-response curve, under the [`options`] asked for, into
 //!   [`rows`];
 //! - the estimator: [`overlap`], [`crossfit`] and [`regression`] estimate,
+//!   [`jackknife`] widens a region row's SE by the nuisance error,
 //!   [`association`] reads the unadjusted comparisons, [`inference`] and
 //!   [`averaging`] read and combine the estimates;
 //! - across pairs: [`report`] corrects for multiplicity and [`verdict`] words
@@ -90,6 +91,7 @@ mod folds;
 pub mod frame;
 mod genes;
 pub mod inference;
+mod jackknife;
 mod memory;
 pub mod only;
 mod options;
@@ -113,7 +115,7 @@ pub mod verdict;
 #[cfg(test)]
 mod tests;
 
-use crate::lr_activity::args::ReferenceSpecies;
+use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use std::path::Path;
@@ -186,6 +188,14 @@ pub struct Settings<'a> {
     pub block_size: Option<usize>,
     /// `--only`: the pairs to estimate; empty for every pair.
     pub only: &'a [Box<str>],
+    /// `--cell-types` and `--region`, as given, for the record.
+    pub cell_types: Option<&'a str>,
+    pub region: Option<&'a str>,
+    /// `lra-simulate --plant-region`: the region label the benchmark plants
+    /// its effects in; `None` for everywhere, and always for `lra`.
+    pub plant_region: Option<&'a str>,
+    /// `--region-jackknife`.
+    pub region_jackknife: RegionJackknife,
 }
 
 impl Settings<'_> {
@@ -199,6 +209,9 @@ impl Settings<'_> {
             species: self.species.name(),
             seed: self.seed,
             identity_excluded: Vec::new(),
+            cell_types: self.cell_types.map(abs),
+            region: self.region.map(abs),
+            region_jackknife: self.region_jackknife.name(),
         }
     }
 
@@ -230,4 +243,7 @@ pub struct RunInputs<'a> {
     pub coords: &'a [Option<(f32, f32)>],
     /// Cell-type code per data column and the types' names, when known.
     pub cell_type: Option<(&'a [u32], &'a [Box<str>])>,
+    /// Region code per data column and the regions' names, when given
+    /// (`--region`): adjusted for within each section, and a row per region.
+    pub region: Option<(&'a [u32], &'a [Box<str>])>,
 }

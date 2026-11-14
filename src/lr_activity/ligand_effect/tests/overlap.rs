@@ -292,6 +292,28 @@ fn the_marginal_correlation_is_pearson_with_a_clustered_se() {
 }
 
 /// The Hessian kernel against the plain sum.
+/// The Newton Hessian's single-precision Gram is the f64 one to the
+/// precision a step needs.
+#[test]
+fn weighted_gram_in_f32_is_close_to_the_f64_sum() {
+    use crate::lr_activity::ligand_effect::regression::weighted_gram;
+    let mut rng = SmallRng::seed_from_u64(4);
+    let (m, d) = (1000, 12);
+    let rows: Vec<f64> = (0..m * d)
+        .map(|_| StandardNormal.sample(&mut rng))
+        .collect();
+    let rows32: Vec<f32> = rows.iter().map(|&v| v as f32).collect();
+    let w: Vec<f64> = (0..m).map(|_| rng.random::<f64>()).collect();
+    let exact = weighted_gram(&rows, d, &w);
+    let fast = weighted_gram(&rows32, d, &w);
+    let scale = exact.amax();
+    assert!(
+        (&exact - &fast).amax() < 1e-5 * scale,
+        "{}",
+        (&exact - &fast).amax() / scale
+    );
+}
+
 #[test]
 fn weighted_gram_is_the_plain_sum() {
     use crate::lr_activity::ligand_effect::regression::weighted_gram;
@@ -393,9 +415,9 @@ fn bordered_factor_solves_the_bordered_hessian() {
     let x = &w.design.x;
     let base = logistic_base(x, 2, &[], &t, &rows, 1.0, None).unwrap();
     let d = 4;
-    let z: Vec<f64> = rows
+    let z: Vec<f32> = rows
         .iter()
-        .flat_map(|&i| [x[(i, 0)] as f64, x[(i, 1)] as f64, added[0][i], added[1][i]])
+        .flat_map(|&i| [x[(i, 0)], x[(i, 1)], added[0][i] as f32, added[1][i] as f32])
         .collect();
     let h = penalized_hessian(&z, d, &base.weights, 1.0).unwrap();
     let border = Bordered::new(&z, d, &base).unwrap();

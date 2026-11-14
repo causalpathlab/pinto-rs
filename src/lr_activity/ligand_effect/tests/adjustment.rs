@@ -106,6 +106,7 @@ fn world_confounded_by(kind: Confounder, seed: u64) -> World {
             identity_bin: &identity_bin,
             log1p_depth: &log1p_depth,
             cell_type: Some(&ty),
+            region: None,
         },
         &TissueOpts {
             folds: 4,
@@ -298,6 +299,7 @@ fn opposite_fields_world(seed: u64) -> World {
             identity_bin: &identity_bin,
             log1p_depth: &log1p_depth,
             cell_type: None,
+            region: None,
         },
         &TissueOpts {
             folds: 4,
@@ -353,7 +355,7 @@ fn steps_are_nested_prefixes_of_one_matrix() {
     assert_eq!(widths, [section, spatial, identity]);
     assert_eq!(t.design.p(), identity + DEPTH_COLS);
     for s in &t.steps {
-        assert!(std::ptr::eq(s.design.view(&t.design).x, &t.design.x));
+        assert!(std::ptr::eq(s.design.view(&t.design).x, &*t.design.x));
     }
 }
 

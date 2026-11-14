@@ -7,7 +7,8 @@
 //! adjustment, which show how much of an apparent effect each confounder
 //! group explains: (a) section, (b) + spatial smooth, (c) + cell identity
 //! (receiver and neighbour identity, and when cell types are given the
-//! receiver's type and the share of each type among its neighbours); the
+//! receiver's type and the share of each type among its neighbours, and
+//! when regions are given the receiver's region within its section); the
 //! full design adds depth. Each is a column prefix of the one standardized
 //! matrix and owns only its small per-fold Grams.
 
@@ -18,6 +19,7 @@ use super::folds::spatial_folds;
 use super::receivers::{receiver_contacts, size_factors};
 use super::INTERNALS;
 use super::LOG_TARGET;
+use crate::lr_activity::input::UNASSIGNED;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
@@ -25,13 +27,14 @@ use data_beans::alg::random_projection::{binary_sort_columns, RandProjOps};
 /// The section label of the pooled row.
 pub const ALL_SECTIONS: &str = "all";
 
-/// Where an estimand is summed: the whole tissue, one section, or one
-/// receiver cell type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where an estimand is summed: the whole tissue, one section, one
+/// receiver cell type, or one region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     All,
     Section(u32),
     CellType(u32),
+    Region(u32),
 }
 
 /// Settings that shape the tissue, shared by estimation and simulation.
@@ -93,6 +96,10 @@ pub struct Tissue {
     /// Each row's dominant-neighbour identity bin
     /// ([`dominant_neighbour_bin`]).
     pub neighbour_bin: Vec<usize>,
+    /// Region code of each row and the regions' names, when given
+    /// ([`TissueInputs::region`]); every pair then gets one row per named
+    /// region (`section` = `region:<name>`).
+    pub region: Option<(Vec<u32>, Vec<Box<str>>)>,
 }
 
 /// One nested adjustment set: a column prefix of [`Tissue::design`].
@@ -119,7 +126,7 @@ fn step_widths(groups: &[Group]) -> [usize; 3] {
     let identity = end_of(&|g| {
         matches!(
             g,
-            "identity" | "neighbour identity" | "cell type" | "neighbour cell type"
+            "identity" | "neighbour identity" | "cell type" | "neighbour cell type" | "region"
         )
     })
     .max(spatial);
@@ -141,6 +148,10 @@ pub struct TissueInputs<'a> {
     pub log1p_depth: &'a [f32],
     /// Optional cell-type code per data column; joins the identity group.
     pub cell_type: Option<&'a [u32]>,
+    /// Optional region code per data column and each code's name: a region
+    /// indicator per section joins the identity group, and each named region
+    /// (not [`UNASSIGNED`]) gets rows of its own.
+    pub region: Option<(&'a [u32], &'a [Box<str>])>,
 }
 
 impl Tissue {
@@ -214,6 +225,9 @@ impl Tissue {
         let cell_type: Option<Vec<u32>> = inp
             .cell_type
             .map(|ct| cell.iter().map(|&c| ct[c]).collect());
+        let region: Option<(Vec<u32>, Vec<Box<str>>)> = inp
+            .region
+            .map(|(r, names)| (cell.iter().map(|&c| r[c]).collect(), names.to_vec()));
 
         let (x, groups) = confounders::build(&ConfounderInputs {
             coords: &coords,
@@ -224,6 +238,7 @@ impl Tissue {
             identity: &identity,
             log_depth: &log_depth,
             cell_type: cell_type.as_deref(),
+            region: region.as_ref().map(|(r, _)| r.as_slice()),
             scales: &opts.scales,
             n_freq: opts.n_freq,
             seed: opts.seed,
@@ -278,14 +293,15 @@ impl Tissue {
             scopes: Vec::new(),
             scope_rows: Vec::new(),
             neighbour_bin,
+            region,
         };
         tissue.set_scopes();
         Ok(tissue)
     }
 
     /// The scopes of every pair with their row labels: pooled, each section
-    /// when there are several, and each receiver cell type when types are
-    /// named; and each scope's rows.
+    /// when there are several, each receiver cell type when types are
+    /// named, and each named region; and each scope's rows.
     fn set_scopes(&mut self) {
         let mut out: Vec<(Box<str>, Scope)> = vec![(ALL_SECTIONS.into(), Scope::All)];
         if self.section_names.len() > 1 {
@@ -294,24 +310,48 @@ impl Tissue {
             }
         }
         if let (Some(ct), false) = (&self.cell_type, self.cell_type_names.is_empty()) {
-            let mut codes: Vec<u32> = ct.clone();
-            codes.sort_unstable();
-            codes.dedup();
-            for c in codes {
-                let name = self
-                    .cell_type_names
-                    .get(c as usize)
-                    .map_or_else(|| c.to_string(), |n| n.to_string());
-                out.push((format!("type:{name}").into(), Scope::CellType(c)));
-            }
+            out.extend(labelled_scopes(
+                ct,
+                &self.cell_type_names,
+                "type",
+                Scope::CellType,
+                false,
+            ));
+        }
+        if let Some((codes, names)) = &self.region {
+            out.extend(labelled_scopes(codes, names, "region", Scope::Region, true));
         }
         let scopes: Vec<Scope> = out.iter().map(|(_, s)| *s).collect();
-        self.scope_rows = scope_rows(&scopes, &self.section, self.cell_type.as_deref());
+        self.scope_rows = scope_rows(
+            &scopes,
+            &self.section,
+            self.cell_type.as_deref(),
+            self.region.as_ref().map(|(r, _)| r.as_slice()),
+        );
         self.scopes = out;
     }
 
     pub fn n(&self) -> usize {
         self.cell.len()
+    }
+
+    /// The rows of region `code`'s scope; an error when it has none (no
+    /// `--region`, or the region has no named row).
+    pub fn region_rows(&self, code: u32) -> anyhow::Result<&[u32]> {
+        self.scopes
+            .iter()
+            .position(|(_, s)| *s == Scope::Region(code))
+            .map(|k| self.scope_rows[k].as_slice())
+            .ok_or_else(|| anyhow::anyhow!("region code {code} has no row in this tissue"))
+    }
+
+    /// Each row's membership of `rows`, ascending rows of this tissue.
+    pub fn mask(&self, rows: &[u32]) -> Vec<bool> {
+        let mut m = vec![false; self.n()];
+        for &i in rows {
+            m[i as usize] = true;
+        }
+        m
     }
 
     /// Name the cell-type codes given in [`TissueInputs::cell_type`]
@@ -360,40 +400,68 @@ fn second_neighbours(contacts: &Contacts) -> Vec<Vec<u32>> {
 }
 
 /// A section's row label: its name, unless the name reads as the pooled
-/// row's ([`ALL_SECTIONS`]) or a cell type's (`type:…`), which gets a
-/// `section:` prefix so no two kinds of row share a label.
+/// row's ([`ALL_SECTIONS`]), a cell type's (`type:…`) or a region's
+/// (`region:…`), which gets a `section:` prefix so no two kinds of row share
+/// a label.
 pub fn section_label(name: &str) -> Box<str> {
-    if name == ALL_SECTIONS || name.starts_with("type:") || name.starts_with("section:") {
+    if name == ALL_SECTIONS
+        || ["type:", "region:", "section:"]
+            .iter()
+            .any(|p| name.starts_with(p))
+    {
         format!("section:{name}").into()
     } else {
         name.into()
     }
 }
 
-/// The rows (ascending) inside each scope, given each row's section and
-/// cell type.
-pub fn scope_rows(scopes: &[Scope], section: &[u32], cell_type: Option<&[u32]>) -> Vec<Vec<u32>> {
-    let mut by_section: HashMap<u32, Vec<usize>> = HashMap::default();
-    let mut by_type: HashMap<u32, Vec<usize>> = HashMap::default();
-    for (k, s) in scopes.iter().enumerate() {
-        match *s {
-            Scope::All => {}
-            Scope::Section(v) => by_section.entry(v).or_default().push(k),
-            Scope::CellType(v) => by_type.entry(v).or_default().push(k),
-        }
+/// One row per label present in `codes`, ascending by code: `prefix:name`
+/// with its scope, a code without a name read as its number, and the
+/// [`UNASSIGNED`] label left out when `skip_unassigned`.
+fn labelled_scopes(
+    codes: &[u32],
+    names: &[Box<str>],
+    prefix: &str,
+    scope: fn(u32) -> Scope,
+    skip_unassigned: bool,
+) -> Vec<(Box<str>, Scope)> {
+    let mut present = codes.to_vec();
+    present.sort_unstable();
+    present.dedup();
+    present
+        .into_iter()
+        .filter_map(|c| {
+            let name = names
+                .get(c as usize)
+                .map_or_else(|| c.to_string(), |n| n.to_string());
+            (!skip_unassigned || name != UNASSIGNED)
+                .then(|| (format!("{prefix}:{name}").into(), scope(c)))
+        })
+        .collect()
+}
+
+/// The rows (ascending) inside each scope, given each row's section, cell
+/// type and region.
+pub fn scope_rows(
+    scopes: &[Scope],
+    section: &[u32],
+    cell_type: Option<&[u32]>,
+    region: Option<&[u32]>,
+) -> Vec<Vec<u32>> {
+    let mut at: HashMap<Scope, Vec<usize>> = HashMap::default();
+    for (k, &s) in scopes.iter().enumerate() {
+        at.entry(s).or_default().push(k);
     }
     let mut out: Vec<Vec<u32>> = vec![Vec::new(); scopes.len()];
     for i in 0..section.len() {
-        for (k, s) in scopes.iter().enumerate() {
-            if *s == Scope::All {
-                out[k].push(i as u32);
-            }
-        }
-        for &k in by_section.get(&section[i]).into_iter().flatten() {
-            out[k].push(i as u32);
-        }
-        if let Some(ct) = cell_type {
-            for &k in by_type.get(&ct[i]).into_iter().flatten() {
+        let own = [
+            Some(Scope::All),
+            Some(Scope::Section(section[i])),
+            cell_type.map(|ct| Scope::CellType(ct[i])),
+            region.map(|r| Scope::Region(r[i])),
+        ];
+        for s in own.iter().flatten() {
+            for &k in at.get(s).into_iter().flatten() {
                 out[k].push(i as u32);
             }
         }

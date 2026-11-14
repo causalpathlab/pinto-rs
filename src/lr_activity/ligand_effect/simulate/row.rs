@@ -3,6 +3,7 @@
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::baselines::{self, Baselines};
 use crate::lr_activity::ligand_effect::inference::Estimate;
+use crate::lr_activity::ligand_effect::jackknife::Jackknife;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 #[derive(Clone, Debug)]
@@ -42,6 +43,25 @@ pub struct SimRow {
     /// Wall time of the whole run and of its baselines, in seconds.
     pub seconds: f64,
     pub baseline_seconds: f64,
+    /// The estimate read on the planted region's row, when the effect was
+    /// planted in one ([`Scenario::region`]).
+    pub region: Option<RegionRead>,
+}
+
+/// The estimate, its truths and its verdict on one region's row: the same
+/// fit as the pooled row, summed over the region's receivers.
+#[derive(Clone, Copy, Debug)]
+pub struct RegionRead {
+    pub truth: f64,
+    pub truth_exposed: f64,
+    pub estimate: Estimate,
+    /// The region's effect minus the rest's
+    /// ([`crate::lr_activity::ligand_effect::effects::ScopeEffects::versus_rest`]);
+    /// with the effect planted in the region alone, its truth is the region's.
+    pub versus_rest: Estimate,
+    pub verdict: Verdict,
+    /// The jackknife ratios the region row's SEs were widened by.
+    pub jackknife: Jackknife,
 }
 
 impl SimRow {

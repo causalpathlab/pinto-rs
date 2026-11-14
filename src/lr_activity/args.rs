@@ -75,6 +75,61 @@ pub struct LraInputArgs {
     pub batch_files: Option<Vec<Box<str>>>,
 
     #[arg(
+        long = "cell-types",
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath,
+        help_heading = "Input",
+        help = "Cell types per cell (cell, cell_type), in place of the run's lupin round",
+        long_help = "Cell-type labels, one row per cell: a table (TSV, CSV or parquet) with a\n\
+                     `cell` column naming the data's cells and a `cell_type` (or `label`)\n\
+                     column; without those names, the first two columns. They stand in for\n\
+                     the --from run's newest lupin round: confounder columns for the\n\
+                     receiver's type and its neighbours' types, and a row per type. For a\n\
+                     residual fit, the donor-invariant stage-1 types. Cells it leaves out\n\
+                     share the type `unassigned`."
+    )]
+    pub cell_types: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath,
+        help_heading = "Input",
+        help = "Region per cell (cell, region): adjusted for within each section, and a row per region",
+        long_help = "Region labels, one row per cell: a table (TSV, CSV or parquet) with a\n\
+                     `cell` column and a `region` (or `label`) column; without those names,\n\
+                     the first two columns. Each region gets an indicator per section among\n\
+                     the confounders (the smooth fields cannot follow a sharp region edge),\n\
+                     and each pair a row per region, `section` = `region:<name>`, its q\n\
+                     corrected within that region. For a residual fit, the stage-3\n\
+                     communities, best fitted with the pairs' genes dropped so the region is\n\
+                     not read off the response. Cells it leaves out are `unassigned`, which\n\
+                     gets no row."
+    )]
+    pub region: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = RegionJackknife::NoRefit,
+        help_heading = "Input",
+        help = "How a region row's SE is widened near significance",
+        long_help = "How a --region row whose effect, or contrast with the rest, has p < 0.2\n\
+                     is checked by a delete-one-tile jackknife over the tiles of its\n\
+                     sections; its SEs are widened by the jackknife over the clustered SE,\n\
+                     never narrowed.\n\
+                     no-refit (default): the tile leaves the averages alone, the nuisance\n\
+                     fits kept, all replicates read from one pass of them.\n\
+                     refit: each replicate refits the nuisance models without the tile,\n\
+                     so their own error counts. Conservative, at a large cost in power and\n\
+                     one refit per tile.\n\
+                     Neither removes confounding finer than the spatial smooth follows: a\n\
+                     hidden field at that scale, driving both ligand and response inside a\n\
+                     region, biases its row as it biases the pooled one."
+    )]
+    pub region_jackknife: RegionJackknife,
+
+    #[arg(
         long = "knn-spatial",
         short = 'k',
         default_value_t = 5,
@@ -277,6 +332,26 @@ pub struct SrtLrActivityArgs {
     pub emit_json: bool,
 }
 
+/// The delete-one-tile jackknife of region rows ([`SrtLrActivityArgs`]'s
+/// `--region-jackknife`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RegionJackknife {
+    /// Each replicate refits the nuisance models without its tile
+    Refit,
+    /// The tile leaves the average only; the nuisance fits are the full ones
+    #[default]
+    NoRefit,
+}
+
+impl RegionJackknife {
+    /// As `--region-jackknife` spells it.
+    pub fn name(self) -> String {
+        self.to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default()
+    }
+}
+
 /// Species of the contact-effect reference.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceSpecies {
@@ -307,6 +382,37 @@ pub struct LraSimulateArgs {
         help = "Output prefix [default with --from: the run's prefix]"
     )]
     pub out: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_hint = ValueHint::FilePath,
+        help = "Ligand-receptor pairs (two-column TSV/CSV), added to the reference",
+        long_help = "Ligand-receptor pair file, as `pinto lra --lr-pairs` takes it, added\n\
+                     to the reference pairs the benchmark picks from. Needed for data\n\
+                     whose gene names no reference knows (a simulation's GENE1, ...)."
+    )]
+    pub lr_pairs: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_delimiter(','),
+        value_hint = ValueHint::FilePath,
+        help = "Response programmes (TSV or GMT), added to the reference",
+        long_help = "Response programme files, as `pinto lra --targets` takes them: the\n\
+                     programmes the benchmark's responses are drawn on."
+    )]
+    pub targets: Vec<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "REGION",
+        help = "Plant the effect only on receivers in this --region label",
+        long_help = "Plant every scenario's effect only on receivers in this region (a\n\
+                     label of the --region table), and read the estimate, its truth and\n\
+                     its verdict on that region's row as well as the pooled one. The\n\
+                     hidden confounders still act everywhere. Needs --region."
+    )]
+    pub plant_region: Option<Box<str>>,
 
     #[arg(
         long,

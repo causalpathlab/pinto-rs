@@ -8,6 +8,7 @@
 //! | contact-neighbour mean identity | neighbour composition |
 //! | cell-type indicators (optional) | annotated cell type |
 //! | share of each cell type among contacts (optional) | annotated sender cell type |
+//! | region indicators within each section (optional) | a labelled region, e.g. a residual-fit patch |
 //! | receiver log depth (piecewise linear), neighbour mean log depth | detection |
 //!
 //! The smooth fields stand in for unmeasured regional confounders because
@@ -103,6 +104,10 @@ pub struct ConfounderInputs<'a> {
     /// dropped) and the share of each of those types among the row's
     /// contacts join the identity block.
     pub cell_type: Option<&'a [u32]>,
+    /// Optional region code per row: an indicator per region within each
+    /// section ([`region_levels`]), after the cell types. The smooth cannot
+    /// follow a sharp region edge; these can.
+    pub region: Option<&'a [u32]>,
     /// Smooth length scales in contact lengths.
     pub scales: &'a [f64],
     pub n_freq: usize,
@@ -129,6 +134,9 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         l
     });
     let n_type_cols = levels.len().saturating_sub(1);
+    let region_cols = inp
+        .region
+        .map_or_else(Vec::new, |r| region_levels(inp.section, r));
     let n_fields = inp.n_sections.max(1);
     let n_freq = freq_per_section(inp.n_freq, n_fields);
     let p = 1
@@ -136,6 +144,7 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         + inp.scales.len() * n_fields * n_freq
         + 2 * k
         + 2 * n_type_cols
+        + region_cols.len()
         + DEPTH_COLS;
     // Filled column by column, so the only full-size allocation is the
     // matrix itself.
@@ -217,6 +226,19 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
         close(&mut groups, "neighbour cell type".into(), n_type_cols);
     }
 
+    if let Some(r) = inp.region {
+        for &(sec, level) in &region_cols {
+            let col: Vec<f64> = inp
+                .section
+                .iter()
+                .zip(r)
+                .map(|(&s, &v)| (s == sec && v == level) as u8 as f64)
+                .collect();
+            put(&mut x, &col);
+        }
+        close(&mut groups, "region".into(), region_cols.len());
+    }
+
     for col in depth_basis(inp.log_depth) {
         put(&mut x, &col);
     }
@@ -225,6 +247,39 @@ pub fn build(inp: &ConfounderInputs<'_>) -> (DMatrix<f32>, Vec<Group>) {
     debug_assert_eq!(at, p);
     debug_assert_eq!(groups.last().map(|g| g.cols.end), Some(p));
     (x, groups)
+}
+
+/// The region indicator columns, as (section, region) pairs: within each
+/// section, every region present but the section's most common one (the
+/// section's intercept stands for it), in section then region order. A
+/// region gets a column per section, so a region that differs between
+/// donors is not forced to one shift.
+pub fn region_levels(section: &[u32], region: &[u32]) -> Vec<(u32, u32)> {
+    let mut count: std::collections::BTreeMap<(u32, u32), usize> = Default::default();
+    for (&s, &r) in section.iter().zip(region) {
+        *count.entry((s, r)).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    let mut at = count.iter().peekable();
+    while let Some(&(&(s, _), _)) = at.peek() {
+        let in_section: Vec<(u32, usize)> = std::iter::from_fn(|| {
+            at.next_if(|((s2, _), _)| *s2 == s)
+                .map(|(&(_, r), &n)| (r, n))
+        })
+        .collect();
+        // The most common region, ties to the smaller code, is the reference.
+        let reference = in_section
+            .iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+            .map(|&(r, _)| r);
+        out.extend(
+            in_section
+                .iter()
+                .filter(|&&(r, _)| Some(r) != reference)
+                .map(|&(r, _)| (s, r)),
+        );
+    }
+    out
 }
 
 /// Knots of the receiver's depth basis, as quantiles of its log depth.

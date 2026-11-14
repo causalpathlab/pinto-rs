@@ -3,24 +3,26 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const STAGES: [&str; 8] = [
+const STAGES: [&str; 9] = [
     "frame",
     "main fits",
     "no-spill fit",
     "step fits",
     "other thresholds",
     "band",
+    "region jackknife (its refits also count as main fits)",
     "(in fits: outcome ridge",
     "propensity)",
 ];
-pub const RIDGE: usize = 6;
-pub const LOGISTIC: usize = 7;
+pub const RIDGE: usize = 7;
+pub const LOGISTIC: usize = 8;
 pub const FRAME: usize = 0;
 pub const MAIN: usize = 1;
 pub const NOSPILL: usize = 2;
 pub const STEPS: usize = 3;
 pub const THRESHOLDS: usize = 4;
 pub const BAND: usize = 5;
+pub const JACKKNIFE: usize = 6;
 
 static NS: [AtomicU64; STAGES.len()] = [const { AtomicU64::new(0) }; STAGES.len()];
 static ALL_SKIPPED: AtomicU64 = AtomicU64::new(0);

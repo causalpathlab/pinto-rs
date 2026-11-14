@@ -175,6 +175,9 @@ fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String
     if s.marker {
         d += " marker";
     }
+    if let Some(r) = s.region {
+        d += &format!(" planted in region {r}");
+    }
     d
 }
 

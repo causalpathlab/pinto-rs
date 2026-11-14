@@ -33,7 +33,7 @@ fn available_memory() -> Option<usize> {
 /// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_base`]) on
 /// `p` confounders: those and the pair's own columns.
 fn propensity_bytes(rows: usize, p: usize) -> usize {
-    rows * (p + 8) * 8
+    rows * (p + 8) * std::mem::size_of::<super::regression::LogisticRow>()
 }
 
 /// Propensities a threshold keeps for its bordered refits: the main and
