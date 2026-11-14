@@ -114,6 +114,14 @@ impl crate::util::metadata::LraOptions {
         if let Some(o) = out {
             argv.extend(["-o".into(), o.into()]);
         }
+        if self.marginal_baselines.is_some() {
+            argv.push("--marginal-baselines".into());
+            if let Some(n) = self.marginal_permutations {
+                if n != crate::lr_activity::ligand_effect::PERMUTATIONS {
+                    argv.extend(["--marginal-permutations".into(), n.to_string()]);
+                }
+            }
+        }
         let mut flag = |name: &str, value: String| argv.extend([name.into(), value]);
         if method != args::LraMethod::default() {
             if let Some(m) = method.to_possible_value() {

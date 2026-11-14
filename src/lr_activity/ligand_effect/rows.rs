@@ -1,5 +1,6 @@
 //! One row of the `lra` tables, in memory: a pair and section with its estimates.
 
+use super::baselines::Baselines;
 use super::effects::ScopeEffects;
 use super::inference::Estimate;
 use super::jackknife::Jackknife;
@@ -38,6 +39,9 @@ pub struct EffectRow {
     pub n_incompetent_bins: usize,
     /// The threshold–response curve (pooled row only; empty elsewhere).
     pub curve: Vec<CurvePoint>,
+    /// The co-expression baselines over the whole tissue
+    /// (`--marginal-baselines`, pooled row only; `None` elsewhere).
+    pub marginal: Option<Baselines>,
     /// The delete-one-tile jackknife's SE ratios, by which `effects` was
     /// widened (region rows near significance only; NaN elsewhere).
     pub jackknife: Jackknife,
@@ -95,6 +99,7 @@ impl EffectRow {
             n_competent_bins: 0,
             n_incompetent_bins: 0,
             curve: Vec::new(),
+            marginal: None,
             jackknife: Jackknife::NONE,
             effect_p: f64::NAN,
             effect_q: f64::NAN,

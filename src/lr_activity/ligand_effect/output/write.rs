@@ -1,7 +1,7 @@
 //! Writing the `lra` and `lra-simulate` tables.
 
 use super::columns::{f32s, Columns};
-use crate::lr_activity::ligand_effect::baselines::Baselines;
+use crate::lr_activity::ligand_effect::baselines::{Baselines, CellTypeTest, TypeLabels, TypePair};
 use crate::lr_activity::ligand_effect::rows::{CurvePoint, EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow, COMPARED};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -13,8 +13,17 @@ pub const Q_SCOPE_ALL: &str = "all pairs";
 /// row). `verdict` is a [`super::super::verdict::Verdict`] code, `verdict_note`
 /// its words; the headline's [`super::super::rows::Moments`] are computed here.
 /// `q_scope` says which pairs the q-values were corrected over:
-/// [`Q_SCOPE_ALL`], or a `--only` subset.
-pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::Result<()> {
+/// [`Q_SCOPE_ALL`], or a `--only` subset. With `marginal`
+/// (`--marginal-baselines`) the co-expression baselines follow, before
+/// `q_scope`: `celltype_score`, `celltype_p`, `celltype_tested`, `moran_i`,
+/// `moran_p`, `contact_score` and `contact_p`, NaN (and `celltype_tested` 0) on every
+/// row but a pair's pooled one.
+pub fn write_effects(
+    path: &str,
+    rows: &[EffectRow],
+    q_scope: &str,
+    marginal: bool,
+) -> anyhow::Result<()> {
     let moments: Vec<(&EffectRow, Moments)> = rows
         .iter()
         .map(|r| (r, Moments::of(&r.effects.competent)))
@@ -74,8 +83,22 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .f("effect_pct", |(_, m)| m.pct)
         .f("effect_pct_sd", |(_, m)| m.pct_sd)
         .f("effect_pct_lo", |(_, m)| m.pct_lo)
-        .f("effect_pct_hi", |(_, m)| m.pct_hi)
-        .s("q_scope", |_| q_scope);
+        .f("effect_pct_hi", |(_, m)| m.pct_hi);
+    if marginal {
+        let b = |f: fn(&Baselines) -> f64| {
+            move |(r, _): &(&EffectRow, Moments)| r.marginal.as_ref().map_or(f64::NAN, f)
+        };
+        c.f("celltype_score", b(|x| x.celltype_score))
+            .f("celltype_p", b(|x| x.celltype_p))
+            .i("celltype_tested", |(r, _)| {
+                r.marginal.map_or(0, |x| x.celltype_tested)
+            })
+            .f("moran_i", b(|x| x.moran_i))
+            .f("moran_p", b(|x| x.moran_p))
+            .f("contact_score", b(|x| x.contact_score))
+            .f("contact_p", b(|x| x.contact_p));
+    }
+    c.s("q_scope", |_| q_scope);
     c.write(path)
 }
 
@@ -117,6 +140,69 @@ pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
     write_named_table(path, "row", &names, &table)
 }
 
+/// One row of `{out}.lra.celltype.parquet`: a pair's tested sender type ×
+/// receiver type, named.
+pub struct CelltypeRow {
+    pub ligand: Box<str>,
+    pub receptor: Box<str>,
+    pub sender_type: Box<str>,
+    pub receiver_type: Box<str>,
+    pub stat: TypePair,
+    pub q: f64,
+    pub permutations: usize,
+    pub labels: &'static str,
+}
+
+/// The rows of one pair's cell-type test, its types named by `labels`.
+pub fn celltype_rows(
+    ligand: &str,
+    receptor: &str,
+    test: &CellTypeTest,
+    labels: &TypeLabels,
+) -> Vec<CelltypeRow> {
+    test.pairs
+        .iter()
+        .zip(test.q())
+        .map(|(t, q)| CelltypeRow {
+            ligand: ligand.into(),
+            receptor: receptor.into(),
+            sender_type: labels.names[t.sender as usize].clone(),
+            receiver_type: labels.names[t.receiver as usize].clone(),
+            stat: *t,
+            q,
+            permutations: test.permutations,
+            labels: labels.source.name(),
+        })
+        .collect()
+}
+
+/// `{out}.lra.celltype.parquet` (`--marginal-baselines`): one row per pair
+/// and tested sender type × receiver type. CellChat's score
+/// (`mean_ligand_sender × mean_receptor_receiver`, `log1p` of the
+/// depth-normalized counts), its one-sided permutation `p`, its BH `q`
+/// within the pair's tested type pairs, the detection shares that let it be
+/// tested, the permutations run, and where the types came from (`labels`:
+/// `cell-types` or `identity-bins`).
+pub fn write_celltype(path: &str, rows: &[CelltypeRow]) -> anyhow::Result<()> {
+    let mut c = Columns::new(rows);
+    c.s("ligand", |r| &r.ligand)
+        .s("receptor", |r| &r.receptor)
+        .s("sender_type", |r| &r.sender_type)
+        .s("receiver_type", |r| &r.receiver_type)
+        .i("n_sender", |r| r.stat.n_sender)
+        .i("n_receiver", |r| r.stat.n_receiver)
+        .f("mean_ligand_sender", |r| r.stat.mean_ligand)
+        .f("mean_receptor_receiver", |r| r.stat.mean_receptor)
+        .f("ligand_detected_sender", |r| r.stat.ligand_detected)
+        .f("receptor_detected_receiver", |r| r.stat.receptor_detected)
+        .f("score", |r| r.stat.score)
+        .f("p", |r| r.stat.p)
+        .f("q", |r| r.q)
+        .i("permutations", |r| r.permutations)
+        .s("labels", |r| r.labels);
+    c.write(path)
+}
+
 /// Columns of `{out}.lra-simulate.parquet` that `read_sim_runs` reads
 /// back, shared by the writer and the reader.
 pub(super) mod sim_cols {
@@ -136,6 +222,9 @@ pub(super) mod sim_cols {
     /// The region code the effect was planted in; NaN where it was planted
     /// everywhere. Read when present, so older tables still read.
     pub const REGION: &str = "region";
+    /// The planted region's name (`--plant-region`); empty where the effect
+    /// was planted everywhere.
+    pub const PLANTED_REGION: &str = "planted_region";
 
     /// `{method}_reject`.
     pub fn reject(method: &str) -> String {
@@ -149,7 +238,8 @@ pub(super) mod sim_cols {
 /// is 0 where the estimate was not reported. The co-expression baselines
 /// ([`super::super::baselines`]) come with their p and a 0/1 `_reject` at 5%,
 /// as have the other methods of [`super::super::simulate::COMPARED`].
-pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
+/// `planted` names the region every run's effect was planted in, if one.
+pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::Result<()> {
     use sim_cols::*;
     let mut c = Columns::new(rows);
     c.s("ligand", |r| &r.ligand)
@@ -200,6 +290,7 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f("baseline_seconds", |r| r.baseline_seconds);
     let g = |f: fn(&RegionRead) -> f64| move |r: &SimRow| r.region.as_ref().map_or(f64::NAN, f);
     c.f(REGION, |r| r.scenario.region.map_or(f64::NAN, f64::from))
+        .s(PLANTED_REGION, |_| planted.unwrap_or_default())
         .f("region_truth", g(|x| x.truth))
         .f("region_truth_exposed", g(|x| x.truth_exposed))
         .f("region_estimate", g(|x| x.estimate.theta))

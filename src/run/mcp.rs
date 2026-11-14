@@ -812,12 +812,15 @@ fn specs() -> Vec<ToolSpec> {
              ligand-receptor pair, do receivers touching ligand-carrying neighbours change \
              their response programme, compared with similar cells that do not (method \
              contact-effect, the default)? Writes {out}.lra.parquet and {out}.lra.curve.parquet \
-             and records the table in the run's manifest (slot lra.table); with only, a few \
-             pairs to {out}.lra.only-<tag>.parquet (slot lra.subsets). The co-expression methods \
+             and records the table in the run's manifest (slot lra.table); with \
+             marginal_baselines also {out}.lra.celltype.parquet (slot lra.celltype); with only, \
+             a few pairs to {out}.lra.only-<tag>.parquet (and .curve.parquet, and \
+             .celltype.parquet with marginal_baselines; slot lra.subsets). The co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
              on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the pairs \
              whose effect survived the controls (percent change with its 95% CI, q) and the files. Called again with the \
-             same run and out once done, it reads the tables instead of running. Never \
+             same run and out once done, it reads the tables instead of running; a call asking \
+             for other options than those the manifest records for them is refused. Never \
              written over.",
             with_lra_input(json!({
                 "type": "object",
@@ -832,6 +835,8 @@ fn specs() -> Vec<ToolSpec> {
                     "n_permutations": {"type": "integer", "minimum": 1, "description": "coexpression-test: sample permutations for the null (--n-permutations) [default: 1000]"},
                     "json_fwer_threshold": {"type": "number", "description": "coexpression-test: FWER cutoff for the JSON sidecar of significant pairs (--json-fwer-threshold) [default: 0.05]"},
                     "min_gene_count": {"type": "number", "description": "Co-expression methods: minimum total count of a ligand or receptor gene for its pair to be scored (--min-gene-count) [default: 50]"},
+                    "marginal_baselines": {"type": "boolean", "description": "contact-effect: also score each pair's unadjusted co-expression baselines (--marginal-baselines): cell-type label permutation (CellPhoneDB v2, CellChat's score) on the run's cell types (the identity bins when it has none), bivariate Moran's I (SpatialDM) and the contact score (NICHES, COMMOT). Adds celltype_score, celltype_p, celltype_tested, moran_i, moran_p, contact_score, contact_p to the pooled rows and writes {out}.lra.celltype.parquet (slot lra.celltype), one row per tested sender type x receiver type. None adjusts for confounding. Slow on a full reference [default: false]"},
+                    "marginal_permutations": {"type": "integer", "minimum": 1, "description": "marginal_baselines: permutations of each test (--marginal-permutations); Moran's I and the contact score stop early once their 5% verdict is settled, the cell-type test runs all N (its per-type-pair p and q need them); with m tested type pairs its summary can reject only when m / (1 + N) < 0.05. Needs marginal_baselines [default: 2000]"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
@@ -855,7 +860,7 @@ fn specs() -> Vec<ToolSpec> {
                     "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
                     "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference pairs the benchmark picks from (--lr-pairs); needed for gene names no reference knows"},
                     "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
-                    "plant_region": {"type": "string", "description": "Plant every effect only in this region of region (--plant-region), and read it on that region's row beside the pooled one"},
+                    "plant_region": {"type": "string", "description": "Plant every effect only in this region of region (--plant-region), and read it on that region's row beside the pooled one; the table names it (column planted_region)"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
