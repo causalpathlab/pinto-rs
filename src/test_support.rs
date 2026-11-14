@@ -45,3 +45,16 @@ pub(crate) fn write_zarr(
     backend.register_column_names_vec(&cols);
     path.to_str().unwrap().into()
 }
+
+/// `p` (absolute) as a path relative to where the tests run.
+#[cfg(feature = "view")]
+pub(crate) fn from_cwd(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let up: std::path::PathBuf = std::env::current_dir()
+        .unwrap()
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .map(|_| Component::ParentDir)
+        .collect();
+    up.join(p.strip_prefix("/").unwrap())
+}

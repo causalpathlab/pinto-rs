@@ -54,3 +54,39 @@ fn win_ansi_maps_the_symbols_labels_use() {
     assert_eq!(win_ansi("5 µm ×2.0"), b"5 \xB5m \xD72.0");
     assert_eq!(win_ansi("✓"), b"?");
 }
+
+/// A focused PDF of a level with no marker tables (a truth run) is drawn
+/// without markers rather than refused.
+#[test]
+fn a_focused_pdf_of_a_level_without_markers_is_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = super::lra::lra_run(dir.path());
+    let pdf = dir.path().join("a.pdf");
+    let png = dir.path().join("a.png");
+    let (pdf, png) = (pdf.to_str().unwrap(), png.to_str().unwrap());
+    let args = super::view_args(&prefix, &["--pdf", pdf, "--png", png, "--focus", "C0"]);
+    crate::view::write_still(&args).unwrap();
+    assert!(std::path::Path::new(pdf).is_file() && std::path::Path::new(png).is_file());
+}
+
+/// `--png` and `--pdf` make the folders they go in, and a file that
+/// cannot be written is named.
+#[test]
+fn a_still_makes_its_folder_and_names_a_path_it_cannot_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = super::lra::lra_run(dir.path());
+    let png = dir.path().join("new/sub/a.png");
+    let pdf = dir.path().join("new/b.pdf");
+    let (png, pdf) = (png.to_str().unwrap(), pdf.to_str().unwrap());
+    crate::view::write_still(&super::view_args(&prefix, &["--png", png, "--pdf", pdf])).unwrap();
+    assert!(std::path::Path::new(png).is_file() && std::path::Path::new(pdf).is_file());
+
+    // A file where its folder would be.
+    std::fs::write(dir.path().join("file"), "").unwrap();
+    let blocked = dir.path().join("file/c.png");
+    let blocked = blocked.to_str().unwrap();
+    for flag in ["--png", "--pdf"] {
+        let e = crate::view::write_still(&super::view_args(&prefix, &[flag, blocked])).unwrap_err();
+        assert!(format!("{e:#}").contains(blocked), "{flag}: {e:#}");
+    }
+}

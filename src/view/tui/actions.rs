@@ -167,7 +167,7 @@ impl App<'_> {
     pub(super) fn step_level(
         &mut self,
         by: isize,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
         let n = self.levels.len() as isize;
         let next = (self.cur as isize + by).clamp(0, n - 1) as usize;
@@ -177,14 +177,13 @@ impl App<'_> {
         self.go_level(next, terminal)
     }
 
-    /// Level `next`'s communities on the map, loaded first if need be.
+    /// Level `next`'s communities on the map, loaded first if need be; a
+    /// load that fails changes nothing.
     pub(super) fn go_level(
         &mut self,
         next: usize,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
-        self.show = Show::Communities;
-        self.bar_focus = None;
         if self.levels[next].is_none() {
             self.busy(
                 terminal,
@@ -192,6 +191,8 @@ impl App<'_> {
             )?;
             self.levels[next] = Some(self.base.level(next, self.edges)?);
         }
+        self.show = Show::Communities;
+        self.bar_focus = None;
         self.cur = next;
         let k = self.level().comm.k;
         self.focus = vec![false; k];
@@ -206,17 +207,20 @@ impl App<'_> {
         Ok(())
     }
 
-    pub(super) fn toggle_edges(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    pub(super) fn toggle_edges(
+        &mut self,
+        terminal: Option<&mut DefaultTerminal>,
+    ) -> anyhow::Result<()> {
         if self.level().grouping {
             self.status = "edges belong to communities: a to show them".into();
             return Ok(());
         }
-        self.edges = !self.edges;
-        if self.edges && self.level().edges.is_none() {
+        if !self.edges && self.level().edges.is_none() {
             self.busy(terminal, "loading edges ...".into())?;
             let base = self.base;
             base.load_edges(self.level_mut())?;
         }
+        self.edges = !self.edges;
         if self.edges
             && render::mode(&self.base.scene(self.level()), &self.viewport(), self.point)
                 != Mode::Points

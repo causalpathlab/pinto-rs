@@ -227,3 +227,20 @@ fn a_simulation_is_named_any_way_a_run_is() {
         assert_eq!(sim_folder(&format!("{want}{given}")), want, "{given:?}");
     }
 }
+
+/// Label rows naming cells the truth lacks are counted and warned of: a
+/// labelling of another simulation can name the same cells.
+#[test]
+fn label_rows_not_in_the_truth_are_counted() {
+    let t = truth();
+    let mut l = labels_from(&t, |i| t.domain[i] as i64);
+    let s = score(&t, &l).unwrap();
+    assert_eq!(s.n_unmatched, 0);
+    assert!(s.unmatched_warning().is_none());
+    l.push(("elsewhere_1".into(), 0));
+    l.push(("elsewhere_2".into(), -1));
+    let s = score(&t, &l).unwrap();
+    assert_eq!((s.n_scored, s.n_unmatched), (t.cells.len(), 2));
+    let w = s.unmatched_warning().expect("a warning");
+    assert!(w.contains("2 label rows"), "{w}");
+}

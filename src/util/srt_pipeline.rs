@@ -327,7 +327,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     if let Some(path) = ab.mask_cells.as_deref() {
         let names = data_vec.column_names()?;
         let (listed, regions) = if is_region_file(path) {
-            let regions = read_regions(path)?;
+            let regions = read_regions(path).map_err(|e| anyhow::anyhow!("--mask-cells {e:#}"))?;
             let (xc, yc) = plane_columns(&coordinate_names)?;
             let x: Vec<f32> = coordinates.column(xc).iter().copied().collect();
             let y: Vec<f32> = coordinates.column(yc).iter().copied().collect();

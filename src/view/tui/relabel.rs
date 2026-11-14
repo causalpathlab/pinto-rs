@@ -57,7 +57,10 @@ pub(super) enum Staging {
 
 impl App<'_> {
     /// `R`: start or stop relabelling the round's clusters.
-    pub(super) fn toggle_relabel(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    pub(super) fn toggle_relabel(
+        &mut self,
+        terminal: Option<&mut DefaultTerminal>,
+    ) -> anyhow::Result<()> {
         if self.relabel.is_some() {
             self.leave_relabel();
             return Ok(());
@@ -179,11 +182,7 @@ impl App<'_> {
 
     /// Keys while relabelling; `false` passes a key on to the map (zoom,
     /// save, help, quit and the looks).
-    pub(super) fn relabel_key(
-        &mut self,
-        key: KeyEvent,
-        _terminal: &mut DefaultTerminal,
-    ) -> anyhow::Result<bool> {
+    pub(super) fn relabel_key(&mut self, key: KeyEvent) -> anyhow::Result<bool> {
         let r = self.relabel.as_ref().expect("relabelling");
         if r.merge.is_some() {
             return Ok(self.merge_key(key));

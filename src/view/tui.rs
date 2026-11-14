@@ -395,7 +395,7 @@ impl<'a> App<'a> {
             }
             self.poll_job(terminal)?;
             self.poll_lra();
-            self.follow_tick(terminal)?;
+            self.follow_tick(Some(terminal))?;
             session.status(&self.session_status());
             // After an attach the terminal is asked again, before the
             // mouse is on, and the pictures made anew for it.
@@ -446,7 +446,7 @@ impl<'a> App<'a> {
             return Ok(());
         };
         if !job.quit() {
-            self.busy(terminal, "finishing lupin's next round ...".into())?;
+            self.busy(Some(terminal), "finishing lupin's next round ...".into())?;
         }
         job.wait();
         Ok(())
@@ -681,10 +681,10 @@ impl<'a> App<'a> {
     }
 
     /// Show `msg` before a blocking load, while a terminal is there.
-    fn busy(&mut self, terminal: &mut DefaultTerminal, msg: String) -> anyhow::Result<()> {
-        if !self.session.attached() {
+    fn busy(&mut self, terminal: Option<&mut DefaultTerminal>, msg: String) -> anyhow::Result<()> {
+        let Some(terminal) = terminal.filter(|_| self.session.attached()) else {
             return Ok(());
-        }
+        };
         self.status = msg;
         let side = self.layout(terminal)?;
         let (panel, _) = self.panel(side.height);

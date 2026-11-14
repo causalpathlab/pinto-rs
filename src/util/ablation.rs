@@ -339,14 +339,14 @@ pub struct Region {
 
 /// The polygons of a GeoJSON file: a FeatureCollection, a Feature, or a bare
 /// Polygon / MultiPolygon geometry. A feature's section is its `section`
-/// property (or `sample`).
+/// property (or `sample`). Errors name the file; the caller adds how it
+/// was given.
 pub fn read_regions(path: &str) -> anyhow::Result<Vec<Region>> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("--mask-cells {path}: {e}"))?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("--mask-cells {path}: not JSON: {e}"))?;
-    let regions = parse_regions(&value)?;
-    anyhow::ensure!(!regions.is_empty(), "--mask-cells {path}: no polygon in it");
+    let text = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{path}: not JSON: {e}"))?;
+    let regions = parse_regions(&value).map_err(|e| anyhow::anyhow!("{path}: {e:#}"))?;
+    anyhow::ensure!(!regions.is_empty(), "{path}: no polygon in it");
     Ok(regions)
 }
 

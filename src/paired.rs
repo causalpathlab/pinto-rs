@@ -95,7 +95,8 @@ pub fn read_side(runs: &[String]) -> anyhow::Result<HashMap<Box<str>, (String, U
 /// listed is its own donor. A section is matched as `--mask-cells` matches
 /// one: the same, or an `_`-separated end of it.
 pub fn read_donor_map(path: &str) -> anyhow::Result<Vec<(String, String)>> {
-    let pairs: Vec<(String, String)> = read_lines(path)?
+    let lines = read_lines(path).map_err(|e| anyhow::anyhow!("--donor-map {path}: {e}"))?;
+    let pairs: Vec<(String, String)> = lines
         .iter()
         .filter_map(|line| {
             let mut f = line

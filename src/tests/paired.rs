@@ -71,3 +71,12 @@ fn units_split_differently_are_refused() {
         .to_string();
     assert!(e.contains("split"), "{e}");
 }
+
+#[test]
+fn a_donor_map_that_cannot_be_read_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.tsv");
+    let path = path.to_str().unwrap();
+    let e = format!("{:#}", read_donor_map(path).unwrap_err());
+    assert!(e.contains(&format!("--donor-map {path}")), "{e}");
+}

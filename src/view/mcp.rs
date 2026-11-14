@@ -177,8 +177,9 @@ struct ExportArgs {
 
 impl Open {
     pub(super) fn new(prefix: &str, level: Option<&str>) -> anyhow::Result<Self> {
-        // No terminal to read a background from: dark, as --png draws.
-        let base = Base::load(prefix, "auto", Theme::Dark)?;
+        // From the root, so what it answers is too. No terminal to read a
+        // background from: dark, as --png draws.
+        let base = Base::load(&shown_path(Path::new(prefix)), "auto", Theme::Dark)?;
         let at = base.run.level_index(level)?;
         let mut levels: Vec<Option<Level>> = base.run.levels.iter().map(|_| None).collect();
         let level = base.level(at, false)?;
@@ -221,7 +222,7 @@ impl Open {
     }
 
     /// What the run holds, and what `view_map` can be asked to show.
-    fn summary(&self) -> Value {
+    pub(super) fn summary(&self) -> Value {
         let run = &self.base.run;
         let geom = &self.base.geom;
         let tags: Vec<&str> = run.levels.iter().map(|l| l.tag.as_str()).collect();
@@ -256,7 +257,11 @@ impl Open {
             "level": self.level().comm.tag,
             "k": self.level().comm.k,
             "groups": self.groups(),
-            "data_files": run.data_files(),
+            "data_files": run
+                .data_files()
+                .iter()
+                .map(|f| shown_path(Path::new(&**f)))
+                .collect::<Vec<_>>(),
             "rounds": rounds,
         })
     }
@@ -386,7 +391,7 @@ impl Open {
                     .iter()
                     .map(group_id)
                     .collect::<anyhow::Result<Vec<_>>>()?;
-                super::parse_focus(&ids, comm)?
+                super::parse_focus(&ids, comm, level.grouping)?
             }
             None if regrouped => vec![false; comm.k],
             None => self.focus.clone(),
@@ -644,7 +649,11 @@ impl Open {
 
     fn markers(&mut self, a: MarkersArgs) -> anyhow::Result<Vec<Content>> {
         let id = group_id(&a.group)?;
-        let focus = super::parse_focus(std::slice::from_ref(&id), &self.level().comm)?;
+        let focus = super::parse_focus(
+            std::slice::from_ref(&id),
+            &self.level().comm,
+            self.level().grouping,
+        )?;
         let c = focus.iter().position(|&f| f).expect("one group named");
         // A round's groupings come with theirs.
         let (base, level) = self.parts();

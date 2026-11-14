@@ -264,3 +264,82 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
 fn level_of<'a>(app: &'a App) -> &'a Level {
     app.drawn().0
 }
+
+/// A key whose action fails shows why in the popup and the viewer goes
+/// on: `e` on a level with no edges written leaves edges off.
+#[test]
+fn a_key_that_fails_shows_the_error_and_the_viewer_goes_on() {
+    use super::super::tests::lra::lra_run;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let args = super::super::tests::view_args(&prefix, &[]);
+    let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
+    let level = base.level(0, false).unwrap();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let gfx = (Gfx::Cells(Glyphs::HalfBlocks, None), (8., 16.));
+    let mut app = App::new(&base, level, &args, gfx, &session);
+    app.map = Rect::new(0, 0, 80, 48);
+    app.canvas = app.map;
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+
+    app.key(key(KeyCode::Char('e')), None);
+    let error = app.error.clone().expect("the failure is shown");
+    assert!(error.contains("no link_community output"), "{error}");
+    assert!(!app.edges, "edges stay off when they cannot load");
+    assert!(!app.quit);
+    // Any key closes the popup; the viewer takes keys again after it.
+    app.key(key(KeyCode::Char('x')), None);
+    assert!(app.error.is_none());
+    app.key(key(KeyCode::Char('H')), None);
+    assert!(app.structure);
+}
+
+/// Esc in the structure plot under the map goes back to the map alone.
+#[test]
+fn esc_leaves_the_structure_plot() {
+    use super::super::tests::lra::lra_run;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let args = super::super::tests::view_args(&prefix, &[]);
+    let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
+    let level = base.level(0, false).unwrap();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let gfx = (Gfx::Cells(Glyphs::HalfBlocks, None), (8., 16.));
+    let mut app = App::new(&base, level, &args, gfx, &session);
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+
+    app.key(key(KeyCode::Char('H')), None);
+    assert!(app.view == plots::View::Map && app.structure);
+    app.key(key(KeyCode::Esc), None);
+    assert!(app.view == plots::View::Map && !app.structure);
+}
+
+/// A level that fails to load leaves the view as it was: the error shows,
+/// and the level, grouping and structure pick stay.
+#[test]
+fn a_level_that_fails_to_load_leaves_the_view_as_it_was() {
+    use super::super::tests::lra::lra_run;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    // A coarser level whose propensity is gone.
+    let manifest = format!("{prefix}.pinto.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    meta["levels"] = serde_json::json!([
+        {"tag": "L1", "level_index": 0, "propensity": format!("{prefix}.L1.parquet")},
+        {"tag": "final", "level_index": 1, "propensity": format!("{prefix}.propensity.parquet")},
+    ]);
+    std::fs::write(&manifest, meta.to_string()).unwrap();
+    let args = super::super::tests::view_args(&prefix, &[]);
+    let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
+    let level = base.level(1, false).unwrap();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let gfx = (Gfx::Cells(Glyphs::HalfBlocks, None), (8., 16.));
+    let mut app = App::new(&base, level, &args, gfx, &session);
+    assert_eq!(app.cur, 1);
+    app.bar_focus = Some(0);
+
+    app.key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE), None);
+    assert!(app.error.is_some(), "the failure is shown");
+    assert_eq!((app.cur, app.bar_focus), (1, Some(0)));
+}

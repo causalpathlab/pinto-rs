@@ -216,6 +216,8 @@ fn scoring_the_truth_itself_is_perfect() {
         assert_eq!(d["dependence"], 0.0, "{v}");
     }
     assert_eq!(s["n_scored"], s["n_spots"], "{v}");
+    assert_eq!(s["n_unmatched"], 0, "{v}");
+    assert!(v.get("warnings").is_none(), "{v}");
     let patches = s["patches"].as_array().unwrap();
     assert!(!patches.is_empty(), "L2 plants a donor-specific domain");
     for p in patches {
@@ -247,6 +249,20 @@ fn scoring_the_truth_itself_is_perfect() {
         };
         assert_eq!(w["scores"], v["scores"], "{truth}");
     }
+
+    // Rows of cells the truth lacks are warned of, by labelling.
+    let more = dir.path().join("more.tsv");
+    let rows = std::fs::read_to_string(&table).unwrap() + "elsewhere_1\tD1\n";
+    std::fs::write(&more, rows).unwrap();
+    let call: SimScoreToolArgs =
+        crate::mcp::parse(json!({"truth": sim, "labels": [more.to_string_lossy()]})).unwrap();
+    let reply = sim_score(call).unwrap();
+    let [_, Content::Json(w)] = &reply[..] else {
+        panic!("{reply:?}");
+    };
+    assert_eq!(w["scores"][0]["score"]["n_unmatched"], 1, "{w}");
+    let warned = w["warnings"][0]["warning"].as_str().unwrap_or_default();
+    assert!(warned.contains("not in the truth"), "{w}");
 
     // A labelling that cannot be read is named.
     let bad: SimScoreToolArgs =

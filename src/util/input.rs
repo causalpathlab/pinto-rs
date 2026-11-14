@@ -506,6 +506,10 @@ pub fn read_one_coord_file(
         "--coord-column-indices selects {} column; coordinates need at least two",
         user_indices.len()
     );
+    anyhow::ensure!(
+        std::path::Path::new(coord_file).exists(),
+        "coord file '{coord_file}' does not exist"
+    );
 
     let read_coord = |indices: &[usize], names: &[Box<str>]| -> anyhow::Result<MatWithNames<Mat>> {
         if is_zarr {
@@ -541,10 +545,18 @@ pub fn read_one_coord_file(
     };
 
     let initial = read_coord(user_indices, user_names);
+    // A reader that finds none of the names asked for can hand back every
+    // column instead; only the columns named count.
+    let named = |r: &MatWithNames<Mat>| {
+        r.cols
+            .iter()
+            .filter(|c| user_names.is_empty() || user_names.contains(c))
+            .count()
+    };
     let needs_fallback = user_indices.is_empty()
         && match &initial {
             Err(_) => true,
-            Ok(r) => r.mat.ncols() < 2,
+            Ok(r) => r.mat.ncols() < 2 || named(r) < r.cols.len(),
         };
 
     if needs_fallback {
@@ -558,15 +570,18 @@ pub fn read_one_coord_file(
         // positions puts every cell in the same place and the run looks
         // healthy. A wrong answer that announces nothing is worse than an
         // error, and the caller already has an exact way to say what it meant.
-        let mut hint = String::new();
+        let mut hint = match &initial {
+            Err(e) => format!(" Reading it: {e:#}."),
+            Ok(_) => String::new(),
+        };
         if !is_zarr {
             if let Ok(first) =
                 legume_numeric::matrix::common_io::first_line_fields(coord_file, &['\t', ',', ' '])
             {
-                hint = format!(" The file's first line reads {first:?}.");
+                hint += &format!(" The file's first line reads {first:?}.");
             }
         }
-        let matched = initial.as_ref().map_or(0, |r| r.mat.ncols());
+        let matched = initial.as_ref().map_or(0, named);
         return Err(anyhow::anyhow!(
             "coord file '{}' resolved {matched} of the coordinate columns asked for \
              {:?}, and two are needed.{} \

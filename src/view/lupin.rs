@@ -347,6 +347,24 @@ pub fn review(round: &Path) -> anyhow::Result<BTreeMap<i64, Reviewed>> {
 /// by the same two-column rule as pinto view.
 const MIN_LUPIN: (u32, u32, u32) = (0, 6, 1);
 
+/// The version in `lupin --version` output: the first word shaped like
+/// `major.minor[.patch]`, so a build hash after it ("lupin 0.9.8 (270b301)")
+/// is not read as one.
+pub fn lupin_version(text: &str) -> Option<(u32, u32, u32)> {
+    text.split_whitespace().find_map(|word| {
+        let core = word.split('-').next()?;
+        let parts: Vec<u32> = core
+            .split('.')
+            .map(|p| p.parse().ok())
+            .collect::<Option<_>>()?;
+        match parts[..] {
+            [a, b] => Some((a, b, 0)),
+            [a, b, c, ..] => Some((a, b, c)),
+            _ => None,
+        }
+    })
+}
+
 /// Whether the installed lupin is new enough; the reason when it is not.
 /// A good answer is kept for the session; a bad one is asked again, so
 /// installing lupin needs no restart.
@@ -363,19 +381,11 @@ pub fn check() -> Result<(), String> {
         .output()
         .map_err(|e| format!("cannot run {}: {e} (set PINTO_LUPIN to its path)", binary()))?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let version = text.split_whitespace().last().unwrap_or("");
-    let mut parts = version
-        .split(['.', '-'])
-        .map(|p| p.parse::<u32>().unwrap_or(0));
-    let v = (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-    );
-    if v < MIN_LUPIN {
+    if lupin_version(&text).is_none_or(|v| v < MIN_LUPIN) {
         let (a, b, c) = MIN_LUPIN;
         return Err(format!(
-            "lupin {version} is too old; need {a}.{b}.{c}+ (cargo install lupin-rs)"
+            "{} is too old; need lupin {a}.{b}.{c}+ (cargo install lupin-rs)",
+            text.trim()
         ));
     }
     let _ = OK.set(());

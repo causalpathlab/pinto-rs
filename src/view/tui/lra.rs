@@ -108,7 +108,7 @@ impl App<'_> {
         if self.lra.is_none() {
             let tables = self.base.run.tables();
             if !tables.is_empty() {
-                self.busy_maybe(terminal, "reading the lra table ...")?;
+                self.busy(terminal, "reading the lra table ...".into())?;
             }
             match LraView::new(tables) {
                 Ok(v) => self.lra = v,
@@ -129,18 +129,6 @@ impl App<'_> {
         self.pair_pending = self.lra.as_ref().is_some_and(|v| v.selected.is_some());
         self.need_map = true;
         Ok(())
-    }
-
-    /// [`App::busy`] when a terminal is there.
-    fn busy_maybe(
-        &mut self,
-        terminal: Option<&mut DefaultTerminal>,
-        msg: &str,
-    ) -> anyhow::Result<()> {
-        match terminal {
-            Some(t) => self.busy(t, msg.into()),
-            None => Ok(()),
-        }
     }
 
     fn leave_lra(&mut self) {
@@ -314,7 +302,10 @@ impl App<'_> {
     pub(super) fn draw_pair(&mut self, terminal: Option<&mut DefaultTerminal>) {
         let first = self.lra.as_ref().is_some_and(LraView::needs_receivers);
         if first {
-            let _ = self.busy_maybe(terminal, "reading the run's receivers as lra saw them ...");
+            let _ = self.busy(
+                terminal,
+                "reading the run's receivers as lra saw them ...".into(),
+            );
         }
         let (base, level) = (self.base, self.cur);
         let Some(v) = self.lra.as_mut() else { return };
@@ -378,7 +369,7 @@ impl App<'_> {
         }
         let next = (v.at + 1) % v.tables.len();
         let label = style::middle(&v.tables[next].label(), LABEL_WIDTH);
-        self.busy_maybe(terminal, &format!("reading {label} ..."))?;
+        self.busy(terminal, format!("reading {label} ..."))?;
         let v = self.lra.as_mut().expect("checked");
         match v.load(next) {
             Ok(()) => self.status = label,

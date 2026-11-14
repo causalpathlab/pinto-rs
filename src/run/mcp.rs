@@ -8,6 +8,7 @@ use super::form::{blamed, check, Kind, Method};
 use super::script::{self, is_header, outputs, under};
 use super::METHODS;
 use crate::mcp::{parse, shown_path};
+use anyhow::Context as _;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -125,6 +126,7 @@ impl Tools {
         let method = Method::new(&self.cli, "predict")?;
         anyhow::ensure!(!a.model.trim().is_empty(), "give model, the fitted run");
         let model = as_run(&a.model);
+        crate::predict::check_model(crate::util::metadata::run_prefix(&model))?;
         let mut flags = a.flags;
         anyhow::ensure!(
             !flags.keys().any(|k| k.trim_start_matches('-') == "model"),
@@ -563,7 +565,8 @@ fn region(a: RegionArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
             )?;
             let x: Vec<f32> = table.coords.iter().map(|c| c.0).collect();
             let y: Vec<f32> = table.coords.iter().map(|c| c.1).collect();
-            let regions = read_regions(path)?;
+            let regions = read_regions(&shown_path(Path::new(path)))
+                .map_err(|e| anyhow::anyhow!("geojson {e:#}"))?;
             let (picked, _) = cells_in_regions(&table.names, &x, &y, &regions)?;
             let cells = table
                 .names
@@ -596,6 +599,8 @@ fn region(a: RegionArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         text.push_str(c);
         text.push('\n');
     }
+    legume_numeric::matrix::common_io::mkdir_parent(&made[0].to_string_lossy())
+        .with_context(|| format!("making the folder of {}", shown_path(&made[0])))?;
     cx.write_file(&made[0], &text)?;
     let path = shown_path(&made[0]);
     Ok(vec![Content::Json(json!({

@@ -140,6 +140,68 @@ mod reading {
         assert_eq!(r.cols[1].as_ref(), "bar");
     }
 
+    /// A parquet of two cells, a row-name column then `cols`.
+    fn write_coord_parquet(dir: &tempfile::TempDir, cols: &[&str]) -> String {
+        use legume_numeric::matrix::traits::IoOps;
+        let path = dir.path().join("c.parquet").to_string_lossy().into_owned();
+        let rows: Vec<Box<str>> = vec!["cell_a".into(), "cell_b".into()];
+        let cols: Vec<Box<str>> = cols.iter().map(|&c| c.into()).collect();
+        let m = Mat::from_fn(2, cols.len(), |i, j| (i * 10 + j) as f32);
+        m.to_parquet_with_names(&path, (Some(&rows), Some("cell")), Some(&cols))
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn parquet_coordinates_named_but_not_there_are_refused() {
+        // Names that match none of the file's columns once read every
+        // column back, and the first two passed as coordinates unseen.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_coord_parquet(&dir, &["a", "b"]);
+        let names: Vec<Box<str>> = vec!["nope_x".into(), "nope_y".into()];
+        let err = match read_one_coord_file(&path, &[], &names, None) {
+            Ok(r) => panic!("read {:?} for {names:?}", r.cols),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            err.contains("nope_x") && err.contains("coordinate columns"),
+            "{err}"
+        );
+        // Of several conventions named, the one the file has is read.
+        let names: Vec<Box<str>> = vec!["x".into(), "y".into(), "a".into(), "b".into()];
+        let r = read_one_coord_file(&path, &[], &names, None).unwrap();
+        assert_eq!(r.cols, vec![Box::from("a"), Box::from("b")]);
+    }
+
+    #[test]
+    fn a_quoted_header_is_read_by_its_names() {
+        let f = write_csv(
+            "\"barcode\",\"x_centroid\",\"y_centroid\"\n\
+             \"cell_a\",1.0,2.0\n",
+        );
+        let names: Vec<Box<str>> = vec!["x_centroid".into(), "y_centroid".into()];
+        let r = read_one_coord_file(f.path().to_str().unwrap(), &[], &names, None).unwrap();
+        assert_eq!(r.mat.ncols(), 2);
+        assert_eq!(r.mat[(0, 1)], 2.0);
+    }
+
+    #[test]
+    fn a_missing_coordinate_file_is_called_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("none.parquet");
+        let path = path.to_str().unwrap();
+        let names: Vec<Box<str>> = vec!["x".into(), "y".into()];
+        let Err(err) = read_one_coord_file(path, &[], &names, None) else {
+            panic!("read a file that is not there");
+        };
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(path) && err.contains("does not exist"),
+            "{err}"
+        );
+        assert!(!err.contains("--coord-column-indices"), "{err}");
+    }
+
     fn xenium_zarr_path() -> Option<std::path::PathBuf> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

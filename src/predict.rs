@@ -307,6 +307,18 @@ fn assign_to_centroids(latent_nk: &Mat, centroids_kd: &Mat, counts: &[f32]) -> V
         .collect()
 }
 
+/// That a model prefix names a fitted run: its manifest, or a cage model's
+/// feature embedding, is there.
+pub fn check_model(model: &str) -> anyhow::Result<()> {
+    let manifest = format!("{model}.pinto.json");
+    let embedding = format!("{model}.feature_embedding.parquet");
+    anyhow::ensure!(
+        Path::new(&manifest).is_file() || Path::new(&embedding).is_file(),
+        "model {model} is not there: neither {manifest} nor {embedding} exists"
+    );
+    Ok(())
+}
+
 /// Returns the per-cell propensity and the cell names — the same table
 /// written to `{out}.propensity.parquet` — so a caller that consumes the
 /// prediction (`pinto impute`) need not round-trip it through parquet.
@@ -319,6 +331,7 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
     let model = args.model.as_ref();
+    check_model(model)?;
     let meta =
         crate::util::metadata::PintoMetadata::read(Path::new(&format!("{model}.pinto.json")));
     let defaults = default_args()?;
