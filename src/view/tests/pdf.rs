@@ -49,10 +49,38 @@ fn writes_a_pdf_with_the_map_and_the_labels() {
     assert!(text.contains("<353020B56D>"), "scale bar label");
 }
 
+/// Labels are set in the standard font's full WinAnsi range: a Latin-1
+/// letter prints as itself, not as '?'.
 #[test]
-fn win_ansi_maps_the_symbols_labels_use() {
-    assert_eq!(win_ansi("5 µm ×2.0"), b"5 \xB5m \xD72.0");
-    assert_eq!(win_ansi("✓"), b"?");
+fn a_latin_1_label_prints_as_itself() {
+    let frame = Frame {
+        w: 4,
+        h: 3,
+        rgba: vec![128; 4 * 3 * 4],
+        background: Theme::Dark.background(),
+    };
+    let fig = Figure {
+        frame: &frame,
+        vp: Viewport {
+            x0: 0.,
+            y0: 0.,
+            upp: 1.,
+            w: 4,
+            h: 3,
+        },
+        title: "run".into(),
+        subtitle: "café".into(),
+        units: None,
+        legend: Legend::Communities(Vec::new()),
+        markers: Vec::new(),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fig.pdf");
+    write(&fig, &path).unwrap();
+    let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // pdf-writer hex-encodes a string with a non-ASCII byte: "café" in
+    // WinAnsi is 63 61 66 E9.
+    assert!(text.contains("<636166E9>"), "{text}");
 }
 
 /// A focused PDF of a level with no marker tables (a truth run) is drawn

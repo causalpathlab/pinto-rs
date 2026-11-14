@@ -26,7 +26,7 @@
 //!
 //! Outputs mirror `cage`'s inference tables: `{out}.{coord_pairs, latent,
 //! link_community, propensity, feature_community, cell_embedding}.parquet` and a
-//! `{out}.pinto.json` manifest, so `pinto plot` and `pinto annotate` read a
+//! `{out}.pinto.json` manifest, so `pinto view` and `lupin annotate` read a
 //! predicted sample as they would a fitted one.
 
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
@@ -200,7 +200,7 @@ fn pair_encoder_path(model: &str) -> anyhow::Result<String> {
 
 /// Per-pair community labels from `{model}.link_community.parquet`, **unfiltered**.
 ///
-/// Deliberately not `plot::load::read_link_community`: that is a display loader and
+/// Deliberately not `util::parquet_io::read_link_community`: that loader
 /// drops every row whose `edge_kind` is not spatial, while `{model}.latent.parquet`
 /// carries one row per pair including the expression-augmented ones. Pairing the two
 /// positionally after that filter either aborts on a self-consistent model — the
@@ -310,7 +310,7 @@ fn assign_to_centroids(latent_nk: &Mat, centroids_kd: &Mat, counts: &[f32]) -> V
 /// That a model prefix names a fitted run: its manifest, or a cage model's
 /// feature embedding, is there.
 pub fn check_model(model: &str) -> anyhow::Result<()> {
-    let manifest = format!("{model}.pinto.json");
+    let manifest = crate::util::metadata::manifest_path(model);
     let embedding = format!("{model}.feature_embedding.parquet");
     anyhow::ensure!(
         Path::new(&manifest).is_file() || Path::new(&embedding).is_file(),
@@ -332,8 +332,9 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
     let model = args.model.as_ref();
     check_model(model)?;
-    let meta =
-        crate::util::metadata::PintoMetadata::read(Path::new(&format!("{model}.pinto.json")));
+    let meta = crate::util::metadata::PintoMetadata::read(Path::new(
+        &crate::util::metadata::manifest_path(model),
+    ));
     let defaults = default_args()?;
     match meta {
         Ok(meta) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
@@ -757,9 +758,9 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
     // A predicted sample is placed by the model's encoder; it is not a model
     // and carries none of its own.
     meta.outputs.pair_encoder = None;
-    let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", c.out));
-    meta.write(&meta_path)?;
-    info!("Wrote {}", meta_path.display());
+    let meta_path = crate::util::metadata::manifest_path(&c.out);
+    meta.write(Path::new(&meta_path))?;
+    info!("Wrote {meta_path}");
     info!("Done");
     Ok((propensity, cell_names))
 }

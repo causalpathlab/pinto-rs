@@ -29,6 +29,7 @@ mod tui;
 #[cfg(test)]
 mod tests;
 
+use crate::util::cli::value_name;
 use args::{check_clip, check_point_size, POINT_SIZES};
 pub use args::{Show, ViewArgs};
 use color::Theme;
@@ -445,14 +446,6 @@ fn focus_name(comm: &Communities, c: usize) -> String {
 fn legend_line(comm: &Communities, c: usize, colour: color::Rgb) -> String {
     let n = comm.sizes[c];
     format!("  {:<5} {} {n:>9} cells", comm.name(c), color::hex(colour))
-}
-
-/// How the command line spells `v`.
-fn value_name<T: clap::ValueEnum>(v: &T) -> String {
-    v.to_possible_value()
-        .expect("no skipped variants")
-        .get_name()
-        .to_string()
 }
 
 /// `814243` → `814,243`.

@@ -1,6 +1,6 @@
 //! The command-line input arguments shared by the pinto commands.
 
-use super::{KnnExprScope, SRTReadArgs, PRELOAD_HELP, PRELOAD_LONG_HELP};
+use super::{KnnExprScope, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP, PRELOAD_LONG_HELP};
 use clap::Parser;
 use data_beans::aux::feature_names::FeatureNameKind;
 
@@ -60,7 +60,7 @@ pub struct SrtInputArgs {
     #[arg(
         long = "coord-column-names",
         value_delimiter(','),
-        default_value = "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid",
+        default_value = COORD_COLUMN_NAMES,
         help = "Column names for spatial coordinates in coord files",
         long_help = "Column names to select as spatial coordinates, comma separated.\n\
                      Names absent from a given file are skipped, so the default\n\
@@ -275,7 +275,7 @@ pub struct SrtInputArgs {
                      the graph, and components become batches in that mode.\n\
                      Note it also sets the k of the force-directed layout, so it\n\
                      decides pc_1/pc_2, the coordinates written to\n\
-                     coord_pairs.parquet, and what `pinto plot` draws.\n\
+                     coord_pairs.parquet, and what `pinto view` draws.\n\
                      \n\
                      The rest of this applies to the --coord case.\n\
                      \n\

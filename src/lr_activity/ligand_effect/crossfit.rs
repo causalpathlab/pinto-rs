@@ -1,7 +1,6 @@
 //! Cross-fitting folds and the shared design matrix with its per-fold Grams.
 
 use nalgebra::DMatrix;
-use rayon::prelude::*;
 use std::sync::Arc;
 
 /// Ridge penalty on the standardized confounders; the intercept is free.
@@ -225,46 +224,42 @@ pub(super) fn gather_rows(x: &DMatrix<f32>, p: usize, rows: &[usize], buf: &mut 
 /// Rows per [`gather_rows`] block: small enough to stay in cache.
 pub(super) const ROW_BLOCK: usize = 256;
 
+/// Rows per chunk a design's Grams are summed over ([`fold_grams`]).
+const GRAM_CHUNK: usize = 4096;
+
 /// `Σ_{i in fold k} x_i x_iᵀ` for each fold, then training = total − fold.
-/// Accumulated over row chunks in f64, rows gathered a block at a time.
+/// Accumulated over row chunks in f64, rows gathered a block at a time, the
+/// chunks' sums added pairwise down a tree split at the middle chunk: its
+/// shape depends on `n` alone, so the bits are the same however many
+/// threads take the chunks, and only a few sums per thread are live at once.
 fn fold_grams(x: &DMatrix<f32>, cf: &CrossFit) -> Vec<DMatrix<f64>> {
     let (n, p) = x.shape();
     let rows: Vec<usize> = (0..n).collect();
-    let per_fold = rows
-        .par_chunks(4096)
-        .map(|chunk| {
-            let mut acc = vec![DMatrix::<f64>::zeros(p, p); cf.k];
-            let mut buf = Vec::new();
-            for block in chunk.chunks(ROW_BLOCK) {
-                gather_rows(x, p, block, &mut buf);
-                for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
-                    if cf.fold[i] == LEFT_OUT {
+    let chunk_sum = |c: usize| {
+        let mut acc = vec![DMatrix::<f64>::zeros(p, p); cf.k];
+        let mut buf = Vec::new();
+        let chunk = &rows[c * GRAM_CHUNK..((c + 1) * GRAM_CHUNK).min(n)];
+        for block in chunk.chunks(ROW_BLOCK) {
+            gather_rows(x, p, block, &mut buf);
+            for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
+                if cf.fold[i] == LEFT_OUT {
+                    continue;
+                }
+                let g = &mut acc[cf.fold[i] as usize];
+                for a in 0..p {
+                    let xa = xi[a];
+                    if xa == 0.0 {
                         continue;
                     }
-                    let g = &mut acc[cf.fold[i] as usize];
-                    for a in 0..p {
-                        let xa = xi[a];
-                        if xa == 0.0 {
-                            continue;
-                        }
-                        for b in a..p {
-                            g[(a, b)] += xa * xi[b];
-                        }
+                    for b in a..p {
+                        g[(a, b)] += xa * xi[b];
                     }
                 }
             }
-            acc
-        })
-        .reduce(
-            || vec![DMatrix::<f64>::zeros(p, p); cf.k],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b) {
-                    *x += y;
-                }
-                a
-            },
-        );
-    let mut per_fold = per_fold;
+        }
+        acc
+    };
+    let mut per_fold = tree_sum(0..n.div_ceil(GRAM_CHUNK).max(1), &chunk_sum);
     for g in &mut per_fold {
         for a in 0..p {
             for b in 0..a {
@@ -277,4 +272,24 @@ fn fold_grams(x: &DMatrix<f32>, cf: &CrossFit) -> Vec<DMatrix<f64>> {
         total += g;
     }
     per_fold.into_iter().map(|g| &total - g).collect()
+}
+
+/// `leaf` summed over `range`, the two halves of each range at its middle
+/// summed in parallel, then added: a fixed tree, so a fixed order.
+fn tree_sum(
+    range: std::ops::Range<usize>,
+    leaf: &(impl Fn(usize) -> Vec<DMatrix<f64>> + Sync),
+) -> Vec<DMatrix<f64>> {
+    if range.len() <= 1 {
+        return leaf(range.start);
+    }
+    let mid = range.start + range.len() / 2;
+    let (mut a, b) = rayon::join(
+        || tree_sum(range.start..mid, leaf),
+        || tree_sum(mid..range.end, leaf),
+    );
+    for (x, y) in a.iter_mut().zip(b) {
+        *x += y;
+    }
+    a
 }

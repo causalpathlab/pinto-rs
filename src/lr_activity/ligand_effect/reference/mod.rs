@@ -36,6 +36,8 @@
 
 mod download;
 mod programmes;
+
+pub use download::{sha256_file, write_atomic};
 pub mod sources;
 mod table;
 

@@ -38,6 +38,15 @@ pinto lc data.h5 -c coords.csv -o out --n-communities 25
 pinto lc data.h5 -o out   # expression-only
 ```
 
+A fit is reproducible at a fixed `--seed` and thread count
+(`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
+the edges by connected component, which does not depend on the thread count,
+then splits any component larger than the edge count over the thread count
+(at least 256 edges) into blocks of that size. Each block draws its own
+random stream and sees the other blocks' moves only at the end of a sweep,
+so a different thread count gives different blocks and different draws. Set
+`RAYON_NUM_THREADS` to the same value to repeat a run exactly.
+
 ### `dsvd` (delta-svd)
 
 ```sh
@@ -204,9 +213,8 @@ on most.
 
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
-row (`effect_competent_df` is that count less one; it used to be every
-carrying tile less one). A row whose signal sits in a few of many tiles, as a region
-of one donor does, is now tested on few, so its p-value is larger than before.
+row (`effect_competent_df` is that count less one). A row whose signal sits in
+a few of many tiles, as a region of one donor does, is tested on those few.
 
 A significant effect then has to exceed the negative control, the same way:
 the effect in receptor-negative receivers (`effect_contrast_q`), the
@@ -245,6 +253,73 @@ gene names no reference knows, such as a simulation's). `--plant-region`
 plants every effect in one `--region` label only, and reads the estimate, its
 truth and its verdict on that region's row beside the pooled one (`region_*`
 columns); the summary and the table (`planted_region`) name the region.
+
+**One scenario per call.** A sweep over scenarios runs one call per point
+and seed, many at once, and scores each call by AUROC and AUPRC. `--set
+KEY=VALUE` (repeatable), `--pairs N`, `--null-pairs N` or `--one` selects
+this mode in place of the built-in grid:
+
+```sh
+pinto lra-simulate --from out/run1.pinto.json -o sweep/p07-s3 --seed 3 \
+  --set effect_pve=0.02 --set ligand_field_pve=0.25 --set response_field_pve=-0.25 \
+  --set confounder=bumps --set confound_scale=32 --pairs 10 --null-pairs 10
+```
+
+The keys are the table's own column names, so a sweep axis is a column:
+`effect_pve` (the planted effect's share of the programme genes' log-rate
+variance), `ligand_field_pve` and `response_field_pve` (the hidden field's
+share of the producer log odds and, signed, of the response),
+`confound_scale` (the field's length scale, in contact lengths),
+`confounder` (`fourier`, `bumps` or `realgene`), `confound_shape`
+(`linear` or `quadratic`), `heterogeneous`, `marker` and `dose_response`
+(`true`/`false` or `1`/`0`), `dose_midpoint` and `dose_order` (the dose
+response's half-way quantile and Hill order) and `rep`. Unset keys are no
+effect and no confounding; a point out of range is refused before any data
+is read, and the mode needs `-o`.
+
+Every call holds both labels: the pairs fit to benchmark are ranked by
+ligand abundance and the top `--pairs` plus `--null-pairs` (default 10
+each) taken, some carrying the effect and the rest none, all under the
+same hidden field. The fewer label is spread evenly among the more, the
+`k`-th of `few` at rank `floor((k + 1/2) m / few)` of the `m` taken, as
+Bresenham's line algorithm spreads its steps (Bresenham 1965, IBM Systems
+Journal 4(1):25-30): both labels then have the same mean abundance rank to
+within one, whatever the counts, so abundance does not sort them beyond
+that. Equal counts alternate, even ranks planted, each planted pair one
+rank above a null one. With fewer pairs to benchmark the call takes what
+there is, each label keeping its asked share, and warns, as it does below
+20 rows. `realgene` draws its field from the most abundant gene outside every
+pair of the call, and fails when there is none rather than change the
+point. `--plant-region` applies as above; the scores below stay the pooled
+row's, the region's being `region_estimate` and `region_se`. `-o` must not
+be the `--from` run's prefix, whose table is the grid's.
+
+The call writes `{out}.lra-simulate.parquet`, the table above plus
+`planted` (0/1), `t` (estimate over SE, a one-sided score as the planted
+effect is positive), `p` (its two-sided p on the t reference) and
+`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. These five are
+doubles computed at full precision (the grid's columns stay floats), so a
+p far below a float's smallest value is kept rather than written as 0. A row not estimable
+stays, with NaN scores. Then, last and atomically, it writes
+`{out}.lra-simulate.json`, whose presence marks the call complete: the
+resolved scenario, the counts planted and null and the rule that labelled
+them, each pair's ligand, receptor, rank, label, seed and run time, the
+real-gene confounder, `--seed`, `rep`, the pinto version, the reference
+record (path and sha256) and the table's sha256. `field_sha256` names the
+hidden field the call drew, and each pair's the field it ran under, the
+same for every pair. It records nothing in the run's manifest.
+
+Each pair's draws start from `mix_seed(--seed, rank)`, with `rep` mixed in,
+and the hidden field from `--seed` and `rep` alone, so a pair's rows depend
+on its rank and label alone, not on the other pairs of the call (save under
+`realgene`, whose gene can change with `--pairs` and `--null-pairs`; the
+counts also decide which ranks take which label), and the same flags give
+the same table, byte for byte, on any number of threads. These streams are not the
+built-in grid's: a point of the grid and the same point run alone give
+different draws. Pairs run at once as memory allows within
+`RAYON_NUM_THREADS`; a runner starting several calls side by side sets
+`PINTO_MEMORY_BUDGET` (bytes) per call, since each process otherwise takes
+half the free memory for itself.
 
 ### `srt-simulate`, `srt-sim-score`, `srt-sim-pairs`, `srt-sim-baseline`: multi-donor data with a planted truth
 
@@ -381,6 +456,49 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 `run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
 
+### Spatial baselines: `spatialde2`, `stagate`
+
+Published spatial-domain methods, ported to run on pinto's inputs so they
+can be scored beside `lc`, `cage` and `dsvd`:
+
+- `spatialde2`: SpatialDE2's tissue segmentation, a Poisson hidden Markov
+  random field with a Dirichlet-process prior over regions (Kats,
+  Vento-Tormo and Stegle 2021, bioRxiv 10.1101/2021.10.27.466045);
+- `stagate`: a graph-attention autoencoder over the spatial graph (STAGATE;
+  Dong and Zhang 2022, Nature Communications 13:1739), its embedding
+  clustered by pinto's own methods: seeded k-means into exactly
+  `--n-clusters` domains, or Leiden when `--n-clusters` is not given. With
+  `--n-clusters` this differs from the STAGATE tutorial, which fits a
+  Gaussian mixture in R (a GPL package, not ported) at that step.
+
+Each is a model-level port of its reference code: the same preprocessing,
+model, loss or updates, defaults, stopping rule and clustering step (but
+for stagate's fixed-K clustering, above), not bit-for-bit output; each
+module's documentation names the repository and commit read, the function
+behind each step, and every deliberate deviation. The license texts of
+SpatialDE, STAGATE_pyG and STAGATE (MIT) and of scanpy (BSD 3-Clause), with
+their copyright lines, are in `THIRD_PARTY_NOTICES.md`. They take the flags `lc`
+does for its inputs: the data files (one section each), `-c` coordinate
+files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
+`--seed`; spatial graphs are built within a section only. `--n-clusters`
+sets the number of domains as each original takes it (see each `--help` for
+its default and what it does when not given).
+
+```sh
+pinto stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
+pinto srt-sim-score --truth sim --labels res/stagate
+pinto srt-sim-pairs --truth sim --vectors res/stagate.cell_embedding.parquet
+```
+
+Each writes a pinto run, so `pinto view`, `compare`, `srt-sim-score` and
+`srt-sim-pairs` read it as they read a fit: `{out}.pinto.json` (the
+manifest), `{out}.propensity.parquet` (cell × domain membership: the
+method's posterior where it has one, else one-hot), `{out}.cells.parquet`,
+`{out}.cell_embedding.parquet` (the method's per-cell vectors),
+`{out}.labels.tsv` (`cell<TAB>label`) and `{out}.baseline.json` (the
+settings, as run). `pinto run` lists them after the fits, and over MCP
+`run_methods` and `run_fit` take them as they take `lc`.
+
 ### `residual`: what a fitted run leaves unexplained
 
 `pinto residual --from FIT -o OUT` (or `--run FIT`) takes an lc, cage or
@@ -512,7 +630,8 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
-`dsvd`, and change any flag; each method's form is read from its own
+`dsvd` (or the spatial baselines `spatialde2` and `stagate`, listed
+after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen; each fit shows a progress
 bar, plus a sparkline of its score (loss, NLL or moves) once it has two
@@ -818,78 +937,19 @@ the machine). An image reaches the model only if the client passes images on.
 #### What the agent does
 
 The server tells the agent how to work when it connects (the MCP
-`instructions`). Some clients do not pass those to the model; with one of them,
-put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
-
-> Use pinto's MCP tools to fit spatial link-community models and to look at
-> them on the tissue. A fit: `run_methods` lists the methods (lc is the
-> recommended one) and, with a method, its flags; `run_fit` runs one on data
-> files with their coordinates, in the background for anything but a small
-> data set (follow its job with `job_status` / `job_wait`), and never writes
-> over a run. Ablations are fits with run_fit's ablation flags
-> (permute-coords, drop-features, mask-cells with ablation-parent);
-> `run_region` turns a polygon into the cell list mask-cells takes;
-> `run_compare` sets two runs' communities against each other (ARI, NMI,
-> matched communities, and which vanish, split or merge); `run_predict` scores
-> held-out cells on a fitted lc model. Simulation with a planted truth:
-> `run_simulate` writes donors' sections (a background job); `view_open` its
-> `<out>/truth/truth.pinto.json` shows the planted domains; fit with `run_fit`,
-> passing the reply's `fit.data` and `fit.coords` (the sections and their
-> coordinates, in order) as its data and coords, and `fit.flags` as its
-> flags; `run_sim_score` scores the fits' labels against the reply's truth,
-> `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no
-> clustering, and `run_sim_baseline` writes a standard pipeline's labels to
-> score next to them. Two-stage fit: `run_residual` writes the counts an lc,
-> cage or dsvd run leaves unexplained as new data files (a background job);
-> fit them with `run_fit`, passing the reply's `fit.data`, `fit.coords` and
-> `fit.flags` as its data, coords and flags, and `run_lra` on that second
-> fit reads the raw counts, not the excess. Ligand-receptor analysis: `run_lra` on
-> a run asks, per ligand-receptor pair, whether receivers touching
-> ligand-carrying neighbours change their response programme compared with
-> similar cells that do not (adjusted for region, section, cell identity,
-> neighbour make-up, depth and segmentation bleed, with a negative control);
-> `run_lra_simulate` plants effects of known size on the same tissue and
-> reports, per scenario, power and type I error beside the co-expression
-> baselines. Run
-> lra-simulate to check power and calibration before trusting lra on a new
-> tissue. `run_lra` with `only` estimates a few pairs into a subset table of
-> its own (its q corrected within the subset). `view_lra` lists a run's pairs
-> with their verdicts and, given a pair, makes `view_map` draw it: senders,
-> and receivers exposed or not and receptor-competent or not; `view_export`
-> with `curve: true` writes its threshold-response curve. Each pair's verdict
-> is one of: supported: receivers next to
-> ligand-carrying cells change their response programme, ligand and receptor
-> are co-expressed across contacts, and the effect exceeds every negative control;
-> effect_without_coexpression: receivers respond to neighbouring ligand, but
-> ligand and receptor are not co-expressed across contacts beyond chance;
-> colocation_only: ligand and receptor sit together across contacts, but
-> receivers show no change in their response programme; no_evidence: neither a
-> response nor co-expression at this false discovery rate; control_failed: an
-> effect appeared, but it does not exceed the negative control (receivers without the
-> receptor), or that could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
-> nearly the same as having a neighbour of one cell type, so the ligand cannot
-> be told apart from that cell type; insufficient_data: too few exposed or
-> unexposed receptor-carrying receivers, or too little overlap between them,
-> to estimate an effect. Looking: start with `view_open` on a run prefix (the
-> `out` of a fit, or its `.pinto.json`): it lists the run's levels, batches,
-> groups and any lupin rounds. `view_map` draws the map as a PNG with its
-> legend; its arguments stay set until changed, so pass only what changes.
-> `view_markers` lists a group's top features, `view_cell` names the cell
-> under a pixel of the last map (or at a world point, or by name), and
-> `view_export` writes the current view as PNG/PDF files. World coordinates
-> are those `view_open` reports, with y running down the map. lupin rounds are
-> read here as they are on disk; annotating and relabelling them is lupin's
-> own server.
+`instructions`); `pinto mcp --help` prints them. Some clients do not pass those
+to the model; with one of them, put that text in the agent's own instructions
+(an `AGENTS.md`, a system prompt).
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up); with a method, its flags: name, help, default, choices |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `cage`, `dsvd`, then the spatial baselines `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
-| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects |
+| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
 | `run_residual` | `pinto residual` as a recorded job: `run` (an lc, cage or dsvd run), `out`, `data_files`, `excess`, `adapt`, `adapt_cells`, `feature_names`; the run is checked before it starts (another kind of run is refused) and nothing is written over; writes `{out}/{stem}.zarr` with `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, and the reply lists them for `run_fit` as `fit.data` with `fit.coords` and the coordinate columns they carry as `fit.flags`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto srt-simulate` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score` | `pinto srt-sim-score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
@@ -915,7 +975,7 @@ organizing computational biology projects [1] (see
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
   with paths relative to the project. Each `run_fit` is its `pinto lc` (or
-  `cage`, `dsvd`) command, each `run_lra` its `pinto lra` command, and each `view_export`
+  `cage`, `dsvd`, a baseline's) command, each `run_lra` its `pinto lra` command, and each `view_export`
   its `pinto view --png/--pdf` command, so `bash results/<day>/runall.sh`
   makes the fits and figures again without the agent.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and

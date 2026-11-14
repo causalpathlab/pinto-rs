@@ -14,8 +14,19 @@ pub(crate) mod sim;
 pub(crate) mod tui;
 
 /// The methods `pinto run` sets up, in the order listed, each as typed:
-/// the short alias of its subcommand.
-pub const METHODS: [&str; 4] = ["lc", "cage", "cage-cell", "dsvd"];
+/// the short alias of its subcommand. pinto's own models first, then the
+/// spatial baselines (model-level ports of published methods, for
+/// comparison), which take the same data, coordinate and batch files and
+/// write a run of the same shape.
+pub const METHODS: [&str; 6] = ["lc", "cage", "cage-cell", "dsvd", "spatialde2", "stagate"];
+
+/// pinto's own models among [`METHODS`].
+pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;
+
+/// The spatial baselines among [`METHODS`].
+pub const BASELINES: &[&str] = METHODS.split_at(N_MODELS).1;
+
+const N_MODELS: usize = 4;
 
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power

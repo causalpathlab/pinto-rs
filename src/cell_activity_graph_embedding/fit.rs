@@ -843,7 +843,7 @@ pub fn fit_cell_activity_graph_embedding(
             batch_db.is_some(),
             splice_report,
         );
-        let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", c.out));
+        let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());
     }

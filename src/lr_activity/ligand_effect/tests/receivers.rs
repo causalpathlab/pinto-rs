@@ -3,7 +3,7 @@
 //! receiver's exposure and exposed flag as the estimate's, competence at the
 //! middle of the grid, and the counts and threshold the table's row reports.
 
-use super::estimate_pair;
+use super::{estimate_pair, lattice};
 use crate::lr_activity::ligand_effect::contacts::competence_grid;
 use crate::lr_activity::ligand_effect::dose::Exposure;
 use crate::lr_activity::ligand_effect::estimate::PairData;
@@ -35,22 +35,11 @@ struct Small {
 fn small(seed: u64) -> Small {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n = SIDE * SIDE + 1;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| match i {
-            _ if i == n - 1 => Some((1e4, 1e4)),
-            _ if i % 37 == 5 => None,
-            _ => Some(((i % SIDE) as f32 * 10.0, (i / SIDE) as f32 * 10.0)),
-        })
-        .collect();
-    let mut pairs = Vec::new();
-    for i in 0..SIDE * SIDE {
-        if i % SIDE + 1 < SIDE {
-            pairs.push((i, i + 1));
-        }
-        if i / SIDE + 1 < SIDE {
-            pairs.push((i, i + SIDE));
-        }
+    let (mut coords, pairs) = lattice(SIDE);
+    for i in (5..SIDE * SIDE).step_by(37) {
+        coords[i] = None;
     }
+    coords.push(Some((1e4, 1e4)));
     let section: Vec<Box<str>> = vec!["s".into(); n];
     let identity_bin: Vec<usize> = (0..n).map(|i| (i * 5 + i / SIDE) % 4).collect();
     let identity = Mat::from_fn(4, n, |r, c| ((r * 31 + c * 17) % 13) as f32 / 13.0);

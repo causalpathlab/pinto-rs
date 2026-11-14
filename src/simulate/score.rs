@@ -24,7 +24,7 @@
 
 use super::panel::{donor_label, parse_donor_label};
 use crate::compare::{ari, propensity_path, Partition, Table};
-use crate::util::common::HashMap;
+use crate::util::common::{in_dir, HashMap};
 use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
 use legume_numeric::matrix::table::TableReader;
 use serde::Serialize;
@@ -82,7 +82,7 @@ impl TruthSpots {
             .map(|o| (!o.is_empty()).then(|| donor_index(o)).transpose())
             .collect::<anyhow::Result<Vec<_>>>()?;
         let spots = read_parquet_string_columns_by_name(
-            &format!("{out}/truth/spots.parquet"),
+            &in_dir(out, "truth/spots.parquet"),
             &["cell", "donor", "domain"],
         )?;
         let of_domain: HashMap<&str, usize> = domain_labels

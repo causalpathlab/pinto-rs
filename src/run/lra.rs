@@ -4,7 +4,9 @@
 //! the project's records (a background job unless asked otherwise). The
 //! reply is read from the tables the child wrote.
 
-use super::mcp::{as_run, checked, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
+use super::mcp::{
+    as_run, checked, in_background, out_or_free, out_or_free_by, rooted, spawn, NOT_WRITTEN_OVER,
+};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
@@ -14,7 +16,9 @@ use crate::lr_activity::ligand_effect::output::{
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
-use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
+use crate::tui::flag_value;
+use crate::util::cli::{choices, value_name};
+use crate::util::metadata::{manifest_path, run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -26,21 +30,57 @@ const TOP_PAIRS: usize = 5;
 
 // * Arguments
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LraToolArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub coord_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub batch_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knn_spatial: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
+/// A tool's arguments: what it reads ([`Input`]) and, in the order given,
+/// its own fields after `seed` and after `region_jackknife`. Both lra tools
+/// declare the input fields in one place, in one order, and map them to
+/// [`Input`] alike.
+macro_rules! lra_tool_args {
+    ($name:ident { $($mid:tt)* } { $($tail:tt)* }) => {
+        #[derive(Deserialize, Serialize, Debug)]
+        #[serde(deny_unknown_fields)]
+        pub(super) struct $name {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub run: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub data_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub coord_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub batch_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub knn_spatial: Option<usize>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub seed: Option<u64>,
+            $($mid)*
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub cell_types: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub region: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub region_jackknife: Option<String>,
+            $($tail)*
+            #[serde(default = "in_background", skip_serializing)]
+            pub background: bool,
+        }
+
+        impl $name {
+            fn input(&self) -> Input<'_> {
+                Input {
+                    run: self.run.as_deref(),
+                    data_files: &self.data_files,
+                    coord_files: &self.coord_files,
+                    batch_files: &self.batch_files,
+                    knn_spatial: self.knn_spatial,
+                    cell_types: self.cell_types.as_deref(),
+                    region: self.region.as_deref(),
+                    region_jackknife: self.region_jackknife.as_deref(),
+                }
+            }
+        }
+    };
+}
+
+lra_tool_args!(LraToolArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_permutations: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,20 +100,13 @@ pub(super) struct LraToolArgs {
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_types: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region_jackknife: Option<String>,
+} {
     /// `--marginal-baselines`, and `--marginal-permutations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub marginal_baselines: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
-    #[serde(default = "in_background", skip_serializing)]
-    pub background: bool,
-}
+});
 
 impl LraToolArgs {
     /// `only` as `pinto lra` takes it.
@@ -91,19 +124,6 @@ impl LraToolArgs {
             made.push(output::celltype_beside(&table).into());
         }
         made
-    }
-
-    fn input(&self) -> Input<'_> {
-        Input {
-            run: self.run.as_deref(),
-            data_files: &self.data_files,
-            coord_files: &self.coord_files,
-            batch_files: &self.batch_files,
-            knn_spatial: self.knn_spatial,
-            cell_types: self.cell_types.as_deref(),
-            region: self.region.as_deref(),
-            region_jackknife: self.region_jackknife.as_deref(),
-        }
     }
 
     /// The `run_lra_simulate` call checking this analysis's power: the same
@@ -145,21 +165,7 @@ impl LraToolArgs {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LraSimulateToolArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub coord_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub batch_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knn_spatial: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
+lra_tool_args!(LraSimulateToolArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,28 +176,81 @@ pub(super) struct LraSimulateToolArgs {
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plant_region: Option<String>,
+} {
+    /// `--one`: the single scenario at its defaults.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub one: bool,
+    /// `--set`: the single scenario's keys, `KEY=VALUE`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set: Vec<String>,
+    /// `--pairs` and `--null-pairs`: the single scenario's planted and null
+    /// pairs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_types: Option<String>,
+    pub pairs: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region_jackknife: Option<String>,
-    #[serde(default = "in_background", skip_serializing)]
-    pub background: bool,
-}
+    pub null_pairs: Option<usize>,
+});
 
 impl LraSimulateToolArgs {
-    fn input(&self) -> Input<'_> {
-        Input {
-            run: self.run.as_deref(),
-            data_files: &self.data_files,
-            coord_files: &self.coord_files,
-            batch_files: &self.batch_files,
-            knn_spatial: self.knn_spatial,
-            cell_types: self.cell_types.as_deref(),
-            region: self.region.as_deref(),
-            region_jackknife: self.region_jackknife.as_deref(),
+    /// Whether the call asks for one scenario rather than the built-in grid.
+    fn single(&self) -> bool {
+        crate::lr_activity::args::selects_single(self.one, &self.set, self.pairs, self.null_pairs)
+    }
+
+    /// What the run writes under `out`: the table, and for a single scenario
+    /// the sidecar that marks the call complete.
+    pub(super) fn outputs(&self, out: &str) -> Vec<PathBuf> {
+        let mut made = vec![PathBuf::from(lra_simulate_path(out))];
+        if self.single() {
+            made.push(output::lra_simulate_sidecar_path(out).into());
         }
+        made
+    }
+
+    /// Whether the finished outputs under `out` can be this call's: a single
+    /// scenario's sidecar records this call's point, pair counts, seed and
+    /// planted region, and a grid's table is no single scenario's. An error
+    /// says what differs.
+    pub(super) fn check_made(&self, out: &str) -> anyhow::Result<()> {
+        use crate::lr_activity::ligand_effect::simulate::{ScenarioKeys, SingleScenario};
+        let sidecar = PathBuf::from(output::lra_simulate_sidecar_path(out));
+        if !self.single() {
+            anyhow::ensure!(
+                !sidecar.is_file(),
+                "{} is a single scenario's table (beside {}), not the built-in grid's; \
+                 {NOT_WRITTEN_OVER}",
+                lra_simulate_path(out),
+                shown_path(&sidecar)
+            );
+            return Ok(());
+        }
+        let text = std::fs::read_to_string(&sidecar)?;
+        let made: Value = serde_json::from_str(&text)?;
+        let want = json!({
+            "scenario": ScenarioKeys::default().with_overrides(&self.set)?,
+            "asked": {
+                "planted": self.pairs.unwrap_or(SingleScenario::PAIRS),
+                "null": self.null_pairs.unwrap_or(SingleScenario::PAIRS),
+            },
+            "seed": self.seed.unwrap_or(crate::lr_activity::args::DEFAULT_SEED),
+            "plant_region": self.plant_region,
+        });
+        let differs: Vec<&str> = ["scenario", "asked", "seed", "plant_region"]
+            .into_iter()
+            .filter(|k| made[*k] != want[*k])
+            .collect();
+        anyhow::ensure!(
+            differs.is_empty(),
+            "{} was made with another {} ({}); {NOT_WRITTEN_OVER}",
+            shown_path(&sidecar),
+            differs.join(", "),
+            differs
+                .iter()
+                .map(|k| format!("{k} {}", made[*k]))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        Ok(())
     }
 }
 
@@ -256,22 +315,22 @@ impl Input<'_> {
             argv.push(shown(self.data_files));
         }
         if !self.coord_files.is_empty() {
-            argv.extend(["--coord".into(), shown(self.coord_files)]);
+            argv.push(flag_value("--coord", shown(self.coord_files)));
         }
         if !self.batch_files.is_empty() {
-            argv.extend(["--batch-files".into(), shown(self.batch_files)]);
+            argv.push(flag_value("--batch-files", shown(self.batch_files)));
         }
         if let Some(k) = self.knn_spatial {
-            argv.extend(["--knn-spatial".into(), k.to_string()]);
+            argv.push(flag_value("--knn-spatial", k));
         }
         if let Some(c) = self.cell_types {
-            argv.extend(["--cell-types".into(), shown_path(Path::new(c))]);
+            argv.push(flag_value("--cell-types", shown_path(Path::new(c))));
         }
         if let Some(r) = self.region {
-            argv.extend(["--region".into(), shown_path(Path::new(r))]);
+            argv.push(flag_value("--region", shown_path(Path::new(r))));
         }
         if let Some(j) = self.region_jackknife {
-            argv.extend(["--region-jackknife".into(), j.into()]);
+            argv.push(flag_value("--region-jackknife", j));
         }
         argv
     }
@@ -316,12 +375,8 @@ pub(super) fn lra_method(method: Option<&str>) -> anyhow::Result<LraMethod> {
     match method {
         None => Ok(LraMethod::default()),
         Some(m) => LraMethod::from_str(m, false).map_err(|_| {
-            let names: Vec<String> = LraMethod::value_variants()
-                .iter()
-                .filter_map(|v| v.to_possible_value())
-                .map(|v| v.get_name().to_string())
-                .collect();
-            anyhow::anyhow!("method {m:?}: one of {}", names.join(", "))
+            let names = choices::<LraMethod>().join(", ");
+            anyhow::anyhow!("method {m:?}: one of {names}")
         }),
     }
 }
@@ -344,7 +399,7 @@ fn method_can_read(method: LraMethod, run: Option<&str>) -> anyhow::Result<()> {
     anyhow::ensure!(
         run.is_some() || method == LraMethod::ContactEffect,
         "method {} reads a run's link communities: give run",
-        method_name(method)
+        value_name(&method)
     );
     Ok(())
 }
@@ -370,18 +425,18 @@ pub(super) fn lra_argv(
     let mut argv = options.argv(run, Some(out), method, &a.only);
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {
-        argv.extend(["--n-permutations".into(), n.to_string()]);
+        argv.push(flag_value("--n-permutations", n));
     }
     if let Some(x) = a.json_fwer_threshold {
-        argv.extend(["--json-fwer-threshold".into(), x.to_string()]);
+        argv.push(flag_value("--json-fwer-threshold", x));
     }
     if let Some(x) = a.min_gene_count {
-        argv.extend(["--min-gene-count".into(), x.to_string()]);
+        argv.push(flag_value("--min-gene-count", x));
     }
     if a.marginal_baselines {
         argv.push("--marginal-baselines".into());
         if let Some(n) = a.marginal_permutations {
-            argv.extend(["--marginal-permutations".into(), n.to_string()]);
+            argv.push(flag_value("--marginal-permutations", n));
         }
     }
     argv
@@ -396,26 +451,33 @@ pub(super) fn lra_simulate_argv(
 ) -> Vec<String> {
     let mut argv: Vec<String> = vec!["lra-simulate".into()];
     if let Some(run) = run {
-        argv.extend(["--from".into(), run.into()]);
+        argv.push(flag_value("--from", run));
     }
-    argv.extend(["-o".into(), out.into()]);
+    argv.push(flag_value("--out", out));
     argv.extend(a.input().flags());
     if let Some(seed) = a.seed {
-        argv.extend(["--seed".into(), seed.to_string()]);
+        argv.push(flag_value("--seed", seed));
     }
     if let Some(s) = &a.species {
-        argv.extend(["--species".into(), s.clone()]);
+        argv.push(flag_value("--species", s));
     }
     if let Some(p) = &a.lr_pairs {
-        argv.extend(["--lr-pairs".into(), shown_path(Path::new(p))]);
+        argv.push(flag_value("--lr-pairs", shown_path(Path::new(p))));
     }
     if !a.targets.is_empty() {
         let t: Vec<String> = a.targets.iter().map(|t| shown_path(Path::new(t))).collect();
-        argv.extend(["--targets".into(), t.join(",")]);
+        argv.push(flag_value("--targets", t.join(",")));
     }
     if let Some(r) = &a.plant_region {
-        argv.extend(["--plant-region".into(), r.clone()]);
+        argv.push(flag_value("--plant-region", r));
     }
+    if a.one {
+        argv.push("--one".into());
+    }
+    // One token each, so a value cannot be read as a flag.
+    argv.extend(a.set.iter().map(|s| format!("--set={s}")));
+    argv.extend(a.pairs.map(|n| format!("--pairs={n}")));
+    argv.extend(a.null_pairs.map(|n| format!("--null-pairs={n}")));
     argv
 }
 
@@ -542,7 +604,7 @@ fn start(
         return Ok(None);
     };
     Ok(Some(json!({
-        "command": format!("pinto {}", script::line(argv)),
+        "command": script::pinto_line(argv),
         "job": job,
         "writes": made.iter().map(|p| shown_path(p)).collect::<Vec<_>>(),
         "note": format!(
@@ -573,7 +635,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
         checked_lra(cli, &argv)?;
-        let manifest = run.map_or_else(|| PathBuf::from(format!("{o}.pinto.json")), PathBuf::from);
+        let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
         if let Some(reply) = read_finished(
             cx,
             &made,
@@ -588,7 +650,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     })?;
     let argv = lra_argv(&a, method, run, &out);
     checked_lra(cli, &argv)?;
-    let summary = format!("lra {} of {}", method_name(method), input.source(run));
+    let summary = format!("lra {} of {}", value_name(&method), input.source(run));
     // The same call, by its out: what reads the tables once the job is done.
     let mut again = serde_json::to_value(&a)?;
     if let Some(run) = run {
@@ -599,13 +661,6 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         return Ok(vec![Content::Json(job)]);
     }
     lra_reply(&a, method, Some(&argv), run, &made)
-}
-
-fn method_name(method: LraMethod) -> String {
-    use clap::ValueEnum;
-    method
-        .to_possible_value()
-        .map_or_else(String::new, |v| v.get_name().to_string())
 }
 
 /// Add `note` to the reply's JSON piece.
@@ -641,7 +696,7 @@ fn lra_reply(
         json!({})
     };
     if let Some(argv) = command {
-        reply["command"] = format!("pinto {}", script::line(argv)).into();
+        reply["command"] = script::pinto_line(argv).into();
     }
     reply["written"] = written.into();
     let mut pieces = vec![Content::Json(reply)];
@@ -710,17 +765,31 @@ pub(super) fn lra_simulate(
     let out = named_out(a.out.as_deref());
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
-        let made = vec![PathBuf::from(lra_simulate_path(&o))];
+        let made = a.outputs(&o);
         checked(cli, &lra_simulate_argv(&a, run, &o))?;
-        // lra-simulate records no options for its table.
-        if let Some(reply) = read_finished(cx, &made, || Ok(false), |_| simulate_reply(None, &made))
-        {
+        // lra-simulate records no options for its table; a single scenario's
+        // sidecar records its point, which must be this call's.
+        if let Some(reply) = read_finished(
+            cx,
+            &made,
+            || a.check_made(&o).map(|()| false),
+            |_| simulate_reply(None, &made),
+        ) {
             return reply;
         }
     }
-    let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
-        Ok(vec![PathBuf::from(lra_simulate_path(o))])
-    })?;
+    // A single scenario's free name is no run's prefix (a run in today's
+    // folder has one there), whose table is that run's grid's.
+    let (out, made) = match a.single() {
+        true => out_or_free_by(
+            cx,
+            out.as_deref(),
+            &format!("{}-scenario", input.stem(run)),
+            |o| Ok(a.outputs(o)),
+            |o| Path::new(&crate::util::metadata::run_manifest(o)).is_file(),
+        )?,
+        false => out_or_free(cx, out.as_deref(), &input.stem(run), |o| Ok(a.outputs(o)))?,
+    };
     let argv = lra_simulate_argv(&a, run, &out);
     checked(cli, &argv)?;
     let summary = format!(
@@ -753,9 +822,10 @@ fn simulate_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Resul
     let runs = read_sim_runs(&table)?;
     let mut reply = comparison_summary(&runs, read_planted_region(&table).as_deref());
     if let Some(argv) = command {
-        reply["command"] = format!("pinto {}", script::line(argv)).into();
+        reply["command"] = script::pinto_line(argv).into();
     }
-    reply["written"] = json!([shown_path(&made[0])]);
+    let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
+    reply["written"] = json!(written);
     Ok(vec![Content::Json(reply)])
 }
 

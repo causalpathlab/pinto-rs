@@ -101,7 +101,7 @@ pub struct LraInputArgs {
                      the first two columns. Each region gets an indicator per section among\n\
                      the confounders (the smooth fields cannot follow a sharp region edge),\n\
                      and each pair a row per region, `section` = `region:<name>`, its q\n\
-                     corrected within that region. For a residual fit, the stage-3\n\
+                     corrected within that region. For a residual fit, its\n\
                      communities, best fitted with the pairs' genes dropped so the region is\n\
                      not read off the response. Cells it leaves out are `unassigned`, which\n\
                      gets no row."
@@ -380,30 +380,12 @@ pub enum RegionJackknife {
     NoRefit,
 }
 
-impl RegionJackknife {
-    /// As `--region-jackknife` spells it.
-    pub fn name(self) -> String {
-        self.to_possible_value()
-            .map(|v| v.get_name().to_string())
-            .unwrap_or_default()
-    }
-}
-
 /// Species of the contact-effect reference.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceSpecies {
     Auto,
     Human,
     Mouse,
-}
-
-impl ReferenceSpecies {
-    /// As `--species` spells it.
-    pub fn name(self) -> String {
-        self.to_possible_value()
-            .map(|v| v.get_name().to_string())
-            .unwrap_or_default()
-    }
 }
 
 // * lra-simulate
@@ -458,6 +440,86 @@ pub struct LraSimulateArgs {
         help = "Species of the reference; auto reads it from the gene-name case"
     )]
     pub species: ReferenceSpecies,
+
+    #[arg(
+        long,
+        help_heading = "Single scenario",
+        help = "Run one scenario on planted and null pairs, not the built-in grid",
+        long_help = "Run one scenario, not the built-in grid: its effect planted on\n\
+                     --pairs pairs and withheld (effect 0) on --null-pairs others, all\n\
+                     under the same hidden field, so the one call can be scored by\n\
+                     AUROC and AUPRC. --set, --pairs or --null-pairs select it too.\n\
+                     Needs -o. Writes {out}.lra-simulate.parquet with a planted label\n\
+                     and each method's p, then {out}.lra-simulate.json (the resolved\n\
+                     scenario, the pairs and their seeds), whose presence marks the\n\
+                     call complete. The run's manifest is not written to."
+    )]
+    pub one: bool,
+
+    #[arg(
+        long = "set",
+        value_name = "KEY=VALUE",
+        help_heading = "Single scenario",
+        help = "Set a key of the single scenario (repeatable); keys are the table's columns",
+        long_help = "Set a key of the single scenario, KEY=VALUE, repeatable; the keys are\n\
+                     the {out}.lra-simulate.parquet columns that record them:\n\
+                     effect_pve, ligand_field_pve, response_field_pve (signed),\n\
+                     confound_scale, confounder (fourier, bumps or realgene),\n\
+                     confound_shape (linear or quadratic), heterogeneous, marker,\n\
+                     dose_response (true/false or 1/0), dose_midpoint, dose_order and\n\
+                     rep. Unset keys are no effect and no confounding. A point out of\n\
+                     range is refused before any data is read."
+    )]
+    pub set: Vec<String>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help_heading = "Single scenario",
+        help = "Pairs the single scenario's effect is planted on [default: 10]"
+    )]
+    pub pairs: Option<usize>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help_heading = "Single scenario",
+        help = "Further pairs the single scenario withholds its effect from [default: 10]"
+    )]
+    pub null_pairs: Option<usize>,
+}
+
+/// Whether `--one`, `--set`, `--pairs` or `--null-pairs` select the
+/// single-scenario mode: any of them given. The one rule, for the command
+/// line and the MCP tool alike.
+pub fn selects_single(
+    one: bool,
+    set: &[String],
+    pairs: Option<usize>,
+    null_pairs: Option<usize>,
+) -> bool {
+    one || !set.is_empty() || pairs.is_some() || null_pairs.is_some()
+}
+
+impl LraSimulateArgs {
+    /// The single scenario these flags ask for, checked; `None` for the
+    /// built-in grid.
+    pub fn single(
+        &self,
+    ) -> anyhow::Result<Option<crate::lr_activity::ligand_effect::simulate::SingleScenario>> {
+        use crate::lr_activity::ligand_effect::simulate::SingleScenario;
+        if !selects_single(self.one, &self.set, self.pairs, self.null_pairs) {
+            return Ok(None);
+        }
+        SingleScenario::new(
+            &self.set,
+            self.pairs.unwrap_or(SingleScenario::PAIRS),
+            self.null_pairs.unwrap_or(SingleScenario::PAIRS),
+        )
+        .map(Some)
+    }
 }
 
 // * Removed flags

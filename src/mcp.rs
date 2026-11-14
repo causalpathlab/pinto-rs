@@ -6,8 +6,8 @@ use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde_json::Value;
 
 /// What the agent is told when it connects: what the tools are for, and in
-/// which order to call them. The README gives the same, for clients that
-/// do not pass it on. The verdicts are `pinto lra --help`'s, from the one
+/// which order to call them. `pinto mcp --help` prints the same, for clients
+/// that do not pass it on. The verdicts are `pinto lra --help`'s, from the one
 /// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(
@@ -22,8 +22,14 @@ them on the tissue. A fit: `run_methods` lists the methods (lc is the \
 recommended one) and, with a method, its flags; `run_fit` runs one on data \
 files with their coordinates, in the background for anything but a small \
 data set (follow its job with `job_status` / `job_wait`), and never writes \
-over a run. Ablations are fits with run_fit's ablation flags \
-(permute-coords, drop-features, mask-cells with ablation-parent); \
+over a run. Its methods also hold two spatial baselines, model-level \
+ports of published methods to compare pinto against: spatialde2 \
+(SpatialDE2's tissue segmentation) and stagate (STAGATE, its embedding \
+clustered by pinto's k-means or Leiden); \
+run_fit runs them as it runs lc, and each writes a run with its labels and \
+a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's \
+ablation flags (permute-coords, drop-features, mask-cells with \
+ablation-parent; the baselines have none); \
 `run_region` turns a polygon into the cell list mask-cells takes; \
 `run_compare` sets two runs' communities against each other (ARI, NMI, \
 matched communities, and which vanish, split or merge); `run_predict` scores \
@@ -36,7 +42,9 @@ planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
 `fit.coords` (the sections and their coordinates, in order) as its data and \
 coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, \
 `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no clustering, and \
-`run_sim_baseline` writes a standard pipeline's labels to score next to them.";
+`run_sim_baseline` writes a standard pipeline's labels to score next to them; \
+a spatial baseline's run is scored as a fit is, its labels by `run_sim_score` and \
+its `{out}.cell_embedding.parquet` by `run_sim_pairs`.";
 
 const RESIDUAL: &str = "\
 Two-stage fit: `run_residual` writes the counts an lc, cage or dsvd run \
@@ -94,15 +102,5 @@ impl Handler for Server {
     }
 }
 
-/// The arguments of a call, or what is wrong with them.
-pub fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
-}
-
-/// `p` as results give paths: from the root.
-pub fn shown_path(p: &std::path::Path) -> String {
-    std::path::absolute(p)
-        .unwrap_or_else(|_| p.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
+pub use crate::util::paths::shown_path;
+pub use legume_mcp::parse_args as parse;

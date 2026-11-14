@@ -228,6 +228,27 @@ fn the_plan_names_every_file_a_run_writes() {
     assert_eq!(written, made);
 }
 
+/// An `out` given as a folder, ending in `/`, names each file once under
+/// it: no doubled slash in the paths the plan and its reply show.
+#[test]
+fn a_folder_out_names_its_files_without_a_doubled_slash() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let plan = Plan::new(
+        &Run::open(&prefix).unwrap(),
+        &args(&prefix, &format!("{d}/resid/"), None),
+    )
+    .unwrap();
+    let under = |f: &str| format!("{d}/resid/{f}");
+    assert_eq!(plan.zarrs, [under("S1.zarr"), under("S2.zarr")]);
+    assert_eq!(
+        plan.coords,
+        [under("S1.coords.parquet"), under("S2.coords.parquet")]
+    );
+    assert_eq!(plan.summary, under("residual.json"));
+}
+
 /// A subset of the run's files is refused: a fit names its cells by its
 /// files, so the subset could not find the run's cells.
 #[test]

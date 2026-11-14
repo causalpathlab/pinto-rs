@@ -655,7 +655,7 @@ impl App {
         planned
             .iter()
             .map(|p| {
-                let mut cmd = format!("pinto {}", script::line(&p.job.argv));
+                let mut cmd = script::pinto_line(&p.job.argv);
                 // A job that reads an earlier one's result waits for it, as
                 // the queue does: it runs only once that one's done file is
                 // there.

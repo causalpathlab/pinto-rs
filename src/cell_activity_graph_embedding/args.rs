@@ -302,9 +302,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      summing over D rather than averaging keeps it invariant to\n\
                      --embedding-dim too — see loss::embedding_ridge.\n\
                      The default 0.0625 is the shrinkage cage was tuned at\n\
-                     (~40% off the free feature-embedding norm); it is 1/16 only\n\
-                     because the penalty used to be divided by D and D defaulted\n\
-                     to 16. It now means the same thing at every D.\n\
+                     (~40% off the free feature-embedding norm), and it means\n\
+                     the same thing at every D.\n\
                      Useful range 0.01-0.25. Do NOT reach for 1.0: measured on\n\
                      a 10.9k-cell 18k-feature sample it drives both embeddings to\n\
                      zero. A dense every-row penalty competes with a SPARSE data\n\

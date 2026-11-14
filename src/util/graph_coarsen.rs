@@ -1,7 +1,7 @@
 use crate::util::common::*;
-use crate::util::knn_graph::KnnGraph;
 use data_beans::alg::cell_pairs::collapse_pairs;
 use data_beans::alg::union_find::UnionFind;
+use legume_numeric::matrix::knn_graph::KnnGraph;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 use std::collections::VecDeque;
 

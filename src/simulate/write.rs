@@ -19,6 +19,7 @@
 use super::panel::{donor_label, Section};
 use super::sim::Sim;
 use super::truth::Info;
+use crate::util::common::in_dir;
 use data_beans::sparse_io_vector::stacked_column_name;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
@@ -196,8 +197,8 @@ pub fn write_truth_run(
     use crate::util::common::Mat;
     use crate::util::metadata::{now_secs, LevelInfo, OutputFiles, PintoMetadata};
     use crate::util::parquet_io::{cells_table_path, write_cells_table};
-    let prefix = format!("{dir}/truth");
-    let recorded = format!("{named}/truth");
+    let prefix = in_dir(dir, "truth");
+    let recorded = in_dir(named, "truth");
     let t = &sim.truth;
     let (spots, cells) = spot_index(sim);
     let mut coords = Mat::zeros(cells.len(), 2);
@@ -236,7 +237,6 @@ pub fn write_truth_run(
                 propensity: format!("{recorded}.{tag}.propensity.parquet"),
                 link_community: None,
                 feature_community: None,
-                entropy_present: Some(true),
                 community_names: Some(names),
             })
         };
@@ -270,5 +270,7 @@ pub fn write_truth_run(
         levels: Some(levels),
         ..Default::default()
     };
-    meta.write(std::path::Path::new(&format!("{prefix}.pinto.json")))
+    meta.write(std::path::Path::new(&crate::util::metadata::manifest_path(
+        &prefix,
+    )))
 }

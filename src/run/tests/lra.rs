@@ -1,14 +1,8 @@
 use super::*;
+use crate::built_cli as cli;
 use crate::lr_activity::ligand_effect::output::SimRun;
 use crate::lr_activity::ligand_effect::simulate::Scenario;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
-
-fn cli() -> clap::Command {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
 
 fn lra_args(v: Value) -> LraToolArgs {
     crate::mcp::parse(v).unwrap()
@@ -39,18 +33,12 @@ fn run_lra_builds_pinto_lras_command_line() {
     );
     let want: Vec<String> = [
         "lra",
-        "--from",
-        "/p/r.pinto.json",
-        "-o",
-        "/p/out",
-        "--method",
-        "coexpression-test",
-        "--lr-pairs",
-        &pairs,
-        "--targets",
-        &targets,
-        "--species",
-        "mouse",
+        "--from=/p/r.pinto.json",
+        "--out=/p/out",
+        "--method=coexpression-test",
+        &format!("--lr-pairs={pairs}"),
+        &format!("--targets={targets}"),
+        "--species=mouse",
     ]
     .map(String::from)
     .to_vec();
@@ -63,7 +51,7 @@ fn run_lra_builds_pinto_lras_command_line() {
         Some("r.pinto.json"),
         "o",
     );
-    assert_eq!(bare, ["lra", "--from", "r.pinto.json", "-o", "o"]);
+    assert_eq!(bare, ["lra", "--from=r.pinto.json", "--out=o"]);
     // clap's complaint on a value pinto does not take.
     let bad = lra_argv(
         &lra_args(json!({"run": "r", "species": "fish"})),
@@ -86,10 +74,7 @@ fn run_lra_passes_only_and_writes_the_subset_table() {
         Some("/p/r.pinto.json"),
         "/p/out",
     );
-    assert_eq!(
-        argv[argv.len() - 2..],
-        ["--only", "LIGA1,LIGB1:RECE1_RECE2"]
-    );
+    assert_eq!(argv[argv.len() - 1], "--only=LIGA1,LIGB1:RECE1_RECE2");
     checked(&cli(), &argv).unwrap();
     let made = lra_outputs(LraMethod::ContactEffect, "/p/out", &a.only());
     let tag = crate::lr_activity::ligand_effect::only::tag(&a.only());
@@ -129,12 +114,9 @@ fn a_simulate_call_becomes_its_command_line() {
         argv,
         [
             "lra-simulate",
-            "--from",
-            "/p/r.pinto.json",
-            "-o",
-            "/p/out",
-            "--species",
-            "human"
+            "--from=/p/r.pinto.json",
+            "--out=/p/out",
+            "--species=human"
         ]
     );
     checked(&cli(), &argv).unwrap();
@@ -145,8 +127,7 @@ fn a_simulate_call_becomes_its_command_line() {
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
     assert!(
-        argv.windows(2)
-            .any(|w| w == ["--region-jackknife", "no-refit"]),
+        argv.iter().any(|w| w == "--region-jackknife=no-refit"),
         "{argv:?}"
     );
     checked(&cli(), &argv).unwrap();
@@ -157,18 +138,14 @@ fn a_simulate_call_becomes_its_command_line() {
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
-    let tail: Vec<&str> = argv[5..].iter().map(String::as_str).collect();
+    let tail: Vec<&str> = argv[3..].iter().map(String::as_str).collect();
     assert_eq!(
         tail,
         [
-            "--region",
-            "/p/region.tsv",
-            "--lr-pairs",
-            "/p/pairs.tsv",
-            "--targets",
-            "/p/t.tsv",
-            "--plant-region",
-            "D3_specific_domain_1"
+            "--region=/p/region.tsv",
+            "--lr-pairs=/p/pairs.tsv",
+            "--targets=/p/t.tsv",
+            "--plant-region=D3_specific_domain_1"
         ]
     );
     checked(&cli(), &argv).unwrap();
@@ -244,7 +221,7 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     }));
     assert_eq!(a.input().run().unwrap(), None);
     let argv = lra_argv(&a, LraMethod::ContactEffect, None, "o");
-    assert!(!argv.iter().any(|w| w == "--from"), "{argv:?}");
+    assert!(!argv.iter().any(|w| w.starts_with("--from")), "{argv:?}");
     for flag in [
         "--coord",
         "--batch-files",
@@ -254,7 +231,11 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
         "--json-fwer-threshold",
         "--min-gene-count",
     ] {
-        assert!(argv.iter().any(|w| w == flag), "{flag}: {argv:?}");
+        let given = format!("{flag}=");
+        assert!(
+            argv.iter().any(|w| w.starts_with(&given)),
+            "{flag}: {argv:?}"
+        );
     }
     checked(&cli(), &argv).unwrap();
     let s: LraSimulateToolArgs = crate::mcp::parse(json!({
@@ -264,7 +245,7 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     }))
     .unwrap();
     let argv = lra_simulate_argv(&s, None, "o");
-    assert!(argv.iter().any(|w| w == "--seed"), "{argv:?}");
+    assert!(argv.iter().any(|w| w == "--seed=3"), "{argv:?}");
     checked(&cli(), &argv).unwrap();
 }
 
@@ -279,10 +260,10 @@ fn run_lra_passes_the_marginal_baselines() {
         "marginal_permutations": 500,
     }));
     let argv = lra_argv(&a, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
-    let tail = &argv[argv.len() - 3..];
+    let tail = &argv[argv.len() - 2..];
     assert_eq!(
         tail,
-        ["--marginal-baselines", "--marginal-permutations", "500"]
+        ["--marginal-baselines", "--marginal-permutations=500"]
     );
     checked(&cli(), &argv).unwrap();
     let made = a.outputs(LraMethod::ContactEffect, "o");
@@ -704,4 +685,100 @@ fn simulate_runs_read_back_as_written() {
     let scenario = v["scenarios"][0]["scenario"].as_str().unwrap();
     assert!(scenario.ends_with("planted in region R2"), "{scenario}");
     assert!(v.get("command").is_none(), "read back unchecked: {v}");
+}
+
+/// A single-scenario call's settings reach `pinto lra-simulate` one token
+/// each, which it takes, and the sidecar marking the call complete is among
+/// what it writes; without them, the grid's table alone.
+#[test]
+fn a_single_scenario_call_passes_its_settings() {
+    let a: LraSimulateToolArgs = crate::mcp::parse(json!({
+        "run": "r",
+        "set": ["effect_pve=0.05", "confounder=bumps"],
+        "pairs": 4,
+        "null_pairs": 6,
+    }))
+    .unwrap();
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
+    let tail: Vec<&str> = argv[3..].iter().map(String::as_str).collect();
+    assert_eq!(
+        tail,
+        [
+            "--set=effect_pve=0.05",
+            "--set=confounder=bumps",
+            "--pairs=4",
+            "--null-pairs=6"
+        ]
+    );
+    checked(&cli(), &argv).unwrap();
+    assert_eq!(
+        a.outputs("/p/out"),
+        [
+            PathBuf::from("/p/out.lra-simulate.parquet"),
+            PathBuf::from("/p/out.lra-simulate.json")
+        ]
+    );
+    let grid: LraSimulateToolArgs = crate::mcp::parse(json!({"run": "r"})).unwrap();
+    assert_eq!(
+        grid.outputs("/p/out"),
+        [PathBuf::from("/p/out.lra-simulate.parquet")]
+    );
+    // `one` alone selects the mode at its defaults.
+    let one: LraSimulateToolArgs = crate::mcp::parse(json!({"run": "r", "one": true})).unwrap();
+    let argv = lra_simulate_argv(&one, Some("/p/r.pinto.json"), "/p/out");
+    assert_eq!(argv.last().map(String::as_str), Some("--one"));
+    checked(&cli(), &argv).unwrap();
+    assert_eq!(one.outputs("/p/out").len(), 2);
+    // A pair count alone selects it too, as on the command line.
+    for alone in [
+        json!({"run": "r", "pairs": 4}),
+        json!({"run": "r", "null_pairs": 4}),
+    ] {
+        let a: LraSimulateToolArgs = crate::mcp::parse(alone.clone()).unwrap();
+        assert_eq!(a.outputs("/p/out").len(), 2, "{alone}");
+    }
+    // A pair count of zero is refused as the command line refuses it.
+    let zero: LraSimulateToolArgs = crate::mcp::parse(json!({"run": "r", "pairs": 0})).unwrap();
+    assert!(checked(
+        &cli(),
+        &lra_simulate_argv(&zero, Some("/p/r.pinto.json"), "/p/out")
+    )
+    .is_err());
+}
+
+/// A finished single scenario is read back only for the call that made it:
+/// another point, pair count, seed or region under the same out is refused,
+/// and a grid call refuses a single scenario's table.
+#[test]
+fn a_finished_single_scenario_is_read_back_for_its_own_call_alone() {
+    use crate::lr_activity::ligand_effect::simulate::ScenarioKeys;
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("p1").to_string_lossy().into_owned();
+    let call = |v: Value| -> LraSimulateToolArgs { crate::mcp::parse(v).unwrap() };
+    let a = call(json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4}));
+    let grid = call(json!({"run": "r"}));
+    grid.check_made(&out).unwrap();
+    let sets = vec!["effect_pve=0.02".to_string()];
+    let sidecar = json!({
+        "scenario": ScenarioKeys::default().with_overrides(&sets).unwrap(),
+        "asked": {"planted": 4, "null": 10},
+        "seed": 42,
+        "plant_region": null,
+    });
+    std::fs::write(output::lra_simulate_sidecar_path(&out), sidecar.to_string()).unwrap();
+    a.check_made(&out).unwrap();
+    for other in [
+        json!({"run": "r", "set": ["effect_pve=0.05"], "pairs": 4}),
+        json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 5}),
+        json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4, "seed": 3}),
+        json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4, "plant_region": "R1"}),
+    ] {
+        let e = call(other.clone())
+            .check_made(&out)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(NOT_WRITTEN_OVER), "{other}: {e}");
+    }
+    let e = grid.check_made(&out).unwrap_err().to_string();
+    assert!(e.contains("single scenario"), "{e}");
 }

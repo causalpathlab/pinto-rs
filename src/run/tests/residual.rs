@@ -1,16 +1,10 @@
 use super::*;
+use crate::built_cli as cli;
 use crate::mcp::shown_path;
 use crate::run::mcp::checked;
 use crate::util::metadata::PintoMetadata;
 use serde_json::Value;
 use std::path::Path;
-
-fn cli() -> clap::Command {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
 
 fn args(v: Value) -> ResidualToolArgs {
     crate::mcp::parse(v).unwrap()
@@ -34,7 +28,7 @@ fn manifest(dir: &Path, command: &str, files: &[&str]) -> String {
 
 #[test]
 fn the_residual_tool_is_listed_with_its_schema() {
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     let spec = tools.iter().find(|t| t.name == "run_residual").unwrap();
     assert_eq!(spec.input_schema["additionalProperties"], false);
     assert_eq!(spec.input_schema["required"], json!(["run"]));
@@ -66,11 +60,9 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     assert_eq!(
         bare,
         [
-            "residual",
-            "--from",
-            &shown_path(Path::new("r")),
-            "-o",
-            "/p/res"
+            "residual".to_string(),
+            format!("--from={}", shown_path(Path::new("r"))),
+            "--out=/p/res".into()
         ]
     );
     checked(&cli(), &bare).unwrap();
@@ -91,16 +83,13 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     let argv = residual_argv(&full, "o").unwrap();
     let want: Vec<String> = [
         "residual",
-        "--from",
-        &shown_path(Path::new("r")),
-        "--data-files",
-        &files,
+        &format!("--from={}", shown_path(Path::new("r"))),
+        &format!("--data-files={files}"),
         "--excess=floor",
         "--adapt=none",
         "--adapt-cells=20",
         "--feature-names=gene",
-        "-o",
-        "o",
+        "--out=o",
     ]
     .map(String::from)
     .to_vec();
@@ -139,14 +128,14 @@ fn a_value_the_command_refuses_is_refused_with_its_reason() {
 /// `--run` works too.
 #[test]
 fn the_run_is_named_by_the_commands_own_flag() {
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     let spec = tools.iter().find(|t| t.name == "run_residual").unwrap();
     let run = spec.input_schema["properties"]["run"]["description"]
         .as_str()
         .unwrap();
     assert!(run.ends_with("(--from; --run also works)"), "{run}");
     let argv = residual_argv(&args(json!({"run": "r"})), "o").unwrap();
-    assert_eq!(argv[1], "--from");
+    assert!(argv[1].starts_with("--from="), "{argv:?}");
 }
 
 /// Only an lc, cage or dsvd run is taken, refused while the call is set up.

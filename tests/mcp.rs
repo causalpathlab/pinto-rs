@@ -393,7 +393,10 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
         .iter()
         .map(|m| m["method"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["lc", "cage", "dsvd"]);
+    assert_eq!(
+        names,
+        ["lc", "cage", "cage-cell", "dsvd", "spatialde2", "stagate"]
+    );
     let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));
     assert_eq!(lc["coords"], true);
     let flags = lc["flags"].as_array().unwrap();
@@ -629,6 +632,61 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
     );
     assert!(msg.contains("--marginal-baselines applies to"), "{msg}");
     assert!(!dir.path().join("y.lr_activity.parquet").exists());
+}
+
+/// A single lra-simulate scenario with no out takes a prefix of its own,
+/// even for a run in today's results folder, whose own prefix holds the
+/// built-in grid's table; a grid call keeps that slot.
+#[test]
+fn a_single_scenario_takes_a_prefix_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let reference = empty_reference(dir.path());
+    let mut c = Client::start_with(
+        dir.path(),
+        &[
+            ("PINTO_REFERENCE_DIR", reference.as_os_str()),
+            ("PINTO_OFFLINE", std::ffi::OsStr::new("1")),
+        ],
+    );
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    // Today's folder, from a call on data of another name.
+    let (job, _) = c.ok(
+        "run_lra_simulate",
+        json!({"data_files": ["d.zarr"], "coord_files": ["d.csv"], "one": true}),
+    );
+    let first = job["writes"][0].as_str().unwrap_or_else(|| panic!("{job}"));
+    let day = dir.path().join(Path::new(first).parent().unwrap());
+    let prefix = common::write_run(&day, 100);
+    let run = format!("{prefix}.pinto.json");
+    // Another run's prefix is no free name either.
+    std::fs::write(day.join("run-scenario.pinto.json"), "{}").unwrap();
+    // Each file written, by its name in today's folder.
+    let mut writes = |args: Value| -> Vec<String> {
+        let (job, _) = c.ok("run_lra_simulate", args);
+        let writes = job["writes"].as_array().unwrap_or_else(|| panic!("{job}"));
+        writes
+            .iter()
+            .map(|w| {
+                let w = Path::new(w.as_str().unwrap());
+                assert_eq!(w.parent().unwrap().file_name(), day.file_name(), "{job}");
+                w.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect()
+    };
+    for single in [
+        json!({"run": run, "one": true}),
+        json!({"run": run, "pairs": 4}),
+        json!({"run": run, "null_pairs": 4}),
+    ] {
+        let made = writes(single.clone());
+        assert_eq!(made.len(), 2, "the table and its sidecar: {made:?}");
+        for w in &made {
+            for taken in ["run.", "run-scenario."] {
+                assert!(!w.starts_with(taken), "{single}: {w} is a run's slot");
+            }
+        }
+    }
+    assert_eq!(writes(json!({"run": run})), ["run.lra-simulate.parquet"]);
 }
 
 /// A simulation over the server: settings checked before anything runs, the
@@ -874,7 +932,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
             "method": "lc",
             "data": sim["fit"]["data"],
             "coords": sim["fit"]["coords"],
-            "flags": sim["fit"]["flags"],
+            "flags": small_fit(
+                &sim["fit"]["flags"],
+                json!({"n-communities": 5, "num-gibbs": 10})
+            ),
             "out": "fits/lc1",
             "background": false,
         }),
@@ -946,7 +1007,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
             "method": "dsvd",
             "data": job["fit"]["data"],
             "coords": job["fit"]["coords"],
-            "flags": job["fit"]["flags"],
+            "flags": small_fit(
+                &job["fit"]["flags"],
+                json!({"n-latent-topics": 5, "leiden-runs": 1, "leiden-knn": 10})
+            ),
             "out": "fits/dsvd2",
             "background": false,
         }),
@@ -990,4 +1054,18 @@ fn an_agent_fits_the_residual_of_a_simulation() {
         !read.is_empty() && read.iter().all(|l| l.contains("/sim/sections/")),
         "the simulation's own sections, not the excess: {read:?}"
     );
+}
+
+/// The flags a reply gives `run_fit`, with a narrow projection and the
+/// method's own `extra` on top: a fit this test only plumbs through, kept
+/// quick, never one whose quality it reads.
+fn small_fit(flags: &Value, extra: Value) -> Value {
+    let mut flags = flags.clone();
+    let merged = flags.as_object_mut().unwrap();
+    merged.insert("proj-dim".into(), json!(16));
+    let Value::Object(extra) = extra else {
+        panic!("flags are an object: {extra}")
+    };
+    merged.extend(extra);
+    flags
 }

@@ -33,7 +33,7 @@
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::predict::{predict_cage, PredictArgs};
 use crate::util::common::*;
-use crate::util::metadata::PintoMetadata;
+use crate::util::metadata::{manifest_path, run_prefix, PintoMetadata};
 use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles};
 use clap::Args;
 use data_beans::alg::retrieval_impute::{retrieval_impute, RetrievalImputeConfig};
@@ -44,7 +44,7 @@ use legume_numeric::matrix::traits::IoOps;
 use log::info;
 use std::path::Path;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct ImputeArgs {
     #[command(flatten)]
     pub predict: PredictArgs,
@@ -98,6 +98,11 @@ pub struct ImputeArgs {
 }
 
 pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
+    // A model named by its manifest is the same model, as `pinto predict`
+    // takes it.
+    let mut args = args.clone();
+    args.predict.model = run_prefix(&args.predict.model).into();
+    let args = &args;
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
     anyhow::ensure!(
@@ -112,7 +117,7 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
     // model with a misplaced file — or a `pinto predict` output prefix —
     // onto the profile path with different semantics. The probe survives
     // only as a fallback for pre-manifest runs.
-    let meta = PintoMetadata::read(Path::new(&format!("{model}.pinto.json")))
+    let meta = PintoMetadata::read(Path::new(&manifest_path(model)))
         // Pre-unification lc / dsvd runs wrote the same schema under
         // `{prefix}.metadata.json`; prefer their recorded command over the
         // artifact probe below.
