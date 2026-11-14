@@ -240,7 +240,7 @@ enum Commands {
                       \x20 pinto lc s1.h5,s2.h5 -c c1.csv,c2.csv -o out\n\n\
                       INPUT FILES:\n\n\
                       \x20 data.h5 / data.zarr   Features-by-cells sparse matrix.\n\
-                      \x20                        Convert from MTX: data-beans from-mtx in.mtx out.h5\n\
+                      \x20                        Convert from MTX: data-beans from-mtx in.mtx -o out.zarr\n\
                       \x20 -c coords.csv          Cell coordinates (barcode,x,y).\n\
                       \x20                        Omit for expression-only mode.\n\n\
                       EDGE PROFILE MODES:\n\n\

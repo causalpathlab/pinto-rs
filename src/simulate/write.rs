@@ -19,6 +19,7 @@
 use super::panel::{donor_label, Section};
 use super::sim::Sim;
 use super::truth::Info;
+use data_beans::sparse_io_vector::stacked_column_name;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 /// The coordinate columns of every coordinate table written here.
@@ -32,7 +33,13 @@ fn f32s(v: impl Iterator<Item = f64>) -> Vec<f32> {
 /// pinto names it: `{barcode}@{section}`, or the bare barcode when there is
 /// one section (pinto adds the file stem only with several data files).
 pub fn spot_index(sim: &Sim) -> (Vec<(usize, usize)>, Vec<Box<str>>) {
-    let several = sim.sections.len() > 1;
+    let n = sim.sections.len();
+    // as a fit names the cells of the section files `S*.zarr`
+    let files: Vec<String> = sim
+        .sections
+        .iter()
+        .map(|s| format!("{}.zarr", s.name))
+        .collect();
     let spots: Vec<(usize, usize)> = sim
         .sections
         .iter()
@@ -42,12 +49,8 @@ pub fn spot_index(sim: &Sim) -> (Vec<(usize, usize)>, Vec<Box<str>>) {
     let cells = spots
         .iter()
         .map(|&(s, i)| {
-            let sec = &sim.sections[s];
-            if several {
-                format!("{}@{}", sec.barcodes[i], sec.name).into()
-            } else {
-                sec.barcodes[i].clone()
-            }
+            stacked_column_name(&sim.sections[s].barcodes[i], &files[s], n)
+                .expect("a section file has a name")
         })
         .collect();
     (spots, cells)

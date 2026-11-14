@@ -83,14 +83,11 @@ pub(crate) fn load_expr_data(
     preload: bool,
 ) -> anyhow::Result<SparseIoVec> {
     anyhow::ensure!(!data_files.is_empty(), "empty data files");
-    let attach_data_name = data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
-    for data_file in data_files.iter() {
+    let names = crate::util::input::stacked_data_names(data_files)?;
+    for (data_file, data_name) in data_files.iter().zip(names) {
         info!("Importing data file: {}", data_file);
         let data = crate::util::input::open_sparse(data_file, preload)?;
-        let data_name = attach_data_name
-            .then(|| legume_numeric::matrix::common_io::basename(data_file))
-            .transpose()?;
         data_vec.push(Arc::from(data), data_name)?;
     }
     Ok(data_vec)

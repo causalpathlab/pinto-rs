@@ -773,7 +773,10 @@ PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
 ## Input data
 
 - **Expression:** `.h5` or `.zarr` via `data-beans`
-  (`data-beans from-mtx … --backend hdf5 -o data.h5`).
+  (`data-beans from-mtx … --backend hdf5 -o data.h5`). Convert an AnnData
+  `.h5ad` first with `data-beans from-h5ad` and pass the result: pinto no
+  longer converts one on the fly, though a `{base}.db.zarr` an earlier
+  version cached beside it is still used, so delete a stale cache.
 - **Coordinates:** CSV/TSV/parquet (Visium / Xenium column names recognized).
 - **Batch (optional):** `-b labels.txt`.
 
