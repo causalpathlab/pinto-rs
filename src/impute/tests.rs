@@ -281,3 +281,22 @@ fn matching_axes_pass_through_and_foreign_files_are_refused() {
         align_to_columns("p", prop, &names(&["a", "b"]), &names(&["a", "a", "b"])).unwrap_err();
     assert!(err.to_string().contains("not unique"), "{err}");
 }
+
+/// No reference neighbours is refused as an argument, before any data is
+/// read.
+#[test]
+fn zero_reference_neighbours_is_an_argument_error() {
+    let e = parse_impute(&[
+        "impute",
+        "q.zarr",
+        "--model",
+        "m",
+        "-o",
+        "o",
+        "--impute-knn",
+        "0",
+    ])
+    .unwrap_err();
+    let kind = e.downcast_ref::<clap::Error>().map(clap::Error::kind);
+    assert_eq!(kind, Some(clap::error::ErrorKind::ValueValidation), "{e}");
+}

@@ -3,6 +3,7 @@ use crate::util::common::*;
 use crate::util::knn_graph::KnnGraph;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::convert::try_open_or_convert;
+use data_beans::sparse_io_vector::data_name_of;
 
 mod args;
 pub use args::{ResolvedKnn, SrtInputArgs};
@@ -56,6 +57,27 @@ pub fn open_sparse(
     Ok(data)
 }
 
+/// The `data_name` each of `files` is stacked under, by data-beans' rule
+/// ([`data_name_of`]: its stem with several files, none with one), refused
+/// when two files would give their cells the same name.
+pub fn stacked_data_names(files: &[Box<str>]) -> anyhow::Result<Vec<Option<Box<str>>>> {
+    let names = files
+        .iter()
+        .map(|f| data_name_of(f, files.len()))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut seen = HashSet::default();
+    for (f, n) in files.iter().zip(&names) {
+        if let Some(n) = n {
+            anyhow::ensure!(
+                seen.insert(n),
+                "{f} and an earlier data file have the same name {n}, so their cells \
+                 would share names; rename one"
+            );
+        }
+    }
+    Ok(names)
+}
+
 /// Open `data_files` on the union of their rows, for reading expression
 /// back (propensity, the viewer's gene maps): a feature some file never
 /// measured is kept, and [`crate::util::coverage::Coverage`] tells its
@@ -66,13 +88,11 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
         return Err(anyhow::anyhow!("empty data files"));
     }
 
-    let attach_data_name = data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
 
-    for data_file in data_files.iter() {
+    for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
         info!("Importing data file: {}", data_file);
         let data = try_open_or_convert(data_file)?;
-        let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
         data_vec.push(Arc::from(data), data_name)?;
     }
 
@@ -95,7 +115,6 @@ pub fn open_fit_data(
     feature_kind: &FeatureNameKind,
     preload_data: bool,
 ) -> anyhow::Result<SparseIoVec> {
-    let attach_data_name = data_files.len() > 1;
     let mut data_vec = SparseIoVec::new();
     if let Some(canon) = feature_kind.clone().into_canonicalizer() {
         data_vec = data_vec.with_row_canonicalizer(move |name| canon(name))?;
@@ -103,11 +122,10 @@ pub fn open_fit_data(
         data_vec = data_vec.with_row_alignment(RowAlignment::Intersect)?;
     }
 
-    for data_file in data_files.iter() {
+    for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
         info!("Importing data file: {}", data_file);
 
         let data = open_sparse(data_file, preload_data)?;
-        let data_name = attach_data_name.then(|| basename(data_file)).transpose()?;
 
         data_vec.push(Arc::from(data), data_name)?;
     }

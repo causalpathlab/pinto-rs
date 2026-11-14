@@ -74,7 +74,8 @@ pub struct ImputeArgs {
     #[arg(
         long,
         default_value_t = 25,
-        help = "Reference nearest neighbours pooled per query cell",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help = "Reference nearest neighbours pooled per query cell (at least 1)",
         long_help = "Named --impute-knn (not -k): the SrtInput -k sizes the\n\
                      spatial pair graph, this sizes the retrieval pool."
     )]

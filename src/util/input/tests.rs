@@ -286,3 +286,66 @@ mod separation {
         assert_ne!(out[(0, 2)], out[(2, 2)]);
     }
 }
+
+/// Two `zarr` backends of one gene, cells `a` and `b`, at `names` under
+/// `dir`.
+fn backends(dir: &std::path::Path, names: &[&str]) -> Vec<Box<str>> {
+    let genes: Vec<Box<str>> = vec!["g0".into()];
+    let bc: Vec<Box<str>> = vec!["a".into(), "b".into()];
+    names
+        .iter()
+        .map(|n| {
+            let f = dir.join(n);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            let f = f.to_string_lossy().into_owned();
+            crate::simulate::write::write_backend(&f, &genes, &bc, vec![(0, 0, 1.0), (0, 1, 2.0)])
+                .unwrap();
+            f.into()
+        })
+        .collect()
+}
+
+/// A fit names its cells as data-beans' own shared-row reader does (the
+/// one impute reads a reference with), with one file and with several, so
+/// training and reference agree on every name.
+#[test]
+fn fits_name_cells_as_data_beans_reads_them() {
+    use data_beans::aux::data_loading::{read_data_on_shared_rows, ReadSharedRowsArgs};
+    use data_beans::aux::feature_names::FeatureNameKind;
+    let dir = tempfile::tempdir().unwrap();
+    let files = backends(dir.path(), &["S1.zarr", "S2.zarr"]);
+    for n in [1, 2] {
+        let fit = super::open_fit_data(&files[..n], &FeatureNameKind::Exact, false).unwrap();
+        let reference = read_data_on_shared_rows(ReadSharedRowsArgs {
+            data_files: files[..n].to_vec(),
+            feature_kind: Some(FeatureNameKind::Exact),
+            ..Default::default()
+        })
+        .unwrap()
+        .data;
+        assert_eq!(
+            fit.column_names().unwrap(),
+            reference.column_names().unwrap(),
+            "{n} files"
+        );
+    }
+}
+
+/// Data files that would give their cells the same name are refused: two
+/// files with one stem would name two cells `a@S1`.
+#[test]
+fn files_with_one_name_are_refused() {
+    use data_beans::aux::feature_names::FeatureNameKind;
+    let dir = tempfile::tempdir().unwrap();
+    let files = backends(dir.path(), &["x/S1.zarr", "y/S1.zarr"]);
+    let e = super::open_fit_data(&files, &FeatureNameKind::Exact, false)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(e.contains("same name"), "{e}");
+    let e = super::read_expr_data(&files)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(e.contains("same name"), "{e}");
+}
