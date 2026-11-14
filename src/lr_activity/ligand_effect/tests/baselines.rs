@@ -125,33 +125,45 @@ fn a_planted_effect_leaves_the_baselines_unchanged() {
     }
 }
 
-/// Every statistic of one run, in [`Baselines`]' field order.
-fn values(b: &Baselines) -> [f64; 10] {
+/// Every statistic of one run, named, in [`Baselines`]' field order.
+fn values(b: &Baselines) -> [(&'static str, f64); 10] {
     [
-        b.celltype_score,
-        b.celltype_p,
-        b.celltype_tested as f64,
-        b.moran_i,
-        b.moran_p,
-        b.contact_score,
-        b.contact_p,
-        b.coexpr_log_or,
-        b.coexpr_se,
-        b.coexpr_p,
+        (stringify!(celltype_score), b.celltype_score),
+        (stringify!(celltype_p), b.celltype_p),
+        (stringify!(celltype_tested), b.celltype_tested as f64),
+        (stringify!(moran_i), b.moran_i),
+        (stringify!(moran_p), b.moran_p),
+        (stringify!(contact_score), b.contact_score),
+        (stringify!(contact_p), b.contact_p),
+        (stringify!(coexpr_log_or), b.coexpr_log_or),
+        (stringify!(coexpr_se), b.coexpr_se),
+        (stringify!(coexpr_p), b.coexpr_p),
     ]
+}
+
+/// Each statistic of `b` equals its `want` to a relative 1e-12.
+#[track_caller]
+fn assert_pinned(b: &Baselines, want: [f64; 10]) {
+    for ((field, got), want) in values(b).into_iter().zip(want) {
+        assert!(
+            (got - want).abs() <= 1e-12 * want.abs(),
+            "{field}: {got} != {want}"
+        );
+    }
 }
 
 /// What `lra-simulate` reports for two pairs on the fixture, pinned: the
 /// cell-type test on identity bins and the contact statistics, value for
 /// value, so a change to the code `lra` shares cannot move the benchmark.
 /// The first pair's verdicts settle early, the second's run every
-/// permutation.
+/// permutation. Values match to a part in 1e12, the rounding platforms
+/// differ by; a change to the code moves them far more.
 #[test]
 fn the_benchmark_baselines_are_pinned() {
     let f = fixture();
     let b = baselines(&f.tissue, &f.ligand, &f.receptor, 7);
-    assert_eq!(
-        values(&b),
+    assert_pinned(
+        &b,
         [
             0.7742558873543621,
             0.0009995002498750624,
@@ -163,12 +175,12 @@ fn the_benchmark_baselines_are_pinned() {
             -1.5296461582183838,
             0.06737641245126724,
             1.0,
-        ]
+        ],
     );
     let (l, r) = even(&f);
     let b = baselines(&f.tissue, &l, &r, 8);
-    assert_eq!(
-        values(&b),
+    assert_pinned(
+        &b,
         [
             0.6727535228830798,
             1.0,
@@ -180,6 +192,6 @@ fn the_benchmark_baselines_are_pinned() {
             0.03821168839931488,
             0.05047428607940674,
             0.22450918162937955,
-        ]
+        ],
     );
 }
