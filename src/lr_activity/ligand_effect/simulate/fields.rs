@@ -145,6 +145,21 @@ pub struct SimShared<'a> {
     pub field: Option<&'a [f64]>,
 }
 
+/// The hex sha256 of a hidden field's values, little-endian f64 bytes: the
+/// field's identity, which a record can compare without holding it.
+pub fn field_sha256(field: &[f64]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for v in field {
+        hasher.update(v.to_le_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// The real-gene field at each distinct scale; empty without a gene.
 pub fn gene_fields(tissue: &Tissue, gene: Option<&[f64]>, scales: &[f64]) -> Vec<(f64, Vec<f64>)> {
     let Some(g) = gene else {

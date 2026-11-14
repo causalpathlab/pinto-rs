@@ -509,6 +509,18 @@ pub struct LraSimulateArgs {
     pub null_pairs: Option<usize>,
 }
 
+/// Whether `--one`, `--set`, `--pairs` or `--null-pairs` select the
+/// single-scenario mode: any of them given. The one rule, for the command
+/// line and the MCP tool alike.
+pub fn selects_single(
+    one: bool,
+    set: &[String],
+    pairs: Option<usize>,
+    null_pairs: Option<usize>,
+) -> bool {
+    one || !set.is_empty() || pairs.is_some() || null_pairs.is_some()
+}
+
 impl LraSimulateArgs {
     /// The single scenario these flags ask for, checked; `None` for the
     /// built-in grid.
@@ -516,8 +528,7 @@ impl LraSimulateArgs {
         &self,
     ) -> anyhow::Result<Option<crate::lr_activity::ligand_effect::simulate::SingleScenario>> {
         use crate::lr_activity::ligand_effect::simulate::SingleScenario;
-        if !(self.one || !self.set.is_empty() || self.pairs.is_some() || self.null_pairs.is_some())
-        {
+        if !selects_single(self.one, &self.set, self.pairs, self.null_pairs) {
             return Ok(None);
         }
         SingleScenario::new(

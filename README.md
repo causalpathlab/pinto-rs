@@ -263,11 +263,17 @@ effect and no confounding; a point out of range is refused before any data
 is read, and the mode needs `-o`.
 
 Every call holds both labels: the pairs fit to benchmark are ranked by
-ligand abundance, the even ranks carry the effect (`--pairs`, default 10)
-and the odd ranks none (`--null-pairs`, default 10), all under the same
-hidden field, so abundance cannot predict the label. With fewer pairs to
-benchmark the call takes what there is and warns, as it does below 20
-rows. `realgene` draws its field from the most abundant gene outside every
+ligand abundance and the top `--pairs` plus `--null-pairs` (default 10
+each) taken, some carrying the effect and the rest none, all under the
+same hidden field. The fewer label is spread evenly among the more, the
+`k`-th of `few` at rank `floor((k + 1/2) m / few)` of the `m` taken, as
+Bresenham's line algorithm spreads its steps (Bresenham 1965, IBM Systems
+Journal 4(1):25-30): both labels then have the same mean abundance rank to
+within one, whatever the counts, so abundance does not sort them beyond
+that. Equal counts alternate, even ranks planted, each planted pair one
+rank above a null one. With fewer pairs to benchmark the call takes what
+there is, each label keeping its asked share, and warns, as it does below
+20 rows. `realgene` draws its field from the most abundant gene outside every
 pair of the call, and fails when there is none rather than change the
 point. `--plant-region` applies as above; the scores below stay the pooled
 row's, the region's being `region_estimate` and `region_se`. `-o` must not
@@ -281,14 +287,17 @@ estimable stays, with NaN scores. Then, last and atomically, it writes
 `{out}.lra-simulate.json`, whose presence marks the call complete: the
 resolved scenario, the counts planted and null and the rule that labelled
 them, each pair's ligand, receptor, rank, label, seed and run time, the
-real-gene confounder, `--seed`, `rep`, the pinto version and the reference
-record (path and sha256). It records nothing in the run's manifest.
+real-gene confounder, `--seed`, `rep`, the pinto version, the reference
+record (path and sha256) and the table's sha256. `field_sha256` names the
+hidden field the call drew, and each pair's the field it ran under, the
+same for every pair. It records nothing in the run's manifest.
 
 Each pair's draws start from `mix_seed(--seed, rank)`, with `rep` mixed in,
-and the hidden field from `--seed` and `rep` alone, so a pair's rows do not
-depend on the other pairs of the call (save under `realgene`, whose gene
-can change with `--pairs` and `--null-pairs`), and the same flags give the same
-table, byte for byte, on any number of threads. These streams are not the
+and the hidden field from `--seed` and `rep` alone, so a pair's rows depend
+on its rank and label alone, not on the other pairs of the call (save under
+`realgene`, whose gene can change with `--pairs` and `--null-pairs`; the
+counts also decide which ranks take which label), and the same flags give
+the same table, byte for byte, on any number of threads. These streams are not the
 built-in grid's: a point of the grid and the same point run alone give
 different draws. Pairs run at once as memory allows within
 `RAYON_NUM_THREADS`; a runner starting several calls side by side sets

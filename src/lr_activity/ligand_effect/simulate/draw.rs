@@ -1,7 +1,7 @@
 //! Drawing counts and running one simulated pair.
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
-use super::fields::{confounding, SimShared};
+use super::fields::{confounding, field_sha256, SimShared};
 use super::row::{RegionRead, SimRow};
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
@@ -718,5 +718,6 @@ pub fn simulate(
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds: seen.baseline_seconds,
         region,
+        field_sha256: shared.field.map(|_| field_sha256(&run.f).into()),
     })
 }

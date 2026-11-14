@@ -661,10 +661,32 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
     })
 }
 
+/// Whether output prefixes `a` and `b`, their folders made, name the same
+/// files: the same folder through any symbolic link or `..` and the same
+/// name, or a file of `b`'s that `a` reaches as well (its name in another
+/// case, on a file system that ignores case).
+fn same_prefix(a: &str, b: &str) -> bool {
+    let resolved = |p: &str| -> Option<std::path::PathBuf> {
+        let path = std::path::absolute(p).ok()?;
+        Some(
+            std::fs::canonicalize(path.parent()?)
+                .ok()?
+                .join(path.file_name()?),
+        )
+    };
+    let file = |p: &str, suffix: &str| std::fs::canonicalize(format!("{p}{suffix}")).ok();
+    resolved(a).is_some_and(|r| resolved(b) == Some(r))
+        || [".pinto.json", ".lra-simulate.parquet"]
+            .iter()
+            .any(|s| file(a, s).is_some_and(|f| file(b, s) == Some(f)))
+}
+
 /// `pinto lra-simulate`: the contact-effect analysis's power and
 /// calibration check on this tissue.
 pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
-    use crate::lr_activity::ligand_effect::pipeline::{run_simulate, run_simulate_one};
+    use crate::lr_activity::ligand_effect::pipeline::{
+        clear_single_outputs, run_simulate, run_simulate_one,
+    };
     use crate::lr_activity::ligand_effect::{check_memory_budget, RunInputs, Settings};
     // A single scenario is checked before any data is read, and needs its
     // own prefix: calls run side by side would all write the run's.
@@ -677,15 +699,19 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
     check_memory_budget()?;
     let input = args.input.resolve()?;
     let out = input.out(args.out.as_deref())?;
-    if let (Some(_), Some(run)) = (&single, &input.run) {
-        let same = |p: &str| std::path::absolute(p).ok();
-        anyhow::ensure!(
-            same(&out) != same(&run.prefix),
-            "--out {out} is the --from run's prefix, whose {{prefix}}.lra-simulate.parquet is the \
-             built-in grid's; give a single scenario a prefix of its own"
-        );
-    }
     mkdir_parent(&out)?;
+    if single.is_some() {
+        if let Some(run) = &input.run {
+            anyhow::ensure!(
+                !same_prefix(&out, &run.prefix),
+                "--out {out} is the --from run's prefix, whose {{prefix}}.lra-simulate.parquet is \
+                 the built-in grid's; give a single scenario a prefix of its own"
+            );
+        }
+        // Before any data is read, so a call that fails there leaves no
+        // earlier call's outputs to pass for its own.
+        clear_single_outputs(&out)?;
+    }
     let contacts = load_contacts(&input)?;
     // A single scenario writes its own sidecar and records nothing in a
     // manifest, so it is handed none.

@@ -4,7 +4,9 @@
 //! the project's records (a background job unless asked otherwise). The
 //! reply is read from the tables the child wrote.
 
-use super::mcp::{as_run, checked, in_background, out_or_free, rooted, spawn, NOT_WRITTEN_OVER};
+use super::mcp::{
+    as_run, checked, in_background, out_or_free, out_or_free_by, rooted, spawn, NOT_WRITTEN_OVER,
+};
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
@@ -195,7 +197,7 @@ pub(super) struct LraSimulateToolArgs {
 impl LraSimulateToolArgs {
     /// Whether the call asks for one scenario rather than the built-in grid.
     fn single(&self) -> bool {
-        self.one || !self.set.is_empty() || self.pairs.is_some() || self.null_pairs.is_some()
+        crate::lr_activity::args::selects_single(self.one, &self.set, self.pairs, self.null_pairs)
     }
 
     /// What the run writes under `out`: the table, and for a single scenario
@@ -803,7 +805,18 @@ pub(super) fn lra_simulate(
             return reply;
         }
     }
-    let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| Ok(a.outputs(o)))?;
+    // A single scenario's free name is no run's prefix (a run in today's
+    // folder has one there), whose table is that run's grid's.
+    let (out, made) = match a.single() {
+        true => out_or_free_by(
+            cx,
+            out.as_deref(),
+            &format!("{}-scenario", input.stem(run)),
+            |o| Ok(a.outputs(o)),
+            |o| Path::new(&crate::util::metadata::run_manifest(o)).is_file(),
+        )?,
+        false => out_or_free(cx, out.as_deref(), &input.stem(run), |o| Ok(a.outputs(o)))?,
+    };
     let argv = lra_simulate_argv(&a, run, &out);
     checked(cli, &argv)?;
     let summary = format!(

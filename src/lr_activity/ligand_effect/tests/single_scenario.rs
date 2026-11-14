@@ -2,9 +2,9 @@
 //! grid, pinned, and the single-scenario mode a sweep runs one call per
 //! point of.
 
-use super::super::memory::memory_budget;
+use super::super::memory::{memory_budget, pair_memory_budget, workers_within, MEMORY_BUDGET_VAR};
 use super::super::output::{lra_simulate_path, lra_simulate_sidecar_path};
-use super::super::pipeline::{alternate_ranks, run_grid, run_simulate_one};
+use super::super::pipeline::{interleaved_ranks, run_grid, run_simulate_one};
 use super::super::reference::{with_test_root, write_empty_reference, Species};
 use super::super::simulate::{
     ConfoundShape, ConfounderKind, GridOpts, Scenario, ScenarioKeys, SingleScenario,
@@ -323,27 +323,54 @@ const SCORED: [&str; 16] = [
     "p",
 ];
 
-/// Even abundance ranks planted, odd ranks null, as many of each as asked
-/// and there are.
+/// The labels are spread over the top `N1 + N0` abundance ranks, the fewer
+/// label evenly among the more, so ligand abundance does not predict them:
+/// equal counts alternate (even ranks planted), and unequal ones still give
+/// both labels the same mean rank to within one. Fewer pairs than asked
+/// keep the asked share of each.
 #[test]
-fn labels_alternate_by_abundance_rank() {
+fn labels_spread_evenly_over_the_abundance_ranks() {
     let t = |r: &[(usize, bool)]| r.to_vec();
+    let planted_at =
+        |r: &[(usize, bool)]| -> Vec<usize> { r.iter().filter(|x| x.1).map(|x| x.0).collect() };
     assert_eq!(
-        alternate_ranks(10, 2, 2),
+        interleaved_ranks(10, 2, 2),
         t(&[(0, true), (1, false), (2, true), (3, false)])
     );
+    // Ten planted, two null: the nulls sit inside the planted run.
+    let r = interleaved_ranks(20, 10, 2);
     assert_eq!(
-        alternate_ranks(10, 3, 1),
-        t(&[(0, true), (1, false), (2, true), (4, true)])
+        r.iter().map(|x| x.0).collect::<Vec<_>>(),
+        (0..12).collect::<Vec<_>>()
     );
+    assert_eq!(planted_at(&r), [0, 1, 2, 4, 5, 6, 7, 8, 10, 11]);
+    assert_eq!(planted_at(&interleaved_ranks(20, 3, 10)), [2, 6, 10]);
     assert_eq!(
-        alternate_ranks(10, 1, 3),
-        t(&[(0, true), (1, false), (3, false), (5, false)])
-    );
-    assert_eq!(
-        alternate_ranks(3, 2, 2),
+        interleaved_ranks(3, 2, 2),
         t(&[(0, true), (1, false), (2, true)])
     );
+    assert_eq!(interleaved_ranks(1, 2, 2), t(&[(0, true)]));
+    for planted in 1..=25 {
+        for null in 1..=25 {
+            let r = interleaved_ranks(100, planted, null);
+            let ranks: Vec<usize> = r.iter().map(|x| x.0).collect();
+            assert_eq!(ranks, (0..planted + null).collect::<Vec<_>>());
+            let mean = |label: bool| {
+                let of: Vec<f64> = r
+                    .iter()
+                    .filter(|x| x.1 == label)
+                    .map(|x| x.0 as f64)
+                    .collect();
+                assert_eq!(of.len(), if label { planted } else { null });
+                of.iter().sum::<f64>() / of.len() as f64
+            };
+            let (m1, m0) = (mean(true), mean(false));
+            assert!(
+                (m1 - m0).abs() <= 1.0,
+                "{planted} planted at mean rank {m1}, {null} null at {m0}"
+            );
+        }
+    }
 }
 
 /// The keys are the table's own column names, a 0/1 column reads as a
@@ -450,8 +477,48 @@ fn the_memory_budget_can_be_set() {
     assert!(memory_budget(Some("0"), Some(16 * gib)).is_err());
 }
 
+/// Pairs at once are what the budget holds, never more than the threads
+/// (a quarter of them when a fit outgrows the cache), and one at least,
+/// even when the budget holds less than one pair.
+#[test]
+fn the_memory_budget_bounds_the_pairs_at_once() {
+    let (mib, small, large) = (1usize << 20, 1 << 10, 1 << 30);
+    assert_eq!(workers_within(10 * mib, 100 * mib, 8, small), 1);
+    assert_eq!(workers_within(300 * mib, 100 * mib, 8, small), 3);
+    assert_eq!(workers_within(usize::MAX, 100 * mib, 8, small), 8);
+    assert_eq!(workers_within(usize::MAX, 100 * mib, 8, large), 2);
+    assert_eq!(workers_within(usize::MAX, 100 * mib, 2, large), 1);
+}
+
+/// What [`the_memory_budget_variable_sets_the_pairs_budget`] runs in a
+/// process of its own, the variable set there: the budget is read once per
+/// process, so a test in this one could not set it.
+#[test]
+#[ignore = "run in a process of its own by the_memory_budget_variable_sets_the_pairs_budget"]
+fn memory_budget_in_a_process_of_its_own() {
+    if let Ok(want) = std::env::var("PINTO_TEST_WANT_BUDGET") {
+        assert_eq!(pair_memory_budget().to_string(), want);
+    }
+}
+
+/// `PINTO_MEMORY_BUDGET` is the budget pairs at once are counted against,
+/// in place of half the free memory.
+#[test]
+fn the_memory_budget_variable_sets_the_pairs_budget() {
+    let (_, here) = module_path!().split_once("::").unwrap();
+    let probe = format!("{here}::memory_budget_in_a_process_of_its_own");
+    let run = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &probe, "--ignored", "--test-threads=1"])
+        .env(MEMORY_BUDGET_VAR, "123456789")
+        .env("PINTO_TEST_WANT_BUDGET", "123456789")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success() && said.contains("1 passed"), "{said}");
+}
+
 /// One call holds N1 planted and N0 null rows under the same scenario, on
-/// alternate abundance ranks, with the scores a sweep reads, and a sidecar;
+/// interleaved abundance ranks, with the scores a sweep reads, and a sidecar;
 /// the same call on one thread or four writes the same bytes, and leaves the
 /// run's manifest as it was.
 #[test]
@@ -500,12 +567,19 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
         serde_json::from_slice(&std::fs::read(lra_simulate_sidecar_path(&four)).unwrap()).unwrap();
     assert_eq!(sidecar["planted"], 2);
     assert_eq!(sidecar["null"], 2);
-    assert_eq!(sidecar["assignment"], "alternate-rank");
+    assert_eq!(sidecar["assignment"], "interleaved-rank");
     assert_eq!(sidecar["scenario"]["effect_pve"], 0.05);
     assert_eq!(sidecar["scenario"]["confounder"], "bumps");
     assert_eq!(sidecar["seed"], 42);
     assert_eq!(sidecar["version"], env!("CARGO_PKG_VERSION"));
     assert!(sidecar["reference"]["sha256"].is_string(), "{sidecar}");
+    // The sidecar is written after the table it completes, whose bytes it
+    // names.
+    assert_eq!(
+        sidecar["table_sha256"],
+        super::super::reference::sha256_file(Path::new(&path)).unwrap(),
+        "{sidecar}"
+    );
     let pairs = sidecar["pairs"].as_array().unwrap();
     assert_eq!(pairs.len(), 4);
     for (rank, p) in pairs.iter().enumerate() {
@@ -526,9 +600,9 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
     );
 }
 
-/// A pair's rows depend on its rank, the seed and the scenario alone: a
-/// call with another effect size and fewer planted pairs gives the same
-/// null rows.
+/// A pair's rows depend on its rank, its label, the seed and the scenario
+/// alone: a call with another effect size and more planted pairs, whose
+/// nulls fall on the same ranks, gives the same null rows.
 #[test]
 fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
     let dir = tempfile::tempdir().unwrap();
@@ -548,7 +622,7 @@ fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
         (dir.path(), &m),
         "b",
         &with_effect("effect_pve=0.1"),
-        (1, 2),
+        (3, 2),
         2,
     )
     .unwrap();
@@ -562,7 +636,7 @@ fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
         )
     };
     let ((la, xa, pa), (lb, xb, pb)) = (read(&a), read(&b));
-    assert_eq!(pb, [1.0, 0.0, 0.0]);
+    assert_eq!(pb, [1.0, 0.0, 1.0, 0.0, 1.0]);
     let nulls = |l: &[Box<str>], p: &[f64]| -> Vec<(usize, Box<str>)> {
         (0..l.len())
             .filter(|&i| p[i] == 0.0)
@@ -614,4 +688,139 @@ fn realgene_without_a_free_gene_fails() {
     let made: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
     assert!(made["real_gene_confounder"].is_null(), "{made}");
+}
+
+/// The sidecar of the call that wrote into `out`.
+fn sidecar(out: &str) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(lra_simulate_sidecar_path(out)).unwrap()).unwrap()
+}
+
+/// Every pair of a call faces the one hidden field, drawn from `--seed` and
+/// `rep` alone: the same for calls of other pair counts and effects, another
+/// for another `rep`.
+#[test]
+fn every_pair_of_a_call_faces_one_field_of_its_seed_and_rep() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(dir.path());
+    let m = manifest(dir.path());
+    let call = |name: &str, effect: &str, rep: &str, pairs| {
+        let mut sets = with_effect(effect);
+        sets.push(rep);
+        single_call(&f, (dir.path(), &m), name, &sets, pairs, 2).unwrap()
+    };
+    let a = sidecar(&call("a", "effect_pve=0.05", "rep=1", (2, 2)));
+    let b = sidecar(&call("b", "effect_pve=0.1", "rep=1", (1, 3)));
+    let c = sidecar(&call("c", "effect_pve=0.05", "rep=2", (2, 2)));
+    for s in [&a, &b, &c] {
+        let field = s["field_sha256"].as_str().unwrap();
+        for p in s["pairs"].as_array().unwrap() {
+            assert_eq!(p["field_sha256"], field, "{p}");
+        }
+    }
+    assert_eq!(
+        a["field_sha256"], b["field_sha256"],
+        "the seed and rep alone"
+    );
+    assert_ne!(a["field_sha256"], c["field_sha256"], "rep draws another");
+}
+
+/// A call that fails before it simulates (here its pairs file is missing)
+/// still removes an earlier call's table and sidecar under its prefix,
+/// which would otherwise pass for this call's.
+#[test]
+fn a_call_that_fails_early_leaves_no_earlier_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = fixture(dir.path());
+    let m = manifest(dir.path());
+    f.pairs_file = dir
+        .path()
+        .join("no-pairs.tsv")
+        .to_string_lossy()
+        .into_owned();
+    let out = dir.path().join("x").to_string_lossy().into_owned();
+    let (table, sidecar) = (lra_simulate_path(&out), lra_simulate_sidecar_path(&out));
+    for earlier in [&table, &sidecar] {
+        std::fs::write(earlier, "an earlier call's").unwrap();
+    }
+    let call = single_call(
+        &f,
+        (dir.path(), &m),
+        "x",
+        &with_effect("effect_pve=0.05"),
+        (2, 2),
+        2,
+    );
+    assert!(call.is_err(), "no pairs file to read");
+    assert!(!Path::new(&table).exists(), "the earlier table is gone");
+    assert!(!Path::new(&sidecar).exists(), "the earlier sidecar is gone");
+}
+
+/// Each method's p column is that method's own two-sided p on its t
+/// reference, NaN where its estimate is: a sweep scores each method by its
+/// column.
+#[test]
+fn each_method_s_p_column_is_its_own() {
+    use super::super::inference::Estimate;
+    use super::super::simulate::SimRow;
+    let est = |theta: f64, se: f64, df: f64| Estimate {
+        theta,
+        se,
+        df,
+        ..Estimate::nan(100, 50)
+    };
+    let row = |estimate, marginal_cor, unadjusted_diff, ipw| SimRow {
+        scenario: Scenario::default(),
+        estimate,
+        marginal_cor,
+        unadjusted_diff,
+        ipw,
+        ..super::regions::planted_run(0)
+    };
+    // Each method its own t and reference, so no column passes for another.
+    let rows = [
+        row(
+            est(1.0, 0.5, 30.0),
+            est(0.3, 0.1, 8.0),
+            est(1.0, 1.0, f64::INFINITY),
+            est(-2.6, 1.0, 5.0),
+        ),
+        row(
+            est(0.4, 0.2, 12.0),
+            Estimate::nan(100, 50),
+            est(0.5, 0.2, 40.0),
+            Estimate::nan(100, 50),
+        ),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.parquet").to_string_lossy().into_owned();
+    super::super::output::write_sim_scored(&path, &rows, None, &[true, false]).unwrap();
+    type Method = fn(&SimRow) -> Estimate;
+    let methods: [(&str, Method); 4] = [
+        ("p", |r| r.estimate),
+        ("marginal_cor_p", |r| r.marginal_cor),
+        ("unadjusted_diff_p", |r| r.unadjusted_diff),
+        ("effect_ipw_p", |r| r.ipw),
+    ];
+    let names: Vec<&str> = methods.iter().map(|m| m.0).collect();
+    let (_, cols) = read_table_columns(&path, &[], &names).unwrap();
+    for ((name, of), col) in methods.iter().zip(&cols) {
+        for (r, &got) in rows.iter().zip(col) {
+            let want = of(r).p();
+            if want.is_nan() {
+                assert!(got.is_nan(), "{name}: {got} where the estimate is NaN");
+            } else {
+                assert!(
+                    (got - want).abs() <= 1e-6 * want.max(1e-6),
+                    "{name}: {got} vs {want}"
+                );
+            }
+        }
+    }
+    let (_, t) = read_table_columns(&path, &[], &["t", "planted"]).unwrap();
+    assert_eq!(t[1], [1.0, 0.0]);
+    assert!(
+        (t[0][0] - 2.0).abs() < 1e-6 && (t[0][1] - 2.0).abs() < 1e-6,
+        "{:?}",
+        t[0]
+    );
 }

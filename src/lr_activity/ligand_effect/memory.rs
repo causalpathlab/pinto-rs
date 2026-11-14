@@ -45,7 +45,7 @@ pub fn check_memory_budget() -> anyhow::Result<()> {
 /// variable that does not parse is refused at the start
 /// ([`check_memory_budget`]); one that reaches here anyway is warned about
 /// once and counts as unset.
-fn pair_memory_budget() -> usize {
+pub(super) fn pair_memory_budget() -> usize {
     static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     let set = SET.get_or_init(|| {
         let var = std::env::var(MEMORY_BUDGET_VAR).ok()?;
@@ -119,17 +119,30 @@ const FITS_IN_CACHE: usize = 4 << 20;
 /// steps ([`run_bounded`]). Fits slow each other down past that: more of them
 /// at once take longer in all.
 pub(super) fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
-    let threads = rayon::current_num_threads();
     let rows = tissue.n().min(nuisance.max_propensity_rows);
     let fit_bytes = propensity_bytes(rows, tissue.design.p());
+    workers_within(
+        pair_memory_budget(),
+        per_pair,
+        rayon::current_num_threads(),
+        fit_bytes,
+    )
+}
+
+/// [`pair_workers`] on a `budget` of bytes and `threads`, each pair holding
+/// `per_pair` bytes and fitting propensities of `fit_bytes`: at least one.
+pub(super) fn workers_within(
+    budget: usize,
+    per_pair: usize,
+    threads: usize,
+    fit_bytes: usize,
+) -> usize {
     let by_cache = if fit_bytes < FITS_IN_CACHE {
         threads
     } else {
         (threads / 4).max(1)
     };
-    (pair_memory_budget() / per_pair.max(1))
-        .min(by_cache)
-        .max(1)
+    (budget / per_pair.max(1)).min(by_cache).max(1)
 }
 
 /// `one` over every item, at most `workers` at a time, in item order. Each

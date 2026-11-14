@@ -16,27 +16,57 @@ use legume_numeric::matrix::rand_util::mix_seed;
 use serde_json::json;
 use std::path::Path;
 
-/// The rule that labels pairs, as the sidecar names it ([`alternate_ranks`]).
-const ASSIGNMENT: &str = "alternate-rank";
+/// The rule that labels pairs, as the sidecar names it
+/// ([`interleaved_ranks`]).
+const ASSIGNMENT: &str = "interleaved-rank";
 
 /// Mixed into `--seed` for the call's hidden field: no abundance rank
 /// reaches it, so the field's stream is apart from every pair's.
 const FIELD_SALT: u64 = u64::MAX;
 
-/// Planted and null pairs by abundance rank among `available`: even ranks
-/// planted, odd ranks null, the first `planted` and `null` of each. With
-/// labels alternating down the ranks, ligand abundance cannot predict them.
-pub fn alternate_ranks(available: usize, planted: usize, null: usize) -> Vec<(usize, bool)> {
-    let mut left = [null, planted];
-    (0..available)
-        .map(|rank| (rank, rank % 2 == 0))
-        .filter(|&(_, p)| {
-            let room = &mut left[usize::from(p)];
-            let take = *room > 0;
-            *room -= usize::from(take);
-            take
-        })
-        .collect()
+/// Planted and null pairs by abundance rank: the top `planted + null` of the
+/// `available` ranks, the fewer label (null when the counts are equal)
+/// spread evenly among the more, at rank `⌊(k + ½) m / few⌋` for its `k`-th
+/// pair of `few` over `m` ranks, as Bresenham's line algorithm spreads its
+/// steps (Bresenham 1965, IBM Systems Journal 4(1):25-30). Both labels then
+/// have the same mean abundance rank to within one, whatever the counts:
+/// ligand abundance sorts them no further. Equal counts alternate, even
+/// ranks planted. With fewer ranks than asked, each label keeps its asked
+/// share, at least one of each while two ranks are left.
+pub fn interleaved_ranks(available: usize, planted: usize, null: usize) -> Vec<(usize, bool)> {
+    let asked = planted + null;
+    let m = asked.min(available);
+    let n1 = match m {
+        0 | 1 => m,
+        _ if m == asked => planted,
+        _ => ((2 * m * planted + asked) / (2 * asked)).clamp(1, m - 1),
+    };
+    let n0 = m - n1;
+    let (few, label) = if n1 < n0 { (n1, true) } else { (n0, false) };
+    let mut planted_at = vec![!label; m];
+    for k in 0..few {
+        planted_at[(2 * k + 1) * m / (2 * few)] = label;
+    }
+    planted_at.into_iter().enumerate().collect()
+}
+
+/// Remove an earlier single-scenario call's table and sidecar under `out`:
+/// its sidecar would mark the next call complete before it is, and its
+/// table would pass for the next call's should that one fail.
+pub fn clear_single_outputs(out: &str) -> anyhow::Result<()> {
+    let earlier = [
+        output::lra_simulate_sidecar_path(out),
+        output::lra_simulate_path(out),
+    ];
+    for path in &earlier {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("removing the earlier {path}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// A benchmarked pair of the call.
@@ -54,28 +84,22 @@ struct Labelled {
 
 /// One scenario ([`SingleScenario`]) on the run: the `planted` pairs carry
 /// its effect, the `null` pairs none, every pair the same hidden field, drawn
-/// once from `--seed` and `rep`. Pairs run at once as memory allows
-/// ([`run_bounded`]), each from its own seed, so a pair's rows are the same
-/// whatever else the call holds and however many threads run it; the one
-/// exception is `realgene`, whose gene is the most abundant one outside the
-/// call's pairs and so can change with how many pairs it asks for. It writes
-/// `{out}.lra-simulate.parquet` ([`output::write_sim_scored`]), then, last
-/// and atomically, `{out}.lra-simulate.json`, and records nothing in the
-/// run's manifest.
+/// once from `--seed` and `rep`, the labels interleaved by abundance rank
+/// ([`interleaved_ranks`]). Pairs run at once as memory allows
+/// ([`run_bounded`]), each from its own seed, so a pair's rows, given its
+/// rank and label, are the same whatever else the call holds and however
+/// many threads run it; the one exception is `realgene`, whose gene is the
+/// most abundant one outside the call's pairs and so can change with how
+/// many pairs it asks for. Earlier outputs under `out` are removed first
+/// ([`clear_single_outputs`]), as the command does before reading data. It
+/// writes `{out}.lra-simulate.parquet` ([`output::write_sim_scored`]), then,
+/// last and atomically, `{out}.lra-simulate.json`, and records nothing in
+/// the run's manifest.
 pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Result<()> {
     let a = &inp.settings;
     let table = output::lra_simulate_path(a.out);
     let sidecar = output::lra_simulate_sidecar_path(a.out);
-    // An earlier call's sidecar would mark this one complete before it is,
-    // and its table would pass for this call's should this one fail.
-    for earlier in [&sidecar, &table] {
-        match std::fs::remove_file(earlier) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(e).with_context(|| format!("removing the earlier {earlier}"));
-            }
-            _ => {}
-        }
-    }
+    clear_single_outputs(a.out)?;
     let prep = prepare(inp)?;
     let tissue = &prep.tissue;
     // The benchmark plants on one competence threshold.
@@ -88,9 +112,8 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         region,
         ..one.scenario
     };
-    let ranks = (2 * one.planted - 1).max(2 * one.null);
-    let order = benchmark_pairs(&prep, eopts, ranks, region)?;
-    let labelled: Vec<Labelled> = alternate_ranks(order.len(), one.planted, one.null)
+    let order = benchmark_pairs(&prep, eopts, one.planted + one.null, region)?;
+    let labelled: Vec<Labelled> = interleaved_ranks(order.len(), one.planted, one.null)
         .into_iter()
         .map(|(rank, planted)| Labelled {
             rank,
@@ -210,6 +233,7 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
                 "planted": l.planted,
                 "seed": l.seed,
                 "estimable": r.estimable(),
+                "field_sha256": r.field_sha256.as_deref(),
                 "seconds": s,
                 "baseline_seconds": b,
             })
@@ -228,10 +252,13 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         "asked": {"planted": one.planted, "null": one.null},
         "assignment": ASSIGNMENT,
         "assignment_rule": "pairs ranked by ligand abundance among those with the receivers \
-                            to benchmark on: even ranks planted (effect_pve as set), odd ranks \
-                            null (effect_pve 0)",
+                            to benchmark on, the top planted + null of them labelled: the fewer \
+                            label (null when equal) at rank floor((k + 1/2) m / few) for its \
+                            k-th of few pairs over m ranks, the other label at the rest; planted \
+                            pairs take effect_pve as set, null pairs effect_pve 0",
         "seeds": "pair: mix_seed(seed, rank), rep mixed in per run; hidden field: \
                   mix_seed(mix_seed(seed, 2^64 - 1), rep), one for every pair",
+        "field_sha256": simulate::field_sha256(&field),
         "pairs": pairs,
         "real_gene_confounder": confounder.as_ref().map(|(n, _)| &**n),
         "reference": reference,
@@ -240,6 +267,8 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
             ..a.options()
         },
         "table": crate::lr_activity::recorded(Path::new(&table)),
+        // Read back from the written table: the sidecar can only follow it.
+        "table_sha256": reference::sha256_file(Path::new(&table))?,
     });
     let mut text = serde_json::to_string_pretty(&record)?;
     text.push('\n');

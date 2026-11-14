@@ -274,4 +274,70 @@ fn lra_simulate_keeps_a_single_scenario_off_the_run_s_table() {
         !e.contains("prefix"),
         "another prefix gets past the check: {e}"
     );
+    // The same folder by a symbolic link is the same prefix, either way round.
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+    let linked = |name: &str| link.join(name).to_string_lossy().into_owned();
+    for (from, out) in [
+        (linked("run.pinto.json"), prefix.clone()),
+        (from, linked("run")),
+    ] {
+        let e =
+            lr_activity::fit_lra_simulate(&lra_simulate(&["--from", &from, "-o", &out, "--one"]))
+                .unwrap_err()
+                .to_string();
+        assert!(e.contains("prefix"), "--from {from} -o {out}: {e}");
+    }
+    // A folder not made yet and left by `..`, and on a file system that
+    // ignores case the name in another case, are the same prefix too.
+    let mut same = vec![dir.path().join("new").join("..").join("run")];
+    if dir.path().join("RUN.pinto.json").is_file() {
+        same.push(dir.path().join("RUN"));
+    }
+    for out in same {
+        let out = out.to_string_lossy().into_owned();
+        let e = lr_activity::fit_lra_simulate(&lra_simulate(&[
+            "--from",
+            &m.to_string_lossy(),
+            "-o",
+            &out,
+            "--one",
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("prefix"), "-o {out}: {e}");
+    }
+}
+
+/// A single scenario removes an earlier call's table and sidecar under its
+/// prefix before it reads any data, so a call that fails there leaves
+/// neither to pass for its own.
+#[test]
+fn lra_simulate_clears_a_single_scenario_s_earlier_outputs_first() {
+    let dir = tempfile::tempdir().unwrap();
+    // A data file that is there but cannot be read.
+    std::fs::write(dir.path().join("d.zarr"), b"").unwrap();
+    let m = dir.path().join("run.pinto.json");
+    crate::util::metadata::PintoMetadata {
+        command: "lc".into(),
+        prefix: "run".into(),
+        data_files: Some(vec!["d.zarr".into()]),
+        ..Default::default()
+    }
+    .write(&m)
+    .unwrap();
+    let out = dir.path().join("p").to_string_lossy().into_owned();
+    let earlier = [
+        format!("{out}.lra-simulate.parquet"),
+        format!("{out}.lra-simulate.json"),
+    ];
+    for f in &earlier {
+        std::fs::write(f, "an earlier call's").unwrap();
+    }
+    let from = m.to_string_lossy().into_owned();
+    lr_activity::fit_lra_simulate(&lra_simulate(&["--from", &from, "-o", &out, "--one"]))
+        .unwrap_err();
+    for f in &earlier {
+        assert!(!std::path::Path::new(f).exists(), "{f} is left");
+    }
 }

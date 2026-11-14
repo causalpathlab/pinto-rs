@@ -748,6 +748,14 @@ fn a_single_scenario_call_passes_its_settings() {
     assert_eq!(argv.last().map(String::as_str), Some("--one"));
     checked(&cli(), &argv).unwrap();
     assert_eq!(one.outputs("/p/out").len(), 2);
+    // A pair count alone selects it too, as on the command line.
+    for alone in [
+        json!({"run": "r", "pairs": 4}),
+        json!({"run": "r", "null_pairs": 4}),
+    ] {
+        let a: LraSimulateToolArgs = crate::mcp::parse(alone.clone()).unwrap();
+        assert_eq!(a.outputs("/p/out").len(), 2, "{alone}");
+    }
     // A pair count of zero is refused as the command line refuses it.
     let zero: LraSimulateToolArgs = crate::mcp::parse(json!({"run": "r", "pairs": 0})).unwrap();
     assert!(checked(
