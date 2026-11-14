@@ -144,6 +144,12 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n_communities: Option<usize>,
 
+    /// A cage fit on cells (`pinto cage-cell`): no pseudobulks and no
+    /// batch-effect estimate, so a reader applies no batch correction to
+    /// it either. Absent (false) on every other run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cell_level: bool,
+
     /// Which graph the pairs came from. Absent on manifests written before
     /// this was recorded, and on runs that build no graph.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -443,6 +449,17 @@ pub struct LevelInfo {
 }
 
 impl PintoMetadata {
+    /// The method that made the run, as `pinto run` names it: the command,
+    /// except that a cell-level cage run is `cage-cell`. Read by the viewer.
+    #[cfg(any(feature = "view", test))]
+    pub fn method(&self) -> &str {
+        if self.cell_level {
+            "cage-cell"
+        } else {
+            &self.command
+        }
+    }
+
     /// Read a run's manifest, change it, write it back, holding the
     /// manifest's lock throughout ([`PintoMetadata::update`]). A missing
     /// manifest is left alone (at debug level); one that cannot be read or
@@ -832,6 +849,7 @@ pub fn create_lc_metadata(
         n_features: inputs.n_features,
         n_edges: Some(inputs.n_edges),
         n_communities: Some(inputs.k),
+        cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice,
         outputs: OutputFiles {
@@ -877,6 +895,7 @@ pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> 
         n_features: inputs.n_features,
         n_edges: Some(inputs.n_edges),
         n_communities: Some(inputs.k),
+        cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice: None,
         outputs: OutputFiles {
@@ -926,6 +945,7 @@ pub fn create_cage_metadata(
         n_features: inputs.n_features,
         n_edges: Some(inputs.n_edges),
         n_communities: Some(inputs.k),
+        cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice,
         outputs: OutputFiles {
@@ -983,6 +1003,7 @@ pub fn create_prop_metadata(
         n_edges: None,
         graph: None,
         n_communities: Some(n_clusters),
+        cell_level: false,
         splice: None,
         outputs: OutputFiles {
             coord_pairs: coord_pair_file.map(|s| s.to_string()),

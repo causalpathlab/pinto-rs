@@ -654,6 +654,7 @@ pub fn fit_cell_activity_graph_embedding(
         unit_to_group_per_level: &pb_to_parent_per_level,
         positives_per_draw: positives_per_feature_exp_batch,
         n_negatives: args.n_negatives,
+        exclude_partner: args.cell_level,
     };
 
     let feature_batch_size = resolve_feature_batch_size(ProbeInputs {
@@ -827,7 +828,7 @@ pub fn fit_cell_activity_graph_embedding(
     // Metadata
     {
         let coord_file_str = c.coord_files_joined();
-        let meta = create_cage_metadata(
+        let mut meta = create_cage_metadata(
             &RunInputs {
                 prefix: &c.out,
                 data_files: &c.data_files,
@@ -843,6 +844,7 @@ pub fn fit_cell_activity_graph_embedding(
             batch_db.is_some(),
             splice_report,
         );
+        meta.cell_level = args.cell_level;
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());
@@ -854,7 +856,9 @@ pub fn fit_cell_activity_graph_embedding(
 
 /// What `cage-cell` cannot combine with, checked here because it sets
 /// the mode after parsing: flags that pick from, or pool over, a hierarchy
-/// of pseudobulks (refused), and those that only shape it (warned).
+/// of pseudobulks, and an input to the batch-effect estimate it skips.
+/// Flags that only shape what it skips are warned of in `main`, which
+/// knows which were given (see [`cell_level_no_ops_given`]).
 fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         args.chain_levels.is_none(),
@@ -866,21 +870,41 @@ fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> any
         "cage-cell: --feature-modules and --feature-embedding pool counts per \
          trained unit, a dense features × cells matrix on cells"
     );
-    if args.hvg.n_hvg > 0 || args.hvg.feature_list_file.is_some() {
-        log::warn!(
-            "cage-cell: --n-hvg and --feature-list-file weight the projection that \
-             builds pseudobulks; on cells there is none, and every feature trains"
-        );
-    }
+    anyhow::ensure!(
+        args.common.cnv_clones.is_none(),
+        "cage-cell: --cnv-clones stratifies the batch-effect estimate, which \
+         cage-cell does not make"
+    );
     Ok(())
+}
+
+/// The flags `cage-cell` was given on its command line (`m`, its
+/// subcommand's matches) that shape only what it skips: the HVG weighting
+/// of the projection that builds pseudobulks, the coarsening, and the
+/// batch-effect estimate. Their defaults are not reported.
+pub(crate) fn cell_level_no_ops_given(m: &clap::ArgMatches) -> Vec<&'static str> {
+    const NO_OPS: [(&str, &str); 6] = [
+        ("n_hvg", "--n-hvg"),
+        ("feature_list_file", "--feature-list-file"),
+        ("must_train_features", "--must-train-features"),
+        ("n_pseudobulk", "--n-pseudobulk"),
+        ("num_levels", "--num-levels"),
+        ("batch_knn", "--batch-knn"),
+    ];
+    NO_OPS
+        .into_iter()
+        .filter(|(id, _)| m.value_source(id) == Some(clap::parser::ValueSource::CommandLine))
+        .map(|(_, flag)| flag)
+        .collect()
 }
 
 /// The "hierarchy" of a cell-level fit: every cell its own unit at both
 /// levels. The trained unit is the cell; the one chain level is the cell
 /// too, so the negative sampler's rejection (a candidate in the anchor's
-/// group is redrawn) excludes exactly the anchor, and a negative is any
-/// other cell of the anchor's batch (the samplers are per batch). Nothing
-/// is coarsened.
+/// group is redrawn) excludes exactly the anchor; the sampler's
+/// `exclude_partner` redraws the positive partner too, so a negative is
+/// any other cell of the anchor's batch (the samplers are per batch).
+/// Nothing is coarsened.
 pub(crate) fn cell_level_hierarchy(
     n_cells: usize,
     pairs: &[(usize, usize)],

@@ -21,6 +21,11 @@ fn an_out_ending_in_a_slash_is_a_folder_named_for_the_method() {
         out_of(&["pinto", "lc", "d.zarr", "--out", "res/r"]),
         "res/r"
     );
+    // as `pinto run` names it
+    assert_eq!(
+        out_of(&["pinto", "cage-cell", "d.zarr", "--out", "res/"]),
+        "res/cage-cell"
+    );
 }
 
 fn strings(v: &[&str]) -> Vec<String> {
@@ -457,4 +462,48 @@ fn the_readme_points_to_the_instructions_rather_than_copying_them() {
     for sentence in mcp::instructions().split(". ").filter(|s| s.len() > 60) {
         assert!(!readme.contains(&words(sentence)), "{sentence}");
     }
+}
+
+/// cage-cell has its own --embedding-l2 default; cage keeps cage's, and
+/// either takes the flag when it is given.
+#[test]
+fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
+    let l2 = |argv: &[&str]| match Cli::try_parse_from(argv)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .commands
+    {
+        Commands::Cage(a) | Commands::CageCell(a) => a.embedding_l2,
+        _ => panic!("not cage"),
+    };
+    assert_eq!(l2(&["pinto", "cage", "d.zarr", "-o", "o"]), 0.0625);
+    assert_eq!(l2(&["pinto", "cage-cell", "d.zarr", "-o", "o"]), 0.0);
+    for cmd in ["cage", "cage-cell"] {
+        assert_eq!(
+            l2(&["pinto", cmd, "d.zarr", "-o", "o", "--embedding-l2", "0.25"]),
+            0.25
+        );
+    }
+}
+
+/// cage-cell names the flags given on its command line that shape only the
+/// coarsening or the batch-effect estimate it skips, and none it was not
+/// given (their defaults are not the user's doing).
+#[test]
+fn cage_cell_names_only_the_no_op_flags_it_was_given() {
+    use cell_activity_graph_embedding::fit::cell_level_no_ops_given;
+    use clap::CommandFactory;
+    let given = |extra: &[&str]| {
+        let argv = [&["pinto", "cage-cell", "d.zarr", "-o", "o"][..], extra].concat();
+        let m = Cli::command().try_get_matches_from(argv).unwrap();
+        cell_level_no_ops_given(m.subcommand_matches("cage-cell").unwrap())
+    };
+    assert!(given(&[]).is_empty());
+    assert_eq!(
+        given(&["-d", "3", "--n-hvg", "100", "--batch-knn", "4"]),
+        ["--n-hvg", "--n-pseudobulk", "--batch-knn"]
+    );
+    assert_eq!(
+        given(&["--num-levels=9", "--must-train-features", "f.txt"]),
+        ["--must-train-features", "--num-levels"]
+    );
 }
