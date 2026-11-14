@@ -282,8 +282,10 @@ be the `--from` run's prefix, whose table is the grid's.
 The call writes `{out}.lra-simulate.parquet`, the table above plus
 `planted` (0/1), `t` (estimate over SE, a one-sided score as the planted
 effect is positive), `p` (its two-sided p on the t reference) and
-`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. A row not
-estimable stays, with NaN scores. Then, last and atomically, it writes
+`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. These five are
+doubles computed at full precision (the grid's columns stay floats), so a
+p far below a float's smallest value is kept rather than written as 0. A row not estimable
+stays, with NaN scores. Then, last and atomically, it writes
 `{out}.lra-simulate.json`, whose presence marks the call complete: the
 resolved scenario, the counts planted and null and the rule that labelled
 them, each pair's ligand, receptor, rank, label, seed and run time, the

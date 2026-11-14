@@ -824,3 +824,90 @@ fn each_method_s_p_column_is_its_own() {
         t[0]
     );
 }
+
+/// The score columns are doubles, computed in f64 from the estimates: a p
+/// far below single precision's smallest value is kept, positive, where a
+/// float would round it to 0 and a sweep's `-log10 p` to infinity. Each
+/// method's column is its own, on the normal and on a finite-df t
+/// reference. The label stays an integer and the grid's columns keep their
+/// float.
+#[test]
+fn scores_are_written_as_doubles() {
+    use super::super::inference::Estimate;
+    use super::super::simulate::SimRow;
+    use parquet::basic::Type;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let est = |theta: f64, df: f64| Estimate {
+        theta,
+        se: 1.0,
+        df,
+        ..Estimate::nan(100, 50)
+    };
+    let row = |estimate, marginal_cor, unadjusted_diff, ipw| SimRow {
+        scenario: Scenario::default(),
+        estimate,
+        marginal_cor,
+        unadjusted_diff,
+        ipw,
+        ..super::regions::planted_run(0)
+    };
+    let rows = [
+        row(
+            est(20.1, f64::INFINITY),
+            est(25.3, 2000.0),
+            est(18.7, f64::INFINITY),
+            est(30.9, 5000.0),
+        ),
+        row(
+            est(0.3, 40.0),
+            est(-0.2, 8.0),
+            est(1.1, f64::INFINITY),
+            est(0.7, 12.0),
+        ),
+    ];
+    type Score = fn(&SimRow) -> f64;
+    let scores: [(&str, Score); 5] = [
+        ("t", |r| r.estimate.z()),
+        ("p", |r| r.estimate.p()),
+        ("marginal_cor_p", |r| r.marginal_cor.p()),
+        ("unadjusted_diff_p", |r| r.unadjusted_diff.p()),
+        ("effect_ipw_p", |r| r.ipw.p()),
+    ];
+    for (name, of) in &scores[1..] {
+        let tiny = of(&rows[0]);
+        assert!(
+            tiny > 0.0 && tiny < 1e-60,
+            "{name}: the p must be positive in f64 and far below f32's smallest: {tiny}"
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.parquet").to_string_lossy().into_owned();
+    super::super::output::write_sim_scored(&path, &rows, None, &[true, false]).unwrap();
+
+    let names: Vec<&str> = scores.iter().map(|s| s.0).collect();
+    let (_, cols) = read_table_columns(&path, &[], &names).unwrap();
+    for ((name, of), col) in scores.iter().zip(&cols) {
+        for (r, &got) in rows.iter().zip(col) {
+            assert_eq!(got, of(r), "{name}: written as computed, not rounded");
+        }
+    }
+
+    let reader = SerializedFileReader::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let schema = reader.metadata().file_metadata().schema_descr_ptr();
+    let ty = |name: &str| {
+        (0..schema.num_columns())
+            .map(|j| schema.column(j))
+            .find(|c| c.name() == name)
+            .unwrap_or_else(|| panic!("no column {name}"))
+            .physical_type()
+    };
+    for name in names {
+        assert_eq!(ty(name), Type::DOUBLE, "{name}");
+    }
+    assert_eq!(ty("planted"), Type::INT32);
+    assert_eq!(
+        ty("estimate"),
+        Type::FLOAT,
+        "the grid's columns keep their type"
+    );
+}

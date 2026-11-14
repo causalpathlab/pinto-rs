@@ -249,7 +249,9 @@ pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::
 /// effect is positive, and `p` its two-sided p on the t reference
 /// ([`crate::lr_activity::ligand_effect::inference::Estimate::p`]);
 /// `marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p` the same for the
-/// other methods. A row not estimable has NaN scores. The scores are the
+/// other methods. These five are doubles, computed in f64, so a p below a
+/// float's smallest value is kept, not written as 0 for a sweep's `-log10 p`
+/// to turn infinite. A row not estimable has NaN scores. The scores are the
 /// pooled row's: with a planted region, its row's are `region_estimate` and
 /// `region_se`.
 pub fn write_sim_scored(
@@ -262,11 +264,11 @@ pub fn write_sim_scored(
     let label: Vec<usize> = planted.iter().map(|&p| usize::from(p)).collect();
     let mut c = sim_columns(rows, region);
     c.v("planted", label)
-        .f("t", |r| r.estimate.z())
-        .f("p", |r| r.estimate.p())
-        .f("marginal_cor_p", |r| r.marginal_cor.p())
-        .f("unadjusted_diff_p", |r| r.unadjusted_diff.p())
-        .f("effect_ipw_p", |r| r.ipw.p());
+        .d("t", |r| r.estimate.z())
+        .d("p", |r| r.estimate.p())
+        .d("marginal_cor_p", |r| r.marginal_cor.p())
+        .d("unadjusted_diff_p", |r| r.unadjusted_diff.p())
+        .d("effect_ipw_p", |r| r.ipw.p());
     c.write(path)
 }
 
