@@ -225,7 +225,7 @@ fn eee_posteriors_sum_to_one_and_find_two_blobs() {
         let centre = if i < n / 2 { 0.0 } else { 6.0 };
         centre + (((i * 31 + j * 17) % 23) as f32 / 23.0 - 0.5)
     });
-    let (labels, post) = eee_gmm(&z, 2, 1).unwrap();
+    let (labels, post) = mclust_eee(&z, 2, 1).unwrap();
     for i in 0..n {
         let s: f32 = post.row(i).iter().sum();
         assert!((s - 1.0).abs() < 1e-5);
@@ -257,4 +257,80 @@ fn cuda_forward_matches_cpu() {
     for (a, b) in out[0].iter().zip(&out[1]) {
         assert!((a - b).abs() < 1e-4 * (1.0 + a.abs()), "{a} vs {b}");
     }
+}
+
+#[test]
+fn loess_keeps_degree_two_in_a_narrow_window() {
+    // means within 0.01 decades: the local quadratic must still be exact
+    let x: Vec<f64> = (0..300).map(|i| 1e-2 * (i as f64 * 0.37).sin()).collect();
+    let y: Vec<f64> = x.iter().map(|v| 1.0 + 2.0 * v - 50.0 * v * v).collect();
+    let fit = loess_quadratic(&x, &y, 0.3);
+    for (f, t) in fit.iter().zip(&y) {
+        assert!((f - t).abs() < 1e-9, "{f} vs {t}");
+    }
+}
+
+#[test]
+fn filter_genes_keeps_genes_in_enough_cells() {
+    // gene 0 in 3 cells, gene 1 in 1, gene 2 in 2
+    let mut coo = CooMatrix::<f32>::new(3, 4);
+    for c in 0..3 {
+        coo.push(0, c, 1.0);
+    }
+    coo.push(1, 3, 5.0);
+    coo.push(2, 0, 2.0);
+    coo.push(2, 1, 2.0);
+    let counts = CscMatrix::from(&coo);
+    let kept = filter_genes(&counts, 2);
+    assert_eq!(kept.nrows(), 2);
+    let t: Vec<(usize, usize, f32)> = kept.triplet_iter().map(|(r, c, &v)| (r, c, v)).collect();
+    assert!(t.contains(&(1, 1, 2.0)) && !t.iter().any(|&(_, c, _)| c == 3));
+    assert_eq!(filter_genes(&counts, 0).nnz(), counts.nnz());
+}
+
+/// `n` points in `d` dimensions around `k` well-separated centres, in
+/// order of their centre.
+fn blobs(n: usize, d: usize, k: usize) -> nalgebra::DMatrix<f64> {
+    let mut state = 99u64;
+    let mut unif = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+    };
+    nalgebra::DMatrix::from_fn(n, d, |i, j| {
+        let c = i * k / n;
+        10.0 * ((c + j) % k) as f64 + unif()
+    })
+}
+
+#[test]
+fn hc_vvv_recovers_separated_groups() {
+    let (n, k) = (90, 3);
+    let x = blobs(n, 4, k);
+    let labels = hc_vvv(&svd_transform(&x), k);
+    let mut of_blob = vec![None; k];
+    for (i, &l) in labels.iter().enumerate() {
+        assert_eq!(*of_blob[i * k / n].get_or_insert(l), l, "{labels:?}");
+    }
+    let mut seen: Vec<usize> = of_blob.into_iter().flatten().collect();
+    seen.sort_unstable();
+    assert_eq!(seen, vec![0, 1, 2]);
+}
+
+#[test]
+fn mclust_eee_subsamples_and_labels_every_cell() {
+    let (n, k) = (2600, 3);
+    let x = blobs(n, 3, k);
+    let z = Mat::from_fn(n, 3, |i, j| x[(i, j)] as f32);
+    let (labels, post) = mclust_eee(&z, k, 5).unwrap();
+    assert_eq!(post.nrows(), n);
+    // each blob one label, the three distinct
+    let mut of_blob = vec![None; k];
+    for (i, &l) in labels.iter().enumerate() {
+        assert_eq!(*of_blob[i * k / n].get_or_insert(l), l);
+    }
+    let mut seen: Vec<usize> = of_blob.into_iter().flatten().collect();
+    seen.sort_unstable();
+    assert_eq!(seen, vec![0, 1, 2]);
 }
