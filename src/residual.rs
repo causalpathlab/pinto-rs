@@ -67,7 +67,12 @@ use std::path::Path;
 
 #[derive(Args, Debug)]
 pub struct ResidualArgs {
-    #[arg(long, help = "Stage-1 run prefix (or its .pinto.json)")]
+    #[arg(
+        long = "from",
+        visible_alias = "run",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Stage-1 run prefix (or its .pinto.json)"
+    )]
     pub run: Box<str>,
 
     #[arg(short, long, help = "Output directory")]
@@ -76,6 +81,7 @@ pub struct ResidualArgs {
     #[arg(
         long,
         value_delimiter = ',',
+        value_hint = clap::ValueHint::FilePath,
         help = "The run's data files where they are now (default: its manifest's)",
         long_help = "The run's own data files, in its order, when they have moved\n\
                      from where its manifest records them. As many files as the run\n\

@@ -70,7 +70,7 @@ impl App {
                 }
                 Target::Out(i) => format!(
                     " --out for {} (empty: back under the output header)",
-                    self.rows[*i].form.name
+                    self.rows[*i].label()
                 ),
                 Target::Field(m, i) => format!(" --{}", self.rows[*m].form.fields[*i].long),
                 Target::Filter => " flags containing".to_string(),
@@ -113,11 +113,11 @@ impl App {
             });
             spans.push(Span::raw(" "));
         }
-        let queued: Vec<&str> = self
+        let queued: Vec<String> = self
             .rows
             .iter()
             .filter(|r| r.on)
-            .map(|r| r.form.name.as_str())
+            .map(super::Row::label)
             .collect();
         let summary = format!(
             "  {} data · {}",
@@ -152,6 +152,7 @@ impl App {
                 "enter / → queue and show flags",
                 "o name one --out by hand",
                 "O output header",
+                "m stage-2 method",
                 "✓ done in the last run",
             ],
             Screen::Params => &[
@@ -384,7 +385,7 @@ impl App {
         for (i, r) in self.rows.iter().enumerate() {
             let changed = r.form.changed();
             let text = format!(
-                " [{}] {:<13} --out {:<out_w$}  {:<11} {}",
+                " [{}] {:<14} --out {:<out_w$}  {:<11} {}",
                 if r.on {
                     "x"
                 } else if r.done {
@@ -392,7 +393,7 @@ impl App {
                 } else {
                     " "
                 },
-                r.form.name,
+                r.label(),
                 fit(&outs[i], out_w),
                 if changed == 0 {
                     "defaults".to_string()
@@ -422,7 +423,7 @@ impl App {
         .areas(area);
         let mut tabs = Vec::new();
         for m in self.param_methods() {
-            let name = format!(" {} ", self.rows[m].form.name);
+            let name = format!(" {} ", self.rows[m].label());
             tabs.push(if m == self.param_method {
                 Span::styled(name, selected())
             } else {

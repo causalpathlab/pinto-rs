@@ -22,6 +22,14 @@ pub const METHODS: [&str; 3] = ["lc", "cage", "dsvd"];
 /// check.
 pub const ON_RUNS: [&str; 2] = ["lra", "lra-simulate"];
 
+/// What `pinto run` also sets up on a fitted run, after those: its
+/// residual, with a second fit on the residual's files.
+pub const RESIDUAL: &str = "residual";
+
+/// The methods the second stage fits the residual with, the first offered
+/// first.
+pub const STAGE_TWO: [&str; 3] = ["dsvd", "lc", "cage"];
+
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {
     #[arg(help = "Folder the file browser starts in [default: .]")]

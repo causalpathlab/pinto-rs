@@ -330,11 +330,11 @@ Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 
 ### `residual`: what a fitted run leaves unexplained
 
-`pinto residual --run FIT -o OUT` takes an lc, cage or dsvd run and writes
-the counts its communities do not explain, as new data files that `lc`,
-`cage` and `dsvd` fit as they fit data: the second stage of a two-stage
-fit, meant to pick up structure the first stage absorbed, such as a domain
-only one donor has.
+`pinto residual --from FIT -o OUT` (or `--run FIT`) takes an lc, cage or
+dsvd run and writes the counts its communities do not explain, as new data
+files that `lc`, `cage` and `dsvd` fit as they fit data: the second stage
+of a two-stage fit, meant to pick up structure the first stage absorbed,
+such as a domain only one donor has.
 
 From the run's per-cell propensities it refits raw-count community profiles
 `p_k` (lc's feature-community statistic with unit weights) and each cell's
@@ -478,6 +478,26 @@ seen from where `pinto run` started). They are run and saved as
 `{out}.cmd.sh` like the fits, write `{out}.lra.parquet` (a subset's
 `{out}.lra.only-<tag>.parquet`) or `{out}.lra-simulate.parquet`, and
 record them in the `--from` run's manifest; `v` opens that run.
+
+Below them, `residual` sets up a two-stage fit on a fitted lc, cage or dsvd
+run. Its `--from` (`--run` also works) names the run, and it writes the
+counts the run leaves unexplained to `{out}/` (see `residual` above); it is
+done once `{out}/residual.json` is there, and nothing it would write may be
+there already. Queuing it queues the `stage-2` row too: a fit on the
+residual's files, each data file's `{stem}.zarr` in the run's order with its
+`{stem}.coords.parquet`, and `--coord-column-names` set to the run's
+coordinate columns; the data picked on the Data screen are not passed to
+it. The stage-2 fit is dsvd unless `m` on its row switches it to lc or cage,
+each keeping its own flags on the Parameters screen; space takes it off.
+With lra queued on the same run, space on `stage-2 lra` queues lra on the
+stage-2 fit as well, starting from that lra's flags: it reads the raw counts
+of the run's data files through `residual.json`, so the two tables compare.
+Each stage-2 job starts only once the one it reads is done; when that one
+fails or stops, it is not started. A residual (or stage-2 fit) that
+finished keeps its `--out` while what reads it is still queued, so ctrl+r
+again runs only the rest, on what it wrote. All of them are saved as
+`{out}.cmd.sh` like the fits, and `c` in the review copies the commands in
+the order they run.
 
 A saved script refuses to run over what its run writes (a fit's
 `{out}.pinto.json`, lra's table), and `pinto run` never writes over a script.

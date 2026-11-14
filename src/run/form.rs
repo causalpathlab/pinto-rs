@@ -288,6 +288,13 @@ impl Method {
             .map(|f| f.value.trim())
     }
 
+    /// Set the flag `long` to `value`, when the method has it.
+    pub fn set(&mut self, long: &str, value: &str) {
+        if let Some(f) = self.fields.iter_mut().find(|f| f.long == long) {
+            f.value = value.to_string();
+        }
+    }
+
     /// Flags changed from their defaults.
     #[must_use]
     pub fn changed(&self) -> usize {
