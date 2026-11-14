@@ -20,25 +20,30 @@ fn parse(argv: &[&str]) -> Result<CellActivityGraphEmbeddingArgs, clap::Error> {
 }
 
 #[test]
-fn the_hierarchy_is_the_batch_then_the_cell() {
-    let batches: Vec<Box<str>> = ["a", "a", "b", "b", "a"].map(Box::from).to_vec();
+fn every_cell_is_its_own_unit_at_both_levels() {
     let pairs = [(0, 1), (2, 3), (1, 4)];
-    let ml = cell_level_hierarchy(&batches, &pairs);
-    assert_eq!(
-        ml.all_cell_labels,
-        vec![vec![0, 0, 1, 1, 0], vec![0, 1, 2, 3, 4]]
-    );
-    // coarse: pairs within batch a share a sample; finest: one per pair
-    assert_eq!(ml.all_num_samples, vec![2, 3]);
-    assert_eq!(ml.all_pair_to_sample[0][0], ml.all_pair_to_sample[0][2]);
-    assert_ne!(ml.all_pair_to_sample[0][0], ml.all_pair_to_sample[0][1]);
+    let ml = cell_level_hierarchy(5, &pairs);
+    // the chain level is the identity too, so a negative is redrawn only
+    // when it is the anchor itself (not whenever it shares its batch)
+    assert_eq!(ml.all_cell_labels, vec![(0..5).collect::<Vec<_>>(); 2]);
+    assert_eq!(ml.all_num_samples, vec![3, 3]);
 }
 
+/// `cage-cell` sets the mode after parsing, so fit itself refuses what
+/// needs a hierarchy of pseudobulks.
 #[test]
-fn cell_level_refuses_chain_levels() {
-    let base = ["-o", "out", "d.zarr", "--cell-level"];
-    assert!(parse(&base).is_ok());
-    assert!(parse(&[&base[..], &["--chain-levels", "0"]].concat()).is_err());
+fn cell_level_refuses_hierarchy_flags() {
+    for extra in [
+        &["--chain-levels", "1"][..],
+        &["--feature-embedding", "dict.parquet"][..],
+    ] {
+        let mut a = parse(&[&["-o", "out", "d.zarr"][..], extra].concat()).unwrap();
+        a.cell_level = true;
+        let e = fit_cell_activity_graph_embedding(&a)
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("cage-cell:"), "{extra:?}: {e}");
+    }
 }
 
 /// Two sections of a `side × side` grid, the left and right halves
@@ -77,6 +82,7 @@ fn two_sections(dir: &std::path::Path, side: usize) -> (String, String) {
 
 fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&str]) -> String {
     let out = dir.join(name).to_str().unwrap().to_string();
+    let cell_level = extra.contains(&"cell");
     let argv: Vec<&str> = [
         data,
         "-c",
@@ -99,9 +105,11 @@ fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&st
         "kmeans",
     ]
     .into_iter()
-    .chain(extra.iter().copied())
+    .chain(extra.iter().copied().filter(|&e| e != "cell"))
     .collect();
-    fit_cell_activity_graph_embedding(&parse(&argv).unwrap()).unwrap();
+    let mut args = parse(&argv).unwrap();
+    args.cell_level = cell_level;
+    fit_cell_activity_graph_embedding(&args).unwrap();
     out
 }
 
@@ -111,7 +119,7 @@ fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
     let (data, coords) = two_sections(dir.path(), 8);
     let n_cells = 2 * 8 * 8;
 
-    let cell = fit(dir.path(), &data, &coords, "cell", &["--cell-level"]);
+    let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
     let trained = Mat::from_parquet(&format!("{cell}.pb_embedding.parquet")).unwrap();
     assert_eq!(trained.mat.nrows(), n_cells, "one trained row per cell");
     for skipped in ["delta", "pseudobulk_cells"] {

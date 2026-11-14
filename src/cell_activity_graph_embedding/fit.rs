@@ -87,6 +87,9 @@ use train::{resolve_feature_batch_size, train, ProbeInputs, TrainInputs};
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
 ) -> anyhow::Result<()> {
+    if args.cell_level {
+        check_cell_level(args, args.modules.resolve(None)?.is_some())?;
+    }
     let c = &args.common;
     mkdir_parent(&c.out)?;
 
@@ -103,7 +106,7 @@ pub fn fit_cell_activity_graph_embedding(
     // three coarser levels); explicit values are checked here, where a
     // mistake costs milliseconds rather than a full collapse.
     let chain_levels: Vec<usize> = match &args.chain_levels {
-        // one level above the cells: their batch
+        // the cells themselves (see `cell_level_hierarchy`)
         None if args.cell_level => vec![0],
         Some(levels) => {
             for &lvl in levels {
@@ -139,6 +142,7 @@ pub fn fit_cell_activity_graph_embedding(
     anyhow::ensure!(!chain_levels.is_empty(), "chain-levels must be non-empty");
     // Opt-in on cage.
     let module_cfg = args.modules.resolve(None)?;
+
     anyhow::ensure!(
         !(module_cfg.is_some() && args.feature_embedding.is_some()),
         "--feature-modules learns the feature side through a module layer and --feature-embedding \
@@ -292,7 +296,9 @@ pub fn fit_cell_activity_graph_embedding(
     // 4. HVG-weighted proj -> coarsening //
     /////////////////////////////////////////
     let ml = if args.cell_level {
-        cell_level_hierarchy(&batch_membership, srt_cell_pairs.inner.pairs())
+        // taken only for the expression graph, if at all: nothing coarsens
+        drop(shared_cell_proj);
+        cell_level_hierarchy(n_cells, srt_cell_pairs.inner.pairs())
     } else {
         let batch_arg: Option<&[Box<str>]> = if batch_db.is_some() {
             Some(&batch_membership)
@@ -471,7 +477,9 @@ pub fn fit_cell_activity_graph_embedding(
         n_exp_batches,
         n_pb,
         args.alpha_neg,
-        Some(pb_filter),
+        // on cells there is no coarser group for an edge to straddle;
+        // cross-batch edges are dropped either way
+        (!args.cell_level).then_some(pb_filter),
     );
     info!(
         "PB super-edge data: {} batches; dropped {} cross-batch, {} straddling a chain-level boundary",
@@ -844,33 +852,50 @@ pub fn fit_cell_activity_graph_embedding(
     Ok(())
 }
 
-/// Min / median / max of a fitted intercept vector, as one log line.
-/// The two-level "hierarchy" of `--cell-level`: each cell's batch, then the
-/// cell itself, so the trained unit is the cell, every within-batch spatial
-/// pair is a positive super edge, and negatives are other cells of the same
-/// batch. Nothing is coarsened.
+/// What `cage-cell` cannot combine with, checked here because it sets
+/// the mode after parsing: flags that pick from, or pool over, a hierarchy
+/// of pseudobulks (refused), and those that only shape it (warned).
+fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.chain_levels.is_none(),
+        "cage-cell: --chain-levels has no hierarchy to pick from on cells"
+    );
+    // both pool counts per trained unit: a dense features × cells matrix
+    anyhow::ensure!(
+        !modules && args.feature_embedding.is_none(),
+        "cage-cell: --feature-modules and --feature-embedding pool counts per \
+         trained unit, a dense features × cells matrix on cells"
+    );
+    if args.hvg.n_hvg > 0 || args.hvg.feature_list_file.is_some() {
+        log::warn!(
+            "cage-cell: --n-hvg and --feature-list-file weight the projection that \
+             builds pseudobulks; on cells there is none, and every feature trains"
+        );
+    }
+    Ok(())
+}
+
+/// The "hierarchy" of a cell-level fit: every cell its own unit at both
+/// levels. The trained unit is the cell; the one chain level is the cell
+/// too, so the negative sampler's rejection (a candidate in the anchor's
+/// group is redrawn) excludes exactly the anchor, and a negative is any
+/// other cell of the anchor's batch (the samplers are per batch). Nothing
+/// is coarsened.
 pub(crate) fn cell_level_hierarchy(
-    batch_membership: &[Box<str>],
+    n_cells: usize,
     pairs: &[(usize, usize)],
 ) -> crate::util::graph_coarsen::MultiLevelCoarsenResult {
-    use crate::util::graph_coarsen::cell_labels_to_pair_samples;
-    let batch: Vec<usize> =
-        crate::util::ablation::dense_ids(batch_membership.iter().map(|b| b.as_ref()))
-            .into_iter()
-            .map(|b| b as usize)
-            .collect();
-    let cells: Vec<usize> = (0..batch_membership.len()).collect();
-    let (all_pair_to_sample, all_num_samples) = [&batch, &cells]
-        .iter()
-        .map(|labels| cell_labels_to_pair_samples(labels, pairs))
-        .unzip();
+    let cells: Vec<usize> = (0..n_cells).collect();
+    let (pair_to_sample, n_samples) =
+        crate::util::graph_coarsen::cell_labels_to_pair_samples(&cells, pairs);
     crate::util::graph_coarsen::MultiLevelCoarsenResult {
-        all_pair_to_sample,
-        all_num_samples,
-        all_cell_labels: vec![batch, cells],
+        all_pair_to_sample: vec![pair_to_sample.clone(), pair_to_sample],
+        all_num_samples: vec![n_samples; 2],
+        all_cell_labels: vec![cells.clone(), cells],
     }
 }
 
+/// Min / median / max of a fitted intercept vector, as one log line.
 fn log_intercept_spread(what: &str, values: Vec<f32>) {
     if !values.is_empty() {
         let q = legume_numeric::matrix::utils::quantiles(&values, &[0.0, 0.5, 1.0]);

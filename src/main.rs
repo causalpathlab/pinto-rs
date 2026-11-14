@@ -849,6 +849,9 @@ fn main() -> anyhow::Result<()> {
     check_removed_lra_flags(&argv)?;
     let mut cli = Cli::parse_from(argv);
     name_folder_out(&mut cli.commands);
+    if let Commands::CageCell(a) = &mut cli.commands {
+        a.cell_level = true;
+    }
 
     crate::util::common::init_logger(cli.verbose);
 
@@ -862,13 +865,8 @@ fn main() -> anyhow::Result<()> {
         Commands::LinkCommunity(args) => {
             fit_srt_link_community(args)?;
         }
-        Commands::Cage(args) => {
+        Commands::Cage(args) | Commands::CageCell(args) => {
             fit_cell_activity_graph_embedding(args)?;
-        }
-        Commands::CageCell(args) => {
-            let mut args = args.clone();
-            args.cell_level = true;
-            fit_cell_activity_graph_embedding(&args)?;
         }
         Commands::Annotate(_args) => {
             eprintln!(
