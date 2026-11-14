@@ -42,7 +42,7 @@ fn manifest_path(prefix: &str) -> String {
 
 /// What a baseline fit produced, for [`write_run`].
 pub struct Fitted<'a> {
-    /// The subcommand, e.g. `banksy`.
+    /// The subcommand, e.g. `stagate`.
     pub method: &'a str,
     /// 0-based labels, one per cell.
     pub labels: &'a [usize],

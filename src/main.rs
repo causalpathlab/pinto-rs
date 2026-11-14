@@ -87,8 +87,6 @@ fn print_logo() {
                   BASELINES (published spatial methods, model-level ports, to compare\n\
                   against; same data, -c, -b, -o and --seed flags as lc; each writes a\n\
                   run with labels and a cell embedding):\n\n\
-                  \x20 banksy      BANKSY (Singhal et al. 2024)\n\
-                  \x20             Neighbour-augmented features, PCA and Leiden.\n\n\
                   \x20 spatialde2  SpatialDE2 tissue segmentation (Kats et al. 2021)\n\
                   \x20             Poisson HMRF with a Dirichlet-process prior.\n\n\
                   \x20 stagate     STAGATE (Dong and Zhang 2022)\n\
@@ -638,14 +636,6 @@ enum Commands {
     SrtSimBaseline(Box<simulate::BaselineArgs>),
 
     #[command(
-        about = "BANKSY: neighbour-augmented features, PCA and Leiden (baseline)",
-        long_about = "BANKSY (Singhal et al. 2024), faithful to its reference code at the\n\
-                      model level, on pinto's inputs. Writes {out}.labels.tsv,\n\
-                      {out}.cell_embedding.parquet and {out}.baseline.json."
-    )]
-    Banksy(Box<spatial_baselines::banksy::Args>),
-
-    #[command(
         about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
         long_about = "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
                       faithful to its reference code at the model level, on pinto's inputs.\n\
@@ -827,7 +817,6 @@ impl Commands {
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
-            Commands::Banksy(a) => (&mut a.input.out, "banksy"),
             Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
             Commands::Stagate(a) => (&mut a.input.out, "stagate"),
             _ => return None,
@@ -910,7 +899,6 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
-        Commands::Banksy(args) => spatial_baselines::banksy::run(args)?,
         Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
         Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Compare(args) => run_compare(args)?,

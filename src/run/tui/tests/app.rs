@@ -857,12 +857,11 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     a.editor = None;
     let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
     assert_eq!(
-        names[..8],
+        names[..7],
         [
             "lc",
             "cage",
             "dsvd",
-            "banksy",
             "spatialde2",
             "stagate",
             "lra",
@@ -1084,7 +1083,6 @@ fn the_residual_row_is_listed_only_where_pinto_has_the_command() {
             "lc",
             "cage",
             "dsvd",
-            "banksy",
             "spatialde2",
             "stagate",
             "lra",

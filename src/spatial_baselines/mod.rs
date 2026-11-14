@@ -3,8 +3,6 @@
 //!
 //! One method per strategy:
 //!
-//! - [`banksy`]: neighbour-augmented features, then PCA and Leiden (BANKSY,
-//!   Singhal et al. 2024, Nature Genetics 56:431, doi:10.1038/s41588-024-01664-3).
 //! - [`spatialde2`]: SpatialDE2's tissue segmentation, a Poisson hidden
 //!   Markov random field with a Dirichlet-process prior over regions (Kats,
 //!   Vento-Tormo and Stegle 2021, bioRxiv doi:10.1101/2021.10.27.466045).
@@ -22,7 +20,6 @@
 //!   per-cell vectors, for `pinto srt-sim-pairs --vectors`;
 //! - `{out}.baseline.json`: the method, its settings and its inputs.
 
-pub mod banksy;
 pub mod graph;
 pub mod input;
 pub mod output;

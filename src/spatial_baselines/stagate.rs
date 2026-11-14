@@ -1,3 +1,7 @@
+// Ported from STAGATE_pyG (https://github.com/QIFEIDKN/STAGATE_pyG), MIT
+// License, Copyright (c) 2021 Kangning Dong. Its license and the commit
+// followed are in THIRD_PARTY_NOTICES.md at the crate root.
+
 //! STAGATE (Dong and Zhang 2022, "Deciphering spatial domains from
 //! spatially resolved transcriptomics with an adaptive graph attention
 //! auto-encoder", Nature Communications 13:1739,

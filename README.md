@@ -381,14 +381,11 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 `run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
 
-### Spatial baselines: `banksy`, `spatialde2`, `stagate`
+### Spatial baselines: `spatialde2`, `stagate`
 
 Published spatial-domain methods, ported to run on pinto's inputs so they
 can be scored beside `lc`, `cage` and `dsvd`:
 
-- `banksy`: neighbour-augmented features (each cell's expression beside
-  its neighbourhood's), then PCA and Leiden
-  (BANKSY; Singhal et al. 2024, Nature Genetics 56:431);
 - `spatialde2`: SpatialDE2's tissue segmentation, a Poisson hidden Markov
   random field with a Dirichlet-process prior over regions (Kats,
   Vento-Tormo and Stegle 2021, bioRxiv 10.1101/2021.10.27.466045);
@@ -400,17 +397,18 @@ Each is a model-level port of its reference code: the same preprocessing,
 model, loss or updates, defaults, stopping rule and clustering step, not
 bit-for-bit output; each module's documentation names the repository and
 commit read, the function behind each step, and every deliberate
-deviation. They take the flags `lc` does for its inputs: the data files
-(one section each), `-c` coordinate files, `--coord-column-names`, `-b`
-batch files, `-o` the output prefix and `--seed`; spatial graphs are built
-within a section only. `--n-clusters` sets the number of domains (where the
-original picks clusters by a resolution, it is tuned toward that number;
-see each `--help` for its default).
+deviation. SpatialDE's and STAGATE_pyG's MIT license texts, with their
+copyright lines, are in `THIRD_PARTY_NOTICES.md`. They take the flags `lc`
+does for its inputs: the data files (one section each), `-c` coordinate
+files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
+`--seed`; spatial graphs are built within a section only. `--n-clusters`
+sets the number of domains as each original takes it (see each `--help` for
+its default and what it does when not given).
 
 ```sh
-pinto banksy s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/banksy --n-clusters 4
-pinto srt-sim-score --truth sim --labels res/banksy
-pinto srt-sim-pairs --truth sim --vectors res/banksy.cell_embedding.parquet
+pinto stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
+pinto srt-sim-score --truth sim --labels res/stagate
+pinto srt-sim-pairs --truth sim --vectors res/stagate.cell_embedding.parquet
 ```
 
 Each writes a pinto run, so `pinto view`, `compare`, `srt-sim-score` and
@@ -553,7 +551,7 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
-`dsvd` (or the spatial baselines `banksy`, `spatialde2` and `stagate`, listed
+`dsvd` (or the spatial baselines `spatialde2` and `stagate`, listed
 after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen; each fit shows a progress
@@ -868,9 +866,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > recommended one) and, with a method, its flags; `run_fit` runs one on data
 > files with their coordinates, in the background for anything but a small
 > data set (follow its job with `job_status` / `job_wait`), and never writes
-> over a run. Its methods also hold three spatial baselines, model-level
-> ports of published methods to compare pinto against: banksy (BANKSY),
-> spatialde2 (SpatialDE2's tissue segmentation) and stagate (STAGATE);
+> over a run. Its methods also hold two spatial baselines, model-level
+> ports of published methods to compare pinto against: spatialde2
+> (SpatialDE2's tissue segmentation) and stagate (STAGATE);
 > run_fit runs them as it runs lc, and each writes a run with its labels and
 > a cell embedding. Ablations are fits with run_fit's ablation flags
 > (permute-coords, drop-features, mask-cells with ablation-parent);
@@ -931,7 +929,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `cage`, `dsvd`, then the spatial baselines `banksy`, `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `cage`, `dsvd`, then the spatial baselines `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

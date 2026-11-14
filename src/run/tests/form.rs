@@ -221,7 +221,5 @@ fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
         );
         assert_eq!(check(&cli, &argv), Ok(()), "{argv:?}");
     }
-    for &name in crate::run::BASELINES {
-        assert!(crate::run::METHODS.contains(&name), "{name}");
-    }
+    assert_eq!(crate::run::BASELINES, ["spatialde2", "stagate"]);
 }

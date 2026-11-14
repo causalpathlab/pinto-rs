@@ -18,7 +18,7 @@ pub(crate) mod tui;
 /// spatial baselines (model-level ports of published methods, for
 /// comparison), which take the same data, coordinate and batch files and
 /// write a run of the same shape.
-pub const METHODS: [&str; 6] = ["lc", "cage", "dsvd", "banksy", "spatialde2", "stagate"];
+pub const METHODS: [&str; 5] = ["lc", "cage", "dsvd", "spatialde2", "stagate"];
 
 /// pinto's own models among [`METHODS`].
 pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;

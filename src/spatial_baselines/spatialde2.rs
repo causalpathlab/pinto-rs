@@ -1,3 +1,8 @@
+// Ported from SpatialDE (https://github.com/PMBio/SpatialDE), MIT License,
+// Copyright (c) 2020 Ilia Kats, Stegle Group and Copyright (c) 2018
+// Teichmann Group. Its license and the commit followed are in
+// THIRD_PARTY_NOTICES.md at the crate root.
+
 //! SpatialDE2 tissue segmentation (Kats, Vento-Tormo and Stegle 2021,
 //! "SpatialDE2: Fast and localized variance component analysis of spatial
 //! transcriptomics", bioRxiv doi:10.1101/2021.10.27.466045): a Poisson
