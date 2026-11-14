@@ -22,10 +22,9 @@ pub struct Tools {
 
 impl Default for Tools {
     fn default() -> Self {
-        use clap::CommandFactory;
-        let mut cli = crate::Cli::command();
-        cli.build();
-        Tools { cli }
+        Tools {
+            cli: crate::built_cli(),
+        }
     }
 }
 
@@ -233,7 +232,7 @@ impl Tools {
         })?;
 
         let manifest = made[0].clone();
-        let reply = json!({ "command": format!("pinto {}", script::line(&argv)) });
+        let reply = json!({ "command": script::pinto_line(&argv) });
         let mut reply = launch(
             cx,
             &argv,
@@ -390,10 +389,7 @@ fn reply_from(path: &Path, drop: &[&str], argv: &[String]) -> anyhow::Result<Map
     for key in drop {
         reply.remove(*key);
     }
-    reply.insert(
-        "command".into(),
-        format!("pinto {}", script::line(argv)).into(),
-    );
+    reply.insert("command".into(), script::pinto_line(argv).into());
     Ok(reply)
 }
 

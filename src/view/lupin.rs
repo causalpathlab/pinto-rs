@@ -20,6 +20,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+pub(super) use crate::util::paths::absolute;
+use crate::util::paths::shown_path;
+
 /// The lupin binary: `$PINTO_LUPIN`, else `lupin` on the `PATH`.
 pub fn binary() -> String {
     std::env::var("PINTO_LUPIN").unwrap_or_else(|_| "lupin".into())
@@ -182,7 +185,7 @@ fn run(
 /// as typed when it was fit, usually from there.
 pub fn annotate(manifest: &Path, tag: &str, markers: &Path, out: &str) -> Job {
     let manifest = absolute(manifest);
-    let out = absolute(Path::new(out)).display().to_string();
+    let out = shown_path(Path::new(out));
     let args = vec![
         "annotate".into(),
         "-f".into(),
@@ -190,7 +193,7 @@ pub fn annotate(manifest: &Path, tag: &str, markers: &Path, out: &str) -> Job {
         "--level".into(),
         tag.into(),
         "-m".into(),
-        absolute(markers).display().to_string(),
+        shown_path(markers),
         "-o".into(),
         out.clone(),
         // Only enrichment keeps the level's communities as the clusters and
@@ -204,11 +207,6 @@ pub fn annotate(manifest: &Path, tag: &str, markers: &Path, out: &str) -> Job {
         args,
         None,
     )
-}
-
-/// `p` from the root, so it reads the same from any working directory.
-pub(super) fn absolute(p: &Path) -> PathBuf {
-    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn manifest_dir(manifest: &Path) -> PathBuf {

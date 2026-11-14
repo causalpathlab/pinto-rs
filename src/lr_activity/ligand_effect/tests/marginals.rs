@@ -2,7 +2,7 @@
 //! `lra-simulate` benchmarks, read on the run's own cell types, and the
 //! per-type-pair table beside the effects table.
 
-use crate::lr_activity::input::UNASSIGNED;
+use super::{lattice, type_names};
 use crate::lr_activity::ligand_effect::baselines::{
     baselines, marginals, CellTypeTest, TypeLabels, TypeSource, PERMUTATIONS,
 };
@@ -24,27 +24,12 @@ fn type_code(i: usize) -> u32 {
     ((i % SIDE) / 8).min(3) as u32
 }
 
-fn type_names() -> Vec<Box<str>> {
-    ["CT1", "CT2", "CT3", UNASSIGNED].map(Into::into).to_vec()
-}
-
 /// A grid touching its four neighbours, with identity bins in horizontal
 /// bands, so that bins and types cut the tissue differently; with
 /// `types`, the cell types of [`type_code`].
 fn tissue(types: bool) -> Tissue {
     let n = SIDE * SIDE;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some(((i % SIDE) as f32 * 10.0, (i / SIDE) as f32 * 10.0)))
-        .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        if i % SIDE + 1 < SIDE {
-            pairs.push((i, i + 1));
-        }
-        if i / SIDE + 1 < SIDE {
-            pairs.push((i, i + SIDE));
-        }
-    }
+    let (coords, pairs) = lattice(SIDE);
     let bin: Vec<usize> = (0..n).map(|i| (i / SIDE) / 10).collect();
     let identity = Mat::from_fn(3, n, |k, i| (bin[i] as f32 - 1.0) * (k as f32 + 1.0));
     let section: Vec<Box<str>> = vec!["s0".into(); n];

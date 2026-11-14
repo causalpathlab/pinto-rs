@@ -14,6 +14,7 @@ use super::color::{Rgb, Theme};
 use super::curve::Curve;
 use super::data::{Communities, NO_CLUSTER};
 use super::gene::{GeneMap, Source};
+use super::lupin::same_file;
 use super::render::{Layer, Style};
 use super::StillPair;
 use super::{Base, Level};
@@ -58,7 +59,7 @@ impl TableRef {
     /// A table named by its path (`--lra-table`): a subset when its name
     /// says so, its curve beside it.
     pub fn at(path: &Path, run: &Run) -> Self {
-        let recorded = run.tables().into_iter().find(|t| same(&t.path, path));
+        let recorded = run.tables().into_iter().find(|t| same_file(&t.path, path));
         if let Some(t) = recorded {
             return t;
         }
@@ -73,14 +74,6 @@ impl TableRef {
             }),
             options: run.lra_options(),
         }
-    }
-}
-
-/// Whether two paths name one file.
-fn same(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
     }
 }
 
@@ -566,7 +559,7 @@ impl LraView {
                 (Some(at), r, false)
             }
             Which::Path(r) => {
-                let at = self.tables.iter().position(|t| same(&t.path, &r.path));
+                let at = self.tables.iter().position(|t| same_file(&t.path, &r.path));
                 (at, *r, true)
             }
         };
@@ -585,7 +578,11 @@ impl LraView {
     /// `pinto lra` that ended since it was opened added to the run.
     pub fn add_tables(&mut self, tables: Vec<TableRef>) {
         for t in tables {
-            if !self.tables.iter().any(|known| same(&known.path, &t.path)) {
+            if !self
+                .tables
+                .iter()
+                .any(|known| same_file(&known.path, &t.path))
+            {
                 self.tables.push(t);
             }
         }

@@ -21,6 +21,42 @@ pub(crate) fn make_test_graph(n_nodes: usize, edges: Vec<(usize, usize)>) -> Knn
     }
 }
 
+/// Owned copies of `names`.
+pub(crate) fn boxed(names: &[&str]) -> Vec<Box<str>> {
+    names.iter().map(|&s| s.into()).collect()
+}
+
+/// `{prefix}0`, `{prefix}1`, …, `n` of them.
+pub(crate) fn numbered(prefix: &str, n: usize) -> Vec<Box<str>> {
+    (0..n).map(|i| format!("{prefix}{i}").into()).collect()
+}
+
+/// A zarr file `{tag}.zarr` in `dir` with rows `rows` and columns `cols`,
+/// holding `triplets` (row, column, value), and its path.
+fn zarr_backend(
+    dir: &std::path::Path,
+    tag: &str,
+    rows: &[Box<str>],
+    cols: &[Box<str>],
+    triplets: &[(u64, u64, f32)],
+) -> (
+    Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>,
+    Box<str>,
+) {
+    use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
+    let path = dir.join(format!("{tag}.zarr"));
+    let mut backend = create_sparse_from_triplets(
+        triplets,
+        (rows.len(), cols.len(), triplets.len()),
+        Some(path.to_str().unwrap()),
+        Some(&SparseIoBackend::Zarr),
+    )
+    .unwrap();
+    backend.register_row_names_vec(rows);
+    backend.register_column_names_vec(cols);
+    (backend, path.to_str().unwrap().into())
+}
+
 /// A zarr file `{tag}.zarr` in `dir` of `rows` by `n_cols` columns named
 /// `{tag}_0`, `{tag}_1`, …, holding `triplets` (row, column, value).
 pub(crate) fn write_zarr(
@@ -30,20 +66,23 @@ pub(crate) fn write_zarr(
     n_cols: usize,
     triplets: &[(u64, u64, f32)],
 ) -> Box<str> {
-    use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
-    let path = dir.join(format!("{tag}.zarr"));
-    let mut backend = create_sparse_from_triplets(
-        triplets,
-        (rows.len(), n_cols, triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )
-    .unwrap();
-    let rows: Vec<Box<str>> = rows.iter().map(|&s| s.into()).collect();
-    let cols: Vec<Box<str>> = (0..n_cols).map(|j| format!("{tag}_{j}").into()).collect();
-    backend.register_row_names_vec(&rows);
-    backend.register_column_names_vec(&cols);
-    path.to_str().unwrap().into()
+    let cols = numbered(&format!("{tag}_"), n_cols);
+    zarr_backend(dir, tag, &boxed(rows), &cols, triplets).1
+}
+
+/// [`write_zarr`]'s file with columns `cols`, opened as the only file of a
+/// [`SparseIoVec`](data_beans::sparse_io_vector::SparseIoVec).
+pub(crate) fn sparse_vec(
+    dir: &std::path::Path,
+    tag: &str,
+    rows: &[Box<str>],
+    cols: &[Box<str>],
+    triplets: &[(u64, u64, f32)],
+) -> data_beans::sparse_io_vector::SparseIoVec {
+    let (backend, _) = zarr_backend(dir, tag, rows, cols, triplets);
+    let mut v = data_beans::sparse_io_vector::SparseIoVec::new();
+    v.push(std::sync::Arc::from(backend), None).unwrap();
+    v
 }
 
 /// `p` (absolute) as a path relative to where the tests run.

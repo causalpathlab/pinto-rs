@@ -4,7 +4,7 @@
 //! its simultaneous band, the two-scale
 //! moments and the per-cell-type rows.
 
-use super::{estimate_pair, fitted_effects};
+use super::{estimate_pair, fitted_effects, lattice};
 use crate::lr_activity::ligand_effect::averaging::{abf_average, abf_weights, combine};
 use crate::lr_activity::ligand_effect::curve::{curve_taus, sup_t_crit};
 use crate::lr_activity::ligand_effect::dose::Exposure;
@@ -63,18 +63,7 @@ fn world(seed: u64, dose: f64, named: bool) -> World {
 fn world_in(seed: u64, dose: f64, named: bool, regions: bool) -> World {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n = SIDE * SIDE;
-    let coords: Vec<Option<(f32, f32)>> = (0..n)
-        .map(|i| Some(((i % SIDE) as f32 * 10.0, (i / SIDE) as f32 * 10.0)))
-        .collect();
-    let mut pairs = Vec::new();
-    for i in 0..n {
-        if i % SIDE + 1 < SIDE {
-            pairs.push((i, i + 1));
-        }
-        if i / SIDE + 1 < SIDE {
-            pairs.push((i, i + SIDE));
-        }
-    }
+    let (coords, pairs) = lattice(SIDE);
     let section: Vec<Box<str>> = vec!["s".into(); n];
     let identity_bin: Vec<usize> = (0..n).map(|i| (i * 7 + i / SIDE) % 3).collect();
     let ty: Vec<u32> = (0..n)

@@ -10,6 +10,7 @@ use crate::cell_activity_graph_embedding::pair_projection::encoder::{
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, PairDictionary, PairProjectionArgs, PairSolver,
 };
+use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use legume_numeric::candle::candle_core::Device;
@@ -289,20 +290,14 @@ fn planted_data(dir: &tempfile::TempDir, cells: &[PlantedCell]) -> anyhow::Resul
         .enumerate()
         .flat_map(|(c, (profile, _))| profile.iter().map(move |&(g, n)| (g as u64, c as u64, n)))
         .collect();
-    let path = dir.path().join("planted.zarr");
-    let mut backend = create_sparse_from_triplets(
+    let rows = numbered("G", N_FEATURES);
+    Ok(sparse_vec(
+        dir.path(),
+        "planted",
+        &rows,
+        &numbered("c", cells.len()),
         &triplets,
-        (N_FEATURES, cells.len(), triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )?;
-    let rows: Vec<Box<str>> = (0..N_FEATURES).map(|g| format!("G{g}").into()).collect();
-    backend.register_row_names_vec(&rows);
-    let names: Vec<Box<str>> = (0..cells.len()).map(|c| format!("c{c}").into()).collect();
-    backend.register_column_names_vec(&names);
-    let mut v = SparseIoVec::new();
-    v.push(std::sync::Arc::from(backend), None)?;
-    Ok(v)
+    ))
 }
 
 #[test]

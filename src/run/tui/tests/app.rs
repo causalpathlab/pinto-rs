@@ -224,9 +224,7 @@ fn the_filter_narrows_the_flags() {
 
 #[test]
 fn every_method_of_pinto_parses_from_an_untouched_form() {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
+    let cli = crate::built_cli();
     for m in METHODS {
         let form = Method::new(&cli, m).unwrap();
         assert!(!form.fields.is_empty(), "{m} has no flags");
@@ -833,21 +831,13 @@ fn a_running_fit_shows_its_bar_until_its_fit_clears_it_then_its_log() {
 /// from where it runs, and what says each is done is its table.
 #[test]
 fn lra_on_a_run_is_set_up_with_its_flags() {
-    use clap::CommandFactory;
     let dir = tempfile::tempdir().unwrap();
     // macOS temp folders sit behind a symlink (/var -> /private/var).
     let here = &dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(here.join("res")).unwrap();
     std::fs::write(here.join("res/run.pinto.json"), "{}").unwrap();
     std::fs::write(here.join("pairs.tsv"), "A\tB\n").unwrap();
-    let mut cli = crate::Cli::command();
-    cli.build();
-    let mut a = App {
-        here: here.to_path_buf(),
-        ..App::new(cli, here.to_path_buf()).unwrap()
-    };
-    a.browser = None;
-    a.editor = None;
+    let mut a = pinto_app(here);
     let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
     assert_eq!(names[..5], ["lc", "cage", "dsvd", "lra", "lra-simulate"]);
     let lra = 3;
@@ -963,12 +953,9 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
 
 /// `pinto run` on pinto's own commands, started in `here`.
 fn pinto_app(here: &Path) -> App {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
     let mut a = App {
         here: here.to_path_buf(),
-        ..App::new(cli, here.to_path_buf()).unwrap()
+        ..App::new(crate::built_cli(), here.to_path_buf()).unwrap()
     };
     a.browser = None;
     a.editor = None;

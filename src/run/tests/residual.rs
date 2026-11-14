@@ -1,16 +1,10 @@
 use super::*;
+use crate::built_cli as cli;
 use crate::mcp::shown_path;
 use crate::run::mcp::checked;
 use crate::util::metadata::PintoMetadata;
 use serde_json::Value;
 use std::path::Path;
-
-fn cli() -> clap::Command {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
 
 fn args(v: Value) -> ResidualToolArgs {
     crate::mcp::parse(v).unwrap()

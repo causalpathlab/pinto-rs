@@ -7,13 +7,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub use crate::tui::quote;
-
-/// A command line as one shell line.
-#[must_use]
-pub fn line(argv: &[String]) -> String {
-    argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
-}
+pub use crate::tui::pinto_line;
+pub use legume_tui::form::script::quote;
 
 /// `path` with `.` and `..` resolved: through symlinks as far as it
 /// exists, so two paths into one folder compare alike, then by its words.

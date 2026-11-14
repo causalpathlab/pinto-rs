@@ -118,6 +118,7 @@ mod tests;
 pub use baselines::PERMUTATIONS;
 
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
+use crate::util::cli::value_name;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use std::path::Path;
@@ -212,12 +213,12 @@ impl Settings<'_> {
         crate::util::metadata::LraOptions {
             lr_pairs: self.lr_pairs.map(abs),
             targets: self.targets.iter().map(|t| abs(t)).collect(),
-            species: self.species.name(),
+            species: value_name(&self.species),
             seed: self.seed,
             identity_excluded: Vec::new(),
             cell_types: self.cell_types.map(abs),
             region: self.region.map(abs),
-            region_jackknife: self.region_jackknife.name(),
+            region_jackknife: value_name(&self.region_jackknife),
             marginal_baselines: None,
             marginal_permutations: self.marginal,
         }

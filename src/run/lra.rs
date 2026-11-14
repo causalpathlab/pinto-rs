@@ -15,6 +15,7 @@ use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::tui::flag_value;
+use crate::util::cli::{choices, value_name};
 use crate::util::metadata::{run_stem, LraOptions, PintoMetadata};
 use legume_mcp::{Call, Content, Next};
 use serde::{Deserialize, Serialize};
@@ -27,21 +28,57 @@ const TOP_PAIRS: usize = 5;
 
 // * Arguments
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LraToolArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub coord_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub batch_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knn_spatial: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
+/// A tool's arguments: what it reads ([`Input`]) and, in the order given,
+/// its own fields after `seed` and after `region_jackknife`. Both lra tools
+/// declare the input fields in one place, in one order, and map them to
+/// [`Input`] alike.
+macro_rules! lra_tool_args {
+    ($name:ident { $($mid:tt)* } { $($tail:tt)* }) => {
+        #[derive(Deserialize, Serialize, Debug)]
+        #[serde(deny_unknown_fields)]
+        pub(super) struct $name {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub run: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub data_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub coord_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub batch_files: Vec<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub knn_spatial: Option<usize>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub seed: Option<u64>,
+            $($mid)*
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub cell_types: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub region: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub region_jackknife: Option<String>,
+            $($tail)*
+            #[serde(default = "in_background", skip_serializing)]
+            pub background: bool,
+        }
+
+        impl $name {
+            fn input(&self) -> Input<'_> {
+                Input {
+                    run: self.run.as_deref(),
+                    data_files: &self.data_files,
+                    coord_files: &self.coord_files,
+                    batch_files: &self.batch_files,
+                    knn_spatial: self.knn_spatial,
+                    cell_types: self.cell_types.as_deref(),
+                    region: self.region.as_deref(),
+                    region_jackknife: self.region_jackknife.as_deref(),
+                }
+            }
+        }
+    };
+}
+
+lra_tool_args!(LraToolArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_permutations: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,20 +98,13 @@ pub(super) struct LraToolArgs {
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_types: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region_jackknife: Option<String>,
+} {
     /// `--marginal-baselines`, and `--marginal-permutations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub marginal_baselines: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
-    #[serde(default = "in_background", skip_serializing)]
-    pub background: bool,
-}
+});
 
 impl LraToolArgs {
     /// `only` as `pinto lra` takes it.
@@ -92,19 +122,6 @@ impl LraToolArgs {
             made.push(output::celltype_beside(&table).into());
         }
         made
-    }
-
-    fn input(&self) -> Input<'_> {
-        Input {
-            run: self.run.as_deref(),
-            data_files: &self.data_files,
-            coord_files: &self.coord_files,
-            batch_files: &self.batch_files,
-            knn_spatial: self.knn_spatial,
-            cell_types: self.cell_types.as_deref(),
-            region: self.region.as_deref(),
-            region_jackknife: self.region_jackknife.as_deref(),
-        }
     }
 
     /// The `run_lra_simulate` call checking this analysis's power: the same
@@ -146,21 +163,7 @@ impl LraToolArgs {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LraSimulateToolArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub coord_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub batch_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knn_spatial: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
+lra_tool_args!(LraSimulateToolArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,30 +174,7 @@ pub(super) struct LraSimulateToolArgs {
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plant_region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_types: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region_jackknife: Option<String>,
-    #[serde(default = "in_background", skip_serializing)]
-    pub background: bool,
-}
-
-impl LraSimulateToolArgs {
-    fn input(&self) -> Input<'_> {
-        Input {
-            run: self.run.as_deref(),
-            data_files: &self.data_files,
-            coord_files: &self.coord_files,
-            batch_files: &self.batch_files,
-            knn_spatial: self.knn_spatial,
-            cell_types: self.cell_types.as_deref(),
-            region: self.region.as_deref(),
-            region_jackknife: self.region_jackknife.as_deref(),
-        }
-    }
-}
+} {});
 
 /// What a tool reads, as `LraInputArgs` takes it: a run's manifest, or data
 /// files with their coordinates.
@@ -317,12 +297,8 @@ pub(super) fn lra_method(method: Option<&str>) -> anyhow::Result<LraMethod> {
     match method {
         None => Ok(LraMethod::default()),
         Some(m) => LraMethod::from_str(m, false).map_err(|_| {
-            let names: Vec<String> = LraMethod::value_variants()
-                .iter()
-                .filter_map(|v| v.to_possible_value())
-                .map(|v| v.get_name().to_string())
-                .collect();
-            anyhow::anyhow!("method {m:?}: one of {}", names.join(", "))
+            let names = choices::<LraMethod>().join(", ");
+            anyhow::anyhow!("method {m:?}: one of {names}")
         }),
     }
 }
@@ -345,7 +321,7 @@ fn method_can_read(method: LraMethod, run: Option<&str>) -> anyhow::Result<()> {
     anyhow::ensure!(
         run.is_some() || method == LraMethod::ContactEffect,
         "method {} reads a run's link communities: give run",
-        method_name(method)
+        value_name(&method)
     );
     Ok(())
 }
@@ -543,7 +519,7 @@ fn start(
         return Ok(None);
     };
     Ok(Some(json!({
-        "command": format!("pinto {}", script::line(argv)),
+        "command": script::pinto_line(argv),
         "job": job,
         "writes": made.iter().map(|p| shown_path(p)).collect::<Vec<_>>(),
         "note": format!(
@@ -589,7 +565,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     })?;
     let argv = lra_argv(&a, method, run, &out);
     checked_lra(cli, &argv)?;
-    let summary = format!("lra {} of {}", method_name(method), input.source(run));
+    let summary = format!("lra {} of {}", value_name(&method), input.source(run));
     // The same call, by its out: what reads the tables once the job is done.
     let mut again = serde_json::to_value(&a)?;
     if let Some(run) = run {
@@ -600,13 +576,6 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         return Ok(vec![Content::Json(job)]);
     }
     lra_reply(&a, method, Some(&argv), run, &made)
-}
-
-fn method_name(method: LraMethod) -> String {
-    use clap::ValueEnum;
-    method
-        .to_possible_value()
-        .map_or_else(String::new, |v| v.get_name().to_string())
 }
 
 /// Add `note` to the reply's JSON piece.
@@ -642,7 +611,7 @@ fn lra_reply(
         json!({})
     };
     if let Some(argv) = command {
-        reply["command"] = format!("pinto {}", script::line(argv)).into();
+        reply["command"] = script::pinto_line(argv).into();
     }
     reply["written"] = written.into();
     let mut pieces = vec![Content::Json(reply)];
@@ -754,7 +723,7 @@ fn simulate_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Resul
     let runs = read_sim_runs(&table)?;
     let mut reply = comparison_summary(&runs, read_planted_region(&table).as_deref());
     if let Some(argv) = command {
-        reply["command"] = format!("pinto {}", script::line(argv)).into();
+        reply["command"] = script::pinto_line(argv).into();
     }
     reply["written"] = json!([shown_path(&made[0])]);
     Ok(vec![Content::Json(reply)])

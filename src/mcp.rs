@@ -94,15 +94,5 @@ impl Handler for Server {
     }
 }
 
-/// The arguments of a call, or what is wrong with them.
-pub fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
-}
-
-/// `p` as results give paths: from the root.
-pub fn shown_path(p: &std::path::Path) -> String {
-    std::path::absolute(p)
-        .unwrap_or_else(|_| p.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
+pub use crate::util::paths::shown_path;
+pub use legume_mcp::parse_args as parse;

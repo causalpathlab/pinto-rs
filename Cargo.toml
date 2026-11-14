@@ -24,7 +24,6 @@ path = "src/main.rs"
 default = ["view"]
 # `pinto view`: multi-resolution viewer for pinto outputs.
 view = [
-    "dep:png",
     "dep:ratatui",
     "dep:ratatui-image",
     "dep:image",
@@ -77,18 +76,17 @@ sha2 = "0.11"
 dirs = "6"
 flate2 = "1"
 
-png = { version = "0.18", optional = true }
 ratatui = { version = "0.30", optional = true }
 ratatui-image = { version = "11.1", optional = true, default-features = false, features = ["crossterm"] }
-image = { version = "0.25", optional = true, default-features = false }
+image = { version = "0.25.10", optional = true, default-features = false, features = ["png"] }
 base64 = { version = "0.22", optional = true }
 pdf-writer = { version = "0.15", optional = true }
 # Detachable sessions for `pinto run` and `pinto view`, and what the
 # viewers share: map colours, screen styles, kitty graphics and block
 # characters, the structure plot and heatmap and their PDF figures, the
-# save field and the gallery of saved figures. The same floor as in
-# [dev-dependencies].
-legume-tui = { version = "0.3", optional = true, features = ["save", "gallery", "map-kitty", "chart", "export"] }
+# save field, the gallery of saved figures and the shell words of a
+# command line. The same floor as in [dev-dependencies].
+legume-tui = { version = "0.3.15", optional = true, features = ["form", "save", "gallery", "map-kitty", "chart", "export"] }
 
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads.
@@ -100,5 +98,5 @@ libc = "0.2"
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
-legume-tui = { version = "0.3", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.3.15", default-features = false, features = ["testing"] }
 tempfile = "3.2"

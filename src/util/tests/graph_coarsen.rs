@@ -386,22 +386,17 @@ fn spatial_seeding_seeds_each_group_in_its_own_frame() {
     let side = 10;
     let per = side * side;
     let n = 2 * per;
-    let mut coords = Mat::zeros(n, 2);
-    let mut edges = Vec::new();
-    for s in 0..2 {
-        for i in 0..per {
-            let (row, col) = (i / side, i % side);
-            let c = s * per + i;
-            coords[(c, 0)] = col as f32;
-            coords[(c, 1)] = row as f32;
-            if col + 1 < side {
-                edges.push((c, c + 1));
-            }
-            if row + 1 < side {
-                edges.push((c, c + side));
-            }
-        }
-    }
+    let coords = Mat::from_fn(n, 2, |c, d| {
+        let i = c % per;
+        [i % side, i / side][d] as f32
+    });
+    let edges: Vec<(usize, usize)> = (0..2)
+        .flat_map(|s| {
+            grid_edges(side)
+                .into_iter()
+                .map(move |(a, b)| (a + s * per, b + s * per))
+        })
+        .collect();
     let graph = make_test_graph(n, edges);
     let groups: Vec<u32> = (0..n).map(|c| (c / per) as u32).collect();
 

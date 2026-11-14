@@ -8,9 +8,10 @@ use super::super::pipeline::run;
 use super::super::reference::{with_test_root, write_empty_reference, Species};
 use super::super::tissue::ALL_SECTIONS;
 use super::super::{RunInputs, Settings};
+use super::{lattice_contacts, type_names};
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
-use crate::lr_activity::input::UNASSIGNED;
 use crate::lr_activity::recorded;
+use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::metadata::PintoMetadata;
@@ -55,10 +56,6 @@ fn type_code(c: usize) -> u32 {
     (place(c).1 / 7) as u32
 }
 
-fn type_names() -> Vec<Box<str>> {
-    ["CT1", "CT2", "CT3", UNASSIGNED].map(Into::into).to_vec()
-}
-
 /// Counts per gene and cell: the identity genes high in their group, the
 /// receptor rare in the last group, ligands and targets everywhere.
 fn triplets(n: usize) -> Vec<(u64, u64, f32)> {
@@ -83,37 +80,8 @@ fn triplets(n: usize) -> Vec<(u64, u64, f32)> {
 }
 
 fn data(dir: &Path, n: usize) -> SparseIoVec {
-    let t = triplets(n);
-    let path = dir.join("d.zarr");
-    let mut backend = create_sparse_from_triplets(
-        &t,
-        (n_genes(), n, t.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )
-    .unwrap();
     let rows: Vec<Box<str>> = (0..n_genes()).map(gene).collect();
-    backend.register_row_names_vec(&rows);
-    let cells: Vec<Box<str>> = (0..n).map(|c| format!("c{c}").into()).collect();
-    backend.register_column_names_vec(&cells);
-    let mut v = SparseIoVec::new();
-    v.push(Arc::from(backend), None).unwrap();
-    v
-}
-
-/// The grid's four-neighbour contacts within each section.
-fn contacts(n: usize) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    for c in 0..n {
-        let (r, col) = place(c);
-        if col + 1 < SIDE {
-            pairs.push((c, c + 1));
-        }
-        if r + 1 < SIDE {
-            pairs.push((c, c + SIDE));
-        }
-    }
-    pairs
+    sparse_vec(dir, "d", &rows, &numbered("c", n), &triplets(n))
 }
 
 /// The pair file and the receptor's programme, beside an empty reference.
@@ -152,7 +120,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
         .collect();
     let codes: Vec<u32> = (0..n).map(type_code).collect();
     let names = type_names();
-    let pairs = contacts(n);
+    let pairs = lattice_contacts(SIDE, SECTIONS);
     with_test_root(&dir.join("reference"), || {
         run(&RunInputs {
             settings: Settings {
