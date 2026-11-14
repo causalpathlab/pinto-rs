@@ -1,5 +1,6 @@
 //! The commands from input to tables: `pinto lra` and `pinto lra-simulate`.
 
+use super::baselines::{marginals, Baselines, CellTypeTest, TypeLabels};
 use super::estimate::{estimate_pair_shared, PairData};
 use super::fits::LigandShare;
 use super::genes::GeneStore;
@@ -8,7 +9,7 @@ use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared};
-use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts};
+use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts, ALL_SECTIONS};
 use super::{
     contacts, only, options, output, receivers, report, rows, timing, RunInputs, Settings,
     INTERNALS, LOG_TARGET,
@@ -327,6 +328,77 @@ fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
     rows
 }
 
+/// `--marginal-baselines`: what the run's pairs were scored against.
+struct Marginal {
+    labels: TypeLabels,
+    /// Each pair's baselines and cell-type test, in pair order.
+    tests: Vec<(Baselines, CellTypeTest)>,
+}
+
+/// A pair's own seed, from its names, so that a `--only` subset scores a
+/// pair as the full run does. FNV-1a, which no Rust release changes.
+fn pair_seed(seed: u64, p: &Pair) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in p.ligand.bytes().chain([0]).chain(p.receptor.bytes()) {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    legume_numeric::matrix::rand_util::mix_seed(seed, h)
+}
+
+/// Every pair's co-expression baselines over the whole tissue
+/// ([`marginals`]), on the run's cell types when it has any, else on the
+/// identity bins, each permutation test on up to `permutations`.
+fn marginal_baselines(prep: &Prepared, permutations: usize, seed: u64) -> Marginal {
+    let labels = TypeLabels::of(&prep.tissue);
+    info!(
+        target: LOG_TARGET,
+        "Marginal baselines on {}, up to {permutations} permutations",
+        labels.note(&prep.tissue)
+    );
+    let pb = Progress::new(prep.pairs.len(), "marginal baselines");
+    let t0 = std::time::Instant::now();
+    let tests = prep
+        .pairs
+        .par_iter()
+        .map(|p| {
+            let (l, r) = (prep.ligand_counts(p), prep.receptor_counts(p));
+            let out = marginals(
+                &prep.tissue,
+                &l,
+                &r,
+                pair_seed(seed, p),
+                &labels,
+                permutations,
+                // the per-type-pair table's p and q need every permutation
+                false,
+            );
+            pb.inc();
+            out
+        })
+        .collect();
+    pb.finish();
+    info!(
+        target: LOG_TARGET,
+        "Marginal baselines of {} pairs in {:.0}s",
+        prep.pairs.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    Marginal { labels, tests }
+}
+
+/// Put each pair's baselines on its pooled row.
+fn attach_marginals(rows: &mut [rows::EffectRow], prep: &Prepared, m: &Marginal) {
+    let by_pair: HashMap<(&str, &str), &Baselines> = prep
+        .pairs
+        .iter()
+        .zip(&m.tests)
+        .map(|(p, (b, _))| ((&*p.ligand, &*p.receptor), b))
+        .collect();
+    for r in rows.iter_mut().filter(|r| &*r.section == ALL_SECTIONS) {
+        r.marginal = by_pair.get(&(&*r.ligand, &*r.receptor)).map(|&&b| b);
+    }
+}
+
 /// Record the tables in the manifest: a `--only` run as a subset beside the
 /// full table, any other as the full table with its reference.
 fn record_tables(
@@ -334,18 +406,21 @@ fn record_tables(
     prep: &Prepared,
     path: &str,
     curve_path: &str,
+    celltype: Option<(&str, &Marginal)>,
 ) -> anyhow::Result<()> {
     let recorded = |p: &str| crate::lr_activity::recorded(Path::new(p));
     // The genes left out of the identity, so the viewer draws the
     // receivers as they were without the files that decided them.
     let options = crate::util::metadata::LraOptions {
         identity_excluded: prep.identity_excluded.clone(),
+        marginal_baselines: celltype.map(|(_, m)| m.labels.source.name().into()),
         ..a.options()
     };
     if a.only.is_empty() {
         record(a.manifest, |o| {
             o.table = Some(recorded(path));
             o.curve = Some(recorded(curve_path));
+            o.celltype = celltype.map(|(p, _)| recorded(p));
             o.record_options(options);
             o.reference = prep
                 .reference_record
@@ -359,18 +434,20 @@ fn record_tables(
             of: prep.n_all,
             table: recorded(path),
             curve: recorded(curve_path),
+            celltype: celltype.map(|(p, _)| recorded(p)),
             options: Some(options),
         };
         record(a.manifest, |o| o.record_subset(entry))
     }
 }
 
-/// Write the effect and curve tables and record them; the effect table's
-/// path and the q-values' scope.
+/// Write the effect and curve tables (and with `marginal` the per-type-pair
+/// table) and record them; the effect table's path and the q-values' scope.
 fn write_tables(
     a: &Settings<'_>,
     prep: &Prepared,
     rows: &[rows::EffectRow],
+    marginal: Option<&Marginal>,
 ) -> anyhow::Result<(String, String)> {
     let made = crate::lr_activity::lra_outputs(
         crate::lr_activity::args::LraMethod::ContactEffect,
@@ -383,9 +460,25 @@ fn write_tables(
     } else {
         only::q_scope(prep.pairs.len(), prep.n_all)
     };
-    output::write_effects(&path, rows, &q_scope)?;
+    output::write_effects(&path, rows, &q_scope, marginal.is_some())?;
     output::write_curve(&curve_path, rows)?;
-    record_tables(a, prep, &path, &curve_path)?;
+    let celltype_path = output::celltype_beside(&path);
+    if let Some(m) = marginal {
+        let table: Vec<output::CelltypeRow> = prep
+            .pairs
+            .iter()
+            .zip(&m.tests)
+            .flat_map(|(p, (_, t))| output::celltype_rows(&p.ligand, &p.receptor, t, &m.labels))
+            .collect();
+        output::write_celltype(&celltype_path, &table)?;
+        info!(
+            target: LOG_TARGET,
+            "Wrote {} tested type pairs to {celltype_path}",
+            table.len()
+        );
+    }
+    let celltype = marginal.map(|m| (celltype_path.as_str(), m));
+    record_tables(a, prep, &path, &curve_path, celltype)?;
     Ok((path, q_scope))
 }
 
@@ -408,7 +501,11 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let prep = prepare(inp)?;
     let mut rows = estimate_pairs(&prep);
     report::report(&mut rows, &report::ReportOpts::default());
-    let (path, q_scope) = write_tables(a, &prep, &rows)?;
+    let marginal = a.marginal.map(|n| marginal_baselines(&prep, n, a.seed));
+    if let Some(m) = &marginal {
+        attach_marginals(&mut rows, &prep, m);
+    }
+    let (path, q_scope) = write_tables(a, &prep, &rows, marginal.as_ref())?;
     print_run_summary(a, &rows, &path, &q_scope);
     Ok(())
 }
@@ -597,8 +694,8 @@ impl Benchmark<'_> {
 }
 
 /// The region code `--plant-region` names among the tissue's `--region`
-/// labels; `None` without it.
-fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<u32>> {
+/// labels, `unassigned` not one of them; `None` without it.
+pub(super) fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<u32>> {
     let Some(name) = name else {
         return Ok(None);
     };
@@ -606,14 +703,20 @@ fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<
         .region
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--plant-region {name} needs --region"))?;
+    let unassigned = crate::lr_activity::input::UNASSIGNED;
     let code = names
         .iter()
         .position(|n| &**n == name)
-        .filter(|_| name != crate::lr_activity::input::UNASSIGNED)
+        .filter(|_| name != unassigned)
         .ok_or_else(|| {
+            let choices: Vec<&str> = names
+                .iter()
+                .map(|n| &**n)
+                .filter(|&n| n != unassigned)
+                .collect();
             anyhow::anyhow!(
                 "--plant-region {name}: not a region of --region (has {})",
-                names.join(", ")
+                choices.join(", ")
             )
         })?;
     info!(target: LOG_TARGET, "Planting every effect in region {name} alone");
@@ -661,11 +764,11 @@ pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     }
     pb.finish();
     let path = output::lra_simulate_path(a.out);
-    output::write_sim(&path, &rows)?;
+    output::write_sim(&path, &rows, a.plant_region)?;
     record(a.manifest, |o| {
         o.simulate = Some(crate::lr_activity::recorded(Path::new(&path)))
     })?;
-    println!("{}", output::sim_summary(&rows));
+    println!("{}", output::sim_summary(&rows, a.plant_region));
     println!("lra-simulate: wrote {} runs to {path}", rows.len());
     Ok(())
 }

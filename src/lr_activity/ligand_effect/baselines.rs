@@ -1,5 +1,6 @@
 //! Co-expression baselines for the `pinto lra-simulate` benchmark, of which
-//! [`coexpression`] is also the column `pinto lra` reports: the ligand–receptor
+//! [`coexpression`] is also the column `pinto lra` reports, and all of which
+//! `pinto lra --marginal-baselines` reports beside it ([`marginals`]): the ligand–receptor
 //! statistics in common use, none of which adjusts for a confounder, each
 //! asked the same question as the estimator ("is the pair interacting?")
 //! and tested at the same 5% level, one-sided (more co-expression than
@@ -8,18 +9,23 @@
 //! (detection for the co-expression log odds).
 //!
 //! - **Cell-type label permutation** (CellPhoneDB v2, Efremova et al. 2020;
-//!   CellChat, Jin et al. 2021). Cell types are the identity bins coarsened
-//!   to their three leading bits (bit `k` of a bin is the sign of the `k`-th
-//!   singular direction of the identity projection, so `bin & 7` splits the
-//!   receivers along the three strongest axes: at most 8 types). The score
+//!   CellChat, Jin et al. 2021). In the benchmark, cell types are the
+//!   identity bins coarsened to their three leading bits (bit `k` of a bin
+//!   is the sign of the `k`-th singular direction of the identity
+//!   projection, so `bin & 7` splits the receivers along the three strongest
+//!   axes: at most 8 types); `pinto lra` uses the run's own cell types when
+//!   it has any, and these bins only when it has none ([`TypeLabels::of`]).
+//!   Cells of the `unassigned` type are permuted with the rest but never
+//!   form a tested type. The score
 //!   of sender type A and receiver type B is CellChat's law-of-mass-action
 //!   product, mean ligand in A × mean receptor in B (CellPhoneDB's mean of
 //!   the two means would call a pair whenever either partner alone is
 //!   type-specific). As in CellPhoneDB, a type pair is tested only when the
 //!   ligand is detected in at least [`MIN_DETECTED`] of A and the receptor
 //!   in as many of B. Null: cell-type labels permuted across cells
-//!   ([`PERMUTATIONS`] times). The pair's p is the smallest type-pair p,
-//!   Bonferroni-corrected over the tested type pairs.
+//!   ([`PERMUTATIONS`] times by default). The pair's p is the smallest
+//!   type-pair p, Bonferroni-corrected over the tested type pairs; each
+//!   type pair's own score and p are kept too ([`CellTypeTest`]).
 //! - **Bivariate Moran's I** (SpatialDM, Li et al. 2023): the global
 //!   bivariate Moran's I of ligand in senders and receptor in receivers over
 //!   the row-standardized contact graph, `I = (n / S0) Σ_ij w_ij L̃_i R̃_j /
@@ -43,24 +49,27 @@
 //! so many exceedances that even none in the remaining permutations would
 //! leave its p (Bonferroni-scaled for the cell-type test) at or above 5%,
 //! the rest are skipped and p is read from the permutations run. Rejection
-//! is therefore exactly what all [`PERMUTATIONS`] would give, on the same
+//! is therefore exactly what all the permutations would give, on the same
 //! permutation stream, so the calibration is unchanged; only a
 //! non-rejecting p is estimated from fewer permutations. Subsampling the
 //! rows instead would change the statistic and save nothing on a tissue of
 //! a few thousand receivers.
 
 use super::inference::upper_normal_p;
+use super::report::bh;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
+use crate::lr_activity::input::UNASSIGNED;
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
-/// Permutations of every permutation baseline. Bonferroni over up to 64
-/// type pairs needs `64 / (1 + P) < 0.05`, so `P ≥ 1280`.
-const PERMUTATIONS: usize = 2000;
+/// Permutations of every permutation baseline, unless asked otherwise.
+/// Bonferroni over up to 64 type pairs needs `64 / (1 + P) < 0.05`, so
+/// `P ≥ 1280`; more types need more.
+pub const PERMUTATIONS: usize = 2000;
 
 /// Permutations per chunk, each chunk with its own seed.
 const CHUNK: usize = 100;
@@ -112,11 +121,106 @@ pub fn rejects(p: f64) -> bool {
     p < ALPHA
 }
 
-/// Cell type of each row: the identity bin's [`TYPE_BITS`] leading bits.
-pub fn cell_types(bin: &[usize]) -> Vec<u8> {
-    bin.iter()
-        .map(|&b| (b & ((1 << TYPE_BITS) - 1)) as u8)
-        .collect()
+/// Where the cell-type baseline's types come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeSource {
+    /// The run's cell types (`--cell-types` or its lupin round).
+    CellTypes,
+    /// The identity bins' [`TYPE_BITS`] leading bits.
+    IdentityBins,
+}
+
+impl TypeSource {
+    /// As the run's options and the per-type-pair table record it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::CellTypes => "cell-types",
+            Self::IdentityBins => "identity-bins",
+        }
+    }
+}
+
+/// The cell types the cell-type baseline permutes: a code per row, a name
+/// per code, and which codes may be a tested sender or receiver type.
+#[derive(Clone, Debug)]
+pub struct TypeLabels {
+    pub codes: Vec<u32>,
+    pub names: Vec<Box<str>>,
+    pub testable: Vec<bool>,
+    pub source: TypeSource,
+}
+
+impl TypeLabels {
+    /// The benchmark's types: each row's identity bin's [`TYPE_BITS`]
+    /// leading bits, all `2^TYPE_BITS` of them testable.
+    pub fn identity_bins(tissue: &Tissue) -> Self {
+        let k = 1 << TYPE_BITS;
+        Self {
+            codes: tissue
+                .identity_bin
+                .iter()
+                .map(|&b| (b & (k - 1)) as u32)
+                .collect(),
+            names: (0..k).map(|b| format!("bin{b}").into()).collect(),
+            testable: vec![true; k],
+            source: TypeSource::IdentityBins,
+        }
+    }
+
+    /// The run's cell types when it has any besides `unassigned`, else
+    /// [`TypeLabels::identity_bins`].
+    pub fn of(tissue: &Tissue) -> Self {
+        let Some(codes) = &tissue.cell_type else {
+            return Self::identity_bins(tissue);
+        };
+        let k = codes.iter().max().map_or(0, |&c| c as usize + 1);
+        let names: Vec<Box<str>> = (0..k.max(tissue.cell_type_names.len()))
+            .map(|c| {
+                tissue
+                    .cell_type_names
+                    .get(c)
+                    .cloned()
+                    .unwrap_or_else(|| c.to_string().into())
+            })
+            .collect();
+        let testable: Vec<bool> = names.iter().map(|n| &**n != UNASSIGNED).collect();
+        if !codes.iter().any(|&c| testable[c as usize]) {
+            return Self::identity_bins(tissue);
+        }
+        Self {
+            codes: codes.clone(),
+            names,
+            testable,
+            source: TypeSource::CellTypes,
+        }
+    }
+
+    /// Where the types of [`TypeLabels::of`]`(tissue)` came from, for the
+    /// run's log, and the testable types that hold cells: with the identity
+    /// bins, whether the run had no cell types or its cell types labelled
+    /// none of the rows.
+    pub fn note(&self, tissue: &Tissue) -> String {
+        let from = match (self.source, tissue.cell_type.is_some()) {
+            (TypeSource::CellTypes, _) => "the run's cell types",
+            (TypeSource::IdentityBins, false) => "the identity bins, the run having no cell types",
+            (TypeSource::IdentityBins, true) => {
+                "the identity bins, the run's cell types labelling none of the receivers"
+            }
+        };
+        let mut held = vec![false; self.names.len()];
+        for &c in &self.codes {
+            held[c as usize] = true;
+        }
+        let types: Vec<&str> = self
+            .names
+            .iter()
+            .zip(&self.testable)
+            .zip(&held)
+            .filter(|((_, &t), &h)| t && h)
+            .map(|((n, _), _)| &**n)
+            .collect();
+        format!("{from} ({} types: {})", types.len(), types.join(", "))
+    }
 }
 
 /// `null ≥ observed`, forgiving the rounding of a sum taken in another
@@ -129,27 +233,28 @@ fn perm_p(exceed: usize, perms: usize) -> f64 {
     (1 + exceed) as f64 / (1 + perms) as f64
 }
 
-/// Run the permutation chunks, a round of [`ROUND`] at a time in parallel:
-/// `f(rng, k)` handles `k` permutations and returns its exceedance counts,
-/// which are summed. After each round, `settled(counts)` says whether the
-/// verdict can no longer change; then the rest are skipped. Returns the
-/// counts and the permutations run.
+/// Run `total` permutations in chunks, a round of [`ROUND`] at a time in
+/// parallel: `f(rng, k)` handles `k` permutations and returns its
+/// exceedance counts, which are summed. After each round, `settled(counts)`
+/// says whether the verdict can no longer change; then the rest are
+/// skipped. Returns the counts and the permutations run.
 fn permuted<F>(
     seed: u64,
     len: usize,
+    total: usize,
     settled: impl Fn(&[usize]) -> bool,
     f: F,
 ) -> (Vec<usize>, usize)
 where
     F: Fn(&mut SmallRng, usize) -> Vec<usize> + Sync,
 {
-    let chunks = PERMUTATIONS.div_ceil(CHUNK);
+    let chunks = total.div_ceil(CHUNK);
     let (mut counts, mut done) = (vec![0usize; len], 0usize);
     for round in (0..chunks).collect::<Vec<_>>().chunks(ROUND) {
         let part = round
             .par_iter()
             .map(|&c| {
-                let k = CHUNK.min(PERMUTATIONS - c * CHUNK);
+                let k = CHUNK.min(total - c * CHUNK);
                 (
                     f(&mut SmallRng::seed_from_u64(mix_seed(seed, c as u64)), k),
                     k,
@@ -162,7 +267,7 @@ where
             }
             done += k;
         }
-        if done < PERMUTATIONS && settled(&counts) {
+        if done < total && settled(&counts) {
             break;
         }
     }
@@ -170,30 +275,68 @@ where
 }
 
 /// Whether `exceed` exceedances leave a p, scaled by `m` (Bonferroni), at
-/// or above [`ALPHA`] whatever the permutations not yet run give.
-fn cannot_reject(exceed: usize, m: usize) -> bool {
-    perm_p(exceed, PERMUTATIONS) * m as f64 >= ALPHA
+/// or above [`ALPHA`] whatever the rest of the `total` permutations give.
+fn cannot_reject(exceed: usize, m: usize, total: usize) -> bool {
+    perm_p(exceed, total) * m as f64 >= ALPHA
 }
 
-/// Every baseline on one pair's ligand and receptor counts.
+/// Every baseline on one pair's ligand and receptor counts, as the
+/// benchmark scores them: types from the identity bins, [`PERMUTATIONS`]
+/// permutations.
 pub fn baselines(
     tissue: &Tissue,
     ligand_counts: &[f64],
     receptor_counts: &[f64],
     seed: u64,
 ) -> Baselines {
+    let labels = TypeLabels::identity_bins(tissue);
+    marginals(
+        tissue,
+        ligand_counts,
+        receptor_counts,
+        seed,
+        &labels,
+        PERMUTATIONS,
+        true,
+    )
+    .0
+}
+
+/// Every baseline on one pair's counts, the cell-type test on `labels` and
+/// each permutation test on up to `permutations` permutations, and the
+/// cell-type test with each of its type pairs. With `early_stop` the
+/// cell-type test stops once its Bonferroni summary cannot reject, which is
+/// all the summary needs; without it every type pair gets every
+/// permutation, as a per-type-pair p and q need.
+pub fn marginals(
+    tissue: &Tissue,
+    ligand_counts: &[f64],
+    receptor_counts: &[f64],
+    seed: u64,
+    labels: &TypeLabels,
+    permutations: usize,
+    early_stop: bool,
+) -> (Baselines, CellTypeTest) {
     let n = tissue.n();
     let sf = &tissue.size_factor;
     let xl: Vec<f64> = (0..n).map(|i| (ligand_counts[i] / sf[i]).ln_1p()).collect();
     let xr: Vec<f64> = (0..n)
         .map(|i| (receptor_counts[i] / sf[i]).ln_1p())
         .collect();
-    let (celltype_score, celltype_p, celltype_tested) =
-        celltype(tissue, &xl, &xr, mix_seed(seed, 1));
-    let (moran_i, moran_p, contact_score, contact_p) = spatial(tissue, &xl, &xr, mix_seed(seed, 2));
+    let types = celltype(
+        labels,
+        &xl,
+        &xr,
+        mix_seed(seed, 1),
+        permutations,
+        early_stop,
+    );
+    let (celltype_score, celltype_p, celltype_tested) = types.summary();
+    let (moran_i, moran_p, contact_score, contact_p) =
+        spatial(tissue, &xl, &xr, mix_seed(seed, 2), permutations);
     let all = vec![true; n];
     let (coexpr_log_or, coexpr_se) = coexpression(tissue, ligand_counts, receptor_counts, &all);
-    Baselines {
+    let b = Baselines {
         celltype_score,
         celltype_p,
         celltype_tested,
@@ -204,13 +347,14 @@ pub fn baselines(
         coexpr_log_or,
         coexpr_se,
         coexpr_p: upper_normal_p(coexpr_log_or / coexpr_se),
-    }
+    };
+    (b, types)
 }
 
 // * Cell-type label permutation
 
 /// Per-type sums of ligand and receptor under labels `ty`.
-fn type_sums(ty: &[u8], xl: &[f64], xr: &[f64], k: usize) -> (Vec<f64>, Vec<f64>) {
+fn type_sums(ty: &[u32], xl: &[f64], xr: &[f64], k: usize) -> (Vec<f64>, Vec<f64>) {
     let (mut sl, mut sr) = (vec![0.0; k], vec![0.0; k]);
     for i in 0..ty.len() {
         sl[ty[i] as usize] += xl[i];
@@ -219,10 +363,65 @@ fn type_sums(ty: &[u8], xl: &[f64], xr: &[f64], k: usize) -> (Vec<f64>, Vec<f64>
     (sl, sr)
 }
 
-/// (largest tested score, Bonferroni p, type pairs tested).
-fn celltype(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, usize) {
-    let ty = cell_types(&tissue.identity_bin);
-    let k = 1 << TYPE_BITS;
+/// One tested sender type × receiver type of the cell-type test: the codes,
+/// cells of each, mean `log1p` ligand in the sender and receptor in the
+/// receiver with their detection shares (the reason it is tested), the
+/// score (their product) and its permutation p.
+#[derive(Clone, Copy, Debug)]
+pub struct TypePair {
+    pub sender: u32,
+    pub receiver: u32,
+    pub n_sender: usize,
+    pub n_receiver: usize,
+    pub mean_ligand: f64,
+    pub mean_receptor: f64,
+    pub ligand_detected: f64,
+    pub receptor_detected: f64,
+    pub score: f64,
+    pub p: f64,
+}
+
+/// The cell-type test of one pair: every tested type pair, and the
+/// permutations run.
+#[derive(Clone, Debug, Default)]
+pub struct CellTypeTest {
+    pub pairs: Vec<TypePair>,
+    pub permutations: usize,
+}
+
+impl CellTypeTest {
+    /// (largest tested score, Bonferroni p, type pairs tested); NaN and 0
+    /// when none is tested.
+    pub fn summary(&self) -> (f64, f64, usize) {
+        let m = self.pairs.len();
+        if m == 0 {
+            return (f64::NAN, f64::NAN, 0);
+        }
+        let p_min = self.pairs.iter().map(|t| t.p).fold(f64::INFINITY, f64::min);
+        let best = self
+            .pairs
+            .iter()
+            .map(|t| t.score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        (best, (p_min * m as f64).min(1.0), m)
+    }
+
+    /// Benjamini–Hochberg q of each type pair, within this pair's type pairs.
+    pub fn q(&self) -> Vec<f64> {
+        bh(&self.pairs.iter().map(|t| t.p).collect::<Vec<_>>())
+    }
+}
+
+fn celltype(
+    labels: &TypeLabels,
+    xl: &[f64],
+    xr: &[f64],
+    seed: u64,
+    permutations: usize,
+    early_stop: bool,
+) -> CellTypeTest {
+    let ty = &labels.codes;
+    let k = labels.names.len();
     let mut cells = vec![0usize; k];
     let (mut dl, mut dr) = (vec![0usize; k], vec![0usize; k]);
     for i in 0..ty.len() {
@@ -231,13 +430,15 @@ fn celltype(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, us
         dl[t] += (xl[i] > 0.0) as usize;
         dr[t] += (xr[i] > 0.0) as usize;
     }
-    let share = |d: usize, t: usize| cells[t] > 0 && d as f64 >= MIN_DETECTED * cells[t] as f64;
+    let share = |d: usize, t: usize| {
+        labels.testable[t] && cells[t] > 0 && d as f64 >= MIN_DETECTED * cells[t] as f64
+    };
     let tested: Vec<(usize, usize)> = (0..k)
         .flat_map(|a| (0..k).map(move |b| (a, b)))
         .filter(|&(a, b)| share(dl[a], a) && share(dr[b], b))
         .collect();
     if tested.is_empty() {
-        return (f64::NAN, f64::NAN, 0);
+        return CellTypeTest::default();
     }
     let scores = |sl: &[f64], sr: &[f64]| -> Vec<f64> {
         tested
@@ -245,13 +446,13 @@ fn celltype(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, us
             .map(|&(a, b)| sl[a] / cells[a] as f64 * sr[b] / cells[b] as f64)
             .collect()
     };
-    let (sl, sr) = type_sums(&ty, xl, xr, k);
+    let (sl, sr) = type_sums(ty, xl, xr, k);
     let obs = scores(&sl, &sr);
     let m = tested.len();
-    let settled = |c: &[usize]| c.iter().all(|&e| cannot_reject(e, m));
-    let (exceed, perms) = permuted(seed, tested.len(), settled, |rng, perms| {
+    let settled = |c: &[usize]| early_stop && c.iter().all(|&e| cannot_reject(e, m, permutations));
+    let (exceed, perms) = permuted(seed, m, permutations, settled, |rng, perms| {
         let mut lab = ty.clone();
-        let mut hit = vec![0usize; tested.len()];
+        let mut hit = vec![0usize; m];
         for _ in 0..perms {
             lab.shuffle(rng);
             let (sl, sr) = type_sums(&lab, xl, xr, k);
@@ -261,19 +462,39 @@ fn celltype(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, us
         }
         hit
     });
-    let p_min = exceed
+    let pairs = tested
         .iter()
-        .map(|&e| perm_p(e, perms))
-        .fold(f64::INFINITY, f64::min);
-    let best = obs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    (best, (p_min * m as f64).min(1.0), m)
+        .zip(obs.iter().zip(&exceed))
+        .map(|(&(a, b), (&score, &e))| TypePair {
+            sender: a as u32,
+            receiver: b as u32,
+            n_sender: cells[a],
+            n_receiver: cells[b],
+            mean_ligand: sl[a] / cells[a] as f64,
+            mean_receptor: sr[b] / cells[b] as f64,
+            ligand_detected: dl[a] as f64 / cells[a] as f64,
+            receptor_detected: dr[b] as f64 / cells[b] as f64,
+            score,
+            p: perm_p(e, perms),
+        })
+        .collect();
+    CellTypeTest {
+        pairs,
+        permutations: perms,
+    }
 }
 
 // * Contact statistics
 
-/// (Moran's I, its p, contact score, its p), sharing one set of ligand
-/// permutations within sections.
-fn spatial(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, f64, f64) {
+/// (Moran's I, its p, contact score, its p), sharing one set of up to
+/// `permutations` ligand permutations within sections.
+fn spatial(
+    tissue: &Tissue,
+    xl: &[f64],
+    xr: &[f64],
+    seed: u64,
+    permutations: usize,
+) -> (f64, f64, f64, f64) {
     let n = tissue.n();
     let nan = (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
     let mean = |v: &[f64]| v.iter().sum::<f64>() / n.max(1) as f64;
@@ -306,8 +527,8 @@ fn spatial(tissue: &Tissue, xl: &[f64], xr: &[f64], seed: u64) -> (f64, f64, f64
     for i in 0..n {
         rows[tissue.section[i] as usize].push(i);
     }
-    let settled = |c: &[usize]| c.iter().all(|&e| cannot_reject(e, 1));
-    let (exceed, perms) = permuted(seed, 2, settled, |rng, perms| {
+    let settled = |c: &[usize]| c.iter().all(|&e| cannot_reject(e, 1, permutations));
+    let (exceed, perms) = permuted(seed, 2, permutations, settled, |rng, perms| {
         let mut vals: Vec<Vec<f64>> = rows
             .iter()
             .map(|r| r.iter().map(|&i| xl[i]).collect())

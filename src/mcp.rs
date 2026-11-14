@@ -11,7 +11,7 @@ use serde_json::Value;
 /// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(
-        "{FITS} {SIMULATE} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
+        "{FITS} {SIMULATE} {RESIDUAL} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
         crate::lr_activity::ligand_effect::verdict::verdict_line()
     )
 }
@@ -37,6 +37,13 @@ planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
 coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, \
 `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no clustering, and \
 `run_sim_baseline` writes a standard pipeline's labels to score next to them.";
+
+const RESIDUAL: &str = "\
+Two-stage fit: `run_residual` writes the counts an lc, cage or dsvd run \
+leaves unexplained as new data files (a background job); fit them with \
+`run_fit`, passing the reply's `fit.data`, `fit.coords` and `fit.flags` as \
+its data, coords and flags, and `run_lra` on that second fit reads the raw \
+counts, not the excess.";
 
 const LRA: &str = "\
 Ligand-receptor analysis: `run_lra` on a run asks, per ligand-receptor pair, \

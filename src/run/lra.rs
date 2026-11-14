@@ -8,8 +8,8 @@ use super::mcp::{as_run, checked, in_background, out_or_free, rooted, spawn, NOT
 use super::script;
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::output::{
-    self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_pooled_effects,
-    read_sim_runs,
+    self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_planted_region,
+    read_pooled_effects, read_sim_runs,
 };
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
@@ -66,6 +66,11 @@ pub(super) struct LraToolArgs {
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_jackknife: Option<String>,
+    /// `--marginal-baselines`, and `--marginal-permutations`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marginal_baselines: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marginal_permutations: Option<usize>,
     #[serde(default = "in_background", skip_serializing)]
     pub background: bool,
 }
@@ -74,6 +79,18 @@ impl LraToolArgs {
     /// `only` as `pinto lra` takes it.
     fn only(&self) -> Vec<Box<str>> {
         self.only.iter().map(|s| s.as_str().into()).collect()
+    }
+
+    /// What `pinto lra` writes for these arguments: [`lra_outputs`], and
+    /// with `marginal_baselines` the per-type-pair table beside the
+    /// contact-effect table.
+    fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
+        let mut made = lra_outputs(method, out, &self.only());
+        if self.marginal_baselines && method == LraMethod::ContactEffect {
+            let table = made[0].to_string_lossy().into_owned();
+            made.push(output::celltype_beside(&table).into());
+        }
+        made
     }
 
     fn input(&self) -> Input<'_> {
@@ -86,6 +103,44 @@ impl LraToolArgs {
             cell_types: self.cell_types.as_deref(),
             region: self.region.as_deref(),
             region_jackknife: self.region_jackknife.as_deref(),
+        }
+    }
+
+    /// The `run_lra_simulate` call checking this analysis's power: the same
+    /// input, pairs, programmes and species.
+    fn simulate_args(&self, run: Option<&str>) -> Value {
+        let mut args = self.input().args(run);
+        if let Some(p) = &self.lr_pairs {
+            args["lr_pairs"] = p.as_str().into();
+        }
+        if !self.targets.is_empty() {
+            args["targets"] = self.targets.clone().into();
+        }
+        if let Some(s) = &self.species {
+            args["species"] = s.as_str().into();
+        }
+        args
+    }
+
+    /// What `pinto lra` records in the manifest that it was asked, for this
+    /// call: [`LraOptions`] but the identity genes and where the cell-type
+    /// baseline's types came from, which the run decides.
+    fn asked_options(&self) -> LraOptions {
+        let d = LraOptions::default();
+        let shown = |p: &String| shown_path(Path::new(p));
+        LraOptions {
+            lr_pairs: self.lr_pairs.as_ref().map(shown),
+            targets: self.targets.iter().map(shown).collect(),
+            species: self.species.clone().unwrap_or(d.species),
+            seed: self.seed.unwrap_or(d.seed),
+            cell_types: self.cell_types.as_ref().map(shown),
+            region: self.region.as_ref().map(shown),
+            region_jackknife: self.region_jackknife.clone().unwrap_or(d.region_jackknife),
+            marginal_permutations: self.marginal_baselines.then(|| {
+                self.marginal_permutations
+                    .unwrap_or(crate::lr_activity::ligand_effect::PERMUTATIONS)
+            }),
+            ..d
         }
     }
 }
@@ -303,13 +358,14 @@ pub(super) fn lra_argv(
     run: Option<&str>,
     out: &str,
 ) -> Vec<String> {
+    // The labels and the baselines go below, as the input and flags give them.
     let d = LraOptions::default();
     let options = LraOptions {
-        lr_pairs: a.lr_pairs.as_deref().map(|p| shown_path(Path::new(p))),
-        targets: a.targets.iter().map(|t| shown_path(Path::new(t))).collect(),
-        species: a.species.clone().unwrap_or(d.species),
-        seed: a.seed.unwrap_or(d.seed),
-        ..d
+        cell_types: None,
+        region: None,
+        region_jackknife: d.region_jackknife,
+        marginal_permutations: None,
+        ..a.asked_options()
     };
     let mut argv = options.argv(run, Some(out), method, &a.only);
     argv.extend(a.input().flags());
@@ -321,6 +377,12 @@ pub(super) fn lra_argv(
     }
     if let Some(x) = a.min_gene_count {
         argv.extend(["--min-gene-count".into(), x.to_string()]);
+    }
+    if a.marginal_baselines {
+        argv.push("--marginal-baselines".into());
+        if let Some(n) = a.marginal_permutations {
+            argv.extend(["--marginal-permutations".into(), n.to_string()]);
+        }
     }
     argv
 }
@@ -364,21 +426,105 @@ fn finished(cx: &Call, made: &[PathBuf]) -> bool {
 }
 
 /// The reply from the tables a finished run left at `made`, read, not run
-/// again; `None` when there are none. Tables that cannot be read are not
-/// written over either.
+/// again; `None` when there are none. `made_as` says whether the manifest
+/// records them made as this call asks (an error when it records
+/// otherwise, `false` when it records nothing), and `reply(made_as)` shows
+/// the call's command only when it does. Tables that cannot be read are
+/// not written over either.
 fn read_finished(
     cx: &Call,
     made: &[PathBuf],
-    reply: impl FnOnce() -> anyhow::Result<Vec<Content>>,
+    made_as: impl FnOnce() -> anyhow::Result<bool>,
+    reply: impl FnOnce(bool) -> anyhow::Result<Vec<Content>>,
 ) -> Option<anyhow::Result<Vec<Content>>> {
     finished(cx, made).then(|| {
-        let mut reply = reply().map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
+        let checked = made_as()?;
+        let mut reply = reply(checked).map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
         push_note(
             &mut reply,
-            "read from the tables already there; nothing was run",
+            if checked {
+                "read from the tables already there, made with this call's options; nothing \
+                 was run"
+            } else {
+                "read from the tables already there; nothing was run. The manifest does not \
+                 record all that made them (data files, the co-expression methods' options), \
+                 so this call was not checked against them in full and its command is not shown"
+            },
         );
         Ok(reply)
     })
+}
+
+/// The options the manifest at `manifest` records for the contact-effect
+/// table `table`: the full table's or a subset's; `None` when it names
+/// neither.
+fn recorded_options(manifest: &Path, table: &Path) -> Option<LraOptions> {
+    let lra = PintoMetadata::read(manifest).ok()?.outputs.lra;
+    let table = crate::lr_activity::recorded(table);
+    if lra.table.as_deref() == Some(table.as_str()) {
+        return lra.options;
+    }
+    let subset = lra.subsets.iter().find(|s| s.table == table)?;
+    lra.subset_options(subset)
+}
+
+/// Whether the finished tables `made` were made as `a` asks, by the options
+/// the manifest at `manifest` records for them: `true` when they were, an
+/// error naming each option that differs when they were not, `false` when
+/// what made them is not all recorded (the co-expression methods record no
+/// options, and no table records the data files it read).
+fn made_as_asked(
+    a: &LraToolArgs,
+    method: LraMethod,
+    manifest: &Path,
+    made: &[PathBuf],
+) -> anyhow::Result<bool> {
+    if method != LraMethod::ContactEffect {
+        return Ok(false);
+    }
+    let Some(recorded) = recorded_options(manifest, &made[0]) else {
+        return Ok(false);
+    };
+    let fields = |o: &LraOptions| match serde_json::to_value(o) {
+        Ok(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    let (was, asked) = (fields(&recorded), fields(&a.asked_options()));
+    let mut differ: Vec<String> = was
+        .keys()
+        .chain(asked.keys())
+        .filter(|&k| k != "identity_excluded" && k != "marginal_baselines")
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|&k| was.get(k) != asked.get(k))
+        .map(|k| {
+            let show = |m: &Map<String, Value>| m.get(k).map_or("none".into(), Value::to_string);
+            format!("{k} {}, asked {}", show(&was), show(&asked))
+        })
+        .collect();
+    if recorded.marginal_baselines.is_some() != a.marginal_baselines {
+        differ.push(format!(
+            "marginal_baselines {}, asked {}",
+            recorded.marginal_baselines.is_some(),
+            a.marginal_baselines
+        ));
+    }
+    anyhow::ensure!(
+        differ.is_empty(),
+        "{} was made with other options ({}); {NOT_WRITTEN_OVER}, or call with the options it \
+         was made with",
+        shown_path(&made[0]),
+        differ.join("; ")
+    );
+    Ok(a.data_files.is_empty())
+}
+
+/// `argv` checked as pinto parses it, and for the flags only the contact
+/// effect takes, as `pinto lra` checks them before reading any data.
+fn checked_lra(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
+    let args: crate::lr_activity::SrtLrActivityArgs = super::mcp::parsed(cli, argv)?;
+    crate::lr_activity::fit::check_method_flags(&args)
+        .map_err(|e| anyhow::anyhow!("pinto {}: {e}", argv[0]))
 }
 
 /// Run `argv` making `made`: in the background (the reply is the job), or
@@ -415,24 +561,33 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     let run = input.run()?;
     let run = run.as_deref();
     method_can_read(method, run)?;
+    anyhow::ensure!(
+        a.marginal_baselines || a.marginal_permutations.is_none(),
+        "marginal_permutations applies with marginal_baselines, the tests it counts"
+    );
     let out = named_out(a.out.as_deref());
-    let only = a.only();
-    // A finished `out` is read, not run again.
+    // A finished `out` is read, not run again, once the call is checked as
+    // it would be run.
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
-        let made = lra_outputs(method, &o, &only);
+        let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
-        if let Some(reply) =
-            read_finished(cx, &made, || lra_reply(method, &argv, &input, run, &made))
-        {
+        checked_lra(cli, &argv)?;
+        let manifest = run.map_or_else(|| PathBuf::from(format!("{o}.pinto.json")), PathBuf::from);
+        if let Some(reply) = read_finished(
+            cx,
+            &made,
+            || made_as_asked(&a, method, &manifest, &made),
+            |checked| lra_reply(&a, method, checked.then_some(&argv[..]), run, &made),
+        ) {
             return reply;
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
-        Ok(lra_outputs(method, o, &only))
+        Ok(a.outputs(method, o))
     })?;
     let argv = lra_argv(&a, method, run, &out);
-    checked(cli, &argv)?;
+    checked_lra(cli, &argv)?;
     let summary = format!("lra {} of {}", method_name(method), input.source(run));
     // The same call, by its out: what reads the tables once the job is done.
     let mut again = serde_json::to_value(&a)?;
@@ -443,7 +598,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     if let Some(job) = start(cx, &argv, &made, &summary, a.background, "run_lra", &again)? {
         return Ok(vec![Content::Json(job)]);
     }
-    lra_reply(method, &argv, &input, run, &made)
+    lra_reply(&a, method, Some(&argv), run, &made)
 }
 
 fn method_name(method: LraMethod) -> String {
@@ -460,13 +615,14 @@ fn push_note(reply: &mut [Content], note: &str) {
     }
 }
 
-/// The reply to a finished `pinto lra`: for the contact effect, the verdict
-/// counts over the pooled pairs and those that survived the controls, then the files and
-/// what to do next.
+/// The reply to a finished `pinto lra` for `a`: for the contact effect, the
+/// verdict counts over the pooled pairs and those that survived the
+/// controls, then the command that made the tables (when known), the files
+/// and what to do next.
 fn lra_reply(
+    a: &LraToolArgs,
     method: LraMethod,
-    argv: &[String],
-    input: &Input<'_>,
+    command: Option<&[String]>,
     run: Option<&str>,
     made: &[PathBuf],
 ) -> anyhow::Result<Vec<Content>> {
@@ -475,7 +631,7 @@ fn lra_reply(
         let mut r = effects_summary(&read_pooled_effects(&made[0].to_string_lossy())?);
         r["reading"] =
             "one row per pair and section (`all` pooled); verdict_note says why in words".into();
-        if argv.iter().any(|w| w == "--only") {
+        if !a.only.is_empty() {
             r["q_scope"] = "q corrected within this --only subset, not over every pair; \
                             recorded under lra.subsets, the full table unchanged"
                 .into();
@@ -484,7 +640,9 @@ fn lra_reply(
     } else {
         json!({})
     };
-    reply["command"] = format!("pinto {}", script::line(argv)).into();
+    if let Some(argv) = command {
+        reply["command"] = format!("pinto {}", script::line(argv)).into();
+    }
     reply["written"] = written.into();
     let mut pieces = vec![Content::Json(reply)];
     let checked = run
@@ -493,7 +651,7 @@ fn lra_reply(
     if checked.is_none() {
         pieces.push(Content::Next(vec![Next::new(
             "run_lra_simulate",
-            input.args(run),
+            a.simulate_args(run),
             "no power check for this tissue yet: it shows which effect sizes lra can detect \
              here and whether it stays calibrated under confounding",
         )]));
@@ -553,8 +711,10 @@ pub(super) fn lra_simulate(
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = vec![PathBuf::from(lra_simulate_path(&o))];
-        let argv = lra_simulate_argv(&a, run, &o);
-        if let Some(reply) = read_finished(cx, &made, || simulate_reply(&argv, &made)) {
+        checked(cli, &lra_simulate_argv(&a, run, &o))?;
+        // lra-simulate records no options for its table.
+        if let Some(reply) = read_finished(cx, &made, || Ok(false), |_| simulate_reply(None, &made))
+        {
             return reply;
         }
     }
@@ -583,14 +743,18 @@ pub(super) fn lra_simulate(
     )? {
         return Ok(vec![Content::Json(job)]);
     }
-    simulate_reply(&argv, &made)
+    simulate_reply(Some(&argv), &made)
 }
 
-/// The reply to a finished `pinto lra-simulate`: the comparison table.
-fn simulate_reply(argv: &[String], made: &[PathBuf]) -> anyhow::Result<Vec<Content>> {
-    let runs = read_sim_runs(&made[0].to_string_lossy())?;
-    let mut reply = comparison_summary(&runs);
-    reply["command"] = format!("pinto {}", script::line(argv)).into();
+/// The reply to a finished `pinto lra-simulate`: the comparison table, and
+/// the command that made it when known.
+fn simulate_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Result<Vec<Content>> {
+    let table = made[0].to_string_lossy();
+    let runs = read_sim_runs(&table)?;
+    let mut reply = comparison_summary(&runs, read_planted_region(&table).as_deref());
+    if let Some(argv) = command {
+        reply["command"] = format!("pinto {}", script::line(argv)).into();
+    }
     reply["written"] = json!([shown_path(&made[0])]);
     Ok(vec![Content::Json(reply)])
 }
@@ -599,8 +763,8 @@ fn simulate_reply(argv: &[String], made: &[PathBuf]) -> anyhow::Result<Vec<Conte
 /// where nothing is planted or the field is shifted, power elsewhere), the
 /// estimable share, and the means over the confounded nulls and the
 /// planted effects.
-pub(super) fn comparison_summary(runs: &[output::SimRun]) -> Value {
-    let c = compare_runs(runs);
+pub(super) fn comparison_summary(runs: &[output::SimRun], planted: Option<&str>) -> Value {
+    let c = compare_runs(runs, planted);
     let rates = |r: &[f64; COMPARED.len()]| -> Value {
         COMPARED
             .iter()

@@ -115,6 +115,8 @@ pub mod verdict;
 #[cfg(test)]
 mod tests;
 
+pub use baselines::PERMUTATIONS;
+
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
@@ -196,6 +198,10 @@ pub struct Settings<'a> {
     pub plant_region: Option<&'a str>,
     /// `--region-jackknife`.
     pub region_jackknife: RegionJackknife,
+    /// `--marginal-baselines`: the permutations of each co-expression
+    /// baseline (`--marginal-permutations`); `None` without the flag, and
+    /// always for `lra-simulate`, which scores its own.
+    pub marginal: Option<usize>,
 }
 
 impl Settings<'_> {
@@ -212,6 +218,8 @@ impl Settings<'_> {
             cell_types: self.cell_types.map(abs),
             region: self.region.map(abs),
             region_jackknife: self.region_jackknife.name(),
+            marginal_baselines: None,
+            marginal_permutations: self.marginal,
         }
     }
 

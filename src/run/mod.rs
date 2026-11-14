@@ -8,6 +8,7 @@
 pub(crate) mod form;
 pub(crate) mod lra;
 pub(crate) mod mcp;
+pub(crate) mod residual;
 pub(crate) mod script;
 pub(crate) mod sim;
 pub(crate) mod tui;

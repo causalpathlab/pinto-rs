@@ -196,6 +196,40 @@ fn a_run_writes_each_files_excess_and_coordinates() {
     assert!(Path::new(&format!("{out}/residual.json")).exists());
 }
 
+/// The plan names what a run writes, all of it: each file's zarr and
+/// coordinates, in the run's order, then residual.json, and nothing else
+/// in the output folder.
+#[test]
+fn the_plan_names_every_file_a_run_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let out = format!("{d}/resid");
+    let a = args(&prefix, &out, None);
+    let plan = Plan::new(&Run::open(&prefix).unwrap(), &a).unwrap();
+    assert_eq!(
+        plan.made(),
+        [
+            "S1.zarr",
+            "S1.coords.parquet",
+            "S2.zarr",
+            "S2.coords.parquet",
+            "residual.json"
+        ]
+        .map(|f| std::path::PathBuf::from(format!("{out}/{f}")))
+    );
+    assert_eq!(plan.coord_names, ["row_um".into(), "col_um".into()]);
+    run_residual(&a).unwrap();
+    let mut written: Vec<std::path::PathBuf> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    written.sort();
+    let mut made = plan.made();
+    made.sort();
+    assert_eq!(written, made);
+}
+
 /// A subset of the run's files is refused: a fit names its cells by its
 /// files, so the subset could not find the run's cells.
 #[test]
@@ -452,7 +486,11 @@ fn adapt_defaults_to_batch_and_refuses_a_negative_weight() {
     let parse =
         |extra: &[&str]| Cli::try_parse_from(["x", "--run", "r", "-o", "o"].iter().chain(extra));
     assert_eq!(parse(&[]).unwrap().r.adapt, Adapt::Batch);
-    assert!(parse(&["--adapt-cells", "-1"]).is_err());
+    let err = parse(&["--adapt-cells=-1"])
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(err.contains("must be finite and not negative"), "{err}");
 }
 
 /// Two files of 20 cells, one community, each file its own batch. S1: all
@@ -505,4 +543,103 @@ fn batch_adaptation_absorbs_a_community_wide_shift_and_keeps_a_local_one() {
         all - one < 19.0,
         "the community-wide shift is absorbed ({all}, {one})"
     );
+}
+
+/// A data file given that does not exist is refused while planning, before
+/// any count is read or a job started, and nothing is written.
+#[test]
+fn a_missing_data_file_is_refused_while_planning() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, files) = fixture(d);
+    let out = format!("{d}/resid");
+    let given = Some(vec![
+        files[0].clone().into(),
+        format!("{d}/nowhere/S2.zarr").into(),
+    ]);
+    let a = args(&prefix, &out, given);
+    let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(
+        e.contains("nowhere/S2.zarr") && e.contains("not found"),
+        "{e}"
+    );
+    assert!(!Path::new(&out).exists());
+}
+
+/// An `-o` that is a file, or under one, is refused while planning: every
+/// path under it would read as free, and the run would fail only when it
+/// writes.
+#[test]
+fn an_output_that_is_a_file_is_refused_while_planning() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let out = format!("{d}/resid");
+    std::fs::write(&out, "").unwrap();
+    for o in [out.clone(), format!("{out}/sub")] {
+        let e = Plan::new(&Run::open(&prefix).unwrap(), &args(&prefix, &o, None))
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(e.contains(&format!("{out} is a file")), "{e}");
+    }
+}
+
+/// A residual of a fit on a residual is refused while planning, whether the
+/// fit's manifest names the residual's files or `--data-files` does: its
+/// residual.json would name the excess files as raw, and lra on a fit of it
+/// would read excess counts as raw counts.
+#[test]
+fn a_residual_of_a_fit_on_a_residual_is_refused() {
+    use crate::util::metadata::PintoMetadata;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, raw) = fixture(d);
+    let out = format!("{d}/resid");
+    run_residual(&args(&prefix, &out, None)).unwrap();
+    let excess: Vec<String> = ["S1", "S2"]
+        .iter()
+        .map(|s| format!("{out}/{s}.zarr"))
+        .collect();
+    let stage2 = format!("{d}/fit2");
+    let write = |files: Vec<String>| {
+        let mut meta = PintoMetadata {
+            command: "lc".into(),
+            prefix: stage2.clone(),
+            data_files: Some(files),
+            ..Default::default()
+        };
+        meta.outputs.coord_columns = Some(vec!["row_um".into(), "col_um".into()]);
+        meta.write(Path::new(&format!("{stage2}.pinto.json")))
+            .unwrap();
+    };
+    let refused = |data_files: Option<Vec<Box<str>>>| {
+        let a = args(&stage2, &format!("{d}/resid2"), data_files);
+        Plan::new(&Run::open(&stage2).unwrap(), &a)
+            .err()
+            .expect("refused")
+            .to_string()
+    };
+    write(excess.clone());
+    let e = refused(None);
+    assert!(e.contains("a fit on a residual"), "{e}");
+    // the files moved: the manifest's are gone, --data-files names the excess
+    write(vec![
+        format!("{d}/moved/S1.zarr"),
+        format!("{d}/moved/S2.zarr"),
+    ]);
+    let e = refused(Some(excess.iter().map(|f| f.as_str().into()).collect()));
+    assert!(e.contains("a fit on a residual"), "{e}");
+    // a fit whose own manifest carries the residual block, on files with no
+    // marker beside them
+    let manifest = format!("{stage2}.pinto.json");
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m["residual"] = serde_json::json!({"counts": "excess", "raw_data_files": raw});
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let e = refused(Some(raw.iter().map(|f| f.as_str().into()).collect()));
+    assert!(e.contains("a fit on a residual"), "{e}");
 }

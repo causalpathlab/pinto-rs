@@ -238,6 +238,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
         of: 3,
         table: only.clone(),
         curve: format!("{prefix}.lra.only-l1-r1.curve.parquet"),
+        celltype: None,
         options: None,
     };
     let manifest = serde_json::json!({

@@ -254,3 +254,20 @@ fn raw_and_residual_files_match_by_the_cells_name() {
     assert!(same_data_name("raw/S1.zarr", "resid/S1.zarr"));
     assert!(!same_data_name("raw/S2.zarr", "resid/S1.zarr"));
 }
+
+/// The cell-type caveat names where the labels came from: a `--cell-types`
+/// file is no lupin round.
+#[test]
+fn the_cell_type_caveat_names_its_source() {
+    let file = crate::lr_activity::input::cell_type_caveat("--cell-types ct.tsv");
+    assert!(
+        file.starts_with("cell types from --cell-types ct.tsv adjust the estimate"),
+        "{file}"
+    );
+    assert!(!file.contains("lupin"), "{file}");
+    let round = crate::lr_activity::input::cell_type_caveat("lupin round r.lupin.json");
+    assert!(
+        round.starts_with("cell types from lupin round r.lupin.json"),
+        "{round}"
+    );
+}

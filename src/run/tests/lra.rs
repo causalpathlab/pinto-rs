@@ -153,7 +153,7 @@ fn a_simulate_call_becomes_its_command_line() {
     // A region benchmark on data no reference names.
     let a: LraSimulateToolArgs = crate::mcp::parse(json!({
         "run": "r", "lr_pairs": "/p/pairs.tsv", "targets": ["/p/t.tsv"],
-        "region": "/p/region.tsv", "plant_region": "DM5"
+        "region": "/p/region.tsv", "plant_region": "D3_specific_domain_1"
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
@@ -168,7 +168,7 @@ fn a_simulate_call_becomes_its_command_line() {
             "--targets",
             "/p/t.tsv",
             "--plant-region",
-            "DM5"
+            "D3_specific_domain_1"
         ]
     );
     checked(&cli(), &argv).unwrap();
@@ -268,6 +268,221 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     checked(&cli(), &argv).unwrap();
 }
 
+/// `marginal_baselines` and `marginal_permutations` reach `pinto lra` as
+/// its flags, which it takes, and the per-type-pair table is among what the
+/// run writes; without them neither flag nor table.
+#[test]
+fn run_lra_passes_the_marginal_baselines() {
+    let a = lra_args(json!({
+        "run": "r",
+        "marginal_baselines": true,
+        "marginal_permutations": 500,
+    }));
+    let argv = lra_argv(&a, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    let tail = &argv[argv.len() - 3..];
+    assert_eq!(
+        tail,
+        ["--marginal-baselines", "--marginal-permutations", "500"]
+    );
+    checked(&cli(), &argv).unwrap();
+    let made = a.outputs(LraMethod::ContactEffect, "o");
+    assert_eq!(made.last().unwrap(), Path::new("o.lra.celltype.parquet"));
+    let bare = lra_args(json!({"run": "r"}));
+    let argv = lra_argv(&bare, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    assert!(
+        !argv.iter().any(|w| w.starts_with("--marginal")),
+        "{argv:?}"
+    );
+    // Permutations without the baselines are not passed on (run_lra
+    // refuses them, as pinto lra does).
+    let alone = lra_args(json!({"run": "r", "marginal_permutations": 500}));
+    let argv = lra_argv(&alone, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    assert!(
+        !argv.iter().any(|w| w.starts_with("--marginal")),
+        "{argv:?}"
+    );
+    assert_eq!(
+        bare.outputs(LraMethod::ContactEffect, "o"),
+        lra_outputs(LraMethod::ContactEffect, "o", &[])
+    );
+    // A subset's table sits beside the subset.
+    let only = lra_args(json!({"run": "r", "only": ["L1"], "marginal_baselines": true}));
+    let made = only.outputs(LraMethod::ContactEffect, "o");
+    let table = made[0].to_string_lossy().into_owned();
+    assert_eq!(
+        made.last().unwrap().to_string_lossy(),
+        format!(
+            "{}.celltype.parquet",
+            table.strip_suffix(".parquet").unwrap()
+        )
+    );
+}
+
+// * Reading finished tables
+
+/// A run's manifest at `dir` recording the full contact-effect table at
+/// `{dir}/o` and a subset of it, each with `options`; the manifest's path
+/// and the full table's outputs.
+fn recorded_run(dir: &Path, options: LraOptions) -> (String, Vec<PathBuf>) {
+    let run = dir.join("r.pinto.json");
+    let out = dir.join("o").to_string_lossy().into_owned();
+    let made = lra_outputs(LraMethod::ContactEffect, &out, &[]);
+    let only: Vec<Box<str>> = vec!["LIGA1".into()];
+    let subset = lra_outputs(LraMethod::ContactEffect, &out, &only);
+    let mut m = PintoMetadata::default();
+    let lra = &mut m.outputs.lra;
+    lra.table = Some(crate::lr_activity::recorded(&made[0]));
+    lra.options = Some(options.clone());
+    lra.record_subset(crate::util::metadata::LraSubset {
+        only: vec!["LIGA1".into()],
+        table: crate::lr_activity::recorded(&subset[0]),
+        curve: crate::lr_activity::recorded(&subset[1]),
+        options: Some(LraOptions { seed: 9, ..options }),
+        ..Default::default()
+    });
+    m.write(&run).unwrap();
+    (run.to_string_lossy().into_owned(), made)
+}
+
+/// A finished table is read back only for a call asking what made it, as
+/// the manifest records it: a call asking otherwise is refused, naming
+/// what differs, rather than answered with flags that never made the
+/// table. A table the manifest records nothing for is read back unchecked.
+#[test]
+fn a_finished_table_answers_only_the_options_that_made_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let pairs = dir.path().join("pairs.tsv").to_string_lossy().into_owned();
+    let options = LraOptions {
+        lr_pairs: Some(shown_path(Path::new(&pairs))),
+        ..LraOptions::default()
+    };
+    let (run, made) = recorded_run(dir.path(), options);
+    let made_as = |extra: Value| {
+        let mut v = json!({"run": run, "lr_pairs": pairs});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let a = lra_args(v);
+        let method = lra_method(a.method.as_deref()).unwrap();
+        let made = if a.only.is_empty() {
+            made.clone()
+        } else {
+            lra_outputs(
+                method,
+                &made[0].to_string_lossy().replace(".lra.parquet", ""),
+                &a.only(),
+            )
+        };
+        made_as_asked(&a, method, Path::new(&run), &made)
+    };
+    assert!(made_as(json!({})).unwrap(), "the call that made it");
+    assert!(
+        made_as(json!({"species": "auto", "seed": 42})).unwrap(),
+        "its defaults spelled out"
+    );
+    for (extra, named) in [
+        (json!({"species": "mouse"}), "species"),
+        (json!({"region": "regions.tsv"}), "region"),
+        (json!({"seed": 3}), "seed"),
+        (json!({"marginal_baselines": true}), "marginal_baselines"),
+    ] {
+        let e = made_as(extra.clone()).unwrap_err().to_string();
+        assert!(
+            e.contains(named) && e.contains("give another out"),
+            "{extra}: {e}"
+        );
+    }
+    let e = made_as(json!({"lr_pairs": null})).unwrap_err().to_string();
+    assert!(e.contains("lr_pairs"), "{e}");
+    // A subset answers with its own options.
+    assert!(made_as(json!({"only": ["LIGA1"], "seed": 9})).unwrap());
+    assert!(made_as(json!({"only": ["LIGA1"]})).is_err());
+    // Nothing recorded for the co-expression methods, nor for a table the
+    // manifest does not name.
+    assert!(!made_as(json!({"method": "coexpression-scores", "species": "mouse"})).unwrap());
+    // Nor for the data files a table read.
+    assert!(!made_as(json!({"data_files": ["d.zarr"]})).unwrap());
+    let elsewhere = lra_outputs(LraMethod::ContactEffect, "elsewhere", &[]);
+    let a = lra_args(json!({"run": run, "species": "mouse"}));
+    assert!(!made_as_asked(&a, LraMethod::ContactEffect, Path::new(&run), &elsewhere).unwrap());
+}
+
+/// A table made with the baselines answers a call asking for them, with
+/// their permutations, and none other.
+#[test]
+fn a_table_with_the_baselines_answers_a_call_for_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (run, made) = recorded_run(
+        dir.path(),
+        LraOptions {
+            marginal_baselines: Some("cell-types".into()),
+            marginal_permutations: Some(crate::lr_activity::ligand_effect::PERMUTATIONS),
+            ..LraOptions::default()
+        },
+    );
+    let made_as = |v: Value| {
+        made_as_asked(
+            &lra_args(v),
+            LraMethod::ContactEffect,
+            Path::new(&run),
+            &made,
+        )
+    };
+    assert!(made_as(json!({"run": run, "marginal_baselines": true})).unwrap());
+    for v in [
+        json!({"run": run}),
+        json!({"run": run, "marginal_baselines": true, "marginal_permutations": 500}),
+    ] {
+        let e = made_as(v.clone()).unwrap_err().to_string();
+        assert!(e.contains("marginal"), "{v}: {e}");
+    }
+}
+
+/// The power check a reply suggests reads the pairs and programmes the
+/// analysis read: its lr_pairs, targets and species go with it.
+#[test]
+fn the_suggested_power_check_reads_the_same_pairs() {
+    let a = lra_args(json!({
+        "run": "r",
+        "lr_pairs": "pairs.tsv",
+        "targets": ["t.tsv"],
+        "species": "human",
+        "region": "regions.tsv",
+        "only": ["LIGA1"],
+    }));
+    let args = a.simulate_args(Some("r.pinto.json"));
+    assert_eq!(args["run"], "r.pinto.json");
+    assert_eq!(args["lr_pairs"], "pairs.tsv");
+    assert_eq!(args["targets"], json!(["t.tsv"]));
+    assert_eq!(args["species"], "human");
+    assert_eq!(args["region"], "regions.tsv");
+    let s: LraSimulateToolArgs = crate::mcp::parse(args).unwrap();
+    let argv = lra_simulate_argv(&s, Some("r.pinto.json"), "o");
+    checked(&cli(), &argv).unwrap();
+}
+
+/// A reply read back unchecked shows no command: the call's flags may not
+/// be those that made the table.
+#[test]
+fn an_unchecked_read_back_shows_no_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("o.lra.parquet");
+    write_effects(path.to_str().unwrap());
+    let a = lra_args(json!({"run": "r"}));
+    let made = [path.clone()];
+    let argv: Vec<String> = vec!["lra".into()];
+    let reply = lra_reply(&a, LraMethod::ContactEffect, Some(&argv), None, &made).unwrap();
+    let Content::Json(v) = &reply[0] else {
+        panic!("a JSON reply")
+    };
+    assert_eq!(v["command"], "pinto lra");
+    let reply = lra_reply(&a, LraMethod::ContactEffect, None, None, &made).unwrap();
+    let Content::Json(v) = &reply[0] else {
+        panic!("a JSON reply")
+    };
+    assert!(v.get("command").is_none(), "{v}");
+}
+
 // * Replies
 
 /// A small `{out}.lra.parquet`: three pairs pooled and one section row.
@@ -365,7 +580,7 @@ fn the_simulate_reply_is_the_comparison_table() {
         run(0.3, 0.0, [f, t, f, t, t, t, t, t], t),
         run(0.3, 0.0, [f, t, f, t, t, t, t, f], t),
     ];
-    let v = comparison_summary(&runs);
+    let v = comparison_summary(&runs, None);
     assert_eq!(v["runs"], 4);
     assert_eq!(v["methods"], json!(COMPARED));
     let s = v["scenarios"].as_array().unwrap();
@@ -391,9 +606,11 @@ fn simulate_runs_read_back_as_written() {
     let s = |x: &str| -> Vec<Box<str>> { vec![x.into(); n] };
     let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |x: f32| vec![x; n];
+    let (code, planted) = (vec![1f32; n], s("R2"));
     // The table, with the unadjusted difference's rejections under its old
-    // name when `old_name`, and without the columns `without`.
-    let write = |path: &std::path::Path, old_name: bool, without: &[&str]| {
+    // name when `old_name`, without the columns `without`, and with the
+    // effect planted in region R2 when `in_region`.
+    let write = |path: &std::path::Path, old_name: bool, without: &[&str], in_region: bool| {
         let floats: Vec<(String, Vec<f32>)> = vec![
             ("effect_pve".into(), f(0.3)),
             ("ligand_field_pve".into(), f(0.3)),
@@ -434,18 +651,22 @@ fn simulate_runs_read_back_as_written() {
             ints.iter()
                 .map(|(k, v)| (k.as_str().into(), Column::I32(v))),
         );
+        if in_region {
+            table.push(("region".into(), Column::F32(&code)));
+            table.push(("planted_region".into(), Column::Str(&planted)));
+        }
         table.retain(|(k, _)| !without.contains(&k.as_ref()));
         write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
     };
     // A table from before the rename, as every earlier table is, is refused,
     // not read with that method missing.
     let old = dir.path().join("old.lra-simulate.parquet");
-    write(&old, true, &[]);
+    write(&old, true, &[], false);
     let e = read_sim_runs(old.to_str().unwrap())
         .unwrap_err()
         .to_string();
     assert!(e.contains("not a table this version"), "{e}");
-    write(&path, false, &[]);
+    write(&path, false, &[], false);
     let runs = read_sim_runs(path.to_str().unwrap()).unwrap();
     assert_eq!(runs.len(), 2);
     let sc = runs[0].scenario;
@@ -457,7 +678,7 @@ fn simulate_runs_read_back_as_written() {
     assert!(runs[0].estimable && !runs[1].estimable);
     assert_eq!(runs[1].rejects, COMPARED.map(|m| m == "unadjusted_diff"));
     // Both replicates are one scenario, worded as the run's summary words it.
-    let v = comparison_summary(&runs);
+    let v = comparison_summary(&runs, None);
     let s = v["scenarios"].as_array().unwrap();
     assert_eq!(s.len(), 1);
     assert_eq!(
@@ -470,7 +691,17 @@ fn simulate_runs_read_back_as_written() {
     // A table without a column it is read for is an error, not read with a
     // default in its place.
     for gone in ["ipw_reject", "dose_order"] {
-        write(&old, false, &[gone]);
+        write(&old, false, &[gone], false);
         assert!(read_sim_runs(old.to_str().unwrap()).is_err(), "{gone}");
     }
+
+    // The read-back names the region the effect was planted in.
+    write(&path, false, &[], true);
+    let reply = simulate_reply(None, std::slice::from_ref(&path)).unwrap();
+    let Content::Json(v) = &reply[0] else {
+        panic!("a JSON reply")
+    };
+    let scenario = v["scenarios"][0]["scenario"].as_str().unwrap();
+    assert!(scenario.ends_with("planted in region R2"), "{scenario}");
+    assert!(v.get("command").is_none(), "read back unchecked: {v}");
 }

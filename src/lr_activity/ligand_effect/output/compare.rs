@@ -50,8 +50,8 @@ pub struct Comparison {
 /// [`Comparison`] of `runs`, scenarios in the order they first appear. A
 /// run without a statistic (an estimate without overlap) counts as not
 /// rejecting.
-pub fn compare_runs(runs: &[SimRun]) -> Comparison {
-    let groups = scenario_groups(runs, |r| &r.scenario);
+pub fn compare_runs(runs: &[SimRun], planted: Option<&str>) -> Comparison {
+    let groups = scenario_groups(runs, |r| &r.scenario, planted);
     let (mut nulls, mut planted) = (Vec::new(), Vec::new());
     let mut scenarios = Vec::with_capacity(groups.len());
     for (key, idx) in groups {
@@ -98,9 +98,9 @@ pub fn compare_runs(runs: &[SimRun]) -> Comparison {
 /// share, then the mean over scenarios of type I error under the confounded
 /// nulls and of power under the planted effects, and the baselines' share of
 /// the run time.
-pub fn comparison(rows: &[SimRow]) -> String {
+pub fn comparison(rows: &[SimRow], planted: Option<&str>) -> String {
     let runs: Vec<SimRun> = rows.iter().map(SimRun::from).collect();
-    let c = compare_runs(&runs);
+    let c = compare_runs(&runs, planted);
     let width = c
         .scenarios
         .iter()
@@ -152,7 +152,11 @@ pub fn comparison(rows: &[SimRow]) -> String {
 }
 
 /// A scenario in words, without its replicate: the summary's grouping key.
-fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String {
+/// A planted region goes by its name, `planted`, when the run gives it.
+fn describe(
+    s: &crate::lr_activity::ligand_effect::simulate::Scenario,
+    planted: Option<&str>,
+) -> String {
     let mut d = format!("effect PVE={}", s.effect_pve);
     if s.ligand_field_pve != 0.0 || s.response_field_pve != 0.0 {
         d += &format!(
@@ -176,21 +180,24 @@ fn describe(s: &crate::lr_activity::ligand_effect::simulate::Scenario) -> String
         d += " marker";
     }
     if let Some(r) = s.region {
-        d += &format!(" planted in region {r}");
+        let name = planted.map_or_else(|| r.to_string(), String::from);
+        d += &format!(" planted in region {name}");
     }
     d
 }
 
-/// Indices of `items` grouped by scenario ([`describe`]), groups in the
-/// order their scenario first appears; one pass with a map.
+/// Indices of `items` grouped by scenario ([`describe`], the planted
+/// region named `planted`), groups in the order their scenario first
+/// appears; one pass with a map.
 pub(super) fn scenario_groups<T>(
     items: &[T],
     scenario: impl Fn(&T) -> &crate::lr_activity::ligand_effect::simulate::Scenario,
+    planted: Option<&str>,
 ) -> Vec<(String, Vec<usize>)> {
     let mut at: std::collections::HashMap<String, usize> = Default::default();
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, r) in items.iter().enumerate() {
-        let d = describe(scenario(r));
+        let d = describe(scenario(r), planted);
         let k = *at.entry(d.clone()).or_insert_with(|| {
             groups.push((d, Vec::new()));
             groups.len() - 1

@@ -45,7 +45,7 @@ impl<'r, T> Columns<'r, T> {
         self
     }
 
-    pub(super) fn s(&mut self, name: &str, f: impl Fn(&T) -> &str) -> &mut Self {
+    pub(super) fn s(&mut self, name: &str, f: impl Fn(&'r T) -> &'r str) -> &mut Self {
         self.order.push((2, self.strs.len()));
         self.strs
             .push((name.into(), self.rows.iter().map(|r| f(r).into()).collect()));

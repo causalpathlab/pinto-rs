@@ -107,12 +107,50 @@ genes (case and subunit order aside) among the reference pairs and
 pairs. The receivers and each pair's estimate are those of the full run
 (the receiver identity still leaves out every pair's genes), so a subset
 takes seconds. A subset never writes over the full table: it goes to
-`{out}.lra.only-<tag>.parquet` (and `.curve.parquet`), `<tag>` the list
+`{out}.lra.only-<tag>.parquet` (and `.curve.parquet`, and `.celltype.parquet`
+with `--marginal-baselines`), `<tag>` the list
 itself when short (`l1+l2`) or a short hash of it, with or without
 `-o`, and the manifest records it apart, under `outputs.lra.subsets`, the
 full table staying `outputs.lra.table`. Its q-values are corrected within
 the subset only: the `q_scope` column (`all pairs` in a full table) and each
 row's `warnings` say so.
+
+`--marginal-baselines` also scores each pair on the co-expression statistics
+`lra-simulate` compares the estimate with, over the whole tissue: cell-type
+label permutation (CellPhoneDB v2, Efremova 2020) with CellChat's
+law-of-mass-action score, mean ligand in the sender type times mean receptor
+in the receiver type (Jin 2021), a type pair tested when at least 10% of each
+side detects its gene, the pair's p the smallest type-pair p,
+Bonferroni-corrected over the tested type pairs; bivariate Moran's I of ligand
+and receptor over the contacts (SpatialDM, Li 2023); and the contact
+co-expression score `Σ L_i R_j` (NICHES, Raredon 2022; COMMOT, Cang 2023).
+Each is one-sided, its null the cell-type labels (or, for the contact
+statistics, the ligand within each section) permuted up to
+`--marginal-permutations` times (default 2000; Moran's I and the contact
+score stop early once their verdict at 5% is settled, while the cell-type
+test runs every permutation, since its per-type-pair p and q need them). The cell types are the run's own (`--cell-types` or the
+lupin round), `unassigned` permuted with the rest but never a tested type;
+a run with none falls back to the identity bins coarsened to at most 8 types,
+as `lra-simulate` does, and the manifest's lra options (`marginal_baselines`:
+`cell-types` or `identity-bins`) and the log say which. Many types need more
+permutations: with `m` tested type pairs the cell-type test can reject only
+when `m / (1 + N) < 0.05`. The pooled rows gain `celltype_score`,
+`celltype_p`, `celltype_tested`, `moran_i`, `moran_p`, `contact_score` and
+`contact_p` (NaN, and `celltype_tested` 0, on the other rows), and
+`{out}.lra.celltype.parquet` (beside a `--only` subset's table for a subset),
+recorded in the manifest as `outputs.lra.celltype` (a subset's beside it
+under `outputs.lra.subsets`), holds one row per pair and tested sender type
+x receiver type: `ligand`,
+`receptor`, `sender_type`, `receiver_type`, `n_sender`, `n_receiver`,
+`mean_ligand_sender`, `mean_receptor_receiver` (`log1p` of the
+depth-normalized counts), `ligand_detected_sender` and
+`receptor_detected_receiver` (the detection shares that let it be tested),
+`score`, `p`, `q` (BH within the pair's tested type pairs), `permutations`
+and `labels`. None of these adjusts for confounding, unlike the estimate: a
+ligand made by one cell type and a receptor carried by another score as an
+interaction whatever the receivers do, which is what `lra-simulate` shows
+them doing. They are for comparison and enter no verdict. The flag is off by
+default, as the permutations cost more than the estimate on a full reference.
 
 Two other methods test co-expression within link communities (they need an
 lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
@@ -192,14 +230,14 @@ confounded nulls and the planted effects, and the baselines' run time.
 
 ```sh
 pinto lra-simulate --from out/run1.pinto.json
-pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region patch
+pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region D3_specific_domain_1
 ```
 
 `--lr-pairs` and `--targets` add pairs and programmes as for `pinto lra` (for
 gene names no reference knows, such as a simulation's). `--plant-region`
 plants every effect in one `--region` label only, and reads the estimate, its
 truth and its verdict on that region's row beside the pooled one (`region_*`
-columns).
+columns); the summary and the table (`planted_region`) name the region.
 
 ### `srt-simulate`, `srt-sim-score`, `srt-sim-pairs`, `srt-sim-baseline`: multi-donor data with a planted truth
 
@@ -383,6 +421,9 @@ Each coordinate file holds the run's first two coordinates under the run's
 column names (with a `spot` column first), so the second fit reads them by
 those names: `--coord-column-names` with the run's names, whatever columns
 the first fit picked them from.
+
+Agents run it as the MCP tool `run_residual`, whose reply lists the files
+and flags for `run_fit` (see `mcp` below).
 
 ### Ablations, `compare` and held-out scoring
 
@@ -741,7 +782,11 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > flags; `run_sim_score` scores the fits' labels against the reply's truth,
 > `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no
 > clustering, and `run_sim_baseline` writes a standard pipeline's labels to
-> score next to them. Ligand-receptor analysis: `run_lra` on
+> score next to them. Two-stage fit: `run_residual` writes the counts an lc,
+> cage or dsvd run leaves unexplained as new data files (a background job);
+> fit them with `run_fit`, passing the reply's `fit.data`, `fit.coords` and
+> `fit.flags` as its data, coords and flags, and `run_lra` on that second
+> fit reads the raw counts, not the excess. Ligand-receptor analysis: `run_lra` on
 > a run asks, per ligand-receptor pair, whether receivers touching
 > ligand-carrying neighbours change their response programme compared with
 > similar cells that do not (adjusted for region, section, cell identity,
@@ -786,8 +831,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
-| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`; writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call |
+| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
 | `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects |
+| `run_residual` | `pinto residual` as a recorded job: `run` (an lc, cage or dsvd run), `out`, `data_files`, `excess`, `adapt`, `adapt_cells`, `feature_names`; the run is checked before it starts (another kind of run is refused) and nothing is written over; writes `{out}/{stem}.zarr` with `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, and the reply lists them for `run_fit` as `fit.data` with `fit.coords` and the coordinate columns they carry as `fit.flags`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto srt-simulate` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score` | `pinto srt-sim-score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
 | `run_sim_pairs` | `pinto srt-sim-pairs` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
@@ -799,7 +845,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: verdict counts and a list filtered by `verdict` and `search` (genes), `sort`ed by q, effect or name, each with its percent change and q; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns; with `curve: true`, the selected lra pair's threshold-response curve |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
-| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_residual`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.
