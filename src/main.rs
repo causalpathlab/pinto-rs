@@ -525,12 +525,15 @@ enum Commands {
                       residual as they fit data.\n\n\
                       By default (--adapt batch, see its help) a shift of a whole\n\
                       community within a batch is absorbed; a local patch stays.\n\n\
-                      Limits: the identifying assumption is that donor-specific\n\
-                      biology is local; a whole community shifted in one donor is read\n\
-                      as nuisance and absorbed. A stage-1 run split by donor cannot be\n\
-                      corrected here. A patch stage 1 gave its own community, and a\n\
-                      new mix of shared cell states, cannot appear in a count\n\
-                      residual; look for them among the stage-1 communities."
+                      It does not estimate or subtract a donor effect. With --adapt\n\
+                      batch it absorbs only what moves a whole stage-1 community within\n\
+                      a batch, assuming donor-specific biology is local: a whole\n\
+                      community shifted in one donor is read as nuisance.\n\n\
+                      It cannot correct a stage-1 run split by donor (which happens once\n\
+                      the donor effect is about as large as the cell-type effect): check\n\
+                      the stage-1 communities' donor make-up first. A patch stage 1 gave\n\
+                      its own community, and a donor-specific mix of shared cell states,\n\
+                      leave no excess; look for them among the stage-1 communities."
     )]
     Residual(Box<residual::ResidualArgs>),
 
@@ -697,7 +700,12 @@ enum Commands {
              Pick the data files with the coordinate and batch files of\n\
              each, queue one or more of lc, cage and dsvd, and change\n\
              their flags. Every flag a method has is listed with its help;\n\
-             hidden ones under `a`.\n\n\
+             hidden ones under `a`. On a fitted run, lra, lra-simulate and\n\
+             residual can be queued too: the residual brings a stage-2 fit\n\
+             on its files (`m` picks its method), and lra on that fit is\n\
+             offered with lra on the first run. Each stage-2 job starts\n\
+             only once the one it reads is done; a --from names a run\n\
+             already fitted.\n\n\
              Each data file is its own batch unless `n` names one batch for\n\
              all its cells (files given one name are one batch) or `b` takes\n\
              a label file, whose labels `e` renames. Label files the run\n\
