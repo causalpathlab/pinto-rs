@@ -19,8 +19,14 @@ struct Client {
 
 impl Client {
     fn start(dir: &std::path::Path) -> Self {
+        Self::start_with(dir, &[])
+    }
+
+    /// The server with `env` set, for it and the children it runs.
+    fn start_with(dir: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_pinto"))
             .arg("mcp")
+            .envs(env.iter().copied())
             .current_dir(dir)
             // The feed `pinto view --follow` reads, kept with the test.
             .env("LEGUME_MCP_WATCH", dir.join("watch"))
@@ -157,7 +163,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..17],
+        names[..18],
         [
             "run_methods",
             "run_fit",
@@ -166,6 +172,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_compare",
             "run_lra",
             "run_lra_simulate",
+            "run_residual",
             "run_simulate",
             "run_sim_score",
             "run_sim_pairs",
@@ -781,4 +788,206 @@ fn an_agent_simulates_looks_and_scores() {
         json!({"set": tiny, "out": "blocker/sim", "background": false}),
     );
     assert!(!msg.contains("give another out"), "{msg}");
+}
+
+/// A ligand-effect reference cache with no pairs and no programmes, so
+/// lra runs offline on the pairs and programmes a test gives it.
+fn empty_reference(dir: &Path) -> std::path::PathBuf {
+    let root = dir.join("reference");
+    let built = root.join("built").join("r2-all");
+    std::fs::create_dir_all(&built).unwrap();
+    std::fs::create_dir_all(root.join("downloads")).unwrap();
+    for tag in ["human", "mouse"] {
+        std::fs::write(
+            built.join(format!("lr_pairs.{tag}.tsv")),
+            "ligand\treceptor\n",
+        )
+        .unwrap();
+        std::fs::write(
+            built.join(format!("receptor_targets.{tag}.tsv")),
+            "receptor\ttarget\tweight\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(built.join("reference.json"), "{}").unwrap();
+    root
+}
+
+/// One ligand-receptor pair and its response programme, from a
+/// simulation's truth genes: the programme is the genes of the first
+/// planted cell state's programme, and the ligand and receptor two genes
+/// outside it. The pair and programme files, written in `dir`.
+fn pair_from_truth(sim: &Path, dir: &Path) -> (String, String) {
+    use legume_numeric::matrix::traits::IoOps;
+    let genes =
+        nalgebra::DMatrix::<f32>::from_parquet(&sim.join("truth/genes.parquet").to_string_lossy())
+            .unwrap();
+    let col = genes
+        .cols
+        .iter()
+        .position(|c| c.starts_with("programme_"))
+        .expect("a programme column");
+    let (inside, outside): (Vec<usize>, Vec<usize>) =
+        (0..genes.rows.len()).partition(|&g| genes.mat[(g, col)] != 0.0);
+    assert!(!inside.is_empty() && outside.len() >= 2, "{inside:?}");
+    let (ligand, receptor) = (&genes.rows[outside[0]], &genes.rows[outside[1]]);
+    let pairs = dir.join("pairs.tsv");
+    std::fs::write(&pairs, format!("ligand\treceptor\n{ligand}\t{receptor}\n")).unwrap();
+    let mut programme = String::from("ligand\treceptor\ttarget\tweight\n");
+    for &g in &inside {
+        programme.push_str(&format!("{ligand}\t{receptor}\t{}\t1\n", genes.rows[g]));
+    }
+    let targets = dir.join("targets.tsv");
+    std::fs::write(&targets, programme).unwrap();
+    (
+        pairs.to_string_lossy().into_owned(),
+        targets.to_string_lossy().into_owned(),
+    )
+}
+
+/// The two-stage fit an agent runs on a simulation: an lc fit, its
+/// residual (a bad run refused before any job), a dsvd fit on the
+/// residual's files as the reply lists them, and lra on that fit, which
+/// reads the run's raw counts.
+#[test]
+fn an_agent_fits_the_residual_of_a_simulation() {
+    let dir = tempfile::tempdir().unwrap();
+    let reference = empty_reference(dir.path());
+    let mut c = Client::start_with(
+        dir.path(),
+        &[
+            ("PINTO_REFERENCE_DIR", reference.as_os_str()),
+            ("PINTO_OFFLINE", std::ffi::OsStr::new("1")),
+        ],
+    );
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    // big enough for lra's cross-fitting folds
+    let small = json!(["grid_side=24", "n_genes=40", "programme_genes=5"]);
+    let (sim, _) = c.ok(
+        "run_simulate",
+        json!({"scenario": "L2", "set": small, "out": "sim", "background": false}),
+    );
+    let truth = sim["truth"].as_str().unwrap().to_string();
+    let (lc, _) = c.ok(
+        "run_fit",
+        json!({
+            "method": "lc",
+            "data": sim["fit"]["data"],
+            "coords": sim["fit"]["coords"],
+            "flags": sim["fit"]["flags"],
+            "out": "fits/lc1",
+            "background": false,
+        }),
+    );
+    let stage1 = lc["written"][0].as_str().unwrap().to_string();
+
+    // A run that is not lc, cage or dsvd is refused before any job starts.
+    let msg = c.fails("run_residual", json!({"run": truth, "out": "bad"}));
+    assert!(msg.contains("lc, cage or dsvd"), "{msg}");
+    assert!(!dir.path().join("bad").exists(), "refused before it ran");
+    let (jobs, _) = c.ok("job_status", json!({}));
+    assert!(!jobs.to_string().contains("residual of"), "{jobs}");
+
+    // Today's free name passes over a file in the way; an -o that is a
+    // file is refused before any job.
+    c.fails("run_residual", json!({"run": truth}));
+    let day = std::fs::read_dir(dir.path().join("results"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .unwrap();
+    let in_the_way = day.join("residual");
+    std::fs::write(&in_the_way, "").unwrap();
+    let in_the_way = in_the_way.to_string_lossy().into_owned();
+    let msg = c.fails("run_residual", json!({"run": stage1, "out": in_the_way}));
+    assert!(msg.contains("is a file"), "{msg}");
+    let (job, _) = c.ok("run_residual", json!({"run": stage1}));
+    let res = job["out"].as_str().unwrap().to_string();
+    assert!(res.ends_with("residual-2"), "{job}");
+    let id = job["job"].as_str().unwrap().to_string();
+    assert!(job["note"].as_str().unwrap().contains("run_fit"), "{job}");
+    assert!(job["note"].as_str().unwrap().contains("run_lra"), "{job}");
+    let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
+    assert_eq!(waited["state"], "done", "{waited}");
+    assert!(Path::new(&res).join("residual.json").is_file(), "{job}");
+    // The reply lists each section's residual, in the fit's order, with
+    // its coordinates and the column names they carry, all written.
+    let (data, coords) = (
+        job["fit"]["data"].as_array().unwrap(),
+        job["fit"]["coords"].as_array().unwrap(),
+    );
+    let sections = sim["fit"]["data"].as_array().unwrap();
+    assert_eq!((data.len(), coords.len()), (sections.len(), sections.len()));
+    for ((d, xy), raw) in data.iter().zip(coords).zip(sections) {
+        let stem = Path::new(raw.as_str().unwrap()).file_name().unwrap();
+        let (d, xy) = (Path::new(d.as_str().unwrap()), xy.as_str().unwrap());
+        assert_eq!(d.file_name().unwrap(), stem, "{job}");
+        assert!(d.exists() && Path::new(xy).is_file(), "{job}");
+    }
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&stage1).unwrap()).unwrap();
+    let names: Vec<&str> = manifest["outputs"]["coord_columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        job["fit"]["flags"],
+        json!({"coord-column-names": names[..2].join(",")}),
+        "{job}"
+    );
+    let msg = c.fails("run_residual", json!({"run": stage1, "out": res}));
+    assert!(msg.contains("exists"), "{msg}");
+
+    // Stage 2 on the reply's files, and lra on it, read on the raw counts.
+    let (dsvd, _) = c.ok(
+        "run_fit",
+        json!({
+            "method": "dsvd",
+            "data": job["fit"]["data"],
+            "coords": job["fit"]["coords"],
+            "flags": job["fit"]["flags"],
+            "out": "fits/dsvd2",
+            "background": false,
+        }),
+    );
+    let stage2 = dsvd["written"][0].as_str().unwrap().to_string();
+    // A residual of the stage-2 fit is refused: lra would read excess as raw.
+    let msg = c.fails("run_residual", json!({"run": stage2, "out": "res2"}));
+    assert!(msg.contains("a fit on a residual"), "{msg}");
+    assert!(!dir.path().join("res2").exists(), "refused before it ran");
+    let (lr_pairs, targets) = pair_from_truth(&dir.path().join("sim"), dir.path());
+    let (reply, notes) = c.request(
+        "tools/call",
+        json!({
+            "name": "run_lra",
+            "arguments": {
+                "run": stage2,
+                "lr_pairs": lr_pairs,
+                "targets": [targets],
+                "species": "human",
+                "out": "lra/",
+                "background": false,
+            },
+            "_meta": {"progressToken": 1},
+        }),
+    );
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let log: Vec<&str> = notes
+        .iter()
+        .filter_map(|n| n["params"]["message"].as_str())
+        .collect();
+    assert!(
+        log.iter()
+            .any(|l| l.contains("is a residual fit") && l.contains("reading its raw counts")),
+        "{log:?}"
+    );
+    let read: Vec<&&str> = log
+        .iter()
+        .filter(|l| l.contains("Importing data file"))
+        .collect();
+    assert!(
+        !read.is_empty() && read.iter().all(|l| l.contains("/sim/sections/")),
+        "the simulation's own sections, not the excess: {read:?}"
+    );
 }

@@ -67,7 +67,12 @@ use std::path::Path;
 
 #[derive(Args, Debug)]
 pub struct ResidualArgs {
-    #[arg(long, help = "Stage-1 run prefix (or its .pinto.json)")]
+    #[arg(
+        long = "from",
+        visible_alias = "run",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Stage-1 run prefix (or its .pinto.json)"
+    )]
     pub run: Box<str>,
 
     #[arg(short, long, help = "Output directory")]
@@ -213,49 +218,159 @@ struct Inputs {
     group_of: Vec<usize>,
 }
 
-impl Inputs {
-    fn load(run: &Run, args: &ResidualArgs) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            STAGE_ONE.contains(&run.meta.command.as_str()),
-            "{}: a {} run; a residual is taken from an lc, cage or dsvd run",
-            run.manifest.display(),
-            run.meta.command
-        );
-        let resolve = |f: &str| -> anyhow::Result<String> {
-            run.resolve(f)
-                .map(|p| p.to_string_lossy().into_owned())
-                .ok_or_else(|| anyhow::anyhow!("{f}: not found beside {}", run.manifest.display()))
-        };
-        let output = |f: Option<&str>, suffix: &str| match f {
-            Some(f) => resolve(f),
-            None => Ok(format!("{}.{suffix}", run.prefix)),
-        };
-        let files: Vec<Box<str>> = match &args.data_files {
-            Some(f) => f.clone(),
-            None => run
-                .meta
-                .data_files
-                .iter()
-                .flatten()
-                .map(|f| resolve(f).map(Into::into))
-                .collect::<anyhow::Result<_>>()?,
-        };
-        anyhow::ensure!(!files.is_empty(), "{}: no data files", args.run);
-        // a residual file is named by its data file, and a fit names cells by it
-        let mut seen: HashSet<Box<str>> = HashSet::default();
-        for f in &files {
-            let name = basename(f.trim_end_matches('/'))?;
+/// What `pinto residual` writes for a run, and what it reads to make it,
+/// checked as far as it can be before any count is read: `-o` is not a
+/// file, the run is an lc, cage or dsvd run on raw counts, its data files
+/// are found, all of them, with distinct names, it names its coordinate
+/// columns, and no output is an input.
+pub struct Plan {
+    /// The run's data files, in its order.
+    pub files: Vec<Box<str>>,
+    /// Per data file, its residual zarr (`{out}/{stem}.zarr`).
+    pub zarrs: Vec<String>,
+    /// Per data file, its residual's coordinates, beside the zarr.
+    pub coords: Vec<String>,
+    /// `{out}/residual.json`.
+    pub summary: String,
+    /// The run's first two coordinate columns, which the coordinate files
+    /// carry.
+    pub coord_names: [Box<str>; 2],
+}
+
+impl Plan {
+    pub fn new(run: &Run, args: &ResidualArgs) -> anyhow::Result<Self> {
+        // a file at -o or above it would make every path under it read as
+        // free, and the run would fail only when it writes
+        if let Some(file) = Path::new(args.out.as_ref())
+            .ancestors()
+            .find(|p| p.exists())
+            .filter(|p| !p.is_dir())
+        {
+            anyhow::bail!("{} is a file; -o is a folder", file.display());
+        }
+        let files = stage_one_files(run, args)?;
+        let coord_names = coord_names(run)?;
+        let zarrs = output_paths(&files, &args.out)?;
+        let coords = zarrs.iter().map(|z| coords_path(z)).collect();
+        Ok(Self {
+            files,
+            zarrs,
+            coords,
+            summary: summary_path(&args.out),
+            coord_names,
+        })
+    }
+
+    /// Every path it writes: each file's zarr and coordinates, then
+    /// `residual.json`.
+    pub fn made(&self) -> Vec<std::path::PathBuf> {
+        self.zarrs
+            .iter()
+            .zip(&self.coords)
+            .flat_map(|(z, c)| [z, c])
+            .chain([&self.summary])
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    /// Refused when anything it writes is there already.
+    fn ensure_unwritten(&self) -> anyhow::Result<()> {
+        for path in self.made() {
             anyhow::ensure!(
-                seen.insert(name.clone()),
-                "{f} and an earlier data file have the same name {name}"
+                !path.exists(),
+                "{} exists: nothing is written over; give another -o",
+                path.display()
             );
         }
-        let n_run = run.meta.data_files.as_ref().map_or(files.len(), Vec::len);
+        Ok(())
+    }
+}
+
+/// The run's data files (its manifest's, or `--data-files`), checked: an
+/// lc, cage or dsvd run on raw counts (not a fit on a residual), every file
+/// found, as many as the run had, each with its own name.
+fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str>>> {
+    anyhow::ensure!(
+        STAGE_ONE.contains(&run.meta.command.as_str()),
+        "{}: a {} run; a residual is taken from an lc, cage or dsvd run",
+        run.manifest.display(),
+        run.meta.command
+    );
+    let files: Vec<Box<str>> = match &args.data_files {
+        Some(f) => {
+            for file in f {
+                anyhow::ensure!(
+                    Path::new(file.as_ref()).exists(),
+                    "--data-files {file}: not found"
+                );
+            }
+            f.clone()
+        }
+        None => run
+            .meta
+            .data_files
+            .iter()
+            .flatten()
+            .map(|f| resolve(run, f).map(Into::into))
+            .collect::<anyhow::Result<_>>()?,
+    };
+    anyhow::ensure!(!files.is_empty(), "{}: no data files", args.run);
+    // its residual.json would name the excess files as raw, and lra on a
+    // fit of it would read excess counts as raw counts
+    let on_residual = crate::lr_activity::input::residual_of(run)?.is_some()
+        || files
+            .iter()
+            .any(|f| crate::lr_activity::input::is_excess(Path::new(f.as_ref())));
+    anyhow::ensure!(
+        !on_residual,
+        "{}: a fit on a residual; a residual is taken from a fit on raw counts, not \
+         from a fit on another residual",
+        run.manifest.display()
+    );
+    // a residual file is named by its data file, and a fit names cells by it
+    let mut seen: HashSet<Box<str>> = HashSet::default();
+    for f in &files {
+        let name = basename(f.trim_end_matches('/'))?;
         anyhow::ensure!(
-            files.len() == n_run,
-            "{} data files given for a run fitted on {n_run}: pass all of the run's files",
-            files.len()
+            seen.insert(name.clone()),
+            "{f} and an earlier data file have the same name {name}"
         );
+    }
+    let n_run = run.meta.data_files.as_ref().map_or(files.len(), Vec::len);
+    anyhow::ensure!(
+        files.len() == n_run,
+        "{} data files given for a run fitted on {n_run}: pass all of the run's files",
+        files.len()
+    );
+    Ok(files)
+}
+
+/// The run's first two coordinate columns, as its manifest names them.
+fn coord_names(run: &Run) -> anyhow::Result<[Box<str>; 2]> {
+    match &run.meta.outputs.coord_columns {
+        Some(c) if c.len() >= 2 => Ok([c[0].as_str().into(), c[1].as_str().into()]),
+        _ => anyhow::bail!(
+            "{}: the manifest names no coordinate columns, so the residual's coordinate \
+             files could not carry the run's names",
+            run.manifest.display()
+        ),
+    }
+}
+
+/// A file the run names, beside its manifest.
+fn resolve(run: &Run, f: &str) -> anyhow::Result<String> {
+    run.resolve(f)
+        .map(|p| p.to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow::anyhow!("{f}: not found beside {}", run.manifest.display()))
+}
+
+impl Inputs {
+    fn load(run: &Run, args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
+        let output = |f: Option<&str>, suffix: &str| match f {
+            Some(f) => resolve(run, f),
+            None => Ok(format!("{}.{suffix}", run.prefix)),
+        };
+        let files = plan.files.clone();
         // read as the fit read them: lc and dsvd on the rows every file
         // shares, cage by its feature-name mode
         let kind = match args.feature_names {
@@ -267,14 +382,7 @@ impl Inputs {
         };
         let data = crate::util::input::open_fit_data(&files, &kind, false)?;
 
-        let coord_names: [Box<str>; 2] = match &run.meta.outputs.coord_columns {
-            Some(c) if c.len() >= 2 => [c[0].as_str().into(), c[1].as_str().into()],
-            _ => anyhow::bail!(
-                "{}: the manifest names no coordinate columns, so the residual's coordinate \
-                 files could not carry the run's names",
-                run.manifest.display()
-            ),
-        };
+        let coord_names = plan.coord_names.clone();
         let cells = crate::util::parquet_io::read_cells_table(
             Path::new(&output(run.meta.outputs.cells.as_deref(), "cells.parquet")?),
             Some(
@@ -511,8 +619,9 @@ struct FileSummary {
 
 pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     let run = Run::open(&args.run)?;
-    let inp = Inputs::load(&run, args)?;
-    let outputs = output_paths(&inp.files, &args.out)?;
+    let plan = Plan::new(&run, args)?;
+    plan.ensure_unwritten()?;
+    let inp = Inputs::load(&run, args, &plan)?;
     let sections = file_sections(&inp)?;
     let profiles = group_profiles(&inp, args.adapt_cells, args.block_size)?;
     info!(
@@ -537,14 +646,14 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     let summary = inp
         .files
         .iter()
-        .zip(&outputs)
+        .zip(&plan.zarrs)
         .zip(sections)
         .map(|((f, out_file), section)| {
             write_file(f, out_file, &rows, section, &cells, &inp.coord_names)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     std::fs::write(
-        summary_path(&args.out),
+        &plan.summary,
         serde_json::to_string_pretty(&residual_marker(&run, &inp.files, args, summary)?)?,
     )?;
     Ok(())
@@ -589,8 +698,7 @@ fn summary_path(out: &str) -> String {
     format!("{out}/residual.json")
 }
 
-/// Each data file's residual zarr under `out`, checked to write over
-/// nothing: not over its input, nor over any file already there.
+/// Each data file's residual zarr under `out`, checked not to be its input.
 fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
     let outputs: Vec<String> = files
         .iter()
@@ -600,16 +708,6 @@ fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
         anyhow::ensure!(
             !same_file(Path::new(o), Path::new(f.as_ref())),
             "{o} is the input {f}; give -o a directory apart from the data"
-        );
-    }
-    let targets = outputs
-        .iter()
-        .flat_map(|o| [o.clone(), coords_path(o)])
-        .chain([summary_path(out)]);
-    for path in targets {
-        anyhow::ensure!(
-            !Path::new(&path).exists(),
-            "{path} exists: nothing is written over; give another -o"
         );
     }
     Ok(outputs)
