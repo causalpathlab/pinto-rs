@@ -96,7 +96,11 @@ fn write_embedding(prefix: &str, cells: &[Box<str>], x: &Mat, name: &str) -> any
 }
 
 /// Write every output of a fitted baseline under `input.out`.
-pub fn write_run(input: &SpatialInputArgs, data: &SpatialData, fit: Fitted<'_>) -> anyhow::Result<()> {
+pub fn write_run(
+    input: &SpatialInputArgs,
+    data: &SpatialData,
+    fit: Fitted<'_>,
+) -> anyhow::Result<()> {
     let prefix = input.out.as_ref();
     let n = data.cells.len();
     anyhow::ensure!(fit.labels.len() == n, "one label per cell");

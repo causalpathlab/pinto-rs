@@ -26,14 +26,6 @@ impl Neighbours {
         self.index.iter().map(Vec::len).sum()
     }
 
-    /// Directed edges `(i, j)` for every listed neighbour `j` of `i`.
-    pub fn edges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.index
-            .iter()
-            .enumerate()
-            .flat_map(|(i, js)| js.iter().map(move |&j| (i, j)))
-    }
-
     /// The same graph with every edge in both directions, each listed once
     /// per cell, neighbours re-sorted by distance (ties by index).
     pub fn symmetrised(&self) -> Neighbours {
@@ -68,16 +60,12 @@ pub fn knn_within_sections(data: &SpatialData, k: usize) -> Neighbours {
     let n = data.cells.len();
     let mut index = vec![Vec::new(); n];
     let mut dist = vec![Vec::new(); n];
-    let parts: Vec<(Vec<usize>, Vec<Vec<usize>>, Vec<Vec<f32>>)> = data
-        .section_cells()
-        .into_par_iter()
-        .map(|cells| {
-            let xy = data.xy.select_rows(cells.iter());
-            let (idx, d) = knn_rows_l2(&xy, k);
-            (cells, idx, d)
-        })
+    let sections = data.section_cells();
+    let found: Vec<_> = sections
+        .par_iter()
+        .map(|cells| knn_rows_l2(&data.xy.select_rows(cells.iter()), k))
         .collect();
-    for (cells, idx, d) in parts {
+    for (cells, (idx, d)) in sections.iter().zip(found) {
         for (r, (js, ds)) in idx.into_iter().zip(d).enumerate() {
             index[cells[r]] = js.into_iter().map(|j| cells[j]).collect();
             dist[cells[r]] = ds;
