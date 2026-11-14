@@ -329,19 +329,21 @@ pub fn read_cells_table(
     };
     let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
     let mut wanted = vec![fields[0].as_ref(), x.as_str(), y.as_str()];
-    for extra in ["batch", "in_graph"] {
-        // Only the viewer reads these.
-        if cfg!(feature = "view") && has(extra) {
-            wanted.push(extra);
-        }
+    // The batch labels are read by the viewer and by `pinto residual`;
+    // only the viewer reads `in_graph`.
+    if has("batch") {
+        wanted.push("batch");
+    }
+    if cfg!(feature = "view") && has("in_graph") {
+        wanted.push("in_graph");
     }
     let cols = read_named_columns(path, &wanted)?;
     let names = labels(&cols[0])?;
     let (xs, ys) = (floats(&cols[1])?, floats(&cols[2])?);
+    let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
+    let batches = column("batch").map(|c| labels(c)).transpose()?;
     #[cfg(feature = "view")]
-    let (batches, in_graph, index) = {
-        let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
-        let batches = column("batch").map(|c| labels(c)).transpose()?;
+    let (in_graph, index) = {
         let in_graph = column("in_graph")
             .map(|c| ints(c).map(|v| v.into_iter().map(|k| k != 0).collect::<Vec<_>>()))
             .transpose()?
@@ -351,12 +353,11 @@ pub fn read_cells_table(
             .enumerate()
             .map(|(i, n)| (n.clone(), i))
             .collect();
-        (batches, in_graph, index)
+        (in_graph, index)
     };
     Ok(CellTable {
         names,
         coords: xs.into_iter().zip(ys).collect(),
-        #[cfg(feature = "view")]
         batches,
         #[cfg(feature = "view")]
         index,
@@ -376,7 +377,6 @@ pub struct CellTable {
     /// (x, y) coordinate per cell.
     pub coords: Vec<(f32, f32)>,
     /// Optional batch label per cell.
-    #[cfg(feature = "view")]
     pub batches: Option<Vec<Box<str>>>,
     /// `name → index into names/coords/batches`
     #[cfg(feature = "view")]
@@ -444,9 +444,7 @@ pub fn read_cells_from_coord_pairs(
     let x_col_right: Box<str> = format!("right_{x_bare}").into_boxed_str();
     let y_col_right: Box<str> = format!("right_{y_bare}").into_boxed_str();
 
-    // Only the viewer reads the batches.
-    let has_batch = cfg!(feature = "view")
-        && fields.iter().any(|f| f.as_ref() == "left_batch")
+    let has_batch = fields.iter().any(|f| f.as_ref() == "left_batch")
         && fields.iter().any(|f| f.as_ref() == "right_batch");
 
     // Column-wise: millions of pairs read in a fraction of the time the
@@ -502,7 +500,6 @@ pub fn read_cells_from_coord_pairs(
     Ok(CellTable {
         names,
         coords,
-        #[cfg(feature = "view")]
         batches: has_batch.then_some(batches),
         #[cfg(feature = "view")]
         index,

@@ -350,11 +350,27 @@ and for a cage run with the `--feature-names` mode it was fitted with. The
 run must be an lc, cage or dsvd run; every file's name must be distinct,
 and nothing at `OUT` is written over.
 
-**Limits.** No donor or batch effect is removed from `μ`, so donor nuisance
-stays in the residual. A residual community confined to one donor is
-evidence of donor-specific biology only when the donors carry no such
-nuisance; a mix of shared cell states unique to one donor is not
-recovered.
+By default (`--adapt batch`) each community's profile is re-estimated per
+batch as the run knew it (its cells table's `batch` column, written when the
+run had more than one: its `--batch-files`, else its data files), shrunk toward the pooled profile by
+a Dirichlet prior worth `--adapt-cells` cells of the community (default 50;
+MacKay and Peto 1995). A shift that moves a whole community within a batch,
+as donor, donor-by-type and section nuisance do, is absorbed into `μ`; a
+local patch, a minority of its community's weight in that batch, stays in
+the residual. No batch fold from the stage-1 run enters `μ`.
+`--adapt none` keeps the pooled profiles. `residual.json` records `adapt`,
+`adapt_cells`, `excess` and the formula.
+
+**Limits.** The identifying assumption is that donor-specific biology is
+local: a whole community shifted in one donor is read as nuisance and
+absorbed, so a donor-specific difference that covers a whole community is
+not found. When the stage-1 run is itself split by donor, its communities
+already carry the donor effect, and the residual cannot separate nuisance
+from biology. A patch that stage 1 already gave its own community is
+explained by that community's profile and does not appear in the residual;
+look for it among the stage-1 communities. A new mix of shared cell states
+cannot appear in a count residual at all, since the shared profiles explain
+it exactly: find it among the stage-1 communities instead.
 
 ```sh
 pinto residual --run out/lc1 -o out/resid

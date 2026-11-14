@@ -64,7 +64,7 @@ pub struct SrtLinkCommunityArgs {
     #[arg(
         long,
         default_value_t = 1.0,
-        value_parser = parse_alpha,
+        value_parser = crate::util::common::non_negative_f64,
         help = "Dirichlet concentration for community mixing weights",
         long_help = "Concentration α of the symmetric Dirichlet prior.\n\
                      The prior sits on the community mixing weights, integrated out.\n\
@@ -279,14 +279,4 @@ pub struct SrtLinkCommunityArgs {
         hide = true
     )]
     pub incidence_b: f64,
-}
-
-/// `α` as `--alpha` takes it: anything else would turn the prior off unannounced.
-fn parse_alpha(text: &str) -> Result<f64, String> {
-    let alpha: f64 = text.parse().map_err(|e| format!("{e}"))?;
-    if alpha.is_finite() && alpha >= 0.0 {
-        Ok(alpha)
-    } else {
-        Err("must be finite and not negative".to_string())
-    }
 }

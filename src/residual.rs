@@ -10,7 +10,8 @@
 //! `p_k(g) ∝ (1 + Σ_i π_ik y_gi) / (1 + Σ_i π_ik)`, normalised over `g`,
 //!
 //! lc's own feature-community statistic and Gamma(1, 1) posterior mean
-//! ([`fit_feature_community_param`]) with unit feature weights: the NB
+//! (`link_community::profiles::fit_feature_community_param`) with unit
+//! feature weights, the `1 + Σ_i π_ik` cancelling in the normalisation: the NB
 //! Fisher-information weights `{run}.feature_community` carries shrink
 //! high-mean features, so that table is not a composition. Each cell then
 //! gets its proportions `θ_i` by the per-cell EM of `pinto impute` and
@@ -20,18 +21,39 @@
 //! `p` or `μ`: `δ` is the donor (batch) effect, the very thing the residual
 //! is meant to keep.
 //!
+//! By default (`--adapt batch`) each community's profile is then
+//! re-estimated per batch as the run knew it (the `batch` column of its
+//! cells table, written when the run had more than one: its
+//! `--batch-files`, else its data files), here and from the
+//! stage-1 communities only:
+//!
+//! `p_{k,b}(g) = (α_k p_k(g) + S_{gk,b}) / (α_k + T_{kb})`,
+//! `S_{gk,b} = Σ_{i∈b} π_ik y_gi`, `T_{kb} = Σ_g S_{gk,b}`,
+//!
+//! a Dirichlet prior centred on the pooled profile with the mass of
+//! `--adapt-cells` cells of community k (the hierarchical Dirichlet
+//! smoothing of MacKay and Peto 1995, Natural Language Engineering 1:289-308,
+//! doi:10.1017/S1351324900000218), as Harmony corrects per cluster and per
+//! batch (Korsunsky et al. 2019, Nat Methods 16:1289-1296,
+//! doi:10.1038/s41592-019-0619-0). A shift that moves a whole community in a
+//! batch (donor, donor-by-type or section nuisance) is then absorbed, while
+//! a local patch, a minority of the community's weight there, stays in the
+//! residual. The identifying assumption: donor-specific biology is local, and
+//! a whole community shifted in one donor is read as nuisance.
+//! `--adapt none` keeps the pooled profiles.
+//!
 //! Per data file it writes `{out}/{stem}.zarr`, the excess counts
 //! `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`) on the rows every
 //! file shares (as an exact-name fit reads them; with `--feature-names` as
 //! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
 //! the run's first two coordinates for those cells. The excess keeps counts,
 //! so the count models fit it as they fit data. `{out}/residual.json`
-//! records, per file, the counts in and the excess out, and carries the
-//! block `pinto lra` reads to take a fit on these files on its raw counts:
-//! the stage-1 run and the raw data files.
+//! records, per file, the counts in and the excess out, how `μ` was made
+//! (`excess`, `adapt`, `adapt_cells`, `formula`), and carries the block
+//! `pinto lra` reads to take a fit on these files on its raw counts: the
+//! stage-1 run and the raw data files.
 
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
-use crate::link_community::profiles::fit_feature_community_param;
 use crate::util::common::*;
 use crate::util::lupin_rounds::same_file;
 use crate::util::metadata::Run;
@@ -41,7 +63,6 @@ use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::sparse_data_visitors::VisitColumnsOps;
 use data_beans::sparse_io_vector::SparseIoVec;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
-use legume_numeric::param::traits::Inference;
 use std::path::Path;
 
 #[derive(Args, Debug)]
@@ -87,6 +108,37 @@ pub struct ResidualArgs {
                      run was fitted with, so its rows are read as it read them."
     )]
     pub feature_names: FeatureNameMode,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = Adapt::Batch,
+        help = "Profiles μ is computed from: adapted per batch of the run, or pooled",
+        long_help = "batch: each community's profile re-estimated per batch as the run\n\
+                     knew it (its cells table's batch column, else its data files),\n\
+                     shrunk toward the pooled profile, so a shift of a whole community\n\
+                     in a batch is absorbed and a local patch stays in the residual.\n\
+                     none: the pooled profiles, so donor nuisance stays too."
+    )]
+    pub adapt: Adapt,
+
+    #[arg(
+        long,
+        default_value_t = 50.0,
+        value_parser = crate::util::common::non_negative_f64,
+        help = "Prior weight of the pooled profile under --adapt batch, in cells of the community"
+    )]
+    pub adapt_cells: f64,
+}
+
+/// The profiles `μ` is computed from.
+#[derive(clap::ValueEnum, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Adapt {
+    /// The run's communities, pooled over every batch.
+    None,
+    /// Each community re-estimated per batch of the run, shrunk toward the pool.
+    Batch,
 }
 
 /// The commands whose runs a residual is taken from.
@@ -157,6 +209,8 @@ struct Inputs {
     /// Run cell name → coordinates, from its cells table.
     coords: HashMap<Box<str>, (f32, f32)>,
     coord_names: [Box<str>; 2],
+    /// Each cell's adaptation group (`--adapt`): 0 for all under `none`.
+    group_of: Vec<usize>,
 }
 
 impl Inputs {
@@ -230,6 +284,14 @@ impl Inputs {
                     .collect::<Vec<_>>(),
             ),
         )?;
+        let group_of = match args.adapt {
+            Adapt::None => vec![0; data.num_columns()],
+            Adapt::Batch => batch_groups(
+                &cells.names,
+                cells.batches.as_deref(),
+                &data.column_names()?,
+            ),
+        };
         let coords = cells.names.into_iter().zip(cells.coords).collect();
 
         let prop_path = output(run.meta.outputs.propensity.as_deref(), "propensity.parquet")?;
@@ -263,8 +325,31 @@ impl Inputs {
             prop,
             coords,
             coord_names,
+            group_of,
         })
     }
+}
+
+/// Group ids over the data's columns `names`: each cell's batch in the
+/// run's cells table (`table_names`, `batches`; none means one batch). A
+/// cell the table lacks was not placed, carries no weight, and groups apart.
+fn batch_groups(
+    table_names: &[Box<str>],
+    batches: Option<&[Box<str>]>,
+    names: &[Box<str>],
+) -> Vec<usize> {
+    let Some(batches) = batches else {
+        return vec![0; names.len()];
+    };
+    let batch_of: HashMap<&str, &str> = table_names
+        .iter()
+        .zip(batches)
+        .map(|(c, b)| (c.as_ref(), b.as_ref()))
+        .collect();
+    crate::util::ablation::dense_ids(names.iter().map(|c| batch_of.get(c.as_ref())))
+        .into_iter()
+        .map(|g| g as usize)
+        .collect()
 }
 
 /// The propensity's communities that have weight in the data: one with
@@ -277,15 +362,11 @@ fn weighted_communities(prop: Mat) -> Mat {
     prop.select_columns(&kept)
 }
 
-/// The run's communities as raw-count profiles `p_t` (`[K, G]`), from lc's
-/// feature-community statistic with unit weights (see the module doc).
-fn community_profiles(
-    inp: &Inputs,
-    block_size: Option<usize>,
-) -> anyhow::Result<nalgebra::DMatrix<f64>> {
-    let ones = vec![1.0f32; inp.data.num_rows()];
-    let gamma = fit_feature_community_param(&inp.prop, &inp.data, Some(&ones), None, block_size)?;
-    Ok(normalised_profiles(&gamma.posterior_mean().map(f64::from)))
+/// The pooled profiles `[K, G]` from the community sums over every cell
+/// (`[G, K]`): lc's Gamma(1, 1) posterior mean, `1 + S_gk` normalised over
+/// the data's rows.
+fn pooled_profiles(total: &nalgebra::DMatrix<f64>) -> nalgebra::DMatrix<f64> {
+    normalised_profiles(&total.add_scalar(1.0))
 }
 
 /// Each community's share of every data row, `[K, G]`, from rates `[G, K]`
@@ -302,8 +383,93 @@ fn normalised_profiles(rates: &nalgebra::DMatrix<f64>) -> nalgebra::DMatrix<f64>
     p_t
 }
 
+/// One group's profiles `[K, G]` from its sums `S` (`[G, K]`):
+/// `(α_k p_k + S_k) / (α_k + T_k)` per community, the pooled `p` where the
+/// group has no counts of it.
+fn adapt_profiles(
+    pooled: &nalgebra::DMatrix<f64>,
+    sums: &nalgebra::DMatrix<f64>,
+    alpha: &[f64],
+) -> nalgebra::DMatrix<f64> {
+    let mut p = pooled.clone();
+    for (k, &a) in alpha.iter().enumerate() {
+        let t = sums.column(k).sum();
+        if t > 0.0 {
+            let row = (pooled.row(k) * a + sums.column(k).transpose()) / (a + t);
+            p.set_row(k, &row);
+        }
+    }
+    p
+}
+
+/// Adds block `(lb, ub)`'s community sums `Σ_i π_ik y_gi` (`[G, K]`) into
+/// its cells' groups, one sparse-dense product per group in the block.
+fn sums_visitor(
+    (lb, ub): (usize, usize),
+    data: &SparseIoVec,
+    inp: &Inputs,
+    out: Arc<Mutex<&mut Vec<nalgebra::DMatrix<f64>>>>,
+) -> anyhow::Result<()> {
+    let csc = data.read_columns_csc(lb..ub)?;
+    let groups = &inp.group_of[lb..ub];
+    let mut local = Vec::new();
+    for b in groups.iter().copied().collect::<HashSet<usize>>() {
+        let p_nk = Mat::from_fn(ub - lb, inp.prop.ncols(), |j, k| {
+            if groups[j] == b {
+                inp.prop[(lb + j, k)]
+            } else {
+                0.0
+            }
+        });
+        local.push((b, (&csc * &p_nk).map(f64::from)));
+    }
+    let mut out = out.lock().expect("lock residual sums");
+    for (b, m) in local {
+        out[b] += m;
+    }
+    Ok(())
+}
+
+/// Each group's profiles `[K, G]` from one pass over the data: the pooled
+/// profiles from every group's sums (see the module doc), alone with one
+/// group, else each group's adapted with `α_k` = `n0` cells' worth of
+/// community k's counts.
+fn group_profiles(
+    inp: &Inputs,
+    n0: f64,
+    block_size: Option<usize>,
+) -> anyhow::Result<Vec<nalgebra::DMatrix<f64>>> {
+    let n_groups = inp.group_of.iter().max().map_or(1, |&g| g + 1);
+    let (g, k) = (inp.data.num_rows(), inp.prop.ncols());
+    let mut sums = vec![nalgebra::DMatrix::<f64>::zeros(g, k); n_groups];
+    // one merge per block under the lock: blocks of a few thousand cells
+    // keep the merges few
+    let block = Some(block_size.unwrap_or(4096).max(1024));
+    inp.data
+        .visit_columns_by_block(&sums_visitor, inp, &mut sums, block)?;
+    let total = sums
+        .iter()
+        .fold(nalgebra::DMatrix::zeros(g, k), |a, s| a + s);
+    let pooled = pooled_profiles(&total);
+    if n_groups == 1 {
+        return Ok(vec![pooled]);
+    }
+    // community k's mean counts per unit of propensity, Σ S / Σ_i π_ik
+    let alpha: Vec<f64> = (0..k)
+        .map(|c| {
+            let mass: f64 = inp.prop.column(c).iter().map(|&v| f64::from(v)).sum();
+            n0 * total.column(c).sum() / mass
+        })
+        .collect();
+    Ok(sums
+        .iter()
+        .map(|s| adapt_profiles(&pooled, s, &alpha))
+        .collect())
+}
+
 struct ExcessParam<'a> {
-    p_t: &'a nalgebra::DMatrix<f64>,
+    profiles: &'a [nalgebra::DMatrix<f64>],
+    group_of: &'a [usize],
     iters: usize,
     how: Excess,
 }
@@ -320,10 +486,11 @@ fn excess_visitor(
     let csc = data.read_columns_csc(lb..ub)?;
     let block: CellExcess = (0..csc.ncols())
         .map(|j| {
+            let p_t = &param.profiles[param.group_of[lb + j]];
             let col = column_entries(&csc, j);
-            let pi = cell_theta(&col, param.p_t, param.iters);
+            let pi = cell_theta(&col, p_t, param.iters);
             let n = col.iter().map(|&(_, y)| y).sum();
-            (n, excess_counts(&col, n, param.p_t, &pi, param.how))
+            (n, excess_counts(&col, n, p_t, &pi, param.how))
         })
         .collect();
     let mut out = out.lock().expect("lock residual excess");
@@ -347,12 +514,18 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     let inp = Inputs::load(&run, args)?;
     let outputs = output_paths(&inp.files, &args.out)?;
     let sections = file_sections(&inp)?;
-    let p_t = community_profiles(&inp, args.block_size)?;
-    info!("Refitted {} raw-count community profiles", p_t.nrows());
+    let profiles = group_profiles(&inp, args.adapt_cells, args.block_size)?;
+    info!(
+        "Refitted {} raw-count community profiles in {} group(s) ({:?})",
+        profiles[0].nrows(),
+        profiles.len(),
+        args.adapt
+    );
 
     let mut cells: CellExcess = vec![(0.0, Vec::new()); inp.data.num_columns()];
     let param = ExcessParam {
-        p_t: &p_t,
+        profiles: &profiles,
+        group_of: &inp.group_of,
         iters: args.em_iters,
         how: args.excess,
     };
@@ -372,7 +545,7 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
         .collect::<anyhow::Result<Vec<_>>>()?;
     std::fs::write(
         summary_path(&args.out),
-        serde_json::to_string_pretty(&residual_marker(&run, &inp.files, args.excess, summary)?)?,
+        serde_json::to_string_pretty(&residual_marker(&run, &inp.files, args, summary)?)?,
     )?;
     Ok(())
 }
@@ -384,7 +557,7 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
 fn residual_marker(
     run: &Run,
     files: &[Box<str>],
-    excess: Excess,
+    args: &ResidualArgs,
     summary: Vec<FileSummary>,
 ) -> anyhow::Result<serde_json::Value> {
     let canonical = |p: &Path| -> anyhow::Result<String> {
@@ -402,7 +575,12 @@ fn residual_marker(
             .collect::<anyhow::Result<_>>()?,
     };
     let mut marker = serde_json::to_value(block)?;
-    marker["excess"] = serde_json::to_value(excess)?;
+    marker["excess"] = serde_json::to_value(args.excess)?;
+    marker["adapt"] = serde_json::to_value(args.adapt)?;
+    marker["adapt_cells"] = serde_json::to_value(args.adapt_cells)?;
+    marker["formula"] =
+        "max(y - mu, 0) as a count; mu = n_i sum_k theta_ik p_k(g); no batch delta from stage 1"
+            .into();
     marker["files"] = serde_json::to_value(summary)?;
     Ok(marker)
 }

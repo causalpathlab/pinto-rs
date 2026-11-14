@@ -84,3 +84,13 @@ pub fn names_from_parquet(
 
     Ok(pairs)
 }
+
+/// A clap value parser for a finite number, 0 or more.
+pub fn non_negative_f64(text: &str) -> Result<f64, String> {
+    let v: f64 = text.parse().map_err(|e| format!("{e}"))?;
+    if v.is_finite() && v >= 0.0 {
+        Ok(v)
+    } else {
+        Err("must be finite and not negative".to_string())
+    }
+}
