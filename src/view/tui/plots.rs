@@ -420,7 +420,12 @@ impl App<'_> {
         ];
         // Group names written down their columns.
         // A round cluster by its id: `K3 CT1_a` → `K3`.
-        let short = |c: usize| -> Vec<char> { super::focus_name(comm, c).chars().collect() };
+        // long names keep their start and end, so names sharing a prefix differ
+        let short = |c: usize| -> Vec<char> {
+            legume_tui::chrome::middle(&super::focus_name(comm, c), NAME_ROWS)
+                .chars()
+                .collect()
+        };
         let tallest = heat
             .groups
             .iter()

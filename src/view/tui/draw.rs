@@ -525,7 +525,8 @@ impl App<'_> {
 
 /// A legend row's text: the name and cell count, fitted to the panel.
 pub(super) fn legend_text(comm: &super::super::data::Communities, c: usize, n: usize) -> String {
-    let name: String = comm.name(c).chars().take(17).collect();
+    // a long name keeps its start and end, so names sharing a prefix differ
+    let name = legume_tui::chrome::middle(&comm.name(c), 17);
     let width = if comm.names.is_some() { 17 } else { 4 };
     format!(" {name:<width$} {:>9}", thousands(n))
 }
