@@ -193,6 +193,30 @@ fn real_cell_types_are_used_when_given() {
     assert_eq!(b.celltype_tested, bench.celltype_tested);
 }
 
+/// The log says where the types came from, and why when they are the
+/// identity bins: the run has no cell types, or its cell types label none
+/// of the receivers; it lists only the types that hold cells.
+#[test]
+fn the_log_says_why_the_types_are_the_identity_bins() {
+    let t = tissue(true);
+    let note = TypeLabels::of(&t).note(&t);
+    assert_eq!(note, "the run's cell types (3 types: CT1, CT2, CT3)");
+    let bare = tissue(false);
+    let note = TypeLabels::of(&bare).note(&bare);
+    assert_eq!(
+        note,
+        "the identity bins, the run having no cell types (3 types: bin0, bin1, bin2)"
+    );
+    let mut none = tissue(true);
+    none.cell_type = Some(vec![3; none.n()]);
+    let note = TypeLabels::of(&none).note(&none);
+    assert_eq!(
+        note,
+        "the identity bins, the run's cell types labelling none of the receivers \
+         (3 types: bin0, bin1, bin2)"
+    );
+}
+
 /// `--marginal-permutations` sets how many permutations run: a rejecting
 /// type pair runs all of them and sits at the floor `1 / (1 + P)`.
 #[test]
@@ -467,4 +491,33 @@ fn the_baselines_are_refused_with_a_coexpression_method() {
     assert!(e.contains("--marginal-baselines"), "{e}");
     let ok = parse(&["--marginal-baselines"]);
     assert!(crate::lr_activity::fit::check_method_flags(&ok).is_ok());
+}
+
+/// `--marginal-permutations` is refused as the command line is parsed,
+/// before any data is read: without `--marginal-baselines` (and so with a
+/// co-expression method too), and at 0.
+#[test]
+fn the_permutations_need_the_baselines_and_one_at_least() {
+    let parse = |extra: &[&str]| {
+        let argv = ["pinto", "lra", "--from", "r.pinto.json"]
+            .iter()
+            .chain(extra)
+            .copied();
+        <crate::Cli as clap::Parser>::try_parse_from(argv).map(|_| ())
+    };
+    for refused in [
+        &["--marginal-permutations", "5000"][..],
+        &[
+            "--method",
+            "coexpression-test",
+            "--marginal-permutations",
+            "10",
+        ],
+        &["--marginal-baselines", "--marginal-permutations", "0"],
+    ] {
+        assert!(parse(refused).is_err(), "{refused:?}");
+    }
+    assert!(parse(&["--marginal-baselines", "--marginal-permutations", "1"]).is_ok());
+    assert!(parse(&["--marginal-baselines"]).is_ok());
+    assert!(parse(&[]).is_ok(), "the default needs no flag");
 }

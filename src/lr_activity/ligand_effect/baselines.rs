@@ -194,6 +194,33 @@ impl TypeLabels {
             source: TypeSource::CellTypes,
         }
     }
+
+    /// Where the types of [`TypeLabels::of`]`(tissue)` came from, for the
+    /// run's log, and the testable types that hold cells: with the identity
+    /// bins, whether the run had no cell types or its cell types labelled
+    /// none of the rows.
+    pub fn note(&self, tissue: &Tissue) -> String {
+        let from = match (self.source, tissue.cell_type.is_some()) {
+            (TypeSource::CellTypes, _) => "the run's cell types",
+            (TypeSource::IdentityBins, false) => "the identity bins, the run having no cell types",
+            (TypeSource::IdentityBins, true) => {
+                "the identity bins, the run's cell types labelling none of the receivers"
+            }
+        };
+        let mut held = vec![false; self.names.len()];
+        for &c in &self.codes {
+            held[c as usize] = true;
+        }
+        let types: Vec<&str> = self
+            .names
+            .iter()
+            .zip(&self.testable)
+            .zip(&held)
+            .filter(|((_, &t), &h)| t && h)
+            .map(|((n, _), _)| &**n)
+            .collect();
+        format!("{from} ({} types: {})", types.len(), types.join(", "))
+    }
 }
 
 /// `null ≥ observed`, forgiving the rounding of a sum taken in another

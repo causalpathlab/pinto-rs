@@ -164,10 +164,55 @@ fn ensure_with(species: Species, opts: &ReferenceOpts, offline: bool) -> Result<
     Ok(files)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's cache root, in place of the environment's on this thread
+    /// ([`with_test_root`]).
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `root` as the cache root on this thread, so a test reads
+/// a reference it wrote without touching the user's cache or the process
+/// environment.
+#[cfg(test)]
+pub fn with_test_root<T>(root: &Path, f: impl FnOnce() -> T) -> T {
+    /// Clears the root when dropped, a panicking `f` too.
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ROOT.with(|r| *r.borrow_mut() = None);
+        }
+    }
+    TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.to_path_buf()));
+    let _reset = Reset;
+    f()
+}
+
+/// An empty reference for `species` under the cache root `root`: its
+/// tables hold only their headers, so a test's own pair and programme
+/// files are all the pairs there are.
+#[cfg(test)]
+pub fn write_empty_reference(root: &Path, species: Species) -> Result<()> {
+    let built = root
+        .join("built")
+        .join(format!("r{BUILD_REVISION}-{}", LicenceMode::All.tag()));
+    fs::create_dir_all(&built)?;
+    fs::create_dir_all(root.join("downloads"))?;
+    let files = ReferenceFiles::at(&built, species);
+    fs::write(&files.lr_pairs, "ligand\treceptor\n")?;
+    fs::write(&files.receptor_targets, "receptor\ttarget\tweight\n")?;
+    fs::write(&files.record, "{}")?;
+    Ok(())
+}
+
 /// The cache root: `dir`, else `$PINTO_REFERENCE_DIR`, else the user cache.
 pub fn cache_root(dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(d) = dir {
         return Ok(d.to_path_buf());
+    }
+    #[cfg(test)]
+    if let Some(d) = TEST_ROOT.with(|r| r.borrow().clone()) {
+        return Ok(d);
     }
     if let Some(d) = std::env::var_os("PINTO_REFERENCE_DIR").filter(|d| !d.is_empty()) {
         return Ok(d.into());

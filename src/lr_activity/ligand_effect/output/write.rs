@@ -222,6 +222,9 @@ pub(super) mod sim_cols {
     /// The region code the effect was planted in; NaN where it was planted
     /// everywhere. Read when present, so older tables still read.
     pub const REGION: &str = "region";
+    /// The planted region's name (`--plant-region`); empty where the effect
+    /// was planted everywhere.
+    pub const PLANTED_REGION: &str = "planted_region";
 
     /// `{method}_reject`.
     pub fn reject(method: &str) -> String {
@@ -235,7 +238,8 @@ pub(super) mod sim_cols {
 /// is 0 where the estimate was not reported. The co-expression baselines
 /// ([`super::super::baselines`]) come with their p and a 0/1 `_reject` at 5%,
 /// as have the other methods of [`super::super::simulate::COMPARED`].
-pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
+/// `planted` names the region every run's effect was planted in, if one.
+pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::Result<()> {
     use sim_cols::*;
     let mut c = Columns::new(rows);
     c.s("ligand", |r| &r.ligand)
@@ -286,6 +290,7 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f("baseline_seconds", |r| r.baseline_seconds);
     let g = |f: fn(&RegionRead) -> f64| move |r: &SimRow| r.region.as_ref().map_or(f64::NAN, f);
     c.f(REGION, |r| r.scenario.region.map_or(f64::NAN, f64::from))
+        .s(PLANTED_REGION, |_| planted.unwrap_or_default())
         .f("region_truth", g(|x| x.truth))
         .f("region_truth_exposed", g(|x| x.truth_exposed))
         .f("region_estimate", g(|x| x.estimate.theta))

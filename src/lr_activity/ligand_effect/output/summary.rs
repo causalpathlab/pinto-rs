@@ -242,10 +242,11 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
 /// difference and the partial adjustments, with estimable share, bias and
 /// coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison
-/// ([`super::compare::comparison`]).
-pub fn sim_summary(rows: &[SimRow]) -> String {
+/// ([`super::compare::comparison`]). The planted region, if any, goes by
+/// its name `planted`.
+pub fn sim_summary(rows: &[SimRow], planted: Option<&str>) -> String {
     let mut out = sim_legend();
-    for (key, idx) in scenario_groups(rows, |r| &r.scenario) {
+    for (key, idx) in scenario_groups(rows, |r| &r.scenario, planted) {
         let g: Vec<&SimRow> = idx.iter().map(|&i| &rows[i]).collect();
         let null = is_null(&g[0].scenario);
         out += &scenario_title(&key, &g);
@@ -256,7 +257,7 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
             out += &view_line(name, view, &g, null);
         }
     }
-    out.push_str(&comparison(rows));
+    out.push_str(&comparison(rows, planted));
     out
 }
 

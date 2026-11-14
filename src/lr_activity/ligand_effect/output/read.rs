@@ -385,6 +385,16 @@ impl<'p> SimTable<'p> {
     }
 }
 
+/// The region the runs of `{out}.lra-simulate.parquet` were planted in, by
+/// name; `None` where they were planted everywhere, or the table is from
+/// before regions were named.
+pub fn read_planted_region(path: &str) -> Option<Box<str>> {
+    let (mut s, _) =
+        legume_numeric::matrix::parquet::read_table_columns(path, &[sim_cols::PLANTED_REGION], &[])
+            .ok()?;
+    s.pop()?.into_iter().find(|n| !n.is_empty())
+}
+
 /// The runs of `{out}.lra-simulate.parquet` as [`super::compare_runs`] reads them,
 /// each column by its name ([`super::sim_cols`]).
 pub fn read_sim_runs(path: &str) -> anyhow::Result<Vec<SimRun>> {

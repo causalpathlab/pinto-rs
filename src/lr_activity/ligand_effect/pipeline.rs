@@ -1,6 +1,6 @@
 //! The commands from input to tables: `pinto lra` and `pinto lra-simulate`.
 
-use super::baselines::{marginals, Baselines, CellTypeTest, TypeLabels, TypeSource};
+use super::baselines::{marginals, Baselines, CellTypeTest, TypeLabels};
 use super::estimate::{estimate_pair_shared, PairData};
 use super::fits::LigandShare;
 use super::genes::GeneStore;
@@ -350,22 +350,10 @@ fn pair_seed(seed: u64, p: &Pair) -> u64 {
 /// identity bins, each permutation test on up to `permutations`.
 fn marginal_baselines(prep: &Prepared, permutations: usize, seed: u64) -> Marginal {
     let labels = TypeLabels::of(&prep.tissue);
-    let testable: Vec<&str> = labels
-        .names
-        .iter()
-        .zip(&labels.testable)
-        .filter(|(_, &t)| t)
-        .map(|(n, _)| &**n)
-        .collect();
-    let from = match labels.source {
-        TypeSource::CellTypes => "the run's cell types",
-        TypeSource::IdentityBins => "the identity bins, the run having no cell types",
-    };
     info!(
         target: LOG_TARGET,
-        "Marginal baselines on {from} ({} types: {}), up to {permutations} permutations",
-        testable.len(),
-        testable.join(", ")
+        "Marginal baselines on {}, up to {permutations} permutations",
+        labels.note(&prep.tissue)
     );
     let pb = Progress::new(prep.pairs.len(), "marginal baselines");
     let t0 = std::time::Instant::now();
@@ -510,9 +498,6 @@ fn print_run_summary(a: &Settings<'_>, rows: &[rows::EffectRow], path: &str, q_s
 
 pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
-    if let Some(n) = a.marginal {
-        anyhow::ensure!(n > 0, "--marginal-permutations must be at least 1");
-    }
     let prep = prepare(inp)?;
     let mut rows = estimate_pairs(&prep);
     report::report(&mut rows, &report::ReportOpts::default());
@@ -709,8 +694,8 @@ impl Benchmark<'_> {
 }
 
 /// The region code `--plant-region` names among the tissue's `--region`
-/// labels; `None` without it.
-fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<u32>> {
+/// labels, `unassigned` not one of them; `None` without it.
+pub(super) fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<u32>> {
     let Some(name) = name else {
         return Ok(None);
     };
@@ -718,14 +703,20 @@ fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<
         .region
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--plant-region {name} needs --region"))?;
+    let unassigned = crate::lr_activity::input::UNASSIGNED;
     let code = names
         .iter()
         .position(|n| &**n == name)
-        .filter(|_| name != crate::lr_activity::input::UNASSIGNED)
+        .filter(|_| name != unassigned)
         .ok_or_else(|| {
+            let choices: Vec<&str> = names
+                .iter()
+                .map(|n| &**n)
+                .filter(|&n| n != unassigned)
+                .collect();
             anyhow::anyhow!(
                 "--plant-region {name}: not a region of --region (has {})",
-                names.join(", ")
+                choices.join(", ")
             )
         })?;
     info!(target: LOG_TARGET, "Planting every effect in region {name} alone");
@@ -773,11 +764,11 @@ pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     }
     pb.finish();
     let path = output::lra_simulate_path(a.out);
-    output::write_sim(&path, &rows)?;
+    output::write_sim(&path, &rows, a.plant_region)?;
     record(a.manifest, |o| {
         o.simulate = Some(crate::lr_activity::recorded(Path::new(&path)))
     })?;
-    println!("{}", output::sim_summary(&rows));
+    println!("{}", output::sim_summary(&rows, a.plant_region));
     println!("lra-simulate: wrote {} runs to {path}", rows.len());
     Ok(())
 }
