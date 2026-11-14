@@ -73,6 +73,27 @@
 //!   stays linear in cells; the energy is the same sum, truncated to the
 //!   graph. `--neighbors 0` drops space, as `neighbors=0` does in the
 //!   reference (a Poisson mixture with a DP prior).
+//!
+//!   The default of 100 neighbours is a choice of this port, not a
+//!   reference value. Cutting the `1/d²` sum does more than truncate it:
+//!   in 2-D the far shells carry much of each cell's total weight, so a
+//!   cut graph has a weaker effective `smoothness_factor`. On the 6 × 1600
+//!   spot simulation the regions found went from shared ARI 0.638 at
+//!   `--neighbors 100` to 0.753 with every pair in a section connected
+//!   (`--neighbors` at least the section size, which is the reference's
+//!   model within each section, at `k · N` memory).
+//! - **Memory at the default cap.** The posteriors are `N × K₀` with the
+//!   reference's default `K₀ = ceil(sqrt(N))`, so memory and work per
+//!   update grow as `N^1.5` (about 8 GB for the posteriors alone at 1M
+//!   cells, and a second copy while pruning), not linearly in cells. The
+//!   default is kept for fidelity; `--n-clusters` bounds `K₀` and with it
+//!   the memory. A warning is logged when the posteriors pass 4 GB.
+//! - **Cells with no counts.** Kept, as in the reference: the size factor
+//!   enters only as `-s_n Σ_g E[λ_cg]` and in `π̂ s`, never as a divisor,
+//!   so such a cell's posterior is its prior (neighbourhood and stick).
+//! - **Order of sums.** The sums over cells run over fixed chunks added in
+//!   order, so a given `--seed` gives the same ELBO trace and labels on
+//!   every run.
 //! - **Sections.** All sections are fitted as one model (one set of region
 //!   rate profiles), neighbours taken only within a section; `min d²` is the
 //!   smallest over all sections. Coincident cells (distance 0) take the
@@ -116,8 +137,13 @@ const ETA_2: f64 = 1.0;
 const GAMMAHAT_INIT: f64 = 1e-6;
 /// The paper's segmentation genes: the top 2000 by total counts.
 const N_TOP_GENES: usize = 2000;
-/// Neighbours per cell in place of the reference's fully connected graph.
+/// Neighbours per cell in place of the reference's fully connected graph
+/// (a choice of this port, not a reference value).
 const NEIGHBORS: usize = 100;
+/// Cells per chunk in the sums over cells, fixed so they run in one order.
+const SUM_CHUNK: usize = 4096;
+/// Posterior size above which a warning names `--n-clusters`.
+const PI_WARN_BYTES: f64 = 4e9;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -125,13 +151,17 @@ pub struct Args {
     pub input: SpatialInputArgs,
 
     /// Maximum number of regions, SpatialDE2's `nclasses` cap (default:
-    /// ceil(sqrt(cells))). SpatialDE2 has no resolution: its Dirichlet
-    /// process prunes unused regions, so a run may end with fewer
+    /// ceil(sqrt(cells)), as the reference). SpatialDE2 has no resolution:
+    /// its Dirichlet process prunes unused regions, so a run may end with
+    /// fewer. The posteriors take cells × cap memory, N^1.5 at the default;
+    /// set this to bound it on large data
     #[arg(long)]
     pub n_clusters: Option<usize>,
 
-    /// Spatial neighbours per cell, within a section (the reference
-    /// connects every pair; 0 ignores space: a Poisson DP mixture)
+    /// Spatial neighbours per cell, within a section (100 is this port's
+    /// choice: the reference connects every pair, and cutting its 1/d^2
+    /// sum weakens the smoothing; the section size reproduces it at
+    /// cells × section memory; 0 ignores space: a Poisson DP mixture)
     #[arg(long, default_value_t = NEIGHBORS)]
     pub neighbors: usize,
 
@@ -510,26 +540,31 @@ pub fn update(
             acc
         })
         .collect();
-    let zero = || (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
-    let (ps, pn, pc) = pi
-        .par_chunks(k)
-        .zip(sizefactors)
-        .fold(zero, |(mut ps, mut pn, mut pc), (row, &s)| {
-            let mut tail = 0.0;
-            for c in (0..k).rev() {
-                pc[c] += tail;
-                tail += row[c];
-                pn[c] += row[c];
-                ps[c] += row[c] * s;
+    // fixed-size chunks summed in order, so the rounding (and with it the
+    // stopping test and argmax ties) is the same on every run for a seed
+    let parts: Vec<[Vec<f64>; 3]> = pi
+        .par_chunks(k * SUM_CHUNK)
+        .zip(sizefactors.par_chunks(SUM_CHUNK))
+        .map(|(rows, sf)| {
+            let (mut ps, mut pn, mut pc) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+            for (row, &s) in rows.chunks(k).zip(sf) {
+                let mut tail = 0.0;
+                for c in (0..k).rev() {
+                    pc[c] += tail;
+                    tail += row[c];
+                    pn[c] += row[c];
+                    ps[c] += row[c] * s;
+                }
             }
-            (ps, pn, pc)
+            [ps, pn, pc]
         })
-        .reduce(zero, |mut a, b| {
-            add(&mut a.0, &b.0);
-            add(&mut a.1, &b.1);
-            add(&mut a.2, &b.2);
-            a
-        });
+        .collect();
+    let (mut ps, mut pn, mut pc) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+    for [a, b, c] in &parts {
+        add(&mut ps, a);
+        add(&mut pn, b);
+        add(&mut pc, c);
+    }
 
     let fg = g as f64;
     let gamma_hat_1: Vec<f64> = (0..k * g).map(|x| p.gamma_1 + py[x % g][x / g]).collect();
@@ -661,6 +696,14 @@ pub fn segment(
         .nclasses
         .unwrap_or_else(|| (n as f32).sqrt().ceil() as usize)
         .max(1);
+    let pi_bytes = n as f64 * k0 as f64 * 8.0;
+    if pi_bytes > PI_WARN_BYTES {
+        log::warn!(
+            "spatialde2: posteriors of {n} cells × {k0} regions take {:.1} GB \
+             (twice that while pruning); --n-clusters bounds it",
+            pi_bytes / 1e9
+        );
+    }
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut labels: Vec<usize> = (0..n).map(|_| rng.random_range(0..k0)).collect();
     let mut st = State::init(k0, counts.n_genes, p.eta_1);
@@ -796,10 +839,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     params.check()?;
     let data = args.input.read()?;
     let (counts, sizefactors, genes) = select_counts(&data, args.n_top_genes);
-    anyhow::ensure!(
-        sizefactors.iter().all(|&s| s > 0.0),
-        "spatialde2: some cells have no counts (size factor 0)"
-    );
     log::info!(
         "spatialde2: {} genes by total counts, size factors over all {}",
         genes.len(),

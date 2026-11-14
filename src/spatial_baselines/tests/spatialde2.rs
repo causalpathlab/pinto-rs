@@ -178,6 +178,42 @@ fn segments_two_regions_and_prunes_the_rest() {
 }
 
 #[test]
+fn zero_count_cell_takes_its_prior_and_runs_repeat() {
+    let d = grid(10, 2);
+    let g = graph_of(&d, 8, 2.0);
+    let (_, _, truth) = two_region_counts(10, 2);
+    // cell 0 (left half) has no counts and size factor 0, as the
+    // reference allows
+    let rows: Vec<Vec<(usize, f64)>> = (0..truth.len())
+        .map(|i| {
+            if i == 0 {
+                Vec::new()
+            } else {
+                let hi = 20.0 + (i % 3) as f64;
+                let lo = 1.0 + (i % 2) as f64;
+                let (a, b) = if truth[i] == 0 { (hi, lo) } else { (lo, hi) };
+                vec![(0, a), (1, b), (2, 10.0)]
+            }
+        })
+        .collect();
+    let sf: Vec<f64> = rows
+        .iter()
+        .map(|r| r.iter().map(|&(_, v)| v).sum())
+        .collect();
+    assert_eq!(sf[0], 0.0);
+    let counts = CellCounts::from_rows(3, &rows);
+    let a = segment(&counts, &sf, Some(&g), &Params::default(), 3).unwrap();
+    let b = segment(&counts, &sf, Some(&g), &Params::default(), 3).unwrap();
+    assert!(a.pi.iter().all(|v| v.is_finite()));
+    assert!((a.pi[..a.k].iter().sum::<f64>() - 1.0).abs() < 1e-9);
+    // its label follows its neighbours (cells 1 and 10)
+    assert!(a.labels[0] == a.labels[1] || a.labels[0] == a.labels[10]);
+    // same seed, same bits
+    assert_eq!(a.elbo_trace, b.elbo_trace);
+    assert_eq!(a.labels, b.labels);
+}
+
+#[test]
 fn class_cap_and_no_space() {
     let (counts, sf, _) = two_region_counts(6, 1);
     let p = Params {
