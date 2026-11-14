@@ -19,7 +19,8 @@
 //! A labelling is any pinto run at any level (its propensity's hard labels),
 //! or a table (TSV or parquet) with a `cell` column and a label column, as
 //! lupin writes them. Empty, `NA`, `-1` and `unassigned` labels are none;
-//! spots left unlabelled are not scored and are counted.
+//! spots left unlabelled are not scored and are counted. Label rows naming
+//! cells the truth lacks are counted too (`n_unmatched`) and warned of.
 
 use super::panel::{donor_label, parse_donor_label};
 use crate::compare::{ari, propensity_path, Partition, Table};
@@ -140,10 +141,27 @@ pub struct DomainDependence {
 pub struct Score {
     pub n_spots: usize,
     pub n_scored: usize,
+    /// Label rows naming a cell the truth lacks.
+    pub n_unmatched: usize,
     pub shared_ari: f64,
     pub donor_dependence: f64,
     pub donor_dependence_by_domain: Vec<DomainDependence>,
     pub patches: Vec<PatchScore>,
+}
+
+impl Score {
+    /// What to warn of when label rows name cells the truth lacks: every
+    /// simulation names its cells alike, so a labelling of another one
+    /// still matches some of them.
+    pub fn unmatched_warning(&self) -> Option<String> {
+        (self.n_unmatched > 0).then(|| {
+            format!(
+                "{} label rows name cells not in the truth: is it a labelling of \
+                 another simulation?",
+                self.n_unmatched
+            )
+        })
+    }
 }
 
 /// `counts[k][d]`: label → spots of domain `k` and donor `d`.
@@ -166,13 +184,18 @@ pub fn score(t: &TruthSpots, labels: &[(Box<str>, i64)]) -> anyhow::Result<Score
         );
     }
     let mut counts: Counts = vec![vec![HashMap::default(); t.n_donors]; t.domain_labels.len()];
-    let mut n_scored = 0;
+    let (mut n_scored, mut n_found) = (0, 0);
     for (i, c) in t.cells.iter().enumerate() {
-        if let Some(&l) = given.get(c.as_ref()).filter(|&&l| l >= 0) {
+        let Some(&l) = given.get(c.as_ref()) else {
+            continue;
+        };
+        n_found += 1;
+        if l >= 0 {
             *counts[t.domain[i]][t.donor[i]].entry(l).or_insert(0) += 1;
             n_scored += 1;
         }
     }
+    let n_unmatched = given.len().saturating_sub(n_found);
     anyhow::ensure!(
         n_scored > 0,
         "no spot of the truth is labelled: are the cell names spelled alike?"
@@ -181,6 +204,7 @@ pub fn score(t: &TruthSpots, labels: &[(Box<str>, i64)]) -> anyhow::Result<Score
     Ok(Score {
         n_spots: t.cells.len(),
         n_scored,
+        n_unmatched,
         shared_ari,
         donor_dependence,
         donor_dependence_by_domain,
@@ -466,6 +490,9 @@ pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
                     continue;
                 }
             };
+        if let Some(w) = s.unmatched_warning() {
+            log::warn!("{input}: {w}");
+        }
         for row in table_rows(input, &s) {
             println!("{row}");
         }

@@ -28,3 +28,17 @@ fn cage_only_flags_are_named_when_set() {
         vec!["--device-no", "--no-init-features"]
     );
 }
+
+/// A model that is not there is refused before any data is read, by its
+/// path.
+#[test]
+fn a_model_that_is_not_there_is_refused_by_its_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("nope").to_string_lossy().to_string();
+    let mut args = default_args().unwrap();
+    args.model = model.clone().into();
+    args.common.data_files = vec![dir.path().join("d.zarr").to_string_lossy().into()];
+    let e = format!("{:#}", super::predict(&args).unwrap_err());
+    assert!(e.contains(&format!("{model}.pinto.json")), "{e}");
+    assert!(e.contains("not there"), "{e}");
+}

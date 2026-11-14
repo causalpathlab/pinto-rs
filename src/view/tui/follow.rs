@@ -126,7 +126,10 @@ impl App<'_> {
     /// Read the server followed, and draw the agent's view when it changed
     /// and is followed. Relabelling or a dialog keeps the view as it is
     /// until it is done.
-    pub(super) fn follow_tick(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    pub(super) fn follow_tick(
+        &mut self,
+        terminal: Option<&mut DefaultTerminal>,
+    ) -> anyhow::Result<()> {
         let busy = self.relabel.is_some() || self.modal.is_some();
         let Some(f) = self.follower.as_mut() else {
             return Ok(());
@@ -158,7 +161,7 @@ impl App<'_> {
     /// `F`: the agent's view again, and follow it.
     pub(super) fn resume_following(
         &mut self,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
         if self.relabel.is_some() {
             self.status = "leave relabel mode first".into();
@@ -179,7 +182,7 @@ impl App<'_> {
     fn apply_followed(
         &mut self,
         view: &Followed,
-        terminal: &mut DefaultTerminal,
+        mut terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
         if !same_file(Path::new(&view.run), Path::new(&self.base.run.prefix)) {
             self.status = format!("the agent opened {}: --follow again to see it", view.run);
@@ -188,7 +191,7 @@ impl App<'_> {
         if view.show == Show::Communities {
             let i = self.base.run.level_index(Some(&view.level))?;
             if i != self.cur {
-                self.go_level(i, terminal)?;
+                self.go_level(i, terminal.as_deref_mut())?;
             }
         } else if let Some(path) = &view.round {
             if !self
@@ -196,7 +199,10 @@ impl App<'_> {
                 .as_ref()
                 .is_some_and(|r| same_file(&r.path, Path::new(path)))
             {
-                self.busy(terminal, "loading the agent's round ...".into())?;
+                self.busy(
+                    terminal.as_deref_mut(),
+                    "loading the agent's round ...".into(),
+                )?;
                 self.load_round(Path::new(path))?;
                 // Another round is another grouping, as `,` and `.` show it.
                 self.set_show(view.show);
@@ -212,7 +218,7 @@ impl App<'_> {
                 self.community = c;
             }
         }
-        let focus = parse_focus(&view.focus, &self.level().comm)?;
+        let focus = parse_focus(&view.focus, &self.level().comm, self.level().grouping)?;
         if focus != self.focus {
             let shown = focus.iter().position(|&f| f);
             self.set_focus(focus, shown);

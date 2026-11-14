@@ -89,3 +89,133 @@ fn the_lra_tools_take_every_flag_the_command_line_shows() {
         }
     }
 }
+
+/// A writer the test reads back.
+#[derive(Clone, Default)]
+struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `name` called once on a server of the run tools: whether it failed,
+/// and what it said.
+fn call_once(name: &str, args: Value) -> (bool, String) {
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": name, "arguments": args}});
+    let sink = Sink::default();
+    let info = legume_mcp::ServerInfo {
+        name: "test".into(),
+        version: "0.0.0".into(),
+        instructions: None,
+    };
+    let input = std::io::Cursor::new(format!("{call}\n"));
+    legume_mcp::serve_on(input, sink.clone(), info, Tools::default()).unwrap();
+    let text = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let reply: Value = text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|m| m["id"] == json!(1))
+        .unwrap();
+    let result = &reply["result"];
+    let said = result["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (result["isError"] == json!(true), said)
+}
+
+/// A run of four cells at the corners of a unit square, as its manifest
+/// lists it; its prefix.
+fn square_run(dir: &Path) -> String {
+    use legume_numeric::matrix::traits::IoOps;
+    let prefix = dir.join("run").to_string_lossy().into_owned();
+    let names: Vec<Box<str>> = (0..4).map(|i| format!("c{i}@S1").into()).collect();
+    let xy = nalgebra::DMatrix::<f32>::from_row_slice(4, 2, &[0., 0., 1., 0., 0., 1., 1., 1.]);
+    let cols: Vec<Box<str>> = vec!["x".into(), "y".into()];
+    xy.to_parquet_with_names(
+        &format!("{prefix}.cells.parquet"),
+        (Some(&names), Some("cell")),
+        Some(&cols),
+    )
+    .unwrap();
+    let prop = nalgebra::DMatrix::<f32>::from_element(4, 2, 0.5);
+    let comms: Vec<Box<str>> = vec!["C0".into(), "C1".into()];
+    prop.to_parquet_with_names(
+        &format!("{prefix}.propensity.parquet"),
+        (Some(&names), Some("cell")),
+        Some(&comms),
+    )
+    .unwrap();
+    let manifest = json!({
+        "command": "lc", "version": "0", "timestamp": "", "prefix": prefix,
+        "n_cells": 4, "n_features": 1,
+        "outputs": {
+            "cells": format!("{prefix}.cells.parquet"),
+            "propensity": format!("{prefix}.propensity.parquet"),
+        },
+    });
+    std::fs::write(format!("{prefix}.pinto.json"), manifest.to_string()).unwrap();
+    prefix
+}
+
+/// `run_region` writes its cell list into a folder it makes.
+#[test]
+fn run_region_makes_the_folder_of_its_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = square_run(dir.path());
+    let out = dir.path().join("new/sub/region");
+    let (failed, said) = call_once(
+        "run_region",
+        json!({"run": run, "polygon": [[-1, -1], [2, -1], [2, 2], [-1, 2]],
+               "out": out.to_str().unwrap()}),
+    );
+    assert!(!failed, "{said}");
+    let list = std::fs::read_to_string(format!("{}.cells.txt", out.display())).unwrap();
+    assert_eq!(list.lines().count(), 5, "{list}");
+}
+
+/// A GeoJSON `run_region` cannot read is named as its `geojson`, from the
+/// root, not as a flag it was never given.
+#[test]
+fn run_region_names_its_geojson_when_it_cannot_read_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = square_run(dir.path());
+    // Given relative to where the server runs.
+    let missing = crate::test_support::from_cwd(&dir.path().join("missing.geojson"));
+    let (failed, said) = call_once(
+        "run_region",
+        json!({"run": run, "geojson": missing.to_str().unwrap()}),
+    );
+    assert!(failed);
+    let named = format!("geojson {}", shown_path(&missing));
+    assert!(said.contains(&named), "{said}");
+    assert!(!said.contains("--mask-cells"), "{said}");
+}
+
+/// `run_predict` refuses a model that is not there before it starts a job.
+#[test]
+fn run_predict_refuses_a_model_that_is_not_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("nope");
+    let data = dir.path().join("d.zarr");
+    let (failed, said) = call_once(
+        "run_predict",
+        json!({"model": model.to_str().unwrap(), "data": [data.to_str().unwrap()],
+               "out": dir.path().join("pred").to_str().unwrap(), "background": false}),
+    );
+    assert!(failed, "{said}");
+    assert!(
+        said.contains(&format!("{}.pinto.json", model.display())),
+        "{said}"
+    );
+    assert!(said.contains("not there"), "{said}");
+}

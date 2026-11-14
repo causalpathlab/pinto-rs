@@ -164,3 +164,31 @@ fn a_prefix_with_neither_manifest_nor_coord_pairs_is_an_error() {
     let err = Run::open(&prefix).err().unwrap().to_string();
     assert!(err.contains("coord_pairs"), "{err}");
 }
+
+/// `view_open` on a relative prefix answers with paths from the root, the
+/// run's source and its data files alike.
+#[test]
+fn view_open_gives_its_paths_from_the_root() {
+    use crate::view::mcp::Open;
+    use std::path::Path;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = super::lra::lra_run(dir.path());
+    // The same paths, relative to where the tests run.
+    let relative = |p: &str| crate::test_support::from_cwd(Path::new(p));
+    let manifest = format!("{prefix}.pinto.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let data = meta["data_files"][0].as_str().unwrap().to_string();
+    meta["data_files"][0] = relative(&data).to_string_lossy().into();
+    std::fs::write(&manifest, meta.to_string()).unwrap();
+
+    let open = Open::new(&relative(&prefix).to_string_lossy(), None).unwrap();
+    let summary = open.summary();
+    let source = summary["source"].as_str().unwrap();
+    assert!(Path::new(source).is_absolute(), "{source}");
+    let files = summary["data_files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    let file = files[0].as_str().unwrap();
+    assert!(Path::new(file).is_absolute(), "{file}");
+    assert!(Path::new(file).exists(), "{file}");
+}

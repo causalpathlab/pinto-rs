@@ -8,7 +8,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     let spec = ToolSpec::new;
     let group = json!({
         "type": ["string", "integer"],
-        "description": "C3 or 3 for a community; a lupin cluster id (K3 or 3) or a cell type when a round is shown",
+        "description": "C3 or 3 for a community, or its name when the level names them; a lupin cluster id (K3 or 3) or a cell type when a round is shown",
     });
     vec![
         spec(

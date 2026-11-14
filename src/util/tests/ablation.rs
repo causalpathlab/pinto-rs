@@ -284,3 +284,29 @@ fn seeding_sees_the_plane_per_section_and_batch() {
     }
     assert_eq!(groups, [0, 0, 1, 2]);
 }
+
+/// Each way a region file can be wrong names the file.
+#[test]
+fn a_region_file_that_cannot_be_used_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let polygon = r#"{"type": "Polygon", "coordinates": [[["a", 0], [1, 0], [1, 1]]]}"#;
+    for (name, text) in [
+        ("missing.geojson", None),
+        ("text.geojson", Some("not json")),
+        (
+            "empty.geojson",
+            Some(r#"{"type": "FeatureCollection", "features": []}"#),
+        ),
+        ("bad.geojson", Some(polygon)),
+    ] {
+        let path = dir.path().join(name);
+        if let Some(text) = text {
+            std::fs::write(&path, text).unwrap();
+        }
+        let path = path.to_str().unwrap();
+        let Err(e) = read_regions(path) else {
+            panic!("{name} was read");
+        };
+        assert!(format!("{e:#}").starts_with(&format!("{path}: ")), "{e:#}");
+    }
+}

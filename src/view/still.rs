@@ -12,6 +12,8 @@ use super::{
     color, curve, data, focused, ids, legend_line, lra, parse_focus, pdf, scalebar, value_name,
     Base, Level, FIT_MARGIN,
 };
+use anyhow::Context as _;
+use legume_numeric::matrix::common_io::mkdir_parent;
 use std::path::Path;
 use std::time::Instant;
 
@@ -50,9 +52,11 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     let focus = args
         .focus
         .as_deref()
-        .map(|ids| parse_focus(ids, &level.comm))
+        .map(|ids| parse_focus(ids, &level.comm, level.grouping))
         .transpose()?;
-    if focus.is_some() && args.pdf.is_some() {
+    // The PDF lists the focused groups' markers, when the level has them.
+    let has_markers = base.run.levels[level.index].feature_community.is_some();
+    if focus.is_some() && args.pdf.is_some() && has_markers {
         base.load_features(&mut level)?;
     }
     let style = Style {
@@ -154,11 +158,13 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
         let w = args.width.max(1);
         let h = args.height.unwrap_or(w * 3 / 5);
         if let Some(path) = args.png.as_deref() {
-            curve::still(&curve, (w, h), theme).write_png(Path::new(path))?;
+            writing(Path::new(path), |p| {
+                curve::still(&curve, (w, h), theme).write_png(p)
+            })?;
         }
         if let Some(path) = args.pdf.as_deref() {
             let page = curve::page(&curve, theme).map_err(anyhow::Error::msg)?;
-            pdf::write_chart(page, Path::new(path))?;
+            writing(Path::new(path), |p| Ok(pdf::write_chart(page, p)?))?;
         }
     } else {
         let base = Base::load(args.prefix(), &args.units, theme)?;
@@ -304,15 +310,24 @@ pub(super) fn write_outputs(
 ) -> anyhow::Result<()> {
     let mut frame = base.render(level, style, gene, vp);
     if let Some(path) = pdf_path {
-        pdf::write(&figure(base, level, style, gene, vp, &frame), path)?;
+        writing(path, |p| {
+            pdf::write(&figure(base, level, style, gene, vp, &frame), p)
+        })?;
     }
     if let Some(path) = png {
         if let Some(units) = base.units {
             scalebar::draw(&mut frame, vp, units, true);
         }
-        frame.write_png(path)?;
+        writing(path, |p| frame.write_png(p))?;
     }
     Ok(())
+}
+
+/// Write `path` by `write`, its folder made first; a failure names it.
+fn writing(path: &Path, write: impl FnOnce(&Path) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    mkdir_parent(&path.to_string_lossy())
+        .and_then(|()| write(path))
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The PDF page for a rendered view: title, legend for the layer (or the

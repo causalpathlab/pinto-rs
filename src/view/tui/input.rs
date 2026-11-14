@@ -21,7 +21,7 @@ impl App<'_> {
         let resumes = matches!(&ev, Event::Key(k) if k.code == KeyCode::Char('F'));
         let before = (self.follower.is_some() && !resumes).then(|| self.view_key());
         match ev {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, terminal)?,
+            Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, Some(terminal)),
             Event::Mouse(m) => self.mouse(m),
             Event::Resize(..) => {
                 terminal.autoresize()?;
@@ -53,18 +53,30 @@ impl App<'_> {
         )
     }
 
-    fn key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+    /// A key's action; one that fails shows why in the popup, and the
+    /// viewer goes on.
+    pub(super) fn key(&mut self, key: KeyEvent, terminal: Option<&mut DefaultTerminal>) {
         if self.error.take().is_some() {
             // Any key closes the popup, and does nothing else.
             self.need_map = true;
             self.need_panel = true;
-            return Ok(());
+            return;
         }
+        if let Err(e) = self.act(key, terminal) {
+            self.fail(format!("{e:#}"));
+        }
+    }
+
+    fn act(
+        &mut self,
+        key: KeyEvent,
+        mut terminal: Option<&mut DefaultTerminal>,
+    ) -> anyhow::Result<()> {
         let big = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if big { 0.5 } else { 0.125 };
         self.status.clear();
         if self.modal.is_some() {
-            return self.modal_key(key, terminal);
+            return self.modal_key(key);
         }
         // Outside a dialog, shift-enter is H: the next chart.
         let key = if crate::tui::shift_enter(&key) {
@@ -76,10 +88,10 @@ impl App<'_> {
             self.status = "on a chart: H next chart or back to the map · esc the map".into();
             return Ok(());
         }
-        if self.lra_on && self.lra_key(key, Some(terminal))? {
+        if self.lra_on && self.lra_key(key, terminal.as_deref_mut())? {
             return Ok(());
         }
-        if self.relabel.is_some() && self.relabel_key(key, terminal)? {
+        if self.relabel.is_some() && self.relabel_key(key)? {
             return Ok(());
         }
         if self.grid_shows() && self.grid_key(key) {
@@ -131,7 +143,7 @@ impl App<'_> {
             KeyCode::Char('C') => self.step_show(-1, terminal)?,
             KeyCode::Char('A') => self.ask_markers(),
             KeyCode::Char('R') => self.toggle_relabel(terminal)?,
-            KeyCode::Char('I') => self.toggle_lra(Some(terminal))?,
+            KeyCode::Char('I') => self.toggle_lra(terminal)?,
             KeyCode::Char('<') => self.scale_points(1. / POINT_STEP),
             KeyCode::Char('>') => self.scale_points(POINT_STEP),
             KeyCode::Char('.') => self.next_round(1, terminal)?,
@@ -269,7 +281,7 @@ impl App<'_> {
     fn back(&mut self) {
         if self.bar_focus.take().is_some() {
             self.need_map = true;
-        } else if self.view != plots::View::Map {
+        } else if self.view != plots::View::Map || self.structure {
             self.view = plots::View::Map;
             self.structure = false;
             self.need_map = true;

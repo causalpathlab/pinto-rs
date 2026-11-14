@@ -233,10 +233,13 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     anyhow::ensure!(!a.labels.is_empty(), "give labels: runs or label tables");
     let t = TruthSpots::read(&a.truth).map_err(|e| bad_truth(&a.truth, e))?;
     let mut lines = vec![table_header()];
-    let (mut scores, mut failed) = (Vec::new(), Vec::new());
+    let (mut scores, mut failed, mut warnings) = (Vec::new(), Vec::new(), Vec::new());
     for input in &a.labels {
         match read_labels(input, &a.level, &a.label_column).and_then(|l| score(&t, &l)) {
             Ok(s) => {
+                if let Some(w) = s.unmatched_warning() {
+                    warnings.push(json!({ "labels": input, "warning": w }));
+                }
                 lines.extend(table_rows(input, &s));
                 scores.push(json!({ "labels": input, "level": a.level, "score": s }));
             }
@@ -250,6 +253,9 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     let mut reply = json!({ "truth": shown_path(Path::new(&a.truth)), "scores": scores });
     if !failed.is_empty() {
         reply["failed"] = failed.into();
+    }
+    if !warnings.is_empty() {
+        reply["warnings"] = warnings.into();
     }
     Ok(vec![Content::Text(lines.join("\n")), Content::Json(reply)])
 }

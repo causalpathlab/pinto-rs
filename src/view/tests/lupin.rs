@@ -215,3 +215,13 @@ fn a_job_that_saves_is_waited_for_and_any_other_is_stopped() {
         );
     }
 }
+
+#[test]
+fn the_lupin_version_is_read_past_a_build_hash() {
+    assert_eq!(lupin_version("lupin 0.9.8 (270b301)\n"), Some((0, 9, 8)));
+    assert_eq!(lupin_version("lupin 0.6.1\n"), Some((0, 6, 1)));
+    assert_eq!(lupin_version("lupin-rs 1.2.3-dev"), Some((1, 2, 3)));
+    // A hash of digits is not a version.
+    assert_eq!(lupin_version("lupin (1234567)"), None);
+    assert_eq!(lupin_version(""), None);
+}

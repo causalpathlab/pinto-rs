@@ -228,6 +228,23 @@ fn a_simulation_is_named_any_way_a_run_is() {
     }
 }
 
+/// Label rows naming cells the truth lacks are counted and warned of: a
+/// labelling of another simulation can name the same cells.
+#[test]
+fn label_rows_not_in_the_truth_are_counted() {
+    let t = truth();
+    let mut l = labels_from(&t, |i| t.domain[i] as i64);
+    let s = score(&t, &l).unwrap();
+    assert_eq!(s.n_unmatched, 0);
+    assert!(s.unmatched_warning().is_none());
+    l.push(("elsewhere_1".into(), 0));
+    l.push(("elsewhere_2".into(), -1));
+    let s = score(&t, &l).unwrap();
+    assert_eq!((s.n_scored, s.n_unmatched), (t.cells.len(), 2));
+    let w = s.unmatched_warning().expect("a warning");
+    assert!(w.contains("2 label rows"), "{w}");
+}
+
 /// Each whitespace-separated field of `line`, as its start and end column.
 pub(super) fn spans(line: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -254,6 +271,7 @@ fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
     let s = Score {
         n_spots: 4,
         n_scored: 4,
+        n_unmatched: 0,
         shared_ari: 1.0,
         donor_dependence: 0.0,
         donor_dependence_by_domain: Vec::new(),

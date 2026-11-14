@@ -125,7 +125,7 @@ impl App<'_> {
     pub(super) fn step_show(
         &mut self,
         by: isize,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
         if self.round.is_none() {
             let Some(path) = self.rounds.first().cloned() else {
@@ -148,7 +148,7 @@ impl App<'_> {
     pub(super) fn next_round(
         &mut self,
         by: isize,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
         if self.rounds.len() < 2 {
             self.status = match self.rounds.len() {
@@ -264,7 +264,7 @@ impl App<'_> {
             (JobKind::Annotate(path), Ok(_)) => {
                 self.rounds.retain(|r| !same_file(r, &path));
                 self.rounds.insert(0, path.clone());
-                self.open_new_round(terminal, &path, "annotated")?;
+                self.open_new_round(Some(terminal), &path, "annotated")?;
             }
             (JobKind::Annotate(_), Err(e)) => self.fail(format!("lupin annotate: {e}")),
             (JobKind::Next(from), Ok(stdout)) => {
@@ -284,7 +284,7 @@ impl App<'_> {
                     self.rounds.insert(0, next.clone());
                 }
                 let what = format!("{applied} decisions applied");
-                self.open_new_round(terminal, &next, &what)?;
+                self.open_new_round(Some(terminal), &next, &what)?;
             }
             (JobKind::Next(_), Err(e)) => {
                 self.fail(if e.contains("not the latest round") {
@@ -310,7 +310,7 @@ impl App<'_> {
 
     fn open_new_round(
         &mut self,
-        terminal: &mut DefaultTerminal,
+        terminal: Option<&mut DefaultTerminal>,
         path: &Path,
         what: &str,
     ) -> anyhow::Result<()> {
@@ -328,11 +328,7 @@ impl App<'_> {
 
     // ── dialogs ─────────────────────────────────────────────────────────
 
-    pub(super) fn modal_key(
-        &mut self,
-        key: KeyEvent,
-        _terminal: &mut DefaultTerminal,
-    ) -> anyhow::Result<()> {
+    pub(super) fn modal_key(&mut self, key: KeyEvent) -> anyhow::Result<()> {
         let Some(modal) = self.modal.take() else {
             return Ok(());
         };

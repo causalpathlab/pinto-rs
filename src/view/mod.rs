@@ -460,28 +460,37 @@ fn thousands(n: usize) -> String {
     indicatif::HumanCount(n as u64).to_string()
 }
 
-/// `["C7", "3"]` → one flag per community; a round's groups by name
-/// (`K3`, a cell type).
-fn parse_focus(given: &[Box<str>], comm: &Communities) -> anyhow::Result<Vec<bool>> {
+/// `["C7", "3"]` → one flag per community; a `round`'s groups by name
+/// (`K3`, a cell type). A level whose communities the manifest names
+/// takes the names, and `C7` or `7` too.
+fn parse_focus(given: &[Box<str>], comm: &Communities, round: bool) -> anyhow::Result<Vec<bool>> {
     let k = comm.k;
     let mut focus = vec![false; k];
     for id in given {
-        let c = if comm.names.is_some() {
-            // A round's cluster by its bare id too, as lupin gives it.
-            let cluster = comm.ids.is_some() && id.parse::<i64>().is_ok();
-            let id: Box<str> = if cluster {
-                format!("K{id}").into()
-            } else {
-                id.clone()
-            };
-            (0..k)
-                .find(|&c| focus_name(comm, c) == id.as_ref())
-                .ok_or_else(|| anyhow::anyhow!("--focus: no group {id:?} in this round"))?
+        // A round's cluster by its bare id too, as lupin gives it.
+        let cluster = comm.ids.is_some() && id.parse::<i64>().is_ok();
+        let id: Box<str> = if cluster {
+            format!("K{id}").into()
         } else {
-            let c = render::community_id(id)
-                .ok_or_else(|| anyhow::anyhow!("--focus: {id:?} is not a community (C7 or 7)"))?;
-            anyhow::ensure!(c < k, "--focus: C{c}, but the level has K={k}");
-            c
+            id.clone()
+        };
+        let named = comm
+            .names
+            .as_ref()
+            .and_then(|_| (0..k).find(|&c| focus_name(comm, c) == id.as_ref()));
+        let c = match named {
+            Some(c) => c,
+            None if round => anyhow::bail!("--focus: no group {id:?} in this round"),
+            None => {
+                let c = render::community_id(&id).ok_or_else(|| match comm.names {
+                    Some(_) => {
+                        anyhow::anyhow!("--focus: no group {id:?} in this level (a name, C7 or 7)")
+                    }
+                    None => anyhow::anyhow!("--focus: {id:?} is not a community (C7 or 7)"),
+                })?;
+                anyhow::ensure!(c < k, "--focus: C{c}, but the level has K={k}");
+                c
+            }
         };
         focus[c] = true;
     }
