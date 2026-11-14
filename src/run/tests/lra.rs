@@ -138,6 +138,40 @@ fn a_simulate_call_becomes_its_command_line() {
         ]
     );
     checked(&cli(), &argv).unwrap();
+    // The jackknife's kind passes through as given.
+    let a: LraSimulateToolArgs = crate::mcp::parse(json!({
+        "run": "r", "region": "/p/region.tsv", "region_jackknife": "no-refit"
+    }))
+    .unwrap();
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
+    assert!(
+        argv.windows(2)
+            .any(|w| w == ["--region-jackknife", "no-refit"]),
+        "{argv:?}"
+    );
+    checked(&cli(), &argv).unwrap();
+    // A region benchmark on data no reference names.
+    let a: LraSimulateToolArgs = crate::mcp::parse(json!({
+        "run": "r", "lr_pairs": "/p/pairs.tsv", "targets": ["/p/t.tsv"],
+        "region": "/p/region.tsv", "plant_region": "DM5"
+    }))
+    .unwrap();
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
+    let tail: Vec<&str> = argv[5..].iter().map(String::as_str).collect();
+    assert_eq!(
+        tail,
+        [
+            "--region",
+            "/p/region.tsv",
+            "--lr-pairs",
+            "/p/pairs.tsv",
+            "--targets",
+            "/p/t.tsv",
+            "--plant-region",
+            "DM5"
+        ]
+    );
+    checked(&cli(), &argv).unwrap();
     // The study and its example are gone from the tool as from the CLI.
     for gone in ["study", "example_study"] {
         let call = json!({"run": "r", gone: true});

@@ -2,6 +2,7 @@
 
 use super::inference::{Estimate, ONE_CLUSTER_DF};
 use super::overlap::NuisanceOpts;
+use crate::lr_activity::args::RegionJackknife;
 
 /// Overlap weight below which a receiver's exposure counts as nearly
 /// determined by its confounders.
@@ -56,6 +57,9 @@ pub struct EffectOpts {
     /// ([`super::fits::Reads`]), which the guard then reports as not estimable all the
     /// same; for tests that check skipping them changes nothing.
     pub fit_thin: bool,
+    /// How a region row near significance is jackknifed
+    /// ([`super::jackknife`]).
+    pub region_jackknife: RegionJackknife,
 }
 
 impl Default for EffectOpts {
@@ -72,6 +76,7 @@ impl Default for EffectOpts {
             abf_prior_scale: ABF_PRIOR_SCALE,
             seed: 42,
             fit_thin: false,
+            region_jackknife: RegionJackknife::NoRefit,
         }
     }
 }

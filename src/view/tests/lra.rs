@@ -295,6 +295,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
             .map(|c| Some(((c % SIDE) as f32, (c / SIDE) as f32)))
             .collect(),
         cell_type: None,
+        region: None,
     };
     (prefix, contacts)
 }
@@ -564,6 +565,7 @@ fn the_layer_starts_lra_beside_the_run() {
         species: "mouse".into(),
         seed: 7,
         identity_excluded: vec!["G0".into()],
+        ..LraOptions::default()
     };
     let only = vec!["LIGA1:RECA1".to_string(), "LIGB1".to_string()];
     let argv = lra_command(Path::new("run.pinto.json"), &opts, &only);

@@ -13,6 +13,7 @@ use super::{
     contacts, only, options, output, receivers, report, rows, timing, RunInputs, Settings,
     INTERNALS, LOG_TARGET,
 };
+use crate::lr_activity::args::RegionJackknife;
 use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
@@ -144,6 +145,7 @@ fn build_tissue(
             identity_bin,
             log1p_depth,
             cell_type: inp.cell_type.map(|(codes, _)| codes),
+            region: inp.region,
         },
         &topts,
     )?
@@ -151,7 +153,7 @@ fn build_tissue(
 }
 
 /// The estimator's options: the fixed settings and the run's seed.
-fn effect_opts(seed: u64) -> EffectOpts {
+fn effect_opts(seed: u64, region_jackknife: RegionJackknife) -> EffectOpts {
     let k = INTERNALS;
     EffectOpts {
         keep_arm_weights: false,
@@ -168,6 +170,7 @@ fn effect_opts(seed: u64) -> EffectOpts {
         min_arm: k.min_arm,
         min_ess: k.min_ess,
         fit_thin: false,
+        region_jackknife,
     }
 }
 
@@ -212,7 +215,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         n_all,
         store,
         local,
-        eopts: effect_opts(a.seed),
+        eopts: effect_opts(a.seed, a.region_jackknife),
         reference_record: Some(record),
         identity_excluded,
     })
@@ -421,10 +424,13 @@ fn competent_receivers(tissue: &Tissue, receptor_counts: &[f64], eopts: &EffectO
 /// sparsity, not the estimator, one without competent receivers would measure
 /// nothing, and three receptors of one ligand would benchmark one ligand three
 /// times.
+///
+/// With a planted region, the competent receivers counted are those inside it.
 fn benchmark_pairs(
     prep: &Prepared,
     eopts: &EffectOpts,
     n_pairs: usize,
+    region: Option<u32>,
 ) -> anyhow::Result<Vec<usize>> {
     let pairs = &prep.pairs;
     let mut order: Vec<usize> = (0..pairs.len()).collect();
@@ -437,9 +443,15 @@ fn benchmark_pairs(
     order.sort_by(|&x, &y| abundance(&pairs[y]).total_cmp(&abundance(&pairs[x])));
     // Both arms at `min_arm` receivers, were the competent receivers split evenly.
     let enough = 2 * eopts.min_arm;
+    let inside = region
+        .map(|code| prep.tissue.region_rows(code).map(|r| prep.tissue.mask(r)))
+        .transpose()?;
     let has_receivers = |k: usize| {
         let competent = competent_receivers(&prep.tissue, &prep.receptor_counts(&pairs[k]), eopts);
-        competent.iter().filter(|&&c| c).count() >= enough
+        (0..competent.len())
+            .filter(|&i| competent[i] && inside.as_ref().is_none_or(|m| m[i]))
+            .count()
+            >= enough
     };
     let mut seen_ligand: HashSet<&[usize]> = HashSet::default();
     let order: Vec<usize> = order
@@ -452,7 +464,12 @@ fn benchmark_pairs(
         .collect();
     anyhow::ensure!(
         !order.is_empty(),
-        "no pair has {enough} receptor-competent receivers to benchmark on"
+        "no pair has {enough} receptor-competent receivers{} to benchmark on",
+        if region.is_some() {
+            " in the planted region"
+        } else {
+            ""
+        }
     );
     Ok(order)
 }
@@ -579,6 +596,30 @@ impl Benchmark<'_> {
     }
 }
 
+/// The region code `--plant-region` names among the tissue's `--region`
+/// labels; `None` without it.
+fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Result<Option<u32>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let (_, names) = tissue
+        .region
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--plant-region {name} needs --region"))?;
+    let code = names
+        .iter()
+        .position(|n| &**n == name)
+        .filter(|_| name != crate::lr_activity::input::UNASSIGNED)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--plant-region {name}: not a region of --region (has {})",
+                names.join(", ")
+            )
+        })?;
+    info!(target: LOG_TARGET, "Planting every effect in region {name} alone");
+    Ok(Some(code as u32))
+}
+
 pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
@@ -588,10 +629,14 @@ pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         ..prep.eopts
     };
     let mut gopts = simulate::GridOpts::default();
-    let order = benchmark_pairs(&prep, eopts, gopts.pairs)?;
+    let region = planted_region(&prep.tissue, a.plant_region)?;
+    let order = benchmark_pairs(&prep, eopts, gopts.pairs, region)?;
     let confounder_gene = real_gene_confounder(&prep, &order);
     settle_real_gene(&prep.pairs, confounder_gene.as_ref(), &mut gopts);
-    let grid = default_grid(&gopts);
+    let grid: Vec<simulate::Scenario> = default_grid(&gopts)
+        .into_iter()
+        .map(|s| simulate::Scenario { region, ..s })
+        .collect();
     info!(
         target: LOG_TARGET,
         "Simulating {} scenarios × {} pairs on the real tissue...",

@@ -2,7 +2,7 @@
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
 use super::fields::{confounding, SimShared};
-use super::row::SimRow;
+use super::row::{RegionRead, SimRow};
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
 use crate::lr_activity::ligand_effect::averaging::abf_weights;
@@ -10,7 +10,9 @@ use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
 use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
 use crate::lr_activity::ligand_effect::effects::Sensitivity;
 use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
+use crate::lr_activity::ligand_effect::jackknife::{jackknife, Jackknife, PairFit};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
+use crate::lr_activity::ligand_effect::overlap::FoldStarts;
 use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
 use crate::lr_activity::ligand_effect::response::{expected_bleed, Response};
 use crate::lr_activity::ligand_effect::rows::EffectRow;
@@ -113,6 +115,9 @@ struct Run<'a> {
     seed: u64,
     /// The hidden field.
     f: Vec<f64>,
+    /// Which rows the effect is planted on: those of `scen.region`'s scope,
+    /// every row without one.
+    planted: Option<Vec<bool>>,
 }
 
 /// Who truly makes ligand, and what is detected of it.
@@ -246,11 +251,12 @@ fn who_responds(run: &Run<'_>, ligand: &TrueLigand, competent: &[bool]) -> Recei
     let (bin, marker) = (&tissue.identity_bin, &ligand.marker);
     let responds: Vec<bool> = (0..n)
         .map(|i| {
-            if scen.marker {
-                marker[bin[i]]
-            } else {
-                competent[i]
-            }
+            run.planted.as_ref().is_none_or(|m| m[i])
+                && if scen.marker {
+                    marker[bin[i]]
+                } else {
+                    competent[i]
+                }
         })
         .collect();
     let comp: Vec<bool> = (0..n)
@@ -487,16 +493,30 @@ pub fn seen_contrast(effect: &[f64], t: &[bool], comp: &[bool], weight: &[f64]) 
     }
 }
 
-/// [`SimRow::truth`] and [`SimRow::truth_exposed`].
+/// A run's potential outcomes, true exposure and seen dose, per receiver:
+/// what its truths are read from.
+struct Outcomes<'a> {
+    y1: &'a [f64],
+    y0: &'a [f64],
+    t_star: &'a [bool],
+    dose: &'a [f64],
+}
+
+/// [`SimRow::truth`] and [`SimRow::truth_exposed`] of scope `scope` of
+/// `avg`, whose competent receivers are `comp`.
 fn effect_truths(
-    y1: &[f64],
-    y0: &[f64],
-    t_star: &[bool],
+    o: &Outcomes<'_>,
     comp: &[bool],
-    dose: &[f64],
     avg: &ThresholdAverage,
     opts: &EffectOpts,
+    scope: usize,
 ) -> (f64, f64) {
+    let Outcomes {
+        y1,
+        y0,
+        t_star,
+        dose,
+    } = *o;
     let averaged = if opts.threshold.is_some() {
         1
     } else {
@@ -505,7 +525,10 @@ fn effect_truths(
     let realized: Vec<f64> = (0..y1.len())
         .map(|i| if t_star[i] { y1[i] - y0[i] } else { 0.0 })
         .collect();
-    let parts: Vec<_> = avg.points[..averaged].iter().map(|p| p.1).collect();
+    let parts: Vec<_> = avg.scope_points[..averaged]
+        .iter()
+        .map(|p| p[scope])
+        .collect();
     let (weights, _) = abf_weights(&parts, opts.abf_prior_scale);
     let truth = if weights.is_empty() {
         f64::NAN
@@ -522,21 +545,23 @@ fn effect_truths(
     (truth, sample_effect(y1, y0, &among))
 }
 
-/// The verdict `lra` would give this run alone.
+/// The verdict `lra` would give this run alone, on scope `scope` (its
+/// co-expression is the pooled one's).
 fn run_verdict(
-    tissue: &Tissue,
     rows: Rows<'_>,
     seen: &SeenByEstimator,
     avg: &ThresholdAverage,
+    neighbour_bin: &[usize],
+    scope: usize,
 ) -> Verdict {
-    let e = avg.scopes[0];
+    let e = avg.scopes[scope];
     let mut judged = EffectRow::pending(
         e,
         (seen.baselines.coexpr_log_or, seen.baselines.coexpr_se),
         eta_squared(
-            &tissue.neighbour_bin,
+            neighbour_bin,
             &indicator(&seen.exposure.leaned_on(e.abf)),
-            &rows.scope_rows[0],
+            &rows.scope_rows[scope],
         ),
     );
     report(std::slice::from_mut(&mut judged), &ReportOpts::default());
@@ -571,6 +596,10 @@ pub fn simulate(
     );
     let seed = mix_seed(seed, scen.rep as u64);
     let f = confounding(tissue, base, shared, scen, mix_seed(seed, 1))?;
+    let region_rows = scen
+        .region
+        .map(|code| tissue.region_rows(code))
+        .transpose()?;
     let run = Run {
         tissue,
         base,
@@ -578,6 +607,7 @@ pub fn simulate(
         opts,
         seed,
         f,
+        planted: region_rows.map(|r| tissue.mask(r)),
     };
 
     // The ligand and the programme draw from this one stream, ligand first.
@@ -609,19 +639,52 @@ pub fn simulate(
     } else {
         Vec::new()
     };
-    let rows = Rows::cells(tissue).pooled();
-    let avg = over_thresholds(
-        rows,
-        exposure,
-        &taus,
-        std::slice::from_ref(&response),
+    // The pooled scope, and the planted region's when there is one.
+    let scope_rows: Vec<Vec<u32>> = std::iter::once(tissue.scope_rows[0].as_slice())
+        .chain(region_rows)
+        .map(<[u32]>::to_vec)
+        .collect();
+    let rows = Rows {
+        scope_rows: &scope_rows,
+        ..Rows::cells(tissue)
+    };
+    let fit = PairFit {
+        ex: exposure,
+        responses: std::slice::from_ref(&response),
         levels,
-        Sensitivity::STEPS,
         opts,
-    )?;
+    };
+    let mut avg = over_thresholds(rows, &fit, &taus, Sensitivity::STEPS, FoldStarts::default())?;
+    // The planted region's row is jackknifed in every run, as `lra` would a
+    // region row near significance: the benchmark measures the widened row.
+    let jack = match region_rows {
+        Some(_) => {
+            let j = jackknife(rows, tissue, &scope_rows[1], &fit)?;
+            j.widen(&mut avg.scopes[1]);
+            j
+        }
+        None => Jackknife::NONE,
+    };
     let e = avg.scopes[0];
-    let (truth, truth_exposed) =
-        effect_truths(&y1, &y0, &latent.t, comp, &exposure.dose, &avg, opts);
+    let outcomes = Outcomes {
+        y1: &y1,
+        y0: &y0,
+        t_star: &latent.t,
+        dose: &exposure.dose,
+    };
+    let (truth, truth_exposed) = effect_truths(&outcomes, comp, &avg, opts, 0);
+    let region = run.planted.as_ref().map(|inside| {
+        let comp_in: Vec<bool> = (0..n).map(|i| comp[i] && inside[i]).collect();
+        let (truth, truth_exposed) = effect_truths(&outcomes, &comp_in, &avg, opts, 1);
+        RegionRead {
+            truth,
+            truth_exposed,
+            estimate: avg.scopes[1].competent,
+            versus_rest: avg.scopes[1].versus_rest,
+            verdict: run_verdict(rows, &seen, &avg, &tissue.neighbour_bin, 1),
+            jackknife: jack,
+        }
+    });
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
     let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
@@ -639,10 +702,11 @@ pub fn simulate(
         incompetent: e.incompetent,
         steps: e.steps,
         contrast: e.effect,
-        verdict: run_verdict(tissue, rows, &seen, &avg),
+        verdict: run_verdict(rows, &seen, &avg, &tissue.neighbour_bin, 0),
         misclassified,
         baselines: seen.baselines,
         seconds: start.elapsed().as_secs_f64(),
         baseline_seconds: seen.baseline_seconds,
+        region,
     })
 }

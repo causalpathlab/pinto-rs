@@ -5,9 +5,12 @@
 use crate::lr_activity::args::LraInputArgs;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
-use crate::util::lupin_rounds::{latest_rounds, read_json};
+use crate::util::lupin_rounds::{latest_rounds, read_json, same_file};
 use crate::util::metadata::{resolve_beside, GraphParams, OutputFiles, PintoMetadata, Run};
 use std::path::{Path, PathBuf};
+
+/// The label of a cell no cell-type or region table names.
+pub const UNASSIGNED: &str = "unassigned";
 
 /// Resolved inputs.
 #[derive(Debug, Clone)]
@@ -20,6 +23,12 @@ pub struct LraInput {
     pub knn_spatial: usize,
     pub preload_data: bool,
     pub block_size: Option<usize>,
+    /// `--cell-types` and `--region`: cell-label tables.
+    pub cell_types: Option<Box<str>>,
+    pub region: Option<Box<str>>,
+    /// The stage-1 run of a residual fit, when `--from` names one: its
+    /// newest lupin round gives the cell types ([`residual_of`]).
+    pub stage1: Option<Run>,
 }
 
 impl LraInputArgs {
@@ -29,9 +38,34 @@ impl LraInputArgs {
             .as_deref()
             .map(|m| Run::open(m).map_err(|e| anyhow::anyhow!("--from {e}")))
             .transpose()?;
-        let data_files: Vec<Box<str>> = match (&run, self.data_files.is_empty()) {
-            (_, false) => self.data_files.clone(),
-            (Some(r), true) => {
+        for f in &self.data_files {
+            if let Some((marker, _)) = excess_marker(Path::new(&**f)) {
+                anyhow::bail!(
+                    "{f} holds excess counts (see {}): lra estimates on the raw counts. Pass the raw \
+                     data files, or --from the residual run alone, which names them",
+                    marker.display()
+                );
+            }
+        }
+        let residual = run.as_ref().map(residual_of).transpose()?.flatten();
+        if let (Some(r), Some(res)) = (&run, &residual) {
+            info!(
+                "--from {} is a residual fit ({}): reading its raw counts, not its excess counts",
+                r.manifest.display(),
+                res.holder.display()
+            );
+            if self.region.is_none() {
+                warn!(
+                    "a residual fit's communities are its donor-specific regions; pass them as \
+                     --region (a cell, region table), best from a fit with the pairs' genes \
+                     dropped, to adjust for them and read each one's effect"
+                );
+            }
+        }
+        let data_files: Vec<Box<str>> = match (&run, &residual, self.data_files.is_empty()) {
+            (_, _, false) => self.data_files.clone(),
+            (Some(r), Some(res), true) => raw_data_files(r, res)?,
+            (Some(r), None, true) => {
                 let listed = r.meta.data_files.clone().unwrap_or_default();
                 anyhow::ensure!(
                     !listed.is_empty(),
@@ -47,7 +81,7 @@ impl LraInputArgs {
                     })
                     .collect::<anyhow::Result<_>>()?
             }
-            (None, true) => anyhow::bail!(
+            (None, _, true) => anyhow::bail!(
                 "no input: pass a prior run's manifest (--from run.pinto.json), \
                  or data files with --coord"
             ),
@@ -61,8 +95,149 @@ impl LraInputArgs {
             knn_spatial: self.knn_spatial,
             preload_data: self.preload_data,
             block_size: self.block_size,
+            cell_types: self.cell_types.clone(),
+            region: self.region.clone(),
+            stage1: residual.and_then(|r| r.stage1),
         })
     }
+}
+
+// * Residual fits
+
+/// The `residual` block a residual fit's manifest carries, and that `pinto
+/// residual` writes into `{out}/residual.json` beside its excess-count
+/// backends: one schema for both sides. lra reads only what decides its
+/// input. Paths are absolute, or relative to the file holding the block.
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub(crate) struct ResidualBlock {
+    /// `excess` for counts a fitted run left unexplained.
+    pub counts: String,
+    /// The stage-1 run's manifest.
+    #[serde(default)]
+    pub stage1: Option<String>,
+    /// Aligned with the run's `data_files`, index for index.
+    #[serde(default)]
+    pub raw_data_files: Vec<String>,
+}
+
+/// Whether two data files give their cells the same name, as a fit names
+/// them by [`basename`] (a second extension such as `.zarr` in `.zarr.zip`
+/// dropped): a residual's file and the raw file it came from must.
+pub(crate) fn same_data_name(a: &str, b: &str) -> bool {
+    let name = |p: &str| basename(p.trim_end_matches('/')).ok();
+    name(a).is_some() && name(a) == name(b)
+}
+
+/// What lra takes from a residual fit: the raw data files, the stage-1 run,
+/// and where the block was read (its paths are relative to that file).
+#[derive(Debug)]
+pub struct ResidualInput {
+    pub raw_data_files: Vec<std::path::PathBuf>,
+    pub stage1: Option<Run>,
+    pub holder: PathBuf,
+}
+
+/// The excess-count marker beside data file `path`: `residual.json` in its
+/// directory saying `counts: excess`, with the marker's block. A raw file
+/// the marker names is not excess.
+fn excess_marker(path: &Path) -> Option<(PathBuf, serde_json::Value)> {
+    let marker = path.parent()?.join("residual.json");
+    let value = read_json(&marker)?;
+    let block: ResidualBlock = serde_json::from_value(value.clone()).ok()?;
+    let raw = block
+        .raw_data_files
+        .iter()
+        .filter_map(|f| resolve_beside(&marker, f))
+        .any(|f| same_file(&f, path));
+    (block.counts == "excess" && !raw).then_some((marker, value))
+}
+
+/// `run` as a residual fit: its manifest's `residual` block, else the
+/// marker beside its first data file; `None` for a run on raw counts.
+pub fn residual_of(run: &Run) -> anyhow::Result<Option<ResidualInput>> {
+    let in_manifest = read_json(&run.manifest)
+        .and_then(|m| m.get("residual").cloned())
+        .map(|v| (v, run.manifest.clone()));
+    let beside = || {
+        let first = run.meta.data_files.as_ref()?.first()?;
+        let (marker, value) = excess_marker(&run.resolve(first)?)?;
+        Some((value, marker))
+    };
+    let Some((value, holder)) = in_manifest.or_else(beside) else {
+        return Ok(None);
+    };
+    let block: ResidualBlock = serde_json::from_value(value).map_err(|e| {
+        anyhow::anyhow!(
+            "{}: a residual block lra cannot read: {e}",
+            holder.display()
+        )
+    })?;
+    if block.counts != "excess" {
+        return Ok(None);
+    }
+    let raw_data_files = block
+        .raw_data_files
+        .iter()
+        .map(|f| resolve_beside(&holder, f).ok_or_else(|| missing(&holder, f, "raw data file")))
+        .collect::<anyhow::Result<_>>()?;
+    let stage1 = block
+        .stage1
+        .as_deref()
+        .map(|s| {
+            let path =
+                resolve_beside(&holder, s).ok_or_else(|| missing(&holder, s, "stage-1 run"))?;
+            Run::open(&path.to_string_lossy())
+        })
+        .transpose()?;
+    Ok(Some(ResidualInput {
+        raw_data_files,
+        stage1,
+        holder,
+    }))
+}
+
+/// The raw counts of residual fit `run`: the block's `raw_data_files`, else
+/// the stage-1 run's data files, one per data file of `run` and with the
+/// same stems, so the cells keep their names.
+fn raw_data_files(run: &Run, res: &ResidualInput) -> anyhow::Result<Vec<Box<str>>> {
+    let raw: Vec<PathBuf> = if !res.raw_data_files.is_empty() {
+        res.raw_data_files.clone()
+    } else if let Some(s1) = &res.stage1 {
+        s1.meta
+            .data_files
+            .iter()
+            .flatten()
+            .map(|f| {
+                s1.resolve(f)
+                    .ok_or_else(|| missing(&s1.manifest, f, "data file"))
+            })
+            .collect::<anyhow::Result<_>>()?
+    } else {
+        anyhow::bail!(
+            "{} names neither raw_data_files nor a stage1 run: pass the raw data files",
+            res.holder.display()
+        );
+    };
+    let own = run.meta.data_files.clone().unwrap_or_default();
+    anyhow::ensure!(
+        raw.len() == own.len(),
+        "{} gives {} raw data files for the run's {}",
+        res.holder.display(),
+        raw.len(),
+        own.len()
+    );
+    for (r, o) in raw.iter().zip(&own) {
+        anyhow::ensure!(
+            same_data_name(&r.to_string_lossy(), o),
+            "raw data file {} does not match the run's {o}: they must share a name, so \
+             the cells keep their names",
+            r.display()
+        );
+    }
+    Ok(raw
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned().into_boxed_str())
+        .collect())
 }
 
 fn missing(manifest: &Path, file: &str, what: &str) -> anyhow::Error {
@@ -125,14 +300,57 @@ pub struct Contacts {
     /// Each cell's section (batch) label.
     pub cell_section: Vec<Box<str>>,
     pub coords: Vec<Option<(f32, f32)>>,
-    /// Cell types of the run's newest lupin round, when it has one: a code
-    /// per data column into the names (unlabelled cells get `unassigned`).
-    pub cell_type: Option<(Vec<u32>, Vec<Box<str>>)>,
+    /// Cell types of `--cell-types`, else of the run's newest lupin round,
+    /// when it has one: a code per data column into the names (unlabelled
+    /// cells get `unassigned`).
+    pub cell_type: Option<Labels>,
+    /// Regions of `--region`, coded the same way.
+    pub region: Option<Labels>,
+}
+
+/// A label per data column, as a code into the names; `unassigned`, the
+/// last name, for a cell the labels leave out.
+pub type Labels = (Vec<u32>, Vec<Box<str>>);
+
+/// Read the contacts of `input` ([`read_contacts`]), with the cell types
+/// and regions of `--cell-types` and `--region` when given.
+pub fn load_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
+    let mut c = read_contacts(input)?;
+    if input.cell_types.is_none() && input.region.is_none() {
+        return Ok(c);
+    }
+    let cell_to_col: HashMap<Box<str>, usize> = c
+        .data
+        .column_names()?
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (n, i))
+        .collect();
+    let n_cells = c.data.num_columns();
+    if let Some(f) = &input.cell_types {
+        let t = read_labels(
+            Path::new(&**f),
+            &["cell_type", "label"],
+            &cell_to_col,
+            n_cells,
+        )
+        .map_err(|e| e.context(format!("--cell-types {f}")))?;
+        info!("Cell types from {f}: {} types", t.1.len());
+        warn!("{CELL_TYPE_CAVEAT}");
+        c.cell_type = Some(t);
+    }
+    if let Some(f) = &input.region {
+        let r = read_labels(Path::new(&**f), &["region", "label"], &cell_to_col, n_cells)
+            .map_err(|e| e.context(format!("--region {f}")))?;
+        info!("Regions from {f}: {} regions", r.1.len());
+        c.region = Some(r);
+    }
+    Ok(c)
 }
 
 /// Read the contacts of `input`: from the `--from` run's cell pairs, or by
 /// building a spatial KNN graph on the coordinates given.
-pub fn load_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
+fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
     if input.run.is_some() {
         anyhow::ensure!(
             input.coord_files.is_empty(),
@@ -191,6 +409,7 @@ pub fn load_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         cell_section: batches,
         coords,
         cell_type: None,
+        region: None,
     })
 }
 
@@ -213,7 +432,11 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .collect();
     let prefix = &input.run.as_ref().expect("from a run").prefix;
     let coords = read_coords(prefix, &cell_to_col, n_cells)?;
-    let manifest = &input.run.as_ref().expect("from a run").manifest;
+    // A residual fit's cell types are its stage-1 run's: donor-invariant.
+    let manifest = match &input.stage1 {
+        Some(s1) => &s1.manifest,
+        None => &input.run.as_ref().expect("from a run").manifest,
+    };
     let cell_type = match newest_round(manifest) {
         Some(round) => match round_cell_types(&round, &cell_to_col, n_cells) {
             Ok(t) => {
@@ -239,6 +462,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         cell_section,
         coords,
         cell_type,
+        region: None,
     })
 }
 
@@ -315,21 +539,88 @@ pub fn round_cell_types(
         resolve_beside(round, argmax).ok_or_else(|| anyhow::anyhow!("{argmax} not found"))?;
     let t = TableReader::open(&table.to_string_lossy())?;
     let cols = t.select(&["cell", "cell_type"])?;
+    let (label, _) = labels_by_column(&t, &cols, cell_to_col, n_cells)?;
+    code_labels(label)
+}
+
+/// A cell-label table (`--cell-types`, `--region`): its `cell` column (else
+/// the first) and the first of `label_names` it has (else the second), as a
+/// code per data column ([`Labels`]). Errors when no cell of the data is
+/// named; warns when fewer than half are.
+pub fn read_labels(
+    path: &Path,
+    label_names: &[&str],
+    cell_to_col: &HashMap<Box<str>, usize>,
+    n_cells: usize,
+) -> anyhow::Result<Labels> {
+    use legume_numeric::matrix::table::TableReader;
+    let t = TableReader::open(&path.to_string_lossy())?;
+    anyhow::ensure!(
+        t.header().len() >= 2,
+        "needs a cell column and a label column, has {:?}",
+        t.header()
+    );
+    let cell = t.find_column(&["cell"]).unwrap_or(0);
+    let label = t
+        .find_column(label_names)
+        .unwrap_or(if cell == 1 { 0 } else { 1 });
+    anyhow::ensure!(cell != label, "the cell and label columns are the same");
+    let (label, matched) = labels_by_column(&t, &[cell, label], cell_to_col, n_cells)?;
+    anyhow::ensure!(
+        matched > 0,
+        "no cell it names is a cell of the data (first data cells: {})",
+        first_names(cell_to_col)
+    );
+    if 2 * matched < n_cells {
+        warn!(
+            "{}: labels {matched} of {n_cells} cells; the rest are unassigned",
+            path.display()
+        );
+    }
+    code_labels(label)
+}
+
+/// A few of the data's cell names, for an error that says how to name them.
+fn first_names(cell_to_col: &HashMap<Box<str>, usize>) -> String {
+    let mut v: Vec<(&usize, &Box<str>)> = cell_to_col.iter().map(|(n, c)| (c, n)).collect();
+    v.sort_unstable();
+    v.iter()
+        .take(3)
+        .map(|(_, n)| n.as_ref())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Each data column's label from the table's `cols` (cell, label), and how
+/// many cells got one; empty and `unassigned` labels are left out.
+fn labels_by_column(
+    t: &legume_numeric::matrix::table::TableReader,
+    cols: &[usize],
+    cell_to_col: &HashMap<Box<str>, usize>,
+    n_cells: usize,
+) -> anyhow::Result<(Vec<Option<Box<str>>>, usize)> {
     let mut label = vec![None::<Box<str>>; n_cells];
-    for row in t.rows(&cols)? {
+    let mut matched = 0usize;
+    for row in t.rows(cols)? {
         let row = row?;
         let (cell, ty) = (row[0].as_ref(), row[1].as_ref());
-        if ty.is_empty() || ty.eq_ignore_ascii_case("unassigned") {
+        if ty.is_empty() || ty.eq_ignore_ascii_case(UNASSIGNED) {
             continue;
         }
         if let Some(&c) = cell_to_col.get(cell) {
+            matched += label[c].is_none() as usize;
             label[c] = Some(ty.into());
         }
     }
+    Ok((label, matched))
+}
+
+/// Labels as codes into their sorted names, `unassigned` last.
+fn code_labels(label: Vec<Option<Box<str>>>) -> anyhow::Result<Labels> {
     let mut names: Vec<Box<str>> = label.iter().flatten().cloned().collect();
     names.sort_unstable();
     names.dedup();
-    anyhow::ensure!(!names.is_empty(), "no cell of the data has a cell type");
+    anyhow::ensure!(!names.is_empty(), "no cell of the data has a label");
     let unassigned = names.len() as u32;
     let codes = label
         .iter()
@@ -339,7 +630,7 @@ pub fn round_cell_types(
             })
         })
         .collect();
-    names.push("unassigned".into());
+    names.push(UNASSIGNED.into());
     Ok((codes, names))
 }
 

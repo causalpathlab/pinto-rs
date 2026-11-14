@@ -2,6 +2,7 @@ mod adjustment;
 mod averaging;
 mod baselines;
 mod benchmark;
+mod clusters;
 mod combining;
 mod covariates;
 mod interface;
@@ -10,6 +11,7 @@ mod overlap;
 mod pairs;
 #[cfg(feature = "view")]
 mod receivers;
+mod regions;
 mod reporting;
 mod simulate;
 mod targets;

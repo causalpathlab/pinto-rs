@@ -64,6 +64,7 @@ pub(super) fn fixture() -> Fixture {
             identity_bin: &ty,
             log1p_depth: &log1p_depth,
             cell_type: None,
+            region: None,
         },
         &TissueOpts {
             folds: 4,

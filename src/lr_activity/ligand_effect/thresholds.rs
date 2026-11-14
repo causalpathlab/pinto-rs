@@ -24,6 +24,22 @@ pub struct ThresholdAverage {
     /// The main fit's arm weights under the first weighting, one per point of
     /// `points`; empty unless [`super::options::EffectOpts::keep_arm_weights`].
     pub arm_weights: Vec<Vec<f64>>,
+    /// The effect of `points` in every scope, not only the pooled one: what
+    /// a scope's truth is averaged over thresholds by.
+    pub scope_points: Vec<Vec<Estimate>>,
+    /// The headline threshold's propensity solutions per fold: where a
+    /// jackknife replicate starts ([`super::jackknife`]).
+    pub starts: FoldStarts,
+}
+
+/// One pair as the fits read it: its exposure, its response under each
+/// weighting of its programme, its competence levels and the options.
+#[derive(Clone, Copy)]
+pub struct PairFit<'a> {
+    pub ex: &'a Exposure,
+    pub responses: &'a [Response],
+    pub levels: &'a [Vec<bool>],
+    pub opts: &'a EffectOpts,
 }
 
 /// The thresholds a pair is read at beyond the headline: none without
@@ -49,22 +65,30 @@ pub fn thresholds(ex: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Vec
 /// A fixed [`super::options::EffectOpts::threshold`] is not averaged: its
 /// estimate is the headline, and `taus` only the curve. A headline threshold
 /// with no estimate ends the pair: the other thresholds are not fitted. `sens`
-/// runs at the headline threshold alone.
+/// runs at the headline threshold alone. The headline's propensity fits start
+/// from `init` (empty: cold), and their solutions come back in
+/// [`ThresholdAverage::starts`].
 pub fn over_thresholds(
     rows: Rows<'_>,
-    ex: &Exposure,
+    fit: &PairFit<'_>,
     taus: &[(f64, f64)],
-    responses: &[Response],
-    levels: &[Vec<bool>],
     sens: Sensitivity,
-    opts: &EffectOpts,
+    init: FoldStarts,
 ) -> anyhow::Result<ThresholdAverage> {
+    let PairFit {
+        ex,
+        responses,
+        levels,
+        opts,
+    } = *fit;
     let mid = levels.len() / 2;
     let grid = threshold_grid(ex, taus);
-    let mut starts = FoldStarts::default();
+    let mut starts = init;
+    let mut headline_starts = FoldStarts::default();
     let mut at_tau: Vec<Vec<ScopeEffects>> = Vec::with_capacity(grid.len());
     let mut points = Vec::with_capacity(grid.len());
     let mut arm_weights = Vec::new();
+    let mut scope_points = Vec::with_capacity(grid.len());
     for (g, &tau) in grid.iter().enumerate() {
         let clock = std::time::Instant::now();
         let other = (g > 0).then(|| ex.at(tau));
@@ -74,6 +98,9 @@ pub fn over_thresholds(
             ThresholdFits::new(rows, exposure, levels, opts, &mut starts)
         })?
         .with_steps(rows, sens.steps, opts, &starts)?;
+        if g == 0 {
+            headline_starts = starts.clone();
+        }
         if g == 0 && !fits.runs_competent() {
             timing::all_skipped();
         }
@@ -86,6 +113,7 @@ pub fn over_thresholds(
             if w == 0 {
                 let head = &per_c.levels[mid];
                 points.push((tau, head.scopes[0].competent, head.pooled_sums.clone()));
+                scope_points.push(head.scopes.iter().map(|s| s.competent).collect());
                 if opts.keep_arm_weights {
                     arm_weights.push(per_c.arm_weight);
                 }
@@ -112,6 +140,8 @@ pub fn over_thresholds(
         scopes,
         points,
         arm_weights,
+        scope_points,
+        starts: headline_starts,
     })
 }
 

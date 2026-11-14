@@ -3,7 +3,7 @@
 use super::columns::{f32s, Columns};
 use crate::lr_activity::ligand_effect::baselines::Baselines;
 use crate::lr_activity::ligand_effect::rows::{CurvePoint, EffectRow, Moments};
-use crate::lr_activity::ligand_effect::simulate::{SimRow, COMPARED};
+use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow, COMPARED};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 /// The `q_scope` of a table of every pair.
@@ -50,6 +50,12 @@ pub fn write_effects(path: &str, rows: &[EffectRow], q_scope: &str) -> anyhow::R
         .est("effect_incompetent", |(r, _)| r.effects.incompetent)
         .f("effect_incompetent_q", |(r, _)| r.effect_incompetent_q)
         .est("effect_contrast", |(r, _)| r.effects.effect)
+        .est("effect_vs_rest", |(r, _)| r.effects.versus_rest)
+        .f("effect_vs_rest_df", |(r, _)| r.effects.versus_rest.df)
+        .f("effect_vs_rest_p", |(r, _)| r.effects.versus_rest.p())
+        .f("jackknife_ratio", |(r, _)| r.jackknife.competent)
+        .f("jackknife_vs_rest_ratio", |(r, _)| r.jackknife.versus_rest)
+        .i("jackknife_tiles", |(r, _)| r.jackknife.replicates)
         .f("effect_log10_bf", |(r, _)| r.effects.abf.log10_bf)
         .f("tau_top", |(r, _)| r.effects.abf.top_tau)
         .f("tau_top_weight", |(r, _)| r.effects.abf.top_weight)
@@ -127,6 +133,9 @@ pub(super) mod sim_cols {
     pub const DOSE_RESPONSE: &str = "dose_response";
     pub const DOSE_MIDPOINT: &str = "dose_midpoint";
     pub const DOSE_ORDER: &str = "dose_order";
+    /// The region code the effect was planted in; NaN where it was planted
+    /// everywhere. Read when present, so older tables still read.
+    pub const REGION: &str = "region";
 
     /// `{method}_reject`.
     pub fn reject(method: &str) -> String {
@@ -189,6 +198,31 @@ pub fn write_sim(path: &str, rows: &[SimRow]) -> anyhow::Result<()> {
         .f("coexpr_p", b(|x| x.coexpr_p))
         .f("seconds", |r| r.seconds)
         .f("baseline_seconds", |r| r.baseline_seconds);
+    let g = |f: fn(&RegionRead) -> f64| move |r: &SimRow| r.region.as_ref().map_or(f64::NAN, f);
+    c.f(REGION, |r| r.scenario.region.map_or(f64::NAN, f64::from))
+        .f("region_truth", g(|x| x.truth))
+        .f("region_truth_exposed", g(|x| x.truth_exposed))
+        .f("region_estimate", g(|x| x.estimate.theta))
+        .f("region_se", g(|x| x.estimate.se))
+        .f("region_df", g(|x| x.estimate.df))
+        .s("region_verdict", |r| {
+            r.region.as_ref().map_or("", |x| x.verdict.code())
+        })
+        .f(
+            "region_reject",
+            g(|x| f64::from(u8::from(x.estimate.rejects()))),
+        )
+        .f("region_jackknife_ratio", g(|x| x.jackknife.competent))
+        .f(
+            "region_jackknife_vs_rest_ratio",
+            g(|x| x.jackknife.versus_rest),
+        )
+        .f("region_vs_rest", g(|x| x.versus_rest.theta))
+        .f("region_vs_rest_se", g(|x| x.versus_rest.se))
+        .f(
+            "region_vs_rest_reject",
+            g(|x| f64::from(u8::from(x.versus_rest.rejects()))),
+        );
     for (k, m) in COMPARED.iter().enumerate() {
         c.i(&reject(m), |r| r.rejections()[k] as usize);
     }

@@ -3,7 +3,7 @@
 use super::compare::{comparison, is_null, scenario_groups};
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
-use crate::lr_activity::ligand_effect::simulate::SimRow;
+use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow};
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 /// Decimals to print a percent change and its interval with, from the
@@ -122,21 +122,40 @@ fn share(v: &[bool]) -> String {
     }
 }
 
-fn est(e: &Estimate) -> (f64, f64, f64) {
-    (e.theta, e.se, e.crit())
+/// An estimate of the planted region's row read against that region's
+/// truths; NaN without a planted region. `vs_rest` shares them: nothing is
+/// planted outside the region.
+fn on_region(r: &SimRow, pick: fn(&RegionRead) -> Estimate) -> Read {
+    let nan = f64::NAN;
+    r.region.as_ref().map_or((nan, nan, nan, nan, nan), |g| {
+        let e = pick(g);
+        (e.theta, e.se, e.crit(), g.truth, g.truth_exposed)
+    })
 }
 
-/// (estimate, se, two-sided 5% critical value of its t reference).
-type View = fn(&SimRow) -> (f64, f64, f64);
+/// An estimate read against the pooled row's truths.
+fn est(e: &Estimate, r: &SimRow) -> Read {
+    (e.theta, e.se, e.crit(), r.truth, r.truth_exposed)
+}
 
-/// The lines of a scenario, in print order.
-const VIEWS: [(&str, View); 6] = [
-    ("estimate", |r| est(&r.estimate)),
-    ("unadjusted_diff", |r| est(&r.unadjusted_diff)),
-    ("ipw", |r| est(&r.ipw)),
-    ("section", |r| est(&r.steps[0])),
-    ("spatial", |r| est(&r.steps[1])),
-    ("identity", |r| est(&r.steps[2])),
+/// (estimate, se, two-sided 5% critical value of its t reference, truth,
+/// truth among the exposed).
+type Read = (f64, f64, f64, f64, f64);
+type View = fn(&SimRow) -> Read;
+
+/// The lines of a scenario, in print order; `region` only under a planted
+/// region.
+/// Each with whether it reads the planted region's row, and so is shown
+/// only under one.
+const VIEWS: [(&str, View, bool); 8] = [
+    ("estimate", |r| est(&r.estimate, r), false),
+    ("region", |r| on_region(r, |g| g.estimate), true),
+    ("vs_rest", |r| on_region(r, |g| g.versus_rest), true),
+    ("unadjusted_diff", |r| est(&r.unadjusted_diff, r), false),
+    ("ipw", |r| est(&r.ipw, r), false),
+    ("section", |r| est(&r.steps[0], r), false),
+    ("spatial", |r| est(&r.steps[1], r), false),
+    ("identity", |r| est(&r.steps[2], r), false),
 ];
 
 /// What the columns mean, and the column headings.
@@ -147,7 +166,7 @@ fn sim_legend() -> String {
          effect among the truly exposed. \
          `estim` is the share of runs with a reported estimate; `reject` the share \
          significant at 5%: type I error where nothing is planted, power elsewhere; `atten` mean estimate / mean effect among the \
-         exposed under a planted effect. section/spatial/identity are the partial adjustments.\n",
+         exposed under a planted effect. section/spatial/identity are the partial adjustments; `region` is the estimate on the planted region's row and `vs_rest` the region minus the rest, both against that region's truths.\n",
     );
     out += &format!(
         "  {:<15} {:>5}  {:>7} {:>7}  {:>5} {:>7}  {:<6} {:>6}  {:>6}\n",
@@ -172,9 +191,9 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
     let ok: Vec<(f64, f64, f64, f64, f64)> = g
         .iter()
         .filter_map(|r| {
-            let (th, se, crit) = view(r);
-            (th.is_finite() && se.is_finite() && crit.is_finite() && r.truth.is_finite())
-                .then_some((th, se, r.truth, r.truth_exposed, crit))
+            let (th, se, crit, truth, truth_x) = view(r);
+            (th.is_finite() && se.is_finite() && crit.is_finite() && truth.is_finite())
+                .then_some((th, se, truth, truth_x, crit))
         })
         .collect();
     let estim = ok.len() as f64 / g.len() as f64;
@@ -230,7 +249,10 @@ pub fn sim_summary(rows: &[SimRow]) -> String {
         let g: Vec<&SimRow> = idx.iter().map(|&i| &rows[i]).collect();
         let null = is_null(&g[0].scenario);
         out += &scenario_title(&key, &g);
-        for (name, view) in VIEWS {
+        for (name, view, needs_region) in VIEWS {
+            if needs_region && g[0].scenario.region.is_none() {
+                continue;
+            }
             out += &view_line(name, view, &g, null);
         }
     }

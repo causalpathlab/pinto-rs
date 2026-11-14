@@ -2,6 +2,7 @@
 
 use super::effects::ScopeEffects;
 use super::inference::Estimate;
+use super::jackknife::Jackknife;
 use super::tissue::ALL_SECTIONS;
 use super::verdict::Verdict;
 
@@ -37,6 +38,9 @@ pub struct EffectRow {
     pub n_incompetent_bins: usize,
     /// The threshold–response curve (pooled row only; empty elsewhere).
     pub curve: Vec<CurvePoint>,
+    /// The delete-one-tile jackknife's SE ratios, by which `effects` was
+    /// widened (region rows near significance only; NaN elsewhere).
+    pub jackknife: Jackknife,
     // From here on filled in by `report`, once every pair is in.
     /// Two-sided p of the headline (the competent effect) against the t reference with
     /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its BH q
@@ -91,6 +95,7 @@ impl EffectRow {
             n_competent_bins: 0,
             n_incompetent_bins: 0,
             curve: Vec::new(),
+            jackknife: Jackknife::NONE,
             effect_p: f64::NAN,
             effect_q: f64::NAN,
             coexpr_p: f64::NAN,

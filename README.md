@@ -79,7 +79,21 @@ share of each type among its neighbours) and strata and add one row per
 receiver cell type (`type:<name>`); without a round there are none. The
 labels come from expression-derived clusters: the receiver identity
 projection leaves the ligand, receptor and target genes out, but the
-clustering behind the labels may have used them.
+clustering behind the labels may have used them. `--cell-types` (a `cell`,
+`cell_type` table) stands in for the round.
+
+`--region` (a `cell`, `region` table, such as a residual fit's communities)
+adds an indicator per region within each section to the adjustment, which the
+smooth fields cannot give at a sharp edge, and a row per region
+(`region:<name>`, its q corrected within the region). Every section and region
+row also carries `effect_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
+that on every other receiver, from the same fit, the test that an effect is
+the region's or the donor's own. A region row with p < 0.2 is checked by a
+delete-one-tile jackknife over its sections, which widens its SEs and never
+narrows them (`jackknife_ratio`); `--region-jackknife no-refit` (the default)
+keeps the nuisance fits, `refit` refits them per tile and is conservative. A
+`--from` run fitted on a residual fit's excess counts is read on its raw
+counts, and its cell types come from the stage-1 run.
 
 `--only` estimates a few pairs instead of all of them: comma-separated
 `LIGAND:RECEPTOR` entries (a complex joins its subunits with `_`,
@@ -139,6 +153,12 @@ thresholds), so the weights do not depend on the response's units.
 prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
 on most.
 
+Every test reads its t reference on the effective number of variance tiles,
+`3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
+row (`effect_competent_df` is that count less one; it used to be every
+carrying tile less one). A row whose signal sits in a few of many tiles, as a region
+of one donor does, is now tested on few, so its p-value is larger than before.
+
 A significant effect then has to exceed the negative control, the same way:
 the effect in receptor-negative receivers (`effect_contrast_q`), the
 comparison corrected among the pairs with a significant effect (so its q is
@@ -168,7 +188,14 @@ confounded nulls and the planted effects, and the baselines' run time.
 
 ```sh
 pinto lra-simulate --from out/run1.pinto.json
+pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region patch
 ```
+
+`--lr-pairs` and `--targets` add pairs and programmes as for `pinto lra` (for
+gene names no reference knows, such as a simulation's). `--plant-region`
+plants every effect in one `--region` label only, and reads the estimate, its
+truth and its verdict on that region's row beside the pooled one (`region_*`
+columns).
 
 ### `srt-simulate`, `srt-sim-score`, `srt-sim-baseline`: multi-donor data with a planted truth
 
@@ -292,9 +319,10 @@ proportions `θ_i` (the per-cell EM of `pinto impute`), so a cell's
 expectation is `μ_gi = n_i Σ_k θ_ik p_k(g)`. Per data file it writes the
 excess `round(max(y − μ, 0))` (or the floor, `--excess floor`) on the rows
 every file shares as `{OUT}/{stem}.zarr`, the run's coordinates of its
-cells as
-`{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` with the counts in
-and out. Data is read as the fit read it: exactly by name for lc and dsvd,
+cells as `{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` with the
+counts in and out. `residual.json` also names the stage-1 run and the raw
+data files, so `pinto lra` given a fit on the residual reads the raw
+counts, not the excess. Data is read as the fit read it: exactly by name for lc and dsvd,
 and for a cage run with the `--feature-names` mode it was fitted with. The
 run must be an lc, cage or dsvd run; every file's name must be distinct,
 and nothing at `OUT` is written over.

@@ -40,18 +40,19 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The same rows, the propensities bordered from `share`'s base fits.
-    pub fn shared(self, share: &'a LigandShare) -> Self {
+    /// The same rows with the pooled scope alone.
+    #[cfg(test)]
+    pub fn pooled(self) -> Self {
         Self {
-            share: Some(share),
+            scope_rows: &self.scope_rows[..1],
             ..self
         }
     }
 
-    /// The same rows with the pooled scope alone.
-    pub fn pooled(self) -> Self {
+    /// The same rows, the propensities bordered from `share`'s base fits.
+    pub fn shared(self, share: &'a LigandShare) -> Self {
         Self {
-            scope_rows: &self.scope_rows[..1],
+            share: Some(share),
             ..self
         }
     }

@@ -330,3 +330,55 @@ fn communities_without_weight_are_left_out() {
     let kept = weighted_communities(prop);
     assert_eq!(kept, Mat::from_row_slice(2, 2, &[0.5, 0.2, 0.5, 0.8]));
 }
+
+/// residual.json carries the block lra reads (counts: excess, the stage-1
+/// run, the raw data files index for index), so lra reads a fit on the
+/// residual's files on their raw counts.
+#[test]
+fn lra_reads_a_fit_on_the_residual_as_a_residual_fit() {
+    use crate::util::metadata::PintoMetadata;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, files) = fixture(d);
+    let out = format!("{d}/resid");
+    run_residual(&args(&prefix, &out, None)).unwrap();
+    let marker: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["counts"], "excess", "{marker}");
+    // paths that resolve from anywhere: canonical, absolute, existing
+    let stage1 = std::fs::canonicalize(format!("{prefix}.pinto.json")).unwrap();
+    assert_eq!(
+        marker["stage1"],
+        stage1.to_string_lossy().as_ref(),
+        "{marker}"
+    );
+    let raw: Vec<String> = files
+        .iter()
+        .map(|f| {
+            std::fs::canonicalize(f)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(marker["raw_data_files"], serde_json::json!(raw), "{marker}");
+
+    // a stage-2 fit on the residual's files
+    let stage2 = format!("{d}/fit2");
+    let meta = PintoMetadata {
+        command: "lc".into(),
+        prefix: stage2.clone(),
+        data_files: Some(vec![format!("{out}/S1.zarr"), format!("{out}/S2.zarr")]),
+        ..Default::default()
+    };
+    meta.write(Path::new(&format!("{stage2}.pinto.json")))
+        .unwrap();
+    let run = Run::open(&stage2).unwrap();
+    let found = crate::lr_activity::input::residual_of(&run)
+        .unwrap()
+        .expect("read as a residual fit");
+    let raw: Vec<std::path::PathBuf> = raw.iter().map(std::path::PathBuf::from).collect();
+    assert_eq!(found.raw_data_files, raw);
+    assert_eq!(found.stage1.unwrap().manifest, stage1);
+}

@@ -96,6 +96,10 @@ pub struct Scenario {
     /// doses, and how sharply it rises (the Hill order).
     pub dose_midpoint: f64,
     pub dose_order: i32,
+    /// The effect is planted only on receivers of this region code
+    /// ([`crate::lr_activity::ligand_effect::tissue::Tissue::region`]), and read on that
+    /// region's row beside the pooled one; `None` plants it everywhere.
+    pub region: Option<u32>,
     pub rep: usize,
 }
 
@@ -134,6 +138,7 @@ impl Default for Scenario {
             dose_response: false,
             dose_midpoint: 0.5,
             dose_order: 2,
+            region: None,
             rep: 0,
         }
     }

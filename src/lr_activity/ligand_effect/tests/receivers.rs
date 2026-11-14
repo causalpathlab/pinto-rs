@@ -66,6 +66,7 @@ fn small(seed: u64) -> Small {
             identity_bin: &identity_bin,
             log1p_depth: &log1p_depth,
             cell_type: None,
+            region: None,
         },
         &TissueOpts {
             folds: 3,

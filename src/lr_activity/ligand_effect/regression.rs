@@ -65,10 +65,13 @@ pub(super) fn fold_products(
         .par_chunks(8192)
         .map(|rows| {
             let mut sums = empty();
-            let mut buf = Vec::new();
+            let mut buf: Vec<f64> = Vec::new();
             for block in rows.chunks(ROW_BLOCK) {
                 gather_design_rows(x, p, cols, block, &mut buf);
                 for (zi, &i) in buf.chunks_exact(d.max(1)).zip(block) {
+                    if fold[i] == super::crossfit::LEFT_OUT {
+                        continue;
+                    }
                     let (a, b) = &mut sums[fold[i] as usize];
                     let yi = y[i];
                     for r in 0..d {
@@ -157,7 +160,7 @@ const BORDERED_KEEP_BELOW: f64 = 0.9;
 thread_local! {
     /// A logistic fit's rows, kept between fits: allocating them anew for
     /// every fit costs a page fault per page, and many workers fault at once.
-    static LOGISTIC_ROWS: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LOGISTIC_ROWS: std::cell::RefCell<Vec<LogisticRow>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A converged logistic fit with what a refit adding columns reuses
@@ -213,6 +216,112 @@ pub(super) fn logistic_base(
     })
 }
 
+/// Where a jackknife replicate's fold starts ([`LogisticBase::leaving_out`]):
+/// the rows it keeps, and the full fit's penalized Hessian over them, with
+/// the weights it is at.
+pub(super) struct Replicate {
+    rows: Vec<usize>,
+    factor: nalgebra::Cholesky<f64, nalgebra::Dyn>,
+    weights: Vec<f64>,
+}
+
+/// [`logistic_base`] on `start`'s rows, started from its factor and `init`:
+/// the Newton steps solve with that factor for as long as they shrink, then
+/// with fresh ones. The gradient is exact, so the optimum is
+/// [`logistic_base`]'s.
+pub(super) fn logistic_from(
+    x: &DMatrix<f32>,
+    p: usize,
+    cols: &[&[f64]],
+    t: &[f64],
+    ridge: f64,
+    init: Option<&DVector<f64>>,
+    start: Replicate,
+) -> anyhow::Result<LogisticBase> {
+    let Replicate {
+        rows,
+        factor,
+        weights,
+    } = start;
+    let d = p + cols.len();
+    LOGISTIC_ROWS.with_borrow_mut(|z| {
+        gather_design_rows(x, p, cols, &rows, z);
+        let tt: Vec<f64> = rows.iter().map(|&i| t[i]).collect();
+        let fit = newton_on_rows(z, d, &tt, ridge, init, Some(Factor::Fresh(factor)))?;
+        let (hessian, weights) = match fit.last_fresh {
+            Some((h, w)) if !w.is_empty() => (h, w),
+            Some((h, _)) => (h, weights),
+            None => anyhow::bail!("a fit given a factor keeps one"),
+        };
+        Ok(LogisticBase {
+            beta: fit.beta,
+            hessian,
+            weights,
+            rows,
+            ridge,
+        })
+    })
+}
+
+impl LogisticBase {
+    /// This fit's rows less those `fold` marks
+    /// [`super::crossfit::LEFT_OUT`], and its penalized Hessian less theirs,
+    /// `H − Σ w_i z_i z_iᵀ` by rank-one downdates, with the weights of the
+    /// rows kept: where a jackknife replicate of the same fold starts. `None`
+    /// when no row is left out (not a replicate), when a quarter or more are
+    /// (a fresh Hessian is then as cheap), or when a downdate loses positive
+    /// definiteness. `x`, `p` and `cols` are the design the fit was on.
+    pub(super) fn leaving_out(
+        &self,
+        fold: &[u8],
+        x: &DMatrix<f32>,
+        p: usize,
+        cols: &[&[f64]],
+    ) -> Option<Replicate> {
+        use super::crossfit::LEFT_OUT;
+        let d = p + cols.len();
+        // Not a replicate (no row left out): the ordinary fit's path, which
+        // should not pay for the partition below.
+        if self.weights.len() != self.rows.len()
+            || self.beta.len() != d
+            || !self.rows.iter().any(|&i| fold[i] == LEFT_OUT)
+        {
+            return None;
+        }
+        let (mut kept, mut out, mut kept_w, mut out_w) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (&i, &w) in self.rows.iter().zip(&self.weights) {
+            if fold[i] == LEFT_OUT {
+                out.push(i);
+                out_w.push(w);
+            } else {
+                kept.push(i);
+                kept_w.push(w);
+            }
+        }
+        if 4 * out.len() >= self.rows.len() {
+            return None;
+        }
+        let mut factor = self.hessian.clone();
+        let mut z: Vec<f64> = Vec::new();
+        gather_design_rows(x, p, cols, &out, &mut z);
+        for (zi, &w) in z.chunks_exact(d).zip(&out_w) {
+            let v = DVector::from_iterator(d, zi.iter().map(|&a| a * w.sqrt()));
+            factor.rank_one_update(&v, -1.0);
+        }
+        let ok = factor
+            .l_dirty()
+            .diagonal()
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.0);
+        ok.then_some(Replicate {
+            rows: kept,
+            factor,
+            weights: kept_w,
+        })
+    }
+}
+
 /// The logistic ridge on `[X | cols | added]` over `base.rows` (`base`
 /// being its fit on `[X | cols]`), started from `base`'s solution with zeros
 /// for `added`. Its Newton steps use `base`'s Hessian bordered by the added
@@ -256,7 +365,7 @@ pub(super) fn logistic_bordered(
 
 /// `ZᵀWZ + λD`, factored, with the jitter every Newton Hessian carries.
 pub(super) fn penalized_hessian(
-    z: &[f64],
+    z: &[LogisticRow],
     d: usize,
     weights: &[f64],
     ridge: f64,
@@ -282,7 +391,7 @@ pub(super) struct Bordered<'a> {
 }
 
 impl<'a> Bordered<'a> {
-    pub(super) fn new(z: &[f64], d: usize, base: &'a LogisticBase) -> anyhow::Result<Self> {
+    pub(super) fn new(z: &[LogisticRow], d: usize, base: &'a LogisticBase) -> anyhow::Result<Self> {
         let d0 = base.beta.len();
         let q = d - d0;
         let m = base.weights.len();
@@ -291,12 +400,12 @@ impl<'a> Bordered<'a> {
         for (zr, &w) in z.chunks_exact(d).zip(&base.weights) {
             let (head, tail) = zr.split_at(d0);
             for (k, &s) in tail.iter().enumerate() {
-                let ws = w * s;
+                let ws = w * s.wide();
                 for (j, &a) in head.iter().enumerate() {
-                    b[(j, k)] += a * ws;
+                    b[(j, k)] += a.wide() * ws;
                 }
                 for (l, &s2) in tail.iter().enumerate() {
-                    c[(l, k)] += s2 * ws;
+                    c[(l, k)] += s2.wide() * ws;
                 }
             }
         }
@@ -366,17 +475,17 @@ struct NewtonFit {
 
 /// Rows `rows` of `[X | cols]`, row-major, gathered a cache-sized block at a
 /// time: `x` is column-major.
-fn gather_design_rows(
+fn gather_design_rows<T: RowValue>(
     x: &DMatrix<f32>,
     p: usize,
     cols: &[&[f64]],
     rows: &[usize],
-    z: &mut Vec<f64>,
+    z: &mut Vec<T>,
 ) {
     use super::crossfit::ROW_BLOCK;
     let d = p + cols.len();
     z.clear();
-    z.resize(rows.len() * d, 0.0);
+    z.resize(rows.len() * d, T::ZERO);
     if d == 0 {
         return;
     }
@@ -389,12 +498,12 @@ fn gather_design_rows(
     for (out, block) in z.chunks_mut(ROW_BLOCK * d).zip(rows.chunks(ROW_BLOCK)) {
         for (j, col) in columns.iter().enumerate() {
             for (zr, &i) in out.chunks_exact_mut(d).zip(block) {
-                zr[j] = col[i] as f64;
+                zr[j] = T::of_f32(col[i]);
             }
         }
         for (c, col) in cols.iter().enumerate() {
             for (zr, &i) in out.chunks_exact_mut(d).zip(block) {
-                zr[p + c] = col[i];
+                zr[p + c] = T::of_f64(col[i]);
             }
         }
     }
@@ -419,7 +528,7 @@ impl RowPass {
         }
     }
 
-    fn at(&mut self, z: &[f64], t: &[f64], beta: &[f64], ridge: f64) {
+    fn at(&mut self, z: &[LogisticRow], t: &[f64], beta: &[f64], ridge: f64) {
         self.gradient.fill(0.0);
         let ll = row_pass_best(z, t, beta, &mut self.gradient, &mut self.weights);
         let mut penalty = 0.0;
@@ -433,7 +542,7 @@ impl RowPass {
 
 /// [`row_pass`] on the widest vectors the machine has.
 fn row_pass_best(
-    z: &[f64],
+    z: &[LogisticRow],
     t: &[f64],
     beta: &[f64],
     gradient: &mut [f64],
@@ -451,7 +560,13 @@ fn row_pass_best(
 /// weight. Written in fixed lanes without fused multiply-add, so wider
 /// vectors give the same bits.
 #[inline(always)]
-fn row_pass(z: &[f64], t: &[f64], beta: &[f64], gradient: &mut [f64], weights: &mut [f64]) -> f64 {
+fn row_pass(
+    z: &[LogisticRow],
+    t: &[f64],
+    beta: &[f64],
+    gradient: &mut [f64],
+    weights: &mut [f64],
+) -> f64 {
     let d = beta.len().max(1);
     let mut ll = 0.0;
     for ((zr, &tr), wr) in z.chunks_exact(d).zip(t).zip(weights.iter_mut()) {
@@ -460,19 +575,19 @@ fn row_pass(z: &[f64], t: &[f64], beta: &[f64], gradient: &mut [f64], weights: &
         let (bhead, btail) = beta.as_chunks::<4>();
         for (a, b) in head.iter().zip(bhead) {
             for k in 0..4 {
-                lanes[k] += a[k] * b[k];
+                lanes[k] += a[k].wide() * b[k];
             }
         }
         let mut eta = lanes[0] + lanes[1] + lanes[2] + lanes[3];
         for (a, b) in tail.iter().zip(btail) {
-            eta += a * b;
+            eta += a.wide() * b;
         }
         let e = sigmoid(eta);
         *wr = (e * (1.0 - e)).max(1e-10);
         ll += tr * eta - softplus(eta);
         let residual = tr - e;
         for (g, &a) in gradient.iter_mut().zip(zr) {
-            *g += residual * a;
+            *g += residual * a.wide();
         }
     }
     ll
@@ -481,7 +596,7 @@ fn row_pass(z: &[f64], t: &[f64], beta: &[f64], gradient: &mut [f64], weights: &
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 fn row_pass_avx2(
-    z: &[f64],
+    z: &[LogisticRow],
     t: &[f64],
     beta: &[f64],
     gradient: &mut [f64],
@@ -494,7 +609,7 @@ fn row_pass_avx2(
 /// `first`, when given, is the factor the first steps solve with
 /// ([`logistic_bordered`]), kept for as long as its steps keep shrinking.
 fn newton_on_rows<'a>(
-    z: &[f64],
+    z: &[LogisticRow],
     d: usize,
     t: &[f64],
     ridge: f64,
@@ -655,23 +770,72 @@ fn lbfgs_direction(
     r
 }
 
-/// Rows of a [`weighted_gram`] tile: the tile and its weighted copy stay in
-/// cache while one matrix product adds them in.
-const GRAM_TILE: usize = 256;
+/// What gathered design rows are held as: f64 for the outcome ridge's
+/// products, f32 for the logistic fits ([`LogisticRow`]).
+pub(super) trait RowValue: Copy + Send + Sync {
+    const ZERO: Self;
+    fn of_f32(v: f32) -> Self;
+    fn of_f64(v: f64) -> Self;
+    fn wide(self) -> f64;
+}
+
+impl RowValue for f64 {
+    const ZERO: Self = 0.0;
+    fn of_f32(v: f32) -> Self {
+        v as f64
+    }
+    fn of_f64(v: f64) -> Self {
+        v
+    }
+    fn wide(self) -> f64 {
+        self
+    }
+}
+
+impl RowValue for f32 {
+    const ZERO: Self = 0.0;
+    fn of_f32(v: f32) -> Self {
+        v
+    }
+    fn of_f64(v: f64) -> Self {
+        v as f32
+    }
+    fn wide(self) -> f64 {
+        self as f64
+    }
+}
+
+/// A logistic fit's rows are held in f32 and every sum over them is taken
+/// in f64. Memory traffic limits many fits side by side: a fit streams its
+/// rows once per Newton pass, and at 16 threads those passes took five
+/// times their one-thread time (srt-simulate L2). The design is f32
+/// already; only the pair's own columns are rounded, at 6e-8 relative.
+pub(super) type LogisticRow = f32;
 
 /// `Σ_r w_r z_r z_rᵀ`, the `z_r` contiguous in `rows`, a tile of rows at a
-/// time as one matrix product `Z_tᵀ (W_t Z_t)`: a blocked kernel instead of
-/// one rank-one update per row, so each entry of the result is loaded once
-/// per tile rather than once per row.
-pub(super) fn weighted_gram(rows: &[f64], d: usize, w: &[f64]) -> DMatrix<f64> {
+/// time as one matrix product `Z_tᵀ (W_t Z_t)` (a blocked kernel instead of
+/// one rank-one update per row), in `T` within each tile and the tiles
+/// summed in f64. The Newton Hessian takes it in f32 ([`LogisticRow`]): a
+/// Hessian only points a step, and the
+/// gradient, summed in f64 ([`row_pass`]), decides where the steps end, so
+/// its rounding (about 1e-5 relative over a tile) changes the steps a fit
+/// takes, not the optimum it reaches; a single-precision product moves half
+/// the bytes and does twice the arithmetic per vector instruction.
+pub(super) fn weighted_gram<T: RowValue + nalgebra::RealField>(
+    rows: &[T],
+    d: usize,
+    w: &[f64],
+) -> DMatrix<f64> {
     let mut h = DMatrix::<f64>::zeros(d, d);
     if d == 0 {
         return h;
     }
-    let mut scaled = vec![0.0; GRAM_TILE * d];
+    let mut scaled = vec![T::ZERO; GRAM_TILE * d];
+    let mut part = DMatrix::<T>::zeros(d, d);
     for (tile, wt) in rows.chunks(GRAM_TILE * d).zip(w.chunks(GRAM_TILE)) {
         let r = wt.len();
         for ((s, z), &wr) in scaled.chunks_exact_mut(d).zip(tile.chunks_exact(d)).zip(wt) {
+            let wr = T::of_f64(wr);
             for (a, &b) in s.iter_mut().zip(z) {
                 *a = wr * b;
             }
@@ -680,10 +844,17 @@ pub(super) fn weighted_gram(rows: &[f64], d: usize, w: &[f64]) -> DMatrix<f64> {
         // column r), `zw` the `r × d` weighted rows.
         let zt = nalgebra::DMatrixView::from_slice(tile, d, r);
         let zw = nalgebra::DMatrixView::from_slice_with_strides(&scaled[..r * d], r, d, d, 1);
-        h.gemm(1.0, &zt, &zw, 1.0);
+        part.gemm(T::one(), &zt, &zw, T::zero());
+        for (a, &b) in h.iter_mut().zip(part.iter()) {
+            *a += b.wide();
+        }
     }
     h
 }
+
+/// Rows of a [`weighted_gram`] tile: the tile and its weighted copy stay in
+/// cache while one matrix product adds them in.
+const GRAM_TILE: usize = 256;
 
 /// `log(1 + e^x)` without overflow.
 fn softplus(x: f64) -> f64 {

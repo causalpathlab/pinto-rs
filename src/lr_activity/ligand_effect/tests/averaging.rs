@@ -55,6 +55,12 @@ fn poisson(rng: &mut SmallRng, rate: f64) -> f32 {
 /// rises with dose, `2 exp(dose · a)`, `a` the number of ligand-carrying
 /// contacts. Two cell types in 8×8 patches, named when `named`.
 fn world(seed: u64, dose: f64, named: bool) -> World {
+    world_in(seed, dose, named, false)
+}
+
+/// [`world`], with regions when `regions`: the left half `a`, the right
+/// half `b`, the first row unassigned.
+fn world_in(seed: u64, dose: f64, named: bool, regions: bool) -> World {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n = SIDE * SIDE;
     let coords: Vec<Option<(f32, f32)>> = (0..n)
@@ -79,6 +85,14 @@ fn world(seed: u64, dose: f64, named: bool) -> World {
         e as f32
     });
     let log1p_depth = vec![(500.0f32).ln_1p(); n];
+    let region: Vec<u32> = (0..n)
+        .map(|i| match (i / SIDE, i % SIDE < SIDE / 2) {
+            (0, _) => 2,
+            (_, true) => 0,
+            _ => 1,
+        })
+        .collect();
+    let region_names: Vec<Box<str>> = vec!["a".into(), "b".into(), "unassigned".into()];
     let mut tissue = Tissue::build(
         &TissueInputs {
             coords: &coords,
@@ -88,6 +102,7 @@ fn world(seed: u64, dose: f64, named: bool) -> World {
             identity_bin: &identity_bin,
             log1p_depth: &log1p_depth,
             cell_type: Some(&ty),
+            region: regions.then_some((region.as_slice(), region_names.as_slice())),
         },
         &TissueOpts {
             folds: 4,
@@ -358,6 +373,76 @@ fn named_cell_types_add_one_row_each() {
     let w = world(5, 0.15, false);
     let rows = estimate_pair(&w.tissue, &data(&w, &targets), &opts(&[0.1], false)).unwrap();
     assert_eq!(rows.len(), 1);
+}
+
+/// Regions add a row each, and an unassigned region none; the adjustment
+/// gains a region group that the identity step admits.
+#[test]
+fn regions_add_one_row_each_but_unassigned() {
+    let w = world_in(5, 0.15, false, true);
+    let targets = [(1.0, w.response.as_slice())];
+    let rows = estimate_pair(&w.tissue, &data(&w, &targets), &opts(&[0.1], false)).unwrap();
+    let labels: Vec<&str> = rows.iter().map(|r| &*r.section).collect();
+    assert_eq!(labels, ["all", "region:a", "region:b"]);
+    let n: usize = rows[1..].iter().map(|r| r.n_receivers).sum();
+    assert_eq!(n + SIDE, rows[0].n_receivers, "the first row is unassigned");
+    for r in &rows[1..] {
+        assert!(r.effects.competent.theta.is_finite(), "{}", r.section);
+        // Against the rest of the tissue, from the same fit.
+        let v = r.effects.versus_rest;
+        assert!(v.theta.is_finite() && v.se > 0.0, "{}", r.section);
+    }
+    assert!(
+        rows[0].effects.versus_rest.theta.is_nan(),
+        "the pooled row has no rest"
+    );
+    // The same effect everywhere: a region differs from the rest by noise.
+    let v = rows[1].effects.versus_rest;
+    assert!(v.theta.abs() < 4.0 * v.se, "{} ± {}", v.theta, v.se);
+    let plain = world(5, 0.15, false);
+    let p = w.tissue.design.p() - plain.tissue.design.p();
+    // One section: a column for region b and one for unassigned, a the
+    // reference.
+    assert_eq!(p, 2);
+    assert_eq!(
+        w.tissue.steps[2].design.p() - plain.tissue.steps[2].design.p(),
+        p,
+        "the identity step admits the region group"
+    );
+}
+
+/// The jackknife of a region row runs once per tile of the region's
+/// section and gives a finite ratio; it only ever widens.
+#[test]
+fn a_region_row_is_jackknifed_over_its_sections_tiles() {
+    use crate::lr_activity::ligand_effect::contacts::competence;
+    use crate::lr_activity::ligand_effect::jackknife::{jackknife, PairFit};
+    let w = world_in(5, 0.15, false, true);
+    let targets = [(1.0, w.response.as_slice())];
+    let o = opts(&[0.1], false);
+    let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
+    let levels = vec![competence(&w.tissue.identity_bin, &detected, 0.1)];
+    let x = Exposure::build(&w.tissue, &w.ligand, &o);
+    let r = Response::build(&w.tissue, &targets);
+    let fit = PairFit {
+        ex: &x,
+        responses: std::slice::from_ref(&r),
+        levels: &levels,
+        opts: &o,
+    };
+    let region = &w.tissue.scope_rows[1];
+    let j = jackknife(Rows::cells(&w.tissue), &w.tissue, region, &fit).unwrap();
+    assert_eq!(
+        j.replicates,
+        w.tissue.cf.n_clusters(),
+        "one section: every tile"
+    );
+    assert!(j.competent.is_finite() && j.competent > 0.0, "{j:?}");
+    assert!(j.versus_rest.is_finite(), "{j:?}");
+    let mut e = estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[1].effects;
+    let before = e.competent.se;
+    j.widen(&mut e);
+    assert!(e.competent.se >= before);
 }
 
 // * Skipped fits
@@ -699,4 +784,39 @@ fn a_ligands_shared_propensity_is_each_pairs_own() {
             );
         }
     }
+}
+
+/// `--region-jackknife no-refit` gives the clustered SE back: the
+/// replicates' plumbing adds nothing, and what `refit` adds on top is the
+/// nuisance error.
+#[test]
+fn a_jackknife_without_refits_is_the_clustered_se() {
+    use crate::lr_activity::args::RegionJackknife;
+    use crate::lr_activity::ligand_effect::contacts::competence;
+    use crate::lr_activity::ligand_effect::jackknife::{jackknife, PairFit};
+    let w = world_in(5, 0.15, false, true);
+    let targets = [(1.0, w.response.as_slice())];
+    let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
+    let levels = vec![competence(&w.tissue.identity_bin, &detected, 0.1)];
+    let r = Response::build(&w.tissue, &targets);
+    let region = &w.tissue.scope_rows[1];
+    let ratio = |kind: RegionJackknife| {
+        let o = EffectOpts {
+            region_jackknife: kind,
+            ..opts(&[0.1], false)
+        };
+        let x = Exposure::build(&w.tissue, &w.ligand, &o);
+        let fit = PairFit {
+            ex: &x,
+            responses: std::slice::from_ref(&r),
+            levels: &levels,
+            opts: &o,
+        };
+        jackknife(Rows::cells(&w.tissue), &w.tissue, region, &fit).unwrap()
+    };
+    let no_refit = ratio(RegionJackknife::NoRefit);
+    let refit = ratio(RegionJackknife::Refit);
+    assert_eq!(no_refit.replicates, refit.replicates);
+    assert!((0.9..1.1).contains(&no_refit.competent), "{no_refit:?}");
+    assert!(refit.competent >= 0.9 * no_refit.competent, "{refit:?}");
 }

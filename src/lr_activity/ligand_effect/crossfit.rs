@@ -2,9 +2,14 @@
 
 use nalgebra::DMatrix;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// Ridge penalty on the standardized confounders; the intercept is free.
 pub const DEFAULT_RIDGE: f64 = 1.0;
+
+/// The fold of a row left out of every fold, training and held out alike:
+/// a jackknife replicate's deleted tile ([`CrossFit::leaving_out`]).
+pub const LEFT_OUT: u8 = u8::MAX;
 
 /// Fold assignment and clusters for cross-fitting and the variance.
 pub struct CrossFit {
@@ -24,10 +29,16 @@ impl CrossFit {
         let n_clusters = cluster.iter().copied().max().map_or(0, |c| c as usize + 1);
         let mut test: Vec<Vec<usize>> = vec![Vec::new(); k];
         for (i, &f) in fold.iter().enumerate() {
-            test[f as usize].push(i);
+            if f != LEFT_OUT {
+                test[f as usize].push(i);
+            }
         }
         let train = (0..k)
-            .map(|f| (0..fold.len()).filter(|&i| fold[i] as usize != f).collect())
+            .map(|f| {
+                (0..fold.len())
+                    .filter(|&i| fold[i] as usize != f && fold[i] != LEFT_OUT)
+                    .collect()
+            })
             .collect();
         Self {
             fold,
@@ -42,6 +53,16 @@ impl CrossFit {
     pub fn n_clusters(&self) -> usize {
         self.n_clusters
     }
+
+    /// The same folds and clusters with the rows `out` in none of them:
+    /// neither trained on nor predicted.
+    pub fn leaving_out(&self, out: &[usize]) -> Self {
+        let mut fold = self.fold.clone();
+        for &i in out {
+            fold[i] = LEFT_OUT;
+        }
+        Self::new(fold, self.k, self.cluster.clone())
+    }
 }
 
 /// The confounder matrix with one Gram matrix per held-out fold.
@@ -51,7 +72,9 @@ impl CrossFit {
 pub struct Design {
     /// Rows are receivers, column-major `n × p`, stored in f32 to halve the
     /// largest allocation of the run; every sum over it is taken in f64.
-    pub x: DMatrix<f32>,
+    /// Shared, so a jackknife replicate ([`Design::leaving_out`]) owns only
+    /// its Grams.
+    pub x: Arc<DMatrix<f32>>,
     /// `gram[k] = Σ_{fold(i) ≠ k} x_i x_iᵀ`: the training Gram for fold `k`.
     gram: Vec<DMatrix<f64>>,
 }
@@ -78,11 +101,52 @@ impl Design {
             x.column_mut(0).fill(1.0);
         }
         let gram = fold_grams(&x, cf);
-        Self { x, gram }
+        Self {
+            x: Arc::new(x),
+            gram,
+        }
     }
 
     pub fn p(&self) -> usize {
         self.x.ncols()
+    }
+
+    /// The design with the rows `out` taken out of every training Gram, for
+    /// the folds `cf` (the ones it was built with) and
+    /// [`CrossFit::leaving_out`]`(out)`: each Gram less those rows' outer
+    /// products, its standardization kept.
+    pub fn leaving_out(&self, cf: &CrossFit, out: &[usize]) -> Self {
+        let p = self.p();
+        // Each fold's Gram over its rows left out, by the blocked kernel;
+        // fold k's training Gram loses every other fold's.
+        let mut by_fold = vec![Vec::new(); self.gram.len()];
+        for &i in out {
+            by_fold[cf.fold[i] as usize].push(i);
+        }
+        let mut buf = Vec::new();
+        let mut parts = Vec::with_capacity(by_fold.len());
+        for rows in &by_fold {
+            gather_rows(&self.x, p, rows, &mut buf);
+            parts.push(super::regression::weighted_gram(
+                &buf,
+                p,
+                &vec![1.0; rows.len()],
+            ));
+        }
+        let mut total = DMatrix::<f64>::zeros(p, p);
+        for part in &parts {
+            total += part;
+        }
+        let gram = self
+            .gram
+            .iter()
+            .zip(&parts)
+            .map(|(g, own)| g - (&total - own))
+            .collect();
+        Self {
+            x: Arc::clone(&self.x),
+            gram,
+        }
     }
 }
 
@@ -174,6 +238,9 @@ fn fold_grams(x: &DMatrix<f32>, cf: &CrossFit) -> Vec<DMatrix<f64>> {
             for block in chunk.chunks(ROW_BLOCK) {
                 gather_rows(x, p, block, &mut buf);
                 for (xi, &i) in buf.chunks_exact(p.max(1)).zip(block) {
+                    if cf.fold[i] == LEFT_OUT {
+                        continue;
+                    }
                     let g = &mut acc[cf.fold[i] as usize];
                     for a in 0..p {
                         let xa = xi[a];

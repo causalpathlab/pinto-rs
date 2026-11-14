@@ -25,8 +25,10 @@
 //! file shares (as an exact-name fit reads them; with `--feature-names` as
 //! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
 //! the run's first two coordinates for those cells. The excess keeps counts,
-//! so the count models fit it as they fit data. `{out}/residual.json` records, per file, the counts in and
-//! the excess out.
+//! so the count models fit it as they fit data. `{out}/residual.json`
+//! records, per file, the counts in and the excess out, and carries the
+//! block `pinto lra` reads to take a fit on these files on its raw counts:
+//! the stage-1 run and the raw data files.
 
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::link_community::profiles::fit_feature_community_param;
@@ -370,13 +372,39 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
         .collect::<anyhow::Result<Vec<_>>>()?;
     std::fs::write(
         summary_path(&args.out),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "run": run.prefix,
-            "excess": args.excess,
-            "files": summary,
-        }))?,
+        serde_json::to_string_pretty(&residual_marker(&run, &inp.files, args.excess, summary)?)?,
     )?;
     Ok(())
+}
+
+/// `residual.json`: the block lra reads to take a fit on the residual's
+/// files as a residual fit (the stage-1 run and the raw data files, index
+/// for index with the residual's, as canonical paths that resolve from
+/// anywhere), with how the excess was made and each file's counts.
+fn residual_marker(
+    run: &Run,
+    files: &[Box<str>],
+    excess: Excess,
+    summary: Vec<FileSummary>,
+) -> anyhow::Result<serde_json::Value> {
+    let canonical = |p: &Path| -> anyhow::Result<String> {
+        Ok(std::fs::canonicalize(p)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?
+            .to_string_lossy()
+            .into_owned())
+    };
+    let block = crate::lr_activity::input::ResidualBlock {
+        counts: "excess".into(),
+        stage1: Some(canonical(&run.manifest)?),
+        raw_data_files: files
+            .iter()
+            .map(|f| canonical(Path::new(f.as_ref())))
+            .collect::<anyhow::Result<_>>()?,
+    };
+    let mut marker = serde_json::to_value(block)?;
+    marker["excess"] = serde_json::to_value(excess)?;
+    marker["files"] = serde_json::to_value(summary)?;
+    Ok(marker)
 }
 
 fn summary_path(out: &str) -> String {

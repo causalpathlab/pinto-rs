@@ -29,10 +29,12 @@
 //! function summed within clusters (tiles), since receivers sharing a tile
 //! share senders and are not independent. With a few dozen tiles the
 //! cluster-robust variance is itself noisy, so tests and intervals use a
-//! t reference with `C − 1` degrees of freedom over the `C` clusters that
-//! carry the subgroup (the usual small-cluster reference for a
-//! cluster-robust mean; Cameron & Miller 2015, J Hum Resour 50:317),
-//! rather than the normal.
+//! t reference (the usual small-cluster reference for a cluster-robust
+//! mean; Cameron & Miller 2015, J Hum Resour 50:317), rather than the
+//! normal, with `C_eff − 1` degrees of freedom: `C_eff` counts the clusters
+//! the variance rests on, at most the `C` that carry the subgroup
+//! ([`super::inference::effective_clusters`]), so a region inside a few
+//! tiles is read on few.
 //!
 //! The nuisance models are deliberately plain: a logistic ridge for `e` and
 //! a linear ridge for `m`, both on a shared confounder matrix. Double
@@ -46,11 +48,12 @@ use super::crossfit::{gather_rows, CrossFit, DesignView, DEFAULT_RIDGE, ROW_BLOC
 use super::fits::indicator;
 use super::inference::{clustered_sd, Estimate};
 use super::regression::{
-    fold_products, logistic_base, logistic_bordered, ridge_bordered, sigmoid, subsample,
-    LogisticBase,
+    fold_products, logistic_base, logistic_bordered, logistic_from, ridge_bordered, sigmoid,
+    subsample, LogisticBase,
 };
 use nalgebra::DVector;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// Options for the nuisance fits.
 #[derive(Clone, Copy, Debug)]
@@ -127,24 +130,45 @@ fn linear_predictor(
 /// is close. Another fold's is not a good start: the folds differ in space,
 /// and Newton takes more steps from it than from the marginal log-odds. The
 /// problem is strictly convex, so a start changes the steps, not the optimum.
-#[derive(Clone, Debug, Default)]
-pub struct FoldStarts(Vec<Option<nalgebra::DVector<f64>>>);
+///
+#[derive(Clone, Default)]
+pub struct FoldStarts(Vec<Option<FoldStart>>);
+
+/// One fold's start: a solution, or the whole fit it came from, which a
+/// jackknife replicate of the same folds (rows left out,
+/// [`super::crossfit::LEFT_OUT`]) starts from: its Newton factor less those
+/// rows ([`LogisticBase::leaving_out`]), rather than a fresh Hessian.
+#[derive(Clone)]
+enum FoldStart {
+    Beta(nalgebra::DVector<f64>),
+    Fit(Arc<LogisticBase>),
+}
+
+impl FoldStart {
+    fn beta(&self) -> &nalgebra::DVector<f64> {
+        match self {
+            Self::Beta(b) => b,
+            Self::Fit(f) => &f.beta,
+        }
+    }
+}
 
 impl FoldStarts {
     /// These solutions, of a model on the first `p` design columns and pair
     /// columns after them, cut down to a nested model on the first `nested`
-    /// design columns and the same pair columns.
+    /// design columns and the same pair columns. The fits do not carry over:
+    /// they are of another design.
     pub fn nested(&self, p: usize, nested: usize) -> Self {
         Self(
             self.0
                 .iter()
                 .map(|b| {
                     b.as_ref().map(|b| {
-                        let s = b.as_slice();
-                        nalgebra::DVector::from_iterator(
+                        let s = b.beta().as_slice();
+                        FoldStart::Beta(nalgebra::DVector::from_iterator(
                             nested + s.len() - p,
                             s[..nested].iter().chain(&s[p..]).copied(),
-                        )
+                        ))
                     })
                 })
                 .collect(),
@@ -171,7 +195,7 @@ pub fn propensity(
     let p = design.p;
     starts.0.resize(cf.k, None);
     // Folds are independent: fit them side by side on this worker's pool.
-    let folds: Vec<Option<LogisticBase>> = (0..cf.k)
+    let folds: Vec<Option<Arc<LogisticBase>>> = (0..cf.k)
         .into_par_iter()
         .map(|k| {
             let (train, test) = (&cf.train[k], &cf.test[k]);
@@ -179,12 +203,21 @@ pub fn propensity(
                 return Ok(None);
             }
             anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
-            let rows = subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64);
-            let start = starts.0[k].as_ref();
-            timing::time(timing::LOGISTIC, || {
-                logistic_base(design.x, p, extra, &tf, &rows, opts.ridge, start)
+            let start = starts.0[k].as_ref().map(FoldStart::beta);
+            // A jackknife replicate: the full fit's rows less the ones left
+            // out, from its factor less theirs.
+            let replicate = match &starts.0[k] {
+                Some(FoldStart::Fit(b)) => b.leaving_out(&cf.fold, design.x, p, extra),
+                _ => None,
+            };
+            timing::time(timing::LOGISTIC, || match replicate {
+                Some(rep) => logistic_from(design.x, p, extra, &tf, opts.ridge, start, rep),
+                None => {
+                    let rows = subsample(train, opts.max_propensity_rows, opts.seed ^ k as u64);
+                    logistic_base(design.x, p, extra, &tf, &rows, opts.ridge, start)
+                }
             })
-            .map(Some)
+            .map(|b| Some(Arc::new(b)))
         })
         .collect::<anyhow::Result<_>>()?;
     let mut e = vec![0.0; n];
@@ -197,7 +230,7 @@ pub fn propensity(
             extra,
             |i, eta| e[i] = sigmoid(eta),
         );
-        starts.0[k] = Some(base.beta.clone());
+        starts.0[k] = Some(FoldStart::Fit(Arc::clone(base)));
     }
     Ok(Propensity { e, folds })
 }
@@ -206,7 +239,7 @@ pub fn propensity(
 /// which a propensity with further columns starts ([`propensity_bordered`]).
 pub struct Propensity {
     pub e: Vec<f64>,
-    folds: Vec<Option<LogisticBase>>,
+    folds: Vec<Option<Arc<LogisticBase>>>,
 }
 
 impl Propensity {
@@ -216,7 +249,7 @@ impl Propensity {
         FoldStarts(
             self.folds
                 .iter()
-                .map(|f| f.as_ref().map(|f| f.beta.clone()))
+                .map(|f| f.as_ref().map(|f| FoldStart::Fit(Arc::clone(f))))
                 .collect(),
         )
     }

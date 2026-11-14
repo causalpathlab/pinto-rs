@@ -119,7 +119,9 @@ use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, LigandShare, Rows};
+use super::jackknife::{jackknife, Jackknife, PairFit, JACKKNIFE_P};
 use super::options::EffectOpts;
+use super::overlap::FoldStarts;
 use super::response::{genes_and_weights, Response, Targets};
 use super::rows::{CurvePoint, EffectRow};
 use super::thresholds::{aligned, over_thresholds, thresholds};
@@ -189,7 +191,24 @@ fn estimate_on(
     let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
-    let eff = over_thresholds(rows, &ex, &taus, &responses, &comps, Sensitivity::ALL, opts)?;
+    let fit = PairFit {
+        ex: &ex,
+        responses: &responses,
+        levels: &comps,
+        opts,
+    };
+    let mut eff = over_thresholds(rows, &fit, &taus, Sensitivity::ALL, FoldStarts::default())?;
+    let mut jacks = vec![Jackknife::NONE; tissue.scopes.len()];
+    for (k, (_, scope)) in tissue.scopes.iter().enumerate() {
+        let e = &mut eff.scopes[k];
+        let near = |x: &super::inference::Estimate| x.p() < JACKKNIFE_P;
+        if matches!(scope, Scope::Region(_)) && (near(&e.competent) || near(&e.versus_rest)) {
+            jacks[k] = timing::time(timing::JACKKNIFE, || {
+                jackknife(rows, tissue, &tissue.scope_rows[k], &fit)
+            })?;
+            jacks[k].widen(e);
+        }
+    }
     let mut curve = Some(threshold_curve(
         tissue.cf.n_clusters(),
         &taus,
@@ -207,13 +226,16 @@ fn estimate_on(
     };
     let mut rows = Vec::with_capacity(tissue.scopes.len());
     let scopes = tissue.scopes.iter().zip(&tissue.scope_rows);
-    for (((label, scope), inside_rows), e) in scopes.zip(eff.scopes) {
+    for ((((label, scope), inside_rows), e), jack) in scopes.zip(eff.scopes).zip(jacks) {
         let curve = if *scope == Scope::All {
             curve.take().unwrap_or_default()
         } else {
             Vec::new()
         };
-        rows.push(reads.row(label, inside_rows, e, curve));
+        rows.push(EffectRow {
+            jackknife: jack,
+            ..reads.row(label, inside_rows, e, curve)
+        });
     }
     Ok(rows)
 }
