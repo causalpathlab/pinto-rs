@@ -422,3 +422,35 @@ fn annotate_is_no_command() {
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand, "{name}");
     }
 }
+
+#[cfg(feature = "view")]
+use crate::session_cli_tests::flat as words;
+
+/// `pinto mcp --help` prints what the server tells an agent, from the one
+/// source the server sends.
+#[cfg(feature = "view")]
+#[test]
+fn mcp_help_prints_the_servers_instructions() {
+    let help = built_cli()
+        .find_subcommand_mut("mcp")
+        .expect("mcp")
+        .render_long_help()
+        .to_string();
+    assert!(
+        words(&help).contains(&words(&mcp::instructions())),
+        "{help}"
+    );
+    assert!(help.lines().all(|l| l.chars().count() <= 80), "{help}");
+}
+
+/// The README keeps no copy of the instructions; it points to the help.
+#[cfg(feature = "view")]
+#[test]
+fn the_readme_points_to_the_instructions_rather_than_copying_them() {
+    let readme = include_str!("../../README.md");
+    assert!(readme.contains("pinto mcp --help"));
+    let readme = words(&readme.replace('>', " "));
+    for sentence in mcp::instructions().split(". ").filter(|s| s.len() > 60) {
+        assert!(!readme.contains(&words(sentence)), "{sentence}");
+    }
+}

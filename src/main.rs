@@ -694,21 +694,21 @@ enum Commands {
     #[cfg(feature = "view")]
     #[command(
         about = "Serve pinto run and the viewer to agents (Model Context Protocol, stdio)",
-        long_about = "Serve pinto to an agent as a Model Context Protocol server on\n\
-                      stdin and stdout. run_methods and run_fit set up and run fits as\n\
-                      `pinto run` does, as background jobs unless asked to wait. The\n\
-                      viewer's tools: view_open opens a run, view_map draws it as a PNG\n\
-                      with its legend, view_markers, view_cell and view_export ask\n\
-                      about it and write figures.\n\
-                      The view is kept between calls, as `pinto view` keeps it.\n\
-                      lupin rounds are shown as they are on disk.\n\n\
-                      Any MCP client runs it as the command `pinto mcp`. The project's\n\
-                      records go to its working directory, or to LEGUME_MCP_PROJECT;\n\
-                      LEGUME_MCP_RECORDS=off keeps none. `pinto view --follow` shows\n\
-                      a person what the agent does. The README has each client's setup.\n\n\
-                      Examples:\n\
-                      \x20 claude mcp add pinto -e LEGUME_MCP_PROJECT=\"$PWD\" -- pinto mcp\n\
-                      \x20 codex mcp add pinto -- pinto mcp"
+        long_about = format!(
+            "Serve pinto to an agent as a Model Context Protocol server on\n\
+             stdin and stdout. It tells the agent, as it connects:\n\n\
+             {}\n\n\
+             For a client that does not pass that on, put it in the agent's\n\
+             own instructions (an AGENTS.md, a system prompt).\n\n\
+             Any MCP client runs it as the command `pinto mcp`. The project's\n\
+             records go to its working directory, or to LEGUME_MCP_PROJECT;\n\
+             LEGUME_MCP_RECORDS=off keeps none. `pinto view --follow` shows\n\
+             a person what the agent does. The README has each client's setup.\n\n\
+             Examples:\n\
+             \x20 claude mcp add pinto -e LEGUME_MCP_PROJECT=\"$PWD\" -- pinto mcp\n\
+             \x20 codex mcp add pinto -- pinto mcp",
+            legume_tui::cli::wrap(&mcp::instructions(), 80)
+        )
     )]
     Mcp,
 

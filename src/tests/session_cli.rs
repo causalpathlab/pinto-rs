@@ -68,7 +68,7 @@ fn long_help(name: &str) -> String {
 }
 
 /// `text` on one line, its words a space apart.
-fn flat(text: &str) -> String {
+pub(crate) fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
