@@ -258,3 +258,38 @@ fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
         }
     }
 }
+
+/// `--feature-inclusion moran` scores every feature, on the PB tree in cage
+/// and on cells in cage-cell, and writes the table.
+#[test]
+fn feature_inclusion_scores_every_feature_in_both_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    for (name, extra) in [
+        (
+            "pb",
+            &["--feature-inclusion", "moran", "--inclusion-blocks", "4"][..],
+        ),
+        (
+            "cell",
+            &[
+                "--feature-inclusion",
+                "moran",
+                "--inclusion-blocks",
+                "4",
+                "cell",
+            ][..],
+        ),
+    ] {
+        let out = fit(dir.path(), &data, &coords, name, extra);
+        let t = Mat::from_parquet(&format!("{out}.feature_inclusion.parquet")).unwrap();
+        assert_eq!(t.rows.len(), 12, "{name}: one row per feature");
+        let pi = t
+            .mat
+            .column(t.cols.iter().position(|c| c.as_ref() == "pi").unwrap());
+        assert!(
+            pi.iter().all(|&p| (0.0..=1.0).contains(&p)),
+            "{name}: π outside [0, 1]"
+        );
+    }
+}

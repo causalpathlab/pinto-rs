@@ -265,30 +265,6 @@ pub fn fit_cell_activity_graph_embedding(
         );
     }
 
-    // Each feature's probability of spatial signal, which each epoch
-    // samples features by (`--feature-inclusion moran`).
-    let inclusion = match args.feature_inclusion {
-        FeatureInclusionMode::All => None,
-        FeatureInclusionMode::Moran => {
-            anyhow::ensure!(
-                !c.coord_files.is_empty(),
-                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
-            );
-            let plane = coordinates
-                .select_columns(&crate::util::ablation::non_batch_columns(&coordinate_names));
-            let inc = crate::cell_activity_graph_embedding::feature_inclusion::moran_inclusion(
-                &data_vec,
-                &feature_axis,
-                &plane,
-                &section_ids,
-                &topology_graph(&graph, &spatial_graph).edges,
-                args.inclusion_tiles,
-            )?;
-            write_feature_inclusion(&c.out, &feature_names, &inc)?;
-            Some(inc)
-        }
-    };
-
     // Per-ROW count totals, streamed ONCE. Two consumers need them and both are
     // whole-matrix passes: the splice go/no-go here, and the pair projection's
     // partition at the end of the run. The counts do not change in between —
@@ -423,6 +399,40 @@ pub fn fit_cell_activity_graph_embedding(
         n_exp_batches,
     )?;
     let n_pb = pb_frame.n_pb;
+
+    // Each feature's probability of spatial signal, which each epoch
+    // samples features by (`--feature-inclusion moran`): over the PB tree's
+    // finest super-cells and super edges, with coarse super-cells as
+    // jackknife blocks; on cells (cage-cell, no pseudobulks) over cells and
+    // spatial edges, with geometric tiles as blocks.
+    let inclusion = match args.feature_inclusion {
+        FeatureInclusionMode::All => None,
+        FeatureInclusionMode::Moran => {
+            use crate::cell_activity_graph_embedding::feature_inclusion::{
+                cell_inclusion, pb_inclusion,
+            };
+            anyhow::ensure!(
+                !c.coord_files.is_empty(),
+                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
+            );
+            let inc = if args.cell_level {
+                let plane = coordinates
+                    .select_columns(&crate::util::ablation::non_batch_columns(&coordinate_names));
+                cell_inclusion(
+                    &data_vec,
+                    &feature_axis,
+                    &plane,
+                    &section_ids,
+                    &topology_graph(&graph, &spatial_graph).edges,
+                    args.inclusion_blocks,
+                )?
+            } else {
+                pb_inclusion(&data_vec, &feature_axis, &pb_frame, args.inclusion_blocks)?
+            };
+            write_feature_inclusion(&c.out, &feature_names, &inc)?;
+            Some(inc)
+        }
+    };
 
     // Collapse cells into super-cells per coarsening level and fit one shared
     // SVD over them: the WARM START of the trained PB table, and the basis the

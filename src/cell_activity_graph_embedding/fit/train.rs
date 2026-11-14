@@ -289,6 +289,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         let mut pair_acc: Option<Tensor> = None;
         let mut chunk_count: usize = 0;
         // Features this epoch will actually visit.
+        let visited = perm.len();
         debug_assert!(inclusion.is_some() || perm.len() == features_per_epoch_actual);
         for chunk in perm.chunks(feature_batch_size) {
             if stop.load(Ordering::Relaxed) {
@@ -483,7 +484,13 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 .unwrap()
                 .to_vec1::<f32>()
                 .unwrap_or_default();
-            let scale = chunk_count as f64;
+            // Under --feature-inclusion an epoch's feature count is a random
+            // draw: average per feature visited (as full chunks), so the loss
+            // the convergence test reads does not move with the draw.
+            let scale = match inclusion {
+                Some(_) => visited as f64 / feature_batch_size.max(1) as f64,
+                None => chunk_count as f64,
+            };
             (
                 (loss_sum as f64) / scale,
                 pl_sum.iter().map(|v| *v as f64 / scale).collect::<Vec<_>>(),

@@ -178,3 +178,111 @@ fn sampling_follows_pi() {
         visits[2]
     );
 }
+
+// ---- units, PB-tree blocks and epochs (written before the code) ---------
+
+use crate::cell_activity_graph_embedding::feature_inclusion::{
+    inclusion_of, normalised_profiles, tree_blocks, UnitGraph,
+};
+
+/// Any blocks, not only tiles: a checkerboard over two sections, deleted
+/// one at a time, matches Moran's I recomputed from scratch.
+#[test]
+fn the_jackknife_deletes_any_block_exactly() {
+    let mut rng = SmallRng::seed_from_u64(5);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let (xy, edges) = grid(6);
+    let n = xy.len();
+    let x: Vec<f64> = xy
+        .iter()
+        .map(|&(a, _)| a as f64 + noise.sample(&mut rng))
+        .collect();
+    let checker: Vec<usize> = xy
+        .iter()
+        .map(|&(a, b)| ((a as usize / 2) + (b as usize / 2)) % 3)
+        .collect();
+    // two sections: the same grid twice, units n..2n the second
+    let g = UnitGraph {
+        profiles: (0..2 * n)
+            .map(|u| vec![(0u32, x[u % n] as f32 * (1 + u / n) as f32)])
+            .collect(),
+        section: (0..2 * n).map(|u| u / n).collect(),
+        block: (0..2 * n).map(|u| checker[u % n] + 3 * (u / n)).collect(),
+        edges: edges
+            .iter()
+            .flat_map(|&(i, j)| [(i, j), (i + n, j + n)])
+            .collect(),
+    };
+    let inc = inclusion_of(1, &g);
+    let xs: Vec<Vec<f64>> = (0..2)
+        .map(|s| x.iter().map(|v| v * (1 + s) as f64).collect())
+        .collect();
+    let all = vec![true; n];
+    let mut loo = Vec::new();
+    for s in 0..2 {
+        for k in 0..3 {
+            let keep: Vec<bool> = checker.iter().map(|&b| b != k).collect();
+            let secs: Vec<Section> = (0..2)
+                .map(|r| {
+                    (
+                        xs[r].clone(),
+                        edges.clone(),
+                        if r == s { keep.clone() } else { all.clone() },
+                    )
+                })
+                .collect();
+            loo.push(moran_brute(&secs));
+        }
+    }
+    let m = loo.len() as f64;
+    let mean = loo.iter().sum::<f64>() / m;
+    let brute_se = ((m - 1.0) / m * loo.iter().map(|v| (v - mean).powi(2)).sum::<f64>()).sqrt();
+    assert!(
+        (inc.se[0] - brute_se).abs() < 1e-4,
+        "{} vs {brute_se}",
+        inc.se[0]
+    );
+}
+
+/// A unit's profile is its pooled counts, log-normalised to 1e4.
+#[test]
+fn units_are_log_normalised_pooled_counts() {
+    // features × units: unit 0 pools (2, 2), unit 1 pools (0, 4)
+    let pooled = crate::util::common::Mat::from_row_slice(2, 2, &[2.0, 0.0, 2.0, 4.0]);
+    let p = normalised_profiles(&pooled);
+    let half = (1.0f32 + 5e3).ln();
+    assert_eq!(p[0], vec![(0, half), (1, half)]);
+    assert_eq!(p[1], vec![(1, (1.0f32 + 1e4).ln())]);
+}
+
+/// Blocks are coarse super-cells of the PB tree, never spanning two
+/// sections, from the coarsest level that gives each section enough.
+#[test]
+fn blocks_come_from_the_pb_tree() {
+    // 8 PBs, sections [0,0,0,0,1,1,1,1]; level 0 has 2 groups that each
+    // span both sections, level 1 has 4 groups within sections
+    let levels = vec![
+        vec![0, 0, 1, 1, 0, 0, 1, 1],
+        vec![0, 0, 1, 1, 2, 2, 3, 3],
+        vec![0, 1, 2, 3, 4, 5, 6, 7],
+    ];
+    let section = vec![0, 0, 0, 0, 1, 1, 1, 1];
+    // two blocks per section: level 0 already gives two once split by section
+    let b = tree_blocks(&levels, &section, 2);
+    assert_eq!(b, vec![0, 0, 1, 1, 2, 2, 3, 3]);
+    // four per section needs the finest level
+    let b = tree_blocks(&levels, &section, 4);
+    assert_eq!(b, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+}
+
+/// An epoch always trains something, however small every π is.
+#[test]
+fn an_epoch_is_never_empty() {
+    let pi = [1e-9f32; 5];
+    let mut rng = SmallRng::seed_from_u64(2);
+    for _ in 0..100 {
+        let mut f = vec![0, 1, 2, 3, 4];
+        sample_included(&mut f, &pi, &mut rng);
+        assert_eq!(f.len(), 1);
+    }
+}

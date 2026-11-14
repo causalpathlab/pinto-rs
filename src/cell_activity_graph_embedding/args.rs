@@ -349,8 +349,10 @@ pub struct CellActivityGraphEmbeddingArgs {
                      moran: feature g with probability π_g, its posterior\n\
                      probability of spatial signal. Each feature's Moran's I\n\
                      over the spatial graph (log-normalised, centred per\n\
-                     section, pooled) gets a delete-one-tile jackknife standard\n\
-                     error (--inclusion-tiles); a two-group empirical-Bayes\n\
+                     section, pooled; on the PB tree's finest super-cells and\n\
+                     super edges, or on cells for cage-cell) gets a\n\
+                     delete-one-block jackknife standard\n\
+                     error (--inclusion-blocks); a two-group empirical-Bayes\n\
                      model on the t statistics gives π_g = 1 − local fdr, with\n\
                      no threshold to choose. Features are weighted, not cut:\n\
                      the expected objective is Σ π_g L_g, and the likely-noise\n\
@@ -361,14 +363,16 @@ pub struct CellActivityGraphEmbeddingArgs {
 
     #[arg(
         long,
-        default_value_t = 4,
-        help = "Tiles per side of each section for --feature-inclusion's jackknife",
-        long_help = "Each section's plane is cut into this many tiles per side;\n\
-                     the jackknife leaves out one tile at a time. Tiles, not whole\n\
-                     sections, so a domain that only one section holds is not\n\
-                     penalised."
+        default_value_t = 16,
+        help = "Jackknife blocks per section for --feature-inclusion",
+        long_help = "About this many blocks per section, which the jackknife\n\
+                     leaves out one at a time: coarse super-cells of the PB tree\n\
+                     (the coarsest level giving every section this many), or\n\
+                     on cells (cage-cell) a grid of ceil(sqrt(N)) tiles per side.\n\
+                     Blocks within sections, never whole sections, so a domain\n\
+                     that only one section holds is not penalised."
     )]
-    pub inclusion_tiles: usize,
+    pub inclusion_blocks: usize,
 
     /// Cells and cell pairs are the trained unit, with no pseudobulks:
     /// set by `pinto cage-cell`, not a flag.
