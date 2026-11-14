@@ -7,7 +7,7 @@ use super::run_sim;
 use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
-use crate::lr_activity::ligand_effect::simulate::{ConfounderKind, Scenario, SimBase};
+use crate::lr_activity::ligand_effect::simulate::{ConfounderKind, Scenario, SimBase, SimRow};
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
 use crate::util::common::Mat;
 
@@ -312,4 +312,41 @@ fn the_effect_coefficient_explains_its_pve_within_bins() {
     }
     assert!((ss / rows.len() as f64 - pve).abs() < 1e-12);
     assert_eq!(effect_coef(0.0, &x, &responds, &bin), 0.0);
+}
+
+/// A field handed in ([`SimShared::field`]) is the run's hidden field: the
+/// one the run would draw gives the same run, another moves it.
+#[test]
+fn a_shared_field_is_the_run_s_field() {
+    use crate::lr_activity::ligand_effect::simulate::{
+        calibrate_producers, confounding, simulate, SimShared,
+    };
+    use legume_numeric::matrix::rand_util::mix_seed;
+    let f = fixture();
+    let scen = Scenario {
+        effect_pve: 0.05,
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
+        confounder: ConfounderKind::Bumps,
+        rep: 1,
+        ..Scenario::default()
+    };
+    let seed = 11;
+    let b = base(&f);
+    let drawn = run_sim(&f.tissue, &b, &scen, &opts(), seed).unwrap();
+    let with = |field_seed: u64| {
+        let field = confounding(&f.tissue, b.confounder_gene, &[], &scen, field_seed).unwrap();
+        let shared = SimShared {
+            producers: calibrate_producers(&f.tissue, b.ligand_counts),
+            gene_fields: &[],
+            field: Some(&field),
+        };
+        simulate(&f.tissue, &b, &shared, &scen, &opts(), seed).unwrap()
+    };
+    // The run's own field seed (`simulate`'s, rep mixed in, then salt 1).
+    let same = with(mix_seed(mix_seed(seed, 1), 1));
+    let bits = |r: &SimRow| [r.estimate.theta, r.estimate.se, r.truth].map(f64::to_bits);
+    assert_eq!(bits(&same), bits(&drawn));
+    let other = with(mix_seed(seed, 99));
+    assert_ne!(bits(&other), bits(&drawn), "another field, another run");
 }

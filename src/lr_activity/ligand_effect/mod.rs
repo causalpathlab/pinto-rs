@@ -116,6 +116,7 @@ pub mod verdict;
 mod tests;
 
 pub use baselines::PERMUTATIONS;
+pub use memory::check_memory_budget;
 
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::common::*;

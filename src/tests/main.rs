@@ -166,3 +166,112 @@ fn lra_needs_a_contact_per_cell_at_least() {
         assert!(parse("1").is_ok(), "{cmd}");
     }
 }
+
+fn lra_simulate(extra: &[&str]) -> LraSimulateArgs {
+    let mut argv = vec!["pinto", "lra-simulate"];
+    argv.extend_from_slice(extra);
+    match Cli::try_parse_from(argv)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .commands
+    {
+        Commands::LraSimulate(a) => *a,
+        _ => panic!("not lra-simulate"),
+    }
+}
+
+/// Any of `--one`, `--set`, `--pairs` and `--null-pairs` selects the
+/// single-scenario mode, its pair counts ten each unless given; without
+/// them the built-in grid runs.
+#[test]
+fn lra_simulate_selects_one_scenario_by_its_flags() {
+    let base = ["--from", "r.pinto.json", "-o", "x"];
+    let with = |extra: &[&str]| lra_simulate(&[&base[..], extra].concat());
+    assert!(with(&[]).single().unwrap().is_none(), "the grid");
+    for extra in [
+        &["--one"][..],
+        &["--set", "effect_pve=0.05"],
+        &["--set=marker=1"],
+        &["--pairs", "4"],
+        &["--null-pairs=3"],
+    ] {
+        assert!(with(extra).single().unwrap().is_some(), "{extra:?}");
+    }
+    let one = with(&["--set", "effect_pve=0.05", "--set", "rep=2", "--pairs=4"])
+        .single()
+        .unwrap()
+        .unwrap();
+    assert_eq!((one.planted, one.null), (4, 10));
+    assert_eq!((one.scenario.effect_pve, one.scenario.rep), (0.05, 2));
+    assert!(Cli::try_parse_from(
+        [&["pinto", "lra-simulate"][..], &base, &["--pairs", "0"]].concat()
+    )
+    .is_err());
+}
+
+/// A single-scenario call checks its point and its `--out` before reading
+/// any data: the data files here do not exist, and the error is the point's.
+#[test]
+fn lra_simulate_refuses_a_bad_point_before_reading_data() {
+    let data = ["missing.zarr", "--coord", "missing.csv"];
+    let run = |extra: &[&str]| {
+        lr_activity::fit_lra_simulate(&lra_simulate(&[&data[..], extra].concat()))
+            .unwrap_err()
+            .to_string()
+    };
+    let e = run(&[
+        "-o",
+        "x",
+        "--set",
+        "effect_pve=0.8",
+        "--set",
+        "response_field_pve=0.5",
+    ]);
+    assert!(e.contains("PVE out of range"), "{e}");
+    let e = run(&["-o", "x", "--set", "no_such_key=1"]);
+    assert!(e.contains("no_such_key"), "{e}");
+    let e = run(&["--set", "effect_pve=0.05"]);
+    assert!(e.contains("--out"), "{e}");
+    let e =
+        lr_activity::fit_lra_simulate(&lra_simulate(&["--from", "missing.pinto.json", "--one"]))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("--out"), "{e}");
+}
+
+#[test]
+fn lra_simulate_has_a_version() {
+    let e = Cli::try_parse_from(["pinto", "lra-simulate", "--version"]).unwrap_err();
+    assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
+}
+
+/// A single scenario never takes the `--from` run's own prefix, whose
+/// `{prefix}.lra-simulate.parquet` is the grid's the manifest records.
+#[test]
+fn lra_simulate_keeps_a_single_scenario_off_the_run_s_table() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("d.zarr"), b"").unwrap();
+    let m = dir.path().join("run.pinto.json");
+    crate::util::metadata::PintoMetadata {
+        command: "lc".into(),
+        prefix: "run".into(),
+        data_files: Some(vec!["d.zarr".into()]),
+        ..Default::default()
+    }
+    .write(&m)
+    .unwrap();
+    let from = m.to_string_lossy().into_owned();
+    let prefix = dir.path().join("run").to_string_lossy().into_owned();
+    let e =
+        lr_activity::fit_lra_simulate(&lra_simulate(&["--from", &from, "-o", &prefix, "--one"]))
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("prefix"), "{e}");
+    let other = dir.path().join("other").to_string_lossy().into_owned();
+    let e = lr_activity::fit_lra_simulate(&lra_simulate(&["--from", &from, "-o", &other, "--one"]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !e.contains("prefix"),
+        "another prefix gets past the check: {e}"
+    );
+}

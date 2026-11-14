@@ -458,6 +458,75 @@ pub struct LraSimulateArgs {
         help = "Species of the reference; auto reads it from the gene-name case"
     )]
     pub species: ReferenceSpecies,
+
+    #[arg(
+        long,
+        help_heading = "Single scenario",
+        help = "Run one scenario on planted and null pairs, not the built-in grid",
+        long_help = "Run one scenario, not the built-in grid: its effect planted on\n\
+                     --pairs pairs and withheld (effect 0) on --null-pairs others, all\n\
+                     under the same hidden field, so the one call can be scored by\n\
+                     AUROC and AUPRC. --set, --pairs or --null-pairs select it too.\n\
+                     Needs -o. Writes {out}.lra-simulate.parquet with a planted label\n\
+                     and each method's p, then {out}.lra-simulate.json (the resolved\n\
+                     scenario, the pairs and their seeds), whose presence marks the\n\
+                     call complete. The run's manifest is not written to."
+    )]
+    pub one: bool,
+
+    #[arg(
+        long = "set",
+        value_name = "KEY=VALUE",
+        help_heading = "Single scenario",
+        help = "Set a key of the single scenario (repeatable); keys are the table's columns",
+        long_help = "Set a key of the single scenario, KEY=VALUE, repeatable; the keys are\n\
+                     the {out}.lra-simulate.parquet columns that record them:\n\
+                     effect_pve, ligand_field_pve, response_field_pve (signed),\n\
+                     confound_scale, confounder (fourier, bumps or realgene),\n\
+                     confound_shape (linear or quadratic), heterogeneous, marker,\n\
+                     dose_response (true/false or 1/0), dose_midpoint, dose_order and\n\
+                     rep. Unset keys are no effect and no confounding. A point out of\n\
+                     range is refused before any data is read."
+    )]
+    pub set: Vec<String>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help_heading = "Single scenario",
+        help = "Pairs the single scenario's effect is planted on [default: 10]"
+    )]
+    pub pairs: Option<usize>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help_heading = "Single scenario",
+        help = "Further pairs the single scenario withholds its effect from [default: 10]"
+    )]
+    pub null_pairs: Option<usize>,
+}
+
+impl LraSimulateArgs {
+    /// The single scenario these flags ask for, checked; `None` for the
+    /// built-in grid.
+    pub fn single(
+        &self,
+    ) -> anyhow::Result<Option<crate::lr_activity::ligand_effect::simulate::SingleScenario>> {
+        use crate::lr_activity::ligand_effect::simulate::SingleScenario;
+        if !(self.one || !self.set.is_empty() || self.pairs.is_some() || self.null_pairs.is_some())
+        {
+            return Ok(None);
+        }
+        SingleScenario::new(
+            &self.set,
+            self.pairs.unwrap_or(SingleScenario::PAIRS),
+            self.null_pairs.unwrap_or(SingleScenario::PAIRS),
+        )
+        .map(Some)
+    }
 }
 
 // * Removed flags

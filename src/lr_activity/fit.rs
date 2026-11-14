@@ -623,7 +623,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
 /// contacts, from the `--from` run or built from the coordinates given.
 fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyhow::Result<()> {
     use crate::lr_activity::ligand_effect::pipeline::run;
-    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
+    use crate::lr_activity::ligand_effect::{check_memory_budget, RunInputs, Settings};
+    check_memory_budget()?;
     let contacts = load_contacts(input)?;
     let manifest = record_manifest(input, out, &contacts)?;
     run(&RunInputs {
@@ -663,14 +664,36 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
 /// `pinto lra-simulate`: the contact-effect analysis's power and
 /// calibration check on this tissue.
 pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
-    use crate::lr_activity::ligand_effect::pipeline::run_simulate;
-    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
+    use crate::lr_activity::ligand_effect::pipeline::{run_simulate, run_simulate_one};
+    use crate::lr_activity::ligand_effect::{check_memory_budget, RunInputs, Settings};
+    // A single scenario is checked before any data is read, and needs its
+    // own prefix: calls run side by side would all write the run's.
+    let single = args.single()?;
+    anyhow::ensure!(
+        single.is_none() || args.out.is_some(),
+        "a single scenario (--one, --set, --pairs, --null-pairs) needs --out: calls side by \
+         side would all write {{prefix}}.lra-simulate.parquet"
+    );
+    check_memory_budget()?;
     let input = args.input.resolve()?;
     let out = input.out(args.out.as_deref())?;
+    if let (Some(_), Some(run)) = (&single, &input.run) {
+        let same = |p: &str| std::path::absolute(p).ok();
+        anyhow::ensure!(
+            same(&out) != same(&run.prefix),
+            "--out {out} is the --from run's prefix, whose {{prefix}}.lra-simulate.parquet is the \
+             built-in grid's; give a single scenario a prefix of its own"
+        );
+    }
     mkdir_parent(&out)?;
     let contacts = load_contacts(&input)?;
-    let manifest = record_manifest(&input, &out, &contacts)?;
-    run_simulate(&RunInputs {
+    // A single scenario writes its own sidecar and records nothing in a
+    // manifest, so it is handed none.
+    let manifest = match single {
+        Some(_) => std::path::PathBuf::new(),
+        None => record_manifest(&input, &out, &contacts)?,
+    };
+    let inputs = RunInputs {
         settings: Settings {
             out: &out,
             manifest: &manifest,
@@ -699,7 +722,11 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             .region
             .as_ref()
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
-    })
+    };
+    match &single {
+        Some(one) => run_simulate_one(&inputs, one),
+        None => run_simulate(&inputs),
+    }
 }
 
 pub(super) fn stratum_entry(

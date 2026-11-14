@@ -45,6 +45,15 @@ impl<'r, T> Columns<'r, T> {
         self
     }
 
+    /// An integer column given whole, a value per row.
+    pub(super) fn v(&mut self, name: &str, values: Vec<usize>) -> &mut Self {
+        debug_assert_eq!(values.len(), self.rows.len());
+        self.order.push((1, self.i32s.len()));
+        self.i32s
+            .push((name.into(), values.into_iter().map(|v| v as i32).collect()));
+        self
+    }
+
     pub(super) fn s(&mut self, name: &str, f: impl Fn(&'r T) -> &'r str) -> &mut Self {
         self.order.push((2, self.strs.len()));
         self.strs

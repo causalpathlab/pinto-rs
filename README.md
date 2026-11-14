@@ -239,6 +239,62 @@ plants every effect in one `--region` label only, and reads the estimate, its
 truth and its verdict on that region's row beside the pooled one (`region_*`
 columns); the summary and the table (`planted_region`) name the region.
 
+**One scenario per call.** A sweep over scenarios runs one call per point
+and seed, many at once, and scores each call by AUROC and AUPRC. `--set
+KEY=VALUE` (repeatable), `--pairs N`, `--null-pairs N` or `--one` selects
+this mode in place of the built-in grid:
+
+```sh
+pinto lra-simulate --from out/run1.pinto.json -o sweep/p07-s3 --seed 3 \
+  --set effect_pve=0.02 --set ligand_field_pve=0.25 --set response_field_pve=-0.25 \
+  --set confounder=bumps --set confound_scale=32 --pairs 10 --null-pairs 10
+```
+
+The keys are the table's own column names, so a sweep axis is a column:
+`effect_pve` (the planted effect's share of the programme genes' log-rate
+variance), `ligand_field_pve` and `response_field_pve` (the hidden field's
+share of the producer log odds and, signed, of the response),
+`confound_scale` (the field's length scale, in contact lengths),
+`confounder` (`fourier`, `bumps` or `realgene`), `confound_shape`
+(`linear` or `quadratic`), `heterogeneous`, `marker` and `dose_response`
+(`true`/`false` or `1`/`0`), `dose_midpoint` and `dose_order` (the dose
+response's half-way quantile and Hill order) and `rep`. Unset keys are no
+effect and no confounding; a point out of range is refused before any data
+is read, and the mode needs `-o`.
+
+Every call holds both labels: the pairs fit to benchmark are ranked by
+ligand abundance, the even ranks carry the effect (`--pairs`, default 10)
+and the odd ranks none (`--null-pairs`, default 10), all under the same
+hidden field, so abundance cannot predict the label. With fewer pairs to
+benchmark the call takes what there is and warns, as it does below 20
+rows. `realgene` draws its field from the most abundant gene outside every
+pair of the call, and fails when there is none rather than change the
+point. `--plant-region` applies as above; the scores below stay the pooled
+row's, the region's being `region_estimate` and `region_se`. `-o` must not
+be the `--from` run's prefix, whose table is the grid's.
+
+The call writes `{out}.lra-simulate.parquet`, the table above plus
+`planted` (0/1), `t` (estimate over SE, a one-sided score as the planted
+effect is positive), `p` (its two-sided p on the t reference) and
+`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. A row not
+estimable stays, with NaN scores. Then, last and atomically, it writes
+`{out}.lra-simulate.json`, whose presence marks the call complete: the
+resolved scenario, the counts planted and null and the rule that labelled
+them, each pair's ligand, receptor, rank, label, seed and run time, the
+real-gene confounder, `--seed`, `rep`, the pinto version and the reference
+record (path and sha256). It records nothing in the run's manifest.
+
+Each pair's draws start from `mix_seed(--seed, rank)`, with `rep` mixed in,
+and the hidden field from `--seed` and `rep` alone, so a pair's rows do not
+depend on the other pairs of the call (save under `realgene`, whose gene
+can change with `--pairs` and `--null-pairs`), and the same flags give the same
+table, byte for byte, on any number of threads. These streams are not the
+built-in grid's: a point of the grid and the same point run alone give
+different draws. Pairs run at once as memory allows within
+`RAYON_NUM_THREADS`; a runner starting several calls side by side sets
+`PINTO_MEMORY_BUDGET` (bytes) per call, since each process otherwise takes
+half the free memory for itself.
+
 ### `srt-simulate`, `srt-sim-score`, `srt-sim-pairs`, `srt-sim-baseline`: multi-donor data with a planted truth
 
 Do methods find the same domains in every donor, and keep a domain that
@@ -882,7 +938,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations`, `json_fwer_threshold`, `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
-| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects |
+| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
 | `run_residual` | `pinto residual` as a recorded job: `run` (an lc, cage or dsvd run), `out`, `data_files`, `excess`, `adapt`, `adapt_cells`, `feature_names`; the run is checked before it starts (another kind of run is refused) and nothing is written over; writes `{out}/{stem}.zarr` with `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, and the reply lists them for `run_fit` as `fit.data` with `fit.coords` and the coordinate columns they carry as `fit.flags`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto srt-simulate` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score` | `pinto srt-sim-score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |

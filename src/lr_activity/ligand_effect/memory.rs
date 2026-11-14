@@ -8,13 +8,52 @@ use super::tissue::Tissue;
 /// what it has, and the least allowed when it does.
 const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
 
-/// Memory allowed for pairs estimated at once: half of what is available now
-/// ([`available_memory`]), the rest left to the tissue and the machine's
-/// other work.
-fn pair_memory_budget() -> usize {
-    available_memory().map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
+/// The variable that sets the memory budget, in bytes: a runner starting
+/// several pinto processes at once gives each its share, which half of what
+/// is free, read by each process alone, would overcommit.
+pub const MEMORY_BUDGET_VAR: &str = "PINTO_MEMORY_BUDGET";
+
+/// Memory allowed for pairs estimated at once: `set` bytes
+/// ([`MEMORY_BUDGET_VAR`]) when given, else [`half_available`]. A `set` that
+/// is not a whole number of bytes is an error.
+pub(super) fn memory_budget(set: Option<&str>, available: Option<usize>) -> anyhow::Result<usize> {
+    set.map_or(Ok(half_available(available)), |s| {
+        s.trim()
+            .parse()
+            .ok()
+            .filter(|&b: &usize| b > 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
+            })
+    })
+}
+
+/// Half of the `available` memory, the rest left to the tissue and the
+/// machine's other work, and never below [`MIN_PAIR_MEMORY_BUDGET`].
+fn half_available(available: Option<usize>) -> usize {
+    available.map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
         (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
     })
+}
+
+/// Refuse a [`MEMORY_BUDGET_VAR`] that does not parse, before any work.
+pub fn check_memory_budget() -> anyhow::Result<()> {
+    memory_budget(std::env::var(MEMORY_BUDGET_VAR).ok().as_deref(), None).map(|_| ())
+}
+
+/// [`memory_budget`] now, of what is available ([`available_memory`]). A
+/// variable that does not parse is refused at the start
+/// ([`check_memory_budget`]); one that reaches here anyway is warned about
+/// once and counts as unset.
+fn pair_memory_budget() -> usize {
+    static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        let var = std::env::var(MEMORY_BUDGET_VAR).ok()?;
+        memory_budget(Some(&var), None)
+            .map_err(|e| log::warn!("{e}; using half the available memory"))
+            .ok()
+    });
+    set.unwrap_or_else(|| half_available(available_memory()))
 }
 
 /// Bytes this process could still allocate: the system's available memory, or

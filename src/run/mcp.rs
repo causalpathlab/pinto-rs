@@ -859,8 +859,14 @@ fn specs() -> Vec<ToolSpec> {
              rejecting at 5% (type I error where nothing is planted, power elsewhere) beside \
              the co-expression baselines, the estimable share, and the means over the \
              confounded nulls and the planted effects. Writes {out}.lra-simulate.parquet and \
-             records it in the run's manifest (slot lra.simulate). Runs as a background job unless asked; called again with the same run \
-             and out once done, it reads the table instead of running.",
+             records it in the run's manifest (slot lra.simulate). With one, set, pairs or \
+             null_pairs it runs one scenario instead of the built-in grid: its effect planted on pairs \
+             pairs and withheld on null_pairs others under the same hidden field, writing \
+             {out}.lra-simulate.parquet (columns planted, t, p and each method's p, for AUROC \
+             and AUPRC) and then {out}.lra-simulate.json (the resolved scenario, the pairs, \
+             their labels and seeds, the reference), recording nothing in the manifest. Runs \
+             as a background job unless asked; called again with the same run and out once \
+             done, it reads the table instead of running.",
             with_lra_input(json!({
                 "type": "object",
                 "properties": {
@@ -870,6 +876,10 @@ fn specs() -> Vec<ToolSpec> {
                     "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference pairs the benchmark picks from (--lr-pairs); needed for gene names no reference knows"},
                     "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
                     "plant_region": {"type": "string", "description": "Plant every effect only in this region of region (--plant-region), and read it on that region's row beside the pooled one; the table names it (column planted_region)"},
+                    "one": {"type": "boolean", "description": "Run one scenario at its defaults (--one): no effect and no confounding unless set says otherwise; set, pairs or null_pairs select the single-scenario mode too"},
+                    "set": {"type": "array", "items": {"type": "string"}, "description": "One scenario's keys, KEY=VALUE each (--set), the table's column names: effect_pve, ligand_field_pve, response_field_pve (signed), confound_scale, confounder (fourier, bumps, realgene), confound_shape (linear, quadratic), heterogeneous, marker, dose_response (true/false or 1/0), dose_midpoint, dose_order, rep; unset keys are no effect and no confounding. Selects the single-scenario mode"},
+                    "pairs": {"type": "integer", "minimum": 1, "description": "Pairs the single scenario's effect is planted on (--pairs), even abundance ranks [default: 10]. Selects the single-scenario mode"},
+                    "null_pairs": {"type": "integer", "minimum": 1, "description": "Further pairs it withholds the effect from (--null-pairs), odd abundance ranks [default: 10]. Selects the single-scenario mode"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,

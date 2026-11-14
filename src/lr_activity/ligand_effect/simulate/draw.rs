@@ -113,8 +113,8 @@ struct Run<'a> {
     opts: &'a EffectOpts,
     /// The run's seed; each random stream mixes in its own salt.
     seed: u64,
-    /// The hidden field.
-    f: Vec<f64>,
+    /// The hidden field, drawn for the run or shared ([`SimShared::field`]).
+    f: std::borrow::Cow<'a, [f64]>,
     /// Which rows the effect is planted on: those of `scen.region`'s scope,
     /// every row without one.
     planted: Option<Vec<bool>>,
@@ -595,7 +595,17 @@ pub fn simulate(
         base.target_bin_means.len()
     );
     let seed = mix_seed(seed, scen.rep as u64);
-    let f = confounding(tissue, base, shared, scen, mix_seed(seed, 1))?;
+    let f = match shared.field {
+        Some(f) => f.into(),
+        None => confounding(
+            tissue,
+            base.confounder_gene,
+            shared.gene_fields,
+            scen,
+            mix_seed(seed, 1),
+        )?
+        .into(),
+    };
     let region_rows = scen
         .region
         .map(|code| tissue.region_rows(code))

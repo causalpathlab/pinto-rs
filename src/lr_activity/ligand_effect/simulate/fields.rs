@@ -1,6 +1,6 @@
 //! The hidden spatial fields and how they enter a scenario.
 
-use super::calibrate::{Producers, SimBase};
+use super::calibrate::Producers;
 use super::scenario::{ConfoundShape, ConfounderKind, Scenario};
 use crate::lr_activity::ligand_effect::confounders::fourier_features;
 use crate::lr_activity::ligand_effect::regression::standardize;
@@ -138,6 +138,11 @@ pub struct SimShared<'a> {
     /// `(scale, field)` ([`gene_fields`]); a scale missing here is
     /// computed when a scenario needs it.
     pub gene_fields: &'a [(f64, Vec<f64>)],
+    /// The hidden field `f(Z)` itself ([`confounding`]), drawn once for
+    /// every pair of a single-scenario call so its planted and null pairs
+    /// face the same field; `None` draws it per run from the run's seed, as
+    /// the built-in grid does.
+    pub field: Option<&'a [f64]>,
 }
 
 /// The real-gene field at each distinct scale; empty without a gene.
@@ -155,11 +160,13 @@ pub fn gene_fields(tissue: &Tissue, gene: Option<&[f64]>, scales: &[f64]) -> Vec
 }
 
 /// The scenario's hidden field through its shape, standardized: `f(Z)` per
-/// row, so a field PVE sets its share of variance whatever the shape.
-pub(super) fn confounding(
+/// row, so a field PVE sets its share of variance whatever the shape. `gene`
+/// is the real-gene confounder's counts, and `gene_fields` its fields already
+/// smoothed.
+pub fn confounding(
     tissue: &Tissue,
-    base: &SimBase<'_>,
-    shared: &SimShared<'_>,
+    gene: Option<&[f64]>,
+    gene_fields: &[(f64, Vec<f64>)],
     scen: &Scenario,
     seed: u64,
 ) -> anyhow::Result<Vec<f64>> {
@@ -171,10 +178,8 @@ pub(super) fn confounding(
         ConfounderKind::Fourier => fourier_field(tissue, scen.scale, seed),
         ConfounderKind::Bumps => bump_field(tissue, scen.scale, seed),
         ConfounderKind::RealGene => {
-            let g = base
-                .confounder_gene
-                .ok_or_else(|| anyhow::anyhow!("no real gene given for the confounder"))?;
-            match shared.gene_fields.iter().find(|(s, _)| *s == scen.scale) {
+            let g = gene.ok_or_else(|| anyhow::anyhow!("no real gene given for the confounder"))?;
+            match gene_fields.iter().find(|(s, _)| *s == scen.scale) {
                 Some((_, z)) => z.clone(),
                 None => gene_field(tissue, g, scen.scale),
             }

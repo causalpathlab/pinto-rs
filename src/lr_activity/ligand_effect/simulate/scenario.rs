@@ -1,7 +1,11 @@
-//! What to simulate: the scenarios and the built-in grid.
+//! What to simulate: the scenarios, the built-in grid, and the single
+//! scenario a sweep asks for by its keys.
+
+use serde::Deserialize as _;
 
 /// The hidden confounder's spatial form.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "&'static str")]
 pub enum ConfounderKind {
     /// Random Fourier features, the adjustment smooth's own basis
     Fourier,
@@ -34,8 +38,23 @@ impl std::str::FromStr for ConfounderKind {
     }
 }
 
+impl TryFrom<String> for ConfounderKind {
+    type Error = anyhow::Error;
+
+    fn try_from(s: String) -> anyhow::Result<Self> {
+        s.parse()
+    }
+}
+
+impl From<ConfounderKind> for &'static str {
+    fn from(k: ConfounderKind) -> Self {
+        k.label()
+    }
+}
+
 /// How the hidden field enters ligand production and response.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "&'static str")]
 pub enum ConfoundShape {
     /// Z
     Linear,
@@ -61,6 +80,20 @@ impl std::str::FromStr for ConfoundShape {
             .into_iter()
             .find(|k| k.label() == s)
             .ok_or_else(|| anyhow::anyhow!("unknown confound shape {s:?}"))
+    }
+}
+
+impl TryFrom<String> for ConfoundShape {
+    type Error = anyhow::Error;
+
+    fn try_from(s: String) -> anyhow::Result<Self> {
+        s.parse()
+    }
+}
+
+impl From<ConfoundShape> for &'static str {
+    fn from(k: ConfoundShape) -> Self {
+        k.label()
     }
 }
 
@@ -105,7 +138,9 @@ pub struct Scenario {
 
 impl Scenario {
     /// Effect, field and noise share a unit variance: each PVE at least 0,
-    /// the response's two summing to at most 1, the ligand's below 1.
+    /// the response's two summing to at most 1, the ligand's below 1. The
+    /// field's scale is positive, the dose response's midpoint a quantile and
+    /// its order at least 1.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.effect_pve >= 0.0
@@ -117,7 +152,140 @@ impl Scenario {
             self.response_field_pve,
             self.ligand_field_pve
         );
+        anyhow::ensure!(
+            self.scale.is_finite() && self.scale > 0.0,
+            "confound_scale {} is not a positive length",
+            self.scale
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.dose_midpoint) && self.dose_order >= 1,
+            "dose response out of range: midpoint {} (a quantile, 0 to 1), order {} (at least 1)",
+            self.dose_midpoint,
+            self.dose_order
+        );
         Ok(())
+    }
+}
+
+/// A scenario as `lra-simulate --set` names it: each key the
+/// `{out}.lra-simulate.parquet` column that records it, so a sweep's axis is
+/// a column of the table. Unset keys keep [`Scenario::default`]; the planted
+/// region is `--plant-region`'s.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScenarioKeys {
+    pub effect_pve: f64,
+    pub ligand_field_pve: f64,
+    pub response_field_pve: f64,
+    pub confound_scale: f64,
+    pub confounder: ConfounderKind,
+    pub confound_shape: ConfoundShape,
+    #[serde(deserialize_with = "flag")]
+    pub heterogeneous: bool,
+    #[serde(deserialize_with = "flag")]
+    pub marker: bool,
+    #[serde(deserialize_with = "flag")]
+    pub dose_response: bool,
+    pub dose_midpoint: f64,
+    pub dose_order: i32,
+    pub rep: usize,
+}
+
+/// A flag as given or as its 0/1 column records it.
+fn flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    use serde::de::Error;
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(b) => Ok(b),
+        serde_json::Value::Number(n) if n.as_u64() == Some(0) => Ok(false),
+        serde_json::Value::Number(n) if n.as_u64() == Some(1) => Ok(true),
+        v => Err(D::Error::custom(format!(
+            "expected true, false, 0 or 1, got {v}"
+        ))),
+    }
+}
+
+impl Default for ScenarioKeys {
+    fn default() -> Self {
+        Self::from(&Scenario::default())
+    }
+}
+
+impl From<&Scenario> for ScenarioKeys {
+    fn from(s: &Scenario) -> Self {
+        Self {
+            effect_pve: s.effect_pve,
+            ligand_field_pve: s.ligand_field_pve,
+            response_field_pve: s.response_field_pve,
+            confound_scale: s.scale,
+            confounder: s.confounder,
+            confound_shape: s.shape,
+            heterogeneous: s.heterogeneous,
+            marker: s.marker,
+            dose_response: s.dose_response,
+            dose_midpoint: s.dose_midpoint,
+            dose_order: s.dose_order,
+            rep: s.rep,
+        }
+    }
+}
+
+impl ScenarioKeys {
+    /// Set keys by `key=value`, as `srt-simulate --set` sets its parameters
+    /// ([`crate::simulate::set_fields`]).
+    pub fn with_overrides(self, sets: &[String]) -> anyhow::Result<Self> {
+        crate::simulate::set_fields(&self, sets, "scenario key")
+    }
+
+    /// The scenario, planted everywhere.
+    pub fn scenario(&self) -> Scenario {
+        Scenario {
+            effect_pve: self.effect_pve,
+            ligand_field_pve: self.ligand_field_pve,
+            response_field_pve: self.response_field_pve,
+            scale: self.confound_scale,
+            confounder: self.confounder,
+            shape: self.confound_shape,
+            heterogeneous: self.heterogeneous,
+            marker: self.marker,
+            dose_response: self.dose_response,
+            dose_midpoint: self.dose_midpoint,
+            dose_order: self.dose_order,
+            region: None,
+            rep: self.rep,
+        }
+    }
+}
+
+/// `lra-simulate`'s single-scenario mode: one scenario, its effect planted on
+/// `planted` pairs and withheld (effect 0, all else alike) on `null` further
+/// pairs, so one call can be scored by AUROC and AUPRC.
+#[derive(Clone, Debug)]
+pub struct SingleScenario {
+    pub scenario: Scenario,
+    pub planted: usize,
+    pub null: usize,
+}
+
+impl SingleScenario {
+    /// Planted and null pairs a call asks for when not told.
+    pub const PAIRS: usize = 10;
+
+    /// The scenario `sets` makes of the defaults, checked
+    /// ([`Scenario::validate`]), on `planted` and `null` pairs, at least
+    /// one each.
+    pub fn new(sets: &[String], planted: usize, null: usize) -> anyhow::Result<Self> {
+        let scenario = ScenarioKeys::default().with_overrides(sets)?.scenario();
+        scenario.validate()?;
+        anyhow::ensure!(
+            planted >= 1 && null >= 1,
+            "a single-scenario call needs a planted and a null pair at least (asked {planted} \
+             and {null})"
+        );
+        Ok(Self {
+            scenario,
+            planted,
+            null,
+        })
     }
 }
 

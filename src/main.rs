@@ -64,6 +64,7 @@ fn print_logo() {
 #[derive(Parser, Debug)]
 #[command(
     version,
+    propagate_version = true,
     about = "PINTO - Proximity-based Interaction Network for Tissue Organization",
     long_about = "PINTO discovers cell-cell interaction patterns.\n\
                   It reads spatial transcriptomics.\n\
