@@ -240,6 +240,38 @@ pub(super) mod sim_cols {
 /// as have the other methods of [`super::super::simulate::COMPARED`].
 /// `planted` names the region every run's effect was planted in, if one.
 pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::Result<()> {
+    sim_columns(rows, planted).write(path)
+}
+
+/// A single-scenario call's table: [`write_sim`]'s columns, then what a
+/// sweep scores each row by. `planted` (0/1) is the row's label, one per
+/// row; `t` is the estimate over its SE, a one-sided score since the planted
+/// effect is positive, and `p` its two-sided p on the t reference
+/// ([`crate::lr_activity::ligand_effect::inference::Estimate::p`]);
+/// `marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p` the same for the
+/// other methods. A row not estimable has NaN scores. The scores are the
+/// pooled row's: with a planted region, its row's are `region_estimate` and
+/// `region_se`.
+pub fn write_sim_scored(
+    path: &str,
+    rows: &[SimRow],
+    region: Option<&str>,
+    planted: &[bool],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(planted.len() == rows.len(), "a label per row");
+    let label: Vec<usize> = planted.iter().map(|&p| usize::from(p)).collect();
+    let mut c = sim_columns(rows, region);
+    c.v("planted", label)
+        .f("t", |r| r.estimate.z())
+        .f("p", |r| r.estimate.p())
+        .f("marginal_cor_p", |r| r.marginal_cor.p())
+        .f("unadjusted_diff_p", |r| r.unadjusted_diff.p())
+        .f("effect_ipw_p", |r| r.ipw.p());
+    c.write(path)
+}
+
+/// The columns of [`write_sim`].
+fn sim_columns<'r>(rows: &'r [SimRow], planted: Option<&'r str>) -> Columns<'r, SimRow> {
     use sim_cols::*;
     let mut c = Columns::new(rows);
     c.s("ligand", |r| &r.ligand)
@@ -317,5 +349,5 @@ pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::
     for (k, m) in COMPARED.iter().enumerate() {
         c.i(&reject(m), |r| r.rejections()[k] as usize);
     }
-    c.write(path)
+    c
 }

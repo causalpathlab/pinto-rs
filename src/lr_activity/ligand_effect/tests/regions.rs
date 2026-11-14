@@ -104,7 +104,7 @@ fn a_planted_region_is_one_of_the_regions_named() {
 }
 
 /// One benchmark run planted in region `code`, every estimate missing.
-fn planted_run(code: u32) -> SimRow {
+pub(super) fn planted_run(code: u32) -> SimRow {
     let e = Estimate::nan(0, 0);
     let nan = f64::NAN;
     SimRow {
@@ -142,6 +142,7 @@ fn planted_run(code: u32) -> SimRow {
         seconds: 0.0,
         baseline_seconds: 0.0,
         region: None,
+        field_sha256: None,
     }
 }
 

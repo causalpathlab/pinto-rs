@@ -16,6 +16,7 @@ mod receivers;
 mod regions;
 mod reporting;
 mod simulate;
+mod single_scenario;
 mod targets;
 
 // * Shared helpers
@@ -61,6 +62,7 @@ pub(super) fn run_sim(
     let shared = SimShared {
         producers: calibrate_producers(tissue, base.ligand_counts),
         gene_fields: &[],
+        field: None,
     };
     super::simulate::simulate(tissue, base, &shared, scen, opts, seed)
 }

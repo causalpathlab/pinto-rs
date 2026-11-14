@@ -8,13 +8,52 @@ use super::tissue::Tissue;
 /// what it has, and the least allowed when it does.
 const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
 
-/// Memory allowed for pairs estimated at once: half of what is available now
-/// ([`available_memory`]), the rest left to the tissue and the machine's
-/// other work.
-fn pair_memory_budget() -> usize {
-    available_memory().map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
+/// The variable that sets the memory budget, in bytes: a runner starting
+/// several pinto processes at once gives each its share, which half of what
+/// is free, read by each process alone, would overcommit.
+pub const MEMORY_BUDGET_VAR: &str = "PINTO_MEMORY_BUDGET";
+
+/// Memory allowed for pairs estimated at once: `set` bytes
+/// ([`MEMORY_BUDGET_VAR`]) when given, else [`half_available`]. A `set` that
+/// is not a whole number of bytes is an error.
+pub(super) fn memory_budget(set: Option<&str>, available: Option<usize>) -> anyhow::Result<usize> {
+    set.map_or(Ok(half_available(available)), |s| {
+        s.trim()
+            .parse()
+            .ok()
+            .filter(|&b: &usize| b > 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
+            })
+    })
+}
+
+/// Half of the `available` memory, the rest left to the tissue and the
+/// machine's other work, and never below [`MIN_PAIR_MEMORY_BUDGET`].
+fn half_available(available: Option<usize>) -> usize {
+    available.map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
         (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
     })
+}
+
+/// Refuse a [`MEMORY_BUDGET_VAR`] that does not parse, before any work.
+pub fn check_memory_budget() -> anyhow::Result<()> {
+    memory_budget(std::env::var(MEMORY_BUDGET_VAR).ok().as_deref(), None).map(|_| ())
+}
+
+/// [`memory_budget`] now, of what is available ([`available_memory`]). A
+/// variable that does not parse is refused at the start
+/// ([`check_memory_budget`]); one that reaches here anyway is warned about
+/// once and counts as unset.
+pub(super) fn pair_memory_budget() -> usize {
+    static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        let var = std::env::var(MEMORY_BUDGET_VAR).ok()?;
+        memory_budget(Some(&var), None)
+            .map_err(|e| log::warn!("{e}; using half the available memory"))
+            .ok()
+    });
+    set.unwrap_or_else(|| half_available(available_memory()))
 }
 
 /// Bytes this process could still allocate: the system's available memory, or
@@ -80,17 +119,30 @@ const FITS_IN_CACHE: usize = 4 << 20;
 /// steps ([`run_bounded`]). Fits slow each other down past that: more of them
 /// at once take longer in all.
 pub(super) fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
-    let threads = rayon::current_num_threads();
     let rows = tissue.n().min(nuisance.max_propensity_rows);
     let fit_bytes = propensity_bytes(rows, tissue.design.p());
+    workers_within(
+        pair_memory_budget(),
+        per_pair,
+        rayon::current_num_threads(),
+        fit_bytes,
+    )
+}
+
+/// [`pair_workers`] on a `budget` of bytes and `threads`, each pair holding
+/// `per_pair` bytes and fitting propensities of `fit_bytes`: at least one.
+pub(super) fn workers_within(
+    budget: usize,
+    per_pair: usize,
+    threads: usize,
+    fit_bytes: usize,
+) -> usize {
     let by_cache = if fit_bytes < FITS_IN_CACHE {
         threads
     } else {
         (threads / 4).max(1)
     };
-    (pair_memory_budget() / per_pair.max(1))
-        .min(by_cache)
-        .max(1)
+    (budget / per_pair.max(1)).min(by_cache).max(1)
 }
 
 /// `one` over every item, at most `workers` at a time, in item order. Each

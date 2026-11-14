@@ -179,3 +179,48 @@ fn widening_covers_the_control_contrast_and_failure_is_flagged() {
     }
     .failed());
 }
+
+/// A design's Grams are summed in a fixed order over its row chunks, so a
+/// tissue of many chunks gets the same bits on one thread or several: every
+/// pair's outcome regression starts from them.
+#[test]
+fn a_design_s_grams_are_the_same_bits_on_any_number_of_threads() {
+    use crate::lr_activity::ligand_effect::crossfit::{CrossFit, Design};
+    let mut rng = SmallRng::seed_from_u64(11);
+    // Well past two row chunks, so the sum order could follow the pool.
+    let (n, p, k) = (60_000, 12, 5);
+    let x = nalgebra::DMatrix::<f32>::from_fn(n, p, |_, j| {
+        if j == 0 {
+            1.0
+        } else {
+            let e: f64 = StandardNormal.sample(&mut rng);
+            e as f32
+        }
+    });
+    let fold: Vec<u8> = (0..n).map(|i| (i % k) as u8).collect();
+    let cluster: Vec<u32> = (0..n).map(|i| (i / 100) as u32).collect();
+    let cf = CrossFit::new(fold, k, cluster);
+    let grams = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let design = pool.install(|| Design::new(x.clone(), &cf));
+        let bits: Vec<u64> = design
+            .view()
+            .gram
+            .iter()
+            .flat_map(|g| g.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
+            .collect();
+        bits
+    };
+    let one = grams(1);
+    for threads in [2, 4, 8] {
+        let other = grams(threads);
+        let differ = one.iter().zip(&other).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            differ, 0,
+            "{differ} Gram entries differ on {threads} threads"
+        );
+    }
+}

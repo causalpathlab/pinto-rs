@@ -19,6 +19,12 @@ use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
 
+mod single;
+
+#[cfg(test)]
+pub(super) use single::interleaved_ranks;
+pub use single::{clear_single_outputs, run_simulate_one};
+
 /// The shared progress bar over the long stages. Where no bar can draw (the
 /// log of a background job, a pipe) each twentieth of the way is logged too.
 struct Progress {
@@ -639,36 +645,65 @@ struct Benchmark<'a> {
     pb: &'a Progress,
 }
 
-impl Benchmark<'_> {
-    /// The runs of pair `k`, one per scenario that ran; a scenario that fails
-    /// is warned about and has none.
-    fn pair_runs(&self, k: usize) -> Vec<simulate::SimRow> {
-        let (prep, eopts, grid) = (self.prep, self.eopts, self.grid);
+/// What a benchmarked pair's runs draw on, read once: its ligand and receptor
+/// counts, its competent receivers, and its programme's weights and bin
+/// means.
+struct PairSim {
+    ligand: Vec<f64>,
+    receptor: Vec<f64>,
+    competent: Vec<bool>,
+    weights: Vec<f64>,
+    bin_means: Vec<f64>,
+}
+
+impl PairSim {
+    fn new(prep: &Prepared, eopts: &EffectOpts, p: &Pair) -> Self {
         let (tissue, store, local) = (&prep.tissue, &prep.store, &prep.local);
-        let p = &prep.pairs[k];
-        let lig = prep.ligand_counts(p);
-        let rec = prep.receptor_counts(p);
-        let competent = competent_receivers(tissue, &rec, eopts);
-        let weights: Vec<f64> = p.targets.iter().map(|(_, w, _)| *w).collect();
+        let ligand = prep.ligand_counts(p);
+        let receptor = prep.receptor_counts(p);
+        let competent = competent_receivers(tissue, &receptor, eopts);
+        let weights = p.targets.iter().map(|(_, w, _)| *w).collect();
         let genes: Vec<&[(u32, f32)]> = p
             .targets
             .iter()
             .map(|(g, _, _)| store.nonzeros(local[g]))
             .collect();
-        let bin_means = simulate::target_bin_means(tissue, &genes);
-        let base = SimBase {
+        Self {
+            ligand,
+            receptor,
+            competent,
+            weights,
+            bin_means: simulate::target_bin_means(tissue, &genes),
+        }
+    }
+
+    fn base<'a>(&'a self, p: &'a Pair, confounder_gene: Option<&'a [f64]>) -> SimBase<'a> {
+        SimBase {
             ligand: &p.ligand,
             receptor: &p.receptor,
-            ligand_counts: &lig,
-            target_weights: &weights,
-            target_bin_means: &bin_means,
-            competent: &competent,
-            receptor_counts: &rec,
-            confounder_gene: self.confounder_gene,
-        };
+            ligand_counts: &self.ligand,
+            target_weights: &self.weights,
+            target_bin_means: &self.bin_means,
+            competent: &self.competent,
+            receptor_counts: &self.receptor,
+            confounder_gene,
+        }
+    }
+}
+
+impl Benchmark<'_> {
+    /// The runs of pair `k`, one per scenario that ran; a scenario that fails
+    /// is warned about and has none.
+    fn pair_runs(&self, k: usize) -> Vec<simulate::SimRow> {
+        let (prep, eopts, grid) = (self.prep, self.eopts, self.grid);
+        let tissue = &prep.tissue;
+        let p = &prep.pairs[k];
+        let pair = PairSim::new(prep, eopts, p);
+        let base = pair.base(p, self.confounder_gene);
         let shared = SimShared {
             producers: simulate::calibrate_producers(tissue, base.ligand_counts),
             gene_fields: self.gene_fields,
+            field: None,
         };
         // Scenarios are independent: run as many at once as the memory
         // budget allows (each holds about a pair's worth of vectors).
@@ -724,6 +759,11 @@ pub(super) fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Res
 }
 
 pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
+    run_grid(inp, simulate::GridOpts::default())
+}
+
+/// The built-in benchmark on the grid `gopts` builds ([`default_grid`]).
+pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     // The benchmark plants on one competence threshold.
@@ -731,7 +771,6 @@ pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
         competences: &options::BENCHMARK_COMPETENCE,
         ..prep.eopts
     };
-    let mut gopts = simulate::GridOpts::default();
     let region = planted_region(&prep.tissue, a.plant_region)?;
     let order = benchmark_pairs(&prep, eopts, gopts.pairs, region)?;
     let confounder_gene = real_gene_confounder(&prep, &order);

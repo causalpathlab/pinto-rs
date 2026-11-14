@@ -220,7 +220,12 @@ pub fn lra_simulate_long_about() -> String {
      Writes {out}.lra-simulate.parquet and prints the summary; `pinto lra`\n\
      on the same run then notes the check.\n\
      \n\
-     Example:\n\
-     \x20 pinto lra-simulate --from out/run1.pinto.json"
+     A sweep runs one scenario per call instead (--set KEY=VALUE, --pairs,\n\
+     --null-pairs or --one): planted and null pairs in one table, scored\n\
+     by AUROC and AUPRC, and a sidecar {out}.lra-simulate.json written last.\n\
+     \n\
+     Examples:\n\
+     \x20 pinto lra-simulate --from out/run1.pinto.json\n\
+     \x20 pinto lra-simulate --from out/run1.pinto.json -o sweep/p1 --set effect_pve=0.02"
         .to_string()
 }
