@@ -1319,8 +1319,12 @@ fn the_copied_commands_replay_the_residual_then_stage_two() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 2, "{text}");
     assert!(lines[0].starts_with("pinto residual "), "{text}");
+    // a pasted replay waits as the queue does: the stage-2 fit runs only
+    // once the residual's summary is there
+    let done = &a.confirm.as_ref().unwrap().planned[0].job.done_name();
+    let guard = format!("[ -f {} ] && pinto dsvd ", script::quote(done));
     assert!(
-        lines[1].starts_with("pinto dsvd ") && lines[1].contains("--coord-column-names cx,cy"),
+        lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names cx,cy"),
         "{text}"
     );
     let planned = &a.confirm.as_ref().unwrap().planned;
@@ -1410,4 +1414,118 @@ fn a_stage_two_fit_that_failed_runs_again_on_the_finished_residual() {
         "{:?}",
         p[0].problem
     );
+}
+
+/// The queued residual, lra and lra on the stage-2 fit: the app and the
+/// rows' indices (lra, residual, stage 2, stage-2 lra).
+fn two_stage_with_lra(here: &Path) -> (App, usize, usize, usize, usize) {
+    let mut a = pinto_app(here);
+    let (lra, res, two, lra2) = (
+        row(&a, "lra"),
+        row(&a, "residual"),
+        row(&a, "stage-2 dsvd"),
+        row(&a, "stage-2 lra"),
+    );
+    a.screen = Screen::Methods;
+    a.method_row = res;
+    key(&mut a, KeyCode::Char(' '));
+    set_flag(&mut a, res, "from", "res/fit");
+    a.rows[lra].on = true;
+    set_flag(&mut a, lra, "from", "res/fit");
+    a.method_row = lra2;
+    key(&mut a, KeyCode::Char(' '));
+    assert!(a.rows[two].on && a.rows[lra2].on);
+    (a, lra, res, two, lra2)
+}
+
+/// Taking the residual off takes off what reads it: the stage-2 fit and
+/// lra on it.
+#[test]
+fn taking_the_residual_off_takes_its_stage_two_rows_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let here = &fitted_run(dir.path());
+    let (mut a, lra, res, two, lra2) = two_stage_with_lra(here);
+    a.method_row = res;
+    key(&mut a, KeyCode::Char(' '));
+    assert!(!a.rows[res].on && !a.rows[two].on && !a.rows[lra2].on);
+    assert!(a.rows[lra].on, "lra on the first run stays");
+}
+
+/// A stage-2 fit that finished while lra on it did not keeps its --out,
+/// and the run key again runs only that lra, on the kept fit.
+#[cfg(unix)]
+#[test]
+fn lra_on_a_finished_stage_two_fit_runs_again_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let here = &fitted_run(dir.path());
+    let (mut a, _, _, two, lra2) = two_stage_with_lra(here);
+    let two_out = a.rows[two].out.clone();
+    // A stand-in pinto that finishes lra on the first run, the residual
+    // and the stage-2 fit, and fails lra on the stage-2 fit (the one
+    // reading a residual fit).
+    let fake = fake_pinto(
+        here,
+        "case \"$1\" in \
+         lra) case \"$*\" in *residual*) exit 1 ;; esac ;; \
+         residual) mkdir -p \"$3\" && touch \"$3/residual.json\" ;; \
+         *) while [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done ;; \
+         esac",
+    );
+    let jobs: Vec<jobs::Job> = a.plan().into_iter().map(|p| p.job).collect();
+    assert_eq!(jobs.len(), 4);
+    a.queue = Some(Queue::start(jobs, fake));
+    while a.running() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    a.poll();
+    assert!(
+        a.rows[two].done && !a.rows[two].on,
+        "the stage-2 fit is done"
+    );
+    assert!(a.rows[lra2].on, "lra on it is still to do");
+    assert_eq!(a.rows[two].out, two_out, "kept for lra on it");
+    let p = a.plan();
+    let methods: Vec<&str> = p.iter().map(|p| p.job.method.as_str()).collect();
+    assert_eq!(methods, ["stage-2 lra"]);
+    assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
+    assert_eq!(p[0].job.after, None, "nothing left to wait on");
+    let from = after(&p[0].job.argv, "--from").unwrap();
+    assert!(from.ends_with(&format!("{two_out}.pinto.json")), "{from}");
+}
+
+/// The residual's default --out moves past a residual already written in
+/// the folder, as a fit's moves past a fit.
+#[test]
+fn the_residual_out_moves_past_a_residual_already_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let here = &fitted_run(dir.path());
+    // outs named in the run's own folder, as pinto run started there would
+    let named = |here: &Path| {
+        let mut a = pinto_app(here);
+        a.refresh_outs();
+        a
+    };
+    let first = named(here);
+    let taken = first.rows[row(&first, "residual")].out.clone();
+    std::fs::create_dir_all(here.join(&taken)).unwrap();
+    std::fs::write(here.join(&taken).join("residual.json"), "{}").unwrap();
+    let a = named(here);
+    let out = &a.rows[row(&a, "residual")].out;
+    assert_ne!(out, &taken, "{out}");
+    assert_eq!(out, &format!("{taken}-2"));
+}
+
+/// Switching a finished stage-2 row to another method clears its done
+/// mark: that method has not run.
+#[test]
+fn a_new_stage_two_method_is_not_marked_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let here = &fitted_run(dir.path());
+    let mut a = pinto_app(here);
+    let two = row(&a, "stage-2 dsvd");
+    a.rows[two].done = true;
+    a.screen = Screen::Methods;
+    a.method_row = two;
+    key(&mut a, KeyCode::Char('m'));
+    assert!(!a.rows[two].done);
 }

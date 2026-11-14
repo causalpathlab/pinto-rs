@@ -233,9 +233,17 @@ holding a set share of the log rate's variance:
 | (none) | spot noise: what the four shares leave |
 
 Noise is the remainder, so raising one share with the others fixed shrinks
-the noise, not the other shares. A sweep over the nuisance shares
-(`N = pve_donor + pve_inter + pve_section`) has to choose what gives way,
-and the choice changes what a trend along N means:
+the noise, not the other shares.
+
+**The size of the donor effect** is its share of the log rate's variance,
+`pve_donor + pve_inter`: donor-wide plus donor-by-cell-state, the two terms
+that differ between donors. `pve_section` is the per-section share on top,
+so the whole nuisance is `N = pve_donor + pve_inter + pve_section`. Wherever
+a result says "the donor effect" or labels a sweep by it, it means
+`pve_donor + pve_inter` at a stated `pve_type`, and how the two donor terms
+split it should be stated too, since donor-by-type effects are the harder
+ones. A sweep over the nuisance shares has to choose what gives way, and
+the choice changes what a trend along N means:
 
 | held fixed | set | as N grows |
 |---|---|---|
@@ -345,32 +353,52 @@ every file shares as `{OUT}/{stem}.zarr`, the run's coordinates of its
 cells as `{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` with the
 counts in and out. `residual.json` also names the stage-1 run and the raw
 data files, so `pinto lra` given a fit on the residual reads the raw
-counts, not the excess. Data is read as the fit read it: exactly by name for lc and dsvd,
-and for a cage run with the `--feature-names` mode it was fitted with. The
-run must be an lc, cage or dsvd run; every file's name must be distinct,
-and nothing at `OUT` is written over.
+counts, not the excess. Data is read as the fit read it: exactly by name
+for lc and dsvd, and for a cage run with the `--feature-names` mode it was
+fitted with. The run must be an lc, cage or dsvd run; every file's name
+must be distinct, and nothing at `OUT` is written over.
 
 By default (`--adapt batch`) each community's profile is re-estimated per
 batch as the run knew it (its cells table's `batch` column, written when the
-run had more than one: its `--batch-files`, else its data files), shrunk toward the pooled profile by
-a Dirichlet prior worth `--adapt-cells` cells of the community (default 50;
-MacKay and Peto 1995). A shift that moves a whole community within a batch,
+run had more than one: its `--batch-files`, else its data files), shrunk
+toward the pooled profile by a Dirichlet prior worth `--adapt-cells` cells
+of the community (default 50; MacKay and Peto 1995). A shift that moves a whole community within a batch,
 as donor, donor-by-type and section nuisance do, is absorbed into `μ`; a
 local patch, a minority of its community's weight in that batch, stays in
 the residual. No batch fold from the stage-1 run enters `μ`.
 `--adapt none` keeps the pooled profiles. `residual.json` records `adapt`,
 `adapt_cells`, `excess` and the formula.
 
-**Limits.** The identifying assumption is that donor-specific biology is
-local: a whole community shifted in one donor is read as nuisance and
-absorbed, so a donor-specific difference that covers a whole community is
-not found. When the stage-1 run is itself split by donor, its communities
-already carry the donor effect, and the residual cannot separate nuisance
-from biology. A patch that stage 1 already gave its own community is
-explained by that community's profile and does not appear in the residual;
-look for it among the stage-1 communities. A new mix of shared cell states
-cannot appear in a count residual at all, since the shared profiles explain
-it exactly: find it among the stage-1 communities instead.
+**What it removes, and what it does not.** `residual` does not estimate a
+donor effect or subtract one. With `--adapt batch` it absorbs only what
+moves a whole stage-1 community within one batch; with `--adapt none` it
+absorbs nothing beyond the pooled profiles, and donor nuisance stays in
+the residual. Everything rests on one identifying assumption: donor-specific
+biology is local. A whole community shifted in one donor is read as
+nuisance, so a donor-specific difference that covers a whole community is
+absorbed and never found.
+
+**What it cannot do:**
+
+- **Correct a stage-1 run that is split by donor.** If stage 1 already gave
+  each donor its own communities, those communities carry the donor effect,
+  and nothing downstream separates nuisance from biology. This happens once
+  the donor effect is about as large as the cell-type effect: in
+  `srt-simulate` terms, once `pve_donor + pve_inter` approaches `pve_type`.
+  The fix is a donor-invariant stage 1, not a better residual.
+- **Find a patch stage 1 already named.** A patch that stage 1 gave its own
+  community is explained by that community's profile and leaves no excess;
+  look for it among the stage-1 communities.
+- **Find a donor-specific mix of shared cell states.** The shared profiles
+  explain such a mix exactly, so it never appears in a count residual; it
+  too can only be found among the stage-1 communities.
+
+**Check before trusting a residual community confined to one donor:** look
+at the stage-1 communities' donor make-up first. If they already follow the
+donor, the residual's one-donor communities are nuisance. On a simulation,
+`srt-sim-pairs` shows it directly: a stage-1 representation at chance on
+`cross_donor` pairs but not on `within_donor` ones (a large `donor_gap`) is
+split by donor.
 
 ```sh
 pinto residual --run out/lc1 -o out/resid

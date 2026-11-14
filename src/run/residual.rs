@@ -136,9 +136,13 @@ pub(super) fn specs() -> Vec<ToolSpec> {
          counts. Writes {out}/{stem}.zarr with {stem}.coords.parquet per data file (the \
          run's coordinates under its column names) and {out}/residual.json. The reply's \
          fit.data and fit.coords list them for run_fit, in order, and fit.flags the \
-         coordinate columns to read; run_lra on that fit reads the raw counts. The run is \
-         checked before it starts; it runs as a background job unless asked, and never over \
-         an existing file.",
+         coordinate columns to read; run_lra on that fit reads the raw counts. It removes no \
+         donor effect and cannot correct a stage-1 run already split by donor (as happens \
+         once the donor effect is about as large as the cell-type effect): before reading a \
+         residual community confined to one donor as biology, check the stage-1 \
+         communities' donor make-up (on a simulation, run_sim_pairs' donor_gap), and tell \
+         the user. The run is checked before it starts; it runs as a background job unless \
+         asked, and never over an existing file.",
         json!({
             "type": "object",
             "properties": {

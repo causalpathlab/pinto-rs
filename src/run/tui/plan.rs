@@ -36,8 +36,9 @@ impl App {
     }
 
     /// Queue row `i`, or take it off. The residual takes its stage-2 fit
-    /// with it, and off, lra on that fit too. lra on the stage-2 fit is offered only with lra queued on
-    /// the residual's run, and comes with that lra's flags.
+    /// with it, and off, lra on that fit too. lra on the stage-2 fit is
+    /// offered only with lra queued on the residual's run, and comes with
+    /// that lra's flags.
     fn queue_row(&mut self, i: usize, on: bool) {
         match self.rows[i].role {
             Role::Residual => {
@@ -83,6 +84,8 @@ impl App {
         let next = r.alts.remove(0);
         let was = std::mem::replace(&mut r.form, next);
         r.alts.push(was);
+        // the new method has not run, whatever the last one did
+        r.done = false;
         if !r.typed {
             r.out = free_out(&self.here, &under(&self.header, &r.stem()));
         }

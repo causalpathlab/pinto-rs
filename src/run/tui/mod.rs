@@ -645,11 +645,18 @@ impl App {
 
     /// The queued commands as one would type them where pinto run started.
     fn copy_text(&self) -> String {
-        self.confirm
+        let planned: Vec<&Planned> = self.confirm.iter().flat_map(|r| &r.planned).collect();
+        planned
             .iter()
-            .flat_map(|r| &r.planned)
             .map(|p| {
-                let cmd = format!("pinto {}", script::line(&p.job.argv));
+                let mut cmd = format!("pinto {}", script::line(&p.job.argv));
+                // A job that reads an earlier one's result waits for it, as
+                // the queue does: it runs only once that one's done file is
+                // there.
+                if let Some(w) = p.job.after.and_then(|k| planned.get(k)) {
+                    let done = script::relative(&w.job.done, &p.job.dir);
+                    cmd = format!("[ -f {} ] && {cmd}", script::quote(&done.to_string_lossy()));
+                }
                 if p.job.dir == self.here {
                     cmd
                 } else {
@@ -744,7 +751,10 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, base: &str) -> String {
-    first_free(base, |p| jobs::outputs(dir, p).iter().any(|f| f.exists()))
+    // `{out}` itself counts too: the residual writes a folder of that name
+    first_free(base, |p| {
+        dir.join(p).exists() || jobs::outputs(dir, p).iter().any(|f| f.exists())
+    })
 }
 
 /// `base`, else `base-2`, `base-3`, …: the first that is not `taken`.
