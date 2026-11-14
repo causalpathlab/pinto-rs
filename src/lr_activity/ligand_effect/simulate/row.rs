@@ -46,6 +46,10 @@ pub struct SimRow {
     /// The estimate read on the planted region's row, when the effect was
     /// planted in one ([`Scenario::region`]).
     pub region: Option<RegionRead>,
+    /// The hidden field the run drew under ([`super::field_sha256`]), when
+    /// it was handed one ([`super::SimShared::field`]): a single-scenario
+    /// call's sidecar shows by it that every pair faced the call's field.
+    pub field_sha256: Option<Box<str>>,
 }
 
 /// The estimate, its truths and its verdict on one region's row: the same

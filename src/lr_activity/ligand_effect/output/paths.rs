@@ -34,3 +34,9 @@ fn beside(table: &str, what: &str) -> String {
 pub fn lra_simulate_path(out: &str) -> String {
     format!("{out}.lra-simulate.parquet")
 }
+
+/// `{out}.lra-simulate.json`, a single-scenario call's sidecar: written last,
+/// so its presence marks the call complete.
+pub fn lra_simulate_sidecar_path(out: &str) -> String {
+    format!("{out}.lra-simulate.json")
+}

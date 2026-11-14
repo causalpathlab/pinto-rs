@@ -36,5 +36,6 @@ mod tests;
 
 pub use baseline::{run_baseline, BaselineArgs};
 pub use pairs::{run_pairs, SimPairsArgs};
+pub use params::set_fields;
 pub use run::{run_simulate, SimulateArgs};
 pub use score::{run_score, SimScoreArgs};
