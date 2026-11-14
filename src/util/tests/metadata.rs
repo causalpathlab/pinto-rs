@@ -408,10 +408,10 @@ fn lra_identity_genes_are_one_line_and_read_back() {
         identity_excluded: genes.iter().map(|g| g.to_string()).collect(),
         ..LraOptions::default()
     };
-    let o = options(&["ENSG1_CFH", "GCLC", "NFYA"]);
+    let o = options(&["ENSG1_GENE1", "GENE2", "GENE3"]);
     let json = serde_json::to_string_pretty(&o).unwrap();
     assert!(
-        json.contains("\"identity_excluded\": \"ENSG1_CFH,GCLC,NFYA\""),
+        json.contains("\"identity_excluded\": \"ENSG1_GENE1,GENE2,GENE3\""),
         "{json}"
     );
     assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), o);

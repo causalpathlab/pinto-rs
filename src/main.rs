@@ -404,9 +404,9 @@ enum Commands {
     #[command(
         name = "cage-cell",
         about = "cage trained on cells and cell pairs, with no pseudobulks",
-        long_about = "cage trained on cells instead of super-cells, as cell-level methods\n\
-                      (STAGATE, BANKSY) are, for a like-for-like comparison: the same\n\
-                      model and outputs.\n\n\
+        long_about = "cage trained on cells instead of super-cells, as cell-level\n\
+                      methods such as STAGATE are, for a like-for-like comparison: the\n\
+                      same model and outputs.\n\n\
                       Each cell is its own unit and each within-batch spatial cell pair\n\
                       a positive; negatives are other cells of the same batch, never\n\
                       the pair's own two. Nothing is pseudobulked: no coarsening\n\

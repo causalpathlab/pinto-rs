@@ -127,7 +127,7 @@ pub struct AblationArgs {
                      one per line; anything else is a regular expression. A row is\n\
                      dropped when its name, or one of its `_`-separated parts (before\n\
                      any `/`), equals a listed name or matches the expression:\n\
-                     `^MT-` drops ENSG…_MT-CO1."
+                     `^MT-` drops ID1_MT-GENE1."
     )]
     pub drop_features: Option<Box<str>>,
 

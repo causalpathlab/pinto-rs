@@ -343,18 +343,33 @@ fn lra_simulate_clears_a_single_scenario_s_earlier_outputs_first() {
     }
 }
 
-/// Every command's long help, the top level's first, each with the command
-/// line that reaches it.
-fn every_long_help() -> Vec<(String, String)> {
-    fn walk(cmd: &mut clap::Command, path: String, out: &mut Vec<(String, String)>) {
-        out.push((path.clone(), cmd.render_long_help().to_string()));
+/// Draws one command's help, short or long.
+type Render = fn(&mut clap::Command) -> clap::builder::StyledStr;
+
+/// Every command's help as `render` draws it, the top level's first, each
+/// with the command line that reaches it.
+fn every_help(render: Render) -> Vec<(String, String)> {
+    fn walk(
+        cmd: &mut clap::Command,
+        path: String,
+        render: Render,
+        out: &mut Vec<(String, String)>,
+    ) {
+        out.push((path.clone(), render(cmd).to_string()));
         for sub in cmd.get_subcommands_mut() {
             let p = format!("{path} {}", sub.get_name());
-            walk(sub, p, out);
+            walk(sub, p, render, out);
         }
     }
     let mut out = Vec::new();
-    walk(&mut built_cli(), "pinto".into(), &mut out);
+    walk(&mut built_cli(), "pinto".into(), render, &mut out);
+    out
+}
+
+/// Every command's help as `render` draws it, then the README.
+fn help_and_readme(render: Render) -> Vec<(String, String)> {
+    let mut out = every_help(render);
+    out.push(("README.md".into(), include_str!("../../README.md").into()));
     out
 }
 
@@ -383,7 +398,7 @@ fn the_top_level_help_lists_every_command_once() {
 #[test]
 fn help_names_only_commands_that_exist() {
     let cli = built_cli();
-    for (path, help) in every_long_help() {
+    for (path, help) in every_help(clap::Command::render_long_help) {
         for (at, _) in help.match_indices("`pinto ") {
             let rest = &help[at + "`pinto ".len()..];
             let word: String = rest
@@ -406,11 +421,7 @@ fn help_names_only_commands_that_exist() {
 /// earlier release, and number a residual fit's stages one way.
 #[test]
 fn help_and_readme_carry_no_release_notes() {
-    let readme = include_str!("../../README.md");
-    let texts = every_long_help()
-        .into_iter()
-        .chain([("README.md".to_string(), readme.to_string())]);
-    for (path, text) in texts {
+    for (path, text) in help_and_readme(clap::Command::render_long_help) {
         for stale in ["no longer", "used to be", "than before", "stage-3"] {
             assert!(!text.contains(stale), "{path} says {stale:?}");
         }
@@ -461,6 +472,28 @@ fn the_readme_points_to_the_instructions_rather_than_copying_them() {
     let readme = words(&readme.replace('>', " "));
     for sentence in mcp::instructions().split(". ").filter(|s| s.len() > 60) {
         assert!(!readme.contains(&words(sentence)), "{sentence}");
+    }
+}
+
+/// No help, short or long, nor the README or the notices, names a method
+/// pinto dropped for its license (the names are spelt in pieces so a search
+/// of the tree finds none).
+#[test]
+fn no_help_names_a_dropped_method() {
+    let dropped = [["bank", "sy"].concat(), ["mc", "lust"].concat()];
+    let notices = (
+        "THIRD_PARTY_NOTICES.md".to_string(),
+        include_str!("../../THIRD_PARTY_NOTICES.md").to_string(),
+    );
+    let texts = [clap::Command::render_help, clap::Command::render_long_help]
+        .into_iter()
+        .flat_map(help_and_readme)
+        .chain([notices]);
+    for (path, text) in texts {
+        let text = text.to_lowercase();
+        for d in &dropped {
+            assert!(!text.contains(d.as_str()), "{path} names {d}");
+        }
     }
 }
 
