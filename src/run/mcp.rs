@@ -348,13 +348,14 @@ pub(super) fn as_run(input: &str) -> String {
     shown_path(Path::new(&named))
 }
 
-/// The output prefix: `out` when given (from the root), else a free name
-/// after `base` in today's results folder; refused when one of the outputs
-/// `plan` names exists or a running job holds it.
 /// What a tool says when its outputs are already there: no run's outputs
 /// are written over.
 pub(super) const NOT_WRITTEN_OVER: &str = "nothing is written over; give another out";
 
+/// The output prefix: `out` when given (from the root), else a free name
+/// after `base` in today's results folder (passing over a name a file
+/// holds); refused when one of the outputs `plan` names exists or a running
+/// job holds it.
 pub(super) fn out_or_free(
     cx: &Call,
     out: Option<&str>,
@@ -367,7 +368,8 @@ pub(super) fn out_or_free(
             let made = plan(&o)?;
             (o, made)
         }
-        _ => cx.free_prefix(base, &plan, |_| false)?,
+        // a name a file holds is passed over: nothing is written under it
+        _ => cx.free_prefix(base, &plan, |o| Path::new(o).is_file())?,
     };
     if let Some(there) = made.iter().find(|p| p.exists()) {
         anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));

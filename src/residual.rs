@@ -220,9 +220,10 @@ struct Inputs {
 }
 
 /// What `pinto residual` writes for a run, and what it reads to make it,
-/// checked as far as it can be before any count is read: the run is an lc,
-/// cage or dsvd run, its data files are found, all of them, with distinct
-/// names, it names its coordinate columns, and no output is an input.
+/// checked as far as it can be before any count is read: `-o` is not a
+/// file, the run is an lc, cage or dsvd run on raw counts, its data files
+/// are found, all of them, with distinct names, it names its coordinate
+/// columns, and no output is an input.
 pub struct Plan {
     /// The run's data files, in its order.
     pub files: Vec<Box<str>>,
@@ -239,6 +240,15 @@ pub struct Plan {
 
 impl Plan {
     pub fn new(run: &Run, args: &ResidualArgs) -> anyhow::Result<Self> {
+        // a file at -o or above it would make every path under it read as
+        // free, and the run would fail only when it writes
+        if let Some(file) = Path::new(args.out.as_ref())
+            .ancestors()
+            .find(|p| p.exists())
+            .filter(|p| !p.is_dir())
+        {
+            anyhow::bail!("{} is a file; -o is a folder", file.display());
+        }
         let files = stage_one_files(run, args)?;
         let coord_names = coord_names(run)?;
         let zarrs = output_paths(&files, &args.out)?;
@@ -278,8 +288,8 @@ impl Plan {
 }
 
 /// The run's data files (its manifest's, or `--data-files`), checked: an
-/// lc, cage or dsvd run, every file found, as many as the run had, each
-/// with its own name.
+/// lc, cage or dsvd run on raw counts (not a fit on a residual), every file
+/// found, as many as the run had, each with its own name.
 fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str>>> {
     anyhow::ensure!(
         STAGE_ONE.contains(&run.meta.command.as_str()),
@@ -306,6 +316,18 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
             .collect::<anyhow::Result<_>>()?,
     };
     anyhow::ensure!(!files.is_empty(), "{}: no data files", args.run);
+    // its residual.json would name the excess files as raw, and lra on a
+    // fit of it would read excess counts as raw counts
+    let on_residual = crate::lr_activity::input::residual_of(run)?.is_some()
+        || files
+            .iter()
+            .any(|f| crate::lr_activity::input::is_excess(Path::new(f.as_ref())));
+    anyhow::ensure!(
+        !on_residual,
+        "{}: a fit on a residual; a residual is taken from a fit on raw counts, not \
+         from a fit on another residual",
+        run.manifest.display()
+    );
     // a residual file is named by its data file, and a fit names cells by it
     let mut seen: HashSet<Box<str>> = HashSet::default();
     for f in &files {

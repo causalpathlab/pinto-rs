@@ -860,13 +860,28 @@ fn an_agent_fits_the_residual_of_a_simulation() {
     let (jobs, _) = c.ok("job_status", json!({}));
     assert!(!jobs.to_string().contains("residual of"), "{jobs}");
 
-    let (job, _) = c.ok("run_residual", json!({"run": stage1, "out": "res"}));
+    // Today's free name passes over a file in the way; an -o that is a
+    // file is refused before any job.
+    c.fails("run_residual", json!({"run": truth}));
+    let day = std::fs::read_dir(dir.path().join("results"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .unwrap();
+    let in_the_way = day.join("residual");
+    std::fs::write(&in_the_way, "").unwrap();
+    let in_the_way = in_the_way.to_string_lossy().into_owned();
+    let msg = c.fails("run_residual", json!({"run": stage1, "out": in_the_way}));
+    assert!(msg.contains("is a file"), "{msg}");
+    let (job, _) = c.ok("run_residual", json!({"run": stage1}));
+    let res = job["out"].as_str().unwrap().to_string();
+    assert!(res.ends_with("residual-2"), "{job}");
     let id = job["job"].as_str().unwrap().to_string();
     assert!(job["note"].as_str().unwrap().contains("run_fit"), "{job}");
     assert!(job["note"].as_str().unwrap().contains("run_lra"), "{job}");
     let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
     assert_eq!(waited["state"], "done", "{waited}");
-    assert!(dir.path().join("res/residual.json").is_file(), "{job}");
+    assert!(Path::new(&res).join("residual.json").is_file(), "{job}");
     // The reply lists each section's residual, in the fit's order, with
     // its coordinates and the column names they carry, all written.
     let (data, coords) = (
@@ -893,7 +908,7 @@ fn an_agent_fits_the_residual_of_a_simulation() {
         json!({"coord-column-names": names[..2].join(",")}),
         "{job}"
     );
-    let msg = c.fails("run_residual", json!({"run": stage1, "out": "res"}));
+    let msg = c.fails("run_residual", json!({"run": stage1, "out": res}));
     assert!(msg.contains("exists"), "{msg}");
 
     // Stage 2 on the reply's files, and lra on it, read on the raw counts.
@@ -909,6 +924,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
         }),
     );
     let stage2 = dsvd["written"][0].as_str().unwrap().to_string();
+    // A residual of the stage-2 fit is refused: lra would read excess as raw.
+    let msg = c.fails("run_residual", json!({"run": stage2, "out": "res2"}));
+    assert!(msg.contains("a fit on a residual"), "{msg}");
+    assert!(!dir.path().join("res2").exists(), "refused before it ran");
     let (lr_pairs, targets) = pair_from_truth(&dir.path().join("sim"), dir.path());
     let (reply, notes) = c.request(
         "tools/call",
