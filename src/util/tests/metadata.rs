@@ -1,6 +1,6 @@
 //! Round-trip tests for the run manifest.
 //!
-//! The manifest is a published contract: `pinto plot`, `pinto prop` and
+//! The manifest is a published contract: `pinto view`, `pinto prop` and
 //! `pinto lra` all locate their inputs through it, so a field that fails to
 //! serialize is a broken pipeline rather than a cosmetic defect.
 
@@ -341,7 +341,7 @@ fn metadata_records_an_unaugmented_run_as_such() {
 ///
 /// This block gains fields over time, and `PintoMetadata::backfill_output`
 /// swallows a read error at debug level — so a missing-field failure here is
-/// silent, and `pinto plot --from` / `pinto lra --from` abort outright on a
+/// silent, and `pinto view` / `pinto lra --from` abort outright on a
 /// manifest they should have read.
 #[test]
 fn an_older_graph_block_still_deserializes() {

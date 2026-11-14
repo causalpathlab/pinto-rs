@@ -204,9 +204,8 @@ on most.
 
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
-row (`effect_competent_df` is that count less one; it used to be every
-carrying tile less one). A row whose signal sits in a few of many tiles, as a region
-of one donor does, is now tested on few, so its p-value is larger than before.
+row (`effect_competent_df` is that count less one). A row whose signal sits in
+a few of many tiles, as a region of one donor does, is tested on those few.
 
 A significant effect then has to exceed the negative control, the same way:
 the effect in receptor-negative receivers (`effect_contrast_q`), the

@@ -244,10 +244,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
     }
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads
-    // (`left_cell` / `right_cell` / `community`). This used to be a local
-    // writer emitting `.edge_cluster.parquet` with the label column named
-    // `cluster` — which `plot::load::read_link_community` cannot parse, so a
-    // `prop` run silently lost its mesh overlay.
+    // (`left_cell` / `right_cell` / `community`).
     {
         info!("Writing link communities");
         // Map name pairs back to vertex indices. Strict rather than filtered:

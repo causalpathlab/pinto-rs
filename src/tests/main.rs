@@ -337,3 +337,88 @@ fn lra_simulate_clears_a_single_scenario_s_earlier_outputs_first() {
         assert!(!std::path::Path::new(f).exists(), "{f} is left");
     }
 }
+
+/// Every command's long help, the top level's first, each with the command
+/// line that reaches it.
+fn every_long_help() -> Vec<(String, String)> {
+    fn walk(cmd: &mut clap::Command, path: String, out: &mut Vec<(String, String)>) {
+        out.push((path.clone(), cmd.render_long_help().to_string()));
+        for sub in cmd.get_subcommands_mut() {
+            let p = format!("{path} {}", sub.get_name());
+            walk(sub, p, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&mut built_cli(), "pinto".into(), &mut out);
+    out
+}
+
+/// `pinto --help` indexes the commands by clap's own list, which names every
+/// command, and keeps one quick start; no hand-kept list beside it.
+#[test]
+fn the_top_level_help_lists_every_command_once() {
+    let mut cli = built_cli();
+    let help = cli.render_long_help().to_string();
+    assert!(!help.contains("SUBCOMMANDS:"), "{help}");
+    assert!(!help.contains("All outputs are"), "{help}");
+    assert_eq!(help.matches("QUICK START").count(), 1, "{help}");
+    for sub in cli.get_subcommands().filter(|s| !s.is_hide_set()) {
+        let name = sub.get_name();
+        let listed = help
+            .lines()
+            .filter(|l| l.split_whitespace().next() == Some(name))
+            .count();
+        assert_eq!(listed, 1, "{name} listed {listed} times:\n{help}");
+    }
+}
+
+/// Every `pinto <command>` a help text names is a command pinto has, all
+/// its features on.
+#[cfg(feature = "view")]
+#[test]
+fn help_names_only_commands_that_exist() {
+    let cli = built_cli();
+    for (path, help) in every_long_help() {
+        for (at, _) in help.match_indices("`pinto ") {
+            let rest = &help[at + "`pinto ".len()..];
+            let word: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if word.is_empty() {
+                continue;
+            }
+            assert!(
+                cli.find_subcommand(&word).is_some(),
+                "{path} --help names `pinto {word}`, which is no command"
+            );
+        }
+        assert!(!help.contains("plot::load"), "{path}");
+    }
+}
+
+/// Help and the README say what pinto does, not how it differs from an
+/// earlier release, and number a residual fit's stages one way.
+#[test]
+fn help_and_readme_carry_no_release_notes() {
+    let readme = include_str!("../../README.md");
+    let texts = every_long_help()
+        .into_iter()
+        .chain([("README.md".to_string(), readme.to_string())]);
+    for (path, text) in texts {
+        for stale in ["no longer", "used to be", "than before", "stage-3"] {
+            assert!(!text.contains(stale), "{path} says {stale:?}");
+        }
+    }
+}
+
+/// The annotate stub is gone: its name and alias are unknown commands.
+#[test]
+fn annotate_is_no_command() {
+    for name in ["annotate", "cage-annotate"] {
+        let err = built_cli()
+            .try_get_matches_from(["pinto", name])
+            .expect_err(name);
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand, "{name}");
+    }
+}

@@ -1,4 +1,3 @@
-mod annotate;
 mod cell_activity_graph_embedding;
 mod compare;
 mod holdout;
@@ -25,7 +24,6 @@ mod view;
 #[cfg(test)]
 mod test_support;
 
-use annotate::AnnotateArgs;
 use cell_activity_graph_embedding::{
     fit_cell_activity_graph_embedding, CellActivityGraphEmbeddingArgs,
 };
@@ -69,28 +67,6 @@ fn print_logo() {
     long_about = "PINTO discovers cell-cell interaction patterns.\n\
                   It reads spatial transcriptomics.\n\
                   It detects link communities on cell-pair graphs.\n\n\
-                  SUBCOMMANDS:\n\n\
-                  \x20 lc    Link community model (recommended)\n\
-                  \x20       Assigns each cell-cell edge to a community via collapsed\n\
-                  \x20       Gibbs sampling on compressed all-feature edge profiles.\n\n\
-                  \x20 dsvd  Delta-SVD model\n\
-                  \x20       Cell-pair shared/difference analysis via Poisson-Gamma\n\
-                  \x20       SVD on pseudobulk co-expression.\n\n\
-                  \x20 prop  Propensity (standalone)\n\
-                  \x20       Re-cut a cage/dsvd edge latent at a different K.\n\n\
-                  \x20 view  Viewer (multi-resolution)\n\
-                  \x20       Zoomable map of a run's communities, in the terminal.\n\n\
-                  \x20 run   Set up fits in the terminal\n\
-                  \x20       Choose data, methods and flags, then run them.\n\n\
-                  \x20 mcp   Server for agents (Model Context Protocol)\n\
-                  \x20       pinto run's fits and the viewer's map as tools, on stdio.\n\n\
-                  BASELINES (published spatial methods, model-level ports, to compare\n\
-                  against; same data, -c, -b, -o and --seed flags as lc; each writes a\n\
-                  run with labels and a cell embedding):\n\n\
-                  \x20 spatialde2  SpatialDE2 tissue segmentation (Kats et al. 2021)\n\
-                  \x20             Poisson HMRF with a Dirichlet-process prior.\n\n\
-                  \x20 stagate     STAGATE (Dong and Zhang 2022)\n\
-                  \x20             Graph-attention autoencoder on the spatial graph.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -108,8 +84,7 @@ fn print_logo() {
                   \x20         Default columns: pxl_row_in_fullres,pxl_col_in_fullres\n\
                   \x20         Omit -c for expression-only mode.\n\
                   \x20 Batch:  -b labels.txt (one label per cell per line, optional)\n\n\
-                  OUTPUT: All outputs are .parquet files with {out} prefix.\n\
-                  \x20 Use --help on each subcommand for output file details.",
+                  Each fitting command's --help lists the files it writes.",
     term_width = 80
 )]
 struct Cli {
@@ -358,10 +333,9 @@ enum Commands {
                       That gates a shared multi-scale PB hierarchy.\n\n\
                       Chain levels differ only in their negative pools.\n\
                       This is embedding-only. There is no count decoder.\n\n\
-                      NOTE --n-hvg no longer subsets the trained feature axis.\n\
-                      It weights the random projection instead.\n\
-                      That projection builds the coarsening hierarchy.\n\
-                      senna bge and senna gem do the same.\n\
+                      --n-hvg weights the random projection that builds the\n\
+                      coarsening hierarchy, as in senna bge and senna gem;\n\
+                      it does not subset the trained feature axis.\n\
                       Every feature is present in every output table; a feature\n\
                       TRAINS only if it is active on a super edge.\n\
                       A feature whose activity sits entirely inside super-cells\n\
@@ -403,7 +377,7 @@ enum Commands {
                       spherical on the pair latent and seeded by --seed.\n\n\
                       A cell's embedding is its own placement on the feature embedding,\n\
                       by the same encoder that places its pairs,\n\
-                      written for `pinto annotate`.\n\
+                      written for `lupin annotate`.\n\
                       A cell with no counts gets a zero row.\n\n\
                       Outputs:\n\
                       \x20 {out}.pb_embedding.parquet    super-cell × embedding_dim (trained)\n\
@@ -426,13 +400,6 @@ enum Commands {
                       \x20 {out}.pinto.json           manifest"
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),
-
-    #[command(
-        visible_alias = "cage-annotate",
-        about = "Marker-set cell-type annotation by projection (any embedding run)",
-        long_about = "Moved to `lupin annotate`. Run `lupin annotate --help`."
-    )]
-    Annotate(AnnotateArgs),
 
     #[command(
         about = "Apply a trained run to a new sample (cage), or score held-out cells (lc, dsvd)",
@@ -494,7 +461,7 @@ enum Commands {
                       \x20 {out}.link_community.parquet, {out}.propensity.parquet,\n\
                       \x20 {out}.feature_community.parquet, {out}.cell_embedding.parquet,\n\
                       \x20 {out}.pinto.json (command = predict), readable by\n\
-                      \x20 `pinto annotate` like a fitted run,\n\
+                      \x20 `lupin annotate` like a fitted run,\n\
                       \x20 {out}.predictive.parquet, one row per cell PAIR.\n\n\
                       SCORING. predictive.parquet holds eval_llik, eval_count,\n\
                       eval_llik_per_count, eval_null_llik_per_count and, with\n\
@@ -662,7 +629,8 @@ enum Commands {
         about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
         long_about = concat!(
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
-             faithful to its reference code at the model level, on pinto's inputs.\n\n",
+             faithful to its reference code at the model level, on pinto's inputs:\n\
+             the data, -c, -b, -o and --seed flags lc takes.\n\n",
             baseline_outputs!()
         )
     )]
@@ -672,7 +640,8 @@ enum Commands {
         about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
         long_about = concat!(
             "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
-             model level, on pinto's inputs.\n\n",
+             model level, on pinto's inputs: the data, -c, -b, -o and --seed flags\n\
+             lc takes.\n\n",
             baseline_outputs!()
         )
     )]
@@ -898,13 +867,6 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Cage(args) => {
             fit_cell_activity_graph_embedding(args)?;
-        }
-        Commands::Annotate(_args) => {
-            eprintln!(
-                "The `pinto annotate` command moved to `lupin annotate`.\n\
-                 Run `lupin annotate --help` for usage."
-            );
-            std::process::exit(1);
         }
         Commands::Predict(args) => {
             // The return value serves `pinto impute`; the CLI path only wants

@@ -26,7 +26,7 @@
 //!
 //! Outputs mirror `cage`'s inference tables: `{out}.{coord_pairs, latent,
 //! link_community, propensity, feature_community, cell_embedding}.parquet` and a
-//! `{out}.pinto.json` manifest, so `pinto plot` and `pinto annotate` read a
+//! `{out}.pinto.json` manifest, so `pinto view` and `lupin annotate` read a
 //! predicted sample as they would a fitted one.
 
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
@@ -200,7 +200,7 @@ fn pair_encoder_path(model: &str) -> anyhow::Result<String> {
 
 /// Per-pair community labels from `{model}.link_community.parquet`, **unfiltered**.
 ///
-/// Deliberately not `plot::load::read_link_community`: that is a display loader and
+/// Deliberately not `util::parquet_io::read_link_community`: that loader
 /// drops every row whose `edge_kind` is not spatial, while `{model}.latent.parquet`
 /// carries one row per pair including the expression-augmented ones. Pairing the two
 /// positionally after that filter either aborts on a self-consistent model — the
