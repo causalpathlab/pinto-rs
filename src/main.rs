@@ -523,11 +523,14 @@ enum Commands {
                       and the raw data files, which pinto lra reads to take a fit on\n\
                       the residual on its raw counts), so lc, cage and dsvd fit the\n\
                       residual as they fit data.\n\n\
-                      Limits: no donor or batch effect is removed, so donor nuisance\n\
-                      stays in the residual. A residual community confined to one\n\
-                      donor is evidence of donor-specific biology only when the\n\
-                      donors carry no such nuisance; a mix of shared cell states\n\
-                      unique to one donor is not recovered."
+                      By default (--adapt batch, see its help) a shift of a whole\n\
+                      community within a batch is absorbed; a local patch stays.\n\n\
+                      Limits: the identifying assumption is that donor-specific\n\
+                      biology is local; a whole community shifted in one donor is read\n\
+                      as nuisance and absorbed. A stage-1 run split by donor cannot be\n\
+                      corrected here. A patch stage 1 gave its own community, and a\n\
+                      new mix of shared cell states, cannot appear in a count\n\
+                      residual; look for them among the stage-1 communities."
     )]
     Residual(Box<residual::ResidualArgs>),
 

@@ -68,40 +68,40 @@ fn a_cell_with_no_counts_has_no_theta_and_no_excess() {
     assert!(excess_counts(&[], total(&[]), &m, &pi, Excess::Round).is_empty());
 }
 
-/// Two files `S1`, `S2` of cells `a`, `b` over `g0`, `g1`, all (10, 10)
-/// but S2/b at (10, 30), and a one-community run on them in which S2/b
-/// carries no weight, so the profile is the other cells' (1/2, 1/2).
-/// Returns the run prefix and the data files.
-fn fixture(d: &str) -> (String, Vec<String>) {
+/// Files of cells over `g0`, `g1` (`(name, cell i's counts)`; cells `a`,
+/// `b`, ... in order) and a run on them as a fit leaves it: propensity
+/// `prop` over the cells `{barcode}@{file}`, each file its own batch,
+/// coordinates and a manifest. Returns the run prefix and the data files.
+fn write_run(d: &str, sections: &[(&str, Vec<(f32, f32)>)], prop: Mat) -> (String, Vec<String>) {
     use crate::link_community::outputs::write_propensity_matrix;
     use crate::simulate::write::write_backend;
     use crate::util::metadata::PintoMetadata;
     use crate::util::parquet_io::write_cells_table;
-
     let genes: Vec<Box<str>> = vec!["g0".into(), "g1".into()];
-    let bc: Vec<Box<str>> = vec!["a".into(), "b".into()];
-    let mut names: Vec<Box<str>> = Vec::new();
-    let mut files = Vec::new();
-    for s in ["S1", "S2"] {
-        let extra = if s == "S2" { 20.0 } else { 0.0 };
-        let trip = vec![
-            (0, 0, 10.0),
-            (1, 0, 10.0),
-            (0, 1, 10.0),
-            (1, 1, 10.0 + extra),
-        ];
+    let (mut files, mut names, mut batches) = (Vec::new(), Vec::new(), Vec::new());
+    for (s, y) in sections {
+        let bc: Vec<Box<str>> = (0..y.len())
+            .map(|i| char::from(b'a' + i as u8).to_string().into())
+            .collect();
+        let trip = y
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &(a, b))| [(0, i as u64, a), (1, i as u64, b)])
+            .collect();
         let f = format!("{d}/{s}.zarr");
         write_backend(&f, &genes, &bc, trip).unwrap();
         files.push(f);
-        names.extend(bc.iter().map(|b| Box::<str>::from(format!("{b}@{s}"))));
+        for b in &bc {
+            names.push(Box::<str>::from(format!("{b}@{s}")));
+            batches.push(Box::<str>::from(*s));
+        }
     }
+    let n = names.len();
     let prefix = format!("{d}/fit");
-    let prop = Mat::from_column_slice(4, 1, &[1.0, 1.0, 1.0, 0.0]);
     write_propensity_matrix(&prefix, &prop, &names).unwrap();
-    let coords = Mat::from_row_slice(4, 2, &[0., 0., 1., 1., 2., 2., 3., 3.]);
+    let coords = Mat::from_fn(n, 2, |i, j| (i * 2 + j) as f32);
     let cn: Vec<Box<str>> = vec!["row_um".into(), "col_um".into()];
-    let batches: Vec<Box<str>> = vec!["S1".into(), "S1".into(), "S2".into(), "S2".into()];
-    write_cells_table(&prefix, &names, &coords, &cn, &batches, &[true; 4]).unwrap();
+    write_cells_table(&prefix, &names, &coords, &cn, &batches, &vec![true; n]).unwrap();
     let mut meta = PintoMetadata {
         command: "lc".into(),
         prefix: prefix.clone(),
@@ -114,6 +114,22 @@ fn fixture(d: &str) -> (String, Vec<String>) {
     (prefix, files)
 }
 
+/// Two files `S1`, `S2` of cells `a`, `b` over `g0`, `g1`, all (10, 10)
+/// but S2/b at (10, 30), and a one-community run on them in which S2/b
+/// carries no weight, so the profile is the other cells' (1/2, 1/2).
+/// Returns the run prefix and the data files.
+fn fixture(d: &str) -> (String, Vec<String>) {
+    let sections = [
+        ("S1", vec![(10.0, 10.0); 2]),
+        ("S2", vec![(10.0, 10.0), (10.0, 30.0)]),
+    ];
+    write_run(
+        d,
+        &sections,
+        Mat::from_column_slice(4, 1, &[1.0, 1.0, 1.0, 0.0]),
+    )
+}
+
 fn args(run: &str, out: &str, data_files: Option<Vec<Box<str>>>) -> ResidualArgs {
     ResidualArgs {
         run: run.into(),
@@ -123,6 +139,8 @@ fn args(run: &str, out: &str, data_files: Option<Vec<Box<str>>>) -> ResidualArgs
         em_iters: 50,
         block_size: Some(1),
         feature_names: crate::cell_activity_graph_embedding::args::FeatureNameMode::Exact,
+        adapt: Adapt::Batch,
+        adapt_cells: 50.0,
     }
 }
 
@@ -150,10 +168,9 @@ fn g1(c: &nalgebra_sparse::CscMatrix<f32>, j: usize) -> f32 {
 }
 
 fn read(path: &str) -> nalgebra_sparse::CscMatrix<f32> {
-    data_beans::sparse_io::open_sparse_matrix_by_path(path)
-        .unwrap()
-        .read_columns_csc(vec![0, 1])
-        .unwrap()
+    let m = data_beans::sparse_io::open_sparse_matrix_by_path(path).unwrap();
+    let n = m.num_columns().unwrap();
+    m.read_columns_csc((0..n).collect()).unwrap()
 }
 
 /// S2/b, 20 over the others on `g1`, keeps half of it as excess (μ_g1 = 20
@@ -346,6 +363,9 @@ fn lra_reads_a_fit_on_the_residual_as_a_residual_fit() {
         serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap())
             .unwrap();
     assert_eq!(marker["counts"], "excess", "{marker}");
+    assert_eq!(marker["adapt"], "batch", "{marker}");
+    assert_eq!(marker["adapt_cells"], 50.0, "{marker}");
+    assert!(marker["formula"].is_string(), "{marker}");
     // paths that resolve from anywhere: canonical, absolute, existing
     let stage1 = std::fs::canonicalize(format!("{prefix}.pinto.json")).unwrap();
     assert_eq!(
@@ -381,4 +401,108 @@ fn lra_reads_a_fit_on_the_residual_as_a_residual_fit() {
     let raw: Vec<std::path::PathBuf> = raw.iter().map(std::path::PathBuf::from).collect();
     assert_eq!(found.raw_data_files, raw);
     assert_eq!(found.stage1.unwrap().manifest, stage1);
+}
+
+#[test]
+fn pooled_profiles_carry_the_gamma_prior() {
+    // One community, sums (4, 2) as [G, K]: (4 + 1, 2 + 1) / 8.
+    let p = pooled_profiles(&nalgebra::DMatrix::from_column_slice(2, 1, &[4.0, 2.0]));
+    assert!((p[(0, 0)] - 5.0 / 8.0).abs() < 1e-12);
+    assert!((p[(0, 1)] - 3.0 / 8.0).abs() < 1e-12);
+}
+
+#[test]
+fn an_adapted_profile_is_the_batchs_sums_shrunk_toward_the_pool() {
+    let pooled = nalgebra::DMatrix::from_row_slice(1, 2, &[0.5, 0.5]);
+    // Batch sums (30, 10) as [G, K], alpha = 40: (20 + 30, 20 + 10) / 80.
+    let sums = nalgebra::DMatrix::from_column_slice(2, 1, &[30.0, 10.0]);
+    let p = adapt_profiles(&pooled, &sums, &[40.0]);
+    assert!((p[(0, 0)] - 50.0 / 80.0).abs() < 1e-12);
+    assert!((p[(0, 1)] - 30.0 / 80.0).abs() < 1e-12);
+    // No counts of the community in the batch: the pool.
+    let p = adapt_profiles(&pooled, &nalgebra::DMatrix::zeros(2, 1), &[40.0]);
+    assert_eq!(p, pooled);
+}
+
+/// The run's batch labels set the groups, across files; a cell the cells
+/// table lacks (not placed) groups apart; no batch labels is one batch.
+#[test]
+fn batch_groups_follow_the_runs_batches_across_files() {
+    let boxed = |v: &[&str]| -> Vec<Box<str>> { v.iter().map(|&s| s.into()).collect() };
+    let table = boxed(&["a@S1", "b@S1", "a@S2", "b@S2"]);
+    let names = boxed(&["a@S1", "b@S1", "a@S2", "b@S2", "a@S3"]);
+    let batches = boxed(&["D1", "D1", "D1", "D2"]);
+    assert_eq!(
+        batch_groups(&table, Some(&batches), &names),
+        vec![0, 0, 0, 1, 2]
+    );
+    assert_eq!(batch_groups(&table, None, &names), vec![0; 5]);
+}
+
+/// `--adapt` defaults to batch, and `--adapt-cells` refuses a negative
+/// weight (the parser's own cases are tested with lc's `--alpha`).
+#[test]
+fn adapt_defaults_to_batch_and_refuses_a_negative_weight() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        r: ResidualArgs,
+    }
+    let parse =
+        |extra: &[&str]| Cli::try_parse_from(["x", "--run", "r", "-o", "o"].iter().chain(extra));
+    assert_eq!(parse(&[]).unwrap().r.adapt, Adapt::Batch);
+    assert!(parse(&["--adapt-cells", "-1"]).is_err());
+}
+
+/// Two files of 20 cells, one community, each file its own batch. S1: all
+/// (20, 20). S2: every cell (20, 40), a shift of the whole community, and
+/// cell 0 (20, 120) on top. Returns the run prefix.
+fn shifted_fixture(d: &str) -> String {
+    let n = 20;
+    let mut y2 = vec![(20.0, 40.0); n];
+    y2[0] = (20.0, 120.0);
+    let sections = [("S1", vec![(20.0, 20.0); n]), ("S2", y2)];
+    write_run(d, &sections, Mat::from_element(2 * n, 1, 1.0)).0
+}
+
+/// Total `g1` excess over a residual file's cells, and cell 0's.
+fn g1_excess(out: &str, s: &str) -> (f32, f32) {
+    let m = read(&format!("{out}/{s}.zarr"));
+    ((0..m.ncols()).map(|j| g1(&m, j)).sum(), g1(&m, 0))
+}
+
+/// Pooled profiles leave S2's whole-community shift as excess in every S2
+/// cell; batch-adapted profiles absorb it and keep the one shifted cell.
+#[test]
+fn batch_adaptation_absorbs_a_community_wide_shift_and_keeps_a_local_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let prefix = shifted_fixture(d);
+
+    let pooled = format!("{d}/pooled");
+    run_residual(&ResidualArgs {
+        adapt: Adapt::None,
+        ..args(&prefix, &pooled, None)
+    })
+    .unwrap();
+    let (all, one) = g1_excess(&pooled, "S2");
+    assert!(
+        all - one > 40.0,
+        "pooled: S2's ordinary cells carry the shift ({all}, {one})"
+    );
+
+    let adapted = format!("{d}/adapted");
+    run_residual(&ResidualArgs {
+        adapt: Adapt::Batch,
+        adapt_cells: 1.0,
+        ..args(&prefix, &adapted, None)
+    })
+    .unwrap();
+    let (all, one) = g1_excess(&adapted, "S2");
+    assert!(one > 20.0, "the one shifted cell keeps its excess ({one})");
+    assert!(
+        all - one < 19.0,
+        "the community-wide shift is absorbed ({all}, {one})"
+    );
 }
