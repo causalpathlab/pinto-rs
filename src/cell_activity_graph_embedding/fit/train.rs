@@ -151,6 +151,9 @@ pub(super) struct TrainInputs<'a> {
     pub trainable_features: &'a [usize],
     pub feature_batch_size: usize,
     pub feature_fisher_weights: Option<&'a [f32]>,
+    /// Each feature's probability of being visited in an epoch
+    /// (`--feature-inclusion`); `None` visits every one.
+    pub inclusion: Option<&'a [f32]>,
     pub module_cfg: Option<&'a FeatureModuleConfig>,
     pub module_profiles: Option<&'a Mat>,
     pub n_exp_batches: usize,
@@ -172,6 +175,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         trainable_features,
         feature_batch_size,
         feature_fisher_weights,
+        inclusion,
         module_cfg,
         module_profiles,
         n_exp_batches,
@@ -197,10 +201,22 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // so the ETA is derived from observed step rate rather than guessed.
     // `--features-per-epoch` shortens every epoch equally, so this stays exact.
     // Early exit (convergence or Ctrl-C) simply finishes the bar short.
+    // Under --feature-inclusion an epoch visits each feature with its
+    // probability, so its length is that expectation (for the bar and the
+    // per-step ridge share only).
+    let expected_visits = match inclusion {
+        Some(pi) => (trainable_features
+            .iter()
+            .map(|&g| pi[g])
+            .sum::<f32>()
+            .round() as usize)
+            .max(1),
+        None => trainable_features.len(),
+    };
     let features_per_epoch_actual = if args.features_per_epoch > 0 {
-        args.features_per_epoch.min(trainable_features.len())
+        args.features_per_epoch.min(expected_visits)
     } else {
-        trainable_features.len()
+        expected_visits
     };
     let steps_per_epoch = features_per_epoch_actual.div_ceil(feature_batch_size);
     // The LoRA ridge is a per-epoch weight; every step takes its share.
@@ -245,6 +261,15 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         }
         let mut perm: Vec<usize> = trainable_features.to_vec();
         perm.shuffle(&mut rng_master);
+        // Soft inclusion: feature g joins this epoch with probability π_g,
+        // so the expected objective is Σ π_g L_g.
+        if let Some(pi) = inclusion {
+            crate::cell_activity_graph_embedding::feature_inclusion::sample_included(
+                &mut perm,
+                pi,
+                &mut rng_master,
+            );
+        }
         // Optional cost lever: visit a random subset of the feature axis this
         // epoch. Stochastic coverage, NOT axis selection — every feature stays
         // in the model, keeps its gate, and appears in the output tables; it
@@ -264,7 +289,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         let mut pair_acc: Option<Tensor> = None;
         let mut chunk_count: usize = 0;
         // Features this epoch will actually visit.
-        debug_assert_eq!(perm.len(), features_per_epoch_actual);
+        debug_assert!(inclusion.is_some() || perm.len() == features_per_epoch_actual);
         for chunk in perm.chunks(feature_batch_size) {
             if stop.load(Ordering::Relaxed) {
                 break;

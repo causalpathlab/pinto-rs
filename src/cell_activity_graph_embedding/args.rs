@@ -10,6 +10,17 @@ use crate::util::device::ComputeDevice;
 /// CLI mirror of [`graph_embedding_util::loss::NceObjective`] (that crate keeps
 /// its model enums clap-free, so every consumer carries its own wrapper — see
 /// `senna/src/bge/mod.rs` and `faba/src/gem/common.rs`).
+/// Which features each epoch trains (`--feature-inclusion`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[clap(rename_all = "lowercase")]
+pub enum FeatureInclusionMode {
+    /// Every trainable feature, every epoch.
+    All,
+    /// Each feature with probability π_g, its posterior probability of
+    /// spatial signal (jackknifed Moran's I, two-group empirical Bayes).
+    Moran,
+}
+
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 #[clap(rename_all = "lowercase")]
 pub enum NceObjectiveArg {
@@ -327,6 +338,37 @@ pub struct CellActivityGraphEmbeddingArgs {
                      so no positive super edge can share one."
     )]
     pub chain_levels: Option<Vec<usize>>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = FeatureInclusionMode::All,
+        help = "Which features each epoch trains: all, or each with its probability of spatial signal",
+        long_help = "Which features each epoch trains.\n\
+                     all: every trainable feature, every epoch.\n\
+                     moran: feature g with probability π_g, its posterior\n\
+                     probability of spatial signal. Each feature's Moran's I\n\
+                     over the spatial graph (log-normalised, centred per\n\
+                     section, pooled) gets a delete-one-tile jackknife standard\n\
+                     error (--inclusion-tiles); a two-group empirical-Bayes\n\
+                     model on the t statistics gives π_g = 1 − local fdr, with\n\
+                     no threshold to choose. Features are weighted, not cut:\n\
+                     the expected objective is Σ π_g L_g, and the likely-noise\n\
+                     features mostly cost nothing. Writes\n\
+                     {out}.feature_inclusion.parquet."
+    )]
+    pub feature_inclusion: FeatureInclusionMode,
+
+    #[arg(
+        long,
+        default_value_t = 4,
+        help = "Tiles per side of each section for --feature-inclusion's jackknife",
+        long_help = "Each section's plane is cut into this many tiles per side;\n\
+                     the jackknife leaves out one tile at a time. Tiles, not whole\n\
+                     sections, so a domain that only one section holds is not\n\
+                     penalised."
+    )]
+    pub inclusion_tiles: usize,
 
     /// Cells and cell pairs are the trained unit, with no pseudobulks:
     /// set by `pinto cage-cell`, not a flag.

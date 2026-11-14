@@ -42,7 +42,7 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -175,7 +175,7 @@ pub fn fit_cell_activity_graph_embedding(
         coordinates,
         coordinate_names,
         batch_membership,
-        section_ids: _,
+        section_ids,
         seeding,
         batch_effects: batch_db,
         graph,
@@ -264,6 +264,30 @@ pub fn fit_cell_activity_graph_embedding(
             n_cells, n_features, n_fine_edges
         );
     }
+
+    // Each feature's probability of spatial signal, which each epoch
+    // samples features by (`--feature-inclusion moran`).
+    let inclusion = match args.feature_inclusion {
+        FeatureInclusionMode::All => None,
+        FeatureInclusionMode::Moran => {
+            anyhow::ensure!(
+                !c.coord_files.is_empty(),
+                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
+            );
+            let plane = coordinates
+                .select_columns(&crate::util::ablation::non_batch_columns(&coordinate_names));
+            let inc = crate::cell_activity_graph_embedding::feature_inclusion::moran_inclusion(
+                &data_vec,
+                &feature_axis,
+                &plane,
+                &section_ids,
+                &topology_graph(&graph, &spatial_graph).edges,
+                args.inclusion_tiles,
+            )?;
+            write_feature_inclusion(&c.out, &feature_names, &inc)?;
+            Some(inc)
+        }
+    };
 
     // Per-ROW count totals, streamed ONCE. Two consumers need them and both are
     // whole-matrix passes: the splice go/no-go here, and the pair projection's
@@ -676,6 +700,7 @@ pub fn fit_cell_activity_graph_embedding(
         trainable_features: &trainable_features,
         feature_batch_size,
         feature_fisher_weights: feature_fisher_weights.as_deref(),
+        inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
         module_cfg: module_cfg.as_ref(),
         module_profiles: module_profiles.as_ref(),
         n_exp_batches,
@@ -851,6 +876,31 @@ pub fn fit_cell_activity_graph_embedding(
     }
 
     info!("Done");
+    Ok(())
+}
+
+/// `{out}.feature_inclusion.parquet`: each feature's Moran's I, its
+/// jackknife standard error, t statistic and inclusion probability.
+fn write_feature_inclusion(
+    out: &str,
+    features: &[Box<str>],
+    inc: &crate::cell_activity_graph_embedding::feature_inclusion::FeatureInclusion,
+) -> anyhow::Result<()> {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let f32s = |v: &[f64]| v.iter().map(|&x| x as f32).collect::<Vec<f32>>();
+    let (moran, se, t) = (f32s(&inc.moran), f32s(&inc.se), f32s(&inc.t));
+    write_named_table(
+        &format!("{out}.feature_inclusion.parquet"),
+        "feature",
+        features,
+        &[
+            ("moran".into(), Column::F32(&moran)),
+            ("jackknife_se".into(), Column::F32(&se)),
+            ("t".into(), Column::F32(&t)),
+            ("pi".into(), Column::F32(&inc.pi)),
+        ],
+    )?;
+    info!("Wrote {out}.feature_inclusion.parquet");
     Ok(())
 }
 

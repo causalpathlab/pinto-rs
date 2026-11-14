@@ -11,6 +11,7 @@
 pub mod args;
 pub mod feature_chain_sampler;
 pub mod feature_gating;
+pub mod feature_inclusion;
 pub mod fit;
 pub mod loss;
 pub mod pair_projection;
