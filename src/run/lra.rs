@@ -60,6 +60,12 @@ pub(super) struct LraToolArgs {
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_types: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_jackknife: Option<String>,
     #[serde(default = "in_background", skip_serializing)]
     pub background: bool,
 }
@@ -77,6 +83,9 @@ impl LraToolArgs {
             coord_files: &self.coord_files,
             batch_files: &self.batch_files,
             knn_spatial: self.knn_spatial,
+            cell_types: self.cell_types.as_deref(),
+            region: self.region.as_deref(),
+            region_jackknife: self.region_jackknife.as_deref(),
         }
     }
 }
@@ -100,6 +109,18 @@ pub(super) struct LraSimulateToolArgs {
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub species: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lr_pairs: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plant_region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_types: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_jackknife: Option<String>,
     #[serde(default = "in_background", skip_serializing)]
     pub background: bool,
 }
@@ -112,6 +133,9 @@ impl LraSimulateToolArgs {
             coord_files: &self.coord_files,
             batch_files: &self.batch_files,
             knn_spatial: self.knn_spatial,
+            cell_types: self.cell_types.as_deref(),
+            region: self.region.as_deref(),
+            region_jackknife: self.region_jackknife.as_deref(),
         }
     }
 }
@@ -124,6 +148,9 @@ struct Input<'a> {
     coord_files: &'a [String],
     batch_files: &'a [String],
     knn_spatial: Option<usize>,
+    cell_types: Option<&'a str>,
+    region: Option<&'a str>,
+    region_jackknife: Option<&'a str>,
 }
 
 impl Input<'_> {
@@ -182,6 +209,15 @@ impl Input<'_> {
         if let Some(k) = self.knn_spatial {
             argv.extend(["--knn-spatial".into(), k.to_string()]);
         }
+        if let Some(c) = self.cell_types {
+            argv.extend(["--cell-types".into(), shown_path(Path::new(c))]);
+        }
+        if let Some(r) = self.region {
+            argv.extend(["--region".into(), shown_path(Path::new(r))]);
+        }
+        if let Some(j) = self.region_jackknife {
+            argv.extend(["--region-jackknife".into(), j.into()]);
+        }
         argv
     }
 
@@ -202,6 +238,15 @@ impl Input<'_> {
         }
         if let Some(k) = self.knn_spatial {
             args["knn_spatial"] = k.into();
+        }
+        if let Some(c) = self.cell_types {
+            args["cell_types"] = c.into();
+        }
+        if let Some(r) = self.region {
+            args["region"] = r.into();
+        }
+        if let Some(j) = self.region_jackknife {
+            args["region_jackknife"] = j.into();
         }
         args
     }
@@ -264,7 +309,7 @@ pub(super) fn lra_argv(
         targets: a.targets.iter().map(|t| shown_path(Path::new(t))).collect(),
         species: a.species.clone().unwrap_or(d.species),
         seed: a.seed.unwrap_or(d.seed),
-        identity_excluded: Vec::new(),
+        ..d
     };
     let mut argv = options.argv(run, Some(out), method, &a.only);
     argv.extend(a.input().flags());
@@ -298,6 +343,16 @@ pub(super) fn lra_simulate_argv(
     }
     if let Some(s) = &a.species {
         argv.extend(["--species".into(), s.clone()]);
+    }
+    if let Some(p) = &a.lr_pairs {
+        argv.extend(["--lr-pairs".into(), shown_path(Path::new(p))]);
+    }
+    if !a.targets.is_empty() {
+        let t: Vec<String> = a.targets.iter().map(|t| shown_path(Path::new(t))).collect();
+        argv.extend(["--targets".into(), t.join(",")]);
+    }
+    if let Some(r) = &a.plant_region {
+        argv.extend(["--plant-region".into(), r.clone()]);
     }
     argv
 }

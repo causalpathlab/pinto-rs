@@ -218,6 +218,13 @@ fn warnings(row: &EffectRow, ev: Evidence, controls: &[Flag], opts: &ReportOpts)
     if !ev.estimable {
         w.push(not_estimable_reason(row, opts));
     }
+    if ev.estimable && row.jackknife.failed() {
+        w.push(
+            "the tile jackknife could not run (deleting a tile leaves an arm thin): its SE \
+             is the clustered one, likely too small for a region in few tiles"
+                .into(),
+        );
+    }
     if ev.confounded {
         w.push(format!(
             "exposure {:.0}% explained by the dominant neighbour's identity: the effect \

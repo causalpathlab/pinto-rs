@@ -129,6 +129,15 @@ pub struct LraOptions {
     /// before 0.16.4.
     #[serde(skip_serializing_if = "Vec::is_empty", with = "comma_list")]
     pub identity_excluded: Vec<String>,
+    /// `--cell-types`: the cell-label file that stood in for the run's
+    /// lupin round, when one was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_types: Option<String>,
+    /// `--region`: the region-label file adjusted for and reported by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// `--region-jackknife`: `refit` or `no-refit`.
+    pub region_jackknife: String,
 }
 
 /// A list of names as one comma-separated string, so a long one is one
@@ -173,6 +182,9 @@ impl Default for LraOptions {
             species: crate::lr_activity::args::ReferenceSpecies::Auto.name(),
             seed: crate::lr_activity::args::DEFAULT_SEED,
             identity_excluded: Vec::new(),
+            cell_types: None,
+            region: None,
+            region_jackknife: crate::lr_activity::args::RegionJackknife::default().name(),
         }
     }
 }

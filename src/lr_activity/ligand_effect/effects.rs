@@ -38,6 +38,14 @@ pub struct ScopeEffects {
     /// be read as this estimate's own uncertainty.
     pub outcome: Estimate,
     pub incompetent: Estimate,
+    /// The competent effect in this scope minus that on every other
+    /// competent receiver, from the same fit: whether the effect is the
+    /// scope's own (a section's, a region's) rather than the tissue's. NaN
+    /// on the pooled scope, which has no rest. Tiles never cross sections,
+    /// so for a section the two parts share no cluster; a region's rows
+    /// may share tiles with the rest, which the clustered variance of the
+    /// difference counts.
+    pub versus_rest: Estimate,
     /// The competent effect under the section, spatial and identity steps
     /// (pooled only; NaN elsewhere).
     pub steps: [Estimate; 3],
@@ -74,6 +82,7 @@ impl ScopeEffects {
             ipw: pick(&|e| e.ipw),
             outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
+            versus_rest: pick(&|e| e.versus_rest),
             steps: [
                 pick(&|e| e.steps[0]),
                 pick(&|e| e.steps[1]),
@@ -259,7 +268,12 @@ impl ScopeReader<'_> {
             .iter()
             .enumerate()
             .map(|(k, inside)| {
-                let (effects, sums) = self.scope(inside, competent, headline[k], k == 0);
+                let rest = (k > 0).then(|| Rest {
+                    rows: complement(&scope_rows[0], inside),
+                    open: headline[0],
+                });
+                let (effects, sums) =
+                    self.scope(inside, competent, headline[k], k == 0, rest.as_ref());
                 if k == 0 {
                     pooled_sums = sums;
                 }
@@ -281,6 +295,7 @@ impl ScopeReader<'_> {
         competent: &[bool],
         open: bool,
         pooled: bool,
+        rest: Option<&Rest>,
     ) -> (ScopeEffects, Vec<f64>) {
         let (comp, incomp): (Vec<u32>, Vec<u32>) =
             inside.iter().partition(|&&i| competent[i as usize]);
@@ -289,6 +304,19 @@ impl ScopeReader<'_> {
         let (on_incompetent, incompetent_sums) = self.subset(main, open, &incomp);
         let contrast = difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
         let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
+        let versus_rest = match rest {
+            Some(rest) => {
+                let others: Vec<u32> = rest
+                    .rows
+                    .iter()
+                    .copied()
+                    .filter(|&i| competent[i as usize])
+                    .collect();
+                let (on_rest, rest_sums) = self.subset(main, rest.open, &others);
+                difference(&on_competent, &sums, &on_rest, &rest_sums)
+            }
+            None => nan,
+        };
         let unadjusted_diff = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
         let (ipw, outcome) = match main {
             Some(m) if on_competent.theta.is_finite() => (
@@ -313,6 +341,7 @@ impl ScopeReader<'_> {
             ipw,
             outcome,
             incompetent: on_incompetent,
+            versus_rest,
             steps,
             nospill,
             near_determined,
@@ -352,6 +381,27 @@ impl ScopeReader<'_> {
         }
         (steps, nospill)
     }
+}
+
+/// The pooled rows outside a scope, and whether the pooled scope has a
+/// headline, which decides whether their estimate is read.
+struct Rest {
+    rows: Vec<u32>,
+    open: bool,
+}
+
+/// The rows of `all` not in `inside`, both ascending.
+pub(super) fn complement(all: &[u32], inside: &[u32]) -> Vec<u32> {
+    let mut j = 0;
+    all.iter()
+        .copied()
+        .filter(|&i| {
+            while j < inside.len() && inside[j] < i {
+                j += 1;
+            }
+            !(j < inside.len() && inside[j] == i)
+        })
+        .collect()
 }
 
 /// Share of the rows `comp` whose overlap weight is below

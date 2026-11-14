@@ -293,6 +293,8 @@ struct SimTable<'p> {
     strings: Vec<Vec<Box<str>>>,
     numbers: Vec<Vec<f64>>,
     rejects: Vec<Vec<f64>>,
+    /// The `region` column, when the table has one.
+    region: Option<Vec<f64>>,
 }
 
 impl<'p> SimTable<'p> {
@@ -312,11 +314,16 @@ impl<'p> SimTable<'p> {
                     format!("{path} is not a table this version of lra-simulate wrote")
                 })?;
         let rejects = numbers.split_off(SIM_NUMBERS.len());
+        // A table from before regions were planted has no region column.
+        let region = legume_numeric::matrix::parquet::read_table_columns(path, &[], &[REGION])
+            .ok()
+            .and_then(|(_, mut n)| n.pop());
         Ok(Self {
             path,
             strings,
             numbers,
             rejects,
+            region,
         })
     }
 
@@ -358,6 +365,12 @@ impl<'p> SimTable<'p> {
             dose_response: self.flag(DOSE_RESPONSE, i),
             dose_midpoint: self.num(DOSE_MIDPOINT, i),
             dose_order: self.col(DOSE_ORDER)[i] as i32,
+            region: self
+                .region
+                .as_ref()
+                .map(|r| r[i])
+                .filter(|v| v.is_finite())
+                .map(|v| v as u32),
         })
     }
 

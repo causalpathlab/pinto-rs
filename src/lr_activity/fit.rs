@@ -92,6 +92,11 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         "--only applies to --method contact-effect; the co-expression methods test the \
          pairs of --lr-pairs"
     );
+    anyhow::ensure!(
+        args.input.region.is_none() && args.input.cell_types.is_none(),
+        "--region and --cell-types apply to --method contact-effect; the co-expression \
+         methods stratify by the run's link communities"
+    );
     let lc_prefix = input.lc_prefix()?;
     let lc_prefix = lc_prefix.as_str();
     // The `--from` run's manifest, which every method records into.
@@ -616,6 +621,10 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             seed: args.input.seed,
             block_size: input.block_size,
             only: &args.only,
+            cell_types: input.cell_types.as_deref(),
+            region: input.region.as_deref(),
+            plant_region: None,
+            region_jackknife: args.input.region_jackknife,
         },
         data: &contacts.data,
         axis: &contacts.axis,
@@ -624,6 +633,10 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
         coords: &contacts.coords,
         cell_type: contacts
             .cell_type
+            .as_ref()
+            .map(|(c, n)| (c.as_slice(), n.as_slice())),
+        region: contacts
+            .region
             .as_ref()
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
     })
@@ -643,12 +656,16 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         settings: Settings {
             out: &out,
             manifest: &manifest,
-            lr_pairs: None,
-            targets: &[],
+            lr_pairs: args.lr_pairs.as_deref(),
+            targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
             block_size: input.block_size,
             only: &[],
+            cell_types: input.cell_types.as_deref(),
+            region: input.region.as_deref(),
+            plant_region: args.plant_region.as_deref(),
+            region_jackknife: args.input.region_jackknife,
         },
         data: &contacts.data,
         axis: &contacts.axis,
@@ -657,6 +674,10 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         coords: &contacts.coords,
         cell_type: contacts
             .cell_type
+            .as_ref()
+            .map(|(c, n)| (c.as_slice(), n.as_slice())),
+        region: contacts
+            .region
             .as_ref()
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
     })

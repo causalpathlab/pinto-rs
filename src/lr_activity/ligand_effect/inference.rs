@@ -103,9 +103,10 @@ pub fn t_crit_975(df: f64) -> f64 {
 
 /// `sqrt(Σ_c s_c²)` over the cluster sums `s_c` of ψ, scaled by
 /// `C / (C − 1)` for few clusters, and the t reference's degrees of freedom
-/// `C − 1` (NaN below two clusters), `C` counting the clusters that carry
-/// `ψ`.
-pub(super) fn clustered_sd(sums: &[f64]) -> (f64, f64) {
+/// `C_eff − 1` (NaN below two clusters), `C` counting the clusters that
+/// carry `ψ` and `C_eff` ([`effective_clusters`]) how many of them the
+/// variance rests on.
+pub fn clustered_sd(sums: &[f64]) -> (f64, f64) {
     let used = sums.iter().filter(|s| **s != 0.0).count();
     let ss: f64 = sums.iter().map(|s| s * s).sum();
     let scale = if used > 1 {
@@ -114,11 +115,37 @@ pub(super) fn clustered_sd(sums: &[f64]) -> (f64, f64) {
         1.0
     };
     let df = if used > 1 {
-        used as f64 - 1.0
+        effective_clusters(sums) - 1.0
     } else {
         f64::NAN
     };
     ((ss * scale).sqrt(), df)
+}
+
+/// How many of the clusters carrying `sums` the clustered variance rests
+/// on: `3 (Σ s_c²)² / Σ s_c⁴`, between 2 and the `C` clusters that carry
+/// any (NaN below two).
+///
+/// The clustered variance is a sum of one squared term per cluster, so its
+/// Satterthwaite degrees of freedom are `(Σ σ_c²)² / Σ σ_c⁴` (Bell &
+/// McCaffrey 2002, Surv Methodol 28:169); `s_c²` estimates `σ_c²`, and
+/// `s_c⁴` estimates `3 σ_c⁴` for a normal `s_c`, hence the 3, which makes
+/// `C` clusters alike count as about `C`. A subgroup inside a few tiles of
+/// many, as a region of one donor is, leaves the rest of the tiles nearly
+/// empty: `C − 1` would read their count as information, and a t reference
+/// on it rejects too often (MacKinnon & Webb 2017, J Appl Econom 32:233;
+/// Carter, Schnepel & Steigerwald 2017, Rev Econ Stat 99:698).
+pub fn effective_clusters(sums: &[f64]) -> f64 {
+    let used = sums.iter().filter(|s| **s != 0.0).count();
+    if used < 2 {
+        return f64::NAN;
+    }
+    let s2: f64 = sums.iter().map(|s| s * s).sum();
+    let s4: f64 = sums.iter().map(|s| s.powi(4)).sum();
+    if s4 <= 0.0 || !s4.is_finite() {
+        return used as f64;
+    }
+    (3.0 * s2 * s2 / s4).clamp(2.0, used as f64)
 }
 
 /// Whether an analysis's estimate can enter Rubin's rules: a finite estimate

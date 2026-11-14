@@ -519,8 +519,10 @@ enum Commands {
                       from the run enters it. Per data file it writes\n  \
                       {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n  \
                       {out}/{stem}.coords.parquet  the run's coordinates of its cells\n\
-                      and {out}/residual.json, so lc, cage and dsvd fit the residual\n\
-                      as they fit data.\n\n\
+                      and {out}/residual.json (the counts in and out, the stage-1 run\n\
+                      and the raw data files, which pinto lra reads to take a fit on\n\
+                      the residual on its raw counts), so lc, cage and dsvd fit the\n\
+                      residual as they fit data.\n\n\
                       Limits: no donor or batch effect is removed, so donor nuisance\n\
                       stays in the residual. A residual community confined to one\n\
                       donor is evidence of donor-specific biology only when the\n\
