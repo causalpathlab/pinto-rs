@@ -8,7 +8,8 @@
 //!   posterior when it has one, else one-hot labels), `cluster`, `entropy`;
 //! - `{out}.cells.parquet`: every cell with its coordinates;
 //! - `{out}.cell_embedding.parquet`: `cell` and the method's per-cell vectors;
-//! - `{out}.labels.tsv`: `cell<TAB>label`, labels `C1`, `C2`, ...;
+//! - `{out}.labels.tsv`: `cell<TAB>label`, labels `C0`, `C1`, ..., as the
+//!   propensity columns name them;
 //! - `{out}.baseline.json`: the method's settings, as run.
 
 use super::input::{SpatialData, SpatialInputArgs};
@@ -74,7 +75,7 @@ fn ensure_parent(prefix: &str) -> anyhow::Result<()> {
 fn write_labels(prefix: &str, cells: &[Box<str>], labels: &[usize]) -> anyhow::Result<()> {
     let mut text = String::from("cell\tlabel\n");
     for (c, l) in cells.iter().zip(labels) {
-        text.push_str(&format!("{c}\tC{}\n", l + 1));
+        text.push_str(&format!("{c}\tC{l}\n"));
     }
     std::fs::write(labels_path(prefix), text)?;
     Ok(())

@@ -21,7 +21,7 @@ pub(crate) mod tui;
 pub const METHODS: [&str; 6] = ["lc", "cage", "dsvd", "banksy", "spatialde2", "stagate"];
 
 /// The spatial baselines among [`METHODS`].
-pub const BASELINES: [&str; 3] = ["banksy", "spatialde2", "stagate"];
+pub const BASELINES: &[&str] = METHODS.split_at(3).1;
 
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power

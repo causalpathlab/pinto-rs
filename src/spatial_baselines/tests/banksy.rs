@@ -230,9 +230,9 @@ fn defaults_follow_the_reference() {
 
 #[test]
 fn recovers_two_domains_end_to_end() {
-    let (d, truth) = two_domains();
+    let (mut d, truth) = two_domains();
     let args = test_args(Some(2));
-    let (pcs, genes) = banksy_pcs(&d, &args).unwrap();
+    let (pcs, genes) = banksy_pcs(&mut d, &args).unwrap();
     assert_eq!(pcs.nrows(), truth.len());
     assert!(!genes.is_empty());
     let labels = cluster_pcs(&pcs, 15, 1.0, Some(2), 1).unwrap();

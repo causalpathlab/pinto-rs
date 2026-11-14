@@ -121,6 +121,11 @@
 //!   the CPU a seed gives one result.
 //! - The compute device defaults to the CPU, as `cage`; the reference uses
 //!   `cuda:0` when there is one. Pass `--device cuda`.
+//! - Training is full-batch, as STAGATE_pyG's default `train_STAGATE`: each
+//!   layer gathers one `edges × width` message tensor (width 512 on the first
+//!   layer), so device memory grows with the edge count. Around 10⁵ spots at
+//!   `--k-cutoff 6` this passes a 10 GB card; the reference's `Batch_Data`
+//!   mini-batch path, which splits the tissue into tiles, is not ported.
 //! - Training follows pyG, not the TF trainer that T1_DLPFC (the source of
 //!   the mclust and radius-150 pipeline) runs. The TF defaults not followed
 //!   (`Train_STAGATE.py:train_STAGATE`, `model.py:GATE.__call__`): loss

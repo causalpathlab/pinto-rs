@@ -509,14 +509,15 @@ pub fn cluster_pcs(
     Ok(labels)
 }
 
-/// The BANKSY PCs (cells × PCs) of the data, with the genes used.
-pub fn banksy_pcs(data: &SpatialData, args: &Args) -> anyhow::Result<(Mat, Vec<usize>)> {
-    let mut norm = data.counts.clone();
-    normalise_library(&mut norm);
-    let genes = select_genes(&norm, args.n_hvg);
+/// The BANKSY PCs (cells × PCs) of the data, with the genes used. The
+/// counts are normalised in place and then released: nothing after this
+/// reads them.
+pub fn banksy_pcs(data: &mut SpatialData, args: &Args) -> anyhow::Result<(Mat, Vec<usize>)> {
+    normalise_library(&mut data.counts);
+    let genes = select_genes(&data.counts, args.n_hvg);
     anyhow::ensure!(genes.len() >= 2, "fewer than two variable genes");
-    let x = dense_spots_by_genes(&norm, &genes);
-    drop(norm);
+    let x = dense_spots_by_genes(&data.counts, &genes);
+    data.counts = CscMatrix::zeros(0, 0);
     let harmonics = banksy_weights(data, args.k_geom, args.max_m);
     info!(
         "{} genes; harmonics 0..={} with k_geom {}..{}",
@@ -537,8 +538,8 @@ pub fn banksy_pcs(data: &SpatialData, args: &Args) -> anyhow::Result<(Mat, Vec<u
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     args.validate()?;
-    let data = args.input.read()?;
-    let (pcs, genes) = banksy_pcs(&data, args)?;
+    let mut data = args.input.read()?;
+    let (pcs, genes) = banksy_pcs(&mut data, args)?;
     let labels = cluster_pcs(
         &pcs,
         args.knn,

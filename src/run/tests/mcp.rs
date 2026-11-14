@@ -241,7 +241,7 @@ fn run_methods_lists_the_baselines_as_it_lists_lc() {
         assert_eq!(m["coords"], true, "{m}");
         assert_eq!(m["batches"], true, "{m}");
     }
-    for name in BASELINES {
+    for &name in BASELINES {
         let one = first(
             tools
                 .methods(MethodsArgs {
@@ -278,7 +278,7 @@ fn run_fit_takes_a_baseline_as_it_takes_lc() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("m");
     let out = out.to_str().unwrap();
-    for name in BASELINES {
+    for &name in BASELINES {
         let (failed, said) = call_once(
             "run_fit",
             json!({"method": name, "data": ["a.zarr"], "coords": ["a.csv"],
@@ -287,7 +287,7 @@ fn run_fit_takes_a_baseline_as_it_takes_lc() {
         assert!(failed && said.contains("no flag --no-such-flag"), "{said}");
     }
     std::fs::write(format!("{out}.pinto.json"), "{}").unwrap();
-    for name in BASELINES {
+    for &name in BASELINES {
         let (failed, said) = call_once(
             "run_fit",
             json!({"method": name, "data": ["a.zarr"], "coords": ["a.csv"], "out": out}),

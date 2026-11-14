@@ -335,18 +335,31 @@ pub struct WeightedGraph {
 
 impl WeightedGraph {
     /// `w_nm = 2 s min d² / d²_nm` on symmetric neighbour lists (cell
-    /// indices and Euclidean distances), `min d²` over every listed pair.
-    pub fn from_neighbours(index: &[Vec<usize>], dist: &[Vec<f32>], smoothness: f64) -> Self {
-        let min_d2 = dist
-            .iter()
-            .flatten()
-            .map(|&d| (d as f64) * (d as f64))
-            .filter(|&d2| d2 > 0.0)
-            .fold(f64::INFINITY, f64::min);
+    /// indices and Euclidean distances), `min d²` over the listed pairs of
+    /// the cell's own section (`section[i]`), as the reference computes it
+    /// over one dataset: a section's weights do not depend on another
+    /// section's spot spacing.
+    pub fn from_neighbours(
+        index: &[Vec<usize>],
+        dist: &[Vec<f32>],
+        section: &[usize],
+        smoothness: f64,
+    ) -> Self {
+        let n_sections = section.iter().max().map_or(0, |&m| m + 1);
+        let mut min_d2 = vec![f64::INFINITY; n_sections];
+        for (ds, &s) in dist.iter().zip(section) {
+            for &d in ds {
+                let d2 = (d as f64) * (d as f64);
+                if d2 > 0.0 && d2 < min_d2[s] {
+                    min_d2[s] = d2;
+                }
+            }
+        }
         let mut offsets = vec![0];
         let mut flat = Vec::new();
         let mut weight = Vec::new();
-        for (js, ds) in index.iter().zip(dist) {
+        for ((js, ds), &s) in index.iter().zip(dist).zip(section) {
+            let min_d2 = min_d2[s];
             for (&j, &d) in js.iter().zip(ds) {
                 let d2 = ((d as f64) * (d as f64)).max(min_d2);
                 flat.push(j);
@@ -837,8 +850,10 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         ..Params::default()
     };
     params.check()?;
-    let data = args.input.read()?;
+    let mut data = args.input.read()?;
     let (counts, sizefactors, genes) = select_counts(&data, args.n_top_genes);
+    // the model reads its own copy from here on
+    data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
     log::info!(
         "spatialde2: {} genes by total counts, size factors over all {}",
         genes.len(),
@@ -851,7 +866,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
             nb.n_edges(),
             args.neighbors
         );
-        WeightedGraph::from_neighbours(&nb.index, &nb.dist, params.smoothness_factor)
+        WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, params.smoothness_factor)
     });
     let seg = segment(
         &counts,

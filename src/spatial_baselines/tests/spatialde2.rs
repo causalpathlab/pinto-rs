@@ -22,7 +22,7 @@ fn grid(side: usize, n_sections: usize) -> SpatialData {
 
 fn graph_of(data: &SpatialData, k: usize, smoothness: f64) -> WeightedGraph {
     let nb = knn_within_sections(data, k).symmetrised();
-    WeightedGraph::from_neighbours(&nb.index, &nb.dist, smoothness)
+    WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, smoothness)
 }
 
 /// Two regions (left and right halves of each grid), each with its own
