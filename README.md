@@ -401,7 +401,7 @@ donor, the residual's one-donor communities are nuisance. On a simulation,
 split by donor.
 
 ```sh
-pinto residual --run out/lc1 -o out/resid
+pinto residual --from out/lc1 -o out/resid
 pinto lc out/resid/S1.zarr,out/resid/S2.zarr \
   -c out/resid/S1.coords.parquet,out/resid/S2.coords.parquet \
   --coord-column-names x,y -o out/lc2   # the first run's coordinate names
@@ -477,7 +477,7 @@ Once a run ends, the methods it finished are unqueued (marked ✓), so
 ctrl+r again, or `r` on the Run screen, runs only the ones stopped, failed
 or not reached; space queues one again. Each reruns into its old `--out`,
 after first clearing the script and batch files its unfinished run left
-there.
+there (a residual's, the files it had written in `{out}/`).
 
 ```sh
 pinto run data/        # the file browser starts in data/
@@ -522,8 +522,10 @@ stage-2 fit as well, starting from that lra's flags: it reads the raw counts
 of the run's data files through `residual.json`, so the two tables compare.
 Each stage-2 job starts only once the one it reads is done; when that one
 fails or stops, it is not started. A residual (or stage-2 fit) that
-finished keeps its `--out` while what reads it is still queued, so ctrl+r
-again runs only the rest, on what it wrote. All of them are saved as
+finished is read where it wrote, as it ran, so ctrl+r again runs only the
+rest, on what it wrote; its row's `--out` moves on like a finished fit's.
+A residual stopped or failed part-way reruns at its `--out`, its files
+there cleared first. All of them are saved as
 `{out}.cmd.sh` like the fits, and `c` in the review copies the commands in
 the order they run.
 

@@ -224,6 +224,7 @@ struct Inputs {
 /// file, the run is an lc, cage or dsvd run on raw counts, its data files
 /// are found, all of them, with distinct names, it names its coordinate
 /// columns, and no output is an input.
+#[derive(Clone, Debug)]
 pub struct Plan {
     /// The run's data files, in its order.
     pub files: Vec<Box<str>>,

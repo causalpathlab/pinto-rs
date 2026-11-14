@@ -38,7 +38,7 @@ impl Row {
             on: false,
             out: String::new(),
             typed: false,
-            done: false,
+            ran: None,
         };
         r.out = free_out(here, &r.stem());
         r
@@ -50,6 +50,11 @@ impl Row {
             Role::Plain | Role::Residual => self.form.name.clone(),
             Role::Stage2 | Role::Stage2Lra => format!("stage-2 {}", self.form.name),
         }
+    }
+
+    /// Whether it finished in the last queue it was in.
+    fn done(&self) -> bool {
+        self.ran.is_some()
     }
 
     /// What its `--out` is named after, under the output header.
@@ -123,8 +128,9 @@ struct Row {
     out: String,
     /// Whether `out` was typed by hand, so the output header leaves it.
     typed: bool,
-    /// Whether it finished in the last run it was in.
-    done: bool,
+    /// Its run that finished, in the last queue it was in: what reads it
+    /// reads what that run wrote, wherever `out` has moved since.
+    ran: Option<Job>,
 }
 
 /// What a line being typed will become.

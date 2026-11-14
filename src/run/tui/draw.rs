@@ -171,8 +171,10 @@ impl App {
                 "v open the one chosen in pinto view",
             ],
         };
+        // Over the review, the review shows it.
+        let message = self.message.as_ref().filter(|_| self.confirm.is_none());
         let mut lines = vec![Line::from(Span::styled(
-            format!(" {}", self.message.clone().unwrap_or_default()),
+            format!(" {}", message.cloned().unwrap_or_default()),
             bold(),
         ))];
         let mut all = vec![
@@ -388,7 +390,7 @@ impl App {
                 " [{}] {:<14} --out {:<out_w$}  {:<11} {}",
                 if r.on {
                     "x"
-                } else if r.done {
+                } else if r.done() {
                     "✓"
                 } else {
                     " "
@@ -623,12 +625,12 @@ impl App {
             }
             for (on, note) in [
                 (
-                    self.rows[p.job.row].done,
+                    self.rows[p.job.row].done(),
                     "✓ finished earlier in this session: it runs again",
                 ),
                 (
                     p.job.clear,
-                    "↻ the unfinished run's script and batch files here are cleared first",
+                    "↻ what the unfinished run left here (its script, batch or residual files) is cleared first",
                 ),
             ] {
                 if on {

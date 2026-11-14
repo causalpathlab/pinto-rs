@@ -700,7 +700,12 @@ enum Commands {
              Pick the data files with the coordinate and batch files of\n\
              each, queue one or more of lc, cage and dsvd, and change\n\
              their flags. Every flag a method has is listed with its help;\n\
-             hidden ones under `a`.\n\n\
+             hidden ones under `a`. On a fitted run, lra, lra-simulate and\n\
+             residual can be queued too: the residual brings a stage-2 fit\n\
+             on its files (`m` picks its method), and lra on that fit is\n\
+             offered with lra on the first run. Each stage-2 job starts\n\
+             only once the one it reads is done; a --from names a run\n\
+             already fitted.\n\n\
              Each data file is its own batch unless `n` names one batch for\n\
              all its cells (files given one name are one batch) or `b` takes\n\
              a label file, whose labels `e` renames. Label files the run\n\

@@ -128,3 +128,20 @@ fn lra_help_lists_every_verdict() {
         assert!(help.contains(m), "{m}");
     }
 }
+
+/// `pinto run --help` names the methods that run on a fitted run, and the
+/// residual's stage-2 fit.
+#[cfg(feature = "view")]
+#[test]
+fn run_help_names_the_methods_on_a_run() {
+    use clap::CommandFactory;
+    let mut cli = Cli::command();
+    let help = cli
+        .find_subcommand_mut("run")
+        .expect("run")
+        .render_long_help()
+        .to_string();
+    for m in ["lra", "lra-simulate", "residual", "stage-2"] {
+        assert!(help.contains(m), "{m} missing from run --help");
+    }
+}

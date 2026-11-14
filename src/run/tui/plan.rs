@@ -49,6 +49,17 @@ impl App {
                         _ => {}
                     }
                 }
+                // Space on that row next takes it off, which is easy to
+                // read as ignored without this.
+                if let Some(two) = on
+                    .then(|| self.rows.iter().find(|r| r.role == Role::Stage2))
+                    .flatten()
+                {
+                    self.message = Some(format!(
+                        "residual queued with {}: space on its row takes it off",
+                        two.label()
+                    ));
+                }
             }
             Role::Stage2Lra if on => {
                 let Some(lra) = self.lra_on_residual_run() else {
@@ -85,7 +96,7 @@ impl App {
         let was = std::mem::replace(&mut r.form, next);
         r.alts.push(was);
         // the new method has not run, whatever the last one did
-        r.done = false;
+        r.ran = None;
         if !r.typed {
             r.out = free_out(&self.here, &under(&self.header, &r.stem()));
         }
@@ -101,19 +112,23 @@ impl App {
         Some(script::normalize(Path::new(&manifest)))
     }
 
+    /// The run row `r` reads: its `--from` when queued, else the one its
+    /// finished run read.
+    fn run_read(&self, r: &super::Row) -> Option<PathBuf> {
+        if r.on {
+            self.run_of(&r.form)
+        } else {
+            r.ran.as_ref().map(|j| script::normalize(j.view()))
+        }
+    }
+
     /// The lra row queued (or finished in the last run) on the run the
     /// residual queued (or finished) reads.
     fn lra_on_residual_run(&self) -> Option<usize> {
-        let res = self
-            .rows
-            .iter()
-            .find(|r| r.role == Role::Residual && (r.on || r.done))?;
-        let run = self.run_of(&res.form)?;
+        let res = self.rows.iter().find(|r| r.role == Role::Residual)?;
+        let run = self.run_read(res)?;
         self.rows.iter().position(|r| {
-            r.role == Role::Plain
-                && (r.on || r.done)
-                && r.form.name == "lra"
-                && self.run_of(&r.form).as_ref() == Some(&run)
+            r.role == Role::Plain && r.form.name == "lra" && self.run_read(r).as_ref() == Some(&run)
         })
     }
 
@@ -251,15 +266,15 @@ impl App {
         // The queued residual's place in the plan and what it writes, and
         // the stage-2 fit's place.
         // Finished in the last run, not queued again and still there, each
-        // is read where it is.
+        // is read where its run wrote, as it ran.
         let mut residual: Option<(Option<usize>, Result<Plan, String>)> = self
             .finished(Role::Residual)
-            .and_then(|i| self.residual_of(i).ok())
-            .filter(|p| Path::new(&p.summary).is_file())
+            .and_then(|j| j.residual.clone())
+            .filter(|p| p.made().iter().all(|f| f.exists()))
             .map(|p| (None, Ok(p)));
         let mut stage2: Option<(Option<usize>, PathBuf)> = self
             .finished(Role::Stage2)
-            .map(|i| self.fit_manifest(i))
+            .map(|j| j.manifest().to_path_buf())
             .filter(|m| m.is_file())
             .map(|m| (None, m));
         for (i, r) in self.rows.iter().enumerate().filter(|(_, r)| r.on) {
@@ -320,26 +335,32 @@ impl App {
                 }
             };
             job.after = after;
-            job.clear = self.clears(i);
-            // What an unfinished run left is cleared, so only what says it
-            // is done is in the way.
-            let mut in_the_way = if job.clear {
-                vec![job.done.clone()]
-            } else {
-                job.in_the_way()
-            };
             let mut unplanned = None;
             if r.role == Role::Residual {
                 let p = residual_args(&job.argv)
                     .and_then(|a| residual_plan(&dir, &a))
                     .map_err(|e| format!("{e:#}"));
                 match &p {
-                    // Nothing it writes is written over.
-                    Ok(p) => in_the_way.extend(p.made()),
+                    // Its files, as a fit's batch files: nothing is written
+                    // over, and what an unfinished run wrote is cleared.
+                    Ok(p) => {
+                        job.leftovers
+                            .extend(p.made().into_iter().filter(|f| *f != job.done));
+                        job.residual = Some(p.clone());
+                    }
                     Err(why) => unplanned = Some(why.clone()),
                 }
                 residual = Some((Some(planned.len()), p));
             }
+            // What the unfinished run left is cleared, so only what says
+            // it is done, and what that run did not own, is in the way.
+            let unfinished = self.unfinished(i);
+            job.clear = unfinished.is_some();
+            let in_the_way: Vec<PathBuf> = job
+                .in_the_way()
+                .into_iter()
+                .filter(|f| *f == job.done || unfinished.is_none_or(|u| !u.leftovers.contains(f)))
+                .collect();
             if r.role == Role::Stage2 {
                 stage2 = Some((Some(planned.len()), job.manifest().to_path_buf()));
             }
@@ -364,10 +385,21 @@ impl App {
                 Some(why)
             } else if on_run && !reads_made && !job.opens.is_file() {
                 blamed = Some("from".to_string());
-                Some(format!(
-                    "--from {}: no such run manifest",
-                    form.from().unwrap_or_default()
-                ))
+                let from = form.from().unwrap_or_default();
+                let opens = script::normalize(&job.opens);
+                Some(
+                    match planned
+                        .iter()
+                        .find(|p| script::normalize(p.job.manifest()) == opens)
+                    {
+                        // What it reads is planned before it is set up.
+                        Some(w) => format!(
+                            "--from {from}: not there yet, {m} queued here writes it: run {m} first",
+                            m = w.job.method
+                        ),
+                        None => format!("--from {from}: no such run manifest"),
+                    },
+                )
             } else if unplanned.is_some() {
                 unplanned
             } else if picked && self.pairs.is_empty() {
@@ -442,27 +474,13 @@ impl App {
         }
     }
 
-    /// The row of `role` that finished in the last run and is not queued
-    /// again.
-    fn finished(&self, role: Role) -> Option<usize> {
+    /// The run of the row of `role` that finished in the last queue it was
+    /// in, when it is not queued again.
+    fn finished(&self, role: Role) -> Option<&Job> {
         self.rows
             .iter()
-            .position(|r| r.role == role && r.done && !r.on)
-    }
-
-    /// What the residual of row `i` writes, at its `--out`.
-    fn residual_of(&self, i: usize) -> anyhow::Result<Plan> {
-        let (dir, out) = self.out_of(i);
-        let form = &self.rows[i].form;
-        let mut argv = form.argv(&[], &[], &[], &out);
-        relative_values(form, &mut argv, &self.here, &dir);
-        residual_args(&argv).and_then(|a| residual_plan(&dir, &a))
-    }
-
-    /// The manifest the fit of row `i` writes, at its `--out`.
-    fn fit_manifest(&self, i: usize) -> PathBuf {
-        let (dir, out) = self.out_of(i);
-        script::outputs(&dir, &out)[0].clone()
+            .find(|r| r.role == role && !r.on)
+            .and_then(|r| r.ran.as_ref())
     }
 
     /// Worth saying when no data file has coordinates: the cell graph then
@@ -475,7 +493,7 @@ impl App {
 
     pub(super) fn open_confirm(&mut self) {
         if !self.rows.iter().any(|r| r.on) {
-            self.message = Some(if self.rows.iter().any(|r| r.done) {
+            self.message = Some(if self.rows.iter().any(super::Row::done) {
                 "every method queued finished: space on the Methods screen queues one again".into()
             } else {
                 "no method queued: space on the Methods screen picks some".into()
@@ -549,7 +567,8 @@ impl App {
 
     /// Once the queue has ended, unqueue the methods it finished and move
     /// their `--out` on, so ctrl+r again runs only those stopped, failed or
-    /// not reached, each at the `--out` it had.
+    /// not reached, each at the `--out` it had. What reads a finished one
+    /// reads where it wrote ([`super::Row::ran`]).
     pub(super) fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
         if !q.take_end() {
@@ -559,25 +578,13 @@ impl App {
         let mut done = Vec::new();
         for (job, state) in q.jobs.iter().zip(&states) {
             let r = &mut self.rows[job.row];
-            r.done = *state == jobs::State::Done;
-            if r.done {
+            r.ran = (*state == jobs::State::Done).then(|| job.clone());
+            if r.done() {
                 r.on = false;
                 done.push(job.method.clone());
-            }
-        }
-        // A finished residual or stage-2 fit keeps its --out while what
-        // reads it is still to run.
-        let left = |role| self.rows.iter().any(|r| r.role == role && r.on);
-        let (stage2_left, lra2_left) = (left(Role::Stage2), left(Role::Stage2Lra));
-        for job in &q.jobs {
-            let r = &mut self.rows[job.row];
-            let read = match r.role {
-                Role::Residual => stage2_left || lra2_left,
-                Role::Stage2 => lra2_left,
-                _ => false,
-            };
-            if r.done && !r.typed && !read {
-                r.out = free_out(&self.here, &under(&self.header, &r.stem()));
+                if !r.typed {
+                    r.out = free_out(&self.here, &under(&self.header, &r.stem()));
+                }
             }
         }
         self.keep_param_method();
@@ -590,19 +597,20 @@ impl App {
         }
     }
 
-    /// Whether a run of row `i` clears first what the last queue's
-    /// unfinished run of it left at the same `--out`.
-    fn clears(&self, i: usize) -> bool {
-        let Some(q) = self.queue.as_ref().filter(|q| q.finished()) else {
-            return false;
-        };
+    /// The last queue's unfinished run of row `i` at the same `--out`,
+    /// whose leftovers a run of it clears first: one that started, so its
+    /// script is there, and wrote nothing over.
+    fn unfinished(&self, i: usize) -> Option<&Job> {
+        let q = self.queue.as_ref().filter(|q| q.finished())?;
         let (dir, out) = self.out_of(i);
-        q.jobs.iter().zip(q.states()).any(|(j, s)| {
-            j.row == i
+        q.jobs.iter().zip(q.states()).find_map(|(j, s)| {
+            (j.row == i
                 && s != jobs::State::Done
                 && j.dir == dir
                 && j.out == out
-                && !j.manifest().exists()
+                && j.script().exists()
+                && !j.manifest().exists())
+            .then_some(j)
         })
     }
 
