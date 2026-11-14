@@ -3,8 +3,9 @@
 use super::super::{form, script};
 use super::jobs::{Job, Queue};
 use super::{
-    batch, copy, data, free_out, jobs, App, Planned, Review, Screen, Target, CONFIRM_SETTLE,
+    batch, copy, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
 };
+use crate::residual::{Plan, ResidualArgs};
 use crate::tui::shown;
 use form::{Field, Kind, Method};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -17,22 +18,118 @@ impl App {
         match k.code {
             KeyCode::Up => self.method_row = self.method_row.saturating_sub(1),
             KeyCode::Down => self.method_row = (self.method_row + 1).min(last),
-            KeyCode::Char(' ') => {
-                let r = &mut self.rows[self.method_row];
-                r.on = !r.on;
-                self.keep_param_method();
-            }
+            KeyCode::Char(' ') => self.queue_row(self.method_row, !self.rows[self.method_row].on),
+            KeyCode::Char('m') => self.next_stage_two(self.method_row),
             KeyCode::Char('o') => {
                 let out = self.rows[self.method_row].out.clone();
                 self.edit(Target::Out(self.method_row), out);
             }
             KeyCode::Char('O') => self.edit(Target::Header, self.header.clone()),
             KeyCode::Enter | KeyCode::Right => {
-                self.rows[self.method_row].on = true;
+                if !self.rows[self.method_row].on {
+                    self.queue_row(self.method_row, true);
+                }
                 self.show_params(self.method_row);
             }
             _ => {}
         }
+    }
+
+    /// Queue row `i`, or take it off. The residual takes its stage-2 fit
+    /// with it, and off, lra on that fit too. lra on the stage-2 fit is
+    /// offered only with lra queued on the residual's run, and comes with
+    /// that lra's flags.
+    fn queue_row(&mut self, i: usize, on: bool) {
+        match self.rows[i].role {
+            Role::Residual => {
+                for r in &mut self.rows {
+                    match r.role {
+                        Role::Stage2 => r.on = on,
+                        Role::Stage2Lra if !on => r.on = false,
+                        _ => {}
+                    }
+                }
+                // Space on that row next takes it off, which is easy to
+                // read as ignored without this.
+                if let Some(two) = on
+                    .then(|| self.rows.iter().find(|r| r.role == Role::Stage2))
+                    .flatten()
+                {
+                    self.message = Some(format!(
+                        "residual queued with {}: space on its row takes it off",
+                        two.label()
+                    ));
+                }
+            }
+            Role::Stage2Lra if on => {
+                let Some(lra) = self.lra_on_residual_run() else {
+                    self.message = Some(NO_LRA.into());
+                    return;
+                };
+                let flags: Vec<(String, String)> = self.rows[lra]
+                    .form
+                    .fields
+                    .iter()
+                    .filter(|f| f.long != "from")
+                    .map(|f| (f.long.clone(), f.value.clone()))
+                    .collect();
+                for f in &mut self.rows[i].form.fields {
+                    if let Some((_, v)) = flags.iter().find(|(l, _)| *l == f.long) {
+                        f.value.clone_from(v);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.rows[i].on = on;
+        self.keep_param_method();
+    }
+
+    /// `m` on the stage-2 row: the next method it fits the residual with,
+    /// each keeping its flags, its `--out` renamed unless typed.
+    fn next_stage_two(&mut self, i: usize) {
+        let r = &mut self.rows[i];
+        if r.role != Role::Stage2 || r.alts.is_empty() {
+            return;
+        }
+        let next = r.alts.remove(0);
+        let was = std::mem::replace(&mut r.form, next);
+        r.alts.push(was);
+        // the new method has not run, whatever the last one did
+        r.ran = None;
+        if !r.typed {
+            r.out = free_out(&self.here, &under(&self.header, &r.stem()));
+        }
+        if self.param_method == i {
+            self.field_row = 0;
+        }
+    }
+
+    /// The run `form` reads (`--from`), as its manifest.
+    fn run_of(&self, form: &Method) -> Option<PathBuf> {
+        let f = form.from()?;
+        let manifest = crate::util::metadata::run_manifest(&self.here.join(f).to_string_lossy());
+        Some(script::normalize(Path::new(&manifest)))
+    }
+
+    /// The run row `r` reads: its `--from` when queued, else the one its
+    /// finished run read.
+    fn run_read(&self, r: &super::Row) -> Option<PathBuf> {
+        if r.on {
+            self.run_of(&r.form)
+        } else {
+            r.ran.as_ref().map(|j| script::normalize(j.view()))
+        }
+    }
+
+    /// The lra row queued (or finished in the last run) on the run the
+    /// residual queued (or finished) reads.
+    fn lra_on_residual_run(&self) -> Option<usize> {
+        let res = self.rows.iter().find(|r| r.role == Role::Residual)?;
+        let run = self.run_read(res)?;
+        self.rows.iter().position(|r| {
+            r.role == Role::Plain && r.form.name == "lra" && self.run_read(r).as_ref() == Some(&run)
+        })
     }
 
     fn show_params(&mut self, m: usize) {
@@ -165,24 +262,54 @@ impl App {
         let coord_problem = data::coord_problem(&self.pairs);
         let batch_args = batch::args(&self.pairs);
         let mut outs: Vec<PathBuf> = Vec::new();
-        let mut planned = Vec::new();
+        let mut planned: Vec<Planned> = Vec::new();
+        // The queued residual's place in the plan and what it writes, and
+        // the stage-2 fit's place.
+        // Finished in the last run, not queued again and still there, each
+        // is read where its run wrote, as it ran.
+        let mut residual: Option<(Option<usize>, Result<Plan, String>)> = self
+            .finished(Role::Residual)
+            .and_then(|j| j.residual.clone())
+            .filter(|p| p.made().iter().all(|f| f.exists()))
+            .map(|p| (None, Ok(p)));
+        let mut stage2: Option<(Option<usize>, PathBuf)> = self
+            .finished(Role::Stage2)
+            .map(|j| j.manifest().to_path_buf())
+            .filter(|m| m.is_file())
+            .map(|m| (None, m));
         for (i, r) in self.rows.iter().enumerate().filter(|(_, r)| r.on) {
             let (dir, out) = self.out_of(i);
             let rel = |p: &Path| script::relative(p, &dir).to_string_lossy().into_owned();
-            let data: Vec<String> = self.pairs.iter().map(|p| rel(&p.data)).collect();
-            let coords: Vec<String> = if r.form.takes_coords() && coord_problem.is_none() {
-                self.pairs
-                    .iter()
-                    .filter_map(|p| p.coord.as_deref().map(rel))
-                    .collect()
-            } else {
-                Vec::new()
+            let mut form = r.form.clone();
+            // The stage-2 rows read what the earlier ones write: the job
+            // they wait on, or why they cannot be set up.
+            let (staged, after) =
+                self.staged(r.role, &mut form, residual.as_ref(), stage2.as_ref());
+            // The picked data are the fits' alone.
+            let picked = r.role == Role::Plain && !form.from_run;
+            let (data, coords): (Vec<String>, Vec<String>) = match (r.role, &residual) {
+                (Role::Stage2, Some((_, Ok(p)))) => (
+                    p.zarrs.iter().map(|z| rel(Path::new(z))).collect(),
+                    p.coords.iter().map(|c| rel(Path::new(c))).collect(),
+                ),
+                (Role::Plain, _) => (
+                    self.pairs.iter().map(|p| rel(&p.data)).collect(),
+                    if form.takes_coords() && coord_problem.is_none() {
+                        self.pairs
+                            .iter()
+                            .filter_map(|p| p.coord.as_deref().map(rel))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                ),
+                _ => (Vec::new(), Vec::new()),
             };
             // Label files given are passed as they are; the others are
             // written for the run in `{out}.batches/`.
             let mut made = Vec::new();
             let mut batches = Vec::new();
-            if let (true, Ok(Some(args))) = (r.form.takes_batches(), &batch_args) {
+            if let (true, true, Ok(Some(args))) = (picked, form.takes_batches(), &batch_args) {
                 for a in args {
                     match a {
                         batch::Arg::Given(f) => batches.push(rel(f)),
@@ -194,52 +321,92 @@ impl App {
                     }
                 }
             }
-            let mut argv = r.form.argv(&data, &coords, &batches, &out);
+            let mut argv = form.argv(&data, &coords, &batches, &out);
             // Files typed where pinto run started, read where it runs.
-            relative_values(&r.form, &mut argv, &self.here, &dir);
-            let on_run = r.form.from_run;
+            relative_values(&form, &mut argv, &self.here, &dir);
+            let on_run = form.from_run;
+            let label = r.label();
             let mut job = if on_run {
-                on_run_job(&r.form.name, i, &dir, &out, argv)
+                on_run_job(&label, i, &dir, &out, argv)
             } else {
                 Job {
                     made,
-                    ..Job::fit(&r.form.name, i, &dir, &out, argv)
+                    ..Job::fit(&label, i, &dir, &out, argv)
                 }
             };
-            job.clear = self.clears(i);
-            // What an unfinished run left is cleared, so only what says it
-            // is done is in the way.
-            let in_the_way = if job.clear {
-                vec![job.done.clone()]
-            } else {
-                job.in_the_way()
-            };
+            job.after = after;
+            let mut unplanned = None;
+            if r.role == Role::Residual {
+                let p = residual_args(&job.argv)
+                    .and_then(|a| residual_plan(&dir, &a))
+                    .map_err(|e| format!("{e:#}"));
+                match &p {
+                    // Its files, as a fit's batch files: nothing is written
+                    // over, and what an unfinished run wrote is cleared.
+                    Ok(p) => {
+                        job.leftovers
+                            .extend(p.made().into_iter().filter(|f| *f != job.done));
+                        job.residual = Some(p.clone());
+                    }
+                    Err(why) => unplanned = Some(why.clone()),
+                }
+                residual = Some((Some(planned.len()), p));
+            }
+            // What the unfinished run left is cleared, so only what says
+            // it is done, and what that run did not own, is in the way.
+            let unfinished = self.unfinished(i);
+            job.clear = unfinished.is_some();
+            let in_the_way: Vec<PathBuf> = job
+                .in_the_way()
+                .into_iter()
+                .filter(|f| *f == job.done || unfinished.is_none_or(|u| !u.leftovers.contains(f)))
+                .collect();
+            if r.role == Role::Stage2 {
+                stage2 = Some((Some(planned.len()), job.manifest().to_path_buf()));
+            }
             let mut blamed = None;
             // A line clap refuses says so: on a run, the job could not
             // even tell which manifest it reads.
             let refused = || {
                 form::check(&self.cli, &job.argv).err().map(|why| {
-                    let who = form::blamed(&why, &r.form.fields).map(str::to_string);
+                    let who = form::blamed(&why, &form.fields).map(str::to_string);
                     (why, who)
                 })
             };
-            let problem = if on_run && r.form.from().is_none() {
+            // The stage-2 fit lra reads is made in this queue.
+            let reads_made = r.role == Role::Stage2Lra;
+            let problem = if staged.is_some() {
+                staged
+            } else if on_run && form.from().is_none() {
                 blamed = Some("from".to_string());
                 Some("--from is unset: the run's .pinto.json (Parameters screen)".to_string())
             } else if let Some((why, who)) = on_run.then(refused).flatten() {
                 blamed = who;
                 Some(why)
-            } else if on_run && !job.opens.is_file() {
+            } else if on_run && !reads_made && !job.opens.is_file() {
                 blamed = Some("from".to_string());
-                Some(format!(
-                    "--from {}: no such run manifest",
-                    r.form.from().unwrap_or_default()
-                ))
-            } else if !on_run && self.pairs.is_empty() {
+                let from = form.from().unwrap_or_default();
+                let opens = script::normalize(&job.opens);
+                Some(
+                    match planned
+                        .iter()
+                        .find(|p| script::normalize(p.job.manifest()) == opens)
+                    {
+                        // What it reads is planned before it is set up.
+                        Some(w) => format!(
+                            "--from {from}: not there yet, {m} queued here writes it: run {m} first",
+                            m = w.job.method
+                        ),
+                        None => format!("--from {from}: no such run manifest"),
+                    },
+                )
+            } else if unplanned.is_some() {
+                unplanned
+            } else if picked && self.pairs.is_empty() {
                 Some("no data files: add some on the Data screen".to_string())
-            } else if let (Some(p), false) = (&coord_problem, on_run) {
+            } else if let (Some(p), true) = (&coord_problem, picked) {
                 Some(p.clone())
-            } else if let (Err(why), false) = (&batch_args, on_run) {
+            } else if let (Err(why), true) = (&batch_args, picked) {
                 Some(why.clone())
             } else if let Some(there) = in_the_way.into_iter().find(|p| p.exists()) {
                 Some(format!(
@@ -267,6 +434,55 @@ impl App {
         planned
     }
 
+    /// What a stage-2 row (`role`) reads, set in its `form`: the stage-2
+    /// fit, the residual's files with the run's coordinate columns; lra on
+    /// it, the stage-2 fit's manifest. With the job of the plan it waits on
+    /// (none when what it reads finished in the last run), or why it cannot
+    /// be set up. Other rows read nothing made here.
+    fn staged(
+        &self,
+        role: Role,
+        form: &mut Method,
+        residual: Option<&(Option<usize>, Result<Plan, String>)>,
+        stage2: Option<&(Option<usize>, PathBuf)>,
+    ) -> (Option<String>, Option<usize>) {
+        match (role, residual) {
+            (Role::Stage2, None) => (
+                Some("stage 2 fits the residual's files: queue residual too".into()),
+                None,
+            ),
+            (Role::Stage2, Some((at, Err(_)))) => (
+                Some("the residual it fits is not set up (see residual)".into()),
+                *at,
+            ),
+            (Role::Stage2, Some((at, Ok(p)))) => {
+                form.set("coord-column-names", &p.coord_names.join(","));
+                (None, *at)
+            }
+            (Role::Stage2Lra, _) => match stage2 {
+                None => (
+                    Some("lra on stage 2 reads the stage-2 fit: queue it".into()),
+                    None,
+                ),
+                Some((at, _)) if self.lra_on_residual_run().is_none() => (Some(NO_LRA.into()), *at),
+                Some((at, manifest)) => {
+                    form.set("from", &manifest.to_string_lossy());
+                    (None, *at)
+                }
+            },
+            _ => (None, None),
+        }
+    }
+
+    /// The run of the row of `role` that finished in the last queue it was
+    /// in, when it is not queued again.
+    fn finished(&self, role: Role) -> Option<&Job> {
+        self.rows
+            .iter()
+            .find(|r| r.role == role && !r.on)
+            .and_then(|r| r.ran.as_ref())
+    }
+
     /// Worth saying when no data file has coordinates: the cell graph then
     /// comes from expression.
     pub(super) fn coord_warning(&self) -> Option<String> {
@@ -277,7 +493,7 @@ impl App {
 
     pub(super) fn open_confirm(&mut self) {
         if !self.rows.iter().any(|r| r.on) {
-            self.message = Some(if self.rows.iter().any(|r| r.done) {
+            self.message = Some(if self.rows.iter().any(super::Row::done) {
                 "every method queued finished: space on the Methods screen queues one again".into()
             } else {
                 "no method queued: space on the Methods screen picks some".into()
@@ -326,7 +542,7 @@ impl App {
                 };
                 if let Some(p) = planned.iter().find(|p| p.problem.is_some()) {
                     if let Some(flag) = &p.blamed {
-                        self.go_to_flag(&p.job.method, flag);
+                        self.go_to_flag(p.job.row, flag);
                     }
                     self.message = Some(format!(
                         "{}: {}",
@@ -351,7 +567,8 @@ impl App {
 
     /// Once the queue has ended, unqueue the methods it finished and move
     /// their `--out` on, so ctrl+r again runs only those stopped, failed or
-    /// not reached, each at the `--out` it had.
+    /// not reached, each at the `--out` it had. What reads a finished one
+    /// reads where it wrote ([`super::Row::ran`]).
     pub(super) fn settle(&mut self) {
         let Some(q) = &self.queue else { return };
         if !q.take_end() {
@@ -361,13 +578,13 @@ impl App {
         let mut done = Vec::new();
         for (job, state) in q.jobs.iter().zip(&states) {
             let r = &mut self.rows[job.row];
-            r.done = *state == jobs::State::Done;
-            if r.done {
+            r.ran = (*state == jobs::State::Done).then(|| job.clone());
+            if r.done() {
                 r.on = false;
-                if !r.typed {
-                    r.out = free_out(&self.here, &under(&self.header, &r.form.name));
-                }
                 done.push(job.method.clone());
+                if !r.typed {
+                    r.out = free_out(&self.here, &under(&self.header, &r.stem()));
+                }
             }
         }
         self.keep_param_method();
@@ -380,19 +597,20 @@ impl App {
         }
     }
 
-    /// Whether a run of row `i` clears first what the last queue's
-    /// unfinished run of it left at the same `--out`.
-    fn clears(&self, i: usize) -> bool {
-        let Some(q) = self.queue.as_ref().filter(|q| q.finished()) else {
-            return false;
-        };
+    /// The last queue's unfinished run of row `i` at the same `--out`,
+    /// whose leftovers a run of it clears first: one that started, so its
+    /// script is there, and wrote nothing over.
+    fn unfinished(&self, i: usize) -> Option<&Job> {
+        let q = self.queue.as_ref().filter(|q| q.finished())?;
         let (dir, out) = self.out_of(i);
-        q.jobs.iter().zip(q.states()).any(|(j, s)| {
-            j.row == i
+        q.jobs.iter().zip(q.states()).find_map(|(j, s)| {
+            (j.row == i
                 && s != jobs::State::Done
                 && j.dir == dir
                 && j.out == out
-                && !j.manifest().exists()
+                && j.script().exists()
+                && !j.manifest().exists())
+            .then_some(j)
         })
     }
 
@@ -400,16 +618,13 @@ impl App {
     /// first free one.
     pub(super) fn refresh_outs(&mut self) {
         for r in self.rows.iter_mut().filter(|r| !r.typed) {
-            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
+            r.out = free_out(&self.here, &under(&self.header, &r.stem()));
         }
     }
 
-    /// Show `--flag` of `method` on the parameters screen, the advanced
+    /// Show `--flag` of row `m` on the parameters screen, the advanced
     /// rows too when it is one of them.
-    fn go_to_flag(&mut self, method: &str, flag: &str) {
-        let Some(m) = self.rows.iter().position(|r| r.form.name == method) else {
-            return;
-        };
+    fn go_to_flag(&mut self, m: usize, flag: &str) {
         let Some(at) = self.rows[m].form.fields.iter().position(|f| f.long == flag) else {
             return;
         };
@@ -440,6 +655,11 @@ fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>
             a.input.from,
         ),
         Ok(crate::Commands::LraSimulate(a)) => (lra_simulate_path(out).into(), a.input.from),
+        // What the residual's plan says marks it done.
+        Ok(crate::Commands::Residual(a)) => (
+            residual_plan(dir, &a).map_or_else(|_| PathBuf::from(out), |p| p.summary.into()),
+            Some(a.run),
+        ),
         // An argv pinto does not take: the plan's check says why, and the
         // job does not run.
         _ => (PathBuf::from(out), None),
@@ -450,6 +670,38 @@ fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>
         row,
         ..Job::reading(method, dir, out, argv, paths)
     }
+}
+
+/// What lra on the stage-2 fit needs, said when it is not there.
+const NO_LRA: &str =
+    "lra on the stage-2 fit comes with lra queued on the residual's run: the same --from";
+
+/// `argv` as `pinto residual` parses it.
+fn residual_args(argv: &[String]) -> anyhow::Result<ResidualArgs> {
+    let cli = <crate::Cli as clap::Parser>::try_parse_from(
+        std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
+    )?;
+    match cli.commands {
+        crate::Commands::Residual(a) => Ok(*a),
+        _ => anyhow::bail!("not a residual"),
+    }
+}
+
+/// What the residual `a`, run in `dir`, writes ([`Plan`]): its paths
+/// from `dir`, checked as the command checks them before reading a count.
+fn residual_plan(dir: &Path, a: &ResidualArgs) -> anyhow::Result<Plan> {
+    let from = |p: &str| -> Box<str> { dir.join(p).to_string_lossy().into() };
+    let a = ResidualArgs {
+        run: from(&a.run),
+        out: from(&a.out),
+        data_files: a
+            .data_files
+            .as_ref()
+            .map(|f| f.iter().map(|p| from(p)).collect()),
+        ..*a
+    };
+    let run = crate::util::metadata::Run::open(&a.run)?;
+    Plan::new(&run, &a)
 }
 
 /// Values of `form`'s flags that name files ([`form::Field::path`]), as

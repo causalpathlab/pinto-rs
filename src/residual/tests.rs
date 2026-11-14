@@ -559,8 +559,7 @@ fn a_missing_data_file_is_refused_while_planning() {
     ]);
     let a = args(&prefix, &out, given);
     let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
-        .err()
-        .expect("refused")
+        .expect_err("refused")
         .to_string();
     assert!(
         e.contains("nowhere/S2.zarr") && e.contains("not found"),
@@ -581,8 +580,7 @@ fn an_output_that_is_a_file_is_refused_while_planning() {
     std::fs::write(&out, "").unwrap();
     for o in [out.clone(), format!("{out}/sub")] {
         let e = Plan::new(&Run::open(&prefix).unwrap(), &args(&prefix, &o, None))
-            .err()
-            .expect("refused")
+            .expect_err("refused")
             .to_string();
         assert!(e.contains(&format!("{out} is a file")), "{e}");
     }
@@ -619,8 +617,7 @@ fn a_residual_of_a_fit_on_a_residual_is_refused() {
     let refused = |data_files: Option<Vec<Box<str>>>| {
         let a = args(&stage2, &format!("{d}/resid2"), data_files);
         Plan::new(&Run::open(&stage2).unwrap(), &a)
-            .err()
-            .expect("refused")
+            .expect_err("refused")
             .to_string()
     };
     write(excess.clone());

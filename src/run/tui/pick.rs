@@ -46,12 +46,12 @@ impl App {
                         if t.is_empty() {
                             // Cleared: back under the header.
                             r.typed = false;
-                            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
+                            r.out = free_out(&self.here, &under(&self.header, &r.stem()));
                         } else {
                             // A folder: the method's name in it.
                             r.typed = true;
                             r.out = if t.ends_with('/') {
-                                under(t, &r.form.name)
+                                under(t, &r.stem())
                             } else {
                                 t.to_string()
                             };

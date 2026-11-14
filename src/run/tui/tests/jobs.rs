@@ -244,3 +244,46 @@ fn a_job_reading_a_run_clears_only_its_own_script() {
     let script = std::fs::read_to_string(d.join("run.lra.cmd.sh")).unwrap();
     assert!(script.contains("if [ -f run.lra.parquet ]"), "{script}");
 }
+
+/// A job that reads what an earlier one writes waits for it: when that one
+/// fails, it is not started, and its script is never written.
+#[cfg(unix)]
+#[test]
+fn a_job_waiting_on_one_that_failed_is_not_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = |m: &str| {
+        Job::fit(
+            m,
+            0,
+            dir.path(),
+            m,
+            vec![m.into(), "--out".into(), m.into()],
+        )
+    };
+    let second = Job {
+        after: Some(0),
+        ..job("b")
+    };
+    let q = Queue::start(vec![job("a"), second], PathBuf::from("/usr/bin/false"));
+    while !q.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let states = q.states();
+    assert!(matches!(&states[1], State::Failed(why) if why.contains("a did not finish")));
+    assert!(!dir.path().join("b.cmd.sh").exists());
+    // One that finished lets it start.
+    let ok = Queue::start(
+        vec![
+            job("c"),
+            Job {
+                after: Some(0),
+                ..job("d")
+            },
+        ],
+        PathBuf::from("/usr/bin/true"),
+    );
+    while !ok.finished() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(ok.states(), [State::Done, State::Done]);
+}

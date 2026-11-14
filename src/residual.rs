@@ -81,6 +81,7 @@ pub struct ResidualArgs {
     #[arg(
         long,
         value_delimiter = ',',
+        value_hint = clap::ValueHint::FilePath,
         help = "The run's data files where they are now (default: its manifest's)",
         long_help = "The run's own data files, in its order, when they have moved\n\
                      from where its manifest records them. As many files as the run\n\
@@ -223,6 +224,7 @@ struct Inputs {
 /// file, the run is an lc, cage or dsvd run on raw counts, its data files
 /// are found, all of them, with distinct names, it names its coordinate
 /// columns, and no output is an input.
+#[derive(Clone, Debug)]
 pub struct Plan {
     /// The run's data files, in its order.
     pub files: Vec<Box<str>>,
