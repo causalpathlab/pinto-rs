@@ -217,6 +217,9 @@ pub struct LraSubset {
     pub of: usize,
     pub table: String,
     pub curve: String,
+    /// `--marginal-baselines`: the subset's per-type-pair table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub celltype: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<LraOptions>,
 }

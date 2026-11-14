@@ -270,13 +270,17 @@ pub fn baselines(
         seed,
         &labels,
         PERMUTATIONS,
+        true,
     )
     .0
 }
 
 /// Every baseline on one pair's counts, the cell-type test on `labels` and
 /// each permutation test on up to `permutations` permutations, and the
-/// cell-type test with each of its type pairs.
+/// cell-type test with each of its type pairs. With `early_stop` the
+/// cell-type test stops once its Bonferroni summary cannot reject, which is
+/// all the summary needs; without it every type pair gets every
+/// permutation, as a per-type-pair p and q need.
 pub fn marginals(
     tissue: &Tissue,
     ligand_counts: &[f64],
@@ -284,6 +288,7 @@ pub fn marginals(
     seed: u64,
     labels: &TypeLabels,
     permutations: usize,
+    early_stop: bool,
 ) -> (Baselines, CellTypeTest) {
     let n = tissue.n();
     let sf = &tissue.size_factor;
@@ -291,7 +296,14 @@ pub fn marginals(
     let xr: Vec<f64> = (0..n)
         .map(|i| (receptor_counts[i] / sf[i]).ln_1p())
         .collect();
-    let types = celltype(labels, &xl, &xr, mix_seed(seed, 1), permutations);
+    let types = celltype(
+        labels,
+        &xl,
+        &xr,
+        mix_seed(seed, 1),
+        permutations,
+        early_stop,
+    );
     let (celltype_score, celltype_p, celltype_tested) = types.summary();
     let (moran_i, moran_p, contact_score, contact_p) =
         spatial(tissue, &xl, &xr, mix_seed(seed, 2), permutations);
@@ -379,6 +391,7 @@ fn celltype(
     xr: &[f64],
     seed: u64,
     permutations: usize,
+    early_stop: bool,
 ) -> CellTypeTest {
     let ty = &labels.codes;
     let k = labels.names.len();
@@ -409,7 +422,7 @@ fn celltype(
     let (sl, sr) = type_sums(ty, xl, xr, k);
     let obs = scores(&sl, &sr);
     let m = tested.len();
-    let settled = |c: &[usize]| c.iter().all(|&e| cannot_reject(e, m, permutations));
+    let settled = |c: &[usize]| early_stop && c.iter().all(|&e| cannot_reject(e, m, permutations));
     let (exceed, perms) = permuted(seed, m, permutations, settled, |rng, perms| {
         let mut lab = ty.clone();
         let mut hit = vec![0usize; m];

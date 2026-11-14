@@ -270,10 +270,12 @@ pub struct SrtLrActivityArgs {
         value_name = "N",
         default_value_t = crate::lr_activity::ligand_effect::PERMUTATIONS,
         help = "Permutations of each --marginal-baselines test",
-        long_help = "Permutations of each --marginal-baselines permutation test. They stop\n\
-                     early once the verdict at 5% is settled. The cell-type test is\n\
-                     Bonferroni-corrected over its type pairs, so with m tested type pairs\n\
-                     it can reject only when m / (1 + N) < 0.05: many types need more."
+        long_help = "Permutations of each --marginal-baselines permutation test. Moran's I\n\
+                     and the contact score stop early once their verdict at 5% is settled;\n\
+                     the cell-type test runs all N, since its per-type-pair table's p and q\n\
+                     need them. Its summary is Bonferroni-corrected over the type pairs, so\n\
+                     with m tested type pairs it can reject only when m / (1 + N) < 0.05:\n\
+                     many types need more."
     )]
     pub marginal_permutations: usize,
 

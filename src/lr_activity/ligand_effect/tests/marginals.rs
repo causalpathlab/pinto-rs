@@ -98,7 +98,7 @@ fn planted_test(permutations: usize) -> (TypeLabels, CellTypeTest, f64, f64, usi
     let t = tissue(true);
     let (l, r) = planted(&t);
     let labels = TypeLabels::of(&t);
-    let (b, test) = marginals(&t, &l, &r, 11, &labels, permutations);
+    let (b, test) = marginals(&t, &l, &r, 11, &labels, permutations, false);
     (
         labels,
         test,
@@ -151,7 +151,7 @@ fn real_cell_types_are_used_when_given() {
     let labels = TypeLabels::of(&t);
     assert_eq!(labels.source, TypeSource::CellTypes);
     assert_eq!(labels.names, type_names());
-    let (_, test) = marginals(&t, &l, &r, 3, &labels, 200);
+    let (_, test) = marginals(&t, &l, &r, 3, &labels, 200, false);
     let sf = &t.size_factor;
     for o in &test.pairs {
         let rows: Vec<usize> = (0..t.n())
@@ -170,7 +170,7 @@ fn real_cell_types_are_used_when_given() {
     let bare = tissue(false);
     let bins = TypeLabels::of(&bare);
     assert_eq!(bins.source, TypeSource::IdentityBins);
-    let (b, test) = marginals(&bare, &l, &r, 5, &bins, PERMUTATIONS);
+    let (b, test) = marginals(&bare, &l, &r, 5, &bins, PERMUTATIONS, true);
     // Three bands of bins, every pair of them tested.
     assert_eq!(test.pairs.len(), 9);
     let bench = baselines(&bare, &l, &r, 5);
@@ -314,7 +314,7 @@ fn the_flag_adds_the_marginal_columns_and_nothing_else() {
 
     let t = tissue(true);
     let (l, r) = planted(&t);
-    let (b, _) = marginals(&t, &l, &r, 1, &TypeLabels::of(&t), 200);
+    let (b, _) = marginals(&t, &l, &r, 1, &TypeLabels::of(&t), 200, false);
     let pooled = EffectRow {
         marginal: Some(b),
         ..row()
@@ -395,4 +395,76 @@ fn the_type_pair_table_has_a_row_per_tested_type_pair() {
     assert!(q[k] <= 9.0 * p[k] + 1e-6);
     assert!(x[9].iter().all(|&n| n == 300.0));
     assert!(x[4].iter().chain(&x[5]).all(|&d| d >= 0.1));
+}
+
+/// With many tested type pairs the Bonferroni summary can stop permuting
+/// early, but the per-type-pair table's p and q need every permutation
+/// asked for: with 144 type pairs, early stopping stops short, and the
+/// table's run does not.
+#[test]
+fn the_type_pair_table_gets_every_permutation() {
+    let t = tissue(false);
+    let k = 12;
+    let labels = TypeLabels {
+        codes: t.cell.iter().map(|&c| (c % k) as u32).collect(),
+        names: (1..=k).map(|i| format!("CT{i}").into()).collect(),
+        testable: vec![true; k],
+        source: TypeSource::CellTypes,
+    };
+    let ones = vec![1.0; t.n()];
+    let (_, summary) = marginals(&t, &ones, &ones, 3, &labels, 2000, true);
+    assert_eq!(summary.pairs.len(), k * k, "every type pair is tested");
+    assert!(summary.permutations < 2000, "the summary stops early");
+    let (_, table) = marginals(&t, &ones, &ones, 3, &labels, 2000, false);
+    assert_eq!(table.permutations, 2000);
+}
+
+/// A run restarted from its recorded options (the viewer's rerun, MCP's
+/// run_lra) asks for the baselines again, with their permutation count when
+/// it is not the default.
+#[cfg(feature = "view")]
+#[test]
+fn a_rerun_keeps_the_marginal_baselines() {
+    use crate::lr_activity::args::LraMethod;
+    use crate::util::metadata::LraOptions;
+    let o = LraOptions {
+        marginal_baselines: Some("cell-types".into()),
+        marginal_permutations: Some(500),
+        ..LraOptions::default()
+    };
+    let argv = o.argv(Some("r.pinto.json"), None, LraMethod::default(), &[]);
+    assert!(argv.iter().any(|a| a == "--marginal-baselines"), "{argv:?}");
+    let at = argv.iter().position(|a| a == "--marginal-permutations");
+    assert_eq!(at.map(|i| argv[i + 1].as_str()), Some("500"), "{argv:?}");
+    let plain = LraOptions::default().argv(Some("r.pinto.json"), None, LraMethod::default(), &[]);
+    assert!(
+        !plain.iter().any(|a| a.starts_with("--marginal")),
+        "{plain:?}"
+    );
+}
+
+/// The baselines are contact-effect's: asked for with a co-expression
+/// method they are refused, as --only, --region and --cell-types are.
+#[test]
+fn the_baselines_are_refused_with_a_coexpression_method() {
+    let parse = |extra: &[&str]| -> crate::lr_activity::args::SrtLrActivityArgs {
+        let argv = ["pinto", "lra", "--from", "r.pinto.json"]
+            .iter()
+            .chain(extra)
+            .copied();
+        match <crate::Cli as clap::Parser>::try_parse_from(argv)
+            .unwrap()
+            .commands
+        {
+            crate::Commands::LrActivity(a) => *a,
+            _ => unreachable!("an lra command line"),
+        }
+    };
+    let coexpr = parse(&["--method", "coexpression-test", "--marginal-baselines"]);
+    let e = crate::lr_activity::fit::check_method_flags(&coexpr)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--marginal-baselines"), "{e}");
+    let ok = parse(&["--marginal-baselines"]);
+    assert!(crate::lr_activity::fit::check_method_flags(&ok).is_ok());
 }

@@ -381,6 +381,8 @@ fn marginal_baselines(prep: &Prepared, permutations: usize, seed: u64) -> Margin
                 pair_seed(seed, p),
                 &labels,
                 permutations,
+                // the per-type-pair table's p and q need every permutation
+                false,
             );
             pb.inc();
             out
@@ -444,6 +446,7 @@ fn record_tables(
             of: prep.n_all,
             table: recorded(path),
             curve: recorded(curve_path),
+            celltype: celltype.map(|(p, _)| recorded(p)),
             options: Some(options),
         };
         record(a.manifest, |o| o.record_subset(entry))

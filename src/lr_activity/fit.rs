@@ -80,12 +80,11 @@ pub const BATCH_LABEL_META: &str = "pooled";
 /// samples — correlation + permutation are too noisy below this.
 const MIN_SAMPLES_PER_STRATUM: usize = 4;
 
-pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
-    let input = args.input.resolve()?;
-    let out = input.out(args.out.as_deref())?;
-    mkdir_parent(&out)?;
+/// The flags only `--method contact-effect` takes, refused with a
+/// co-expression method before any data is read.
+pub(crate) fn check_method_flags(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     if args.method == LraMethod::ContactEffect {
-        return contact_effect(args, &input, &out);
+        return Ok(());
     }
     anyhow::ensure!(
         args.only.is_empty(),
@@ -97,6 +96,22 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         "--region and --cell-types apply to --method contact-effect; the co-expression \
          methods stratify by the run's link communities"
     );
+    anyhow::ensure!(
+        !args.marginal_baselines,
+        "--marginal-baselines applies to --method contact-effect; the co-expression \
+         methods are marginal statistics themselves"
+    );
+    Ok(())
+}
+
+pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
+    check_method_flags(args)?;
+    let input = args.input.resolve()?;
+    let out = input.out(args.out.as_deref())?;
+    mkdir_parent(&out)?;
+    if args.method == LraMethod::ContactEffect {
+        return contact_effect(args, &input, &out);
+    }
     let lc_prefix = input.lc_prefix()?;
     let lc_prefix = lc_prefix.as_str();
     // The `--from` run's manifest, which every method records into.
