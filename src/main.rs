@@ -15,6 +15,7 @@ mod residual;
 #[cfg(feature = "view")]
 mod run;
 mod simulate;
+mod spatial_baselines;
 mod svd;
 #[cfg(feature = "view")]
 mod tui;
@@ -628,6 +629,31 @@ enum Commands {
     SrtSimBaseline(Box<simulate::BaselineArgs>),
 
     #[command(
+        about = "BANKSY: neighbour-augmented features, PCA and Leiden (baseline)",
+        long_about = "BANKSY (Singhal et al. 2024), faithful to its reference code at the\n\
+                      model level, on pinto's inputs. Writes {out}.labels.tsv,\n\
+                      {out}.cell_embedding.parquet and {out}.baseline.json."
+    )]
+    Banksy(Box<spatial_baselines::banksy::Args>),
+
+    #[command(
+        about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
+        long_about = "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
+                      faithful to its reference code at the model level, on pinto's inputs.\n\
+                      Writes {out}.labels.tsv, {out}.cell_embedding.parquet and\n\
+                      {out}.baseline.json."
+    )]
+    Spatialde2(Box<spatial_baselines::spatialde2::Args>),
+
+    #[command(
+        about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
+        long_about = "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
+                      model level, on pinto's inputs. Writes {out}.labels.tsv,\n\
+                      {out}.cell_embedding.parquet and {out}.baseline.json."
+    )]
+    Stagate(Box<spatial_baselines::stagate::Args>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -792,6 +818,9 @@ impl Commands {
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
+            Commands::Banksy(a) => (&mut a.input.out, "banksy"),
+            Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
+            Commands::Stagate(a) => (&mut a.input.out, "stagate"),
             _ => return None,
         })
     }
@@ -872,6 +901,9 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
+        Commands::Banksy(args) => spatial_baselines::banksy::run(args)?,
+        Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
+        Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
