@@ -268,6 +268,48 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     checked(&cli(), &argv).unwrap();
 }
 
+/// `marginal_baselines` and `marginal_permutations` reach `pinto lra` as
+/// its flags, which it takes, and the per-type-pair table is among what the
+/// run writes; without them neither flag nor table.
+#[test]
+fn run_lra_passes_the_marginal_baselines() {
+    let a = lra_args(json!({
+        "run": "r",
+        "marginal_baselines": true,
+        "marginal_permutations": 500,
+    }));
+    let argv = lra_argv(&a, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    let tail = &argv[argv.len() - 3..];
+    assert_eq!(
+        tail,
+        ["--marginal-baselines", "--marginal-permutations", "500"]
+    );
+    checked(&cli(), &argv).unwrap();
+    let made = a.outputs(LraMethod::ContactEffect, "o");
+    assert_eq!(made.last().unwrap(), Path::new("o.lra.celltype.parquet"));
+    let bare = lra_args(json!({"run": "r"}));
+    let argv = lra_argv(&bare, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    assert!(
+        !argv.iter().any(|w| w.starts_with("--marginal")),
+        "{argv:?}"
+    );
+    assert_eq!(
+        bare.outputs(LraMethod::ContactEffect, "o"),
+        lra_outputs(LraMethod::ContactEffect, "o", &[])
+    );
+    // A subset's table sits beside the subset.
+    let only = lra_args(json!({"run": "r", "only": ["L1"], "marginal_baselines": true}));
+    let made = only.outputs(LraMethod::ContactEffect, "o");
+    let table = made[0].to_string_lossy().into_owned();
+    assert_eq!(
+        made.last().unwrap().to_string_lossy(),
+        format!(
+            "{}.celltype.parquet",
+            table.strip_suffix(".parquet").unwrap()
+        )
+    );
+}
+
 // * Replies
 
 /// A small `{out}.lra.parquet`: three pairs pooled and one section row.

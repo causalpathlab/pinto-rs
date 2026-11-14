@@ -247,6 +247,36 @@ pub struct SrtLrActivityArgs {
     )]
     pub species: ReferenceSpecies,
 
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Also report the unadjusted co-expression baselines per pair (permutations: slow)",
+        long_help = "Also report, per pair (contact-effect), the co-expression statistics\n\
+                     lra-simulate benchmarks the estimate against, none of which adjusts for\n\
+                     confounding: the cell-type label permutation test (CellPhoneDB v2,\n\
+                     CellChat's product score) on the run's cell types (--cell-types or its\n\
+                     lupin round; the identity bins, coarsened to at most 8, when it has\n\
+                     none), bivariate Moran's I over contacts (SpatialDM) and the contact\n\
+                     co-expression score (NICHES, COMMOT). The pooled rows gain\n\
+                     celltype_score, celltype_p, celltype_tested, moran_i, moran_p,\n\
+                     contact_score and contact_p, and {out}.lra.celltype.parquet holds\n\
+                     every tested sender type x receiver type. Off by default: the\n\
+                     permutations cost more than the estimate on a full reference."
+    )]
+    pub marginal_baselines: bool,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::lr_activity::ligand_effect::PERMUTATIONS,
+        help = "Permutations of each --marginal-baselines test",
+        long_help = "Permutations of each --marginal-baselines permutation test. They stop\n\
+                     early once the verdict at 5% is settled. The cell-type test is\n\
+                     Bonferroni-corrected over its type pairs, so with m tested type pairs\n\
+                     it can reject only when m / (1 + N) < 0.05: many types need more."
+    )]
+    pub marginal_permutations: usize,
+
     // * Co-expression methods
     #[arg(
         long,

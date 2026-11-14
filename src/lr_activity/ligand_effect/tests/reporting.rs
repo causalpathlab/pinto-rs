@@ -178,6 +178,7 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> Effe
         n_competent_bins: 1,
         n_incompetent_bins: 1,
         curve: Vec::new(),
+        marginal: None,
         jackknife: crate::lr_activity::ligand_effect::jackknife::Jackknife::NONE,
         effect_p: f64::NAN,
         effect_q: f64::NAN,

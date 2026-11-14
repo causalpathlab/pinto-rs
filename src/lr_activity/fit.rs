@@ -625,6 +625,9 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             region: input.region.as_deref(),
             plant_region: None,
             region_jackknife: args.input.region_jackknife,
+            marginal: args
+                .marginal_baselines
+                .then_some(args.marginal_permutations),
         },
         data: &contacts.data,
         axis: &contacts.axis,
@@ -666,6 +669,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             region: input.region.as_deref(),
             plant_region: args.plant_region.as_deref(),
             region_jackknife: args.input.region_jackknife,
+            marginal: None,
         },
         data: &contacts.data,
         axis: &contacts.axis,

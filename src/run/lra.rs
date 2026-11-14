@@ -66,6 +66,11 @@ pub(super) struct LraToolArgs {
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_jackknife: Option<String>,
+    /// `--marginal-baselines`, and `--marginal-permutations`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marginal_baselines: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marginal_permutations: Option<usize>,
     #[serde(default = "in_background", skip_serializing)]
     pub background: bool,
 }
@@ -74,6 +79,18 @@ impl LraToolArgs {
     /// `only` as `pinto lra` takes it.
     fn only(&self) -> Vec<Box<str>> {
         self.only.iter().map(|s| s.as_str().into()).collect()
+    }
+
+    /// What `pinto lra` writes for these arguments: [`lra_outputs`], and
+    /// with `marginal_baselines` the per-type-pair table beside the
+    /// contact-effect table.
+    fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
+        let mut made = lra_outputs(method, out, &self.only());
+        if self.marginal_baselines && method == LraMethod::ContactEffect {
+            let table = made[0].to_string_lossy().into_owned();
+            made.push(output::celltype_beside(&table).into());
+        }
+        made
     }
 
     fn input(&self) -> Input<'_> {
@@ -322,6 +339,12 @@ pub(super) fn lra_argv(
     if let Some(x) = a.min_gene_count {
         argv.extend(["--min-gene-count".into(), x.to_string()]);
     }
+    if a.marginal_baselines {
+        argv.push("--marginal-baselines".into());
+    }
+    if let Some(n) = a.marginal_permutations {
+        argv.extend(["--marginal-permutations".into(), n.to_string()]);
+    }
     argv
 }
 
@@ -416,11 +439,10 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     let run = run.as_deref();
     method_can_read(method, run)?;
     let out = named_out(a.out.as_deref());
-    let only = a.only();
     // A finished `out` is read, not run again.
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
-        let made = lra_outputs(method, &o, &only);
+        let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
         if let Some(reply) =
             read_finished(cx, &made, || lra_reply(method, &argv, &input, run, &made))
@@ -429,7 +451,7 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
-        Ok(lra_outputs(method, o, &only))
+        Ok(a.outputs(method, o))
     })?;
     let argv = lra_argv(&a, method, run, &out);
     checked(cli, &argv)?;

@@ -14,6 +14,11 @@ pub struct LraFiles {
     /// Each pair's threshold–response curve, `{out}.lra.curve.parquet`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
+    /// The cell-type baseline per sender and receiver type,
+    /// `{out}.lra.celltype.parquet`, when the table was made with
+    /// `--marginal-baselines`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub celltype: Option<String>,
     /// The power and calibration check, `{out}.lra-simulate.parquet`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulate: Option<String>,
@@ -138,6 +143,14 @@ pub struct LraOptions {
     pub region: Option<String>,
     /// `--region-jackknife`: `refit` or `no-refit`.
     pub region_jackknife: String,
+    /// `--marginal-baselines`: where the cell-type baseline's types came
+    /// from, `cell-types` (the run's) or `identity-bins` (none given);
+    /// `None` without the flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marginal_baselines: Option<String>,
+    /// `--marginal-permutations`, when the baselines were computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marginal_permutations: Option<usize>,
 }
 
 /// A list of names as one comma-separated string, so a long one is one
@@ -185,6 +198,8 @@ impl Default for LraOptions {
             cell_types: None,
             region: None,
             region_jackknife: crate::lr_activity::args::RegionJackknife::default().name(),
+            marginal_baselines: None,
+            marginal_permutations: None,
         }
     }
 }

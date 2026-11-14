@@ -13,8 +13,19 @@ pub fn lra_curve_path(out: &str) -> String {
 /// The curves written beside the contact-effect table `table`, the full
 /// one or a subset's: `{table without .parquet}.curve.parquet`.
 pub fn curve_beside(table: &str) -> String {
+    beside(table, "curve")
+}
+
+/// The per-type-pair table (`--marginal-baselines`) beside the
+/// contact-effect table `table`: `{table without .parquet}.celltype.parquet`.
+pub fn celltype_beside(table: &str) -> String {
+    beside(table, "celltype")
+}
+
+/// `{table without .parquet}.{what}.parquet`.
+fn beside(table: &str, what: &str) -> String {
     format!(
-        "{}.curve.parquet",
+        "{}.{what}.parquet",
         table.strip_suffix(".parquet").unwrap_or(table)
     )
 }

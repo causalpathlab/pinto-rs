@@ -6,6 +6,7 @@ mod clusters;
 mod combining;
 mod covariates;
 mod interface;
+mod marginals;
 mod only;
 mod overlap;
 mod pairs;

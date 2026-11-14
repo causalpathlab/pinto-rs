@@ -832,6 +832,8 @@ fn specs() -> Vec<ToolSpec> {
                     "n_permutations": {"type": "integer", "minimum": 1, "description": "coexpression-test: sample permutations for the null (--n-permutations) [default: 1000]"},
                     "json_fwer_threshold": {"type": "number", "description": "coexpression-test: FWER cutoff for the JSON sidecar of significant pairs (--json-fwer-threshold) [default: 0.05]"},
                     "min_gene_count": {"type": "number", "description": "Co-expression methods: minimum total count of a ligand or receptor gene for its pair to be scored (--min-gene-count) [default: 50]"},
+                    "marginal_baselines": {"type": "boolean", "description": "contact-effect: also score each pair's unadjusted co-expression baselines (--marginal-baselines): cell-type label permutation (CellPhoneDB v2, CellChat's score) on the run's cell types (the identity bins when it has none), bivariate Moran's I (SpatialDM) and the contact score (NICHES, COMMOT). Adds celltype_score, celltype_p, celltype_tested, moran_i, moran_p, contact_score, contact_p to the pooled rows and writes {out}.lra.celltype.parquet, one row per tested sender type x receiver type. None adjusts for confounding. Slow on a full reference [default: false]"},
+                    "marginal_permutations": {"type": "integer", "minimum": 1, "description": "marginal_baselines: permutations of each test (--marginal-permutations), stopping early once the 5% verdict is settled [default: 2000]"},
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,

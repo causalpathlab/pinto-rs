@@ -124,3 +124,62 @@ fn a_planted_effect_leaves_the_baselines_unchanged() {
         assert_eq!(p(&none.baselines), p(&some.baselines), "{name}");
     }
 }
+
+/// Every statistic of one run, in [`Baselines`]' field order.
+fn values(b: &Baselines) -> [f64; 10] {
+    [
+        b.celltype_score,
+        b.celltype_p,
+        b.celltype_tested as f64,
+        b.moran_i,
+        b.moran_p,
+        b.contact_score,
+        b.contact_p,
+        b.coexpr_log_or,
+        b.coexpr_se,
+        b.coexpr_p,
+    ]
+}
+
+/// What `lra-simulate` reports for two pairs on the fixture, pinned: the
+/// cell-type test on identity bins and the contact statistics, value for
+/// value, so a change to the code `lra` shares cannot move the benchmark.
+/// The first pair's verdicts settle early, the second's run every
+/// permutation.
+#[test]
+fn the_benchmark_baselines_are_pinned() {
+    let f = fixture();
+    let b = baselines(&f.tissue, &f.ligand, &f.receptor, 7);
+    assert_eq!(
+        values(&b),
+        [
+            0.7742558873543621,
+            0.0009995002498750624,
+            2.0,
+            -0.25864063578360863,
+            1.0,
+            1782.1335134361896,
+            1.0,
+            -1.5296461582183838,
+            0.06737641245126724,
+            1.0,
+        ]
+    );
+    let (l, r) = even(&f);
+    let b = baselines(&f.tissue, &l, &r, 8);
+    assert_eq!(
+        values(&b),
+        [
+            0.6727535228830798,
+            1.0,
+            4.0,
+            0.012633672125407561,
+            0.0004997501249375312,
+            9611.818943933049,
+            0.00849575212393803,
+            0.03821168839931488,
+            0.05047428607940674,
+            0.22450918162937955,
+        ]
+    );
+}
