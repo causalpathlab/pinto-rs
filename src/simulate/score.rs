@@ -380,7 +380,7 @@ pub struct SimScoreArgs {
 /// The table's header line, as `srt-sim-score` prints it.
 pub fn table_header() -> String {
     format!(
-        "{:<40} {:>7} {:>10} {:>10} {:>6} {:>6} {:>6} {:>6}  {}",
+        "{:<40} {:>7} {:>10} {:>10} {:<22} {:>6} {:>6} {:>6}  {}",
         "labels",
         "scored",
         "shared_ari",
@@ -432,7 +432,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
     let by_domain = by_domain_cell(s);
     if s.patches.is_empty() {
         return vec![format!(
-            "{head} {:>6} {:>6} {:>6} {:>6}  {by_domain}",
+            "{head} {:<22} {:>6} {:>6} {:>6}  {by_domain}",
             "", "", "", ""
         )];
     }
@@ -440,7 +440,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
         .iter()
         .map(|p| {
             format!(
-                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
+                "{head} {:<22} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
                 p.domain, p.f1, p.precision, p.owner_share
             )
         })

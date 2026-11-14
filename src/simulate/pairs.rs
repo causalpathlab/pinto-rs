@@ -523,7 +523,7 @@ pub struct SimPairsArgs {
 /// set (AUPRC and prevalence are in the JSON).
 pub fn pairs_header() -> String {
     format!(
-        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:>6} {:>7} {:>7} {:>7}",
+        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:<22} {:>7} {:<22} {:>7}",
         "vectors",
         "scored",
         "cross",
@@ -556,7 +556,7 @@ pub fn pairs_rows(input: &str, s: &PairScore) -> Vec<String> {
         .iter()
         .map(|p| {
             format!(
-                "{head} {:>6} {:>7.3} {:>7} {:>7.3}",
+                "{head} {:<22} {:>7.3} {:<22} {:>7.3}",
                 p.domain, p.pairs.auroc, p.closest_domain, p.closest_auroc
             )
         })
