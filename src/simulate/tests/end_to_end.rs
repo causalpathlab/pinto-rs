@@ -170,16 +170,16 @@ fn scoring_the_truth_and_the_donors() {
     let truth = write("truth.tsv", &|i| t.domain_labels[t.domain[i]].to_string());
     let donors = write("donors.tsv", &|i| donor_label(t.donor[i]).to_string());
     let s = score(&t, &read_labels(&truth, "final", "label").unwrap()).unwrap();
-    assert_eq!(
-        (s.n_scored, s.consistency, s.donor_dependence),
-        (t.cells.len(), 1.0, 0.0)
-    );
+    assert_eq!((s.n_scored, s.donor_dependence), (t.cells.len(), 0.0));
     assert!((s.shared_ari - 1.0).abs() < 1e-12);
     assert_eq!(s.patches.len(), 1);
     assert_eq!(s.patches[0].f1, 1.0);
     let s = score(&t, &read_labels(&donors, "final", "label").unwrap()).unwrap();
-    assert_eq!(s.consistency, 0.0);
     assert!((s.donor_dependence - 1.0).abs() < 1e-9);
+    for d in &s.donor_dependence_by_domain {
+        let x = d.dependence.unwrap();
+        assert!((x - 1.0).abs() < 1e-9, "{}: {x}", d.domain);
+    }
 }
 
 /// The outputs appear at `out` only once all are written: they are written

@@ -39,6 +39,10 @@ fn the_sim_tools_are_listed_with_their_schemas() {
             &["truth", "labels", "level", "label_column"][..],
         ),
         (
+            "run_sim_pairs",
+            &["truth", "vectors", "level", "pairs", "seed", "knn"][..],
+        ),
+        (
             "run_sim_baseline",
             &["truth", "method", "k", "seed", "out", "background"][..],
         ),
@@ -208,7 +212,9 @@ fn scoring_the_truth_itself_is_perfect() {
     let s = &v["scores"][0]["score"];
     assert_eq!(s["shared_ari"], 1.0, "{v}");
     assert_eq!(s["donor_dependence"], 0.0, "{v}");
-    assert_eq!(s["consistency"], 1.0, "{v}");
+    for d in s["donor_dependence_by_domain"].as_array().unwrap() {
+        assert_eq!(d["dependence"], 0.0, "{v}");
+    }
     assert_eq!(s["n_scored"], s["n_spots"], "{v}");
     let patches = s["patches"].as_array().unwrap();
     assert!(!patches.is_empty(), "L2 plants a donor-specific domain");
@@ -247,6 +253,48 @@ fn scoring_the_truth_itself_is_perfect() {
         crate::mcp::parse(json!({"truth": sim, "labels": ["nowhere.tsv"]})).unwrap();
     let e = format!("{:#}", sim_score(bad).unwrap_err());
     assert!(e.contains("nowhere.tsv"), "{e}");
+}
+
+/// The truth run's own domains, as vectors, score 1 on every pair set; the
+/// reply is a table, one row per donor-specific domain, and the JSON with
+/// how the pairs were drawn. Vectors that cannot be read are named.
+#[test]
+fn pair_scoring_the_truth_itself_is_perfect() {
+    let dir = tempfile::tempdir().unwrap();
+    let sim = dir.path().join("sim").to_string_lossy().into_owned();
+    let a = sim_args(json!({"scenario": "L2", "set": TINY}));
+    crate::simulate::run_simulate(&simulation(&cli(), &a, &sim).unwrap().1).unwrap();
+    let truth = format!("{sim}/truth/truth.pinto.json");
+    let call: SimPairsToolArgs = args(json!({
+        "truth": sim,
+        "vectors": [truth, "nowhere.tsv"],
+        "level": "domain",
+        "pairs": 2000,
+    }));
+    let reply = sim_pairs(call).unwrap();
+    let [Content::Text(text), Content::Json(v)] = &reply[..] else {
+        panic!("a table and its JSON: {reply:?}");
+    };
+    let scored = &v["scores"][0];
+    assert_eq!(
+        (&scored["pairs"], &scored["seed"]),
+        (&json!(2000), &json!(1))
+    );
+    let s = &scored["score"];
+    for set in ["cross_donor", "within_donor", "spatial"] {
+        assert_eq!(s[set]["auroc"], 1.0, "{set}: {v}");
+        assert_eq!(s[set]["auprc"], 1.0, "{set}: {v}");
+    }
+    let patches = s["patches"].as_array().unwrap();
+    assert!(!patches.is_empty(), "L2 plants a donor-specific domain");
+    assert_eq!(patches[0]["pairs"]["auroc"], 1.0, "{v}");
+    assert_eq!(text.lines().count(), 1 + patches.len(), "{text}");
+    assert_eq!(v["failed"][0]["vectors"], "nowhere.tsv", "{v}");
+    let bad: SimPairsToolArgs = args(json!({"truth": sim, "vectors": ["nowhere.tsv"]}));
+    let e = format!("{:#}", sim_pairs(bad).unwrap_err());
+    assert!(e.contains("nowhere.tsv"), "{e}");
+    let few: SimPairsToolArgs = args(json!({"truth": sim, "vectors": [truth], "pairs": 1}));
+    assert!(sim_pairs(few).is_err());
 }
 
 /// A baseline is `pinto srt-sim-baseline` with only what was given; an

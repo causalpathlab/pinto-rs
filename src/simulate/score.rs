@@ -7,9 +7,9 @@
 //!   domain, the conditional mutual information `I(label; donor | domain)`
 //!   over `H(donor | domain)`. 0: labels donor-invariant; 1: labels set by
 //!   the donor. No threshold; a domain that sits in one donor, or a
-//!   single-donor panel, adds nothing.
-//! - `consistency`: share of shared domains (held by two donors or more)
-//!   whose most common label is the same in every donor.
+//!   single-donor panel, adds nothing. `donor_dependence_by_domain` gives
+//!   the same ratio for each shared domain on its own (`None` for a domain
+//!   in one donor).
 //!
 //! **Test 2, donor-specific domains**, each against the label that matches
 //! it best (highest F1): that label's `precision` (low: shared spots
@@ -128,13 +128,21 @@ pub struct PatchScore {
     pub owner_share: f64,
 }
 
+/// One shared domain's donor dependence, `I(label; donor)` over
+/// `H(donor)` on its spots; `None` when its spots sit in one donor.
+#[derive(Serialize, Debug)]
+pub struct DomainDependence {
+    pub domain: String,
+    pub dependence: Option<f64>,
+}
+
 #[derive(Serialize, Debug)]
 pub struct Score {
     pub n_spots: usize,
     pub n_scored: usize,
     pub shared_ari: f64,
     pub donor_dependence: f64,
-    pub consistency: f64,
+    pub donor_dependence_by_domain: Vec<DomainDependence>,
     pub patches: Vec<PatchScore>,
 }
 
@@ -169,19 +177,25 @@ pub fn score(t: &TruthSpots, labels: &[(Box<str>, i64)]) -> anyhow::Result<Score
         n_scored > 0,
         "no spot of the truth is labelled: are the cell names spelled alike?"
     );
-    let (shared_ari, donor_dependence, consistency) = invariant(t, &counts);
+    let (shared_ari, donor_dependence, donor_dependence_by_domain) = invariant(t, &counts);
     Ok(Score {
         n_spots: t.cells.len(),
         n_scored,
         shared_ari,
         donor_dependence,
-        consistency,
+        donor_dependence_by_domain,
         patches: patches(t, &counts),
     })
 }
 
-/// Test 1, over the shared domains: ARI, donor dependence, consistency.
-fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, f64) {
+/// Information over entropy, in [0, 1]; `None` without entropy.
+fn ratio(info: f64, entropy: f64) -> Option<f64> {
+    (entropy > 1e-12).then(|| (info / entropy).clamp(0.0, 1.0))
+}
+
+/// Test 1, over the shared domains: ARI, donor dependence pooled and by
+/// domain.
+fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, Vec<DomainDependence>) {
     let shared: Vec<usize> = (0..counts.len())
         .filter(|&k| t.domain_owner[k].is_none())
         .collect();
@@ -216,7 +230,7 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, f64) {
     // shared domains weighted by their spots:
     // N_k I_k = Σ x ln x (label, donor) − Σ x ln x (donor) − Σ x ln x (label) + N_k ln N_k
     let (mut info, mut entropy) = (0.0, 0.0);
-    let (mut held, mut consistent) = (0usize, 0usize);
+    let mut by_domain = Vec::with_capacity(shared.len());
     for &k in &shared {
         let per_donor: Vec<usize> = counts[k].iter().map(|m| m.values().sum()).collect();
         let mut per_label: HashMap<i64, usize> = HashMap::default();
@@ -225,40 +239,22 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, f64) {
             .flatten()
             .for_each(|(&l, &x)| *per_label.entry(l).or_insert(0) += x);
         let nk: usize = per_donor.iter().sum();
-        if nk == 0 {
-            continue;
+        let (mut ik, mut hk) = (0.0, 0.0);
+        if nk > 0 {
+            let joint = xlogx(counts[k].iter().flat_map(|m| m.values()));
+            let nk_ln = nk as f64 * (nk as f64).ln();
+            ik = joint - xlogx(per_donor.iter()) - xlogx(per_label.values()) + nk_ln;
+            hk = nk_ln - xlogx(per_donor.iter());
         }
-        let joint = xlogx(counts[k].iter().flat_map(|m| m.values()));
-        let nk_ln = nk as f64 * (nk as f64).ln();
-        info += joint - xlogx(per_donor.iter()) - xlogx(per_label.values()) + nk_ln;
-        entropy += nk_ln - xlogx(per_donor.iter());
-        // each donor's most common label (ties to the smaller label)
-        let tops: Vec<i64> = counts[k]
-            .iter()
-            .filter(|m| !m.is_empty())
-            .map(|m| {
-                *m.iter()
-                    .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-                    .expect("non-empty")
-                    .0
-            })
-            .collect();
-        if tops.len() >= 2 {
-            held += 1;
-            consistent += tops.iter().all(|&l| l == tops[0]) as usize;
-        }
+        info += ik;
+        entropy += hk;
+        by_domain.push(DomainDependence {
+            domain: t.domain_labels[k].to_string(),
+            dependence: ratio(ik, hk),
+        });
     }
-    let dependence = if entropy > 1e-12 {
-        (info / entropy).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let consistency = if held > 0 {
-        consistent as f64 / held as f64
-    } else {
-        f64::NAN
-    };
-    (ari_value, dependence, consistency)
+    let dependence = ratio(info, entropy).unwrap_or(0.0);
+    (ari_value, dependence, by_domain)
 }
 
 /// Test 2: each donor-specific domain against its best-matching label.
@@ -319,6 +315,15 @@ fn is_none_label(label: &str) -> bool {
     matches!(label, "" | "NA" | "-1") || label.eq_ignore_ascii_case("unassigned")
 }
 
+/// Whether `input` names a table (TSV or parquet, a propensity table
+/// aside) rather than a run.
+pub(crate) fn is_table(input: &str) -> bool {
+    [".tsv", ".txt", ".tsv.gz"]
+        .iter()
+        .any(|e| input.ends_with(e))
+        || (input.ends_with(".parquet") && !input.ends_with(".propensity.parquet"))
+}
+
 /// Hard labels of a run at `level`, or of a table's `cell` and
 /// `label_column` columns (TSV or parquet).
 pub fn read_labels(
@@ -326,11 +331,7 @@ pub fn read_labels(
     level: &str,
     label_column: &str,
 ) -> anyhow::Result<Vec<(Box<str>, i64)>> {
-    let is_table = [".tsv", ".txt", ".tsv.gz"]
-        .iter()
-        .any(|e| input.ends_with(e))
-        || (input.ends_with(".parquet") && !input.ends_with(".propensity.parquet"));
-    if is_table {
+    if is_table(input) {
         let t = TableReader::open(input)?;
         let cols = t.select(&["cell", label_column])?;
         let mut ids: HashMap<Box<str>, i64> = HashMap::default();
@@ -379,22 +380,21 @@ pub struct SimScoreArgs {
 /// The table's header line, as `srt-sim-score` prints it.
 pub fn table_header() -> String {
     format!(
-        "{:<40} {:>7} {:>10} {:>10} {:>11} {:>6} {:>6} {:>6} {:>6}",
+        "{:<40} {:>7} {:>10} {:>10} {:>6} {:>6} {:>6} {:>6}  {}",
         "labels",
         "scored",
         "shared_ari",
         "donor_dep",
-        "consistency",
         "patch",
         "f1",
         "prec",
-        "owner"
+        "owner",
+        "donor_dep_by_domain"
     )
 }
 
-/// A labelling's rows of the table: one per donor-specific domain, or one
-/// when there is none. The labelling goes by its file and folder.
-pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
+/// An input as the tables show it: its file and folder.
+pub(crate) fn shown_name(input: &str) -> String {
     let path = std::path::Path::new(input);
     let parent = path
         .parent()
@@ -403,19 +403,44 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
     let file = path
         .file_name()
         .map_or_else(|| input.to_string(), |f| f.to_string_lossy().to_string());
-    let name = parent.map_or(file.clone(), |p| format!("{p}/{file}"));
+    parent.map_or(file.clone(), |p| format!("{p}/{file}"))
+}
+
+/// Each shared domain's donor dependence, as `A:0.012 B:-` (`-`: the
+/// domain sits in one donor).
+fn by_domain_cell(s: &Score) -> String {
+    s.donor_dependence_by_domain
+        .iter()
+        .map(|d| match d.dependence {
+            Some(x) => format!("{}:{x:.3}", d.domain),
+            None => format!("{}:-", d.domain),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A labelling's rows of the table: one per donor-specific domain, or one
+/// when there is none. The labelling goes by its file and folder.
+pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
     let head = format!(
-        "{:<40} {:>7} {:>10.3} {:>10.3} {:>11.3}",
-        name, s.n_scored, s.shared_ari, s.donor_dependence, s.consistency
+        "{:<40} {:>7} {:>10.3} {:>10.3}",
+        shown_name(input),
+        s.n_scored,
+        s.shared_ari,
+        s.donor_dependence
     );
+    let by_domain = by_domain_cell(s);
     if s.patches.is_empty() {
-        return vec![head];
+        return vec![format!(
+            "{head} {:>6} {:>6} {:>6} {:>6}  {by_domain}",
+            "", "", "", ""
+        )];
     }
     s.patches
         .iter()
         .map(|p| {
             format!(
-                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}",
+                "{head} {:>6} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
                 p.domain, p.f1, p.precision, p.owner_share
             )
         })

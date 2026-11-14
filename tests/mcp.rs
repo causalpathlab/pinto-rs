@@ -157,7 +157,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..16],
+        names[..17],
         [
             "run_methods",
             "run_fit",
@@ -168,6 +168,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_lra_simulate",
             "run_simulate",
             "run_sim_score",
+            "run_sim_pairs",
             "run_sim_baseline",
             "view_open",
             "view_map",
@@ -695,6 +696,14 @@ fn an_agent_simulates_looks_and_scores() {
         assert_eq!(s["donor_dependence"], 0.0, "{scored}");
         assert_eq!(s["patches"][0]["f1"], 1.0, "{scored}");
     }
+    // So it is for run_sim_pairs, the truth run's domains as the vectors.
+    let (paired, _) = c.ok(
+        "run_sim_pairs",
+        json!({"truth": truth, "vectors": [truth], "level": "domain", "pairs": 1000}),
+    );
+    let s = &paired["scores"][0]["score"];
+    assert_eq!(s["cross_donor"]["auroc"], 1.0, "{paired}");
+    assert_eq!(s["spatial"]["auroc"], 1.0, "{paired}");
     // A baseline runs on the reply's truth and its table scores like a fit;
     // its out may sit in a folder not made yet. A bad setting, or a
     // simulation the baseline cannot read, is refused before any job.
