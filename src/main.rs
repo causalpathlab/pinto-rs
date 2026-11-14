@@ -671,7 +671,10 @@ enum Commands {
         about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
         long_about = concat!(
             "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
-             model level, on pinto's inputs.\n\n",
+             model level, on pinto's inputs. Its embedding is clustered by pinto's\n\
+             own methods: seeded k-means into --n-clusters domains, or Leiden\n\
+             without it. With --n-clusters this differs from the STAGATE tutorial,\n\
+             which fits a Gaussian mixture in R at that step.\n\n",
             baseline_outputs!()
         )
     )]
