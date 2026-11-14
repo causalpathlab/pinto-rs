@@ -190,3 +190,38 @@ fn a_method_found_by_its_alias_is_typed_as_the_alias() {
     assert_eq!(check(&cli, &argv), Ok(()));
     assert!(Method::new(&cli, "nope").is_err());
 }
+
+/// Every method `pinto run` offers, the spatial baselines among them, reads
+/// as a form from pinto's own definition: data, coordinate and batch files
+/// passed as lc's are, `--out` and the files filled by `pinto run` alone,
+/// and the line it builds taken by pinto.
+#[test]
+fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
+    use clap::CommandFactory;
+    let mut cli = crate::Cli::command();
+    cli.build();
+    for name in crate::run::METHODS {
+        let m = Method::new(&cli, name).unwrap();
+        assert_eq!(m.name, name);
+        assert!(!m.about.is_empty(), "{name}");
+        assert!(
+            m.takes_coords() && m.takes_batches() && !m.from_run,
+            "{name}"
+        );
+        assert!(
+            m.fields.iter().all(|f| !OWN.contains(&f.long.as_str())),
+            "{name}"
+        );
+        assert!(m.fields.iter().any(|f| f.long == "seed"), "{name} --seed");
+        let argv = m.argv(
+            &["a.zarr".into(), "b.zarr".into()],
+            &["a.csv".into(), "b.csv".into()],
+            &["a.txt".into(), "b.txt".into()],
+            "o",
+        );
+        assert_eq!(check(&cli, &argv), Ok(()), "{argv:?}");
+    }
+    for name in crate::run::BASELINES {
+        assert!(crate::run::METHODS.contains(&name), "{name}");
+    }
+}

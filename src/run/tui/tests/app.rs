@@ -250,7 +250,8 @@ fn every_method_of_pinto_parses_from_an_untouched_form() {
             .find(|f| matches!(f.kind, Kind::Flag { .. }) && !f.advanced)
         {
             f.toggle();
-            let argv = form.argv(&["d.zarr".into()], &[], &[], "o");
+            // The spatial baselines require coordinates.
+            let argv = form.argv(&["d.zarr".into()], &["c.csv".into()], &[], "o");
             assert_eq!(form::check(&cli, &argv), Ok(()), "{m}: {argv:?}");
         }
     }
@@ -855,8 +856,20 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     a.browser = None;
     a.editor = None;
     let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
-    assert_eq!(names[..5], ["lc", "cage", "dsvd", "lra", "lra-simulate"]);
-    let lra = 3;
+    assert_eq!(
+        names[..8],
+        [
+            "lc",
+            "cage",
+            "dsvd",
+            "banksy",
+            "spatialde2",
+            "stagate",
+            "lra",
+            "lra-simulate"
+        ]
+    );
+    let lra = METHODS.len();
     assert!(a.rows[lra].form.from_run && !a.rows[lra].form.takes_coords());
 
     a.rows[lra].on = true;
@@ -929,7 +942,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     assert!(text.contains("bash lra.cmd.sh"), "{text}");
 
     // lra-simulate: its own table.
-    let sim = 4;
+    let sim = lra + 1;
     a.rows[lra].on = false;
     a.rows[sim].on = true;
     a.rows[sim].out = "sim".into();
@@ -1071,6 +1084,9 @@ fn the_residual_row_is_listed_only_where_pinto_has_the_command() {
             "lc",
             "cage",
             "dsvd",
+            "banksy",
+            "spatialde2",
+            "stagate",
             "lra",
             "lra-simulate",
             "residual",

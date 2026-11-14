@@ -22,7 +22,11 @@ them on the tissue. A fit: `run_methods` lists the methods (lc is the \
 recommended one) and, with a method, its flags; `run_fit` runs one on data \
 files with their coordinates, in the background for anything but a small \
 data set (follow its job with `job_status` / `job_wait`), and never writes \
-over a run. Ablations are fits with run_fit's ablation flags \
+over a run. Its methods also hold three spatial baselines, model-level \
+ports of published methods to compare pinto against: banksy (BANKSY), \
+spatialde2 (SpatialDE2's tissue segmentation) and stagate (STAGATE); \
+run_fit runs them as it runs lc, and each writes a run with its labels and \
+a cell embedding. Ablations are fits with run_fit's ablation flags \
 (permute-coords, drop-features, mask-cells with ablation-parent); \
 `run_region` turns a polygon into the cell list mask-cells takes; \
 `run_compare` sets two runs' communities against each other (ARI, NMI, \
@@ -36,7 +40,9 @@ planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
 `fit.coords` (the sections and their coordinates, in order) as its data and \
 coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, \
 `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no clustering, and \
-`run_sim_baseline` writes a standard pipeline's labels to score next to them.";
+`run_sim_baseline` writes a standard pipeline's labels to score next to them; \
+a spatial baseline's run is scored as a fit is, its labels by `run_sim_score` and \
+its `{out}.cell_embedding.parquet` by `run_sim_pairs`.";
 
 const RESIDUAL: &str = "\
 Two-stage fit: `run_residual` writes the counts an lc, cage or dsvd run \

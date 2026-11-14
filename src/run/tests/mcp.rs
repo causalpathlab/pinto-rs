@@ -219,3 +219,79 @@ fn run_predict_refuses_a_model_that_is_not_there() {
     );
     assert!(said.contains("not there"), "{said}");
 }
+
+/// `run_methods` lists every method `pinto run` offers, the spatial
+/// baselines with them, each taking coordinate and batch files; with a
+/// baseline it gives that baseline's flags, as with lc.
+#[test]
+fn run_methods_lists_the_baselines_as_it_lists_lc() {
+    let tools = Tools::default();
+    let first = |c: Vec<Content>| match c.into_iter().next() {
+        Some(Content::Json(v)) => v,
+        _ => panic!("no JSON reply"),
+    };
+    let all = first(tools.methods(MethodsArgs { method: None }).unwrap());
+    let listed = all["methods"].as_array().unwrap();
+    let names: Vec<&str> = listed
+        .iter()
+        .map(|m| m["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, METHODS);
+    for m in listed {
+        assert_eq!(m["coords"], true, "{m}");
+        assert_eq!(m["batches"], true, "{m}");
+    }
+    for name in BASELINES {
+        let one = first(
+            tools
+                .methods(MethodsArgs {
+                    method: Some(name.into()),
+                })
+                .unwrap(),
+        );
+        assert_eq!(one["method"], name);
+        let flags: Vec<&str> = one["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["flag"].as_str().unwrap())
+            .collect();
+        assert!(flags.contains(&"--seed"), "{name}: {flags:?}");
+        assert!(!flags.contains(&"--out"), "{name}: {flags:?}");
+    }
+    assert!(tools
+        .methods(MethodsArgs {
+            method: Some("nope".into())
+        })
+        .is_err());
+}
+
+/// run_fit's method is one of METHODS, and a baseline's fit is checked as
+/// lc's is: an unknown flag is refused, and so is a run already there.
+#[test]
+fn run_fit_takes_a_baseline_as_it_takes_lc() {
+    let spec = specs().into_iter().find(|t| t.name == "run_fit").unwrap();
+    assert_eq!(
+        spec.input_schema["properties"]["method"]["enum"],
+        json!(METHODS)
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("m");
+    let out = out.to_str().unwrap();
+    for name in BASELINES {
+        let (failed, said) = call_once(
+            "run_fit",
+            json!({"method": name, "data": ["a.zarr"], "coords": ["a.csv"],
+                   "out": out, "flags": {"no-such-flag": 1}}),
+        );
+        assert!(failed && said.contains("no flag --no-such-flag"), "{said}");
+    }
+    std::fs::write(format!("{out}.pinto.json"), "{}").unwrap();
+    for name in BASELINES {
+        let (failed, said) = call_once(
+            "run_fit",
+            json!({"method": name, "data": ["a.zarr"], "coords": ["a.csv"], "out": out}),
+        );
+        assert!(failed && said.contains("exists"), "{said}");
+    }
+}

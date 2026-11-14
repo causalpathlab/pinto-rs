@@ -381,6 +381,47 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 `run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
 
+### Spatial baselines: `banksy`, `spatialde2`, `stagate`
+
+Published spatial-domain methods, ported to run on pinto's inputs so they
+can be scored beside `lc`, `cage` and `dsvd`:
+
+- `banksy`: neighbour-augmented features (each cell's expression beside
+  its neighbourhood's), then PCA and Leiden
+  (BANKSY; Singhal et al. 2024, Nature Genetics 56:431);
+- `spatialde2`: SpatialDE2's tissue segmentation, a Poisson hidden Markov
+  random field with a Dirichlet-process prior over regions (Kats,
+  Vento-Tormo and Stegle 2021, bioRxiv 10.1101/2021.10.27.466045);
+- `stagate`: a graph-attention autoencoder over the spatial graph, its
+  embedding clustered (STAGATE; Dong and Zhang 2022, Nature Communications
+  13:1739).
+
+Each is a model-level port of its reference code: the same preprocessing,
+model, loss or updates, defaults, stopping rule and clustering step, not
+bit-for-bit output; each module's documentation names the repository and
+commit read, the function behind each step, and every deliberate
+deviation. They take the flags `lc` does for its inputs: the data files
+(one section each), `-c` coordinate files, `--coord-column-names`, `-b`
+batch files, `-o` the output prefix and `--seed`; spatial graphs are built
+within a section only. `--n-clusters` sets the number of domains (where the
+original picks clusters by a resolution, it is tuned toward that number;
+see each `--help` for its default).
+
+```sh
+pinto banksy s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/banksy --n-clusters 4
+pinto srt-sim-score --truth sim --labels res/banksy
+pinto srt-sim-pairs --truth sim --vectors res/banksy.cell_embedding.parquet
+```
+
+Each writes a pinto run, so `pinto view`, `compare`, `srt-sim-score` and
+`srt-sim-pairs` read it as they read a fit: `{out}.pinto.json` (the
+manifest), `{out}.propensity.parquet` (cell × domain membership: the
+method's posterior where it has one, else one-hot), `{out}.cells.parquet`,
+`{out}.cell_embedding.parquet` (the method's per-cell vectors),
+`{out}.labels.tsv` (`cell<TAB>label`) and `{out}.baseline.json` (the
+settings, as run). `pinto run` lists them after the fits, and over MCP
+`run_methods` and `run_fit` take them as they take `lc`.
+
 ### `residual`: what a fitted run leaves unexplained
 
 `pinto residual --from FIT -o OUT` (or `--run FIT`) takes an lc, cage or
@@ -512,7 +553,8 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `cage` and
-`dsvd`, and change any flag; each method's form is read from its own
+`dsvd` (or the spatial baselines `banksy`, `spatialde2` and `stagate`, listed
+after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen; each fit shows a progress
 bar, plus a sparkline of its score (loss, NLL or moves) once it has two
@@ -826,7 +868,11 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > recommended one) and, with a method, its flags; `run_fit` runs one on data
 > files with their coordinates, in the background for anything but a small
 > data set (follow its job with `job_status` / `job_wait`), and never writes
-> over a run. Ablations are fits with run_fit's ablation flags
+> over a run. Its methods also hold three spatial baselines, model-level
+> ports of published methods to compare pinto against: banksy (BANKSY),
+> spatialde2 (SpatialDE2's tissue segmentation) and stagate (STAGATE);
+> run_fit runs them as it runs lc, and each writes a run with its labels and
+> a cell embedding. Ablations are fits with run_fit's ablation flags
 > (permute-coords, drop-features, mask-cells with ablation-parent);
 > `run_region` turns a polygon into the cell list mask-cells takes;
 > `run_compare` sets two runs' communities against each other (ARI, NMI,
@@ -839,7 +885,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 > flags; `run_sim_score` scores the fits' labels against the reply's truth,
 > `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no
 > clustering, and `run_sim_baseline` writes a standard pipeline's labels to
-> score next to them. Two-stage fit: `run_residual` writes the counts an lc,
+> score next to them; a spatial baseline's run is scored as a fit is, its
+> labels by `run_sim_score` and its `{out}.cell_embedding.parquet` by
+> `run_sim_pairs`. Two-stage fit: `run_residual` writes the counts an lc,
 > cage or dsvd run leaves unexplained as new data files (a background job);
 > fit them with `run_fit`, passing the reply's `fit.data`, `fit.coords` and
 > `fit.flags` as its data, coords and flags, and `run_lra` on that second
@@ -883,7 +931,7 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up); with a method, its flags: name, help, default, choices |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `cage`, `dsvd`, then the spatial baselines `banksy`, `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
@@ -915,7 +963,7 @@ organizing computational biology projects [1] (see
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
   with paths relative to the project. Each `run_fit` is its `pinto lc` (or
-  `cage`, `dsvd`) command, each `run_lra` its `pinto lra` command, and each `view_export`
+  `cage`, `dsvd`, a baseline's) command, each `run_lra` its `pinto lra` command, and each `view_export`
   its `pinto view --png/--pdf` command, so `bash results/<day>/runall.sh`
   makes the fits and figures again without the agent.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and

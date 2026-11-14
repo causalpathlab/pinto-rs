@@ -84,6 +84,15 @@ fn print_logo() {
                   \x20       Choose data, methods and flags, then run them.\n\n\
                   \x20 mcp   Server for agents (Model Context Protocol)\n\
                   \x20       pinto run's fits and the viewer's map as tools, on stdio.\n\n\
+                  BASELINES (published spatial methods, model-level ports, to compare\n\
+                  against; same data, -c, -b, -o and --seed flags as lc; each writes a\n\
+                  run with labels and a cell embedding):\n\n\
+                  \x20 banksy      BANKSY (Singhal et al. 2024)\n\
+                  \x20             Neighbour-augmented features, PCA and Leiden.\n\n\
+                  \x20 spatialde2  SpatialDE2 tissue segmentation (Kats et al. 2021)\n\
+                  \x20             Poisson HMRF with a Dirichlet-process prior.\n\n\
+                  \x20 stagate     STAGATE (Dong and Zhang 2022)\n\
+                  \x20             Graph-attention autoencoder on the spatial graph.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
