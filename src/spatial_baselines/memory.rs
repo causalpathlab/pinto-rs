@@ -23,12 +23,13 @@ const GRAM_BLOCK_BYTES: usize = 64 << 20;
 pub const STAGATE_SAFETY: f64 = 1.65;
 
 /// Bytes a stored nonzero holds while the counts are read
-/// (`SparseIoVec::read_columns_csc`): streamed, a file's `(row, column,
-/// value)` triplets (24) beside the `(row, value)` buckets of each column
-/// they fill (8), then the buckets beside the CSC assembled from them (12);
-/// with `--preload-data`, the preloaded arrays (12) beside the buckets and
-/// the CSC. The read's buffers of fixed size (a fused retrieve of at most
-/// 48 MB, a file's cache of decoded chunks) are within the process's own.
+/// (`SparseIoVec::read_columns_csc`): preloaded, the preloaded arrays (12)
+/// beside the `(row, value)` buckets of each column (8) and the CSC
+/// assembled from them (12); streamed (data over data-beans' preload
+/// budget), a file's `(row, column, value)` triplets (24) beside the
+/// buckets they fill, then the buckets beside the CSC. The read's buffers
+/// of fixed size (a fused retrieve of at most 48 MB, a file's cache of
+/// decoded chunks) are within the process's own.
 const READ_NONZERO_BYTES: usize = 32;
 
 /// Peak bytes of reading counts of `nonzeros` stored nonzeros.

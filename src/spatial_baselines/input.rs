@@ -5,7 +5,9 @@
 
 use crate::util::ablation;
 use crate::util::common::Mat;
-use crate::util::input::{read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES};
+use crate::util::input::{
+    open_fit_data, read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
+};
 use data_beans::aux::feature_names::FeatureNameKind;
 use nalgebra_sparse::CscMatrix;
 
@@ -42,9 +44,7 @@ pub struct SpatialInputArgs {
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
 
-    /// Preload the counts when the files are opened, before the memory
-    /// check (by default they are streamed from disk in one read, after it)
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = PRELOAD_HELP)]
     pub preload_data: bool,
 
     /// Output prefix
@@ -105,6 +105,8 @@ pub struct OpenedInput {
     srt: crate::util::input::SRTData,
     /// Each cell's section, as [`SpatialData::section`].
     section: Vec<usize>,
+    data_files: Vec<Box<str>>,
+    preload_data: bool,
 }
 
 /// An input's size from its files' metadata, before its counts are read.
@@ -118,14 +120,14 @@ pub struct InputShape {
 }
 
 impl SpatialInputArgs {
-    /// Open the files and read the coordinates and batches, not the counts.
+    /// Open the files and read the coordinates and batches, not the counts:
+    /// nothing is preloaded, so the memory check from the files' stored
+    /// shape comes before the counts are in memory.
     pub fn open(&self) -> anyhow::Result<OpenedInput> {
         let srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
-            preload_data: self.preload_data,
-            // the counts are read once, after the memory check: streamed,
-            // never preloaded before it unless asked
+            preload_data: false,
             auto_preload: false,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
@@ -139,7 +141,12 @@ impl SpatialInputArgs {
             .into_iter()
             .map(|s| s as usize)
             .collect();
-        Ok(OpenedInput { srt, section })
+        Ok(OpenedInput {
+            srt,
+            section,
+            data_files: self.data_files.clone(),
+            preload_data: self.preload_data,
+        })
     }
 }
 
@@ -161,12 +168,26 @@ impl OpenedInput {
         })
     }
 
-    /// Read the counts.
+    /// Read the counts, the files opened again as the other commands open
+    /// them (preloaded by default, as data-beans' budget allows): a
+    /// preloaded read leaves less memory resident than a streamed one.
     pub fn read(self) -> anyhow::Result<SpatialData> {
-        let OpenedInput { srt, section } = self;
-        let cells = srt.data.column_names()?;
-        let genes = srt.data.row_names()?;
-        let counts = srt.data.read_columns_csc(0..cells.len())?;
+        let OpenedInput {
+            srt,
+            section,
+            data_files,
+            preload_data,
+        } = self;
+        let data = open_fit_data(&data_files, &FeatureNameKind::Exact, preload_data)?;
+        anyhow::ensure!(
+            (data.num_rows(), data.num_columns()) == (srt.data.num_rows(), srt.data.num_columns()),
+            "the data files changed since they were opened"
+        );
+        drop(srt.data);
+        let cells = data.column_names()?;
+        let genes = data.row_names()?;
+        let counts = data.read_columns_csc(0..cells.len())?;
+        drop(data);
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();
         anyhow::ensure!(d >= 1, "no spatial coordinate columns");

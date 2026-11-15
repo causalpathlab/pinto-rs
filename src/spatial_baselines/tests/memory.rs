@@ -503,18 +503,20 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     spatialde2::run_on(&args, input.read().unwrap(), &set(bound)).unwrap();
 }
 
-/// Opening the input preloads no counts unless `--preload-data` asks, so
-/// the check from the stored shape runs before the counts are in memory.
+/// Opening the input preloads no counts, `--preload-data` or not, so the
+/// check from the stored shape runs before the counts are in memory.
 #[test]
-fn opening_the_input_preloads_the_counts_only_when_asked() {
+fn opening_the_input_preloads_no_counts() {
     let dir = tempfile::tempdir().unwrap();
     let files = simulated(dir.path(), 8);
     let out = dir.path().join("run");
-    for (extra, want) in [(&[][..], false), (&["--preload-data"][..], true)] {
+    for extra in [&[][..], &["--preload-data"][..]] {
         let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, extra) else {
             unreachable!()
         };
-        assert_eq!(args.input.open().unwrap().preloaded(), want, "{extra:?}");
+        let input = args.input.open().unwrap();
+        assert!(!input.preloaded(), "{extra:?}");
+        assert_eq!(input.read().unwrap().cells.len(), 64);
     }
 }
 
