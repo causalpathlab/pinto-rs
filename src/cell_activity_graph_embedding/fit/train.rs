@@ -1,6 +1,8 @@
 //! The training loop, and the probe that sizes its chunks.
 
-use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
+use crate::cell_activity_graph_embedding::args::{
+    CellActivityGraphEmbeddingArgs, CONVERGENCE_TOL, GRAD_CLIP,
+};
 use crate::cell_activity_graph_embedding::feature_chain_sampler::FeatureGatedChainSampler;
 use crate::cell_activity_graph_embedding::loss::{cage_nce_loss_per_feature_level, CageLossOut};
 use crate::cell_activity_graph_embedding::pretrained;
@@ -149,8 +151,11 @@ pub(super) struct TrainInputs<'a> {
     pub lora_plus: Option<&'a LoraPlus<'a>>,
     pub sampler: &'a FeatureGatedChainSampler<'a>,
     pub trainable_features: &'a [usize],
+    /// Features an epoch visits: the trainable ones, or Σπ under
+    /// `--feature-inclusion`, capped by `--features-per-epoch`.
+    pub features_visited: usize,
     pub feature_batch_size: usize,
-    pub feature_fisher_weights: Option<&'a [f32]>,
+    pub feature_fisher_weights: &'a [f32],
     /// Each feature's probability of being visited in an epoch
     /// (`--feature-inclusion`); `None` visits every one.
     pub inclusion: Option<&'a [f32]>,
@@ -199,6 +204,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         lora_plus,
         sampler,
         trainable_features,
+        features_visited,
         feature_batch_size,
         feature_fisher_weights,
         inclusion,
@@ -230,16 +236,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // Under --feature-inclusion an epoch visits each feature with its
     // probability, so its length is that expectation (for the bar and the
     // per-step ridge share only).
-    let expected_visits = crate::cell_activity_graph_embedding::feature_inclusion::expected_visits(
-        trainable_features,
-        inclusion,
-    );
-    let features_per_epoch_actual = if args.features_per_epoch > 0 {
-        args.features_per_epoch.min(expected_visits)
-    } else {
-        expected_visits
-    };
-    let steps_per_epoch = features_per_epoch_actual.div_ceil(feature_batch_size);
+    let steps_per_epoch = features_visited.div_ceil(feature_batch_size);
     // The LoRA ridge is a per-epoch weight; every step takes its share.
     if let (Some(l), Some(lp)) = (model.lora.as_mut(), lora_plus) {
         l.ridge_step = f64::from(lp.ridge) / steps_per_epoch.max(1) as f64;
@@ -312,7 +309,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         // Features in the chunks that reached a step (not a chunk that drew
         // nothing, nor one after a stop).
         let mut processed: usize = 0;
-        debug_assert!(inclusion.is_some() || perm.len() == features_per_epoch_actual);
+        debug_assert!(inclusion.is_some() || perm.len() == features_visited);
         for chunk in perm.chunks(feature_batch_size) {
             if stop.load(Ordering::Relaxed) {
                 break;
@@ -378,14 +375,12 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 // (the loss-side analog of bge's count·fisher positive draw and
                 // lc's `apply_feature_weights` on the feature basis). Coverage stays
                 // uniform — every feature is still visited once per epoch.
-            let per_level_gl = match feature_fisher_weights {
-                Some(w) => {
-                    let w_chunk: Vec<f32> = feature_ids.iter().map(|&g| w[g]).collect();
-                    let w_g1 = Tensor::from_vec(w_chunk, (feature_ids.len(), 1), dev)?;
-                    per_level_gl.broadcast_mul(&w_g1)?
-                }
-                None => per_level_gl,
-            };
+            let w_chunk: Vec<f32> = feature_ids
+                .iter()
+                .map(|&g| feature_fisher_weights[g])
+                .collect();
+            let w_g1 = Tensor::from_vec(w_chunk, (feature_ids.len(), 1), dev)?;
+            let per_level_gl = per_level_gl.broadcast_mul(&w_g1)?;
             let loss = per_level_gl.sum_all()?;
             let mut total = loss.clone();
 
@@ -460,7 +455,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             // at all, and without this the bar would still reach 100% and the
             // phase timings would still look normal — the instrumentation would
             // make the failure less visible rather than more.
-            let stepped = clip_and_step_dense_all(adams, grads, f64::from(args.grad_clip))?;
+            let stepped = clip_and_step_dense_all(adams, grads, f64::from(GRAD_CLIP))?;
             if !stepped {
                 skipped_steps += 1;
             }
@@ -561,7 +556,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         });
 
         // Convergence check: if the last `convergence_window` epochs'
-        // mean losses are within `convergence_tol` relative range,
+        // mean losses are within [`CONVERGENCE_TOL`] relative range,
         // exit. `convergence_window == 0` disables.
         if args.convergence_window > 0 && score_trace.len() >= args.convergence_window {
             let window = &score_trace[score_trace.len() - args.convergence_window..];
@@ -577,10 +572,10 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             } else {
                 f64::INFINITY
             };
-            if rel.is_finite() && rel < args.convergence_tol as f64 {
+            if rel.is_finite() && rel < f64::from(CONVERGENCE_TOL) {
                 info!(
                     "converged at epoch {}: last {} losses within rel-range {:.4} < tol {:.4}",
-                    epoch, args.convergence_window, rel, args.convergence_tol
+                    epoch, args.convergence_window, rel, CONVERGENCE_TOL
                 );
                 break;
             }
@@ -600,7 +595,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     if skipped_steps > 0 {
         warn!(
             "{}/{} optimizer steps were SKIPPED for non-finite gradients — those \
-             steps moved no parameters. Lower --lr or --grad-clip if this is a \
+             steps moved no parameters. Lower --lr if this is a \
              large fraction.",
             skipped_steps, total_steps
         );

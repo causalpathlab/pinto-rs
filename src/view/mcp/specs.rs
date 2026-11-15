@@ -72,7 +72,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 "required": ["group"],
                 "additionalProperties": false,
             }),
-        ),
+        )
+        .read_only(),
         spec(
             "view_cell",
             "The cell nearest a pixel of the last map, a world point, or by name: \
@@ -86,7 +87,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 },
                 "additionalProperties": false,
             }),
-        ),
+        )
+        .read_only(),
         spec(
             "view_lra",
             "The run's ligand-receptor tables (pinto lra: the full table and any --only \

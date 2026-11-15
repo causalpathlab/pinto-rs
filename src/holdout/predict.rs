@@ -78,7 +78,7 @@ pub fn predict_profiles(
     args: &PredictArgs,
     meta: &PintoMetadata,
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
-    let c = &args.common;
+    let c = &args.core.common;
     let h = &args.holdout;
     // `--ignore-batch`: no δ here either.
     let delta_iters = if c.ignore_batch {
@@ -86,7 +86,7 @@ pub fn predict_profiles(
     } else {
         h.holdout_delta_iters
     };
-    let model = args.model.as_ref();
+    let model = args.core.model.as_ref();
     mkdir_parent(&c.out)?;
 
     let gc_path = format!("{model}.feature_community.parquet");
@@ -106,7 +106,7 @@ pub fn predict_profiles(
     );
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
-    let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
+    let feature_kind = args.core.feature_name_mode.resolve_kind(&peek_names);
     let SrtPreprocessed {
         data_vec,
         graph,
@@ -115,7 +115,6 @@ pub fn predict_profiles(
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: None,
-        fisher_weights: false,
         // The model's profiles are what is scored; δ is estimated below from
         // the fitting parts, not from this sample's whole counts.
         batch_effects: BatchEstimate::Skip,
@@ -139,10 +138,10 @@ pub fn predict_profiles(
     let g = p_t.ncols();
     let coverage = g as f32 / model_features.len().max(1) as f32;
     anyhow::ensure!(
-        coverage >= args.min_feature_overlap,
+        coverage >= args.core.min_feature_overlap,
         "the sample carries {:.1}% of the model's features, below --min-feature-overlap {:.1}%",
         100.0 * coverage,
-        100.0 * args.min_feature_overlap
+        100.0 * args.core.min_feature_overlap
     );
     let mut slot_names: Vec<Box<str>> = vec![Box::from(""); g];
     for (row, slot) in matched.row_to_matched.iter().enumerate() {
@@ -161,6 +160,7 @@ pub fn predict_profiles(
         .map(|p| named(p, "--ablate-features"))
         .transpose()?;
     let eval_path = args
+        .scoring
         .eval_features
         .as_deref()
         .or(h.ablate_features.as_deref());
@@ -185,13 +185,13 @@ pub fn predict_profiles(
 
     // Every cell split once into its fitting and scored parts, and the
     // sample's own totals on the matched window.
-    let block = c.block_size.unwrap_or(1000).max(1);
+    const BLOCK: usize = 1000;
     let blocks: Vec<(Vec<CellParts>, Vec<f64>)> = (0..n_cells)
-        .step_by(block)
+        .step_by(BLOCK)
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(|lb| -> anyhow::Result<_> {
-            let csc = data_vec.read_columns_csc(lb..(lb + block).min(n_cells))?;
+            let csc = data_vec.read_columns_csc(lb..(lb + BLOCK).min(n_cells))?;
             let mut totals = vec![0f64; g];
             let parts = (0..csc.ncols())
                 .map(|j| {
@@ -241,15 +241,15 @@ pub fn predict_profiles(
         .into_iter()
         .map(Into::into)
         .collect();
-    let (null_totals, null_from) = match args.null_from.as_deref() {
+    let (null_totals, null_from) = match args.scoring.null_from.as_deref() {
         Some(files) => (
-            training_feature_totals(files, c, &feature_kind, &slot_names)?,
+            training_feature_totals(files, &feature_kind, &slot_names)?,
             "--null-from".to_string(),
         ),
         None if !recorded.is_empty() && recorded.iter().all(|f| Path::new(f.as_ref()).exists()) => {
             info!("null: the model's own training data, as its manifest lists it");
             (
-                training_feature_totals(&recorded, c, &feature_kind, &slot_names)?,
+                training_feature_totals(&recorded, &feature_kind, &slot_names)?,
                 "the model's training data".to_string(),
             )
         }
@@ -282,7 +282,7 @@ pub fn predict_profiles(
         log_ceiling: &log_ceiling,
         shares: &shares,
         agreement,
-        iters: h.holdout_em_iters,
+        iters: crate::util::profile_match::EM_ITERS,
     };
 
     let units: Vec<(usize, Option<usize>)> = match h.holdout_unit {

@@ -60,7 +60,6 @@ fn pure_cells_land_on_their_community() -> anyhow::Result<()> {
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         100,
-        None,
         "test",
     )?;
     assert!(prop[(0, 0)] > 0.99, "pure C0 cell: {}", prop[(0, 0)]);
@@ -94,7 +93,6 @@ fn feature_matching_goes_through_the_canonicalizer() -> anyhow::Result<()> {
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Gene { delim: '_' },
         100,
-        None,
         "test",
     )?;
     assert!(prop[(0, 0)] > 0.99, "canonicalized match: {}", prop[(0, 0)]);
@@ -127,7 +125,7 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
                 .into(),
         );
     }
-    let data = open_backends("test", &files, false)?;
+    let data = open_backends("test", &files)?;
     let prop = project_profile_propensity(
         &data,
         &profiles,
@@ -136,7 +134,6 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
             merge_overlapping: false,
         },
         100,
-        None,
         "test",
     )?;
     for c in 0..2 {
@@ -157,7 +154,6 @@ fn a_cell_off_the_model_axis_keeps_a_zero_row() -> anyhow::Result<()> {
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         100,
-        None,
         "test",
     )?;
     assert!(prop.row(0).iter().all(|&x| x == 0.0));
@@ -176,7 +172,6 @@ fn no_shared_feature_is_an_error_not_a_uniform_guess() -> anyhow::Result<()> {
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         10,
-        None,
         "test",
     )
     .is_err());

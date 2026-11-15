@@ -96,7 +96,7 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
         "4",
         "--edge-cluster-method",
         "kmeans",
-        "--n-edge-clusters",
+        "--n-communities",
         "2",
         "--seed",
         "7",

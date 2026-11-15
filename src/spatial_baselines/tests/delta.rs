@@ -179,7 +179,6 @@ fn a_pb_read_reuses_the_delta_estimate_s_projection() {
     let srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
         data_files: i.data_files.clone(),
         coord_files: i.coord_files.clone(),
-        preload_data: false,
         coord_columns: Vec::new(),
         coord_column_names: i.coord_column_names.clone(),
         batch_files: None,
@@ -200,7 +199,7 @@ fn a_pb_read_reuses_the_delta_estimate_s_projection() {
 }
 
 /// The projection a δ estimate keeps is the one a fresh projection with
-/// the same `-p`, block size and batch membership gives after it, basis
+/// the same `-p` and batch membership gives after it, basis
 /// and all: what the srt pipeline reuses in place of projecting again.
 #[test]
 fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
@@ -215,7 +214,6 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
     let mut srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
         data_files: i.data_files.clone(),
         coord_files: i.coord_files.clone(),
-        preload_data: false,
         coord_columns: Vec::new(),
         coord_column_names: i.coord_column_names.clone(),
         batch_files: None,
@@ -223,13 +221,13 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
         feature_kind: data_beans::aux::feature_names::FeatureNameKind::Exact,
     })
     .unwrap();
-    let (proj_dim, block_size) = (16, Some(7));
+    let proj_dim = 16;
     let labels = sorted_batch_labels(&srt.batches);
     let kept = estimate_and_write_batch_effects(
         &mut srt.data,
         &srt.batches,
         &labels,
-        EstimateBatchArgs::at(proj_dim, block_size, 10, 5, None),
+        EstimateBatchArgs::at(proj_dim, 10, 5, None),
         None,
         true,
     )
@@ -239,7 +237,7 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
     .expect("kept");
     let fresh = srt
         .data
-        .project_columns_with_batch_correction(proj_dim, block_size, Some(srt.batches.as_slice()))
+        .project_columns_with_batch_correction(proj_dim, None, Some(srt.batches.as_slice()))
         .unwrap();
     assert_eq!(kept.proj, fresh.proj);
     assert_eq!(kept.basis, fresh.basis);

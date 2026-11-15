@@ -2,7 +2,7 @@
 //! run's seed, so a k-means cut is reproducible like a Leiden one.
 
 use crate::link_community::profiles::EdgeClustering;
-use crate::util::edge_clustering::EdgeClusterArgs;
+use crate::util::edge_clustering::{EdgeClusterArgs, KMEANS_MAX_ITER, LEIDEN_KNN, LEIDEN_RUNS};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -27,8 +27,8 @@ fn leiden_is_the_default_and_carries_the_seed() {
             runs,
             seed,
         } => {
-            assert_eq!(runs, 10);
-            assert_eq!(knn, 30);
+            assert_eq!(runs, LEIDEN_RUNS);
+            assert_eq!(knn, LEIDEN_KNN);
             assert_eq!(resolution, 1.0);
             assert_eq!(target, None);
             assert_eq!(seed, 42);
@@ -38,16 +38,8 @@ fn leiden_is_the_default_and_carries_the_seed() {
 }
 
 #[test]
-fn kmeans_resolves_with_the_count_iterations_and_seed() {
-    let resolved = parse(&[
-        "--edge-cluster-method",
-        "kmeans",
-        "--n-edge-clusters",
-        "25",
-        "--kmeans-max-iter",
-        "7",
-    ])
-    .resolve(9);
+fn kmeans_resolves_with_the_count_and_seed() {
+    let resolved = parse(&["--edge-cluster-method", "kmeans", "--n-communities", "25"]).resolve(9);
     match resolved {
         EdgeClustering::Kmeans {
             n_clusters,
@@ -55,19 +47,10 @@ fn kmeans_resolves_with_the_count_iterations_and_seed() {
             seed,
         } => {
             assert_eq!(n_clusters, Some(25));
-            assert_eq!(max_iter, 7);
+            assert_eq!(max_iter, KMEANS_MAX_ITER);
             assert_eq!(seed, 9);
         }
         other => panic!("expected kmeans, got {other:?}"),
-    }
-}
-
-#[test]
-fn runs_must_be_at_least_one() {
-    assert!(Wrap::try_parse_from(["pinto", "--leiden-runs", "0"]).is_err());
-    match parse(&["--leiden-runs", "1"]).resolve(7) {
-        EdgeClustering::Leiden { runs, .. } => assert_eq!(runs, 1),
-        other => panic!("expected leiden, got {other:?}"),
     }
 }
 

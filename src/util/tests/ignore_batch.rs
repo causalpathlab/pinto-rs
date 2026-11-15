@@ -50,7 +50,6 @@ pub(super) fn preprocess_with(
     preprocess_srt(SrtPreprocessConfig {
         common: &args,
         ablation: None,
-        fisher_weights: false,
         batch_effects: batch,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,

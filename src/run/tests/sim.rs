@@ -38,7 +38,7 @@ fn the_sim_tools_are_listed_with_their_schemas() {
         ),
         (
             "run_sim_baseline",
-            &["truth", "method", "k", "seed", "out", "background"][..],
+            &["truth", "method", "n_clusters", "seed", "out", "background"][..],
         ),
     ] {
         let spec = tools
@@ -94,7 +94,7 @@ fn a_simulate_call_becomes_its_command_line() {
         "--scenario=L2",
         "--set=grid_side=8",
         "--set=seed=2",
-        &format!("--coords={coords}"),
+        &format!("--coord={coords}"),
         "--coord-column-names=x,y",
         "--out=/p/sim",
     ]
@@ -334,7 +334,7 @@ fn the_baseline_command_line_has_only_what_was_given() {
             "srt-sim-baseline",
             "--truth=/p/sim",
             "--method=per-donor",
-            "--k=5",
+            "--n-clusters=5",
             "--seed=2",
             "--out=/p/out.tsv",
         ]

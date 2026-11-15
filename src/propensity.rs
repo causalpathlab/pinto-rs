@@ -12,14 +12,14 @@ use legume_numeric::param::traits::TwoStatParam;
 pub struct SrtPropensityArgs {
     /// How the pair latent becomes link communities. Shared verbatim with
     /// `cage` and `dsvd` — the k-means fallback width is the latent dimension
-    /// here. The old `--maxiter-clustering` survives as an alias.
+    /// here.
     #[command(flatten)]
     edge_clustering: crate::util::edge_clustering::EdgeClusterArgs,
 
     #[arg(
         long,
-        default_value_t = 42,
-        help = "Random seed for Leiden edge clustering"
+        default_value_t = crate::util::common::DEFAULT_SEED,
+        help = "Random seed for the edge clustering"
     )]
     seed: u64,
 
@@ -42,8 +42,9 @@ pub struct SrtPropensityArgs {
     coord_pair_file: Box<str>,
 
     #[arg(
-        short = 'd',
-        long,
+        long = "data-files",
+        short_alias = 'd',
+        alias = "expr-data-files",
         value_delimiter(','),
         help = "Expression data files (.zarr or .h5)",
         long_help = "Expression data files (.zarr or .h5, comma separated). Optional;\n\
@@ -52,33 +53,14 @@ pub struct SrtPropensityArgs {
     expr_data_files: Option<Vec<Box<str>>>,
 
     #[arg(
-        long,
-        default_value = "left_cell",
-        help = "Column name for left cell index in coord_pair_file"
-    )]
-    left_name: Box<str>,
-
-    #[arg(
-        long,
-        default_value = "right_cell",
-        help = "Column name for right cell index in coord_pair_file"
-    )]
-    right_name: Box<str>,
-
-    #[arg(
         long = "coord-column-names",
         value_delimiter(','),
         help = "Coordinate column names in coord_pair_file",
         long_help = "Coordinate column names in coord_pair_file (comma separated).\n\
-                     Looked up as left_{name} and right_{name}."
+                     Looked up as left_{name} and right_{name}.",
+        hide = true
     )]
     coord_column_names: Option<Vec<Box<str>>>,
-
-    #[arg(
-        long,
-        help = "Cells per parallel block (omit for auto-scaling by feature count)"
-    )]
-    block_size: Option<usize>,
 
     #[arg(
         long,
@@ -100,7 +82,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         mat: proj_mk,
     } = Mat::from_parquet(args.latent_data_file.as_ref())?;
 
-    let pair_names = read_pair_names(&args.coord_pair_file, &args.left_name, &args.right_name)?;
+    let pair_names = read_pair_names(&args.coord_pair_file, "left_cell", "right_cell")?;
 
     // Pair provenance, when the source run was augmented. Positionally
     // parallel to the pair rows, so it can be re-emitted with the re-cut
@@ -273,11 +255,10 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         info!("Estimate cluster-specific feature expressions");
         let data_vec = read_expr_data(data_files)?;
         let features = data_vec.row_names()?;
-        let (mut sum_dk, denom_dk) =
-            feature_stats(&data_vec, &prop_kn, &vertex_index, args.block_size)?;
+        let (mut sum_dk, denom_dk) = feature_stats(&data_vec, &prop_kn, &vertex_index, None)?;
 
         info!("Applying NB Fisher-info weighting to feature-cluster stats");
-        let w = compute_nb_fisher_weights(&data_vec, args.block_size)?;
+        let w = compute_nb_fisher_weights(&data_vec, None)?;
         apply_feature_weights(&mut sum_dk, &w);
 
         let mut gamma_param = GammaMatrix::new((sum_dk.nrows(), sum_dk.ncols()), 1.0, 1.0);

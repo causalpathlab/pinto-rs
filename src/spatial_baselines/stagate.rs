@@ -242,7 +242,7 @@ pub struct Args {
     /// gene selection (sc.pp.filter_genes min_cells). The default 0 follows
     /// T1, the fixed-K tutorial; the Louvain tutorials T3, T7 (pyG)
     /// and T8 use 50
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, hide = true)]
     pub min_cells: usize,
 
     /// Number of highly variable genes (seurat_v3 flavour, on counts)
@@ -258,21 +258,26 @@ pub struct Args {
     pub n_epochs: usize,
 
     /// Adam learning rate
-    #[arg(long, default_value_t = LR)]
+    #[arg(long, default_value_t = LR, hide = true)]
     pub lr: f64,
 
     /// Adam weight decay (L2 on the gradient, as torch's Adam)
-    #[arg(long, default_value_t = WEIGHT_DECAY)]
+    #[arg(long, default_value_t = WEIGHT_DECAY, hide = true)]
     pub weight_decay: f64,
 
     /// Gradient clipping: the global L2 norm of the gradients
-    #[arg(long, default_value_t = GRAD_CLIP)]
+    #[arg(long, default_value_t = GRAD_CLIP, hide = true)]
     pub gradient_clipping: f64,
 
     #[arg(long, default_value_t = ComputeDevice::Cpu, value_enum, help = "Compute device")]
     pub device: ComputeDevice,
 
-    #[arg(long, default_value_t = 0, help = "Device ordinal (for cuda/metal)")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Device ordinal (for cuda/metal)",
+        hide = true
+    )]
     pub device_no: usize,
 }
 

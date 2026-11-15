@@ -159,7 +159,6 @@ fn expression_neighbours_stay_inside_their_spatial_component() {
     let component: Vec<usize> = (0..n).map(|c| usize::from(c >= n / 2)).collect();
     let args = || SrtCellPairsArgs {
         knn: 3,
-        block_size: Some(64),
         reciprocal: false,
     };
 
@@ -202,7 +201,6 @@ fn a_component_too_small_for_k_contributes_no_expression_edges() {
         2,
         SrtCellPairsArgs {
             knn: 3,
-            block_size: Some(64),
             reciprocal: false,
         },
     )

@@ -5,10 +5,7 @@ use legume_numeric::matrix::knn_graph::symmetric_adjacency;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 
 fn args() -> AblationArgs {
-    AblationArgs {
-        permute_block: 8,
-        ..Default::default()
-    }
+    AblationArgs::default()
 }
 
 /// The flags as a fit command parses them: its input args and its ablation.
@@ -26,13 +23,82 @@ fn parse(extra: &[&str]) -> Result<AblationArgs, clap::Error> {
     Fit::try_parse_from(argv).map(|f| f.ablation)
 }
 
+/// The hidden qualifiers state their defaults in their help, as clap
+/// cannot for an `Option`; the text must name what the accessors return.
+#[test]
+fn the_qualifier_help_names_the_defaults_the_accessors_use() {
+    use clap::{CommandFactory, ValueEnum};
+    #[derive(clap::Parser)]
+    struct Fit {
+        #[command(flatten)]
+        ablation: AblationArgs,
+    }
+    let cmd = Fit::command();
+    let help = |id: &str| {
+        cmd.get_arguments()
+            .find(|a| a.get_id() == id)
+            .and_then(|a| a.get_help())
+            .unwrap()
+            .to_string()
+    };
+    let block = format!("[default: {}]", args().permute_block());
+    assert!(help("permute_block").contains(&block), "{block}");
+    let mode = args().mask_mode().to_possible_value().unwrap();
+    let mode = format!("[default: {}]", mode.get_name());
+    assert!(help("mask_mode").contains(&mode), "{mode}");
+}
+
 #[test]
 fn one_ablation_per_run_and_a_parent_only_with_one() {
-    assert!(parse(&["--drop-features", "^MT-", "--mask-cells", "c.txt"]).is_err());
+    assert!(parse(&["--drop-features", "^GENE", "--mask-cells", "c.txt"]).is_err());
     assert!(parse(&["--ablation-parent", "base"]).is_err());
-    let a = parse(&["--drop-features", "^MT-", "--ablation-parent", "base"]).unwrap();
+    let a = parse(&["--drop-features", "^GENE", "--ablation-parent", "base"]).unwrap();
     assert_eq!(a.kind(), Some(AblationKind::FeatureDrop));
     assert_eq!(parse(&[]).unwrap().kind(), None);
+}
+
+/// A qualifier of one ablation is refused without it, rather than
+/// accepted and ignored.
+#[test]
+fn an_ablation_qualifier_needs_its_ablation() {
+    let coords = ["-c", "c.csv"];
+    for extra in [
+        &["--mask-mode", "drop"][..],
+        &["--permute-block", "4"],
+        &["--ablation-seed", "3"],
+        &["--permute-block", "4", "--drop-features", "^GENE"],
+        &["--permute-block", "4", "--permute-coords", "within-batch"],
+        &["--mask-mode", "drop", "--drop-features", "^GENE"],
+        // at their default values, too: what is refused is giving them
+        &["--permute-block", "8", "--drop-features", "^GENE"],
+        &["--permute-block", "8", "--permute-coords", "within-batch"],
+        &["--mask-mode", "cut-edges", "--drop-features", "^GENE"],
+        &["--ablation-seed", "3", "--drop-features", "^GENE"],
+        &["--ablation-seed", "3", "--mask-cells", "m.txt"],
+    ] {
+        let argv = [&coords[..], extra].concat();
+        let refused = parse(&argv).map_or(true, |a| a.validate(true).is_err());
+        assert!(refused, "{extra:?}");
+    }
+    let given = |extra: &[&str]| parse(&[&coords[..], extra].concat()).unwrap();
+    assert_eq!(
+        given(&["--mask-cells", "m.txt", "--mask-mode", "drop"]).mask_mode(),
+        MaskMode::Drop
+    );
+    assert_eq!(
+        given(&["--mask-cells", "m.txt"]).mask_mode(),
+        MaskMode::CutEdges
+    );
+    let a = given(&["--permute-coords", "block", "--permute-block", "4"]);
+    assert_eq!(a.permute_block(), 4);
+    let a = given(&["--permute-coords", "block", "--permute-block", "8"]);
+    a.validate(true).unwrap();
+    assert_eq!(
+        given(&["--permute-coords", "block"]).permute_block(),
+        PERMUTE_BLOCK
+    );
+    let a = given(&["--permute-coords", "within-batch", "--ablation-seed", "3"]);
+    assert_eq!(a.ablation_seed, Some(3));
 }
 
 #[test]
@@ -42,14 +108,14 @@ fn permuting_positions_needs_coordinates() {
     assert_eq!(a.kind(), Some(AblationKind::CoordPermutation));
     a.validate(true).unwrap();
     let mut a = a;
-    a.permute_block = 1;
+    a.permute_block = Some(1);
     assert!(a.validate(true).is_err());
 }
 
 #[test]
 fn a_parent_needs_a_manifest() {
     let mut a = args();
-    a.drop_features = Some("^MT-".into());
+    a.drop_features = Some("^GENE".into());
     a.ablation_parent = Some("nowhere".into());
     let e = a.validate(true).unwrap_err().to_string();
     assert!(e.contains("no manifest nowhere.pinto.json"), "{e}");
@@ -67,10 +133,10 @@ fn a_parent_needs_a_manifest() {
 #[test]
 fn features_drop_by_regex_on_name_parts() {
     let rows = boxed(&[
-        "ENSG1_PRE-GENE1",
-        "ENSG2_GENE2",
+        "ID1_PRE-GENE1",
+        "ID2_GENE2",
         "PRE-GENE3",
-        "ENSG3_GENE4/count/spliced",
+        "ID3_GENE4/count/spliced",
     ]);
     let (keep, spec) = feature_keep(&rows, "^PRE-").unwrap();
     assert_eq!(keep, vec![false, true, false, true]);
@@ -85,8 +151,8 @@ fn features_drop_by_regex_on_name_parts() {
 fn features_drop_by_listed_name() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("drop.txt");
-    std::fs::write(&f, "# housekeeping\nGENE2\n\nENSG3\n").unwrap();
-    let rows = boxed(&["ENSG1_PRE-GENE1", "ENSG2_GENE2", "ENSG3_GENE4"]);
+    std::fs::write(&f, "# housekeeping\nGENE2\n\nID3\n").unwrap();
+    let rows = boxed(&["ID1_PRE-GENE1", "ID2_GENE2", "ID3_GENE4"]);
     let (keep, spec) = feature_keep(&rows, f.to_str().unwrap()).unwrap();
     assert_eq!(keep, vec![true, false, false]);
     assert_eq!(spec["n_listed"], 2);

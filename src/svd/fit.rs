@@ -148,17 +148,12 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         edge_source,
         cell_proj: _,
         feature_axis: _,
-        row_weights: _,
-        row_stats: _,
-        feature_weights: _,
-        feature_stats: _,
         n_cells,
         n_rows: n_features,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: Some(&args.ablation),
-        fisher_weights: false,
         batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Rows,
         // `dsvd` takes its own projection because it asks for a different one:
@@ -196,7 +191,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     info!("Per-cell random projection...");
     let mut cell_proj = data_vec.project_columns_with_batch_correction(
         c.proj_dim,
-        c.block_size,
+        None,
         (!c.ignore_batch).then_some(batch_membership.as_slice()),
     )?;
 
@@ -250,7 +245,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         &fused_pair_delta_visitor,
         &fused_input,
         &mut collapsed,
-        c.block_size,
+        None,
     )?;
 
     // 6. Fit Poisson-Gamma (finest level)
@@ -301,7 +296,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         &nystrom_pair_delta_visitor,
         &nystrom_input,
         &mut pair_latent_kn,
-        c.block_size,
+        None,
     )?;
 
     // 9. Export
@@ -332,7 +327,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         n_cells,
         &PropensityReportConfig {
             clustering: args.edge_clustering.resolve(c.seed),
-            block_size: c.block_size,
             // `dsvd` never resolves a feature axis (it stacks its two channels on
             // the row axis), so its feature-community table stays row-keyed.
             feature_axis: None,

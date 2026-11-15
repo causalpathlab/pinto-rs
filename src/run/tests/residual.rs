@@ -40,7 +40,7 @@ fn the_residual_tool_is_listed_with_its_schema() {
         "excess",
         "adapt",
         "adapt_cells",
-        "feature_names",
+        "feature_name_mode",
         "background",
     ] {
         assert!(props.contains_key(arg), "run_residual lacks {arg}");
@@ -48,7 +48,7 @@ fn the_residual_tool_is_listed_with_its_schema() {
     // the choices are the command's own
     assert_eq!(props["excess"]["enum"], json!(["round", "floor"]));
     assert_eq!(props["adapt"]["enum"], json!(["none", "batch"]));
-    assert!(props["feature_names"]["enum"]
+    assert!(props["feature_name_mode"]["enum"]
         .as_array()
         .unwrap()
         .contains(&json!("exact")));
@@ -88,7 +88,7 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
         "--excess=floor",
         "--adapt=none",
         "--adapt-cells=20",
-        "--feature-names=gene",
+        "--feature-name-mode=gene",
         "--out=o",
     ]
     .map(String::from)

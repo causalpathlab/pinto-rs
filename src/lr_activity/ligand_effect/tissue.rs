@@ -497,7 +497,6 @@ pub fn identity_bins(
     axis: &FeatureAxis,
     excluded: &HashSet<usize>,
     cell_section: &[Box<str>],
-    block_size: Option<usize>,
 ) -> anyhow::Result<(Mat, Vec<usize>)> {
     let k = INTERNALS;
     let row_weights: Vec<f32> = (0..data.num_rows())
@@ -518,12 +517,8 @@ pub fn identity_bins(
             row_weights.len()
         );
     }
-    let identity = data.project_columns_weighted(
-        k.identity_dim,
-        block_size,
-        Some(cell_section),
-        &row_weights,
-    )?;
+    let identity =
+        data.project_columns_weighted(k.identity_dim, None, Some(cell_section), &row_weights)?;
     let bits = k.identity_bits.min(k.identity_dim);
     let bins = binary_sort_columns(&identity.proj, bits)?;
     Ok((identity.proj, bins))

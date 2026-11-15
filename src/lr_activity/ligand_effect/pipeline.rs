@@ -206,16 +206,9 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         needed.len(),
         receivers.len()
     );
-    let (store, log1p_depth) =
-        GeneStore::read(inp.data, inp.axis, &needed, &row_of_cell, a.block_size)?;
+    let (store, log1p_depth) = GeneStore::read(inp.data, inp.axis, &needed, &row_of_cell)?;
 
-    let (identity, identity_bin) = identity_bins(
-        inp.data,
-        inp.axis,
-        &excluded,
-        inp.cell_section,
-        a.block_size,
-    )?;
+    let (identity, identity_bin) = identity_bins(inp.data, inp.axis, &excluded, inp.cell_section)?;
     let tissue = build_tissue(inp, &identity, &identity_bin, &log1p_depth)?;
     debug_assert_eq!(tissue.cell, receivers);
     Ok(Prepared {

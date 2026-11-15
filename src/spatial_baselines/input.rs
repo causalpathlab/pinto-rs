@@ -11,8 +11,8 @@ use crate::util::batch_effects::{
 };
 use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
-    read_batch_file, read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES,
-    DEFAULT_BATCH_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM, PRELOAD_HELP,
+    read_batch_file, read_data_with_coordinates, SRTReadArgs, BATCH_KNN, COORD_COLUMN_NAMES,
+    DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
 };
 use anyhow::Context;
 use data_beans::alg::random_projection::RandProjOps;
@@ -54,9 +54,6 @@ pub struct SpatialInputArgs {
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
 
-    #[arg(long, default_value_t = false, help = PRELOAD_HELP)]
-    pub preload_data: bool,
-
     /// Run the original method: no batch effects (δ) are estimated or
     /// divided out. Without it, a multi-batch input's counts are divided by
     /// its own δ estimate (as cage estimates it) before the method's own
@@ -68,8 +65,11 @@ pub struct SpatialInputArgs {
     #[arg(long, short, required = true)]
     pub out: Box<str>,
 
-    /// Random seed
-    #[arg(long, default_value_t = 42)]
+    #[arg(
+        long,
+        default_value_t = crate::util::common::DEFAULT_SEED,
+        help = crate::util::common::SEED_HELP
+    )]
     pub seed: u64,
 }
 
@@ -247,7 +247,6 @@ impl SpatialInputArgs {
         let mut srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
-            preload_data: self.preload_data,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),
@@ -327,7 +326,7 @@ impl SpatialInputArgs {
 }
 
 /// δ estimated on the input itself, by cage's estimator at cage's default
-/// settings (`-p`, `--batch-knn`, `--num-levels`), and written under `out`
+/// settings (`-p`, the batch KNN, `--num-levels`), and written under `out`
 /// as cage writes it, with the projection it collapsed on when
 /// `keep_projection`. `None` with fewer than two batches.
 fn estimate_delta(
@@ -345,13 +344,7 @@ fn estimate_delta(
         data,
         batches,
         &labels,
-        EstimateBatchArgs::at(
-            DEFAULT_PROJ_DIM,
-            None,
-            DEFAULT_BATCH_KNN,
-            DEFAULT_NUM_LEVELS,
-            None,
-        ),
+        EstimateBatchArgs::at(DEFAULT_PROJ_DIM, BATCH_KNN, DEFAULT_NUM_LEVELS, None),
         Some(out),
         keep_projection,
     )

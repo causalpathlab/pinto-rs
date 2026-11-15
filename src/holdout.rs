@@ -77,7 +77,7 @@ pub enum SplitKind {
     FeatureAblation,
 }
 
-#[derive(Args, Debug, Clone, PartialEq)]
+#[derive(Args, Debug, Clone)]
 #[command(next_help_heading = "Held-out scoring (lc / dsvd models)")]
 pub struct HoldoutArgs {
     #[arg(
@@ -104,7 +104,8 @@ pub struct HoldoutArgs {
         long,
         default_value_t = 0.5,
         value_parser = open_fraction,
-        help = "Share of each unit's counts that fits its proportions; the rest is scored"
+        help = "Share of each unit's counts that fits its proportions; the rest is scored",
+        hide = true
     )]
     pub holdout_fit_fraction: f64,
 
@@ -128,17 +129,10 @@ pub struct HoldoutArgs {
                      then set δ_g ← δ_g (obs_g + 1) / (pred_g + 1) per batch, over the\n\
                      FITTING parts only, so the scored parts never inform it. Same\n\
                      default as `senna predict --delta-iters`. 0 applies the model's\n\
-                     profiles unshifted."
-    )]
-    pub holdout_delta_iters: usize,
-
-    #[arg(
-        long,
-        default_value_t = 100,
-        help = "EM iterations per unit",
+                     profiles unshifted.",
         hide = true
     )]
-    pub holdout_em_iters: usize,
+    pub holdout_delta_iters: usize,
 }
 
 fn open_fraction(s: &str) -> Result<f64, String> {

@@ -25,7 +25,6 @@ impl GeneStore {
         axis: &FeatureAxis,
         genes: &[usize],
         row_of_cell: &[usize],
-        block_size: Option<usize>,
     ) -> anyhow::Result<(Self, Vec<f32>)> {
         let n_cells = data.num_columns();
         let mut local_of_gene: HashMap<usize, u32> = HashMap::default();
@@ -40,7 +39,7 @@ impl GeneStore {
                     .unwrap_or(u32::MAX)
             })
             .collect();
-        let jobs = generate_minibatch_intervals(n_cells, data.num_rows(), block_size);
+        let jobs = generate_minibatch_intervals(n_cells, data.num_rows(), None);
         type Block = (usize, Vec<f32>, Vec<(u32, u32, f32)>);
         let pb = new_progress_bar(jobs.len() as u64).with_message("reading gene blocks");
         let blocks: Vec<Block> = jobs
