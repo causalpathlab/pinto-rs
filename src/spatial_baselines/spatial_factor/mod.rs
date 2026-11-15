@@ -1,5 +1,5 @@
 //! One sparse spatial factor core under two baselines, [`super::spatialpca`]
-//! and `mefisto`: both are the latent factor model
+//! and [`super::mefisto`]: both are the latent factor model
 //!
 //! `Y (genes × cells) = W Z + E`, each factor `z_k ~ N(0, v_k R(rho_k))`,
 //!

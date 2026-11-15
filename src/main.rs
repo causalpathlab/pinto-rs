@@ -799,6 +799,43 @@ enum Commands {
     SpatialpcaPb(Box<spatial_baselines::spatialpca::PbArgs>),
 
     #[command(
+        about = "MEFISTO: factor analysis with spatially smooth factors (baseline)",
+        long_about = concat!(
+            "MEFISTO (Velten et al. 2022), written from the paper, on pinto's inputs:\n\
+             the data, -c, -b, -o and --seed flags lc takes. Bayesian factor\n\
+             analysis with sparse weights, the sections as groups, each factor\n\
+             spatially smooth. The paper does not cluster; pinto's seeded k-means\n\
+             (--n-clusters) or Leiden turns the factors into domains.\n\n\
+             Sparse by default: each factor's Gaussian process is replaced by a\n\
+             sparse precision on the kNN graph within each section, its strength\n\
+             fitted per factor; no N x N matrix is held. --reference runs the\n\
+             paper's Gaussian processes, on inducing cells above 1000 cells.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        )
+    )]
+    Mefisto(Box<spatial_baselines::mefisto::Args>),
+
+    #[command(
+        name = "mefisto-pb",
+        about = "mefisto fitted on cage's super-cells, unravelled to cells (baseline)",
+        long_about = concat!(
+            "mefisto fitted on super-cells, then unravelled to cells.\n\n\
+             The cells are coarsened as cage coarsens them, to about -d super-cells\n\
+             within each section, each with its cells' counts summed, on the cell\n\
+             graph collapsed onto them. The sparse model is fitted there; its\n\
+             weights are then held fixed while the noise, the factors and each\n\
+             factor's smoothness are refitted on the cells and their graph. Takes\n\
+             mefisto's flags but --reference.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        )
+    )]
+    MefistoPb(Box<spatial_baselines::mefisto::PbArgs>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -969,6 +1006,8 @@ impl Commands {
             Commands::Spatialde2Pb(a) => (&mut a.fit.input.out, "spatialde2-pb"),
             Commands::Spatialpca(a) => (&mut a.fit.core.input.out, "spatialpca"),
             Commands::SpatialpcaPb(a) => (&mut a.fit.core.input.out, "spatialpca-pb"),
+            Commands::Mefisto(a) => (&mut a.fit.core.input.out, "mefisto"),
+            Commands::MefistoPb(a) => (&mut a.fit.core.input.out, "mefisto-pb"),
             _ => return None,
         })
     }
@@ -1076,6 +1115,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Spatialpca(args) => spatial_baselines::spatialpca::run(args)?,
         Commands::SpatialpcaPb(args) => spatial_baselines::spatialpca::run_pb(args)?,
+        Commands::Mefisto(args) => spatial_baselines::mefisto::run(args)?,
+        Commands::MefistoPb(args) => spatial_baselines::mefisto::run_pb(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {

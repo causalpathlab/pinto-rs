@@ -61,6 +61,7 @@ fn laplacians_are_d_minus_a() {
     assert_eq!(l[(0, 0)], 2.0);
     assert_eq!(l[(1, 1)], 2.5);
     assert_eq!(l[(1, 2)], -0.5);
+    assert_eq!(lap.total_weight(), 2.5);
 
     let lap = two_section_lap(5, 4);
     let l = dense_laplacian(&lap);
@@ -359,6 +360,28 @@ fn implicit_expression_matches_its_dense_form() {
     };
     assert!(max_rel(&unclipped, &want) > 1e-2);
 
+    let op = ResidualOp::log_centred(&counts, &lib, &section, 2);
+    let x = dense_counts(&counts);
+    let mut y = Dense::from_fn(4, 6, |g, c| (1e4 * x[(g, c)] / lib[c]).ln_1p());
+    for s in 0..2 {
+        let cells: Vec<usize> = (0..6).filter(|&c| section[c] == s).collect();
+        for g in 0..4 {
+            let mean = cells.iter().map(|&c| y[(g, c)]).sum::<f64>() / cells.len() as f64;
+            cells.iter().for_each(|&c| y[(g, c)] -= mean);
+        }
+    }
+    assert!(max_rel(&op.apply(&v), &(&y * &v)) < 1e-5);
+    assert!(max_rel(&op.apply_t(&u), &(y.transpose() * &u)) < 1e-5);
+    let ss = op.section_sumsq(&section, 2);
+    for s in 0..2 {
+        for g in 0..4 {
+            let want: f64 = (0..6)
+                .filter(|&c| section[c] == s)
+                .map(|c| y[(g, c)].powi(2))
+                .sum();
+            assert!((ss[(g, s)] - want).abs() < 1e-5 * want.max(1.0));
+        }
+    }
     assert_eq!(library(&counts), vec![31.0, 3.0, 900.0, 6.0, 1.0, 3.0]);
     let sub = select_rows(&counts, &[2, 0]);
     assert_eq!(dense_counts(&sub).row(0), dense_counts(&counts).row(2));

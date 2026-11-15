@@ -13,13 +13,16 @@
 //! - [`spatialpca`]: spatially aware probabilistic PCA (SpatialPCA, Shang
 //!   and Zhou 2022, Nature Communications 13:7203,
 //!   doi:10.1038/s41467-022-34879-1).
+//! - [`mefisto`]: multi-group factor analysis with spatially smooth factors
+//!   (MEFISTO, Velten et al. 2022, Nature Methods 19:179,
+//!   doi:10.1038/s41592-021-01343-9).
 //!
-//! [`spatialpca`] stands on a sparse spatial factor core
-//! ([`spatial_factor`]) and is written from its paper alone; every
+//! The last two share one sparse spatial factor core
+//! ([`spatial_factor`]) and are written from their papers alone; every
 //! baseline's domains come from [`cluster`] where its original clusters
 //! with a GPL package.
 //!
-//! [`spatialde2`] and [`spatialpca`] also run on super-cells
+//! [`spatialde2`], [`spatialpca`] and [`mefisto`] also run on super-cells
 //! (their `-pb` commands): the cells coarsened as cage coarsens them
 //! ([`pseudobulk`]), the fit then unravelled to cells by conditional
 //! re-inference.
@@ -45,6 +48,7 @@
 pub mod cluster;
 pub mod graph;
 pub mod input;
+pub mod mefisto;
 pub mod memory;
 pub mod output;
 pub mod pseudobulk;

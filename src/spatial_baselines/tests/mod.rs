@@ -1,6 +1,7 @@
 mod cli;
 mod delta;
 mod graph;
+mod mefisto;
 mod memory;
 mod notices;
 mod pseudobulk;

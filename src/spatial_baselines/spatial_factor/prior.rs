@@ -124,6 +124,11 @@ impl Laplacian {
         self.degree.iter().sum::<f64>() / self.n().max(1) as f64
     }
 
+    /// Total edge weight, each undirected edge once.
+    pub fn total_weight(&self) -> f64 {
+        self.degree.iter().sum::<f64>() / 2.0
+    }
+
     /// `(L x)_i`.
     fn row(&self, i: usize, x: &[f64]) -> f64 {
         let r = self.offsets[i]..self.offsets[i + 1];

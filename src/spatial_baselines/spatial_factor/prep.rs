@@ -11,7 +11,7 @@
 //!   (Lause, Berens and Kobak 2021, Genome Biology 22:258,
 //!   doi:10.1186/s13059-021-02451-7, the `theta = infinity` limit), clipped
 //!   at `+-sqrt(N)`, then each gene standardised (mean 0, sample SD 1);
-//! - `ResidualOp::log_centred` (MEFISTO): Seurat's `LogNormalize`,
+//! - [`ResidualOp::log_centred`] (MEFISTO): Seurat's `LogNormalize`,
 //!   `ln(1 + 1e4 x / lib)`, each gene centred within each section (a
 //!   MEFISTO group).
 //!
@@ -210,6 +210,47 @@ impl ResidualOp {
         }
         op.terms = vec![(a, b), (mean, vec![1.0; n])];
         op.scale = scale;
+        op
+    }
+
+    /// `ln(1 + 1e4 x / lib)` of `counts` (the selected genes × cells) with
+    /// all-gene libraries `lib` (a cell with none is all zeros), each gene
+    /// centred within each section (`section[c]`, `0..n_sections`).
+    pub fn log_centred(
+        counts: &CscMatrix<f32>,
+        lib: &[f64],
+        section: &[usize],
+        n_sections: usize,
+    ) -> Self {
+        let m = counts.nrows();
+        let cells: Vec<Vec<(u32, f32)>> = counts
+            .col_iter()
+            .enumerate()
+            .map(|(c, col)| {
+                if lib[c] <= 0.0 {
+                    return Vec::new();
+                }
+                col.row_indices()
+                    .iter()
+                    .zip(col.values())
+                    .map(|(&g, &x)| (g as u32, (1e4 * x as f64 / lib[c]).ln_1p() as f32))
+                    .collect()
+            })
+            .collect();
+        let mut op = Self::from_cells(m, cells);
+        let mut size = vec![0f64; n_sections];
+        for &s in section {
+            size[s] += 1.0;
+        }
+        for (s, &k) in size.iter().enumerate() {
+            let ind: Vec<f64> = section
+                .iter()
+                .map(|&t| f64::from(u8::from(t == s)))
+                .collect();
+            let sums = op.row_sums(&ind);
+            let mean: Vec<f64> = sums.iter().map(|t| t.2 / k.max(1.0)).collect();
+            op.terms.push((mean, ind));
+        }
         op
     }
 
