@@ -44,7 +44,7 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("srt-sim-baseline", 6),
         ("spatialde2", 10),
         ("stagate", 15),
-        ("compare", 8),
+        ("compare", 7),
         #[cfg(feature = "view")]
         ("view", 27),
     ];
@@ -65,4 +65,90 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         }
     }
     assert!(wrong.is_empty(), "{}\nall: {counts:?}", wrong.join("\n"));
+}
+
+/// A renamed flag takes its new name and keeps its old one as a hidden
+/// alias, so command lines written before the rename still parse.
+#[test]
+fn renamed_flags_parse_by_their_new_and_old_names() {
+    let parses = |argv: &[&str]| Cli::try_parse_from(argv).map(|c| c.commands);
+    let cage = |flag: &str| match parses(&["pinto", "cage", "d.zarr", "-o", "o", flag, "7"]) {
+        Ok(Commands::Cage(a)) => a.edge_clustering.n_edge_clusters,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(cage("--n-communities"), Some(7));
+    assert_eq!(cage("--n-edge-clusters"), Some(7));
+
+    let levels = |extra: &[&str]| match parses(
+        &[&["pinto", "compare", "a", "b", "-o", "o"][..], extra].concat(),
+    ) {
+        Ok(Commands::Compare(a)) => a.levels(),
+        other => panic!("{other:?}"),
+    };
+    let both = |a: &str, b: &str| (a.to_string(), b.to_string());
+    assert_eq!(levels(&[]), both("final", "final"));
+    assert_eq!(levels(&["--level", "draft"]), both("draft", "draft"));
+    assert_eq!(levels(&["--level", "L1,L2"]), both("L1", "L2"));
+    assert_eq!(levels(&["--level-a", "draft"]), both("draft", "final"));
+    assert!(parses(&["pinto", "compare", "a", "b", "-o", "o", "--level", "L1,L2,L3"]).is_err());
+    assert!(parses(&[
+        "pinto",
+        "compare",
+        "a",
+        "b",
+        "-o",
+        "o",
+        "--level",
+        "L1",
+        "--level-b",
+        "L2"
+    ])
+    .is_err());
+
+    for flag in ["-c", "--coord", "--coords"] {
+        match parses(&["pinto", "srt-simulate", "-o", "o", flag, "x.csv"]) {
+            Ok(Commands::SrtSimulate(a)) => assert_eq!(a.coords.len(), 1, "{flag}"),
+            other => panic!("{flag}: {other:?}"),
+        }
+    }
+    for flag in ["--n-clusters", "--k"] {
+        match parses(&[
+            "pinto",
+            "srt-sim-baseline",
+            "--truth",
+            "t",
+            "-o",
+            "o",
+            flag,
+            "4",
+        ]) {
+            Ok(Commands::SrtSimBaseline(a)) => assert_eq!(a.k, Some(4), "{flag}"),
+            other => panic!("{flag}: {other:?}"),
+        }
+    }
+    for flag in ["--data-files", "--expr-data-files", "-d"] {
+        let argv = [
+            "pinto",
+            "prop",
+            "-z",
+            "l.parquet",
+            "-e",
+            "p.parquet",
+            "-o",
+            "o",
+            flag,
+            "x.zarr",
+        ];
+        assert!(parses(&argv).is_ok(), "{flag}");
+    }
+    for flag in ["--feature-name-mode", "--feature-names"] {
+        match parses(&["pinto", "residual", "--from", "r", "-o", "o", flag, "gene"]) {
+            Ok(Commands::Residual(a)) => assert_ne!(
+                a.feature_names,
+                crate::cell_activity_graph_embedding::args::FeatureNameMode::Exact,
+                "{flag}"
+            ),
+            other => panic!("{flag}: {other:?}"),
+        }
+    }
 }

@@ -161,7 +161,7 @@ enum Commands {
                       --edge-cluster-method picks the cut.\n\
                       leiden is the default,\n\
                       deciding the count from --leiden-resolution.\n\
-                      kmeans instead uses a fixed --n-edge-clusters,\n\
+                      kmeans instead uses a fixed --n-communities,\n\
                       spherical on the pair latent and seeded by --seed.\n\
                       `pinto prop` re-cuts the same latent at a fixed K.\n\n\
                       Outputs:\n\
@@ -191,7 +191,7 @@ enum Commands {
                       Use this subcommand to re-cut the same latent,\n\
                       or for separate expression data.\n\
                       It is the fixed-K path:\n\
-                      --edge-cluster-method kmeans --n-edge-clusters K.\n\n\
+                      --edge-cluster-method kmeans --n-communities K.\n\n\
                       Model:\n\
                       \x20 Given latent codes z_e [E x T] from cage or delta-svd:\n\
                       \x20   c_e = the pair's community, cut by leiden (default)\n\
@@ -212,13 +212,13 @@ enum Commands {
                       Inputs (all passed by flag; there is no positional arg):\n\
                       - -z/--latent-data-file: .latent.parquet (from cage or delta-svd)\n\
                       - -e/--coord-pair-file: .coord_pairs.parquet (cell pair names)\n\
-                      - -d/--expr-data-files: expression data (.zarr or .h5), optional\n\n\
+                      - --data-files: expression data (.zarr or .h5), optional\n\n\
                       Outputs:\n\
                       - {out}.propensity.parquet: per-vertex propensity (N x K)\n\
                       \x20 Columns: C0 .. C{K-1}, cluster (argmax),\n\
                       \x20 entropy (Shannon, nats), plus optional coord trailer.\n\
                       - {out}.link_community.parquet: per-edge community labels\n\
-                      - {out}.features.parquet: cluster-specific feature expression (with -d/--expr-data-files).\n\
+                      - {out}.features.parquet: cluster-specific feature expression (with --data-files).\n\
                       \x20 Rows are scaled by the NB Fisher-info weight\n\
                       \x20 w_g = 1 / (1 + π_g · s̄ · φ(μ_g)). There is no flag for it.\n\
                       - {out}.pinto.json: information-flow manifest used by\n\
@@ -379,7 +379,7 @@ enum Commands {
                       --edge-cluster-method picks the cut.\n\
                       leiden is the default,\n\
                       deciding the count from --leiden-resolution.\n\
-                      kmeans instead uses a fixed --n-edge-clusters,\n\
+                      kmeans instead uses a fixed --n-communities,\n\
                       spherical on the pair latent and seeded by --seed.\n\n\
                       A cell's embedding is its own placement on the feature embedding,\n\
                       by the same encoder that places its pairs,\n\
@@ -675,7 +675,7 @@ enum Commands {
         long_about = "Label an srt-simulate run's spots with the standard scanpy recipe, as a\n\
                       baseline for srt-sim-score: total-count normalisation to 1e4, log1p,\n\
                       highly variable genes by normalised dispersion, scaling, PCA, a kNN\n\
-                      graph and Leiden tuned toward --k clusters (default: the simulation's\n\
+                      graph and Leiden tuned toward --n-clusters clusters (default: the simulation's\n\
                       domains).\n\n\
                       --method pooled runs all sections together, with no batch handling;\n\
                       --method harmony corrects the PCs for the donor with Harmony\n\
@@ -724,9 +724,9 @@ enum Commands {
                       Writes {out}.compare.json and {out}.contingency.parquet.\n\n\
                       Examples:\n\
                       \x20 pinto compare base.pinto.json perm.pinto.json -o base_vs_perm\n\
-                      \x20 pinto compare base perm --level-a draft --tau 0.3 -o cmp"
+                      \x20 pinto compare base perm --level draft,final --tau 0.3 -o cmp"
     )]
-    Compare(CompareArgs),
+    Compare(Box<CompareArgs>),
 
     #[cfg(feature = "view")]
     #[command(
@@ -753,7 +753,7 @@ enum Commands {
             )
         )
     )]
-    View(view::ViewArgs),
+    View(Box<view::ViewArgs>),
 
     #[cfg(feature = "view")]
     #[command(

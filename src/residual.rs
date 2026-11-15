@@ -111,13 +111,14 @@ pub struct ResidualArgs {
     pub block_size: Option<usize>,
 
     #[arg(
-        long,
+        long = "feature-name-mode",
+        alias = "feature-names",
         value_enum,
         default_value = "exact",
-        help = "How the run's fit read feature names (cage's --feature-names)",
+        help = "How the run's fit read feature names (cage's --feature-name-mode)",
         long_help = "How the run's fit read feature names: exact (lc and dsvd, which\n\
-                     read the rows every file shares), or the --feature-names a cage\n\
-                     run was fitted with, so its rows are read as it read them."
+                     read the rows every file shares), or the --feature-name-mode a\n\
+                     cage run was fitted with, so its rows are read as it read them."
     )]
     pub feature_names: FeatureNameMode,
 

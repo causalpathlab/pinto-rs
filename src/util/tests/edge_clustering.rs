@@ -39,8 +39,7 @@ fn leiden_is_the_default_and_carries_the_seed() {
 
 #[test]
 fn kmeans_resolves_with_the_count_and_seed() {
-    let resolved =
-        parse(&["--edge-cluster-method", "kmeans", "--n-edge-clusters", "25"]).resolve(9);
+    let resolved = parse(&["--edge-cluster-method", "kmeans", "--n-communities", "25"]).resolve(9);
     match resolved {
         EdgeClustering::Kmeans {
             n_clusters,

@@ -422,7 +422,7 @@ pub struct BaselineArgs {
 
     /// Clusters to tune Leiden toward (default: the simulation's domains; per
     /// donor, the domains that donor holds)
-    #[arg(long)]
+    #[arg(long = "n-clusters", alias = "k")]
     pub k: Option<usize>,
 
     /// Principal components

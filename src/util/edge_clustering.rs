@@ -49,10 +49,10 @@ pub struct EdgeClusterArgs {
                      \n\
                      leiden (the default) builds a cosine kNN graph over the pair latent,\n\
                      and --leiden-resolution then decides how many communities exist.\n\
-                     Under leiden, --n-edge-clusters is only a target:\n\
+                     Under leiden, --n-communities is only a target:\n\
                      the resolution is steered toward it, not fixed at it.\n\
                      \n\
-                     kmeans instead fixes the community count at --n-edge-clusters.\n\
+                     kmeans instead fixes the community count at --n-communities.\n\
                      It is spherical k-means on the L2-normalized pair latent,\n\
                      seeded by --seed, so the cut is reproducible.\n\
                      Pick it when you need a specific K, or a run comparable to an older one.\n\
@@ -78,7 +78,8 @@ pub struct EdgeClusterArgs {
     pub leiden_runs: usize,
 
     #[arg(
-        long,
+        long = "n-communities",
+        alias = "n-edge-clusters",
         help = "Link communities to cut from the pair latent [default: let leiden decide]",
         long_help = "How many edge clusters to cut from the pair latent.\n\
                      Under the default --edge-cluster-method leiden this is a TARGET:\n\
@@ -99,7 +100,7 @@ pub struct EdgeClusterArgs {
 
 impl EdgeClusterArgs {
     /// Resolve to the algorithm-side enum with the run's seed. An unset
-    /// `--n-edge-clusters` stays `None` in both arms: k-means falls back to
+    /// `--n-communities` stays `None` in both arms: k-means falls back to
     /// the latent width, which [`EdgeClustering::cluster`] reads off the
     /// matrix it is handed, and for Leiden an absent target is exactly what
     /// lets the graph decide.

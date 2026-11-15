@@ -510,10 +510,10 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
         run_b.clone(),
         flag_value("--out", out),
     ];
-    for (flag, value) in [("--level-a", &a.level_a), ("--level-b", &a.level_b)] {
-        if let Some(v) = value {
-            argv.push(flag_value(flag, v));
-        }
+    if a.level_a.is_some() || a.level_b.is_some() {
+        let level = |l: &Option<String>| l.clone().unwrap_or_else(|| "final".into());
+        let levels = format!("{},{}", level(&a.level_a), level(&a.level_b));
+        argv.push(flag_value("--level", levels));
     }
     if let Some(tau) = a.tau {
         argv.push(flag_value("--tau", tau));

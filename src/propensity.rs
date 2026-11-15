@@ -42,8 +42,9 @@ pub struct SrtPropensityArgs {
     coord_pair_file: Box<str>,
 
     #[arg(
-        short = 'd',
-        long,
+        long = "data-files",
+        short_alias = 'd',
+        alias = "expr-data-files",
         value_delimiter(','),
         help = "Expression data files (.zarr or .h5)",
         long_help = "Expression data files (.zarr or .h5, comma separated). Optional;\n\

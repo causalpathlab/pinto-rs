@@ -30,8 +30,8 @@ pub(super) struct ResidualToolArgs {
     pub adapt: Option<String>,
     #[serde(default)]
     pub adapt_cells: Option<f64>,
-    #[serde(default)]
-    pub feature_names: Option<String>,
+    #[serde(default, alias = "feature_names")]
+    pub feature_name_mode: Option<String>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -50,7 +50,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
         ("--excess", a.excess.clone()),
         ("--adapt", a.adapt.clone()),
         ("--adapt-cells", a.adapt_cells.map(|x| x.to_string())),
-        ("--feature-names", a.feature_names.clone()),
+        ("--feature-name-mode", a.feature_name_mode.clone()),
     ] {
         if let Some(v) = value {
             argv.push(flag_value(flag, v));
@@ -146,7 +146,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "excess": flag("excess", json!({"type": "string", "enum": choices::<Excess>()})),
                 "adapt": flag("adapt", json!({"type": "string", "enum": choices::<Adapt>()})),
                 "adapt_cells": flag("adapt_cells", json!({"type": "number", "minimum": 0})),
-                "feature_names": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
+                "feature_name_mode": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
                 "background": background(),
             },
             "required": ["run"],
