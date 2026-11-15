@@ -860,7 +860,7 @@ fn lower_memory(device: &ComputeDevice) -> &'static str {
 
 /// [`run`] on `data` as read, the arguments checked. The peak memory is
 /// checked against the budget (`budget`, taken before the read) before
-/// the graph, the dense input and training are allocated, and for a radius
+/// the dense input, the graph and training are allocated, and for a radius
 /// graph once more when its edges are known.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let n = data.cells.len();
@@ -889,6 +889,12 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let mut shape = memory_shape(args, &sizes, genes.len(), counts.nnz());
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
 
+    // the dense input first, so the counts are freed before the graph
+    let mut log = counts;
+    normalise_log(&mut log);
+    let x = dense_rows(&log, &genes);
+    drop(log);
+
     let nb = spatial_network(&data, args);
     let (src, dst) = spatial_edges(&nb);
     drop(nb);
@@ -901,11 +907,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         shape.edges = src.len();
         ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
     }
-
-    let mut log = counts;
-    normalise_log(&mut log);
-    let x = dense_rows(&log, &genes);
-    drop(log);
 
     let dev = args.device.to_device(args.device_no)?;
     let g = EdgeIndex::new(&src, &dst, n, &dev)?;

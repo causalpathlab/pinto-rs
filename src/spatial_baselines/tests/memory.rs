@@ -93,7 +93,8 @@ fn stagate_safety_is_the_largest_measured_residual() {
 }
 
 /// A radius graph's edges, the input's genes and the hidden width all
-/// count; on CUDA the host holds the counts and the input only.
+/// count; on CUDA the host holds the counts, the input and the graph's
+/// search only.
 #[test]
 fn stagate_estimate_follows_edges_genes_and_device() {
     let base = stagate_shape(10_000, 1, 10);
@@ -118,12 +119,12 @@ fn stagate_estimate_follows_edges_genes_and_device() {
         train_on_host: false,
         ..base.clone()
     };
+    // the counts are freed once the dense input is built, before the graph
     let counts = 12 * base.nonzeros;
     let dense = 4 * base.cells * base.genes;
-    assert_eq!(
-        stagate_peak_bytes(&cuda),
-        STAGATE_PROCESS_BYTES + (counts + base.gram + 12 * base.searched).max(counts + dense)
-    );
+    let graph = dense + base.gram + 28 * base.searched;
+    assert!(graph > read_bytes(base.nonzeros) && graph > counts + dense);
+    assert_eq!(stagate_peak_bytes(&cuda), STAGATE_PROCESS_BYTES + graph);
 }
 
 fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spatialde2Shape {

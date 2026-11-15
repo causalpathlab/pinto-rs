@@ -70,8 +70,8 @@ pub struct StagateShape {
     /// Genes trained on.
     pub genes: usize,
     pub hidden: usize,
-    /// Nonzeros of the counts: read ([`read_bytes`]), then held while the
-    /// graph and the dense input are built.
+    /// Nonzeros of the counts: read ([`read_bytes`]), then held until the
+    /// dense input is built.
     pub nonzeros: usize,
     /// [`knn_gram_bytes`] of the graph's kNN.
     pub gram: usize,
@@ -100,16 +100,17 @@ pub fn stagate_training_bytes(s: &StagateShape) -> usize {
     (4.0 * floats as f64 * STAGATE_SAFETY) as usize
 }
 
-/// STAGATE's peak: the largest of the read ([`read_bytes`]; the gene
-/// filter after it holds the counts beside their filtered copy, 24 bytes a
-/// nonzero, less), the kNN (the counts, the Gram blocks and the neighbours
-/// found), the dense input built beside the counts, and training
-/// ([`stagate_training_bytes`], or on CUDA the input copied to the device),
-/// the counts freed by then.
+/// STAGATE's peak, in the order of a run: the largest of the read
+/// ([`read_bytes`]; the gene filter after it holds the counts beside their
+/// filtered copy, 24 bytes a nonzero, less), the dense input built beside
+/// the counts, the graph (the dense input, the counts freed; the Gram
+/// blocks; 28 bytes a neighbour searched: 12 as found, beside the 16 of the
+/// edge list made from them) and training ([`stagate_training_bytes`], or
+/// on CUDA the input copied to the device).
 pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     let counts = 12 * s.nonzeros;
-    let knn = counts + s.gram + 12 * s.searched;
     let dense = 4 * s.cells * s.genes;
+    let graph = dense + s.gram + 28 * s.searched;
     let training = if s.train_on_host {
         stagate_training_bytes(s)
     } else {
@@ -117,8 +118,8 @@ pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     };
     STAGATE_PROCESS_BYTES
         + read_bytes(s.nonzeros)
-            .max(knn)
             .max(counts + dense)
+            .max(graph)
             .max(training)
 }
 
