@@ -487,7 +487,10 @@ its default and what it does when not given).
 Both fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
 exceeds the memory budget: `PINTO_MEMORY_BUDGET` (bytes) when set, else
-half the memory available to the process (cgroup limits included).
+half the memory available to the process at the start (cgroup limits
+included). The first check comes from the files' stored shape (cells,
+genes and nonzeros), before the counts are read; a file that does not
+store its nonzero count leaves that read unchecked.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for

@@ -108,7 +108,10 @@ pub(crate) fn built_cli() -> clap::Command {
 macro_rules! baseline_memory {
     () => {
         "It stops before its large allocations when its estimated peak memory\n\
-         exceeds PINTO_MEMORY_BUDGET (bytes; default half the available memory).\n\n"
+         exceeds PINTO_MEMORY_BUDGET (bytes; default half the memory available\n\
+         at the start). It checks first from the files' stored shape, before\n\
+         reading the counts; a file that does not store its nonzero count\n\
+         leaves that read unchecked.\n\n"
     };
 }
 

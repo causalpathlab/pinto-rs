@@ -141,7 +141,7 @@
 //! classes, cells × K.
 
 use super::graph::knn_within_sections;
-use super::input::{SpatialData, SpatialInputArgs};
+use super::input::{OpenedInput, SpatialData, SpatialInputArgs};
 use super::memory::{knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape};
 use super::output::{write_run, Fitted};
 use crate::util::common::Mat;
@@ -939,7 +939,59 @@ impl Args {
 pub fn run(args: &Args) -> anyhow::Result<()> {
     args.params().check()?;
     let budget = Budget::now()?;
-    run_on(args, args.input.read()?, &budget)
+    let input = args.input.open()?;
+    check_input(args, &input, &budget)?;
+    run_on(args, input.read()?, &budget)
+}
+
+/// The first memory check, from the files before their counts are read:
+/// every stored nonzero counted as selected too, so it bounds the check
+/// after the read. A file that does not store its nonzero count leaves the
+/// read unchecked.
+fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Result<()> {
+    let Some(estimate) = input_peak_bytes(args, input) else {
+        log::info!("spatialde2: a file does not store its nonzero count; its read is not checked");
+        return Ok(());
+    };
+    ensure_fits(
+        "spatialde2 (from the input's stored shape)",
+        estimate,
+        budget,
+        LOWER_MEMORY,
+    )
+}
+
+/// The peak [`check_input`] checks, `None` when a file does not store its
+/// nonzero count.
+pub(crate) fn input_peak_bytes(args: &Args, input: &OpenedInput) -> Option<usize> {
+    let s = input.shape()?;
+    let shape = memory_shape(args, &s.section_sizes, s.nonzeros, s.nonzeros);
+    Some(spatialde2_peak_bytes(&shape))
+}
+
+/// What a run on `nonzeros` counts, `selected` of them on the genes
+/// segmented on, and sections of `section_sizes` cells holds
+/// ([`Spatialde2Shape`]).
+fn memory_shape(
+    args: &Args,
+    section_sizes: &[usize],
+    nonzeros: usize,
+    selected: usize,
+) -> Spatialde2Shape {
+    let n = section_sizes.iter().sum();
+    Spatialde2Shape {
+        cells: n,
+        nonzeros,
+        selected_nonzeros: selected,
+        // symmetrising at most doubles the edges
+        edges: 2 * knn_edges(section_sizes, args.neighbors),
+        regions: initial_regions(n, args.n_clusters),
+        gram: if args.neighbors > 0 {
+            knn_gram_bytes(section_sizes, rayon::current_num_threads())
+        } else {
+            0
+        },
+    }
 }
 
 /// [`run`] on `data` as read: its peak memory is checked against the
@@ -951,19 +1003,12 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let n = data.cells.len();
     let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
     let spatial = args.neighbors > 0;
-    let shape = Spatialde2Shape {
-        cells: n,
-        nonzeros: data.counts.nnz(),
-        selected_nonzeros: selected_nonzeros(&data, &genes),
-        // symmetrising at most doubles the edges
-        edges: 2 * knn_edges(&sizes, args.neighbors),
-        regions: initial_regions(n, params.nclasses),
-        gram: if spatial {
-            knn_gram_bytes(&sizes, rayon::current_num_threads())
-        } else {
-            0
-        },
-    };
+    let shape = memory_shape(
+        args,
+        &sizes,
+        data.counts.nnz(),
+        selected_nonzeros(&data, &genes),
+    );
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),

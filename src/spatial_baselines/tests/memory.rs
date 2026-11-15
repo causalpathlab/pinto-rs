@@ -333,6 +333,88 @@ fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
     assert!(dir.path().join("sd.labels.tsv").exists());
 }
 
+// ------------------------------------------------- an srt-simulate read
+
+/// A `side × side` srt-simulate section at the measured runs' settings
+/// (2000 genes, one section), written under `dir`: its data and
+/// coordinate files.
+fn simulated(dir: &std::path::Path, side: usize) -> (String, String) {
+    let out = dir.join("sim").to_string_lossy().to_string();
+    crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
+        scenario: "L0".into(),
+        set: [
+            format!("grid_side={side}"),
+            "n_genes=2000".into(),
+            "n_donors=1".into(),
+            "sections_per_donor=1".into(),
+            "seed=1".into(),
+        ]
+        .into(),
+        coords: Vec::new(),
+        coord_column_names: vec!["row_um".into(), "col_um".into()],
+        out: out.as_str().into(),
+    })
+    .unwrap();
+    (
+        format!("{out}/sections/S1.zarr"),
+        format!("{out}/sections/S1.coords.parquet"),
+    )
+}
+
+fn on_files(
+    cmd: &str,
+    (data, coord): &(String, String),
+    out: &std::path::Path,
+    extra: &[&str],
+) -> crate::Commands {
+    let mut argv = vec![
+        "pinto",
+        cmd,
+        data.as_str(),
+        "-c",
+        coord.as_str(),
+        "--coord-column-names",
+        "row_um,col_um",
+        "-o",
+        out.to_str().unwrap(),
+    ];
+    argv.extend(extra);
+    parse(&argv)
+}
+
+/// The check before the read counts every stored nonzero and as many genes
+/// as could be kept, so a budget of exactly its estimate passes the checks
+/// after the read too.
+#[test]
+fn the_check_before_the_read_bounds_the_checks_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = simulated(dir.path(), 8);
+    let out = dir.path().join("run");
+    let st = [
+        "--n-epochs",
+        "1",
+        "--hidden-dims",
+        "8,2",
+        "--n-clusters",
+        "2",
+    ];
+    let crate::Commands::Stagate(args) = on_files("stagate", &files, &out, &st) else {
+        unreachable!()
+    };
+    let input = args.input.open().unwrap();
+    let bound = stagate::input_peak_bytes(&args, &input).unwrap();
+    stagate::run_on(&args, input.read().unwrap(), &set(&bound.to_string())).unwrap();
+
+    let crate::Commands::Spatialde2(args) =
+        on_files("spatialde2", &files, &out, &["--neighbors", "4"])
+    else {
+        unreachable!()
+    };
+    let input = args.input.open().unwrap();
+    let bound = spatialde2::input_peak_bytes(&args, &input).unwrap();
+    spatialde2::run_on(&args, input.read().unwrap(), &set(&bound.to_string())).unwrap();
+}
+
 /// Each command's help names the budget variable.
 #[test]
 fn help_names_the_memory_budget() {

@@ -91,3 +91,53 @@ fn a_memory_budget_that_is_not_utf8_stops_the_command_at_the_start() {
         );
     }
 }
+
+/// A budget the input's stored shape already exceeds refuses the run
+/// before its counts are read.
+#[test]
+fn the_spatial_baselines_check_the_input_before_reading_its_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let sim = Command::new(env!("CARGO_BIN_EXE_pinto"))
+        .args([
+            "srt-simulate",
+            "--set",
+            "grid_side=6",
+            "--set",
+            "n_genes=40",
+            "--set",
+            "programme_genes=8",
+        ])
+        .args([
+            "--set",
+            "n_donors=1",
+            "--set",
+            "sections_per_donor=1",
+            "-o",
+            "sim",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        sim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sim.stderr)
+    );
+    for cmd in ["stagate", "spatialde2"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_pinto"))
+            .args([
+                cmd,
+                "sim/sections/S1.zarr",
+                "-c",
+                "sim/sections/S1.coords.parquet",
+            ])
+            .args(["--coord-column-names", "row_um,col_um", "-o", "x"])
+            .env("PINTO_MEMORY_BUDGET", "1000")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let e = String::from_utf8_lossy(&out.stderr);
+        assert!(e.contains("from the input's stored shape"), "{cmd}: {e}");
+    }
+}

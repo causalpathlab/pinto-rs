@@ -84,8 +84,27 @@ impl SpatialData {
     }
 }
 
+/// The input files opened, their counts not yet read: what a run can know
+/// of its size from the files alone.
+pub struct OpenedInput {
+    srt: crate::util::input::SRTData,
+    /// Each cell's section, as [`SpatialData::section`].
+    section: Vec<usize>,
+}
+
+/// An input's size from its files' metadata, before its counts are read.
+#[derive(Debug, Clone)]
+pub struct InputShape {
+    pub genes: usize,
+    /// Nonzeros of the counts, as the files store them.
+    pub nonzeros: usize,
+    /// Cells in each section.
+    pub section_sizes: Vec<usize>,
+}
+
 impl SpatialInputArgs {
-    pub fn read(&self) -> anyhow::Result<SpatialData> {
+    /// Open the files and read the coordinates and batches, not the counts.
+    pub fn open(&self) -> anyhow::Result<OpenedInput> {
         let srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
@@ -96,16 +115,39 @@ impl SpatialInputArgs {
             header_in_coord: self.coord_header_row,
             feature_kind: FeatureNameKind::Exact,
         })?;
+        // a section is a (data file, batch label) pair, as the reader keeps
+        // them apart; its appended `batch` offset column is not a coordinate
+        let section = ablation::sections(&srt.data.num_columns_by_data()?, &srt.batches)
+            .into_iter()
+            .map(|s| s as usize)
+            .collect();
+        Ok(OpenedInput { srt, section })
+    }
+}
+
+impl OpenedInput {
+    /// The input's size from its files, or `None` when a file does not
+    /// store its nonzero count.
+    pub fn shape(&self) -> Option<InputShape> {
+        let nonzeros = self.srt.data.num_non_zeros().ok()?;
+        let n_sections = self.section.iter().max().map_or(0, |&m| m + 1);
+        let mut section_sizes = vec![0; n_sections];
+        for &s in &self.section {
+            section_sizes[s] += 1;
+        }
+        Some(InputShape {
+            genes: self.srt.data.num_rows(),
+            nonzeros,
+            section_sizes,
+        })
+    }
+
+    /// Read the counts.
+    pub fn read(self) -> anyhow::Result<SpatialData> {
+        let OpenedInput { srt, section } = self;
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
         let counts = srt.data.read_columns_csc(0..cells.len())?;
-        // a section is a (data file, batch label) pair, as the reader keeps
-        // them apart; its appended `batch` offset column is not a coordinate
-        let section: Vec<usize> =
-            ablation::sections(&srt.data.num_columns_by_data()?, &srt.batches)
-                .into_iter()
-                .map(|s| s as usize)
-                .collect();
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();
         anyhow::ensure!(d >= 1, "no spatial coordinate columns");

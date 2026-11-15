@@ -143,7 +143,7 @@
 //!   have it.
 
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
-use super::input::{SpatialData, SpatialInputArgs};
+use super::input::{OpenedInput, SpatialData, SpatialInputArgs};
 use super::memory::{knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape};
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
@@ -767,7 +767,70 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
     let budget = Budget::now()?;
-    run_on(args, args.input.read()?, &budget)
+    let input = args.input.open()?;
+    check_input(args, &input, &budget)?;
+    run_on(args, input.read()?, &budget)
+}
+
+/// The first memory check, from the files before their counts are read:
+/// every stored nonzero and as many genes as `--n-top-genes` could keep, so
+/// it bounds the checks after the read. A file that does not store its
+/// nonzero count leaves the read unchecked.
+fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Result<()> {
+    let Some(estimate) = input_peak_bytes(args, input) else {
+        info!("stagate: a file does not store its nonzero count; its read is not checked");
+        return Ok(());
+    };
+    ensure_fits(
+        "stagate (from the input's stored shape)",
+        estimate,
+        budget,
+        lower_memory(&args.device),
+    )
+}
+
+/// The peak [`check_input`] checks, `None` when a file does not store its
+/// nonzero count.
+pub(crate) fn input_peak_bytes(args: &Args, input: &OpenedInput) -> Option<usize> {
+    let s = input.shape()?;
+    let genes = s.genes.min(args.n_top_genes);
+    Some(stagate_peak_bytes(&memory_shape(
+        args,
+        &s.section_sizes,
+        genes,
+        s.nonzeros,
+    )))
+}
+
+/// What a run on `genes` genes, `nonzeros` counts and sections of
+/// `section_sizes` cells holds ([`StagateShape`]). A radius graph's edges
+/// are not known before it is built: its self loops at least, counted
+/// again once it is.
+fn memory_shape(
+    args: &Args,
+    section_sizes: &[usize],
+    genes: usize,
+    nonzeros: usize,
+) -> StagateShape {
+    let n = section_sizes.iter().sum();
+    let searched = knn_edges(
+        section_sizes,
+        args.rad_cutoff.map_or(args.k_cutoff, |_| RADIUS_MAX_K),
+    );
+    StagateShape {
+        cells: n,
+        edges: n + if args.rad_cutoff.is_some() {
+            0
+        } else {
+            searched
+        },
+        genes,
+        hidden: args.hidden_dims[0],
+        nonzeros,
+        gram: knn_gram_bytes(section_sizes, rayon::current_num_threads()),
+        searched,
+        train_on_host: args.device != ComputeDevice::Cuda,
+    }
 }
 
 /// What would lower STAGATE's peak memory, for [`ensure_fits`]: a GPU too,
@@ -807,27 +870,8 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     );
 
     let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
-    let searched = knn_edges(
-        &sizes,
-        args.rad_cutoff.map_or(args.k_cutoff, |_| RADIUS_MAX_K),
-    );
     let change = lower_memory(&args.device);
-    let mut shape = StagateShape {
-        cells: n,
-        // a radius graph's edges are not known before it is built: its
-        // self loops at least, and counted again once it is
-        edges: n + if args.rad_cutoff.is_some() {
-            0
-        } else {
-            searched
-        },
-        genes: genes.len(),
-        hidden: args.hidden_dims[0],
-        nonzeros: counts.nnz(),
-        gram: knn_gram_bytes(&sizes, rayon::current_num_threads()),
-        searched,
-        train_on_host: args.device != ComputeDevice::Cuda,
-    };
+    let mut shape = memory_shape(args, &sizes, genes.len(), counts.nnz());
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
 
     let nb = spatial_network(&data, args);
