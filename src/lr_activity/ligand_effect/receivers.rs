@@ -2,7 +2,8 @@
 //! contacts and their size factors. [`super::tissue::Tissue::build`] takes
 //! them from here, so `pinto view` (`frame`) draws a pair as the table saw it.
 
-use super::contacts::{upper_median, Contacts};
+use super::contacts::Contacts;
+use crate::util::common::upper_median;
 
 /// Rows of the analysis: cells with coordinates and at least one contact
 /// to another such cell. A sender is itself in that set, so contacts stay

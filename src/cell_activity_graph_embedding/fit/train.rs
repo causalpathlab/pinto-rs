@@ -154,9 +154,6 @@ pub(super) struct TrainInputs<'a> {
     /// Each feature's probability of being visited in an epoch
     /// (`--feature-inclusion`); `None` visits every one.
     pub inclusion: Option<&'a [f32]>,
-    /// Features an epoch visits in expectation: every trainable one, or
-    /// `Σ π` under inclusion (at least one).
-    pub expected_visits: usize,
     pub module_cfg: Option<&'a FeatureModuleConfig>,
     pub module_profiles: Option<&'a Mat>,
     pub n_exp_batches: usize,
@@ -205,7 +202,6 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         feature_batch_size,
         feature_fisher_weights,
         inclusion,
-        expected_visits,
         module_cfg,
         module_profiles,
         n_exp_batches,
@@ -234,6 +230,10 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // Under --feature-inclusion an epoch visits each feature with its
     // probability, so its length is that expectation (for the bar and the
     // per-step ridge share only).
+    let expected_visits = crate::cell_activity_graph_embedding::feature_inclusion::expected_visits(
+        trainable_features,
+        inclusion,
+    );
     let features_per_epoch_actual = if args.features_per_epoch > 0 {
         args.features_per_epoch.min(expected_visits)
     } else {

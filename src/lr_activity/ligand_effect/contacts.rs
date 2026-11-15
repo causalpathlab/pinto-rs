@@ -6,7 +6,7 @@
 //!   sum of a per-cell quantity over its contacts; neighbour-average
 //!   confounders use the mean.
 //! - [`median_contact_length`]: the unit for tiles and smooths, by
-//!   [`upper_median`].
+//!   [`upper_median`](crate::util::common::upper_median).
 //! - [`competence`]: whether a receiver's cell type expresses the receptor,
 //!   read from its identity bin rather than its own count, which the
 //!   ligand itself could change.
@@ -85,23 +85,6 @@ pub fn median_contact_length(
     per.iter_mut()
         .map(|v| upper_median(v).unwrap_or(overall).max(1e-9))
         .collect()
-}
-
-/// The `q` quantile of `sorted` (ascending), the element at
-/// `round(q (len − 1))`; `None` when empty.
-pub fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
-    let last = sorted.len().checked_sub(1)?;
-    sorted.get((q * last as f64).round() as usize).copied()
-}
-
-/// The element at `len / 2` of `v` sorted (the upper median), found by
-/// selection; `None` when empty. Reorders `v`.
-pub fn upper_median(v: &mut [f64]) -> Option<f64> {
-    if v.is_empty() {
-        return None;
-    }
-    let mid = v.len() / 2;
-    Some(*v.select_nth_unstable_by(mid, f64::total_cmp).1)
 }
 
 /// `true` where the share of cells in a row's identity bin detecting the

@@ -1,8 +1,8 @@
 //! Putting estimates together: Rubin's rules across choices and approximate Bayes
 //! factors across thresholds.
 
-use super::contacts::upper_median;
 use super::inference::{usable, Estimate};
+use crate::util::common::upper_median;
 
 /// Rubin's rules over analyses: mean estimate, variance = mean within-analysis
 /// variance + `(1 + 1/R)` × between-analysis variance. Analyses that were not

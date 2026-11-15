@@ -142,24 +142,7 @@ pub fn build_pb_frame(
             n_batches
         );
     }
-    let mut batch_counts = vec![0usize; n_pb * n_batches.max(1)];
-    for (cell, &p) in finest.iter().enumerate() {
-        batch_counts[p * n_batches.max(1) + batch_membership[cell] as usize] += 1;
-    }
-    let mut impure = 0usize;
-    let pb_exp_batch: Vec<u32> = (0..n_pb)
-        .map(|p| {
-            let row = &batch_counts[p * n_batches.max(1)..(p + 1) * n_batches.max(1)];
-            if row.iter().filter(|&&n| n > 0).count() > 1 {
-                impure += 1;
-            }
-            row.iter()
-                .enumerate()
-                .max_by_key(|&(_, &n)| n)
-                .map(|(b, _)| b as u32)
-                .unwrap_or(0)
-        })
-        .collect();
+    let (pb_exp_batch, impure) = majority_label(&finest, n_pb, batch_membership, n_batches);
     if impure > 0 {
         warn!(
             "{} of {} finest PBs span more than one experimental batch; \
@@ -185,4 +168,34 @@ pub fn build_pb_frame(
         },
         fine_to_super,
     ))
+}
+
+/// Each unit's most common label over its members (`unit_of` and `label`
+/// per member, labels below `n_labels`), ties to the highest label, and how
+/// many units' members carry more than one label.
+pub(crate) fn majority_label(
+    unit_of: &[usize],
+    n_units: usize,
+    label: &[u32],
+    n_labels: usize,
+) -> (Vec<u32>, usize) {
+    let n_labels = n_labels.max(1);
+    let mut counts = vec![0usize; n_units * n_labels];
+    for (&u, &l) in unit_of.iter().zip(label) {
+        counts[u * n_labels + l as usize] += 1;
+    }
+    let mut mixed = 0usize;
+    let majority = counts
+        .chunks(n_labels)
+        .map(|row| {
+            if row.iter().filter(|&&n| n > 0).count() > 1 {
+                mixed += 1;
+            }
+            row.iter()
+                .enumerate()
+                .max_by_key(|&(_, &n)| n)
+                .map_or(0, |(l, _)| l as u32)
+        })
+        .collect();
+    (majority, mixed)
 }

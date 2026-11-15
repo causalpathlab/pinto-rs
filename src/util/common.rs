@@ -62,6 +62,27 @@ pub fn default_threads(rayon_env: Option<&str>, cores: usize) -> Option<usize> {
     }
 }
 
+/// The `q` quantile of `sorted` (ascending), the element at
+/// `round(q (len − 1))`; `None` when empty.
+pub fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    sorted.get((q * last as f64).round() as usize).copied()
+}
+
+/// The element at `len / 2` of `v` sorted (the upper median), found by
+/// selection; `None` when empty. Reorders `v`.
+pub fn upper_median(v: &mut [f64]) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    let mid = v.len() / 2;
+    Some(*v.select_nth_unstable_by(mid, f64::total_cmp).1)
+}
+
+/// What log-normalisation scales each unit's counts to before `ln(1 + x)`
+/// (counts per ten thousand); a unit with no counts stays empty.
+pub const LIBRARY_SCALE: f32 = 1e4;
+
 /// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`; NaN
 /// with a non-finite replicate or fewer than two.
 pub fn jackknife_se(v: &[f64]) -> f64 {

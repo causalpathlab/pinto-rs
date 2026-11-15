@@ -2,9 +2,10 @@
 //! features get high inclusion and noise none, and sampling respects π.
 
 use crate::cell_activity_graph_embedding::feature_inclusion::{
-    inclusion_of, jackknife_moran, normalised_profiles, sample_included, section_jack, tile_of,
-    tree_blocks, two_group_inclusion, UnitGraph,
+    jackknife_moran, normalised_profiles, sample_included, score_sections, section_jack, tile_of,
+    tree_blocks, two_group_inclusion, FeatureInclusion,
 };
+use crate::test_support::rook_grid as grid;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
@@ -14,24 +15,25 @@ type Edges = Vec<(usize, usize)>;
 /// One section for [`moran_brute`]: a feature's values, edges, cells kept.
 type Section = (Vec<f64>, Edges, Vec<bool>);
 
-/// A `side × side` grid's rook edges (each once) and coordinates.
-fn grid(side: usize) -> (Vec<(f32, f32)>, Edges) {
-    let xy = (0..side * side)
-        .map(|c| ((c % side) as f32, (c / side) as f32))
-        .collect();
-    let mut e = Vec::new();
-    for r in 0..side {
-        for c in 0..side {
-            let i = r * side + c;
-            if c + 1 < side {
-                e.push((i, i + 1));
-            }
-            if r + 1 < side {
-                e.push((i, i + side));
-            }
-        }
-    }
-    (xy, e)
+/// [`FeatureInclusion`] of units held in memory: their profiles, section,
+/// block and the edges between them.
+fn score(
+    n_features: usize,
+    profiles: &[Vec<(u32, f32)>],
+    section: &[u32],
+    block: &[usize],
+    edges: &[(usize, usize)],
+) -> FeatureInclusion {
+    score_sections(n_features, section, edges, "units", |units: &[usize]| {
+        Ok((
+            units
+                .iter()
+                .map(|&u| profiles[u].as_slice())
+                .collect::<Vec<_>>(),
+            units.iter().map(|&u| block[u]).collect(),
+        ))
+    })
+    .unwrap()
 }
 
 /// Pooled Moran's I computed from scratch: each section centred on its own
@@ -200,18 +202,16 @@ fn the_jackknife_deletes_any_block_exactly() {
         .map(|&(a, b)| ((a as usize / 2) + (b as usize / 2)) % 3)
         .collect();
     // two sections: the same grid twice, units n..2n the second
-    let g = UnitGraph {
-        profiles: (0..2 * n)
-            .map(|u| vec![(0u32, x[u % n] as f32 * (1 + u / n) as f32)])
-            .collect(),
-        section: (0..2 * n).map(|u| (u / n) as u32).collect(),
-        block: (0..2 * n).map(|u| checker[u % n] + 3 * (u / n)).collect(),
-        edges: edges
-            .iter()
-            .flat_map(|&(i, j)| [(i, j), (i + n, j + n)])
-            .collect(),
-    };
-    let inc = inclusion_of(1, &g);
+    let profiles: Vec<Vec<(u32, f32)>> = (0..2 * n)
+        .map(|u| vec![(0u32, x[u % n] as f32 * (1 + u / n) as f32)])
+        .collect();
+    let section: Vec<u32> = (0..2 * n).map(|u| (u / n) as u32).collect();
+    let block: Vec<usize> = (0..2 * n).map(|u| checker[u % n] + 3 * (u / n)).collect();
+    let both: Edges = edges
+        .iter()
+        .flat_map(|&(i, j)| [(i, j), (i + n, j + n)])
+        .collect();
+    let inc = score(1, &profiles, &section, &block, &both);
     let xs: Vec<Vec<f64>> = (0..2)
         .map(|s| x.iter().map(|v| v * (1 + s) as f64).collect())
         .collect();
@@ -386,13 +386,7 @@ fn features_without_spread_get_no_inclusion() {
                 .collect()
         })
         .collect();
-    let unit = UnitGraph {
-        profiles,
-        section: vec![0; xy.len()],
-        block: tile,
-        edges,
-    };
-    let inc = inclusion_of(g, &unit);
+    let inc = score(g, &profiles, &vec![0; xy.len()], &tile, &edges);
     assert!(inc.pi[n_signal + n_noise..].iter().all(|&p| p == 0.0));
     let noise_pi = inc.pi[n_signal..n_signal + n_noise].iter().sum::<f32>() / n_noise as f32;
     assert!(noise_pi < 0.1, "noise features' mean π {noise_pi}");
@@ -462,13 +456,8 @@ fn cells_stream_to_the_same_inclusion() {
     }
     profiles.iter_mut().for_each(|p| log_normalise(p));
     let tile = tile_of(&xy, 2);
-    let unit = UnitGraph {
-        profiles,
-        section,
-        block: (0..2 * n).map(|c| tile[c % n] + 4 * (c / n)).collect(),
-        edges: all_edges.clone(),
-    };
-    let held = inclusion_of(3, &unit);
+    let block: Vec<usize> = (0..2 * n).map(|c| tile[c % n] + 4 * (c / n)).collect();
+    let held = score(3, &profiles, &section, &block, &all_edges);
     for f in 0..3 {
         assert!((inc.moran[f] - held.moran[f]).abs() < 1e-6, "feature {f}");
         assert!((inc.se[f] - held.se[f]).abs() < 1e-6, "feature {f}");
@@ -476,9 +465,83 @@ fn cells_stream_to_the_same_inclusion() {
 
     let one: Vec<Box<str>> = vec!["x".into()];
     let line = plane.columns(0, 1).into_owned();
-    let section: Vec<u32> = (0..2 * n).map(|c| (c / n) as u32).collect();
     let e = cell_inclusion(&data, &axis, (&line, &one), &section, &all_edges, 4, 5)
         .unwrap_err()
         .to_string();
     assert!(e.contains("two coordinate columns"), "{e}");
+}
+
+/// The linear edge term is built per unit from its edge counts toward each
+/// block, not per edge: sparse profiles over several features, scattered
+/// blocks (most edges between two) and a repeated edge still match Moran's
+/// I and its jackknife recomputed from scratch.
+#[test]
+fn per_unit_edge_counts_match_the_edges() {
+    let mut rng = SmallRng::seed_from_u64(17);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let (xy, mut edges) = grid(5);
+    edges.push(edges[3]);
+    let n = xy.len();
+    let block: Vec<usize> = (0..n).map(|u| (u * 7) % 4).collect();
+    // feature f observed on every (f + 1)-th unit
+    let xs: Vec<Vec<f64>> = (0..3)
+        .map(|f| {
+            (0..n)
+                .map(|u| {
+                    if u % (f + 1) == 0 {
+                        xy[u].0 as f64 + noise.sample(&mut rng)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let profiles: Vec<Vec<(u32, f32)>> = (0..n)
+        .map(|u| {
+            (0..3)
+                .filter(|&f| xs[f][u] != 0.0)
+                .map(|f| (f as u32, xs[f][u] as f32))
+                .collect()
+        })
+        .collect();
+    let (moran, se, _) = jackknife_moran(&[section_jack(3, &profiles, &block, &edges)]);
+    for f in 0..3 {
+        let x: Vec<f64> = xs[f].iter().map(|&v| v as f32 as f64).collect();
+        let full = moran_brute(&[(x.clone(), edges.clone(), vec![true; n])]);
+        assert!(
+            (moran[f] - full).abs() < 1e-6,
+            "feature {f}: {} vs {full}",
+            moran[f]
+        );
+        let brute_se = brute_jackknife_se(&[x], &edges, &block, 4);
+        assert!(
+            (se[f] - brute_se).abs() < 1e-6,
+            "feature {f}: {} vs {brute_se}",
+            se[f]
+        );
+    }
+}
+
+/// PB edges fold the spatial cell edges within a section; the frame's
+/// super edges are taken as they are only where its batch filter keeps
+/// the same cell edges.
+#[test]
+fn pb_edges_fold_within_sections_and_reuse_the_frame_only_when_it_agrees() {
+    use crate::cell_activity_graph_embedding::feature_inclusion::pb_spatial_edges;
+    // six cells in PBs [0, 0, 1, 1, 2, 2]; cells 0..4 in section 0
+    let cell_to_pb = [0, 0, 1, 1, 2, 2];
+    let section = [0u32, 0, 0, 0, 1, 1];
+    let edges = [(0, 1), (1, 2), (0, 3), (3, 4), (4, 5)];
+    let folded = pb_spatial_edges(&cell_to_pb, &section, &edges, None);
+    assert_eq!(folded, vec![(0, 1)]);
+    // a frame whose batches are the sections is reused as it is
+    let frame: [(u32, u32); 1] = [(0, 1)];
+    let reused = pb_spatial_edges(&cell_to_pb, &section, &edges, Some((&frame, &section)));
+    assert_eq!(reused, folded);
+    // one batch keeps the edge across sections, so the frame is not reused
+    let one_batch = [0u32; 6];
+    let wide: [(u32, u32); 2] = [(0, 1), (1, 2)];
+    let own = pb_spatial_edges(&cell_to_pb, &section, &edges, Some((&wide, &one_batch)));
+    assert_eq!(own, folded);
 }

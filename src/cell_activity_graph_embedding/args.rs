@@ -83,6 +83,7 @@ impl FeatureNameMode {
 }
 
 #[derive(Parser, Debug, Clone)]
+#[command(mut_arg("feature_modules", |a| a.long_help(FEATURE_MODULES_LONG_HELP)))]
 pub struct CellActivityGraphEmbeddingArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
@@ -620,7 +621,7 @@ pub enum FeatureEmbeddingMode {
 
 /// cage's own long help for `--feature-modules`, set over the shared flag
 /// group's (whose text describes within-module negatives, which cage does
-/// not draw) by `mut_arg` on the cage subcommands.
+/// not draw) by `mut_arg` on [`CellActivityGraphEmbeddingArgs`].
 pub const FEATURE_MODULES_LONG_HELP: &str = "\
 Put a learned mixed-membership module layer in front of the feature embedding.
 Each feature's row becomes a sparse mixture of M shared module vectors, plus a
