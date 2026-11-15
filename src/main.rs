@@ -252,7 +252,7 @@ enum Commands {
                       \x20 pinto lc data.h5 -o out\n\n\
                       \x20 # With external feature-feature network:\n\
                       \x20 pinto lc data.h5 -c coords.csv -o out \\\n\
-                      \x20   --feature-network biogrid_pairs.tsv\n\n\
+                      \x20   --feature-network feature_pairs.tsv\n\n\
                       \x20 # Multi-sample with batch correction:\n\
                       \x20 pinto lc s1.h5,s2.h5 -c c1.csv,c2.csv -o out\n\n\
                       INPUT FILES:\n\n\
@@ -271,7 +271,8 @@ enum Commands {
                       \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\
                       \x20   Optionally zero basis rows for features below --min-feature-count.\n\n\
                       \x20 Feature-network module-pair profile (--feature-network file.tsv):\n\
-                      \x20   External feature-feature edges (two-column TSV), optionally SNN-\n\
+                      \x20   Feature-feature edges you supply (two-column TSV; pinto has\n\
+                      \x20   no network of its own), optionally SNN-\n\
                       \x20   augmented, k-core-trimmed, Leiden-clustered into feature modules.\n\
                       \x20   Edge profile is SPARSE over module-pairs (a, b) with entries\n\
                       \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\
@@ -344,6 +345,10 @@ enum Commands {
                       That gates a shared multi-scale PB hierarchy.\n\n\
                       Chain levels differ only in their negative pools.\n\
                       This is embedding-only. There is no count decoder.\n\n\
+                      Where most features are noise, a run can take one of two\n\
+                      remedies: --feature-inclusion moran trains each feature with\n\
+                      its probability of spatial signal; --feature-modules M embeds\n\
+                      features through M learned modules. Not both.\n\n\
                       --n-hvg weights the random projection that builds the\n\
                       coarsening hierarchy, as in senna bge and senna gem;\n\
                       it does not subset the trained feature axis.\n\
@@ -418,18 +423,22 @@ enum Commands {
         long_about = "cage trained on cells instead of super-cells, as cell-level\n\
                       methods such as STAGATE are, for a like-for-like comparison: the\n\
                       same model and outputs.\n\n\
-                      Each cell is its own unit and each within-batch spatial cell pair\n\
-                      a positive; negatives are other cells of the same batch, never\n\
-                      the pair's own two. Nothing is pseudobulked: no coarsening\n\
-                      hierarchy, no pseudobulk SVD warm start (the cell table starts at\n\
-                      random), and no batch-effect estimate, so no batch correction is\n\
-                      applied, and `pinto predict` applies none to a query either.\n\
-                      --n-pseudobulk, --num-levels, --batch-knn and the HVG flags do\n\
-                      nothing here (a warning says so); --chain-levels, --cnv-clones,\n\
-                      --feature-modules and --feature-embedding are refused.\n\
-                      --embedding-l2 defaults to 0 here.\n\n\
-                      Writes what cage writes, without {out}.delta.parquet and\n\
-                      {out}.pseudobulk_cells.parquet; its manifest says `cell_level`.",
+                      Cells and cell pairs are the training units: each cell is its own\n\
+                      unit and each within-batch spatial cell pair a positive; negatives\n\
+                      are other cells of the same batch, never the pair's own two. No\n\
+                      coarsening hierarchy and no pseudobulk SVD warm start (the cell\n\
+                      table starts at random).\n\n\
+                      Batch effects (δ) are estimated and removed as in cage, and\n\
+                      `pinto predict` corrects a query as it does for cage. The δ\n\
+                      estimate pools cells internally, only to estimate δ (so\n\
+                      --num-levels, --batch-knn and --cnv-clones shape it); training\n\
+                      never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
+                      does.\n\n\
+                      --n-pseudobulk and the HVG flags do nothing here (a warning says\n\
+                      so); --chain-levels, --feature-modules and --feature-embedding are\n\
+                      refused. --embedding-l2 defaults to 0 here.\n\n\
+                      Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
+                      its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0"))
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
@@ -756,8 +765,8 @@ enum Commands {
         long_about = format!(
             "Set up pinto fits in the terminal and run them.\n\n\
              Pick the data files with the coordinate and batch files of\n\
-             each, queue one or more of lc, cage and dsvd, and change\n\
-             their flags. Every flag a method has is listed with its help;\n\
+             each, queue one or more of lc, dsvd, cage and cage-cell, and\n\
+             change their flags. Every flag a method has is listed with its help;\n\
              hidden ones under `a`. On a fitted run, lra, lra-simulate and\n\
              residual can be queued too: the residual brings a stage-2 fit\n\
              on its files (`m` picks its method), and lra on that fit is\n\
@@ -883,6 +892,15 @@ fn main() -> anyhow::Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // At most 16 worker threads unless RAYON_NUM_THREADS says otherwise.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let env = std::env::var("RAYON_NUM_THREADS").ok();
+    if let Some(n) = util::common::default_threads(env.as_deref(), cores) {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()?;
+    }
+
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
     }
@@ -907,8 +925,8 @@ fn main() -> anyhow::Result<()> {
         let no_ops = cell_activity_graph_embedding::fit::cell_level_no_ops_given(m);
         if !no_ops.is_empty() {
             log::warn!(
-                "cage-cell: {} shape only the HVG projection, coarsening or batch-effect \
-                 estimate that cage-cell skips; they do nothing here",
+                "cage-cell: {} shape only the HVG projection or the pseudobulks that \
+                 cage-cell skips; they do nothing here",
                 no_ops.join(", ")
             );
         }

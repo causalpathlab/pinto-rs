@@ -519,8 +519,8 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
 }
 
 /// cage-cell names the flags given on its command line that shape only the
-/// coarsening or the batch-effect estimate it skips, and none it was not
-/// given (their defaults are not the user's doing).
+/// pseudobulks it skips, and none it was not given (their defaults are not
+/// the user's doing).
 #[test]
 fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     use cell_activity_graph_embedding::fit::cell_level_no_ops_given;
@@ -533,10 +533,113 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     assert!(given(&[]).is_empty());
     assert_eq!(
         given(&["-d", "3", "--n-hvg", "100", "--batch-knn", "4"]),
-        ["--n-hvg", "--n-pseudobulk", "--batch-knn"]
+        ["--n-hvg", "--n-pseudobulk"]
     );
+    // the batch-effect estimate reads these, so they are not no-ops
     assert_eq!(
         given(&["--num-levels=9", "--must-train-features", "f.txt"]),
-        ["--must-train-features", "--num-levels"]
+        ["--must-train-features"]
     );
+}
+
+/// cage's `--feature-modules` help is pinto's own: cage draws its NCE
+/// negatives over pseudobulks, never within a module, and a run takes
+/// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
+/// is a tuning knob, hidden.
+#[test]
+fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
+    let mut cli = built_cli();
+    for cmd in ["cage", "cage-cell"] {
+        let sub = cli.find_subcommand_mut(cmd).expect(cmd);
+        let arg = |id: &str| {
+            sub.get_arguments()
+                .find(|a| a.get_id() == id)
+                .unwrap_or_else(|| panic!("{cmd}: no {id}"))
+                .clone()
+        };
+        assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
+        assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
+        let help = sub.render_long_help().to_string();
+        // the flag's entry: from its line up to the next flag's
+        let flag_line = |l: &str| {
+            let l = l.trim_start();
+            l.starts_with("--") || l.as_bytes().get(2) == Some(&b',')
+        };
+        let modules: String = help
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("--feature-modules <"))
+            .enumerate()
+            .take_while(|&(i, l)| i == 0 || !flag_line(l))
+            .map(|(_, l)| format!("{l}\n"))
+            .collect();
+        assert!(!modules.is_empty(), "{cmd}: --feature-modules not listed");
+        for wrong in ["own module", "WITHIN a module", "senna", "--multiome"] {
+            assert!(!modules.contains(wrong), "{cmd} says {wrong:?}: {modules}");
+        }
+        for right in ["never within a module", "--feature-inclusion moran"] {
+            assert!(modules.contains(right), "{cmd} lacks {right:?}: {modules}");
+        }
+    }
+}
+
+/// Each of pinto's models, and each choice that handles noisy features,
+/// is named where a user or an agent picks a method: the README, `pinto
+/// run`'s help and the MCP instructions. dsvd is presented beside lc and
+/// cage, not after them.
+#[cfg(feature = "view")]
+#[test]
+fn the_models_and_their_feature_choices_are_named_where_methods_are_picked() {
+    let mut cli = built_cli();
+    let run = cli
+        .find_subcommand_mut("run")
+        .expect("run")
+        .render_long_help()
+        .to_string();
+    let readme = include_str!("../../README.md");
+    let mcp = mcp::instructions();
+    for (what, text) in [("README", readme), ("pinto run", &run), ("mcp", &mcp)] {
+        for model in ["lc", "dsvd", "cage"] {
+            assert!(text.contains(model), "{what} does not name {model}");
+        }
+    }
+    for (what, text) in [("README", readme), ("mcp", &mcp)] {
+        for choice in ["feature-inclusion", "feature-modules", "feature-network"] {
+            assert!(text.contains(choice), "{what} does not name {choice}");
+        }
+    }
+    assert_eq!(run::MODELS[..2], ["lc", "dsvd"], "dsvd listed beside lc");
+    assert!(readme.contains("### `dsvd` (delta-svd), recommended"));
+}
+
+/// lc's `--feature-network` help says what the file is and what the
+/// modules do, and that pinto brings no network of its own.
+#[test]
+fn lc_says_what_its_feature_network_is() {
+    let mut cli = built_cli();
+    let lc = cli.find_subcommand_mut("lc").expect("lc");
+    let arg = lc
+        .get_arguments()
+        .find(|a| a.get_id() == "feature_network")
+        .expect("--feature-network")
+        .clone();
+    let help = arg.get_long_help().expect("long help").to_string();
+    assert!(!help.contains("do not come from feature modules"), "{help}");
+    for says in ["two-column", "Leiden", "module pairs", "ships no network"] {
+        assert!(help.contains(says), "lacks {says:?}: {help}");
+    }
+    let readme = include_str!("../../README.md");
+    assert!(readme.contains("ships no network"));
+}
+
+/// The README says that pinto's default thread cap changes lc's draws on a
+/// machine with more cores, and that RAYON_NUM_THREADS sets it.
+#[test]
+fn the_readme_says_the_thread_cap_changes_lc_on_large_machines() {
+    let readme = include_str!("../../README.md");
+    let cap = util::common::MAX_DEFAULT_THREADS.to_string();
+    assert!(
+        readme.contains(&format!("at most {cap} worker threads")),
+        "README does not state the cap"
+    );
+    assert!(readme.contains(&format!("more than {cap} cores")));
 }

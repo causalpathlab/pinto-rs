@@ -8,6 +8,11 @@
 //!
 //! Features dropped by the trim get `None` as their module label; surviving
 //! features get `Some(m)` with `m` contiguous starting at 0.
+//!
+//! References: V. A. Traag, L. Waltman and N. J. van Eck, "From Louvain to
+//! Leiden: guaranteeing well-connected communities", Sci. Rep. 9 (2019);
+//! S. B. Seidman, "Network structure and minimum degree", Social Networks 5
+//! (1983), for the k-core.
 
 use legume_numeric::matrix::pair_graph::FeaturePairGraph;
 use log::info;

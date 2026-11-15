@@ -47,3 +47,49 @@ pub fn non_negative_f64(text: &str) -> Result<f64, String> {
         Err("must be finite and not negative".to_string())
     }
 }
+
+/// Most worker threads a pinto command takes by default: a shared machine
+/// is not a command's to fill, and past this the fits gain little.
+pub const MAX_DEFAULT_THREADS: usize = 16;
+
+/// The worker threads to start with: `min(MAX_DEFAULT_THREADS, cores)`,
+/// unless `RAYON_NUM_THREADS` (`rayon_env`) is set, when rayon's own choice
+/// stands (`None`).
+pub fn default_threads(rayon_env: Option<&str>, cores: usize) -> Option<usize> {
+    match rayon_env {
+        Some(v) if !v.trim().is_empty() => None,
+        _ => Some(cores.clamp(1, MAX_DEFAULT_THREADS)),
+    }
+}
+
+/// The `q` quantile of `sorted` (ascending), the element at
+/// `round(q (len − 1))`; `None` when empty.
+pub fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    sorted.get((q * last as f64).round() as usize).copied()
+}
+
+/// The element at `len / 2` of `v` sorted (the upper median), found by
+/// selection; `None` when empty. Reorders `v`.
+pub fn upper_median(v: &mut [f64]) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    let mid = v.len() / 2;
+    Some(*v.select_nth_unstable_by(mid, f64::total_cmp).1)
+}
+
+/// What log-normalisation scales each unit's counts to before `ln(1 + x)`
+/// (counts per ten thousand); a unit with no counts stays empty.
+pub const LIBRARY_SCALE: f32 = 1e4;
+
+/// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`; NaN
+/// with a non-finite replicate or fewer than two.
+pub fn jackknife_se(v: &[f64]) -> f64 {
+    let g = v.len() as f64;
+    if v.len() < 2 || v.iter().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
+    let mean = v.iter().sum::<f64>() / g;
+    ((g - 1.0) / g * v.iter().map(|x| (x - mean).powi(2)).sum::<f64>()).sqrt()
+}

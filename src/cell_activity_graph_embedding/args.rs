@@ -7,6 +7,17 @@ use data_beans::aux::feature_names::FeatureNameKind;
 
 use crate::util::device::ComputeDevice;
 
+/// Which features each epoch trains (`--feature-inclusion`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[clap(rename_all = "lowercase")]
+pub enum FeatureInclusionMode {
+    /// Every trainable feature, every epoch.
+    All,
+    /// Each feature with probability π_g, its posterior probability of
+    /// spatial signal (jackknifed Moran's I, two-group empirical Bayes).
+    Moran,
+}
+
 /// CLI mirror of [`graph_embedding_util::loss::NceObjective`] (that crate keeps
 /// its model enums clap-free, so every consumer carries its own wrapper — see
 /// `senna/src/bge/mod.rs` and `faba/src/gem/common.rs`).
@@ -72,6 +83,7 @@ impl FeatureNameMode {
 }
 
 #[derive(Parser, Debug, Clone)]
+#[command(mut_arg("feature_modules", |a| a.long_help(FEATURE_MODULES_LONG_HELP)))]
 pub struct CellActivityGraphEmbeddingArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
@@ -328,6 +340,43 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     pub chain_levels: Option<Vec<usize>>,
 
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = FeatureInclusionMode::All,
+        help = "Which features each epoch trains: all, or each with its probability of spatial signal",
+        long_help = "Which features each epoch trains.\n\
+                     all: every trainable feature, every epoch.\n\
+                     moran: feature g with probability π_g, its posterior\n\
+                     probability of spatial signal. Each feature's Moran's I\n\
+                     (Moran 1950) over the spatial graph (log-normalised, centred\n\
+                     per section, pooled; on the PB tree's finest super-cells and\n\
+                     super edges, or on cells for cage-cell) gets a\n\
+                     delete-one-block jackknife standard error; a two-group\n\
+                     empirical-Bayes model on the t statistics gives\n\
+                     π_g = 1 − local fdr (Efron 2004), with no threshold to\n\
+                     choose. Features are weighted, not cut: the expected\n\
+                     objective is Σ π_g L_g, and the likely-noise features\n\
+                     mostly cost nothing. Needs coordinates (-c).\n\
+                     An alternative to --feature-modules, not a companion: a\n\
+                     run takes one. Writes {out}.feature_inclusion.parquet."
+    )]
+    pub feature_inclusion: FeatureInclusionMode,
+
+    #[arg(
+        long,
+        default_value_t = 16,
+        hide = true,
+        help = "Jackknife blocks per section for --feature-inclusion",
+        long_help = "About this many blocks per section, which the jackknife\n\
+                     leaves out one at a time: coarse super-cells of the PB tree\n\
+                     (merged to this many per section), or\n\
+                     on cells (cage-cell) a grid of ceil(sqrt(N)) tiles per side.\n\
+                     Blocks within sections, never whole sections, so a domain\n\
+                     that only one section holds is not penalised."
+    )]
+    pub inclusion_blocks: usize,
+
     /// Cells and cell pairs are the trained unit, with no pseudobulks:
     /// set by `pinto cage-cell`, not a flag.
     #[arg(skip)]
@@ -569,6 +618,37 @@ pub enum FeatureEmbeddingMode {
     /// neighbor-seeded rows train.
     Lora,
 }
+
+/// cage's own long help for `--feature-modules`, set over the shared flag
+/// group's (whose text describes within-module negatives, which cage does
+/// not draw) by `mut_arg` on [`CellActivityGraphEmbeddingArgs`].
+pub const FEATURE_MODULES_LONG_HELP: &str = "\
+Put a learned mixed-membership module layer in front of the feature embedding.
+Each feature's row becomes a sparse mixture of M shared module vectors, plus a
+residual of its own (ridge-shrunk by --embedding-l2). Off unless given.
+
+WHY. A free row receives gradient only on the steps that draw its feature. A
+rare feature, or one absent from a later dataset, has nothing standing in for
+it. Through a module, every edge on any member trains the shared vector, so a
+feature that is never drawn still inherits a trained row from its siblings.
+
+HOW. Membership is sparsemax (Martins and Astudillo 2016) over learned logits:
+a feature sits on a few modules with exact zeros elsewhere. It starts from a
+partition of the features by their profiles over the finest pseudobulks, held
+fixed for the first quarter of the epochs, then trains. An exact softmax over
+all M modules scores each pseudobulk's module-pooled counts, so every module
+gets gradient on every step, and a load-balance prior keeps every module in
+use. cage's NCE is unchanged: its negatives are other pseudobulks of the
+batch, never within a module.
+
+A run takes this or --feature-inclusion moran, not both, and not with
+--feature-embedding. cage-cell refuses it.
+
+OUTPUTS. {out}.module_membership.parquet (feature x M),
+{out}.module_dictionary.parquet (M x H), {out}.module_residual.parquet and
+{out}.module_bias.parquet. {out}.feature_embedding.parquet holds the composed
+row, so nothing that reads it has to know modules exist; `pinto predict` places
+features the model never saw through these tables.";
 
 /// The width when neither the flag nor a pinned dictionary decides it.
 pub const DEFAULT_EMBEDDING_DIM: usize = 16;

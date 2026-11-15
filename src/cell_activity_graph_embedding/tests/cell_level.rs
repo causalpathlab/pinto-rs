@@ -4,9 +4,10 @@ use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
 use crate::cell_activity_graph_embedding::fit::{
     cell_level_hierarchy, fit_cell_activity_graph_embedding,
 };
-use crate::test_support::write_zarr;
+use crate::test_support::two_sections;
 use crate::util::common::Mat;
 use clap::Parser;
+use legume_numeric::matrix::parquet::{write_named_table, Column};
 use legume_numeric::matrix::traits::IoOps;
 
 #[derive(Parser)]
@@ -30,15 +31,12 @@ fn every_cell_is_its_own_unit_at_both_levels() {
 }
 
 /// `cage-cell` sets the mode after parsing, so fit itself refuses what
-/// needs a hierarchy of pseudobulks or a batch-effect estimate.
+/// needs a hierarchy of pseudobulks.
 #[test]
 fn cell_level_refuses_hierarchy_flags() {
     for extra in [
         &["--chain-levels", "1"][..],
         &["--feature-embedding", "dict.parquet"][..],
-        // an input to the batch-effect estimate cage-cell skips: refused,
-        // not left unopened
-        &["--cnv-clones", "clones.tsv"][..],
     ] {
         let mut a = parse(&[&["-o", "out", "d.zarr"][..], extra].concat()).unwrap();
         a.cell_level = true;
@@ -49,48 +47,15 @@ fn cell_level_refuses_hierarchy_flags() {
     }
 }
 
-/// Two sections of a `side × side` grid, the left and right halves
-/// expressing different genes, and the second section's every third gene
-/// four times the first's (a batch effect); returns the data and
-/// coordinate files.
-fn two_sections(dir: &std::path::Path, side: usize) -> (String, String) {
-    let genes: Vec<String> = (0..12).map(|g| format!("G{g}")).collect();
-    let genes: Vec<&str> = genes.iter().map(String::as_str).collect();
-    let (mut data, mut coords) = (Vec::new(), Vec::new());
-    for tag in ["s1", "s2"] {
-        let n = side * side;
-        let mut triplets = Vec::new();
-        let mut csv = String::from("cell,x,y\n");
-        for c in 0..n {
-            let (r, col) = (c / side, c % side);
-            let left = col < side / 2;
-            for g in 0..12u64 {
-                let marker = if left { g < 6 } else { g >= 6 };
-                let v = if marker {
-                    4.0 + ((c + g as usize) % 3) as f32
-                } else {
-                    ((c * 7 + g as usize) % 2) as f32
-                };
-                let v = if tag == "s2" && g % 3 == 0 {
-                    4.0 * v
-                } else {
-                    v
-                };
-                if v > 0.0 {
-                    triplets.push((g, c as u64, v));
-                }
-            }
-            csv.push_str(&format!("{tag}_{c},{col},{r}\n"));
-        }
-        data.push(write_zarr(dir, tag, &genes, n, &triplets).to_string());
-        let path = dir.join(format!("{tag}.coords.csv"));
-        std::fs::write(&path, csv).unwrap();
-        coords.push(path.to_str().unwrap().to_string());
-    }
-    (data.join(","), coords.join(","))
-}
-
-fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&str]) -> String {
+/// A short cage fit of `data` (`cage-cell` when `extra` holds `"cell"`)
+/// to `{dir}/{name}`; its prefix, or why it failed.
+pub(super) fn try_fit(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    extra: &[&str],
+) -> anyhow::Result<String> {
     let out = dir.join(name).to_str().unwrap().to_string();
     let cell_level = extra.contains(&"cell");
     let argv: Vec<&str> = [
@@ -119,8 +84,19 @@ fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&st
     .collect();
     let mut args = parse(&argv).unwrap();
     args.cell_level = cell_level;
-    fit_cell_activity_graph_embedding(&args).unwrap();
-    out
+    fit_cell_activity_graph_embedding(&args)?;
+    Ok(out)
+}
+
+/// [`try_fit`], which must succeed.
+pub(super) fn fit(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    extra: &[&str],
+) -> String {
+    try_fit(dir, data, coords, name, extra).unwrap()
 }
 
 fn cell_level_of(prefix: &str) -> bool {
@@ -162,7 +138,7 @@ fn cell_embedding(prefix: &str) -> Mat {
 }
 
 #[test]
-fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
+fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let dir = tempfile::tempdir().unwrap();
     let (data, coords) = two_sections(dir.path(), 8);
     let n_cells = 2 * 8 * 8;
@@ -170,20 +146,35 @@ fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
     let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
     let trained = Mat::from_parquet(&format!("{cell}.pb_embedding.parquet")).unwrap();
     assert_eq!(trained.mat.nrows(), n_cells, "one trained row per cell");
-    for skipped in ["delta", "pseudobulk_cells"] {
-        assert!(
-            !std::path::Path::new(&format!("{cell}.{skipped}.parquet")).exists(),
-            "--cell-level wrote {skipped}.parquet"
-        );
-    }
+    assert!(
+        !std::path::Path::new(&format!("{cell}.pseudobulk_cells.parquet")).exists(),
+        "cage-cell wrote pseudobulk_cells.parquet"
+    );
+    // batch effects are estimated and removed, as in cage, unless asked not to
+    assert!(
+        std::path::Path::new(&format!("{cell}.delta.parquet")).exists(),
+        "cage-cell estimated no batch effects"
+    );
+    assert!(std::path::Path::new(&format!("{cell}.pinto.json")).exists());
+    let raw = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "cell_raw",
+        &["cell", "--ignore-batch"],
+    );
+    assert!(
+        !std::path::Path::new(&format!("{raw}.delta.parquet")).exists(),
+        "--ignore-batch still estimated batch effects"
+    );
     assert!(
         cell_level_of(&cell),
         "the manifest says the run is cell-level"
     );
 
     // Predicted on its own training files, a cell-level model places the
-    // cells where it trained them: the query is not batch-corrected, as
-    // the training was not.
+    // cells where it trained them: the query is batch-corrected, as the
+    // training was.
     let predicted = predict(dir.path(), &data, &coords, &cell);
     let (fitted, placed) = (cell_embedding(&cell), cell_embedding(&predicted));
     let diff = (&fitted - &placed).abs().max();
@@ -203,6 +194,37 @@ fn cell_level_trains_on_cells_and_builds_no_pseudobulks() {
         !cell_level_of(&pb),
         "an ordinary cage run is not cell-level"
     );
+}
+
+/// cage-cell estimates batch effects as cage does, so `--cnv-clones`
+/// stratifies that estimate here too.
+#[test]
+fn cell_level_takes_cnv_clones_into_its_batch_estimate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    // every other cell in a private clone (stratum 1), the rest mixable
+    let clones = dir.path().join("x.clones.parquet");
+    let clones = clones.to_str().unwrap();
+    let cells: Vec<Box<str>> = ["s1", "s2"]
+        .iter()
+        .flat_map(|tag| (0..8 * 8).map(move |c| format!("{tag}_{c}@{tag}").into()))
+        .collect();
+    let stratum: Vec<i32> = (0..cells.len() as i32).map(|c| c % 2).collect();
+    write_named_table(
+        clones,
+        "cell",
+        &cells,
+        &[("stratum".into(), Column::I32(&stratum))],
+    )
+    .unwrap();
+    let cell = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "cell",
+        &["cell", "--cnv-clones", clones],
+    );
+    assert!(std::path::Path::new(&format!("{cell}.delta.parquet")).exists());
 }
 
 /// On cells the chain group is the cell, so the upstream rejection
@@ -256,5 +278,40 @@ fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
                 );
             }
         }
+    }
+}
+
+/// `--feature-inclusion moran` scores every feature, on the PB tree in cage
+/// and on cells in cage-cell, and writes the table.
+#[test]
+fn feature_inclusion_scores_every_feature_in_both_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    for (name, extra) in [
+        (
+            "pb",
+            &["--feature-inclusion", "moran", "--inclusion-blocks", "4"][..],
+        ),
+        (
+            "cell",
+            &[
+                "--feature-inclusion",
+                "moran",
+                "--inclusion-blocks",
+                "4",
+                "cell",
+            ][..],
+        ),
+    ] {
+        let out = fit(dir.path(), &data, &coords, name, extra);
+        let t = Mat::from_parquet(&format!("{out}.feature_inclusion.parquet")).unwrap();
+        assert_eq!(t.rows.len(), 12, "{name}: one row per feature");
+        let pi = t
+            .mat
+            .column(t.cols.iter().position(|c| c.as_ref() == "pi").unwrap());
+        assert!(
+            pi.iter().all(|&p| (0.0..=1.0).contains(&p)),
+            "{name}: π outside [0, 1]"
+        );
     }
 }

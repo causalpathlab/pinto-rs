@@ -397,20 +397,28 @@ pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'stat
     .collect()
 }
 
+/// Whether the model at prefix `model` trained on batch-corrected counts:
+/// its manifest records batch effects. A model fitted on one batch, with
+/// `--ignore-batch`, or an older cage-cell fit records none, and its
+/// encoder saw uncorrected counts, so the query must not be corrected
+/// either. A model with no readable manifest is taken to be corrected,
+/// as cage always was.
+fn model_batch_corrected(model: &str) -> bool {
+    crate::util::metadata::PintoMetadata::read(Path::new(&crate::util::metadata::manifest_path(
+        model,
+    )))
+    .map_or(true, |m| m.outputs.batch_effects.is_some())
+}
+
 pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 
-    // A cell-level model's encoder was trained on counts no batch divisor
-    // touched, so the query's cells go through it uncorrected too.
-    let model_cell_level = crate::util::metadata::PintoMetadata::read(Path::new(
-        &crate::util::metadata::manifest_path(&args.model),
-    ))
-    .is_ok_and(|m| m.cell_level);
-    if model_cell_level {
+    let model_corrected = model_batch_corrected(&args.model);
+    if !model_corrected {
         info!(
-            "{}: a cell-level model, so the query is not batch-corrected",
+            "{}: the model records no batch effects, so the query is not batch-corrected",
             args.model
         );
     }
@@ -439,7 +447,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         common: c,
         ablation: None,
         fisher_weights: !args.no_fisher_weights,
-        batch_effects: !model_cell_level,
+        batch_effects: model_corrected,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: true,
         feature_kind: Some(feature_kind.clone()),
