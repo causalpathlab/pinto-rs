@@ -15,10 +15,13 @@ pub const LEIDEN_NEIGHBOURS: usize = 15;
 /// Lloyd rounds of the k-means at most.
 pub const KMEANS_MAX_ITER: usize = 300;
 
+/// k-means starts, the best kept by inertia (scikit-learn's `n_init`
+/// default; Pedregosa et al. 2011, JMLR 12:2825).
+pub const KMEANS_RESTARTS: usize = 10;
+
 /// The domains of the embedding `z` (cells × latent): with `n_clusters`,
-/// seeded k-means into that many clusters ([`kmeans_centroids_seeded`]:
-/// k-means++ then Lloyd rounds until no cell moves, at most
-/// [`KMEANS_MAX_ITER`]); without, Leiden at `resolution` ([`leiden_at`]).
+/// seeded k-means into that many clusters ([`kmeans_restarts`]); without,
+/// Leiden at `resolution` ([`leiden_at`]).
 /// The labels and the method's name.
 pub fn cluster_embedding(
     z: &Mat,
@@ -32,11 +35,33 @@ pub fn cluster_embedding(
                 k >= 1 && z.nrows() >= k,
                 "k-means into {k} clusters needs at least {k} cells"
             );
-            let (_, labels) = kmeans_centroids_seeded(z, k, KMEANS_MAX_ITER, seed);
-            (labels, "kmeans")
+            (kmeans_restarts(z, k, seed), "kmeans")
         }
         None => (leiden_at(z, resolution, seed)?, "leiden"),
     })
+}
+
+/// The best by inertia (the sum of squared distances to the centroids) of
+/// [`KMEANS_RESTARTS`] k-means fits into `k` clusters, the `r`-th from
+/// seed `seed + r` ([`kmeans_centroids_seeded`]: k-means++ then Lloyd
+/// rounds until no cell moves, at most [`KMEANS_MAX_ITER`]); the first
+/// start on a tie.
+pub fn kmeans_restarts(z: &Mat, k: usize, seed: u64) -> Vec<usize> {
+    let mut best: Option<(f64, Vec<usize>)> = None;
+    for r in 0..KMEANS_RESTARTS as u64 {
+        let (c, labels) = kmeans_centroids_seeded(z, k, KMEANS_MAX_ITER, seed.wrapping_add(r));
+        let inertia: f64 = (0..z.nrows())
+            .map(|i| {
+                (0..z.ncols())
+                    .map(|j| f64::from(z[(i, j)] - c[(labels[i], j)]).powi(2))
+                    .sum::<f64>()
+            })
+            .sum();
+        if best.as_ref().is_none_or(|b| inertia < b.0) {
+            best = Some((inertia, labels));
+        }
+    }
+    best.expect("at least one start").1
 }
 
 /// `sc.pp.neighbors` (15 neighbours, the cell counted) then modularity

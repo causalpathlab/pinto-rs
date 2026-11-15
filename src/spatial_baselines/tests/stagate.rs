@@ -1,5 +1,5 @@
 use super::graph::toy;
-use crate::spatial_baselines::cluster::cluster_embedding;
+use crate::spatial_baselines::cluster::{cluster_embedding, kmeans_restarts, KMEANS_MAX_ITER};
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::stagate::*;
 use crate::util::common::Mat;
@@ -635,5 +635,50 @@ fn a_step_s_loss_is_detached() {
     for input in [Input::Dense(dense), Input::Sparse(sparse)] {
         let mut m = Stagate::new(12, 8, 2, 3, &dev).unwrap();
         assert!(!m.step(&input, &g, &opts).unwrap().track_op());
+    }
+}
+
+/// Inertia of `labels` on `z`: squared distances to each cluster's mean.
+fn inertia(z: &Mat, labels: &[usize]) -> f64 {
+    let k = labels.iter().max().map_or(0, |&m| m + 1);
+    let mut sum = vec![vec![0f64; z.ncols()]; k];
+    let mut count = vec![0f64; k];
+    for (i, &l) in labels.iter().enumerate() {
+        count[l] += 1.0;
+        for j in 0..z.ncols() {
+            sum[l][j] += f64::from(z[(i, j)]);
+        }
+    }
+    (0..z.nrows())
+        .map(|i| {
+            let l = labels[i];
+            (0..z.ncols())
+                .map(|j| (f64::from(z[(i, j)]) - sum[l][j] / count[l]).powi(2))
+                .sum::<f64>()
+        })
+        .sum()
+}
+
+/// The restarts keep the best start: their inertia is at most that of
+/// each of their single starts, and below the worst on a cloud where
+/// starts disagree.
+#[test]
+fn kmeans_restarts_keep_the_lowest_inertia_start() {
+    use legume_numeric::matrix::kmeans::kmeans_centroids_seeded;
+    // an unstructured cloud, so k-means++ starts land in different optima
+    let (n, k) = (300, 8);
+    let g = crate::spatial_baselines::spatial_factor::kit::gaussian(n, 2, 5);
+    let z = Mat::from_fn(n, 2, |i, j| g[(i, j)] as f32);
+    let mut worst = 0f64;
+    for seed in [3u64, 11, 40] {
+        let best = inertia(&z, &kmeans_restarts(&z, k, seed));
+        for r in 0..10 {
+            let (_, l) = kmeans_centroids_seeded(&z, k, KMEANS_MAX_ITER, seed + r);
+            let single = inertia(&z, &l);
+            assert!(best <= single * (1.0 + 1e-6), "seed {seed} start {r}");
+            worst = worst.max(single);
+        }
+        assert_eq!(kmeans_restarts(&z, k, seed), kmeans_restarts(&z, k, seed));
+        assert!(best < worst, "seed {seed}: starts never differ");
     }
 }

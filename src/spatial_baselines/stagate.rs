@@ -89,7 +89,7 @@
 //!    K domains ([`super::cluster::cluster_embedding`]): legume-numeric's seeded k-means
 //!    (k-means++ start from `--seed`, then Lloyd rounds until no cell
 //!    moves, at most 300; Euclidean; an emptied cluster re-seeded from the
-//!    cell worst served). Tutorial T1 instead fits a K-component Gaussian
+//!    cell worst served), the best of 10 starts by inertia. Tutorial T1 instead fits a K-component Gaussian
 //!    mixture with a shared full covariance through R (`utils.py`'s R
 //!    bridge); that package is GPL, so its model, initialisation and EM are
 //!    not ported, and the domains can differ from the tutorial's. Without
@@ -158,7 +158,7 @@
 //!   tutorials' `alpha=0` disables that module, and the pyG build does not
 //!   have it.
 
-use super::cluster::{cluster_embedding, KMEANS_MAX_ITER};
+use super::cluster::{cluster_embedding, KMEANS_MAX_ITER, KMEANS_RESTARTS};
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
@@ -1217,6 +1217,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         "clustering": clustering,
         "n_clusters": args.n_clusters,
         "kmeans_max_iter": args.n_clusters.is_some().then_some(KMEANS_MAX_ITER),
+        "kmeans_restarts": args.n_clusters.is_some().then_some(KMEANS_RESTARTS),
         "resolution": args.n_clusters.is_none().then_some(args.resolution),
         "n_domains": found,
     });
