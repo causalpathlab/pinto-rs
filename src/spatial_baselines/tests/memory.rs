@@ -141,6 +141,23 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
     }
 }
 
+/// Building the symmetrised graph holds 76 bytes a kNN edge (38 a
+/// symmetrised edge, of which there are at most twice as many): the kNN
+/// lists (12), their sorted copy (8), the reverse edges (24) and the
+/// merged lists (16 each, the reverse ones among them).
+#[test]
+fn spatialde2_estimate_charges_the_graph_as_it_is_built() {
+    let base = spatialde2_shape(16384, 1, 4);
+    let more = Spatialde2Shape {
+        edges: base.edges + 1000,
+        ..base.clone()
+    };
+    assert_eq!(
+        spatialde2_peak_bytes(&more) - spatialde2_peak_bytes(&base),
+        38 * 1000
+    );
+}
+
 /// Each update holds six genes × regions arrays of f64: E[λ], E[log λ] in
 /// both layouts, π̂ Y, and the old and new gammahat_1.
 #[test]

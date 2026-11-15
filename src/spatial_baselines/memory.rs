@@ -133,7 +133,7 @@ pub struct Spatialde2Shape {
     pub selected_nonzeros: usize,
     /// Genes segmented on.
     pub genes: usize,
-    /// Edges of the symmetrised spatial graph, at most.
+    /// Edges of the symmetrised spatial graph, at most (twice the kNN's).
     pub edges: usize,
     /// Regions at the start (`--n-clusters`, else ceil(sqrt(cells))).
     pub regions: usize,
@@ -148,17 +148,26 @@ pub struct Spatialde2Shape {
 /// that every measured peak is covered at the counts' real nonzeros.
 const SELECTED_NONZERO_BYTES: usize = 16 + 24 + 16;
 
+/// Bytes an edge of the symmetrised graph holds while it is built
+/// (`Neighbours::symmetrised`), at its bound of twice the kNN's `E` edges:
+/// the kNN's lists (12 `E`), their sorted copy (8 `E`), the reverse edges
+/// missing from them (24 each, `E` at most) and the merged lists (16 each,
+/// `2E` at most), live at once, 76 `E`. The weighted graph built after it,
+/// beside the symmetric lists, holds 28 an edge, and keeps 16.
+const GRAPH_EDGE_BYTES: usize = 38;
+
 /// SpatialDE2's peak: the read ([`read_bytes`]), or after it, f64
 /// throughout and summed as if all were live at once, the counts as read
 /// (12 per nonzero) beside the selected counts
-/// ([`SELECTED_NONZERO_BYTES`]); the weighted graph (16 per edge); the
-/// posteriors, cells × regions, twice while pruning; an update's genes ×
-/// regions arrays (E[λ], E[log λ] in both layouts, π̂ Y, the old and the
-/// new gammahat_1: six); and the kNN's Gram blocks.
+/// ([`SELECTED_NONZERO_BYTES`]); the graph as built
+/// ([`GRAPH_EDGE_BYTES`]); the posteriors, cells × regions, twice while
+/// pruning; an update's genes × regions arrays (E[λ], E[log λ] in both
+/// layouts, π̂ Y, the old and the new gammahat_1: six); and the kNN's Gram
+/// blocks.
 pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
     let held = 12 * s.nonzeros
         + SELECTED_NONZERO_BYTES * s.selected_nonzeros
-        + 16 * s.edges
+        + GRAPH_EDGE_BYTES * s.edges
         + 16 * s.cells * s.regions
         + 6 * 8 * s.genes * s.regions
         + s.gram;

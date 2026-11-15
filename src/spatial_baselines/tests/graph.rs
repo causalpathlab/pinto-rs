@@ -41,3 +41,18 @@ fn section_sizes_count_every_section_from_its_labels() {
     assert_eq!(section_sizes(&[0, 2, 2, 0, 2]), vec![2, 0, 3]);
     assert!(section_sizes(&[]).is_empty());
 }
+
+/// Each edge whose reverse the kNN lacks is added to its other end, the
+/// lists re-sorted by distance (ties by index).
+#[test]
+fn symmetrising_adds_the_missing_reverse_edges() {
+    let d = toy(&[(0., 0.), (1., 0.), (2., 0.), (10., 0.)], &[0; 4]);
+    let g = knn_within_sections(&d, 1);
+    assert_eq!(g.index, vec![vec![1], vec![0], vec![1], vec![2]]);
+    let s = g.symmetrised();
+    assert_eq!(s.index, vec![vec![1], vec![0, 2], vec![1, 3], vec![2]]);
+    assert_eq!(
+        s.dist,
+        vec![vec![1.0], vec![1.0, 1.0], vec![1.0, 8.0], vec![8.0]]
+    );
+}

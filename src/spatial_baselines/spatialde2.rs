@@ -381,9 +381,11 @@ impl WeightedGraph {
                 }
             }
         }
-        let mut offsets = vec![0];
-        let mut flat = Vec::new();
-        let mut weight = Vec::new();
+        let edges = index.iter().map(Vec::len).sum();
+        let mut offsets = Vec::with_capacity(index.len() + 1);
+        offsets.push(0);
+        let mut flat = Vec::with_capacity(edges);
+        let mut weight = Vec::with_capacity(edges);
         for ((js, ds), &s) in index.iter().zip(dist).zip(section) {
             let min_d2 = min_d2[s];
             for (&j, &d) in js.iter().zip(ds) {

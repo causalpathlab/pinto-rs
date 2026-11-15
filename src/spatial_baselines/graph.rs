@@ -52,14 +52,15 @@ impl Neighbours {
             })
             .collect();
         reverse.par_sort_unstable_by_key(|&(j, i, _)| (j, i));
+        // each cell's list sized to its own and its reverse edges at once
         let mut at = 0;
         let mut lists: Vec<Vec<(f32, usize)>> = Vec::with_capacity(self.n_cells());
         for (i, (js, ds)) in self.index.iter().zip(&self.dist).enumerate() {
-            let mut l: Vec<(f32, usize)> = ds.iter().copied().zip(js.iter().copied()).collect();
-            while at < reverse.len() && reverse[at].0 == i {
-                l.push((reverse[at].2, reverse[at].1));
-                at += 1;
-            }
+            let end = at + reverse[at..].partition_point(|r| r.0 == i);
+            let mut l = Vec::with_capacity(js.len() + end - at);
+            l.extend(ds.iter().copied().zip(js.iter().copied()));
+            l.extend(reverse[at..end].iter().map(|&(_, j, d)| (d, j)));
+            at = end;
             lists.push(l);
         }
         lists
