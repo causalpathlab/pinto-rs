@@ -726,7 +726,10 @@ enum Commands {
              lc takes. Its embedding is clustered by pinto's own methods: seeded\n\
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
-             Gaussian mixture in R at that step.\n\n",
+             Gaussian mixture in R at that step.\n\n\
+             Sparse by default: the input stays sparse and the loss is summed\n\
+             over blocks of cells. --reference holds the dense input, as the\n\
+             original does; both give the same numbers up to float rounding.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

@@ -12,7 +12,8 @@ const MIB: f64 = (1u64 << 20) as f64;
 
 /// Maximum resident memory (MiB) of full CPU runs on srt-simulate square
 /// grids at the defaults (2000 genes, all trained on; for stagate hidden
-/// width 512 and 6 neighbours, for spatialde2 100 neighbours): (cells per
+/// width 512 and 6 neighbours, its dense input, now `--reference`; for
+/// spatialde2 100 neighbours): (cells per
 /// section, sections, threads, MiB).
 const STAGATE_MEASURED: [(usize, usize, usize, f64); 9] = [
     (1024, 1, 10, 426.19),
@@ -92,6 +93,46 @@ fn delta_estimate_covers_every_measured_peak_and_is_not_far_above() {
     }
 }
 
+/// Maximum resident memory (MiB) of sparse (default) stagate runs on one
+/// srt-simulate section at the defaults (2000 genes, all of them highly
+/// variable; hidden width 512, 6 neighbours; 20 epochs, which peak as 1000
+/// do), 4 threads: (cells, nonzeros, MiB).
+const STAGATE_SPARSE_MEASURED: [(usize, usize, f64); 4] = [
+    (1024, 788_258, 398.84),
+    (4096, 3_156_044, 1106.34),
+    (8100, 6_238_351, 2067.0),
+    (16384, 12_572_357, 4162.81),
+];
+
+/// The sparse estimate covers every measured sparse run, and from 4096
+/// cells is not far above it; the dense estimate of the same input is
+/// larger (the dense input and reconstruction are gone).
+#[test]
+fn stagate_sparse_estimate_covers_every_measured_peak_and_is_not_far_above() {
+    for (cells, nonzeros, measured) in STAGATE_SPARSE_MEASURED {
+        let sizes = stagate::StagateSizes {
+            sparse: true,
+            ..STAGATE_MEASURED_SIZES
+        };
+        let mut shape = sizes.memory_shape(&InputShape {
+            genes: 2000,
+            nonzeros,
+            section_sizes: vec![cells],
+        });
+        shape.gram = knn_gram_bytes(&[cells], 4);
+        let est = mib(stagate_peak_bytes(&shape));
+        assert!(est >= measured, "{cells}: {est:.0} < {measured} MiB");
+        if cells >= 4096 {
+            assert!(est <= 1.35 * measured, "{cells}: {est:.0} MiB");
+        }
+        let dense = StagateShape {
+            sparse: false,
+            ..shape
+        };
+        assert!(stagate_peak_bytes(&dense) > stagate_peak_bytes(&shape));
+    }
+}
+
 /// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
 /// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
 const NONZEROS_PER_CELL: usize = 765;
@@ -103,6 +144,7 @@ const STAGATE_MEASURED_SIZES: stagate::StagateSizes = stagate::StagateSizes {
     rad_cutoff: None,
     hidden: 512,
     train_on_host: true,
+    sparse: false,
 };
 
 fn stagate_shape(per_section: usize, sections: usize, threads: usize) -> StagateShape {
@@ -323,6 +365,8 @@ fn the_read_of_the_counts_is_charged() {
         gram: 0,
         searched: 0,
         train_on_host: true,
+        sparse: false,
+        selected_nonzeros: 0,
     };
     assert_eq!(
         stagate_peak_bytes(&stagate),
@@ -490,6 +534,7 @@ fn stagate_counts_a_radius_graph_once_built() {
         rad_cutoff: Some(1.5),
         hidden: 8,
         train_on_host: true,
+        sparse: false,
     }
     .memory_shape(&InputShape {
         genes: 8,
