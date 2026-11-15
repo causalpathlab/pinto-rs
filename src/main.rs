@@ -1013,3 +1013,7 @@ mod tests;
 #[cfg(all(test, feature = "view"))]
 #[path = "tests/session_cli.rs"]
 mod session_cli_tests;
+
+#[cfg(test)]
+#[path = "tests/surface.rs"]
+mod surface_tests;

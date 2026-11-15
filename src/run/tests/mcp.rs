@@ -407,3 +407,162 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
         "Random seed for reproducibility (--seed) [default: 42]"
     );
 }
+
+/// Every tool pinto serves, run and view alike.
+fn all_tools() -> Vec<ToolSpec> {
+    legume_mcp::Handler::tools(&crate::mcp::Server::default())
+}
+
+/// A tool whose fields pass a command's flags: the tool, the command, the
+/// fields named apart from the argument they pass, and the command's
+/// visible arguments the tool takes in another way (or not at all).
+type Mirror = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static [&'static str],
+);
+
+/// The tools whose fields pass a command's flags.
+const MIRRORS: &[Mirror] = &[
+    ("run_lra", "lra", &[("run", "from")], &[]),
+    ("run_lra_simulate", "lra-simulate", &[("run", "from")], &[]),
+    ("run_residual", "residual", &[], &["em_iters", "block_size"]),
+    ("run_compare", "compare", &[], &[]),
+    ("run_simulate", "srt-simulate", &[], &[]),
+    ("run_sim_score", "srt-sim-score", &[], &["out"]),
+    ("run_sim_pairs", "srt-sim-pairs", &[], &["out"]),
+    (
+        "run_sim_baseline",
+        "srt-sim-baseline",
+        &[],
+        &[
+            "n_pcs",
+            "n_hvg",
+            "knn",
+            "theta",
+            "sigma",
+            "lambda",
+            "harmony_k",
+            "max_rounds",
+        ],
+    ),
+];
+
+/// MCP mirrors the command line: a tool passing a command's flags has a
+/// field for each flag its `--help` shows, and none for a hidden one.
+#[test]
+fn each_tool_s_fields_are_its_command_s_visible_flags() {
+    let cli = crate::built_cli();
+    let tools = all_tools();
+    for &(tool, command, renamed, not_fields) in MIRRORS {
+        let spec = tools.iter().find(|t| t.name == tool).unwrap();
+        let mut fields: Vec<String> = spec.input_schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|k| *k != "background")
+            .map(|k| {
+                renamed
+                    .iter()
+                    .find(|(f, _)| f == k)
+                    .map_or(k.clone(), |(_, id)| id.to_string())
+            })
+            .collect();
+        fields.sort();
+        fields.dedup();
+        let sub = cli.find_subcommand(command).unwrap();
+        let mut visible: Vec<String> = sub
+            .get_arguments()
+            .filter(|a| !a.is_hide_set())
+            .map(|a| a.get_id().to_string())
+            .filter(|id| !matches!(id.as_str(), "help" | "version" | "verbose"))
+            .filter(|id| !not_fields.contains(&id.as_str()))
+            .collect();
+        visible.sort();
+        assert_eq!(fields, visible, "{tool} against pinto {command}");
+    }
+}
+
+/// `run_methods` lists exactly the flags a method's `--help` shows, less
+/// those `run_fit` takes as its own fields.
+#[test]
+fn run_methods_lists_exactly_each_method_s_visible_flags() {
+    let cli = crate::built_cli();
+    let tools = Tools::default();
+    for &name in &METHODS {
+        let reply = match tools
+            .methods(MethodsArgs {
+                method: Some(name.into()),
+            })
+            .unwrap()
+            .into_iter()
+            .next()
+        {
+            Some(Content::Json(v)) => v,
+            _ => panic!("no JSON reply"),
+        };
+        let listed: Vec<String> = reply["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                f["flag"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches('-')
+                    .to_string()
+            })
+            .collect();
+        let shown: Vec<String> = cli
+            .find_subcommand(name)
+            .unwrap()
+            .get_arguments()
+            .filter(|a| !a.is_hide_set())
+            .filter_map(|a| a.get_long())
+            .filter(|l| !["out", "coord", "batch-files", "help", "version", "verbose"].contains(l))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(listed, shown, "run_methods {name}");
+    }
+}
+
+/// A flag hidden on every command that has it is named by no tool and not
+/// in the instructions: an agent is never steered to a knob the user does
+/// not change.
+#[test]
+fn no_tool_names_a_hidden_flag() {
+    let cli = crate::built_cli();
+    let mut hidden: Vec<&str> = Vec::new();
+    let mut shown: Vec<&str> = Vec::new();
+    for sub in cli.get_subcommands() {
+        for a in sub.get_arguments() {
+            if let Some(long) = a.get_long() {
+                if a.is_hide_set() {
+                    hidden.push(long);
+                } else {
+                    shown.push(long);
+                }
+            }
+        }
+    }
+    hidden.retain(|h| h.contains('-') && !shown.contains(h));
+    let mut texts = vec![("instructions".to_string(), crate::mcp::instructions())];
+    for t in all_tools() {
+        texts.push((
+            t.name.clone(),
+            format!("{} {}", t.description, t.input_schema),
+        ));
+    }
+    for (name, text) in &texts {
+        for h in &hidden {
+            let named = text.match_indices(h).any(|(at, _)| {
+                let before = text[..at].chars().next_back();
+                let after = text[at + h.len()..].chars().next();
+                let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '-');
+                !word(before.filter(|&c| c != '-')) && !word(after)
+            });
+            assert!(!named, "{name} names the hidden flag --{h}");
+        }
+    }
+}
