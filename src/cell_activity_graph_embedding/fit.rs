@@ -604,17 +604,34 @@ pub fn fit_cell_activity_graph_embedding(
     // List of features with at least one cached (feature, batch) entry — used
     // to skip empty features in every epoch's permutation. Computed now so
     // we can free `activities` afterwards.
-    // Features with π = 0 under --feature-inclusion stay on this list,
-    // though never drawn. Open gap: the bar for taking them off is a fixed
-    // seed giving the same result with and without them here. It is not met
-    // yet, likely because the epoch shuffle and the inclusion draw take
-    // random numbers per listed feature, so the list moves the stream.
-    let trainable_features: Vec<usize> = (0..n_features)
+    // Under --feature-inclusion a feature with π = 0 is never drawn, so it
+    // leaves the list (unless every π is 0, when an epoch draws uniformly).
+    // Each feature's keep draw, order key and sampling stream are its own,
+    // and the CUDA chunk-size probe walks `active_features`, so this changes
+    // no other feature's draws.
+    let active_features: Vec<usize> = (0..n_features)
         .filter(|&g| cache.entries[g].iter().any(|e| e.is_some()))
         .collect();
+    let positive_pi = inclusion
+        .as_ref()
+        .map(|f| f.pi.as_slice())
+        .filter(|pi| active_features.iter().any(|&g| pi[g] > 0.0));
+    let trainable_features: Vec<usize> = match positive_pi {
+        Some(pi) => active_features
+            .iter()
+            .copied()
+            .filter(|&g| pi[g] > 0.0)
+            .collect(),
+        None => active_features.clone(),
+    };
     info!(
-        "{} trainable features (≥1 active batch)",
-        trainable_features.len()
+        "{} trainable features (≥1 active batch{})",
+        trainable_features.len(),
+        if positive_pi.is_some() {
+            ", π > 0"
+        } else {
+            ""
+        }
     );
 
     // Features an epoch visits: all of them, or Σπ under inclusion.
@@ -730,7 +747,7 @@ pub fn fit_cell_activity_graph_embedding(
 
     let feature_batch_size = resolve_feature_batch_size(ProbeInputs {
         args,
-        trainable_features: &trainable_features,
+        active_features: &active_features,
         n_exp_batches,
         sampler: &sampler,
         model: &model,

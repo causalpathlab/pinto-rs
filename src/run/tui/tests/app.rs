@@ -848,7 +848,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     let mut a = pinto_app(here);
     let names: Vec<&str> = a.rows.iter().map(|r| r.form.name.as_str()).collect();
     assert_eq!(
-        names[..9],
+        names[..13],
         [
             "lc",
             "dsvd",
@@ -856,7 +856,11 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
             "cage-cell",
             "spatialde2",
             "stagate",
+            "spatialpca",
+            "mefisto",
             "spatialde2-pb",
+            "spatialpca-pb",
+            "mefisto-pb",
             "lra",
             "lra-simulate"
         ]
@@ -1065,7 +1069,11 @@ fn the_residual_row_is_listed_only_where_pinto_has_the_command() {
             "cage-cell",
             "spatialde2",
             "stagate",
+            "spatialpca",
+            "mefisto",
             "spatialde2-pb",
+            "spatialpca-pb",
+            "mefisto-pb",
             "lra",
             "lra-simulate",
             "residual",

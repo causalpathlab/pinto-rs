@@ -1,7 +1,15 @@
 //! The baselines' command lines stay small: a short `--help` each.
 
 /// The baselines whose `-h` is kept short.
-pub(crate) const BASELINES: &[&str] = &["stagate", "spatialde2", "spatialde2-pb"];
+pub(crate) const BASELINES: &[&str] = &[
+    "stagate",
+    "spatialde2",
+    "spatialpca",
+    "mefisto",
+    "spatialde2-pb",
+    "spatialpca-pb",
+    "mefisto-pb",
+];
 
 /// Most lines a baseline's `-h` may take.
 const HELP_LINES: usize = 60;
@@ -16,10 +24,11 @@ fn each_baseline_s_help_is_short() {
             .to_string();
         let lines = help.lines().count();
         assert!(lines <= HELP_LINES, "{cmd} -h: {lines} lines\n{help}");
-        // spatialde2-pb has no --reference and takes -d
+        // only stagate and spatialde2 have --reference; the -pb forms take -d
         let pb = cmd.ends_with("-pb");
+        let reference = matches!(*cmd, "stagate" | "spatialde2");
         let flag = |f: &str| help.lines().any(|l| l.trim_start().starts_with(f));
-        assert_eq!(flag("--reference"), !pb, "{cmd}");
+        assert_eq!(flag("--reference"), reference, "{cmd}");
         assert_eq!(flag("-d, --n-pseudobulk"), pb, "{cmd}");
         assert!(help.contains("--ignore-batch"), "{cmd}");
     }
@@ -51,4 +60,70 @@ fn only_spatialde2_pb_takes_d_and_it_has_no_reference() {
         pb.get_arguments().all(|a| a.get_id() != "reference"),
         "spatialde2-pb carries a --reference"
     );
+}
+
+/// The factor baselines show two method flags each, at their papers'
+/// defaults, `--n-pcs` naming SpatialPCA's; their tuning knobs are hidden
+/// (so neither `pinto run`'s form nor the MCP schema offers them), none
+/// takes `--reference`, and the `-pb` forms take `-d`.
+#[test]
+fn factor_baselines_show_few_flags_at_their_papers_defaults() {
+    let parse = |argv: &[&str]| {
+        let mut full = vec!["pinto"];
+        full.extend(argv);
+        full.extend(["d.zarr", "-c", "c.csv", "-o", "x"]);
+        <crate::Cli as clap::Parser>::try_parse_from(full).map(|c| c.commands)
+    };
+    let Ok(crate::Commands::Spatialpca(a)) = parse(&["spatialpca"]) else {
+        panic!("spatialpca")
+    };
+    assert_eq!(
+        (a.fit.n_factors, a.fit.n_genes, a.fit.refine_k),
+        (20, 3000, 6)
+    );
+    let Ok(crate::Commands::Spatialpca(a)) = parse(&["spatialpca", "--n-pcs", "7"]) else {
+        panic!("--n-pcs")
+    };
+    assert_eq!(a.fit.n_factors, 7);
+    // no dense-kernel mode: --reference and its knobs are not flags
+    for cmd in ["spatialpca", "mefisto", "spatialpca-pb", "mefisto-pb"] {
+        assert!(parse(&[cmd, "--reference"]).is_err(), "{cmd} --reference");
+    }
+    assert!(parse(&["spatialpca", "--bandwidth", "1.5"]).is_err());
+    assert!(parse(&["mefisto", "--n-inducing", "100"]).is_err());
+    let Ok(crate::Commands::Mefisto(m)) = parse(&["mefisto"]) else {
+        panic!("mefisto")
+    };
+    assert_eq!(
+        (m.fit.n_factors, m.fit.n_genes, m.fit.refine_k),
+        (4, 2000, 0)
+    );
+    for cmd in ["spatialpca", "mefisto"] {
+        assert!(parse(&[cmd, "-d", "5"]).is_err(), "{cmd} -d");
+        let pb = format!("{cmd}-pb");
+        assert!(parse(&[&pb, "-d", "5"]).is_ok(), "{pb} -d");
+        assert!(parse(&[&pb, "--reference"]).is_err(), "{pb} --reference");
+    }
+    let cli = crate::built_cli();
+    let visible = |cmd: &str| -> Vec<String> {
+        cli.find_subcommand(cmd)
+            .unwrap()
+            .get_arguments()
+            .filter(|a| !a.is_hide_set() && !a.is_positional())
+            .filter_map(|a| a.get_long().map(str::to_string))
+            .collect()
+    };
+    for cmd in ["spatialpca", "mefisto"] {
+        let v = visible(cmd);
+        for want in ["n-factors", "n-genes", "n-clusters", "ignore-batch", "seed"] {
+            assert!(v.iter().any(|f| f == want), "{cmd}: no --{want}");
+        }
+        for hidden in ["knn", "cg-tol", "slq-probes", "refine-k", "resolution"] {
+            assert!(!v.iter().any(|f| f == hidden), "{cmd}: --{hidden} shown");
+        }
+    }
+    assert!(!visible("mefisto").iter().any(|f| f == "n-inducing"));
+    for cmd in ["spatialpca", "mefisto"] {
+        assert!(!visible(cmd).iter().any(|f| f == "reference"), "{cmd}");
+    }
 }

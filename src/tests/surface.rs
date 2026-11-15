@@ -44,7 +44,11 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("srt-sim-baseline", 6),
         ("spatialde2", 12),
         ("stagate", 17),
+        ("spatialpca", 11),
+        ("mefisto", 11),
         ("spatialde2-pb", 12),
+        ("spatialpca-pb", 12),
+        ("mefisto-pb", 12),
         ("compare", 7),
         #[cfg(feature = "view")]
         ("view", 27),
