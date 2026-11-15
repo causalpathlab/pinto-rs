@@ -131,6 +131,8 @@ pub struct Spatialde2Shape {
     pub nonzeros: usize,
     /// Nonzeros of the genes segmented on.
     pub selected_nonzeros: usize,
+    /// Genes segmented on.
+    pub genes: usize,
     /// Edges of the symmetrised spatial graph, at most.
     pub edges: usize,
     /// Regions at the start (`--n-clusters`, else ceil(sqrt(cells))).
@@ -150,13 +152,15 @@ const SELECTED_NONZERO_BYTES: usize = 16 + 24 + 16;
 /// throughout and summed as if all were live at once, the counts as read
 /// (12 per nonzero) beside the selected counts
 /// ([`SELECTED_NONZERO_BYTES`]); the weighted graph (16 per edge); the
-/// posteriors, cells × regions, twice while pruning; and the kNN's Gram
-/// blocks.
+/// posteriors, cells × regions, twice while pruning; an update's genes ×
+/// regions arrays (E[λ], E[log λ] in both layouts, π̂ Y, the old and the
+/// new gammahat_1: six); and the kNN's Gram blocks.
 pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
     let held = 12 * s.nonzeros
         + SELECTED_NONZERO_BYTES * s.selected_nonzeros
         + 16 * s.edges
         + 16 * s.cells * s.regions
+        + 6 * 8 * s.genes * s.regions
         + s.gram;
     SPATIALDE2_PROCESS_BYTES + read_bytes(s.nonzeros).max(held)
 }

@@ -950,8 +950,8 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
 }
 
 /// The first memory check, from the files before their counts are read:
-/// every stored nonzero counted as selected too, so it bounds the check
-/// after the read. A file that does not store its nonzero count leaves the
+/// every stored nonzero counted as selected too, and as many genes as
+/// `--n-top-genes` could keep, so it bounds the check after the read. A file that does not store its nonzero count leaves the
 /// read unchecked.
 fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Result<()> {
     let Some(estimate) = input_peak_bytes(args, input) else {
@@ -970,11 +970,15 @@ fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Res
 /// nonzero count.
 pub(crate) fn input_peak_bytes(args: &Args, input: &OpenedInput) -> Option<usize> {
     let s = input.shape()?;
-    let shape = memory_shape(args, &s.section_sizes, s.nonzeros, s.nonzeros);
+    let genes = match args.n_top_genes {
+        0 => s.genes,
+        n => s.genes.min(n),
+    };
+    let shape = memory_shape(args, &s.section_sizes, s.nonzeros, s.nonzeros, genes);
     Some(spatialde2_peak_bytes(&shape))
 }
 
-/// What a run on `nonzeros` counts, `selected` of them on the genes
+/// What a run on `nonzeros` counts, `selected` of them on the `genes`
 /// segmented on, and sections of `section_sizes` cells holds
 /// ([`Spatialde2Shape`]).
 fn memory_shape(
@@ -982,12 +986,14 @@ fn memory_shape(
     section_sizes: &[usize],
     nonzeros: usize,
     selected: usize,
+    genes: usize,
 ) -> Spatialde2Shape {
     let n = section_sizes.iter().sum();
     Spatialde2Shape {
         cells: n,
         nonzeros,
         selected_nonzeros: selected,
+        genes,
         // symmetrising at most doubles the edges
         edges: 2 * knn_edges(section_sizes, args.neighbors),
         regions: initial_regions(n, args.n_clusters),
@@ -1012,7 +1018,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let n = data.cells.len();
     let sizes = section_sizes(&data.section);
     let spatial = args.neighbors > 0;
-    let shape = memory_shape(args, &sizes, data.counts.nnz(), selected);
+    let shape = memory_shape(args, &sizes, data.counts.nnz(), selected, genes.len());
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),

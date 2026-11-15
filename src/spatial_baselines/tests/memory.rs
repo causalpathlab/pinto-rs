@@ -134,10 +134,26 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
         cells: n,
         nonzeros: NONZEROS_PER_CELL * n,
         selected_nonzeros: NONZEROS_PER_CELL * n,
+        genes: 2000,
         edges: 2 * knn_edges(&sizes, 100),
         regions: spatialde2::initial_regions(n, None),
         gram: knn_gram_bytes(&sizes, threads),
     }
+}
+
+/// Each update holds six genes × regions arrays of f64: E[λ], E[log λ] in
+/// both layouts, π̂ Y, and the old and new gammahat_1.
+#[test]
+fn spatialde2_estimate_counts_the_genes_by_regions_state() {
+    let base = spatialde2_shape(16384, 1, 4);
+    let more = Spatialde2Shape {
+        genes: base.genes + 1000,
+        ..base.clone()
+    };
+    assert_eq!(
+        spatialde2_peak_bytes(&more) - spatialde2_peak_bytes(&base),
+        6 * 8 * 1000 * base.regions
+    );
 }
 
 #[test]
@@ -179,6 +195,7 @@ fn the_read_of_the_counts_is_charged() {
         cells: 10,
         nonzeros,
         selected_nonzeros: 0,
+        genes: 1,
         edges: 0,
         regions: 1,
         gram: 0,
