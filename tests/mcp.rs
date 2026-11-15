@@ -395,7 +395,16 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
         .collect();
     assert_eq!(
         names,
-        ["lc", "dsvd", "cage", "cage-cell", "spatialde2", "stagate"]
+        [
+            "lc",
+            "dsvd",
+            "cage",
+            "cage-cell",
+            "spatialde2",
+            "stagate",
+            "spatialde2-pb",
+            "stagate-pb"
+        ]
     );
     let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));
     assert_eq!(lc["coords"], true);

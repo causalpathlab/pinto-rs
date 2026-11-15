@@ -133,6 +133,52 @@ fn stagate_sparse_estimate_covers_every_measured_peak_and_is_not_far_above() {
     }
 }
 
+/// Maximum resident memory (MiB) of the `-pb` commands on one srt-simulate
+/// section (2000 genes, `-d 1024`, stagate-pb 20 epochs at the defaults
+/// otherwise, 4 threads): (cells, nonzeros, stagate-pb MiB, spatialde2-pb
+/// MiB).
+const PSEUDOBULK_MEASURED: [(usize, usize, f64, f64); 4] = [
+    (1024, 788_258, 437.77, 136.20),
+    (4096, 3_156_044, 870.66, 466.98),
+    (8100, 6_238_351, 1398.89, 695.89),
+    (16384, 12_572_357, 2445.99, 1316.26),
+];
+
+/// A `-pb` command's estimate, its cell-level fit's and the coarsening's,
+/// covers every measured run (it trains on super-cells, but unravels on
+/// every cell).
+#[test]
+fn pseudobulk_estimates_cover_every_measured_peak() {
+    for (cells, nonzeros, st_measured, sd_measured) in PSEUDOBULK_MEASURED {
+        let input = InputShape {
+            genes: 2000,
+            nonzeros,
+            section_sizes: vec![cells],
+        };
+        let st = stagate::StagateSizes {
+            sparse: true,
+            ..STAGATE_MEASURED_SIZES
+        }
+        .memory_shape(&input);
+        let est = mib(stagate_peak_bytes(&st) + pseudobulk_bytes(cells, nonzeros, st.edges));
+        assert!(
+            est >= st_measured,
+            "stagate-pb {cells}: {est:.0} < {st_measured}"
+        );
+        let sd = spatialde2::Spatialde2Sizes {
+            neighbors: 100,
+            n_clusters: None,
+            all_pairs: false,
+        }
+        .memory_shape(&input, nonzeros);
+        let est = mib(spatialde2_peak_bytes(&sd) + pseudobulk_bytes(cells, nonzeros, sd.edges));
+        assert!(
+            est >= sd_measured,
+            "spatialde2-pb {cells}: {est:.0} < {sd_measured}"
+        );
+    }
+}
+
 /// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
 /// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
 const NONZEROS_PER_CELL: usize = 765;

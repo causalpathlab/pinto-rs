@@ -32,7 +32,9 @@ data set (follow its job with `job_status` / `job_wait`), and never writes \
 over a run. Its methods also hold two spatial baselines, model-level \
 ports of published methods to compare pinto against: spatialde2 \
 (SpatialDE2's tissue segmentation) and stagate (STAGATE, its embedding \
-clustered by pinto's k-means or Leiden); \
+clustered by pinto's k-means or Leiden), sparse by default (reference runs \
+the original's own formulation), and their -pb forms, fitted on cage's \
+super-cells and unravelled to cells (stagate-pb is approximate); \
 run_fit runs them as it runs lc, and each writes a run with its labels and \
 a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's \
 ablation flags (permute-coords, drop-features, mask-cells with \

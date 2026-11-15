@@ -122,6 +122,20 @@ pub fn delta_estimate_bytes(genes: usize, nonzeros: usize, samples: usize) -> us
     DELTA_NONZERO_BYTES * nonzeros + DELTA_GENE_SAMPLE_BYTES * genes * samples
 }
 
+/// What a `-pb` command holds above its cell-level fit: the cells'
+/// projection (`-p` 200 f32 a cell) with the copy coarsening normalises and
+/// the seeds' features (three), the coarsening graph (cage's 5 neighbours
+/// a cell, as lists, edges and adjacency: 64 bytes a neighbour), the
+/// super-cells' counts (at most every nonzero: 12 as built, 12 held), and
+/// the fold of the method's `edges` listed edges onto the super-cells (an
+/// undirected copy, 24 bytes a pair, and the fold's map and fine-to-super
+/// index, 48 a pair: 36 a listed edge, 40 with a margin).
+pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize) -> usize {
+    let proj = 3 * 4 * crate::spatial_baselines::input::DELTA_PROJ_DIM * cells;
+    let graph = 64 * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
+    proj + graph + 24 * nonzeros + 40 * edges
+}
+
 /// What a STAGATE run holds at once.
 #[derive(Debug, Clone)]
 pub struct StagateShape {

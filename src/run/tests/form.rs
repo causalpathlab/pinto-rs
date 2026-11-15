@@ -237,7 +237,10 @@ fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
         );
         assert_eq!(check(&cli, &argv), Ok(()), "{argv:?}");
     }
-    assert_eq!(crate::run::BASELINES, ["spatialde2", "stagate"]);
+    assert_eq!(
+        crate::run::BASELINES,
+        ["spatialde2", "stagate", "spatialde2-pb", "stagate-pb"]
+    );
 }
 
 /// A negative value is the flag's own word, `--flag=value`, so it reaches

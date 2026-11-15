@@ -10,6 +10,7 @@ use crate::util::input::{
     read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
 };
 use anyhow::Context;
+use data_beans::alg::random_projection::RandProjOps;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::convert::try_open_or_convert;
 use data_beans::sparse_io::SparseIo;
@@ -63,6 +64,15 @@ pub struct SpatialInputArgs {
     #[arg(long, default_value_t = false)]
     pub reference: bool,
 
+    /// Target number of super-cells the -pb commands fit on (as cage's -d:
+    /// the cells are coarsened until about this many remain)
+    #[arg(long, short = 'd', default_value_t = 1024, hide = true)]
+    pub n_pseudobulk: usize,
+
+    /// Set by the `-pb` commands: fit on super-cells, then unravel to cells.
+    #[arg(skip)]
+    pub pseudobulk: bool,
+
     /// Output prefix
     #[arg(long, short, required = true)]
     pub out: Box<str>,
@@ -89,6 +99,10 @@ pub struct SpatialData {
     pub n_sections: usize,
     /// The batch effects the counts were divided by, when they were.
     pub delta: Option<AppliedDelta>,
+    /// The cells' random projection (`proj_dim × cells`, batch-corrected
+    /// with δ when there is one), as cage coarsens on it; read for the
+    /// `-pb` commands only.
+    pub projection: Option<Mat>,
 }
 
 /// The δ a baseline's counts were divided by: estimated on the input
@@ -229,6 +243,19 @@ impl SpatialInputArgs {
         } else {
             estimate_delta(&mut srt.data, &srt.batches, &self.out)?
         };
+        // the projection cage coarsens on, taken as cage takes it
+        let projection = match self.pseudobulk {
+            true => Some(
+                srt.data
+                    .project_columns_with_batch_correction(
+                        DELTA_PROJ_DIM,
+                        None,
+                        delta.as_ref().map(|_| srt.batches.as_slice()),
+                    )?
+                    .proj,
+            ),
+            false => None,
+        };
         let mut counts = srt.data.read_columns_csc(0..cells.len())?;
         drop(srt.data);
         let applied = delta.map(|(mean, batches)| {
@@ -260,6 +287,7 @@ impl SpatialInputArgs {
             section,
             n_sections,
             delta: applied,
+            projection,
         })
     }
 }
@@ -300,8 +328,9 @@ fn estimate_delta(
     Ok(Some((posterior.into_mean()?, names)))
 }
 
-/// cage's defaults for the δ estimate (`-p`, `--batch-knn`, `--num-levels`).
-const DELTA_PROJ_DIM: usize = 200;
+/// cage's defaults for the δ estimate (`-p`, `--batch-knn`, `--num-levels`);
+/// `-p` is also the projection the `-pb` commands coarsen on.
+pub const DELTA_PROJ_DIM: usize = 200;
 const DELTA_BATCH_KNN: usize = 10;
 const DELTA_NUM_LEVELS: usize = 5;
 

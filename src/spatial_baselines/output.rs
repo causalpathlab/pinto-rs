@@ -54,6 +54,36 @@ pub struct Fitted<'a> {
     pub settings: serde_json::Value,
     /// The super-cells a `-pb` command fitted on; `None` on cells.
     pub pseudobulk: Option<PseudobulkInput>,
+    /// A `-pb` command's cells: each one's super-cell and that super-cell's
+    /// label, the broadcast diagnostic, for `{out}.cell_pb.parquet`.
+    pub cell_pb: Option<CellPb<'a>>,
+}
+
+/// Each cell's super-cell and the super-cell's label.
+pub struct CellPb<'a> {
+    pub super_cell: &'a [usize],
+    pub broadcast: &'a [usize],
+}
+
+fn cell_pb_path(prefix: &str) -> String {
+    format!("{prefix}.cell_pb.parquet")
+}
+
+/// `{out}.cell_pb.parquet`: `cell`, its super-cell `pb` (as cage writes
+/// it) and the super-cell's label `pb_label` broadcast to it.
+fn write_cell_pb(prefix: &str, cells: &[Box<str>], c: &CellPb<'_>) -> anyhow::Result<()> {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let pb: Vec<Box<str>> = c.super_cell.iter().map(|p| p.to_string().into()).collect();
+    let label: Vec<Box<str>> = c.broadcast.iter().map(|l| format!("C{l}").into()).collect();
+    write_named_table(
+        &cell_pb_path(prefix),
+        "cell",
+        cells,
+        &[
+            ("pb".into(), Column::Str(&pb)),
+            ("pb_label".into(), Column::Str(&label)),
+        ],
+    )
 }
 
 /// The run's formulation (`--reference` or the sparse default) and input.
@@ -139,6 +169,9 @@ pub fn write_run(
     };
     mkdir_parent(prefix)?;
     write_labels(prefix, &data.cells, fit.labels)?;
+    if let Some(c) = &fit.cell_pb {
+        write_cell_pb(prefix, &data.cells, c)?;
+    }
     write_embedding(prefix, &data.cells, fit.embedding, fit.embedding_name)?;
     write_propensity_matrix(prefix, membership, &data.cells)?;
     write_cells_table(
@@ -183,6 +216,7 @@ pub fn write_run(
             cell_embedding: Some(embedding_path(prefix)),
             batch_effects,
             delta_cells,
+            cell_pb: fit.cell_pb.as_ref().map(|_| cell_pb_path(prefix)),
             ..Default::default()
         },
         batch_labels: data.delta.as_ref().map(|_| match input.batch_files {

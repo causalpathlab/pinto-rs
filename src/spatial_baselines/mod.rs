@@ -10,6 +10,10 @@
 //!   (STAGATE, Dong and Zhang 2022, Nature Communications 13:1739,
 //!   doi:10.1038/s41467-022-29439-6).
 //!
+//! Each also runs on super-cells (`spatialde2-pb`, `stagate-pb`): the cells
+//! coarsened as cage coarsens them ([`pseudobulk`]), the fit then
+//! unravelled to cells by conditional re-inference.
+//!
 //! Each is faithful at the model level: the preprocessing, model, loss or
 //! updates, defaults and clustering step of its reference code, cited per
 //! module. Each runs on the cells, one section at a time where the method
@@ -32,6 +36,7 @@ pub mod graph;
 pub mod input;
 pub mod memory;
 pub mod output;
+pub mod pseudobulk;
 pub mod spatialde2;
 pub mod stagate;
 

@@ -738,6 +738,50 @@ enum Commands {
     Stagate(Box<spatial_baselines::stagate::Args>),
 
     #[command(
+        name = "spatialde2-pb",
+        about = "spatialde2 fitted on cage's super-cells, unravelled to cells (baseline)",
+        long_about = concat!(
+            "spatialde2 fitted on super-cells, then unravelled to cells.\n\n\
+             The cells are coarsened as cage coarsens them, to about -d super-cells\n\
+             within each section. A super-cell's counts are its cells' summed, and a\n\
+             super-edge's weight sums the cell-level weights of the cell-cell edges\n\
+             it collapses: the cells' model with each super-cell's cells sharing a\n\
+             region. Each cell's region posterior is then re-inferred on its own\n\
+             counts and the cell graph, the fit's region rates held fixed. Takes\n\
+             spatialde2's flags; --reference is refused.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        ),
+        mut_arg("n_pseudobulk", |a| a.hide(false)),
+        mut_arg("reference", |a| a.hide(true))
+    )]
+    Spatialde2Pb(Box<spatial_baselines::spatialde2::Args>),
+
+    #[command(
+        name = "stagate-pb",
+        about = "stagate trained on cage's super-cells, unravelled to cells (baseline)",
+        long_about = concat!(
+            "stagate trained on super-cells, then unravelled to cells.\n\n\
+             The cells are coarsened as cage coarsens them, to about -d super-cells\n\
+             within each section, each with its cells' counts summed, on the cell\n\
+             graph collapsed onto them. The trained encoder then embeds each cell\n\
+             from its own counts and the cell graph, and each cell takes the nearest\n\
+             centroid of the domains clustered on the super-cells. Takes stagate's\n\
+             flags; --reference is refused.\n\n\
+             Approximate: on simulated sections its unravelled domains fall well\n\
+             short of stagate's on cells (the encoder trained on super-cells does\n\
+             not carry over to single cells' sparser counts).\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        ),
+        mut_arg("n_pseudobulk", |a| a.hide(false)),
+        mut_arg("reference", |a| a.hide(true))
+    )]
+    StagatePb(Box<spatial_baselines::stagate::Args>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -905,6 +949,8 @@ impl Commands {
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
             Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
             Commands::Stagate(a) => (&mut a.input.out, "stagate"),
+            Commands::Spatialde2Pb(a) => (&mut a.input.out, "spatialde2-pb"),
+            Commands::StagatePb(a) => (&mut a.input.out, "stagate-pb"),
             _ => return None,
         })
     }
@@ -958,8 +1004,11 @@ fn main() -> anyhow::Result<()> {
             .exit()
     });
     name_folder_out(&mut cli.commands);
-    if let Commands::CageCell(a) = &mut cli.commands {
-        a.cell_level = true;
+    match &mut cli.commands {
+        Commands::CageCell(a) => a.cell_level = true,
+        Commands::Spatialde2Pb(a) => a.input.pseudobulk = true,
+        Commands::StagatePb(a) => a.input.pseudobulk = true,
+        _ => {}
     }
 
     crate::util::common::init_logger(cli.verbose);
@@ -1007,8 +1056,12 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
-        Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
-        Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
+        Commands::Spatialde2(args) | Commands::Spatialde2Pb(args) => {
+            spatial_baselines::spatialde2::run(args)?
+        }
+        Commands::Stagate(args) | Commands::StagatePb(args) => {
+            spatial_baselines::stagate::run(args)?
+        }
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
