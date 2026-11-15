@@ -129,6 +129,12 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
     for (g, r) in model_row.iter().enumerate() {
         let r = r.expect("every row is a model row");
         assert_eq!(used.mean[(g, 0)], model_delta.mean[(r, 0)], "row {g}");
+        // the fits' table in full: the known batch's spread is the model's
+        assert_eq!(used.sd[(g, 0)], model_delta.sd[(r, 0)], "row {g}");
+        assert!(
+            model_delta.sd[(r, 0)] > 0.0,
+            "row {g}: the model has no spread"
+        );
         // the new section's fold over the known one is s3's over s1's
         let fold = used.mean[(g, 1)] / used.mean[(g, 0)];
         let want = if g % 3 == 1 { 8.0 } else { 1.0 };

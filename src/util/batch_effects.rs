@@ -200,26 +200,36 @@ pub fn estimate_and_write_batch_effects(
 }
 
 /// A run's batch effects, read back from its `{prefix}.delta.parquet`: the
-/// posterior mean of δ, one row per matrix row the run read (a splice
-/// channel such as `FEATURE/count/spliced` is a row of its own) and one
-/// column per batch label as estimated (after `--auto-batch`), sorted.
+/// posterior of δ, one row per matrix row the run read (a splice channel
+/// such as `FEATURE/count/spliced` is a row of its own) and one column per
+/// batch label as estimated (after `--auto-batch`), sorted. The mean is
+/// what the run divided by; the spread planes are carried so a table
+/// written from this one has the fits' schema.
 pub struct RunDelta {
     pub rows: Vec<Box<str>>,
     pub batches: Vec<Box<str>>,
-    /// `[rows × batches]`
+    /// `[rows × batches]` each.
     pub mean: Mat,
+    pub sd: Mat,
+    pub log_mean: Mat,
+    pub log_sd: Mat,
 }
 
-/// Read a melted `delta.parquet` (`feature`, `batch`, `mean`, ...); only the
-/// mean is kept, the value the run itself divided by.
+/// The columns of a melted δ table after `feature` and `batch`, as the
+/// fits write them.
+const DELTA_PLANES: [&str; 4] = ["mean", "sd", "log_mean", "log_sd"];
+
+/// Read a melted `delta.parquet` (`feature`, `batch`, `mean`, and the fits'
+/// `sd`, `log_mean`, `log_sd`; a table with the mean alone reads with the
+/// spread planes zero).
 pub fn read_delta(path: &str) -> anyhow::Result<RunDelta> {
-    let (strs, nums) = read_table_columns(path, &["feature", "batch"], &["mean"])?;
+    let (strs, nums) = read_table_columns(path, &["feature", "batch"], &DELTA_PLANES)
+        .or_else(|_| read_table_columns(path, &["feature", "batch"], &DELTA_PLANES[..1]))?;
     let [feature, batch]: [Vec<Box<str>>; 2] = strs
         .try_into()
         .map_err(|_| anyhow::anyhow!("{path}: expected feature and batch columns"))?;
-    let mean = nums.into_iter().next().unwrap_or_default();
     anyhow::ensure!(
-        feature.len() == batch.len() && batch.len() == mean.len(),
+        nums.iter().all(|c| c.len() == feature.len()) && feature.len() == batch.len(),
         "{path}: columns of different lengths"
     );
     let mut batches: Vec<Box<str>> = batch.clone();
@@ -238,18 +248,27 @@ pub fn read_delta(path: &str) -> anyhow::Result<RunDelta> {
             rows.push(f.clone());
         }
     }
-    let mut m = Mat::from_element(rows.len(), batches.len(), f32::NAN);
-    for ((f, b), &v) in feature.iter().zip(&batch).zip(&mean) {
-        m[(row_of[f], col_of[b.as_ref()])] = v as f32;
-    }
+    let plane = |k: usize, fill: f32| {
+        let mut m = Mat::from_element(rows.len(), batches.len(), fill);
+        if let Some(values) = nums.get(k) {
+            for ((f, b), &v) in feature.iter().zip(&batch).zip(values) {
+                m[(row_of[f], col_of[b.as_ref()])] = v as f32;
+            }
+        }
+        m
+    };
+    let mean = plane(0, f32::NAN);
     anyhow::ensure!(
-        m.iter().all(|v| v.is_finite()),
+        mean.iter().all(|v| v.is_finite()),
         "{path}: not every (feature, batch) pair has a finite mean"
     );
     Ok(RunDelta {
+        sd: plane(1, 0.0),
+        log_mean: plane(2, 0.0),
+        log_sd: plane(3, 0.0),
+        mean,
         rows,
         batches,
-        mean: m,
     })
 }
 
@@ -266,13 +285,77 @@ impl RunDelta {
         rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
     }
 
-    /// This δ on another matrix's `rows`, matched by name: `[rows × batches]`,
-    /// with 1 (no shift) on a row the run did not read.
-    pub fn on_rows(&self, rows: &[Box<str>]) -> Mat {
+    /// This δ on another matrix's `rows`, matched by name, and which of
+    /// them the run read; a row it did not read is no shift (mean 1, no
+    /// spread).
+    pub fn on_rows(&self, rows: &[Box<str>]) -> (Self, Vec<bool>) {
         let idx = self.row_index(rows);
-        Mat::from_fn(rows.len(), self.batches.len(), |i, j| {
-            idx[i].map_or(1.0, |r| self.mean[(r, j)])
-        })
+        let pick = |m: &Mat, fill: f32| {
+            Mat::from_fn(rows.len(), self.batches.len(), |i, j| {
+                idx[i].map_or(fill, |r| m[(r, j)])
+            })
+        };
+        let on = Self {
+            rows: rows.to_vec(),
+            batches: self.batches.clone(),
+            mean: pick(&self.mean, 1.0),
+            sd: pick(&self.sd, 0.0),
+            log_mean: pick(&self.log_mean, 0.0),
+            log_sd: pick(&self.log_sd, 0.0),
+        };
+        (on, idx.iter().map(Option::is_some).collect())
+    }
+
+    /// This δ's columns `batches`, by label; a label it lacks is no shift.
+    pub fn on_batches(&self, batches: &[Box<str>]) -> Self {
+        let idx: Vec<Option<usize>> = batches
+            .iter()
+            .map(|b| self.batches.iter().position(|m| m == b))
+            .collect();
+        let pick = |m: &Mat, fill: f32| {
+            Mat::from_fn(self.rows.len(), batches.len(), |i, j| {
+                idx[j].map_or(fill, |c| m[(i, c)])
+            })
+        };
+        Self {
+            rows: self.rows.clone(),
+            batches: batches.to_vec(),
+            mean: pick(&self.mean, 1.0),
+            sd: pick(&self.sd, 0.0),
+            log_mean: pick(&self.log_mean, 0.0),
+            log_sd: pick(&self.log_sd, 0.0),
+        }
+    }
+
+    /// Write this δ melted to `path`, in the fits' schema (`feature`,
+    /// `batch`, `mean`, `sd`, `log_mean`, `log_sd`), so [`read_delta`]
+    /// reads it back.
+    pub fn write(&self, path: &str) -> anyhow::Result<()> {
+        use legume_numeric::matrix::parquet::{write_named_table, Column};
+        let n = self.rows.len() * self.batches.len();
+        let (mut feature, mut batch) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut planes: [Vec<f32>; 4] = Default::default();
+        for (b, label) in self.batches.iter().enumerate() {
+            for (g, row) in self.rows.iter().enumerate() {
+                feature.push(row.clone());
+                batch.push(label.clone());
+                for (p, m) in
+                    planes
+                        .iter_mut()
+                        .zip([&self.mean, &self.sd, &self.log_mean, &self.log_sd])
+                {
+                    p.push(m[(g, b)]);
+                }
+            }
+        }
+        let mut cols = vec![("batch".into(), Column::Str(&batch))];
+        cols.extend(
+            DELTA_PLANES
+                .iter()
+                .zip(&planes)
+                .map(|(name, p)| ((*name).into(), Column::F32(p))),
+        );
+        write_named_table(path, "feature", &feature, &cols)
     }
 }
 

@@ -221,7 +221,7 @@ fn reference_divide(model: &str, ref_data: &SparseIoVec) -> anyhow::Result<Optio
         batch_of_cell.len()
     );
     Ok(Some(RefDivide {
-        delta: delta.on_rows(&ref_data.row_names()?),
+        delta: delta.on_rows(&ref_data.row_names()?).0.mean,
         batch_of_cell,
     }))
 }

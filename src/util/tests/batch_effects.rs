@@ -58,7 +58,9 @@ fn delta_rows_are_matched_by_name() {
     assert_eq!((at("GENE1", 0), at("GENE1", 1)), (0.5, 2.0));
     assert_eq!((at("GENE2", 0), at("GENE2", 1)), (0.25, 4.0));
     let rows: Vec<Box<str>> = ["GENE1", "GENE3", "GENE2"].map(Box::from).to_vec();
-    let on = d.on_rows(&rows);
+    let (on, read) = d.on_rows(&rows);
+    assert_eq!(read, [true, false, true]);
+    let on = on.mean;
     assert_eq!(on.nrows(), 3);
     assert_eq!((on[(0, 1)], on[(2, 0)]), (2.0, 0.25));
     assert_eq!(
@@ -112,4 +114,42 @@ fn columns_are_divided_by_their_batchs_delta() {
     assert_eq!((at(0, 0), at(1, 0)), (2.0, 6.0), "δ 0 leaves the count");
     assert_eq!(at(0, 1), 5.0, "a skipped column is left as is");
     assert_eq!(at(1, 2), 3.0);
+}
+
+/// A δ written by `RunDelta::write` has the fits' columns and reads back
+/// whole, every plane.
+#[test]
+fn a_written_delta_reads_back_with_its_spread() {
+    use crate::util::batch_effects::{read_delta, RunDelta};
+    use crate::util::common::Mat;
+    use legume_numeric::matrix::parquet::read_table_columns;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("x.delta.parquet");
+    let path = path.to_str().unwrap();
+    let names = |v: &[&str]| v.iter().map(|&s| Box::from(s)).collect::<Vec<Box<str>>>();
+    let d = RunDelta {
+        rows: names(&["GENE1", "GENE2"]),
+        batches: names(&["a", "b"]),
+        mean: Mat::from_row_slice(2, 2, &[0.5, 2.0, 1.5, 0.75]),
+        sd: Mat::from_row_slice(2, 2, &[0.1, 0.2, 0.3, 0.4]),
+        log_mean: Mat::from_row_slice(2, 2, &[-0.7, 0.7, 0.4, -0.3]),
+        log_sd: Mat::from_row_slice(2, 2, &[0.01, 0.02, 0.03, 0.04]),
+    };
+    d.write(path).unwrap();
+    read_table_columns(
+        path,
+        &["feature", "batch"],
+        &["mean", "sd", "log_mean", "log_sd"],
+    )
+    .expect("the fits' columns");
+    let back = read_delta(path).unwrap();
+    assert_eq!((back.rows, back.batches), (d.rows, d.batches));
+    for (a, b) in [
+        (&back.mean, &d.mean),
+        (&back.sd, &d.sd),
+        (&back.log_mean, &d.log_mean),
+        (&back.log_sd, &d.log_sd),
+    ] {
+        assert!((a - b).abs().max() < 1e-6);
+    }
 }

@@ -672,19 +672,30 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         }
     };
     let rows = data_vec.row_names()?;
+    // The estimate in full (its spread too) is the table preprocessing
+    // wrote; on this sample's rows and sorted batches.
+    let estimate = match batch_effects {
+        Some(_) => Some(
+            crate::util::batch_effects::read_delta(&format!("{}.delta.parquet", c.out))?
+                .on_rows(&rows)
+                .0
+                .on_batches(&query_batches),
+        ),
+        None => None,
+    };
     let (batch_effects, from_model) = delta::query_delta(
         &args.model,
         &how,
         &rows,
         &query_batches,
-        batch_effects,
+        estimate,
         c.ignore_batch,
     )?;
     if let (Some(d), true) = (batch_effects.as_ref(), from_model) {
-        delta::write_delta(&c.out, d, &rows, &query_batches)?;
+        d.write(&format!("{}.delta.parquet", c.out))?;
     }
     let pair_batch = batch_effects.as_ref().map(|delta| PairBatchDivisor {
-        delta,
+        delta: &delta.mean,
         batch_of_cell: &batch_of_cell,
     });
 

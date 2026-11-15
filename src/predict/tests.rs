@@ -93,20 +93,40 @@ mod batch_effects {
     }
 
     /// A known batch takes the model's column; a new one the query's
-    /// estimate times the model-over-estimate ratio of the shared batches;
-    /// a row the model lacks keeps the estimate.
+    /// estimate times the model-over-estimate ratio of the shared batches,
+    /// its spread scaled alike; a row the model lacks keeps the estimate.
+    /// Every plane of the fits' table is filled.
     #[test]
     fn a_new_batch_is_carried_into_the_model_frame() {
+        use crate::util::batch_effects::RunDelta;
+        let planes = |mean: &[f32], sd: f32| RunDelta {
+            rows: boxed(&["r0", "r1"]),
+            batches: boxed(&["b0", "b1"]),
+            mean: Mat::from_row_slice(2, 2, mean),
+            sd: Mat::from_element(2, 2, sd),
+            log_mean: Mat::from_row_slice(2, 2, mean).map(f32::ln),
+            log_sd: Mat::from_element(2, 2, 0.1),
+        };
         // model: rows x batches (m0, m1)
-        let model = Mat::from_row_slice(2, 2, &[0.5, 2.0, 1.0, 1.0]);
+        let model = planes(&[0.5, 2.0, 1.0, 1.0], 0.2);
         // query batches (q0 = m1, q1 new); its own estimate pinned over q0, q1
-        let estimate = Mat::from_row_slice(2, 2, &[0.5, 2.0, 3.0, 1.0 / 3.0]);
+        let estimate = planes(&[0.5, 2.0, 3.0, 1.0 / 3.0], 0.01);
         let matched = [Some(1), None];
-        let d = combine(&model, &[true, false], Some(&estimate), &matched);
-        assert_eq!(d[(0, 0)], 2.0, "known batch: the model's column");
+        let q = boxed(&["q0", "q1"]);
+        let d = combine(&model, &[true, false], Some(&estimate), &matched, &q);
+        assert_eq!(d.batches, q);
+        assert_eq!(d.mean[(0, 0)], 2.0, "known batch: the model's column");
+        assert_eq!(d.sd[(0, 0)], 0.2, "known batch: the model's spread");
         // new: 2.0 (estimate) x 2.0 / 0.5 (model over estimate on q0)
-        assert!((d[(0, 1)] - 8.0).abs() < 1e-5, "{}", d[(0, 1)]);
-        assert_eq!((d[(1, 0)], d[(1, 1)]), (3.0, 1.0 / 3.0), "no model row");
+        assert!((d.mean[(0, 1)] - 8.0).abs() < 1e-5, "{}", d.mean[(0, 1)]);
+        assert!((d.sd[(0, 1)] - 0.04).abs() < 1e-6, "{}", d.sd[(0, 1)]);
+        assert!((d.log_mean[(0, 1)] - 8f32.ln()).abs() < 1e-5);
+        assert_eq!(d.log_sd[(0, 1)], 0.1);
+        assert_eq!(
+            (d.mean[(1, 0)], d.mean[(1, 1)]),
+            (3.0, 1.0 / 3.0),
+            "no model row"
+        );
     }
 }
 

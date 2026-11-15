@@ -10,7 +10,6 @@
 
 use crate::util::batch_effects::{read_delta, run_delta_path, RunDelta};
 use crate::util::common::*;
-use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 /// How a query's batch labels name batches, and so how they can be matched
 /// to the model's.
@@ -67,42 +66,57 @@ fn same_file(a: &str, b: &str) -> bool {
 }
 
 /// The δ for the query, `[query rows × query batches]`, from the model's δ
-/// on the query's rows and the query's own estimate.
+/// on the query's rows (`model_has_row`: the rows the model read) and the
+/// query's own estimate on the same rows and batches.
 ///
 /// A query batch that is a model batch (`matched`) takes the model's
 /// column. Any other takes the query's estimate, moved into the model's
 /// frame: on each row, times the geometric mean, over the shared batches,
-/// of model over estimate. A row the model did not read takes the estimate
-/// as it is (1 without one).
+/// of model over estimate (the spread scaled alike). A row the model did
+/// not read takes the estimate as it is (no shift without one).
 pub(crate) fn combine(
-    model: &Mat,
+    model: &RunDelta,
     model_has_row: &[bool],
-    estimate: Option<&Mat>,
+    estimate: Option<&RunDelta>,
     matched: &[Option<usize>],
-) -> Mat {
-    let n_rows = model.nrows();
+    query_batches: &[Box<str>],
+) -> RunDelta {
+    let n_rows = model.rows.len();
     let shared: Vec<(usize, usize)> = matched
         .iter()
         .enumerate()
         .filter_map(|(q, m)| m.map(|m| (q, m)))
         .collect();
-    let est = |g: usize, q: usize| estimate.map_or(1.0, |e| e[(g, q)]);
-    let anchor: Vec<f32> = (0..n_rows)
+    let est = |plane: fn(&RunDelta) -> &Mat, g: usize, q: usize, none: f32| {
+        estimate.map_or(none, |e| plane(e)[(g, q)])
+    };
+    let log_anchor: Vec<f32> = (0..n_rows)
         .map(|g| {
             if !model_has_row[g] || shared.is_empty() || estimate.is_none() {
-                return 1.0;
+                return 0.0;
             }
             let log_ratio: f32 = shared
                 .iter()
-                .map(|&(q, m)| model[(g, m)].ln() - est(g, q).ln())
+                .map(|&(q, m)| model.mean[(g, m)].ln() - est(|e| &e.mean, g, q, 1.0).ln())
                 .sum();
-            (log_ratio / shared.len() as f32).exp()
+            log_ratio / shared.len() as f32
         })
         .collect();
-    Mat::from_fn(n_rows, matched.len(), |g, q| match matched[q] {
-        Some(m) if model_has_row[g] => model[(g, m)],
-        _ => est(g, q) * anchor[g],
-    })
+    let plane = |of: fn(&RunDelta) -> &Mat, none: f32, moved: &dyn Fn(f32, usize) -> f32| {
+        Mat::from_fn(n_rows, matched.len(), |g, q| match matched[q] {
+            Some(m) if model_has_row[g] => of(model)[(g, m)],
+            _ => moved(est(of, g, q, none), g),
+        })
+    };
+    let scale = |v: f32, g: usize| v * log_anchor[g].exp();
+    RunDelta {
+        rows: model.rows.clone(),
+        batches: query_batches.to_vec(),
+        mean: plane(|d| &d.mean, 1.0, &scale),
+        sd: plane(|d| &d.sd, 0.0, &scale),
+        log_mean: plane(|d| &d.log_mean, 0.0, &|v, g| v + log_anchor[g]),
+        log_sd: plane(|d| &d.log_sd, 0.0, &|v, _| v),
+    }
 }
 
 /// The δ predict divides the query by, given the query's own estimate
@@ -114,9 +128,9 @@ pub(crate) fn query_delta(
     how: &QueryLabels<'_>,
     rows: &[Box<str>],
     query_batches: &[Box<str>],
-    estimate: Option<Mat>,
+    estimate: Option<RunDelta>,
     ignore_batch: bool,
-) -> anyhow::Result<(Option<Mat>, bool)> {
+) -> anyhow::Result<(Option<RunDelta>, bool)> {
     if ignore_batch {
         return Ok((None, false));
     }
@@ -141,8 +155,7 @@ pub(crate) fn query_delta(
              estimated; their counts are not divided"
         );
     }
-    let idx = model.row_index(rows);
-    let has_row: Vec<bool> = idx.iter().map(Option::is_some).collect();
+    let (on_rows, has_row) = model.on_rows(rows);
     let n_missing = has_row.iter().filter(|&&h| !h).count();
     if n_missing > 0 {
         info!(
@@ -155,41 +168,14 @@ pub(crate) fn query_delta(
          {n_new} new",
         matched.len()
     );
-    let on_rows = model.on_rows(rows);
     Ok((
-        Some(combine(&on_rows, &has_row, estimate.as_ref(), &matched)),
+        Some(combine(
+            &on_rows,
+            &has_row,
+            estimate.as_ref(),
+            &matched,
+            query_batches,
+        )),
         true,
     ))
-}
-
-/// Write `delta` as `{out}.delta.parquet`, melted as the fits write theirs
-/// (`feature`, `batch`, `mean`), so [`read_delta`] reads it back.
-pub(crate) fn write_delta(
-    out: &str,
-    delta: &Mat,
-    rows: &[Box<str>],
-    batches: &[Box<str>],
-) -> anyhow::Result<()> {
-    let n = delta.nrows() * delta.ncols();
-    let (mut feature, mut batch, mut mean) = (
-        Vec::with_capacity(n),
-        Vec::with_capacity(n),
-        Vec::with_capacity(n),
-    );
-    for (b, label) in batches.iter().enumerate() {
-        for (g, row) in rows.iter().enumerate() {
-            feature.push(row.clone());
-            batch.push(label.clone());
-            mean.push(delta[(g, b)]);
-        }
-    }
-    write_named_table(
-        &format!("{out}.delta.parquet"),
-        "feature",
-        &feature,
-        &[
-            ("batch".into(), Column::Str(&batch)),
-            ("mean".into(), Column::F32(&mean)),
-        ],
-    )
 }
