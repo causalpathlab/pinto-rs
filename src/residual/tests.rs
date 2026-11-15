@@ -152,9 +152,7 @@ fn rewrite_run(prefix: &str, names: &[&str], prop: Mat, command: &str) {
     let names: Vec<Box<str>> = names.iter().map(|&n| n.into()).collect();
     write_propensity_matrix(prefix, &prop, &names).unwrap();
     let manifest = format!("{prefix}.pinto.json");
-    let mut meta = PintoMetadata::read(Path::new(&manifest)).unwrap();
-    meta.command = command.into();
-    meta.write(Path::new(&manifest)).unwrap();
+    PintoMetadata::update(Path::new(&manifest), |m| m.command = command.into()).unwrap();
 }
 
 const CELLS: [&str; 4] = ["a@S1", "b@S1", "a@S2", "b@S2"];

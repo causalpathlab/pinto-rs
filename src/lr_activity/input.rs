@@ -6,7 +6,7 @@ use crate::lr_activity::args::LraInputArgs;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::lupin_rounds::{latest_rounds, read_json, same_file};
-use crate::util::metadata::{resolve_beside, GraphParams, OutputFiles, PintoMetadata, Run};
+use crate::util::metadata::{resolve_beside, GraphParams, PintoMetadata, Run};
 use std::path::{Path, PathBuf};
 
 /// The label of a cell no cell-type or region table names.
@@ -696,25 +696,22 @@ pub fn record_manifest(
         return Ok(r.manifest.clone());
     }
     let path = PathBuf::from(format!("{out}.pinto.json"));
-    if !path.exists() {
-        PintoMetadata {
-            command: "lra".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            timestamp: crate::util::metadata::now_secs(),
-            prefix: out.into(),
-            data_files: Some(input.data_files.iter().map(|s| s.to_string()).collect()),
-            coord_file: Some(input.coord_files.join(",")),
-            n_cells: contacts.data.num_columns(),
-            n_features: contacts.axis.n_features(),
-            n_edges: Some(contacts.pairs.len()),
-            graph: Some(GraphParams {
-                knn_base: input.knn_spatial,
-                ..Default::default()
-            }),
-            outputs: OutputFiles::default(),
+    PintoMetadata {
+        command: "lra".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        timestamp: crate::util::metadata::now_secs(),
+        prefix: out.into(),
+        data_files: Some(input.data_files.iter().map(|s| s.to_string()).collect()),
+        coord_file: Some(input.coord_files.join(",")),
+        n_cells: contacts.data.num_columns(),
+        n_features: contacts.axis.n_features(),
+        n_edges: Some(contacts.pairs.len()),
+        graph: Some(GraphParams {
+            knn_base: input.knn_spatial,
             ..Default::default()
-        }
-        .write(&path)?;
+        }),
+        ..Default::default()
     }
+    .write_if_missing(&path)?;
     Ok(path)
 }
