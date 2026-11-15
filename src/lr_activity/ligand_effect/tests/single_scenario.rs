@@ -219,9 +219,10 @@ fn small_grid() -> GridOpts {
 
 /// The built-in grid's table, pinned: the row count, which pairs ran, and
 /// position-weighted sums over the estimate, its SE, its truth and whether
-/// it was estimable. A change to the grid, to its
-/// seeds or to what one run draws moves them. Values match to a part in
-/// 1e5, well above the f32 rounding of the table.
+/// it was estimable. A change to the grid, to its seeds or to what one run
+/// draws moves them. The estimable count matches exactly; the others match
+/// to a part in 1e4 of their absolute terms, since the fits stop at points
+/// that differ slightly between CPU architectures.
 #[test]
 fn the_built_in_grid_is_pinned() {
     let dir = tempfile::tempdir().unwrap();
@@ -232,35 +233,36 @@ fn the_built_in_grid_is_pinned() {
         run_grid(&f.inputs(&out, &m, 42), small_grid())
     })
     .unwrap();
+    let want = [
+        ("estimate", 6.088_119_713_589_549, 1e-4),
+        ("se", 8.306_056_205_183_268, 1e-4),
+        ("truth", 3.749_613_553_285_598_8, 1e-4),
+        ("estimable", 206.0, 0.0),
+    ];
     let path = lra_simulate_path(&out);
-    let (s, x) = read_table_columns(
-        &path,
-        &["ligand"],
-        &["estimate", "se", "truth", "estimable"],
-    )
-    .unwrap();
+    let (s, x) = read_table_columns(&path, &["ligand"], &want.map(|(name, ..)| name)).unwrap();
     let mut ligands: Vec<&str> = s[0].iter().map(|l| &**l).collect();
     assert_eq!(ligands.len(), 20);
     ligands.dedup();
     assert_eq!(ligands, ["GENE6", "GENE5"], "the most abundant ligands");
-    // Each row weighted by its position, so rows trading values move it.
-    let fingerprint = |v: &[f64]| {
+    // Each row weighted by its position, so rows trading values move it;
+    // the same weights on |x| give the scale a band is taken from.
+    let weighted = |v: &[f64]| {
         v.iter()
             .enumerate()
             .filter(|(_, x)| x.is_finite())
-            .map(|(i, x)| (i + 1) as f64 * x)
-            .sum::<f64>()
+            .map(|(i, &x)| ((i + 1) as f64 * x, (i + 1) as f64 * x.abs()))
+            .fold((0.0, 0.0), |(a, b), (c, d)| (a + c, b + d))
     };
-    let got = x.iter().map(|c| fingerprint(c)).collect::<Vec<_>>();
-    let want = [
-        6.088_119_713_589_549,
-        8.306_056_205_183_268,
-        3.749_613_553_285_598_8,
-        206.0,
-    ];
-    for (k, (g, w)) in got.iter().zip(want).enumerate() {
-        assert!((g - w).abs() <= 1e-5 * w.abs(), "column {k}: {g} != {w}");
-    }
+    let off: Vec<String> = x
+        .iter()
+        .zip(want)
+        .filter_map(|(v, (name, w, tol))| {
+            let (got, scale) = weighted(v);
+            ((got - w).abs() > tol * scale).then(|| format!("{name}: {got} != {w}"))
+        })
+        .collect();
+    assert!(off.is_empty(), "{}", off.join("; "));
 }
 
 // * The single-scenario mode
