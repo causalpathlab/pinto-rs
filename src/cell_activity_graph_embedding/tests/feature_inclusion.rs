@@ -309,3 +309,24 @@ fn expected_visits_are_the_sum_of_pi() {
     assert_eq!(expected_visits(&[1, 2, 3, 4], Some(&pi)), 3);
     assert_eq!(expected_visits(&[0, 4], Some(&pi)), 1);
 }
+
+/// Inclusion scores spatial signal, so a run without coordinates is
+/// refused before any data is read (here there is none to read).
+#[test]
+fn inclusion_without_coordinates_is_refused_up_front() {
+    use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
+    use crate::cell_activity_graph_embedding::fit::fit_cell_activity_graph_embedding;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        cage: CellActivityGraphEmbeddingArgs,
+    }
+    let a = Cli::try_parse_from(["x", "-o", "out", "d.zarr", "--feature-inclusion", "moran"])
+        .unwrap()
+        .cage;
+    let e = fit_cell_activity_graph_embedding(&a)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("needs coordinates"), "{e}");
+}

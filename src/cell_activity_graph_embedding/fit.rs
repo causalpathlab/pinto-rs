@@ -148,6 +148,10 @@ pub fn fit_cell_activity_graph_embedding(
         !(module_cfg.is_some() && args.feature_inclusion == FeatureInclusionMode::Moran),
         "--feature-inclusion moran and --feature-modules are alternatives; pick one"
     );
+    anyhow::ensure!(
+        args.feature_inclusion != FeatureInclusionMode::Moran || !c.coord_files.is_empty(),
+        "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
+    );
 
     anyhow::ensure!(
         !(module_cfg.is_some() && args.feature_embedding.is_some()),
@@ -464,10 +468,6 @@ pub fn fit_cell_activity_graph_embedding(
             use crate::cell_activity_graph_embedding::feature_inclusion::{
                 cell_inclusion, pb_inclusion, PbUnits,
             };
-            anyhow::ensure!(
-                !c.coord_files.is_empty(),
-                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
-            );
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
                 None => {
