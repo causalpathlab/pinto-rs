@@ -1,4 +1,4 @@
-//! SpatialPCA's profile likelihood on the sparse prior (the default).
+//! SpatialPCA's profile likelihood on the sparse prior.
 //!
 //! The paper's model (Eq. 1, 2): `Y = (X B)^T + W Z + E`, `X = 1`, `W^T W =
 //! I`, `E ~ N(0, sigma0^2)`, each spatial PC `Z_l ~ N(0, sigma0^2 tau K)`.

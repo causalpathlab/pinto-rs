@@ -33,6 +33,7 @@
 //! with no variance within its sections (none expressed, as the paper
 //! drops before testing, or constant) has no p-value.
 
+use super::bandwidth::quantile;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::CscMatrix;
 use rayon::prelude::*;
@@ -40,6 +41,10 @@ use std::sync::OnceLock;
 
 /// Quantiles of `|s|` the transforms' parameters are taken at.
 const QUANTILES: [f64; 5] = [0.2, 0.4, 0.6, 0.8, 1.0];
+
+/// The kernels tested: the coordinates as they are, then a Gaussian and a
+/// cosine transform at each of [`QUANTILES`].
+pub const KERNELS: usize = 1 + 2 * QUANTILES.len();
 /// FDR at which a gene is spatially variable.
 pub const FDR: f64 = 0.05;
 /// Gauss-Legendre nodes per panel of the tail quadrature.
@@ -55,9 +60,9 @@ struct Kernel {
     lambda: Vec<f64>,
 }
 
-fn kernel(s: DMatrix<f64>, section: &[usize], n_sections: usize) -> Kernel {
-    let hs = centred(&s, section, n_sections);
-    let g = s.transpose() * &s;
+fn kernel(s: &DMatrix<f64>, section: &[usize], n_sections: usize) -> Kernel {
+    let hs = centred(s, section, n_sections);
+    let g = s.transpose() * s;
     let w = g.clone().try_inverse().unwrap_or_else(|| {
         // a degenerate transform (a constant column): its pseudo-inverse
         g.clone().pseudo_inverse(1e-12).expect("a symmetric matrix")
@@ -95,14 +100,6 @@ fn centred(s: &DMatrix<f64>, section: &[usize], n_sections: usize) -> DMatrix<f6
     })
 }
 
-/// R's default quantile (type 7) of sorted `x` at `p`.
-fn quantile(sorted: &[f64], p: f64) -> f64 {
-    let h = (sorted.len() as f64 - 1.0) * p;
-    let lo = h.floor() as usize;
-    let hi = (lo + 1).min(sorted.len() - 1);
-    sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
-}
-
 /// The eleven kernels of coordinates `xy` (cells × d): each axis centred
 /// and scaled within its section, then as they are, Gaussian- and
 /// cosine-transformed.
@@ -133,7 +130,7 @@ fn kernels(xy: &DMatrix<f64>, section: &[usize], n_sections: usize) -> Vec<Kerne
             v
         })
         .collect();
-    let mut out = vec![kernel(s.clone(), section, n_sections)];
+    let mut out = vec![kernel(&s, section, n_sections)];
     for &q in &QUANTILES {
         let par: Vec<f64> = abs_sorted
             .iter()
@@ -142,7 +139,7 @@ fn kernels(xy: &DMatrix<f64>, section: &[usize], n_sections: usize) -> Vec<Kerne
         let gauss = DMatrix::from_fn(n, d, |c, j| {
             (-s[(c, j)].powi(2) / (2.0 * par[j].powi(2))).exp()
         });
-        out.push(kernel(gauss, section, n_sections));
+        out.push(kernel(&gauss, section, n_sections));
     }
     for &q in &QUANTILES {
         let par: Vec<f64> = abs_sorted
@@ -152,7 +149,7 @@ fn kernels(xy: &DMatrix<f64>, section: &[usize], n_sections: usize) -> Vec<Kerne
         let cosine = DMatrix::from_fn(n, d, |c, j| {
             (2.0 * std::f64::consts::PI * s[(c, j)] / par[j]).cos()
         });
-        out.push(kernel(cosine, section, n_sections));
+        out.push(kernel(&cosine, section, n_sections));
     }
     out
 }
@@ -274,7 +271,7 @@ pub fn by_adjust(p: &[f64]) -> Vec<f64> {
 /// The f64 accumulators [`kernel_stats`] sums the genes into, one a
 /// thread, over `m` genes, `n_sections` sections and `d` coordinates.
 pub fn accumulator_bytes(m: usize, n_sections: usize, d: usize, threads: usize) -> usize {
-    8 * threads * m * (1 + n_sections + 11 * d)
+    8 * threads * m * (1 + n_sections + KERNELS * d)
 }
 
 /// Each kernel's null weights, and each gene's statistic under each kernel

@@ -1,4 +1,4 @@
-//! Peak memory of a `stagate` or `spatialde2` run, estimated before its
+//! Peak memory of a `stagate`, `spatialde2`, `spatialpca` or `mefisto` run, estimated before its
 //! large allocations, so a run that would not fit stops with an error
 //! ([`ensure_fits`]) instead of swapping the machine
 //! to a halt. Every estimate is in bytes.

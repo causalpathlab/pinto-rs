@@ -64,9 +64,8 @@ fn only_spatialde2_pb_takes_d_and_it_has_no_reference() {
 
 /// The factor baselines show two method flags each, at their papers'
 /// defaults, `--n-pcs` naming SpatialPCA's; their tuning knobs are hidden
-/// (so neither `pinto run`'s form nor the MCP schema offers them), the
-/// reference's knobs need `--reference`, and the `-pb` forms take `-d` and
-/// no `--reference`.
+/// (so neither `pinto run`'s form nor the MCP schema offers them), none
+/// takes `--reference`, and the `-pb` forms take `-d`.
 #[test]
 fn factor_baselines_show_few_flags_at_their_papers_defaults() {
     let parse = |argv: &[&str]| {

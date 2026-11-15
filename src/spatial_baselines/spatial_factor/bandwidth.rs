@@ -2,8 +2,8 @@
 //! Jones' plug-in, as R's `bw.nrd0` and `bw.SJ` take them (SCTransform
 //! sets its smoothing bandwidth from `bw.SJ`).
 
-fn quantile(sorted: &[f64], p: f64) -> f64 {
-    // R's default (type 7)
+/// R's default quantile (type 7) of sorted `x` at `p`.
+pub(super) fn quantile(sorted: &[f64], p: f64) -> f64 {
     let h = (sorted.len() as f64 - 1.0) * p;
     let lo = h.floor() as usize;
     let hi = (lo + 1).min(sorted.len() - 1);

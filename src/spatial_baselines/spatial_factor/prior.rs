@@ -380,20 +380,24 @@ fn cg_column(
     let mut p = z.clone();
     let mut rz: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
     let mut ap = vec![0.0; n];
+    let mut rr: f64 = r.iter().map(|v| v * v).sum();
     for it in 0..CG_MAX_ITER {
-        let rnorm = r.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if rnorm <= tol * bnorm {
+        if rr.sqrt() <= tol * bnorm {
             return it;
         }
         apply(&p, &mut ap);
         let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
         let alpha = rz / pap;
+        // r's squared norm and r^T z summed in the same pass, in cell order
+        let (mut rr_new, mut rz_new) = (-0.0, -0.0);
         for i in 0..n {
             x[i] += alpha * p[i];
             r[i] -= alpha * ap[i];
             z[i] = r[i] / diag[i];
+            rr_new += r[i] * r[i];
+            rz_new += r[i] * z[i];
         }
-        let rz_new: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
+        rr = rr_new;
         let beta = rz_new / rz;
         rz = rz_new;
         for i in 0..n {

@@ -72,16 +72,16 @@
 pub mod sparse;
 pub mod vb;
 
-use super::graph::knn_within_sections;
 use super::input::{InputShape, SpatialData};
-use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
+use super::memory::{factor_peak_bytes, FactorShape};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, select_rows, SparseOp};
+pub use super::spatial_factor::Variant;
 use super::spatial_factor::{
-    cell_graph, coarsen, domains, pseudobulk_input, select_genes, spectrum, to_mat, CoreArgs,
+    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, read_shape,
+    refined_domains, select_genes, spectrum, to_mat, CoreArgs,
 };
-use crate::util::ablation::section_sizes;
 use crate::util::memory::{ensure_fits, Budget};
 use sparse::GraphPrior;
 use vb::{FactorPrior, State, Trace, VbData, VbOpts};
@@ -175,13 +175,6 @@ pub struct PbArgs {
     pub unravel_max_iter: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Variant {
-    Sparse,
-    /// A `-pb` run, its target number of super-cells.
-    Pseudobulk(usize),
-}
-
 impl FitArgs {
     fn check(&self) -> anyhow::Result<()> {
         self.core.check()?;
@@ -221,10 +214,7 @@ impl FitArgs {
             exact_eig_max: self.core.exact_eig_max,
             cell_vectors: 2 * k * g + 2 * k + 8,
             gene_vectors: 8 * k + 2 * k * g + 4 * g,
-            super_cells: match variant {
-                Variant::Pseudobulk(target) => target,
-                _ => 0,
-            },
+            super_cells: variant.super_cells(),
             dense_bytes: 0,
             nonzero_bytes: super::memory::FACTOR_NONZERO_BYTES,
             freed_before_graph: 0,
@@ -236,20 +226,9 @@ const LOWER_MEMORY: &str = "lower --n-genes or --n-factors";
 
 fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> {
     fit.check()?;
-    let budget = Budget::now()?;
-    let stored = fit.core.input.stored()?;
-    check_stored_shape(
-        "mefisto",
-        stored.as_ref().map(|s| {
-            let peak = factor_peak_bytes(&fit.memory_shape(s, s.genes.min(fit.n_genes), variant));
-            fit.core
-                .input
-                .peak_with_delta(peak, FACTOR_PROCESS_BYTES, s)
-        }),
-        &budget,
-        LOWER_MEMORY,
-    )?;
-    Ok(budget)
+    check_stored("mefisto", &fit.core.input, LOWER_MEMORY, |s| {
+        fit.memory_shape(s, s.genes.min(fit.n_genes), variant)
+    })
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
@@ -260,15 +239,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk))?;
     run_pb_on(args, args.fit.core.input.read(true)?, &budget)
-}
-
-fn read_shape(data: &SpatialData) -> InputShape {
-    InputShape {
-        genes: data.genes.len(),
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-        batches: data.n_batches(),
-    }
 }
 
 /// The log expression of `genes`, centred per section, the counts freed.
@@ -319,8 +289,7 @@ fn cell_domains(
     st: &State,
 ) -> anyhow::Result<(Vec<usize>, &'static str)> {
     let z = domain_embedding(&st.mu, &st.w_mean());
-    let refine = (fit.refine_k > 0).then(|| knn_within_sections(data, fit.refine_k));
-    domains(&to_mat(&z), &fit.core, refine.as_ref())
+    refined_domains(&to_mat(&z), &fit.core, data, fit.refine_k)
 }
 
 fn weights_out(
@@ -329,11 +298,10 @@ fn weights_out(
     genes: &[usize],
     st: &State,
 ) -> anyhow::Result<()> {
-    let names: Vec<Box<str>> = genes.iter().map(|&g| data.genes[g].clone()).collect();
     write_loadings(
         &fit.core.input.out,
         "mefisto_weights",
-        &names,
+        &names_of(&data.genes, genes),
         &to_mat(&st.w_mean()),
         "mefisto",
     )
@@ -350,8 +318,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         LOWER_MEMORY,
     )?;
     let op = expression(&mut data, &genes);
-    let section = data.section.clone();
-    let vd = VbData::new(&op, &section, data.n_sections);
+    let vd = VbData::new(&op, &data.section, data.n_sections);
     let mut st = State::init(&vd, fit.n_factors, fit.core.input.seed);
     let (trace, extra) = {
         let (_, lap) = cell_graph(&data, fit.core.knn);
@@ -368,7 +335,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         let smooth: Vec<f64> = (0..st.k())
             .map(|k| prior.neighbour_correlation(k, fit.core.slq_probes, fit.core.input.seed))
             .collect();
-        let extra = serde_json::json!({
+        let mut extra = serde_json::json!({
             "prior": "sparse",
             "graph": format!("kNN within a section, k = {}, symmetrised", fit.core.knn),
             "neighbour_correlation": smooth,
@@ -377,7 +344,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             "exact_eig_max": fit.core.exact_eig_max,
             "cg_tol": fit.cg_tol,
         });
-        let mut extra = extra;
         merge(&mut extra, state_settings(&vd, &st, &prior));
         (trace, extra)
     };
@@ -424,7 +390,7 @@ fn base_settings(
         "paper": "Velten et al. 2022, doi:10.1038/s41592-021-01343-9",
         "n_factors": fit.n_factors,
         "n_genes": fit.n_genes,
-        "genes_used": genes.iter().map(|&g| names[g].as_ref()).collect::<Vec<_>>(),
+        "genes_used": names_of(names, genes),
         "gene_selection": "seurat_v3 highly variable genes",
         "normalisation": "LogNormalize (1e4), centred per section",
         "elbo_trace": trace.elbo,
@@ -451,12 +417,6 @@ fn state_settings(vd: &VbData<'_>, st: &State, prior: &dyn FactorPrior) -> serde
     })
 }
 
-fn merge(into: &mut serde_json::Value, from: serde_json::Value) {
-    if let (Some(a), serde_json::Value::Object(b)) = (into.as_object_mut(), from) {
-        a.extend(b);
-    }
-}
-
 /// `mefisto-pb` on `data` as read with its projection.
 pub(crate) fn run_pb_on(
     args: &PbArgs,
@@ -478,12 +438,11 @@ pub(crate) fn run_pb_on(
     let (nb, lap) = cell_graph(&data, fit.core.knn);
     let mut coarse = coarsen(&mut data, args.n_pseudobulk, &nb)?;
     drop(nb);
-    let pb_section = coarse.cells.data.section.clone();
     let pb_op = expression(&mut coarse.cells.data, &genes);
     let op = expression(&mut data, &genes);
     let seed = fit.core.input.seed;
 
-    let pb_vd = VbData::new(&pb_op, &pb_section, data.n_sections);
+    let pb_vd = VbData::new(&pb_op, &coarse.cells.data.section, data.n_sections);
     let pb_spec = spectrum(&coarse.lap, &fit.core);
     let mut pb_prior = GraphPrior::new(
         &coarse.lap,
@@ -501,8 +460,7 @@ pub(crate) fn run_pb_on(
         None,
     )?;
 
-    let section = data.section.clone();
-    let vd = VbData::new(&op, &section, data.n_sections);
+    let vd = VbData::new(&op, &data.section, data.n_sections);
     let spec = spectrum(&lap, &fit.core);
     let mut prior = GraphPrior::new(
         &lap,

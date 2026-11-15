@@ -1,4 +1,4 @@
-//! MEFISTO's factor prior on the sparse graph (the default): `z_k ~ N(0,
+//! MEFISTO's factor prior on the sparse graph: `z_k ~ N(0,
 //! Q_k^{-1})`, `Q_k = c_k (I + rho_k L)`, `c_k = cbar(rho_k)`, so the mean
 //! prior variance is one as `diag(Sigma_k) = 1` in SI (24), replacing the
 //! squared-exponential kernel; sections independent a priori, sharing

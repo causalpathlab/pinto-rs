@@ -1002,15 +1002,15 @@ fn help_names_the_memory_budget() {
     }
 }
 
+/// A measured run: cells, MiB, genes modelled.
+type Measured = (usize, f64, usize);
+
 /// Maximum resident memory (MiB) of full CPU runs of the factor baselines
 /// on one srt-simulate section (2000 genes; at their defaults otherwise,
 /// `-d 1024` for the `-pb` forms, 4 threads): (cells, MiB, genes modelled)
 /// for spatialpca, mefisto, spatialpca-pb and mefisto-pb. MEFISTO models
 /// all 2000; SpatialPCA the genes SPARK-X declares, the same for its `-pb`
 /// form, which selects on the cells.
-/// A measured run: cells, MiB, genes modelled.
-type Measured = (usize, f64, usize);
-
 const FACTOR_MEASURED: [(&str, [Measured; 4]); 4] = [
     (
         "spatialpca",

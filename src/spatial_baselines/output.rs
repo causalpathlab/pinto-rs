@@ -58,12 +58,12 @@ pub struct Fitted<'a> {
     /// How the input was held (`baseline.input_layout`), for a method
     /// whose layout is not the mode's alone; `None` otherwise.
     pub input_layout: Option<InputLayout>,
-    /// What `spatialde2-pb` fitted on and its cells' super-cells; `None`
+    /// What a `-pb` run fitted on and its cells' super-cells; `None`
     /// on cells.
     pub pseudobulk: Option<PbFit<'a>>,
 }
 
-/// The super-cells a `spatialde2-pb` run fitted on (`baseline.input`), and
+/// The super-cells a `-pb` run fitted on (`baseline.input`), and
 /// each cell's super-cell and that super-cell's label, the broadcast
 /// diagnostic, for `{out}.cell_pb.parquet`.
 pub struct PbFit<'a> {
@@ -122,10 +122,13 @@ fn write_labels(prefix: &str, cells: &[Box<str>], labels: &[usize]) -> anyhow::R
     Ok(())
 }
 
+/// The column names `{name}_1..{name}_d`.
+fn numbered(name: &str, d: usize) -> Vec<Box<str>> {
+    (1..=d).map(|j| format!("{name}_{j}").into()).collect()
+}
+
 fn write_embedding(prefix: &str, cells: &[Box<str>], x: &Mat, name: &str) -> anyhow::Result<()> {
-    let names: Vec<Box<str>> = (1..=x.ncols())
-        .map(|j| format!("{name}_{j}").into())
-        .collect();
+    let names = numbered(name, x.ncols());
     x.to_parquet_with_names(
         &embedding_path(prefix),
         (Some(cells), Some("cell")),
@@ -143,9 +146,7 @@ pub fn write_loadings(
     name: &str,
 ) -> anyhow::Result<()> {
     mkdir_parent(prefix)?;
-    let names: Vec<Box<str>> = (1..=w.ncols())
-        .map(|j| format!("{name}_{j}").into())
-        .collect();
+    let names = numbered(name, w.ncols());
     w.to_parquet_with_names(
         &format!("{prefix}.{stem}.parquet"),
         (Some(genes), Some("feature")),

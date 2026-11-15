@@ -23,10 +23,13 @@ pub mod sparkx;
 
 use super::cluster::{cluster_embedding, refine_by_neighbours};
 use super::graph::{knn_within_sections, Neighbours};
-use super::input::{SpatialData, SpatialInputArgs};
+use super::input::{InputShape, SpatialData, SpatialInputArgs};
+use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::pseudobulk::{fold_weighted, super_cells, SuperCells, COARSEN_K};
 use super::stagate::seurat_v3_hvg;
+use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
+use crate::util::memory::Budget;
 use kit::Dense;
 use prior::{Laplacian, Spectrum, SpectrumOpts};
 
@@ -37,6 +40,24 @@ pub const SLQ_PROBES: usize = 32;
 pub const SLQ_STEPS: usize = 60;
 pub const EXACT_EIG_MAX: usize = 2000;
 pub const RESOLUTION: f64 = 1.0;
+
+/// Which run of a factor baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    Sparse,
+    /// A `-pb` run, its target number of super-cells.
+    Pseudobulk(usize),
+}
+
+impl Variant {
+    /// The super-cells the run holds: none on cells.
+    pub fn super_cells(self) -> usize {
+        match self {
+            Variant::Pseudobulk(target) => target,
+            Variant::Sparse => 0,
+        }
+    }
+}
 
 /// The flags both factor baselines share.
 #[derive(clap::Args, Debug, Clone)]
@@ -97,6 +118,50 @@ impl CoreArgs {
     }
 }
 
+/// Refuse, before the read, a run of `what` whose `shape` on the stored
+/// input would not fit in memory; `change` says what to lower. The memory
+/// budget it checked against.
+pub fn check_stored(
+    what: &str,
+    input: &SpatialInputArgs,
+    change: &str,
+    shape: impl Fn(&InputShape) -> FactorShape,
+) -> anyhow::Result<Budget> {
+    let budget = Budget::now()?;
+    let stored = input.stored()?;
+    check_stored_shape(
+        what,
+        stored
+            .as_ref()
+            .map(|s| input.peak_with_delta(factor_peak_bytes(&shape(s)), FACTOR_PROCESS_BYTES, s)),
+        &budget,
+        change,
+    )?;
+    Ok(budget)
+}
+
+/// The shape of `data` as read.
+pub fn read_shape(data: &SpatialData) -> InputShape {
+    InputShape {
+        genes: data.genes.len(),
+        nonzeros: data.counts.nnz(),
+        section_sizes: section_sizes(&data.section),
+        batches: data.n_batches(),
+    }
+}
+
+/// The names of `genes` (indices into `names`).
+pub fn names_of(names: &[Box<str>], genes: &[usize]) -> Vec<Box<str>> {
+    genes.iter().map(|&g| names[g].clone()).collect()
+}
+
+/// `from`'s keys added to the object `into`.
+pub fn merge(into: &mut serde_json::Value, from: serde_json::Value) {
+    if let (Some(a), serde_json::Value::Object(b)) = (into.as_object_mut(), from) {
+        a.extend(b);
+    }
+}
+
 /// The sparse prior's graph on cells: each cell's `knn` nearest within its
 /// section, symmetrised, every edge of weight one; the neighbour lists and
 /// the Laplacian.
@@ -143,6 +208,18 @@ pub fn domains(
         Some(nb) => (refine_by_neighbours(&labels, nb), how),
         None => (labels, how),
     })
+}
+
+/// [`domains`] refined over each cell's `refine_k` nearest within its
+/// section (none at 0).
+pub fn refined_domains(
+    z: &Mat,
+    core: &CoreArgs,
+    data: &SpatialData,
+    refine_k: usize,
+) -> anyhow::Result<(Vec<usize>, &'static str)> {
+    let refine = (refine_k > 0).then(|| knn_within_sections(data, refine_k));
+    domains(z, core, refine.as_ref())
 }
 
 /// `z` (f64, cells × k) as the f32 embedding the outputs write.

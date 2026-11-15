@@ -1,5 +1,7 @@
 use super::graph::toy;
-use crate::spatial_baselines::cluster::{cluster_embedding, kmeans_restarts, KMEANS_MAX_ITER};
+use crate::spatial_baselines::cluster::{
+    cluster_embedding, kmeans_restarts, KMEANS_MAX_ITER, KMEANS_RESTARTS,
+};
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::stagate::*;
 use crate::util::common::Mat;
@@ -672,7 +674,7 @@ fn kmeans_restarts_keep_the_lowest_inertia_start() {
     let mut worst = 0f64;
     for seed in [3u64, 11, 40] {
         let best = inertia(&z, &kmeans_restarts(&z, k, seed));
-        for r in 0..10 {
+        for r in 0..KMEANS_RESTARTS as u64 {
             let (_, l) = kmeans_centroids_seeded(&z, k, KMEANS_MAX_ITER, seed + r);
             let single = inertia(&z, &l);
             assert!(best <= single * (1.0 + 1e-6), "seed {seed} start {r}");

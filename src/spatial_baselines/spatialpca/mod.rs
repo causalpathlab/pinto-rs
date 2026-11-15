@@ -78,18 +78,19 @@
 
 pub mod sparse;
 
-use super::graph::knn_within_sections;
 use super::input::{InputShape, SpatialData};
-use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
+use super::memory::{factor_peak_bytes, FactorShape};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, DenseRows};
 use super::spatial_factor::sct::SctReport;
 use super::spatial_factor::sparkx;
+pub use super::spatial_factor::Variant;
 use super::spatial_factor::{
-    cell_graph, coarsen, domains, pseudobulk_input, spectrum, to_mat, CoreArgs,
+    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, read_shape,
+    refined_domains, spectrum, to_mat, CoreArgs,
 };
-use crate::util::ablation::section_sizes;
+use crate::util::common::Mat;
 use crate::util::memory::{ensure_fits, Budget};
 use sparse::Profile;
 
@@ -151,14 +152,6 @@ pub struct PbArgs {
     pub n_pseudobulk: usize,
 }
 
-/// Which run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Variant {
-    Sparse,
-    /// A `-pb` run, its target number of super-cells.
-    Pseudobulk(usize),
-}
-
 impl FitArgs {
     fn check(&self) -> anyhow::Result<()> {
         self.core.check()?;
@@ -177,10 +170,7 @@ impl FitArgs {
     ) -> FactorShape {
         let d = self.n_factors.min(m);
         let n: usize = input.section_sizes.iter().sum();
-        let super_cells = match variant {
-            Variant::Pseudobulk(target) => target,
-            _ => 0,
-        };
+        let super_cells = variant.super_cells();
         let (sections, threads) = (input.section_sizes.len(), rayon::current_num_threads());
         FactorShape {
             input: input.clone(),
@@ -196,7 +186,7 @@ impl FitArgs {
             // residuals as f32 rows, the cells' and with -pb the
             // super-cells', and each gene's residuals in f64 as formed
             dense_bytes: sparkx::accumulator_bytes(input.genes, sections, 3, threads)
-                + 8 * n * 3 * (11 + 3)
+                + 8 * n * 3 * (sparkx::KERNELS + 3)
                 + 4 * m * (n + super_cells)
                 + 8 * n * threads,
             nonzero_bytes: super::memory::SCT_NONZERO_BYTES,
@@ -214,20 +204,9 @@ const LOWER_MEMORY: &str = "lower --n-genes or --n-factors, or run spatialpca-pb
 
 fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> {
     fit.check()?;
-    let budget = Budget::now()?;
-    let stored = fit.core.input.stored()?;
-    check_stored_shape(
-        "spatialpca",
-        stored.as_ref().map(|s| {
-            let peak = factor_peak_bytes(&fit.memory_shape(s, s.genes.min(fit.n_genes), variant));
-            fit.core
-                .input
-                .peak_with_delta(peak, FACTOR_PROCESS_BYTES, s)
-        }),
-        &budget,
-        LOWER_MEMORY,
-    )?;
-    Ok(budget)
+    check_stored("spatialpca", &fit.core.input, LOWER_MEMORY, |s| {
+        fit.memory_shape(s, s.genes.min(fit.n_genes), variant)
+    })
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
@@ -240,16 +219,6 @@ pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     run_pb_on(args, args.fit.core.input.read(true)?, &budget)
 }
 
-fn read_shape(data: &SpatialData) -> InputShape {
-    InputShape {
-        genes: data.genes.len(),
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-        batches: data.n_batches(),
-    }
-}
-
-/// The genes, the expression on them and its libraries, the counts freed.
 /// SpatialPCA's genes: SPARK-X's spatially variable genes at a
 /// Benjamini-Yekutieli FDR of [`sparkx::FDR`], at most `n_genes` by
 /// p-value; and how many were significant.
@@ -280,15 +249,20 @@ fn expression(data: &mut SpatialData, genes: &[usize], seed: u64) -> (DenseRows,
     out
 }
 
-/// The domains of the PCs `z`, refined over each cell's `refine_k`
-/// nearest within its section.
-fn cell_domains(
+/// `{out}.spatialpca_loadings.parquet`: the loadings `w` on `genes`.
+fn loadings_out(
     fit: &FitArgs,
     data: &SpatialData,
-    z: &Dense,
-) -> anyhow::Result<(Vec<usize>, &'static str)> {
-    let refine = (fit.refine_k > 0).then(|| knn_within_sections(data, fit.refine_k));
-    domains(&to_mat(z), &fit.core, refine.as_ref())
+    genes: &[usize],
+    w: &Dense,
+) -> anyhow::Result<()> {
+    write_loadings(
+        &fit.core.input.out,
+        "spatialpca_loadings",
+        &names_of(&data.genes, genes),
+        &to_mat(w),
+        "spatialpc",
+    )
 }
 
 fn base_settings(
@@ -302,7 +276,7 @@ fn base_settings(
         "paper": "Shang and Zhou 2022, doi:10.1038/s41467-022-34879-1",
         "d": fit.n_factors,
         "n_genes": fit.n_genes,
-        "genes_used": genes.iter().map(|&g| names[g].as_ref()).collect::<Vec<_>>(),
+        "genes_used": names_of(names, genes),
         "gene_selection": "SPARK-X, Benjamini-Yekutieli FDR 0.05, at most n_genes by p",
         "n_significant": pre.significant,
         "normalisation": "SCTransform v1 Pearson residuals, clipped at sqrt(N), standardised per gene",
@@ -347,18 +321,11 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         let settings = sparse_settings(&best, op.m, n, evals, fit);
         (best.z, best.w, settings)
     };
-    let (labels, clustering) = cell_domains(fit, &data, &z)?;
+    let z: Mat = to_mat(&z);
+    let (labels, clustering) = refined_domains(&z, &fit.core, &data, fit.refine_k)?;
     let base = base_settings(fit, &genes, &data.genes, clustering, &pre);
     merge(&mut settings, base);
-    let loadings = to_mat(&w);
-    let gene_names: Vec<Box<str>> = genes.iter().map(|&g| data.genes[g].clone()).collect();
-    write_loadings(
-        &fit.core.input.out,
-        "spatialpca_loadings",
-        &gene_names,
-        &loadings,
-        "spatialpc",
-    )?;
+    loadings_out(fit, &data, &genes, &w)?;
     write_run(
         &fit.core.input,
         &data,
@@ -366,7 +333,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             method: "spatialpca",
             labels: &labels,
             membership: None,
-            embedding: &to_mat(&z),
+            embedding: &z,
             embedding_name: "spatialpc",
             settings,
             reference: false,
@@ -380,12 +347,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
 struct Preprocessing {
     significant: usize,
     sct: SctReport,
-}
-
-fn merge(into: &mut serde_json::Value, from: serde_json::Value) {
-    if let (Some(a), serde_json::Value::Object(b)) = (into.as_object_mut(), from) {
-        a.extend(b);
-    }
 }
 
 fn sparse_settings(
@@ -454,7 +415,8 @@ pub(crate) fn run_pb_on(
         best.tau,
         best.rho
     );
-    let (labels, clustering) = cell_domains(fit, &data, &best.z)?;
+    let z = to_mat(&best.z);
+    let (labels, clustering) = refined_domains(&z, &fit.core, &data, fit.refine_k)?;
     let of_cell = &coarse.cells.of_cell;
     let broadcast: Vec<usize> = of_cell.iter().map(|&s| pb_labels[s]).collect();
     let mut settings = sparse_settings(&best, m, n, evals, fit);
@@ -468,16 +430,7 @@ pub(crate) fn run_pb_on(
         "method": "W fixed from the super-cell fit; sigma0^2, tau and rho refitted on the cells and their graph",
         "broadcast": "the super-cells' own labels, clustered apart, in cell_pb.parquet (a diagnostic)",
     });
-    write_loadings(
-        &fit.core.input.out,
-        "spatialpca_loadings",
-        &genes
-            .iter()
-            .map(|&g| data.genes[g].clone())
-            .collect::<Vec<_>>(),
-        &to_mat(&pb_fit.w),
-        "spatialpc",
-    )?;
+    loadings_out(fit, &data, &genes, &pb_fit.w)?;
     write_run(
         &fit.core.input,
         &data,
@@ -485,7 +438,7 @@ pub(crate) fn run_pb_on(
             method: "spatialpca-pb",
             labels: &labels,
             membership: None,
-            embedding: &to_mat(&best.z),
+            embedding: &z,
             embedding_name: "spatialpc",
             settings,
             reference: false,
