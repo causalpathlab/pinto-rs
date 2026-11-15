@@ -167,7 +167,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         batch_membership,
         section_ids: _,
         seeding,
-        batch_labels: _,
+        batch_labels,
         batch_effects: batch_db,
         graph,
         knn,
@@ -340,6 +340,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     // 10. Propensity + dictionary
     let edges = srt_cell_pairs.inner.pairs();
+    let batch_of_cell = nystrom_input
+        .batch_effect
+        .as_ref()
+        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
 
     // Leiden by default, same as `cage`: the SVD width is chosen for how much
     // variance to keep, which is no reason for the pairs to fall into exactly
@@ -357,6 +361,11 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             // the row axis), so its feature-community table stays row-keyed.
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
+            // batch-adjusted, as the pairs are
+            divisor: crate::util::batch_effects::BatchDivisor::of(
+                nystrom_input.batch_effect.as_ref(),
+                batch_of_cell.as_deref(),
+            ),
         },
         &c.out,
     )?

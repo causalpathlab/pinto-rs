@@ -337,15 +337,15 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     }
     let defaults = default_args()?;
     match run.as_ref() {
-        Some(Run { meta, .. }) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
+        Some(run) if matches!(run.meta.command.as_str(), "lc" | "dsvd") => {
             let unused = cage_only_flags(args, &defaults);
             anyhow::ensure!(
                 unused.is_empty(),
                 "{model} is an {} model: {} apply to cage models only",
-                meta.command,
+                run.meta.command,
                 unused.join(", ")
             );
-            crate::holdout::predict_profiles(args, meta)
+            crate::holdout::predict_profiles(args, run)
         }
         _ => {
             anyhow::ensure!(
@@ -414,13 +414,16 @@ pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'stat
 /// The δ of the model at prefix `model` (its manifest `run`) and its path,
 /// when it has one and `--ignore-batch` is not given. A model without one
 /// (one batch, `--ignore-batch`, or an older cage-cell fit) trained its
-/// encoder on undivided counts, so its query is not divided either.
+/// encoder on undivided counts, so its query is not divided either. A
+/// model whose manifest says its dictionary is batch-adjusted refuses
+/// `--ignore-batch` ([`delta::batch_adjusted`]).
 fn model_delta(
     model: &str,
     run: Option<&Run>,
     ignore_batch: bool,
 ) -> anyhow::Result<Option<(crate::util::batch_effects::RunDelta, String)>> {
     use crate::util::batch_effects::{read_delta, run_delta_path};
+    delta::batch_adjusted(model, run, ignore_batch, delta::QueryReader::Cage)?;
     if ignore_batch {
         return Ok(None);
     }
@@ -466,6 +469,9 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         },
         None => BatchEstimate::Skip,
     };
+    // A model whose dictionary is batch-adjusted has its query's written
+    // alike; an older one's stays on the counts as read.
+    let model_adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
@@ -691,15 +697,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
          check --coord and the neighbourhood flags (-k / --knn-expr)"
     );
 
-    let batch_id_of: HashMap<&str, u32> = query_batches
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.as_ref(), i as u32))
-        .collect();
-    let batch_of_cell: Vec<u32> = batch_membership
-        .iter()
-        .map(|b| batch_id_of[b.as_ref()])
-        .collect();
+    let batch_of_cell = crate::util::batch_effects::batch_ids(&batch_membership, &query_batches);
 
     let rows = data_vec.row_names()?;
     // The estimate in full (its spread too), on this sample's rows, by
@@ -810,6 +808,8 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
             feature_weights: feature_weights.as_deref(),
             axis: &feature_axis,
             block_size: c.block_size,
+            // batch-adjusted when the model's is
+            divisor: pair_batch.filter(|_| model_adjusted),
         },
         &labels,
         k,
@@ -846,6 +846,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         None,
     );
     meta.command = "predict".to_string();
+    meta.outputs.feature_community_batch_adjusted &= model_adjusted;
     // A predicted sample is placed by the model's encoder; it is not a model
     // and carries none of its own.
     meta.outputs.pair_encoder = None;
@@ -860,7 +861,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
 /// Fits record them canonical; an older manifest's relative entry is
 /// resolved beside the manifest, else from here, and kept as written when
 /// it resolves in neither.
-fn model_data_files(run: Option<&Run>) -> Vec<String> {
+pub(crate) fn model_data_files(run: Option<&Run>) -> Vec<String> {
     let Some(run) = run else {
         return Vec::new();
     };
@@ -943,7 +944,7 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
     Ok(())
 }
 
-mod delta;
+pub(crate) mod delta;
 
 #[cfg(test)]
 mod tests;

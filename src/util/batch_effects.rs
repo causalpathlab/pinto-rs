@@ -618,6 +618,41 @@ pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<s
     Ok(out)
 }
 
+/// A run's batch effect with each cell's batch: what divides the counts a
+/// run reports on, such as its feature x community dictionary
+/// ([`divide_columns`]), and, per endpoint, cage's pairs.
+#[derive(Copy, Clone)]
+pub struct BatchDivisor<'a> {
+    /// `[rows × batches]` multiplicative batch effect `δ` (its mean).
+    pub delta: &'a Mat,
+    /// Cell → its column of `delta`.
+    pub batch_of_cell: &'a [u32],
+}
+
+impl<'a> BatchDivisor<'a> {
+    /// The divisor of a run with a batch effect `delta` and its cells'
+    /// batches, `None` when it has neither.
+    pub fn of(delta: Option<&'a Mat>, batch_of_cell: Option<&'a [u32]>) -> Option<Self> {
+        delta.zip(batch_of_cell).map(|(delta, batch_of_cell)| Self {
+            delta,
+            batch_of_cell,
+        })
+    }
+}
+
+/// Each cell's column of a δ over the sorted `labels`
+/// ([`sorted_batch_labels`] of `batch_membership`).
+pub fn batch_ids(batch_membership: &[Box<str>], labels: &[Box<str>]) -> Vec<u32> {
+    batch_membership
+        .iter()
+        .map(|b| {
+            labels
+                .binary_search(b)
+                .expect("a cell's batch is one of the sorted labels") as u32
+        })
+        .collect()
+}
+
 /// Divide each count of `x` by its row's δ in its column's batch, a plain
 /// `x / δ`: `batch_of_column(j)` is column `j`'s column of `delta`
 /// (`[rows × batches]`), `None` to leave the column as it is (no batch, or

@@ -290,6 +290,9 @@ pub struct PartitionInputs<'a> {
     pub feature_weights: Option<&'a [f32]>,
     pub axis: &'a FeatureAxis,
     pub block_size: Option<usize>,
+    /// The run's batch effect, when it divides by one: every written
+    /// feature_community is then batch-adjusted.
+    pub divisor: Option<crate::util::batch_effects::BatchDivisor<'a>>,
 }
 
 /// Fit the propensity and feature-community stats of an edge partition.
@@ -305,6 +308,7 @@ pub fn fit_partition(
         inp.feature_weights,
         Some(inp.axis),
         inp.block_size,
+        inp.divisor,
     )?;
     Ok(Partition {
         propensity,

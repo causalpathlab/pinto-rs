@@ -252,3 +252,179 @@ fn an_lc_model_named_by_a_renamed_manifest_predicts() {
     crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict)
         .expect("a model opened by its manifest was refused");
 }
+
+/// `pinto predict` (held-out scoring) of the lc model at `model` on `data`
+/// (with `coords` when given), with `extra` flags, to `{dir}/{name}`: its
+/// output's manifest, or the error.
+fn score(
+    dir: &std::path::Path,
+    model: &str,
+    (data, coords): (&str, Option<&str>),
+    name: &str,
+    extra: &[&str],
+) -> anyhow::Result<crate::util::metadata::PintoMetadata> {
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        predict: crate::predict::PredictArgs,
+    }
+    let out = dir.join(name).to_str().unwrap().to_string();
+    let mut argv = vec!["x", data, "--model", model, "-o", &out];
+    if let Some(coords) = coords {
+        argv.extend_from_slice(&["-c", coords, "--coord-column-names", "x,y"]);
+    }
+    argv.extend_from_slice(extra);
+    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict)?;
+    crate::util::metadata::PintoMetadata::read(std::path::Path::new(
+        &crate::util::metadata::manifest_path(&out),
+    ))
+}
+
+/// The manifest at `prefix`, its batch-adjusted flag set to `adjusted`.
+fn set_adjusted(prefix: &str, adjusted: bool) {
+    let path = crate::util::metadata::manifest_path(prefix);
+    let mut meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&path)).unwrap();
+    meta.outputs.feature_community_batch_adjusted = adjusted;
+    meta.write(std::path::Path::new(&path)).unwrap();
+}
+
+/// A multi-batch lc model's profiles are batch-adjusted, so a held-out
+/// batch the model knows takes the model's δ: with no δ rounds, its
+/// training sections score better than through the same profiles read as
+/// an older model's (every batch at δ = 1). `--ignore-batch` is refused
+/// for it, and taken for the older one.
+#[test]
+fn a_known_batch_is_scored_under_the_models_delta() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
+    let input = (data.as_str(), Some(coords.as_str()));
+    let no_rounds = ["--holdout-delta-iters", "0"];
+    let llik =
+        |m: &crate::util::metadata::PintoMetadata| m.holdout.as_ref().unwrap().eval_llik_per_count;
+    let adjusted = score(dir.path(), &lc, input, "adjusted", &no_rounds).unwrap();
+    // with no δ rounds the known batches still take the model's δ, and the
+    // manifest says so
+    let info = adjusted.holdout.as_ref().unwrap();
+    assert_eq!((info.delta_iters, info.model_delta_batches), (0, Some(2)));
+    assert!(
+        info.notes.iter().any(|n| n.contains(
+            "2 of this sample's 2 batches are the \
+             model's and take its δ; no other batch"
+        )),
+        "{:?}",
+        info.notes
+    );
+    let err = score(dir.path(), &lc, input, "ignored", &["--ignore-batch"]).unwrap_err();
+    assert!(err.to_string().contains("--ignore-batch"), "{err}");
+    assert!(err.to_string().contains("--holdout-delta-iters 0"), "{err}");
+
+    set_adjusted(&lc, false);
+    let older = score(dir.path(), &lc, input, "older", &no_rounds).unwrap();
+    let info = older.holdout.as_ref().unwrap();
+    assert_eq!(info.model_delta_batches, None);
+    assert!(
+        info.notes
+            .iter()
+            .any(|n| n.starts_with("every batch takes the model's profiles unshifted")),
+        "{:?}",
+        info.notes
+    );
+    assert!(
+        llik(&adjusted) > llik(&older),
+        "known batches under the model's δ {} vs at 1 {}",
+        llik(&adjusted),
+        llik(&older)
+    );
+    score(dir.path(), &lc, input, "ignored", &["--ignore-batch"]).unwrap();
+}
+
+/// Without coordinates an adjusted model's graph is built on the
+/// batch-corrected projection, and so is the held-out sample's: scored on
+/// its own training data, its pairs are the model's. The query's graph
+/// follows the manifest's graph flag alone, whatever its profiles'
+/// batch-adjusted flag says, so each is set without the other.
+#[test]
+fn an_expression_model_is_scored_on_a_graph_built_as_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, _) = two_sections(dir.path(), 8);
+    let model = dir.path().join("expr").to_str().unwrap().to_string();
+    let argv = [
+        "lc",
+        data.as_str(),
+        "-o",
+        model.as_str(),
+        "--n-communities",
+        "2",
+        "--num-gibbs",
+        "2",
+        "--num-greedy",
+        "1",
+        "--num-levels",
+        "2",
+    ];
+    fit_srt_link_community(&SrtLinkCommunityArgs::try_parse_from(argv).unwrap()).unwrap();
+    let pairs_of = |left: &[Box<str>], right: &[Box<str>]| {
+        let mut p: Vec<(Box<str>, Box<str>)> = left
+            .iter()
+            .zip(right)
+            .map(|(a, b)| {
+                if a <= b {
+                    (a.clone(), b.clone())
+                } else {
+                    (b.clone(), a.clone())
+                }
+            })
+            .collect();
+        p.sort();
+        p
+    };
+    let trained =
+        crate::lr_activity::io::read_pair_table(&format!("{model}.coord_pairs.parquet"), false)
+            .unwrap();
+    let (l, r): (Vec<Box<str>>, Vec<Box<str>>) = trained
+        .into_iter()
+        .map(|e| (e.left_cell, e.right_cell))
+        .unzip();
+    let trained = pairs_of(&l, &r);
+
+    let scored_pairs = |name: &str, extra: &[&str]| {
+        score(dir.path(), &model, (data.as_str(), None), name, extra).unwrap();
+        let path = dir.path().join(format!("{name}.predictive.parquet"));
+        let (strs, _) = legume_numeric::matrix::parquet::read_table_columns(
+            path.to_str().unwrap(),
+            &["left", "right"],
+            &[],
+        )
+        .unwrap();
+        pairs_of(&strs[0], &strs[1])
+    };
+    let manifest = crate::util::metadata::manifest_path(&model);
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    assert!(
+        meta.base_graph_batch_corrected(),
+        "the fit records its graph"
+    );
+    assert_eq!(scored_pairs("pred", &[]), trained);
+    let flag = |adjusted: bool, corrected: bool| {
+        let mut meta = meta.clone();
+        meta.outputs.feature_community_batch_adjusted = adjusted;
+        meta.graph.as_mut().unwrap().base_batch_corrected = corrected;
+        meta.write(std::path::Path::new(&manifest)).unwrap();
+    };
+
+    // the graph flag alone: profiles read as raw, the graph still corrected
+    flag(false, true);
+    assert_eq!(scored_pairs("graph_only", &[]), trained);
+
+    // an older model's manifest records neither: its query graph is the
+    // uncorrected one, as an --ignore-batch query builds it
+    flag(false, false);
+    let older = scored_pairs("older", &[]);
+    assert_eq!(older, scored_pairs("ignored", &["--ignore-batch"]));
+    assert_ne!(older, trained, "the corrected graph should differ");
+
+    // the profiles' flag alone: the graph is the uncorrected one
+    flag(true, false);
+    assert_eq!(scored_pairs("profiles_only", &[]), older);
+}

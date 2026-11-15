@@ -481,6 +481,12 @@ pub struct OutputFiles {
     #[serde(alias = "gene_community", skip_serializing_if = "Option::is_none")]
     pub feature_community: Option<String>,
 
+    /// Every feature_community the run wrote (its levels' too) was fitted
+    /// on counts divided by its batch effect, `batch_effects`. Absent: on
+    /// the counts as read (one batch, `--ignore-batch`, or an older run).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub feature_community_batch_adjusted: bool,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scores: Option<String>,
 
@@ -577,8 +583,9 @@ pub struct DictMergeSummary {
     /// The cosine the merge tree was cut at (`--merge-cut`); `None` when
     /// it was not cut.
     pub cut_cosine: Option<f64>,
-    /// Sections centred on a mean of their own before the merge, when more
-    /// than one section holds an edge.
+    /// Sections (crossed with batches, for a run with a batch effect)
+    /// centred on a mean of their own before the merge, when more than one
+    /// holds an edge.
     pub centred_sections: Option<usize>,
 }
 
@@ -603,8 +610,9 @@ pub struct DictMergeFiles {
     /// not cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_cosine: Option<f64>,
-    /// Sections centred on a mean of their own before the merge; absent
-    /// with a single section.
+    /// Sections (crossed with batches, for a run with a batch effect)
+    /// centred on a mean of their own before the merge; absent with a
+    /// single one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub centred_sections: Option<usize>,
 }
@@ -1098,6 +1106,7 @@ pub fn create_lc_metadata(
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,
@@ -1147,6 +1156,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             batch_effects,
             delta_cells,
             ..Default::default()
@@ -1200,6 +1210,7 @@ pub fn create_cage_metadata(
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,
