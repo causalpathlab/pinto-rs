@@ -108,18 +108,10 @@ pub(crate) fn retrieval_impute(
         }
         let mut csc = ref_data.read_columns_csc(lb..ub)?;
         if let Some(div) = divide {
-            for (j, mut col) in csc.col_iter_mut().enumerate() {
-                let Some(b) = div.batch_of_cell[lb + j] else {
-                    continue;
-                };
-                let (rows, vals) = col.rows_and_values_mut();
-                for (&g, v) in rows.iter().zip(vals.iter_mut()) {
-                    let d = div.delta[(g, b)];
-                    if d > 0.0 {
-                        *v /= d;
-                    }
-                }
-            }
+            // only the cells some query row pools
+            crate::util::batch_effects::divide_columns(&mut csc, &div.delta, |j| {
+                div.batch_of_cell[lb + j].filter(|_| !consumers[lb + j].is_empty())
+            });
         }
         for c in 0..(ub - lb) {
             for &(q, w) in &consumers[lb + c] {

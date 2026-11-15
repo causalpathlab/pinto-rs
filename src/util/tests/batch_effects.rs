@@ -89,3 +89,27 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
     meta.write(std::path::Path::new(&manifest)).unwrap();
     assert_eq!(run_delta_path(&prefix).as_deref(), Some(file.as_str()));
 }
+
+/// Each count is divided by its row's δ in its column's batch; a column
+/// with no batch (or no use) is left as it is, and so is a count whose δ
+/// is not positive.
+#[test]
+fn columns_are_divided_by_their_batchs_delta() {
+    use crate::util::batch_effects::divide_columns;
+    use crate::util::common::Mat;
+    use nalgebra_sparse::{CooMatrix, CscMatrix};
+    // rows x cells: cell 0 in batch 1, cell 1 skipped, cell 2 in batch 0
+    let mut coo = CooMatrix::new(2, 3);
+    for (r, c, v) in [(0, 0, 4.0f32), (1, 0, 6.0), (0, 1, 5.0), (1, 2, 9.0)] {
+        coo.push(r, c, v);
+    }
+    let mut x = CscMatrix::from(&coo);
+    // rows x batches
+    let delta = Mat::from_row_slice(2, 2, &[2.0, 2.0, 3.0, 0.0]);
+    let batch = [Some(1), None, Some(0)];
+    divide_columns(&mut x, &delta, |j| batch[j]);
+    let at = |r: usize, c: usize| x.get_entry(r, c).unwrap().into_value();
+    assert_eq!((at(0, 0), at(1, 0)), (2.0, 6.0), "δ 0 leaves the count");
+    assert_eq!(at(0, 1), 5.0, "a skipped column is left as is");
+    assert_eq!(at(1, 2), 3.0);
+}

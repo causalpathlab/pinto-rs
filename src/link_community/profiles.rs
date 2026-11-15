@@ -112,15 +112,7 @@ where
     let mut x = data.read_columns_csc(cells.clone())?;
     if let Some(delta) = delta {
         let batches = data.get_batch_membership(cells);
-        for (mut col, &b) in x.col_iter_mut().zip(&batches) {
-            let (rows, vals) = col.rows_and_values_mut();
-            for (&g, v) in rows.iter().zip(vals.iter_mut()) {
-                let d = delta[(g, b)];
-                if d > 0.0 {
-                    *v /= d;
-                }
-            }
-        }
+        crate::util::batch_effects::divide_columns(&mut x, delta, |j| Some(batches[j]));
     }
     Ok(x)
 }

@@ -307,3 +307,30 @@ pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<s
     }
     Ok(out)
 }
+
+/// Divide each count of `x` by its row's δ in its column's batch, a plain
+/// `x / δ`: `batch_of_column(j)` is column `j`'s column of `delta`
+/// (`[rows × batches]`), `None` to leave the column as it is (no batch, or
+/// no use for it). A non-positive δ leaves its count as is.
+///
+/// lc's edge profiles and impute's reference cells divide this way; the
+/// cage pair divisor does not, since it also divides by the cell's own
+/// rate (a self-normalising Poisson ratio, see `PairBatchDivisor`).
+pub fn divide_columns(
+    x: &mut nalgebra_sparse::CscMatrix<f32>,
+    delta: &Mat,
+    batch_of_column: impl Fn(usize) -> Option<usize>,
+) {
+    for (j, mut col) in x.col_iter_mut().enumerate() {
+        let Some(b) = batch_of_column(j) else {
+            continue;
+        };
+        let (rows, vals) = col.rows_and_values_mut();
+        for (&g, v) in rows.iter().zip(vals.iter_mut()) {
+            let d = delta[(g, b)];
+            if d > 0.0 {
+                *v /= d;
+            }
+        }
+    }
+}
