@@ -72,7 +72,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         batch_membership,
         section_ids,
         seeding,
-        batch_effects: _,
+        batch_effects,
         graph,
         knn,
         spatial_graph,
@@ -102,6 +102,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         cell_projection: true,
     })?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
+    // The batch effect divides every count lc profiles (the edge profiles at
+    // every level, the module expression), as dsvd and cage divide theirs;
+    // feature_community and the feature filters stay on raw counts.
+    let has_batch_effects = batch_effects.is_some();
     let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
     let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
     let n_features = feature_axis.n_features();
@@ -178,6 +182,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             basis.n_modules,
             Some(&row_weights),
             c.block_size,
+            batch_effects.as_ref(),
         )?;
 
         module_ctx = Some(ModulePairContext {
@@ -283,6 +288,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     } else {
         ProfileMode::Projection {
             basis: proj_basis.as_ref().expect("projection basis must be set"),
+            delta: batch_effects.as_ref(),
         }
     };
 
@@ -517,6 +523,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 graph: (&knn).into(),
                 ablation,
             },
+            has_batch_effects,
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a
             // fitted contrast.
@@ -632,11 +639,13 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
         k
     );
     // Across sections, communities are compared within their section
-    // (see `remove_group_means`); also under --ignore-batch. The shift
-    // is removed here, in the comparison, and not from the model's
-    // rates: dividing lc's edge profiles by a batch estimate lowered
-    // the partition's purity when measured, while centring the
-    // comparison did not.
+    // (see `remove_group_means`); also under --ignore-batch. The merge
+    // compares feature_community, which stays on raw counts (as dsvd's
+    // and cage's do), so a section's shift has to be removed here, in the
+    // comparison. The edge profiles the partition was fitted on are
+    // divided by the batch estimate. That divide once measured lower
+    // purity than centring alone; lc divides anyway, so that it corrects
+    // batches the way dsvd and cage do.
     let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
     let share = community_group_shares(
         final_membership,
@@ -747,8 +756,13 @@ fn build_full_profiles(
             edge_indices,
             basis,
         )),
-        ProfileMode::Projection { basis } => {
-            build_projection_profiles_for_edges(data, edge_indices, all_edges, basis, block_size)
-        }
+        ProfileMode::Projection { basis, delta } => build_projection_profiles_for_edges(
+            data,
+            edge_indices,
+            all_edges,
+            basis,
+            block_size,
+            delta,
+        ),
     }
 }

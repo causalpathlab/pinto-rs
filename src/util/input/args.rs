@@ -121,9 +121,10 @@ pub struct SrtInputArgs {
         conflicts_with = "auto_batch",
         help = "Estimate and remove no batch effects",
         long_help = "Estimate no batch effects, so none are removed anywhere.\n\
-                     Data files (and --batch-files labels) still keep their cells\n\
-                     apart, in the spatial graph and in the outputs; only the\n\
-                     correction goes."
+                     predict and impute also leave a fitted run's batch effects\n\
+                     unused. Data files (and --batch-files labels) still keep\n\
+                     their cells apart, in the spatial graph and in the outputs;\n\
+                     only the correction goes."
     )]
     pub ignore_batch: bool,
 

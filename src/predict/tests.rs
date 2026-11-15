@@ -42,3 +42,70 @@ fn a_model_that_is_not_there_is_refused_by_its_path() {
     assert!(e.contains(&format!("{model}.pinto.json")), "{e}");
     assert!(e.contains("not there"), "{e}");
 }
+
+mod batch_effects {
+    use super::super::delta::{combine, match_batches, QueryLabels};
+    use crate::test_support::boxed;
+    use crate::util::common::Mat;
+
+    /// Named labels match by name. Per-file labels match a query file only
+    /// when it is one of the model's own files (the model's labels are
+    /// file positions too); a new file at a known position is new.
+    /// Components never match.
+    #[test]
+    fn query_batches_are_matched_by_name_or_by_file() {
+        let model = boxed(&["0", "1"]);
+        let q = boxed(&["1", "x"]);
+        assert_eq!(
+            match_batches(&q, &model, &QueryLabels::Named),
+            vec![Some(1), None]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let file = |n: &str| {
+            let p = dir.path().join(n);
+            std::fs::write(&p, b"").unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        let (a, b, c) = (file("a.zarr"), file("b.zarr"), file("c.zarr"));
+        let model_files = vec![a.clone(), b.clone()];
+        let query_files = boxed(&[&c, &a]);
+        let how = QueryLabels::Files {
+            query_files: &query_files,
+            model_files: &model_files,
+        };
+        // query "0" is c (new), query "1" is a (the model's "0")
+        assert_eq!(
+            match_batches(&boxed(&["0", "1"]), &model, &how),
+            vec![None, Some(0)]
+        );
+        // a model whose labels are not file positions shares none by file,
+        // even labels that look like positions
+        for labels in [&["d1", "d2"][..], &["0", "1", "2"][..]] {
+            assert_eq!(
+                match_batches(&boxed(&["0", "1"]), &boxed(labels), &how),
+                vec![None, None]
+            );
+        }
+        assert_eq!(
+            match_batches(&q, &model, &QueryLabels::Components),
+            vec![None, None]
+        );
+    }
+
+    /// A known batch takes the model's column; a new one the query's
+    /// estimate times the model-over-estimate ratio of the shared batches;
+    /// a row the model lacks keeps the estimate.
+    #[test]
+    fn a_new_batch_is_carried_into_the_model_frame() {
+        // model: rows x batches (m0, m1)
+        let model = Mat::from_row_slice(2, 2, &[0.5, 2.0, 1.0, 1.0]);
+        // query batches (q0 = m1, q1 new); its own estimate pinned over q0, q1
+        let estimate = Mat::from_row_slice(2, 2, &[0.5, 2.0, 3.0, 1.0 / 3.0]);
+        let matched = [Some(1), None];
+        let d = combine(&model, &[true, false], Some(&estimate), &matched);
+        assert_eq!(d[(0, 0)], 2.0, "known batch: the model's column");
+        // new: 2.0 (estimate) x 2.0 / 0.5 (model over estimate on q0)
+        assert!((d[(0, 1)] - 8.0).abs() < 1e-5, "{}", d[(0, 1)]);
+        assert_eq!((d[(1, 0)], d[(1, 1)]), (3.0, 1.0 / 3.0), "no model row");
+    }
+}

@@ -198,3 +198,112 @@ pub fn estimate_and_write_batch_effects(
 
     Ok(batch_effects.map(|x| x.posterior_mean().clone()))
 }
+
+/// A run's batch effects, read back from its `{prefix}.delta.parquet`: the
+/// posterior mean of δ, one row per matrix row the run read (a splice
+/// channel such as `FEATURE/count/spliced` is a row of its own) and one
+/// column per batch label as estimated (after `--auto-batch`), sorted.
+pub struct RunDelta {
+    pub rows: Vec<Box<str>>,
+    pub batches: Vec<Box<str>>,
+    /// `[rows × batches]`
+    pub mean: Mat,
+}
+
+/// Read a melted `delta.parquet` (`feature`, `batch`, `mean`, ...); only the
+/// mean is kept, the value the run itself divided by.
+pub fn read_delta(path: &str) -> anyhow::Result<RunDelta> {
+    let (strs, nums) = read_table_columns(path, &["feature", "batch"], &["mean"])?;
+    let [feature, batch]: [Vec<Box<str>>; 2] = strs
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{path}: expected feature and batch columns"))?;
+    let mean = nums.into_iter().next().unwrap_or_default();
+    anyhow::ensure!(
+        feature.len() == batch.len() && batch.len() == mean.len(),
+        "{path}: columns of different lengths"
+    );
+    let mut batches: Vec<Box<str>> = batch.clone();
+    batches.sort();
+    batches.dedup();
+    let col_of: HashMap<&str, usize> = batches
+        .iter()
+        .enumerate()
+        .map(|(j, b)| (b.as_ref(), j))
+        .collect();
+    let mut rows: Vec<Box<str>> = Vec::new();
+    let mut row_of: HashMap<Box<str>, usize> = HashMap::default();
+    for f in &feature {
+        if !row_of.contains_key(f) {
+            row_of.insert(f.clone(), rows.len());
+            rows.push(f.clone());
+        }
+    }
+    let mut m = Mat::from_element(rows.len(), batches.len(), f32::NAN);
+    for ((f, b), &v) in feature.iter().zip(&batch).zip(&mean) {
+        m[(row_of[f], col_of[b.as_ref()])] = v as f32;
+    }
+    anyhow::ensure!(
+        m.iter().all(|v| v.is_finite()),
+        "{path}: not every (feature, batch) pair has a finite mean"
+    );
+    Ok(RunDelta {
+        rows,
+        batches,
+        mean: m,
+    })
+}
+
+impl RunDelta {
+    /// Each of `rows`' row in this δ, by name; `None` for a row the run did
+    /// not read.
+    pub fn row_index(&self, rows: &[Box<str>]) -> Vec<Option<usize>> {
+        let of: HashMap<&str, usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.as_ref(), i))
+            .collect();
+        rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
+    }
+
+    /// This δ on another matrix's `rows`, matched by name: `[rows × batches]`,
+    /// with 1 (no shift) on a row the run did not read.
+    pub fn on_rows(&self, rows: &[Box<str>]) -> Mat {
+        let idx = self.row_index(rows);
+        Mat::from_fn(rows.len(), self.batches.len(), |i, j| {
+            idx[i].map_or(1.0, |r| self.mean[(r, j)])
+        })
+    }
+}
+
+/// The δ a fitted run left at `prefix`, when it has one: the run's manifest
+/// says whether it wrote one (a stale file from an earlier fit under the
+/// same prefix is not read); a run without a manifest is taken at its
+/// `{prefix}.delta.parquet`.
+pub fn run_delta_path(prefix: &str) -> Option<String> {
+    let path = format!("{prefix}.delta.parquet");
+    let manifest = crate::util::metadata::manifest_path(prefix);
+    let recorded = match crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest))
+    {
+        Ok(meta) => meta.outputs.batch_effects.is_some(),
+        Err(_) => true,
+    };
+    (recorded && std::path::Path::new(&path).is_file()).then_some(path)
+}
+
+/// Each cell's batch label as the run estimated it, from its
+/// `coord_pairs.parquet` (`left_batch` / `right_batch`). These are the
+/// labels δ's columns are named by; the cells table keeps the labels as
+/// read, before `--auto-batch`. Empty when the table has no batch columns
+/// (a single-batch run).
+pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<str>, Box<str>>> {
+    let pairs = crate::lr_activity::io::read_pair_table(path, false)?;
+    let mut out: HashMap<Box<str>, Box<str>> = HashMap::default();
+    for e in pairs {
+        if let Some((l, r)) = e.side_batches {
+            out.insert(e.left_cell, l);
+            out.insert(e.right_cell, r);
+        }
+    }
+    Ok(out)
+}

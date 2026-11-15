@@ -186,7 +186,7 @@ fn coarsening_by_pb_chunks_equals_the_brute_force_pooling() {
         expected[(r as usize, labels[c as usize])] += v;
     }
 
-    let actual = coarsen_cell_expression_dense(&data, &labels, n_pb).unwrap();
+    let actual = coarsen_cell_expression_dense(&data, &labels, n_pb, None).unwrap();
     assert_eq!((actual.nrows(), actual.ncols()), (n_features, n_pb));
     for g in 0..n_features {
         for p in 0..n_pb {
@@ -208,11 +208,11 @@ fn coarsening_rejects_a_label_with_no_pb_sample_and_a_short_label_vector() {
     let data = backend_from(&dir, vec![(0, 0, 1.0), (0, 1, 2.0)], 2, 2);
 
     // Label 5 with only 2 samples declared.
-    let err = coarsen_cell_expression_dense(&data, &[0, 5], 2).unwrap_err();
+    let err = coarsen_cell_expression_dense(&data, &[0, 5], 2, None).unwrap_err();
     assert!(err.to_string().contains("label 5"), "{err}");
 
     // One label for two cells: the tail would otherwise vanish in release.
-    let err = coarsen_cell_expression_dense(&data, &[0], 1).unwrap_err();
+    let err = coarsen_cell_expression_dense(&data, &[0], 1, None).unwrap_err();
     assert!(err.to_string().contains("one pb-sample label"), "{err}");
 }
 
@@ -222,13 +222,14 @@ fn coarsening_rejects_a_label_with_no_pb_sample_and_a_short_label_vector() {
 fn degenerate_widths_return_empty_rather_than_panicking() {
     let dir = tempfile::tempdir().unwrap();
     let data = backend_from(&dir, vec![(0, 0, 1.0)], 2, 2);
-    let out = coarsen_cell_expression_dense(&data, &[0, 0], 0).unwrap();
+    let out = coarsen_cell_expression_dense(&data, &[0, 0], 0, None).unwrap();
     assert_eq!((out.nrows(), out.ncols()), (2, 0));
 
     // Zero-width basis: every edge gets an empty profile, no panic.
     let basis = Mat::zeros(2, 0);
     let edges = vec![(0usize, 1usize)];
-    let store = build_projection_profiles_for_edges(&data, &[0], &edges, &basis, None).unwrap();
+    let store =
+        build_projection_profiles_for_edges(&data, &[0], &edges, &basis, None, None).unwrap();
     assert_eq!(store.n_edges, 1);
     assert_eq!(store.m, 0);
 }
@@ -270,7 +271,8 @@ fn edge_profiles_survive_a_short_final_job() {
     }
 
     let store =
-        build_projection_profiles_for_edges(&data, &edge_indices, &edges, &basis, Some(4)).unwrap();
+        build_projection_profiles_for_edges(&data, &edge_indices, &edges, &basis, Some(4), None)
+            .unwrap();
     assert_eq!(store.n_edges, edges.len());
 
     let basis_t = basis.transpose();
@@ -356,4 +358,80 @@ fn kmeans_arm_is_seeded_spherical_and_recovers_planted_directions() {
     .cluster(&latent)
     .unwrap();
     assert!(by_width.iter().all(|&l| l < 4));
+}
+
+/// With a batch effect, every count lc profiles is first divided by its
+/// row's fold in its cell's batch: the fine edge profiles, the coarsened
+/// cascade expression and the module expression alike.
+#[test]
+fn profiles_read_counts_divided_by_the_batch_effect() {
+    let (n_features, n_cells, m) = (4usize, 6usize, 3usize);
+    let mut triplets: Vec<(u64, u64, f32)> = Vec::new();
+    for c in 0..n_cells {
+        for g in 0..n_features {
+            if (c + g) % 4 != 0 {
+                triplets.push((g as u64, c as u64, ((c * 3 + g * 5) % 7 + 1) as f32));
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut data = backend_from(&dir, triplets.clone(), n_features, n_cells);
+    let batch: Vec<usize> = (0..n_cells).map(|c| c % 2).collect();
+    data.register_batch_membership(&batch);
+    let delta = Mat::from_fn(n_features, 2, |g, b| {
+        if b == 1 && g % 2 == 0 {
+            4.0
+        } else {
+            0.5 + g as f32
+        }
+    });
+
+    // the divided counts, by hand
+    let mut divided = Mat::zeros(n_features, n_cells);
+    for &(r, c, v) in &triplets {
+        divided[(r as usize, c as usize)] = v;
+    }
+    for c in 0..n_cells {
+        for g in 0..n_features {
+            divided[(g, c)] /= delta[(g, batch[c])];
+        }
+    }
+
+    let edges: Vec<(usize, usize)> = vec![(0, 1), (1, 2), (2, 5), (3, 4)];
+    let idx: Vec<usize> = (0..edges.len()).collect();
+    let basis = Mat::from_fn(n_features, m, |g, d| 1.0 + ((g + 2 * d) % 3) as f32);
+    let store =
+        build_projection_profiles_for_edges(&data, &idx, &edges, &basis, None, Some(&delta))
+            .unwrap();
+    let basis_t = basis.transpose();
+    for (e, &(u, v)) in edges.iter().enumerate() {
+        let expected = &basis_t * (divided.column(u) + divided.column(v));
+        let (cols, vals) = store.row(e);
+        for (&d, &x) in cols.iter().zip(vals.iter()) {
+            assert!((x - expected[d as usize]).abs() < 1e-4, "edge {e}, dim {d}");
+        }
+    }
+
+    let labels = vec![0, 1, 0, 1, 1, 0];
+    let pooled = coarsen_cell_expression_dense(&data, &labels, 2, Some(&delta)).unwrap();
+    for g in 0..n_features {
+        for p in 0..2 {
+            let expected: f32 = (0..n_cells)
+                .filter(|&c| labels[c] == p)
+                .map(|c| divided[(g, c)])
+                .sum();
+            assert!(
+                (pooled[(g, p)] - expected).abs() < 1e-4,
+                "feature {g}, pb {p}"
+            );
+        }
+    }
+
+    let module_of = vec![Some(0), Some(1), Some(0), None];
+    let (module_expr, _) =
+        build_module_expression(&data, &module_of, 2, None, None, Some(&delta)).unwrap();
+    for c in 0..n_cells {
+        let expected = divided[(0, c)] + divided[(2, c)];
+        assert!((module_expr[(0, c)] - expected).abs() < 1e-4, "cell {c}");
+    }
 }

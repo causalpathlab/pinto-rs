@@ -122,13 +122,16 @@ impl ModulePairBasis {
 ///   - `cell_totals[c] = Σ_m x_{c,m}` — the per-cell total used as the null
 ///     scale in the residual.
 ///
-/// One streaming pass over the sparse expression matrix.
+/// One streaming pass over the sparse expression matrix, each cell's counts
+/// divided by its batch's fold first when `delta` is given
+/// ([`super::read_columns_divided`]).
 pub fn build_module_expression(
     data: &SparseIoVec,
     module_of_feature: &[Option<usize>],
     n_modules: usize,
     feature_weights: Option<&[f32]>,
     block_size: Option<usize>,
+    delta: Option<&Mat>,
 ) -> anyhow::Result<(Mat, Vec<f32>)> {
     let n_cells = data.num_columns();
     let n_features = data.num_rows();
@@ -146,7 +149,7 @@ pub fn build_module_expression(
         .par_iter()
         .progress_with(prog_bar.clone())
         .map(|&(lb, ub)| -> anyhow::Result<(usize, Mat, Vec<f32>)> {
-            let x = data.read_columns_csc(lb..ub)?;
+            let x = super::read_columns_divided(data, lb..ub, delta)?;
             let block_len = ub - lb;
             let mut block_expr = Mat::zeros(n_modules, block_len);
             let mut block_totals = vec![0.0f32; block_len];

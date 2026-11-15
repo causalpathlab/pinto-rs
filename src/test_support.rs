@@ -90,40 +90,46 @@ pub(crate) fn sparse_vec(
 /// four times the first's (a batch effect); returns the data and
 /// coordinate files.
 pub(crate) fn two_sections(dir: &std::path::Path, side: usize) -> (String, String) {
+    let (s1, c1) = section(dir, "s1", side, &|_| 1.0);
+    let (s2, c2) = section(dir, "s2", side, &|g| if g % 3 == 0 { 4.0 } else { 1.0 });
+    (format!("{s1},{s2}"), format!("{c1},{c2}"))
+}
+
+/// One section `{tag}` of [`two_sections`]' grid over GENE0..GENE11, each
+/// feature `g` times `fold(g)` (a batch effect); its data and coordinate
+/// files. Cells are `{tag}_{c}`.
+pub(crate) fn section(
+    dir: &std::path::Path,
+    tag: &str,
+    side: usize,
+    fold: &dyn Fn(usize) -> f32,
+) -> (String, String) {
     let genes: Vec<String> = (0..12).map(|g| format!("GENE{g}")).collect();
     let genes: Vec<&str> = genes.iter().map(String::as_str).collect();
-    let (mut data, mut coords) = (Vec::new(), Vec::new());
-    for tag in ["s1", "s2"] {
-        let n = side * side;
-        let mut triplets = Vec::new();
-        let mut csv = String::from("cell,x,y\n");
-        for c in 0..n {
-            let (r, col) = (c / side, c % side);
-            let left = col < side / 2;
-            for g in 0..12u64 {
-                let marker = if left { g < 6 } else { g >= 6 };
-                let v = if marker {
-                    4.0 + ((c + g as usize) % 3) as f32
-                } else {
-                    ((c * 7 + g as usize) % 2) as f32
-                };
-                let v = if tag == "s2" && g % 3 == 0 {
-                    4.0 * v
-                } else {
-                    v
-                };
-                if v > 0.0 {
-                    triplets.push((g, c as u64, v));
-                }
+    let n = side * side;
+    let mut triplets = Vec::new();
+    let mut csv = String::from("cell,x,y\n");
+    for c in 0..n {
+        let (r, col) = (c / side, c % side);
+        let left = col < side / 2;
+        for g in 0..12usize {
+            let marker = if left { g < 6 } else { g >= 6 };
+            let v = if marker {
+                4.0 + ((c + g) % 3) as f32
+            } else {
+                ((c * 7 + g) % 2) as f32
+            };
+            let v = fold(g) * v;
+            if v > 0.0 {
+                triplets.push((g as u64, c as u64, v));
             }
-            csv.push_str(&format!("{tag}_{c},{col},{r}\n"));
         }
-        data.push(write_zarr(dir, tag, &genes, n, &triplets).to_string());
-        let path = dir.join(format!("{tag}.coords.csv"));
-        std::fs::write(&path, csv).unwrap();
-        coords.push(path.to_str().unwrap().to_string());
+        csv.push_str(&format!("{tag}_{c},{col},{r}\n"));
     }
-    (data.join(","), coords.join(","))
+    let data = write_zarr(dir, tag, &genes, n, &triplets).to_string();
+    let path = dir.join(format!("{tag}.coords.csv"));
+    std::fs::write(&path, csv).unwrap();
+    (data, path.to_str().unwrap().to_string())
 }
 
 /// `p` (absolute) as a path relative to where the tests run.

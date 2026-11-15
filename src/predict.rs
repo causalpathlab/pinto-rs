@@ -512,7 +512,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
                 0,
             );
             let row_profiles = crate::link_community::profiles::coarsen_cell_expression_dense(
-                &data_vec, &labels, n_pb,
+                &data_vec, &labels, n_pb, None,
             )?;
             Ok(feature_axis
                 .pool_rows_opt(&row_profiles)
@@ -624,16 +624,44 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
          check --coord and the neighbourhood flags (-k / --knn-expr)"
     );
 
-    let batch_id_of: HashMap<Box<str>, u32> = {
-        let mut uniq: Vec<Box<str>> = batch_membership.to_vec();
-        uniq.sort();
-        uniq.dedup();
-        uniq.into_iter()
-            .enumerate()
-            .map(|(i, b)| (b, i as u32))
-            .collect()
+    let mut query_batches: Vec<Box<str>> = batch_membership.to_vec();
+    query_batches.sort();
+    query_batches.dedup();
+    let batch_id_of: HashMap<&str, u32> = query_batches
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.as_ref(), i as u32))
+        .collect();
+    let batch_of_cell: Vec<u32> = batch_membership
+        .iter()
+        .map(|b| batch_id_of[b.as_ref()])
+        .collect();
+
+    // A query batch the model trained on is divided by the model's own δ;
+    // only a new one by the query's estimate.
+    let model_files = model_data_files(&args.model);
+    let how = if c.batch_files.is_some() {
+        delta::QueryLabels::Named
+    } else if c.auto_batch {
+        delta::QueryLabels::Components
+    } else {
+        delta::QueryLabels::Files {
+            query_files: &c.data_files,
+            model_files: &model_files,
+        }
     };
-    let batch_of_cell: Vec<u32> = batch_membership.iter().map(|b| batch_id_of[b]).collect();
+    let rows = data_vec.row_names()?;
+    let (batch_effects, from_model) = delta::query_delta(
+        &args.model,
+        &how,
+        &rows,
+        &query_batches,
+        batch_effects,
+        c.ignore_batch,
+    )?;
+    if let (Some(d), true) = (batch_effects.as_ref(), from_model) {
+        delta::write_delta(&c.out, d, &rows, &query_batches)?;
+    }
     let pair_batch = batch_effects.as_ref().map(|delta| PairBatchDivisor {
         delta,
         batch_of_cell: &batch_of_cell,
@@ -765,6 +793,16 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
     Ok((propensity, cell_names))
 }
 
+/// The data files a model's manifest records (none without a manifest).
+fn model_data_files(model: &str) -> Vec<String> {
+    crate::util::metadata::PintoMetadata::read(Path::new(&crate::util::metadata::manifest_path(
+        model,
+    )))
+    .ok()
+    .and_then(|m| m.data_files)
+    .unwrap_or_default()
+}
+
 /// Per-pair held-out scores, under the same column names `senna predict` uses
 /// for the same quantities.
 ///
@@ -832,6 +870,8 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
     info!("Wrote {out}.predictive.parquet");
     Ok(())
 }
+
+mod delta;
 
 #[cfg(test)]
 mod tests;

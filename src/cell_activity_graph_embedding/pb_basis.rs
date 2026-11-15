@@ -128,10 +128,13 @@ pub fn build_pseudobulks(args: PseudobulkArgs<'_>) -> anyhow::Result<Pseudobulks
     // The MATRIX ROW axis, deliberately: the two splice tracks are separable only
     // here, and Stage 1's `delta` block reads them apart. The feature-pooled fold
     // every other consumer wants is derived per level below.
+    // Raw counts: cage trains its pseudobulks undivided, and divides only the
+    // cells and pairs it places.
     let mut finest_counts = Some(coarsen_cell_expression_dense(
         args.data,
         finest_labels,
         n_pb_fine,
+        None,
     )?);
 
     // `parent[p_fine] = p_coarse`, or `None` when this level's cut splits a
@@ -196,7 +199,7 @@ pub fn build_pseudobulks(args: PseudobulkArgs<'_>) -> anyhow::Result<Pseudobulks
                  re-reading it directly (this should not happen — see \
                  graph_coarsen_multilevel's nesting guarantee)"
             );
-            coarsen_cell_expression_dense(args.data, labels, n_pb)?
+            coarsen_cell_expression_dense(args.data, labels, n_pb, None)?
         };
         collapsed.push((labels.clone(), counts));
     }

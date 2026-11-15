@@ -38,6 +38,12 @@ pinto lc data.h5 -c coords.csv -o out --n-communities 25
 pinto lc data.h5 -o out   # expression-only
 ```
 
+With several batches (data files, or `--batch-files` labels), lc estimates
+batch effects δ, as dsvd and cage do, and divides every count of its edge
+profiles by its batch's δ; `{out}.feature_community.parquet` stays on raw
+counts. The manifest names `{out}.delta.parquet`. `--ignore-batch` fits
+without δ.
+
 A fit is reproducible at a fixed `--seed` and thread count
 (`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
 the edges by connected component, which does not depend on the thread count,
@@ -107,6 +113,12 @@ writing the module tables. `cage-cell` is cage trained on cells and cell
 pairs, for comparison with cell-level methods; it estimates and removes batch
 effects as cage does (`--ignore-batch` runs it without). `pinto predict`
 applies a cage or cage-cell run to new data; see each command's `--help`.
+A query batch the model trained on (the same `--batch-files` label, or one
+of the model's own data files) is divided by the model's own batch effects;
+only a new batch is estimated on the query. `pinto impute` divides the
+reference cells of a cage run by the run's batch effects before pooling
+them; for lc and dsvd runs it stays on raw counts, since their
+feature-community profiles are fitted on raw counts.
 
 ### `lra`: ligand-receptor analysis
 

@@ -10,7 +10,7 @@ use clap::Parser;
 
 /// Two data files of `cells` cells over twelve features, the second with its
 /// first six features three times the first's: a batch effect to estimate.
-fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
+pub(super) fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
     let rows: Vec<String> = (0..12).map(|g| format!("GENE{g}")).collect();
     let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
     ["a", "b"]
@@ -29,7 +29,7 @@ fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
         .collect()
 }
 
-fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed {
+pub(super) fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed {
     let mut argv = vec!["pinto"];
     argv.extend(files.iter().map(|f| f.as_ref()));
     argv.extend_from_slice(&["-o", out, "--no-qc", "--knn-expr", "5"]);

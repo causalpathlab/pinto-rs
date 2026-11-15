@@ -810,9 +810,11 @@ pub struct RunInputs<'a> {
 /// (skipped levels are absent — the cascade drops levels with too few
 /// super-edges, so indices need not be contiguous and may not start at 0).
 /// `merge` is `Some` when the dictionary merge wrote its tree, with the cut
-/// it was cut at, if any.
+/// it was cut at, if any. `has_batch_effects` is `true` when the run
+/// estimated batch effects and so wrote `delta.parquet`.
 pub fn create_lc_metadata(
     inputs: &RunInputs<'_>,
+    has_batch_effects: bool,
     merge: Option<DictMergeSummary>,
     splice: Option<SpliceTrackInfo>,
     cascade_level_indices: &[usize],
@@ -862,6 +864,7 @@ pub fn create_lc_metadata(
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
             scores: Some(format!("{prefix}.scores.parquet")),
+            batch_effects: has_batch_effects.then(|| format!("{prefix}.delta.parquet")),
             dict_merge,
             ..Default::default()
         },

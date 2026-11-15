@@ -26,6 +26,7 @@ fn an_lc_run_without_a_cut_names_the_tree_and_no_cut() {
             graph: GraphParams::default(),
             ablation: None,
         },
+        false,
         Some(DictMergeSummary {
             min_nnz: 1,
             features_scored: 10,
@@ -63,6 +64,7 @@ fn metadata_roundtrip_lc() {
             graph: GraphParams::default(),
             ablation: None,
         },
+        true,
         Some(DictMergeSummary {
             min_nnz: 1,
             features_scored: 10,
@@ -97,6 +99,11 @@ fn metadata_roundtrip_lc() {
         .as_deref()
         .is_some_and(|c| c.ends_with("run.dict_merges.cut.parquet")));
     assert_eq!(merge.centred_sections, Some(3));
+    assert!(back
+        .outputs
+        .batch_effects
+        .as_deref()
+        .is_some_and(|d| d.ends_with("run.delta.parquet")));
     assert!(back.outputs.lr_activity.is_none());
     assert_eq!(
         back.outputs.coord_columns.as_deref(),
@@ -246,6 +253,7 @@ fn metadata_roundtrip_lc_merge_no_collapse() {
             graph: GraphParams::default(),
             ablation: None,
         },
+        false,
         None,
         None,
         &[],
@@ -283,6 +291,7 @@ fn roundtrip_graph(graph: GraphParams) -> (tempfile::TempDir, GraphParams) {
             graph,
             ablation: None,
         },
+        false,
         None,
         None,
         &[0],
@@ -537,6 +546,7 @@ fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
             graph: GraphParams::default(),
             ablation: None,
         },
+        false,
         None,
         None,
         &[0, 1],

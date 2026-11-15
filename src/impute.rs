@@ -36,12 +36,13 @@ use crate::util::common::*;
 use crate::util::metadata::{manifest_path, run_prefix, PintoMetadata};
 use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles};
 use clap::Args;
-use data_beans::alg::retrieval_impute::{retrieval_impute, RetrievalImputeConfig};
+use data_beans::alg::retrieval_impute::RetrievalImputeConfig;
 use data_beans::sparse_data_visitors::VisitColumnsOps;
 use data_beans::sparse_io_vector::SparseIoVec;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::traits::IoOps;
 use log::info;
+use retrieval::{retrieval_impute, RefDivide};
 use std::path::Path;
 
 #[derive(Args, Debug, Clone)]
@@ -154,6 +155,13 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         ref_prop.ncols()
     );
 
+    // A cage model's reference cells are divided by the run's δ, as predict
+    // divides the query; lc and dsvd match raw counts to raw profiles.
+    let divide = if is_cage && !c.ignore_batch {
+        reference_divide(model, &ref_data)?
+    } else {
+        None
+    };
     let imputed = retrieval_impute(
         &query_prop,
         &ref_prop,
@@ -163,6 +171,7 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
             temperature: args.impute_temperature,
             chunk: c.block_size.unwrap_or(512),
         },
+        divide.as_ref(),
     )?;
 
     let ref_feature_names = ref_data.row_names()?;
@@ -178,6 +187,43 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         imputed.ncols()
     );
     Ok(())
+}
+
+/// The run's δ on the reference cells, when the run has one: its rows
+/// matched to the reference's by name, and each cell's batch as the run
+/// estimated it, from `{model}.coord_pairs.parquet` (a cell the run placed
+/// in no pair is left as is; it is never retrieved).
+fn reference_divide(model: &str, ref_data: &SparseIoVec) -> anyhow::Result<Option<RefDivide>> {
+    use crate::util::batch_effects::{cell_batches_from_coord_pairs, read_delta, run_delta_path};
+    let Some(path) = run_delta_path(model) else {
+        return Ok(None);
+    };
+    let delta = read_delta(&path)?;
+    let batch_of = cell_batches_from_coord_pairs(&format!("{model}.coord_pairs.parquet"))?;
+    let col_of: HashMap<&str, usize> = delta
+        .batches
+        .iter()
+        .enumerate()
+        .map(|(j, b)| (b.as_ref(), j))
+        .collect();
+    let batch_of_cell: Vec<Option<usize>> = ref_data
+        .column_names()?
+        .iter()
+        .map(|cell| {
+            batch_of
+                .get(cell)
+                .and_then(|b| col_of.get(b.as_ref()).copied())
+        })
+        .collect();
+    let n = batch_of_cell.iter().flatten().count();
+    info!(
+        "Reference counts divided by {path}: {n} of {} cells by their batch's δ",
+        batch_of_cell.len()
+    );
+    Ok(Some(RefDivide {
+        delta: delta.on_rows(&ref_data.row_names()?),
+        batch_of_cell,
+    }))
 }
 
 /// Reference data files: the explicit flag, else the model's manifest.
@@ -468,6 +514,9 @@ fn profile_em_visitor(
     prop_kn.columns_range_mut(lb..ub).copy_from(&chunk);
     Ok(())
 }
+
+#[path = "impute/retrieval.rs"]
+mod retrieval;
 
 #[cfg(test)]
 #[path = "impute/tests.rs"]
