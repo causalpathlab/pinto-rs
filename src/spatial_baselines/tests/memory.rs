@@ -191,13 +191,20 @@ fn pseudobulk_estimate_covers_every_measured_peak() {
             section_sizes: vec![cells],
             batches: 1,
         };
-        let sd = spatialde2::Spatialde2Sizes {
-            neighbors: 100,
-            n_clusters: None,
-            all_pairs: false,
-        }
-        .memory_shape(&input, nonzeros);
-        let est = mib(spatialde2_peak_bytes(&sd) + pseudobulk_bytes(cells, nonzeros, sd.edges));
+        // Taken in the 4-thread pool the peaks were measured on.
+        let est = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| {
+                let sd = spatialde2::Spatialde2Sizes {
+                    neighbors: 100,
+                    n_clusters: None,
+                    all_pairs: false,
+                }
+                .memory_shape(&input, nonzeros);
+                mib(spatialde2_peak_bytes(&sd) + pseudobulk_bytes(cells, nonzeros, sd.edges))
+            });
         assert!(
             est >= measured,
             "spatialde2-pb {cells}: {est:.0} < {measured}"
@@ -1084,27 +1091,34 @@ fn spatialpca_estimate_counts_spark_x_over_every_gene() {
 fn factor_estimate(cmd: &str, input: &InputShape, genes: usize) -> f64 {
     use crate::spatial_baselines::{mefisto, spatialpca};
     let argv = ["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
-    let shape = match parse(&argv) {
-        crate::Commands::Spatialpca(a) => {
-            a.fit
-                .memory_shape(input, genes, spatialpca::Variant::Sparse)
-        }
-        crate::Commands::SpatialpcaPb(a) => {
-            a.fit
-                .memory_shape(input, genes, spatialpca::Variant::Pseudobulk(1024))
-        }
-        crate::Commands::Mefisto(a) => a.fit.memory_shape(input, genes, mefisto::Variant::Sparse),
-        crate::Commands::MefistoPb(a) => {
-            a.fit
-                .memory_shape(input, genes, mefisto::Variant::Pseudobulk(1024))
-        }
-        _ => unreachable!(),
-    };
+    let command = parse(&argv);
+    // The shape reads the thread count too, so it is taken inside the
+    // 4-thread pool the peaks were measured on, not on this machine's.
     rayon::ThreadPoolBuilder::new()
         .num_threads(4)
         .build()
         .unwrap()
-        .install(|| mib(factor_peak_bytes(&shape)))
+        .install(|| {
+            let shape = match &command {
+                crate::Commands::Spatialpca(a) => {
+                    a.fit
+                        .memory_shape(input, genes, spatialpca::Variant::Sparse)
+                }
+                crate::Commands::SpatialpcaPb(a) => {
+                    a.fit
+                        .memory_shape(input, genes, spatialpca::Variant::Pseudobulk(1024))
+                }
+                crate::Commands::Mefisto(a) => {
+                    a.fit.memory_shape(input, genes, mefisto::Variant::Sparse)
+                }
+                crate::Commands::MefistoPb(a) => {
+                    a.fit
+                        .memory_shape(input, genes, mefisto::Variant::Pseudobulk(1024))
+                }
+                _ => unreachable!(),
+            };
+            mib(factor_peak_bytes(&shape))
+        })
 }
 
 /// The factor baselines' estimates cover every measured run, and from 4096
