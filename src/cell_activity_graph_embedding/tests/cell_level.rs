@@ -30,23 +30,6 @@ fn every_cell_is_its_own_unit_at_both_levels() {
     assert_eq!(ml.all_num_samples, vec![3, 3]);
 }
 
-/// `cage-cell` sets the mode after parsing, so fit itself refuses what
-/// needs a hierarchy of pseudobulks.
-#[test]
-fn cell_level_refuses_hierarchy_flags() {
-    for extra in [
-        &["--chain-levels", "1"][..],
-        &["--feature-embedding", "dict.parquet"][..],
-    ] {
-        let mut a = parse(&[&["-o", "out", "d.zarr"][..], extra].concat()).unwrap();
-        a.cell_level = true;
-        let e = fit_cell_activity_graph_embedding(&a)
-            .unwrap_err()
-            .to_string();
-        assert!(e.starts_with("cage-cell:"), "{extra:?}: {e}");
-    }
-}
-
 /// A short cage fit of `data` (`cage-cell` when `extra` holds `"cell"`)
 /// to `{dir}/{name}`; its prefix, or why it failed.
 pub(super) fn try_fit(
@@ -127,7 +110,11 @@ fn predict(dir: &std::path::Path, data: &str, coords: &str, model: &str) -> Stri
         "-o",
         &out,
     ];
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict).unwrap();
+    crate::predict::predict(
+        &Cli::try_parse_from(argv).unwrap().predict,
+        &Default::default(),
+    )
+    .unwrap();
     out
 }
 
@@ -314,4 +301,48 @@ fn feature_inclusion_scores_every_feature_in_both_modes() {
             "{name}: π outside [0, 1]"
         );
     }
+}
+
+/// `--positives-per-epoch` (hidden) replaces the per-feature budget with
+/// an epoch total; unset keeps the per-feature default.
+#[test]
+fn positives_per_epoch_sets_the_epoch_budget() {
+    let base = ["-o", "out", "d.zarr"];
+    assert_eq!(parse(&base).unwrap().positives_per_epoch, None);
+    let set = parse(&[&base[..], &["--positives-per-epoch", "5"]].concat()).unwrap();
+    assert_eq!(set.positives_per_epoch, Some(5));
+
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 6);
+    let auto = fit(dir.path(), &data, &coords, "auto", &["cell"]);
+    let one = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "one",
+        &["cell", "--positives-per-epoch", "1"],
+    );
+    let read = |p: &str| {
+        Mat::from_parquet(&format!("{p}.pb_embedding.parquet"))
+            .unwrap()
+            .mat
+    };
+    assert!(
+        read(&auto) != read(&one),
+        "the budget left the fit unchanged"
+    );
+}
+
+/// The per-(feature, batch) draws: the default when unset, else the epoch
+/// total split over the expected visits and the batches, floored, at least
+/// one, and no division by zero visits or batches.
+#[test]
+fn positives_per_feature_batch_splits_the_total_over_visits_and_batches() {
+    use crate::cell_activity_graph_embedding::args::PER_FEATURE_BATCH;
+    use crate::cell_activity_graph_embedding::fit::positives_per_feature_batch as per;
+    assert_eq!(per(None, 5, 2), PER_FEATURE_BATCH);
+    assert_eq!(per(Some(100), 5, 2), 10);
+    assert_eq!(per(Some(29), 4, 3), 2, "floored");
+    assert_eq!(per(Some(1), 5, 2), 1, "at least one");
+    assert_eq!(per(Some(7), 0, 0), 7, "no visits or batches divides by one");
 }

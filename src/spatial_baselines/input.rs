@@ -42,11 +42,6 @@ pub struct SpatialInputArgs {
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
 
-    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
-    /// No flag sets it.
-    #[arg(skip)]
-    pub preload_data: bool,
-
     /// Output prefix
     #[arg(long, short, required = true)]
     pub out: Box<str>,
@@ -92,7 +87,6 @@ impl SpatialInputArgs {
         let srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
-            preload_data: self.preload_data,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),

@@ -31,10 +31,10 @@
 //! `{out}.propensity.parquet` for the profile-projected query.
 
 use crate::link_community::outputs::write_propensity_matrix;
-use crate::predict::{predict_cage, PredictArgs};
+use crate::predict::{predict_cage, PredictCoreArgs, ScoringArgs};
 use crate::util::common::*;
 use crate::util::metadata::{PintoMetadata, Run};
-use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles};
+use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles, EM_ITERS};
 use clap::Args;
 use data_beans::alg::retrieval_impute::RetrievalImputeConfig;
 use data_beans::sparse_data_visitors::VisitColumnsOps;
@@ -45,21 +45,13 @@ use log::info;
 use retrieval::{retrieval_impute, RefDivide};
 use std::path::Path;
 
-/// EM iterations per cell of the lc / dsvd profile projection.
-pub const PROFILE_EM_ITERS: usize = 100;
+/// Query cells per chunk of the retrieval.
+const RETRIEVAL_CHUNK: usize = 512;
 
 #[derive(Args, Debug, Clone)]
-// predict's held-out scoring flags, which impute refuses or never reads.
-#[command(
-    mut_arg("held_out", |a| a.hide(true)),
-    mut_arg("holdout_unit", |a| a.hide(true)),
-    mut_arg("ablate_features", |a| a.hide(true)),
-    mut_arg("eval_features", |a| a.hide(true)),
-    mut_arg("null_from", |a| a.hide(true))
-)]
 pub struct ImputeArgs {
     #[command(flatten)]
-    pub predict: PredictArgs,
+    pub predict: PredictCoreArgs,
 
     #[arg(
         long,
@@ -100,14 +92,12 @@ pub struct ImputeArgs {
         hide = true
     )]
     pub impute_temperature: f32,
-
-    /// EM iterations per cell of the lc / dsvd profile projection:
-    /// [`PROFILE_EM_ITERS`]. No flag sets it.
-    #[arg(skip = PROFILE_EM_ITERS)]
-    pub profile_em_iters: usize,
 }
 
-pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
+/// `qc_given` names the cell QC flags given on the command line (see
+/// [`SrtInputArgs::qc_flags_given`](crate::util::input::SrtInputArgs::qc_flags_given)),
+/// which an lc / dsvd model refuses.
+pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> {
     // A model named by its manifest is the same model, as `pinto predict`
     // takes it.
     let mut args = args.clone();
@@ -115,11 +105,6 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
     let args = &args;
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
-    anyhow::ensure!(
-        args.predict.holdout == crate::predict::default_args()?.holdout,
-        "the held-out scoring flags (--held-out, --holdout-*, --ablate-features) are for \
-         `pinto predict`, not impute"
-    );
     mkdir_parent(&c.out)?;
 
     // The manifest is the authority on what the model IS; artifact probing
@@ -144,6 +129,17 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
             probe
         }
     };
+
+    // The lc / dsvd projection reads every cell as given: no QC runs there,
+    // so a QC flag would be ignored. Refuse it instead.
+    if !is_cage {
+        anyhow::ensure!(
+            qc_given.is_empty(),
+            "{model} is an lc / dsvd model, whose impute runs no cell QC: {} \
+             would do nothing. Filter the cells before the run.",
+            qc_given.join(", ")
+        );
+    }
 
     let reference_files = resolve_reference_data(args, run.as_ref())?;
     let (query_prop, query_cells, ref_prop, ref_data) = if is_cage {
@@ -174,7 +170,7 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         &RetrievalImputeConfig {
             knn: args.impute_knn,
             temperature: args.impute_temperature,
-            chunk: c.block_size.unwrap_or(512),
+            chunk: RETRIEVAL_CHUNK,
         },
         divide.as_ref(),
     )?;
@@ -308,12 +304,11 @@ fn resolve_reference_data(args: &ImputeArgs, run: Option<&Run>) -> anyhow::Resul
 /// Open a set of sparse backends. The multi-file `@basename` cell-name
 /// suffixing matches what training wrote into its propensity table, so the
 /// cage path's name check compares like with like.
-fn open_backends(what: &str, files: &[Box<str>], preload: bool) -> anyhow::Result<SparseIoVec> {
+fn open_backends(what: &str, files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     info!("Opening {what} data ({} file(s))", files.len());
     let loaded = data_beans::aux::data_loading::read_data_on_shared_rows(
         data_beans::aux::data_loading::ReadSharedRowsArgs {
             data_files: files.to_vec(),
-            preload,
             // Inference: every reference and query column comes back.
             keep_empty_barcodes: true,
             ..Default::default()
@@ -338,13 +333,9 @@ fn cage_propensities(
     let model = args.predict.model.as_ref();
 
     info!("cage model: projecting the query sample through `pinto predict`");
-    let (query_prop, query_cells) = predict_cage(&args.predict, run)?;
+    let (query_prop, query_cells) = predict_cage(&args.predict, &ScoringArgs::default(), run)?;
 
-    let ref_data = open_backends(
-        "reference",
-        reference_files,
-        args.predict.common.preload_data,
-    )?;
+    let ref_data = open_backends("reference", reference_files)?;
     let ref_prop_path = args
         .reference_propensity
         .clone()
@@ -449,7 +440,7 @@ fn profile_propensities(
     );
 
     anyhow::ensure!(!c.data_files.is_empty(), "impute: no data files given");
-    let query_data = open_backends("query", &c.data_files, c.preload_data)?;
+    let query_data = open_backends("query", &c.data_files)?;
     let feature_kind = args
         .predict
         .feature_name_mode
@@ -460,8 +451,7 @@ fn profile_propensities(
         &profiles,
         &model_features,
         &feature_kind,
-        args.profile_em_iters,
-        c.block_size,
+        EM_ITERS,
         "query",
     )?;
     write_propensity_matrix(&c.out, &query_prop, &query_cells)?;
@@ -473,14 +463,13 @@ fn profile_propensities(
 
     // The reference goes through the SAME map — not through the training
     // run's edge-based propensity — so the kNN compares like with like.
-    let ref_data = open_backends("reference", reference_files, c.preload_data)?;
+    let ref_data = open_backends("reference", reference_files)?;
     let ref_prop = project_profile_propensity(
         &ref_data,
         &profiles,
         &model_features,
         &feature_kind,
-        args.profile_em_iters,
-        c.block_size,
+        EM_ITERS,
         "reference",
     )?;
     Ok((query_prop, query_cells, ref_prop, ref_data))
@@ -502,7 +491,6 @@ fn project_profile_propensity(
     model_features: &[Box<str>],
     feature_kind: &data_beans::aux::feature_names::FeatureNameKind,
     iters: usize,
-    block_size: Option<usize>,
     what: &str,
 ) -> anyhow::Result<Mat> {
     let k = profiles.ncols();
@@ -520,7 +508,7 @@ fn project_profile_propensity(
     };
     let n = data.num_columns();
     let mut prop_kn = Mat::zeros(k, n);
-    data.visit_columns_by_block(&profile_em_visitor, &param, &mut prop_kn, block_size)?;
+    data.visit_columns_by_block(&profile_em_visitor, &param, &mut prop_kn, None)?;
     Ok(prop_kn.transpose())
 }
 

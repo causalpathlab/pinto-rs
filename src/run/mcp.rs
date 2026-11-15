@@ -20,22 +20,23 @@ use std::path::Path;
 /// The run tools, and pinto's command line to read the methods from.
 pub struct Tools {
     cli: clap::Command,
+    /// The tools, described once from `cli`.
+    specs: Vec<ToolSpec>,
 }
 
 impl Default for Tools {
     fn default() -> Self {
-        Tools {
-            cli: crate::built_cli(),
-        }
+        let cli = crate::built_cli();
+        let mut specs = specs(&cli);
+        specs.extend(super::residual::specs(&cli));
+        specs.extend(super::sim::specs());
+        Tools { cli, specs }
     }
 }
 
 impl Handler for Tools {
     fn tools(&self) -> Vec<ToolSpec> {
-        let mut tools = specs(&self.cli);
-        tools.extend(super::residual::specs(&self.cli));
-        tools.extend(super::sim::specs());
-        tools
+        self.specs.clone()
     }
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
@@ -189,12 +190,9 @@ impl Tools {
             );
         }
         for (flag, value) in &a.flags {
+            let flag = flag.trim_start_matches('-');
             let field = method.field_mut(flag).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{} has no flag --{}: {lister} lists them",
-                    a.method,
-                    flag.trim_start_matches('-')
-                )
+                anyhow::anyhow!("{} has no flag --{flag}: {lister} lists them", a.method)
             })?;
             let long = field.long.clone();
             field.value = match (&field.kind, value) {
@@ -411,7 +409,7 @@ fn default_name(a: &CompareArgs) -> String {
     let stem = |input: &str, level: &Option<String>| {
         let name = crate::util::metadata::run_stem(input);
         match level.as_deref() {
-            Some(l) if l != "final" => format!("{name}.{l}"),
+            Some(l) if l != crate::compare::DEFAULT_LEVEL => format!("{name}.{l}"),
             _ => name,
         }
     };
@@ -511,8 +509,12 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
         flag_value("--out", out),
     ];
     if a.level_a.is_some() || a.level_b.is_some() {
-        let level = |l: &Option<String>| l.clone().unwrap_or_else(|| "final".into());
-        let levels = format!("{},{}", level(&a.level_a), level(&a.level_b));
+        use crate::compare::level_or_final;
+        let levels = format!(
+            "{},{}",
+            level_or_final(&a.level_a),
+            level_or_final(&a.level_b)
+        );
         argv.push(flag_value("--level", levels));
     }
     if let Some(tau) = a.tau {
@@ -727,8 +729,9 @@ fn text(v: &Value) -> String {
 }
 
 fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
-    let lra = |id: &str, schema: Value| flag_arg(cli, "lra", id, schema);
-    let sim = |id: &str, schema: Value| flag_arg(cli, "lra-simulate", id, schema);
+    let (lra_cmd, sim_cmd) = (subcommand(cli, "lra"), subcommand(cli, "lra-simulate"));
+    let lra = |id: &str, schema: Value| flag_arg(lra_cmd, id, schema);
+    let sim = |id: &str, schema: Value| flag_arg(sim_cmd, id, schema);
     let methods = json!({
         "enum": METHODS,
         "description": format!(
@@ -878,9 +881,9 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "method": lra("method", json!({"enum": choices::<LraMethod>()})),
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "lr_pairs": lra("lr_pairs", json!({"type": "string"})),
-                    "targets": lra("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "targets": long_flag_arg(lra_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "species": lra("species", json!({"enum": choices::<ReferenceSpecies>()})),
-                    "only": lra("only", json!({"type": "array", "items": {"type": "string"}})),
+                    "only": long_flag_arg(lra_cmd, "only", json!({"type": "array", "items": {"type": "string"}})),
                     "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
@@ -914,10 +917,10 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "species": sim("species", json!({"enum": choices::<ReferenceSpecies>()})),
                     "lr_pairs": sim("lr_pairs", json!({"type": "string"})),
-                    "targets": sim("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "targets": long_flag_arg(sim_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "plant_region": sim("plant_region", json!({"type": "string"})),
                     "one": sim("one", json!({"type": "boolean"})),
-                    "set": sim("set", json!({"type": "array", "items": {"type": "string"}})),
+                    "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
                     "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
                     "background": background(),
@@ -931,7 +934,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
 /// `schema` with the arguments of what lra reads beside a run, which `run_lra`
 /// and `run_lra_simulate` share, described by `pinto {command}`'s flags.
 fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Value {
-    let flag = |id: &str, schema: Value| flag_arg(cli, command, id, schema);
+    let sub = subcommand(cli, command);
+    let flag = |id: &str, schema: Value| flag_arg(sub, id, schema);
     let files = || json!({"type": "array", "items": {"type": "string"}});
     let shared = json!({
         "data_files": flag("data_files", files()),
@@ -949,34 +953,41 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
     schema
 }
 
-/// The arguments whose long help carries a vocabulary or a format an agent
-/// needs to fill them in: lra-simulate's `set` keys, the `only` pair
-/// syntax and the `targets` file format. Every other field is described by
-/// its short help, as `--help` shows it.
-pub(super) const LONG_HELP_FIELDS: &[&str] = &["set", "only", "targets"];
+/// `pinto {name}`.
+pub(super) fn subcommand<'c>(cli: &'c clap::Command, name: &str) -> &'c clap::Command {
+    cli.find_subcommand(name)
+        .unwrap_or_else(|| panic!("pinto has no command {name}"))
+}
 
-/// A tool argument that passes `pinto {command}`'s argument `id`: `schema`
-/// keeps its type (and any enum), and its description is the flag's own
-/// help (short, but for [`LONG_HELP_FIELDS`]), the flag, and clap's
-/// default, so the two cannot drift.
-pub(super) fn flag_arg(cli: &clap::Command, command: &str, id: &str, mut schema: Value) -> Value {
-    let arg = cli
-        .find_subcommand(command)
-        .and_then(|c| c.get_arguments().find(|a| a.get_id() == id))
-        .unwrap_or_else(|| panic!("pinto {command} has no argument {id}"));
-    let (first, second) = (arg.get_help(), arg.get_long_help());
-    let (first, second) = if LONG_HELP_FIELDS.contains(&id) {
-        (second, first)
+/// A tool argument that passes the argument `id` of `sub` (a pinto
+/// command): `schema` keeps its type (and any enum), and its description
+/// is the flag's own short help, as `--help` shows it, the flag, and
+/// clap's default, so the two cannot drift.
+pub(super) fn flag_arg(sub: &clap::Command, id: &str, schema: Value) -> Value {
+    described(sub, id, schema, false)
+}
+
+/// [`flag_arg`] described by the flag's long help, for an argument whose
+/// long help carries a vocabulary or a format an agent needs to fill it in.
+pub(super) fn long_flag_arg(sub: &clap::Command, id: &str, schema: Value) -> Value {
+    described(sub, id, schema, true)
+}
+
+fn described(sub: &clap::Command, id: &str, mut schema: Value, long: bool) -> Value {
+    let arg = sub
+        .get_arguments()
+        .find(|a| a.get_id() == id)
+        .unwrap_or_else(|| panic!("pinto {} has no argument {id}", sub.get_name()));
+    let (short, long_help) = (arg.get_help(), arg.get_long_help());
+    let help = if long {
+        long_help.or(short)
     } else {
-        (first, second)
+        short.or(long_help)
     };
-    let help = first
-        .or(second)
-        .map(ToString::to_string)
-        .unwrap_or_default();
+    let help = help.map(ToString::to_string).unwrap_or_default();
     let mut said = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    if let Some(long) = arg.get_long() {
-        said.push_str(&format!(" (--{long})"));
+    if let Some(flag) = arg.get_long() {
+        said.push_str(&format!(" (--{flag})"));
     }
     let default: Vec<String> = arg
         .get_default_values()

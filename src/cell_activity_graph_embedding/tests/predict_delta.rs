@@ -37,7 +37,11 @@ fn predict(
         "--null-from",
     ];
     argv.extend(training.split(','));
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict).unwrap();
+    crate::predict::predict(
+        &Cli::try_parse_from(argv).unwrap().predict,
+        &Default::default(),
+    )
+    .unwrap();
     out
 }
 
@@ -208,7 +212,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
             "--impute-knn",
             "1",
         ];
-        crate::impute::run_impute(&Cli::try_parse_from(argv).unwrap().impute)?;
+        crate::impute::run_impute(&Cli::try_parse_from(argv).unwrap().impute, &[])?;
         anyhow::Ok(
             Mat::from_parquet(&format!("{out}.imputed.parquet"))
                 .unwrap()

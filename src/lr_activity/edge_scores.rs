@@ -365,12 +365,9 @@ pub fn write_edge_scores(path: &str, rows: &[EdgeScoreRow]) -> anyhow::Result<()
 
 /// Per-cell `log1p` of the total count over ALL rows (the panel a pair is
 /// scored on is a subset; depth is a property of the cell, not the panel).
-pub fn per_cell_log1p_depth(
-    data: &SparseIoVec,
-    block_size: Option<usize>,
-) -> anyhow::Result<Vec<f32>> {
+pub fn per_cell_log1p_depth(data: &SparseIoVec) -> anyhow::Result<Vec<f32>> {
     let n_cells = data.num_columns();
-    let jobs = generate_minibatch_intervals(n_cells, data.num_rows(), block_size);
+    let jobs = generate_minibatch_intervals(n_cells, data.num_rows(), None);
     let mut depth = vec![0.0f32; n_cells];
     // Jobs partition the columns, so each writes a disjoint slice; a fold
     // would allocate a full-length accumulator per worker for no benefit.

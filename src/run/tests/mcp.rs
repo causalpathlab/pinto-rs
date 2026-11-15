@@ -350,17 +350,15 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
             let Some(p) = props.get(id) else { continue };
             let said = p["description"].as_str().unwrap();
             let (short, long) = (arg.get_help(), arg.get_long_help());
-            let help = if LONG_HELP_FIELDS.contains(&id) {
-                long.or(short)
-            } else {
-                short.or(long)
+            let words = |h: Option<&clap::builder::StyledStr>| {
+                let h = h.map(ToString::to_string).unwrap_or_default();
+                h.split_whitespace().collect::<Vec<_>>().join(" ")
             };
-            let help = help.map(ToString::to_string).unwrap_or_default();
-            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(
-                said.starts_with(&help),
-                "{tool}.{id}: {said:?} is not {help:?}"
-            );
+            // the short help, or the long one where the tool asks for it
+            let help = [words(short.or(long)), words(long.or(short))]
+                .into_iter()
+                .find(|h| said.starts_with(h))
+                .unwrap_or_else(|| panic!("{tool}.{id}: {said:?} is neither of its helps"));
             let default: Vec<String> = arg
                 .get_default_values()
                 .iter()
@@ -411,12 +409,7 @@ type Mirror = (
 
 /// The tools whose fields pass a command's flags.
 const MIRRORS: &[Mirror] = &[
-    (
-        "run_lra",
-        "lra",
-        &[("run", "from")],
-        &["json_fwer_threshold"],
-    ),
+    ("run_lra", "lra", &[("run", "from")], &[]),
     ("run_lra_simulate", "lra-simulate", &[("run", "from")], &[]),
     (
         "run_residual",

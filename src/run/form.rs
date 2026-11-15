@@ -310,24 +310,29 @@ impl Method {
     /// The value of the flag `long`, as typed, when it is not its default.
     #[must_use]
     pub fn value(&self, long: &str) -> Option<&str> {
+        let f = &self.fields[self.position(long)?];
+        (!f.is_default()).then(|| f.value.trim())
+    }
+
+    /// Where the row of the flag named `name` (with or without `--`) is,
+    /// by its long name or an alias.
+    fn position(&self, name: &str) -> Option<usize> {
+        let name = name.trim_start_matches('-');
         self.fields
             .iter()
-            .find(|f| f.long == long && !f.is_default())
-            .map(|f| f.value.trim())
+            .position(|f| f.long == name || f.aliases.iter().any(|a| a == name))
     }
 
     /// The row of the flag named `name` (with or without `--`), by its
     /// long name or an alias.
     pub fn field_mut(&mut self, name: &str) -> Option<&mut Field> {
-        let name = name.trim_start_matches('-');
-        self.fields
-            .iter_mut()
-            .find(|f| f.long == name || f.aliases.iter().any(|a| a == name))
+        let at = self.position(name)?;
+        Some(&mut self.fields[at])
     }
 
     /// Set the flag `long` to `value`, when the method has it.
     pub fn set(&mut self, long: &str, value: &str) {
-        if let Some(f) = self.fields.iter_mut().find(|f| f.long == long) {
+        if let Some(f) = self.field_mut(long) {
             f.value = value.to_string();
         }
     }

@@ -259,7 +259,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
     });
     std::fs::write(format!("{prefix}.pinto.json"), manifest.to_string()).unwrap();
 
-    let data = crate::lr_activity::fit::load_expr_data(&[zarr], false).unwrap();
+    let data = crate::lr_activity::fit::load_expr_data(&[zarr]).unwrap();
     let axis = FeatureAxis::resolve_or_identity(&data.row_names().unwrap()).unwrap();
     let mut pairs = Vec::new();
     for c in 0..n {

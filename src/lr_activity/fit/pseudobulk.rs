@@ -78,16 +78,13 @@ pub(super) fn load_edges(
     Ok((anchor_edges, edges))
 }
 
-pub(crate) fn load_expr_data(
-    data_files: &[Box<str>],
-    preload: bool,
-) -> anyhow::Result<SparseIoVec> {
+pub(crate) fn load_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     anyhow::ensure!(!data_files.is_empty(), "empty data files");
     let mut data_vec = SparseIoVec::new();
     let names = crate::util::input::stacked_data_names(data_files)?;
     for (data_file, data_name) in data_files.iter().zip(names) {
         info!("Importing data file: {}", data_file);
-        let data = crate::util::input::open_sparse(data_file, preload)?;
+        let data = crate::util::input::open_sparse(data_file)?;
         data_vec.push(Arc::from(data), data_name)?;
     }
     Ok(data_vec)

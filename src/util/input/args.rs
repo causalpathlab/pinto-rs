@@ -4,6 +4,19 @@ use super::{KnnExprScope, SRTReadArgs, COORD_COLUMN_NAMES};
 use clap::Parser;
 use data_beans::aux::feature_names::FeatureNameKind;
 
+/// `--qc-feature-min-cells`, refused at any floor but 0: data-beans'
+/// feature QC drops no feature in pinto, which reads only the cell QC.
+fn no_feature_qc(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>().map_err(|e| e.to_string())? {
+        0 => Ok(0),
+        _ => Err(
+            "pinto reads only the cell QC, so a feature floor drops no feature; \
+                  filter the features before the run"
+                .into(),
+        ),
+    }
+}
+
 /// Shared CLI arguments for spatial data input across all pinto subcommands.
 ///
 /// Flatten this into each subcommand's args struct with `#[command(flatten)]`.
@@ -13,7 +26,10 @@ use data_beans::aux::feature_names::FeatureNameKind;
 #[command(
     mut_arg("qc_mads", |a| a.hide(true)),
     mut_arg("qc_min_cell_nnz", |a| a.hide(true)),
-    mut_arg("qc_report", |a| a.hide(true))
+    mut_arg("qc_report", |a| a.hide(true)),
+    // data-beans applies a feature floor only for a consumer that reads its
+    // feature verdict, and pinto reads only the cell one.
+    mut_arg("qc_feature_min_cells", |a| a.hide(true).value_parser(no_feature_qc))
 )]
 pub struct SrtInputArgs {
     #[arg(
@@ -143,16 +159,6 @@ pub struct SrtInputArgs {
     )]
     pub out: Box<str>,
 
-    /// Cells per parallel block: none, so it scales with the feature count
-    /// under `PINTO_MEMORY_BUDGET`. No flag sets it.
-    #[arg(skip)]
-    pub block_size: Option<usize>,
-
-    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
-    /// No flag sets it.
-    #[arg(skip)]
-    pub preload_data: bool,
-
     #[arg(
         long,
         default_value_t = crate::util::common::DEFAULT_SEED,
@@ -197,12 +203,6 @@ pub struct SrtInputArgs {
         hide = true
     )]
     pub proj_dim: usize,
-
-    /// Neighbours per pseudobulk sample in other batches, for the
-    /// cross-batch matching batch-effect estimation needs: [`BATCH_KNN`].
-    /// No flag sets it.
-    #[arg(skip = BATCH_KNN)]
-    pub batch_knn: usize,
 
     #[arg(
         long = "cnv-clones",
@@ -454,19 +454,22 @@ impl SrtInputArgs {
         }
     }
 
+    /// The cell QC flags given on the command line of `cmd` (a subcommand
+    /// flattening these args, its matches `m`), by name: what a path that
+    /// runs no QC must refuse rather than ignore. Every flag data-beans'
+    /// `QcArgs` contributes counts, at any value, except `--no-qc`, which
+    /// asks for exactly what such a path does.
+    pub fn qc_flags_given(cmd: &clap::Command, m: &clap::ArgMatches) -> Vec<String> {
+        let ids = crate::util::cli::group_ids(cmd, "QcArgs");
+        crate::util::cli::given_on_cli(cmd, m, ids.into_iter().filter(|&id| id != "no_qc"))
+    }
+
     /// Reject the flag combinations that need no data to judge.
     ///
     /// Split from the bounds check so a typo fails before the run reads a
     /// single file: these depend only on argv, while the `< n_cells` bounds
     /// cannot be judged until QC has settled the cell count.
     pub fn validate_flags(&self) -> anyhow::Result<()> {
-        // data-beans applies a feature floor only for a consumer that reads
-        // its feature verdict, and pinto reads only the cell one.
-        anyhow::ensure!(
-            self.qc.qc_feature_min_cells == 0,
-            "--qc-feature-min-cells drops no feature in pinto, which reads only \
-             the cell QC; filter the features before the run."
-        );
         if !self.has_coordinates() {
             // The two flags name the same graph here, and the choice is not
             // cosmetic: component count is k-dependent, components become
@@ -522,7 +525,7 @@ impl SrtInputArgs {
         // Last, because it is the least fatal: an unusable k makes the run
         // impossible, while a scope with nothing to scope only makes a flag
         // inert. Reporting the scope first would send the user round twice.
-        // Reachable only WITH coordinates — see `validate_flags`.
+        // Reachable only WITH coordinates (see `validate_flags`).
         anyhow::ensure!(
             self.knn_expr_scope == KnnExprScope::Global || augment > 0,
             "--knn-expr-scope scopes the expression search, and --knn-expr is 0 \
@@ -598,7 +601,6 @@ impl SrtInputArgs {
         SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
-            preload_data: self.preload_data,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),

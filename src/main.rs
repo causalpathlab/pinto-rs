@@ -33,7 +33,7 @@ use compare::{run_compare, CompareArgs};
 use impute::{run_impute, ImputeArgs};
 use link_community::fit::*;
 use lr_activity::{fit_lra_simulate, fit_srt_lr_activity, LraSimulateArgs, SrtLrActivityArgs};
-use predict::{predict, PredictArgs};
+use predict::{predict, ModelOnlyFlags, PredictArgs};
 use propensity::*;
 use svd::fit::*;
 
@@ -437,17 +437,8 @@ enum Commands {
                       its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0")),
         // What cage-cell refuses, or warns does nothing on cells, is off its
-        // help: pseudobulk sizing, the projection's HVG weighting, feature
-        // modules and a pretrained dictionary.
-        mut_arg("n_pseudobulk", |a| a.hide(true)),
-        mut_arg("n_hvg", |a| a.hide(true)),
-        mut_arg("feature_list_file", |a| a.hide(true)),
-        mut_arg("must_train_features", |a| a.hide(true)),
-        mut_arg("feature_modules", |a| a.hide(true)),
-        mut_arg("feature_embedding", |a| a.hide(true)),
-        mut_arg("feature_embedding_bias", |a| a.hide(true)),
-        mut_arg("feature_embedding_mode", |a| a.hide(true)),
-        mut_arg("feature_init_mode", |a| a.hide(true))
+        // help.
+        mut_args(cell_activity_graph_embedding::fit::hide_on_cells)
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
 
@@ -878,7 +869,7 @@ impl Commands {
             Commands::LinkCommunity(a) => (&mut a.common.out, "lc"),
             Commands::Cage(a) => (&mut a.common.out, "cage"),
             Commands::CageCell(a) => (&mut a.common.out, "cage-cell"),
-            Commands::Predict(a) => (&mut a.common.out, "predict"),
+            Commands::Predict(a) => (&mut a.core.common.out, "predict"),
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
@@ -929,9 +920,13 @@ fn main() -> anyhow::Result<()> {
 
     let argv: Vec<String> = std::env::args().collect();
     check_removed_lra_flags(&argv)?;
-    // `Cli::parse_from`, keeping the matches: cage-cell asks which flags
-    // were given rather than left at their defaults.
-    let matches = <Cli as clap::CommandFactory>::command().get_matches_from(argv);
+    // `Cli::parse_from`, keeping the command and its matches: cage-cell,
+    // predict and impute ask which flags were given rather than left at
+    // their defaults.
+    let mut cmd = <Cli as clap::CommandFactory>::command();
+    let matches = cmd
+        .try_get_matches_from_mut(argv)
+        .unwrap_or_else(|e| e.exit());
     let mut cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| {
         e.format(&mut <Cli as clap::CommandFactory>::command())
             .exit()
@@ -943,16 +938,15 @@ fn main() -> anyhow::Result<()> {
 
     crate::util::common::init_logger(cli.verbose);
 
-    if let Some(m) = matches.subcommand_matches("cage-cell") {
-        let no_ops = cell_activity_graph_embedding::fit::cell_level_no_ops_given(m);
-        if !no_ops.is_empty() {
-            log::warn!(
-                "cage-cell: {} shape only the HVG projection or the pseudobulks that \
-                 cage-cell skips; they do nothing here",
-                no_ops.join(", ")
-            );
-        }
-    }
+    // The subcommand `name`, as built, and its matches.
+    let sub = |name: &str| {
+        (
+            cmd.find_subcommand(name).expect("a subcommand of pinto"),
+            matches
+                .subcommand_matches(name)
+                .expect("the subcommand run"),
+        )
+    };
 
     match &cli.commands {
         Commands::Propensity(args) => {
@@ -964,16 +958,23 @@ fn main() -> anyhow::Result<()> {
         Commands::LinkCommunity(args) => {
             fit_srt_link_community(args)?;
         }
-        Commands::Cage(args) | Commands::CageCell(args) => {
+        Commands::Cage(args) => {
+            fit_cell_activity_graph_embedding(args)?;
+        }
+        Commands::CageCell(args) => {
+            let (c, m) = sub("cage-cell");
+            cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
             fit_cell_activity_graph_embedding(args)?;
         }
         Commands::Predict(args) => {
             // The return value serves `pinto impute`; the CLI path only wants
             // the files predict writes.
-            let (_propensity, _cell_names) = predict(args)?;
+            let (c, m) = sub("predict");
+            let (_propensity, _cell_names) = predict(args, &ModelOnlyFlags::given(c, m))?;
         }
         Commands::Impute(args) => {
-            run_impute(args)?;
+            let (c, m) = sub("impute");
+            run_impute(args, &util::input::SrtInputArgs::qc_flags_given(c, m))?;
         }
         Commands::LrActivity(args) => {
             fit_srt_lr_activity(args)?;

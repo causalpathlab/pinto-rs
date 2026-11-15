@@ -42,8 +42,8 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
-    SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, FisherStats, Seeding,
+    SrtPreprocessConfig, SrtPreprocessed,
 };
 use data_beans::qc::suggest_nnz_cutoff;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -85,17 +85,12 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         edge_source,
         cell_proj,
         feature_axis,
-        row_weights: _,
-        row_stats,
-        feature_weights,
-        feature_stats,
         n_cells,
         n_rows,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: Some(&args.ablation),
-        fisher_weights: true,
         batch_effects: BatchEstimate::Fit,
         // Everything `lc` filters, weights and reports is per FEATURE. On a
         // channelized matrix a row is half a feature, and reading one as the other
@@ -112,16 +107,15 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
         .transpose()?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
-    let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
-    let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
+    let FisherStats {
+        row_weights: _,
+        row_stats,
+        feature_weights,
+        feature_stats,
+    } = FisherStats::compute(&data_vec, &feature_axis)?;
     let n_features = feature_axis.n_features();
     // Per-row totals, taken off the streaming pass rather than paid for again.
-    let row_totals: Vec<f64> = row_stats
-        .expect("fisher_weights=true must yield Some")
-        .sum()
-        .iter()
-        .map(|&x| f64::from(x))
-        .collect();
+    let row_totals: Vec<f64> = row_stats.sum().iter().map(|&x| f64::from(x)).collect();
 
     /////////////////////////////////////////////
     // 4-pre. Feature network setup (if provided) //
@@ -183,7 +177,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             &module_of_row,
             basis.n_modules,
             Some(&row_weights),
-            c.block_size,
+            None,
             batch_effects.as_ref(),
         )?;
 
@@ -306,7 +300,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         &(0..n_edges).collect::<Vec<usize>>(),
         edges,
         &profile_mode,
-        c.block_size,
     )?;
 
     let density_pct = 100.0 * full_profiles.nnz() as f64
@@ -341,9 +334,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         edge_kind,
         cell_names: &cell_names,
         data_vec: &data_vec,
-        feature_weights: Some(&feature_weights),
+        feature_weights: &feature_weights,
         axis: &feature_axis,
-        block_size: c.block_size,
     };
     let cascade_result = run_cascade(
         &c.out,
@@ -361,13 +353,13 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     ///////////////////////////////////////////////
     // 8. Component-EM + greedy on full profiles //
     ///////////////////////////////////////////////
-    // Optional frozen K×K incidence (hybrid: Gibbs for edges, VB for B).
+    // Frozen K×K incidence (hybrid: Gibbs for edges, VB for B).
     // Vertex propensity θ and the variational expected log-incidence
     // E_q[log B] = ψ(a + S) − log(b + W) are both computed once from the
     // cascade's fine-resolution labels and held fixed for the duration of
     // EM + greedy. No per-move bookkeeping; the score gains the term
     //   Σ_{k'} (θ_L[k'] + θ_R[k']) · log_B[k, k'].
-    let incidence_scores: Option<Vec<f32>> = {
+    let incidence_scores: Vec<f32> = {
         let prop_mat = compute_node_membership(edges, &current_labels, n_cells, k);
         let prop_flat = pack_propensity_row_major(&prop_mat);
         drop(prop_mat);
@@ -380,10 +372,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             INCIDENCE_B,
         );
         info!(
-            "Incidence enabled (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
+            "Incidence (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
             k, INCIDENCE_A, INCIDENCE_B
         );
-        Some(cell_incidence_scores(&prop_flat, &log_b, k))
+        cell_incidence_scores(&prop_flat, &log_b, k)
     };
 
     let comp_args = ComponentGibbsArgs {
@@ -391,21 +383,18 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         edges,
         k,
         alpha: DIRICHLET_ALPHA,
-        incidence: incidence_scores.as_deref(),
+        incidence: Some(&incidence_scores),
     };
 
     let num_fine_sweeps = num_em_sweeps(args.num_gibbs);
-
-    if num_fine_sweeps > 0 {
-        info!("EM Gibbs on full edge set ({} sweeps)...", num_fine_sweeps);
-        let moves = sampler.run_components_em(
-            &mut current_labels,
-            &full_profiles,
-            &comp_args,
-            num_fine_sweeps,
-        );
-        info!("EM Gibbs: {} moves", moves);
-    }
+    info!("EM Gibbs on full edge set ({} sweeps)...", num_fine_sweeps);
+    let moves = sampler.run_components_em(
+        &mut current_labels,
+        &full_profiles,
+        &comp_args,
+        num_fine_sweeps,
+    );
+    info!("EM Gibbs: {} moves", moves);
 
     info!("Greedy finalization ({} max sweeps)...", args.num_greedy);
     let greedy_moves = sampler.run_greedy_by_components(
@@ -741,7 +730,6 @@ fn build_full_profiles(
     edge_indices: &[usize],
     all_edges: &[(usize, usize)],
     mode: &ProfileMode<'_>,
-    block_size: Option<usize>,
 ) -> anyhow::Result<LinkProfileStore> {
     match *mode {
         ProfileMode::ModulePair {
@@ -755,13 +743,8 @@ fn build_full_profiles(
             edge_indices,
             basis,
         )),
-        ProfileMode::Projection { basis, delta } => build_projection_profiles_for_edges(
-            data,
-            edge_indices,
-            all_edges,
-            basis,
-            block_size,
-            delta,
-        ),
+        ProfileMode::Projection { basis, delta } => {
+            build_projection_profiles_for_edges(data, edge_indices, all_edges, basis, None, delta)
+        }
     }
 }

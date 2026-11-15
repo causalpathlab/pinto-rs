@@ -40,7 +40,8 @@ use crate::util::common::*;
 use crate::util::device::ComputeDevice;
 use crate::util::metadata::{create_cage_metadata, BatchLabels, DeltaWritten, Run, RunInputs};
 use crate::util::srt_pipeline::{
-    preprocess_srt, BatchEstimate, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, BatchEstimate, FeatureAxisMode, FisherStats, SrtPreprocessConfig,
+    SrtPreprocessed,
 };
 use clap::Args;
 use data_beans::aux::frozen_features::{load_frozen_feature_host_matching, FrozenLoadArgs};
@@ -54,10 +55,21 @@ use std::path::Path;
 #[derive(Args, Debug, Clone)]
 pub struct PredictArgs {
     #[command(flatten)]
-    pub common: crate::util::input::SrtInputArgs,
+    pub core: PredictCoreArgs,
 
     #[command(flatten)]
     pub holdout: crate::holdout::HoldoutArgs,
+
+    #[command(flatten)]
+    pub scoring: ScoringArgs,
+}
+
+/// The flags `pinto predict` and `pinto impute` share: the query, the
+/// model, and how the model is applied to the query.
+#[derive(Args, Debug, Clone)]
+pub struct PredictCoreArgs {
+    #[command(flatten)]
+    pub common: crate::util::input::SrtInputArgs,
 
     #[arg(
         long,
@@ -106,7 +118,7 @@ pub struct PredictArgs {
                      so a whole-transcriptome query is not penalized\n\
                      for carrying features the model never had.\n\
                      \n\
-                     Zero mapped features is always refused — that is a naming failure.",
+                     Zero mapped features is always refused: that is a naming failure.",
         hide = true
     )]
     pub min_feature_overlap: f32,
@@ -124,27 +136,12 @@ pub struct PredictArgs {
         hide = true
     )]
     pub no_init_features: bool,
+}
 
-    /// Dictionary neighbours a feature the model never saw is initialised
-    /// from. No flag sets it.
-    #[arg(skip = graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS)]
-    pub feature_init_neighbours: usize,
-
-    /// Profile similarity below which such a feature takes the diffuse
-    /// prior. No flag sets it.
-    #[arg(skip = graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR)]
-    pub feature_init_similarity_floor: f32,
-
-    /// Cells per read block and cell pairs per placement pass (memory
-    /// only). No flag sets it.
-    #[arg(skip = crate::cell_activity_graph_embedding::args::PAIR_BLOCK)]
-    pub pair_block: usize,
-
-    /// Off: the feature_community table is NB Fisher-info weighted. No
-    /// flag sets it.
-    #[arg(skip)]
-    pub no_fisher_weights: bool,
-
+/// How `pinto predict` scores its prediction, which `pinto impute` does
+/// not.
+#[derive(Args, Debug, Clone, Default)]
+pub struct ScoringArgs {
     /// Restrict the agreement correlations to these features (one name per line).
     ///
     /// Off by default because a pair-level correlation sorts the feature axis once
@@ -169,6 +166,8 @@ pub struct PredictArgs {
     /// score well on `b_g` alone. Pass the training half and both the rate and
     /// the null come from data the model was actually fitted on.
     ///
+    /// The value is a comma-separated list of data files.
+    ///
     /// Same flag, same meaning as `senna predict --null-from`; pass the same
     /// training half to both and the two commands' scores are comparable.
     #[arg(
@@ -176,7 +175,7 @@ pub struct PredictArgs {
         value_name = "FILE",
         num_args = 1..,
         value_delimiter = ',',
-        help = "Training data supplying the per-feature totals (b_g) and the null; pass the train half"
+        help = "Training data (comma-separated files) supplying the per-feature totals (b_g) and the null; pass the train half"
     )]
     pub null_from: Option<Vec<Box<str>>>,
 }
@@ -318,38 +317,60 @@ pub fn check_model(model: &str) -> anyhow::Result<()> {
 /// Returns the per-cell propensity and the cell names — the same table
 /// written to `{out}.propensity.parquet` — so a caller that consumes the
 /// prediction (`pinto impute`) need not round-trip it through parquet.
-pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     // A model named by its manifest is the same model: records name runs that
     // way, so a held-out scoring links to the fit it scores.
     let mut args = args.clone();
-    let run = open_model(&mut args.model)?;
+    let run = open_model(&mut args.core.model)?;
     let args = &args;
-    let c = &args.common;
-    anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
-    let model = args.model.as_ref();
+    anyhow::ensure!(
+        !args.core.common.data_files.is_empty(),
+        "predict: no data files given"
+    );
+    let model = args.core.model.as_ref();
     // a model opened by its manifest is there, whatever the manifest's name
     if run.is_none() {
         check_model(model)?;
     }
-    let defaults = default_args()?;
     match run.as_ref() {
         Some(Run { meta, .. }) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
-            let unused = cage_only_flags(args, &defaults);
             anyhow::ensure!(
-                unused.is_empty(),
+                given.cage.is_empty(),
                 "{model} is an {} model: {} apply to cage models only",
                 meta.command,
-                unused.join(", ")
+                given.cage.join(", ")
             );
             crate::holdout::predict_profiles(args, meta)
         }
         _ => {
             anyhow::ensure!(
-                args.holdout == defaults.holdout,
+                given.holdout.is_empty(),
                 "{model} is not an lc / dsvd model: the held-out scoring flags \
-                 (--held-out, --holdout-*, --ablate-features) apply to those only"
+                 ({}) apply to those only",
+                given.holdout.join(", ")
             );
-            predict_cage(args, run.as_ref())
+            predict_cage(&args.core, &args.scoring, run.as_ref())
+        }
+    }
+}
+
+/// The flags given on `pinto predict`'s command line that apply to one kind
+/// of model only, by name.
+#[derive(Debug, Default)]
+pub struct ModelOnlyFlags {
+    /// Cage models only.
+    pub cage: Vec<String>,
+    /// lc / dsvd models only: the held-out scoring flags.
+    pub holdout: Vec<String>,
+}
+
+impl ModelOnlyFlags {
+    /// Those of `cmd` (`pinto predict`, its matches `m`).
+    pub fn given(cmd: &clap::Command, m: &clap::ArgMatches) -> Self {
+        use crate::util::cli::{given_on_cli, group_ids};
+        ModelOnlyFlags {
+            cage: given_on_cli(cmd, m, ["device", "device_no", "no_init_features"]),
+            holdout: given_on_cli(cmd, m, group_ids(cmd, "HoldoutArgs")),
         }
     }
 }
@@ -366,32 +387,6 @@ pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
         None => crate::util::metadata::run_prefix(model).into(),
     };
     Ok(run)
-}
-
-/// `PredictArgs` as parsed with nothing set: what a flag left alone reads.
-pub(crate) fn default_args() -> anyhow::Result<PredictArgs> {
-    #[derive(clap::Parser)]
-    struct Probe {
-        #[command(flatten)]
-        args: PredictArgs,
-    }
-    use clap::Parser;
-    Ok(Probe::try_parse_from(["predict", "data", "--model", "m", "-o", "o"])?.args)
-}
-
-/// The cage-only flags `args` sets away from their defaults, by name.
-pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'static str> {
-    [
-        ("--device", args.device != d.device),
-        ("--device-no", args.device_no != d.device_no),
-        (
-            "--no-init-features",
-            args.no_init_features != d.no_init_features,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(name, set)| set.then_some(name))
-    .collect()
 }
 
 /// The δ of the model at prefix `model` (its manifest `run`) and its path,
@@ -414,7 +409,11 @@ fn model_delta(
 
 /// `pinto predict` of the cage model at prefix `args.model`, its manifest
 /// `run` (`None` for a model without one).
-pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+pub fn predict_cage(
+    args: &PredictCoreArgs,
+    scoring: &ScoringArgs,
+    run: Option<&Run>,
+) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
@@ -460,8 +459,6 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         knn,
         edge_source,
         feature_axis,
-        row_stats,
-        feature_weights,
         n_cells,
         n_rows: _,
         cell_proj,
@@ -469,13 +466,17 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: None,
-        fisher_weights: !args.no_fisher_weights,
         batch_effects: batch_plan,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: true,
         feature_kind: Some(feature_kind.clone()),
     })?;
     let feature_axis = feature_axis.expect("FeatureAxisMode::Strict must yield Some");
+    let FisherStats {
+        row_stats,
+        feature_weights,
+        ..
+    } = FisherStats::compute(&data_vec, &feature_axis)?;
     let cell_names = data_vec.column_names()?;
     let feature_names: Vec<Box<str>> = feature_axis.feature_names().to_vec();
     let n_features = feature_axis.n_features();
@@ -569,8 +570,8 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
             name_kind: feature_kind.clone(),
             feature_profiles: &build_profiles,
             membership_init: Some(graph_embedding_util::transfer::AlignKnobs {
-                k: args.feature_init_neighbours,
-                similarity_floor: args.feature_init_similarity_floor,
+                k: graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS,
+                similarity_floor: graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR,
             }),
         })?;
         let mut n_init = 0usize;
@@ -596,10 +597,9 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
             );
         }
     }
-    let mut feature_totals = match args.null_from.as_deref() {
+    let mut feature_totals = match scoring.null_from.as_deref() {
         Some(files) => crate::util::profile_match::training_feature_totals(
             files,
-            c,
             &feature_kind,
             &feature_names,
         )?,
@@ -609,12 +609,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
                  is anchored on the data being scored and llik is not held out. Pass the \
                  training half"
             );
-            let row_totals: Vec<f64> = match row_stats {
-                Some(st) => st.sum().iter().map(|&x| f64::from(x)).collect(),
-                None => {
-                    crate::link_community::profiles::compute_row_totals(&data_vec, c.block_size)?
-                }
-            };
+            let row_totals: Vec<f64> = row_stats.sum().iter().map(|&x| f64::from(x)).collect();
             feature_axis.pool_totals(&row_totals)
         }
     };
@@ -624,7 +619,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         }
     }
 
-    let eval_features: Option<Vec<Box<str>>> = match args.eval_features.as_deref() {
+    let eval_features: Option<Vec<Box<str>>> = match scoring.eval_features.as_deref() {
         // The same reader `senna predict --eval-features` uses. The help on both
         // commands tells the user to pass ONE file to both; parsing it two ways
         // meant a two-column panel scored senna on the right features and matched
@@ -723,7 +718,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
                 dev: &dev,
             },
             seed: c.seed,
-            pair_block: args.pair_block,
+            pair_block: crate::cell_activity_graph_embedding::args::PAIR_BLOCK,
             eval_features: eval_features.clone(),
             score_pairs: true,
         },
@@ -784,9 +779,8 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
                 .flatten(),
             cell_names: &cell_names,
             data_vec: &data_vec,
-            feature_weights: feature_weights.as_deref(),
+            feature_weights: &feature_weights,
             axis: &feature_axis,
-            block_size: c.block_size,
         },
         &labels,
         k,

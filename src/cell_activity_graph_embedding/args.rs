@@ -1,6 +1,5 @@
 //! CLI arguments for `pinto cage`.
 
-use crate::cell_activity_graph_embedding::feature_gating::ActivityNorm;
 use clap::{Parser, ValueEnum};
 use data_beans::alg::hvg::HvgCliArgs;
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -229,15 +228,26 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     pub gpu_mem_fraction: f32,
 
-    /// Sibling-PB negatives per positive super edge per chain level:
-    /// [`N_NEGATIVES`]. No flag sets it.
-    #[arg(skip = N_NEGATIVES)]
-    pub n_negatives: usize,
-
-    /// Negative-degree exponent of the negative sampling: [`ALPHA_NEG`].
-    /// No flag sets it.
-    #[arg(skip = ALPHA_NEG)]
-    pub alpha_neg: f32,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Total positive edges drawn per epoch, across all features (unset = auto)",
+        long_help = "The epoch's total SUPER-EDGE sampling budget.\n\
+                     \n\
+                     Divided evenly: each visited feature draws\n\
+                     N / (expected visits x batches) positives per batch,\n\
+                     floored, at least one. The expected visits are the\n\
+                     trainable features, or the sum of their inclusion\n\
+                     probabilities pi under --feature-inclusion.\n\
+                     Unset, each feature draws a fixed number per batch.\n\
+                     \n\
+                     --features-per-epoch does not enter the split: it caps\n\
+                     the features visited, each keeps its draws, and the\n\
+                     epoch draws fewer than N in all.\n\
+                     --epochs is the usual way to train longer.",
+        hide = true
+    )]
+    pub positives_per_epoch: Option<usize>,
 
     #[arg(
         long,
@@ -246,10 +256,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         hide = true
     )]
     pub lr: f32,
-
-    /// Per-feature activity normalization: log1p. No flag sets it.
-    #[arg(skip = ActivityNorm::Log1p)]
-    pub activity_norm: ActivityNorm,
 
     #[arg(
         long,
@@ -263,11 +269,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         hide = true
     )]
     pub activity_alpha: f32,
-
-    /// Off: each feature's loss is weighted by its NB Fisher information,
-    /// as in `pinto lc`. No flag sets it.
-    #[arg(skip)]
-    pub no_fisher_weights: bool,
 
     #[arg(
         long,
@@ -386,34 +387,16 @@ pub struct CellActivityGraphEmbeddingArgs {
         long_help = "After each epoch, look at the recent mean losses.\n\
                      The window is `convergence-window` epochs wide.\n\
                      Stop training when their (max − min) / |mean| falls below\n\
-                     0.01.\n\
+                     a fixed tolerance.\n\
                      Pass 0 to run all --epochs unconditionally.",
         hide = true
     )]
     pub convergence_window: usize,
 
-    /// Relative loss range over `--convergence-window` epochs that stops
-    /// training: [`CONVERGENCE_TOL`]. No flag sets it.
-    #[arg(skip = CONVERGENCE_TOL)]
-    pub convergence_tol: f32,
-
     /// How the pair latent becomes link communities. Shared verbatim with
     /// `dsvd` — the k-means fallback width is `--embedding-dim` here.
     #[command(flatten)]
     pub edge_clustering: crate::util::edge_clustering::EdgeClusterArgs,
-
-    /// Gradient-norm clip of each step: [`GRAD_CLIP`]. No flag sets it.
-    #[arg(skip = GRAD_CLIP)]
-    pub grad_clip: f32,
-
-    /// Prior precision of the pair encoder's fit: [`PAIR_RIDGE`]. No flag
-    /// sets it.
-    #[arg(skip = PAIR_RIDGE)]
-    pub pair_ridge: f32,
-
-    /// Pairs placed per block: [`PAIR_BLOCK`]. No flag sets it.
-    #[arg(skip = PAIR_BLOCK)]
-    pub pair_block: usize,
 
     #[arg(
         long = "nce-objective",
@@ -526,16 +509,6 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     #[arg(alias = "gene-init-mode")]
     pub feature_init_mode: FeatureInitMode,
-
-    /// Dictionary neighbours a missing feature is initialised from. No flag
-    /// sets it.
-    #[arg(skip = graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS)]
-    pub feature_init_neighbours: usize,
-
-    /// Similarity below which a neighbour does not initialise a missing
-    /// feature. No flag sets it.
-    #[arg(skip = graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR)]
-    pub feature_init_similarity_floor: f32,
 
     /// The `--feature-modules` flag group (see `graph_embedding_util::FeatureModuleArgs`).
     /// Cage has no feature-negative NCE, so the within-module negatives do not apply

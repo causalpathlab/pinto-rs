@@ -118,7 +118,8 @@ pub(super) fn residual(
 }
 
 pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
-    let flag = |id: &str, schema: Value| super::mcp::flag_arg(cli, "residual", id, schema);
+    let sub = super::mcp::subcommand(cli, "residual");
+    let flag = |id: &str, schema: Value| super::mcp::flag_arg(sub, id, schema);
     vec![ToolSpec::new(
         "run_residual",
         "The counts a fitted lc, cage or dsvd run leaves unexplained, as new data files \

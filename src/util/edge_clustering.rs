@@ -26,11 +26,10 @@ pub enum EdgeClusterMethod {
 pub const LEIDEN_KNN: usize = 30;
 
 /// Leiden runs combined into one consensus partition. Leiden's partition
-/// moves with its seed: on one cage fit's pair latent, five seeds agreed
-/// only at ARI 0.58-0.79. So Leiden runs this many times (seeds derived from
+/// moves with its seed, so Leiden runs this many times (seeds derived from
 /// `--seed`), each kNN-graph edge is weighted by the share of runs that keep
 /// its two pairs together, and one final Leiden on that graph gives the
-/// partition; 10 runs agreed at ARI 0.80-0.91 across seeds.
+/// partition, which agrees far better across seeds than a single run.
 pub const LEIDEN_RUNS: usize = 10;
 
 /// Lloyd iterations for spherical kmeans.
@@ -62,20 +61,12 @@ pub struct EdgeClusterArgs {
     )]
     pub edge_cluster_method: EdgeClusterMethod,
 
-    /// Neighbours per pair in the Leiden kNN graph: [`LEIDEN_KNN`].
-    #[arg(skip = LEIDEN_KNN)]
-    pub leiden_knn: usize,
-
     #[arg(
         long,
         default_value_t = 1.0,
         help = "Leiden modularity resolution; higher gives more, finer communities"
     )]
     pub leiden_resolution: f64,
-
-    /// Leiden runs combined into one consensus partition: [`LEIDEN_RUNS`].
-    #[arg(skip = LEIDEN_RUNS)]
-    pub leiden_runs: usize,
 
     #[arg(
         long = "n-communities",
@@ -92,10 +83,6 @@ pub struct EdgeClusterArgs {
                      See this subcommand's own --help for the files it writes."
     )]
     pub n_edge_clusters: Option<usize>,
-
-    /// Lloyd iterations for kmeans: [`KMEANS_MAX_ITER`].
-    #[arg(skip = KMEANS_MAX_ITER)]
-    pub kmeans_max_iter: usize,
 }
 
 impl EdgeClusterArgs {
@@ -108,14 +95,14 @@ impl EdgeClusterArgs {
         match self.edge_cluster_method {
             EdgeClusterMethod::Kmeans => EdgeClustering::Kmeans {
                 n_clusters: self.n_edge_clusters,
-                max_iter: self.kmeans_max_iter,
+                max_iter: KMEANS_MAX_ITER,
                 seed,
             },
             EdgeClusterMethod::Leiden => EdgeClustering::Leiden {
-                knn: self.leiden_knn,
+                knn: LEIDEN_KNN,
                 resolution: self.leiden_resolution,
                 target: self.n_edge_clusters,
-                runs: self.leiden_runs,
+                runs: LEIDEN_RUNS,
                 seed,
             },
         }

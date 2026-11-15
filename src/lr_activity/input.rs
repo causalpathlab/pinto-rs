@@ -21,8 +21,6 @@ pub struct LraInput {
     pub coord_column_names: Vec<Box<str>>,
     pub batch_files: Option<Vec<Box<str>>>,
     pub knn_spatial: usize,
-    pub preload_data: bool,
-    pub block_size: Option<usize>,
     /// `--cell-types` and `--region`: cell-label tables.
     pub cell_types: Option<Box<str>>,
     pub region: Option<Box<str>>,
@@ -93,8 +91,6 @@ impl LraInputArgs {
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),
             knn_spatial: self.knn_spatial,
-            preload_data: self.preload_data,
-            block_size: self.block_size,
             cell_types: self.cell_types.clone(),
             region: self.region.clone(),
             stage1: residual.and_then(|r| r.stage1),
@@ -377,7 +373,6 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
     } = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
         data_files: input.data_files.clone(),
         coord_files: input.coord_files.clone(),
-        preload_data: input.preload_data,
         coord_columns: Vec::new(),
         coord_column_names: input.coord_column_names.clone(),
         batch_files: input.batch_files.clone(),
@@ -393,7 +388,6 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         &coordinates,
         crate::util::cell_pairs::SrtCellPairsArgs {
             knn: input.knn_spatial,
-            block_size: input.block_size,
             reciprocal: false,
         },
     )?;
@@ -419,7 +413,7 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
 }
 
 fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
-    let data = crate::lr_activity::fit::load_expr_data(&input.data_files, input.preload_data)?;
+    let data = crate::lr_activity::fit::load_expr_data(&input.data_files)?;
     let axis = FeatureAxis::resolve_or_identity(&data.row_names()?)?;
     let n_cells = data.num_columns();
     let cell_to_col: HashMap<Box<str>, usize> = data

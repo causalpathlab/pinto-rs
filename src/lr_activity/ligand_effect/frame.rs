@@ -235,9 +235,9 @@ impl RunFrame {
         let (cell, row_of, contacts) = receiver_contacts(&run.coords, &run.pairs);
         anyhow::ensure!(!cell.is_empty(), "no cell has a spatial contact");
         // The depths, in one pass that keeps no gene.
-        let (_, log1p_depth) = GeneStore::read(&run.data, &run.axis, &[], &row_of, None)?;
+        let (_, log1p_depth) = GeneStore::read(&run.data, &run.axis, &[], &row_of)?;
         let log_depth: Vec<f64> = cell.iter().map(|&c| log1p_depth[c] as f64).collect();
-        let (_, bins) = identity_bins(&run.data, &run.axis, excluded, &run.cell_section, None)?;
+        let (_, bins) = identity_bins(&run.data, &run.axis, excluded, &run.cell_section)?;
         let identity_bin = cell.iter().map(|&c| bins[c]).collect();
         let column_names = run.data.column_names()?;
         Ok(Self {

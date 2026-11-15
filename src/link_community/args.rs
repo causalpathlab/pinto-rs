@@ -32,9 +32,8 @@ pub struct SrtLinkCommunityArgs {
         default_value_t = 100,
         help = "Gibbs iterations at the coarsest level",
         long_help = "Gibbs iterations at the coarsest coarsening level.\n\
-                     Later V-cycle levels use num_gibbs/5, at least 10. They can afford fewer:\n\
-                     each warm-starts from the level above.\n\
-                     The full-resolution EM runs num_gibbs/4 sweeps, at least 5.",
+                     Later V-cycle levels, and the full-resolution EM, run a fraction\n\
+                     of these. They can afford fewer: each warm-starts from the level above.",
         hide = true
     )]
     pub num_gibbs: usize,
@@ -70,10 +69,8 @@ pub struct SrtLinkCommunityArgs {
                      comma-separated when it ends in .csv). A line naming a feature the data\n\
                      lacks, such as a header, is skipped. pinto ships no network of its own.\n\n\
                      With it, lc groups the features into modules: the network, densified by\n\
-                     shared neighbours (at least 3) and k-core trimmed (degree 3), is\n\
-                     clustered by Leiden (Traag, Waltman and van Eck 2019; resolution 1).\n\
-                     Each cell pair's profile is\n\
-                     then sparse over module pairs (a, b): how far the two cells co-express a\n\
+                     shared neighbours and k-core trimmed, is clustered by Leiden (Traag,\n\
+                     Waltman and van Eck 2019). Each cell pair's profile is then sparse over module pairs (a, b): how far the two cells co-express a\n\
                      and b beyond what their totals predict, in place of the random-projection\n\
                      profile. A feature trimmed away joins no module.\n\
                      Writes {out}.feature_graph.parquet, the feature pairs kept."

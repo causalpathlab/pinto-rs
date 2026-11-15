@@ -130,7 +130,6 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
                 targets: &targets,
                 species: ReferenceSpecies::Human,
                 seed: 7,
-                block_size: None,
                 only,
                 cell_types: Some("ct.tsv"),
                 region: None,

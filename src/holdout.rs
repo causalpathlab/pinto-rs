@@ -77,10 +77,7 @@ pub enum SplitKind {
     FeatureAblation,
 }
 
-/// EM iterations of each held-out unit's community mix on its fit part.
-pub const HOLDOUT_EM_ITERS: usize = 100;
-
-#[derive(Args, Debug, Clone, PartialEq)]
+#[derive(Args, Debug, Clone)]
 #[command(next_help_heading = "Held-out scoring (lc / dsvd models)")]
 pub struct HoldoutArgs {
     #[arg(
@@ -136,11 +133,6 @@ pub struct HoldoutArgs {
         hide = true
     )]
     pub holdout_delta_iters: usize,
-
-    /// EM iterations of each unit's community mix on its fit part:
-    /// [`HOLDOUT_EM_ITERS`]. No flag sets it.
-    #[arg(skip = HOLDOUT_EM_ITERS)]
-    pub holdout_em_iters: usize,
 }
 
 fn open_fraction(s: &str) -> Result<f64, String> {

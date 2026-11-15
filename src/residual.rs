@@ -44,7 +44,7 @@
 //!
 //! Per data file it writes `{out}/{stem}.zarr`, the excess counts
 //! `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`) on the rows every
-//! file shares (as an exact-name fit reads them; with `--feature-names` as
+//! file shares (as an exact-name fit reads them; with `--feature-name-mode` as
 //! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
 //! the run's first two coordinates for those cells. The excess keeps counts,
 //! so the count models fit it as they fit data. `{out}/residual.json`
@@ -101,7 +101,7 @@ pub struct ResidualArgs {
 
     #[arg(
         long,
-        default_value_t = 100,
+        default_value_t = crate::util::profile_match::EM_ITERS,
         help = "EM iterations per cell for θ",
         hide = true
     )]
@@ -384,12 +384,12 @@ impl Inputs {
         // shares, cage by its feature-name mode
         let kind = match args.feature_names {
             FeatureNameMode::Auto => {
-                let first = crate::util::input::open_sparse(&files[0], false)?;
+                let first = crate::util::input::open_sparse(&files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
-        let data = crate::util::input::open_fit_data(&files, &kind, false)?;
+        let data = crate::util::input::open_fit_data(&files, &kind)?;
 
         let coord_names = plan.coord_names.clone();
         let cells = crate::util::parquet_io::read_cells_table(

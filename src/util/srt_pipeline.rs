@@ -31,10 +31,10 @@ use crate::util::input::{
 };
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
-use data_beans::alg::sparse_streaming::streaming_sparse_running_stats;
 use data_beans::aux::feature_names::FeatureNameKind;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 use legume_numeric::matrix::knn_graph::{DistanceMerge, EdgeSource};
+use legume_numeric::matrix::sparse_stat::SparseRunningStatistics;
 
 ///////////////////////////
 // Config + result types //
@@ -45,9 +45,6 @@ pub struct SrtPreprocessConfig<'a> {
     /// The fit's ablation flags; `None` for a command that fits nothing
     /// (`predict`).
     pub ablation: Option<&'a AblationArgs>,
-    /// Compute per-feature NB Fisher-info weights. `lc` needs them; `svd`
-    /// and (v1) `cage` do not.
-    pub fisher_weights: bool,
     /// Whether to estimate per-batch effects, and what to do with them.
     pub batch_effects: BatchEstimate,
     /// Whether, and how strictly, to resolve the FEATURE unit axis from the row
@@ -163,27 +160,6 @@ pub struct SrtPreprocessed {
     /// The feature unit axis. `Some` iff the config asked for it. Identity (one
     /// feature per row) unless the rows carry splice channels.
     pub feature_axis: Option<FeatureAxis>,
-    /// Per-ROW NB Fisher-info weights. This is the right axis for the
-    /// projection and for anything that reads the matrix directly.
-    pub row_weights: Option<Vec<f32>>,
-    /// The ROW-axis statistics [`Self::row_weights`] came from. Its `sum()` is
-    /// the per-row count total, which spares a caller that needs one a second
-    /// full pass over the data.
-    pub row_stats: Option<legume_numeric::matrix::sparse_stat::SparseRunningStatistics<f32>>,
-    /// Per-FEATURE NB Fisher-info weights, `Some` iff both `fisher_weights` and
-    /// `feature_axis` were asked for.
-    ///
-    /// These are NOT a fold of [`Self::row_weights`]. A Fisher weight is a
-    /// function of a feature's abundance and mean, and that function is not
-    /// additive, so folding the weights would hand a feature a precision no
-    /// measurement supports. The fold happens on the statistics instead, and it
-    /// happens inside the streaming pass because `npos` and `s2` do not survive
-    /// one applied afterwards.
-    pub feature_weights: Option<Vec<f32>>,
-    /// The feature-axis statistics [`Self::feature_weights`] came from. Carried out
-    /// because the dictionary merge needs per-feature DETECTION counts, which is
-    /// exactly the statistic a post-hoc fold gets wrong.
-    pub feature_stats: Option<legume_numeric::matrix::sparse_stat::SparseRunningStatistics<f32>>,
     pub n_cells: usize,
     /// Matrix rows. Equal to the feature count only on a non-channelized axis.
     pub n_rows: usize,
@@ -292,7 +268,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // (Near-empty cells are kept; the gem-style near-empty output floor is
     // not applied to pinto's per-cell outputs.)
     if let Some(qc_cfg) = c.qc.to_config() {
-        let report = data_beans::qc_lib::compute_qc(&data_vec, &qc_cfg, c.block_size)?;
+        let report = data_beans::qc_lib::compute_qc(&data_vec, &qc_cfg, None)?;
         // Before masking: the report is indexed by the ORIGINAL cell order, so
         // the names have to be read while they still line up. Read once, for
         // the report and for the cells set aside below.
@@ -374,7 +350,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         };
         let keep = cell_keep(&names, &listed)?;
         let n_masked = keep.iter().filter(|&&k| !k).count();
-        let cut = has_coords && ab.mask_mode == MaskMode::CutEdges;
+        let cut = has_coords && ab.mask_mode() == MaskMode::CutEdges;
         info!(
             "Ablation: masking {} of {} cells ({})",
             n_masked,
@@ -436,12 +412,12 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 PermuteCoords::Block => {
                     let xy = plane_columns(&coordinate_names)?;
                     let (moved, n_tiles) =
-                        permute_blocks(&coordinates, xy, &section_ids, ab.permute_block, seed);
+                        permute_blocks(&coordinates, xy, &section_ids, ab.permute_block(), seed);
                     (
                         moved,
                         serde_json::json!({
                             "mode": "block",
-                            "per_side": ab.permute_block,
+                            "per_side": ab.permute_block(),
                             "n_tiles": n_tiles,
                             "n_sections": n_sections,
                         }),
@@ -461,7 +437,6 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             permuted.as_ref().unwrap_or(&coordinates),
             SrtCellPairsArgs {
                 knn: base_knn,
-                block_size: c.block_size,
                 reciprocal: knn.reciprocal,
             },
         )?
@@ -472,14 +447,13 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         );
         let cell_proj_pre = data_vec.project_columns_with_batch_correction(
             c.proj_dim,
-            c.block_size,
+            None,
             None::<&[Box<str>]>,
         )?;
         let (g, embedding) = build_expression_graph(
             &cell_proj_pre.proj,
             SrtCellPairsArgs {
                 knn: base_knn,
-                block_size: c.block_size,
                 reciprocal: knn.reciprocal,
             },
         )?;
@@ -542,8 +516,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             EstimateBatchArgs {
                 proj_dim: c.proj_dim,
                 sort_dim: batch_sort_dim,
-                block_size: c.block_size,
-                batch_knn: c.batch_knn,
+                block_size: None,
+                batch_knn: crate::util::input::BATCH_KNN,
                 num_levels: c.num_levels,
                 strata,
             },
@@ -578,7 +552,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let augment_knn = knn.augment;
 
     let cell_proj = if cfg.cell_projection || augment_knn > 0 {
-        Some(data_vec.project_columns_with_batch_correction(c.proj_dim, c.block_size, batch_arg)?)
+        Some(data_vec.project_columns_with_batch_correction(c.proj_dim, None, batch_arg)?)
     } else {
         None
     };
@@ -595,7 +569,6 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             .expect("the projection above is taken whenever augment_knn() > 0");
         let knn_args = SrtCellPairsArgs {
             knn: augment_knn,
-            block_size: c.block_size,
             reciprocal: knn.reciprocal,
         };
         let expr_graph = match knn.scope {
@@ -638,45 +611,6 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         FeatureAxisMode::Lenient => Some(FeatureAxis::resolve_or_identity(&data_vec.row_names()?)?),
     };
 
-    // One streaming pass, up to four consumers. `compute_nb_fisher_weights`
-    // builds these same statistics and returns only the weights, dropping
-    // `npos`, which is exactly the per-feature detection count the dictionary
-    // merge keys on. Taking the statistics here saves a second full read.
-    //
-    // On a channelized axis the pass folds as it goes rather than afterwards,
-    // because `npos` and `s2` do not survive a post-hoc fold: a cell detected
-    // on both tracks would count twice, and the variance would lose its cross
-    // term. Those are the two statistics the merge filter and the dispersion
-    // trend respectively depend on.
-    let mut row_weights = None;
-    let mut row_stats = None;
-    let mut feature_weights = None;
-    let mut feature_stats = None;
-    if cfg.fisher_weights {
-        info!("Computing NB Fisher-info weights for inference...");
-        match feature_axis.as_ref() {
-            Some(axis) => {
-                let (r_stats, g_stats) =
-                    axis.running_stats(&data_vec, c.block_size, "NB-Fisher")?;
-                let rw = fisher_weights_from_stats(&r_stats, n_cells);
-                let gw = fisher_weights_from_stats(&g_stats, n_cells);
-                log_weights("Row weights w_r", &rw);
-                log_weights("Feature weights w_g", &gw);
-                row_weights = Some(rw);
-                row_stats = Some(r_stats);
-                feature_weights = Some(gw);
-                feature_stats = Some(g_stats);
-            }
-            None => {
-                let stats = streaming_sparse_running_stats(&data_vec, c.block_size, "NB-Fisher")?;
-                let rw = fisher_weights_from_stats(&stats, n_cells);
-                log_weights("Row weights w_r", &rw);
-                row_weights = Some(rw);
-                row_stats = Some(stats);
-            }
-        }
-    }
-
     // Each section's own plane, crossed with the final batch labels; under
     // --permute-coords, the scrambled positions the graph was built on.
     let seeding = (has_coords && n_cells > SEEDING_THRESHOLD).then(|| {
@@ -715,14 +649,69 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         edge_source,
         cell_proj,
         feature_axis,
-        row_weights,
-        row_stats,
-        feature_weights,
-        feature_stats,
         n_cells,
         n_rows,
         ablation,
     })
+}
+
+/// The NB Fisher-info pass over the cells `data_vec` holds: weights and the
+/// statistics they came from, on the rows and on the feature axis `axis`.
+/// A fit takes it after [`preprocess_srt`], on the axis that resolved.
+pub struct FisherStats {
+    /// Per-ROW NB Fisher-info weights. This is the right axis for the
+    /// projection and for anything that reads the matrix directly.
+    pub row_weights: Vec<f32>,
+    /// The ROW-axis statistics [`Self::row_weights`] came from. Its `sum()` is
+    /// the per-row count total, which spares a caller that needs one a second
+    /// full pass over the data.
+    pub row_stats: SparseRunningStatistics<f32>,
+    /// Per-FEATURE NB Fisher-info weights.
+    ///
+    /// These are NOT a fold of [`Self::row_weights`]. A Fisher weight is a
+    /// function of a feature's abundance and mean, and that function is not
+    /// additive, so folding the weights would hand a feature a precision no
+    /// measurement supports. The fold happens on the statistics instead, and it
+    /// happens inside the streaming pass because `npos` and `s2` do not survive
+    /// one applied afterwards.
+    pub feature_weights: Vec<f32>,
+    /// The feature-axis statistics [`Self::feature_weights`] came from. Carried out
+    /// because the dictionary merge needs per-feature DETECTION counts, which is
+    /// exactly the statistic a post-hoc fold gets wrong.
+    pub feature_stats: SparseRunningStatistics<f32>,
+}
+
+impl FisherStats {
+    /// One streaming pass, four consumers. `compute_nb_fisher_weights`
+    /// builds these same statistics and returns only the weights, dropping
+    /// `npos`, which is exactly the per-feature detection count the dictionary
+    /// merge keys on. Taking the statistics here saves a second full read.
+    ///
+    /// On a channelized axis the pass folds as it goes rather than afterwards,
+    /// because `npos` and `s2` do not survive a post-hoc fold: a cell detected
+    /// on both tracks would count twice, and the variance would lose its cross
+    /// term. Those are the two statistics the merge filter and the dispersion
+    /// trend respectively depend on.
+    pub fn compute(data_vec: &SparseIoVec, axis: &FeatureAxis) -> anyhow::Result<Self> {
+        info!("Computing NB Fisher-info weights for inference...");
+        let n_cells = data_vec.num_columns();
+        let (row_stats, feature_stats) = axis.running_stats(data_vec, "NB-Fisher")?;
+        let row_weights = fisher_weights_from_stats(&row_stats, n_cells);
+        // on the identity axis the feature statistics are the row ones
+        let feature_weights = if axis.is_channelized() {
+            fisher_weights_from_stats(&feature_stats, n_cells)
+        } else {
+            row_weights.clone()
+        };
+        log_weights("Row weights w_r", &row_weights);
+        log_weights("Feature weights w_g", &feature_weights);
+        Ok(Self {
+            row_weights,
+            row_stats,
+            feature_weights,
+            feature_stats,
+        })
+    }
 }
 
 /// Take the cells `keep` rules out of the working set: the data, the

@@ -141,16 +141,6 @@ pub struct LraInputArgs {
 
     #[arg(long, default_value_t = DEFAULT_SEED, help = crate::util::common::SEED_HELP)]
     pub seed: u64,
-
-    /// Cells per parallel block: none, so it scales with the feature count
-    /// under `PINTO_MEMORY_BUDGET`. No flag sets it.
-    #[arg(skip)]
-    pub block_size: Option<usize>,
-
-    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
-    /// No flag sets it.
-    #[arg(skip)]
-    pub preload_data: bool,
 }
 
 // * lra

@@ -23,14 +23,21 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// The level a run is compared at when none is named.
+pub const DEFAULT_LEVEL: &str = "final";
+
+/// `level`, else [`DEFAULT_LEVEL`].
+pub fn level_or_final(level: &Option<String>) -> String {
+    level.clone().unwrap_or_else(|| DEFAULT_LEVEL.into())
+}
+
 impl CompareArgs {
     /// The levels of A and B: `--level`, else `--level-a` / `--level-b`,
     /// else final.
     pub fn levels(&self) -> (String, String) {
-        self.level.clone().unwrap_or_else(|| {
-            let or_final = |l: &Option<String>| l.clone().unwrap_or_else(|| "final".into());
-            (or_final(&self.level_a), or_final(&self.level_b))
-        })
+        self.level
+            .clone()
+            .unwrap_or_else(|| (level_or_final(&self.level_a), level_or_final(&self.level_b)))
     }
 }
 
@@ -125,7 +132,7 @@ pub struct CompareArgs {
 
     #[arg(
         long,
-        default_value_t = 42,
+        default_value_t = crate::util::common::DEFAULT_SEED,
         help = "--paired: bootstrap seed",
         hide = true
     )]

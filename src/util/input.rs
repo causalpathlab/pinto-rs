@@ -6,12 +6,11 @@ use data_beans::sparse_io_vector::data_name_of;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
-pub use args::{ResolvedKnn, SrtInputArgs};
+pub use args::{ResolvedKnn, SrtInputArgs, BATCH_KNN};
 
 pub struct SRTReadArgs {
     pub data_files: Vec<Box<str>>,
     pub coord_files: Vec<Box<str>>,
-    pub preload_data: bool,
     pub coord_columns: Vec<usize>,
     pub coord_column_names: Vec<Box<str>>,
     pub batch_files: Option<Vec<Box<str>>>,
@@ -36,18 +35,15 @@ pub struct SRTData {
 pub const COORD_COLUMN_NAMES: &str =
     "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid";
 
-/// Open `data_file`, its columns preloaded when asked or, by default,
-/// whenever data-beans' memory budget allows; the budget is shared by the
-/// whole process and given back when the data is dropped. data-beans checks
-/// it only for a backend that knows its nonzero count, so one that does not
-/// is preloaded only when asked.
+/// Open `data_file`, its columns preloaded whenever data-beans' memory
+/// budget allows; the budget is shared by the whole process and given back
+/// when the data is dropped. data-beans checks it only for a backend that
+/// knows its nonzero count, so one that does not is never preloaded.
 pub fn open_sparse(
     data_file: &str,
-    preload: bool,
 ) -> anyhow::Result<Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>> {
     let mut data = try_open_or_convert(data_file)?;
-    let auto = data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some();
-    if preload || auto {
+    if data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some() {
         data.preload_columns()?;
     }
     Ok(data)
@@ -100,7 +96,7 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
 /// lists them: a feature one sample never measured is not a zero there.
 /// Other kinds canonicalize names first and keep their union, as before.
 fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
-    open_fit_data(&args.data_files, &args.feature_kind, args.preload_data)
+    open_fit_data(&args.data_files, &args.feature_kind)
 }
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
@@ -109,7 +105,6 @@ fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
 pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,
-    preload_data: bool,
 ) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
     if let Some(canon) = feature_kind.clone().into_canonicalizer() {
@@ -121,7 +116,7 @@ pub fn open_fit_data(
     for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
         info!("Importing data file: {}", data_file);
 
-        let data = open_sparse(data_file, preload_data)?;
+        let data = open_sparse(data_file)?;
 
         data_vec.push(Arc::from(data), data_name)?;
     }
