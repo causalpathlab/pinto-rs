@@ -434,7 +434,7 @@ fn spatial_edges(
     scored: &[usize],
     knn: usize,
 ) -> anyhow::Result<Vec<(usize, usize)>> {
-    let n_sections = layout.section.iter().max().map_or(0, |&m| m + 1);
+    let n_sections = crate::util::ablation::n_sections(&layout.section);
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_sections];
     for &i in scored {
         members[layout.section[i]].push(i);

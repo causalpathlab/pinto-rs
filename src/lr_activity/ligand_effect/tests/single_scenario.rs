@@ -2,7 +2,7 @@
 //! grid, pinned, and the single-scenario mode a sweep runs one call per
 //! point of.
 
-use super::super::memory::{memory_budget, pair_memory_budget, workers_within, MEMORY_BUDGET_VAR};
+use super::super::memory::{pair_memory_budget, workers_within};
 use super::super::output::{lra_simulate_path, lra_simulate_sidecar_path};
 use super::super::pipeline::{interleaved_ranks, run_grid, run_simulate_one};
 use super::super::reference::{with_test_root, write_empty_reference, Species};
@@ -13,6 +13,7 @@ use super::super::{RunInputs, Settings};
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
+use crate::util::memory::{budget_var, half_available, parse_budget, MEMORY_BUDGET_VAR};
 use legume_numeric::matrix::parquet::read_table_columns;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -177,6 +178,7 @@ impl Fixture {
                 plant_region: None,
                 region_jackknife: RegionJackknife::NoRefit,
                 marginal: None,
+                memory_budget: None,
             },
             data: &self.data,
             axis: &self.axis,
@@ -497,13 +499,10 @@ fn an_invalid_point_is_refused() {
 #[test]
 fn the_memory_budget_can_be_set() {
     let gib = 1usize << 30;
-    assert_eq!(
-        memory_budget(Some("123456789"), Some(16 * gib)).unwrap(),
-        123_456_789
-    );
-    assert_eq!(memory_budget(None, Some(16 * gib)).unwrap(), 8 * gib);
-    assert!(memory_budget(Some("lots"), Some(16 * gib)).is_err());
-    assert!(memory_budget(Some("0"), Some(16 * gib)).is_err());
+    assert_eq!(parse_budget("123456789").unwrap(), 123_456_789);
+    assert_eq!(half_available(Some(16 * gib)), 8 * gib);
+    assert!(parse_budget("lots").is_err());
+    assert!(parse_budget("0").is_err());
 }
 
 /// Pairs at once are what the budget holds, never more than the threads
@@ -520,13 +519,14 @@ fn the_memory_budget_bounds_the_pairs_at_once() {
 }
 
 /// What [`the_memory_budget_variable_sets_the_pairs_budget`] runs in a
-/// process of its own, the variable set there: the budget is read once per
-/// process, so a test in this one could not set it.
+/// process of its own, the variable set there: a test in this one could not
+/// set the process's environment safely beside the others.
 #[test]
 #[ignore = "run in a process of its own by the_memory_budget_variable_sets_the_pairs_budget"]
 fn memory_budget_in_a_process_of_its_own() {
     if let Ok(want) = std::env::var("PINTO_TEST_WANT_BUDGET") {
-        assert_eq!(pair_memory_budget().to_string(), want);
+        let set = budget_var().unwrap();
+        assert_eq!(pair_memory_budget(set).to_string(), want);
     }
 }
 

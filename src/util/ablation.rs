@@ -565,6 +565,37 @@ pub fn sections(file_sizes: &[usize], batches: &[Box<str>]) -> Vec<u32> {
     dense_ids(file_of.zip(batches.iter().map(|b| b.as_ref())))
 }
 
+/// Sections of cells labelled `section` (0-based, as [`sections`] numbers
+/// them): one more than the largest label.
+pub fn n_sections<S>(section: &[S]) -> usize
+where
+    S: Copy + Ord + TryInto<usize>,
+    S::Error: std::fmt::Debug,
+{
+    section.iter().max().map_or(0, |&m| index(m) + 1)
+}
+
+/// Cells in each of the [`n_sections`] sections `section` labels.
+pub fn section_sizes<S>(section: &[S]) -> Vec<usize>
+where
+    S: Copy + Ord + TryInto<usize>,
+    S::Error: std::fmt::Debug,
+{
+    let mut sizes = vec![0; n_sections(section)];
+    for &s in section {
+        sizes[index(s)] += 1;
+    }
+    sizes
+}
+
+/// A section label as an index.
+fn index<S: TryInto<usize>>(s: S) -> usize
+where
+    S::Error: std::fmt::Debug,
+{
+    s.try_into().expect("a section label is an index")
+}
+
 /// One id per distinct key, numbered 0..k in order of first appearance.
 pub fn dense_ids<K: std::hash::Hash + Eq>(keys: impl Iterator<Item = K>) -> Vec<u32> {
     let mut ids: HashMap<K, u32> = HashMap::default();
