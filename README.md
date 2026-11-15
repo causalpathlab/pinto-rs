@@ -494,7 +494,8 @@ store its nonzero count leaves that read unchecked.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for
-`spatialde2`), train `stagate` on a GPU (`--device cuda`), or raise
+`spatialde2`), train `stagate` on a GPU (`--device cuda`, in a build with
+the `cuda` feature), or raise
 `PINTO_MEMORY_BUDGET` knowingly; a runner starting several at once gives
 each its share.
 

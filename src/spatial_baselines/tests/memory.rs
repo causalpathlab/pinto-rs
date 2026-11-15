@@ -273,26 +273,29 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
         "estimated",
         "budget",
         "--n-top-genes",
-        "--device cuda",
         "PINTO_MEMORY_BUDGET",
     ] {
         assert!(e.contains(want), "{want} missing from: {e}");
     }
+    // a GPU is suggested only where this build can train on one
+    assert_eq!(e.contains("--device cuda"), cfg!(feature = "cuda"), "{e}");
     assert!(!dir.path().join("st.labels.tsv").exists());
     run("3", usize::MAX).unwrap();
     assert!(dir.path().join("st.labels.tsv").exists());
 }
 
-/// A run already on CUDA is not told to train on a GPU.
+/// A run already on a GPU is not told to train on one.
 #[test]
-fn stagate_on_cuda_is_not_told_to_use_cuda() {
+fn stagate_on_a_gpu_is_not_told_to_use_cuda() {
     let dir = tempfile::tempdir().unwrap();
-    let args = stagate_args(&dir.path().join("st"), &["--device", "cuda"]);
-    let e = stagate::run_on(&args, tissue(6), &set(1000))
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("--n-top-genes"), "{e}");
-    assert!(!e.contains("--device cuda"), "{e}");
+    for device in ["cuda", "metal"] {
+        let args = stagate_args(&dir.path().join("st"), &["--device", device]);
+        let e = stagate::run_on(&args, tissue(6), &set(1000))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--n-top-genes"), "{e}");
+        assert!(!e.contains("--device cuda"), "{device}: {e}");
+    }
 }
 
 /// A radius graph's edges are counted once it is built: a budget that

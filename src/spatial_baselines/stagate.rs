@@ -833,13 +833,13 @@ fn memory_shape(
     }
 }
 
-/// What would lower STAGATE's peak memory, for [`ensure_fits`]: a GPU too,
-/// unless the run is on one.
+/// What would lower STAGATE's peak memory, for [`ensure_fits`]: a GPU too
+/// for a run on the CPU, where this build can train on CUDA.
 fn lower_memory(device: &ComputeDevice) -> &'static str {
-    if *device == ComputeDevice::Cuda {
-        "lower --n-top-genes, --k-cutoff or --rad-cutoff"
-    } else {
+    if cfg!(feature = "cuda") && *device == ComputeDevice::Cpu {
         "lower --n-top-genes, --k-cutoff or --rad-cutoff, train on a GPU (--device cuda)"
+    } else {
+        "lower --n-top-genes, --k-cutoff or --rad-cutoff"
     }
 }
 
