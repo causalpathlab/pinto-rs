@@ -1,8 +1,9 @@
-//! Peak memory of a `stagate` or `spatialde2` run, estimated before its
+//! Peak memory of a `stagate`, `spatialde2`, `spatialpca` or `mefisto` run, estimated before its
 //! large allocations, so a run that would not fit stops with an error
 //! ([`ensure_fits`]) instead of swapping the machine
 //! to a halt. Every estimate is in bytes.
 
+use super::input::InputShape;
 use crate::util::memory::{ensure_fits, Budget};
 
 /// The binary, its libraries and the allocator's own arenas: what a run of
@@ -273,4 +274,92 @@ pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
         + PAIR_CELL_BYTES * s.pair_cells
         + s.gram;
     peak(SPATIALDE2_PROCESS_BYTES, s.nonzeros, held)
+}
+
+/// The binary, its libraries and the allocator's arenas, for `spatialpca`
+/// and `mefisto`.
+pub const FACTOR_PROCESS_BYTES: usize = 64 << 20;
+
+/// What a `spatialpca` or `mefisto` run holds at once.
+#[derive(Debug, Clone)]
+pub struct FactorShape {
+    pub input: InputShape,
+    /// Genes modelled.
+    pub genes: usize,
+    /// Neighbours of the prior's kNN graph.
+    pub knn: usize,
+    /// Sections up to this size take a dense eigendecomposition of their
+    /// Laplacian.
+    pub exact_eig_max: usize,
+    /// f64 vectors over the cells the fit holds at once.
+    pub cell_vectors: usize,
+    /// f64 vectors over the genes the fit holds at once.
+    pub gene_vectors: usize,
+    /// A `-pb` run's target number of super-cells (0 on cells): the
+    /// coarsening's memory too.
+    pub super_cells: usize,
+    /// Bytes of expression held dense (SpatialPCA's residuals).
+    pub dense_bytes: usize,
+    /// Bytes a stored nonzero takes over the run ([`FACTOR_NONZERO_BYTES`]
+    /// or [`SCT_NONZERO_BYTES`]).
+    pub nonzero_bytes: usize,
+    /// Bytes a nonzero frees before the cells' graph is built, which the
+    /// kNN's Gram blocks then reuse (measured: SpatialPCA's peak on cells
+    /// is below the sum with them).
+    pub freed_before_graph: usize,
+}
+
+/// Bytes a stored nonzero takes over a factor baseline's run, summed
+/// rather than overlapped since the allocator keeps what each step frees
+/// for the next (measured: the resident memory after each step only
+/// grows): the read ([`read_bytes`]), the selected genes' copy (12) and
+/// the implicit expression (16, by gene and by cell), every nonzero
+/// counted as selected.
+pub const FACTOR_NONZERO_BYTES: usize = 32 + 12 + 16;
+
+/// [`FACTOR_NONZERO_BYTES`] for SpatialPCA, whose expression is dense: the
+/// read and SCTransform's copy of every gene's nonzeros by gene (8, a cell
+/// index and a count).
+pub const SCT_NONZERO_BYTES: usize = 32 + 8;
+
+/// A factor baseline's peak: the process, every nonzero's
+/// `nonzero_bytes`, the graph as built (the kNN's Gram blocks, less what
+/// `freed_before_graph` left them,
+/// [`GRAPH_EDGE_BYTES`] an edge of the symmetrised kNN, then its lists and
+/// its Laplacian, 12 bytes an entry each), the dense blocks of the exactly
+/// decomposed sections (three `n_s^2` copies, a thread each), the fit's
+/// vectors, the expression held dense, and with `-pb` the coarsening and
+/// the super-cells' own expression.
+pub fn factor_peak_bytes(s: &FactorShape) -> usize {
+    let sizes = &s.input.section_sizes;
+    let n: usize = sizes.iter().sum();
+    let nnz = s.input.nonzeros;
+    let edges = 2 * knn_edges(sizes, s.knn);
+    let threads = rayon::current_num_threads().max(1);
+    let mut exact: Vec<usize> = sizes
+        .iter()
+        .filter(|&&k| k <= s.exact_eig_max)
+        .map(|&k| 3 * 8 * k * k)
+        .collect();
+    exact.sort_unstable_by(|a, b| b.cmp(a));
+    let exact: usize = exact.iter().take(threads).sum();
+    let gram = knn_gram_bytes(sizes, threads).saturating_sub(s.freed_before_graph * nnz);
+    let graph = gram + (GRAPH_EDGE_BYTES + 24) * edges;
+    // the super-cells' counts, their selected copy and their expression,
+    // at most every nonzero and every gene of every super-cell, beside the
+    // coarsening's
+    let pb = if s.super_cells > 0 {
+        let super_nnz = nnz.min(s.super_cells * s.input.genes);
+        pseudobulk_bytes(n, nnz, edges) + 40 * super_nnz
+    } else {
+        0
+    };
+    FACTOR_PROCESS_BYTES
+        + s.nonzero_bytes * nnz
+        + graph
+        + exact
+        + 8 * n * s.cell_vectors
+        + 8 * s.genes * s.gene_vectors
+        + s.dense_bytes
+        + pb
 }

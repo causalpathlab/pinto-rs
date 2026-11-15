@@ -17,17 +17,21 @@ pub(crate) mod tui;
 /// the short alias of its subcommand. pinto's own models first (lc and
 /// dsvd, then cage and its cell-level form), then the spatial baselines
 /// (model-level ports of published methods, for comparison, then
-/// spatialde2's `-pb` form fitted on super-cells), which take
+/// their `-pb` forms fitted on super-cells), which take
 /// the same data, coordinate and batch files and write a run of the same
 /// shape.
-pub const METHODS: [&str; 7] = [
+pub const METHODS: [&str; 11] = [
     "lc",
     "dsvd",
     "cage",
     "cage-cell",
     "spatialde2",
     "stagate",
+    "spatialpca",
+    "mefisto",
     "spatialde2-pb",
+    "spatialpca-pb",
+    "mefisto-pb",
 ];
 
 /// pinto's own models among [`METHODS`].

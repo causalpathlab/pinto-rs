@@ -239,7 +239,15 @@ fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
     }
     assert_eq!(
         crate::run::BASELINES,
-        ["spatialde2", "stagate", "spatialde2-pb"]
+        [
+            "spatialde2",
+            "stagate",
+            "spatialpca",
+            "mefisto",
+            "spatialde2-pb",
+            "spatialpca-pb",
+            "mefisto-pb"
+        ]
     );
 }
 
