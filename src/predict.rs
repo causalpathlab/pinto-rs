@@ -424,8 +424,8 @@ pub fn predict_cage(
     // A query batch the model trained on is divided by the model's own δ,
     // and only a new one is estimated, on the query; a model without a δ
     // trained on undivided counts, so the query is not divided.
-    let model_delta = model_delta(&args.model, run, c.ignore_batch)?;
-    if model_delta.is_none() && !c.ignore_batch {
+    let model_delta = model_delta(&args.model, run, c.batch.ignore_batch)?;
+    if model_delta.is_none() && !c.batch.ignore_batch {
         info!(
             "{}: the model has no batch effects, so the query is not batch-corrected",
             args.model

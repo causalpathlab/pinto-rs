@@ -143,7 +143,7 @@ pub(crate) fn every_batch_known(
             // per-cell list
             use std::io::BufRead;
             let mut labels = std::collections::BTreeSet::new();
-            for file in c.batch_files.iter().flatten() {
+            for file in c.batch.batch_files.iter().flatten() {
                 for line in open_buf_reader(file)?.lines() {
                     let line = line?;
                     if !labels.contains(line.as_str()) {

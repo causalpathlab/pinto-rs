@@ -119,37 +119,8 @@ pub struct SrtInputArgs {
     )]
     pub coord_header_row: Option<usize>,
 
-    #[arg(
-        long,
-        short = 'b',
-        value_delimiter(','),
-        help = "Batch label files, one per data file",
-        long_help = "Batch membership files, one per data file, comma separated.\n\
-                     Each is plain text with one batch label per cell, per line.\n\
-                     Cells sharing a label share batch effects. If omitted,\n\
-                     each data file is treated as one batch."
-    )]
-    pub batch_files: Option<Vec<Box<str>>>,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        help = "Auto-detect batches from disconnected spatial graph components"
-    )]
-    pub auto_batch: bool,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        conflicts_with = "auto_batch",
-        help = "Estimate and remove no batch effects",
-        long_help = "Estimate no batch effects, so none are removed anywhere.\n\
-                     predict and impute also leave a fitted run's batch effects\n\
-                     unused. Data files (and --batch-files labels) still keep\n\
-                     their cells apart, in the spatial graph and in the outputs;\n\
-                     only the correction goes."
-    )]
-    pub ignore_batch: bool,
+    #[command(flatten)]
+    pub batch: BatchArgs,
 
     #[arg(
         long,
@@ -165,61 +136,6 @@ pub struct SrtInputArgs {
         help = crate::util::common::SEED_HELP
     )]
     pub seed: u64,
-
-    #[arg(
-        long,
-        default_value_t = DEFAULT_NUM_LEVELS,
-        help = "Number of multi-level coarsening levels",
-        long_help = "Number of hierarchical coarsening levels, coarse to fine.\n\
-                     Each level merges cells by graph-constrained matching.\n\
-                     That halves the number of groups per level.\n\
-                     More levels initialize the finest level better. They also take longer.\n\
-                     Typical range: 2-10.",
-        hide = true
-    )]
-    pub num_levels: usize,
-
-    #[arg(
-        long,
-        short = 'p',
-        default_value_t = DEFAULT_PROJ_DIM,
-        help = "Random projection dimension for cell embeddings",
-        long_help = "Dimension of the random projection for cell embeddings.\n\
-                     Cells are projected from G feature dimensions down to this one.\n\
-                     That projection feeds KNN construction and coarsening,\n\
-                     and in `lc` it also sets the width of every edge profile.\n\
-                     \n\
-                     This is the main quality knob, and it is easy to set too low.\n\
-                     A sketch too narrow to separate two cell programs merges them,\n\
-                     so the rare profiles that sit between programs get absorbed\n\
-                     into whichever neighbouring community is largest.\n\
-                     That shows up as speckle in a propensity map\n\
-                     rather than as coherent spatial domains.\n\
-                     \n\
-                     Cost is linear in this value:\n\
-                     runtime, peak memory, and the size of the edge profile store.\n\
-                     Raise it when domains look speckled or over-merged.\n\
-                     Lower it when a large dataset will not fit.",
-        hide = true
-    )]
-    pub proj_dim: usize,
-
-    #[arg(
-        long = "cnv-clones",
-        help = "CNV clone table from `mung clones`; batch δ cannot mix across strata",
-        long_help = "Path to `{out}.clones.parquet` written by `mung clones`.\n\
-                     Each cell's stratum is a hard parent cut on the multilevel\n\
-                     collapse used for batch-effect estimation (cage / lc / dsvd):\n\
-                     finest codes are crossed with the stratum, BBKNN matches only\n\
-                     within stratum, and unmatched (clone-only) mass is excluded\n\
-                     from the δ update / pin vote while the δ learned on mixable\n\
-                     cells is still applied to clones. Missing cells default to\n\
-                     stratum 0. A batch with no matched mass gets δ ≈ 1 (warned).\n\
-                     \n\
-                     Does not gate spatial graph coarsening — only the MultilevelParams\n\
-                     δ path shared by cage / lc / dsvd."
-    )]
-    pub cnv_clones: Option<Box<str>>,
 
     #[arg(
         long,
@@ -349,6 +265,103 @@ pub struct SrtInputArgs {
 
     #[command(flatten)]
     pub qc: data_beans::qc_lib::QcArgs,
+}
+
+/// The batch options: which cells share batch effects (`--batch-files`,
+/// `--auto-batch`), whether δ is estimated (`--ignore-batch`), and how its
+/// estimate collapses the cells (`--cnv-clones` strata, the `-p`
+/// projection and `--num-levels`, which cage, lc and dsvd also coarsen
+/// with).
+///
+/// Flatten this into an args struct with `#[command(flatten)]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct BatchArgs {
+    #[arg(
+        long,
+        short = 'b',
+        value_delimiter(','),
+        help = "Batch label files, one per data file",
+        long_help = "Batch membership files, one per data file, comma separated.\n\
+                     Each is plain text with one batch label per cell, per line.\n\
+                     Cells sharing a label share batch effects. If omitted,\n\
+                     each data file is treated as one batch."
+    )]
+    pub batch_files: Option<Vec<Box<str>>>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Auto-detect batches from disconnected spatial graph components"
+    )]
+    pub auto_batch: bool,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "auto_batch",
+        help = "Estimate and remove no batch effects",
+        long_help = "Estimate no batch effects, so none are removed anywhere.\n\
+                     predict and impute also leave a fitted run's batch effects\n\
+                     unused. Data files (and --batch-files labels) still keep\n\
+                     their cells apart, in the spatial graph and in the outputs;\n\
+                     only the correction goes."
+    )]
+    pub ignore_batch: bool,
+
+    #[arg(
+        long,
+        default_value_t = DEFAULT_NUM_LEVELS,
+        help = "Number of multi-level coarsening levels",
+        long_help = "Number of hierarchical coarsening levels, coarse to fine.\n\
+                     Each level merges cells by graph-constrained matching.\n\
+                     That halves the number of groups per level.\n\
+                     More levels initialize the finest level better. They also take longer.\n\
+                     Typical range: 2-10.",
+        hide = true
+    )]
+    pub num_levels: usize,
+
+    #[arg(
+        long,
+        short = 'p',
+        default_value_t = DEFAULT_PROJ_DIM,
+        help = "Random projection dimension for cell embeddings",
+        long_help = "Dimension of the random projection for cell embeddings.\n\
+                     Cells are projected from G feature dimensions down to this one.\n\
+                     That projection feeds KNN construction and coarsening,\n\
+                     and in `lc` it also sets the width of every edge profile.\n\
+                     \n\
+                     This is the main quality knob, and it is easy to set too low.\n\
+                     A sketch too narrow to separate two cell programs merges them,\n\
+                     so the rare profiles that sit between programs get absorbed\n\
+                     into whichever neighbouring community is largest.\n\
+                     That shows up as speckle in a propensity map\n\
+                     rather than as coherent spatial domains.\n\
+                     \n\
+                     Cost is linear in this value:\n\
+                     runtime, peak memory, and the size of the edge profile store.\n\
+                     Raise it when domains look speckled or over-merged.\n\
+                     Lower it when a large dataset will not fit.",
+        hide = true
+    )]
+    pub proj_dim: usize,
+
+    #[arg(
+        long = "cnv-clones",
+        help = "CNV clone table from `mung clones`; batch δ cannot mix across strata",
+        long_help = "Path to `{out}.clones.parquet` written by `mung clones`.\n\
+                     Each cell's stratum is a hard parent cut on the multilevel\n\
+                     collapse used for batch-effect estimation (cage / lc / dsvd):\n\
+                     finest codes are crossed with the stratum, BBKNN matches only\n\
+                     within stratum, and unmatched (clone-only) mass is excluded\n\
+                     from the δ update / pin vote while the δ learned on mixable\n\
+                     cells is still applied to clones. Missing cells default to\n\
+                     stratum 0. A batch with no matched mass gets δ ≈ 1 (warned).\n\
+                     \n\
+                     Does not gate spatial graph coarsening — only the MultilevelParams\n\
+                     δ path shared by cage / lc / dsvd."
+    )]
+    pub cnv_clones: Option<Box<str>>,
 }
 
 /// Neighbours per pseudobulk sample in other batches for cross-batch
@@ -609,7 +622,7 @@ impl SrtInputArgs {
             coord_files: self.coord_files.clone(),
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
-            batch_files: self.batch_files.clone(),
+            batch_files: self.batch.batch_files.clone(),
             header_in_coord: self.coord_header_row,
             feature_kind,
         }

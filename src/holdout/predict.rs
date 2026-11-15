@@ -92,11 +92,11 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
     let adjusted = crate::predict::delta::batch_adjusted(
         model,
         Some(run),
-        c.ignore_batch,
+        c.batch.ignore_batch,
         crate::predict::delta::QueryReader::Holdout,
     )?;
     // `--ignore-batch`: no δ here either.
-    let delta_iters = if c.ignore_batch {
+    let delta_iters = if c.batch.ignore_batch {
         0
     } else {
         h.holdout_delta_iters

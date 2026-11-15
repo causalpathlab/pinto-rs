@@ -311,9 +311,9 @@ impl BatchLabels {
     /// The labels a run with inputs `c` gives its cells (`--batch-files`
     /// wins over `--auto-batch`, as preprocessing has it).
     pub fn of(c: &crate::util::input::SrtInputArgs) -> Self {
-        if c.batch_files.is_some() {
+        if c.batch.batch_files.is_some() {
             Self::BatchFiles
-        } else if c.auto_batch {
+        } else if c.batch.auto_batch {
             Self::AutoBatch
         } else {
             Self::Files

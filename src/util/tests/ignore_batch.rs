@@ -146,7 +146,7 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
             .project_columns_with_batch_correction(
                 8,
                 None,
-                (!args.ignore_batch).then_some(pre.batch_membership.as_slice()),
+                (!args.batch.ignore_batch).then_some(pre.batch_membership.as_slice()),
             )
             .unwrap();
         assert_eq!(got.proj, fresh.proj, "{extra:?}, delta {has_delta}");
