@@ -770,9 +770,15 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     run_on(args, args.input.read()?, budget.as_deref())
 }
 
-/// What would lower STAGATE's peak memory, for [`ensure_fits`].
-const LOWER_MEMORY: &str =
-    "lower --n-top-genes, --k-cutoff or --rad-cutoff, train on a GPU (--device cuda)";
+/// What would lower STAGATE's peak memory, for [`ensure_fits`]: a GPU too,
+/// unless the run is on one.
+fn lower_memory(device: &ComputeDevice) -> &'static str {
+    if *device == ComputeDevice::Cuda {
+        "lower --n-top-genes, --k-cutoff or --rad-cutoff"
+    } else {
+        "lower --n-top-genes, --k-cutoff or --rad-cutoff, train on a GPU (--device cuda)"
+    }
+}
 
 /// [`run`] on `data` as read, the arguments checked. The peak memory is
 /// checked against the budget (`budget`, [`budget_var`] as read) before
@@ -809,6 +815,7 @@ pub(crate) fn run_on(
         &sizes,
         args.rad_cutoff.map_or(args.k_cutoff, |_| RADIUS_MAX_K),
     );
+    let change = lower_memory(&args.device);
     let mut shape = StagateShape {
         cells: n,
         // a radius graph's edges are not known before it is built: its
@@ -825,7 +832,7 @@ pub(crate) fn run_on(
         searched,
         train_on_host: args.device != ComputeDevice::Cuda,
     };
-    ensure_fits("stagate", stagate_peak_bytes(&shape), budget, LOWER_MEMORY)?;
+    ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
 
     let nb = spatial_network(&data, args);
     let (src, dst) = spatial_edges(&nb);
@@ -837,7 +844,7 @@ pub(crate) fn run_on(
     );
     if args.rad_cutoff.is_some() {
         shape.edges = src.len();
-        ensure_fits("stagate", stagate_peak_bytes(&shape), budget, LOWER_MEMORY)?;
+        ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
     }
 
     let mut log = counts;

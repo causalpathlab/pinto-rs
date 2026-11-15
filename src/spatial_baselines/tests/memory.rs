@@ -244,6 +244,18 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
     assert!(dir.path().join("st.labels.tsv").exists());
 }
 
+/// A run already on CUDA is not told to train on a GPU.
+#[test]
+fn stagate_on_cuda_is_not_told_to_use_cuda() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = stagate_args(&dir.path().join("st"), &["--device", "cuda"]);
+    let e = stagate::run_on(&args, tissue(6), Some("1000"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--n-top-genes"), "{e}");
+    assert!(!e.contains("--device cuda"), "{e}");
+}
+
 /// A radius graph's edges are counted once it is built: a budget that
 /// holds its self loops alone refuses it then.
 #[test]

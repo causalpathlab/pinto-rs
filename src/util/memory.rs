@@ -38,11 +38,17 @@ pub fn check_memory_budget() -> anyhow::Result<()> {
     budget_var().map(|_| ())
 }
 
-/// [`MEMORY_BUDGET_VAR`] as set, refused when it does not parse.
+/// [`MEMORY_BUDGET_VAR`] as set, refused when it does not parse (a value
+/// that is not UTF-8 included: it is not taken as unset).
 pub fn budget_var() -> anyhow::Result<Option<String>> {
-    let set = std::env::var(MEMORY_BUDGET_VAR).ok();
-    memory_budget(set.as_deref(), None)?;
-    Ok(set)
+    let Some(raw) = std::env::var_os(MEMORY_BUDGET_VAR) else {
+        return Ok(None);
+    };
+    let set = raw.into_string().map_err(|raw| {
+        anyhow::anyhow!("{MEMORY_BUDGET_VAR}={raw:?}: expected a positive number of bytes")
+    })?;
+    memory_budget(Some(&set), None)?;
+    Ok(Some(set))
 }
 
 /// Bytes this process could still allocate: the system's available memory, or
