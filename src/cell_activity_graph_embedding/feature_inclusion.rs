@@ -326,25 +326,58 @@ pub fn jackknife_moran(sections: &[SectionJack]) -> (Vec<f64>, Vec<f64>, Vec<f64
 }
 
 /// This epoch's features: each of `features` kept with probability `pi[g]`,
-/// in order. Never empty: if no feature is kept, one is drawn with
+/// in a shuffled order. Never empty: if no feature is kept, one is drawn with
 /// probability proportional to `pi` (uniformly when every `pi` is 0), so an
 /// epoch always trains.
-pub fn sample_included(features: &mut Vec<usize>, pi: &[f32], rng: &mut impl rand::Rng) {
-    use rand::RngExt;
-    use rand_distr::weighted::WeightedIndex;
-    use rand_distr::Distribution;
-    if features.is_empty() {
-        return;
-    }
-    let all = features.clone();
-    features.retain(|&g| rng.random::<f32>() < pi[g]);
-    if features.is_empty() {
-        let pick = match WeightedIndex::new(all.iter().map(|&g| pi[g])) {
-            Ok(by_pi) => by_pi.sample(rng),
-            Err(_) => rng.random_range(0..all.len()),
+///
+/// Every draw comes from feature `g`'s own stream for `(seed, epoch)`, and the
+/// order is by a key from that stream, so whether a feature is kept, and the
+/// relative order of the kept ones, do not depend on which other features are
+/// listed. The fallback pick, made only when nothing is kept, does.
+pub fn sample_included(features: &[usize], pi: &[f32], seed: u64, epoch: usize) -> Vec<usize> {
+    use legume_numeric::matrix::rand_util::{mix_seed, stream_seed};
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    let epoch_seed = stream_seed(seed, "feature-inclusion", epoch, 0);
+    // Feature g's stream: its keep draw, then its order key, then (read
+    // only when nothing is kept) its fallback key.
+    let stream = |g: usize| SmallRng::seed_from_u64(mix_seed(epoch_seed, g as u64));
+    let mut kept: Vec<(f64, usize)> = features
+        .iter()
+        .filter_map(|&g| {
+            let mut rng = stream(g);
+            let keep = rng.random::<f32>() < pi[g];
+            let order = rng.random::<f64>();
+            keep.then_some((order, g))
+        })
+        .collect();
+    if kept.is_empty() {
+        // The key ln(u)/w: the largest is a draw in proportion to the weights
+        // (P. S. Efraimidis and P. G. Spirakis, "Weighted random sampling with
+        // a reservoir", Inf. Process. Lett. 97 (2006)); with no weight
+        // anywhere, ln(u) alone is a uniform draw.
+        let fallback_key = |g: usize| {
+            let mut rng = stream(g);
+            let _keep: f32 = rng.random();
+            let _order: f64 = rng.random();
+            let ln_u = rng.random::<f64>().ln();
+            let w = f64::from(pi[g]);
+            if w > 0.0 {
+                (true, ln_u / w)
+            } else {
+                (false, ln_u)
+            }
         };
-        features.push(all[pick]);
+        return features
+            .iter()
+            .map(|&g| (fallback_key(g), g))
+            .max_by(|(x, _), (y, _)| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)))
+            .map(|(_, g)| g)
+            .into_iter()
+            .collect();
     }
+    kept.sort_by(|x, y| x.0.total_cmp(&y.0));
+    kept.into_iter().map(|(_, g)| g).collect()
 }
 
 /// Features an epoch visits in expectation: every one of `features`, or
