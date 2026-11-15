@@ -1001,3 +1001,130 @@ fn help_names_the_memory_budget() {
         assert!(help.contains("PINTO_MEMORY_BUDGET"), "{cmd} --help");
     }
 }
+
+/// Maximum resident memory (MiB) of full CPU runs of the factor baselines
+/// on one srt-simulate section (2000 genes, all modelled; at their
+/// defaults otherwise, `-d 1024` for the `-pb` forms, 4 threads): (cells,
+/// MiB) for spatialpca, mefisto, spatialpca-pb and mefisto-pb.
+const FACTOR_MEASURED: [(&str, [(usize, f64); 4]); 4] = [
+    (
+        "spatialpca",
+        [
+            (1024, 98.77),
+            (4096, 265.45),
+            (8100, 463.78),
+            (16384, 850.14),
+        ],
+    ),
+    (
+        "mefisto",
+        [
+            (1024, 87.45),
+            (4096, 254.97),
+            (8100, 462.45),
+            (16384, 839.08),
+        ],
+    ),
+    (
+        "spatialpca-pb",
+        [
+            (1024, 113.34),
+            (4096, 368.91),
+            (8100, 569.27),
+            (16384, 1166.91),
+        ],
+    ),
+    (
+        "mefisto-pb",
+        [
+            (1024, 107.98),
+            (4096, 383.13),
+            (8100, 590.23),
+            (16384, 1173.61),
+        ],
+    ),
+];
+
+/// The factor baselines' estimates cover every measured run, and from 4096
+/// cells are not far above it.
+#[test]
+fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
+    use crate::spatial_baselines::{mefisto, spatialpca};
+    for (cmd, runs) in FACTOR_MEASURED {
+        for (cells, measured) in runs {
+            let input = InputShape {
+                genes: 2000,
+                nonzeros: NONZEROS_PER_CELL * cells,
+                section_sizes: vec![cells],
+                batches: 1,
+            };
+            let argv = ["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
+            let shape = match parse(&argv) {
+                crate::Commands::Spatialpca(a) => {
+                    a.fit
+                        .memory_shape(&input, 2000, spatialpca::Variant::Sparse)
+                }
+                crate::Commands::SpatialpcaPb(a) => {
+                    a.fit
+                        .memory_shape(&input, 2000, spatialpca::Variant::Pseudobulk(1024))
+                }
+                crate::Commands::Mefisto(a) => {
+                    a.fit
+                        .memory_shape(&input, 2000, mefisto::Variant::Sparse, 0)
+                }
+                crate::Commands::MefistoPb(a) => {
+                    a.fit
+                        .memory_shape(&input, 2000, mefisto::Variant::Pseudobulk(1024), 0)
+                }
+                _ => unreachable!(),
+            };
+            let est = rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap()
+                .install(|| mib(factor_peak_bytes(&shape)));
+            assert!(est >= measured, "{cmd} {cells}: {est:.0} < {measured} MiB");
+            if cells >= 4096 {
+                assert!(est <= 1.5 * measured, "{cmd} {cells}: {est:.0} MiB");
+            }
+        }
+    }
+}
+
+/// The `--reference` estimates cover the measured runs (one srt-simulate
+/// section of 1024 cells, 2000 genes, 4 threads; MEFISTO's on its 1000
+/// inducing cells): spatialpca 246.48 MiB, mefisto 177.66 MiB.
+#[test]
+fn factor_reference_estimates_cover_the_measured_runs() {
+    use crate::spatial_baselines::{mefisto, spatialpca};
+    let input = InputShape {
+        genes: 2000,
+        nonzeros: NONZEROS_PER_CELL * 1024,
+        section_sizes: vec![1024],
+        batches: 1,
+    };
+    let crate::Commands::Spatialpca(a) =
+        parse(&["pinto", "spatialpca", "d.zarr", "-c", "c.csv", "-o", "x"])
+    else {
+        unreachable!()
+    };
+    let sp = a
+        .fit
+        .memory_shape(&input, 2000, spatialpca::Variant::Reference);
+    let crate::Commands::Mefisto(m) =
+        parse(&["pinto", "mefisto", "d.zarr", "-c", "c.csv", "-o", "x"])
+    else {
+        unreachable!()
+    };
+    let mf = m
+        .fit
+        .memory_shape(&input, 2000, mefisto::Variant::Reference, 1000);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    let (est_sp, est_mf) =
+        pool.install(|| (mib(factor_peak_bytes(&sp)), mib(factor_peak_bytes(&mf))));
+    assert!(est_sp >= 246.48, "spatialpca --reference {est_sp:.0}");
+    assert!(est_mf >= 177.66, "mefisto --reference {est_mf:.0}");
+}
