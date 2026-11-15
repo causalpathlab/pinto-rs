@@ -330,3 +330,91 @@ fn inclusion_without_coordinates_is_refused_up_front() {
         .to_string();
     assert!(e.contains("needs coordinates"), "{e}");
 }
+
+/// A tree whose levels jump past the asked-for count (few coarse groups,
+/// then many fine ones) is merged to about that many blocks per section,
+/// siblings kept together, rather than taking the whole finer level.
+#[test]
+fn blocks_are_merged_to_about_the_count_asked_for() {
+    // two sections of 12 PBs; the coarse level has 2 groups per section,
+    // the next one 12
+    let section: Vec<u32> = (0..24).map(|u| (u / 12) as u32).collect();
+    let levels = vec![
+        (0..24).map(|u| u / 6).collect::<Vec<usize>>(),
+        (0..24).collect(),
+    ];
+    let b = tree_blocks(&levels, &section, 3);
+    for s in 0..2 {
+        let mut ids: Vec<usize> = (0..24).filter(|&u| u / 12 == s).map(|u| b[u]).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "section {s}: {b:?}");
+    }
+    // about equal blocks of 4, never across sections
+    assert_eq!(
+        b,
+        [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5]
+    );
+    // with no level fine enough, the finest units themselves
+    let b = tree_blocks(&levels[..1], &section, 6);
+    assert_eq!(b.iter().max(), Some(&11));
+}
+
+/// Features that carry no spread (no variation, or no edges) are not part
+/// of the two-group fit and get π = 0: were they in it, a majority of them
+/// would make the MAD zero and every π one.
+#[test]
+fn features_without_spread_get_no_inclusion() {
+    let mut rng = SmallRng::seed_from_u64(11);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let (xy, edges) = grid(20);
+    let tile = tile_of(&xy, 4);
+    // 10 signal, 90 noise, 300 never observed
+    let (n_signal, n_noise, g) = (10usize, 90usize, 400usize);
+    let profiles: Vec<Vec<(u32, f32)>> = xy
+        .iter()
+        .map(|&(x, _)| {
+            (0..(n_signal + n_noise) as u32)
+                .map(|f| {
+                    let s = if (f as usize) < n_signal && x < 10.0 {
+                        3.0
+                    } else {
+                        0.0
+                    };
+                    (f, (s + noise.sample(&mut rng)) as f32)
+                })
+                .collect()
+        })
+        .collect();
+    let unit = UnitGraph {
+        profiles,
+        section: vec![0; xy.len()],
+        block: tile,
+        edges,
+    };
+    let inc = inclusion_of(g, &unit);
+    assert!(inc.pi[n_signal + n_noise..].iter().all(|&p| p == 0.0));
+    let noise_pi = inc.pi[n_signal..n_signal + n_noise].iter().sum::<f32>() / n_noise as f32;
+    assert!(noise_pi < 0.1, "noise features' mean π {noise_pi}");
+    assert!(
+        inc.pi[..n_signal].iter().all(|&p| p > 0.9),
+        "{:?}",
+        &inc.pi[..n_signal]
+    );
+}
+
+/// One extreme t widens the range but not the kernel: the density stays a
+/// density, so the null bulk is not called signal.
+#[test]
+fn one_extreme_t_does_not_inflate_the_density() {
+    let mut rng = SmallRng::seed_from_u64(13);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let t: Vec<f64> = (0..999)
+        .map(|_| noise.sample(&mut rng))
+        .chain([1e6])
+        .collect();
+    let (pi, _) = two_group_inclusion(&t);
+    let null = pi[..999].iter().sum::<f32>() / 999.0;
+    assert!(null < 0.05, "null features' mean π {null}");
+    assert!(pi[999] > 0.99);
+}
