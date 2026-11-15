@@ -484,6 +484,17 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
 
+Both fit the whole tissue in memory, so each estimates its peak before its
+large allocations, logs it, and stops with an error when the estimate
+exceeds the memory budget: `PINTO_MEMORY_BUDGET` (bytes) when set, else
+half the memory available to the process (cgroup limits included).
+`stagate` grows with the cells, the edges and the genes, and far faster
+with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
+`--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for
+`spatialde2`), train `stagate` on a GPU (`--device cuda`), or raise
+`PINTO_MEMORY_BUDGET` knowingly; a runner starting several at once gives
+each its share.
+
 ```sh
 pinto stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
 pinto srt-sim-score --truth sim --labels res/stagate

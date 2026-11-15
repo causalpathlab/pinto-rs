@@ -144,10 +144,12 @@
 
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{SpatialData, SpatialInputArgs};
+use super::memory::{knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape};
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
+use crate::util::memory::{budget_var, ensure_fits};
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
@@ -764,7 +766,23 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     if let Some(k) = args.n_clusters {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
-    let mut data = args.input.read()?;
+    let budget = budget_var()?;
+    run_on(args, args.input.read()?, budget.as_deref())
+}
+
+/// What would lower STAGATE's peak memory, for [`ensure_fits`].
+const LOWER_MEMORY: &str =
+    "lower --n-top-genes, --k-cutoff or --rad-cutoff, train on a GPU (--device cuda)";
+
+/// [`run`] on `data` as read, the arguments checked. The peak memory is
+/// checked against the budget (`budget`, [`budget_var`] as read) before
+/// the graph, the dense input and training are allocated, and for a radius
+/// graph once more when its edges are known.
+pub(crate) fn run_on(
+    args: &Args,
+    mut data: SpatialData,
+    budget: Option<&str>,
+) -> anyhow::Result<()> {
     let n = data.cells.len();
 
     // the model reads its own copy from here on
@@ -781,22 +799,51 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     let counts_kept = counts.nrows();
     let (genes, _) = seurat_v3_hvg(&counts, args.n_top_genes);
     anyhow::ensure!(!genes.is_empty(), "no genes to train on");
-    let mut log = counts;
-    normalise_log(&mut log);
-    let x = dense_rows(&log, &genes);
-    drop(log);
     info!(
         "{n} cells, {} highly variable genes (seurat_v3)",
         genes.len()
     );
 
+    let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
+    let searched = knn_edges(
+        &sizes,
+        args.rad_cutoff.map_or(args.k_cutoff, |_| RADIUS_MAX_K),
+    );
+    let mut shape = StagateShape {
+        cells: n,
+        // a radius graph's edges are not known before it is built: its
+        // self loops at least, and counted again once it is
+        edges: n + if args.rad_cutoff.is_some() {
+            0
+        } else {
+            searched
+        },
+        genes: genes.len(),
+        hidden: args.hidden_dims[0],
+        nonzeros: counts.nnz(),
+        gram: knn_gram_bytes(&sizes, rayon::current_num_threads()),
+        searched,
+        train_on_host: args.device != ComputeDevice::Cuda,
+    };
+    ensure_fits("stagate", stagate_peak_bytes(&shape), budget, LOWER_MEMORY)?;
+
     let nb = spatial_network(&data, args);
     let (src, dst) = spatial_edges(&nb);
+    drop(nb);
     info!(
         "spatial network: {} edges, {:.4} neighbours per cell, plus self loops",
         src.len() - n,
         (src.len() - n) as f64 / n as f64
     );
+    if args.rad_cutoff.is_some() {
+        shape.edges = src.len();
+        ensure_fits("stagate", stagate_peak_bytes(&shape), budget, LOWER_MEMORY)?;
+    }
+
+    let mut log = counts;
+    normalise_log(&mut log);
+    let x = dense_rows(&log, &genes);
+    drop(log);
 
     let dev = args.device.to_device(args.device_no)?;
     let g = EdgeIndex::new(&src, &dst, n, &dev)?;

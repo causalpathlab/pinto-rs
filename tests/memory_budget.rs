@@ -36,3 +36,29 @@ fn a_memory_budget_that_does_not_parse_stops_lra_simulate_at_the_start() {
     let e = String::from_utf8_lossy(&read.stderr);
     assert!(!e.contains("PINTO_MEMORY_BUDGET"), "{e}");
 }
+
+#[test]
+fn a_memory_budget_that_does_not_parse_stops_the_spatial_baselines_at_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    for cmd in ["stagate", "spatialde2"] {
+        let run = |budget: &str| {
+            Command::new(env!("CARGO_BIN_EXE_pinto"))
+                .args([cmd, "missing.zarr", "--coord", "missing.csv", "-o", "x"])
+                .env("PINTO_MEMORY_BUDGET", budget)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        let refused = run("lots");
+        assert!(!refused.status.success());
+        let e = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            e.contains("PINTO_MEMORY_BUDGET") && !e.contains("missing.zarr"),
+            "{cmd}: {e}"
+        );
+        let read = run("4000000000");
+        assert!(!read.status.success());
+        let e = String::from_utf8_lossy(&read.stderr);
+        assert!(!e.contains("PINTO_MEMORY_BUDGET"), "{cmd}: {e}");
+    }
+}

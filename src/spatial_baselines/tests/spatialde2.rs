@@ -393,12 +393,14 @@ fn genes_by_total_counts_and_size_factors_over_all() {
     d.counts = CscMatrix::from(&coo);
     d.genes = vec!["a".into(), "b".into(), "c".into()];
     d.xy = Mat::zeros(2, 2);
-    let (counts, sf, genes) = select_counts(&d, 2);
+    let (genes, sf) = top_genes(&d, 2);
     assert_eq!(genes, vec![1, 2]);
     assert_eq!(sf, vec![5.0, 13.0]);
+    let counts = selected_counts(&d, &genes);
+    assert_eq!(selected_nonzeros(&d, &genes), 3);
     assert_eq!(counts.n_genes, 2);
     assert_eq!(counts.n_cells(), 2);
-    let (all, _, genes) = select_counts(&d, 0);
+    let (genes, _) = top_genes(&d, 0);
     assert_eq!(genes, vec![0, 1, 2]);
-    assert_eq!(all.n_genes, 3);
+    assert_eq!(selected_counts(&d, &genes).n_genes, 3);
 }

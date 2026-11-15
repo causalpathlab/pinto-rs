@@ -142,8 +142,10 @@
 
 use super::graph::knn_within_sections;
 use super::input::{SpatialData, SpatialInputArgs};
+use super::memory::{knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape};
 use super::output::{write_run, Fitted};
 use crate::util::common::Mat;
+use crate::util::memory::{budget_var, ensure_fits};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -741,6 +743,13 @@ pub struct Segmentation {
     pub prune_iterations: Vec<usize>,
 }
 
+/// Regions at the start: `nclasses`, else ceil(sqrt(cells)), one at least.
+pub fn initial_regions(n: usize, nclasses: Option<usize>) -> usize {
+    nclasses
+        .unwrap_or_else(|| (n as f32).sqrt().ceil() as usize)
+        .max(1)
+}
+
 /// `tissue_segmentation`: the iterations, pruning and the final prune.
 pub fn segment(
     counts: &CellCounts,
@@ -753,10 +762,7 @@ pub fn segment(
     let n = counts.n_cells();
     anyhow::ensure!(n > 0, "no cells");
     anyhow::ensure!(sizefactors.len() == n, "one size factor per cell");
-    let k0 = p
-        .nclasses
-        .unwrap_or_else(|| (n as f32).sqrt().ceil() as usize)
-        .max(1);
+    let k0 = initial_regions(n, p.nclasses);
     let pi_bytes = n as f64 * k0 as f64 * 8.0;
     if pi_bytes > PI_WARN_BYTES {
         log::warn!(
@@ -853,10 +859,10 @@ pub fn segment(
     })
 }
 
-/// `calc_sizefactors` over every gene, and the counts of the `n_top`
-/// genes with the highest totals (all genes when `n_top` is 0 or covers
-/// them), with their indices.
-pub fn select_counts(data: &SpatialData, n_top: usize) -> (CellCounts, Vec<f64>, Vec<usize>) {
+/// The `n_top` genes with the highest totals, in index order (every gene
+/// when `n_top` is 0 or covers them), and each cell's total over all genes
+/// (`calc_sizefactors`).
+pub fn top_genes(data: &SpatialData, n_top: usize) -> (Vec<usize>, Vec<f64>) {
     let n_genes = data.genes.len();
     let csc = &data.counts;
     let mut total = vec![0.0f64; n_genes];
@@ -873,11 +879,24 @@ pub fn select_counts(data: &SpatialData, n_top: usize) -> (CellCounts, Vec<f64>,
         order.truncate(n_top);
     }
     order.sort_unstable();
+    (order, sizefactors)
+}
+
+/// `genes` (sorted) renumbered `0..genes.len()`, by gene index; other
+/// genes `usize::MAX`.
+fn gene_map(n_genes: usize, genes: &[usize]) -> Vec<usize> {
     let mut map = vec![usize::MAX; n_genes];
-    for (new, &g) in order.iter().enumerate() {
+    for (new, &g) in genes.iter().enumerate() {
         map[g] = new;
     }
-    let rows: Vec<Vec<(usize, f64)>> = csc
+    map
+}
+
+/// The counts of `genes` (sorted), cells by genes.
+pub fn selected_counts(data: &SpatialData, genes: &[usize]) -> CellCounts {
+    let map = gene_map(data.genes.len(), genes);
+    let rows: Vec<Vec<(usize, f64)>> = data
+        .counts
         .col_iter()
         .map(|col| {
             col.row_indices()
@@ -888,26 +907,74 @@ pub fn select_counts(data: &SpatialData, n_top: usize) -> (CellCounts, Vec<f64>,
                 .collect()
         })
         .collect();
-    (
-        CellCounts::from_rows(order.len(), &rows),
-        sizefactors,
-        order,
-    )
+    CellCounts::from_rows(genes.len(), &rows)
+}
+
+/// Nonzeros [`selected_counts`] keeps.
+pub fn selected_nonzeros(data: &SpatialData, genes: &[usize]) -> usize {
+    let map = gene_map(data.genes.len(), genes);
+    data.counts
+        .triplet_iter()
+        .filter(|&(g, _, &v)| map[g] != usize::MAX && v != 0.0)
+        .count()
+}
+
+/// What would lower SpatialDE2's peak memory, for [`ensure_fits`].
+const LOWER_MEMORY: &str = "lower --n-top-genes, --neighbors or --n-clusters";
+
+impl Args {
+    fn params(&self) -> Params {
+        Params {
+            nclasses: self.n_clusters,
+            smoothness_factor: self.smoothness_factor,
+            class_prune_threshold: self.class_prune_threshold,
+            abstol: self.abstol,
+            reltol: self.reltol,
+            maxiter: self.max_iter,
+            ..Params::default()
+        }
+    }
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let params = Params {
-        nclasses: args.n_clusters,
-        smoothness_factor: args.smoothness_factor,
-        class_prune_threshold: args.class_prune_threshold,
-        abstol: args.abstol,
-        reltol: args.reltol,
-        maxiter: args.max_iter,
-        ..Params::default()
+    args.params().check()?;
+    let budget = budget_var()?;
+    run_on(args, args.input.read()?, budget.as_deref())
+}
+
+/// [`run`] on `data` as read: its peak memory is checked against the
+/// budget (`budget`, [`budget_var`] as read) before the counts are copied
+/// and the graph is built.
+pub(crate) fn run_on(
+    args: &Args,
+    mut data: SpatialData,
+    budget: Option<&str>,
+) -> anyhow::Result<()> {
+    let params = args.params();
+    let (genes, sizefactors) = top_genes(&data, args.n_top_genes);
+    let n = data.cells.len();
+    let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
+    let spatial = args.neighbors > 0;
+    let shape = Spatialde2Shape {
+        cells: n,
+        nonzeros: data.counts.nnz(),
+        selected_nonzeros: selected_nonzeros(&data, &genes),
+        // symmetrising at most doubles the edges
+        edges: 2 * knn_edges(&sizes, args.neighbors),
+        regions: initial_regions(n, params.nclasses),
+        gram: if spatial {
+            knn_gram_bytes(&sizes, rayon::current_num_threads())
+        } else {
+            0
+        },
     };
-    params.check()?;
-    let mut data = args.input.read()?;
-    let (counts, sizefactors, genes) = select_counts(&data, args.n_top_genes);
+    ensure_fits(
+        "spatialde2",
+        spatialde2_peak_bytes(&shape),
+        budget,
+        LOWER_MEMORY,
+    )?;
+    let counts = selected_counts(&data, &genes);
     // the model reads its own copy from here on
     data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
     log::info!(
@@ -915,7 +982,7 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         genes.len(),
         data.genes.len()
     );
-    let graph = (args.neighbors > 0).then(|| {
+    let graph = spatial.then(|| {
         let nb = knn_within_sections(&data, args.neighbors).symmetrised();
         log::info!(
             "spatialde2: {} spatial edges (k = {}, symmetrised)",
@@ -938,7 +1005,6 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         seg.k,
         seg.elbo_trace.last().copied().unwrap_or(f64::NAN)
     );
-    let n = data.cells.len();
     let probs = Mat::from_fn(n, seg.k, |i, c| seg.pi[i * seg.k + c] as f32);
     let k0 = seg.nclasses_trace.first().copied().unwrap_or(0);
     let settings = serde_json::json!({

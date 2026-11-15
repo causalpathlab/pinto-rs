@@ -4,42 +4,9 @@
 use super::overlap::NuisanceOpts;
 use super::tissue::Tissue;
 
-/// Memory allowed for pairs estimated at once when the machine does not say
-/// what it has, and the least allowed when it does.
-const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
-
-/// The variable that sets the memory budget, in bytes: a runner starting
-/// several pinto processes at once gives each its share, which half of what
-/// is free, read by each process alone, would overcommit.
-pub const MEMORY_BUDGET_VAR: &str = "PINTO_MEMORY_BUDGET";
-
-/// Memory allowed for pairs estimated at once: `set` bytes
-/// ([`MEMORY_BUDGET_VAR`]) when given, else [`half_available`]. A `set` that
-/// is not a whole number of bytes is an error.
-pub(super) fn memory_budget(set: Option<&str>, available: Option<usize>) -> anyhow::Result<usize> {
-    set.map_or(Ok(half_available(available)), |s| {
-        s.trim()
-            .parse()
-            .ok()
-            .filter(|&b: &usize| b > 0)
-            .ok_or_else(|| {
-                anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
-            })
-    })
-}
-
-/// Half of the `available` memory, the rest left to the tissue and the
-/// machine's other work, and never below [`MIN_PAIR_MEMORY_BUDGET`].
-fn half_available(available: Option<usize>) -> usize {
-    available.map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
-        (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
-    })
-}
-
-/// Refuse a [`MEMORY_BUDGET_VAR`] that does not parse, before any work.
-pub fn check_memory_budget() -> anyhow::Result<()> {
-    memory_budget(std::env::var(MEMORY_BUDGET_VAR).ok().as_deref(), None).map(|_| ())
-}
+pub use crate::util::memory::check_memory_budget;
+use crate::util::memory::{available_memory, half_available};
+pub(super) use crate::util::memory::{memory_budget, MEMORY_BUDGET_VAR};
 
 /// [`memory_budget`] now, of what is available ([`available_memory`]). A
 /// variable that does not parse is refused at the start
@@ -54,19 +21,6 @@ pub(super) fn pair_memory_budget() -> usize {
             .ok()
     });
     set.unwrap_or_else(|| half_available(available_memory()))
-}
-
-/// Bytes this process could still allocate: the system's available memory, or
-/// less when a cgroup (a batch job, a container) limits it. `None` where the
-/// system does not say.
-fn available_memory() -> Option<usize> {
-    let mut system = sysinfo::System::new();
-    system.refresh_memory();
-    let available = system.available_memory();
-    let left = system
-        .cgroup_limits()
-        .map_or(available, |group| group.free_memory.min(available));
-    (left > 0).then_some(left as usize)
 }
 
 /// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_base`]) on
