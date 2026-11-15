@@ -552,9 +552,10 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
 
-Each has two modes, recorded in the manifest (`baseline.mode`) and in
-`baseline.json`: pinto's sparse formulation, the default, which never
-holds an `N × N` matrix, and `--reference`, the original's own. For
+`spatialde2` and `stagate` have two modes, recorded in the manifest
+(`baseline.mode`) and in `baseline.json`: pinto's sparse formulation, the
+default, which never holds an `N × N` matrix, and `--reference`, the
+original's own. For
 `spatialde2` the sparse mode is the reference's own `neighbors=k` option
 (`--neighbors`, 100 by default) and `--reference` its default graph, every
 pair of cells in a section connected; for `stagate` both are the same
@@ -568,13 +569,13 @@ the most expressed.
 `spatialpca` and `mefisto` are written from their papers and supplements
 alone (their reference code is GPL or otherwise copyleft, and none of it is
 read or translated), over one shared sparse factor core: the latent factor
-model `Y = W Z + E` with a spatial prior on each factor. With
-`--reference` each runs its paper's prior: SpatialPCA's Gaussian kernel,
-one block per section, its bandwidth by the paper's rule and its low-rank
-approximation above 5000 cells; MEFISTO's Gaussian processes (a
-squared-exponential kernel times a group kernel), on inducing cells above
-1000 cells. By default each replaces that prior by a sparse precision on
-the per-section kNN graph, `(I + rho L) cbar(rho)`, its strength fitted
+model `Y = W Z + E` with a spatial prior on each factor. They have no
+`--reference`: the papers' dense-kernel priors (SpatialPCA's Gaussian
+kernel with its low-rank approximation, MEFISTO's Gaussian processes on
+inducing cells) cost too much time and memory at real cell counts, so
+pinto implements the papers' models with that prior replaced by a sparse
+precision on the per-section kNN graph, `(I + rho L) cbar(rho)`, and
+offers the `-pb` forms for scale. Its strength is fitted
 with the rest (one `rho` for SpatialPCA, one per factor for MEFISTO), so
 no `N × N` matrix and no `O(N^3)` step is met: determinants and traces come
 from the graph's spectrum (exact on sections of at most 2000 cells,
@@ -628,9 +629,8 @@ with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for
 `spatialde2`), train `stagate` on a GPU (`--device cuda`, in a build with
 the `cuda` feature), lower `--n-genes` for `spatialpca` and `mefisto`
-(whose sparse modes grow linearly with the cells; `spatialpca
---reference` holds a dense kernel block per section and refuses runs over
-a kernel-evaluation cap too), or raise
+(which grow linearly with the cells; their `-pb` forms fit on
+super-cells), or raise
 `PINTO_MEMORY_BUDGET` knowingly; a runner starting several at once gives
 each its share.
 

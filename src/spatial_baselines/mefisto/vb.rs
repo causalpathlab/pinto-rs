@@ -1,9 +1,8 @@
 //! MEFISTO's variational Bayes (Supplementary Information sections 2 to
 //! 4; the multi-group updates of MOFA+, Argelaguet et al. 2020, Genome
 //! Biology 21:111, doi:10.1186/s13059-020-02015-1), one view, the sections
-//! as groups, over any factor prior ([`FactorPrior`]): the same weight,
-//! ARD, sparsity and noise updates and ELBO whether the factors carry the
-//! paper's Gaussian process or the sparse graph prior.
+//! as groups, over a factor prior ([`FactorPrior`], the sparse graph
+//! prior of [`super::sparse`]).
 //!
 //! Model (SI (14)-(24)): `y_c[n, d] ~ N(sum_k w[d,k] z[n,k], 1 /
 //! tau[d, g(n)])`, spike-and-slab weights `w = w^ s`, `w^ ~ N(0, 1 /

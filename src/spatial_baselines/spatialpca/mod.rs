@@ -19,18 +19,12 @@
 //! profiled; `tau` maximises the profile SN(7); the PCs are the posterior
 //! means SN(10).
 //!
-//! - `--reference` ([`reference`]): the paper's Gaussian kernel `K(s, s') =
-//!   exp(-||s - s'||^2 / gamma)`, one block per section (the paper's
-//!   multi-sample extension), each section's coordinates standardised per
-//!   axis, `gamma` per section by the paper's rule (Silverman above 5000
-//!   cells, Sheather-Jones at or below, its pairwise sums on R's `bw.SJ`
-//!   binning of 1000 bins, per gene on the standardised expression, the
-//!   median over genes); the kernel's eigenpairs, the
-//!   Woodbury form SN(11) on the rank-`r` kernel and SN(13) at the
-//!   paper's ranks (the 90% rule at or below 5000 cells; 20
-//!   for the `tau` search and `ceil(0.1 n)` for the PCs above);
-//!   `tau` by Brent on `log tau` after a 41-point grid on `[1e-4, 1e4]`.
-//! - The default, sparse ([`sparse`]): the kernel replaced by the sparse
+//! The paper's dense Gaussian kernel `K(s, s') = exp(-||s - s'||^2 /
+//! gamma)` and its low-rank approximation cost too much time and memory at
+//! real cell counts, so pinto offers the model with a sparse graph prior
+//! in its place, and `spatialpca-pb` for scale; there is no `--reference`.
+//!
+//! - The prior ([`sparse`]): the kernel replaced by the sparse
 //!   prior `R(rho) = (I + rho L)^{-1} / cbar(rho)` on the per-section kNN
 //!   graph ([`super::spatial_factor::prior`]), `tau` and `rho` both by
 //!   maximum likelihood on the same profile, which then has the exact
@@ -56,21 +50,17 @@
 //!   written from its paper), so the `--n-genes` most variable genes
 //!   (seurat_v3 flavour) are modelled, one of the gene sets the paper
 //!   itself reports runs on.
-//! - **Normalisation**: SCTransform's VST is replaced, in both modes, by
+//! - **Normalisation**: SCTransform's VST is replaced by
 //!   analytic Pearson residuals of a Poisson model (Lause, Berens and
 //!   Kobak 2021, Genome Biology 22:258, doi:10.1186/s13059-021-02451-7),
 //!   clipped at `+-sqrt(N)`, then standardised per gene as the paper does.
-//! - **Sparse mode only**: the sparse prior and its `rho` by maximum
+//! - **The sparse prior** (cost, above): its `rho` by maximum
 //!   likelihood; spectral sums by stochastic Lanczos quadrature on
 //!   sections of more than 2000 cells; solves by conjugate gradients and
 //!   `G`'s eigenpairs by subspace iteration, to tolerance; `(tau, rho)` by a
 //!   projected L-BFGS from the best of a 3 × 3 grid.
-//! - **Low rank** (`--reference`): `G`, `g` and `q` of the `tau` profile
-//!   from SN(11)'s Woodbury identity on the rank-`r` kernel `U D U^T`, in
-//!   place of SN(12) as printed, which keeps the kernel's discarded
-//!   directions at full weight in `G` (the two agree at full rank).
 //! - **Exact reformulations**: the scalar forms of SN(11) with `q = 1` and
-//!   centred `Y`; the kernel applied in tiles; `R = I` with each loading's
+//!   centred `Y`; `R = I` with each loading's
 //!   largest entry positive; the refinement over the `k` nearest cells
 //!   (the lattice neighbours on a regular lattice).
 //!
@@ -79,7 +69,6 @@
 //! `tau` and `rho` refitted on the cells and their graph, each cell's PCs
 //! `C^{-1} Y^T W`.
 
-pub mod reference;
 pub mod sparse;
 
 use super::graph::knn_within_sections;
@@ -100,7 +89,6 @@ pub const N_GENES: usize = 3000;
 pub const REFINE_K: usize = 6;
 pub const CG_TOL: f64 = 1e-8;
 pub const MAX_EVALS: usize = 50;
-pub const MAX_KERNEL_EVALS: f64 = 1e14;
 
 /// The model's arguments, shared by `spatialpca` and `spatialpca-pb`.
 #[derive(clap::Args, Debug, Clone)]
@@ -135,23 +123,6 @@ pub struct FitArgs {
 pub struct Args {
     #[command(flatten)]
     pub fit: FitArgs,
-
-    /// Run the paper's own formulation instead of pinto's sparse one (see
-    /// --help): the dense Gaussian kernel with its low-rank approximation
-    #[arg(long, default_value_t = false)]
-    pub reference: bool,
-
-    /// --reference: the kernel bandwidth gamma, in place of the paper's rule
-    #[arg(long, hide = true, requires = "reference")]
-    pub bandwidth: Option<f64>,
-
-    /// --reference: the kernel rank, in place of the paper's rule
-    #[arg(long, hide = true, requires = "reference")]
-    pub rank: Option<usize>,
-
-    /// --reference: kernel evaluations a run may take at most
-    #[arg(long, default_value_t = MAX_KERNEL_EVALS, hide = true)]
-    pub max_kernel_evals: f64,
 }
 
 /// `spatialpca-pb`'s arguments: the sparse model's, and the super-cells.
@@ -175,8 +146,6 @@ pub struct PbArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Sparse,
-    /// `--reference`, its `--rank` when set.
-    Reference(Option<usize>),
     /// A `-pb` run, its target number of super-cells.
     Pseudobulk(usize),
 }
@@ -209,66 +178,11 @@ impl FitArgs {
                 Variant::Pseudobulk(target) => target,
                 _ => 0,
             },
-            reference: match variant {
-                Variant::Reference(rank) => reference_bytes(input, m, d, rank),
-                _ => 0,
-            },
         }
     }
 }
 
-/// What `--reference` holds beyond the sparse path's: `Y` dense (m × n),
-/// `G`, its rank-one term, its eigenvectors and their workspace (m × m), the kernel's
-/// eigenvectors over all cells (`n × sum_s min(want, n_s)`) with one
-/// block's own while it is taken (its dense kernel and eigenvectors, three
-/// copies as sorted, at or below the paper's 5000 cells), `Y U` and its
-/// scaled copy (m × r_est), and the PCs' `K M U` (n × r_Z) and products
-/// (n × d).
-fn reference_bytes(input: &InputShape, m: usize, d: usize, rank: Option<usize>) -> usize {
-    let sizes = &input.section_sizes;
-    let n: usize = sizes.iter().sum();
-    let want = reference::kernel_want(n, rank);
-    let width: usize = sizes.iter().map(|&s| want.min(s)).sum();
-    let largest = sizes.iter().copied().max().unwrap_or(0);
-    let block = if largest <= reference::DENSE_KERNEL_MAX {
-        3 * largest * largest
-    } else {
-        // subspace iteration: a few blocks of want + 10 vectors
-        4 * largest * (want + 10)
-    };
-    // the ranks at most: all of the kernel's at or below 5000 cells
-    let (r_est, r_z) = if n > reference::DENSE_KERNEL_MAX {
-        (
-            rank.unwrap_or(20).min(width),
-            rank.unwrap_or(n.div_ceil(10)).min(width),
-        )
-    } else {
-        (width, width)
-    };
-    8 * (m * n + 4 * m * m + block + n * width + 2 * m * r_est + n * r_z + 4 * n * d)
-}
-
-/// Kernel evaluations of a `--reference` run, from its section sizes:
-/// each block's eigenpairs (dense at or below the paper's 5000 cells,
-/// else about 30 rounds of a block `r_Z + 10` wide) and the PCs' products.
-pub fn kernel_evals(sizes: &[usize], d: usize) -> f64 {
-    let n: usize = sizes.iter().sum();
-    let rz = (n as f64 * 0.1).ceil();
-    sizes
-        .iter()
-        .map(|&g| {
-            let g = g as f64;
-            let eig = if g as usize <= reference::DENSE_KERNEL_MAX {
-                g * g
-            } else {
-                30.0 * g * g * (rz + 10.0)
-            };
-            eig + g * g * (d as f64 + 1.0)
-        })
-        .sum()
-}
-
-const LOWER_MEMORY: &str = "lower --n-genes or --n-factors, or run without --reference";
+const LOWER_MEMORY: &str = "lower --n-genes or --n-factors, or run spatialpca-pb";
 
 fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> {
     fit.check()?;
@@ -289,29 +203,8 @@ fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> 
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let variant = if args.reference {
-        Variant::Reference(args.rank)
-    } else {
-        Variant::Sparse
-    };
-    let budget = check_before_read(&args.fit, variant)?;
-    if args.reference {
-        if let Some(s) = args.fit.core.input.stored()? {
-            check_kernel_evals(args, &s.section_sizes)?;
-        }
-    }
+    let budget = check_before_read(&args.fit, Variant::Sparse)?;
     run_on(args, args.fit.core.input.read(false)?, &budget)
-}
-
-fn check_kernel_evals(args: &Args, sizes: &[usize]) -> anyhow::Result<()> {
-    let evals = kernel_evals(sizes, args.fit.n_factors);
-    anyhow::ensure!(
-        evals <= args.max_kernel_evals,
-        "spatialpca --reference would take about {evals:.2e} kernel evaluations, over \
-         --max-kernel-evals {:.2e}; the default sparse mode has no kernel",
-        args.max_kernel_evals
-    );
-    Ok(())
 }
 
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
@@ -371,63 +264,16 @@ fn base_settings(
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let fit = &args.fit;
     let genes = select_genes(&data, fit.n_genes)?;
-    let variant = if args.reference {
-        Variant::Reference(args.rank)
-    } else {
-        Variant::Sparse
-    };
     ensure_fits(
         "spatialpca",
-        factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), variant)),
+        factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), Variant::Sparse)),
         budget,
         LOWER_MEMORY,
     )?;
     let op = expression(&mut data, &genes);
     let d = fit.n_factors.min(op.m);
     let n = op.n;
-    let (z, w, mut settings) = if args.reference {
-        check_kernel_evals(args, &section_sizes(&data.section))?;
-        let y = op.dense();
-        drop(op);
-        let xy: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                (0..data.xy.ncols())
-                    .map(|j| data.xy[(i, j)] as f64)
-                    .collect()
-            })
-            .collect();
-        let blocks = reference::blocks(&y, &xy, &data.section_cells(), args.bandwidth)?;
-        let want = reference::kernel_want(n, args.rank);
-        let eig = reference::kernel_eigen(&blocks, n, want, fit.core.input.seed);
-        let (r_est, r_z) = reference::ranks(&eig.values, n, args.rank);
-        let prof = reference::TauProfile::new(&y, &eig, r_est, d);
-        let (best, evals) = prof.fit();
-        let z = reference::pcs(&y, &best.w, best.tau, &eig, r_z, &blocks);
-        let mut w = best.w.clone();
-        let mut zz = z.clone();
-        sparse::fix_signs(&mut w, &mut zz);
-        let m = y.nrows();
-        log::info!(
-            "spatialpca --reference: tau {:.4e}, sigma0^2 {:.4e}, ranks {r_est} and {r_z}",
-            best.tau,
-            best.s / (m as f64 * (n as f64 - 1.0))
-        );
-        let settings = serde_json::json!({
-            "prior": "reference",
-            "kernel": "Gaussian exp(-d^2 / gamma), one block per section, coordinates standardised per axis",
-            "gamma": blocks.iter().map(|b| b.gamma).collect::<Vec<_>>(),
-            "bandwidth_rule": if args.bandwidth.is_some() { "--bandwidth" } else { "Silverman above 5000 cells, Sheather-Jones at or below; median over genes" },
-            "tau_hat": best.tau,
-            "sigma0_sq_hat": best.s / (m as f64 * (n as f64 - 1.0)),
-            "eigenvalues_g": best.eigvals,
-            "r_est": r_est,
-            "r_z": r_z,
-            "low_rank_variant": "SN(11) Woodbury on the rank-r kernel",
-            "ell": best.ell,
-            "evaluations": evals,
-        });
-        (zz, w, settings)
-    } else {
+    let (z, w, mut settings) = {
         let (_, lap) = cell_graph(&data, fit.core.knn);
         let spec = spectrum(&lap, &fit.core);
         let prof = Profile::new(&op, &lap, &spec, d, fit.cg_tol, fit.core.input.seed);
@@ -463,7 +309,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &to_mat(&z),
             embedding_name: "spatialpc",
             settings,
-            reference: args.reference,
+            reference: false,
             input_layout: None,
             pseudobulk: None,
         },

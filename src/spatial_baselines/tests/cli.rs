@@ -24,10 +24,11 @@ fn each_baseline_s_help_is_short() {
             .to_string();
         let lines = help.lines().count();
         assert!(lines <= HELP_LINES, "{cmd} -h: {lines} lines\n{help}");
-        // spatialde2-pb has no --reference and takes -d
+        // only stagate and spatialde2 have --reference; the -pb forms take -d
         let pb = cmd.ends_with("-pb");
+        let reference = matches!(*cmd, "stagate" | "spatialde2");
         let flag = |f: &str| help.lines().any(|l| l.trim_start().starts_with(f));
-        assert_eq!(flag("--reference"), !pb, "{cmd}");
+        assert_eq!(flag("--reference"), reference, "{cmd}");
         assert_eq!(flag("-d, --n-pseudobulk"), pb, "{cmd}");
         assert!(help.contains("--ignore-batch"), "{cmd}");
     }
@@ -85,8 +86,12 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         panic!("--n-pcs")
     };
     assert_eq!(a.fit.n_factors, 7);
+    // no dense-kernel mode: --reference and its knobs are not flags
+    for cmd in ["spatialpca", "mefisto", "spatialpca-pb", "mefisto-pb"] {
+        assert!(parse(&[cmd, "--reference"]).is_err(), "{cmd} --reference");
+    }
     assert!(parse(&["spatialpca", "--bandwidth", "1.5"]).is_err());
-    assert!(parse(&["spatialpca", "--reference", "--bandwidth", "1.5"]).is_ok());
+    assert!(parse(&["mefisto", "--n-inducing", "100"]).is_err());
     let Ok(crate::Commands::Mefisto(m)) = parse(&["mefisto"]) else {
         panic!("mefisto")
     };
@@ -111,14 +116,7 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
     };
     for cmd in ["spatialpca", "mefisto"] {
         let v = visible(cmd);
-        for want in [
-            "n-factors",
-            "n-genes",
-            "n-clusters",
-            "reference",
-            "ignore-batch",
-            "seed",
-        ] {
+        for want in ["n-factors", "n-genes", "n-clusters", "ignore-batch", "seed"] {
             assert!(v.iter().any(|f| f == want), "{cmd}: no --{want}");
         }
         for hidden in ["knn", "cg-tol", "slq-probes", "refine-k", "resolution"] {
@@ -126,4 +124,7 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         }
     }
     assert!(!visible("mefisto").iter().any(|f| f == "n-inducing"));
+    for cmd in ["spatialpca", "mefisto"] {
+        assert!(!visible(cmd).iter().any(|f| f == "reference"), "{cmd}");
+    }
 }

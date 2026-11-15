@@ -298,8 +298,6 @@ pub struct FactorShape {
     /// A `-pb` run's target number of super-cells (0 on cells): the
     /// coarsening's memory too.
     pub super_cells: usize,
-    /// What `--reference` holds beyond the sparse path.
-    pub reference: usize,
 }
 
 /// Bytes a stored nonzero takes over a factor baseline's run, summed
@@ -315,7 +313,7 @@ const FACTOR_NONZERO_BYTES: usize = 32 + 12 + 16;
 /// [`GRAPH_EDGE_BYTES`] an edge of the symmetrised kNN, then its lists and
 /// its Laplacian, 12 bytes an entry each), the dense blocks of the exactly
 /// decomposed sections (three `n_s^2` copies, a thread each), the fit's
-/// vectors, what `--reference` adds, and with `-pb` the coarsening and
+/// vectors, and with `-pb` the coarsening and
 /// the super-cells' own expression.
 pub fn factor_peak_bytes(s: &FactorShape) -> usize {
     let sizes = &s.input.section_sizes;
@@ -346,6 +344,5 @@ pub fn factor_peak_bytes(s: &FactorShape) -> usize {
         + exact
         + 8 * n * s.cell_vectors
         + 8 * s.genes * s.gene_vectors
-        + s.reference
         + pb
 }

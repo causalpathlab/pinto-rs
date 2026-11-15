@@ -35,8 +35,10 @@ ports of published methods to compare pinto against: spatialde2 \
 clustered by pinto's k-means or Leiden), spatialpca (SpatialPCA, spatially \
 aware probabilistic PCA, its spatial PCs clustered by pinto's k-means or \
 Leiden) and mefisto (MEFISTO, spatially smooth factor analysis, its factors \
-clustered by pinto's k-means or Leiden), sparse by default (reference runs \
-the original's own formulation), and their -pb forms (spatialde2-pb, \
+clustered by pinto's k-means or Leiden), sparse by default (spatialde2 and \
+stagate take --reference for the original's own formulation; spatialpca \
+and mefisto have only the sparse form, the papers' dense kernels costing \
+too much at real cell counts), and their -pb forms (spatialde2-pb, \
 spatialpca-pb, mefisto-pb), fitted on cage's super-cells and unravelled to \
 cells; \
 run_fit runs them as it runs lc, and each writes a run with its labels and \

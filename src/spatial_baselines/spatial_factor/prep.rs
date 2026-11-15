@@ -345,7 +345,8 @@ impl ResidualOp {
         out
     }
 
-    /// Gene `g`'s row of `Y`, dense over the cells.
+    /// Gene `g`'s row of `Y`, dense over the cells (for tests).
+    #[cfg(test)]
     pub fn gene_row(&self, g: usize) -> Vec<f64> {
         let mut out = vec![0f64; self.n];
         for e in self.g_ptr[g]..self.g_ptr[g + 1] {
@@ -515,8 +516,8 @@ impl ResidualOp {
         Dense::from_fn(self.n, k, |c, j| cols[c][j])
     }
 
-    /// `Y` as a dense genes × cells matrix (the reference modes, which hold
-    /// it as the originals do).
+    /// `Y` as a dense genes × cells matrix (for tests).
+    #[cfg(test)]
     pub fn dense(&self) -> Dense {
         let rows: Vec<Vec<f64>> = (0..self.m)
             .into_par_iter()

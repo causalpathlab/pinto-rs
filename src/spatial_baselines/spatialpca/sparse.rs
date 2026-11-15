@@ -21,7 +21,7 @@
 //! spectrum; `(tau, rho)` maximise `ell` by a projected L-BFGS with its
 //! analytic gradient (the envelope theorem: `dS = sum_l z_l^T dC z_l`).
 
-use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box_with, top_eigs, Dense, EigOpts};
+use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
 use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
 use crate::spatial_baselines::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
 use std::cell::RefCell;
@@ -201,7 +201,7 @@ impl<'a> Profile<'a> {
                 }
             }
         }
-        let (r, mut e) = lbfgs_box_with(
+        let (r, mut e) = lbfgs_box(
             |x| {
                 let e = self.eval(x[0], x[1]);
                 (-e.ell, vec![-e.grad[0], -e.grad[1]], e)

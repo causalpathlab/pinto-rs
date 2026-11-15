@@ -25,17 +25,15 @@
 //!    relative change is below `--tol` at an iteration whose
 //!    hyperparameter step moved none by more than `--hyper-tol` (log
 //!    scale), or `--max-iter` iterations.
-//! 4. The factors' prior:
-//!    - `--reference` ([`reference`]): the paper's Gaussian process, a
-//!      squared-exponential kernel times a group kernel (SI (8)-(13)), on
-//!      the cells when there are at most `--n-inducing` (1000, the paper's
-//!      spatial run), else on that many inducing cells (SI section 4); the
-//!      lengthscale grid and the box-constrained search over the smooth
-//!      share and the group kernel (SI section 3.2.2).
-//!    - the default, sparse ([`sparse`]): the precision `c_k (I + rho_k L)`
-//!      on the per-section kNN graph, one strength `rho_k` per factor by a
-//!      log grid then Brent; traces and log-determinants by the graph's
-//!      spectrum, means by conjugate gradients.
+//! 4. The factors' prior ([`sparse`]), in place of the paper's Gaussian
+//!    processes (a squared-exponential kernel times a group kernel, SI
+//!    (8)-(13)), which with their inducing-point approximation cost too
+//!    much time and memory at real cell counts; pinto offers the model
+//!    with a sparse graph prior instead, and `mefisto-pb` for scale, and
+//!    there is no `--reference`. The precision `c_k (I + rho_k L)` on the
+//!    per-section kNN graph, one strength `rho_k` per factor by a log grid
+//!    then Brent; traces and log-determinants by the graph's spectrum,
+//!    means by conjugate gradients.
 //! 5. Domains, a step the paper does not take: `E[Z]`, each factor scaled
 //!    by its weights' norm `||E[w_k]||` ([`domain_embedding`]), clustered
 //!    by pinto's seeded k-means (`--n-clusters`) or Leiden.
@@ -46,7 +44,7 @@
 //!   by the input's own δ before the libraries, the genes and the
 //!   normalisation; `--ignore-batch` runs the paper's model (the sections
 //!   still its groups).
-//! - **Sparse mode only**: the graph prior in place of the kernel (one
+//! - **The sparse prior** (cost, above): the graph prior in place of the kernel (one
 //!   `rho_k` for the lengthscale and smooth share; the group kernel the
 //!   identity, sections independent a priori), each `rho_k` maximising
 //!   the ELBO jointly with `q(z_k)` (the factor's collapsed bound) where
@@ -56,24 +54,21 @@
 //!   correlation of graph neighbours, not `1 - zeta_k`.
 //! - **Exact reformulations**: implicit centring; the weight updates
 //!   written for per-group noise; only per-group sums of the factors'
-//!   variances kept; `Sigma_ZU` formed in row blocks; the extreme pairwise
-//!   distances by nearest neighbours and the convex hull.
+//!   variances kept.
 //! - **Domains**: an added step (no GPL package involved).
 //! - **Not ported** (unused by the paper's spatial analysis): covariate
 //!   alignment, non-Gaussian likelihoods, the Kronecker path, interpolation.
 //!
 //! The paper is silent on the start, the order of updates within an
-//! iteration, the convergence rule (pinto's also asks the hyperparameters
-//! to have settled) and the inducing cells' placement in
-//! 2-D; pinto's choices are documented where they are made ([`vb::State::init`],
-//! [`vb::fit`], [`reference::inducing_cells`]).
+//! iteration and the convergence rule (pinto's also asks the
+//! hyperparameters to have settled); pinto's choices are documented where
+//! they are made ([`vb::State::init`], [`vb::fit`]).
 //!
 //! `mefisto-pb` fits the sparse model on cage's super-cells and the
 //! collapsed graph, then unravels to cells: the weights, ARD and sparsity
 //! held fixed; the noise, the factors and each `rho_k` re-fitted on the
 //! cells and their graph, from the super-cells' factors broadcast.
 
-pub mod reference;
 pub mod sparse;
 pub mod vb;
 
@@ -100,7 +95,6 @@ pub const MAX_ITER: usize = 1000;
 pub const GP_START: usize = 20;
 pub const GP_EVERY: usize = 10;
 pub const N_GRID: usize = 20;
-pub const N_INDUCING: usize = 1000;
 pub const UNRAVEL_MAX_ITER: usize = 200;
 
 /// The model's arguments, shared by `mefisto` and `mefisto-pb`.
@@ -158,20 +152,6 @@ pub struct FitArgs {
 pub struct Args {
     #[command(flatten)]
     pub fit: FitArgs,
-
-    /// Run the paper's own formulation instead of pinto's sparse one (see
-    /// --help): each factor a Gaussian process, on inducing cells when
-    /// there are many
-    #[arg(long, default_value_t = false)]
-    pub reference: bool,
-
-    /// --reference: the Gaussian processes' inducing cells, at most
-    #[arg(long, default_value_t = N_INDUCING, hide = true)]
-    pub n_inducing: usize,
-
-    /// --reference: rank of the group kernel
-    #[arg(long, default_value_t = 1, hide = true)]
-    pub group_rank: usize,
 }
 
 /// `mefisto-pb`'s arguments: the sparse model's, and the super-cells.
@@ -198,7 +178,6 @@ pub struct PbArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Sparse,
-    Reference,
     /// A `-pb` run, its target number of super-cells.
     Pseudobulk(usize),
 }
@@ -232,11 +211,9 @@ impl FitArgs {
         input: &InputShape,
         m: usize,
         variant: Variant,
-        n_inducing: usize,
     ) -> FactorShape {
         let k = self.n_factors;
         let g = input.section_sizes.len().max(1);
-        let n: usize = input.section_sizes.iter().sum();
         FactorShape {
             input: input.clone(),
             genes: m,
@@ -248,45 +225,20 @@ impl FitArgs {
                 Variant::Pseudobulk(target) => target,
                 _ => 0,
             },
-            reference: match variant {
-                Variant::Reference => {
-                    let mm = n.min(n_inducing);
-                    // per factor q(u) (its covariance); a hyperparameter
-                    // search's M × M matrices (the objective's and its
-                    // gradient's, with the likelihood's sums, one per
-                    // section, below N cells) and row blocks
-                    // one lengthscale's search per thread at once
-                    let sums = if mm < n { g * mm * mm } else { 0 };
-                    let searches = rayon::current_num_threads().min(self.n_grid.max(1));
-                    // one group: each lengthscale's kept eigenbasis and
-                    // its E_UZ E_ZU in it
-                    let bases = if g == 1 { self.n_grid * 2 * mm * mm } else { 0 };
-                    8 * (k * mm * mm
-                        + searches * (16 * mm * mm + sums)
-                        + bases
-                        + 3 * 4096.min(n) * mm)
-                }
-                _ => 0,
-            },
         }
     }
 }
 
 const LOWER_MEMORY: &str = "lower --n-genes or --n-factors";
 
-fn check_before_read(fit: &FitArgs, variant: Variant, n_inducing: usize) -> anyhow::Result<Budget> {
+fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> {
     fit.check()?;
     let budget = Budget::now()?;
     let stored = fit.core.input.stored()?;
     check_stored_shape(
         "mefisto",
         stored.as_ref().map(|s| {
-            let peak = factor_peak_bytes(&fit.memory_shape(
-                s,
-                s.genes.min(fit.n_genes),
-                variant,
-                n_inducing,
-            ));
+            let peak = factor_peak_bytes(&fit.memory_shape(s, s.genes.min(fit.n_genes), variant));
             fit.core
                 .input
                 .peak_with_delta(peak, FACTOR_PROCESS_BYTES, s)
@@ -298,17 +250,12 @@ fn check_before_read(fit: &FitArgs, variant: Variant, n_inducing: usize) -> anyh
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let variant = if args.reference {
-        Variant::Reference
-    } else {
-        Variant::Sparse
-    };
-    let budget = check_before_read(&args.fit, variant, args.n_inducing)?;
+    let budget = check_before_read(&args.fit, Variant::Sparse)?;
     run_on(args, args.fit.core.input.read(false)?, &budget)
 }
 
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
-    let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk), 0)?;
+    let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk))?;
     run_pb_on(args, args.fit.core.input.read(true)?, &budget)
 }
 
@@ -393,19 +340,9 @@ fn weights_out(
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let fit = &args.fit;
     let genes = select_genes(&data, fit.n_genes)?;
-    let variant = if args.reference {
-        Variant::Reference
-    } else {
-        Variant::Sparse
-    };
     ensure_fits(
         "mefisto",
-        factor_peak_bytes(&fit.memory_shape(
-            &read_shape(&data),
-            genes.len(),
-            variant,
-            args.n_inducing,
-        )),
+        factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), Variant::Sparse)),
         budget,
         LOWER_MEMORY,
     )?;
@@ -413,45 +350,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let section = data.section.clone();
     let vd = VbData::new(&op, &section, data.n_sections);
     let mut st = State::init(&vd, fit.n_factors, fit.core.input.seed);
-    let (trace, extra) = if args.reference {
-        if data.n_sections > 1 {
-            log::warn!(
-                "mefisto --reference: {} sections share one coordinate frame in the paper's \
-                 group kernel; pinto's sections have their own, so cross-section terms \
-                 overlay them as they are",
-                data.n_sections
-            );
-        }
-        let xy: Vec<Vec<f64>> = (0..op.n)
-            .map(|i| {
-                (0..data.xy.ncols())
-                    .map(|j| data.xy[(i, j)] as f64)
-                    .collect()
-            })
-            .collect();
-        let mut prior = reference::GpPrior::new(
-            xy,
-            section.clone(),
-            data.n_sections,
-            reference::GpSizes {
-                k: st.k(),
-                n_inducing: args.n_inducing,
-                n_grid: fit.n_grid,
-                rank: args.group_rank,
-                seed: fit.core.input.seed,
-            },
-        );
-        let trace = vb::fit(&vd, &mut st, &mut prior, &fit.opts());
-        let extra = serde_json::json!({
-            "prior": "reference",
-            "kernel": "squared exponential times a group kernel (SI (8)-(13))",
-            "n_inducing": prior.inducing.len(),
-            "group_rank": args.group_rank,
-        });
-        let mut extra = extra;
-        merge(&mut extra, state_settings(&vd, &st, &prior));
-        (trace, extra)
-    } else {
+    let (trace, extra) = {
         let (_, lap) = cell_graph(&data, fit.core.knn);
         let spec = spectrum(&lap, &fit.core);
         let mut prior = GraphPrior::new(
@@ -503,7 +402,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &to_mat(&st.mu),
             embedding_name: "mefisto",
             settings: s,
-            reference: args.reference,
+            reference: false,
             input_layout: None,
             pseudobulk: None,
         },
@@ -569,7 +468,6 @@ pub(crate) fn run_pb_on(
             &read_shape(&data),
             genes.len(),
             Variant::Pseudobulk(args.n_pseudobulk),
-            0,
         )),
         budget,
         LOWER_MEMORY,

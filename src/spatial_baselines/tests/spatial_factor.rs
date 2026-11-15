@@ -204,9 +204,9 @@ fn brent_finds_a_known_minimum() {
 fn box_minimiser_respects_active_bounds() {
     let quad = |x: &[f64]| {
         let f = (x[0] - 2.0).powi(2) + 3.0 * (x[1] + 0.5).powi(2);
-        (f, vec![2.0 * (x[0] - 2.0), 6.0 * (x[1] + 0.5)])
+        (f, vec![2.0 * (x[0] - 2.0), 6.0 * (x[1] + 0.5)], ())
     };
-    let r = lbfgs_box(quad, &[0.0, 0.0], &[-1.0, 0.0], &[1.0, 1.0], 200, 1e-9, 0.0);
+    let (r, _) = lbfgs_box(quad, &[0.0, 0.0], &[-1.0, 0.0], &[1.0, 1.0], 200, 1e-9, 0.0);
     assert!(
         (r.x[0] - 1.0).abs() < 1e-9 && r.x[1].abs() < 1e-9,
         "{:?}",
@@ -221,9 +221,10 @@ fn box_minimiser_respects_active_bounds() {
                 -2.0 * (1.0 - a) - 400.0 * a * (b - a * a),
                 200.0 * (b - a * a),
             ],
+            (),
         )
     };
-    let r = lbfgs_box(
+    let (r, _) = lbfgs_box(
         rosen,
         &[-1.2, 1.0],
         &[-2.0, -2.0],
@@ -238,7 +239,7 @@ fn box_minimiser_respects_active_bounds() {
         r.x
     );
     // with an active bound on Rosenbrock
-    let r = lbfgs_box(
+    let (r, _) = lbfgs_box(
         rosen,
         &[-1.2, 1.0],
         &[-2.0, -2.0],

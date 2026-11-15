@@ -768,8 +768,9 @@ enum Commands {
              vote over spatial neighbours.\n\n\
              Sparse by default: the paper's Gaussian kernel is replaced by a\n\
              sparse precision on the kNN graph within each section, its strength\n\
-             fitted with the rest; no N x N matrix is held. --reference runs the\n\
-             paper's kernel, with its low-rank approximation above 5000 cells.\n\
+             fitted with the rest; no N x N matrix is held. There is no\n\
+             --reference: the paper's dense kernel costs too much time and memory\n\
+             at real cell counts; spatialpca-pb fits on super-cells for scale.\n\
              Genes: the most variable (the paper's spatially variable gene step\n\
              is not ported); counts normalised by analytic Pearson residuals.\n\n",
             baseline_batch!(),
@@ -790,7 +791,7 @@ enum Commands {
              edges it collapses). The sparse model is fitted there; its loadings\n\
              are then held fixed, the noise and prior scales refitted on the cells\n\
              and their graph, and each cell's spatial PCs inferred. Takes\n\
-             spatialpca's flags but --reference.\n\n",
+             spatialpca's flags.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -808,8 +809,9 @@ enum Commands {
              (--n-clusters) or Leiden turns the factors into domains.\n\n\
              Sparse by default: each factor's Gaussian process is replaced by a\n\
              sparse precision on the kNN graph within each section, its strength\n\
-             fitted per factor; no N x N matrix is held. --reference runs the\n\
-             paper's Gaussian processes, on inducing cells above 1000 cells.\n\n",
+             fitted per factor; no N x N matrix is held. There is no --reference:\n\
+             the paper's Gaussian processes cost too much time and memory at real\n\
+             cell counts; mefisto-pb fits on super-cells for scale.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -827,7 +829,7 @@ enum Commands {
              graph collapsed onto them. The sparse model is fitted there; its\n\
              weights are then held fixed while the noise, the factors and each\n\
              factor's smoothness are refitted on the cells and their graph. Takes\n\
-             mefisto's flags but --reference.\n\n",
+             mefisto's flags.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

@@ -137,35 +137,10 @@ pub struct BoxMin {
 /// Nocedal and Zhu 1995, SIAM J. Sci. Comput. 16:1190,
 /// doi:10.1137/0916069) without its generalised Cauchy point. Stops at a
 /// projected gradient below `pgtol`, a relative change of `f` below
-/// `ftol`, or `max_evals` evaluations.
-pub fn lbfgs_box(
-    mut fg: impl FnMut(&[f64]) -> (f64, Vec<f64>),
-    x0: &[f64],
-    lo: &[f64],
-    hi: &[f64],
-    max_evals: usize,
-    pgtol: f64,
-    ftol: f64,
-) -> BoxMin {
-    lbfgs_box_with(
-        |x| {
-            let (f, g) = fg(x);
-            (f, g, ())
-        },
-        x0,
-        lo,
-        hi,
-        max_evals,
-        pgtol,
-        ftol,
-    )
-    .0
-}
-
-/// [`lbfgs_box`] with what each evaluation computes alongside its value
-/// and gradient, returned for the point it stops at (no evaluation
-/// repeated there).
-pub fn lbfgs_box_with<T>(
+/// `ftol`, or `max_evals` evaluations. `fg` returns, beside the value and
+/// gradient, what its evaluation computed (`T`); the result carries that
+/// of the point it stops at, so no evaluation is repeated there.
+pub fn lbfgs_box<T>(
     mut fg: impl FnMut(&[f64]) -> (f64, Vec<f64>, T),
     x0: &[f64],
     lo: &[f64],
