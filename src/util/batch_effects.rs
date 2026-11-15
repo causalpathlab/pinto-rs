@@ -14,7 +14,7 @@
 //!    aggregated feature sums. This is a small set — typically
 //!    O(n_batches * n_groups) entries.
 //!
-//! 3. **Cross-batch KNN matching** (`--batch-knn`): for each
+//! 3. **Cross-batch KNN matching** (`BATCH_KNN` neighbours): for each
 //!    pb-sample, find its `batch_knn` nearest neighbors among
 //!    pb-samples from *other* batches using HNSW on centroids.
 //!    Because we search over coarsened pb-samples (not individual

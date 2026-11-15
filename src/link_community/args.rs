@@ -34,7 +34,7 @@ pub struct SrtLinkCommunityArgs {
         long_help = "Gibbs iterations at the coarsest coarsening level.\n\
                      Later V-cycle levels use num_gibbs/5, at least 10. They can afford fewer:\n\
                      each warm-starts from the level above.\n\
-                     --num-em controls the full-resolution iterations.",
+                     The full-resolution EM runs num_gibbs/4 sweeps, at least 5.",
         hide = true
     )]
     pub num_gibbs: usize,
@@ -53,35 +53,12 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        help = "EM Gibbs sweeps on full edge set",
-        long_help = "EM Gibbs sweeps over the full-resolution edges.\n\
-                     Pass 0 to skip EM and refine greedily only. If omitted,\n\
-                     this defaults to num_gibbs/4, at least 5.",
-        hide = true
-    )]
-    pub num_em: Option<usize>,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        value_parser = crate::util::common::non_negative_f64,
-        help = "Dirichlet concentration for community mixing weights",
-        long_help = "Concentration α of the symmetric Dirichlet prior.\n\
-                     The prior sits on the community mixing weights, integrated out.\n\
-                     It counts edges, and super-edges at the coarser levels.\n\
-                     The default is one pseudo-edge across all K.\n\
-                     Small values favor large communities over small ones.\n\
-                     Pass 0 to disable it and use a uniform prior."
-    )]
-    pub alpha: f64,
-
-    #[arg(
-        long,
         default_value_t = 1.0,
         help = "Min total count to include a feature in the projection basis",
         long_help = "Features under this total count are zeroed in the basis.\n\
                      That removes them from every profile dimension.\n\
-                     Feature-pair mode ignores this flag. Pass 0 to include all features."
+                     Feature-pair mode ignores this flag. Pass 0 to include all features.",
+        hide = true
     )]
     pub min_feature_count: f32,
 
@@ -93,9 +70,9 @@ pub struct SrtLinkCommunityArgs {
                      comma-separated when it ends in .csv). A line naming a feature the data\n\
                      lacks, such as a header, is skipped. pinto ships no network of its own.\n\n\
                      With it, lc groups the features into modules: the network, densified by\n\
-                     shared neighbours (--snn-min-shared) and k-core trimmed\n\
-                     (--feature-trim-min-degree), is clustered by Leiden (Traag, Waltman and\n\
-                     van Eck 2019; --feature-modules-resolution). Each cell pair's profile is\n\
+                     shared neighbours (at least 3) and k-core trimmed (degree 3), is\n\
+                     clustered by Leiden (Traag, Waltman and van Eck 2019; resolution 1).\n\
+                     Each cell pair's profile is\n\
                      then sparse over module pairs (a, b): how far the two cells co-express a\n\
                      and b beyond what their totals predict, in place of the random-projection\n\
                      profile. A feature trimmed away joins no module.\n\
@@ -124,59 +101,6 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        default_value_t = 3,
-        help = "Shared-neighbor count to add an SNN edge (0 disables)",
-        long_help = "Augment the feature network with shared-neighbor edges.\n\
-                     A synthetic edge joins any unconnected pair (u, v).\n\
-                     The pair must share at least N neighbours already.\n\
-                     This densifies incomplete networks. It applies only with --feature-network;\n\
-                     0 disables it.",
-        hide = true
-    )]
-    pub snn_min_shared: usize,
-
-    #[arg(
-        long,
-        default_value_t = 3,
-        help = "Minimum feature degree to keep before Leiden module resolution",
-        long_help = "k-core trim applied before Leiden runs on the feature graph.\n\
-                     Features below this subgraph degree are dropped, iteratively.\n\
-                     A feature trimmed in any round contributes to no module,\n\
-                     and to no module-pair basis entry. This applies only with --feature-network.",
-        hide = true
-    )]
-    #[arg(alias = "gene-trim-min-degree")]
-    pub feature_trim_min_degree: usize,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "Leiden modularity resolution for feature-module clustering",
-        long_help = "Modularity γ for Leiden on the feature graph.\n\
-                     That graph is SNN-augmented and k-core-trimmed. Higher γ yields more,\n\
-                     smaller modules. Lower γ yields fewer, larger ones.\n\
-                     This applies only with --feature-network.",
-        hide = true
-    )]
-    #[arg(alias = "gene-modules-resolution")]
-    pub feature_modules_resolution: f64,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "Modularity-gain resolution for the coarsening merge veto",
-        long_help = "Resolution γ for the degree-corrected merge veto.\n\
-                     A proposed merge (i, j) is rejected when:\n\
-                     sim(i,j) < γ · deg(i) · deg(j) / (2W).\n\
-                     That is the Louvain/Leiden modularity-gain criterion,\n\
-                     adapted to cosine-weighted edges.\n\
-                     γ = 1.0 is the standard modularity resolution. Pass 0 to disable the veto.",
-        hide = true
-    )]
-    pub modularity_gamma: f32,
-
-    #[arg(
-        long,
         help = "Cosine cutoff for cutting the dictionary-merge tree (unset = no cut)",
         long_help = "Merges at or above this cosine collapse into one community.\n\
                      Merges below the cutoff stay separate.\n\
@@ -189,7 +113,7 @@ pub struct SrtLinkCommunityArgs {
                      \n\
                      Cosine runs on per-feature-centred log-rates of the\n\
                      feature-community posterior, restricted to detected features\n\
-                     (see --merge-min-nnz). With several sections (data files,\n\
+                     (a detection cutoff read off the data). With several sections (data files,\n\
                      crossed with --batch-files labels), each section's mean\n\
                      profile is removed first, so communities are compared by\n\
                      how they differ from their own section. This holds under\n\
@@ -208,34 +132,6 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        value_name = "N",
-        help = "Minimum cells a feature must appear in to score the dictionary merge (unset = auto)",
-        long_help = "Features detected in fewer than N cells are dropped before the\n\
-                     merge cosine is computed.\n\
-                     They are NOT dropped from any other output.\n\
-                     \n\
-                     Unset (the default) picks N by the same nnz-histogram trough\n\
-                     data-beans uses for cell QC.\n\
-                     Pass 0 to score every feature, which is the pre-fix behaviour.\n\
-                     \n\
-                     WHY THIS EXISTS.\n\
-                     An undetected feature still gets a Poisson-Gamma posterior.\n\
-                     Its log-rate is then set by each community's exposure\n\
-                     rather than by data, so it swings across communities\n\
-                     harder than a well-measured feature's does.\n\
-                     Cosine is dominated by the largest-magnitude rows,\n\
-                     so left in, those features decide the merge\n\
-                     and collapse the tree at any cut.\n\
-                     \n\
-                     Raising N past the community count is refused:\n\
-                     below that the dictionary is rank-deficient\n\
-                     and every pair looks identical.",
-        hide = true
-    )]
-    pub merge_min_nnz: Option<usize>,
-
-    #[arg(
-        long,
         default_value_t = false,
         help = "Disable per-level cascade outputs (still runs the V-cycle)",
         long_help = "By default the V-cycle emits per-level outputs:\n\
@@ -250,41 +146,32 @@ pub struct SrtLinkCommunityArgs {
                      matching the pre-V-cycle behaviour. The cascade still runs internally."
     )]
     pub no_level_outputs: bool,
+}
 
-    #[arg(
-        long,
-        default_value_t = false,
-        help = "Disable the frozen K×K incidence (RBM-style vertex prior)",
-        long_help = "After the V-cycle, pinto derives a vertex propensity.\n\
-                     It reads the cascade-final edge labels.\n\
-                     It then freezes the K×K incidence matrix:\n\
-                     log B[k, k'] = ψ(a + S[k, k']) − log(b + W[k']) That is the variational E_q[log B] under Gamma(a, b).\n\
-                     \n\
-                     The final EM-Gibbs and greedy score then gains the term Σ_{k'} (θ_L[k'] + θ_R[k']) · log B[k, k'].\n\
-                     That pulls the labelling toward block structure.\n\
-                     The factorised Poisson rate alone cannot see it.\n\
-                     Our smoke test gained ~50% MI. It cost ~9% more wall time.\n\
-                     \n\
-                     Pass --no-incidence to disable it.",
-        hide = true
-    )]
-    pub no_incidence: bool,
+/// The Dirichlet prior on community sizes: one pseudo-edge per community,
+/// washed out by the thousands of edges any tissue has.
+pub const DIRICHLET_ALPHA: f64 = 1.0;
 
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        value_name = "A",
-        help = "Gamma prior shape a for the incidence term (no effect with --no-incidence)",
-        hide = true
-    )]
-    pub incidence_a: f64,
+/// Shared neighbours a feature pair needs for the SNN augmentation of a
+/// feature network (0 would disable it).
+pub const SNN_MIN_SHARED: usize = 3;
 
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        value_name = "B",
-        help = "Gamma prior rate b for the incidence term (no effect with --no-incidence)",
-        hide = true
-    )]
-    pub incidence_b: f64,
+/// k-core degree a feature keeps in the feature network; a feature below it
+/// joins no module and no module-pair basis entry.
+pub const FEATURE_TRIM_MIN_DEGREE: usize = 3;
+
+/// Leiden resolution of the feature modules cut from a feature network.
+pub const FEATURE_MODULES_RESOLUTION: f64 = 1.0;
+
+/// Modularity resolution of the coarsening's merge veto (0 would disable
+/// the veto).
+pub const MODULARITY_GAMMA: f32 = 1.0;
+
+/// The Gamma(a, b) prior on the community incidence B.
+pub const INCIDENCE_A: f64 = 1.0;
+pub const INCIDENCE_B: f64 = 1.0;
+
+/// Full-resolution EM sweeps after the cascade, from its Gibbs budget.
+pub fn num_em_sweeps(num_gibbs: usize) -> usize {
+    (num_gibbs / 4).max(5)
 }

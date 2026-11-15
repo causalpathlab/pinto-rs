@@ -192,7 +192,7 @@ pub struct Args {
 
     /// Spatial smoothness; larger values give finer segmentations
     /// (multiplied by the smallest squared distance, so dimensionless)
-    #[arg(long, default_value_t = SMOOTHNESS_FACTOR)]
+    #[arg(long, default_value_t = SMOOTHNESS_FACTOR, hide = true)]
     pub smoothness_factor: f64,
 
     /// Genes to segment on: the top N by total counts (0: every gene). The
@@ -202,19 +202,19 @@ pub struct Args {
     pub n_top_genes: usize,
 
     /// Posterior below which, in every cell, a region is pruned
-    #[arg(long, default_value_t = CLASS_PRUNE_THRESHOLD)]
+    #[arg(long, default_value_t = CLASS_PRUNE_THRESHOLD, hide = true)]
     pub class_prune_threshold: f64,
 
     /// Absolute ELBO convergence tolerance
-    #[arg(long, default_value_t = ABSTOL)]
+    #[arg(long, default_value_t = ABSTOL, hide = true)]
     pub abstol: f64,
 
     /// Relative ELBO convergence tolerance
-    #[arg(long, default_value_t = RELTOL)]
+    #[arg(long, default_value_t = RELTOL, hide = true)]
     pub reltol: f64,
 
     /// Maximum number of iterations
-    #[arg(long, default_value_t = MAXITER)]
+    #[arg(long, default_value_t = MAXITER, hide = true)]
     pub max_iter: usize,
 }
 

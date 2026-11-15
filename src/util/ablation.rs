@@ -41,6 +41,9 @@ pub enum PermuteCoords {
     Block,
 }
 
+/// Tiles along a section's longer side for `--permute-coords block`.
+pub const PERMUTE_BLOCK: usize = 8;
+
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MaskMode {
     /// Build the graph with the masked cells, then cut their edges
@@ -88,7 +91,7 @@ impl AblationKind {
     }
 }
 
-#[derive(Args, Debug, Clone, Default)]
+#[derive(Args, Debug, Clone)]
 #[command(
     next_help_heading = "Ablation",
     group(clap::ArgGroup::new("ablation_kind").multiple(false))
@@ -113,7 +116,8 @@ pub struct AblationArgs {
 
     #[arg(
         long,
-        default_value_t = 8,
+        default_value_t = PERMUTE_BLOCK,
+        hide = true,
         help = "Tiles along a section's longer side for --permute-coords block"
     )]
     pub permute_block: usize,
@@ -151,6 +155,7 @@ pub struct AblationArgs {
         long,
         value_enum,
         default_value_t = MaskMode::CutEdges,
+        hide = true,
         help = "How --mask-cells takes cells out of the graph",
         long_help = "cut-edges builds the spatial graph with the masked cells and\n\
                      then removes them with their edges, so the cells around a\n\
@@ -195,12 +200,41 @@ pub struct Ablation {
     pub seed: Option<u64>,
 }
 
+/// No ablation: what a command without the flags runs.
+impl Default for AblationArgs {
+    fn default() -> Self {
+        AblationArgs {
+            permute_coords: None,
+            permute_block: PERMUTE_BLOCK,
+            drop_features: None,
+            mask_cells: None,
+            mask_mode: MaskMode::default(),
+            ablation_parent: None,
+            ablation_seed: None,
+        }
+    }
+}
+
 impl AblationArgs {
     /// What clap cannot say: the files named exist, and a polygon file has
     /// coordinates to place cells by. (One kind per run, a parent only with
     /// one, and --permute-coords only with --coord are clap rules.) Runs
     /// before any data is read.
     pub fn validate(&self, has_coords: bool) -> anyhow::Result<()> {
+        // A qualifier of an ablation that is not asked for would do nothing.
+        anyhow::ensure!(
+            self.permute_block == PERMUTE_BLOCK
+                || self.permute_coords == Some(PermuteCoords::Block),
+            "--permute-block sizes the tiles of --permute-coords block"
+        );
+        anyhow::ensure!(
+            self.ablation_seed.is_none() || self.permute_coords.is_some(),
+            "--ablation-seed seeds --permute-coords"
+        );
+        anyhow::ensure!(
+            self.mask_mode == MaskMode::CutEdges || self.mask_cells.is_some(),
+            "--mask-mode says how --mask-cells takes cells out"
+        );
         if self.permute_coords == Some(PermuteCoords::Block) {
             anyhow::ensure!(
                 self.permute_block >= 2,

@@ -22,6 +22,20 @@ pub enum EdgeClusterMethod {
     Leiden,
 }
 
+/// Neighbours per pair in the cosine kNN graph Leiden runs on.
+pub const LEIDEN_KNN: usize = 30;
+
+/// Leiden runs combined into one consensus partition. Leiden's partition
+/// moves with its seed: on one cage fit's pair latent, five seeds agreed
+/// only at ARI 0.58-0.79. So Leiden runs this many times (seeds derived from
+/// `--seed`), each kNN-graph edge is weighted by the share of runs that keep
+/// its two pairs together, and one final Leiden on that graph gives the
+/// partition; 10 runs agreed at ARI 0.80-0.91 across seeds.
+pub const LEIDEN_RUNS: usize = 10;
+
+/// Lloyd iterations for spherical kmeans.
+pub const KMEANS_MAX_ITER: usize = 100;
+
 /// The flags every pair-latent subcommand shares. Flatten this rather than
 /// re-declaring them, so the three commands cannot drift apart.
 #[derive(Args, Debug, Clone)]
@@ -31,8 +45,9 @@ pub struct EdgeClusterArgs {
         default_value_t = EdgeClusterMethod::Leiden,
         value_enum,
         help = "How to cut the pair latent into link communities",
-        long_help = "leiden is the default.\n\
-                     It builds a cosine kNN graph over the pair latent,\n\
+        long_help = "How the pair latent is cut into link communities.\n\
+                     \n\
+                     leiden (the default) builds a cosine kNN graph over the pair latent,\n\
                      and --leiden-resolution then decides how many communities exist.\n\
                      Under leiden, --n-edge-clusters is only a target:\n\
                      the resolution is steered toward it, not fixed at it.\n\
@@ -47,11 +62,8 @@ pub struct EdgeClusterArgs {
     )]
     pub edge_cluster_method: EdgeClusterMethod,
 
-    #[arg(
-        long,
-        default_value_t = 30,
-        help = "Neighbours per pair in the Leiden kNN graph over the pair latent"
-    )]
+    /// Neighbours per pair in the Leiden kNN graph: [`LEIDEN_KNN`].
+    #[arg(skip = LEIDEN_KNN)]
     pub leiden_knn: usize,
 
     #[arg(
@@ -61,21 +73,8 @@ pub struct EdgeClusterArgs {
     )]
     pub leiden_resolution: f64,
 
-    #[arg(
-        long,
-        default_value_t = 10,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
-        help = "Leiden runs combined into one consensus partition (1 = a single run)",
-        long_help = "Leiden's partition moves with its seed: on one cage fit's pair latent,\n\
-                     five seeds agreed only at ARI 0.58-0.79, with 12 to 14 communities.\n\
-                     So Leiden runs this many times (seeds derived from --seed), each\n\
-                     kNN-graph edge is weighted by the share of runs that keep its two\n\
-                     pairs together, and one final Leiden on that graph gives the\n\
-                     partition. On that latent, 10 runs agreed at ARI 0.80-0.91 across\n\
-                     seeds; 30 runs at 0.89-0.95, for more stability at three times the\n\
-                     work. The runs share the cores. 1 runs Leiden once, as before.\n\
-                     Ignored under kmeans."
-    )]
+    /// Leiden runs combined into one consensus partition: [`LEIDEN_RUNS`].
+    #[arg(skip = LEIDEN_RUNS)]
     pub leiden_runs: usize,
 
     #[arg(
@@ -93,12 +92,8 @@ pub struct EdgeClusterArgs {
     )]
     pub n_edge_clusters: Option<usize>,
 
-    #[arg(
-        long,
-        alias = "maxiter-clustering",
-        default_value_t = 100,
-        help = "Lloyd iterations for kmeans; ignored under leiden"
-    )]
+    /// Lloyd iterations for kmeans: [`KMEANS_MAX_ITER`].
+    #[arg(skip = KMEANS_MAX_ITER)]
     pub kmeans_max_iter: usize,
 }
 

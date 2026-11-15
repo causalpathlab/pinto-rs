@@ -36,16 +36,6 @@ pub struct SRTData {
 pub const COORD_COLUMN_NAMES: &str =
     "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid";
 
-/// Help for `--preload-data`, shared by every command that takes it.
-pub const PRELOAD_HELP: &str = "Preload sparse data even with LEGUME_AUTO_PRELOAD=off";
-pub const PRELOAD_LONG_HELP: &str = "Sparse column data is preloaded into memory by default\n\
-     whenever it fits in half the memory free at the first preload.\n\
-     That half is shared by every file the command preloads.\n\
-     Data over it, or files without a stored nonzero count, are read from disk.\n\
-     LEGUME_AUTO_PRELOAD=off reads from disk unless this flag is given.\n\
-     The flag also preloads files without a stored count.\n\
-     LEGUME_PRELOAD_BUDGET_BYTES sets the limit for each file instead.";
-
 /// Open `data_file`, its columns preloaded when asked or, by default,
 /// whenever data-beans' memory budget allows; the budget is shared by the
 /// whole process and given back when the data is dropped. data-beans checks

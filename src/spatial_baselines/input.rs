@@ -5,9 +5,7 @@
 
 use crate::util::ablation;
 use crate::util::common::Mat;
-use crate::util::input::{
-    read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
-};
+use crate::util::input::{read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES};
 use data_beans::aux::feature_names::FeatureNameKind;
 use nalgebra_sparse::CscMatrix;
 
@@ -44,7 +42,9 @@ pub struct SpatialInputArgs {
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
 
-    #[arg(long, default_value_t = false, help = PRELOAD_HELP)]
+    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
+    /// No flag sets it.
+    #[arg(skip)]
     pub preload_data: bool,
 
     /// Output prefix

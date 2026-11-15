@@ -1,6 +1,6 @@
 //! The command-line input arguments shared by the pinto commands.
 
-use super::{KnnExprScope, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP, PRELOAD_LONG_HELP};
+use super::{KnnExprScope, SRTReadArgs, COORD_COLUMN_NAMES};
 use clap::Parser;
 use data_beans::aux::feature_names::FeatureNameKind;
 
@@ -8,6 +8,13 @@ use data_beans::aux::feature_names::FeatureNameKind;
 ///
 /// Flatten this into each subcommand's args struct with `#[command(flatten)]`.
 #[derive(Parser, Debug, Clone)]
+// data-beans' QC tuning flags, hidden here until its next minor drops the
+// ones pinto never changes (--qc-min-cell-nnz, --qc-mad-on-*, --qc-histogram).
+#[command(
+    mut_arg("qc_mads", |a| a.hide(true)),
+    mut_arg("qc_min_cell_nnz", |a| a.hide(true)),
+    mut_arg("qc_report", |a| a.hide(true))
+)]
 pub struct SrtInputArgs {
     #[arg(
         required = true,
@@ -136,19 +143,14 @@ pub struct SrtInputArgs {
     )]
     pub out: Box<str>,
 
-    #[arg(
-        long,
-        help = "Cells per parallel block (omit for auto-scaling by feature count)",
-        hide = true
-    )]
+    /// Cells per parallel block: none, so it scales with the feature count
+    /// under `PINTO_MEMORY_BUDGET`. No flag sets it.
+    #[arg(skip)]
     pub block_size: Option<usize>,
 
-    #[arg(
-        long,
-        default_value_t = false,
-        help = PRELOAD_HELP,
-        long_help = PRELOAD_LONG_HELP
-    )]
+    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
+    /// No flag sets it.
+    #[arg(skip)]
     pub preload_data: bool,
 
     #[arg(long, default_value_t = 42, help = "Random seed for reproducibility")]
@@ -187,23 +189,15 @@ pub struct SrtInputArgs {
                      Cost is linear in this value:\n\
                      runtime, peak memory, and the size of the edge profile store.\n\
                      Raise it when domains look speckled or over-merged.\n\
-                     Lower it when a large dataset will not fit."
+                     Lower it when a large dataset will not fit.",
+        hide = true
     )]
     pub proj_dim: usize,
 
-    #[arg(
-        long = "batch-knn",
-        default_value_t = 10,
-        help = "KNN for cross-batch matching during batch correction",
-        long_help = "Neighbours per pb-sample for cross-batch matching.\n\
-                     Batch-effect estimation first coarsens cells into pb-samples.\n\
-                     Each pb-sample then finds K neighbours in other batches.\n\
-                     The search is HNSW over centroids.\n\
-                     Those matches give counterfactual expression estimates.\n\
-                     Batch-effect decomposition needs them.\n\
-                     This is used only when multiple batches are present.",
-        hide = true
-    )]
+    /// Neighbours per pseudobulk sample in other batches, for the
+    /// cross-batch matching batch-effect estimation needs: [`BATCH_KNN`].
+    /// No flag sets it.
+    #[arg(skip = BATCH_KNN)]
     pub batch_knn: usize,
 
     #[arg(
@@ -329,7 +323,8 @@ pub struct SrtInputArgs {
                      samples is not something the model should be shown at all.\n\
                      \n\
                      On a microarray the two differ sharply: searching globally,\n\
-                     nearly every neighbour found sits in a different core."
+                     nearly every neighbour found sits in a different core.",
+        hide = true
     )]
     pub knn_expr_scope: KnnExprScope,
 
@@ -351,6 +346,11 @@ pub struct SrtInputArgs {
     #[command(flatten)]
     pub qc: data_beans::qc_lib::QcArgs,
 }
+
+/// Neighbours per pseudobulk sample in other batches for cross-batch
+/// matching in batch-effect estimation (HNSW over centroids); the matches
+/// give the counterfactual expression the decomposition needs.
+pub const BATCH_KNN: usize = 10;
 
 /// Neighbours per cell when neither `-k` nor `--knn-expr` says otherwise.
 ///
@@ -455,7 +455,14 @@ impl SrtInputArgs {
     /// Split from the bounds check so a typo fails before the run reads a
     /// single file: these depend only on argv, while the `< n_cells` bounds
     /// cannot be judged until QC has settled the cell count.
-    pub fn validate_knn_flags(&self) -> anyhow::Result<()> {
+    pub fn validate_flags(&self) -> anyhow::Result<()> {
+        // data-beans applies a feature floor only for a consumer that reads
+        // its feature verdict, and pinto reads only the cell one.
+        anyhow::ensure!(
+            self.qc.qc_feature_min_cells == 0,
+            "--qc-feature-min-cells drops no feature in pinto, which reads only \
+             the cell QC; filter the features before the run."
+        );
         if !self.has_coordinates() {
             // The two flags name the same graph here, and the choice is not
             // cosmetic: component count is k-dependent, components become
@@ -492,7 +499,7 @@ impl SrtInputArgs {
     /// enough to hurt is accepted. It catches the transposed-argument class of
     /// mistake, where `k` exceeds the cell count outright.
     pub fn resolve_knn(&self, n_cells: usize) -> anyhow::Result<ResolvedKnn> {
-        self.validate_knn_flags()?;
+        self.validate_flags()?;
 
         let base = self.base_knn();
         anyhow::ensure!(
@@ -511,7 +518,7 @@ impl SrtInputArgs {
         // Last, because it is the least fatal: an unusable k makes the run
         // impossible, while a scope with nothing to scope only makes a flag
         // inert. Reporting the scope first would send the user round twice.
-        // Reachable only WITH coordinates — see `validate_knn_flags`.
+        // Reachable only WITH coordinates — see `validate_flags`.
         anyhow::ensure!(
             self.knn_expr_scope == KnnExprScope::Global || augment > 0,
             "--knn-expr-scope scopes the expression search, and --knn-expr is 0 \

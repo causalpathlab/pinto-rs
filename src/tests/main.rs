@@ -532,7 +532,7 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     };
     assert!(given(&[]).is_empty());
     assert_eq!(
-        given(&["-d", "3", "--n-hvg", "100", "--batch-knn", "4"]),
+        given(&["-d", "3", "--n-hvg", "100"]),
         ["--n-hvg", "--n-pseudobulk"]
     );
     // the batch-effect estimate reads these, so they are not no-ops
@@ -545,7 +545,7 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
 /// cage's `--feature-modules` help is pinto's own: cage draws its NCE
 /// negatives over pseudobulks, never within a module, and a run takes
 /// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
-/// is a tuning knob, hidden.
+/// is a tuning knob, hidden; cage-cell, which refuses modules, hides them.
 #[test]
 fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
     let mut cli = built_cli();
@@ -559,6 +559,11 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
         };
         assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
         assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
+        // cage-cell refuses modules, so its help leaves them out
+        if cmd == "cage-cell" {
+            assert!(arg("feature_modules").is_hide_set());
+            continue;
+        }
         let help = sub.render_long_help().to_string();
         // the flag's entry: from its line up to the next flag's
         let flag_line = |l: &str| {

@@ -258,16 +258,13 @@ enum Commands {
                       \x20   same feature-level count filter and NB weight so a feature is\n\
                       \x20   never split across the projection.\n\
                       \x20   Every profile dim is a full linear combination of ALL features\n\
-                      \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\
-                      \x20   Optionally zero basis rows for features below --min-feature-count.\n\n\
+                      \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\n\
                       \x20 Feature-network module-pair profile (--feature-network file.tsv):\n\
                       \x20   Feature-feature edges you supply (two-column TSV; pinto has\n\
                       \x20   no network of its own), optionally SNN-\n\
                       \x20   augmented, k-core-trimmed, Leiden-clustered into feature modules.\n\
                       \x20   Edge profile is SPARSE over module-pairs (a, b) with entries\n\
-                      \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\
-                      \x20   Controls: --snn-min-shared, --feature-trim-min-degree,\n\
-                      \x20   --feature-modules-resolution.\n\n\
+                      \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\n\
                       ALGORITHM:\n\n\
                       \x20 1. Build spatial KNN graph (or expression KNN if no coords)\n\
                       \x20 2. Batch effect estimation (multi-sample only;\n\
@@ -372,7 +369,6 @@ enum Commands {
                       Its pooled counts x_gu + x_gv enter through one statistic,\n\
                       and a small encoder trained on this run's pairs\n\
                       maps that statistic to the per-pair latent e_uv in one pass.\n\
-                      --pair-ridge sets the prior it is fitted under.\n\
                       A seeded sample of pairs is always re-solved exactly\n\
                       and the agreement is logged;\n\
                       the few placements the certificate puts far out\n\
@@ -426,7 +422,7 @@ enum Commands {
                       Batch effects (δ) are estimated and removed as in cage, and\n\
                       `pinto predict` corrects a query as it does for cage. The δ\n\
                       estimate pools cells internally, only to estimate δ (so\n\
-                      --num-levels, --batch-knn and --cnv-clones shape it); training\n\
+                      --num-levels and --cnv-clones shape it); training\n\
                       never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
                       does.\n\n\
                       --n-pseudobulk and the HVG flags do nothing here (a warning says\n\
@@ -434,7 +430,19 @@ enum Commands {
                       refused. --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
                       its manifest says `cell_level`.",
-        mut_arg("embedding_l2", |a| a.default_value("0"))
+        mut_arg("embedding_l2", |a| a.default_value("0")),
+        // What cage-cell refuses, or warns does nothing on cells, is off its
+        // help: pseudobulk sizing, the projection's HVG weighting, feature
+        // modules and a pretrained dictionary.
+        mut_arg("n_pseudobulk", |a| a.hide(true)),
+        mut_arg("n_hvg", |a| a.hide(true)),
+        mut_arg("feature_list_file", |a| a.hide(true)),
+        mut_arg("must_train_features", |a| a.hide(true)),
+        mut_arg("feature_modules", |a| a.hide(true)),
+        mut_arg("feature_embedding", |a| a.hide(true)),
+        mut_arg("feature_embedding_bias", |a| a.hide(true)),
+        mut_arg("feature_embedding_mode", |a| a.hide(true)),
+        mut_arg("feature_init_mode", |a| a.hide(true))
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
 
@@ -554,8 +562,8 @@ enum Commands {
                       \n\
                       The reference data defaults to the files recorded in\n\
                       {model}.pinto.json; --reference-data overrides.\n\
-                      Predict-stage flags (coordinates, -k, --pair-block,\n\
-                      eval flags) apply to cage models only.\n\
+                      Predict-stage flags (coordinates, -k, eval flags)\n\
+                      apply to cage models only.\n\
                       \n\
                       Writes {out}.imputed.parquet (N_query × n_ref_features)."
     )]

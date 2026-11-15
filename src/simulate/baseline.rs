@@ -426,16 +426,16 @@ pub struct BaselineArgs {
     pub k: Option<usize>,
 
     /// Principal components
-    #[arg(long, default_value_t = N_PCS)]
+    #[arg(long, default_value_t = N_PCS, hide = true)]
     pub n_pcs: usize,
 
     /// Highly variable genes
-    #[arg(long, default_value_t = N_HVG)]
+    #[arg(long, default_value_t = N_HVG, hide = true)]
     pub n_hvg: usize,
 
     /// Neighbours in the kNN graph, the spot itself included (scanpy's
     /// n_neighbors)
-    #[arg(long, default_value_t = KNN)]
+    #[arg(long, default_value_t = KNN, hide = true)]
     pub knn: usize,
 
     /// Leiden and Harmony seed

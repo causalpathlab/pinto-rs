@@ -235,7 +235,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // `--knn-expr-scope` without `--coord` needs no data to judge, and making
     // the user wait through a load, a possible zarr conversion and a full QC
     // pass to hear about it is time spent on an answer already known.
-    c.validate_knn_flags()?;
+    c.validate_flags()?;
     let no_ablation = AblationArgs::default();
     let ab = cfg.ablation.unwrap_or(&no_ablation);
     ab.validate(c.has_coordinates())?;

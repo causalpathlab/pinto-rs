@@ -45,7 +45,18 @@ use log::info;
 use retrieval::{retrieval_impute, RefDivide};
 use std::path::Path;
 
+/// EM iterations per cell of the lc / dsvd profile projection.
+pub const PROFILE_EM_ITERS: usize = 100;
+
 #[derive(Args, Debug, Clone)]
+// predict's held-out scoring flags, which impute refuses or never reads.
+#[command(
+    mut_arg("held_out", |a| a.hide(true)),
+    mut_arg("holdout_unit", |a| a.hide(true)),
+    mut_arg("ablate_features", |a| a.hide(true)),
+    mut_arg("eval_features", |a| a.hide(true)),
+    mut_arg("null_from", |a| a.hide(true))
+)]
 pub struct ImputeArgs {
     #[command(flatten)]
     pub predict: PredictArgs,
@@ -85,16 +96,14 @@ pub struct ImputeArgs {
     #[arg(
         long,
         default_value_t = 1.0,
-        help = "Softmax temperature on kNN distances (lower = sharper neighbour weights)"
+        help = "Softmax temperature on kNN distances (lower = sharper neighbour weights)",
+        hide = true
     )]
     pub impute_temperature: f32,
 
-    #[arg(
-        long,
-        default_value_t = 100,
-        help = "EM iterations per cell for the lc / dsvd profile projection",
-        hide = true
-    )]
+    /// EM iterations per cell of the lc / dsvd profile projection:
+    /// [`PROFILE_EM_ITERS`]. No flag sets it.
+    #[arg(skip = PROFILE_EM_ITERS)]
     pub profile_em_iters: usize,
 }
 

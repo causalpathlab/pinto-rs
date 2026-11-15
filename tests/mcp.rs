@@ -1009,7 +1009,7 @@ fn an_agent_fits_the_residual_of_a_simulation() {
             "coords": job["fit"]["coords"],
             "flags": small_fit(
                 &job["fit"]["flags"],
-                json!({"n-latent-topics": 5, "leiden-runs": 1, "leiden-knn": 10})
+                json!({"n-latent-topics": 5})
             ),
             "out": "fits/dsvd2",
             "background": false,

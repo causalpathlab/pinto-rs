@@ -600,7 +600,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     if skipped_steps > 0 {
         warn!(
             "{}/{} optimizer steps were SKIPPED for non-finite gradients — those \
-             steps moved no parameters. Lower --lr or --grad-clip if this is a \
+             steps moved no parameters. Lower --lr if this is a \
              large fraction.",
             skipped_steps, total_steps
         );

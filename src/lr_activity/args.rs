@@ -142,20 +142,14 @@ pub struct LraInputArgs {
     #[arg(long, default_value_t = DEFAULT_SEED, help = "Random seed for reproducibility")]
     pub seed: u64,
 
-    #[arg(
-        long,
-        help = "Cells per parallel block (omit for auto-scaling by feature count)",
-        hide = true
-    )]
+    /// Cells per parallel block: none, so it scales with the feature count
+    /// under `PINTO_MEMORY_BUDGET`. No flag sets it.
+    #[arg(skip)]
     pub block_size: Option<usize>,
 
-    #[arg(
-        long,
-        default_value_t = false,
-        hide = true,
-        help = crate::util::input::PRELOAD_HELP,
-        long_help = crate::util::input::PRELOAD_LONG_HELP
-    )]
+    /// Off: data is preloaded as `LEGUME_AUTO_PRELOAD` and its budget allow.
+    /// No flag sets it.
+    #[arg(skip)]
     pub preload_data: bool,
 }
 
@@ -301,7 +295,8 @@ pub struct SrtLrActivityArgs {
         long_help = "Westfall-Young FWER cutoff for the JSON sidecar (coexpression-test).\n\
                      A row enters the sidecar when its FWER is below this AND its\n\
                      restandardized z is positive. The parquet always carries the\n\
-                     full table."
+                     full table.",
+        hide = true
     )]
     pub json_fwer_threshold: f32,
 

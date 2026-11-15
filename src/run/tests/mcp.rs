@@ -418,26 +418,12 @@ const MIRRORS: &[Mirror] = &[
         &["json_fwer_threshold"],
     ),
     ("run_lra_simulate", "lra-simulate", &[("run", "from")], &[]),
-    ("run_residual", "residual", &[], &["em_iters", "block_size"]),
+    ("run_residual", "residual", &[], &[]),
     ("run_compare", "compare", &[], &[]),
     ("run_simulate", "srt-simulate", &[], &[]),
     ("run_sim_score", "srt-sim-score", &[], &["out"]),
     ("run_sim_pairs", "srt-sim-pairs", &[], &["out"]),
-    (
-        "run_sim_baseline",
-        "srt-sim-baseline",
-        &[],
-        &[
-            "n_pcs",
-            "n_hvg",
-            "knn",
-            "theta",
-            "sigma",
-            "lambda",
-            "harmony_k",
-            "max_rounds",
-        ],
-    ),
+    ("run_sim_baseline", "srt-sim-baseline", &[], &[]),
 ];
 
 /// MCP mirrors the command line: a tool passing a command's flags has a

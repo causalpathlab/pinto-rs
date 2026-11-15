@@ -76,14 +76,20 @@ pub struct PredictArgs {
     #[arg(long, default_value_t = ComputeDevice::Cpu, value_enum, help = "Compute device")]
     pub device: ComputeDevice,
 
-    #[arg(long, default_value_t = 0, help = "Device index (for cuda)")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Device index (for cuda)",
+        hide = true
+    )]
     pub device_no: usize,
 
     #[arg(
         long,
         default_value_t = FeatureNameMode::Auto,
         value_enum,
-        help = "Feature-name canonicalization for matching the model's features to the new sample"
+        help = "Feature-name canonicalization for matching the model's features to the new sample",
+        hide = true
     )]
     #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
@@ -100,7 +106,8 @@ pub struct PredictArgs {
                      so a whole-transcriptome query is not penalized\n\
                      for carrying features the model never had.\n\
                      \n\
-                     Zero mapped features is always refused — that is a naming failure."
+                     Zero mapped features is always refused — that is a naming failure.",
+        hide = true
     )]
     pub min_feature_overlap: f32,
 
@@ -113,41 +120,29 @@ pub struct PredictArgs {
                      matched features by count profile over pseudobulks of this sample, row =\n\
                      membership times the module dictionary, with their own counts on the\n\
                      partition axis and provenance in {out}.feature_embedding_init.parquet.\n\
-                     This flag restores the historical drop: no row, not on the axis."
+                     This flag restores the historical drop: no row, not on the axis.",
+        hide = true
     )]
     pub no_init_features: bool,
 
-    #[arg(
-        long,
-        default_value_t = graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS,
-        value_name = "K",
-        help = "membership init: matched features whose memberships are averaged"
-    )]
-    #[arg(alias = "gene-init-neighbours")]
+    /// Dictionary neighbours a feature the model never saw is initialised
+    /// from. No flag sets it.
+    #[arg(skip = graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS)]
     pub feature_init_neighbours: usize,
 
-    #[arg(
-        long,
-        default_value_t = graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR,
-        value_name = "S",
-        help = "membership init: below this best profile similarity a feature takes the diffuse prior"
-    )]
-    #[arg(alias = "gene-init-similarity-floor")]
+    /// Profile similarity below which such a feature takes the diffuse
+    /// prior. No flag sets it.
+    #[arg(skip = graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR)]
     pub feature_init_similarity_floor: f32,
 
-    #[arg(
-        long,
-        default_value_t = 8192,
-        help = "Cells per read block and cell pairs per placement pass (memory only)",
-        hide = true
-    )]
+    /// Cells per read block and cell pairs per placement pass (memory
+    /// only). No flag sets it.
+    #[arg(skip = crate::cell_activity_graph_embedding::args::PAIR_BLOCK)]
     pub pair_block: usize,
 
-    #[arg(
-        long,
-        help = "Skip NB Fisher-info weighting of the feature_community table",
-        hide = true
-    )]
+    /// Off: the feature_community table is NB Fisher-info weighted. No
+    /// flag sets it.
+    #[arg(skip)]
     pub no_fisher_weights: bool,
 
     /// Restrict the agreement correlations to these features (one name per line).
@@ -391,19 +386,6 @@ pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'stat
         (
             "--no-init-features",
             args.no_init_features != d.no_init_features,
-        ),
-        (
-            "--feature-init-neighbours",
-            args.feature_init_neighbours != d.feature_init_neighbours,
-        ),
-        (
-            "--feature-init-similarity-floor",
-            args.feature_init_similarity_floor != d.feature_init_similarity_floor,
-        ),
-        ("--pair-block", args.pair_block != d.pair_block),
-        (
-            "--no-fisher-weights",
-            args.no_fisher_weights != d.no_fisher_weights,
         ),
     ]
     .into_iter()

@@ -42,7 +42,7 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -288,8 +288,8 @@ pub fn fit_cell_activity_graph_embedding(
     // batch effects and QC are both already applied — so a second pass would
     // re-read every column of the zarr to rebuild the same vector.
     // Off the streaming pass when it ran; `sum()` IS the per-row total. Only
-    // `--no-fisher-weights` leaves it absent, and that is the one case worth a
-    // second read.
+    // a run without Fisher weights leaves it absent, and that is the one case
+    // worth a second read.
     let row_totals: Vec<f64> = match row_stats {
         Some(st) => st.sum().iter().map(|&x| f64::from(x)).collect(),
         None => crate::link_community::profiles::compute_row_totals(&data_vec, c.block_size)?,
@@ -530,7 +530,7 @@ pub fn fit_cell_activity_graph_embedding(
     //     super-cell at EVERY `--chain-levels` entry (the coarser-level
     //     analog of the old within-super-cell positives);
     //   - per-PB degree over the retained super edges becomes the
-    //     `--alpha-neg` negative weight, and per-level sibling pools are
+    //     `ALPHA_NEG` negative weight, and per-level sibling pools are
     //     precomputed for the hard-negative draw.
     //
     // All of it is a deterministic function of the coarsening labels and
@@ -631,30 +631,21 @@ pub fn fit_cell_activity_graph_embedding(
         trainable_features.len()
     );
 
-    // Positives drawn per (feature, batch), one scalar for every feature.
-    // `--positives-per-epoch` overrides `--per-feature-batch` with an absolute
-    // total. See `FeatureGatedChainSampler::batch_size` for why the budget is not
-    // split per-feature.
+    // Positives drawn per (feature, batch), one scalar for every feature. See
+    // `FeatureGatedChainSampler::batch_size` for why the budget is not split
+    // per-feature.
     // Features an epoch visits: all of them, or Σπ under inclusion.
     let expected_visits = crate::cell_activity_graph_embedding::feature_inclusion::expected_visits(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
-    let positives_per_feature_exp_batch = match args.positives_per_epoch {
-        Some(total) => (total / (expected_visits * n_exp_batches).max(1)).max(1),
-        None => args.per_feature_batch,
-    };
+    let positives_per_feature_exp_batch = PER_FEATURE_BATCH;
     info!(
-        "Positive budget: {} super-edge draws per (feature, batch), {} features x {} batch(es) = {} per epoch{}",
+        "Positive budget: {} super-edge draws per (feature, batch), {} features x {} batch(es) = {} per epoch",
         positives_per_feature_exp_batch,
         expected_visits,
         n_exp_batches,
         positives_per_feature_exp_batch * expected_visits * n_exp_batches,
-        if args.positives_per_epoch.is_some() {
-            " (--positives-per-epoch)"
-        } else {
-            " (--per-feature-batch)"
-        }
     );
 
     // Activities can be dropped now — the cache owns everything the
@@ -981,7 +972,7 @@ fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> any
 /// The flags `cage-cell` was given on its command line (`m`, its
 /// subcommand's matches) that shape only what it skips: the HVG weighting
 /// of the projection that builds pseudobulks, and the pseudobulks
-/// themselves. (`--num-levels` and `--batch-knn` shape the batch-effect
+/// themselves. (`--num-levels` and the batch matching shape the batch-effect
 /// estimate, which cage-cell makes.) Their defaults are not reported.
 pub(crate) fn cell_level_no_ops_given(m: &clap::ArgMatches) -> Vec<&'static str> {
     const NO_OPS: [(&str, &str); 4] = [

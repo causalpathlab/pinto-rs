@@ -5,10 +5,7 @@ use legume_numeric::matrix::knn_graph::symmetric_adjacency;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 
 fn args() -> AblationArgs {
-    AblationArgs {
-        permute_block: 8,
-        ..Default::default()
-    }
+    AblationArgs::default()
 }
 
 /// The flags as a fit command parses them: its input args and its ablation.
@@ -33,6 +30,34 @@ fn one_ablation_per_run_and_a_parent_only_with_one() {
     let a = parse(&["--drop-features", "^MT-", "--ablation-parent", "base"]).unwrap();
     assert_eq!(a.kind(), Some(AblationKind::FeatureDrop));
     assert_eq!(parse(&[]).unwrap().kind(), None);
+}
+
+/// A qualifier of one ablation is refused without it, rather than
+/// accepted and ignored.
+#[test]
+fn an_ablation_qualifier_needs_its_ablation() {
+    let coords = ["-c", "c.csv"];
+    for extra in [
+        &["--mask-mode", "drop"][..],
+        &["--permute-block", "4"],
+        &["--ablation-seed", "3"],
+        &["--permute-block", "4", "--drop-features", "^MT-"],
+        &["--permute-block", "4", "--permute-coords", "within-batch"],
+        &["--mask-mode", "drop", "--drop-features", "^MT-"],
+    ] {
+        let argv = [&coords[..], extra].concat();
+        let refused = parse(&argv).map_or(true, |a| a.validate(true).is_err());
+        assert!(refused, "{extra:?}");
+    }
+    let given = |extra: &[&str]| parse(&[&coords[..], extra].concat()).unwrap();
+    assert_eq!(
+        given(&["--mask-cells", "m.txt", "--mask-mode", "drop"]).mask_mode,
+        MaskMode::Drop
+    );
+    let a = given(&["--permute-coords", "block", "--permute-block", "4"]);
+    assert_eq!(a.permute_block, 4);
+    let a = given(&["--permute-coords", "within-batch", "--ablation-seed", "3"]);
+    assert_eq!(a.ablation_seed, Some(3));
 }
 
 #[test]

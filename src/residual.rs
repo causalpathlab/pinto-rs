@@ -69,6 +69,7 @@ use std::path::Path;
 pub struct ResidualArgs {
     #[arg(
         long = "from",
+        short = 'f',
         visible_alias = "run",
         value_hint = clap::ValueHint::FilePath,
         help = "Stage-1 run prefix (or its .pinto.json)"
@@ -98,10 +99,15 @@ pub struct ResidualArgs {
     )]
     pub excess: Excess,
 
-    #[arg(long, default_value_t = 100, help = "EM iterations per cell for θ")]
+    #[arg(
+        long,
+        default_value_t = 100,
+        help = "EM iterations per cell for θ",
+        hide = true
+    )]
     pub em_iters: usize,
 
-    #[arg(long, help = "Columns read per block")]
+    #[arg(long, help = "Columns read per block", hide = true)]
     pub block_size: Option<usize>,
 
     #[arg(
