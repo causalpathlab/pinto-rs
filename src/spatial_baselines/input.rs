@@ -3,11 +3,16 @@
 //! named, ordered and split into sections exactly as `lc`, `dsvd` and `cage`
 //! name, order and split them.
 
-use super::memory::{delta_estimate_bytes, DELTA_SAMPLES_PER_BATCH};
+use crate::link_community::profiles::read_columns_divided;
 use crate::util::ablation;
+use crate::util::batch_effects::{
+    delta_estimate_bytes, estimate_and_write_batch_effects, sorted_batch_labels, BatchEffects,
+    EstimateBatchArgs, DELTA_SAMPLES_PER_BATCH,
+};
 use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
-    read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
+    read_batch_file, read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES,
+    DEFAULT_BATCH_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM, PRELOAD_HELP,
 };
 use anyhow::Context;
 use data_beans::alg::random_projection::RandProjOps;
@@ -59,20 +64,6 @@ pub struct SpatialInputArgs {
     #[arg(long, default_value_t = false)]
     pub ignore_batch: bool,
 
-    /// Run the original method's own formulation instead of pinto's sparse
-    /// one (the default; see --help)
-    #[arg(long, default_value_t = false)]
-    pub reference: bool,
-
-    /// Target number of super-cells the -pb commands fit on (as cage's -d:
-    /// the cells are coarsened until about this many remain)
-    #[arg(long, short = 'd', default_value_t = 1024, hide = true)]
-    pub n_pseudobulk: usize,
-
-    /// Set by the `-pb` commands: fit on super-cells, then unravel to cells.
-    #[arg(skip)]
-    pub pseudobulk: bool,
-
     /// Output prefix
     #[arg(long, short, required = true)]
     pub out: Box<str>,
@@ -100,8 +91,8 @@ pub struct SpatialData {
     /// The batch effects the counts were divided by, when they were.
     pub delta: Option<AppliedDelta>,
     /// The cells' random projection (`proj_dim × cells`, batch-corrected
-    /// with δ when there is one), as cage coarsens on it; read for the
-    /// `-pb` commands only.
+    /// with δ when there is one), as cage coarsens on it; read for
+    /// `spatialde2-pb` only ([`SpatialInputArgs::read`]).
     pub projection: Option<Mat>,
 }
 
@@ -115,6 +106,11 @@ pub struct AppliedDelta {
 }
 
 impl SpatialData {
+    /// Distinct batch labels.
+    pub fn n_batches(&self) -> usize {
+        sorted_batch_labels(&self.batches).len()
+    }
+
     /// The cells of each section, in data order.
     pub fn section_cells(&self) -> Vec<Vec<usize>> {
         let mut out = vec![Vec::new(); self.n_sections];
@@ -126,7 +122,7 @@ impl SpatialData {
 }
 
 /// An input's size, what its peak memory is estimated from: from its files'
-/// metadata ([`SpatialInputArgs::stored_shape`]), before its counts are
+/// metadata ([`SpatialInputArgs::stored`]), before its counts are
 /// read, at least what the read gives on every field, so an estimate from
 /// it bounds the estimates after the read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,29 +133,40 @@ pub struct InputShape {
     /// Nonzeros of the counts: from the metadata, those the files store
     /// over all their rows.
     pub nonzeros: usize,
-    /// Cells in each section: from the metadata, each file taken as a
-    /// section, which bounds the smaller sections a batch file splits it
-    /// into.
+    /// Cells in each section, in the read's order: from the metadata, each
+    /// file, split by its batch file's labels when there are batch files.
     pub section_sizes: Vec<usize>,
+    /// Distinct batch labels (a δ estimate is made with two or more): the
+    /// batch files' labels over all files, or one a file without them.
+    pub batches: usize,
 }
 
 /// A data file opened ([`try_open_or_convert`]).
 pub(crate) type StoredFile = Box<dyn SparseIo<IndexIter = Vec<usize>>>;
 
 impl SpatialInputArgs {
-    /// The input's size from its files' stored shape, or `None` when there
-    /// are no files or a file does not store its column or nonzero count.
-    /// Each file is opened for its metadata alone ([`Self::metadata`]), no
-    /// counts read or preloaded, and opened again by [`Self::read`]: a
-    /// check on this shape runs before any count is in memory.
-    pub fn stored_shape(&self) -> anyhow::Result<Option<InputShape>> {
+    /// The input's size from its files' stored shape, or no shape when
+    /// there are no files or a file does not store its column or nonzero
+    /// count. Each file is opened for its metadata alone
+    /// ([`Self::metadata`]), no counts read or preloaded, and opened again
+    /// by the read: a check on this shape runs before any count is in
+    /// memory. Batch files, a label per cell, are read for the sections
+    /// they split files into.
+    pub fn stored(&self) -> anyhow::Result<Option<InputShape>> {
         if self.data_files.is_empty() {
             return Ok(None);
+        }
+        if let Some(b) = &self.batch_files {
+            anyhow::ensure!(
+                b.len() == self.data_files.len(),
+                "# batch files != # of data files"
+            );
         }
         let mut shared: Option<HashSet<Box<str>>> = None;
         let mut nonzeros = 0;
         let mut section_sizes = Vec::with_capacity(self.data_files.len());
-        for (file, data) in self.data_files.iter().zip(self.metadata()) {
+        let mut labels: Vec<Box<str>> = Vec::new();
+        for (f, (file, data)) in self.data_files.iter().zip(self.metadata()).enumerate() {
             let data = data?;
             let (Some(cells), Some(stored)) = (data.num_columns(), data.num_non_zeros()) else {
                 return Ok(None);
@@ -176,36 +183,52 @@ impl SpatialInputArgs {
                 }
                 None => rows,
             });
-            section_sizes.push(cells);
+            match &self.batch_files {
+                Some(b) => {
+                    let file_labels = read_batch_file(&b[f], cells)?;
+                    let sections = ablation::sections(&[cells], &file_labels);
+                    section_sizes.extend(ablation::section_sizes(&sections));
+                    labels.extend(file_labels);
+                }
+                None => section_sizes.push(cells),
+            }
             nonzeros += stored;
         }
         Ok(Some(InputShape {
             genes: shared.map_or(0, |s| s.len()),
             nonzeros,
             section_sizes,
+            batches: match &self.batch_files {
+                Some(_) => sorted_batch_labels(&labels).len(),
+                None => self.data_files.len(),
+            },
         }))
     }
 
     /// What the δ estimate holds above the process's own on an input of
     /// stored shape `s` ([`delta_estimate_bytes`]); 0 when none is made
-    /// (`--ignore-batch`, or one data file and no batch files). With batch
-    /// files the batches are not known before the read: every cell may be
-    /// a sample.
+    /// (`--ignore-batch`, or fewer than two batch labels). A pseudobulk
+    /// sample is a (group, batch) pair of the finest level, at most
+    /// [`DELTA_SAMPLES_PER_BATCH`] groups and no more than the batch's
+    /// cells: summed over the sections, which split each batch (a label
+    /// shared by files is a section in each), it bounds the samples.
     pub fn delta_bytes(&self, s: &InputShape) -> usize {
-        let files = s.section_sizes.len();
-        if self.ignore_batch || (files < 2 && self.batch_files.is_none()) {
+        if self.ignore_batch || s.batches < 2 {
             return 0;
         }
-        let cells: usize = s.section_sizes.iter().sum();
-        let samples = match self.batch_files {
-            Some(_) => cells,
-            None => s
-                .section_sizes
-                .iter()
-                .map(|&n| n.min(DELTA_SAMPLES_PER_BATCH))
-                .sum(),
-        };
+        let samples = s
+            .section_sizes
+            .iter()
+            .map(|&n| n.min(DELTA_SAMPLES_PER_BATCH))
+            .sum();
         delta_estimate_bytes(s.genes, s.nonzeros, samples)
+    }
+
+    /// A run's `peak` on an input of stored shape `s`, or the δ estimate's
+    /// during the read ([`Self::delta_bytes`] above the `process`'s own
+    /// bytes) when that is larger.
+    pub fn peak_with_delta(&self, peak: usize, process: usize, s: &InputShape) -> usize {
+        peak.max(process + self.delta_bytes(s))
     }
 
     /// Each data file opened for its metadata, its counts not read or
@@ -214,11 +237,13 @@ impl SpatialInputArgs {
         self.data_files.iter().map(|file| try_open_or_convert(file))
     }
 
-    /// Read the counts and coordinates, the files opened as the other
+    /// Read the counts and coordinates, with the cells' projection the
+    /// super-cells are coarsened on when `with_projection`
+    /// ([`SpatialData::projection`]). The files are opened as the other
     /// commands open them (preloaded by default, as data-beans' budget
     /// allows): a preloaded read leaves less memory resident than a
     /// streamed one.
-    pub fn read(&self) -> anyhow::Result<SpatialData> {
+    pub fn read(&self, with_projection: bool) -> anyhow::Result<SpatialData> {
         let mut srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
@@ -238,30 +263,39 @@ impl SpatialInputArgs {
                 .collect();
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
-        let delta = if self.ignore_batch {
-            None
-        } else {
-            estimate_delta(&mut srt.data, &srt.batches, &self.out)?
-        };
-        // the projection cage coarsens on, taken as cage takes it
-        let projection = match self.pseudobulk {
-            true => Some(
+        let mut estimate = (!self.ignore_batch)
+            .then(|| estimate_delta(&mut srt.data, &srt.batches, &self.out, with_projection))
+            .transpose()?
+            .flatten();
+        // the projection cage coarsens on, taken as cage takes it: with a
+        // δ, the batch-corrected one its estimate collapsed on
+        let projection = match estimate.as_mut().and_then(|e| e.projection.take()) {
+            Some(proj) => Some(proj.proj),
+            None if with_projection => Some(
                 srt.data
-                    .project_columns_with_batch_correction(
-                        DELTA_PROJ_DIM,
+                    .project_columns_with_batch_correction::<Box<str>>(
+                        DEFAULT_PROJ_DIM,
                         None,
-                        delta.as_ref().map(|_| srt.batches.as_slice()),
+                        None,
                     )?
                     .proj,
             ),
-            false => None,
+            None => None,
         };
-        let mut counts = srt.data.read_columns_csc(0..cells.len())?;
+        let (mean, applied) = match estimate {
+            Some(e) => {
+                let batches = e.posterior.batches.clone();
+                (
+                    Some(e.posterior.into_mean()?),
+                    Some(AppliedDelta { batches }),
+                )
+            }
+            None => (None, None),
+        };
+        // each count divided by its gene's δ in its cell's batch, as lc
+        // divides
+        let counts = read_columns_divided(&srt.data, 0..cells.len(), mean.as_ref())?;
         drop(srt.data);
-        let applied = delta.map(|(mean, batches)| {
-            divide_by_delta(&mut counts, &mean, &batches, &srt.batches);
-            AppliedDelta { batches }
-        });
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();
         anyhow::ensure!(d >= 1, "no spatial coordinate columns");
@@ -293,73 +327,32 @@ impl SpatialInputArgs {
 }
 
 /// δ estimated on the input itself, by cage's estimator at cage's default
-/// settings (`-p 200`, `--batch-knn 10`, `--num-levels 5`), and written
-/// under `out` as cage writes it: its mean, `[genes × batches]`, and its
-/// batch labels. `None` with fewer than two batches.
+/// settings (`-p`, `--batch-knn`, `--num-levels`), and written under `out`
+/// as cage writes it, with the projection it collapsed on when
+/// `keep_projection`. `None` with fewer than two batches.
 fn estimate_delta(
     data: &mut data_beans::sparse_io_vector::SparseIoVec,
     batches: &[Box<str>],
     out: &str,
-) -> anyhow::Result<Option<(crate::util::common::Mat, Vec<Box<str>>)>> {
-    use crate::util::batch_effects::{estimate_and_write_batch_effects, EstimateBatchArgs};
-    let labels = sorted_labels(batches);
+    keep_projection: bool,
+) -> anyhow::Result<Option<BatchEffects>> {
+    let labels = sorted_batch_labels(batches);
     if labels.len() < 2 {
         return Ok(None);
     }
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
-    let Some(posterior) = estimate_and_write_batch_effects(
+    estimate_and_write_batch_effects(
         data,
         batches,
         &labels,
-        EstimateBatchArgs {
-            proj_dim: DELTA_PROJ_DIM,
-            sort_dim: DELTA_PROJ_DIM.min(10),
-            block_size: None,
-            batch_knn: DELTA_BATCH_KNN,
-            num_levels: DELTA_NUM_LEVELS,
-            strata: None,
-        },
+        EstimateBatchArgs::at(
+            DEFAULT_PROJ_DIM,
+            None,
+            DEFAULT_BATCH_KNN,
+            DEFAULT_NUM_LEVELS,
+            None,
+        ),
         Some(out),
-    )?
-    else {
-        return Ok(None);
-    };
-    let names = posterior.batches.clone();
-    Ok(Some((posterior.into_mean()?, names)))
-}
-
-/// cage's defaults for the δ estimate (`-p`, `--batch-knn`, `--num-levels`);
-/// `-p` is also the projection the `-pb` commands coarsen on.
-pub const DELTA_PROJ_DIM: usize = 200;
-const DELTA_BATCH_KNN: usize = 10;
-const DELTA_NUM_LEVELS: usize = 5;
-
-/// The distinct labels of `batches`, sorted: δ's columns.
-fn sorted_labels(batches: &[Box<str>]) -> Vec<Box<str>> {
-    batches
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<std::collections::BTreeSet<&str>>()
-        .into_iter()
-        .map(Box::from)
-        .collect()
-}
-
-/// Each count divided by its gene's δ in its cell's batch (`x / δ`, as lc
-/// divides): `mean` is `[genes × columns]`, its columns named `columns`,
-/// and `batch_of_cell` each cell's label.
-pub fn divide_by_delta(
-    counts: &mut CscMatrix<f32>,
-    mean: &crate::util::common::Mat,
-    columns: &[Box<str>],
-    batch_of_cell: &[Box<str>],
-) {
-    let col: std::collections::HashMap<&str, usize> = columns
-        .iter()
-        .enumerate()
-        .map(|(j, b)| (b.as_ref(), j))
-        .collect();
-    crate::util::batch_effects::divide_columns(counts, mean, |j| {
-        col.get(batch_of_cell[j].as_ref()).copied()
-    });
+        keep_projection,
+    )
 }

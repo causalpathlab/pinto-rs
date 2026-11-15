@@ -107,11 +107,15 @@
 //! loss is summed over blocks of cells, each block's residual dense only
 //! while it is summed ([`Stagate::step`]). Both are exact: the loss and
 //! every gradient are the reference's, to float rounding (a test trains
-//! both and a torch replica). `--reference` holds the dense cells ×
-//! variable genes input, as the reference does. Either way the graph,
-//! attention and messages live on the edge list (cells × (k + 1) entries),
-//! so memory is linear in the cells; the messages, `edges × width`, are
-//! the larger part of it.
+//! both and a torch replica). The dense one holds the cells × variable
+//! genes input, as the reference does: with `--reference`, the run's mode
+//! then `reference`, and on a GPU, where the sparse products would cross
+//! to the host each step, the mode staying `sparse` (the flag's). The
+//! layout held is recorded apart from the mode, as `input_layout` in the
+//! manifest's `baseline` and `baseline.json`'s `run`. Either way the
+//! graph, attention and messages live on the edge list (cells × (k + 1)
+//! entries), so memory is linear in the cells; the messages, `edges ×
+//! width`, are the larger part of it.
 //!
 //! Deliberate deviations:
 //!
@@ -166,6 +170,7 @@ use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
+use crate::util::metadata::InputLayout;
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
@@ -200,6 +205,12 @@ const KMEANS_MAX_ITER: usize = 300;
 pub struct Args {
     #[command(flatten)]
     pub input: SpatialInputArgs,
+
+    /// Run the original method's own formulation instead of pinto's sparse
+    /// one (see --help). The default holds the input sparse on the CPU and
+    /// dense on GPU devices
+    #[arg(long, default_value_t = false)]
+    pub reference: bool,
 
     /// Number of domains. Given, the embedding is clustered by pinto's
     /// seeded k-means (k-means++ from --seed, then Lloyd) into exactly this
@@ -406,54 +417,43 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 }
 
 /// `sc.pp.filter_genes(min_cells)`: the rows (genes) of `counts` nonzero in
-/// at least `min_cells` columns (cells), in order ([`genes_in`],
-/// [`select_rows`]).
-pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
-    let kept = genes_in(&counts, min_cells);
-    select_rows(counts, &kept)
-}
-
-/// The rows (genes) of `counts` nonzero in at least `min_cells` columns.
-pub fn genes_in(counts: &CscMatrix<f32>, min_cells: usize) -> Vec<usize> {
+/// at least `min_cells` columns (cells), in order. The kept entries are
+/// copied column by column into arrays of their exact size, so the counts
+/// and their copy are all it holds (24 bytes a nonzero).
+pub(crate) fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
+    // per gene, its nonzero cells and its stored entries
     let mut nnz = vec![0usize; counts.nrows()];
+    let mut stored = vec![0usize; counts.nrows()];
     for (g, _, &v) in counts.triplet_iter() {
         nnz[g] += usize::from(v != 0.0);
-    }
-    (0..counts.nrows())
-        .filter(|&g| nnz[g] >= min_cells)
-        .collect()
-}
-
-/// Rows `rows` (sorted) of `counts`, renumbered in order. The kept entries
-/// are copied column by column into arrays of their exact size, so the
-/// counts and their copy are all it holds (24 bytes a nonzero).
-pub fn select_rows(counts: CscMatrix<f32>, rows: &[usize]) -> CscMatrix<f32> {
-    if rows.len() == counts.nrows() {
-        return counts;
+        stored[g] += 1;
     }
     let mut at = vec![None; counts.nrows()];
-    for (new, &g) in rows.iter().enumerate() {
-        at[g] = Some(new);
+    let (mut kept, mut total) = (0, 0);
+    for (g, &c) in nnz.iter().enumerate() {
+        if c >= min_cells {
+            at[g] = Some(kept);
+            kept += 1;
+            total += stored[g];
+        }
     }
-    let total = counts
-        .row_indices()
-        .iter()
-        .filter(|&&g| at[g].is_some())
-        .count();
+    if kept == counts.nrows() {
+        return counts;
+    }
     let mut offsets = Vec::with_capacity(counts.ncols() + 1);
-    let mut kept = Vec::with_capacity(total);
+    let mut rows = Vec::with_capacity(total);
     let mut values = Vec::with_capacity(total);
     offsets.push(0);
     for col in counts.col_iter() {
         for (&g, &v) in col.row_indices().iter().zip(col.values()) {
             if let Some(r) = at[g] {
-                kept.push(r);
+                rows.push(r);
                 values.push(v);
             }
         }
-        offsets.push(kept.len());
+        offsets.push(rows.len());
     }
-    CscMatrix::try_from_csc_data(rows.len(), counts.ncols(), offsets, kept, values)
+    CscMatrix::try_from_csc_data(kept, counts.ncols(), offsets, rows, values)
         .expect("kept rows stay sorted within each column")
 }
 
@@ -580,9 +580,9 @@ impl SparseInput {
     }
 }
 
-/// STAGATE's input: dense, as the reference holds it (`--reference`), or
-/// sparse (the default), whose first layer is a sparse × dense product
-/// and whose loss is summed over blocks of cells.
+/// STAGATE's input: dense, as the reference holds it (with `--reference`,
+/// or on a GPU), or sparse (the CPU default), whose first layer is a
+/// sparse × dense product and whose loss is summed over blocks of cells.
 pub enum Input {
     Dense(Tensor),
     Sparse(SparseInput),
@@ -1058,14 +1058,13 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
     let budget = Budget::now()?;
-    let stored = args.input.stored_shape()?;
     check_stored_shape(
         "stagate",
-        stored.map(|s| input_peak_bytes(args, &s)),
+        args.input.stored()?.map(|s| input_peak_bytes(args, &s)),
         &budget,
         lower_memory(&args.device),
     )?;
-    run_on(args, args.input.read()?, &budget)
+    run_on(args, args.input.read(false)?, &budget)
 }
 
 /// The peak of a run on an input of stored shape `s`, checked before its
@@ -1077,31 +1076,45 @@ pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
         genes: s.genes.min(args.n_top_genes),
         ..s.clone()
     });
-    stagate_peak_bytes(&shape).max(STAGATE_PROCESS_BYTES + args.input.delta_bytes(s))
+    args.input
+        .peak_with_delta(stagate_peak_bytes(&shape), STAGATE_PROCESS_BYTES, s)
 }
 
 impl Args {
     /// The arguments a run's peak memory depends on.
-    fn sizes(&self) -> StagateSizes {
+    pub(crate) fn sizes(&self) -> StagateSizes {
         StagateSizes {
             k_cutoff: self.k_cutoff,
             rad_cutoff: self.rad_cutoff,
             hidden: self.hidden_dims[0],
             train_on_host: self.device != ComputeDevice::Cuda,
-            sparse: !self.input.reference,
+            layout: self.input_layout(),
+        }
+    }
+
+    /// The layout the input is held in, recorded apart from the mode (the
+    /// `--reference` flag's): dense with `--reference`, and on any device
+    /// but the CPU. The sparse formulation is the CPU path: its sparse
+    /// products run on the host, so on a GPU each step would copy the
+    /// weights and products across.
+    pub(crate) fn input_layout(&self) -> InputLayout {
+        match self.reference || self.device != ComputeDevice::Cpu {
+            true => InputLayout::Dense,
+            false => InputLayout::Sparse,
         }
     }
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
 /// cell's `k_cutoff` nearest or, with `rad_cutoff`, those within it, the
-/// model `hidden` wide, training on the host or not (`train_on_host`).
+/// model `hidden` wide, training on the host or not (`train_on_host`),
+/// its input held as `layout`.
 pub(crate) struct StagateSizes {
     pub k_cutoff: usize,
     pub rad_cutoff: Option<f32>,
     pub hidden: usize,
     pub train_on_host: bool,
-    pub sparse: bool,
+    pub layout: InputLayout,
 }
 
 impl StagateSizes {
@@ -1127,7 +1140,7 @@ impl StagateSizes {
             gram: knn_gram_bytes(sizes, rayon::current_num_threads()),
             searched,
             train_on_host: self.train_on_host,
-            sparse: self.sparse,
+            sparse: self.layout == InputLayout::Sparse,
             // every nonzero, until the genes are chosen
             selected_nonzeros: input.nonzeros,
         }
@@ -1175,6 +1188,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes: genes.len(),
         nonzeros: counts.nnz(),
         section_sizes: section_sizes(&data.section),
+        batches: data.n_batches(),
     });
     shape.selected_nonzeros = selected_nonzeros(&counts, &genes);
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
@@ -1183,7 +1197,14 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let dev = args.device.to_device(args.device_no)?;
     let mut log = counts;
     normalise_log(&mut log);
-    let x = model_input(&log, &genes, args.input.reference, &dev)?;
+    let layout = args.input_layout();
+    if layout == InputLayout::Dense && !args.reference {
+        info!(
+            "the input is held dense on {}: sparse is the CPU path",
+            args.device
+        );
+    }
+    let x = model_input(&log, &genes, layout, &dev)?;
     drop(log);
 
     let nb = spatial_network(&data, args);
@@ -1231,7 +1252,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
 
     let settings = serde_json::json!({
         "reference": "STAGATE_pyG ae1158c (Dong and Zhang 2022)",
-        "input": if args.input.reference { "dense" } else { "sparse, loss in blocks of cells" },
         "min_cells": args.min_cells,
         "n_genes_kept": counts_kept,
         "n_top_genes": args.n_top_genes,
@@ -1265,36 +1285,38 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &emb,
             embedding_name: "STAGATE",
             settings,
+            reference: args.reference,
+            input_layout: Some(layout),
             pseudobulk: None,
-            cell_pb: None,
         },
     )?;
     Ok(())
 }
 
-/// The model's input, rows `genes` of the log data: dense on `dev`, as the
-/// reference holds it (`reference`), or sparse.
+/// The model's input, rows `genes` of the log data held as `layout`:
+/// dense on `dev`, as the reference holds it, or sparse.
 fn model_input(
     log: &CscMatrix<f32>,
     genes: &[usize],
-    reference: bool,
+    layout: InputLayout,
     dev: &Device,
 ) -> anyhow::Result<Input> {
-    Ok(if reference {
-        let x = dense_rows(log, genes);
-        Input::Dense(Tensor::from_vec(x, (log.ncols(), genes.len()), dev)?)
-    } else {
-        Input::Sparse(SparseInput::from_rows(log, genes))
+    Ok(match layout {
+        InputLayout::Dense => {
+            let x = dense_rows(log, genes);
+            Input::Dense(Tensor::from_vec(x, (log.ncols(), genes.len()), dev)?)
+        }
+        InputLayout::Sparse => Input::Sparse(SparseInput::from_rows(log, genes)),
     })
 }
 
-/// Stored nonzeros of rows `genes` (sorted) of `counts`.
+/// Stored nonzeros of rows `genes` of `counts`.
 fn selected_nonzeros(counts: &CscMatrix<f32>, genes: &[usize]) -> usize {
-    counts
-        .row_indices()
-        .iter()
-        .filter(|g| genes.binary_search(g).is_ok())
-        .count()
+    let mut keep = vec![false; counts.nrows()];
+    for &g in genes {
+        keep[g] = true;
+    }
+    counts.row_indices().iter().filter(|&&g| keep[g]).count()
 }
 
 fn spatial_network(data: &SpatialData, args: &Args) -> Neighbours {

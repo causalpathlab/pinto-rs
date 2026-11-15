@@ -242,7 +242,7 @@ pub struct PintoMetadata {
     pub batch_labels: Option<BatchLabels>,
 
     /// Present on a spatial baseline's run (`stagate`, `spatialde2` and
-    /// their `-pb` commands): its formulation and what it was fitted on.
+    /// `spatialde2-pb`): its formulation and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<BaselineRun>,
 }
@@ -253,11 +253,12 @@ pub struct BaselineRun {
     /// `sparse` (pinto's scalable formulation, the default) or
     /// `reference` (the original method's own).
     pub mode: BaselineMode,
-    /// `cells`, or `pseudobulk` for a `-pb` command.
-    pub input: BaselineInput,
-    /// The super-cells a `-pb` run was fitted on.
+    /// How the input was held, `dense` or `sparse`, for a method whose
+    /// layout is not the mode's alone (a dense GPU run in `sparse` mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pseudobulk: Option<PseudobulkInput>,
+    pub input_layout: Option<InputLayout>,
+    /// `cells`, or the super-cells `spatialde2-pb` was fitted on.
+    pub input: BaselineInput,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,14 +270,22 @@ pub enum BaselineMode {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum BaselineInput {
-    Cells,
-    Pseudobulk,
+pub enum InputLayout {
+    Dense,
+    Sparse,
 }
 
-/// The super-cells a `-pb` baseline was fitted on, and how their graph
-/// was weighted.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+/// What a baseline was fitted on: the cells, or super-cells.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaselineInput {
+    Cells,
+    Pseudobulk(PseudobulkInput),
+}
+
+/// The super-cells a `spatialde2-pb` run was fitted on, and how their
+/// graph was weighted.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PseudobulkInput {
     /// `-d --n-pseudobulk`, the target.
     pub n_pseudobulk: usize,
@@ -1172,7 +1181,7 @@ pub fn create_cage_metadata(
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
             pb_embedding: Some(format!("{prefix}.pb_embedding.parquet")),
             pb_bias: Some(format!("{prefix}.pb_bias.parquet")),
-            cell_pb: Some(format!("{prefix}.cell_pb.parquet")),
+            cell_pb: Some(crate::util::parquet_io::cell_pb_path(prefix)),
             feature_embedding: Some(format!("{prefix}.feature_embedding.parquet")),
             feature_bias: Some(format!("{prefix}.feature_bias.parquet")),
             ..Default::default()

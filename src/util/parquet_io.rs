@@ -257,6 +257,29 @@ pub fn cells_table_path(prefix: &str) -> String {
     format!("{prefix}.cells.parquet")
 }
 
+/// Write `{prefix}.cell_pb.parquet`: each cell and its finest super-cell
+/// `pb`, then `extra` columns. The pb id ships as the bare-integer STRING
+/// the parquet writer uses for `pb_embedding` / `pb_bias` row keys (the
+/// row-name column is BYTE_ARRAY by construction), so the files join
+/// directly with no cast; an INT32 column here would type-mismatch that
+/// join.
+pub fn write_cell_pb(
+    prefix: &str,
+    cells: &[Box<str>],
+    pb: &[usize],
+    extra: Vec<(Box<str>, Column<'_>)>,
+) -> anyhow::Result<()> {
+    let pb: Vec<Box<str>> = pb.iter().map(|p| p.to_string().into()).collect();
+    let mut columns = vec![(Box::from("pb"), Column::Str(&pb))];
+    columns.extend(extra);
+    write_named_table(&cell_pb_path(prefix), "cell", cells, &columns)
+}
+
+/// Where [`write_cell_pb`] writes for `prefix`.
+pub fn cell_pb_path(prefix: &str) -> String {
+    format!("{prefix}.cell_pb.parquet")
+}
+
 /// Read a table written by [`write_cells_table`]. `coord_columns` names the
 /// `[x, y]` columns (from the manifest); without it, the first two numeric
 /// columns other than `in_graph`.

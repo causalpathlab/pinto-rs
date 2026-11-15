@@ -28,8 +28,8 @@ fn super_cells_sum_counts_within_a_section() {
         coo.push((i + 1) % 3, i, 1.0);
     }
     d.counts = CscMatrix::from(&coo);
-    d.projection = Some(Mat::from_fn(4, n, |r, c| ((r + 1) * (c % 8)) as f32 + 0.5));
-    let sc = super_cells(&d, 10).unwrap();
+    let proj = Mat::from_fn(4, n, |r, c| ((r + 1) * (c % 8)) as f32 + 0.5);
+    let sc = super_cells(&d, proj, 10, knn_within_sections(&d, COARSEN_K)).unwrap();
     let m = sc.data.cells.len();
     assert!(m >= 2 && m < n, "{m} super-cells");
     for (c, &s) in sc.of_cell.iter().enumerate() {
@@ -53,7 +53,8 @@ fn super_cells_sum_counts_within_a_section() {
 fn fold_sums_the_collapsed_edges() {
     let of_cell = [0, 0, 1, 1, 2];
     let edges = [(0, 1), (0, 2), (1, 2), (1, 3), (3, 4)];
-    let (super_edges, w) = fold_weighted(&of_cell, &edges, |e| (e + 1) as f64);
+    let w: Vec<f64> = (1..=edges.len()).map(|e| e as f64).collect();
+    let (super_edges, w) = fold_weighted(&of_cell, &edges, &w);
     let got: HashMap<(usize, usize), f64> = super_edges.into_iter().zip(w).collect();
     assert_eq!(got.len(), 2);
     assert_eq!(got[&(0, 1)], 2.0 + 3.0 + 4.0);
@@ -65,7 +66,7 @@ fn fold_sums_the_collapsed_edges() {
 fn undirected_lists_each_edge_once() {
     let d = grid(4, 1);
     let nb = knn_within_sections(&d, 4).symmetrised();
-    let (edges, dist) = undirected(&nb);
+    let (edges, dist) = nb.undirected();
     assert_eq!(edges.len(), nb.n_edges() / 2);
     assert!(edges.iter().all(|&(i, j)| i < j));
     assert_eq!(edges.len(), dist.len());
@@ -160,16 +161,20 @@ fn spatialde2_pb_meets_the_bar_on_a_simulated_section() {
             out.into(),
         ];
         argv.extend(extra.iter().map(|s| s.to_string()));
-        let (crate::Commands::Spatialde2(mut args) | crate::Commands::Spatialde2Pb(mut args)) =
-            <crate::Cli as clap::Parser>::try_parse_from(argv)
-                .unwrap()
-                .commands
-        else {
-            unreachable!()
-        };
-        args.input.pseudobulk = cmd.ends_with("-pb");
-        crate::spatial_baselines::spatialde2::run(&args).unwrap();
-        args.input.read().unwrap()
+        match <crate::Cli as clap::Parser>::try_parse_from(argv)
+            .unwrap()
+            .commands
+        {
+            crate::Commands::Spatialde2(args) => {
+                crate::spatial_baselines::spatialde2::run(&args).unwrap();
+                args.fit.input.read(false).unwrap()
+            }
+            crate::Commands::Spatialde2Pb(args) => {
+                crate::spatial_baselines::spatialde2::run_pb(&args).unwrap();
+                args.fit.input.read(false).unwrap()
+            }
+            _ => unreachable!(),
+        }
     };
     let cell_out = dir.path().join("cells").to_string_lossy().to_string();
     let pb_out = dir.path().join("pb").to_string_lossy().to_string();

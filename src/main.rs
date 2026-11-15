@@ -727,9 +727,10 @@ enum Commands {
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
              Gaussian mixture in R at that step.\n\n\
-             Sparse by default: the input stays sparse and the loss is summed\n\
-             over blocks of cells. --reference holds the dense input, as the\n\
-             original does; both give the same numbers up to float rounding.\n\n",
+             Sparse by default on the CPU: the input stays sparse and the loss is\n\
+             summed over blocks of cells. --reference holds the dense input, as\n\
+             the original does, and so does a GPU (--device), its mode still\n\
+             sparse; both give the same numbers up to float rounding.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -748,15 +749,13 @@ enum Commands {
              it collapses: the cells' model with each super-cell's cells sharing a\n\
              region. Each cell's region posterior is then re-inferred on its own\n\
              counts and the cell graph, the fit's region rates held fixed. Takes\n\
-             spatialde2's flags; --reference is refused.\n\n",
+             spatialde2's flags but --reference: it fits the sparse graph.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
-        ),
-        mut_arg("n_pseudobulk", |a| a.hide(false)),
-        mut_arg("reference", |a| a.hide(true))
+        )
     )]
-    Spatialde2Pb(Box<spatial_baselines::spatialde2::Args>),
+    Spatialde2Pb(Box<spatial_baselines::spatialde2::PbArgs>),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",
@@ -924,9 +923,9 @@ impl Commands {
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
-            Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
+            Commands::Spatialde2(a) => (&mut a.fit.input.out, "spatialde2"),
             Commands::Stagate(a) => (&mut a.input.out, "stagate"),
-            Commands::Spatialde2Pb(a) => (&mut a.input.out, "spatialde2-pb"),
+            Commands::Spatialde2Pb(a) => (&mut a.fit.input.out, "spatialde2-pb"),
             _ => return None,
         })
     }
@@ -980,10 +979,8 @@ fn main() -> anyhow::Result<()> {
             .exit()
     });
     name_folder_out(&mut cli.commands);
-    match &mut cli.commands {
-        Commands::CageCell(a) => a.cell_level = true,
-        Commands::Spatialde2Pb(a) => a.input.pseudobulk = true,
-        _ => {}
+    if let Commands::CageCell(a) = &mut cli.commands {
+        a.cell_level = true;
     }
 
     crate::util::common::init_logger(cli.verbose);
@@ -1031,9 +1028,8 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
-        Commands::Spatialde2(args) | Commands::Spatialde2Pb(args) => {
-            spatial_baselines::spatialde2::run(args)?
-        }
+        Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
+        Commands::Spatialde2Pb(args) => spatial_baselines::spatialde2::run_pb(args)?,
         Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]

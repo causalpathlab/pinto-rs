@@ -17,10 +17,11 @@ use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
 use crate::util::metadata::{
     delta_files, manifest_path, now_secs, BaselineInput, BaselineMode, BaselineRun, BatchLabels,
-    OutputFiles, PintoMetadata, PseudobulkInput,
+    InputLayout, OutputFiles, PintoMetadata, PseudobulkInput,
 };
-use crate::util::parquet_io::{cells_table_path, write_cells_table};
+use crate::util::parquet_io::{cell_pb_path, cells_table_path, write_cell_pb, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
+use legume_numeric::matrix::parquet::Column;
 use legume_numeric::matrix::traits::IoOps;
 
 fn labels_path(prefix: &str) -> String {
@@ -52,52 +53,54 @@ pub struct Fitted<'a> {
     pub embedding_name: &'a str,
     /// The settings as run, recorded in `{out}.baseline.json`.
     pub settings: serde_json::Value,
-    /// The super-cells a `-pb` command fitted on; `None` on cells.
-    pub pseudobulk: Option<PseudobulkInput>,
-    /// A `-pb` command's cells: each one's super-cell and that super-cell's
-    /// label, the broadcast diagnostic, for `{out}.cell_pb.parquet`.
-    pub cell_pb: Option<CellPb<'a>>,
+    /// Whether `--reference` was given (`baseline.mode`).
+    pub reference: bool,
+    /// How the input was held (`baseline.input_layout`), for a method
+    /// whose layout is not the mode's alone; `None` otherwise.
+    pub input_layout: Option<InputLayout>,
+    /// What `spatialde2-pb` fitted on and its cells' super-cells; `None`
+    /// on cells.
+    pub pseudobulk: Option<PbFit<'a>>,
 }
 
-/// Each cell's super-cell and the super-cell's label.
-pub struct CellPb<'a> {
+/// The super-cells a `spatialde2-pb` run fitted on (`baseline.input`), and
+/// each cell's super-cell and that super-cell's label, the broadcast
+/// diagnostic, for `{out}.cell_pb.parquet`.
+pub struct PbFit<'a> {
+    pub input: PseudobulkInput,
     pub super_cell: &'a [usize],
     pub broadcast: &'a [usize],
 }
 
-fn cell_pb_path(prefix: &str) -> String {
-    format!("{prefix}.cell_pb.parquet")
-}
-
 /// `{out}.cell_pb.parquet`: `cell`, its super-cell `pb` (as cage writes
 /// it) and the super-cell's label `pb_label` broadcast to it.
-fn write_cell_pb(prefix: &str, cells: &[Box<str>], c: &CellPb<'_>) -> anyhow::Result<()> {
-    use legume_numeric::matrix::parquet::{write_named_table, Column};
-    let pb: Vec<Box<str>> = c.super_cell.iter().map(|p| p.to_string().into()).collect();
-    let label: Vec<Box<str>> = c.broadcast.iter().map(|l| format!("C{l}").into()).collect();
-    write_named_table(
-        &cell_pb_path(prefix),
-        "cell",
+fn write_pb_labels(prefix: &str, cells: &[Box<str>], pb: &PbFit<'_>) -> anyhow::Result<()> {
+    let label: Vec<Box<str>> = pb
+        .broadcast
+        .iter()
+        .map(|l| format!("C{l}").into())
+        .collect();
+    write_cell_pb(
+        prefix,
         cells,
-        &[
-            ("pb".into(), Column::Str(&pb)),
-            ("pb_label".into(), Column::Str(&label)),
-        ],
+        pb.super_cell,
+        vec![("pb_label".into(), Column::Str(&label))],
     )
 }
 
-/// The run's formulation (`--reference` or the sparse default) and input.
-fn baseline_run(input: &SpatialInputArgs, pseudobulk: Option<PseudobulkInput>) -> BaselineRun {
+/// The run's formulation (the original's own, `reference`, or the sparse
+/// default) and input.
+fn baseline_run(fit: &Fitted<'_>) -> BaselineRun {
     BaselineRun {
-        mode: match input.reference {
+        mode: match fit.reference {
             true => BaselineMode::Reference,
             false => BaselineMode::Sparse,
         },
-        input: match pseudobulk {
-            Some(_) => BaselineInput::Pseudobulk,
+        input_layout: fit.input_layout,
+        input: match &fit.pseudobulk {
+            Some(pb) => BaselineInput::Pseudobulk(pb.input.clone()),
             None => BaselineInput::Cells,
         },
-        pseudobulk,
     }
 }
 
@@ -154,7 +157,7 @@ pub fn write_run(
     anyhow::ensure!(fit.labels.len() == n, "one label per cell");
     anyhow::ensure!(fit.embedding.nrows() == n, "one embedding row per cell");
     let k = fit.labels.iter().max().map_or(0, |&m| m + 1);
-    let run = baseline_run(input, fit.pseudobulk);
+    let run = baseline_run(&fit);
     log::info!("{}: {k} clusters", fit.method);
     let one_hot_labels;
     let membership = match fit.membership {
@@ -169,8 +172,8 @@ pub fn write_run(
     };
     mkdir_parent(prefix)?;
     write_labels(prefix, &data.cells, fit.labels)?;
-    if let Some(c) = &fit.cell_pb {
-        write_cell_pb(prefix, &data.cells, c)?;
+    if let Some(pb) = &fit.pseudobulk {
+        write_pb_labels(prefix, &data.cells, pb)?;
     }
     write_embedding(prefix, &data.cells, fit.embedding, fit.embedding_name)?;
     write_propensity_matrix(prefix, membership, &data.cells)?;
@@ -216,7 +219,7 @@ pub fn write_run(
             cell_embedding: Some(embedding_path(prefix)),
             batch_effects,
             delta_cells,
-            cell_pb: fit.cell_pb.as_ref().map(|_| cell_pb_path(prefix)),
+            cell_pb: fit.pseudobulk.as_ref().map(|_| cell_pb_path(prefix)),
             ..Default::default()
         },
         batch_labels: data.delta.as_ref().map(|_| match input.batch_files {

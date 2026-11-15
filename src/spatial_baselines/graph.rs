@@ -26,6 +26,43 @@ impl Neighbours {
         self.index.iter().map(Vec::len).sum()
     }
 
+    /// Each undirected edge `(i, j)`, `i < j`, once, with its distance,
+    /// ordered by `(i, j)`.
+    pub fn undirected(&self) -> (Vec<(usize, usize)>, Vec<f32>) {
+        let mut pairs: Vec<((usize, usize), f32)> = self
+            .index
+            .iter()
+            .zip(&self.dist)
+            .enumerate()
+            .flat_map(|(i, (js, ds))| {
+                js.iter()
+                    .zip(ds)
+                    .filter(move |(&j, _)| j != i)
+                    .map(move |(&j, &d)| ((i.min(j), i.max(j)), d))
+            })
+            .collect();
+        pairs.sort_unstable_by_key(|p| p.0);
+        pairs.dedup_by_key(|p| p.0);
+        pairs.into_iter().unzip()
+    }
+
+    /// Each cell's `k` nearest of its listed neighbours (lists sorted by
+    /// distance, as [`knn_within_sections`] gives them): the kNN at `k`.
+    pub fn truncated(&self, k: usize) -> Neighbours {
+        Neighbours {
+            index: self
+                .index
+                .iter()
+                .map(|js| js[..k.min(js.len())].to_vec())
+                .collect(),
+            dist: self
+                .dist
+                .iter()
+                .map(|ds| ds[..k.min(ds.len())].to_vec())
+                .collect(),
+        }
+    }
+
     /// The same graph with every edge in both directions, each listed once
     /// per cell, neighbours re-sorted by distance (ties by index).
     pub fn symmetrised(&self) -> Neighbours {

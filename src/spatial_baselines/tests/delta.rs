@@ -70,14 +70,19 @@ fn counts_are_divided_by_the_input_s_own_delta_unless_ignore_batch() {
     let files = two_sections(dir.path(), 10, 60);
     let plain = dir.path().join("plain").to_string_lossy().to_string();
     let original = spatialde2_args(&files, &plain, &["--ignore-batch"])
+        .fit
         .input
-        .read()
+        .read(false)
         .unwrap();
     assert!(original.delta.is_none());
     assert!(!std::path::Path::new(&format!("{plain}.delta.parquet")).exists());
 
     let out = dir.path().join("corrected").to_string_lossy().to_string();
-    let corrected = spatialde2_args(&files, &out, &[]).input.read().unwrap();
+    let corrected = spatialde2_args(&files, &out, &[])
+        .fit
+        .input
+        .read(false)
+        .unwrap();
     let applied = corrected.delta.as_ref().expect("two batches give a δ");
     let delta = read_delta(&format!("{out}.delta.parquet")).unwrap();
     assert_eq!(applied.batches, delta.batches);
@@ -156,4 +161,86 @@ fn the_mode_is_recorded() {
     argv.extend(files.iter().cloned());
     argv.extend(["-o", "x", "--reference", "--neighbors", "4"].map(String::from));
     assert!(<crate::Cli as clap::Parser>::try_parse_from(argv).is_err());
+}
+
+/// A multi-batch `-pb` read takes the projection the δ estimate collapsed
+/// on: the batch-corrected projection of the counts as stored, as a fresh
+/// projection gives it.
+#[test]
+fn a_pb_read_reuses_the_delta_estimate_s_projection() {
+    use data_beans::alg::random_projection::RandProjOps;
+    let dir = tempfile::tempdir().unwrap();
+    let files = two_sections(dir.path(), 6, 60);
+    let out = dir.path().join("pb").to_string_lossy().to_string();
+    let args = spatialde2_args(&files, &out, &[]);
+    let data = args.fit.input.read(true).unwrap();
+    assert!(data.delta.is_some());
+    let i = &args.fit.input;
+    let srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
+        data_files: i.data_files.clone(),
+        coord_files: i.coord_files.clone(),
+        preload_data: false,
+        coord_columns: Vec::new(),
+        coord_column_names: i.coord_column_names.clone(),
+        batch_files: None,
+        header_in_coord: None,
+        feature_kind: data_beans::aux::feature_names::FeatureNameKind::Exact,
+    })
+    .unwrap();
+    let fresh = srt
+        .data
+        .project_columns_with_batch_correction(
+            crate::util::input::DEFAULT_PROJ_DIM,
+            None,
+            Some(srt.batches.as_slice()),
+        )
+        .unwrap()
+        .proj;
+    assert_eq!(data.projection.unwrap(), fresh);
+}
+
+/// The projection a δ estimate keeps is the one a fresh projection with
+/// the same `-p`, block size and batch membership gives after it, basis
+/// and all: what the srt pipeline reuses in place of projecting again.
+#[test]
+fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
+    use crate::util::batch_effects::{
+        estimate_and_write_batch_effects, sorted_batch_labels, EstimateBatchArgs,
+    };
+    use data_beans::alg::random_projection::RandProjOps;
+    let dir = tempfile::tempdir().unwrap();
+    let files = two_sections(dir.path(), 6, 60);
+    let args = spatialde2_args(&files, "unused", &[]);
+    let i = &args.fit.input;
+    let mut srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
+        data_files: i.data_files.clone(),
+        coord_files: i.coord_files.clone(),
+        preload_data: false,
+        coord_columns: Vec::new(),
+        coord_column_names: i.coord_column_names.clone(),
+        batch_files: None,
+        header_in_coord: None,
+        feature_kind: data_beans::aux::feature_names::FeatureNameKind::Exact,
+    })
+    .unwrap();
+    let (proj_dim, block_size) = (16, Some(7));
+    let labels = sorted_batch_labels(&srt.batches);
+    let kept = estimate_and_write_batch_effects(
+        &mut srt.data,
+        &srt.batches,
+        &labels,
+        EstimateBatchArgs::at(proj_dim, block_size, 10, 5, None),
+        None,
+        true,
+    )
+    .unwrap()
+    .expect("two batches give a δ")
+    .projection
+    .expect("kept");
+    let fresh = srt
+        .data
+        .project_columns_with_batch_correction(proj_dim, block_size, Some(srt.batches.as_slice()))
+        .unwrap();
+    assert_eq!(kept.proj, fresh.proj);
+    assert_eq!(kept.basis, fresh.basis);
 }

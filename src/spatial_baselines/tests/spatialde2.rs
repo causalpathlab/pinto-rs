@@ -406,7 +406,7 @@ fn all_pairs_is_the_knn_graph_with_every_cell_listed() {
     let section: Vec<usize> = (0..16).map(|i| usize::from(i % 3 == 0)).collect();
     let d = toy(&xy, &section);
     let full = graph_of(&d, 15, 1.5);
-    let pairs = WeightedGraph::all_pairs(&d.xy, &d.section, 1.5);
+    let pairs = WeightedGraph::all_pairs(&d, 1.5);
     let labels: Vec<usize> = (0..16).map(|i| (i * 7) % 4).collect();
     for i in 0..16 {
         let mut a: Vec<(usize, f64)> = full.neighbours(i).collect();
@@ -426,4 +426,58 @@ fn all_pairs_is_the_knn_graph_with_every_cell_listed() {
             assert!((x - y).abs() < 1e-4 * (1.0 + x.abs()), "{pa:?} vs {pb:?}");
         }
     }
+}
+
+/// A section whose cells all sit at one point has no positive distance:
+/// every pair weighs the same (`2 s`), on the kNN lists and on all pairs,
+/// and the fit's posteriors stay finite.
+#[test]
+fn coincident_cells_weigh_alike_and_fit_without_nan() {
+    let xy = vec![(1.0f32, 1.0f32); 16];
+    let d = toy(&xy, &[0; 16]);
+    let (counts, sf, _) = two_region_counts(4, 1);
+    for g in [graph_of(&d, 6, 1.5), WeightedGraph::all_pairs(&d, 1.5)] {
+        for i in 0..16 {
+            assert!(g.neighbours(i).all(|(_, w)| w == 3.0), "cell {i}");
+        }
+        let seg = segment(&counts, &sf, Some(&g), &Params::default(), 3).unwrap();
+        assert!(seg.pi.iter().all(|p| p.is_finite()), "{:?}", seg.pi);
+    }
+}
+
+/// The unravelling's sweeps are full updates' posteriors with the fit held
+/// fixed: the same posteriors, labels and sweeps as running [`update`]
+/// until no label moves.
+#[test]
+fn unravel_is_full_updates_with_the_fit_held_fixed() {
+    let d = grid(10, 2);
+    let g = graph_of(&d, 8, 2.0);
+    let (counts, sf, _) = two_region_counts(10, 2);
+    let p = Params::default();
+    let fit = segment(&counts, &sf, Some(&g), &p, 7).unwrap();
+    let start: Vec<usize> = (0..200).map(|i| (i / 7) % fit.k).collect();
+    let (pi, labels, sweeps) = unravel(&counts, &sf, Some(&g), &fit, &start);
+    let (mut want_pi, mut want, mut want_sweeps) = (Vec::new(), start, MAX_UNRAVEL_SWEEPS);
+    for sweep in 1..=MAX_UNRAVEL_SWEEPS {
+        let u = update(
+            std::mem::take(&mut want_pi),
+            &counts,
+            &sf,
+            Some((&g, want.as_slice())),
+            &fit.state,
+            fit.nclasses_trace[0],
+            &p,
+        );
+        want_pi = u.pi;
+        let next = argmax_rows(&want_pi, fit.k);
+        let done = next == want;
+        want = next;
+        if done {
+            want_sweeps = sweep;
+            break;
+        }
+    }
+    assert!(sweeps > 1, "{sweeps}");
+    assert_eq!((labels, sweeps), (want, want_sweeps));
+    assert_eq!(pi, want_pi);
 }

@@ -549,7 +549,9 @@ holds an `N × N` matrix, and `--reference`, the original's own. For
 (`--neighbors`, 100 by default) and `--reference` its default graph, every
 pair of cells in a section connected; for `stagate` both are the same
 model and give the same numbers up to float rounding (the sparse one keeps
-the input sparse). Segmentation runs on every gene by default, as
+the input sparse, on the CPU only: on a GPU `stagate` holds it dense, its
+mode still `sparse`, and `baseline.json` records the layout held as
+`input_layout`). Segmentation runs on every gene by default, as
 SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
 the most expressed.
 

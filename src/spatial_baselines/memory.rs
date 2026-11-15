@@ -98,40 +98,17 @@ pub fn knn_edges(section_sizes: &[usize], k: usize) -> usize {
         .sum()
 }
 
-/// Bytes a stored nonzero holds while δ is estimated (cage's estimator,
-/// data-beans' multilevel collapse): the preloaded counts, the cells'
-/// projection and the collapse's per-cell buffers. Calibrated on
-/// srt-simulate runs of two sections (500 and 2000 genes, 512 to 16200
-/// cells): the largest measured residual per nonzero, with a margin.
-const DELTA_NONZERO_BYTES: usize = 52;
-
-/// Bytes a gene holds per pseudobulk sample while δ is estimated: the
-/// collapse's dense gene × sample statistics over its levels. Calibrated
-/// with [`DELTA_NONZERO_BYTES`].
-const DELTA_GENE_SAMPLE_BYTES: usize = 128;
-
-/// Pseudobulk samples the δ estimate's finest level holds per batch at
-/// most: `2^sort_dim` groups, `sort_dim` 10 as cage sets it.
-pub const DELTA_SAMPLES_PER_BATCH: usize = 1 << 10;
-
-/// What the δ estimate holds at once, above the process's own, for
-/// `genes` genes, `nonzeros` stored nonzeros and at most `samples`
-/// pseudobulk samples (each batch's cells, at most
-/// [`DELTA_SAMPLES_PER_BATCH`] of them).
-pub fn delta_estimate_bytes(genes: usize, nonzeros: usize, samples: usize) -> usize {
-    DELTA_NONZERO_BYTES * nonzeros + DELTA_GENE_SAMPLE_BYTES * genes * samples
-}
-
-/// What a `-pb` command holds above its cell-level fit: the cells'
-/// projection (`-p` 200 f32 a cell) with the copy coarsening normalises and
-/// the seeds' features (three), the coarsening graph (cage's 5 neighbours
-/// a cell, as lists, edges and adjacency: 64 bytes a neighbour), the
+/// What `spatialde2-pb` holds above its cell-level fit: the cells'
+/// projection (cage's `-p` f32 a cell), which the coarsening takes and
+/// normalises in place, and the seeds' features (two), the coarsening
+/// graph (cage's `-k` neighbours a cell, as lists, edges and adjacency: 64
+/// bytes a neighbour), the
 /// super-cells' counts (at most every nonzero: 12 as built, 12 held), and
 /// the fold of the method's `edges` listed edges onto the super-cells (an
 /// undirected copy, 24 bytes a pair, and the fold's map and fine-to-super
 /// index, 48 a pair: 36 a listed edge, 40 with a margin).
 pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize) -> usize {
-    let proj = 3 * 4 * crate::spatial_baselines::input::DELTA_PROJ_DIM * cells;
+    let proj = 2 * 4 * crate::util::input::DEFAULT_PROJ_DIM * cells;
     let graph = 64 * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
     proj + graph + 24 * nonzeros + 40 * edges
 }

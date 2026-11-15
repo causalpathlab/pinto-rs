@@ -38,23 +38,11 @@ pub(super) fn write_trained_tables(
         Some(&[Box::from("b_pb")]),
     )?;
 
-    // The pb id ships as the SAME bare-integer STRING the parquet writer
-    // uses for pb_embedding / pb_bias row keys (the row-name column is
-    // BYTE_ARRAY by construction), so the three files join directly with
-    // no cast; an INT32 column here would type-mismatch that join.
-    let cell_pb_col: Vec<Box<str>> = pb_frame
-        .cell_to_finest_pb
-        .iter()
-        .map(|&p| p.to_string().into_boxed_str())
-        .collect();
-    legume_numeric::matrix::parquet::write_named_table(
-        &(c.out.to_string() + ".cell_pb.parquet"),
-        "cell",
+    crate::util::parquet_io::write_cell_pb(
+        &c.out,
         cell_names,
-        &[(
-            Box::from("pb"),
-            legume_numeric::matrix::parquet::Column::Str(&cell_pb_col),
-        )],
+        &pb_frame.cell_to_finest_pb,
+        Vec::new(),
     )?;
 
     // Feature embedding [G × D] — same shared D-dim space as cells, over the FULL
