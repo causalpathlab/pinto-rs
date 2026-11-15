@@ -5,7 +5,7 @@
 
 use crate::link_community::model::*;
 use crate::util::cell_pairs::connected_components;
-use crate::util::common::new_progress_bar;
+use crate::util::common::{new_progress_bar, DEFAULT_MAX_THREADS};
 use legume_numeric::matrix::knn_graph::KnnGraph;
 use log::info;
 use rand::rngs::SmallRng;
@@ -37,8 +37,8 @@ pub struct ComponentGibbsArgs<'a> {
 pub struct LinkGibbsSampler {
     rng: SmallRng,
     /// The most blocks a component splits into and the fewest edges a
-    /// split-off block holds, which a test may set to split a small graph.
-    #[cfg(test)]
+    /// split-off block holds: `--max-threads` and [`GIBBS_MIN_BLOCK_EDGES`]
+    /// in a fit; a test may set them to split a small graph.
     block_layout: (usize, usize),
     /// What the last component sweeps ran with and ended on.
     #[cfg(test)]
@@ -61,32 +61,18 @@ impl LinkGibbsSampler {
     pub fn new(rng: SmallRng) -> Self {
         LinkGibbsSampler {
             rng,
-            #[cfg(test)]
-            block_layout: (GIBBS_BLOCKS, GIBBS_MIN_BLOCK_EDGES),
+            block_layout: (DEFAULT_MAX_THREADS, GIBBS_MIN_BLOCK_EDGES),
             #[cfg(test)]
             last_run: LastComponentRun::default(),
         }
     }
 
     /// The same sampler with at most `blocks` blocks a component of at least
-    /// `min_block_edges` edges each, so a test can split a small graph.
-    #[cfg(test)]
+    /// `min_block_edges` edges each. A fit passes `--max-threads` and
+    /// [`GIBBS_MIN_BLOCK_EDGES`]; a test may split a small graph.
     pub fn with_blocks(mut self, blocks: usize, min_block_edges: usize) -> Self {
-        self.block_layout = (blocks, min_block_edges);
+        self.block_layout = (blocks.max(1), min_block_edges);
         self
-    }
-
-    /// The most blocks a component splits into and the fewest edges a
-    /// split-off block holds: [`GIBBS_BLOCKS`] and [`GIBBS_MIN_BLOCK_EDGES`].
-    #[cfg(not(test))]
-    fn block_layout(&self) -> (usize, usize) {
-        (GIBBS_BLOCKS, GIBBS_MIN_BLOCK_EDGES)
-    }
-
-    /// The block layout, as a test set it.
-    #[cfg(test)]
-    fn block_layout(&self) -> (usize, usize) {
-        self.block_layout
     }
 
     /// Run `num_sweeps` sequential Gibbs sweeps over all edges.
@@ -272,7 +258,7 @@ impl LinkGibbsSampler {
         let incidence_scores = *incidence;
 
         let (comp_labels, n_comp) = connected_components(graph);
-        let (blocks, min_block_edges) = self.block_layout();
+        let (blocks, min_block_edges) = self.block_layout;
         let comp_edges =
             split_components_into_blocks(edges, &comp_labels, n_comp, blocks, min_block_edges);
         let n_parts = comp_edges.len();
@@ -499,24 +485,15 @@ fn partition_edges_by_component(
     comp_edges
 }
 
-/// Most blocks the component sweeps split one component into.
+/// Fewest edges a block split off a component holds: a component of fewer
+/// than twice this many is one exact block.
 ///
 /// A block runs one exact sequential sweep; blocks run in parallel, each
 /// against one snapshot of the others, which they see only at the end of the
 /// sweep. Fewer, larger blocks are closer to exact; more spread a component
-/// over more threads. The count is fixed, not taken from the thread count, so
-/// the draws do not depend on the machine. Sixteen matches pinto's default
-/// thread cap today, so a default run on a machine with at least that many
-/// cores keeps every thread busy on one large component, and holds one copy
-/// of the community stats per thread, as when the blocks followed the thread
-/// count. It is a literal, not the cap, so changing the cap does not change
-/// lc's draws.
-pub(crate) const GIBBS_BLOCKS: usize = 16;
-
-/// Fewest edges a block split off a component holds: a component of fewer
-/// than twice this many is one exact block. It is the floor the blocks had
-/// when they followed the thread count, so at sixteen blocks a component
-/// splits as it did at sixteen threads.
+/// over more threads. Their most is `--max-threads`, a setting the user
+/// chooses and the manifest records, not the pool's size, so the draws
+/// depend on the seed, the data and that setting, not on the machine.
 pub(crate) const GIBBS_MIN_BLOCK_EDGES: usize = 256;
 
 /// Partition by connected component, then split each component into

@@ -6,7 +6,10 @@
 //! `pinto srt-sim-score`'s two tests and `pinto srt-sim-pairs`'s pair sets,
 //! computed in the call, as they take a moment.
 
-use super::mcp::{background, in_background, launch, out_arg, out_or_free, parsed, rooted};
+use super::mcp::{
+    background, in_background, launch, max_threads_arg, max_threads_flag, out_arg, out_or_free,
+    parsed, rooted,
+};
 use super::script;
 use crate::mcp::shown_path;
 use crate::simulate::baseline::{check_inputs, BaselineArgs};
@@ -41,6 +44,8 @@ pub(super) struct SimulateToolArgs {
     pub coord_column_names: Vec<String>,
     #[serde(default)]
     pub out: Option<String>,
+    #[serde(default)]
+    pub max_threads: Option<usize>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -83,6 +88,8 @@ pub(super) struct SimBaselineToolArgs {
     pub seed: Option<u64>,
     #[serde(default)]
     pub out: Option<String>,
+    #[serde(default)]
+    pub max_threads: Option<usize>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -166,6 +173,7 @@ pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
             ));
         }
     }
+    argv.extend(max_threads_flag(a.max_threads));
     argv.push(flag_value("--out", out));
     argv
 }
@@ -311,6 +319,7 @@ pub(super) fn baseline_argv(a: &SimBaselineToolArgs, truth: &str, table: &str) -
     if let Some(s) = a.seed {
         argv.push(flag_value("--seed", s));
     }
+    argv.extend(max_threads_flag(a.max_threads));
     argv.push(flag_value("--out", table));
     argv
 }
@@ -355,7 +364,7 @@ pub(super) fn baseline(
 
 // * Tools
 
-pub(super) fn specs() -> Vec<ToolSpec> {
+pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
     let scenarios: Vec<String> = SCENARIOS
         .iter()
         .map(|s| format!("{} ({})", s.name, s.about))
@@ -384,6 +393,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
                     "out": out_arg("folder", "sim"),
+                    "max_threads": max_threads_arg(cli),
                     "background": background(),
                 },
                 "additionalProperties": false,
@@ -457,6 +467,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "n_clusters": {"type": "integer", "minimum": 1, "description": "Clusters to tune Leiden toward [default: the domains among the spots clustered]"},
                     "seed": {"type": "integer", "minimum": 0, "description": "Leiden and Harmony seed [default: 1]"},
                     "out": {"type": "string", "description": "Output prefix, the table at {out}.tsv; left out, a free baseline-<method> name in today's results folder"},
+                    "max_threads": max_threads_arg(cli),
                     "background": background(),
                 },
                 "required": ["truth"],

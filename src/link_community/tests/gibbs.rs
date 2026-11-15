@@ -494,10 +494,12 @@ fn alike_singletons_in_different_blocks_fail_the_same_check() {
     assert!(gap > 0.1, "the split went unnoticed: {gap}");
 }
 
-/// The blocks the component sweeps split a graph into depend on the data,
-/// not on the machine: one seed gives one partition whatever the thread count.
+/// The blocks the component sweeps split a graph into depend on the data and
+/// `--max-threads`, not on the machine: one seed and one `--max-threads` give
+/// one partition whatever the pool's size, and another `--max-threads` may
+/// split the component otherwise and give another.
 #[test]
-fn a_seed_gives_one_partition_whatever_the_thread_count() {
+fn a_seed_and_max_threads_give_one_partition_whatever_the_pool() {
     use rand::RngExt;
     // One chain component, long enough for four blocks at the real layout.
     let (n_edges, m, k) = (4 * GIBBS_MIN_BLOCK_EDGES + 100, 8, 4);
@@ -527,32 +529,36 @@ fn a_seed_gives_one_partition_whatever_the_thread_count() {
         incidence: Some(&incidence),
     };
 
-    let partition = |threads: usize| {
+    let partition = |max_threads: usize, threads: usize, n_blocks: usize| {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .unwrap();
         pool.install(|| {
             let mut membership: Vec<usize> = (0..n_edges).map(|e| e % k).collect();
-            let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42));
+            let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42))
+                .with_blocks(max_threads, GIBBS_MIN_BLOCK_EDGES);
             sampler.run_components_em(&mut membership, &store, &args, 3);
             assert_eq!(
                 sampler.last_run.block_sizes.len(),
-                4,
+                n_blocks,
                 "the chain is not split as planned"
             );
             sampler.run_greedy_by_components(&mut membership, &store, &args, 3);
             membership
         })
     };
-    let one = partition(1);
+    let max_threads = crate::util::common::DEFAULT_MAX_THREADS;
+    let one = partition(max_threads, 1, 4);
     let used = (0..k).filter(|c| one.contains(c)).count();
     assert!(used > 1, "the fit collapsed into one community");
-    for threads in [2, 4, 8] {
-        let other = partition(threads);
+    for threads in [2, 4, 8, 32] {
+        let other = partition(max_threads, threads, 4);
         let differ = (0..n_edges).filter(|&e| other[e] != one[e]).count();
         assert_eq!(differ, 0, "{threads} threads move {differ} edges");
     }
+    let two = partition(2, 2, 2);
+    assert_ne!(two, one, "two blocks drew as four did");
 }
 
 /// Each sweep of a call draws afresh. A lone edge's conditional is uniform

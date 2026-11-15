@@ -664,25 +664,23 @@ fn lc_says_what_its_feature_network_is() {
     assert!(readme.contains("ships no network"));
 }
 
-/// The README states pinto's default thread cap, what it means on a machine
-/// with more cores, and lc's Gibbs block layout as the code has it.
+/// The README states `--max-threads`, its default, what it means on a
+/// machine with more cores, and lc's Gibbs block layout as the code has it.
 #[test]
-fn the_readme_states_the_thread_cap_and_lc_blocks() {
+fn the_readme_states_max_threads_and_lc_blocks() {
     let readme = include_str!("../../README.md");
-    let cap = util::common::MAX_DEFAULT_THREADS.to_string();
-    assert!(
-        readme.contains(&format!("at most {cap} worker threads")),
-        "README does not state the cap"
-    );
-    assert!(readme.contains(&format!("more than {cap} cores")));
-    use crate::link_community::gibbs::{GIBBS_BLOCKS, GIBBS_MIN_BLOCK_EDGES};
     let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cap = util::common::DEFAULT_MAX_THREADS;
+    use crate::link_community::gibbs::GIBBS_MIN_BLOCK_EDGES;
     for said in [
+        format!("`--max-threads N` (default {cap})"),
+        format!("at most {cap} worker threads"),
+        format!("more than {cap} cores"),
+        "Raise `--max-threads` to use more cores, including for lc's fine Gibbs".to_string(),
+        "the same `--seed` and `--max-threads` give the same lc draws on any machine".to_string(),
         format!("at least {} edges into", 2 * GIBBS_MIN_BLOCK_EDGES),
         format!("blocks of at least {GIBBS_MIN_BLOCK_EDGES} edges"),
-        format!("at most {GIBBS_BLOCKS} blocks a component"),
-        format!("`RAYON_NUM_THREADS` above {GIBBS_BLOCKS}"),
-        format!("splits into at most {GIBBS_BLOCKS} blocks"),
+        "at most `--max-threads` blocks a component".to_string(),
     ] {
         assert!(flat.contains(&said), "README does not say {said:?}");
     }
