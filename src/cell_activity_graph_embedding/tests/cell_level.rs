@@ -4,7 +4,7 @@ use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
 use crate::cell_activity_graph_embedding::fit::{
     cell_level_hierarchy, fit_cell_activity_graph_embedding,
 };
-use crate::test_support::write_zarr;
+use crate::test_support::two_sections;
 use crate::util::common::Mat;
 use clap::Parser;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -47,48 +47,15 @@ fn cell_level_refuses_hierarchy_flags() {
     }
 }
 
-/// Two sections of a `side × side` grid, the left and right halves
-/// expressing different genes, and the second section's every third gene
-/// four times the first's (a batch effect); returns the data and
-/// coordinate files.
-fn two_sections(dir: &std::path::Path, side: usize) -> (String, String) {
-    let genes: Vec<String> = (0..12).map(|g| format!("G{g}")).collect();
-    let genes: Vec<&str> = genes.iter().map(String::as_str).collect();
-    let (mut data, mut coords) = (Vec::new(), Vec::new());
-    for tag in ["s1", "s2"] {
-        let n = side * side;
-        let mut triplets = Vec::new();
-        let mut csv = String::from("cell,x,y\n");
-        for c in 0..n {
-            let (r, col) = (c / side, c % side);
-            let left = col < side / 2;
-            for g in 0..12u64 {
-                let marker = if left { g < 6 } else { g >= 6 };
-                let v = if marker {
-                    4.0 + ((c + g as usize) % 3) as f32
-                } else {
-                    ((c * 7 + g as usize) % 2) as f32
-                };
-                let v = if tag == "s2" && g % 3 == 0 {
-                    4.0 * v
-                } else {
-                    v
-                };
-                if v > 0.0 {
-                    triplets.push((g, c as u64, v));
-                }
-            }
-            csv.push_str(&format!("{tag}_{c},{col},{r}\n"));
-        }
-        data.push(write_zarr(dir, tag, &genes, n, &triplets).to_string());
-        let path = dir.join(format!("{tag}.coords.csv"));
-        std::fs::write(&path, csv).unwrap();
-        coords.push(path.to_str().unwrap().to_string());
-    }
-    (data.join(","), coords.join(","))
-}
-
-fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&str]) -> String {
+/// A short cage fit of `data` (`cage-cell` when `extra` holds `"cell"`)
+/// to `{dir}/{name}`; its prefix, or why it failed.
+pub(super) fn try_fit(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    extra: &[&str],
+) -> anyhow::Result<String> {
     let out = dir.join(name).to_str().unwrap().to_string();
     let cell_level = extra.contains(&"cell");
     let argv: Vec<&str> = [
@@ -117,8 +84,19 @@ fn fit(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&st
     .collect();
     let mut args = parse(&argv).unwrap();
     args.cell_level = cell_level;
-    fit_cell_activity_graph_embedding(&args).unwrap();
-    out
+    fit_cell_activity_graph_embedding(&args)?;
+    Ok(out)
+}
+
+/// [`try_fit`], which must succeed.
+pub(super) fn fit(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    extra: &[&str],
+) -> String {
+    try_fit(dir, data, coords, name, extra).unwrap()
 }
 
 fn cell_level_of(prefix: &str) -> bool {
