@@ -29,11 +29,14 @@
 //! SpatialPCA declares genes significant at a Benjamini-Yekutieli FDR of
 //! 0.05 (Benjamini and Yekutieli 2001, Annals of Statistics 29:1165,
 //! doi:10.1214/aos/1013699998) and models up to 3000 of them
-//! ([`significant`]).
+//! ([`significant`]). The adjustment counts the genes tested only: a gene
+//! with no variance within its sections (none expressed, as the paper
+//! drops before testing, or constant) has no p-value.
 
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::CscMatrix;
 use rayon::prelude::*;
+use std::sync::OnceLock;
 
 /// Quantiles of `|s|` the transforms' parameters are taken at.
 const QUANTILES: [f64; 5] = [0.2, 0.4, 0.6, 0.8, 1.0];
@@ -185,6 +188,12 @@ fn gauss_legendre(k: usize) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// [`gauss_legendre`] at [`GL_NODES`], computed once.
+fn gl_nodes() -> &'static [(f64, f64)] {
+    static NODES: OnceLock<Vec<(f64, f64)>> = OnceLock::new();
+    NODES.get_or_init(|| gauss_legendre(GL_NODES))
+}
+
 fn erfc(x: f64) -> f64 {
     special::Error::compl_error(x)
 }
@@ -202,7 +211,7 @@ pub fn chisq_mix_tail(lambda: &[f64], q: f64) -> f64 {
         [] => 0.0,
         [l] => erfc((q / (2.0 * l)).sqrt()),
         [l1, rest @ ..] => {
-            let gl = gauss_legendre(GL_NODES);
+            let gl = gl_nodes();
             let zmax = (q / l1).sqrt();
             let mut edges = vec![0.0];
             edges.extend(
@@ -212,7 +221,7 @@ pub fn chisq_mix_tail(lambda: &[f64], q: f64) -> f64 {
             let mut integral = 0.0;
             for w in edges.windows(2) {
                 let (a, b) = (w[0], w[1]);
-                for &(x, wt) in &gl {
+                for &(x, wt) in gl {
                     let t = 0.5 * (b - a) * x + 0.5 * (a + b);
                     let z = zmax * t.sin();
                     let phi = (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
@@ -262,28 +271,37 @@ pub fn by_adjust(p: &[f64]) -> Vec<f64> {
     adj
 }
 
-/// Each gene's statistic and null weights under each kernel (none for a
-/// gene with no variance within its sections), from `counts` (genes ×
-/// cells) at coordinates `xy` (cells × d) in sections `section`.
+/// The f64 accumulators [`kernel_stats`] sums the genes into, one a
+/// thread, over `m` genes, `n_sections` sections and `d` coordinates.
+pub fn accumulator_bytes(m: usize, n_sections: usize, d: usize, threads: usize) -> usize {
+    8 * threads * m * (1 + n_sections + 11 * d)
+}
+
+/// Each kernel's null weights, and each gene's statistic under each kernel
+/// (none for a gene with no variance within its sections, untested), from
+/// `counts` (genes × cells) at coordinates `xy` (cells × d) in sections
+/// `section`.
 pub fn kernel_stats(
     counts: &CscMatrix<f32>,
     xy: &DMatrix<f64>,
     section: &[usize],
     n_sections: usize,
-) -> Vec<Vec<(f64, Vec<f64>)>> {
+) -> (Vec<Vec<f64>>, Vec<Option<Vec<f64>>>) {
     let (m, n) = (counts.nrows(), counts.ncols());
     let ks = kernels(xy, section, n_sections);
     let d = xy.ncols();
     let width = ks.len() * d;
-    // per gene: sum y^2, the per-section sums and (HS_k)^T y for every k
+    // per gene: sum y^2, the per-section sums and (HS_k)^T y for every k,
+    // one accumulator a thread over its block of cells
     let stride = 1 + n_sections + width;
-    let cols: Vec<(usize, _)> = counts.col_iter().enumerate().collect();
-    let sums: Vec<f64> = cols
-        .par_chunks(1024)
-        .map(|chunk| {
+    let block = n.div_ceil(rayon::current_num_threads().max(1)).max(1);
+    let sums: Vec<f64> = (0..n.div_ceil(block))
+        .into_par_iter()
+        .map(|b| {
             let mut acc = vec![0f64; m * stride];
-            for (c, col) in chunk {
-                let g = section[*c];
+            for c in b * block..((b + 1) * block).min(n) {
+                let col = counts.col(c);
+                let g = section[c];
                 for (&gene, &v) in col.row_indices().iter().zip(col.values()) {
                     let v = v as f64;
                     let row = &mut acc[gene * stride..(gene + 1) * stride];
@@ -291,7 +309,7 @@ pub fn kernel_stats(
                     row[1 + g] += v;
                     for (k, ker) in ks.iter().enumerate() {
                         for j in 0..d {
-                            row[1 + n_sections + k * d + j] += v * ker.hs[(*c, j)];
+                            row[1 + n_sections + k * d + j] += v * ker.hs[(c, j)];
                         }
                     }
                 }
@@ -309,7 +327,7 @@ pub fn kernel_stats(
     for &g in section {
         size[g] += 1.0;
     }
-    (0..m)
+    let stats = (0..m)
         .into_par_iter()
         .map(|gene| {
             let row = &sums[gene * stride..(gene + 1) * stride];
@@ -318,51 +336,66 @@ pub fn kernel_stats(
                     .map(|g| row[1 + g] * row[1 + g] / size[g].max(1.0))
                     .sum::<f64>();
             if yhy <= 1e-12 * row[0].max(1e-300) {
-                return Vec::new();
+                return None;
             }
-            ks.iter()
-                .enumerate()
-                .map(|(k, ker)| {
-                    let u =
-                        DVector::from_iterator(d, (0..d).map(|j| row[1 + n_sections + k * d + j]));
-                    (u.dot(&(&ker.w * &u)) / (yhy / n as f64), ker.lambda.clone())
-                })
-                .collect()
+            Some(
+                ks.iter()
+                    .enumerate()
+                    .map(|(k, ker)| {
+                        let u = DVector::from_iterator(
+                            d,
+                            (0..d).map(|j| row[1 + n_sections + k * d + j]),
+                        );
+                        u.dot(&(&ker.w * &u)) / (yhy / n as f64)
+                    })
+                    .collect(),
+            )
         })
-        .collect()
+        .collect();
+    (ks.into_iter().map(|k| k.lambda).collect(), stats)
 }
 
-/// Each gene's p-value, its kernels' combined by the Cauchy rule (1 for a
-/// gene with no variance within its sections).
+/// Each gene's p-value, its kernels' combined by the Cauchy rule; none for
+/// a gene with no variance within its sections, which is not tested.
 pub fn sparkx(
     counts: &CscMatrix<f32>,
     xy: &DMatrix<f64>,
     section: &[usize],
     n_sections: usize,
-) -> Vec<f64> {
-    kernel_stats(counts, xy, section, n_sections)
+) -> Vec<Option<f64>> {
+    let (lambda, stats) = kernel_stats(counts, xy, section, n_sections);
+    stats
         .into_par_iter()
         .map(|stats| {
-            if stats.is_empty() {
-                return 1.0;
-            }
-            let p: Vec<f64> = stats
+            let p: Vec<f64> = stats?
                 .iter()
-                .map(|(t, lambda)| chisq_mix_tail(lambda, *t))
+                .zip(&lambda)
+                .map(|(&t, l)| chisq_mix_tail(l, t))
                 .collect();
-            cauchy_combine(&p)
+            Some(cauchy_combine(&p))
         })
         .collect()
 }
 
 /// The genes SpatialPCA models: those with a Benjamini-Yekutieli adjusted
-/// p-value below [`FDR`] among `p` (tested genes), the `at_most` smallest
-/// p-values, in increasing order of p; and how many were significant.
-pub fn significant(p: &[f64], at_most: usize) -> (Vec<usize>, usize) {
-    let adj = by_adjust(p);
-    let mut genes: Vec<usize> = (0..p.len()).filter(|&g| adj[g] < FDR).collect();
+/// p-value below [`FDR`], the adjustment over the tested genes (`p` not
+/// none) only, the `at_most` smallest p-values, in increasing order of p;
+/// and how many were significant.
+pub fn significant(p: &[Option<f64>], at_most: usize) -> (Vec<usize>, usize) {
+    let tested: Vec<(usize, f64)> = p
+        .iter()
+        .enumerate()
+        .filter_map(|(g, &pg)| pg.map(|v| (g, v)))
+        .collect();
+    let adj = by_adjust(&tested.iter().map(|e| e.1).collect::<Vec<_>>());
+    let mut genes: Vec<(usize, f64)> = tested
+        .into_iter()
+        .zip(adj)
+        .filter(|&(_, a)| a < FDR)
+        .map(|(e, _)| e)
+        .collect();
     let count = genes.len();
-    genes.sort_by(|&a, &b| p[a].total_cmp(&p[b]).then(a.cmp(&b)));
+    genes.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
     genes.truncate(at_most);
-    (genes, count)
+    (genes.into_iter().map(|e| e.0).collect(), count)
 }

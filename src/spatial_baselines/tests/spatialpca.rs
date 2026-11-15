@@ -6,7 +6,7 @@ use super::graph::toy;
 use super::pseudobulk::{ari, labels_of, read_column, read_labels};
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::spatial_factor::kit::{gaussian, sym_eig_desc, Dense};
-use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
+use crate::spatial_baselines::spatial_factor::prep::DenseRows;
 use crate::spatial_baselines::spatial_factor::prior::{Laplacian, Spectrum, SpectrumOpts};
 use crate::spatial_baselines::spatialpca::sparse::Profile;
 use rand::rngs::SmallRng;
@@ -112,7 +112,7 @@ fn sparse_profile_is_the_restricted_likelihood() {
     let lap = lap_of(&xy, &vec![0; n], 3);
     let spec = Spectrum::new(&lap, &exact());
     let y = centred_integers(m, n, 2);
-    let op = ResidualOp::from_dense(&y);
+    let op = DenseRows::from_dense(&y);
     let prof = Profile::new(&op, &lap, &spec, d, 1e-14, 0);
     let mut evals = Vec::new();
     for (tau, rho) in [(0.3, 0.5), (1.0, 2.0), (3.0, 0.7), (0.8, 6.0)] {
@@ -174,7 +174,7 @@ fn sparse_profile_gradient_is_the_central_difference() {
     let lap = lap_of(&xy, &section, 5);
     let spec = Spectrum::new(&lap, &exact());
     let y = centred_integers(8, n, 4);
-    let op = ResidualOp::from_dense(&y);
+    let op = DenseRows::from_dense(&y);
     let prof = Profile::new(&op, &lap, &spec, 3, 1e-13, 0);
     let (lt, lr) = (0.4f64, -0.3f64);
     let e = prof.eval(lt, lr);
@@ -209,7 +209,7 @@ fn sparse_profile_matches_its_dense_twin() {
         }
     }
     let y = y.map(|v| (v as f32) as f64);
-    let op = ResidualOp::from_dense(&y);
+    let op = DenseRows::from_dense(&y);
     // centre through the operator's dense form for the twin
     let yd = op.dense();
     let prof = Profile::new(&op, &lap, &spec, 3, 1e-12, 0);
@@ -267,7 +267,7 @@ fn sparse_fit_returns_the_evaluation_at_its_optimum() {
             y[(g, c)] += 2.0 * (xy[c].1 as f64).cos();
         }
     }
-    let op = ResidualOp::from_dense(&y);
+    let op = DenseRows::from_dense(&y);
     let prof = Profile::new(&op, &lap, &spec, 2, 1e-12, 0);
     let (fit, _) = prof.fit(50);
     let again = prof.eval(fit.tau.ln(), fit.rho.ln());
@@ -350,34 +350,27 @@ fn spatialpca_recovers_planted_domains() {
     let data = a.fit.core.input.read(false).unwrap();
     let (domain, k) = planted(&sim, &data.cells);
     let k = k.to_string();
-    let mut scores = Vec::new();
-    for (name, extra) in [("sparse", Vec::<&str>::new())] {
-        let out = dir.path().join(name).to_string_lossy().to_string();
-        let mut flags = vec!["--n-clusters", k.as_str(), "--n-factors", "10"];
-        flags.extend(extra);
-        let crate::Commands::Spatialpca(a) = parse("spatialpca", &files, &out, &flags) else {
-            unreachable!()
-        };
-        crate::spatial_baselines::spatialpca::run(&a).unwrap();
-        let labels = labels_of(&data.cells, &read_labels(&out));
-        scores.push((name, ari(&domain, &labels)));
-        for f in [
-            "pinto.json",
-            "cell_embedding.parquet",
-            "baseline.json",
-            "spatialpca_loadings.parquet",
-        ] {
-            assert!(std::path::Path::new(&format!("{out}.{f}")).exists(), "{f}");
-        }
-        let meta: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
-                .unwrap();
-        assert_eq!(meta["command"], "spatialpca");
+    let out = dir.path().join("sparse").to_string_lossy().to_string();
+    let flags = ["--n-clusters", k.as_str(), "--n-factors", "10"];
+    let crate::Commands::Spatialpca(a) = parse("spatialpca", &files, &out, &flags) else {
+        unreachable!()
+    };
+    crate::spatial_baselines::spatialpca::run(&a).unwrap();
+    let score = ari(&domain, &labels_of(&data.cells, &read_labels(&out)));
+    for f in [
+        "pinto.json",
+        "cell_embedding.parquet",
+        "baseline.json",
+        "spatialpca_loadings.parquet",
+    ] {
+        assert!(std::path::Path::new(&format!("{out}.{f}")).exists(), "{f}");
     }
-    eprintln!("spatialpca ARI: {scores:?}");
-    for (name, a) in scores {
-        assert!(a >= 0.5, "{name}: ARI {a}");
-    }
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
+            .unwrap();
+    assert_eq!(meta["command"], "spatialpca");
+    eprintln!("spatialpca ARI: {score}");
+    assert!(score >= 0.5, "ARI {score}");
 }
 
 /// Counts divided by a δ of one everywhere give the run `--ignore-batch`

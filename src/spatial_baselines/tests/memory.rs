@@ -1015,10 +1015,10 @@ const FACTOR_MEASURED: [(&str, [Measured; 4]); 4] = [
     (
         "spatialpca",
         [
-            (1024, 101.69, 28),
-            (4096, 243.89, 54),
-            (8100, 409.84, 135),
-            (16384, 768.97, 159),
+            (1024, 79.41, 28),
+            (4096, 182.77, 54),
+            (8100, 337.77, 135),
+            (16384, 568.59, 159),
         ],
     ),
     (
@@ -1033,10 +1033,10 @@ const FACTOR_MEASURED: [(&str, [Measured; 4]); 4] = [
     (
         "spatialpca-pb",
         [
-            (1024, 122.67, 28),
-            (4096, 330.30, 54),
-            (8100, 515.22, 135),
-            (16384, 1275.56, 159),
+            (1024, 103.02, 28),
+            (4096, 328.80, 54),
+            (8100, 515.94, 135),
+            (16384, 1046.13, 159),
         ],
     ),
     (
@@ -1050,11 +1050,72 @@ const FACTOR_MEASURED: [(&str, [Measured; 4]); 4] = [
     ),
 ];
 
+/// SpatialPCA's estimate counts SPARK-X's accumulators, a thread each over
+/// every gene read, not only the genes modelled.
+#[test]
+fn spatialpca_estimate_counts_spark_x_over_every_gene() {
+    use crate::spatial_baselines::spatial_factor::sparkx::accumulator_bytes;
+    use crate::spatial_baselines::spatialpca;
+    let crate::Commands::Spatialpca(a) =
+        parse(&["pinto", "spatialpca", "d.zarr", "-c", "c.csv", "-o", "x"])
+    else {
+        unreachable!()
+    };
+    let shape = |genes: usize| InputShape {
+        genes,
+        nonzeros: 1000,
+        section_sizes: vec![500, 500],
+        batches: 1,
+    };
+    let at = |genes: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| {
+                factor_peak_bytes(&a.fit.memory_shape(
+                    &shape(genes),
+                    100,
+                    spatialpca::Variant::Sparse,
+                ))
+            })
+    };
+    let grown = at(20_000) - at(2000);
+    assert_eq!(grown, accumulator_bytes(18_000, 2, 3, 4));
+}
+
+/// A factor command's estimate (MiB, 4 threads) on `input`, `genes`
+/// modelled, at its defaults (`-d 1024` for the `-pb` forms).
+fn factor_estimate(cmd: &str, input: &InputShape, genes: usize) -> f64 {
+    use crate::spatial_baselines::{mefisto, spatialpca};
+    let argv = ["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
+    let shape = match parse(&argv) {
+        crate::Commands::Spatialpca(a) => {
+            a.fit
+                .memory_shape(input, genes, spatialpca::Variant::Sparse)
+        }
+        crate::Commands::SpatialpcaPb(a) => {
+            a.fit
+                .memory_shape(input, genes, spatialpca::Variant::Pseudobulk(1024))
+        }
+        crate::Commands::Mefisto(a) => a.fit.memory_shape(input, genes, mefisto::Variant::Sparse),
+        crate::Commands::MefistoPb(a) => {
+            a.fit
+                .memory_shape(input, genes, mefisto::Variant::Pseudobulk(1024))
+        }
+        _ => unreachable!(),
+    };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap()
+        .install(|| mib(factor_peak_bytes(&shape)))
+}
+
 /// The factor baselines' estimates cover every measured run, and from 4096
 /// cells are not far above it.
 #[test]
 fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
-    use crate::spatial_baselines::{mefisto, spatialpca};
     for (cmd, runs) in FACTOR_MEASURED {
         for (cells, measured, genes) in runs {
             let input = InputShape {
@@ -1063,34 +1124,37 @@ fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
                 section_sizes: vec![cells],
                 batches: 1,
             };
-            let argv = ["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
-            let shape = match parse(&argv) {
-                crate::Commands::Spatialpca(a) => {
-                    a.fit
-                        .memory_shape(&input, genes, spatialpca::Variant::Sparse)
-                }
-                crate::Commands::SpatialpcaPb(a) => {
-                    a.fit
-                        .memory_shape(&input, genes, spatialpca::Variant::Pseudobulk(1024))
-                }
-                crate::Commands::Mefisto(a) => {
-                    a.fit.memory_shape(&input, genes, mefisto::Variant::Sparse)
-                }
-                crate::Commands::MefistoPb(a) => {
-                    a.fit
-                        .memory_shape(&input, genes, mefisto::Variant::Pseudobulk(1024))
-                }
-                _ => unreachable!(),
-            };
-            let est = rayon::ThreadPoolBuilder::new()
-                .num_threads(4)
-                .build()
-                .unwrap()
-                .install(|| mib(factor_peak_bytes(&shape)));
+            let est = factor_estimate(cmd, &input, genes);
             assert!(est >= measured, "{cmd} {cells}: {est:.0} < {measured} MiB");
             if cells >= 4096 {
                 assert!(est <= 1.5 * measured, "{cmd} {cells}: {est:.0} MiB");
             }
         }
+    }
+}
+
+/// Maximum resident memory (MiB) of spatialpca and spatialpca-pb (`-d
+/// 1024`, 4 threads) on one srt-simulate section of 16384 cells and 4000
+/// genes, most of them planted in the cell states' programmes
+/// (`programme_genes=1500`, `pve_type=0.9`, `log_mean=0`), where SPARK-X
+/// declares more genes than the cap: 3000 modelled, the dense residuals
+/// the largest term.
+const MANY_GENES_NONZEROS: usize = 37_742_904;
+const MANY_GENES_MEASURED: [(&str, f64); 2] = [("spatialpca", 1648.39), ("spatialpca-pb", 2869.80)];
+
+/// SpatialPCA's estimates cover the runs that model 3000 genes, and are not
+/// far above them.
+#[test]
+fn spatialpca_estimates_cover_runs_at_the_gene_cap() {
+    let input = InputShape {
+        genes: 4000,
+        nonzeros: MANY_GENES_NONZEROS,
+        section_sizes: vec![16384],
+        batches: 1,
+    };
+    for (cmd, measured) in MANY_GENES_MEASURED {
+        let est = factor_estimate(cmd, &input, 3000);
+        assert!(est >= measured, "{cmd}: {est:.0} < {measured} MiB");
+        assert!(est <= 1.5 * measured, "{cmd}: {est:.0} MiB");
     }
 }

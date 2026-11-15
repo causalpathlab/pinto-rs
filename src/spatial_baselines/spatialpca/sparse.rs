@@ -22,7 +22,7 @@
 //! analytic gradient (the envelope theorem: `dS = sum_l z_l^T dC z_l`).
 
 use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
-use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
+use crate::spatial_baselines::spatial_factor::prep::DenseRows;
 use crate::spatial_baselines::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
 use std::cell::RefCell;
 
@@ -68,7 +68,7 @@ impl Eval {
 /// The profile likelihood of one fit: `d` spatial PCs of `op` on the prior
 /// of `lap`, profiled over `W` or with `W` fixed (the `-pb` unravel).
 pub struct Profile<'a> {
-    pub op: &'a ResidualOp,
+    pub op: &'a DenseRows,
     pub lap: &'a Laplacian,
     pub spec: &'a Spectrum,
     pub d: usize,
@@ -82,7 +82,7 @@ pub struct Profile<'a> {
 
 impl<'a> Profile<'a> {
     pub fn new(
-        op: &'a ResidualOp,
+        op: &'a DenseRows,
         lap: &'a Laplacian,
         spec: &'a Spectrum,
         d: usize,

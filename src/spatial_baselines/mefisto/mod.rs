@@ -77,7 +77,7 @@ use super::input::{InputShape, SpatialData};
 use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
-use super::spatial_factor::prep::{library, select_rows, ResidualOp};
+use super::spatial_factor::prep::{library, select_rows, SparseOp};
 use super::spatial_factor::{
     cell_graph, coarsen, domains, pseudobulk_input, select_genes, spectrum, to_mat, CoreArgs,
 };
@@ -227,6 +227,7 @@ impl FitArgs {
             },
             dense_bytes: 0,
             nonzero_bytes: super::memory::FACTOR_NONZERO_BYTES,
+            freed_before_graph: 0,
         }
     }
 }
@@ -271,11 +272,11 @@ fn read_shape(data: &SpatialData) -> InputShape {
 }
 
 /// The log expression of `genes`, centred per section, the counts freed.
-fn expression(data: &mut SpatialData, genes: &[usize]) -> ResidualOp {
+fn expression(data: &mut SpatialData, genes: &[usize]) -> SparseOp {
     let lib = library(&data.counts);
     let sel = select_rows(&data.counts, genes);
     data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
-    ResidualOp::log_centred(&sel, &lib, &data.section, data.n_sections)
+    SparseOp::log_centred(&sel, &lib, &data.section, data.n_sections)
 }
 
 /// Each factor's share of the centred expression's sum of squares that its

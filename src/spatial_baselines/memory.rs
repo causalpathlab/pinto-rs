@@ -303,6 +303,10 @@ pub struct FactorShape {
     /// Bytes a stored nonzero takes over the run ([`FACTOR_NONZERO_BYTES`]
     /// or [`SCT_NONZERO_BYTES`]).
     pub nonzero_bytes: usize,
+    /// Bytes a nonzero frees before the cells' graph is built, which the
+    /// kNN's Gram blocks then reuse (measured: SpatialPCA's peak on cells
+    /// is below the sum with them).
+    pub freed_before_graph: usize,
 }
 
 /// Bytes a stored nonzero takes over a factor baseline's run, summed
@@ -314,11 +318,13 @@ pub struct FactorShape {
 pub const FACTOR_NONZERO_BYTES: usize = 32 + 12 + 16;
 
 /// [`FACTOR_NONZERO_BYTES`] for SpatialPCA, whose expression is dense: the
-/// read and SCTransform's per-gene lists of every gene's nonzeros (16).
-pub const SCT_NONZERO_BYTES: usize = 32 + 16;
+/// read and SCTransform's copy of every gene's nonzeros by gene (8, a cell
+/// index and a count).
+pub const SCT_NONZERO_BYTES: usize = 32 + 8;
 
 /// A factor baseline's peak: the process, every nonzero's
-/// `nonzero_bytes`, the graph as built (the kNN's Gram blocks,
+/// `nonzero_bytes`, the graph as built (the kNN's Gram blocks, less what
+/// `freed_before_graph` left them,
 /// [`GRAPH_EDGE_BYTES`] an edge of the symmetrised kNN, then its lists and
 /// its Laplacian, 12 bytes an entry each), the dense blocks of the exactly
 /// decomposed sections (three `n_s^2` copies, a thread each), the fit's
@@ -337,7 +343,8 @@ pub fn factor_peak_bytes(s: &FactorShape) -> usize {
         .collect();
     exact.sort_unstable_by(|a, b| b.cmp(a));
     let exact: usize = exact.iter().take(threads).sum();
-    let graph = knn_gram_bytes(sizes, threads) + (GRAPH_EDGE_BYTES + 24) * edges;
+    let gram = knn_gram_bytes(sizes, threads).saturating_sub(s.freed_before_graph * nnz);
+    let graph = gram + (GRAPH_EDGE_BYTES + 24) * edges;
     // the super-cells' counts, their selected copy and their expression,
     // at most every nonzero and every gene of every super-cell, beside the
     // coarsening's

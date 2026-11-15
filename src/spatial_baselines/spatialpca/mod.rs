@@ -83,7 +83,7 @@ use super::input::{InputShape, SpatialData};
 use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
-use super::spatial_factor::prep::{library, ResidualOp};
+use super::spatial_factor::prep::{library, DenseRows};
 use super::spatial_factor::sct::SctReport;
 use super::spatial_factor::sparkx;
 use super::spatial_factor::{
@@ -181,6 +181,7 @@ impl FitArgs {
             Variant::Pseudobulk(target) => target,
             _ => 0,
         };
+        let (sections, threads) = (input.section_sizes.len(), rayon::current_num_threads());
         FactorShape {
             input: input.clone(),
             genes: m,
@@ -188,14 +189,23 @@ impl FitArgs {
             exact_eig_max: self.core.exact_eig_max,
             cell_vectors: 7 * (d + 10) + 2 * d,
             gene_vectors: 3 * (d + 10) + d,
-            super_cells: match variant {
-                Variant::Pseudobulk(target) => target,
-                _ => 0,
-            },
-            // SCTransform's residuals as f32 rows, the cells' and with -pb
-            // the super-cells', and each gene's residuals in f64 as formed
-            dense_bytes: 4 * m * (n + super_cells) + 8 * n * rayon::current_num_threads(),
+            super_cells,
+            // SPARK-X's accumulators over every gene (three coordinates at
+            // most) and its kernels' coordinates (`n x d` for each of the
+            // eleven, and three more as they are formed); SCTransform's
+            // residuals as f32 rows, the cells' and with -pb the
+            // super-cells', and each gene's residuals in f64 as formed
+            dense_bytes: sparkx::accumulator_bytes(input.genes, sections, 3, threads)
+                + 8 * n * 3 * (11 + 3)
+                + 4 * m * (n + super_cells)
+                + 8 * n * threads,
             nonzero_bytes: super::memory::SCT_NONZERO_BYTES,
+            // on cells, the counts (12) and SCTransform's copy (8) are freed
+            // before the graph; -pb builds it with the counts held
+            freed_before_graph: match variant {
+                Variant::Sparse => 20,
+                Variant::Pseudobulk(_) => 0,
+            },
         }
     }
 }
@@ -263,9 +273,9 @@ fn spatial_genes(data: &SpatialData, n_genes: usize) -> anyhow::Result<(Vec<usiz
 }
 
 /// SCTransform's standardised residuals on `genes`, the counts freed.
-fn expression(data: &mut SpatialData, genes: &[usize], seed: u64) -> (ResidualOp, SctReport) {
+fn expression(data: &mut SpatialData, genes: &[usize], seed: u64) -> (DenseRows, SctReport) {
     let lib = library(&data.counts);
-    let out = ResidualOp::sct(&data.counts, &lib, genes, seed);
+    let out = DenseRows::sct(&data.counts, &lib, genes, seed);
     data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
     out
 }
@@ -307,13 +317,18 @@ fn base_settings(
 /// [`run`] on `data` as read.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
+    // before SPARK-X, at the most genes it can select
     ensure_fits(
         "spatialpca",
-        factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), Variant::Sparse)),
+        factor_peak_bytes(&fit.memory_shape(
+            &read_shape(&data),
+            data.genes.len().min(fit.n_genes),
+            Variant::Sparse,
+        )),
         budget,
         LOWER_MEMORY,
     )?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
     let (op, sct) = expression(&mut data, &genes, fit.core.input.seed);
     let pre = Preprocessing { significant, sct };
     let d = fit.n_factors.min(op.m);
@@ -405,17 +420,17 @@ pub(crate) fn run_pb_on(
     budget: &Budget,
 ) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
     ensure_fits(
         "spatialpca-pb",
         factor_peak_bytes(&fit.memory_shape(
             &read_shape(&data),
-            genes.len(),
+            data.genes.len().min(fit.n_genes),
             Variant::Pseudobulk(args.n_pseudobulk),
         )),
         budget,
         LOWER_MEMORY,
     )?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
     let (nb, lap) = cell_graph(&data, fit.core.knn);
     let mut coarse = coarsen(&mut data, args.n_pseudobulk, &nb)?;
     drop(nb);

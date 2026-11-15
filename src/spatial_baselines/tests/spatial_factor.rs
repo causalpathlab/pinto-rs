@@ -340,7 +340,7 @@ fn pearson_dense(counts: &CscMatrix<f32>, lib: &[f64]) -> Dense {
 #[test]
 fn implicit_expression_matches_its_dense_form() {
     let (counts, lib, section) = counts_fixture();
-    let op = ResidualOp::pearson(&counts, &lib);
+    let op = SparseOp::pearson(&counts, &lib);
     assert!(op.clipped_zeros > 0, "the negative clip binds");
     let want = pearson_dense(&counts, &lib);
     let v = gaussian(6, 3, 2);
@@ -348,7 +348,7 @@ fn implicit_expression_matches_its_dense_form() {
     assert!(max_rel(&op.apply(&v), &(&want * &v)) < 1e-5);
     assert!(max_rel(&op.apply_t(&u), &(want.transpose() * &u)) < 1e-5);
     assert!(max_rel(&op.dense(), &want) < 1e-5);
-    let fro = op.frob2(&section, 2);
+    let fro = op.section_sumsq(&section, 2).sum();
     assert!((fro - want.norm_squared()).abs() < 1e-4 * fro);
     // without the clip, the products differ
     let unclipped = {
@@ -361,7 +361,7 @@ fn implicit_expression_matches_its_dense_form() {
     };
     assert!(max_rel(&unclipped, &want) > 1e-2);
 
-    let op = ResidualOp::log_centred(&counts, &lib, &section, 2);
+    let op = SparseOp::log_centred(&counts, &lib, &section, 2);
     let x = dense_counts(&counts);
     let mut y = Dense::from_fn(4, 6, |g, c| (1e4 * x[(g, c)] / lib[c]).ln_1p());
     for s in 0..2 {
@@ -390,7 +390,7 @@ fn implicit_expression_matches_its_dense_form() {
 
 /// The per-section sums of squares row by row, densely (the closed form's
 /// oracle).
-fn sumsq_by_rows(op: &ResidualOp, section: &[usize], n_sections: usize) -> Dense {
+fn sumsq_by_rows(op: &SparseOp, section: &[usize], n_sections: usize) -> Dense {
     Dense::from_fn(op.m, n_sections, |g, s| {
         op.gene_row(g)
             .iter()
@@ -408,16 +408,16 @@ fn sumsq_by_rows(op: &ResidualOp, section: &[usize], n_sections: usize) -> Dense
 fn section_sums_of_squares_in_closed_form_are_the_rows() {
     let (counts, lib, section) = counts_fixture();
     for op in [
-        ResidualOp::pearson(&counts, &lib),
-        ResidualOp::log_centred(&counts, &lib, &section, 2),
+        SparseOp::pearson(&counts, &lib),
+        SparseOp::log_centred(&counts, &lib, &section, 2),
     ] {
         let want = sumsq_by_rows(&op, &section, 2);
         let got = op.section_sumsq(&section, 2);
         assert!(max_rel(&got, &want) < 1e-12, "{}", max_rel(&got, &want));
-        let fro = op.frob2(&section, 2);
+        let fro = op.section_sumsq(&section, 2).sum();
         assert!((fro - want.sum()).abs() < 1e-12 * want.sum());
         // broken: the raw entries' sums of squares alone
-        let raw = sumsq_by_rows(&ResidualOp::from_dense(&dense_counts(&counts)), &section, 2);
+        let raw = sumsq_by_rows(&SparseOp::from_dense(&dense_counts(&counts)), &section, 2);
         assert!(max_rel(&raw, &want) > 1e-2);
     }
 }
@@ -428,8 +428,8 @@ fn section_sums_of_squares_in_closed_form_are_the_rows() {
 fn section_products_are_the_masked_products() {
     let (counts, lib, section) = counts_fixture();
     for op in [
-        ResidualOp::pearson(&counts, &lib),
-        ResidualOp::log_centred(&counts, &lib, &section, 2),
+        SparseOp::pearson(&counts, &lib),
+        SparseOp::log_centred(&counts, &lib, &section, 2),
     ] {
         let v = gaussian(6, 3, 4);
         let per = op.apply_by_section(&v, &section, 2);

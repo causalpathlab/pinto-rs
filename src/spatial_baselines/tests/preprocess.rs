@@ -6,7 +6,7 @@
 
 use crate::spatial_baselines::spatial_factor::kit::{gaussian, Dense};
 use crate::spatial_baselines::spatial_factor::sct::{
-    fit_gene, nb_loglik, residuals, GeneCounts, GeneModel,
+    fit_gene, nb_loglik, residuals, ByGene, Depths, GeneModel,
 };
 use crate::spatial_baselines::spatial_factor::sparkx::{
     by_adjust, cauchy_combine, chisq_mix_tail, kernel_stats, significant, sparkx,
@@ -80,14 +80,6 @@ fn csc(rows: &[Vec<f64>], n: usize) -> CscMatrix<f32> {
     CscMatrix::from(&coo)
 }
 
-fn sparse_gene(r: &[f64]) -> GeneCounts {
-    r.iter()
-        .enumerate()
-        .filter(|(_, &v)| v != 0.0)
-        .map(|(c, &v)| (c as u32, v))
-        .collect()
-}
-
 /// The tail of a weighted sum of chi-squares: one weight's is the
 /// chi-square's, equal weights' the exponential's (exact far into the
 /// tail), unequal weights' the Monte Carlo frequency; without its first
@@ -151,7 +143,8 @@ fn sparkx_statistics_are_the_papers_traces() {
         .collect();
     let counts = csc(std::slice::from_ref(&y), n);
     let section = vec![0usize; n];
-    let stats = kernel_stats(&counts, &xy, &section, 1);
+    let (lambdas, stats) = kernel_stats(&counts, &xy, &section, 1);
+    let stats = stats[0].as_ref().expect("a tested gene");
     // the coordinates as the test standardises them
     let mut s = xy.clone();
     for j in 0..2 {
@@ -171,7 +164,7 @@ fn sparkx_statistics_are_the_papers_traces() {
         let sigma = sk * (sk.transpose() * sk).try_inverse().unwrap() * sk.transpose();
         let (ec, sc) = (&h * &e * &h, &h * &sigma * &h);
         let want = n as f64 * (&ec * &sc).trace();
-        let (t, lambda) = &stats[0][k];
+        let (t, lambda) = (stats[k], &lambdas[k]);
         assert!(
             (t - want).abs() < 1e-9 * want.abs().max(1.0),
             "kernel {k}: {t} vs {want}"
@@ -210,6 +203,29 @@ fn sparkx_statistics_are_the_papers_traces() {
         (-s[(c, j)].powi(2) / (2.0 * q20[j].powi(2))).exp()
     });
     check(1, &g);
+}
+
+/// The Benjamini-Yekutieli adjustment runs over the tested genes only:
+/// untested genes (no p-value) beside them change neither which genes are
+/// significant nor their count; counted as p = 1, they would.
+#[test]
+fn by_adjustment_counts_the_tested_genes_only() {
+    let tested = [0.002, 0.004, 0.006, 0.3];
+    let mut p: Vec<Option<f64>> = tested.iter().map(|&v| Some(v)).collect();
+    let alone = significant(&p, 3000);
+    assert_eq!(alone, (vec![0, 1, 2], 3));
+    p.splice(1..1, std::iter::repeat_n(None, 40));
+    let (genes, count) = significant(&p, 3000);
+    assert_eq!((genes, count), (vec![0, 41, 42], 3));
+    // broken: the untested genes counted at p = 1
+    let as_one: Vec<Option<f64>> = p.iter().map(|v| Some(v.unwrap_or(1.0))).collect();
+    assert!(significant(&as_one, 3000).1 < 3);
+    // an all-zero gene is untested
+    let n = 50;
+    let xy = DMatrix::from_fn(n, 2, |c, j| (c * (j + 1)) as f64);
+    let counts = csc(&[vec![0.0; n], (0..n).map(|c| (c % 3) as f64).collect()], n);
+    let p = sparkx(&counts, &xy, &vec![0; n], 1);
+    assert!(p[0].is_none() && p[1].is_some(), "{p:?}");
 }
 
 /// Bar, set before measuring: on a 30 × 30 grid, genes planted with the
@@ -262,6 +278,7 @@ fn sparkx_detects_planted_spatial_genes_and_not_null_ones() {
     let null = genes.iter().filter(|&&g| g >= 30).count();
     assert_eq!(count, genes.len());
     assert_eq!(planted, 30, "planted detected {planted}: {:?}", &p[..30]);
+    assert!(p.iter().all(Option::is_some));
     assert!(null <= 1, "null declared {null}");
     // shuffled coordinates break the pattern
     let mut order: Vec<usize> = (0..n).collect();
@@ -292,8 +309,9 @@ fn sctransform_gene_fit_is_the_direct_fit() {
     let t: Vec<f64> = lib.iter().map(|m| m.log10()).collect();
     let mut rng = SmallRng::seed_from_u64(5);
     let x: Vec<f64> = lib.iter().map(|&m| nb(&mut rng, 2e-3 * m, 3.0)).collect();
-    let xs = sparse_gene(&x);
-    let fit = fit_gene(&xs, &t);
+    let by_gene = ByGene::from_csc(&csc(std::slice::from_ref(&x), n));
+    let xs = by_gene.gene(0);
+    let fit = fit_gene(xs, &Depths::new(&lib));
     let mu: Vec<f64> = t
         .iter()
         .map(|&ti| (fit.beta0 + fit.beta1 * ti).exp())
@@ -305,11 +323,13 @@ fn sctransform_gene_fit_is_the_direct_fit() {
         g0.abs() < 1e-6 * scale && g1.abs() < 1e-6 * scale,
         "{g0} {g1}"
     );
-    let best = nb_loglik(&xs, &mu, fit.theta);
+    // each cell its own level: the full sum over the cells
+    let levels: Vec<(f64, f64)> = mu.iter().map(|&m| (m, 1.0)).collect();
+    let best = nb_loglik(xs, &mu, &levels, fit.theta);
     for i in 0..400 {
         let th = 10f64.powf(-2.0 + 5.0 * i as f64 / 399.0);
         assert!(
-            nb_loglik(&xs, &mu, th) <= best + 1e-8 * best.abs(),
+            nb_loglik(xs, &mu, &levels, th) <= best + 1e-8 * best.abs(),
             "theta {th} beats {}",
             fit.theta
         );
@@ -334,6 +354,55 @@ fn sctransform_gene_fit_is_the_direct_fit() {
     assert!((fit.theta / 3.0).ln().abs() < 0.4, "{}", fit.theta);
 }
 
+/// Each gene's nonzeros by gene are the counts' own, explicit zeros left
+/// out, in cell order.
+#[test]
+fn by_gene_holds_each_gene_s_nonzeros() {
+    let rows = [[0.0, 2.0, 0.0, 5.0], [1.0, 0.0, 0.0, 0.0], [0.0; 4]];
+    let mut coo = CooMatrix::<f32>::new(3, 4);
+    for (g, r) in rows.iter().enumerate() {
+        for (c, &v) in r.iter().enumerate() {
+            // an explicit zero stored for gene 2
+            if v != 0.0 || g == 2 {
+                coo.push(g, c, v as f32);
+            }
+        }
+    }
+    let by_gene = ByGene::from_csc(&CscMatrix::from(&coo));
+    assert_eq!(by_gene.n_genes(), 3);
+    let got: Vec<Vec<(usize, f64)>> = (0..3).map(|g| by_gene.gene(g).iter().collect()).collect();
+    assert_eq!(got, vec![vec![(1, 2.0), (3, 5.0)], vec![(0, 1.0)], vec![]]);
+}
+
+/// The likelihood's full-cell term over the distinct libraries, each with
+/// its number of cells, is the sum over the cells; counted once each, it
+/// is not.
+#[test]
+fn binned_likelihood_is_the_sum_over_the_cells() {
+    let n = 500;
+    let mut rng = SmallRng::seed_from_u64(12);
+    // forty distinct libraries, one cell with none
+    let mut lib: Vec<f64> = (0..n)
+        .map(|_| 100.0 * rng.random_range(1..=40) as f64)
+        .collect();
+    lib[7] = 0.0;
+    let x: Vec<f64> = lib.iter().map(|&m| nb(&mut rng, 2e-3 * m, 3.0)).collect();
+    let by_gene = ByGene::from_csc(&csc(std::slice::from_ref(&x), n));
+    let depths = Depths::new(&lib);
+    let (mu, levels) = depths.means(-6.0, std::f64::consts::LN_10);
+    assert_eq!(levels.len(), 40);
+    let per_cell: Vec<(f64, f64)> = mu.iter().map(|&m| (m, 1.0)).collect();
+    for theta in [0.1, 3.0, 1e4] {
+        let a = nb_loglik(by_gene.gene(0), &mu, &levels, theta);
+        let b = nb_loglik(by_gene.gene(0), &mu, &per_cell, theta);
+        assert!((a - b).abs() < 1e-10 * b.abs(), "{theta}: {a} vs {b}");
+        // broken: each library once
+        let once: Vec<(f64, f64)> = levels.iter().map(|&(m, _)| (m, 1.0)).collect();
+        let c = nb_loglik(by_gene.gene(0), &mu, &once, theta);
+        assert!((c - b).abs() > 1e-6 * b.abs());
+    }
+}
+
 /// Bar, set before measuring: on null genes (means proportional to the
 /// library, one dispersion), the residuals at the regularised models have
 /// variance near one (median within 0.1, nine in ten within 0.3), on the
@@ -347,15 +416,15 @@ fn sctransform_residuals_have_unit_variance_on_null_genes() {
     let lib = libraries(n, 6);
     let t: Vec<f64> = lib.iter().map(|m| m.log10()).collect();
     let mut rng = SmallRng::seed_from_u64(7);
-    let genes: Vec<GeneCounts> = (0..300)
+    let rows: Vec<Vec<f64>> = (0..300)
         .map(|g| {
             let p = 10f64.powf(-4.0 + 2.5 * g as f64 / 299.0);
-            let x: Vec<f64> = lib.iter().map(|&m| nb(&mut rng, p * m, 4.0)).collect();
-            sparse_gene(&x)
+            lib.iter().map(|&m| nb(&mut rng, p * m, 4.0)).collect()
         })
         .collect();
+    let genes = ByGene::from_csc(&csc(&rows, n));
     let wanted: Vec<usize> = (0..300).collect();
-    let (models, report) = sctransform(&genes, &lib, &wanted, 8);
+    let (models, report) = sctransform(&genes, &Depths::new(&lib), &wanted, 8);
     assert_eq!(report.genes_fitted, 300);
     let var = |z: &[f64]| {
         let m = z.iter().sum::<f64>() / z.len() as f64;
@@ -363,7 +432,7 @@ fn sctransform_residuals_have_unit_variance_on_null_genes() {
     };
     // the genes inside the range, with a mean of at least 0.1 a cell
     let mut vs: Vec<f64> = (100..250)
-        .map(|g| var(&residuals(&genes[g], &t, &models[g])))
+        .map(|g| var(&residuals(genes.gene(g), &t, &models[g])))
         .collect();
     vs.sort_by(f64::total_cmp);
     let med = vs[vs.len() / 2];
@@ -381,7 +450,7 @@ fn sctransform_residuals_have_unit_variance_on_null_genes() {
                 theta: f64::INFINITY,
                 ..models[g]
             };
-            var(&residuals(&genes[g], &t, &m))
+            var(&residuals(genes.gene(g), &t, &m))
         })
         .collect();
     assert!(poisson_var.iter().all(|&v| v > 1.5), "{poisson_var:?}");
@@ -390,14 +459,14 @@ fn sctransform_residuals_have_unit_variance_on_null_genes() {
 /// The dense-row operator's products are its matrix's.
 #[test]
 fn dense_rows_operator_matches_its_matrix() {
-    use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
+    use crate::spatial_baselines::spatial_factor::prep::DenseRows;
     let (m, n) = (5, 700);
     let y = gaussian(m, n, 9).map(|v| (v as f32) as f64);
     let rows: Vec<f32> = (0..m)
         .flat_map(|g| (0..n).map(move |c| (g, c)))
         .map(|(g, c)| y[(g, c)] as f32)
         .collect();
-    let op = ResidualOp::from_rows(m, n, rows);
+    let op = DenseRows::from_rows(m, n, rows);
     let v = gaussian(n, 3, 10);
     let u = gaussian(m, 2, 11);
     assert!((op.apply(&v) - &y * &v).amax() < 1e-10 * (&y * &v).amax());

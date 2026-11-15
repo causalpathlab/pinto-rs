@@ -5,9 +5,8 @@
 //!
 //! with a spatial prior on each factor's values over the cells. The papers
 //! put a dense Gaussian-kernel (SpatialPCA) or squared-exponential
-//! Gaussian-process (MEFISTO) prior on them; both commands run that with
-//! `--reference`, and by default replace it by the sparse precision of
-//! [`prior`]: `R(rho) = (I + rho L)^{-1} / cbar(rho)` on the per-section kNN
+//! Gaussian-process (MEFISTO) prior on them; both commands replace it, with
+//! no mode that keeps it, by the sparse precision of [`prior`]: `R(rho) = (I + rho L)^{-1} / cbar(rho)` on the per-section kNN
 //! graph's Laplacian, so no `N × N` matrix and no `O(N^3)` step is met.
 //!
 //! The core holds what both share: the implicit expression ([`prep`]), the

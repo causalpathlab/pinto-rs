@@ -9,7 +9,7 @@ use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::mefisto::sparse::GraphPrior;
 use crate::spatial_baselines::mefisto::vb::{self, FactorPrior, State, VbData, VbOpts};
 use crate::spatial_baselines::spatial_factor::kit::{gaussian, Dense};
-use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
+use crate::spatial_baselines::spatial_factor::prep::SparseOp;
 use crate::spatial_baselines::spatial_factor::prior::{Laplacian, Spectrum, SpectrumOpts};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -251,7 +251,7 @@ fn centre_sections(y: &mut Dense, section: &[usize], sections: usize) {
 fn mefisto_stops_with_rho_fitted() {
     let (mut y, _, xy, section) = planted_factors(10, 40, 7);
     centre_sections(&mut y, &section, 2);
-    let op = ResidualOp::from_dense(&y);
+    let op = SparseOp::from_dense(&y);
     let vd = VbData::new(&op, &section, 2);
     let lap = lap_of(&xy, &section);
     let spec = Spectrum::new(&lap, &exact());
@@ -304,7 +304,7 @@ fn mefisto_stops_with_rho_fitted() {
 fn vb_terms_are_the_dense_masked_products() {
     let (mut y, _, _, section) = planted_factors(5, 12, 3);
     centre_sections(&mut y, &section, 2);
-    let op = ResidualOp::from_dense(&y);
+    let op = SparseOp::from_dense(&y);
     let yd = op.dense();
     let vd = VbData::new(&op, &section, 2);
     let mut st = State::init(&vd, 2, 1);
@@ -401,7 +401,7 @@ fn mefisto_domains_are_not_driven_by_a_factor_without_weight() {
 fn mefisto_recovers_planted_factors_and_ascends_its_elbo() {
     let (mut y, z, xy, section) = planted_factors(10, 40, 7);
     centre_sections(&mut y, &section, 2);
-    let op = ResidualOp::from_dense(&y);
+    let op = SparseOp::from_dense(&y);
     let vd = VbData::new(&op, &section, 2);
     let lap = lap_of(&xy, &section);
     let spec = Spectrum::new(&lap, &exact());

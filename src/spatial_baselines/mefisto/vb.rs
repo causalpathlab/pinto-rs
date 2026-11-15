@@ -12,7 +12,7 @@
 //! per-group noise of SI (23) (identical to SI (51)/(53) with one group).
 
 use super::super::spatial_factor::kit::{top_eigs, Dense, EigOpts};
-use super::super::spatial_factor::prep::ResidualOp;
+use super::super::spatial_factor::prep::SparseOp;
 
 const A0: f64 = 1e-3;
 const B0: f64 = 1e-3;
@@ -52,7 +52,7 @@ pub trait FactorPrior {
 /// The data the updates read: the centred log expression, per-gene and
 /// per-section sums of squares, and the sections.
 pub struct VbData<'a> {
-    pub op: &'a ResidualOp,
+    pub op: &'a SparseOp,
     pub section: &'a [usize],
     pub n_sections: usize,
     /// `sum_{n in g} y_c[n, d]^2`, genes × sections.
@@ -61,7 +61,7 @@ pub struct VbData<'a> {
 }
 
 impl<'a> VbData<'a> {
-    pub fn new(op: &'a ResidualOp, section: &'a [usize], n_sections: usize) -> Self {
+    pub fn new(op: &'a SparseOp, section: &'a [usize], n_sections: usize) -> Self {
         let mut sizes = vec![0f64; n_sections];
         for &s in section {
             sizes[s] += 1.0;
