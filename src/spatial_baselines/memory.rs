@@ -100,10 +100,12 @@ pub fn stagate_training_bytes(s: &StagateShape) -> usize {
     (4.0 * floats as f64 * STAGATE_SAFETY) as usize
 }
 
-/// STAGATE's peak: the largest of the read ([`read_bytes`]), the kNN (the
-/// counts, the Gram blocks and the neighbours found), the dense input built
-/// beside the counts, and training ([`stagate_training_bytes`], or on CUDA
-/// the input copied to the device), the counts freed by then.
+/// STAGATE's peak: the largest of the read ([`read_bytes`]; the gene
+/// filter after it holds the counts beside their filtered copy, 24 bytes a
+/// nonzero, less), the kNN (the counts, the Gram blocks and the neighbours
+/// found), the dense input built beside the counts, and training
+/// ([`stagate_training_bytes`], or on CUDA the input copied to the device),
+/// the counts freed by then.
 pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     let counts = 12 * s.nonzeros;
     let knn = counts + s.gram + 12 * s.searched;

@@ -390,7 +390,9 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 }
 
 /// `sc.pp.filter_genes(min_cells)`: the rows (genes) of `counts` nonzero in
-/// at least `min_cells` columns (cells), in order.
+/// at least `min_cells` columns (cells), in order. The kept entries are
+/// copied column by column into arrays of their exact size, so the counts
+/// and their filtered copy are all it holds (24 bytes a nonzero).
 pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
     let mut nnz = vec![0usize; counts.nrows()];
     for (g, _, &v) in counts.triplet_iter() {
@@ -409,13 +411,26 @@ pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> 
     if kept == counts.nrows() {
         return counts;
     }
-    let mut coo = nalgebra_sparse::CooMatrix::new(kept, counts.ncols());
-    for (g, c, &v) in counts.triplet_iter() {
-        if let Some(r) = at[g] {
-            coo.push(r, c, v);
+    let total = counts
+        .row_indices()
+        .iter()
+        .filter(|&&g| at[g].is_some())
+        .count();
+    let mut offsets = Vec::with_capacity(counts.ncols() + 1);
+    let mut rows = Vec::with_capacity(total);
+    let mut values = Vec::with_capacity(total);
+    offsets.push(0);
+    for col in counts.col_iter() {
+        for (&g, &v) in col.row_indices().iter().zip(col.values()) {
+            if let Some(r) = at[g] {
+                rows.push(r);
+                values.push(v);
+            }
         }
+        offsets.push(rows.len());
     }
-    CscMatrix::from(&coo)
+    CscMatrix::try_from_csc_data(kept, counts.ncols(), offsets, rows, values)
+        .expect("kept rows stay sorted within each column")
 }
 
 /// Rows `genes` of log data (genes × cells) as a dense cells × genes
