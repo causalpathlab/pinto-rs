@@ -8,6 +8,13 @@
 //! S_k + Q_k` is `(s_g + c) I + c rho L_g` on section `g`, so every trace
 //! and log-determinant is a spectral sum over `L_g` and the mean a
 //! conjugate-gradient solve.
+//!
+//! `rho_k`'s step maximises the factor's part of the ELBO jointly with
+//! `q(z_k)`, which has its optimum `N(A_k b, A_k)` at each `rho`: the
+//! collapsed bound `b^T A_k b / 2 - [log det(S_k + Q_k) - log det Q_k] /
+//! 2`. The paper's step holds `q` fixed (SI (39)-(40)), an EM step whose
+//! `rho` creeps over thousands of iterations; the joint step ascends the
+//! same ELBO and lands where the fixed-`q` steps would converge.
 
 use super::super::spatial_factor::kit::grid_then_brent;
 use super::super::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
@@ -76,14 +83,25 @@ impl<'a> GraphPrior<'a> {
         (t0, t1, ld)
     }
 
-    /// SI (40) with `Sigma^{-1} = Q(rho)`, `q` fixed: `0.5 [N log c(rho) +
-    /// log det(I + rho L)] - 0.5 c(rho) [T0 + rho T1] - 0.5 c(rho) [mu^T mu +
-    /// rho mu^T L mu]`.
-    fn objective(&self, rho: f64, t0: f64, t1: f64, mm: f64, mlm: f64) -> f64 {
-        let n = self.lap.n() as f64;
-        let c = self.spec.cbar(rho, self.lap.n()).0;
-        let ld = self.spec.total(|q| (rho * q).ln_1p());
-        0.5 * (n * c.ln() + ld) - 0.5 * c * (t0 + rho * t1) - 0.5 * c * (mm + rho * mlm)
+    /// The factor's part of the ELBO at `rho` with `q(z_k)` at its
+    /// optimum given `s` and `b`: `b^T (S + Q)^{-1} b / 2 - [log det(S + Q)
+    /// - log det Q] / 2`, `Q = c(rho) (I + rho L)`; the solve warm-started
+    /// from, and left in, `x`.
+    fn collapsed(&self, rho: f64, s: &[f64], b: &DMatrix<f64>, x: &mut DMatrix<f64>) -> f64 {
+        let n = self.lap.n();
+        let c = self.spec.cbar(rho, n).0;
+        let beta = c * rho;
+        let shift: Vec<f64> = s.iter().map(|&sg| sg + c).collect();
+        let (sol, _) = cg_solve(self.lap, &shift, beta, b, Some(x), self.cg_tol);
+        *x = sol;
+        let quad = b.dot(x);
+        let ld_a: f64 = shift
+            .iter()
+            .enumerate()
+            .map(|(g, &sh)| self.spec.sum(g, |q| (sh + beta * q).ln()))
+            .sum();
+        let ld_q = n as f64 * c.ln() + self.spec.total(|q| (rho * q).ln_1p());
+        0.5 * quad - 0.5 * (ld_a - ld_q)
     }
 
     /// The smoothness the sparse prior reports in place of `1 - zeta_k`:
@@ -148,27 +166,37 @@ impl FactorPrior for GraphPrior<'_> {
         0.5 * ld_q - 0.5 * c * (t0 + rho * t1) - 0.5 * c * (mm + rho * mlm) + 0.5 * ld_a + n / 2.0
     }
 
-    fn hyper(&mut self, k: usize, mu: &mut [f64]) -> Option<Vec<f64>> {
-        let (t0, t1, _) = self.traces(k);
-        let mm: f64 = mu.iter().map(|v| v * v).sum();
-        let mlm = self.lap.quad(mu);
+    fn hyper(&mut self, k: usize, s: &[f64], b: &[f64], mu: &mut [f64]) -> Option<Vec<f64>> {
         let dbar = self.lap.mean_degree().max(1e-12);
         let (lo, hi) = ((RHO_RANGE.0 / dbar).ln(), (RHO_RANGE.1 / dbar).ln());
         let p = self.n_grid.max(2);
         let grid: Vec<f64> = (0..p)
             .map(|i| lo + (hi - lo) * i as f64 / (p - 1) as f64)
             .collect();
+        let rhs = DMatrix::from_column_slice(b.len(), 1, b);
+        let mut x = DMatrix::from_column_slice(mu.len(), 1, mu);
         let (lr, f, _) = grid_then_brent(
-            |lr| -self.objective(lr.exp(), t0, t1, mm, mlm),
+            |lr| -self.collapsed(lr.exp(), s, &rhs, &mut x),
             &grid,
             BRENT_TOL,
             BRENT_MAX_EVAL + p,
         );
-        let at_zero = -self.objective(0.0, t0, t1, mm, mlm);
-        let rho = if at_zero < f { 0.0 } else { lr.exp() };
+        // the best of the search, rho = 0 and the current rho (so the step
+        // never lowers the ELBO)
+        let cur = self.rho[k];
+        let at_zero = -self.collapsed(0.0, s, &rhs, &mut x);
+        let at_cur = -self.collapsed(cur, s, &rhs, &mut x);
+        let (_, rho) = [(f, lr.exp()), (at_zero, 0.0), (at_cur, cur)]
+            .into_iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("three candidates");
         self.rho[k] = rho;
         self.c[k] = self.spec.cbar(rho, self.lap.n()).0;
-        None
+        Some(self.update(k, s, b, mu))
+    }
+
+    fn hyper_values(&self, k: usize) -> Vec<f64> {
+        vec![self.rho[k].ln()]
     }
 
     fn report(&self) -> serde_json::Value {

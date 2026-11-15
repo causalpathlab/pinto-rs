@@ -386,3 +386,66 @@ fn implicit_expression_matches_its_dense_form() {
     let sub = select_rows(&counts, &[2, 0]);
     assert_eq!(dense_counts(&sub).row(0), dense_counts(&counts).row(2));
 }
+
+/// The per-section sums of squares row by row, densely (the closed form's
+/// oracle).
+fn sumsq_by_rows(op: &ResidualOp, section: &[usize], n_sections: usize) -> Dense {
+    Dense::from_fn(op.m, n_sections, |g, s| {
+        op.gene_row(g)
+            .iter()
+            .zip(section)
+            .filter(|(_, &t)| t == s)
+            .map(|(v, _)| v * v)
+            .sum()
+    })
+}
+
+/// The closed-form per-section sums of squares are the dense rows', on
+/// both recipes (the Pearson recipe's terms are not section indicators);
+/// dropping the cross terms breaks them.
+#[test]
+fn section_sums_of_squares_in_closed_form_are_the_rows() {
+    let (counts, lib, section) = counts_fixture();
+    for op in [
+        ResidualOp::pearson(&counts, &lib),
+        ResidualOp::log_centred(&counts, &lib, &section, 2),
+    ] {
+        let want = sumsq_by_rows(&op, &section, 2);
+        let got = op.section_sumsq(&section, 2);
+        assert!(max_rel(&got, &want) < 1e-12, "{}", max_rel(&got, &want));
+        let fro = op.frob2(&section, 2);
+        assert!((fro - want.sum()).abs() < 1e-12 * want.sum());
+        // broken: the raw entries' sums of squares alone
+        let raw = sumsq_by_rows(&ResidualOp::from_dense(&dense_counts(&counts)), &section, 2);
+        assert!(max_rel(&raw, &want) > 1e-2);
+    }
+}
+
+/// The section-wise products in one pass are the products with the other
+/// sections' cells masked to zero.
+#[test]
+fn section_products_are_the_masked_products() {
+    let (counts, lib, section) = counts_fixture();
+    for op in [
+        ResidualOp::pearson(&counts, &lib),
+        ResidualOp::log_centred(&counts, &lib, &section, 2),
+    ] {
+        let v = gaussian(6, 3, 4);
+        let per = op.apply_by_section(&v, &section, 2);
+        let u: Vec<Dense> = (0..2).map(|s| gaussian(4, 3, 10 + s as u64)).collect();
+        let ut = op.apply_t_by_section(&u, &section);
+        for s in 0..2 {
+            let masked = Dense::from_fn(6, 3, |c, j| if section[c] == s { v[(c, j)] } else { 0.0 });
+            assert!(max_rel(&per[s], &op.apply(&masked)) < 1e-12);
+            let full = op.apply_t(&u[s]);
+            for c in (0..6).filter(|&c| section[c] == s) {
+                for j in 0..3 {
+                    assert!((ut[(c, j)] - full[(c, j)]).abs() < 1e-12 * full.amax());
+                }
+            }
+        }
+        // broken: one section's U for every cell
+        let one = op.apply_t(&u[0]);
+        assert!((0..6).any(|c| section[c] == 1 && (one[(c, 0)] - ut[(c, 0)]).abs() > 1e-6));
+    }
+}

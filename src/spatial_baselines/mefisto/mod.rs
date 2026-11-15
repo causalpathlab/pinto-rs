@@ -22,7 +22,9 @@
 //!    the cells, coordinate ascent (SI (28)-(68)); the factors' prior
 //!    hyperparameters re-fitted from iteration `--gp-start` every
 //!    `--gp-every` iterations (SI (31), (39)-(40)); until the ELBO's
-//!    relative change is below `--tol` or `--max-iter` iterations.
+//!    relative change is below `--tol` at an iteration whose
+//!    hyperparameter step moved none by more than `--hyper-tol` (log
+//!    scale), or `--max-iter` iterations.
 //! 4. The factors' prior:
 //!    - `--reference` ([`reference`]): the paper's Gaussian process, a
 //!      squared-exponential kernel times a group kernel (SI (8)-(13)), on
@@ -34,8 +36,9 @@
 //!      on the per-section kNN graph, one strength `rho_k` per factor by a
 //!      log grid then Brent; traces and log-determinants by the graph's
 //!      spectrum, means by conjugate gradients.
-//! 5. Domains, a step the paper does not take: `E[Z]` clustered by pinto's
-//!    seeded k-means (`--n-clusters`) or Leiden.
+//! 5. Domains, a step the paper does not take: `E[Z]`, each factor scaled
+//!    by its weights' norm `||E[w_k]||` ([`domain_embedding`]), clustered
+//!    by pinto's seeded k-means (`--n-clusters`) or Leiden.
 //!
 //! # Deviations
 //!
@@ -45,7 +48,9 @@
 //!   still its groups).
 //! - **Sparse mode only**: the graph prior in place of the kernel (one
 //!   `rho_k` for the lengthscale and smooth share; the group kernel the
-//!   identity, sections independent a priori), spectral sums by
+//!   identity, sections independent a priori), each `rho_k` maximising
+//!   the ELBO jointly with `q(z_k)` (the factor's collapsed bound) where
+//!   the paper's step holds `q` fixed, spectral sums by
 //!   stochastic Lanczos quadrature on sections of more than 2000 cells,
 //!   solves to tolerance; the smoothness reported as the prior
 //!   correlation of graph neighbours, not `1 - zeta_k`.
@@ -58,7 +63,8 @@
 //!   alignment, non-Gaussian likelihoods, the Kronecker path, interpolation.
 //!
 //! The paper is silent on the start, the order of updates within an
-//! iteration, the convergence rule and the inducing cells' placement in
+//! iteration, the convergence rule (pinto's also asks the hyperparameters
+//! to have settled) and the inducing cells' placement in
 //! 2-D; pinto's choices are documented where they are made ([`vb::State::init`],
 //! [`vb::fit`], [`reference::inducing_cells`]).
 //!
@@ -89,6 +95,7 @@ pub const N_FACTORS: usize = 4;
 pub const N_GENES: usize = 2000;
 pub const CG_TOL: f64 = 1e-6;
 pub const TOL: f64 = 5e-6;
+pub const HYPER_TOL: f64 = 1e-3;
 pub const MAX_ITER: usize = 1000;
 pub const GP_START: usize = 20;
 pub const GP_EVERY: usize = 10;
@@ -123,6 +130,11 @@ pub struct FitArgs {
     /// Relative ELBO change at convergence
     #[arg(long, default_value_t = TOL, hide = true)]
     pub tol: f64,
+
+    /// Largest change of a hyperparameter (log scale) over a step at
+    /// convergence
+    #[arg(long, default_value_t = HYPER_TOL, hide = true)]
+    pub hyper_tol: f64,
 
     /// Iterations at most
     #[arg(long, default_value_t = MAX_ITER, hide = true)]
@@ -197,7 +209,7 @@ impl FitArgs {
         anyhow::ensure!(self.n_factors >= 1, "--n-factors must be at least 1");
         anyhow::ensure!(self.n_genes >= 2, "--n-genes must be at least 2");
         anyhow::ensure!(
-            self.cg_tol > 0.0 && self.tol > 0.0,
+            self.cg_tol > 0.0 && self.tol > 0.0 && self.hyper_tol > 0.0,
             "tolerances must be positive"
         );
         anyhow::ensure!(self.gp_every >= 1, "--gp-every must be at least 1");
@@ -211,6 +223,7 @@ impl FitArgs {
             gp_start: self.gp_start,
             gp_every: self.gp_every,
             frozen_weights: false,
+            hyper_tol: self.hyper_tol,
         }
     }
 
@@ -238,9 +251,20 @@ impl FitArgs {
             reference: match variant {
                 Variant::Reference => {
                     let mm = n.min(n_inducing);
-                    // per factor q(u) (its covariance), and an update's or a
-                    // hyperparameter step's few M × M matrices and row block
-                    8 * (k * mm * mm + 8 * mm * mm + 3 * 4096.min(n) * mm)
+                    // per factor q(u) (its covariance); a hyperparameter
+                    // search's M × M matrices (the objective's and its
+                    // gradient's, with the likelihood's sums, one per
+                    // section, below N cells) and row blocks
+                    // one lengthscale's search per thread at once
+                    let sums = if mm < n { g * mm * mm } else { 0 };
+                    let searches = rayon::current_num_threads().min(self.n_grid.max(1));
+                    // one group: each lengthscale's kept eigenbasis and
+                    // its E_UZ E_ZU in it
+                    let bases = if g == 1 { self.n_grid * 2 * mm * mm } else { 0 };
+                    8 * (k * mm * mm
+                        + searches * (16 * mm * mm + sums)
+                        + bases
+                        + 3 * 4096.min(n) * mm)
                 }
                 _ => 0,
             },
@@ -322,13 +346,31 @@ pub fn variance_explained(data: &VbData<'_>, st: &State) -> Vec<f64> {
         .collect()
 }
 
+/// What pinto's domain step clusters (the paper has none): each factor's
+/// `E[z_k]` scaled by the norm of its weights `||E[w_k]||`, so a factor
+/// weighs in by the expression it carries, as SpatialPCA's PCs carry their
+/// eigenvalues' scale. MEFISTO's factors have unit prior variance whatever
+/// they explain, so unscaled a factor with almost no weight (one left
+/// unstructured, or pruned by ARD) counts as much as the main one.
+pub fn domain_embedding(mu: &Dense, w: &Dense) -> Dense {
+    let mut z = mu.clone();
+    for k in 0..z.ncols() {
+        let norm = w.column(k).norm();
+        z.column_mut(k).scale_mut(norm);
+    }
+    z
+}
+
+/// The domains of the fit `st`, refined over each cell's `refine_k`
+/// nearest within its section when set.
 fn cell_domains(
     fit: &FitArgs,
     data: &SpatialData,
-    z: &Dense,
+    st: &State,
 ) -> anyhow::Result<(Vec<usize>, &'static str)> {
+    let z = domain_embedding(&st.mu, &st.w_mean());
     let refine = (fit.refine_k > 0).then(|| knn_within_sections(data, fit.refine_k));
-    domains(&to_mat(z), &fit.core, refine.as_ref())
+    domains(&to_mat(&z), &fit.core, refine.as_ref())
 }
 
 fn weights_out(
@@ -447,7 +489,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             " (not converged)"
         }
     );
-    let (labels, clustering) = cell_domains(fit, &data, &st.mu)?;
+    let (labels, clustering) = cell_domains(fit, &data, &st)?;
     let mut s = base_settings(fit, &genes, &data.genes, clustering, &trace);
     merge(&mut s, extra);
     weights_out(fit, &data, &genes, &st)?;
@@ -492,6 +534,7 @@ fn base_settings(
         "gp_every": fit.gp_every,
         "n_grid": fit.n_grid,
         "clustering": clustering,
+        "clustered": "E[z], each factor scaled by ||E[w_k]||",
         "n_clusters": fit.core.n_clusters,
         "resolution": fit.core.n_clusters.is_none().then_some(fit.core.resolution),
         "refine_k": fit.refine_k,
@@ -551,7 +594,11 @@ pub(crate) fn run_pb_on(
     );
     let mut pb_st = State::init(&pb_vd, fit.n_factors, seed);
     let pb_trace = vb::fit(&pb_vd, &mut pb_st, &mut pb_prior, &fit.opts());
-    let (pb_labels, _) = domains(&to_mat(&pb_st.mu), &fit.core, None)?;
+    let (pb_labels, _) = domains(
+        &to_mat(&domain_embedding(&pb_st.mu, &pb_st.w_mean())),
+        &fit.core,
+        None,
+    )?;
 
     let section = data.section.clone();
     let vd = VbData::new(&op, &section, data.n_sections);
@@ -578,7 +625,7 @@ pub(crate) fn run_pb_on(
         trace.iterations,
         prior.rho
     );
-    let (labels, clustering) = cell_domains(fit, &data, &st.mu)?;
+    let (labels, clustering) = cell_domains(fit, &data, &st)?;
     let of_cell = &coarse.cells.of_cell;
     let broadcast: Vec<usize> = of_cell.iter().map(|&s| pb_labels[s]).collect();
     let mut s = base_settings(fit, &genes, &data.genes, clustering, &trace);

@@ -1094,7 +1094,7 @@ fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
 /// Maximum resident memory (MiB) of a default `mefisto --reference` run
 /// on the 1024-cell section below (one group: the eigenbasis search, its
 /// bases kept), 4 threads.
-const MEFISTO_REFERENCE_MIB: f64 = 177.66;
+const MEFISTO_REFERENCE_MIB: f64 = 508.82;
 
 /// The `--reference` estimates cover the measured runs (one srt-simulate
 /// section of 1024 cells, 2000 genes, 4 threads; MEFISTO's on its 1000

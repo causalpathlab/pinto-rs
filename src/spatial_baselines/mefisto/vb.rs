@@ -38,10 +38,14 @@ pub trait FactorPrior {
     fn update(&mut self, k: usize, s: &[f64], b: &[f64], mu: &mut [f64]) -> Vec<f64>;
     /// `E[log p(z_k)] - E[log q(z_k)]` at the current `q` and prior.
     fn kl_term(&self, k: usize, mu: &[f64]) -> f64;
-    /// The hyperparameter step with `q` fixed (SI (39)-(40)); the factor's
-    /// mean and per-section variance sums afterwards, when the prior's
-    /// change moves them.
-    fn hyper(&mut self, k: usize, mu: &mut [f64]) -> Option<Vec<f64>>;
+    /// The hyperparameter step (SI (39)-(40)), given the likelihood's `s`
+    /// and `b` at the current state, as [`FactorPrior::update`] takes them:
+    /// it never lowers the factor's part of the ELBO. The factor's mean
+    /// and per-section variance sums afterwards, when the step moves them.
+    fn hyper(&mut self, k: usize, s: &[f64], b: &[f64], mu: &mut [f64]) -> Option<Vec<f64>>;
+    /// Factor `k`'s hyperparameters on the scale [`fit`]'s convergence
+    /// compares them (logarithms of the positive ones; `-inf` for a zero).
+    fn hyper_values(&self, k: usize) -> Vec<f64>;
     /// What a run records of the prior's state.
     fn report(&self) -> serde_json::Value;
 }
@@ -74,18 +78,10 @@ impl<'a> VbData<'a> {
 
     /// `Y_g mu` for each section, genes × K each, and the per-section Gram
     /// `mu_g^T mu_g`.
-    fn data_terms(&self, mu: &Dense) -> (Vec<Dense>, Vec<Dense>) {
+    pub fn data_terms(&self, mu: &Dense) -> (Vec<Dense>, Vec<Dense>) {
         let (n, k) = mu.shape();
         let g = self.n_sections;
-        let masked = Dense::from_fn(n, k * g, |c, j| {
-            if self.section[c] == j / k {
-                mu[(c, j % k)]
-            } else {
-                0.0
-            }
-        });
-        let ym = self.op.apply(&masked);
-        let per: Vec<Dense> = (0..g).map(|s| ym.columns(s * k, k).into_owned()).collect();
+        let per = self.op.apply_by_section(mu, self.section, g);
         let mut gram = vec![Dense::zeros(k, k); g];
         for c in 0..n {
             let s = self.section[c];
@@ -202,6 +198,9 @@ pub struct VbOpts {
     pub gp_every: usize,
     /// The weights, ARD and sparsity held fixed (the `-pb` unravel).
     pub frozen_weights: bool,
+    /// The hyperparameters are fitted once a step moves none of them by
+    /// more than this (on [`FactorPrior::hyper_values`]' scale).
+    pub hyper_tol: f64,
 }
 
 /// How a fit ended.
@@ -290,22 +289,43 @@ fn update_noise(data: &VbData<'_>, st: &mut State, ym: &[Dense], gram: &[Dense])
     }
 }
 
-/// SI (33)-(34): every factor in turn, through its prior.
-fn update_factors(data: &VbData<'_>, st: &mut State, prior: &mut dyn FactorPrior) {
-    let (m, kk, g) = (st.gamma.nrows(), st.k(), data.n_sections);
-    let n = st.mu.nrows();
-    let tau = st.tau_mean();
-    let wm = st.w_mean();
-    let w2 = st.w2();
-    // Y_c^T (tau_g o E[w_k]) for every factor and section at once
-    let u = Dense::from_fn(m, kk * g, |d, j| tau[(d, j % g)] * wm[(d, j / g)]);
-    let ytu = data.op.apply_t(&u);
-    for k in 0..kk {
-        let s: Vec<f64> = (0..g)
-            .map(|sec| (0..m).map(|d| w2[(d, k)] * tau[(d, sec)]).sum())
+/// What a factor's update reads of the weights and the noise, fixed while
+/// the factors move: `E[tau]`, `E[w]`, `E[w^2]`, and `Y_c^T (tau_g o
+/// E[w])` at each cell's own section `g`.
+pub struct FactorTerms {
+    tau: Dense,
+    wm: Dense,
+    w2: Dense,
+    ytu: Dense,
+}
+
+impl FactorTerms {
+    pub fn new(data: &VbData<'_>, st: &State) -> Self {
+        let (m, kk) = (st.gamma.nrows(), st.k());
+        let tau = st.tau_mean();
+        let wm = st.w_mean();
+        let u: Vec<Dense> = (0..data.n_sections)
+            .map(|sec| Dense::from_fn(m, kk, |d, k| tau[(d, sec)] * wm[(d, k)]))
+            .collect();
+        let ytu = data.op.apply_t_by_section(&u, data.section);
+        FactorTerms {
+            tau,
+            w2: st.w2(),
+            wm,
+            ytu,
+        }
+    }
+
+    /// Factor `k`'s likelihood precision per section and linear term per
+    /// cell (SI (33)-(34)), the other factors at their means `mu`.
+    pub fn of(&self, data: &VbData<'_>, k: usize, mu: &Dense) -> (Vec<f64>, Vec<f64>) {
+        let (m, kk) = (self.wm.nrows(), self.wm.ncols());
+        let (tau, wm) = (&self.tau, &self.wm);
+        let s: Vec<f64> = (0..data.n_sections)
+            .map(|sec| (0..m).map(|d| self.w2[(d, k)] * tau[(d, sec)]).sum())
             .collect();
         // sum_d tau_dg w_dk w_dl, per section and other factor
-        let cross: Vec<Vec<f64>> = (0..g)
+        let cross: Vec<Vec<f64>> = (0..data.n_sections)
             .map(|sec| {
                 (0..kk)
                     .map(|l| {
@@ -320,23 +340,66 @@ fn update_factors(data: &VbData<'_>, st: &mut State, prior: &mut dyn FactorPrior
                     .collect()
             })
             .collect();
-        let b: Vec<f64> = (0..n)
+        let b: Vec<f64> = (0..mu.nrows())
             .map(|c| {
                 let sec = data.section[c];
-                let mut v = ytu[(c, k * g + sec)];
+                let mut v = self.ytu[(c, k)];
                 for l in 0..kk {
-                    v -= cross[sec][l] * st.mu[(c, l)];
+                    v -= cross[sec][l] * mu[(c, l)];
                 }
                 v
             })
             .collect();
+        (s, b)
+    }
+}
+
+/// SI (33)-(34): every factor in turn, through its prior.
+fn update_factors(
+    data: &VbData<'_>,
+    st: &mut State,
+    prior: &mut dyn FactorPrior,
+    terms: &FactorTerms,
+) {
+    for k in 0..st.k() {
+        let (s, b) = terms.of(data, k, &st.mu);
         let mut mu_k: Vec<f64> = st.mu.column(k).iter().copied().collect();
         let tr = prior.update(k, &s, &b, &mut mu_k);
-        st.mu.column_mut(k).copy_from_slice(&mu_k);
-        for sec in 0..g {
-            st.tr[(k, sec)] = tr[sec];
+        set_factor(st, k, &mu_k, tr);
+    }
+}
+
+fn set_factor(st: &mut State, k: usize, mu: &[f64], tr: Vec<f64>) {
+    st.mu.column_mut(k).copy_from_slice(mu);
+    for (sec, v) in tr.into_iter().enumerate() {
+        st.tr[(k, sec)] = v;
+    }
+}
+
+/// The hyperparameter step of every factor in turn, each given the
+/// likelihood at the current state; the largest move of any
+/// hyperparameter.
+fn update_hyper(
+    data: &VbData<'_>,
+    st: &mut State,
+    prior: &mut dyn FactorPrior,
+    terms: &FactorTerms,
+) -> f64 {
+    let mut moved = 0f64;
+    for k in 0..st.k() {
+        let before = prior.hyper_values(k);
+        let (s, b) = terms.of(data, k, &st.mu);
+        let mut mu: Vec<f64> = st.mu.column(k).iter().copied().collect();
+        if let Some(tr) = prior.hyper(k, &s, &b, &mut mu) {
+            set_factor(st, k, &mu, tr);
+        }
+        for (a, b) in before.iter().zip(prior.hyper_values(k)) {
+            // the same value, an infinity included, has not moved
+            let d = if *a == b { 0.0 } else { (a - b).abs() };
+            moved = moved.max(if d.is_nan() { f64::INFINITY } else { d });
         }
     }
+    moved
 }
 
 fn gamma_kl(a0: f64, b0: f64, a: f64, b: f64) -> f64 {
@@ -401,15 +464,22 @@ pub fn elbo(
     total
 }
 
-/// Coordinate ascent until the ELBO's relative change is below `tol` (once
-/// the prior's hyperparameters have been fitted, when they are) or
-/// `max_iter` iterations: per iteration the weights (each factor in turn),
-/// ARD, sparsity (unless frozen), the noise, the factors, then on its
-/// schedule the prior's hyperparameter step, then the ELBO.
+/// Coordinate ascent: per iteration the weights (each factor in turn),
+/// ARD, sparsity (unless frozen), the noise, the factors, then the prior's
+/// hyperparameter step on its schedule (from `gp_start`, every
+/// `gp_every`), then the ELBO. The fit has converged at an iteration whose
+/// ELBO changed by less than `tol` (relative) and, when the
+/// hyperparameters are fitted at all (`gp_start <= max_iter`), whose step
+/// moved none of them by more than `hyper_tol`: the ELBO settles long
+/// before the factors and their hyperparameters stop drifting, so the
+/// ELBO alone would stop with them unfitted. Else the fit stops at
+/// `max_iter` iterations. (The paper is silent on the rule; this is
+/// pinto's.)
 pub fn fit(data: &VbData<'_>, st: &mut State, prior: &mut dyn FactorPrior, o: &VbOpts) -> Trace {
     let mut trace = Vec::new();
     let mut converged = false;
     let (mut ym, mut gram) = data.data_terms(&st.mu);
+    let fits_hyper = o.gp_start <= o.max_iter;
     let mut t = 0;
     while t < o.max_iter {
         t += 1;
@@ -420,32 +490,20 @@ pub fn fit(data: &VbData<'_>, st: &mut State, prior: &mut dyn FactorPrior, o: &V
             update_ard_theta(st);
         }
         update_noise(data, st, &ym, &gram);
-        update_factors(data, st, prior);
-        if t >= o.gp_start && (t - o.gp_start).is_multiple_of(o.gp_every.max(1)) {
-            for k in 0..st.k() {
-                let mut mu: Vec<f64> = st.mu.column(k).iter().copied().collect();
-                if let Some(tr) = prior.hyper(k, &mut mu) {
-                    st.mu.column_mut(k).copy_from_slice(&mu);
-                    for (s, v) in tr.into_iter().enumerate() {
-                        st.tr[(k, s)] = v;
-                    }
-                }
-            }
-        }
+        let terms = FactorTerms::new(data, st);
+        update_factors(data, st, prior, &terms);
+        let scheduled = t >= o.gp_start && (t - o.gp_start).is_multiple_of(o.gp_every.max(1));
+        let moved = scheduled.then(|| update_hyper(data, st, prior, &terms));
         (ym, gram) = data.data_terms(&st.mu);
         let e = elbo(data, st, prior, &ym, &gram);
-        if let Some(&prev) = trace.last() {
-            let change: f64 = (e - prev) / f64::abs(prev).max(1e-300);
-            trace.push(e);
-            // not before the prior's first hyperparameter step has been
-            // followed by a full round of updates
-            let fitted_prior = o.gp_start > o.max_iter || t > o.gp_start;
-            if change.abs() < o.tol && fitted_prior {
-                converged = true;
-                break;
-            }
-        } else {
-            trace.push(e);
+        let change = trace
+            .last()
+            .map(|&prev: &f64| ((e - prev) / prev.abs().max(1e-300)).abs());
+        trace.push(e);
+        let settled = change.is_some_and(|c| c < o.tol);
+        if settled && (!fits_hyper || moved.is_some_and(|m| m < o.hyper_tol)) {
+            converged = true;
+            break;
         }
     }
     Trace {

@@ -361,27 +361,51 @@ impl ResidualOp {
     }
 
     /// `sum_{c : section[c] = s} Y_gc^2` for each gene and section, genes ×
-    /// sections, for rank-one terms that are each a cell indicator times a
-    /// gene vector (the log recipe's centring) or none.
+    /// sections, in closed form from one pass over each gene's entries:
+    /// with `Y_gc = D_g (S_gc - sum_j a_jg b_jc)`, the sum over a section
+    /// is `D_g^2 [sum S^2 - 2 sum_j a_jg sum S b_j + sum_{j,j'} a_jg a_j'g
+    /// sum b_j b_j']`, each sum over the section's cells.
     pub fn section_sumsq(&self, section: &[usize], n_sections: usize) -> Dense {
+        let t = self.terms.len();
+        // sum_{c in s} b_j[c] b_j'[c], per section
+        let mut bb = vec![vec![0f64; t * t]; n_sections];
+        for (c, &s) in section.iter().enumerate() {
+            for j in 0..t {
+                let bj = self.terms[j].1[c];
+                if bj == 0.0 {
+                    continue;
+                }
+                for jj in 0..t {
+                    bb[s][j * t + jj] += bj * self.terms[jj].1[c];
+                }
+            }
+        }
         let rows: Vec<Vec<f64>> = (0..self.m)
             .into_par_iter()
             .map(|g| {
-                let mut acc = vec![0f64; n_sections];
-                // the row, dense by section, in one pass over its entries
-                let mut row = vec![0f64; self.n];
+                let mut ss = vec![0f64; n_sections];
+                let mut sb = vec![0f64; n_sections * t];
                 for e in self.g_ptr[g]..self.g_ptr[g + 1] {
-                    row[self.g_cell[e] as usize] = self.g_val[e] as f64;
-                }
-                for (a, b) in &self.terms {
-                    for (r, bc) in row.iter_mut().zip(b) {
-                        *r -= a[g] * bc;
+                    let c = self.g_cell[e] as usize;
+                    let (v, s) = (self.g_val[e] as f64, section[c]);
+                    ss[s] += v * v;
+                    for (j, (_, b)) in self.terms.iter().enumerate() {
+                        sb[s * t + j] += v * b[c];
                     }
                 }
-                for (c, r) in row.iter().enumerate() {
-                    acc[section[c]] += (self.scale[g] * r).powi(2);
-                }
-                acc
+                let a: Vec<f64> = self.terms.iter().map(|(a, _)| a[g]).collect();
+                (0..n_sections)
+                    .map(|s| {
+                        let mut v = ss[s];
+                        for j in 0..t {
+                            v -= 2.0 * a[j] * sb[s * t + j];
+                            for jj in 0..t {
+                                v += a[j] * a[jj] * bb[s][j * t + jj];
+                            }
+                        }
+                        (self.scale[g] * self.scale[g] * v).max(0.0)
+                    })
+                    .collect()
             })
             .collect();
         Dense::from_fn(self.m, n_sections, |g, s| rows[g][s])
@@ -390,6 +414,105 @@ impl ResidualOp {
     /// `tr(Y Y^T)`.
     pub fn frob2(&self, section: &[usize], n_sections: usize) -> f64 {
         self.section_sumsq(section, n_sections).sum()
+    }
+
+    /// `Y_s V` for each section `s` (`Y` with the other sections' cells
+    /// zeroed), genes × k each, in one pass over the entries.
+    pub fn apply_by_section(&self, v: &Dense, section: &[usize], n_sections: usize) -> Vec<Dense> {
+        let k = v.ncols();
+        let n = self.n;
+        let vs = v.as_slice();
+        // sum_{c in s} b_j[c] v[c, :], per term, section and column
+        let proj: Vec<Vec<f64>> = self
+            .terms
+            .iter()
+            .map(|(_, b)| {
+                let mut p = vec![0f64; n_sections * k];
+                for j in 0..k {
+                    for (c, (&bc, &s)) in b.iter().zip(section).enumerate() {
+                        p[s * k + j] += bc * vs[j * n + c];
+                    }
+                }
+                p
+            })
+            .collect();
+        let rows: Vec<Vec<f64>> = (0..self.m)
+            .into_par_iter()
+            .map(|g| {
+                let mut out = vec![0f64; n_sections * k];
+                for e in self.g_ptr[g]..self.g_ptr[g + 1] {
+                    let (c, x) = (self.g_cell[e] as usize, self.g_val[e] as f64);
+                    let o = &mut out[section[c] * k..(section[c] + 1) * k];
+                    for (j, oj) in o.iter_mut().enumerate() {
+                        *oj += x * vs[j * n + c];
+                    }
+                }
+                for ((a, _), p) in self.terms.iter().zip(&proj) {
+                    for (o, pj) in out.iter_mut().zip(p) {
+                        *o -= a[g] * pj;
+                    }
+                }
+                out.iter_mut().for_each(|o| *o *= self.scale[g]);
+                out
+            })
+            .collect();
+        (0..n_sections)
+            .map(|s| Dense::from_fn(self.m, k, |g, j| rows[g][s * k + j]))
+            .collect()
+    }
+
+    /// Row `c` of `Y^T U_s` for each cell `c`, `s` its section: `u` one
+    /// genes × k matrix per section, cells × k, in one pass over the
+    /// entries.
+    pub fn apply_t_by_section(&self, u: &[Dense], section: &[usize]) -> Dense {
+        let k = u.first().map_or(0, |x| x.ncols());
+        let m = self.m;
+        let n_sections = u.len();
+        // the scaled U_s, section by section, column-major within each
+        let us: Vec<Vec<f64>> = u
+            .iter()
+            .map(|us| {
+                (0..k)
+                    .flat_map(|j| (0..m).map(move |g| (j, g)))
+                    .map(|(j, g)| self.scale[g] * us[(g, j)])
+                    .collect()
+            })
+            .collect();
+        let proj: Vec<Vec<f64>> = self
+            .terms
+            .iter()
+            .map(|(a, _)| {
+                (0..n_sections)
+                    .flat_map(|s| (0..k).map(move |j| (s, j)))
+                    .map(|(s, j)| {
+                        a.iter()
+                            .zip(&us[s][j * m..(j + 1) * m])
+                            .map(|(x, y)| x * y)
+                            .sum()
+                    })
+                    .collect()
+            })
+            .collect();
+        let cols: Vec<Vec<f64>> = (0..self.n)
+            .into_par_iter()
+            .map(|c| {
+                let s = section[c];
+                let mut o = vec![0f64; k];
+                for e in self.c_ptr[c]..self.c_ptr[c + 1] {
+                    let (g, x) = (self.c_gene[e] as usize, self.c_val[e] as f64);
+                    for (j, oj) in o.iter_mut().enumerate() {
+                        *oj += x * us[s][j * m + g];
+                    }
+                }
+                for ((_, b), p) in self.terms.iter().zip(&proj) {
+                    for (j, oj) in o.iter_mut().enumerate() {
+                        *oj -= b[c] * p[s * k + j];
+                    }
+                }
+                o
+            })
+            .collect();
+        Dense::from_fn(self.n, k, |c, j| cols[c][j])
     }
 
     /// `Y` as a dense genes × cells matrix (the reference modes, which hold

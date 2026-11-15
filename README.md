@@ -536,7 +536,8 @@ can be scored beside `lc`, `cage` and `dsvd`:
 - `mefisto`: MEFISTO, multi-group Bayesian factor analysis with spatially
   smooth factors (Velten et al. 2022, Nature Methods 19:179,
   doi:10.1038/s41592-021-01343-9), the sections as its groups, its factors
-  clustered by pinto's k-means or Leiden (the paper does not cluster).
+  (each scaled by its weights' norm) clustered by pinto's k-means or
+  Leiden (the paper does not cluster).
 
 `spatialde2` and `stagate` are model-level ports of its reference code: the same preprocessing,
 model, loss or updates, defaults, stopping rule and clustering step (but
