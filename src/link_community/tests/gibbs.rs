@@ -468,7 +468,11 @@ fn split_gap(profiles: Vec<f32>, k: usize, blocks: usize) -> f64 {
 /// four holds two of each kind and every pair of alike edges has members in
 /// both blocks. Each community holds several edges, so one block's moves
 /// barely change the snapshot the other block sweeps against, and the split
-/// sweeps stay near the posterior, which is not sure of any pair.
+/// sweeps stay near the posterior. The posterior is fairly confident but not
+/// sure of each pair: alike edges are together in about nineteen labelings
+/// of twenty, unlike ones in about one. Calls end twenty sweeps apart and are
+/// near independent, so a share's sampling error is a small fraction of the
+/// bar, which leaves the rest for the snapshot's bias.
 #[test]
 fn split_blocks_stay_near_the_posterior() {
     let (x, y) = ([36.0, 24.0], [24.0, 36.0]);
@@ -496,7 +500,7 @@ fn alike_singletons_in_different_blocks_fail_the_same_check() {
 fn a_seed_gives_one_partition_whatever_the_thread_count() {
     use rand::RngExt;
     // One chain component, long enough for four blocks at the real layout.
-    let (n_edges, m, k) = (4 * GIBBS_MIN_BLOCK_EDGES + 1000, 8, 4);
+    let (n_edges, m, k) = (4 * GIBBS_MIN_BLOCK_EDGES + 100, 8, 4);
     let edges: Vec<(usize, usize)> = (0..n_edges).map(|i| (i, i + 1)).collect();
     let graph = make_test_graph(n_edges + 1, edges.clone());
 
@@ -549,4 +553,31 @@ fn a_seed_gives_one_partition_whatever_the_thread_count() {
         let differ = (0..n_edges).filter(|&e| other[e] != one[e]).count();
         assert_eq!(differ, 0, "{threads} threads move {differ} edges");
     }
+}
+
+/// Each sweep of a call draws afresh. A lone edge's conditional is uniform
+/// over the communities whatever the labels, so a call of `n` sweeps ends
+/// on the label its last sweep drew. Calls of different lengths from one
+/// seed then end on every label; were every sweep of a call to replay one
+/// random stream, they would all end on the first sweep's label.
+#[test]
+fn each_sweep_of_a_call_draws_afresh() {
+    let (k, edges) = (4, vec![(0, 1)]);
+    let graph = make_test_graph(2, edges.clone());
+    let store = LinkProfileStore::new(vec![3.0, 1.0], 1, 2);
+    let args = ComponentGibbsArgs {
+        graph: &graph,
+        edges: &edges,
+        k,
+        alpha: 0.5,
+        incidence: None,
+    };
+    let mut seen = vec![0usize; k];
+    for n in 1..=64 {
+        let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(9));
+        let mut membership = vec![0];
+        sampler.run_components_em(&mut membership, &store, &args, n);
+        seen[membership[0]] += 1;
+    }
+    assert!(seen.iter().all(|&c| c > 0), "labels ended on: {seen:?}");
 }

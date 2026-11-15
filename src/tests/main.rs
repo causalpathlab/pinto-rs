@@ -676,16 +676,15 @@ fn the_readme_states_the_thread_cap_and_lc_blocks() {
     );
     assert!(readme.contains(&format!("more than {cap} cores")));
     use crate::link_community::gibbs::{GIBBS_BLOCKS, GIBBS_MIN_BLOCK_EDGES};
-    let thousands = |n: usize| format!("{},{:03}", n / 1000, n % 1000);
+    let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
     for said in [
-        format!(
-            "at least {} edges into",
-            thousands(2 * GIBBS_MIN_BLOCK_EDGES)
-        ),
-        format!("blocks of at least {}", thousands(GIBBS_MIN_BLOCK_EDGES)),
+        format!("at least {} edges into", 2 * GIBBS_MIN_BLOCK_EDGES),
+        format!("blocks of at least {GIBBS_MIN_BLOCK_EDGES} edges"),
         format!("at most {GIBBS_BLOCKS} blocks a component"),
+        format!("`RAYON_NUM_THREADS` above {GIBBS_BLOCKS}"),
+        format!("splits into at most {GIBBS_BLOCKS} blocks"),
     ] {
-        assert!(readme.contains(&said), "README does not say {said:?}");
+        assert!(flat.contains(&said), "README does not say {said:?}");
     }
 }
 

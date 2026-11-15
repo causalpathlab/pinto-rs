@@ -45,9 +45,10 @@ counts. The manifest names `{out}.delta.parquet`, and
 `{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
 
-lc's Gibbs step groups the edges by connected component and splits a
-component of at least 16,384 edges into near-equal blocks of at least 8,192
-edges, at most 16 blocks a component. Each block is swept in order with its
+lc's fine Gibbs and greedy steps group the edges by connected component and
+split a component of at least 512 edges into near-equal blocks of at least
+256 edges, at most 16 blocks a component; the coarse cascade levels before
+them sweep their edges in one sequence. Each block is swept in order with its
 own random stream; the blocks, split or whole components alike, run in
 parallel against one snapshot of the others and see their moves only at the
 end of a sweep. The block layout and the Gibbs draws depend on `--seed` and
@@ -56,6 +57,8 @@ the data, not on the thread count.
 By default pinto takes at most 16 worker threads, or the machine's core count
 when that is smaller; `RAYON_NUM_THREADS` sets the count instead. On a
 machine with more than 16 cores, a default run leaves the other cores free.
+Raising `RAYON_NUM_THREADS` above 16 gives lc's fine Gibbs no further speedup
+on one large component, which splits into at most 16 blocks.
 
 Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
 you supply, a two-column file of feature pairs named as the data's features
