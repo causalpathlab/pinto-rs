@@ -637,7 +637,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     // rates: dividing lc's edge profiles by a batch estimate lowered
     // the partition's purity when measured, while centring the
     // comparison did not.
-    let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
+    let n_sections = crate::util::ablation::n_sections(section_ids);
     let share = community_group_shares(
         final_membership,
         k,

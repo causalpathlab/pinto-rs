@@ -264,7 +264,7 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
     // files can share one (x, y) frame, and a batch file that gives them all
     // one label (to skip batch correction) must not fold them into one.
     let keys = crate::util::ablation::sections(&cells_per_file, &batch_membership);
-    let n_keys = keys.iter().max().map_or(0, |&m| m as usize + 1);
+    let n_keys = crate::util::ablation::n_sections(&keys);
     let coord_nk = if n_keys > 1 {
         info!("attaching a batch index coordinate ({n_keys} groups)");
         coord_column_names.push("batch".to_string().into_boxed_str());

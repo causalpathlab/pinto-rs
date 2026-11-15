@@ -104,6 +104,17 @@ pub(crate) fn built_cli() -> clap::Command {
     cli
 }
 
+/// The spatial baselines' memory guard, for their `long_about`.
+macro_rules! baseline_memory {
+    () => {
+        "It stops before its large allocations when its estimated peak memory\n\
+         exceeds PINTO_MEMORY_BUDGET (bytes; default half the memory available\n\
+         at the start). It checks first from the files' stored shape, before\n\
+         reading the counts; a file that does not store its nonzero count\n\
+         leaves that read unchecked.\n\n"
+    };
+}
+
 /// The spatial baselines' outputs, as `spatial_baselines/output.rs`
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
@@ -653,6 +664,7 @@ enum Commands {
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
              faithful to its reference code at the model level, on pinto's inputs:\n\
              the data, -c, -b, -o and --seed flags lc takes.\n\n",
+            baseline_memory!(),
             baseline_outputs!()
         )
     )]
@@ -667,6 +679,7 @@ enum Commands {
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
              Gaussian mixture in R at that step.\n\n",
+            baseline_memory!(),
             baseline_outputs!()
         )
     )]

@@ -4,69 +4,14 @@
 use super::overlap::NuisanceOpts;
 use super::tissue::Tissue;
 
-/// Memory allowed for pairs estimated at once when the machine does not say
-/// what it has, and the least allowed when it does.
-const MIN_PAIR_MEMORY_BUDGET: usize = 2 << 30;
+use crate::util::memory::Budget;
 
-/// The variable that sets the memory budget, in bytes: a runner starting
-/// several pinto processes at once gives each its share, which half of what
-/// is free, read by each process alone, would overcommit.
-pub const MEMORY_BUDGET_VAR: &str = "PINTO_MEMORY_BUDGET";
-
-/// Memory allowed for pairs estimated at once: `set` bytes
-/// ([`MEMORY_BUDGET_VAR`]) when given, else [`half_available`]. A `set` that
-/// is not a whole number of bytes is an error.
-pub(super) fn memory_budget(set: Option<&str>, available: Option<usize>) -> anyhow::Result<usize> {
-    set.map_or(Ok(half_available(available)), |s| {
-        s.trim()
-            .parse()
-            .ok()
-            .filter(|&b: &usize| b > 0)
-            .ok_or_else(|| {
-                anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
-            })
-    })
-}
-
-/// Half of the `available` memory, the rest left to the tissue and the
-/// machine's other work, and never below [`MIN_PAIR_MEMORY_BUDGET`].
-fn half_available(available: Option<usize>) -> usize {
-    available.map_or(MIN_PAIR_MEMORY_BUDGET, |a| {
-        (a / 2).max(MIN_PAIR_MEMORY_BUDGET)
-    })
-}
-
-/// Refuse a [`MEMORY_BUDGET_VAR`] that does not parse, before any work.
-pub fn check_memory_budget() -> anyhow::Result<()> {
-    memory_budget(std::env::var(MEMORY_BUDGET_VAR).ok().as_deref(), None).map(|_| ())
-}
-
-/// [`memory_budget`] now, of what is available ([`available_memory`]). A
-/// variable that does not parse is refused at the start
-/// ([`check_memory_budget`]); one that reaches here anyway is warned about
-/// once and counts as unset.
-pub(super) fn pair_memory_budget() -> usize {
-    static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    let set = SET.get_or_init(|| {
-        let var = std::env::var(MEMORY_BUDGET_VAR).ok()?;
-        memory_budget(Some(&var), None)
-            .map_err(|e| log::warn!("{e}; using half the available memory"))
-            .ok()
-    });
-    set.unwrap_or_else(|| half_available(available_memory()))
-}
-
-/// Bytes this process could still allocate: the system's available memory, or
-/// less when a cgroup (a batch job, a container) limits it. `None` where the
-/// system does not say.
-fn available_memory() -> Option<usize> {
-    let mut system = sysinfo::System::new();
-    system.refresh_memory();
-    let available = system.available_memory();
-    let left = system
-        .cgroup_limits()
-        .map_or(available, |group| group.free_memory.min(available));
-    (left > 0).then_some(left as usize)
+/// The memory budget the pairs are sized by: the `set` bytes
+/// ([`crate::util::memory::budget_var`], read once at the start of the run),
+/// else half of what is available now, as each sizing finds it
+/// ([`Budget::measured`]).
+pub(super) fn pair_memory_budget(set: Option<usize>) -> usize {
+    Budget::measured(set).bytes()
 }
 
 /// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_base`]) on
@@ -117,12 +62,18 @@ const FITS_IN_CACHE: usize = 4 << 20;
 /// bytes: what the memory budget allows, and on a tissue whose fits outgrow
 /// the cache a quarter of the threads, the rest serving each pair's parallel
 /// steps ([`run_bounded`]). Fits slow each other down past that: more of them
-/// at once take longer in all.
-pub(super) fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+/// at once take longer in all. `budget` is the bytes the budget variable
+/// sets, if any ([`pair_memory_budget`]).
+pub(super) fn pair_workers(
+    per_pair: usize,
+    tissue: &Tissue,
+    nuisance: &NuisanceOpts,
+    budget: Option<usize>,
+) -> usize {
     let rows = tissue.n().min(nuisance.max_propensity_rows);
     let fit_bytes = propensity_bytes(rows, tissue.design.p());
     workers_within(
-        pair_memory_budget(),
+        pair_memory_budget(budget),
         per_pair,
         rayon::current_num_threads(),
         fit_bytes,
