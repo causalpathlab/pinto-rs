@@ -165,12 +165,9 @@ fn inclusion_is_monotone_and_one_sided() {
 #[test]
 fn sampling_follows_pi() {
     let pi = [0.0f32, 1.0, 0.5];
-    let mut rng = SmallRng::seed_from_u64(1);
     let mut visits = [0usize; 3];
-    for _ in 0..2000 {
-        let mut f = vec![0, 1, 2];
-        sample_included(&mut f, &pi, &mut rng);
-        for g in f {
+    for epoch in 0..2000 {
+        for g in sample_included(&[0, 1, 2], &pi, 1, epoch) {
             visits[g] += 1;
         }
     }
@@ -181,6 +178,65 @@ fn sampling_follows_pi() {
         "π = 0.5 visited {} of 2000",
         visits[2]
     );
+}
+
+/// Each feature draws from its own stream: listing a feature with π = 0, or
+/// leaving it off, keeps every other feature's draws, and their order.
+#[test]
+fn a_zero_pi_feature_leaves_the_others_draws_alone() {
+    let pi: Vec<f32> = (0..40)
+        .map(|g| if g % 3 == 0 { 0.0 } else { 0.5 })
+        .collect();
+    let all: Vec<usize> = (0..pi.len()).collect();
+    let nonzero: Vec<usize> = all.iter().copied().filter(|&g| pi[g] > 0.0).collect();
+    for epoch in 0..20 {
+        assert_eq!(
+            sample_included(&all, &pi, 9, epoch),
+            sample_included(&nonzero, &pi, 9, epoch),
+            "epoch {epoch}"
+        );
+    }
+}
+
+/// The kept features come out shuffled, a fresh order each epoch, not in
+/// the listed order nor by feature index.
+#[test]
+fn kept_features_come_out_shuffled() {
+    let pi = [1.0f32; 30];
+    let listed: Vec<usize> = (0..pi.len()).collect();
+    let mut orders = Vec::new();
+    for epoch in 0..5 {
+        let got = sample_included(&listed, &pi, 3, epoch);
+        let mut sorted = got.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, listed, "every feature kept once");
+        assert_ne!(got, listed, "epoch {epoch} kept the listed order");
+        orders.push(got);
+    }
+    orders.dedup();
+    assert_eq!(orders.len(), 5, "an order repeated across epochs");
+}
+
+/// When nothing is kept, the one feature drawn instead comes in proportion
+/// to π.
+#[test]
+fn the_fallback_follows_pi() {
+    let pi = [1e-7f32, 2e-7, 4e-7];
+    let epochs = 7000;
+    let mut picks = [0usize; 3];
+    for epoch in 0..epochs {
+        let f = sample_included(&[0, 1, 2], &pi, 5, epoch);
+        assert_eq!(f.len(), 1);
+        picks[f[0]] += 1;
+    }
+    for (g, &n) in picks.iter().enumerate() {
+        let share = n as f64 / epochs as f64;
+        let expected = f64::from(pi[g]) / 7e-7;
+        assert!(
+            (share - expected).abs() < 0.03,
+            "feature {g}: share {share}, expected {expected}"
+        );
+    }
 }
 
 // ---- units, PB-tree blocks and epochs ------------------------------------
@@ -258,11 +314,8 @@ fn blocks_come_from_the_pb_tree() {
 #[test]
 fn an_epoch_is_never_empty() {
     let pi = [1e-9f32; 5];
-    let mut rng = SmallRng::seed_from_u64(2);
-    for _ in 0..100 {
-        let mut f = vec![0, 1, 2, 3, 4];
-        sample_included(&mut f, &pi, &mut rng);
-        assert_eq!(f.len(), 1);
+    for epoch in 0..100 {
+        assert_eq!(sample_included(&[0, 1, 2, 3, 4], &pi, 2, epoch).len(), 1);
     }
 }
 

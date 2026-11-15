@@ -54,7 +54,7 @@ fn probe_forward(
 ) -> legume_numeric::candle::candle_core::Result<Tensor> {
     let ProbeInputs {
         args,
-        trainable_features,
+        active_features,
         n_exp_batches,
         sampler,
         model,
@@ -63,7 +63,7 @@ fn probe_forward(
     let mut mini: Vec<(usize, u32, graph_embedding_util::loss::UnitChainBatch)> =
         Vec::with_capacity(n_probe_features);
     let mut features_sampled = 0usize;
-    'fill: for &g in trainable_features
+    'fill: for &g in active_features
         .iter()
         .cycle()
         .take(PROBE_OVERSAMPLE * n_probe_features)
@@ -104,7 +104,7 @@ fn probe_forward(
 pub(super) fn resolve_feature_batch_size(inputs: ProbeInputs<'_>) -> usize {
     let ProbeInputs {
         args,
-        trainable_features,
+        active_features,
         dev,
         ..
     } = inputs;
@@ -123,7 +123,7 @@ pub(super) fn resolve_feature_batch_size(inputs: ProbeInputs<'_>) -> usize {
             legume_numeric::candle::device::auto_chunk_size(
                 dev,
                 FEATURE_BATCH_DEFAULT,
-                16.min(trainable_features.len().max(1)),
+                16.min(active_features.len().max(1)),
                 args.gpu_mem_fraction,
                 |n_probe_features| probe_forward(&inputs, n_probe_features, &mut probe_rng),
             )
@@ -135,7 +135,9 @@ pub(super) fn resolve_feature_batch_size(inputs: ProbeInputs<'_>) -> usize {
 /// What sizing a chunk needs.
 pub(super) struct ProbeInputs<'a> {
     pub args: &'a CellActivityGraphEmbeddingArgs,
-    pub trainable_features: &'a [usize],
+    /// Every feature with an active batch, before `--feature-inclusion`
+    /// drops those with π = 0, so the probe draws the same either way.
+    pub active_features: &'a [usize],
     pub n_exp_batches: usize,
     pub sampler: &'a FeatureGatedChainSampler<'a>,
     pub model: &'a JointEmbedModel,
@@ -277,17 +279,22 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 info!("epoch {epoch}: module membership released — π now trains");
             }
         }
-        let mut perm: Vec<usize> = trainable_features.to_vec();
-        perm.shuffle(&mut rng_master);
         // Soft inclusion: feature g joins this epoch with probability π_g,
-        // so the expected objective is Σ π_g L_g.
-        if let Some(pi) = inclusion {
-            crate::cell_activity_graph_embedding::feature_inclusion::sample_included(
-                &mut perm,
+        // so the expected objective is Σ π_g L_g. Its draws and order are
+        // per feature, so they take nothing from the master stream.
+        let mut perm: Vec<usize> = match inclusion {
+            Some(pi) => crate::cell_activity_graph_embedding::feature_inclusion::sample_included(
+                trainable_features,
                 pi,
-                &mut rng_master,
-            );
-        }
+                c.seed,
+                epoch,
+            ),
+            None => {
+                let mut perm = trainable_features.to_vec();
+                perm.shuffle(&mut rng_master);
+                perm
+            }
+        };
         // Optional cost lever: visit a random subset of the feature axis this
         // epoch. Stochastic coverage, NOT axis selection — every feature stays
         // in the model, keeps its gate, and appears in the output tables; it
