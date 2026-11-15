@@ -577,7 +577,7 @@ fn models_delta(
     let (model_delta, path) = adjusted_model_delta(model, run)?;
     let model_files = crate::predict::model_data_files(Some(run));
     let how = QueryLabels::of(
-        crate::util::metadata::BatchLabels::of(c),
+        crate::util::metadata::BatchLabels::of(&c.batch),
         &c.data_files,
         &model_files,
     );

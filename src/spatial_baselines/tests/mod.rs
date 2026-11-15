@@ -1,3 +1,4 @@
+mod batch_args;
 mod cli;
 mod delta;
 mod graph;

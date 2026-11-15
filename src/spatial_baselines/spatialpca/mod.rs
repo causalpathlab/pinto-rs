@@ -180,6 +180,7 @@ impl FitArgs {
             cell_vectors: 7 * (d + 10) + 2 * d,
             gene_vectors: 3 * (d + 10) + d,
             super_cells,
+            proj_dim: self.core.input.batch.proj_dim,
             // SPARK-X's accumulators over every gene (three coordinates at
             // most) and its kernels' coordinates (`n x d` for each of the
             // eleven, and three more as they are formed); SCTransform's

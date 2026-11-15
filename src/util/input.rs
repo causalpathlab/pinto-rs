@@ -6,9 +6,7 @@ use data_beans::sparse_io_vector::data_name_of;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
-pub use args::{
-    ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
-};
+pub use args::{BatchArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN, DEFAULT_PROJ_DIM};
 
 pub struct SRTReadArgs {
     pub data_files: Vec<Box<str>>,

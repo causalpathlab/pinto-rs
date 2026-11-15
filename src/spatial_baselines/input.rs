@@ -4,16 +4,18 @@
 //! name, order and split them.
 
 use crate::link_community::profiles::read_columns_divided;
+use crate::spatial_baselines::memory::GRAPH_NEIGHBOUR_BYTES;
 use crate::util::ablation;
 use crate::util::batch_effects::{
-    delta_estimate_bytes, estimate_and_write_batch_effects, sorted_batch_labels, BatchEffects,
-    EstimateBatchArgs, DELTA_SAMPLES_PER_BATCH,
+    delta_estimate_bytes, n_strata, sorted_batch_labels, BatchEffects, DELTA_SAMPLES_PER_BATCH,
 };
+use crate::util::cell_pairs::{build_spatial_graph, SrtCellPairsArgs};
 use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
-    read_batch_file, read_data_with_coordinates, SRTReadArgs, BATCH_KNN, COORD_COLUMN_NAMES,
-    DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+    auto_batch_from_components, read_batch_file, read_data_with_coordinates, BatchArgs,
+    SRTReadArgs, COORD_COLUMN_NAMES, DEFAULT_KNN, DEFAULT_PROJ_DIM,
 };
+use crate::util::srt_pipeline::estimate_batches;
 use anyhow::Context;
 use data_beans::alg::random_projection::RandProjOps;
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -21,7 +23,8 @@ use data_beans::convert::try_open_or_convert;
 use data_beans::sparse_io::SparseIo;
 use nalgebra_sparse::CscMatrix;
 
-/// Data files, their coordinates, the output prefix and the seed.
+/// Data files, their coordinates, cage's batch options, the output prefix
+/// and the seed.
 #[derive(clap::Args, Debug, Clone)]
 pub struct SpatialInputArgs {
     /// Expression data files (.zarr or .h5), comma separated; each file is a
@@ -45,21 +48,17 @@ pub struct SpatialInputArgs {
     )]
     pub coord_column_names: Vec<Box<str>>,
 
-    /// Batch label files, one per data file (as `pinto lc -b`): each
-    /// (file, batch) is a section of its own
-    #[arg(long, short = 'b', value_delimiter(','))]
-    pub batch_files: Option<Vec<Box<str>>>,
+    /// cage's batch options, under its names, defaults and help. Each
+    /// (data file, `--batch-files` label) is a section of its own; a
+    /// multi-batch input's counts are divided by its own δ estimate (as
+    /// cage estimates it) before the method's own preprocessing, and
+    /// `--ignore-batch` runs the original method.
+    #[command(flatten)]
+    pub batch: BatchArgs,
 
     /// Header row index in coordinate files (default: detected)
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
-
-    /// Run the original method: no batch effects (δ) are estimated or
-    /// divided out. Without it, a multi-batch input's counts are divided by
-    /// its own δ estimate (as cage estimates it) before the method's own
-    /// preprocessing
-    #[arg(long, default_value_t = false)]
-    pub ignore_batch: bool,
 
     /// Output prefix
     #[arg(long, short, required = true)]
@@ -140,7 +139,13 @@ pub struct InputShape {
     pub section_sizes: Vec<usize>,
     /// Distinct batch labels (a δ estimate is made with two or more): the
     /// batch files' labels over all files, or one a file without them.
+    /// `--auto-batch` may make more after the read; [`SpatialInputArgs::
+    /// delta_bytes`] allows for them.
     pub batches: usize,
+    /// The `--cnv-clones` strata δ's finest groups are crossed with: those
+    /// its table lists and stratum 0 (1 without a table, and after the
+    /// read, by which δ is estimated).
+    pub strata: usize,
 }
 
 /// A data file opened ([`try_open_or_convert`]).
@@ -153,12 +158,13 @@ impl SpatialInputArgs {
     /// ([`Self::metadata`]), no counts read or preloaded, and opened again
     /// by the read: a check on this shape runs before any count is in
     /// memory. Batch files, a label per cell, are read for the sections
-    /// they split files into.
+    /// they split files into, and a clone table for its strata.
     pub fn stored(&self) -> anyhow::Result<Option<InputShape>> {
         if self.data_files.is_empty() {
             return Ok(None);
         }
-        if let Some(b) = &self.batch_files {
+        let batch_files = &self.batch.batch_files;
+        if let Some(b) = batch_files {
             anyhow::ensure!(
                 b.len() == self.data_files.len(),
                 "# batch files != # of data files"
@@ -185,7 +191,7 @@ impl SpatialInputArgs {
                 }
                 None => rows,
             });
-            match &self.batch_files {
+            match batch_files {
                 Some(b) => {
                     let file_labels = read_batch_file(&b[f], cells)?;
                     let sections = ablation::sections(&[cells], &file_labels);
@@ -200,30 +206,52 @@ impl SpatialInputArgs {
             genes: shared.map_or(0, |s| s.len()),
             nonzeros,
             section_sizes,
-            batches: match &self.batch_files {
+            batches: match batch_files {
                 Some(_) => sorted_batch_labels(&labels).len(),
                 None => self.data_files.len(),
+            },
+            strata: match &self.batch.cnv_clones {
+                Some(path) => n_strata(path)?,
+                None => 1,
             },
         }))
     }
 
     /// What the δ estimate holds above the process's own on an input of
     /// stored shape `s` ([`delta_estimate_bytes`]); 0 when none is made
-    /// (`--ignore-batch`, or fewer than two batch labels). A pseudobulk
-    /// sample is a (group, batch) pair of the finest level, at most
-    /// [`DELTA_SAMPLES_PER_BATCH`] groups and no more than the batch's
+    /// (`--ignore-batch`, or fewer than two batch labels and no
+    /// `--auto-batch`). A pseudobulk sample is a (group, stratum, batch)
+    /// triple of the finest level, at most [`DELTA_SAMPLES_PER_BATCH`]
+    /// groups in each of `s.strata` strata and no more than the batch's
     /// cells: summed over the sections, which split each batch (a label
-    /// shared by files is a section in each), it bounds the samples.
+    /// shared by files is a section in each), it bounds the samples. Under
+    /// `--auto-batch` the batches are the spatial graph's components, not
+    /// known before the read: a sample a cell bounds them, and the graph
+    /// they are found on is counted too. A `-p` above the default widens
+    /// the projection the estimate collapses on (its cells' copies, as
+    /// [`super::memory::pseudobulk_bytes`] counts them, and its basis).
     pub fn delta_bytes(&self, s: &InputShape) -> usize {
-        if self.ignore_batch || s.batches < 2 {
+        let b = &self.batch;
+        let auto = b.auto_relabels();
+        if b.ignore_batch || (s.batches < 2 && !auto) {
             return 0;
         }
-        let samples = s
-            .section_sizes
-            .iter()
-            .map(|&n| n.min(DELTA_SAMPLES_PER_BATCH))
-            .sum();
+        let per_section = if auto {
+            usize::MAX
+        } else {
+            DELTA_SAMPLES_PER_BATCH * s.strata
+        };
+        let samples = s.section_sizes.iter().map(|&n| n.min(per_section)).sum();
+        let cells: usize = s.section_sizes.iter().sum();
+        let wider = b.proj_dim.saturating_sub(DEFAULT_PROJ_DIM);
+        let graph = if auto {
+            GRAPH_NEIGHBOUR_BYTES * DEFAULT_KNN * cells
+        } else {
+            0
+        };
         delta_estimate_bytes(s.genes, s.nonzeros, samples)
+            + 4 * wider * (2 * cells + s.genes)
+            + graph
     }
 
     /// A run's `peak` on an input of stored shape `s`, or the δ estimate's
@@ -251,7 +279,7 @@ impl SpatialInputArgs {
             coord_files: self.coord_files.clone(),
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
-            batch_files: self.batch_files.clone(),
+            batch_files: self.batch.batch_files.clone(),
             header_in_coord: self.coord_header_row,
             feature_kind: FeatureNameKind::Exact,
         })?;
@@ -262,10 +290,23 @@ impl SpatialInputArgs {
                 .into_iter()
                 .map(|s| s as usize)
                 .collect();
+        // `--auto-batch` relabels the cells by the spatial graph's
+        // components, as cage's preprocessing does, on its default graph;
+        // the sections stay the files' (and batch files') own
+        if self.batch.auto_relabels() {
+            let graph = build_spatial_graph(
+                &srt.coordinates,
+                SrtCellPairsArgs {
+                    knn: DEFAULT_KNN,
+                    reciprocal: false,
+                },
+            )?;
+            auto_batch_from_components(&graph, &srt.coordinates, &mut srt.batches, true);
+        }
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
-        let mut estimate = (!self.ignore_batch)
-            .then(|| estimate_delta(&mut srt.data, &srt.batches, &self.out, with_projection))
+        let mut estimate = (!self.batch.ignore_batch)
+            .then(|| self.estimate_delta(&mut srt.data, &srt.batches, with_projection))
             .transpose()?
             .flatten()
             // an estimate without a δ is none
@@ -277,7 +318,7 @@ impl SpatialInputArgs {
             None if with_projection => Some(
                 srt.data
                     .project_columns_with_batch_correction::<Box<str>>(
-                        DEFAULT_PROJ_DIM,
+                        self.batch.proj_dim,
                         None,
                         None,
                     )?
@@ -324,29 +365,29 @@ impl SpatialInputArgs {
             projection,
         })
     }
-}
 
-/// δ estimated on the input itself, by cage's estimator at cage's default
-/// settings (`-p`, the batch KNN, `--num-levels`), and written under `out`
-/// as cage writes it, with the projection it collapsed on when
-/// `keep_projection`. `None` with fewer than two batches.
-fn estimate_delta(
-    data: &mut data_beans::sparse_io_vector::SparseIoVec,
-    batches: &[Box<str>],
-    out: &str,
-    keep_projection: bool,
-) -> anyhow::Result<Option<BatchEffects>> {
-    let labels = sorted_batch_labels(batches);
-    if labels.len() < 2 {
-        return Ok(None);
+    /// δ estimated on the input itself over `batches`, by cage's estimator
+    /// at the batch options' settings, and written under `--out` as cage
+    /// writes it, with the projection it collapsed on when
+    /// `keep_projection`. `None` with fewer than two batches.
+    fn estimate_delta(
+        &self,
+        data: &mut data_beans::sparse_io_vector::SparseIoVec,
+        batches: &[Box<str>],
+        keep_projection: bool,
+    ) -> anyhow::Result<Option<BatchEffects>> {
+        let labels = sorted_batch_labels(batches);
+        if labels.len() < 2 {
+            return Ok(None);
+        }
+        legume_numeric::matrix::common_io::mkdir_parent(&self.out)?;
+        estimate_batches(
+            &self.batch,
+            Some(&self.out),
+            data,
+            batches,
+            &labels,
+            keep_projection,
+        )
     }
-    legume_numeric::matrix::common_io::mkdir_parent(out)?;
-    estimate_and_write_batch_effects(
-        data,
-        batches,
-        &labels,
-        EstimateBatchArgs::at(DEFAULT_PROJ_DIM, BATCH_KNN, DEFAULT_NUM_LEVELS, None),
-        Some(out),
-        keep_projection,
-    )
 }

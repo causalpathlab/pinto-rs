@@ -75,6 +75,7 @@ fn delta_estimate_covers_every_measured_peak_and_is_not_far_above() {
             nonzeros,
             section_sizes: vec![per; 2],
             batches: 2,
+            strata: 1,
         };
         let args = input_args(&[]);
         let est = mib(SPATIALDE2_PROCESS_BYTES + args.delta_bytes(&shape));
@@ -109,6 +110,7 @@ fn a_large_input_with_batch_files_is_charged_its_delta_samples() {
         nonzeros: 400_000 * 800,
         section_sizes: vec![100_000; 4],
         batches: 4,
+        strata: 1,
     };
     let with = input_args(&["-b", "a.batch"]);
     let without = input_args(&[]);
@@ -126,6 +128,82 @@ fn a_large_input_with_batch_files_is_charged_its_delta_samples() {
         ..shape
     };
     assert_eq!(with.delta_bytes(&one), 0, "one section has one batch");
+}
+
+/// `--auto-batch` finds its batches after the read, so one file may have
+/// several: its estimate is charged a sample a cell and the graph the
+/// components come from. `--cnv-clones` crosses each batch's groups with
+/// the table's strata, stratum 0 included. A `-p` above the default
+/// widens the projection; at the default nothing changes.
+#[test]
+fn auto_batch_cnv_clones_and_p_keep_the_delta_estimate_an_upper_bound() {
+    use crate::util::input::DEFAULT_KNN;
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let one = InputShape {
+        genes: 2000,
+        nonzeros: 400_000 * 800,
+        section_sizes: vec![400_000],
+        batches: 1,
+        strata: 1,
+    };
+    let auto = input_args(&["--auto-batch"]);
+    assert_eq!(
+        auto.delta_bytes(&one),
+        delta_estimate_bytes(2000, one.nonzeros, 400_000)
+            + GRAPH_NEIGHBOUR_BYTES * DEFAULT_KNN * 400_000
+    );
+    let labelled = input_args(&["--auto-batch", "-b", "a.batch"]);
+    assert_eq!(labelled.delta_bytes(&one), 0, "batch files win");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("x.clones.parquet");
+    let path = path.to_str().unwrap();
+    let cell: Vec<Box<str>> = ["a", "b", "c", "d"].map(Box::from).to_vec();
+    let stratum = [0i32, 1, 2, 2];
+    write_named_table(
+        path,
+        "cell",
+        &cell,
+        &[("stratum".into(), Column::I32(&stratum))],
+    )
+    .unwrap();
+    assert_eq!(crate::util::batch_effects::n_strata(path).unwrap(), 3);
+    let files = simulated(dir.path(), 4);
+    let stored = |extra: &[&str]| {
+        let crate::Commands::Spatialde2(args) =
+            on_files("spatialde2", &files, &dir.path().join("run"), extra)
+        else {
+            unreachable!()
+        };
+        args.fit.input.stored().unwrap().unwrap().strata
+    };
+    assert_eq!((stored(&[]), stored(&["--cnv-clones", path])), (1, 3));
+    let four = InputShape {
+        section_sizes: vec![100_000; 4],
+        batches: 4,
+        strata: 3,
+        ..one.clone()
+    };
+    let clones = input_args(&["--cnv-clones", path]);
+    assert_eq!(
+        clones.delta_bytes(&four),
+        delta_estimate_bytes(2000, four.nonzeros, 4 * 3 * DELTA_SAMPLES_PER_BATCH)
+    );
+
+    let two = InputShape {
+        section_sizes: vec![100_000; 2],
+        batches: 2,
+        ..one
+    };
+    let plain = input_args(&[]);
+    assert_eq!(
+        input_args(&["-p", "200"]).delta_bytes(&two),
+        plain.delta_bytes(&two)
+    );
+    assert_eq!(
+        input_args(&["-p", "300"]).delta_bytes(&two),
+        plain.delta_bytes(&two) + 4 * 100 * (2 * 200_000 + 2000)
+    );
 }
 
 /// Maximum resident memory (MiB) of sparse (default) stagate runs on one
@@ -154,6 +232,7 @@ fn stagate_sparse_estimate_covers_every_measured_peak_and_is_not_far_above() {
             nonzeros,
             section_sizes: vec![cells],
             batches: 1,
+            strata: 1,
         });
         shape.gram = knn_gram_bytes(&[cells], 4);
         let est = mib(stagate_peak_bytes(&shape));
@@ -190,6 +269,7 @@ fn pseudobulk_estimate_covers_every_measured_peak() {
             nonzeros,
             section_sizes: vec![cells],
             batches: 1,
+            strata: 1,
         };
         // Taken in the 4-thread pool the peaks were measured on.
         let est = rayon::ThreadPoolBuilder::new()
@@ -203,7 +283,13 @@ fn pseudobulk_estimate_covers_every_measured_peak() {
                     all_pairs: false,
                 }
                 .memory_shape(&input, nonzeros);
-                mib(spatialde2_peak_bytes(&sd) + pseudobulk_bytes(cells, nonzeros, sd.edges))
+                mib(spatialde2_peak_bytes(&sd)
+                    + pseudobulk_bytes(
+                        cells,
+                        nonzeros,
+                        sd.edges,
+                        crate::util::input::DEFAULT_PROJ_DIM,
+                    ))
             });
         assert!(
             est >= measured,
@@ -236,6 +322,7 @@ fn stagate_shape(per_section: usize, sections: usize, threads: usize) -> Stagate
             nonzeros,
             section_sizes: sizes,
             batches: sections,
+            strata: 1,
         })
     }
 }
@@ -344,6 +431,7 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
                 nonzeros,
                 section_sizes: sizes,
                 batches: sections,
+                strata: 1,
             },
             nonzeros,
         )
@@ -375,6 +463,7 @@ fn spatialde2_reference_holds_no_graph_and_its_estimate_covers_the_measured_runs
                 nonzeros,
                 section_sizes: vec![cells],
                 batches: 1,
+                strata: 1,
             },
             nonzeros,
         );
@@ -684,6 +773,7 @@ fn stagate_counts_a_radius_graph_once_built() {
         nonzeros: data.counts.nnz(),
         section_sizes: vec![36, 36],
         batches: 2,
+        strata: 1,
     });
     assert_eq!(loops_only.edges, data.cells.len());
     let budget = stagate_peak_bytes(&loops_only) + 1;
@@ -825,6 +915,7 @@ fn one_file_s_stored_shape_is_its_read_shape() {
             nonzeros: data.counts.nnz(),
             section_sizes: vec![64],
             batches: 1,
+            strata: 1,
         }
     );
 }
@@ -1068,6 +1159,7 @@ fn spatialpca_estimate_counts_spark_x_over_every_gene() {
         nonzeros: 1000,
         section_sizes: vec![500, 500],
         batches: 1,
+        strata: 1,
     };
     let at = |genes: usize| {
         rayon::ThreadPoolBuilder::new()
@@ -1132,6 +1224,7 @@ fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
                 nonzeros: NONZEROS_PER_CELL * cells,
                 section_sizes: vec![cells],
                 batches: 1,
+                strata: 1,
             };
             let est = factor_estimate(cmd, &input, genes);
             assert!(est >= measured, "{cmd} {cells}: {est:.0} < {measured} MiB");
@@ -1160,6 +1253,7 @@ fn spatialpca_estimates_cover_runs_at_the_gene_cap() {
         nonzeros: MANY_GENES_NONZEROS,
         section_sizes: vec![16384],
         batches: 1,
+        strata: 1,
     };
     for (cmd, measured) in MANY_GENES_MEASURED {
         let est = factor_estimate(cmd, &input, 3000);

@@ -433,7 +433,7 @@ pub fn predict_cage(
     }
     let model_source = run.and_then(|r| r.meta.batch_labels);
     let model_files = model_data_files(run);
-    let how = delta::QueryLabels::of(BatchLabels::of(c), &c.data_files, &model_files);
+    let how = delta::QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
     let all_known = match &model_delta {
         Some((d, _)) => delta::every_batch_known(c, &how, &d.batches, model_source)?,
         None => false,
@@ -816,7 +816,7 @@ pub fn predict_cage(
             // the δ alone: the cells' batches are its own labels, in its
             // coord_pairs
             delta: batch_effects.as_ref().map(|_| DeltaWritten {
-                labels: BatchLabels::of(c),
+                labels: BatchLabels::of(&c.batch),
                 cells: false,
             }),
         },

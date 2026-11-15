@@ -351,17 +351,25 @@ pub struct BatchArgs {
         help = "CNV clone table from `mung clones`; batch δ cannot mix across strata",
         long_help = "Path to `{out}.clones.parquet` written by `mung clones`.\n\
                      Each cell's stratum is a hard parent cut on the multilevel\n\
-                     collapse used for batch-effect estimation (cage / lc / dsvd):\n\
+                     collapse used for batch-effect estimation:\n\
                      finest codes are crossed with the stratum, BBKNN matches only\n\
                      within stratum, and unmatched (clone-only) mass is excluded\n\
                      from the δ update / pin vote while the δ learned on mixable\n\
                      cells is still applied to clones. Missing cells default to\n\
                      stratum 0. A batch with no matched mass gets δ ≈ 1 (warned).\n\
                      \n\
-                     Does not gate spatial graph coarsening — only the MultilevelParams\n\
-                     δ path shared by cage / lc / dsvd."
+                     Does not gate spatial graph coarsening, only the δ estimate\n\
+                     shared by cage, lc, dsvd and the spatial baselines."
     )]
     pub cnv_clones: Option<Box<str>>,
+}
+
+impl BatchArgs {
+    /// Whether `--auto-batch` relabels the cells by the spatial graph's
+    /// components: `--batch-files` labels win over it.
+    pub fn auto_relabels(&self) -> bool {
+        self.auto_batch && self.batch_files.is_none()
+    }
 }
 
 /// Neighbours per pseudobulk sample in other batches for cross-batch

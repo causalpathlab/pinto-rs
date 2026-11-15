@@ -28,7 +28,7 @@ use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
-    KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
+    BatchArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
@@ -191,18 +191,18 @@ pub struct SrtPreprocessed {
     pub ablation: Option<Ablation>,
 }
 
-/// The batch-effect estimate of inputs `c` over `batch_membership` (its
+/// The batch-effect estimate under batch options `c` over `batch_membership` (its
 /// sorted labels `batch_labels`), written under `out` when given (a fit);
 /// the projection it collapsed on kept with `keep_projection`.
 pub(crate) fn estimate_batches(
-    c: &SrtInputArgs,
+    c: &BatchArgs,
     out: Option<&str>,
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     batch_labels: &[Box<str>],
     keep_projection: bool,
 ) -> anyhow::Result<Option<BatchEffects>> {
-    let strata = match c.batch.cnv_clones.as_deref() {
+    let strata = match c.cnv_clones.as_deref() {
         Some(path) => Some(load_cnv_cell_strata(path, data_vec)?),
         None => None,
     };
@@ -211,9 +211,9 @@ pub(crate) fn estimate_batches(
         batch_membership,
         batch_labels,
         EstimateBatchArgs::at(
-            c.batch.proj_dim,
+            c.proj_dim,
             crate::util::input::BATCH_KNN,
-            c.batch.num_levels,
+            c.num_levels,
             strata,
         ),
         out,
@@ -490,7 +490,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // Where a fit writes its estimate; a query's is unwritten.
     let fit_out = (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref());
     // `--auto-batch` relabels the cells by the graph's components.
-    let auto_relabels = c.batch.auto_batch && c.batch.batch_files.is_none();
+    let auto_relabels = c.batch.auto_relabels();
     // Expression mode's projection, kept for the cells' projection below
     // while it is theirs (the same cells and labels).
     let mut base_proj: Option<BaseProjection> = None;
@@ -529,8 +529,14 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         let mut correct = labelled && model == Some(true);
         let mut proj = None;
         if labelled && estimate && model != Some(false) {
-            let mut effects =
-                estimate_batches(c, fit_out, &mut data_vec, &batch_membership, &labels, true)?;
+            let mut effects = estimate_batches(
+                &c.batch,
+                fit_out,
+                &mut data_vec,
+                &batch_membership,
+                &labels,
+                true,
+            )?;
             correct =
                 model.unwrap_or_else(|| effects.as_ref().is_some_and(|e| e.posterior.is_some()));
             if correct {
@@ -610,7 +616,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let mut batch_effects = match early_estimate {
         Some(effects) => effects,
         None if estimate => estimate_batches(
-            c,
+            &c.batch,
             fit_out,
             &mut data_vec,
             &batch_membership,

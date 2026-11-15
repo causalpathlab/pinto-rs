@@ -139,6 +139,16 @@ pub fn load_cnv_cell_strata(
     Ok(cell_to_stratum)
 }
 
+/// The strata of the clone table at `path`: those it lists, and stratum 0
+/// (the mixable cells, and those it does not list).
+pub fn n_strata(path: &str) -> anyhow::Result<usize> {
+    let (_, nums) = read_table_columns(path, &[], &["stratum"])?;
+    let mut strata: std::collections::BTreeSet<u64> =
+        nums.into_iter().flatten().map(|s| s as u64).collect();
+    strata.insert(0);
+    Ok(strata.len())
+}
+
 /// Each of `cells`' stratum in the clone table at `path` (its `cell` and
 /// `stratum` columns; the file is the whole contract with mung). Cells it
 /// does not list go to stratum 0, with a warning.

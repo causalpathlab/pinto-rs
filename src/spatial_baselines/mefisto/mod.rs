@@ -215,6 +215,7 @@ impl FitArgs {
             cell_vectors: 2 * k * g + 2 * k + 8,
             gene_vectors: 8 * k + 2 * k * g + 4 * g,
             super_cells: variant.super_cells(),
+            proj_dim: self.core.input.batch.proj_dim,
             dense_bytes: 0,
             nonzero_bytes: super::memory::FACTOR_NONZERO_BYTES,
             freed_before_graph: 0,

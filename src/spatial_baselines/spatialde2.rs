@@ -1377,7 +1377,12 @@ pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) 
     let shape = fit.sizes(variant).memory_shape(&input, s.nonzeros);
     let peak = spatialde2_peak_bytes(&shape);
     let pb = match variant {
-        Variant::Pseudobulk => pseudobulk_bytes(shape.cells, s.nonzeros, shape.edges),
+        Variant::Pseudobulk => pseudobulk_bytes(
+            shape.cells,
+            s.nonzeros,
+            shape.edges,
+            fit.input.batch.proj_dim,
+        ),
         Variant::Sparse | Variant::Reference => 0,
     };
     fit.input
@@ -1432,6 +1437,7 @@ fn read_shape(data: &SpatialData, genes: usize) -> InputShape {
         nonzeros: data.counts.nnz(),
         section_sizes: section_sizes(&data.section),
         batches: data.n_batches(),
+        strata: 1,
     }
 }
 
@@ -1565,7 +1571,8 @@ pub(crate) fn run_pb_on(
         .memory_shape(&input, input.nonzeros);
     ensure_fits(
         "spatialde2-pb",
-        spatialde2_peak_bytes(&shape) + pseudobulk_bytes(n, input.nonzeros, shape.edges),
+        spatialde2_peak_bytes(&shape)
+            + pseudobulk_bytes(n, input.nonzeros, shape.edges, args.input.batch.proj_dim),
         budget,
         LOWER_MEMORY,
     )?;

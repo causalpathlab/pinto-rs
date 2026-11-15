@@ -615,11 +615,14 @@ noise, `tau` and `rho` refitted on the cells), MEFISTO's weights, ARD and
 sparsity (its noise, factors and each factor's `rho` refitted). Both were
 held to the same bar and met it.
 
-One deviation is shared: with two or more batches (data files, or `-b`
-labels) the counts are divided by the input's own batch effects (δ,
-estimated as `cage` estimates them and written to `{out}.delta.parquet`)
-before the method's own preprocessing. `--ignore-batch` runs the original
-method on the counts as stored.
+One deviation is shared: with two or more batches (data files, `-b`
+labels, or `--auto-batch` components) the counts are divided by the
+input's own batch effects (δ, estimated as `cage` estimates them and
+written to `{out}.delta.parquet`) before the method's own preprocessing.
+The baselines take cage's batch flags under the same names and defaults
+(`--batch-files`, `--auto-batch`, `--ignore-batch`, `--cnv-clones`), so a
+baseline and cage given the same flags estimate the same δ.
+`--ignore-batch` runs the original method on the counts as stored.
 
 All fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate

@@ -359,7 +359,7 @@ pub(crate) fn adjusted_query_delta(
     membership: &[Box<str>],
 ) -> anyhow::Result<Option<(Mat, Vec<u32>)>> {
     use crate::util::batch_effects::{batch_ids, sorted_batch_labels};
-    if BatchLabels::of(c) == BatchLabels::AutoBatch {
+    if BatchLabels::of(&c.batch) == BatchLabels::AutoBatch {
         info!(
             "--auto-batch takes batches from a cell graph, which impute does not build: \
              the query is one batch, new to the model, and is not divided"
@@ -369,16 +369,18 @@ pub(crate) fn adjusted_query_delta(
     let (model_delta, path) = adjusted_model_delta(model, run)?;
     let source = run.meta.batch_labels;
     let model_files = crate::predict::model_data_files(Some(run));
-    let how = QueryLabels::of(BatchLabels::of(c), &c.data_files, &model_files);
+    let how = QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
     let labels = sorted_batch_labels(membership);
     let all_known = every_batch_known(c, &how, &model_delta.batches, source)?;
     let estimate = if all_known {
         None
     } else {
-        crate::util::srt_pipeline::estimate_batches(c, None, data, membership, &labels, false)?
-            .and_then(|e| e.posterior)
-            .map(|p| p.into_delta().map(|d| d.on_batches(&labels)))
-            .transpose()?
+        crate::util::srt_pipeline::estimate_batches(
+            &c.batch, None, data, membership, &labels, false,
+        )?
+        .and_then(|e| e.posterior)
+        .map(|p| p.into_delta().map(|d| d.on_batches(&labels)))
+        .transpose()?
     };
     let matched = match_batches(&labels, &model_delta.batches, source, &how);
     let rows = data.row_names()?;

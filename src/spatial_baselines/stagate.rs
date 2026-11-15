@@ -1139,6 +1139,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         nonzeros: counts.nnz(),
         section_sizes: section_sizes(&data.section),
         batches: data.n_batches(),
+        strata: 1,
     });
     shape.selected_nonzeros = selected_nonzeros(&counts, &genes);
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
