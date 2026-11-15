@@ -33,6 +33,20 @@ struct Fit {
     names: Vec<String>,
     #[arg(long, hide = true)]
     secret: Option<f32>,
+    #[arg(long, value_parser = not_negative)]
+    rate: Option<f64>,
+    #[arg(long)]
+    shift: Vec<f64>,
+}
+
+/// A command's own check of its value, as a method's flags have them.
+fn not_negative(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|e| format!("{e}"))?;
+    if v >= 0.0 {
+        Ok(v)
+    } else {
+        Err(format!("{v} must not be negative"))
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -74,7 +88,9 @@ fn rows_come_from_the_clap_definition() {
             "fast",
             "levels",
             "names",
-            "secret"
+            "secret",
+            "rate",
+            "shift"
         ]
     );
     assert!(m.takes_batches() && m.takes_coords());
@@ -95,7 +111,7 @@ fn an_untouched_form_passes_only_what_pinto_run_fills() {
     let cli = cli();
     let m = Method::new(&cli, "fit").unwrap();
     let argv = m.argv(&["d1.zarr".into(), "d2.zarr".into()], &[], &[], "o");
-    assert_eq!(argv, ["fit", "d1.zarr", "d2.zarr", "--out", "o"]);
+    assert_eq!(argv, ["fit", "d1.zarr", "d2.zarr", "--out=o"]);
     assert_eq!(check(&cli, &argv), Ok(()));
     assert_eq!(m.changed(), 0);
 }
@@ -121,22 +137,15 @@ fn changed_rows_reach_the_command_line_as_clap_takes_them() {
         [
             "fit",
             "d.zarr",
-            "--coord",
-            "c1.csv",
-            "--batch-files",
-            "b1.tsv",
-            "--out",
-            "o",
-            "--steps",
-            "20",
-            "--shape",
-            "flat",
+            "--coord=c1.csv",
+            "--batch-files=b1.tsv",
+            "--out=o",
+            "--steps=20",
+            "--shape=flat",
             "--fast",
-            "--levels",
-            "3,4",
-            "--names",
-            "a",
-            "b"
+            "--levels=3,4",
+            "--names=a",
+            "--names=b"
         ]
     );
     assert_eq!(check(&cli, &argv), Ok(()));
@@ -178,7 +187,7 @@ fn batch_paths_pass_whole_even_with_spaces() {
         &["my labels/b 1.tsv".into(), "b2.tsv".into()],
         "o",
     );
-    assert_eq!(argv[2..4], ["--batch-files", "my labels/b 1.tsv,b2.tsv"]);
+    assert_eq!(argv[2], "--batch-files=my labels/b 1.tsv,b2.tsv");
 }
 
 #[test]
@@ -186,7 +195,68 @@ fn a_method_found_by_its_alias_is_typed_as_the_alias() {
     let cli = cli();
     let m = Method::new(&cli, "f").unwrap();
     let argv = m.argv(&["d.zarr".into()], &["c.csv".into()], &[], "o");
-    assert_eq!(argv[..4], ["f", "d.zarr", "--coord", "c.csv"]);
+    assert_eq!(argv[..3], ["f", "d.zarr", "--coord=c.csv"]);
     assert_eq!(check(&cli, &argv), Ok(()));
     assert!(Method::new(&cli, "nope").is_err());
+}
+
+/// A negative value is the flag's own word, `--flag=value`, so it reaches
+/// the command's check and is refused with its reason, or taken, never
+/// read as a flag pinto does not know.
+#[test]
+fn a_negative_value_reaches_the_command_s_own_check() {
+    let cli = cli();
+    let mut m = Method::new(&cli, "fit").unwrap();
+    field(&mut m, "rate").value = "-0.5".into();
+    let why = check(&cli, &m.argv(&["d.zarr".into()], &[], &[], "o")).unwrap_err();
+    assert!(why.contains("-0.5 must not be negative"), "{why}");
+    assert!(!why.contains("unexpected argument"), "{why}");
+    assert_eq!(blamed(&why, &m.fields), Some("rate"));
+
+    field(&mut m, "rate").reset();
+    field(&mut m, "shift").value = "-1, -2".into();
+    let argv = m.argv(&["d.zarr".into()], &[], &[], "o");
+    assert_eq!(argv[argv.len() - 2..], ["--shift=-1", "--shift=-2"]);
+    assert_eq!(check(&cli, &argv), Ok(()));
+
+    // Several values of one flag go as the flag repeated, each in its word.
+    field(&mut m, "shift").reset();
+    field(&mut m, "names").value = "-1 -2".into();
+    let argv = m.argv(&["d.zarr".into()], &[], &[], "o");
+    assert_eq!(argv[argv.len() - 2..], ["--names=-1", "--names=-2"]);
+    assert_eq!(check(&cli, &argv), Ok(()));
+}
+
+/// The script `pinto run` writes passes the program the words of the
+/// command line it was given, a negative value and `--out` among them.
+#[cfg(unix)]
+#[test]
+fn the_script_replays_the_command_line_word_for_word() {
+    let cli = cli();
+    let mut m = Method::new(&cli, "fit").unwrap();
+    field(&mut m, "rate").value = "-0.5".into();
+    field(&mut m, "shift").value = "-1".into();
+    field(&mut m, "names").value = "a b".into();
+    let argv = m.argv(&["d 1.zarr".into()], &["c.csv".into()], &[], "my out");
+    let dir = tempfile::tempdir().unwrap();
+    // A stand-in pinto that writes down the words it was given.
+    let fake = dir.path().join("fake-pinto");
+    std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\" > words.txt\n").unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = dir.path().join("r.cmd.sh");
+    super::super::script::write(&path, "my out", "r.pinto.json", &argv).unwrap();
+    let run = std::process::Command::new("bash")
+        .arg(&path)
+        .env("PINTO", &fake)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let words = std::fs::read_to_string(dir.path().join("words.txt")).unwrap();
+    assert_eq!(words.lines().collect::<Vec<_>>(), argv, "{words}");
+    let why = check(&cli, &argv).unwrap_err();
+    assert!(why.contains("-0.5 must not be negative"), "{why}");
 }

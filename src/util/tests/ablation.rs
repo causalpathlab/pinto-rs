@@ -1,11 +1,8 @@
+use crate::test_support::boxed;
 use crate::util::ablation::*;
 use crate::util::common::*;
-use crate::util::knn_graph::KnnGraph;
 use legume_numeric::matrix::knn_graph::symmetric_adjacency;
-
-fn names(v: &[&str]) -> Vec<Box<str>> {
-    v.iter().map(|&s| s.into()).collect()
-}
+use legume_numeric::matrix::knn_graph::KnnGraph;
 
 fn args() -> AblationArgs {
     AblationArgs {
@@ -69,16 +66,16 @@ fn a_parent_needs_a_manifest() {
 
 #[test]
 fn features_drop_by_regex_on_name_parts() {
-    let rows = names(&[
-        "ENSG1_MT-CO1",
-        "ENSG2_ACTB",
-        "MT-ND1",
-        "ENSG3_GAPDH/count/spliced",
+    let rows = boxed(&[
+        "ENSG1_PRE-GENE1",
+        "ENSG2_GENE2",
+        "PRE-GENE3",
+        "ENSG3_GENE4/count/spliced",
     ]);
-    let (keep, spec) = feature_keep(&rows, "^MT-").unwrap();
+    let (keep, spec) = feature_keep(&rows, "^PRE-").unwrap();
     assert_eq!(keep, vec![false, true, false, true]);
     assert_eq!(spec["n_dropped"], 2);
-    let (keep, _) = feature_keep(&rows, "^GAPDH$").unwrap();
+    let (keep, _) = feature_keep(&rows, "^GENE4$").unwrap();
     assert_eq!(keep, vec![true, true, true, false]);
     assert!(feature_keep(&rows, "^NOPE$").is_err());
     assert!(feature_keep(&rows, ".").is_err());
@@ -88,8 +85,8 @@ fn features_drop_by_regex_on_name_parts() {
 fn features_drop_by_listed_name() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("drop.txt");
-    std::fs::write(&f, "# housekeeping\nACTB\n\nENSG3\n").unwrap();
-    let rows = names(&["ENSG1_MT-CO1", "ENSG2_ACTB", "ENSG3_GAPDH"]);
+    std::fs::write(&f, "# housekeeping\nGENE2\n\nENSG3\n").unwrap();
+    let rows = boxed(&["ENSG1_PRE-GENE1", "ENSG2_GENE2", "ENSG3_GENE4"]);
     let (keep, spec) = feature_keep(&rows, f.to_str().unwrap()).unwrap();
     assert_eq!(keep, vec![true, false, false]);
     assert_eq!(spec["n_listed"], 2);
@@ -106,15 +103,15 @@ fn a_cell_list_takes_the_first_field_and_skips_a_header() {
     .unwrap();
     let listed = read_cell_list(f.to_str().unwrap()).unwrap();
     assert_eq!(listed.len(), 2);
-    let keep = cell_keep(&names(&["A-1@s1", "C-1@s1", "B-1@s1"]), &listed).unwrap();
+    let keep = cell_keep(&boxed(&["A-1@s1", "C-1@s1", "B-1@s1"]), &listed).unwrap();
     assert_eq!(keep, vec![false, true, false]);
     let none: HashSet<Box<str>> = ["Z".into()].into_iter().collect();
-    assert!(cell_keep(&names(&["A-1@s1"]), &none).is_err());
+    assert!(cell_keep(&boxed(&["A-1@s1"]), &none).is_err());
 }
 
 #[test]
 fn sections_split_files_and_batches() {
-    let b = names(&["x", "x", "y", "x", "x"]);
+    let b = boxed(&["x", "x", "y", "x", "x"]);
     assert_eq!(sections(&[3, 2], &b), vec![0, 0, 1, 2, 2]);
 }
 
@@ -164,8 +161,8 @@ fn block_moves_keep_offsets_inside_a_tile() {
 
 #[test]
 fn plane_columns_skip_the_batch_offset() {
-    assert_eq!(plane_columns(&names(&["batch", "x", "y"])).unwrap(), (1, 2));
-    assert!(plane_columns(&names(&["x", "batch"])).is_err());
+    assert_eq!(plane_columns(&boxed(&["batch", "x", "y"])).unwrap(), (1, 2));
+    assert!(plane_columns(&boxed(&["x", "batch"])).is_err());
 }
 
 #[test]
@@ -239,7 +236,7 @@ fn a_hole_takes_its_area_back() {
 
 #[test]
 fn polygons_pick_cells_of_their_own_section() {
-    let names = names(&["a@GSM1_s1", "b@GSM1_s1", "c@GSM2_s2"]);
+    let names = boxed(&["a@GSM1_s1", "b@GSM1_s1", "c@GSM2_s2"]);
     // All three sit at the same point in their own frames.
     let (x, y) = (vec![1.0f32; 3], vec![1.0f32; 3]);
     let square = vec![vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]];
@@ -271,7 +268,7 @@ fn seeding_sees_the_plane_per_section_and_batch() {
     let batches: Vec<Box<str>> = ["a", "a", "b", "c"].iter().map(|&s| s.into()).collect();
     let (plane, groups) = seeding_inputs(
         &coords,
-        &names(&["x", "batch", "y"]),
+        &boxed(&["x", "batch", "y"]),
         &[0, 0, 1, 1],
         &batches,
     );

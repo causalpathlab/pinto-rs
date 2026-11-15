@@ -9,7 +9,7 @@
 //! Features dropped by the trim get `None` as their module label; surviving
 //! features get `Some(m)` with `m` contiguous starting at 0.
 
-use crate::feature_network::graph::FeaturePairGraph;
+use legume_numeric::matrix::pair_graph::FeaturePairGraph;
 use log::info;
 
 /// Per-feature degree within the subgraph induced by `keep` (count only edges
@@ -144,7 +144,7 @@ pub fn leiden_feature_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature_network::graph::test_graph_from_edges as graph_from_edges;
+    use legume_numeric::matrix::pair_graph::test_graph_from_edges as graph_from_edges;
 
     #[test]
     fn test_kcore_min_degree_zero_keeps_all() {

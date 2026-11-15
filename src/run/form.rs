@@ -4,6 +4,7 @@
 //! Nothing here names a flag of any one method: every row comes from the
 //! subcommand's `Arg`s, so a flag added to a method shows up on its own.
 
+use crate::tui::flag_value;
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 /// Flags `pinto run` fills from its own screens or never passes.
@@ -24,11 +25,12 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Many {
     One,
-    /// Joined into one argument: `--flag a,b`.
+    /// Joined into one argument: `--flag=a,b`.
     Joined(char),
-    /// Listed after one flag: `--flag a b`.
+    /// Listed after one flag that takes them all at once: `--flag a b`,
+    /// or `--flag=a` for one.
     Listed,
-    /// The flag repeated: `--flag a --flag b`.
+    /// The flag repeated, its values gathered: `--flag=a --flag=b`.
     Repeated,
 }
 
@@ -122,6 +124,22 @@ impl Field {
         self.value.trim() == self.default
     }
 
+    /// Each value rewritten by `f`, as the command line splits them (a
+    /// comma list in one value too), joined by commas. A row at its
+    /// default is not passed, and stays as it is.
+    pub fn map_values(&mut self, f: impl Fn(&str) -> String) {
+        if self.is_default() {
+            return;
+        }
+        let vs: Vec<String> = values(self.many, &self.value)
+            .iter()
+            .flat_map(|v| v.split(','))
+            .filter(|v| !v.is_empty())
+            .map(f)
+            .collect();
+        self.value = vs.join(",");
+    }
+
     /// Back to what clap would use.
     pub fn reset(&mut self) {
         self.value.clone_from(&self.default);
@@ -183,10 +201,11 @@ impl Field {
 fn many_of(a: &Arg) -> Many {
     if let Some(c) = a.get_value_delimiter() {
         Many::Joined(c)
+    } else if matches!(a.get_action(), ArgAction::Append) {
+        // it gathers values, so the flag repeated gives each its own word
+        Many::Repeated
     } else if a.get_num_args().is_some_and(|r| r.max_values() > 1) {
         Many::Listed
-    } else if matches!(a.get_action(), ArgAction::Append) {
-        Many::Repeated
     } else {
         Many::One
     }
@@ -209,16 +228,17 @@ fn values(many: Many, text: &str) -> Vec<String> {
     }
 }
 
-/// `flag` with values `vs`, laid out the way the flag takes them.
+/// `flag` with values `vs`, laid out the way the flag takes them: each
+/// value in one word with its flag ([`flag_value`]), so a negative number
+/// reaches the command's own check. Several listed after one flag cannot
+/// be: clap takes one value after `=`.
 fn emit(flag: &str, many: Many, vs: Vec<String>) -> Vec<String> {
-    if vs.is_empty() {
-        return Vec::new();
-    }
-    match many {
-        Many::One => vec![flag.to_string(), vs[0].clone()],
-        Many::Joined(c) => vec![flag.to_string(), vs.join(&c.to_string())],
-        Many::Listed => std::iter::once(flag.to_string()).chain(vs).collect(),
-        Many::Repeated => vs.into_iter().flat_map(|v| [flag.to_string(), v]).collect(),
+    match (many, vs.as_slice()) {
+        (_, []) => Vec::new(),
+        (Many::One, [v, ..]) | (Many::Listed, [v]) => vec![flag_value(flag, v)],
+        (Many::Joined(c), _) => vec![flag_value(flag, vs.join(&c.to_string()))],
+        (Many::Listed, _) => std::iter::once(flag.to_string()).chain(vs).collect(),
+        (Many::Repeated, _) => vs.iter().map(|v| flag_value(flag, v)).collect(),
     }
 }
 
@@ -327,7 +347,7 @@ impl Method {
                 argv.extend(emit(flag, many, files.to_vec()));
             }
         }
-        argv.extend(["--out".to_string(), out.to_string()]);
+        argv.push(flag_value("--out", out));
         for f in &self.fields {
             argv.extend(f.argv());
         }

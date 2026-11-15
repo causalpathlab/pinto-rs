@@ -7,13 +7,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub use crate::tui::quote;
-
-/// A command line as one shell line.
-#[must_use]
-pub fn line(argv: &[String]) -> String {
-    argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
-}
+pub use crate::tui::pinto_line;
+pub use legume_tui::form::script::quote;
 
 /// `path` with `.` and `..` resolved: through symlinks as far as it
 /// exists, so two paths into one folder compare alike, then by its words.
@@ -92,14 +87,14 @@ pub const LOG_LEVEL: &str = "info";
 
 /// The command as the script and the confirm popup write it: the program
 /// and method, each data file on its own line, then one flag and its
-/// values per line. The value of `--out` is the script's `$out`.
+/// values per line. The value of `--out=` is the script's `$out`.
 #[must_use]
 pub fn command_lines(argv: &[String]) -> Vec<String> {
     let mut lines: Vec<String> = vec!["\"${PINTO:-pinto}\"".to_string()];
     let mut in_flags = false;
     for (k, w) in argv.iter().enumerate() {
-        let word = if k > 0 && argv[k - 1] == "--out" {
-            "\"$out\"".to_string()
+        let word = if w.starts_with("--out=") {
+            "--out=\"$out\"".to_string()
         } else {
             quote(w)
         };

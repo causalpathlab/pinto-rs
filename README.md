@@ -23,6 +23,13 @@ cargo install pinto-rs
 
 ## Subcommands
 
+Every run writes `{out}.pinto.json`, the manifest the other commands find
+its files by. Commands that record into a run's manifest (lra and its power
+check, several at once on one fit among them) take turns on it through a
+hidden lock file beside it (`.run1.pinto.json.lock` beside
+`run1.pinto.json`), which is kept. It is not an output: a run copied or
+packaged without it loses nothing.
+
 ### `lc` (link-community), recommended
 
 ```sh

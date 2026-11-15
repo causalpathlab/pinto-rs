@@ -56,13 +56,11 @@ mod coord_pairs_table {
     use data_beans::sparse_io_vector::SparseIoVec;
     use legume_numeric::matrix::knn_graph::EdgeSource;
     use legume_numeric::matrix::parquet::peek_parquet_field_names;
-    use ndarray::Array2;
     use std::sync::Arc;
 
     /// Shape and column names are all that matters; no test reads counts.
     fn make_data(n_cells: usize) -> anyhow::Result<SparseIoVec> {
-        let raw = Array2::<f32>::zeros((3, n_cells));
-        let mut sp = create_sparse_from_ndarray(&raw, None, None)?;
+        let mut sp = create_sparse_from_dmatrix(&Mat::zeros(3, n_cells), None, None)?;
         sp.register_row_names_vec(
             &(0..3)
                 .map(|i| format!("g{i}").into())

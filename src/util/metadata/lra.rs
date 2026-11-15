@@ -1,5 +1,6 @@
 //! The record of a run's `pinto lra` outputs and options.
 
+use crate::util::cli::value_name;
 use serde::{Deserialize, Serialize};
 
 /// What `pinto lra` (contact effect) and `pinto lra-simulate` recorded:
@@ -192,12 +193,12 @@ impl Default for LraOptions {
         Self {
             lr_pairs: None,
             targets: Vec::new(),
-            species: crate::lr_activity::args::ReferenceSpecies::Auto.name(),
+            species: value_name(&crate::lr_activity::args::ReferenceSpecies::Auto),
             seed: crate::lr_activity::args::DEFAULT_SEED,
             identity_excluded: Vec::new(),
             cell_types: None,
             region: None,
-            region_jackknife: crate::lr_activity::args::RegionJackknife::default().name(),
+            region_jackknife: value_name(&crate::lr_activity::args::RegionJackknife::default()),
             marginal_baselines: None,
             marginal_permutations: None,
         }

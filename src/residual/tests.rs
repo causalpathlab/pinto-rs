@@ -152,9 +152,7 @@ fn rewrite_run(prefix: &str, names: &[&str], prop: Mat, command: &str) {
     let names: Vec<Box<str>> = names.iter().map(|&n| n.into()).collect();
     write_propensity_matrix(prefix, &prop, &names).unwrap();
     let manifest = format!("{prefix}.pinto.json");
-    let mut meta = PintoMetadata::read(Path::new(&manifest)).unwrap();
-    meta.command = command.into();
-    meta.write(Path::new(&manifest)).unwrap();
+    PintoMetadata::update(Path::new(&manifest), |m| m.command = command.into()).unwrap();
 }
 
 const CELLS: [&str; 4] = ["a@S1", "b@S1", "a@S2", "b@S2"];
@@ -228,6 +226,27 @@ fn the_plan_names_every_file_a_run_writes() {
     let mut made = plan.made();
     made.sort();
     assert_eq!(written, made);
+}
+
+/// An `out` given as a folder, ending in `/`, names each file once under
+/// it: no doubled slash in the paths the plan and its reply show.
+#[test]
+fn a_folder_out_names_its_files_without_a_doubled_slash() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let plan = Plan::new(
+        &Run::open(&prefix).unwrap(),
+        &args(&prefix, &format!("{d}/resid/"), None),
+    )
+    .unwrap();
+    let under = |f: &str| format!("{d}/resid/{f}");
+    assert_eq!(plan.zarrs, [under("S1.zarr"), under("S2.zarr")]);
+    assert_eq!(
+        plan.coords,
+        [under("S1.coords.parquet"), under("S2.coords.parquet")]
+    );
+    assert_eq!(plan.summary, under("residual.json"));
 }
 
 /// A subset of the run's files is refused: a fit names its cells by its

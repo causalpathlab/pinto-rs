@@ -55,10 +55,8 @@ fn the_script_refuses_to_run_over_a_result() {
         &argv(&[
             "lc",
             "d 1.zarr",
-            "--batch-files",
-            "b.tsv",
-            "--out",
-            "r1",
+            "--batch-files=b.tsv",
+            "--out=r1",
             "--fast",
         ]),
         "r1",
@@ -70,14 +68,14 @@ fn the_script_refuses_to_run_over_a_result() {
     assert!(s.contains("bash r1.cmd.sh\n"));
     assert!(s.contains("out=r1\n"));
     assert!(s.ends_with(
-        "\"${PINTO:-pinto}\" lc \\\n  'd 1.zarr' \\\n  --batch-files b.tsv \\\n  --out \"$out\" \\\n  --fast\n"
+        "\"${PINTO:-pinto}\" lc \\\n  'd 1.zarr' \\\n  --batch-files=b.tsv \\\n  --out=\"$out\" \\\n  --fast\n"
     ));
 }
 
 #[test]
 fn a_script_is_never_written_over() {
     let dir = tempfile::tempdir().unwrap();
-    let a = argv(&["lc", "d.zarr", "--out", "r"]);
+    let a = argv(&["lc", "d.zarr", "--out=r"]);
     let path = dir.path().join("r.cmd.sh");
     write(&path, "r", "r.pinto.json", &a).unwrap();
     assert!(std::fs::read_to_string(&path)
@@ -96,7 +94,7 @@ fn the_script_runs_the_command_once_and_then_refuses() {
     let fake = dir.path().join("fake-pinto");
     std::fs::write(
         &fake,
-        "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done\n",
+        "#!/bin/sh\nfor w; do case \"$w\" in --out=*) touch \"${w#--out=}.pinto.json\";; esac; done\n",
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -106,7 +104,7 @@ fn the_script_runs_the_command_once_and_then_refuses() {
         &path,
         "r",
         "r.pinto.json",
-        &argv(&["lc", "d.zarr", "--out", "r"]),
+        &argv(&["lc", "d.zarr", "--out=r"]),
     )
     .unwrap();
     let run = || {
@@ -126,7 +124,7 @@ fn the_script_runs_the_command_once_and_then_refuses() {
 #[test]
 fn the_script_logs_as_the_run_on_screen_did() {
     let s = text(
-        &argv(&["lc", "d.zarr", "--out", "r"]),
+        &argv(&["lc", "d.zarr", "--out=r"]),
         "r",
         "r.pinto.json",
         "r.cmd.sh",
