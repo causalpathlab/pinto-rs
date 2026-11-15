@@ -67,7 +67,15 @@ fn an_estimate_not_to_be_written_is_only_returned() {
     let dir = tempfile::tempdir().unwrap();
     let files = two_batches(dir.path(), 60);
     let out = dir.path().join("run").to_str().unwrap().to_string();
-    let pre = preprocess_with(&files, &out, &[], BatchEstimate::Query { all_known: false });
+    let pre = preprocess_with(
+        &files,
+        &out,
+        &[],
+        BatchEstimate::Query {
+            all_known: false,
+            base_corrected: false,
+        },
+    );
     let estimate = pre
         .batch_effects
         .expect("two files, two batches")
@@ -88,7 +96,15 @@ fn nothing_is_estimated_when_every_batch_is_known() {
     let dir = tempfile::tempdir().unwrap();
     let files = two_batches(dir.path(), 60);
     let out = dir.path().join("run").to_str().unwrap().to_string();
-    let pre = preprocess_with(&files, &out, &[], BatchEstimate::Query { all_known: true });
+    let pre = preprocess_with(
+        &files,
+        &out,
+        &[],
+        BatchEstimate::Query {
+            all_known: true,
+            base_corrected: false,
+        },
+    );
     assert!(pre.batch_effects.is_none());
     assert_eq!(pre.batch_labels.len(), 2);
     assert!(!std::path::Path::new(&format!("{out}.delta.parquet")).exists());
@@ -330,10 +346,16 @@ fn batches_are_estimated_only_when_asked() {
     assert_eq!(batch_plan(BatchEstimate::Fit, false, 2), (true, false));
     assert_eq!(batch_plan(BatchEstimate::Fit, true, 2), (false, false));
     assert_eq!(batch_plan(BatchEstimate::Skip, false, 2), (false, false));
-    let new = BatchEstimate::Query { all_known: false };
+    let new = BatchEstimate::Query {
+        all_known: false,
+        base_corrected: false,
+    };
     assert_eq!(batch_plan(new, false, 2), (true, false));
     assert_eq!(batch_plan(new, true, 2), (false, false));
-    let known = BatchEstimate::Query { all_known: true };
+    let known = BatchEstimate::Query {
+        all_known: true,
+        base_corrected: false,
+    };
     assert_eq!(batch_plan(known, false, 2), (false, true));
     assert_eq!(batch_plan(known, false, 1), (false, false));
     assert_eq!(batch_plan(known, true, 2), (false, false));

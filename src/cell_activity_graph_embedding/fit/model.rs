@@ -101,8 +101,9 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
                 membership_init: match args.feature_init_mode {
                     FeatureInitMode::Membership => {
                         Some(graph_embedding_util::transfer::AlignKnobs {
-                            k: args.feature_init_neighbours,
-                            similarity_floor: args.feature_init_similarity_floor,
+                            k: graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS,
+                            similarity_floor:
+                                graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR,
                         })
                     }
                     FeatureInitMode::Neighbor => None,

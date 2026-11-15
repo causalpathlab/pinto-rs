@@ -7,13 +7,12 @@ use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
 pub use args::{
-    ResolvedKnn, SrtInputArgs, DEFAULT_BATCH_KNN, DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+    ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
 };
 
 pub struct SRTReadArgs {
     pub data_files: Vec<Box<str>>,
     pub coord_files: Vec<Box<str>>,
-    pub preload_data: bool,
     pub coord_columns: Vec<usize>,
     pub coord_column_names: Vec<Box<str>>,
     pub batch_files: Option<Vec<Box<str>>>,
@@ -38,28 +37,15 @@ pub struct SRTData {
 pub const COORD_COLUMN_NAMES: &str =
     "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid";
 
-/// Help for `--preload-data`, shared by every command that takes it.
-pub const PRELOAD_HELP: &str = "Preload sparse data even with LEGUME_AUTO_PRELOAD=off";
-pub const PRELOAD_LONG_HELP: &str = "Sparse column data is preloaded into memory by default\n\
-     whenever it fits in half the memory free at the first preload.\n\
-     That half is shared by every file the command preloads.\n\
-     Data over it, or files without a stored nonzero count, are read from disk.\n\
-     LEGUME_AUTO_PRELOAD=off reads from disk unless this flag is given.\n\
-     The flag also preloads files without a stored count.\n\
-     LEGUME_PRELOAD_BUDGET_BYTES sets the limit for each file instead.";
-
-/// Open `data_file`, its columns preloaded when asked or, by default,
-/// whenever data-beans' memory budget allows; the budget is shared by the
-/// whole process and given back when the data is dropped. data-beans checks
-/// it only for a backend that knows its nonzero count, so one that does not
-/// is preloaded only when asked.
+/// Open `data_file`, its columns preloaded whenever data-beans' memory
+/// budget allows; the budget is shared by the whole process and given back
+/// when the data is dropped. data-beans checks it only for a backend that
+/// knows its nonzero count, so one that does not is never preloaded.
 pub fn open_sparse(
     data_file: &str,
-    preload: bool,
 ) -> anyhow::Result<Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>> {
     let mut data = try_open_or_convert(data_file)?;
-    let auto = data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some();
-    if preload || auto {
+    if data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some() {
         data.preload_columns()?;
     }
     Ok(data)
@@ -112,7 +98,7 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
 /// lists them: a feature one sample never measured is not a zero there.
 /// Other kinds canonicalize names first and keep their union, as before.
 fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
-    open_fit_data(&args.data_files, &args.feature_kind, args.preload_data)
+    open_fit_data(&args.data_files, &args.feature_kind)
 }
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
@@ -121,7 +107,6 @@ fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
 pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,
-    preload_data: bool,
 ) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
     if let Some(canon) = feature_kind.clone().into_canonicalizer() {
@@ -133,7 +118,7 @@ pub fn open_fit_data(
     for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
         info!("Importing data file: {}", data_file);
 
-        let data = open_sparse(data_file, preload_data)?;
+        let data = open_sparse(data_file)?;
 
         data_vec.push(Arc::from(data), data_name)?;
     }
@@ -164,6 +149,16 @@ pub fn read_batch_file(batch_file: &str, cells: usize) -> anyhow::Result<Vec<Box
         labels.len()
     );
     Ok(labels)
+}
+
+/// Each of `data_vec`'s cells' batch label as a run with inputs `args`
+/// reads it, before QC or `--auto-batch`: its `--batch-files` line, else
+/// its data file's position ([`read_batch_membership`] without the counts).
+pub(crate) fn read_batch_labels(
+    args: &SRTReadArgs,
+    data_vec: &SparseIoVec,
+) -> anyhow::Result<Vec<Box<str>>> {
+    Ok(read_batch_membership(args, data_vec)?.0)
 }
 
 /// Each cell's batch label, with each data file's cell count: from the

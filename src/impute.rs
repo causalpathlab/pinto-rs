@@ -19,7 +19,11 @@
 //!   propensity against an expression-based one. The query's profile
 //!   columns are renormalized over its matched features (a panel observes a
 //!   window of each profile; conditioning on that window is what makes
-//!   the per-cell likelihood proper).
+//!   the per-cell likelihood proper). Profiles fitted on δ-divided counts
+//!   (the manifest's `feature_community_batch_adjusted`) have both sides
+//!   divided onto their scale first: the reference by the run's δ, the
+//!   query by the model's for a batch it knows and by an estimate for a
+//!   new one. An older model's raw-count profiles meet raw counts.
 //!
 //! The retrieval itself (kNN over propensity rows, softmax distance
 //! weights, streamed weighted average of reference counts) lives in
@@ -31,10 +35,10 @@
 //! `{out}.propensity.parquet` for the profile-projected query.
 
 use crate::link_community::outputs::write_propensity_matrix;
-use crate::predict::{predict_cage, PredictArgs};
+use crate::predict::{predict_cage, PredictCoreArgs, ScoringArgs};
 use crate::util::common::*;
 use crate::util::metadata::{PintoMetadata, Run};
-use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles};
+use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles, EM_ITERS};
 use clap::Args;
 use data_beans::alg::retrieval_impute::RetrievalImputeConfig;
 use data_beans::sparse_data_visitors::VisitColumnsOps;
@@ -45,10 +49,13 @@ use log::info;
 use retrieval::{retrieval_impute, RefDivide};
 use std::path::Path;
 
+/// Query cells per chunk of the retrieval.
+const RETRIEVAL_CHUNK: usize = 512;
+
 #[derive(Args, Debug, Clone)]
 pub struct ImputeArgs {
     #[command(flatten)]
-    pub predict: PredictArgs,
+    pub predict: PredictCoreArgs,
 
     #[arg(
         long,
@@ -85,20 +92,16 @@ pub struct ImputeArgs {
     #[arg(
         long,
         default_value_t = 1.0,
-        help = "Softmax temperature on kNN distances (lower = sharper neighbour weights)"
-    )]
-    pub impute_temperature: f32,
-
-    #[arg(
-        long,
-        default_value_t = 100,
-        help = "EM iterations per cell for the lc / dsvd profile projection",
+        help = "Softmax temperature on kNN distances (lower = sharper neighbour weights)",
         hide = true
     )]
-    pub profile_em_iters: usize,
+    pub impute_temperature: f32,
 }
 
-pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
+/// `qc_given` names the cell QC flags given on the command line (see
+/// [`SrtInputArgs::qc_flags_given`](crate::util::input::SrtInputArgs::qc_flags_given)),
+/// which an lc / dsvd model refuses.
+pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> {
     // A model named by its manifest is the same model, as `pinto predict`
     // takes it.
     let mut args = args.clone();
@@ -106,11 +109,6 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
     let args = &args;
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
-    anyhow::ensure!(
-        args.predict.holdout == crate::predict::default_args()?.holdout,
-        "the held-out scoring flags (--held-out, --holdout-*, --ablate-features) are for \
-         `pinto predict`, not impute"
-    );
     mkdir_parent(&c.out)?;
 
     // The manifest is the authority on what the model IS; artifact probing
@@ -136,11 +134,33 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         }
     };
 
+    // The lc / dsvd projection reads every cell as given: no QC runs there,
+    // so a QC flag would be ignored. Refuse it instead.
+    if !is_cage {
+        anyhow::ensure!(
+            qc_given.is_empty(),
+            "{model} is an lc / dsvd model, whose impute runs no cell QC: {} \
+             would do nothing. Filter the cells before the run.",
+            qc_given.join(", ")
+        );
+    }
+
     let reference_files = resolve_reference_data(args, run.as_ref())?;
-    let (query_prop, query_cells, ref_prop, ref_data) = if is_cage {
-        cage_propensities(args, run.as_ref(), &reference_files)?
+    // A cage model's reference cells are divided by the run's δ, as predict
+    // divides the query. So are an lc / dsvd model's, when its manifest says
+    // its profiles are batch-adjusted, its query divided alike; an older one
+    // matches raw counts to raw profiles.
+    let (query_prop, query_cells, ref_prop, ref_data, divide) = if is_cage {
+        let (query_prop, query_cells, ref_prop, ref_data) =
+            cage_propensities(args, run.as_ref(), &reference_files)?;
+        let divide = if c.ignore_batch {
+            None
+        } else {
+            reference_divide(model, run.as_ref(), &ref_data.row_names()?, &ref_data)?
+        };
+        (query_prop, query_cells, ref_prop, ref_data, divide)
     } else {
-        profile_propensities(args, &reference_files)?
+        profile_propensities(args, run.as_ref(), &reference_files)?
     };
     anyhow::ensure!(
         query_prop.ncols() == ref_prop.ncols(),
@@ -150,14 +170,7 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         ref_prop.ncols()
     );
 
-    // A cage model's reference cells are divided by the run's δ, as predict
-    // divides the query; lc and dsvd match raw counts to raw profiles.
     let ref_feature_names = ref_data.row_names()?;
-    let divide = if is_cage && !c.ignore_batch {
-        reference_divide(model, run.as_ref(), &ref_feature_names, &ref_data)?
-    } else {
-        None
-    };
     let imputed = retrieval_impute(
         &query_prop,
         &ref_prop,
@@ -165,7 +178,7 @@ pub fn run_impute(args: &ImputeArgs) -> anyhow::Result<()> {
         &RetrievalImputeConfig {
             knn: args.impute_knn,
             temperature: args.impute_temperature,
-            chunk: c.block_size.unwrap_or(512),
+            chunk: RETRIEVAL_CHUNK,
         },
         divide.as_ref(),
     )?;
@@ -299,12 +312,11 @@ fn resolve_reference_data(args: &ImputeArgs, run: Option<&Run>) -> anyhow::Resul
 /// Open a set of sparse backends. The multi-file `@basename` cell-name
 /// suffixing matches what training wrote into its propensity table, so the
 /// cage path's name check compares like with like.
-fn open_backends(what: &str, files: &[Box<str>], preload: bool) -> anyhow::Result<SparseIoVec> {
+fn open_backends(what: &str, files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     info!("Opening {what} data ({} file(s))", files.len());
     let loaded = data_beans::aux::data_loading::read_data_on_shared_rows(
         data_beans::aux::data_loading::ReadSharedRowsArgs {
             data_files: files.to_vec(),
-            preload,
             // Inference: every reference and query column comes back.
             keep_empty_barcodes: true,
             ..Default::default()
@@ -329,13 +341,9 @@ fn cage_propensities(
     let model = args.predict.model.as_ref();
 
     info!("cage model: projecting the query sample through `pinto predict`");
-    let (query_prop, query_cells) = predict_cage(&args.predict, run)?;
+    let (query_prop, query_cells) = predict_cage(&args.predict, &ScoringArgs::default(), run)?;
 
-    let ref_data = open_backends(
-        "reference",
-        reference_files,
-        args.predict.common.preload_data,
-    )?;
+    let ref_data = open_backends("reference", reference_files)?;
     let ref_prop_path = args
         .reference_propensity
         .clone()
@@ -410,14 +418,31 @@ pub(crate) fn align_to_columns(
 // lc / dsvd: profile projection    //
 ///////////////////////////////////////
 
+/// What [`profile_propensities`] gives: the query's propensity and cell
+/// names, the reference's propensity and data, and the divide its counts
+/// take.
+type ProfileSides = (Mat, Vec<Box<str>>, Mat, SparseIoVec, Option<RefDivide>);
+
 /// Estimate BOTH sides' propensities from the model's feature-community
-/// profiles, one EM per cell, then write the query's under `{out}`.
+/// profiles (manifest `run`), one EM per cell, then write the query's under
+/// `{out}`. A model whose manifest says its profiles are batch-adjusted
+/// has both sides put on their scale first: the reference divided by the
+/// run's δ ([`reference_divide`]), the query by the model's δ for each
+/// batch it knows and an estimate for a new one
+/// ([`crate::predict::delta::adjusted_query_delta`]).
 fn profile_propensities(
     args: &ImputeArgs,
+    run: Option<&Run>,
     reference_files: &[Box<str>],
-) -> anyhow::Result<(Mat, Vec<Box<str>>, Mat, SparseIoVec)> {
+) -> anyhow::Result<ProfileSides> {
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
+    let adjusted = crate::predict::delta::batch_adjusted(
+        model,
+        run,
+        c.ignore_batch,
+        crate::predict::delta::QueryReader::Impute,
+    )?;
     if args.reference_propensity.is_some() {
         log::warn!(
             "--reference-propensity is ignored for an lc / dsvd model: the reference \
@@ -440,21 +465,40 @@ fn profile_propensities(
     );
 
     anyhow::ensure!(!c.data_files.is_empty(), "impute: no data files given");
-    let query_data = open_backends("query", &c.data_files, c.preload_data)?;
+    let mut query_data = open_backends("query", &c.data_files)?;
     let feature_kind = args
         .predict
         .feature_name_mode
         .resolve_kind(&query_data.row_names()?);
     let query_cells = query_data.column_names()?;
-    let query_prop = project_profile_propensity(
-        &query_data,
-        &profiles,
-        &model_features,
-        &feature_kind,
-        args.profile_em_iters,
-        c.block_size,
-        "query",
-    )?;
+    let projection = ProfileProjection {
+        profiles: &profiles,
+        model_features: &model_features,
+        feature_kind: &feature_kind,
+        iters: EM_ITERS,
+    };
+    let query_divide = match run.filter(|_| adjusted) {
+        Some(run) => {
+            let membership = crate::util::input::read_batch_labels(
+                &c.to_read_args_with_kind(feature_kind.clone()),
+                &query_data,
+            )?;
+            crate::predict::delta::adjusted_query_delta(
+                model,
+                run,
+                c,
+                &mut query_data,
+                &membership,
+            )?
+            .map(|(delta, batch)| RefDivide {
+                delta,
+                batch_of_cell: batch.into_iter().map(|b| Some(b as usize)).collect(),
+            })
+        }
+        None => None,
+    };
+    let query_prop =
+        project_profile_propensity(&query_data, &projection, query_divide.as_ref(), "query")?;
     write_propensity_matrix(&c.out, &query_prop, &query_cells)?;
     info!("Wrote {}.propensity.parquet (profile-projected)", c.out);
     // Everything needed from the query is extracted; release it before the
@@ -464,65 +508,74 @@ fn profile_propensities(
 
     // The reference goes through the SAME map — not through the training
     // run's edge-based propensity — so the kNN compares like with like.
-    let ref_data = open_backends("reference", reference_files, c.preload_data)?;
-    let ref_prop = project_profile_propensity(
-        &ref_data,
-        &profiles,
-        &model_features,
-        &feature_kind,
-        args.profile_em_iters,
-        c.block_size,
-        "reference",
-    )?;
-    Ok((query_prop, query_cells, ref_prop, ref_data))
+    let ref_data = open_backends("reference", reference_files)?;
+    let ref_divide = if adjusted {
+        reference_divide(model, run, &ref_data.row_names()?, &ref_data)?
+    } else {
+        None
+    };
+    let ref_prop =
+        project_profile_propensity(&ref_data, &projection, ref_divide.as_ref(), "reference")?;
+    Ok((query_prop, query_cells, ref_prop, ref_data, ref_divide))
 }
 
-struct ProfileEmParam {
+/// The model's profiles a dataset's cells are projected through.
+struct ProfileProjection<'a> {
+    profiles: &'a Mat,
+    model_features: &'a [Box<str>],
+    feature_kind: &'a data_beans::aux::feature_names::FeatureNameKind,
+    iters: usize,
+}
+
+struct ProfileEmParam<'a> {
     profiles: MatchedProfiles,
     /// Already clamped to ≥ 1.
     iters: usize,
+    divide: Option<&'a RefDivide>,
 }
 
 /// `[N, K]` per-cell community proportions by EM over the profile mixture
 /// ([`em_proportions`] per cell). `p̃_k` is the profile conditioned on this
 /// dataset's matched features. A cell with no counts on any matched feature
-/// keeps a zero row (skipped by the retrieval core).
+/// keeps a zero row (skipped by the retrieval core). With `divide`, each
+/// count is divided by its row's δ in its cell's batch first.
 fn project_profile_propensity(
     data: &SparseIoVec,
-    profiles: &Mat,
-    model_features: &[Box<str>],
-    feature_kind: &data_beans::aux::feature_names::FeatureNameKind,
-    iters: usize,
-    block_size: Option<usize>,
+    p: &ProfileProjection<'_>,
+    divide: Option<&RefDivide>,
     what: &str,
 ) -> anyhow::Result<Mat> {
-    let k = profiles.ncols();
+    let k = p.profiles.ncols();
     let matched = match_profiles(
         &data.row_names()?,
-        profiles,
-        model_features,
-        feature_kind,
+        p.profiles,
+        p.model_features,
+        p.feature_kind,
         what,
         data.num_columns(),
     )?;
     let param = ProfileEmParam {
         profiles: matched,
-        iters: iters.max(1),
+        iters: p.iters.max(1),
+        divide,
     };
     let n = data.num_columns();
     let mut prop_kn = Mat::zeros(k, n);
-    data.visit_columns_by_block(&profile_em_visitor, &param, &mut prop_kn, block_size)?;
+    data.visit_columns_by_block(&profile_em_visitor, &param, &mut prop_kn, None)?;
     Ok(prop_kn.transpose())
 }
 
 fn profile_em_visitor(
     job: (usize, usize),
     data: &SparseIoVec,
-    param: &ProfileEmParam,
+    param: &ProfileEmParam<'_>,
     arc_prop_kn: Arc<Mutex<&mut Mat>>,
 ) -> anyhow::Result<()> {
     let (lb, ub) = job;
-    let csc = data.read_columns_csc(lb..ub)?;
+    let mut csc = data.read_columns_csc(lb..ub)?;
+    if let Some(d) = param.divide {
+        crate::util::batch_effects::divide_columns(&mut csc, &d.delta, |j| d.batch_of_cell[lb + j]);
+    }
     let k = param.profiles.p_t.nrows();
     let mut chunk = Mat::zeros(k, ub - lb);
 

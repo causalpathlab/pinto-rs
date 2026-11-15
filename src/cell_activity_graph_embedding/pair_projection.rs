@@ -171,14 +171,11 @@ pub struct PairProjectionArgs<'a> {
 /// Per-endpoint batch division, applied to each cell's counts *before* they are
 /// pooled — the same per-batch fold divide `senna bge` applies in phase 2, so a
 /// pair's latent reflects de-batched composition. Without it a multi-batch run
-/// clusters edges by batch, since every edge is within-batch by construction.
-#[derive(Copy, Clone)]
-pub struct PairBatchDivisor<'a> {
-    /// `[n_features × n_batches]` multiplicative batch effect `δ`.
-    pub delta: &'a Mat,
-    /// Cell → its column of `delta`.
-    pub batch_of_cell: &'a [u32],
-}
+/// clusters edges by batch: an edge's counts carry its endpoints' batch
+/// shifts, whether it joins two cells of one section (a spatial graph) or
+/// cells of any batches (an expression graph, built on the batch-corrected
+/// projection).
+pub use crate::util::batch_effects::BatchDivisor as PairBatchDivisor;
 
 /// Every cell's own placement, in column order: the MAP of its doubled
 /// profile `2x_c`, whose composition is `x_c`'s — the self-pair, so a cell

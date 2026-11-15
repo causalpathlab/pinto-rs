@@ -179,7 +179,6 @@ fn a_pb_read_reuses_the_delta_estimate_s_projection() {
     let srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
         data_files: i.data_files.clone(),
         coord_files: i.coord_files.clone(),
-        preload_data: false,
         coord_columns: Vec::new(),
         coord_column_names: i.coord_column_names.clone(),
         batch_files: None,
@@ -200,7 +199,7 @@ fn a_pb_read_reuses_the_delta_estimate_s_projection() {
 }
 
 /// The projection a δ estimate keeps is the one a fresh projection with
-/// the same `-p`, block size and batch membership gives after it, basis
+/// the same `-p` and batch membership gives after it, basis
 /// and all: what the srt pipeline reuses in place of projecting again.
 #[test]
 fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
@@ -215,7 +214,6 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
     let mut srt = crate::util::input::read_data_with_coordinates(crate::util::input::SRTReadArgs {
         data_files: i.data_files.clone(),
         coord_files: i.coord_files.clone(),
-        preload_data: false,
         coord_columns: Vec::new(),
         coord_column_names: i.coord_column_names.clone(),
         batch_files: None,
@@ -223,13 +221,13 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
         feature_kind: data_beans::aux::feature_names::FeatureNameKind::Exact,
     })
     .unwrap();
-    let (proj_dim, block_size) = (16, Some(7));
+    let proj_dim = 16;
     let labels = sorted_batch_labels(&srt.batches);
     let kept = estimate_and_write_batch_effects(
         &mut srt.data,
         &srt.batches,
         &labels,
-        EstimateBatchArgs::at(proj_dim, block_size, 10, 5, None),
+        EstimateBatchArgs::at(proj_dim, 10, 5, None),
         None,
         true,
     )
@@ -239,8 +237,72 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
     .expect("kept");
     let fresh = srt
         .data
-        .project_columns_with_batch_correction(proj_dim, block_size, Some(srt.batches.as_slice()))
+        .project_columns_with_batch_correction(proj_dim, None, Some(srt.batches.as_slice()))
         .unwrap();
     assert_eq!(kept.proj, fresh.proj);
     assert_eq!(kept.basis, fresh.basis);
+}
+
+/// A planted batch shift shrinks: two sections alike but for every third
+/// gene of the second, three times the first's. Read with δ, each shifted
+/// gene's total in the second section over its total in the first falls
+/// within 1.5 of 1 either way; under `--ignore-batch` it stays near three.
+#[test]
+fn a_planted_batch_shift_shrinks() {
+    use crate::test_support::section;
+    const SHIFT: f32 = 3.0;
+    let dir = tempfile::tempdir().unwrap();
+    let (s1, c1) = section(dir.path(), "s1", 10, &|_| 1.0);
+    let (s2, c2) = section(dir.path(), "s2", 10, &|g| {
+        if g % 3 == 0 {
+            SHIFT
+        } else {
+            1.0
+        }
+    });
+    let files = vec![
+        format!("{s1},{s2}"),
+        "-c".into(),
+        format!("{c1},{c2}"),
+        "--coord-column-names".into(),
+        "x,y".into(),
+    ];
+    let ratios = |tag: &str, extra: &[&str]| -> Vec<(usize, f32)> {
+        let out = dir.path().join(tag).to_string_lossy().to_string();
+        let data = spatialde2_args(&files, &out, extra)
+            .fit
+            .input
+            .read(false)
+            .unwrap();
+        let mut total = vec![[0f32; 2]; data.genes.len()];
+        for (j, col) in data.counts.col_iter().enumerate() {
+            for (&g, &x) in col.row_indices().iter().zip(col.values()) {
+                total[g][data.section[j]] += x;
+            }
+        }
+        data.genes
+            .iter()
+            .zip(&total)
+            .map(|(name, t)| {
+                let g: usize = name.trim_start_matches("GENE").parse().unwrap();
+                (g, t[1] / t[0])
+            })
+            .collect()
+    };
+    let corrected = ratios("corrected", &[]);
+    let original = ratios("original", &["--ignore-batch"]);
+    let shifted = |r: &[(usize, f32)]| -> Vec<f32> {
+        r.iter()
+            .filter(|(g, _)| g % 3 == 0)
+            .map(|&(_, x)| x)
+            .collect()
+    };
+    let (before, after) = (shifted(&original), shifted(&corrected));
+    assert_eq!(before.len(), 4);
+    for x in before {
+        assert!((x - SHIFT).abs() < 0.05 * SHIFT, "uncorrected ratio {x}");
+    }
+    for x in after {
+        assert!((1.0 / 1.5..=1.5).contains(&x), "corrected ratio {x}");
+    }
 }

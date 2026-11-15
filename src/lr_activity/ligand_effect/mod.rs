@@ -188,7 +188,6 @@ pub struct Settings<'a> {
     pub targets: &'a [Box<str>],
     pub species: ReferenceSpecies,
     pub seed: u64,
-    pub block_size: Option<usize>,
     /// `--only`: the pairs to estimate; empty for every pair.
     pub only: &'a [Box<str>],
     /// `--cell-types` and `--region`, as given, for the record.

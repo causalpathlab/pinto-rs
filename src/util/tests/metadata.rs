@@ -324,6 +324,7 @@ fn metadata_records_the_graph_parameters() {
         knn_expr: 7,
         knn_expr_scope: Some("global".to_string()),
         reciprocal: false,
+        base_batch_corrected: false,
     });
     assert_eq!(g.knn_base, 5);
     assert_eq!(g.knn_expr, 7);
@@ -341,6 +342,7 @@ fn metadata_records_an_unaugmented_run_as_such() {
         knn_expr: 0,
         knn_expr_scope: None,
         reciprocal: false,
+        base_batch_corrected: false,
     });
     assert_eq!(g.knn_expr, 0, "and no union is recorded");
     assert_eq!(

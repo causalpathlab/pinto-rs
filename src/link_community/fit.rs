@@ -42,8 +42,8 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
-    SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, FisherStats, Seeding,
+    SrtPreprocessConfig, SrtPreprocessed,
 };
 use data_beans::qc::suggest_nnz_cutoff;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -53,6 +53,10 @@ use rand::SeedableRng;
 
 // Re-export args so external callers (main.rs) keep using the old path.
 pub use crate::link_community::args::SrtLinkCommunityArgs;
+use crate::link_community::args::{
+    num_em_sweeps, DIRICHLET_ALPHA, FEATURE_MODULES_RESOLUTION, FEATURE_TRIM_MIN_DEGREE,
+    INCIDENCE_A, INCIDENCE_B, MODULARITY_GAMMA, SNN_MIN_SHARED,
+};
 
 /// Main entry point for `pinto lc`.
 pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()> {
@@ -73,25 +77,21 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         batch_membership,
         section_ids,
         seeding,
-        batch_labels: _,
+        batch_labels,
         batch_effects,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
         cell_proj,
         feature_axis,
-        row_weights: _,
-        row_stats,
-        feature_weights,
-        feature_stats,
         n_cells,
         n_rows,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: Some(&args.ablation),
-        fisher_weights: true,
         batch_effects: BatchEstimate::Fit,
         // Everything `lc` filters, weights and reports is per FEATURE. On a
         // channelized matrix a row is half a feature, and reading one as the other
@@ -108,16 +108,15 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
         .transpose()?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
-    let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
-    let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
+    let FisherStats {
+        row_weights: _,
+        row_stats,
+        feature_weights,
+        feature_stats,
+    } = FisherStats::compute(&data_vec, &feature_axis)?;
     let n_features = feature_axis.n_features();
     // Per-row totals, taken off the streaming pass rather than paid for again.
-    let row_totals: Vec<f64> = row_stats
-        .expect("fisher_weights=true must yield Some")
-        .sum()
-        .iter()
-        .map(|&x| f64::from(x))
-        .collect();
+    let row_totals: Vec<f64> = row_stats.sum().iter().map(|&x| f64::from(x)).collect();
 
     /////////////////////////////////////////////
     // 4-pre. Feature network setup (if provided) //
@@ -148,15 +147,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             network_file
         );
 
-        feature_graph.augment_with_snn(args.snn_min_shared);
+        feature_graph.augment_with_snn(SNN_MIN_SHARED);
 
-        let keep = kcore_trim(&feature_graph, args.feature_trim_min_degree);
-        let module_of_feature = leiden_feature_modules(
-            &feature_graph,
-            &keep,
-            args.feature_modules_resolution,
-            c.seed,
-        );
+        let keep = kcore_trim(&feature_graph, FEATURE_TRIM_MIN_DEGREE);
+        let module_of_feature =
+            leiden_feature_modules(&feature_graph, &keep, FEATURE_MODULES_RESOLUTION, c.seed);
 
         feature_graph.to_parquet(
             &(c.out.to_string() + ".feature_graph.parquet"),
@@ -166,8 +161,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         let basis = ModulePairBasis::build(&feature_graph, module_of_feature);
         anyhow::ensure!(
             basis.n_pairs > 0,
-            "Feature-network module-pair basis is empty (0 pairs). Try a lower \
-             --feature-trim-min-degree or --feature-modules-resolution, or disable \
+            "Feature-network module-pair basis is empty (0 pairs): the network keeps \
+             too few connected features. Pass a denser network, or leave out \
              --feature-network to use the projection basis."
         );
 
@@ -183,7 +178,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             &module_of_row,
             basis.n_modules,
             Some(&row_weights),
-            c.block_size,
+            None,
             batch_effects.as_ref(),
         )?;
 
@@ -232,8 +227,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             n_clusters: c.n_pseudobulk,
             num_levels: c.num_levels,
             seeding: seeding.as_ref().map(Seeding::params),
-            modularity_veto: (args.modularity_gamma > 0.0).then_some(ModularityVeto {
-                gamma: args.modularity_gamma,
+            modularity_veto: Some(ModularityVeto {
+                gamma: MODULARITY_GAMMA,
             }),
         },
     );
@@ -292,8 +287,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             basis: proj_basis.as_ref().expect("projection basis must be set"),
             // The batch effect divides every count lc profiles (the edge
             // profiles at every level, the module expression), as dsvd and
-            // cage divide theirs; feature_community and the feature filters
-            // stay on raw counts.
+            // cage divide theirs, and the written feature_community; the
+            // feature filters stay on raw counts.
             delta: batch_effects.as_ref(),
         }
     };
@@ -306,7 +301,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         &(0..n_edges).collect::<Vec<usize>>(),
         edges,
         &profile_mode,
-        c.block_size,
     )?;
 
     let density_pct = 100.0 * full_profiles.nnz() as f64
@@ -328,22 +322,30 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     let cell_names = data_vec.column_names()?;
     let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(c.seed));
 
-    info!("Dirichlet prior on community sizes: α = {}", args.alpha);
+    info!("Dirichlet prior on community sizes: α = {DIRICHLET_ALPHA}");
     let cascade_cfg = CascadeConfig {
         k,
         num_gibbs: args.num_gibbs,
         num_greedy: args.num_greedy,
-        alpha: args.alpha,
+        alpha: DIRICHLET_ALPHA,
         no_level_outputs: args.no_level_outputs,
     };
+    // Every written feature_community is fitted on the divided counts, as
+    // the profiles are.
+    let batch_of_cell = batch_effects
+        .as_ref()
+        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
     let partition_inputs = PartitionInputs {
         edges,
         edge_kind,
         cell_names: &cell_names,
         data_vec: &data_vec,
-        feature_weights: Some(&feature_weights),
+        feature_weights: &feature_weights,
         axis: &feature_axis,
-        block_size: c.block_size,
+        divisor: crate::util::batch_effects::BatchDivisor::of(
+            batch_effects.as_ref(),
+            batch_of_cell.as_deref(),
+        ),
     };
     let cascade_result = run_cascade(
         &c.out,
@@ -361,13 +363,13 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     ///////////////////////////////////////////////
     // 8. Component-EM + greedy on full profiles //
     ///////////////////////////////////////////////
-    // Optional frozen K×K incidence (hybrid: Gibbs for edges, VB for B).
+    // Frozen K×K incidence (hybrid: Gibbs for edges, VB for B).
     // Vertex propensity θ and the variational expected log-incidence
     // E_q[log B] = ψ(a + S) − log(b + W) are both computed once from the
     // cascade's fine-resolution labels and held fixed for the duration of
     // EM + greedy. No per-move bookkeeping; the score gains the term
     //   Σ_{k'} (θ_L[k'] + θ_R[k']) · log_B[k, k'].
-    let incidence_scores: Option<Vec<f32>> = if !args.no_incidence {
+    let incidence_scores: Vec<f32> = {
         let prop_mat = compute_node_membership(edges, &current_labels, n_cells, k);
         let prop_flat = pack_propensity_row_major(&prop_mat);
         drop(prop_mat);
@@ -376,38 +378,33 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             &current_labels,
             &prop_flat,
             k,
-            args.incidence_a,
-            args.incidence_b,
+            INCIDENCE_A,
+            INCIDENCE_B,
         );
         info!(
-            "Incidence enabled (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
-            k, args.incidence_a, args.incidence_b
+            "Incidence (VB log B, hybrid Gibbs): K={}, Gamma prior (a={:.3}, b={:.3})",
+            k, INCIDENCE_A, INCIDENCE_B
         );
-        Some(cell_incidence_scores(&prop_flat, &log_b, k))
-    } else {
-        None
+        cell_incidence_scores(&prop_flat, &log_b, k)
     };
 
     let comp_args = ComponentGibbsArgs {
         graph: &graph,
         edges,
         k,
-        alpha: args.alpha,
-        incidence: incidence_scores.as_deref(),
+        alpha: DIRICHLET_ALPHA,
+        incidence: Some(&incidence_scores),
     };
 
-    let num_fine_sweeps = args.num_em.unwrap_or((args.num_gibbs / 4).max(5));
-
-    if num_fine_sweeps > 0 {
-        info!("EM Gibbs on full edge set ({} sweeps)...", num_fine_sweeps);
-        let moves = sampler.run_components_em(
-            &mut current_labels,
-            &full_profiles,
-            &comp_args,
-            num_fine_sweeps,
-        );
-        info!("EM Gibbs: {} moves", moves);
-    }
+    let num_fine_sweeps = num_em_sweeps(args.num_gibbs);
+    info!("EM Gibbs on full edge set ({} sweeps)...", num_fine_sweeps);
+    let moves = sampler.run_components_em(
+        &mut current_labels,
+        &full_profiles,
+        &comp_args,
+        num_fine_sweeps,
+    );
+    info!("EM Gibbs: {} moves", moves);
 
     info!("Greedy finalization ({} max sweeps)...", args.num_greedy);
     let greedy_moves = sampler.run_greedy_by_components(
@@ -439,7 +436,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     );
     // The score above is a plug-in report. This is the collapsed target the sweeps
     // moved on, apart from the frozen incidence term.
-    info!("Log marginal: {:.6e}", fine_stats.log_marginal(args.alpha));
+    info!(
+        "Log marginal: {:.6e}",
+        fine_stats.log_marginal(DIRICHLET_ALPHA)
+    );
     score_trace.push(ScoreEntry {
         level: -1,
         sweep: 0,
@@ -486,6 +486,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         args,
         feature_stats: &feature_stats,
         section_ids: &section_ids,
+        batch_of_cell: batch_of_cell.as_deref(),
         final_membership: &final_membership,
         k,
         draft: &draft,
@@ -526,7 +527,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 n_features,
                 n_edges: edges.len(),
                 k,
-                graph: (&knn).into(),
+                graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
                 delta: batch_effects
                     .is_some()
@@ -559,6 +560,8 @@ struct MergeInputs<'a> {
     args: &'a SrtLinkCommunityArgs,
     feature_stats: &'a legume_numeric::matrix::sparse_stat::SparseRunningStatistics<f32>,
     section_ids: &'a [u32],
+    /// Each cell's batch, for a run that divides by a batch effect.
+    batch_of_cell: Option<&'a [u32]>,
     final_membership: &'a [usize],
     k: usize,
     draft: &'a crate::link_community::outputs::Partition,
@@ -586,6 +589,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
         args,
         feature_stats,
         section_ids,
+        batch_of_cell,
         final_membership,
         k,
         draft,
@@ -606,22 +610,14 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     // this row spliced". On the feature axis that bimodality does not exist,
     // so the question does not arise.
     let feature_nnz = feature_stats.count_positives();
-    let min_nnz = args
-        .merge_min_nnz
-        .or_else(|| suggest_nnz_cutoff(&feature_nnz))
-        .unwrap_or(1);
+    let min_nnz = suggest_nnz_cutoff(&feature_nnz).unwrap_or(1);
     let keep_features: Vec<bool> = feature_nnz.iter().map(|&n| n as usize >= min_nnz).collect();
     let n_keep = keep_features.iter().filter(|&&b| b).count();
     info!(
-        "Dictionary merge scores {} of {} features (detected in ≥ {} cells{})",
+        "Dictionary merge scores {} of {} features (detected in ≥ {} cells, auto cutoff)",
         n_keep,
         keep_features.len(),
         min_nnz,
-        if args.merge_min_nnz.is_some() {
-            ", --merge-min-nnz"
-        } else {
-            ", auto cutoff"
-        }
     );
     // Too few surviving features is as bad as too many. The centred dictionary
     // is `n_keep x K`, so below `K` rows its columns are linearly dependent
@@ -633,8 +629,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     if n_keep < k {
         warn!(
             "only {} feature(s) are detected in >= {} cells, fewer than the {} communities; \
-             skipping the dictionary merge, so the draft partition is the final result. \
-             Lower --merge-min-nnz to score more features.",
+             skipping the dictionary merge, so the draft partition is the final result.",
             n_keep, min_nnz, k
         );
         return Ok(MergeOutcome {
@@ -647,31 +642,45 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
         k
     );
     // Across sections, communities are compared within their section
-    // (see `remove_group_means`); also under --ignore-batch. The merge
-    // compares feature_community, which stays on raw counts (as dsvd's
-    // and cage's do), so a section's shift has to be removed here, in the
-    // comparison. The edge profiles the partition was fitted on are
-    // divided by the batch estimate, by choice, so that lc corrects
-    // batches the way dsvd and cage do.
-    let n_sections = crate::util::ablation::n_sections(section_ids);
+    // (see `remove_group_means`); also under --ignore-batch, where nothing
+    // else removes a section's shift. With a batch estimate the dictionary
+    // is fitted on divided counts, as the edge profiles the partition was
+    // fitted on are, and the groups are sections crossed with batches
+    // (`section_batch_groups`; one per section unless spatial --auto-batch
+    // splits one). A group lies in one batch, so the divide shifts each of
+    // its (feature, group) log-rates by a constant, which the centring
+    // takes out: the merge compares what it would on undivided counts (for
+    // a community inside one group, but for the prior's pull).
+    //
+    // Dividing is a trade-off: it removes donor dependence from the
+    // partition, but lowered shared-domain recovery when measured on the
+    // donor-nuisance simulation. It is kept so that lc corrects batches
+    // as dsvd and cage do; `--ignore-batch` gives the undivided fit.
+    let (group_of, n_groups) =
+        crate::link_community::dict_merge::section_batch_groups(section_ids, batch_of_cell);
     let share = community_group_shares(
         final_membership,
         k,
         partition_inputs.edges,
-        section_ids,
-        n_sections,
+        &group_of,
+        n_groups,
     );
-    // sections holding an edge end, and those centred on their own mean
-    let n_present = (0..n_sections)
+    // groups holding an edge end, and those centred on their own mean
+    let n_present = (0..n_groups)
         .filter(|&g| share.column(g).sum() > 0.0)
         .count();
     let n_own = groups_with_own_mean(&share);
     let centred_sections = (n_present > 1).then_some(n_own);
     if let Some(n_own) = centred_sections {
         info!(
-            "Dictionary merge: the mean profile of {} of {} sections is removed first{}",
+            "Dictionary merge: the mean profile of {} of {} {} is removed first{}",
             n_own,
             n_present,
+            if batch_of_cell.is_some() {
+                "(section, batch) groups"
+            } else {
+                "sections"
+            },
             if n_own < n_present {
                 "; the rest are held by about one community and are compared \
                  against the overall mean"
@@ -749,7 +758,6 @@ fn build_full_profiles(
     edge_indices: &[usize],
     all_edges: &[(usize, usize)],
     mode: &ProfileMode<'_>,
-    block_size: Option<usize>,
 ) -> anyhow::Result<LinkProfileStore> {
     match *mode {
         ProfileMode::ModulePair {
@@ -763,13 +771,8 @@ fn build_full_profiles(
             edge_indices,
             basis,
         )),
-        ProfileMode::Projection { basis, delta } => build_projection_profiles_for_edges(
-            data,
-            edge_indices,
-            all_edges,
-            basis,
-            block_size,
-            delta,
-        ),
+        ProfileMode::Projection { basis, delta } => {
+            build_projection_profiles_for_edges(data, edge_indices, all_edges, basis, None, delta)
+        }
     }
 }

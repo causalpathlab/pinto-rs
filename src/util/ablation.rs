@@ -41,6 +41,9 @@ pub enum PermuteCoords {
     Block,
 }
 
+/// Tiles along a section's longer side for `--permute-coords block`.
+pub const PERMUTE_BLOCK: usize = 8;
+
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MaskMode {
     /// Build the graph with the masked cells, then cut their edges
@@ -88,6 +91,7 @@ impl AblationKind {
     }
 }
 
+/// `Default` is no ablation: what a command without the flags runs.
 #[derive(Args, Debug, Clone, Default)]
 #[command(
     next_help_heading = "Ablation",
@@ -113,10 +117,10 @@ pub struct AblationArgs {
 
     #[arg(
         long,
-        default_value_t = 8,
-        help = "Tiles along a section's longer side for --permute-coords block"
+        hide = true,
+        help = "Tiles along a section's longer side for --permute-coords block [default: 8]"
     )]
-    pub permute_block: usize,
+    pub permute_block: Option<usize>,
 
     #[arg(
         long,
@@ -127,7 +131,7 @@ pub struct AblationArgs {
                      one per line; anything else is a regular expression. A row is\n\
                      dropped when its name, or one of its `_`-separated parts (before\n\
                      any `/`), equals a listed name or matches the expression:\n\
-                     `^MT-` drops ID1_MT-GENE1."
+                     `^PFX-` drops ID1_PFX-GENE1."
     )]
     pub drop_features: Option<Box<str>>,
 
@@ -150,15 +154,15 @@ pub struct AblationArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = MaskMode::CutEdges,
-        help = "How --mask-cells takes cells out of the graph",
+        hide = true,
+        help = "How --mask-cells takes cells out of the graph [default: cut-edges]",
         long_help = "cut-edges builds the spatial graph with the masked cells and\n\
                      then removes them with their edges, so the cells around a\n\
                      masked region lose those neighbours. drop leaves them out\n\
                      before the graph is built, so the KNN search joins cells across\n\
                      the hole. Without --coord the two are the same."
     )]
-    pub mask_mode: MaskMode,
+    pub mask_mode: Option<MaskMode>,
 
     #[arg(
         long,
@@ -201,9 +205,23 @@ impl AblationArgs {
     /// one, and --permute-coords only with --coord are clap rules.) Runs
     /// before any data is read.
     pub fn validate(&self, has_coords: bool) -> anyhow::Result<()> {
+        // A qualifier of an ablation that is not asked for would do nothing,
+        // whatever its value.
+        anyhow::ensure!(
+            self.permute_block.is_none() || self.permute_coords == Some(PermuteCoords::Block),
+            "--permute-block sizes the tiles of --permute-coords block"
+        );
+        anyhow::ensure!(
+            self.ablation_seed.is_none() || self.permute_coords.is_some(),
+            "--ablation-seed seeds --permute-coords, the one random ablation"
+        );
+        anyhow::ensure!(
+            self.mask_mode.is_none() || self.mask_cells.is_some(),
+            "--mask-mode says how --mask-cells takes cells out"
+        );
         if self.permute_coords == Some(PermuteCoords::Block) {
             anyhow::ensure!(
-                self.permute_block >= 2,
+                self.permute_block() >= 2,
                 "--permute-block must be at least 2"
             );
         }
@@ -234,6 +252,16 @@ impl AblationArgs {
         } else {
             None
         }
+    }
+
+    /// The tiles per side of `--permute-coords block`.
+    pub fn permute_block(&self) -> usize {
+        self.permute_block.unwrap_or(PERMUTE_BLOCK)
+    }
+
+    /// How `--mask-cells` takes cells out.
+    pub fn mask_mode(&self) -> MaskMode {
+        self.mask_mode.unwrap_or_default()
     }
 
     /// The seed the random kinds use.

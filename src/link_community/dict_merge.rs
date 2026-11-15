@@ -29,6 +29,42 @@ use legume_numeric::matrix::traits::MatOps;
 /// own in [`remove_group_means`]: closer to one community than to two.
 const MIN_EFFECTIVE_COMMUNITIES: f32 = 1.5;
 
+/// Each cell's group for [`remove_group_means`], and how many groups:
+/// its section, crossed with its batch (`batch_of_cell`) for a run that
+/// divides by a batch effect. Dividing shifts each (feature, group)
+/// log-rate by a constant only for a group inside one batch, which a
+/// section is unless spatial `--auto-batch` splits it into components.
+/// Without a batch, the sections as they are; crossed, numbered in
+/// (section, batch) order.
+pub fn section_batch_groups(
+    section_ids: &[u32],
+    batch_of_cell: Option<&[u32]>,
+) -> (Vec<u32>, usize) {
+    let Some(batch_of_cell) = batch_of_cell else {
+        return (
+            section_ids.to_vec(),
+            crate::util::ablation::n_sections(section_ids),
+        );
+    };
+    debug_assert_eq!(section_ids.len(), batch_of_cell.len());
+    let pairs: std::collections::BTreeSet<(u32, u32)> = section_ids
+        .iter()
+        .copied()
+        .zip(batch_of_cell.iter().copied())
+        .collect();
+    let id: std::collections::HashMap<(u32, u32), u32> = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| (p, i as u32))
+        .collect();
+    let group = section_ids
+        .iter()
+        .zip(batch_of_cell)
+        .map(|(&s, &b)| id[&(s, b)])
+        .collect();
+    (group, pairs.len())
+}
+
 /// Each community's share of its edge ends in each group: `[k × n_groups]`,
 /// rows summing to 1 (or to 0 for a community with no edge). `edges` is
 /// parallel to `membership`, and `group_of[cell]` is a cell's group; an edge

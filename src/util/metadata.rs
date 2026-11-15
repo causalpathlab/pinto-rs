@@ -381,6 +381,24 @@ pub struct GraphParams {
     /// the run builds and changes the edge set, so two runs differing only in
     /// this would otherwise emit identical blocks with different `n_edges`.
     pub reciprocal: bool,
+    /// Expression mode's base graph (no `--coord`) was built on the
+    /// batch-corrected projection: by a fit only when it estimated a δ, so
+    /// its counts are divided too. A query of the model builds its graph
+    /// alike. Absent: on the projection as read (spatial, one batch, no
+    /// δ, `--ignore-batch`, `--auto-batch`, or an older run).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub base_batch_corrected: bool,
+}
+
+impl GraphParams {
+    /// The graph a run built with resolved k's `knn`, its base graph on
+    /// the batch-corrected projection or not (`base_batch_corrected`).
+    pub fn of(knn: &crate::util::input::ResolvedKnn, base_batch_corrected: bool) -> Self {
+        Self {
+            base_batch_corrected,
+            ..knn.into()
+        }
+    }
 }
 
 impl From<&crate::util::input::ResolvedKnn> for GraphParams {
@@ -396,6 +414,7 @@ impl From<&crate::util::input::ResolvedKnn> for GraphParams {
             // made, which is the whole failure this struct exists to prevent.
             knn_expr_scope: (knn.augment > 0).then(|| value_name(&knn.scope)),
             reciprocal: knn.reciprocal,
+            base_batch_corrected: false,
         }
     }
 }
@@ -461,6 +480,12 @@ pub struct OutputFiles {
 
     #[serde(alias = "gene_community", skip_serializing_if = "Option::is_none")]
     pub feature_community: Option<String>,
+
+    /// Every feature_community the run wrote (its levels' too) was fitted
+    /// on counts divided by its batch effect, `batch_effects`. Absent: on
+    /// the counts as read (one batch, `--ignore-batch`, or an older run).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub feature_community_batch_adjusted: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scores: Option<String>,
@@ -558,8 +583,9 @@ pub struct DictMergeSummary {
     /// The cosine the merge tree was cut at (`--merge-cut`); `None` when
     /// it was not cut.
     pub cut_cosine: Option<f64>,
-    /// Sections centred on a mean of their own before the merge, when more
-    /// than one section holds an edge.
+    /// Sections (crossed with batches, for a run with a batch effect)
+    /// centred on a mean of their own before the merge, when more than one
+    /// holds an edge.
     pub centred_sections: Option<usize>,
 }
 
@@ -572,9 +598,8 @@ pub struct DictMergeFiles {
     /// `cut_cosine` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
-    /// Detection cutoff the merge scored on. Chosen from the data when
-    /// `--merge-min-nnz` is unset, so a run is not reproducible from its
-    /// outputs without it.
+    /// Detection cutoff the merge scored on. Chosen from the data, so a run
+    /// is not reproducible from its outputs without it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_nnz: Option<usize>,
     /// How many features cleared that cutoff.
@@ -584,8 +609,9 @@ pub struct DictMergeFiles {
     /// not cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_cosine: Option<f64>,
-    /// Sections centred on a mean of their own before the merge; absent
-    /// with a single section.
+    /// Sections (crossed with batches, for a run with a batch effect)
+    /// centred on a mean of their own before the merge; absent with a
+    /// single one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub centred_sections: Option<usize>,
 }
@@ -620,6 +646,13 @@ impl PintoMetadata {
         } else {
             &self.command
         }
+    }
+
+    /// Whether the run's expression-mode base graph was built on the
+    /// batch-corrected projection, as its manifest records
+    /// ([`GraphParams::base_batch_corrected`]); false for an older run.
+    pub fn base_graph_batch_corrected(&self) -> bool {
+        self.graph.as_ref().is_some_and(|g| g.base_batch_corrected)
     }
 
     /// Read a run's manifest, change it, write it back, holding the
@@ -1072,6 +1105,7 @@ pub fn create_lc_metadata(
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,
@@ -1121,6 +1155,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             batch_effects,
             delta_cells,
             ..Default::default()
@@ -1174,6 +1209,7 @@ pub fn create_cage_metadata(
             propensity: Some(format!("{prefix}.propensity.parquet")),
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
+            feature_community_batch_adjusted: inputs.delta.is_some(),
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,

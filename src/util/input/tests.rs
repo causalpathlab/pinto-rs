@@ -335,7 +335,6 @@ mod row_alignment {
         SRTReadArgs {
             data_files,
             coord_files,
-            preload_data: false,
             coord_columns: vec![],
             coord_column_names: vec!["x".into(), "y".into()],
             batch_files: None,
@@ -440,7 +439,7 @@ fn fits_name_cells_as_data_beans_reads_them() {
     let dir = tempfile::tempdir().unwrap();
     let files = backends(dir.path(), &["S1.zarr", "S2.zarr"]);
     for n in [1, 2] {
-        let fit = super::open_fit_data(&files[..n], &FeatureNameKind::Exact, false).unwrap();
+        let fit = super::open_fit_data(&files[..n], &FeatureNameKind::Exact).unwrap();
         let reference = read_data_on_shared_rows(ReadSharedRowsArgs {
             data_files: files[..n].to_vec(),
             feature_kind: Some(FeatureNameKind::Exact),
@@ -463,7 +462,7 @@ fn files_with_one_name_are_refused() {
     use data_beans::aux::feature_names::FeatureNameKind;
     let dir = tempfile::tempdir().unwrap();
     let files = backends(dir.path(), &["x/S1.zarr", "y/S1.zarr"]);
-    let e = super::open_fit_data(&files, &FeatureNameKind::Exact, false)
+    let e = super::open_fit_data(&files, &FeatureNameKind::Exact)
         .err()
         .expect("refused")
         .to_string();

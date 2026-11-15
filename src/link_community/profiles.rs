@@ -5,6 +5,7 @@
 //! basis via community centroids.
 
 use crate::link_community::model::LinkProfileStore;
+use crate::util::batch_effects::BatchDivisor;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use data_beans::alg::cell_pairs::collapse_pairs;
@@ -24,13 +25,10 @@ pub use modules::{
 /// Returns a vector of length `n_rows` with the sum of all entries per row.
 /// A caller that means features folds this through [`FeatureAxis::pool_totals`]: on
 /// a splice-channelized matrix a row is one track of a feature, not a feature.
-pub fn compute_row_totals(
-    data: &SparseIoVec,
-    block_size: Option<usize>,
-) -> anyhow::Result<Vec<f64>> {
+pub fn compute_row_totals(data: &SparseIoVec) -> anyhow::Result<Vec<f64>> {
     let n_features = data.num_rows();
     let n_cells = data.num_columns();
-    let jobs = generate_minibatch_intervals(n_cells, n_features, block_size);
+    let jobs = generate_minibatch_intervals(n_cells, n_features, None);
 
     // Accumulate with `try_fold` + `try_reduce`, NOT `map().collect()`.
     //
@@ -507,17 +505,18 @@ pub fn shannon_entropy_rows(propensity: &Mat) -> DVec {
 /// Writes `{out_prefix}.feature_community.parquet` (features × K). When
 /// `feature_weights` is `Some`, those precomputed NB Fisher-info weights are
 /// applied to the per-(feature, community) sufficient statistic; otherwise they
-/// are recomputed from the data (extra full-data scan).
+/// are recomputed from the data (extra full-data scan). `divisor` as in
+/// [`fit_feature_community_param`].
 pub fn compute_feature_community_stat(
     cell_propensity: &Mat,
     data_vec: &SparseIoVec,
     feature_weights: Option<&[f32]>,
     axis: Option<&FeatureAxis>,
-    block_size: Option<usize>,
+    divisor: Option<BatchDivisor<'_>>,
     out_prefix: &str,
 ) -> anyhow::Result<()> {
     let param =
-        fit_feature_community_param(cell_propensity, data_vec, feature_weights, axis, block_size)?;
+        fit_feature_community_param(cell_propensity, data_vec, feature_weights, axis, divisor)?;
     let row_names = data_vec.row_names()?;
     let names = axis.map_or(&row_names[..], FeatureAxis::feature_names);
     write_feature_community_param(&param, names, out_prefix)
@@ -530,12 +529,17 @@ pub fn compute_feature_community_stat(
 /// re-reading the parquet output. The sufficient statistic is row-scaled by
 /// NB Fisher-info weights `w_g = 1 / (1 + π_g · s̄ · φ(μ_g))`, matching
 /// `compute_feature_community_stat`.
+///
+/// With `divisor` (a run that divides by its batch effect), each cell's
+/// counts are divided by its batch's δ first, a plain `x / δ`
+/// ([`crate::util::batch_effects::divide_columns`]), so the dictionary is
+/// batch-adjusted. The weights stay what the caller took them on.
 pub fn fit_feature_community_param(
     cell_propensity: &Mat,
     data_vec: &SparseIoVec,
     feature_weights: Option<&[f32]>,
     axis: Option<&FeatureAxis>,
-    block_size: Option<usize>,
+    divisor: Option<BatchDivisor<'_>>,
 ) -> anyhow::Result<legume_numeric::param::dmatrix_gamma::GammaMatrix> {
     use legume_numeric::param::dmatrix_gamma::GammaMatrix;
     use legume_numeric::param::traits::TwoStatParam;
@@ -547,10 +551,20 @@ pub fn fit_feature_community_param(
     let n_features = axis.map_or(n_rows, FeatureAxis::n_features);
     let n_cells = data_vec.num_columns();
     let k = cell_propensity.ncols();
+    if let Some(d) = divisor {
+        anyhow::ensure!(
+            d.delta.nrows() == n_rows && d.batch_of_cell.len() == n_cells,
+            "feature-community divisor is {} rows over {} cells, the data {} rows over {} cells",
+            d.delta.nrows(),
+            d.batch_of_cell.len(),
+            n_rows,
+            n_cells
+        );
+    }
 
     info!("Computing feature-community statistics...");
     let prop_kn = cell_propensity.transpose();
-    let jobs = generate_minibatch_intervals(n_cells, n_rows, block_size);
+    let jobs = generate_minibatch_intervals(n_cells, n_rows, None);
 
     let prog_bar = new_progress_bar(jobs.len() as u64).with_message("feature-community blocks");
     // Folded, not collected: see `compute_row_totals`. Each accumulator here is
@@ -561,7 +575,12 @@ pub fn fit_feature_community_param(
         .try_fold(
             || (Mat::zeros(n_rows, k), DVec::zeros(k)),
             |(mut acc_g, mut acc_k), &(lb, ub)| -> anyhow::Result<(Mat, DVec)> {
-                let x_gn = data_vec.read_columns_csc(lb..ub)?;
+                let mut x_gn = data_vec.read_columns_csc(lb..ub)?;
+                if let Some(d) = divisor {
+                    crate::util::batch_effects::divide_columns(&mut x_gn, d.delta, |j| {
+                        Some(d.batch_of_cell[lb + j] as usize)
+                    });
+                }
                 let block_len = ub - lb;
                 let mut p_kn_block = Mat::zeros(k, block_len);
                 for i in 0..block_len {
@@ -591,7 +610,7 @@ pub fn fit_feature_community_param(
         Some(w) => w,
         None => {
             info!("Computing NB Fisher-info weights for feature-community stats");
-            owned_w = compute_nb_fisher_weights(data_vec, block_size)?;
+            owned_w = compute_nb_fisher_weights(data_vec, None)?;
             &owned_w
         }
     };
@@ -820,7 +839,6 @@ pub fn realized_communities(edge_membership: &[usize], n_edges: usize) -> anyhow
 /// Config for `compute_propensity_and_feature_community_stat`.
 pub struct PropensityReportConfig<'a> {
     pub clustering: EdgeClustering,
-    pub block_size: Option<usize>,
     /// The FEATURE unit axis for the feature-community table, when the caller has
     /// one. `None` keeps the table on the matrix's own rows, which is what a
     /// caller wants when a row is already the unit it reports.
@@ -829,6 +847,9 @@ pub struct PropensityReportConfig<'a> {
     /// augmented. `None` omits the column, keeping an unaugmented run
     /// byte-identical.
     pub edge_kind: Option<&'a [i32]>,
+    /// The run's batch effect, when it divides by one: the dictionary is
+    /// then fitted on divided counts ([`fit_feature_community_param`]).
+    pub divisor: Option<BatchDivisor<'a>>,
 }
 
 /// What the propensity pass hands back to its caller beyond the files it
@@ -859,9 +880,9 @@ pub fn compute_propensity_and_feature_community_stat(
 ) -> anyhow::Result<PropensityOutputs> {
     let PropensityReportConfig {
         clustering,
-        block_size,
         feature_axis,
         edge_kind,
+        divisor,
     } = *cfg;
 
     // 1. Cluster the latent edge vectors
@@ -898,7 +919,7 @@ pub fn compute_propensity_and_feature_community_stat(
         data_vec,
         None,
         feature_axis,
-        block_size,
+        divisor,
         out_prefix,
     )?;
 

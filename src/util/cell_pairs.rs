@@ -52,9 +52,11 @@ pub struct SrtCellPairs<'a> {
 
 pub struct SrtCellPairsArgs {
     pub knn: usize,
-    pub block_size: Option<usize>,
     pub reciprocal: bool,
 }
+
+/// Query points per block of a KNN graph search.
+const KNN_BLOCK: usize = 1000;
 
 impl<'a> SrtCellPairs<'a> {
     /// Wrap a pre-built KNN graph with data and coordinates, recording which
@@ -234,7 +236,7 @@ pub fn build_spatial_graph(coordinates: &Mat, args: SrtCellPairsArgs) -> anyhow:
         coordinates,
         KnnGraphArgs {
             knn: args.knn,
-            block_size: args.block_size.unwrap_or(1000),
+            block_size: KNN_BLOCK,
             reciprocal: args.reciprocal,
         },
     )
@@ -249,7 +251,7 @@ pub fn build_expression_knn(cell_proj: &Mat, args: SrtCellPairsArgs) -> anyhow::
         cell_proj,
         KnnGraphArgs {
             knn: args.knn,
-            block_size: args.block_size.unwrap_or(1000),
+            block_size: KNN_BLOCK,
             reciprocal: args.reciprocal,
         },
     )

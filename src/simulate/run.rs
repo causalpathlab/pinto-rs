@@ -24,7 +24,7 @@ pub struct SimulateArgs {
 
     /// Spot coordinate files, comma-separated, used by the sections in turn;
     /// a square grid when none is given. Only positions are read.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long = "coord", short = 'c', alias = "coords", value_delimiter = ',')]
     pub coords: Vec<Box<str>>,
 
     /// Coordinate column names in the coordinate files

@@ -1,7 +1,24 @@
 //! The model's pair encoder is found from the model prefix alone, so the
 //! resolution is checked without a model.
 
-use super::{cage_only_flags, default_args, pair_encoder_path};
+use super::{pair_encoder_path, ModelOnlyFlags, PredictArgs};
+use clap::{CommandFactory, FromArgMatches, Parser};
+
+#[derive(Parser)]
+struct Probe {
+    #[command(flatten)]
+    args: PredictArgs,
+}
+
+/// `pinto predict` of `extra` beside a query and a model: its args and the
+/// model-only flags it was given.
+fn parse(extra: &[&str]) -> (PredictArgs, ModelOnlyFlags) {
+    let argv = [&["predict", "data", "--model", "m", "-o", "o"][..], extra].concat();
+    let mut cmd = Probe::command();
+    let m = cmd.try_get_matches_from_mut(argv).unwrap();
+    let args = Probe::from_arg_matches(&m).unwrap().args;
+    (args, ModelOnlyFlags::given(&cmd, &m))
+}
 
 #[test]
 fn the_pair_encoder_is_required_and_found_beside_the_model() {
@@ -16,17 +33,21 @@ fn the_pair_encoder_is_required_and_found_beside_the_model() {
     assert_eq!(pair_encoder_path(&model).unwrap(), file);
 }
 
+/// The flags that apply to one kind of model are named when given on the
+/// command line, whatever their value, and not when left at their defaults.
 #[test]
-fn cage_only_flags_are_named_when_set() {
-    let d = default_args().unwrap();
-    assert!(cage_only_flags(&d, &d).is_empty());
-    let mut set = default_args().unwrap();
-    set.no_init_features = true;
-    set.device_no = 1;
-    assert_eq!(
-        cage_only_flags(&set, &d),
-        vec!["--device-no", "--no-init-features"]
-    );
+fn model_only_flags_are_named_when_given() {
+    let (_, none) = parse(&[]);
+    assert!(none.cage.is_empty() && none.holdout.is_empty());
+    let (_, given) = parse(&[
+        "--no-init-features",
+        "--device-no",
+        "0",
+        "--holdout-unit",
+        "cell",
+    ]);
+    assert_eq!(given.cage, ["--device-no", "--no-init-features"]);
+    assert_eq!(given.holdout, ["--holdout-unit"]);
 }
 
 /// A model that is not there is refused before any data is read, by its
@@ -35,10 +56,10 @@ fn cage_only_flags_are_named_when_set() {
 fn a_model_that_is_not_there_is_refused_by_its_path() {
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("nope").to_string_lossy().to_string();
-    let mut args = default_args().unwrap();
-    args.model = model.clone().into();
-    args.common.data_files = vec![dir.path().join("d.zarr").to_string_lossy().into()];
-    let e = format!("{:#}", super::predict(&args).unwrap_err());
+    let (mut args, given) = parse(&[]);
+    args.core.model = model.clone().into();
+    args.core.common.data_files = vec![dir.path().join("d.zarr").to_string_lossy().into()];
+    let e = format!("{:#}", super::predict(&args, &given).unwrap_err());
     assert!(e.contains(&format!("{model}.pinto.json")), "{e}");
     assert!(e.contains("not there"), "{e}");
 }
@@ -172,7 +193,8 @@ mod batch_effects {
 
 /// The query is divided only by a model's δ: a model without one (one
 /// batch, `--ignore-batch`, or an older cage-cell fit) trained its encoder
-/// on undivided counts; `--ignore-batch` on predict leaves it unused.
+/// on undivided counts; `--ignore-batch` on predict leaves it unused, and
+/// is refused for a model fitted on δ-divided counts.
 #[test]
 fn the_query_is_divided_only_when_the_model_has_a_delta() {
     use crate::util::batch_effects::RunDelta;
@@ -214,6 +236,20 @@ fn the_query_is_divided_only_when_the_model_has_a_delta() {
     assert!(super::model_delta(&model, Some(&run), true)
         .unwrap()
         .is_none());
+    // fitted on δ-divided counts: an undivided query is refused
+    meta.outputs.feature_community_batch_adjusted = true;
+    meta.write(std::path::Path::new(&manifest_path(&model)))
+        .unwrap();
+    let run = Run::open(&model).unwrap();
+    let err = super::model_delta(&model, Some(&run), true)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("--ignore-batch"), "{err}");
+    // a cage query reads no held-out flag, so none is offered
+    assert!(!err.to_string().contains("--holdout"), "{err}");
+    assert!(super::model_delta(&model, Some(&run), false)
+        .unwrap()
+        .is_some());
 }
 
 /// A manifest's data files: canonical ones as recorded; an older relative
@@ -344,4 +380,14 @@ fn every_batch_is_known_from_the_inputs() {
         "s3 is new"
     );
     assert!(!known(&[&a, &b, "--auto-batch"], &by_file, files));
+}
+
+/// `--null-from` takes a comma list, as every other file-list flag does,
+/// and still takes the files listed after it.
+#[test]
+fn null_from_takes_a_comma_list() {
+    let null_from = |extra: &[&str]| parse(extra).0.scoring.null_from.unwrap();
+    let two: Vec<Box<str>> = vec!["a.zarr".into(), "b.zarr".into()];
+    assert_eq!(null_from(&["--null-from", "a.zarr,b.zarr"]), two);
+    assert_eq!(null_from(&["--null-from", "a.zarr", "b.zarr"]), two);
 }

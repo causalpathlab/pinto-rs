@@ -800,45 +800,40 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
 }
 
 /// The stored shape of one file, taken from its metadata before any count
-/// is read (`--preload-data` or not), is the shape the read then gives.
+/// is read, is the shape the read then gives.
 #[test]
 fn one_file_s_stored_shape_is_its_read_shape() {
     let dir = tempfile::tempdir().unwrap();
     let files = simulated(dir.path(), 8);
     let out = dir.path().join("run");
-    for extra in [&[][..], &["--preload-data"][..]] {
-        let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, extra) else {
-            unreachable!()
-        };
-        let shape = args.fit.input.stored().unwrap().unwrap();
-        let data = args.fit.input.read(false).unwrap();
-        assert_eq!(
-            shape,
-            InputShape {
-                genes: data.genes.len(),
-                nonzeros: data.counts.nnz(),
-                section_sizes: vec![64],
-                batches: 1,
-            },
-            "{extra:?}"
-        );
-    }
+    let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, &[]) else {
+        unreachable!()
+    };
+    let shape = args.fit.input.stored().unwrap().unwrap();
+    let data = args.fit.input.read(false).unwrap();
+    assert_eq!(
+        shape,
+        InputShape {
+            genes: data.genes.len(),
+            nonzeros: data.counts.nnz(),
+            section_sizes: vec![64],
+            batches: 1,
+        }
+    );
 }
 
 /// The files the stored shape is taken from are opened with no counts in
-/// memory, `--preload-data` or not, so the check on it comes before any.
+/// memory, so the check on it comes before any.
 #[test]
 fn the_stored_shape_is_taken_with_no_counts_in_memory() {
     let dir = tempfile::tempdir().unwrap();
     let files = simulated(dir.path(), 8);
     let out = dir.path().join("run");
-    for extra in [&[][..], &["--preload-data"][..]] {
-        let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, extra) else {
-            unreachable!()
-        };
-        for file in args.fit.input.metadata() {
-            assert!(file.unwrap().csc_column_arrays().is_none(), "{extra:?}");
-        }
+    let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, &[]) else {
+        unreachable!()
+    };
+    for file in args.fit.input.metadata() {
+        assert!(file.unwrap().csc_column_arrays().is_none());
     }
 }
 

@@ -255,3 +255,25 @@ fn graph_params_record_what_the_run_did() {
 
     assert!(params(&["-c", "coords.csv", "--reciprocal"]).reciprocal);
 }
+
+/// data-beans' feature QC never reaches pinto, which reads only the cell
+/// verdict: a feature floor is refused as the command line is parsed rather
+/// than run as a stats pass that changes nothing.
+#[test]
+fn a_feature_qc_floor_is_refused_rather_than_ignored() {
+    assert!(args(&["--qc-feature-min-cells", "0"])
+        .validate_flags()
+        .is_ok());
+    let err = SrtInputArgs::try_parse_from([
+        "pinto",
+        "d.zarr",
+        "-o",
+        "out",
+        "--qc-feature-min-cells",
+        "5",
+    ])
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(err.contains("--qc-feature-min-cells"), "{err}");
+}

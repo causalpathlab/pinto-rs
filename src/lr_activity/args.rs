@@ -3,7 +3,7 @@
 use clap::{Args, Parser, ValueEnum, ValueHint};
 
 /// `--seed`'s default.
-pub const DEFAULT_SEED: u64 = 42;
+pub const DEFAULT_SEED: u64 = crate::util::common::DEFAULT_SEED;
 
 // * Input
 
@@ -139,24 +139,8 @@ pub struct LraInputArgs {
     )]
     pub knn_spatial: usize,
 
-    #[arg(long, default_value_t = DEFAULT_SEED, help = "Random seed for reproducibility")]
+    #[arg(long, default_value_t = DEFAULT_SEED, help = crate::util::common::SEED_HELP)]
     pub seed: u64,
-
-    #[arg(
-        long,
-        help = "Cells per parallel block (omit for auto-scaling by feature count)",
-        hide = true
-    )]
-    pub block_size: Option<usize>,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        hide = true,
-        help = crate::util::input::PRELOAD_HELP,
-        long_help = crate::util::input::PRELOAD_LONG_HELP
-    )]
-    pub preload_data: bool,
 }
 
 // * lra
@@ -301,7 +285,8 @@ pub struct SrtLrActivityArgs {
         long_help = "Westfall-Young FWER cutoff for the JSON sidecar (coexpression-test).\n\
                      A row enters the sidecar when its FWER is below this AND its\n\
                      restandardized z is positive. The parquet always carries the\n\
-                     full table."
+                     full table.",
+        hide = true
     )]
     pub json_fwer_threshold: f32,
 

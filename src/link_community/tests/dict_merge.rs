@@ -374,3 +374,119 @@ fn a_community_with_no_edge_is_left_out_of_the_tree() {
     assert_eq!(labels[1], labels[3]);
     assert_ne!(labels[0], labels[1]);
 }
+
+/// Dividing a group's counts by its batch's δ shifts each (feature, group)
+/// log-rate by a constant when the group lies in one batch, which
+/// [`remove_group_means`] takes out: centred, the dictionary fitted on
+/// divided counts merges as the one fitted on the counts as read. Three
+/// types in each of two batches, one community per (type, batch), the
+/// second batch folded up to six times on a feature; the cells' sections
+/// are `section_of(batch)`, grouped by [`section_batch_groups`] (crossed
+/// with the batches when `by_batch`). Returns whether the centred trees
+/// and cuts agree, and asserts that centring across groups changes the
+/// undivided merge.
+fn centred_merges_agree(section_of: fn(usize) -> u32, by_batch: bool) -> bool {
+    use crate::link_community::profiles::fit_feature_community_param;
+    use crate::util::batch_effects::BatchDivisor;
+    use legume_numeric::param::traits::Inference;
+
+    let (n_types, n_batches, per, n_features) = (3usize, 2usize, 20usize, 24usize);
+    let fold = |g: usize| 1.0 + (g * 5 % 11) as f32 / 2.0;
+    let n_cells = n_types * n_batches * per;
+    // cell → (type, batch), community `b * n_types + t`
+    let type_of = |c: usize| c / per % n_types;
+    let batch_of = |c: usize| c / (per * n_types);
+    let mut triplets = Vec::new();
+    for c in 0..n_cells {
+        let (t, b) = (type_of(c), batch_of(c));
+        for g in 0..n_features {
+            let level = if g / 8 == t { 12.0 } else { 3.0 };
+            let jitter = ((c * 7 + g * 3) % 5) as f32;
+            let v = (level + jitter) * if b == 1 { fold(g) } else { 1.0 };
+            triplets.push((g as u64, c as u64, v.round()));
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let rows: Vec<Box<str>> = (0..n_features).map(|g| format!("GENE{g}").into()).collect();
+    let cols: Vec<Box<str>> = (0..n_cells).map(|c| format!("c{c}").into()).collect();
+    let data = crate::test_support::sparse_vec(dir.path(), "d", &rows, &cols, &triplets);
+
+    let k = n_types * n_batches;
+    let community = |c: usize| batch_of(c) * n_types + type_of(c);
+    let propensity = Mat::from_fn(n_cells, k, |c, j| f32::from(community(c) == j));
+    // each community a chain of its cells, inside its batch
+    let mut edges = Vec::new();
+    let mut membership = Vec::new();
+    for c in 1..n_cells {
+        if community(c) == community(c - 1) {
+            edges.push((c - 1, c));
+            membership.push(community(c));
+        }
+    }
+    let section: Vec<u32> = (0..n_cells).map(|c| section_of(batch_of(c))).collect();
+    let batch_of_cell: Vec<u32> = (0..n_cells).map(|c| batch_of(c) as u32).collect();
+    let (group, n_groups) =
+        section_batch_groups(&section, by_batch.then_some(batch_of_cell.as_slice()));
+    let share = community_group_shares(&membership, k, &edges, &group, n_groups);
+    let occupied = occupied_communities(&share);
+
+    // δ at geometric mean 1 over the two batches
+    let delta = Mat::from_fn(n_features, n_batches, |g, b| {
+        fold(g).sqrt().powi(if b == 1 { 1 } else { -1 })
+    });
+    let ones = vec![1.0; n_features];
+    let fit = |divisor| {
+        fit_feature_community_param(&propensity, &data, Some(&ones), None, divisor)
+            .unwrap()
+            .posterior_log_mean()
+            .clone()
+    };
+    let undivided = fit(None);
+    let divided = fit(Some(BatchDivisor {
+        delta: &delta,
+        batch_of_cell: &batch_of_cell,
+    }));
+    let tree = |m: &Mat| -> Vec<(i32, i32, i32)> {
+        cosine_merge(m, None, Some(&occupied))
+            .iter()
+            .map(|m| (m.id, m.left, m.right))
+            .collect()
+    };
+    let centred = |m: &Mat| remove_group_means(m, &share);
+    let (a, b) = (tree(&centred(&undivided)), tree(&centred(&divided)));
+    let cuts = |m: &Mat| -> Vec<Vec<i32>> {
+        let merges = cosine_merge(m, None, Some(&occupied));
+        [0.9, 0.5, 0.0]
+            .iter()
+            .map(|&t| cosine_cut(&merges, k, t))
+            .collect()
+    };
+    // the batch decides the uncentred, undivided merge, and centring by
+    // batch takes it out: the test sees it
+    if n_groups > 1 {
+        assert_ne!(tree(&undivided), a, "the batch should matter uncentred");
+    }
+    a == b && cuts(&centred(&undivided)) == cuts(&centred(&divided))
+}
+
+/// Each section in one batch: centred per section, or per (section,
+/// batch), the divided and undivided dictionaries merge alike.
+#[test]
+fn centred_divided_and_undivided_dictionaries_merge_alike() {
+    let section_is_batch = |b: usize| b as u32;
+    assert!(centred_merges_agree(section_is_batch, false));
+    assert!(centred_merges_agree(section_is_batch, true));
+}
+
+/// One section split into two batches (spatial `--auto-batch` finds two
+/// components in it): centred per section the divide still shows, centred
+/// per (section, batch) it does not.
+#[test]
+fn a_section_split_into_batches_merges_alike_when_centred_by_batch() {
+    let one_section = |_: usize| 0;
+    assert!(centred_merges_agree(one_section, true));
+    assert!(
+        !centred_merges_agree(one_section, false),
+        "centred per section, the divide should show"
+    );
+}

@@ -22,6 +22,19 @@ pub enum EdgeClusterMethod {
     Leiden,
 }
 
+/// Neighbours per pair in the cosine kNN graph Leiden runs on.
+pub const LEIDEN_KNN: usize = 30;
+
+/// Leiden runs combined into one consensus partition. Leiden's partition
+/// moves with its seed, so Leiden runs this many times (seeds derived from
+/// `--seed`), each kNN-graph edge is weighted by the share of runs that keep
+/// its two pairs together, and one final Leiden on that graph gives the
+/// partition, which agrees far better across seeds than a single run.
+pub const LEIDEN_RUNS: usize = 10;
+
+/// Lloyd iterations for spherical kmeans.
+pub const KMEANS_MAX_ITER: usize = 100;
+
 /// The flags every pair-latent subcommand shares. Flatten this rather than
 /// re-declaring them, so the three commands cannot drift apart.
 #[derive(Args, Debug, Clone)]
@@ -31,13 +44,14 @@ pub struct EdgeClusterArgs {
         default_value_t = EdgeClusterMethod::Leiden,
         value_enum,
         help = "How to cut the pair latent into link communities",
-        long_help = "leiden is the default.\n\
-                     It builds a cosine kNN graph over the pair latent,\n\
+        long_help = "How the pair latent is cut into link communities.\n\
+                     \n\
+                     leiden (the default) builds a cosine kNN graph over the pair latent,\n\
                      and --leiden-resolution then decides how many communities exist.\n\
-                     Under leiden, --n-edge-clusters is only a target:\n\
+                     Under leiden, --n-communities is only a target:\n\
                      the resolution is steered toward it, not fixed at it.\n\
                      \n\
-                     kmeans instead fixes the community count at --n-edge-clusters.\n\
+                     kmeans instead fixes the community count at --n-communities.\n\
                      It is spherical k-means on the L2-normalized pair latent,\n\
                      seeded by --seed, so the cut is reproducible.\n\
                      Pick it when you need a specific K, or a run comparable to an older one.\n\
@@ -49,37 +63,14 @@ pub struct EdgeClusterArgs {
 
     #[arg(
         long,
-        default_value_t = 30,
-        help = "Neighbours per pair in the Leiden kNN graph over the pair latent"
-    )]
-    pub leiden_knn: usize,
-
-    #[arg(
-        long,
         default_value_t = 1.0,
         help = "Leiden modularity resolution; higher gives more, finer communities"
     )]
     pub leiden_resolution: f64,
 
     #[arg(
-        long,
-        default_value_t = 10,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
-        help = "Leiden runs combined into one consensus partition (1 = a single run)",
-        long_help = "Leiden's partition moves with its seed: on one cage fit's pair latent,\n\
-                     five seeds agreed only at ARI 0.58-0.79, with 12 to 14 communities.\n\
-                     So Leiden runs this many times (seeds derived from --seed), each\n\
-                     kNN-graph edge is weighted by the share of runs that keep its two\n\
-                     pairs together, and one final Leiden on that graph gives the\n\
-                     partition. On that latent, 10 runs agreed at ARI 0.80-0.91 across\n\
-                     seeds; 30 runs at 0.89-0.95, for more stability at three times the\n\
-                     work. The runs share the cores. 1 runs Leiden once, as before.\n\
-                     Ignored under kmeans."
-    )]
-    pub leiden_runs: usize,
-
-    #[arg(
-        long,
+        long = "n-communities",
+        alias = "n-edge-clusters",
         help = "Link communities to cut from the pair latent [default: let leiden decide]",
         long_help = "How many edge clusters to cut from the pair latent.\n\
                      Under the default --edge-cluster-method leiden this is a TARGET:\n\
@@ -92,19 +83,11 @@ pub struct EdgeClusterArgs {
                      See this subcommand's own --help for the files it writes."
     )]
     pub n_edge_clusters: Option<usize>,
-
-    #[arg(
-        long,
-        alias = "maxiter-clustering",
-        default_value_t = 100,
-        help = "Lloyd iterations for kmeans; ignored under leiden"
-    )]
-    pub kmeans_max_iter: usize,
 }
 
 impl EdgeClusterArgs {
     /// Resolve to the algorithm-side enum with the run's seed. An unset
-    /// `--n-edge-clusters` stays `None` in both arms: k-means falls back to
+    /// `--n-communities` stays `None` in both arms: k-means falls back to
     /// the latent width, which [`EdgeClustering::cluster`] reads off the
     /// matrix it is handed, and for Leiden an absent target is exactly what
     /// lets the graph decide.
@@ -112,14 +95,14 @@ impl EdgeClusterArgs {
         match self.edge_cluster_method {
             EdgeClusterMethod::Kmeans => EdgeClustering::Kmeans {
                 n_clusters: self.n_edge_clusters,
-                max_iter: self.kmeans_max_iter,
+                max_iter: KMEANS_MAX_ITER,
                 seed,
             },
             EdgeClusterMethod::Leiden => EdgeClustering::Leiden {
-                knn: self.leiden_knn,
+                knn: LEIDEN_KNN,
                 resolution: self.leiden_resolution,
                 target: self.n_edge_clusters,
-                runs: self.leiden_runs,
+                runs: LEIDEN_RUNS,
                 seed,
             },
         }

@@ -114,6 +114,33 @@ pub(crate) struct PairDeltaParameters {
     pub(crate) diff: GammaMatrix,
 }
 
+/// dsvd's per-cell projection: corrected by the cells' batches
+/// (`batch_membership`) unless `--ignore-batch`, at inputs `c`'s `-p` and
+/// block size. Preprocessing's (`shared`) is that projection with a δ
+/// (`has_delta`: the one its estimate collapsed on) and under
+/// `--ignore-batch` (uncorrected), and is taken as it is; otherwise (one
+/// batch, or an estimate without a δ) preprocessing's is uncorrected and
+/// dsvd's is taken here.
+pub(crate) fn dsvd_cell_projection(
+    shared: Option<RandColProjOut>,
+    has_delta: bool,
+    c: &crate::util::input::SrtInputArgs,
+    data_vec: &SparseIoVec,
+    batch_membership: &[Box<str>],
+) -> anyhow::Result<RandColProjOut> {
+    match shared {
+        Some(proj) if has_delta || c.ignore_batch => Ok(proj),
+        _ => {
+            info!("Per-cell random projection...");
+            data_vec.project_columns_with_batch_correction(
+                c.proj_dim,
+                None,
+                (!c.ignore_batch).then_some(batch_membership),
+            )
+        }
+    }
+}
+
 /// Cell-pair SVD pipeline with shared/difference channels:
 ///
 /// 1. Load data + coordinates
@@ -140,39 +167,26 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         batch_membership,
         section_ids: _,
         seeding,
-        batch_labels: _,
+        batch_labels,
         batch_effects: batch_db,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
-        cell_proj: _,
+        cell_proj: shared_cell_proj,
         feature_axis: _,
-        row_weights: _,
-        row_stats: _,
-        feature_weights: _,
-        feature_stats: _,
         n_cells,
         n_rows: n_features,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: Some(&args.ablation),
-        fisher_weights: false,
         batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Rows,
-        // `dsvd` takes its own projection because it asks for a different one:
-        // it batch-corrects whenever `--ignore-batch` is not given, where
-        // preprocessing corrects only when batch effects were estimated. On a
-        // single-batch run those two are not the same projection, so sharing
-        // would quietly change results.
-        //
-        // Note this is a request, not a contract: preprocessing still takes one
-        // when `--knn-expr` needs it for the expression graph, and that one is
-        // dropped here. Asking for `--knn-expr` alongside coordinates therefore
-        // costs two projection passes — but it is off by default, so the
-        // default path pays for one.
-        cell_projection: false,
+        // the per-cell projection below, when it is preprocessing's
+        // ([`dsvd_cell_projection`])
+        cell_projection: true,
         feature_kind: None,
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
@@ -193,11 +207,12 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     srt_cell_pairs.write_coord_pairs(&c.out, &coordinate_names)?;
 
     // 4. Per-cell random projection
-    info!("Per-cell random projection...");
-    let mut cell_proj = data_vec.project_columns_with_batch_correction(
-        c.proj_dim,
-        c.block_size,
-        (!c.ignore_batch).then_some(batch_membership.as_slice()),
+    let mut cell_proj = dsvd_cell_projection(
+        shared_cell_proj,
+        batch_db.is_some(),
+        c,
+        &data_vec,
+        &batch_membership,
     )?;
 
     // 5. Graph-constrained coarsening + multi-level assignment
@@ -250,7 +265,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         &fused_pair_delta_visitor,
         &fused_input,
         &mut collapsed,
-        c.block_size,
+        None,
     )?;
 
     // 6. Fit Poisson-Gamma (finest level)
@@ -301,7 +316,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         &nystrom_pair_delta_visitor,
         &nystrom_input,
         &mut pair_latent_kn,
-        c.block_size,
+        None,
     )?;
 
     // 9. Export
@@ -320,6 +335,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     // 10. Propensity + dictionary
     let edges = srt_cell_pairs.inner.pairs();
+    let batch_of_cell = nystrom_input
+        .batch_effect
+        .as_ref()
+        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
 
     // Leiden by default, same as `cage`: the SVD width is chosen for how much
     // variance to keep, which is no reason for the pairs to fall into exactly
@@ -332,11 +351,15 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         n_cells,
         &PropensityReportConfig {
             clustering: args.edge_clustering.resolve(c.seed),
-            block_size: c.block_size,
             // `dsvd` never resolves a feature axis (it stacks its two channels on
             // the row axis), so its feature-community table stays row-keyed.
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
+            // batch-adjusted, as the pairs are
+            divisor: crate::util::batch_effects::BatchDivisor::of(
+                nystrom_input.batch_effect.as_ref(),
+                batch_of_cell.as_deref(),
+            ),
         },
         &c.out,
     )?
@@ -353,7 +376,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             n_cells,
             n_features: data_vec.num_rows(),
             n_edges: edges.len(),
-            graph: (&knn).into(),
+            graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
             ablation,
             k: n_clusters,
             delta: has_batch_effects.then(|| crate::util::metadata::DeltaWritten::fit(c)),

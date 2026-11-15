@@ -14,7 +14,7 @@
 //!    aggregated feature sums. This is a small set — typically
 //!    O(n_batches * n_groups) entries.
 //!
-//! 3. **Cross-batch KNN matching** (`--batch-knn`): for each
+//! 3. **Cross-batch KNN matching** (`BATCH_KNN` neighbours): for each
 //!    pb-sample, find its `batch_knn` nearest neighbors among
 //!    pb-samples from *other* batches using HNSW on centroids.
 //!    Because we search over coarsened pb-samples (not individual
@@ -56,7 +56,6 @@ use rustc_hash::FxHashMap;
 pub struct EstimateBatchArgs {
     pub proj_dim: usize,
     pub sort_dim: usize,
-    pub block_size: Option<usize>,
     /// KNN for cross-batch pb-sample matching during hierarchical
     /// collapsing. Searches are over coarsened pb-sample centroids,
     /// not individual cells, so this stays small.
@@ -76,7 +75,6 @@ impl EstimateBatchArgs {
     /// [`BATCH_SORT_DIM`] (or `proj_dim`, when smaller).
     pub fn at(
         proj_dim: usize,
-        block_size: Option<usize>,
         batch_knn: usize,
         num_levels: usize,
         strata: Option<Vec<usize>>,
@@ -84,7 +82,6 @@ impl EstimateBatchArgs {
         EstimateBatchArgs {
             proj_dim,
             sort_dim: proj_dim.min(BATCH_SORT_DIM),
-            block_size,
             batch_knn,
             num_levels,
             strata,
@@ -191,7 +188,7 @@ fn estimate_batch(
 ) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut)> {
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
-        args.block_size,
+        None,
         Some(batch_membership),
     )?;
 
@@ -217,11 +214,12 @@ fn estimate_batch(
     Ok((collapse_out.delta, proj_out))
 }
 
-/// What [`estimate_and_write_batch_effects`] gives: the posterior, and the
-/// batch-corrected random projection (`proj_dim × cells`) the estimate
-/// collapsed on, when the caller keeps it.
+/// What [`estimate_and_write_batch_effects`] gives: the posterior (`None`
+/// when the estimate gave no batch effect), and the batch-corrected random
+/// projection (`proj_dim × cells`) the estimate collapsed on, when the
+/// caller keeps it.
 pub struct BatchEffects {
-    pub posterior: BatchPosterior,
+    pub posterior: Option<BatchPosterior>,
     pub projection: Option<RandColProjOut>,
 }
 
@@ -230,11 +228,12 @@ pub struct BatchEffects {
 /// `{out_prefix}.delta_cells.parquet`.
 ///
 /// `labels` are the sorted, distinct labels of `batch_membership`
-/// ([`sorted_batch_labels`]); nothing is estimated with fewer than 2.
-/// Returns the posterior on the data's rows, its batches in label order
-/// (data-beans' batch ids), so a caller indexing cells by sorted label
+/// ([`sorted_batch_labels`]); nothing is estimated with fewer than 2
+/// (`None`). Returns the posterior on the data's rows, its batches in label
+/// order (data-beans' batch ids), so a caller indexing cells by sorted label
 /// indexes its columns; with `keep_projection`, the projection too, which
-/// is otherwise freed before the writes.
+/// is otherwise freed before the writes. An estimate that gives no batch
+/// effect writes nothing and has no posterior, its projection still kept.
 pub fn estimate_and_write_batch_effects(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
@@ -251,7 +250,15 @@ pub fn estimate_and_write_batch_effects(
     let (gamma, proj) = estimate_batch(data_vec, batch_membership, args)?;
     let projection = keep_projection.then_some(proj);
     let Some(gamma) = gamma else {
-        return Ok(None);
+        warn!(
+            "{} batches, but no batch effect was estimated, so the counts are not divided \
+             by one",
+            labels.len()
+        );
+        return Ok(Some(BatchEffects {
+            posterior: None,
+            projection,
+        }));
     };
     let batches = data_vec
         .batch_names()
@@ -270,11 +277,11 @@ pub fn estimate_and_write_batch_effects(
         )?;
     }
     Ok(Some(BatchEffects {
-        posterior: BatchPosterior {
+        posterior: Some(BatchPosterior {
             gamma,
             rows,
             batches,
-        },
+        }),
         projection,
     }))
 }
@@ -606,6 +613,41 @@ pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<s
         }
     }
     Ok(out)
+}
+
+/// A run's batch effect with each cell's batch: what divides the counts a
+/// run reports on, such as its feature x community dictionary
+/// ([`divide_columns`]), and, per endpoint, cage's pairs.
+#[derive(Copy, Clone)]
+pub struct BatchDivisor<'a> {
+    /// `[rows × batches]` multiplicative batch effect `δ` (its mean).
+    pub delta: &'a Mat,
+    /// Cell → its column of `delta`.
+    pub batch_of_cell: &'a [u32],
+}
+
+impl<'a> BatchDivisor<'a> {
+    /// The divisor of a run with a batch effect `delta` and its cells'
+    /// batches, `None` when it has neither.
+    pub fn of(delta: Option<&'a Mat>, batch_of_cell: Option<&'a [u32]>) -> Option<Self> {
+        delta.zip(batch_of_cell).map(|(delta, batch_of_cell)| Self {
+            delta,
+            batch_of_cell,
+        })
+    }
+}
+
+/// Each cell's column of a δ over the sorted `labels`
+/// ([`sorted_batch_labels`] of `batch_membership`).
+pub fn batch_ids(batch_membership: &[Box<str>], labels: &[Box<str>]) -> Vec<u32> {
+    batch_membership
+        .iter()
+        .map(|b| {
+            labels
+                .binary_search(b)
+                .expect("a cell's batch is one of the sorted labels") as u32
+        })
+        .collect()
 }
 
 /// Divide each count of `x` by its row's δ in its column's batch, a plain
