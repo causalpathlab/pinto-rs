@@ -1,4 +1,5 @@
 use super::graph::toy;
+use crate::spatial_baselines::cluster::cluster_embedding;
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::stagate::*;
 use crate::util::common::Mat;

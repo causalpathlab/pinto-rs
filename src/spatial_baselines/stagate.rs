@@ -86,7 +86,7 @@
 //!    multi-tensor Adam). [`Stagate::step`] does exactly that.
 //! 8. The embedding: `h2` from a last forward pass after training.
 //! 9. Clustering, pinto's own. With `--n-clusters K`, k-means into exactly
-//!    K domains ([`cluster_embedding`]): legume-numeric's seeded k-means
+//!    K domains ([`super::cluster::cluster_embedding`]): legume-numeric's seeded k-means
 //!    (k-means++ start from `--seed`, then Lloyd rounds until no cell
 //!    moves, at most 300; Euclidean; an emptied cluster re-seeded from the
 //!    cell worst served). Tutorial T1 instead fits a K-component Gaussian
@@ -158,6 +158,7 @@
 //!   tutorials' `alpha=0` disables that module, and the pyG build does not
 //!   have it.
 
+use super::cluster::{cluster_embedding, KMEANS_MAX_ITER};
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
@@ -175,7 +176,6 @@ use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
 use legume_numeric::candle::fast_index::{gather_rows, index_add_rows};
-use legume_numeric::matrix::kmeans::kmeans_centroids_seeded;
 use log::info;
 use nalgebra_sparse::CscMatrix;
 use rand::rngs::SmallRng;
@@ -198,8 +198,6 @@ const INIT_GAIN: f64 = 1.414;
 const K_CUTOFF: usize = 6;
 const RADIUS_MAX_K: usize = 256;
 const LOUVAIN_RESOLUTION: f64 = 0.5;
-const SCANPY_NEIGHBOURS: usize = 15;
-const KMEANS_MAX_ITER: usize = 300;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -991,59 +989,6 @@ impl Stagate {
         }
         Ok(losses)
     }
-}
-
-// ---------------------------------------------------------------- clusters
-
-/// The domains of the embedding `z` (cells × latent): with `n_clusters`,
-/// seeded k-means into that many clusters ([`kmeans_centroids_seeded`]:
-/// k-means++ then Lloyd rounds until no cell moves, at most
-/// `KMEANS_MAX_ITER`); without, Leiden at `resolution` ([`leiden_at`]).
-/// The labels and the method's name.
-pub fn cluster_embedding(
-    z: &Mat,
-    n_clusters: Option<usize>,
-    resolution: f64,
-    seed: u64,
-) -> anyhow::Result<(Vec<usize>, &'static str)> {
-    Ok(match n_clusters {
-        Some(k) => {
-            anyhow::ensure!(
-                k >= 1 && z.nrows() >= k,
-                "k-means into {k} clusters needs at least {k} cells"
-            );
-            let (_, labels) = kmeans_centroids_seeded(z, k, KMEANS_MAX_ITER, seed);
-            (labels, "kmeans")
-        }
-        None => (leiden_at(z, resolution, seed)?, "leiden"),
-    })
-}
-
-/// `sc.pp.neighbors` (15 neighbours, the cell counted) then modularity
-/// clustering at a fixed `resolution` of the unweighted graph (scanpy's
-/// `sc.tl.louvain` default `use_weights=False`), with Leiden for Louvain.
-fn leiden_at(z: &Mat, resolution: f64, seed: u64) -> anyhow::Result<Vec<usize>> {
-    use legume_numeric::matrix::knn_graph::{
-        compact_labels, modularity_to_cpm_resolution, run_leiden, KnnGraph, KnnGraphArgs,
-    };
-    let n = z.nrows();
-    anyhow::ensure!(n >= 2, "Leiden needs at least 2 cells");
-    let args = KnnGraphArgs {
-        knn: SCANPY_NEIGHBOURS - 1,
-        block_size: 1000,
-        reciprocal: false,
-    };
-    let (graph, fuzzy) = KnnGraph::from_rows_fuzzy(z, args)?;
-    // sc.tl.louvain(use_weights=False): the connectivities' pattern only
-    let unit: Vec<f32> = fuzzy
-        .iter()
-        .map(|&w| f32::from(u8::from(w > 0.0)))
-        .collect();
-    let (network, total) = graph.to_leiden_network_with(&unit);
-    let res = modularity_to_cpm_resolution(resolution, total);
-    let mut labels = run_leiden(&network, n, res, Some(seed as usize));
-    compact_labels(&mut labels);
-    Ok(labels)
 }
 
 // ---------------------------------------------------------------- run

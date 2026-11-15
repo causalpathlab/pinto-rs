@@ -4,5 +4,7 @@ mod graph;
 mod memory;
 mod notices;
 mod pseudobulk;
+mod spatial_factor;
 mod spatialde2;
+mod spatialpca;
 mod stagate;

@@ -133,6 +133,26 @@ fn write_embedding(prefix: &str, cells: &[Box<str>], x: &Mat, name: &str) -> any
     )
 }
 
+/// `{prefix}.{stem}.parquet`: a method's per-gene loadings, a `feature`
+/// column (the genes, as read) and `{name}_1..{name}_d`.
+pub fn write_loadings(
+    prefix: &str,
+    stem: &str,
+    genes: &[Box<str>],
+    w: &Mat,
+    name: &str,
+) -> anyhow::Result<()> {
+    mkdir_parent(prefix)?;
+    let names: Vec<Box<str>> = (1..=w.ncols())
+        .map(|j| format!("{name}_{j}").into())
+        .collect();
+    w.to_parquet_with_names(
+        &format!("{prefix}.{stem}.parquet"),
+        (Some(genes), Some("feature")),
+        Some(&names),
+    )
+}
+
 /// What was done about batch effects: δ divided out (the one deviation
 /// from the original method), or nothing, under `--ignore-batch` or with a
 /// single batch.

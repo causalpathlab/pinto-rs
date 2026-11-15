@@ -75,7 +75,7 @@ fn undirected_lists_each_edge_once() {
 // ------------------------------------------------- the success bar
 
 /// Adjusted Rand index of two labellings.
-fn ari(a: &[usize], b: &[usize]) -> f64 {
+pub(crate) fn ari(a: &[usize], b: &[usize]) -> f64 {
     let mut table: HashMap<(usize, usize), f64> = HashMap::new();
     let (mut ra, mut rb): (HashMap<usize, f64>, HashMap<usize, f64>) = Default::default();
     for (&x, &y) in a.iter().zip(b) {
@@ -94,7 +94,7 @@ fn ari(a: &[usize], b: &[usize]) -> f64 {
 }
 
 /// Labels as integers, in the order of `cells`, from a `cell`/label table.
-fn labels_of(cells: &[Box<str>], table: &HashMap<Box<str>, Box<str>>) -> Vec<usize> {
+pub(crate) fn labels_of(cells: &[Box<str>], table: &HashMap<Box<str>, Box<str>>) -> Vec<usize> {
     let mut ids: HashMap<&str, usize> = HashMap::new();
     cells
         .iter()
@@ -106,7 +106,7 @@ fn labels_of(cells: &[Box<str>], table: &HashMap<Box<str>, Box<str>>) -> Vec<usi
         .collect()
 }
 
-fn read_labels(prefix: &str) -> HashMap<Box<str>, Box<str>> {
+pub(crate) fn read_labels(prefix: &str) -> HashMap<Box<str>, Box<str>> {
     std::fs::read_to_string(format!("{prefix}.labels.tsv"))
         .unwrap()
         .lines()
@@ -118,7 +118,7 @@ fn read_labels(prefix: &str) -> HashMap<Box<str>, Box<str>> {
         .collect()
 }
 
-fn read_column(path: &str, key: &str, col: &str) -> HashMap<Box<str>, Box<str>> {
+pub(crate) fn read_column(path: &str, key: &str, col: &str) -> HashMap<Box<str>, Box<str>> {
     let (strs, _) = read_table_columns(path, &[key, col], &[]).unwrap();
     strs[0]
         .iter()

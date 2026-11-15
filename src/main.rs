@@ -758,6 +758,47 @@ enum Commands {
     Spatialde2Pb(Box<spatial_baselines::spatialde2::PbArgs>),
 
     #[command(
+        about = "SpatialPCA: spatially aware probabilistic PCA (baseline)",
+        long_about = concat!(
+            "SpatialPCA (Shang and Zhou 2022), written from the paper, on pinto's\n\
+             inputs: the data, -c, -b, -o and --seed flags lc takes. Probabilistic\n\
+             PCA whose spatial PCs carry a spatial prior, clustered into domains by\n\
+             pinto's seeded k-means (--n-clusters) or Leiden in place of the\n\
+             paper's Walktrap and Louvain, then refined by the paper's majority\n\
+             vote over spatial neighbours.\n\n\
+             Sparse by default: the paper's Gaussian kernel is replaced by a\n\
+             sparse precision on the kNN graph within each section, its strength\n\
+             fitted with the rest; no N x N matrix is held. --reference runs the\n\
+             paper's kernel, with its low-rank approximation above 5000 cells.\n\
+             Genes: the most variable (the paper's spatially variable gene step\n\
+             is not ported); counts normalised by analytic Pearson residuals.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        )
+    )]
+    Spatialpca(Box<spatial_baselines::spatialpca::Args>),
+
+    #[command(
+        name = "spatialpca-pb",
+        about = "spatialpca fitted on cage's super-cells, unravelled to cells (baseline)",
+        long_about = concat!(
+            "spatialpca fitted on super-cells, then unravelled to cells.\n\n\
+             The cells are coarsened as cage coarsens them, to about -d super-cells\n\
+             within each section, each with its cells' counts summed, on the cell\n\
+             graph collapsed onto them (a super-edge weighted by the cell-cell\n\
+             edges it collapses). The sparse model is fitted there; its loadings\n\
+             are then held fixed, the noise and prior scales refitted on the cells\n\
+             and their graph, and each cell's spatial PCs inferred. Takes\n\
+             spatialpca's flags but --reference.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        )
+    )]
+    SpatialpcaPb(Box<spatial_baselines::spatialpca::PbArgs>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -926,6 +967,8 @@ impl Commands {
             Commands::Spatialde2(a) => (&mut a.fit.input.out, "spatialde2"),
             Commands::Stagate(a) => (&mut a.input.out, "stagate"),
             Commands::Spatialde2Pb(a) => (&mut a.fit.input.out, "spatialde2-pb"),
+            Commands::Spatialpca(a) => (&mut a.fit.core.input.out, "spatialpca"),
+            Commands::SpatialpcaPb(a) => (&mut a.fit.core.input.out, "spatialpca-pb"),
             _ => return None,
         })
     }
@@ -1031,6 +1074,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
         Commands::Spatialde2Pb(args) => spatial_baselines::spatialde2::run_pb(args)?,
         Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
+        Commands::Spatialpca(args) => spatial_baselines::spatialpca::run(args)?,
+        Commands::SpatialpcaPb(args) => spatial_baselines::spatialpca::run_pb(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {
