@@ -47,6 +47,33 @@ fn super_cells_sum_counts_within_a_section() {
     assert!((sc.data.xy[(s0, 0)] - mean_x).abs() < 1e-5);
 }
 
+/// Under `--auto-batch` one section may hold two batches, side by side so
+/// the coarsening graph joins them: no super-cell spans both, even when
+/// one super-cell is asked for, and each keeps its cells' batch.
+#[test]
+fn super_cells_never_span_two_batches_of_one_section() {
+    let mut d = grid(8, 1);
+    let n = d.cells.len();
+    d.batches = (0..n)
+        .map(|i| if d.xy[(i, 1)] < 4.0 { "cc_0" } else { "cc_1" }.into())
+        .collect();
+    let mut coo = CooMatrix::<f32>::new(2, n);
+    for i in 0..n {
+        coo.push(i % 2, i, 1.0);
+    }
+    d.counts = CscMatrix::from(&coo);
+    let proj = Mat::from_fn(4, n, |r, c| ((r + 1) * (c % 8)) as f32 + 0.5);
+    let sc = super_cells(&d, proj, 1, knn_within_sections(&d, COARSEN_K)).unwrap();
+    assert!(
+        sc.data.cells.len() >= 2,
+        "{} super-cells",
+        sc.data.cells.len()
+    );
+    for (c, &s) in sc.of_cell.iter().enumerate() {
+        assert_eq!(sc.data.batches[s], d.batches[c], "cell {c}");
+    }
+}
+
 /// A super-edge sums the weights of the cell-cell edges it collapses;
 /// edges inside a super-cell fold into it.
 #[test]

@@ -130,15 +130,15 @@ fn a_large_input_with_batch_files_is_charged_its_delta_samples() {
     assert_eq!(with.delta_bytes(&one), 0, "one section has one batch");
 }
 
-/// `--auto-batch` finds its batches after the read, so one file may have
-/// several: its estimate is charged a sample a cell and the graph the
-/// components come from. `--cnv-clones` crosses each batch's groups with
-/// the table's strata, stratum 0 included. A `-p` above the default
-/// widens the projection; at the default nothing changes.
+/// `--auto-batch` finds its batches after the read, so before it each
+/// file is charged as one batch, beside the graph the components come
+/// from: a large input is not refused for a sample a cell. Once the
+/// relabel has found the components, the estimate over them is that of as
+/// many sections, which covers every measured run, and a check on it
+/// refuses what would not fit.
 #[test]
-fn auto_batch_cnv_clones_and_p_keep_the_delta_estimate_an_upper_bound() {
+fn auto_batch_is_charged_its_components_once_they_are_found() {
     use crate::util::input::DEFAULT_KNN;
-    use legume_numeric::matrix::parquet::{write_named_table, Column};
     let one = InputShape {
         genes: 2000,
         nonzeros: 400_000 * 800,
@@ -147,11 +147,85 @@ fn auto_batch_cnv_clones_and_p_keep_the_delta_estimate_an_upper_bound() {
         strata: 1,
     };
     let auto = input_args(&["--auto-batch"]);
+    let before = auto.delta_bytes(&one);
     assert_eq!(
-        auto.delta_bytes(&one),
-        delta_estimate_bytes(2000, one.nonzeros, 400_000)
+        before,
+        delta_estimate_bytes(2000, one.nonzeros, DELTA_SAMPLES_PER_BATCH)
             + GRAPH_NEIGHBOUR_BYTES * DEFAULT_KNN * 400_000
     );
+    let budget = set(2 * (SPATIALDE2_PROCESS_BYTES + before));
+    check_stored_shape(
+        "spatialde2",
+        Some(SPATIALDE2_PROCESS_BYTES + before),
+        &budget,
+        "lower it",
+    )
+    .unwrap();
+    let a_sample_a_cell = delta_estimate_bytes(2000, one.nonzeros, 400_000);
+    assert!(SPATIALDE2_PROCESS_BYTES + a_sample_a_cell > budget.bytes());
+
+    // four components of 100 000 cells: four batches' samples
+    let after = auto.relabelled_delta_bytes(&one, vec![100_000; 4], 4);
+    assert_eq!(
+        after,
+        delta_estimate_bytes(2000, one.nonzeros, 4 * DELTA_SAMPLES_PER_BATCH)
+    );
+    assert_eq!(auto.relabelled_delta_bytes(&one, vec![400_000], 1), 0);
+    for (per, genes, nonzeros, measured) in DELTA_MEASURED {
+        let file = InputShape {
+            genes,
+            nonzeros,
+            section_sizes: vec![2 * per],
+            batches: 1,
+            strata: 1,
+        };
+        let est =
+            mib(SPATIALDE2_PROCESS_BYTES + auto.relabelled_delta_bytes(&file, vec![per; 2], 2));
+        assert!(
+            est >= measured,
+            "{per}x2, {genes} genes: {est:.0} < {measured} MiB"
+        );
+    }
+}
+
+/// More `--num-levels` than the default hold more samples, as many a level
+/// as the finest at most, and a group index a cell at each: the estimate
+/// grows with them. Fewer hold less, and keep the default's.
+#[test]
+fn the_delta_estimate_grows_with_the_levels() {
+    use crate::util::input::DEFAULT_NUM_LEVELS;
+    let two = InputShape {
+        genes: 2000,
+        nonzeros: 200_000 * 800,
+        section_sizes: vec![100_000; 2],
+        batches: 2,
+        strata: 1,
+    };
+    let levels = |n: usize| input_args(&["--num-levels", &n.to_string()]).delta_bytes(&two);
+    let default = levels(DEFAULT_NUM_LEVELS);
+    assert_eq!(levels(1), default);
+    let twice = 2 * DEFAULT_NUM_LEVELS;
+    assert_eq!(
+        levels(twice),
+        delta_estimate_bytes(2000, two.nonzeros, 2 * 2 * DELTA_SAMPLES_PER_BATCH)
+            + std::mem::size_of::<usize>() * DEFAULT_NUM_LEVELS * 200_000
+    );
+    assert!(levels(twice) > default);
+}
+
+/// `--cnv-clones` crosses each batch's groups with the table's strata,
+/// stratum 0 included. A `-p` above the default widens the projection; at
+/// the default nothing changes.
+#[test]
+fn cnv_clones_and_p_keep_the_delta_estimate_an_upper_bound() {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let one = InputShape {
+        genes: 2000,
+        nonzeros: 400_000 * 800,
+        section_sizes: vec![400_000],
+        batches: 1,
+        strata: 1,
+    };
     let labelled = input_args(&["--auto-batch", "-b", "a.batch"]);
     assert_eq!(labelled.delta_bytes(&one), 0, "batch files win");
 

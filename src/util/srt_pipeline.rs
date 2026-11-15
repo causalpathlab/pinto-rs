@@ -28,7 +28,7 @@ use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
-    BatchArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
+    CollapseArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
@@ -191,11 +191,11 @@ pub struct SrtPreprocessed {
     pub ablation: Option<Ablation>,
 }
 
-/// The batch-effect estimate under batch options `c` over `batch_membership` (its
+/// The batch-effect estimate under collapse options `c` over `batch_membership` (its
 /// sorted labels `batch_labels`), written under `out` when given (a fit);
 /// the projection it collapsed on kept with `keep_projection`.
 pub(crate) fn estimate_batches(
-    c: &BatchArgs,
+    c: &CollapseArgs,
     out: Option<&str>,
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
@@ -446,7 +446,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let n_rows = data_vec.num_rows();
     let n_cells = data_vec.num_columns();
 
-    anyhow::ensure!(c.batch.proj_dim > 0, "proj_dim must be > 0");
+    c.collapse.check()?;
     // Both k's resolve here, before either graph is built. The KNN builder
     // floors k at 1 and clamps it to n_cells-1 rather than rejecting either
     // extreme, so nothing downstream would catch a 0 or an over-large k.
@@ -508,7 +508,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     } else {
         info!(
             "Building expression KNN graph (k={}, proj_dim={})...",
-            base_knn, c.batch.proj_dim
+            base_knn, c.collapse.proj_dim
         );
         // On the batch-corrected projection when its counts are divided by
         // an estimated δ, or neighbours match batch rather than cell state:
@@ -530,7 +530,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         let mut proj = None;
         if labelled && estimate && model != Some(false) {
             let mut effects = estimate_batches(
-                &c.batch,
+                &c.collapse,
                 fit_out,
                 &mut data_vec,
                 &batch_membership,
@@ -547,7 +547,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         let proj = match proj {
             Some(proj) => proj,
             None => data_vec.project_columns_with_batch_correction(
-                c.batch.proj_dim,
+                c.collapse.proj_dim,
                 None,
                 correct.then_some(batch_membership.as_slice()),
             )?,
@@ -616,7 +616,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let mut batch_effects = match early_estimate {
         Some(effects) => effects,
         None if estimate => estimate_batches(
-            &c.batch,
+            &c.collapse,
             fit_out,
             &mut data_vec,
             &batch_membership,
@@ -656,7 +656,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         None if take_projection => match base_proj {
             Some(b) if b.corrected == batch_arg.is_some() => Some(b.proj),
             _ => Some(data_vec.project_columns_with_batch_correction(
-                c.batch.proj_dim,
+                c.collapse.proj_dim,
                 None,
                 batch_arg,
             )?),
@@ -669,7 +669,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     } else {
         info!(
             "Adding expression KNN edges (k={}, proj_dim={})...",
-            augment_knn, c.batch.proj_dim
+            augment_knn, c.collapse.proj_dim
         );
         let proj = cell_proj
             .as_ref()

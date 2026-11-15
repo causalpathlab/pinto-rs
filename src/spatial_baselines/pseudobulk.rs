@@ -4,9 +4,11 @@
 //! ([`graph_coarsen_multilevel`]) along a kNN graph within each section, on
 //! the random projection cage coarsens on (batch-corrected when there is a
 //! δ), to about `-d --n-pseudobulk` super-cells. A super-cell never spans
-//! two sections: the graph has no edge between them, and the spatial seeds
-//! of a large input are laid on each section's own grid. A super-cell's
-//! counts are its cells' counts summed, its coordinates their centroid.
+//! two sections or two batches (under `--auto-batch` a section may hold
+//! several): the graph has no edge between them, and the spatial seeds of
+//! a large input are laid on each (section, batch) pair's own grid. A
+//! super-cell's counts are its cells' counts summed, its coordinates their
+//! centroid.
 //! The method's own cell graph is then folded onto the super-cells
 //! ([`fold_edges_to_super`]): an edge inside one super-cell folds into it,
 //! and each super-edge records the cell-cell edges it collapses.
@@ -52,7 +54,16 @@ pub fn super_cells(
 ) -> anyhow::Result<SuperCells> {
     let n = data.cells.len();
     anyhow::ensure!(target >= 1, "--n-pseudobulk must be positive");
-    let (edges, distances) = nb.undirected();
+    // an edge between two batches is dropped: under `--auto-batch` a
+    // section may hold several, and a super-cell spans none of them
+    let (edges, distances): (Vec<_>, Vec<_>) = {
+        let (edges, distances) = nb.undirected();
+        edges
+            .into_iter()
+            .zip(distances)
+            .filter(|&((i, j), _)| data.batches[i] == data.batches[j])
+            .unzip()
+    };
     drop(nb);
     let graph = KnnGraph {
         adjacency: symmetric_adjacency(n, &edges, &distances),
@@ -60,7 +71,7 @@ pub fn super_cells(
         distances,
         n_nodes: n,
     };
-    // a section is already one (file, batch) pair: its own seeding group
+    // each (section, batch) pair is its own seeding group
     let sections: Vec<u32> = data.section.iter().map(|&s| s as u32).collect();
     let (plane, groups) = seeding_inputs(&data.xy, &data.coord_names, &sections, &data.batches);
     let ml = graph_coarsen_multilevel(
@@ -87,10 +98,10 @@ pub fn super_cells(
 }
 
 /// The super-cells `of_cell` labels as units: counts summed, coordinates
-/// the centroid, section and batch label of their cells (the coarsening
-/// keeps a super-cell within one section). The labels are dense, `0..m`
-/// each held by a cell, as every level of the coarsening gives them, so no
-/// super-cell is empty (no centroid or size factor of nothing).
+/// the centroid, section and batch labels of their cells (the coarsening
+/// keeps a super-cell within one section and batch). The labels are dense,
+/// `0..m` each held by a cell, as every level of the coarsening gives them,
+/// so no super-cell is empty (no centroid or size factor of nothing).
 pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
     let m = of_cell.iter().max().map_or(0, |&s| s + 1);
     let mut coo = CooMatrix::<f32>::new(data.counts.nrows(), m);
@@ -104,6 +115,7 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
     let mut size = vec![0f32; m];
     let mut section = vec![0usize; m];
     let mut batches: Vec<Box<str>> = vec![Box::from(""); m];
+    let mut read_batches: Vec<Box<str>> = vec![Box::from(""); m];
     for (c, &s) in of_cell.iter().enumerate() {
         size[s] += 1.0;
         for j in 0..dims {
@@ -111,6 +123,7 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
         }
         section[s] = data.section[c];
         batches[s] = data.batches[c].clone();
+        read_batches[s] = data.read_batches[c].clone();
     }
     debug_assert!(size.iter().all(|&k| k > 0.0), "a super-cell with no cell");
     for (s, &k) in size.iter().enumerate() {
@@ -126,6 +139,7 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
         xy,
         coord_names: data.coord_names.clone(),
         batches,
+        read_batches,
         section,
         n_sections: data.n_sections,
         delta: data.delta.clone(),

@@ -112,23 +112,23 @@ pub fn fit_cell_activity_graph_embedding(
         Some(levels) => {
             for &lvl in levels {
                 anyhow::ensure!(
-                    lvl + 1 < c.batch.num_levels,
+                    lvl + 1 < c.collapse.num_levels,
                     "--chain-levels entry {} must be coarser than the finest level \
                      (num_levels = {}; the finest level is the trained unit)",
                     lvl,
-                    c.batch.num_levels
+                    c.collapse.num_levels
                 );
             }
             levels.clone()
         }
         None => {
             anyhow::ensure!(
-                c.batch.num_levels >= 2,
+                c.collapse.num_levels >= 2,
                 "--num-levels {} leaves no level coarser than the finest; \
                  the chain needs at least 2 levels",
-                c.batch.num_levels
+                c.collapse.num_levels
             );
-            (0..(c.batch.num_levels - 1).min(3)).collect()
+            (0..(c.collapse.num_levels - 1).min(3)).collect()
         }
     };
     if args.cell_level {
@@ -136,7 +136,7 @@ pub fn fit_cell_activity_graph_embedding(
     } else {
         info!(
             "Chain levels: {:?} of {} coarsening levels (finest = trained unit)",
-            chain_levels, c.batch.num_levels
+            chain_levels, c.collapse.num_levels
         );
     }
     anyhow::ensure!(args.epochs > 0, "epochs must be > 0");
@@ -369,7 +369,7 @@ pub fn fit_cell_activity_graph_embedding(
             // matrix through training.
             Some(w) => {
                 drop(shared_cell_proj);
-                data_vec.project_columns_weighted(c.batch.proj_dim, None, batch_arg, w)?
+                data_vec.project_columns_weighted(c.collapse.proj_dim, None, batch_arg, w)?
             }
             None => {
                 shared_cell_proj.expect("preprocessing takes the projection whenever HVG is off")
@@ -382,7 +382,7 @@ pub fn fit_cell_activity_graph_embedding(
             srt_cell_pairs.inner.pairs(),
             CoarsenConfig {
                 n_clusters: c.n_pseudobulk,
-                num_levels: c.batch.num_levels,
+                num_levels: c.collapse.num_levels,
                 seeding: seeding.as_ref().map(Seeding::params),
                 modularity_veto: None,
             },

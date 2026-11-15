@@ -211,7 +211,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     ////////////////////////////////////
     info!(
         "Graph coarsening ({} levels, {} coarse clusters)...",
-        c.batch.num_levels, c.n_pseudobulk
+        c.collapse.num_levels, c.n_pseudobulk
     );
 
     // Preprocessing already took this projection, with the same batch
@@ -225,7 +225,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         srt_cell_pairs.inner.pairs(),
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
-            num_levels: c.batch.num_levels,
+            num_levels: c.collapse.num_levels,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: Some(ModularityVeto {
                 gamma: MODULARITY_GAMMA,

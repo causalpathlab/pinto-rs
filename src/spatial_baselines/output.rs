@@ -203,7 +203,7 @@ pub fn write_run(
         &data.cells,
         &data.xy,
         &data.coord_names,
-        &data.batches,
+        &data.read_batches,
         &vec![true; n],
     )?;
     let settings = serde_json::json!({
@@ -213,7 +213,7 @@ pub fn write_run(
         "coord_files": input.coord_files,
         "batch_files": input.batch.batch_files,
         "auto_batch": input.batch.auto_batch,
-        "cnv_clones": input.batch.cnv_clones,
+        "cnv_clones": input.collapse.cnv_clones,
         "seed": input.seed,
         "run": run,
         "batch_correction": batch_correction(input, data),

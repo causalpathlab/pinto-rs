@@ -1014,7 +1014,12 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         &budget,
         lower_memory(&args.device),
     )?;
-    run_on(args, args.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.input
+            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The peak of a run on an input of stored shape `s`, checked before its

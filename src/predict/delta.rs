@@ -376,7 +376,12 @@ pub(crate) fn adjusted_query_delta(
         None
     } else {
         crate::util::srt_pipeline::estimate_batches(
-            &c.batch, None, data, membership, &labels, false,
+            &c.collapse,
+            None,
+            data,
+            membership,
+            &labels,
+            false,
         )?
         .and_then(|e| e.posterior)
         .map(|p| p.into_delta().map(|d| d.on_batches(&labels)))

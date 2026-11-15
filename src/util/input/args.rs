@@ -137,6 +137,9 @@ pub struct SrtInputArgs {
     )]
     pub seed: u64,
 
+    #[command(flatten)]
+    pub collapse: CollapseArgs,
+
     #[arg(
         long,
         short = 'd',
@@ -268,10 +271,8 @@ pub struct SrtInputArgs {
 }
 
 /// The batch options: which cells share batch effects (`--batch-files`,
-/// `--auto-batch`), whether δ is estimated (`--ignore-batch`), and how its
-/// estimate collapses the cells (`--cnv-clones` strata, the `-p`
-/// projection and `--num-levels`, which cage, lc and dsvd also coarsen
-/// with).
+/// `--auto-batch`) and whether δ is estimated (`--ignore-batch`). How the
+/// estimate collapses the cells is [`CollapseArgs`].
 ///
 /// Flatten this into an args struct with `#[command(flatten)]`.
 #[derive(clap::Args, Debug, Clone)]
@@ -307,7 +308,16 @@ pub struct BatchArgs {
                      only the correction goes."
     )]
     pub ignore_batch: bool,
+}
 
+/// How the δ estimate collapses the cells: the `--cnv-clones` strata, the
+/// `-p` projection and `--num-levels`, which cage, lc and dsvd also coarsen
+/// with. Kept apart from [`BatchArgs`] so cage, lc and dsvd list these
+/// after `-o` and `--seed`, as they always have.
+///
+/// Flatten this into an args struct with `#[command(flatten)]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct CollapseArgs {
     #[arg(
         long,
         default_value_t = DEFAULT_NUM_LEVELS,
@@ -369,6 +379,14 @@ impl BatchArgs {
     /// components: `--batch-files` labels win over it.
     pub fn auto_relabels(&self) -> bool {
         self.auto_batch && self.batch_files.is_none()
+    }
+}
+
+impl CollapseArgs {
+    /// Refuse settings no estimate or coarsening can run with: a `-p` of 0.
+    pub fn check(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.proj_dim > 0, "proj_dim must be > 0");
+        Ok(())
     }
 }
 

@@ -206,3 +206,138 @@ fn cnv_clones_and_the_collapse_settings_estimate_cage_s_delta() {
         assert_ne!(base.mean, default.mean, "{tag} leaves δ as the defaults'");
     }
 }
+
+/// The batch column of the cells table `out` wrote, `None` without one.
+fn cells_table_batches(out: &str) -> Option<Vec<Box<str>>> {
+    let path = crate::util::parquet_io::cells_table_path(out);
+    crate::util::parquet_io::read_cells_table(std::path::Path::new(&path), None)
+        .unwrap()
+        .batches
+}
+
+/// Under `--auto-batch` a baseline's cells table records each cell's
+/// sample as read, as cage's does, not its component: one file of two
+/// components has no batch column, two files have theirs.
+#[test]
+fn under_auto_batch_the_cells_table_records_the_samples_as_cage_s_does() {
+    let dir = tempfile::tempdir().unwrap();
+    for (tag, input) in [
+        ("pieces", two_pieces(dir.path(), 8)),
+        ("files", two_files(dir.path(), 8)),
+    ] {
+        let out = |who: &str| {
+            dir.path()
+                .join(format!("{who}_{tag}"))
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        let mut argv: Vec<String> = vec!["pinto".into(), "spatialde2".into()];
+        argv.extend(input.iter().cloned());
+        argv.extend(
+            [
+                "-o",
+                &out("baseline"),
+                "--auto-batch",
+                "--neighbors",
+                "4",
+                "--max-iter",
+                "5",
+            ]
+            .map(String::from),
+        );
+        let crate::Commands::Spatialde2(args) = <crate::Cli as Parser>::try_parse_from(argv)
+            .unwrap()
+            .commands
+        else {
+            unreachable!()
+        };
+        crate::spatial_baselines::spatialde2::run(&args).unwrap();
+        cage_delta(&input, &out("cage"), &["--auto-batch"]);
+        let (base, cage) = (
+            cells_table_batches(&out("baseline")),
+            cells_table_batches(&out("cage")),
+        );
+        assert_eq!(base, cage, "{tag}");
+        assert_eq!(cage.is_some(), tag == "files", "{tag}");
+    }
+}
+
+/// Under `--auto-batch` the δ estimate over the components is checked
+/// once the read has found them, before it is made: a budget it exceeds
+/// stops the read, one it fits lets it through.
+#[test]
+fn auto_batch_components_are_checked_before_their_delta_is_estimated() {
+    use crate::util::memory::Budget;
+    let dir = tempfile::tempdir().unwrap();
+    let input = two_pieces(dir.path(), 8);
+    let out = dir.path().join("checked").to_str().unwrap().to_string();
+    let mut argv: Vec<String> = vec!["pinto".into(), "spatialde2".into()];
+    argv.extend(input.iter().cloned());
+    argv.extend(["-o", &out, "--auto-batch"].map(String::from));
+    let crate::Commands::Spatialde2(args) = <crate::Cli as Parser>::try_parse_from(argv)
+        .unwrap()
+        .commands
+    else {
+        unreachable!()
+    };
+    let input = &args.fit.input;
+    let tight = Budget::new(Some(1024), None);
+    let e = input.read_within(false, &tight, 0).err().expect("refused");
+    assert!(e.to_string().contains("--auto-batch components"), "{e}");
+    assert!(!std::path::Path::new(&format!("{out}.delta.parquet")).exists());
+    let roomy = Budget::new(Some(usize::MAX / 2), None);
+    let data = input.read_within(false, &roomy, 0).unwrap();
+    assert_eq!(data.n_batches(), 2);
+}
+
+/// A baseline refuses `-p 0` as cage does, before anything is read.
+#[test]
+fn a_baseline_refuses_p_0_as_cage_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = two_files(dir.path(), 4);
+    let out = dir.path().join("p0").to_str().unwrap().to_string();
+    let mut argv: Vec<String> = vec!["pinto".into(), "spatialde2".into()];
+    argv.extend(input.iter().cloned());
+    argv.extend(["-o", &out, "-p", "0"].map(String::from));
+    let crate::Commands::Spatialde2(args) = <crate::Cli as Parser>::try_parse_from(argv)
+        .unwrap()
+        .commands
+    else {
+        unreachable!()
+    };
+    let stored = args.fit.input.stored().expect_err("stored refuses -p 0");
+    let read = args.fit.input.read(false).err().expect("read refuses -p 0");
+    let mut argv: Vec<String> = vec!["pinto".into()];
+    argv.extend(input.iter().cloned());
+    argv.extend(["-o", &out, "--no-qc", "-p", "0"].map(String::from));
+    let cage = SrtInputArgs::try_parse_from(argv).unwrap();
+    let cage = preprocess_srt(SrtPreprocessConfig {
+        common: &cage,
+        ablation: None,
+        batch_effects: BatchEstimate::Fit,
+        feature_axis: FeatureAxisMode::Rows,
+        feature_kind: None,
+        cell_projection: false,
+    })
+    .err()
+    .expect("cage refuses -p 0");
+    for e in [stored, read] {
+        assert_eq!(e.to_string(), cage.to_string());
+    }
+}
+
+/// The graph a baseline finds `--auto-batch` components on is cage's at
+/// its default `-k` and matching.
+#[test]
+fn the_auto_batch_graph_is_cage_s_at_its_defaults() {
+    use crate::util::input::DEFAULT_SPATIAL_GRAPH;
+    let cage = SrtInputArgs::try_parse_from(["pinto", "d.zarr", "-c", "c.csv", "-o", "x"])
+        .unwrap()
+        .resolve_knn(100)
+        .unwrap();
+    assert_eq!(
+        (cage.base, cage.reciprocal),
+        (DEFAULT_SPATIAL_GRAPH.knn, DEFAULT_SPATIAL_GRAPH.reciprocal)
+    );
+}
