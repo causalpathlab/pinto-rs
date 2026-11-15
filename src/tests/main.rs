@@ -523,16 +523,11 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
 /// the user's doing).
 #[test]
 fn cage_cell_names_only_the_no_op_flags_it_was_given() {
-    use cell_activity_graph_embedding::fit::cell_level_no_ops_given;
-    use clap::CommandFactory;
-    let given = |extra: &[&str]| {
-        let argv = [&["pinto", "cage-cell", "d.zarr", "-o", "o"][..], extra].concat();
-        let m = Cli::command().try_get_matches_from(argv).unwrap();
-        cell_level_no_ops_given(m.subcommand_matches("cage-cell").unwrap())
-    };
+    use cell_activity_graph_embedding::fit::{cell_level_given, OnCells};
+    let given = |extra: &[&str]| cage_cell(extra, |c, m| cell_level_given(c, m, OnCells::Warn));
     assert!(given(&[]).is_empty());
     assert_eq!(
-        given(&["-d", "3", "--n-hvg", "100", "--batch-knn", "4"]),
+        given(&["-d", "3", "--n-hvg", "100"]),
         ["--n-hvg", "--n-pseudobulk"]
     );
     // the batch-effect estimate reads these, so they are not no-ops
@@ -542,10 +537,43 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     );
 }
 
+/// cage-cell refuses, before it reads a file, what needs a hierarchy of
+/// pseudobulks.
+#[test]
+fn cage_cell_refuses_hierarchy_flags() {
+    use cell_activity_graph_embedding::fit::check_cell_level;
+    for extra in [
+        &["--chain-levels", "1"][..],
+        &["--feature-embedding", "dict.parquet"][..],
+        &["--feature-modules", "4"][..],
+    ] {
+        let e = cage_cell(extra, |c, m| {
+            check_cell_level(c, m).unwrap_err().to_string()
+        });
+        assert!(
+            e.starts_with(&format!("cage-cell: {}", extra[0])),
+            "{extra:?}: {e}"
+        );
+    }
+    assert!(cage_cell(&[], check_cell_level).is_ok());
+}
+
+/// `f` of `pinto cage-cell` with `extra`, as built, and its matches.
+fn cage_cell<T>(extra: &[&str], f: impl Fn(&clap::Command, &clap::ArgMatches) -> T) -> T {
+    use clap::CommandFactory;
+    let argv = [&["pinto", "cage-cell", "d.zarr", "-o", "o"][..], extra].concat();
+    let mut cmd = Cli::command();
+    let m = cmd.try_get_matches_from_mut(argv).unwrap();
+    f(
+        cmd.find_subcommand("cage-cell").unwrap(),
+        m.subcommand_matches("cage-cell").unwrap(),
+    )
+}
+
 /// cage's `--feature-modules` help is pinto's own: cage draws its NCE
 /// negatives over pseudobulks, never within a module, and a run takes
 /// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
-/// is a tuning knob, hidden.
+/// is a tuning knob, hidden; cage-cell, which refuses modules, hides them.
 #[test]
 fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
     let mut cli = built_cli();
@@ -559,6 +587,11 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
         };
         assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
         assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
+        // cage-cell refuses modules, so its help leaves them out
+        if cmd == "cage-cell" {
+            assert!(arg("feature_modules").is_hide_set());
+            continue;
+        }
         let help = sub.render_long_help().to_string();
         // the flag's entry: from its line up to the next flag's
         let flag_line = |l: &str| {
@@ -642,4 +675,91 @@ fn the_readme_says_the_thread_cap_changes_lc_on_large_machines() {
         "README does not state the cap"
     );
     assert!(readme.contains(&format!("more than {cap} cores")));
+}
+
+/// A one-cell manifest at `{dir}/run` naming `command`, the model kind
+/// impute dispatches on; no other artifact is written.
+fn tiny_model(dir: &std::path::Path, command: &str) -> String {
+    use crate::util::metadata::{create_dsvd_metadata, GraphParams, RunInputs};
+    let prefix = dir.join("run").to_string_lossy().to_string();
+    let data_files: Vec<Box<str>> = vec!["a.zarr".into()];
+    let mut meta = create_dsvd_metadata(&RunInputs {
+        prefix: &prefix,
+        data_files: &data_files,
+        coord_file: None,
+        coord_columns: &[],
+        n_cells: 1,
+        n_features: 1,
+        n_edges: 0,
+        k: 1,
+        graph: GraphParams::default(),
+        ablation: None,
+        delta: None,
+    });
+    meta.command = command.into();
+    meta.write(&dir.join("run.pinto.json")).unwrap();
+    prefix
+}
+
+/// `pinto impute` of the model at `model` with the extra flags `extra`: its
+/// error message.
+fn impute_error(model: &str, extra: &[&str]) -> String {
+    use clap::CommandFactory;
+    let mut argv = vec!["pinto", "impute", "q.zarr", "--model", model, "-o", "o"];
+    argv.extend_from_slice(extra);
+    let mut cmd = Cli::command();
+    let m = cmd.try_get_matches_from_mut(&argv).unwrap();
+    let qc_given = util::input::SrtInputArgs::qc_flags_given(
+        cmd.find_subcommand("impute").unwrap(),
+        m.subcommand_matches("impute").unwrap(),
+    );
+    let Commands::Impute(a) = Cli::try_parse_from(argv).unwrap().commands else {
+        panic!("not impute")
+    };
+    crate::impute::run_impute(&a, &qc_given)
+        .unwrap_err()
+        .to_string()
+}
+
+/// impute of an lc / dsvd model runs no cell QC, so it refuses every QC
+/// flag given on the command line, by name, even at its default value,
+/// before it reads a file. `--no-qc` asks for what that path does and is
+/// not refused; a cage model's impute runs QC through `pinto predict` and is
+/// not refused.
+#[test]
+fn impute_refuses_qc_flags_on_the_profile_path_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let lc = tiny_model(dir.path(), "lc");
+    let err = impute_error(&lc, &["--qc-mads", "5"]);
+    assert!(err.contains("runs no cell QC"), "{err}");
+    assert!(err.contains(": --qc-mads would"), "{err}");
+    let err = impute_error(&lc, &["--no-qc", "--qc-min-counts", "1", "--qc-histogram"]);
+    assert!(
+        err.contains(": --qc-min-counts, --qc-histogram would"),
+        "{err}"
+    );
+    // neither --no-qc nor the defaults are reported: the run goes on and
+    // fails later
+    for extra in [&[][..], &["--no-qc"]] {
+        let err = impute_error(&lc, extra);
+        assert!(!err.contains("runs no cell QC"), "{err}");
+    }
+
+    let cage_dir = tempfile::tempdir().unwrap();
+    let cage = tiny_model(cage_dir.path(), "cage");
+    let err = impute_error(&cage, &["--qc-mads", "5"]);
+    assert!(!err.contains("runs no cell QC"), "{err}");
+}
+
+/// impute refuses a feature QC floor as every other command that takes the
+/// flag does, as it parses its command line.
+#[test]
+fn impute_refuses_a_feature_qc_floor() {
+    let argv = ["pinto", "impute", "q.zarr", "--model", "m", "-o", "o"];
+    let parse =
+        |floor: &str| Cli::try_parse_from([&argv[..], &["--qc-feature-min-cells", floor]].concat());
+    assert!(parse("0").is_ok());
+    let err = parse("5").err().unwrap().to_string();
+    assert!(err.contains("--qc-feature-min-cells"), "{err}");
+    assert!(err.contains("reads only the cell QC"), "{err}");
 }

@@ -23,6 +23,33 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// The level a run is compared at when none is named.
+pub const DEFAULT_LEVEL: &str = "final";
+
+/// `level`, else [`DEFAULT_LEVEL`].
+pub fn level_or_final(level: &Option<String>) -> String {
+    level.clone().unwrap_or_else(|| DEFAULT_LEVEL.into())
+}
+
+impl CompareArgs {
+    /// The levels of A and B: `--level`, else `--level-a` / `--level-b`,
+    /// else final.
+    pub fn levels(&self) -> (String, String) {
+        self.level
+            .clone()
+            .unwrap_or_else(|| (level_or_final(&self.level_a), level_or_final(&self.level_b)))
+    }
+}
+
+/// `--level`: one level for both runs, or A's and B's, comma separated.
+fn level_pair(text: &str) -> Result<(String, String), String> {
+    match text.split(',').map(str::trim).collect::<Vec<_>>()[..] {
+        [one] if !one.is_empty() => Ok((one.into(), one.into())),
+        [a, b] if !a.is_empty() && !b.is_empty() => Ok((a.into(), b.into())),
+        _ => Err(format!("{text:?}: one level, or two as A,B")),
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct CompareArgs {
     #[arg(
@@ -46,19 +73,20 @@ pub struct CompareArgs {
 
     #[arg(
         long,
-        default_value = "final",
-        conflicts_with = "paired",
-        help = "Level of A to read: final, draft, or a level tag (L1, L2, …)"
+        value_name = "A[,B]",
+        value_parser = level_pair,
+        conflicts_with_all = ["paired", "level_a", "level_b"],
+        help = "Levels to read: final, draft or a level tag (L1, L2, …); one for both, or A,B [default: final]"
     )]
-    pub level_a: String,
+    pub level: Option<(String, String)>,
 
-    #[arg(
-        long,
-        default_value = "final",
-        conflicts_with = "paired",
-        help = "Level of B to read: final, draft, or a level tag (L1, L2, …)"
-    )]
-    pub level_b: String,
+    /// The level of A alone, as `--level` said it before taking both.
+    #[arg(long, conflicts_with = "paired", hide = true)]
+    pub level_a: Option<String>,
+
+    /// The level of B alone.
+    #[arg(long, conflicts_with = "paired", hide = true)]
+    pub level_b: Option<String>,
 
     #[arg(
         long,
@@ -104,7 +132,7 @@ pub struct CompareArgs {
 
     #[arg(
         long,
-        default_value_t = 42,
+        default_value_t = crate::util::common::DEFAULT_SEED,
         help = "--paired: bootstrap seed",
         hide = true
     )]
@@ -757,8 +785,9 @@ pub fn run_compare(args: &CompareArgs) -> anyhow::Result<()> {
         };
         Ok((part, side))
     };
-    let (pa, sa) = read(&args.a, &args.level_a)?;
-    let (pb, sb) = read(&args.b, &args.level_b)?;
+    let (level_a, level_b) = args.levels();
+    let (pa, sa) = read(&args.a, &level_a)?;
+    let (pb, sb) = read(&args.b, &level_b)?;
     let table = Table::new(&pa, &pb)?;
     let report = compare(&table, sa, sb, args.tau, table_path.clone());
 

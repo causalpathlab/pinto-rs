@@ -1,6 +1,5 @@
 //! CLI arguments for `pinto cage`.
 
-use crate::cell_activity_graph_embedding::feature_gating::ActivityNorm;
 use clap::{Parser, ValueEnum};
 use data_beans::alg::hvg::HvgCliArgs;
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -82,8 +81,40 @@ impl FeatureNameMode {
     }
 }
 
+/// Positive super-edge draws per (feature, batch) each epoch. A batch's
+/// per-feature pool is tens of super edges, so repeated draws are by design;
+/// over-sampling can degrade the fit, so `--epochs` carries the budget.
+pub const PER_FEATURE_BATCH: usize = 12;
+
+/// Sibling-pseudobulk negatives drawn per positive super edge per chain level.
+pub const N_NEGATIVES: usize = 8;
+
+/// Exponent of the power-of-degree negative sampling.
+pub const ALPHA_NEG: f32 = 0.75;
+
+/// Relative loss range over `--convergence-window` epochs below which
+/// training stops.
+pub const CONVERGENCE_TOL: f32 = 0.01;
+
+/// Gradient-norm clip of each optimizer step.
+pub const GRAD_CLIP: f32 = 1.0;
+
+/// Prior precision the pair encoder is fitted under.
+pub const PAIR_RIDGE: f32 = 1.0;
+
+/// Cell pairs placed on the feature embedding per block.
+pub const PAIR_BLOCK: usize = 8192;
+
 #[derive(Parser, Debug, Clone)]
-#[command(mut_arg("feature_modules", |a| a.long_help(FEATURE_MODULES_LONG_HELP)))]
+// legume-graph-embedding's LoRA tuning flags, hidden here: the rank is a
+// size knob, and the learning-rate ratio and ridge stay at upstream's
+// defaults until it drops them.
+#[command(
+    mut_arg("feature_modules", |a| a.long_help(FEATURE_MODULES_LONG_HELP)),
+    mut_arg("lora_rank", |a| a.hide(true)),
+    mut_arg("lora_lr_ratio", |a| a.hide(true)),
+    mut_arg("lora_ridge", |a| a.hide(true))
+)]
 pub struct CellActivityGraphEmbeddingArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
@@ -94,7 +125,12 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(long, default_value_t = ComputeDevice::Cpu, value_enum, help = "Compute device")]
     pub device: ComputeDevice,
 
-    #[arg(long, default_value_t = 0, help = "Device ordinal (for cuda/metal)")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Device ordinal (for cuda/metal)",
+        hide = true
+    )]
     pub device_no: usize,
 
     #[arg(
@@ -107,7 +143,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      exact: strict string equality (pinto lc / svd default)\n\
                      gene:  gene symbols; split on '_' so 'ENSG…_SYMBOL' and 'SYMBOL' alias\n\
                      locus: normalize chrom-coord names; collapse overlaps\n\
-                     mixed: per-row dispatch (RNA+ATAC paired axes)"
+                     mixed: per-row dispatch (RNA+ATAC paired axes)",
+        hide = true
     )]
     #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
@@ -130,11 +167,11 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(
         long,
         default_value_t = 100,
-        help = "Training epochs over the feature axis (early-stops on --convergence-tol)",
+        help = "Training epochs over the feature axis",
         long_help = "Passes over the feature axis.\n\
                      \n\
-                     The run early-stops once the loss flattens, per\n\
-                     --convergence-tol over --convergence-window.\n\
+                     With a --convergence-window, the run early-stops once the\n\
+                     loss flattens over that many epochs.\n\
                      A high value here is a ceiling, not a fixed cost.\n\
                      \n\
                      Pair with --features-per-epoch to cap per-epoch cost."
@@ -170,7 +207,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      The coherence result above was validated at 2048;\n\
                      a memory-constrained device that resolves lower\n\
                      trades some of that benefit for fitting at all.\n\
-                     Passing a value disables the probe and always wins."
+                     Passing a value disables the probe and always wins.",
+        hide = true
     )]
     #[arg(alias = "gene-batch-size")]
     pub feature_batch_size: Option<usize>,
@@ -185,29 +223,10 @@ pub struct CellActivityGraphEmbeddingArgs {
                      with half reserved for the backward pass,\n\
                      fits this fraction of the device memory free at start.\n\
                      Fractions outside 0.05 to 0.95 are clamped to that range.\n\
-                     Ignored on CPU and when --feature-batch-size is set."
+                     Ignored on CPU and when --feature-batch-size is set.",
+        hide = true
     )]
     pub gpu_mem_fraction: f32,
-
-    #[arg(
-        long,
-        default_value_t = 12,
-        help = "Positive super-edge draws per (feature, batch) sample",
-        long_help = "Every feature draws this many positive SUPER EDGES\n\
-                     per experimental batch each epoch, with replacement:\n\
-                     a batch's per-feature pool is tens of super edges,\n\
-                     so repeated draws are by design.\n\
-                     Over-sampling does not merely cost time,\n\
-                     it can DEGRADE the fit\n\
-                     (measured under the former cell-level trainer:\n\
-                     cutting the budget ~20x raised spatial coherence).\n\
-                     Raise it only if the fit looks under-trained,\n\
-                     and check the coherence rather than the loss.\n\
-                     \n\
-                     Kept per-feature so the budget tracks the feature axis.\n\
-                     --positives-per-epoch overrides it with an absolute total."
-    )]
-    pub per_feature_batch: usize,
 
     #[arg(
         long,
@@ -215,50 +234,28 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Total positive edges drawn per epoch, across all features (unset = auto)",
         long_help = "The epoch's total SUPER-EDGE sampling budget.\n\
                      \n\
-                     Divided evenly: each feature draws\n\
-                     N / (trainable features x batches) positives per batch.\n\
-                     Unset keeps the historical --per-feature-batch instead.\n\
-                     Each positive carries\n\
-                     1 + --n-negatives x --chain-levels scores.\n\
+                     Divided evenly: each visited feature draws\n\
+                     N / (expected visits x batches) positives per batch,\n\
+                     floored, at least one. The expected visits are the\n\
+                     trainable features, or the sum of their inclusion\n\
+                     probabilities pi under --feature-inclusion.\n\
+                     Unset, each feature draws a fixed number per batch.\n\
                      \n\
-                     This is the knob for how much data an epoch sees,\n\
-                     and it is the one that moved the fit.\n\
-                     Pair it with --feature-batch-size: the budget sets work per\n\
-                     step, that sets how many steps an epoch takes.\n\
-                     \n\
-                     --features-per-epoch is the coarse alternative:\n\
-                     it drops features rather than sampling each one less.",
+                     --features-per-epoch does not enter the split: it caps\n\
+                     the features visited, each keeps its draws, and the\n\
+                     epoch draws fewer than N in all.\n\
+                     --epochs is the usual way to train longer.",
         hide = true
     )]
     pub positives_per_epoch: Option<usize>,
 
     #[arg(
         long,
-        default_value_t = 8,
-        help = "Sibling-PB negatives drawn per positive super edge per chain level",
+        default_value_t = 5e-3,
+        help = "AdamW learning rate",
         hide = true
     )]
-    pub n_negatives: usize,
-
-    #[arg(
-        long,
-        default_value_t = 0.75,
-        help = "Negative-degree exponent (power-of-degree negative sampling)",
-        hide = true
-    )]
-    pub alpha_neg: f32,
-
-    #[arg(long, default_value_t = 5e-3, help = "AdamW learning rate")]
     pub lr: f32,
-
-    #[arg(
-        long,
-        default_value_t = ActivityNorm::Log1p,
-        value_enum,
-        help = "Per-feature activity normalization",
-        hide = true,
-    )]
-    pub activity_norm: ActivityNorm,
 
     #[arg(
         long,
@@ -275,18 +272,6 @@ pub struct CellActivityGraphEmbeddingArgs {
 
     #[arg(
         long,
-        help = "Disable NB-Fisher per-feature precision weighting of the loss",
-        long_help = "Each feature's contribution to the loss is down-weighted.\n\
-                     The weight is its NB Fisher-info w_g ∈ (0,1]. High-mean,\n\
-                     high-dispersion housekeeping features go toward 0,\n\
-                     and informative low-mean features go toward 1. This matches `pinto lc` and `senna bge`.\n\
-                     Set this flag to train every feature at equal weight.",
-        hide = true
-    )]
-    pub no_fisher_weights: bool,
-
-    #[arg(
-        long,
         default_value_t = 0,
         help = "Features visited per epoch; 0 = the whole axis",
         long_help = "Cost lever. cage walks the feature axis once per epoch.\n\
@@ -298,7 +283,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      Every feature stays on the trained axis. It keeps its sampled loading.\n\
                      It appears in every output table.\n\
                      A feature left out simply waits for a later epoch. Contrast --n-hvg,\n\
-                     which weights the projection. That likewise drops nobody."
+                     which weights the projection. That likewise drops nobody.",
+        hide = true
     )]
     #[arg(alias = "genes-per-epoch")]
     pub features_per_epoch: usize,
@@ -336,7 +322,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      so it adapts to --num-levels.\n\
                      Explicit levels must all be coarser than the finest\n\
                      level: the finest IS the trained unit,\n\
-                     so no positive super edge can share one."
+                     so no positive super edge can share one.",
+        hide = true
     )]
     pub chain_levels: Option<Vec<usize>>,
 
@@ -400,60 +387,16 @@ pub struct CellActivityGraphEmbeddingArgs {
         long_help = "After each epoch, look at the recent mean losses.\n\
                      The window is `convergence-window` epochs wide.\n\
                      Stop training when their (max − min) / |mean| falls below\n\
-                     --convergence-tol.\n\
+                     a fixed tolerance.\n\
                      Pass 0 to run all --epochs unconditionally.",
         hide = true
     )]
     pub convergence_window: usize,
 
-    #[arg(
-        long,
-        default_value_t = 0.01,
-        help = "Relative-range threshold over --convergence-window for stopping",
-        hide = true
-    )]
-    pub convergence_tol: f32,
-
     /// How the pair latent becomes link communities. Shared verbatim with
     /// `dsvd` — the k-means fallback width is `--embedding-dim` here.
     #[command(flatten)]
     pub edge_clustering: crate::util::edge_clustering::EdgeClusterArgs,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "Clip the global gradient norm to this before each step; 0 = off",
-        long_help = "Global-L2-norm gradient clipping for the training loop.\n\
-                     Gradients are scaled to this norm when they exceed it,\n\
-                     which bounds the update without turning it.\n\
-                     A step whose global norm is not finite is skipped.\n\
-                     Pass 0 to disable clipping.",
-        hide = true
-    )]
-    pub grad_clip: f32,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "Ridge λ on the per-pair latent; saved with the pair encoder",
-        long_help = "Gaussian prior strength λ on the per-pair latent e_uv.\n\
-                     The pair encoder is trained under it,\n\
-                     the exact per-pair solve it is checked against carries it,\n\
-                     and it is saved with the encoder,\n\
-                     so `pinto predict` and `pinto impute` use the model's value.\n\
-                     The log-partition is summed over every feature,\n\
-                     so this is a mild prior, not the only bound on the fit.\n\
-                     The per-pair intercept is never penalized."
-    )]
-    pub pair_ridge: f32,
-
-    #[arg(
-        long,
-        default_value_t = 8192,
-        help = "Cells per read block and cell pairs per placement pass (memory only)",
-        hide = true
-    )]
-    pub pair_block: usize,
 
     #[arg(
         long = "nce-objective",
@@ -539,7 +482,8 @@ pub struct CellActivityGraphEmbeddingArgs {
         long,
         requires = "feature_embedding",
         help = "adapt only: add a ridge-shrunk per-feature correction\n\
-                on top of the shared map"
+                on top of the shared map",
+        hide = true
     )]
     #[arg(alias = "gene-adapter-residual")]
     pub feature_adapter_residual: bool,
@@ -565,26 +509,6 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     #[arg(alias = "gene-init-mode")]
     pub feature_init_mode: FeatureInitMode,
-
-    #[arg(
-        long,
-        default_value_t = graph_embedding_util::transfer::DEFAULT_INIT_NEIGHBOURS,
-        value_name = "K",
-        requires = "feature_embedding",
-        help = "membership init: matched features whose memberships are averaged"
-    )]
-    #[arg(alias = "gene-init-neighbours")]
-    pub feature_init_neighbours: usize,
-
-    #[arg(
-        long,
-        default_value_t = graph_embedding_util::transfer::DEFAULT_SIMILARITY_FLOOR,
-        value_name = "S",
-        requires = "feature_embedding",
-        help = "membership init: below this best profile similarity a feature takes the diffuse prior"
-    )]
-    #[arg(alias = "gene-init-similarity-floor")]
-    pub feature_init_similarity_floor: f32,
 
     /// The `--feature-modules` flag group (see `graph_embedding_util::FeatureModuleArgs`).
     /// Cage has no feature-negative NCE, so the within-module negatives do not apply

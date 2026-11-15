@@ -20,22 +20,23 @@ use std::path::Path;
 /// The run tools, and pinto's command line to read the methods from.
 pub struct Tools {
     cli: clap::Command,
+    /// The tools, described once from `cli`.
+    specs: Vec<ToolSpec>,
 }
 
 impl Default for Tools {
     fn default() -> Self {
-        Tools {
-            cli: crate::built_cli(),
-        }
+        let cli = crate::built_cli();
+        let mut specs = specs(&cli);
+        specs.extend(super::residual::specs(&cli));
+        specs.extend(super::sim::specs());
+        Tools { cli, specs }
     }
 }
 
 impl Handler for Tools {
     fn tools(&self) -> Vec<ToolSpec> {
-        let mut tools = specs(&self.cli);
-        tools.extend(super::residual::specs(&self.cli));
-        tools.extend(super::sim::specs());
-        tools
+        self.specs.clone()
     }
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
@@ -189,14 +190,11 @@ impl Tools {
             );
         }
         for (flag, value) in &a.flags {
-            let long = flag.trim_start_matches('-');
-            let field = method
-                .fields
-                .iter_mut()
-                .find(|f| f.long == long)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("{} has no flag --{long}: {lister} lists them", a.method)
-                })?;
+            let flag = flag.trim_start_matches('-');
+            let field = method.field_mut(flag).ok_or_else(|| {
+                anyhow::anyhow!("{} has no flag --{flag}: {lister} lists them", a.method)
+            })?;
+            let long = field.long.clone();
             field.value = match (&field.kind, value) {
                 (Kind::Flag { .. }, Value::Bool(on)) => on.to_string(),
                 (Kind::Flag { .. }, v) => {
@@ -411,7 +409,7 @@ fn default_name(a: &CompareArgs) -> String {
     let stem = |input: &str, level: &Option<String>| {
         let name = crate::util::metadata::run_stem(input);
         match level.as_deref() {
-            Some(l) if l != "final" => format!("{name}.{l}"),
+            Some(l) if l != crate::compare::DEFAULT_LEVEL => format!("{name}.{l}"),
             _ => name,
         }
     };
@@ -510,10 +508,14 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
         run_b.clone(),
         flag_value("--out", out),
     ];
-    for (flag, value) in [("--level-a", &a.level_a), ("--level-b", &a.level_b)] {
-        if let Some(v) = value {
-            argv.push(flag_value(flag, v));
-        }
+    if a.level_a.is_some() || a.level_b.is_some() {
+        use crate::compare::level_or_final;
+        let levels = format!(
+            "{},{}",
+            level_or_final(&a.level_a),
+            level_or_final(&a.level_b)
+        );
+        argv.push(flag_value("--level", levels));
     }
     if let Some(tau) = a.tau {
         argv.push(flag_value("--tau", tau));
@@ -707,6 +709,17 @@ pub(super) fn in_background() -> bool {
     true
 }
 
+/// The `background` field every tool that starts a job takes.
+pub(super) fn background() -> Value {
+    json!({"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"})
+}
+
+/// The `out` field of a tool that names a free output when none is given:
+/// a `kind` (prefix or folder) named after `free` in today's results folder.
+pub(super) fn out_arg(kind: &str, free: &str) -> Value {
+    json!({"type": "string", "description": format!("Output {kind} (-o); left out, a free {free} name in today's results folder")})
+}
+
 /// A flag's value as typed on the command line.
 fn text(v: &Value) -> String {
     match v {
@@ -716,8 +729,9 @@ fn text(v: &Value) -> String {
 }
 
 fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
-    let lra = |id: &str, schema: Value| flag_arg(cli, "lra", id, schema);
-    let sim = |id: &str, schema: Value| flag_arg(cli, "lra-simulate", id, schema);
+    let (lra_cmd, sim_cmd) = (subcommand(cli, "lra"), subcommand(cli, "lra-simulate"));
+    let lra = |id: &str, schema: Value| flag_arg(lra_cmd, id, schema);
+    let sim = |id: &str, schema: Value| flag_arg(sim_cmd, id, schema);
     let methods = json!({
         "enum": METHODS,
         "description": format!(
@@ -741,7 +755,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "properties": { "method": methods },
                 "additionalProperties": false,
             }),
-        ),
+        )
+        .read_only(),
         ToolSpec::new(
             "run_fit",
             "Fit one method on data files, with the command pinto run would build: checked as \
@@ -759,7 +774,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in /, _, - or . names the run for its method (res/ → res/lc)"},
                     "flags": {"type": "object", "description": "The method's flags by name, as run_methods lists them (a switch takes true or false): {\"n-communities\": 12}"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits for the fit"},
+                    "background": background(),
                 },
                 "required": ["method", "data", "out"],
                 "additionalProperties": false,
@@ -785,8 +800,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Its coordinate files, one per data file (pairs from its spatial graph)"},
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file (one δ per batch)"},
                     "out": {"type": "string", "description": "Output prefix (-o)"},
-                    "flags": {"type": "object", "description": "pinto predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), holdout-fit-fraction, ablate-features, eval-features, null-from, holdout-delta-iters, seed, …"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]"},
+                    "flags": {"type": "object", "description": "pinto predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), ablate-features, eval-features, null-from, seed (pinto predict --help lists them)"},
+                    "background": background(),
                 },
                 "required": ["model", "data", "out"],
                 "additionalProperties": false,
@@ -807,7 +822,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "run": {"type": "string", "description": "The run whose cells are picked: its prefix or .pinto.json"},
                     "polygon": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 3, "description": "[[x, y], …] in world coordinates"},
                     "geojson": {"type": "string", "description": "A GeoJSON file of polygons in section coordinates"},
-                    "out": {"type": "string", "description": "Output prefix; left out, a free region name in today's results folder"},
+                    "out": out_arg("prefix", "region"),
                 },
                 "required": ["run"],
                 "additionalProperties": false,
@@ -830,7 +845,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "properties": {
                     "a": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Reference run: its prefix or .pinto.json (or a propensity .parquet); with paired, pinto predict runs, a list for several folds"},
                     "b": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Run(s) to set against it, named the same ways"},
-                    "out": {"type": "string", "description": "Output prefix; left out, a free compare name in today's results folder"},
+                    "out": out_arg("prefix", "compare"),
                     "level_a": {"type": "string", "description": "Level of A: final, draft, or L1, L2, … [default: final]"},
                     "level_b": {"type": "string", "description": "Level of B, the same way [default: final]"},
                     "tau": {"type": "number", "description": "Share of a community's cells that makes another its partner [default: 0.2]"},
@@ -866,15 +881,14 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "method": lra("method", json!({"enum": choices::<LraMethod>()})),
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "lr_pairs": lra("lr_pairs", json!({"type": "string"})),
-                    "targets": lra("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "targets": long_flag_arg(lra_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "species": lra("species", json!({"enum": choices::<ReferenceSpecies>()})),
-                    "only": lra("only", json!({"type": "array", "items": {"type": "string"}})),
+                    "only": long_flag_arg(lra_cmd, "only", json!({"type": "array", "items": {"type": "string"}})),
                     "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
-                    "json_fwer_threshold": lra("json_fwer_threshold", json!({"type": "number"})),
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
                     "marginal_permutations": lra("marginal_permutations", json!({"type": "integer", "minimum": 1})),
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "background": background(),
                 },
                 "additionalProperties": false,
             })),
@@ -903,13 +917,13 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
                     "species": sim("species", json!({"enum": choices::<ReferenceSpecies>()})),
                     "lr_pairs": sim("lr_pairs", json!({"type": "string"})),
-                    "targets": sim("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "targets": long_flag_arg(sim_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "plant_region": sim("plant_region", json!({"type": "string"})),
                     "one": sim("one", json!({"type": "boolean"})),
-                    "set": sim("set", json!({"type": "array", "items": {"type": "string"}})),
+                    "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
                     "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "background": background(),
                 },
                 "additionalProperties": false,
             })),
@@ -920,7 +934,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
 /// `schema` with the arguments of what lra reads beside a run, which `run_lra`
 /// and `run_lra_simulate` share, described by `pinto {command}`'s flags.
 fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Value {
-    let flag = |id: &str, schema: Value| flag_arg(cli, command, id, schema);
+    let sub = subcommand(cli, command);
+    let flag = |id: &str, schema: Value| flag_arg(sub, id, schema);
     let files = || json!({"type": "array", "items": {"type": "string"}});
     let shared = json!({
         "data_files": flag("data_files", files()),
@@ -938,22 +953,41 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
     schema
 }
 
-/// A tool argument that passes `pinto {command}`'s argument `id`: `schema`
-/// keeps its type (and any enum), and its description is the flag's own
-/// help, the flag, and clap's default, so the two cannot drift.
-pub(super) fn flag_arg(cli: &clap::Command, command: &str, id: &str, mut schema: Value) -> Value {
-    let arg = cli
-        .find_subcommand(command)
-        .and_then(|c| c.get_arguments().find(|a| a.get_id() == id))
-        .unwrap_or_else(|| panic!("pinto {command} has no argument {id}"));
-    let help = arg
-        .get_long_help()
-        .or_else(|| arg.get_help())
-        .map(ToString::to_string)
-        .unwrap_or_default();
+/// `pinto {name}`.
+pub(super) fn subcommand<'c>(cli: &'c clap::Command, name: &str) -> &'c clap::Command {
+    cli.find_subcommand(name)
+        .unwrap_or_else(|| panic!("pinto has no command {name}"))
+}
+
+/// A tool argument that passes the argument `id` of `sub` (a pinto
+/// command): `schema` keeps its type (and any enum), and its description
+/// is the flag's own short help, as `--help` shows it, the flag, and
+/// clap's default, so the two cannot drift.
+pub(super) fn flag_arg(sub: &clap::Command, id: &str, schema: Value) -> Value {
+    described(sub, id, schema, false)
+}
+
+/// [`flag_arg`] described by the flag's long help, for an argument whose
+/// long help carries a vocabulary or a format an agent needs to fill it in.
+pub(super) fn long_flag_arg(sub: &clap::Command, id: &str, schema: Value) -> Value {
+    described(sub, id, schema, true)
+}
+
+fn described(sub: &clap::Command, id: &str, mut schema: Value, long: bool) -> Value {
+    let arg = sub
+        .get_arguments()
+        .find(|a| a.get_id() == id)
+        .unwrap_or_else(|| panic!("pinto {} has no argument {id}", sub.get_name()));
+    let (short, long_help) = (arg.get_help(), arg.get_long_help());
+    let help = if long {
+        long_help.or(short)
+    } else {
+        short.or(long_help)
+    };
+    let help = help.map(ToString::to_string).unwrap_or_default();
     let mut said = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    if let Some(long) = arg.get_long() {
-        said.push_str(&format!(" (--{long})"));
+    if let Some(flag) = arg.get_long() {
+        said.push_str(&format!(" (--{flag})"));
     }
     let default: Vec<String> = arg
         .get_default_values()

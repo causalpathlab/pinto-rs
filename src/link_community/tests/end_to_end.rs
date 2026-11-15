@@ -249,8 +249,11 @@ fn an_lc_model_named_by_a_renamed_manifest_predicts() {
         "-o",
         &out,
     ];
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict)
-        .expect("a model opened by its manifest was refused");
+    crate::predict::predict(
+        &Cli::try_parse_from(argv).unwrap().predict,
+        &Default::default(),
+    )
+    .expect("a model opened by its manifest was refused");
 }
 
 /// `pinto predict` (held-out scoring) of the lc model at `model` on `data`
@@ -274,7 +277,10 @@ fn score(
         argv.extend_from_slice(&["-c", coords, "--coord-column-names", "x,y"]);
     }
     argv.extend_from_slice(extra);
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict)?;
+    crate::predict::predict(
+        &Cli::try_parse_from(argv).unwrap().predict,
+        &Default::default(),
+    )?;
     crate::util::metadata::PintoMetadata::read(std::path::Path::new(
         &crate::util::metadata::manifest_path(&out),
     ))

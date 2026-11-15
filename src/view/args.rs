@@ -97,7 +97,8 @@ pub struct ViewArgs {
 
     #[arg(
         long,
-        help = "Image height in pixels [default: from the view's aspect ratio]"
+        help = "Image height in pixels [default: from the view's aspect ratio]",
+        hide = true
     )]
     pub height: Option<usize>,
 
@@ -175,7 +176,8 @@ pub struct ViewArgs {
         long,
         default_value_t = 2,
         value_name = "N",
-        help = "In the terminal, `s` exports the view at N × screen resolution"
+        help = "In the terminal, `s` exports the view at N × screen resolution",
+        hide = true
     )]
     pub export_scale: usize,
 

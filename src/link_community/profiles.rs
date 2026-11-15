@@ -25,13 +25,10 @@ pub use modules::{
 /// Returns a vector of length `n_rows` with the sum of all entries per row.
 /// A caller that means features folds this through [`FeatureAxis::pool_totals`]: on
 /// a splice-channelized matrix a row is one track of a feature, not a feature.
-pub fn compute_row_totals(
-    data: &SparseIoVec,
-    block_size: Option<usize>,
-) -> anyhow::Result<Vec<f64>> {
+pub fn compute_row_totals(data: &SparseIoVec) -> anyhow::Result<Vec<f64>> {
     let n_features = data.num_rows();
     let n_cells = data.num_columns();
-    let jobs = generate_minibatch_intervals(n_cells, n_features, block_size);
+    let jobs = generate_minibatch_intervals(n_cells, n_features, None);
 
     // Accumulate with `try_fold` + `try_reduce`, NOT `map().collect()`.
     //
@@ -515,18 +512,11 @@ pub fn compute_feature_community_stat(
     data_vec: &SparseIoVec,
     feature_weights: Option<&[f32]>,
     axis: Option<&FeatureAxis>,
-    block_size: Option<usize>,
     divisor: Option<BatchDivisor<'_>>,
     out_prefix: &str,
 ) -> anyhow::Result<()> {
-    let param = fit_feature_community_param(
-        cell_propensity,
-        data_vec,
-        feature_weights,
-        axis,
-        block_size,
-        divisor,
-    )?;
+    let param =
+        fit_feature_community_param(cell_propensity, data_vec, feature_weights, axis, divisor)?;
     let row_names = data_vec.row_names()?;
     let names = axis.map_or(&row_names[..], FeatureAxis::feature_names);
     write_feature_community_param(&param, names, out_prefix)
@@ -549,7 +539,6 @@ pub fn fit_feature_community_param(
     data_vec: &SparseIoVec,
     feature_weights: Option<&[f32]>,
     axis: Option<&FeatureAxis>,
-    block_size: Option<usize>,
     divisor: Option<BatchDivisor<'_>>,
 ) -> anyhow::Result<legume_numeric::param::dmatrix_gamma::GammaMatrix> {
     use legume_numeric::param::dmatrix_gamma::GammaMatrix;
@@ -575,7 +564,7 @@ pub fn fit_feature_community_param(
 
     info!("Computing feature-community statistics...");
     let prop_kn = cell_propensity.transpose();
-    let jobs = generate_minibatch_intervals(n_cells, n_rows, block_size);
+    let jobs = generate_minibatch_intervals(n_cells, n_rows, None);
 
     let prog_bar = new_progress_bar(jobs.len() as u64).with_message("feature-community blocks");
     // Folded, not collected: see `compute_row_totals`. Each accumulator here is
@@ -621,7 +610,7 @@ pub fn fit_feature_community_param(
         Some(w) => w,
         None => {
             info!("Computing NB Fisher-info weights for feature-community stats");
-            owned_w = compute_nb_fisher_weights(data_vec, block_size)?;
+            owned_w = compute_nb_fisher_weights(data_vec, None)?;
             &owned_w
         }
     };
@@ -850,7 +839,6 @@ pub fn realized_communities(edge_membership: &[usize], n_edges: usize) -> anyhow
 /// Config for `compute_propensity_and_feature_community_stat`.
 pub struct PropensityReportConfig<'a> {
     pub clustering: EdgeClustering,
-    pub block_size: Option<usize>,
     /// The FEATURE unit axis for the feature-community table, when the caller has
     /// one. `None` keeps the table on the matrix's own rows, which is what a
     /// caller wants when a row is already the unit it reports.
@@ -892,7 +880,6 @@ pub fn compute_propensity_and_feature_community_stat(
 ) -> anyhow::Result<PropensityOutputs> {
     let PropensityReportConfig {
         clustering,
-        block_size,
         feature_axis,
         edge_kind,
         divisor,
@@ -932,7 +919,6 @@ pub fn compute_propensity_and_feature_community_stat(
         data_vec,
         None,
         feature_axis,
-        block_size,
         divisor,
         out_prefix,
     )?;

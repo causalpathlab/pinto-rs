@@ -105,7 +105,6 @@ fn uncorrected_graph(
         &plain.proj,
         crate::util::cell_pairs::SrtCellPairsArgs {
             knn: pre.knn.base,
-            block_size: None,
             reciprocal: false,
         },
     )
@@ -127,7 +126,7 @@ fn under_auto_batch_the_graph_is_the_uncorrected_one() {
 
 /// The cells' projection a corrected expression-mode run hands back is
 /// the base graph's, the one the δ estimate collapsed on: the same matrix
-/// a fresh projection with that `-p`, block size and batch membership
+/// a fresh projection with that `-p` and batch membership
 /// gives.
 #[test]
 fn the_reused_projection_is_a_fresh_one() {
@@ -142,12 +141,11 @@ fn the_reused_projection_is_a_fresh_one() {
     let out = dir.path().join("on").to_str().unwrap().to_string();
     let mut argv = vec!["pinto"];
     argv.extend(files.iter().map(|f| f.as_ref()));
-    argv.extend_from_slice(&["-o", &out, "--no-qc", "-p", "8", "--block-size", "7"]);
+    argv.extend_from_slice(&["-o", &out, "--no-qc", "-p", "8"]);
     let args = SrtInputArgs::try_parse_from(argv).unwrap();
     let pre = preprocess_srt(SrtPreprocessConfig {
         common: &args,
         ablation: None,
-        fisher_weights: false,
         batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
@@ -158,7 +156,7 @@ fn the_reused_projection_is_a_fresh_one() {
     let kept = pre.cell_proj.as_ref().expect("asked for");
     let fresh = pre
         .data_vec
-        .project_columns_with_batch_correction(8, Some(7), Some(pre.batch_membership.as_slice()))
+        .project_columns_with_batch_correction(8, None, Some(pre.batch_membership.as_slice()))
         .unwrap();
     assert_eq!(kept.proj, fresh.proj);
     assert_eq!(kept.basis, fresh.basis);

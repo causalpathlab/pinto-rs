@@ -493,7 +493,7 @@ fn batch_groups_follow_the_runs_batches_across_files() {
 }
 
 /// `--adapt` defaults to batch, and `--adapt-cells` refuses a negative
-/// weight (the parser's own cases are tested with lc's `--alpha`).
+/// weight.
 #[test]
 fn adapt_defaults_to_batch_and_refuses_a_negative_weight() {
     use clap::Parser;

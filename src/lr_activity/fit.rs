@@ -127,7 +127,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // 1. Load expression + resolve gene index map //
     /////////////////////////////////////////////////
     info!("Loading expression data...");
-    let data_vec = load_expr_data(&input.data_files, input.preload_data)?;
+    let data_vec = load_expr_data(&input.data_files)?;
 
     let row_names = data_vec.row_names()?;
     let cell_names = data_vec.column_names()?;
@@ -241,7 +241,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // NB precisions further down, so a separate totals pass would be a second
     // full read of the matrix for a number already in hand.
     info!("Computing per-gene statistics...");
-    let (_, gene_stats) = feature_axis.running_stats(&data_vec, input.block_size, "NB-Fisher")?;
+    let (_, gene_stats) = feature_axis.running_stats(&data_vec, "NB-Fisher")?;
     let gene_sum: Vec<f32> = gene_stats.sum().to_vec();
     let fisher_all = fisher_weights_from_stats(&gene_stats, n_cells);
     let pre_filter_n = resolved_pairs.len();
@@ -325,7 +325,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         }
 
         info!("Computing per-cell log1p depth...");
-        let log_depth = per_cell_log1p_depth(&data_vec, input.block_size)?;
+        let log_depth = per_cell_log1p_depth(&data_vec)?;
 
         info!(
             "Scoring {} LR pairs on the edges of {} strata...",
@@ -393,7 +393,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     );
     let proj = data_vec.project_columns_with_batch_correction(
         args.propensity_dim,
-        input.block_size,
+        None,
         Some(&cell_batch),
     )?;
     let propbin = binary_sort_columns(&proj.proj, args.propensity_dim)?;
@@ -635,7 +635,6 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
-            block_size: input.block_size,
             only: &args.only,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
@@ -728,7 +727,6 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
-            block_size: input.block_size,
             only: &[],
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),

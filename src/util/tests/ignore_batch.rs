@@ -50,7 +50,6 @@ pub(super) fn preprocess_with(
     preprocess_srt(SrtPreprocessConfig {
         common: &args,
         ablation: None,
-        fisher_weights: false,
         batch_effects: batch,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
@@ -121,15 +120,12 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
             &out,
             "-p",
             "8",
-            "--block-size",
-            "7",
         ];
         argv.extend(extra);
         let args = SrtInputArgs::try_parse_from(argv).unwrap();
         let pre = preprocess_srt(SrtPreprocessConfig {
             common: &args,
             ablation: None,
-            fisher_weights: false,
             batch_effects: BatchEstimate::Fit,
             feature_axis: FeatureAxisMode::Rows,
             feature_kind: None,
@@ -149,7 +145,7 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
             .data_vec
             .project_columns_with_batch_correction(
                 8,
-                Some(7),
+                None,
                 (!args.ignore_batch).then_some(pre.batch_membership.as_slice()),
             )
             .unwrap();

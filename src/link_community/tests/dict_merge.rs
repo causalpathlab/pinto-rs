@@ -436,7 +436,7 @@ fn centred_merges_agree(section_of: fn(usize) -> u32, by_batch: bool) -> bool {
     });
     let ones = vec![1.0; n_features];
     let fit = |divisor| {
-        fit_feature_community_param(&propensity, &data, Some(&ones), None, None, divisor)
+        fit_feature_community_param(&propensity, &data, Some(&ones), None, divisor)
             .unwrap()
             .posterior_log_mean()
             .clone()

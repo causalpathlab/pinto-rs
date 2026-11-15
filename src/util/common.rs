@@ -31,6 +31,14 @@ pub fn in_dir(dir: &str, name: &str) -> String {
 // `new_progress_bar(n).with_message(..)`; the template belongs to the helper.
 pub use data_beans::aux::logging::{init_logger, new_progress_bar};
 
+/// `--seed`'s default on every fitting and analysis command. The
+/// simulation scorers (srt-sim-pairs, srt-sim-baseline) keep their own,
+/// 1, so their recorded results stay as they were.
+pub const DEFAULT_SEED: u64 = 42;
+
+/// `--seed`'s help wherever it seeds a whole run.
+pub const SEED_HELP: &str = "Random seed for reproducibility";
+
 // NB Fisher-info feature weighting helpers moved to
 // `data_beans::alg::gene_weighting` so senna / chickpea / pinto share one
 // implementation. Re-exported here for backwards compatibility within pinto.

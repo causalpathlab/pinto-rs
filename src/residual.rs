@@ -44,7 +44,7 @@
 //!
 //! Per data file it writes `{out}/{stem}.zarr`, the excess counts
 //! `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`) on the rows every
-//! file shares (as an exact-name fit reads them; with `--feature-names` as
+//! file shares (as an exact-name fit reads them; with `--feature-name-mode` as
 //! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
 //! the run's first two coordinates for those cells. The excess keeps counts,
 //! so the count models fit it as they fit data. `{out}/residual.json`
@@ -69,6 +69,7 @@ use std::path::Path;
 pub struct ResidualArgs {
     #[arg(
         long = "from",
+        short = 'f',
         visible_alias = "run",
         value_hint = clap::ValueHint::FilePath,
         help = "Stage-1 run prefix (or its .pinto.json)"
@@ -98,20 +99,26 @@ pub struct ResidualArgs {
     )]
     pub excess: Excess,
 
-    #[arg(long, default_value_t = 100, help = "EM iterations per cell for θ")]
+    #[arg(
+        long,
+        default_value_t = crate::util::profile_match::EM_ITERS,
+        help = "EM iterations per cell for θ",
+        hide = true
+    )]
     pub em_iters: usize,
 
-    #[arg(long, help = "Columns read per block")]
+    #[arg(long, help = "Columns read per block", hide = true)]
     pub block_size: Option<usize>,
 
     #[arg(
-        long,
+        long = "feature-name-mode",
+        alias = "feature-names",
         value_enum,
         default_value = "exact",
-        help = "How the run's fit read feature names (cage's --feature-names)",
+        help = "How the run's fit read feature names (cage's --feature-name-mode)",
         long_help = "How the run's fit read feature names: exact (lc and dsvd, which\n\
-                     read the rows every file shares), or the --feature-names a cage\n\
-                     run was fitted with, so its rows are read as it read them."
+                     read the rows every file shares), or the --feature-name-mode a\n\
+                     cage run was fitted with, so its rows are read as it read them."
     )]
     pub feature_names: FeatureNameMode,
 
@@ -377,12 +384,12 @@ impl Inputs {
         // shares, cage by its feature-name mode
         let kind = match args.feature_names {
             FeatureNameMode::Auto => {
-                let first = crate::util::input::open_sparse(&files[0], false)?;
+                let first = crate::util::input::open_sparse(&files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
-        let data = crate::util::input::open_fit_data(&files, &kind, false)?;
+        let data = crate::util::input::open_fit_data(&files, &kind)?;
 
         let coord_names = plan.coord_names.clone();
         let cells = crate::util::parquet_io::read_cells_table(

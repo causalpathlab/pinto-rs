@@ -14,7 +14,7 @@
 //!    aggregated feature sums. This is a small set — typically
 //!    O(n_batches * n_groups) entries.
 //!
-//! 3. **Cross-batch KNN matching** (`--batch-knn`): for each
+//! 3. **Cross-batch KNN matching** (`BATCH_KNN` neighbours): for each
 //!    pb-sample, find its `batch_knn` nearest neighbors among
 //!    pb-samples from *other* batches using HNSW on centroids.
 //!    Because we search over coarsened pb-samples (not individual
@@ -56,7 +56,6 @@ use rustc_hash::FxHashMap;
 pub struct EstimateBatchArgs {
     pub proj_dim: usize,
     pub sort_dim: usize,
-    pub block_size: Option<usize>,
     /// KNN for cross-batch pb-sample matching during hierarchical
     /// collapsing. Searches are over coarsened pb-sample centroids,
     /// not individual cells, so this stays small.
@@ -76,7 +75,6 @@ impl EstimateBatchArgs {
     /// [`BATCH_SORT_DIM`] (or `proj_dim`, when smaller).
     pub fn at(
         proj_dim: usize,
-        block_size: Option<usize>,
         batch_knn: usize,
         num_levels: usize,
         strata: Option<Vec<usize>>,
@@ -84,7 +82,6 @@ impl EstimateBatchArgs {
         EstimateBatchArgs {
             proj_dim,
             sort_dim: proj_dim.min(BATCH_SORT_DIM),
-            block_size,
             batch_knn,
             num_levels,
             strata,
@@ -191,7 +188,7 @@ fn estimate_batch(
 ) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut)> {
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
-        args.block_size,
+        None,
         Some(batch_membership),
     )?;
 

@@ -42,12 +42,15 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ALPHA_NEG,
+    N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
 };
-use crate::cell_activity_graph_embedding::feature_gating::build_feature_active_fine_edges;
+use crate::cell_activity_graph_embedding::feature_gating::{
+    build_feature_active_fine_edges, ActivityNorm,
+};
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, CellLatent, PairBatchDivisor, PairEncoderSpec, PairLatent, PairProjectionArgs,
     PairSolver,
@@ -62,8 +65,8 @@ use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig};
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
 use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
-    SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, FisherStats, Seeding,
+    SrtPreprocessConfig, SrtPreprocessed,
 };
 
 use data_beans::alg::gene_weighting::save_fisher_weights;
@@ -88,9 +91,6 @@ use train::{resolve_feature_batch_size, train, ProbeInputs, TrainInputs};
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
 ) -> anyhow::Result<()> {
-    if args.cell_level {
-        check_cell_level(args, args.modules.resolve(None)?.is_some())?;
-    }
     let c = &args.common;
     mkdir_parent(&c.out)?;
 
@@ -197,17 +197,12 @@ pub fn fit_cell_activity_graph_embedding(
         edge_source,
         cell_proj: shared_cell_proj,
         feature_axis,
-        row_weights: fisher_weights,
-        row_stats,
-        feature_weights: feature_fisher_weights,
-        feature_stats: _,
         n_cells,
         n_rows,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: Some(&args.ablation),
-        fisher_weights: !args.no_fisher_weights,
         // cage-cell too: the estimate is preprocessing (fitted on data-beans'
         // pseudobulk samples), not training; --ignore-batch turns it off
         batch_effects: BatchEstimate::Fit,
@@ -232,13 +227,17 @@ pub fn fit_cell_activity_graph_embedding(
     let n_features = feature_axis.n_features();
     let feature_names: Vec<Box<str>> = feature_axis.feature_names().to_vec();
 
-    // Persist the NB-Fisher precision weights (when computed) so downstream
-    // tools can reload them, matching the senna/chickpea convention. These are
-    // per-ROW NB precisions, consumed by the projection, which reads the
-    // matrix, so they keep the row names.
-    if let Some(w) = fisher_weights.as_ref() {
-        save_fisher_weights(&c.out, w, &row_names)?;
-    }
+    // Persist the NB-Fisher precision weights so downstream tools can reload
+    // them, matching the senna/chickpea convention. These are per-ROW NB
+    // precisions, consumed by the projection, which reads the matrix, so they
+    // keep the row names.
+    let FisherStats {
+        row_weights: fisher_weights,
+        row_stats,
+        feature_weights: feature_fisher_weights,
+        feature_stats: _,
+    } = FisherStats::compute(&data_vec, &feature_axis)?;
+    save_fisher_weights(&c.out, &fisher_weights, &row_names)?;
 
     // Fisher weights, on the axis each consumer actually indexes.
     //
@@ -291,13 +290,8 @@ pub fn fit_cell_activity_graph_embedding(
     // zarr to rebuild the same vector. These totals are undivided: they set
     // the pair projection's abundance offset, a part of the model, not the
     // written feature_community, which is fitted on divided counts.
-    // Off the streaming pass when it ran; `sum()` IS the per-row total. Only
-    // `--no-fisher-weights` leaves it absent, and that is the one case worth a
-    // second read.
-    let row_totals: Vec<f64> = match row_stats {
-        Some(st) => st.sum().iter().map(|&x| f64::from(x)).collect(),
-        None => crate::link_community::profiles::compute_row_totals(&data_vec, c.block_size)?,
-    };
+    // Off the streaming pass; `sum()` IS the per-row total.
+    let row_totals: Vec<f64> = row_stats.sum().iter().map(|&x| f64::from(x)).collect();
     let feature_totals = feature_axis.pool_totals(&row_totals);
 
     // The go/no-go for everything a velocity contrast would be built on, taken
@@ -342,7 +336,7 @@ pub fn fit_cell_activity_graph_embedding(
                 (args.hvg.n_hvg > 0).then_some(args.hvg.n_hvg),
                 args.hvg.feature_list_file.as_deref(),
                 must_train.as_ref(),
-                c.block_size,
+                None,
             )?;
             // Selection ranks ROWS, and the projection it weights reads rows, so
             // both stay on the row axis. What cannot stay there is a feature: picking a
@@ -375,7 +369,7 @@ pub fn fit_cell_activity_graph_embedding(
             // matrix through training.
             Some(w) => {
                 drop(shared_cell_proj);
-                data_vec.project_columns_weighted(c.proj_dim, c.block_size, batch_arg, w)?
+                data_vec.project_columns_weighted(c.proj_dim, None, batch_arg, w)?
             }
             None => {
                 shared_cell_proj.expect("preprocessing takes the projection whenever HVG is off")
@@ -465,7 +459,7 @@ pub fn fit_cell_activity_graph_embedding(
         FeatureInclusionMode::All => None,
         FeatureInclusionMode::Moran => {
             use crate::cell_activity_graph_embedding::feature_inclusion::{
-                cell_inclusion, pb_inclusion, pb_spatial_edges, PbUnits,
+                cell_inclusion, pb_inclusion, pb_spatial_edges, PbUnits, CELL_COLUMN_BLOCK,
             };
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
@@ -476,7 +470,7 @@ pub fn fit_cell_activity_graph_embedding(
                     &section_ids,
                     spatial_edges,
                     args.inclusion_blocks,
-                    c.block_size.unwrap_or(4096),
+                    CELL_COLUMN_BLOCK,
                 )?,
                 Some(fine) => {
                     anyhow::ensure!(
@@ -523,7 +517,7 @@ pub fn fit_cell_activity_graph_embedding(
     //     super-cell at EVERY `--chain-levels` entry (the coarser-level
     //     analog of the old within-super-cell positives);
     //   - per-PB degree over the retained super edges becomes the
-    //     `--alpha-neg` negative weight, and per-level sibling pools are
+    //     `ALPHA_NEG` negative weight, and per-level sibling pools are
     //     precomputed for the hard-negative draw.
     //
     // All of it is a deterministic function of the coarsening labels and
@@ -537,7 +531,7 @@ pub fn fit_cell_activity_graph_embedding(
         &pb_frame.pb_exp_batch,
         n_exp_batches,
         n_pb,
-        args.alpha_neg,
+        ALPHA_NEG,
         // on cells there is no coarser group for an edge to straddle;
         // cross-batch edges are dropped either way
         (!args.cell_level).then_some(pb_filter),
@@ -563,8 +557,7 @@ pub fn fit_cell_activity_graph_embedding(
     let fine_edge_activities = build_feature_active_fine_edges(
         &data_vec,
         &fine_edges,
-        c.block_size,
-        args.activity_norm,
+        ActivityNorm::Log1p,
         &feature_axis,
     )?;
     // Fold per-feature fine-edge activity onto the PB super edges,
@@ -624,30 +617,37 @@ pub fn fit_cell_activity_graph_embedding(
         trainable_features.len()
     );
 
-    // Positives drawn per (feature, batch), one scalar for every feature.
-    // `--positives-per-epoch` overrides `--per-feature-batch` with an absolute
-    // total. See `FeatureGatedChainSampler::batch_size` for why the budget is not
-    // split per-feature.
     // Features an epoch visits: all of them, or Σπ under inclusion.
     let expected_visits = crate::cell_activity_graph_embedding::feature_inclusion::expected_visits(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
-    let positives_per_feature_exp_batch = match args.positives_per_epoch {
-        Some(total) => (total / (expected_visits * n_exp_batches).max(1)).max(1),
-        None => args.per_feature_batch,
+    let positives_per_feature_exp_batch =
+        positives_per_feature_batch(args.positives_per_epoch, expected_visits, n_exp_batches);
+    // --features-per-epoch caps the visits, not the split: each visited
+    // feature keeps its draws and the epoch draws fewer in all.
+    let features_visited = match args.features_per_epoch {
+        0 => expected_visits,
+        cap => cap.min(expected_visits),
     };
     info!(
-        "Positive budget: {} super-edge draws per (feature, batch), {} features x {} batch(es) = {} per epoch{}",
+        "Positive budget: {} super-edge draws per (feature, batch){}; {} features visited{} x {} batch(es) = {} per epoch",
         positives_per_feature_exp_batch,
-        expected_visits,
+        match args.positives_per_epoch {
+            Some(total) => format!(
+                " (--positives-per-epoch {total} split over {expected_visits} expected visits x {n_exp_batches} batch(es))"
+            ),
+            None => String::new(),
+        },
+        features_visited,
+        match (inclusion.is_some(), args.features_per_epoch > 0) {
+            (true, true) => " (Σπ under --feature-inclusion, capped by --features-per-epoch)",
+            (true, false) => " (Σπ under --feature-inclusion)",
+            (false, true) => " (capped by --features-per-epoch)",
+            (false, false) => "",
+        },
         n_exp_batches,
-        positives_per_feature_exp_batch * expected_visits * n_exp_batches,
-        if args.positives_per_epoch.is_some() {
-            " (--positives-per-epoch)"
-        } else {
-            " (--per-feature-batch)"
-        }
+        positives_per_feature_exp_batch * features_visited * n_exp_batches,
     );
 
     // Activities can be dropped now — the cache owns everything the
@@ -724,7 +724,7 @@ pub fn fit_cell_activity_graph_embedding(
         cache: &cache,
         unit_to_group_per_level: &pb_to_parent_per_level,
         positives_per_draw: positives_per_feature_exp_batch,
-        n_negatives: args.n_negatives,
+        n_negatives: N_NEGATIVES,
         exclude_partner: args.cell_level,
     };
 
@@ -745,8 +745,9 @@ pub fn fit_cell_activity_graph_embedding(
         lora_plus: lora_plus.as_ref(),
         sampler: &sampler,
         trainable_features: &trainable_features,
+        features_visited,
         feature_batch_size,
-        feature_fisher_weights: feature_fisher_weights.as_deref(),
+        feature_fisher_weights: &feature_fisher_weights,
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
         module_cfg: module_cfg.as_ref(),
         module_profiles: module_profiles.as_ref(),
@@ -797,7 +798,7 @@ pub fn fit_cell_activity_graph_embedding(
         batch_of_cell: &batch_membership_u32,
     });
     let encoder_spec = PairEncoderSpec {
-        ridge: args.pair_ridge,
+        ridge: PAIR_RIDGE,
         ..PairEncoderSpec::default()
     };
     let pair_encoder_path = format!("{}.pair_encoder.safetensors", c.out);
@@ -821,7 +822,7 @@ pub fn fit_cell_activity_graph_embedding(
                 save_to: &pair_encoder_path,
             },
             seed: c.seed,
-            pair_block: args.pair_block,
+            pair_block: PAIR_BLOCK,
             eval_features: None,
             score_pairs: false,
         },
@@ -874,7 +875,6 @@ pub fn fit_cell_activity_graph_embedding(
         n_cells,
         &PropensityReportConfig {
             clustering,
-            block_size: c.block_size,
             // Deliberately row-keyed, and documented as such in `pinto cage
             // --help`: a channelized run lists a feature's two tracks as two rows,
             // which is the one place the nascent/mature contrast is reportable.
@@ -956,41 +956,96 @@ fn write_feature_inclusion(
     Ok(())
 }
 
-/// What `cage-cell` cannot combine with, checked here because it sets
-/// the mode after parsing: flags that pick from, or pool over, a hierarchy
-/// of pseudobulks. Flags that only shape what it skips are warned of in
-/// `main`, which knows which were given (see [`cell_level_no_ops_given`]).
-fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        args.chain_levels.is_none(),
-        "cage-cell: --chain-levels has no hierarchy to pick from on cells"
-    );
-    // both pool counts per trained unit: a dense features × cells matrix
-    anyhow::ensure!(
-        !modules && args.feature_embedding.is_none(),
-        "cage-cell: --feature-modules and --feature-embedding pool counts per \
-         trained unit, a dense features × cells matrix on cells"
-    );
-    Ok(())
+/// Positives drawn per (feature, batch), one scalar for every feature
+/// (see `FeatureGatedChainSampler::batch_size` for why the budget is not
+/// split per feature). Unset, [`PER_FEATURE_BATCH`]; with
+/// `--positives-per-epoch` `total`, `total` split evenly over
+/// `expected_visits` (the trainable features, or Σπ under
+/// `--feature-inclusion`) times `n_batches`, floored, and at least one.
+pub(crate) fn positives_per_feature_batch(
+    total: Option<usize>,
+    expected_visits: usize,
+    n_batches: usize,
+) -> usize {
+    match total {
+        Some(total) => (total / (expected_visits * n_batches).max(1)).max(1),
+        None => PER_FEATURE_BATCH,
+    }
 }
 
-/// The flags `cage-cell` was given on its command line (`m`, its
-/// subcommand's matches) that shape only what it skips: the HVG weighting
-/// of the projection that builds pseudobulks, and the pseudobulks
-/// themselves. (`--num-levels` and `--batch-knn` shape the batch-effect
-/// estimate, which cage-cell makes.) Their defaults are not reported.
-pub(crate) fn cell_level_no_ops_given(m: &clap::ArgMatches) -> Vec<&'static str> {
-    const NO_OPS: [(&str, &str); 4] = [
-        ("n_hvg", "--n-hvg"),
-        ("feature_list_file", "--feature-list-file"),
-        ("must_train_features", "--must-train-features"),
-        ("n_pseudobulk", "--n-pseudobulk"),
-    ];
-    NO_OPS
-        .into_iter()
-        .filter(|(id, _)| m.value_source(id) == Some(clap::parser::ValueSource::CommandLine))
-        .map(|(_, flag)| flag)
-        .collect()
+/// What `cage-cell` does with a flag of cage's that has no meaning on cells.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OnCells {
+    /// Off its help: a qualifier of a refused flag, refused with it.
+    Hide,
+    /// Off its help, and warned of when given: it shapes only the HVG
+    /// weighting of the projection that builds pseudobulks, or the
+    /// pseudobulks themselves. (`--num-levels` and the batch matching shape
+    /// the batch-effect estimate, which cage-cell makes.)
+    Warn,
+    /// Off its help, and refused when given: it picks from, or pools over, a
+    /// hierarchy of pseudobulks.
+    Refuse,
+}
+
+/// cage's flags that `cage-cell` hides, warns of or refuses, by argument id.
+pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 10] = [
+    ("n_hvg", OnCells::Warn),
+    ("feature_list_file", OnCells::Warn),
+    ("must_train_features", OnCells::Warn),
+    ("n_pseudobulk", OnCells::Warn),
+    ("chain_levels", OnCells::Refuse),
+    ("feature_modules", OnCells::Refuse),
+    ("feature_embedding", OnCells::Refuse),
+    ("feature_embedding_bias", OnCells::Hide),
+    ("feature_embedding_mode", OnCells::Hide),
+    ("feature_init_mode", OnCells::Hide),
+];
+
+/// `arg`, hidden when `cage-cell` has no use for it (every flag of
+/// [`CELL_LEVEL_FLAGS`]).
+pub(crate) fn hide_on_cells(arg: clap::Arg) -> clap::Arg {
+    if CELL_LEVEL_FLAGS.iter().any(|(id, _)| arg.get_id() == *id) {
+        arg.hide(true)
+    } else {
+        arg
+    }
+}
+
+/// The flags of [`CELL_LEVEL_FLAGS`] marked `what` that `cage-cell` (`cmd`,
+/// its matches `m`) was given on its command line; defaults are not the
+/// user's doing.
+pub(crate) fn cell_level_given(
+    cmd: &clap::Command,
+    m: &clap::ArgMatches,
+    what: OnCells,
+) -> Vec<String> {
+    let ids = CELL_LEVEL_FLAGS
+        .iter()
+        .filter(|(_, w)| *w == what)
+        .map(|(id, _)| *id);
+    crate::util::cli::given_on_cli(cmd, m, ids)
+}
+
+/// Refuse the flags `cage-cell` cannot combine with and warn of those that
+/// do nothing on cells, from its command line (`cmd`, its matches `m`).
+pub(crate) fn check_cell_level(cmd: &clap::Command, m: &clap::ArgMatches) -> anyhow::Result<()> {
+    let refused = cell_level_given(cmd, m, OnCells::Refuse);
+    anyhow::ensure!(
+        refused.is_empty(),
+        "cage-cell: {} need a hierarchy of pseudobulks, to pick from or to pool \
+         counts per trained unit (a dense features × cells matrix on cells)",
+        refused.join(", ")
+    );
+    let no_ops = cell_level_given(cmd, m, OnCells::Warn);
+    if !no_ops.is_empty() {
+        log::warn!(
+            "cage-cell: {} shape only the HVG projection or the pseudobulks that \
+             cage-cell skips; they do nothing here",
+            no_ops.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// The "hierarchy" of a cell-level fit: every cell its own unit at both

@@ -39,7 +39,7 @@ fn dividing_by_the_estimate_removes_the_per_batch_bias() {
     }
     let ones = vec![1.0; pre.data_vec.num_rows()];
     let fit = |divisor| {
-        fit_feature_community_param(&by_batch, &pre.data_vec, Some(&ones), None, None, divisor)
+        fit_feature_community_param(&by_batch, &pre.data_vec, Some(&ones), None, divisor)
             .unwrap()
             .posterior_mean()
             .clone()
@@ -84,7 +84,6 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
     let pre = preprocess_srt(SrtPreprocessConfig {
         common: &args,
         ablation: None,
-        fisher_weights: false,
         batch_effects: BatchEstimate::Skip,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
@@ -104,7 +103,7 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
     };
 
     let fit = |divisor| {
-        fit_feature_community_param(&propensity, &pre.data_vec, None, None, None, divisor)
+        fit_feature_community_param(&propensity, &pre.data_vec, None, None, divisor)
             .unwrap()
             .posterior_mean()
             .clone()
@@ -247,7 +246,11 @@ fn predict(dir: &std::path::Path, model: &str, input: &[&str], name: &str) -> St
     let mut argv = vec!["x"];
     argv.extend_from_slice(input);
     argv.extend_from_slice(&["--model", model, "-o", &out]);
-    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict).unwrap();
+    crate::predict::predict(
+        &Cli::try_parse_from(argv).unwrap().predict,
+        &Default::default(),
+    )
+    .unwrap();
     out
 }
 

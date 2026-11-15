@@ -287,9 +287,8 @@ pub struct PartitionInputs<'a> {
     pub cell_names: &'a [Box<str>],
     pub data_vec: &'a SparseIoVec,
     /// Precomputed feature weights, so no partition re-fits their trend.
-    pub feature_weights: Option<&'a [f32]>,
+    pub feature_weights: &'a [f32],
     pub axis: &'a FeatureAxis,
-    pub block_size: Option<usize>,
     /// The run's batch effect, when it divides by one: every written
     /// feature_community is then batch-adjusted.
     pub divisor: Option<crate::util::batch_effects::BatchDivisor<'a>>,
@@ -305,9 +304,8 @@ pub fn fit_partition(
     let feature_community = fit_feature_community_param(
         &propensity,
         inp.data_vec,
-        inp.feature_weights,
+        Some(inp.feature_weights),
         Some(inp.axis),
-        inp.block_size,
         inp.divisor,
     )?;
     Ok(Partition {

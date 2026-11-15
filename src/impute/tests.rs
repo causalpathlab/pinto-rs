@@ -32,7 +32,6 @@ fn project(
         model_features: features,
         feature_kind: kind,
         iters,
-        block_size: None,
     };
     project_profile_propensity(data, &p, None, "test")
 }
@@ -142,7 +141,7 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
                 .into(),
         );
     }
-    let data = open_backends("test", &files, false)?;
+    let data = open_backends("test", &files)?;
     let prop = project(
         &data,
         &profiles,

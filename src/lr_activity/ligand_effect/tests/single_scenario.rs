@@ -171,7 +171,6 @@ impl Fixture {
                 targets: &self.targets,
                 species: ReferenceSpecies::Human,
                 seed,
-                block_size: None,
                 only: &[],
                 cell_types: None,
                 region: None,

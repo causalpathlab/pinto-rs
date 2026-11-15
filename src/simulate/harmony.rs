@@ -56,23 +56,23 @@ const MAX_ROUNDS: usize = 10;
 #[derive(clap::Args, Debug, Clone)]
 pub struct HarmonyParams {
     /// Harmony diversity penalty (>= 0)
-    #[arg(long, default_value_t = THETA)]
+    #[arg(long, default_value_t = THETA, hide = true)]
     pub theta: f64,
 
     /// Harmony soft-clustering width (> 0)
-    #[arg(long, default_value_t = SIGMA)]
+    #[arg(long, default_value_t = SIGMA, hide = true)]
     pub sigma: f64,
 
     /// Harmony ridge penalty (> 0)
-    #[arg(long, default_value_t = LAMBDA)]
+    #[arg(long, default_value_t = LAMBDA, hide = true)]
     pub lambda: f64,
 
     /// Harmony clusters (default: min(100, N / 30))
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub harmony_k: Option<usize>,
 
     /// Harmony rounds at most
-    #[arg(long, default_value_t = MAX_ROUNDS)]
+    #[arg(long, default_value_t = MAX_ROUNDS, hide = true)]
     pub max_rounds: usize,
 }
 

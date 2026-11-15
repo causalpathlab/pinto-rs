@@ -54,7 +54,6 @@ pub struct FeatureActiveEdges {
 pub fn build_feature_active_fine_edges(
     data: &SparseIoVec,
     edges: &[(u32, u32)],
-    block_size: Option<usize>,
     norm: ActivityNorm,
     axis: &FeatureAxis,
 ) -> anyhow::Result<FeatureActiveEdges> {
@@ -72,8 +71,7 @@ pub fn build_feature_active_fine_edges(
     // Avoids the per-row mutex on a shared CooMatrix. The COO→CSR conversion
     // SUMS duplicate entries, which is what folds a feature's channel rows
     // together; `log1p` is applied to the summed value afterwards.
-    let block = block_size.unwrap_or(n_rows.max(1));
-    let intervals = generate_minibatch_intervals(n_cells, block, None);
+    let intervals = generate_minibatch_intervals(n_cells, n_rows.max(1), None);
 
     let per_block: Vec<Vec<(usize, usize, f32)>> = intervals
         .par_iter()

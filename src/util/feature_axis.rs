@@ -137,19 +137,18 @@ impl FeatureAxis {
     pub fn running_stats(
         &self,
         data: &SparseIoVec,
-        block_size: Option<usize>,
         label: &str,
     ) -> anyhow::Result<(SparseRunningStatistics<f32>, SparseRunningStatistics<f32>)> {
         if self.channelized {
             streaming_sparse_running_stats_folded(
                 data,
-                block_size,
+                None,
                 label,
                 self.row_to_feature(),
                 self.n_features(),
             )
         } else {
-            let stats = streaming_sparse_running_stats(data, block_size, label)?;
+            let stats = streaming_sparse_running_stats(data, None, label)?;
             Ok((stats.clone(), stats))
         }
     }

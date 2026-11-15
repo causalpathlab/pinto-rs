@@ -6,7 +6,7 @@
 //! `pinto srt-sim-score`'s two tests and `pinto srt-sim-pairs`'s pair sets,
 //! computed in the call, as they take a moment.
 
-use super::mcp::{in_background, launch, out_or_free, parsed, rooted};
+use super::mcp::{background, in_background, launch, out_arg, out_or_free, parsed, rooted};
 use super::script;
 use crate::mcp::shown_path;
 use crate::simulate::baseline::{check_inputs, BaselineArgs};
@@ -77,8 +77,8 @@ pub(super) struct SimBaselineToolArgs {
     pub truth: String,
     #[serde(default)]
     pub method: Option<String>,
-    #[serde(default)]
-    pub k: Option<usize>,
+    #[serde(default, alias = "k")]
+    pub n_clusters: Option<usize>,
     #[serde(default)]
     pub seed: Option<u64>,
     #[serde(default)]
@@ -158,7 +158,7 @@ pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
         argv.push(flag_value("--set", s));
     }
     if !a.coords.is_empty() {
-        argv.push(flag_value("--coords", rooted(&a.coords).join(",")));
+        argv.push(flag_value("--coord", rooted(&a.coords).join(",")));
         if !a.coord_column_names.is_empty() {
             argv.push(flag_value(
                 "--coord-column-names",
@@ -305,8 +305,8 @@ pub(super) fn baseline_argv(a: &SimBaselineToolArgs, truth: &str, table: &str) -
     if let Some(m) = &a.method {
         argv.push(flag_value("--method", m));
     }
-    if let Some(k) = a.k {
-        argv.push(flag_value("--k", k));
+    if let Some(k) = a.n_clusters {
+        argv.push(flag_value("--n-clusters", k));
     }
     if let Some(s) = a.seed {
         argv.push(flag_value("--seed", s));
@@ -381,10 +381,10 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 "properties": {
                     "scenario": {"type": "string", "enum": SCENARIOS.iter().map(|s| s.name).collect::<Vec<_>>(), "description": format!("Named scenario to start from [default: {}]: {}", SCENARIOS[0].name, scenarios.join("; "))},
                     "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto srt-simulate --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, clean_donors (a list, [0]), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
-                    "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coords); the square grid when none"},
+                    "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
-                    "out": {"type": "string", "description": "Output folder (-o); left out, a free sim name in today's results folder"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "out": out_arg("folder", "sim"),
+                    "background": background(),
                 },
                 "additionalProperties": false,
             }),
@@ -447,17 +447,17 @@ pub(super) fn specs() -> Vec<ToolSpec> {
              recipe on all sections, no batch handling), harmony (the same with Harmony on the \
              PCs, batch = donor) or per-donor (each donor alone, its clusters matched to the \
              largest donor's by marker correlation). Leiden is tuned toward the true number of \
-             domains unless k is given. Writes a cell/label table at {out}.tsv and names it as \
+             domains unless n_clusters is given. Writes a cell/label table at {out}.tsv and names it as \
              labels; runs as a background job unless asked, never over an existing table.",
             json!({
                 "type": "object",
                 "properties": {
                     "truth": {"type": "string", "description": "The simulation: run_simulate's truth (its truth run) or out folder"},
                     "method": {"type": "string", "enum": ["pooled", "harmony", "per-donor"], "description": "Pipeline [default: pooled]"},
-                    "k": {"type": "integer", "minimum": 1, "description": "Clusters to tune Leiden toward [default: the domains among the spots clustered]"},
+                    "n_clusters": {"type": "integer", "minimum": 1, "description": "Clusters to tune Leiden toward [default: the domains among the spots clustered]"},
                     "seed": {"type": "integer", "minimum": 0, "description": "Leiden and Harmony seed [default: 1]"},
                     "out": {"type": "string", "description": "Output prefix, the table at {out}.tsv; left out, a free baseline-<method> name in today's results folder"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "background": background(),
                 },
                 "required": ["truth"],
                 "additionalProperties": false,

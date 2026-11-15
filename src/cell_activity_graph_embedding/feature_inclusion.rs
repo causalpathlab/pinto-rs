@@ -645,6 +645,9 @@ pub fn pb_inclusion(
     score_sections(axis.n_features(), &pb_section, pb.edges, "units", inputs)
 }
 
+/// Cells read per block by [`cell_inclusion`] in a fit.
+pub const CELL_COLUMN_BLOCK: usize = 4096;
+
 /// [`FeatureInclusion`] over cells (cage-cell, which builds no pseudobulks):
 /// each cell's log-normalised counts, the spatial graph `edges` (global cell
 /// pairs; pairs across sections are left out), and a grid of geometric

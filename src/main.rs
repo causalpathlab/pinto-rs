@@ -33,7 +33,7 @@ use compare::{run_compare, CompareArgs};
 use impute::{run_impute, ImputeArgs};
 use link_community::fit::*;
 use lr_activity::{fit_lra_simulate, fit_srt_lr_activity, LraSimulateArgs, SrtLrActivityArgs};
-use predict::{predict, PredictArgs};
+use predict::{predict, ModelOnlyFlags, PredictArgs};
 use propensity::*;
 use svd::fit::*;
 
@@ -88,7 +88,12 @@ fn print_logo() {
     term_width = 80
 )]
 struct Cli {
-    #[arg(short = 'v', long, global = true)]
+    #[arg(
+        short = 'v',
+        long,
+        global = true,
+        help = "Log progress (info level; RUST_LOG overrides)"
+    )]
     verbose: bool,
 
     #[command(subcommand)]
@@ -184,7 +189,7 @@ enum Commands {
                       --edge-cluster-method picks the cut.\n\
                       leiden is the default,\n\
                       deciding the count from --leiden-resolution.\n\
-                      kmeans instead uses a fixed --n-edge-clusters,\n\
+                      kmeans instead uses a fixed --n-communities,\n\
                       spherical on the pair latent and seeded by --seed.\n\
                       `pinto prop` re-cuts the same latent at a fixed K.\n\n\
                       Outputs:\n\
@@ -214,7 +219,7 @@ enum Commands {
                       Use this subcommand to re-cut the same latent,\n\
                       or for separate expression data.\n\
                       It is the fixed-K path:\n\
-                      --edge-cluster-method kmeans --n-edge-clusters K.\n\n\
+                      --edge-cluster-method kmeans --n-communities K.\n\n\
                       Model:\n\
                       \x20 Given latent codes z_e [E x T] from cage or delta-svd:\n\
                       \x20   c_e = the pair's community, cut by leiden (default)\n\
@@ -235,13 +240,13 @@ enum Commands {
                       Inputs (all passed by flag; there is no positional arg):\n\
                       - -z/--latent-data-file: .latent.parquet (from cage or delta-svd)\n\
                       - -e/--coord-pair-file: .coord_pairs.parquet (cell pair names)\n\
-                      - -d/--expr-data-files: expression data (.zarr or .h5), optional\n\n\
+                      - --data-files: expression data (.zarr or .h5), optional\n\n\
                       Outputs:\n\
                       - {out}.propensity.parquet: per-vertex propensity (N x K)\n\
                       \x20 Columns: C0 .. C{K-1}, cluster (argmax),\n\
                       \x20 entropy (Shannon, nats), plus optional coord trailer.\n\
                       - {out}.link_community.parquet: per-edge community labels\n\
-                      - {out}.features.parquet: cluster-specific feature expression (with -d/--expr-data-files).\n\
+                      - {out}.features.parquet: cluster-specific feature expression (with --data-files).\n\
                       \x20 Rows are scaled by the NB Fisher-info weight\n\
                       \x20 w_g = 1 / (1 + π_g · s̄ · φ(μ_g)). There is no flag for it.\n\
                       - {out}.pinto.json: information-flow manifest used by\n\
@@ -281,16 +286,13 @@ enum Commands {
                       \x20   same feature-level count filter and NB weight so a feature is\n\
                       \x20   never split across the projection.\n\
                       \x20   Every profile dim is a full linear combination of ALL features\n\
-                      \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\
-                      \x20   Optionally zero basis rows for features below --min-feature-count.\n\n\
+                      \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\n\
                       \x20 Feature-network module-pair profile (--feature-network file.tsv):\n\
                       \x20   Feature-feature edges you supply (two-column TSV; pinto has\n\
                       \x20   no network of its own), optionally SNN-\n\
                       \x20   augmented, k-core-trimmed, Leiden-clustered into feature modules.\n\
                       \x20   Edge profile is SPARSE over module-pairs (a, b) with entries\n\
-                      \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\
-                      \x20   Controls: --snn-min-shared, --feature-trim-min-degree,\n\
-                      \x20   --feature-modules-resolution.\n\n\
+                      \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\n\
                       ALGORITHM:\n\n\
                       \x20 1. Build spatial KNN graph (or expression KNN if no coords)\n\
                       \x20 2. Batch effect estimation (multi-sample only;\n\
@@ -395,7 +397,6 @@ enum Commands {
                       Its pooled counts x_gu + x_gv enter through one statistic,\n\
                       and a small encoder trained on this run's pairs\n\
                       maps that statistic to the per-pair latent e_uv in one pass.\n\
-                      --pair-ridge sets the prior it is fitted under.\n\
                       A seeded sample of pairs is always re-solved exactly\n\
                       and the agreement is logged;\n\
                       the few placements the certificate puts far out\n\
@@ -406,7 +407,7 @@ enum Commands {
                       --edge-cluster-method picks the cut.\n\
                       leiden is the default,\n\
                       deciding the count from --leiden-resolution.\n\
-                      kmeans instead uses a fixed --n-edge-clusters,\n\
+                      kmeans instead uses a fixed --n-communities,\n\
                       spherical on the pair latent and seeded by --seed.\n\n\
                       A cell's embedding is its own placement on the feature embedding,\n\
                       by the same encoder that places its pairs,\n\
@@ -449,7 +450,7 @@ enum Commands {
                       Batch effects (δ) are estimated and removed as in cage, and\n\
                       `pinto predict` corrects a query as it does for cage. The δ\n\
                       estimate pools cells internally, only to estimate δ (so\n\
-                      --num-levels, --batch-knn and --cnv-clones shape it); training\n\
+                      --num-levels and --cnv-clones shape it); training\n\
                       never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
                       does.\n\n\
                       --n-pseudobulk and the HVG flags do nothing here (a warning says\n\
@@ -457,7 +458,10 @@ enum Commands {
                       refused. --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
                       its manifest says `cell_level`.",
-        mut_arg("embedding_l2", |a| a.default_value("0"))
+        mut_arg("embedding_l2", |a| a.default_value("0")),
+        // What cage-cell refuses, or warns does nothing on cells, is off its
+        // help.
+        mut_args(cell_activity_graph_embedding::fit::hide_on_cells)
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
 
@@ -589,8 +593,8 @@ enum Commands {
                       \n\
                       The reference data defaults to the files recorded in\n\
                       {model}.pinto.json; --reference-data overrides.\n\
-                      Predict-stage flags (coordinates, -k, --pair-block,\n\
-                      eval flags) apply to cage models only.\n\
+                      Predict-stage flags (coordinates, -k, eval flags)\n\
+                      apply to cage models only.\n\
                       \n\
                       Writes {out}.imputed.parquet (N_query × n_ref_features)."
     )]
@@ -702,7 +706,7 @@ enum Commands {
         long_about = "Label an srt-simulate run's spots with the standard scanpy recipe, as a\n\
                       baseline for srt-sim-score: total-count normalisation to 1e4, log1p,\n\
                       highly variable genes by normalised dispersion, scaling, PCA, a kNN\n\
-                      graph and Leiden tuned toward --k clusters (default: the simulation's\n\
+                      graph and Leiden tuned toward --n-clusters clusters (default: the simulation's\n\
                       domains).\n\n\
                       --method pooled runs all sections together, with no batch handling;\n\
                       --method harmony corrects the PCs for the donor with Harmony\n\
@@ -782,9 +786,9 @@ enum Commands {
                       Writes {out}.compare.json and {out}.contingency.parquet.\n\n\
                       Examples:\n\
                       \x20 pinto compare base.pinto.json perm.pinto.json -o base_vs_perm\n\
-                      \x20 pinto compare base perm --level-a draft --tau 0.3 -o cmp"
+                      \x20 pinto compare base perm --level draft,final --tau 0.3 -o cmp"
     )]
-    Compare(CompareArgs),
+    Compare(Box<CompareArgs>),
 
     #[cfg(feature = "view")]
     #[command(
@@ -811,7 +815,7 @@ enum Commands {
             )
         )
     )]
-    View(view::ViewArgs),
+    View(Box<view::ViewArgs>),
 
     #[cfg(feature = "view")]
     #[command(
@@ -931,7 +935,7 @@ impl Commands {
             Commands::LinkCommunity(a) => (&mut a.common.out, "lc"),
             Commands::Cage(a) => (&mut a.common.out, "cage"),
             Commands::CageCell(a) => (&mut a.common.out, "cage-cell"),
-            Commands::Predict(a) => (&mut a.common.out, "predict"),
+            Commands::Predict(a) => (&mut a.core.common.out, "predict"),
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
@@ -983,9 +987,13 @@ fn main() -> anyhow::Result<()> {
 
     let argv: Vec<String> = std::env::args().collect();
     check_removed_lra_flags(&argv)?;
-    // `Cli::parse_from`, keeping the matches: cage-cell asks which flags
-    // were given rather than left at their defaults.
-    let matches = <Cli as clap::CommandFactory>::command().get_matches_from(argv);
+    // `Cli::parse_from`, keeping the command and its matches: cage-cell,
+    // predict and impute ask which flags were given rather than left at
+    // their defaults.
+    let mut cmd = <Cli as clap::CommandFactory>::command();
+    let matches = cmd
+        .try_get_matches_from_mut(argv)
+        .unwrap_or_else(|e| e.exit());
     let mut cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| {
         e.format(&mut <Cli as clap::CommandFactory>::command())
             .exit()
@@ -997,16 +1005,15 @@ fn main() -> anyhow::Result<()> {
 
     crate::util::common::init_logger(cli.verbose);
 
-    if let Some(m) = matches.subcommand_matches("cage-cell") {
-        let no_ops = cell_activity_graph_embedding::fit::cell_level_no_ops_given(m);
-        if !no_ops.is_empty() {
-            log::warn!(
-                "cage-cell: {} shape only the HVG projection or the pseudobulks that \
-                 cage-cell skips; they do nothing here",
-                no_ops.join(", ")
-            );
-        }
-    }
+    // The subcommand `name`, as built, and its matches.
+    let sub = |name: &str| {
+        (
+            cmd.find_subcommand(name).expect("a subcommand of pinto"),
+            matches
+                .subcommand_matches(name)
+                .expect("the subcommand run"),
+        )
+    };
 
     match &cli.commands {
         Commands::Propensity(args) => {
@@ -1018,16 +1025,23 @@ fn main() -> anyhow::Result<()> {
         Commands::LinkCommunity(args) => {
             fit_srt_link_community(args)?;
         }
-        Commands::Cage(args) | Commands::CageCell(args) => {
+        Commands::Cage(args) => {
+            fit_cell_activity_graph_embedding(args)?;
+        }
+        Commands::CageCell(args) => {
+            let (c, m) = sub("cage-cell");
+            cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
             fit_cell_activity_graph_embedding(args)?;
         }
         Commands::Predict(args) => {
             // The return value serves `pinto impute`; the CLI path only wants
             // the files predict writes.
-            let (_propensity, _cell_names) = predict(args)?;
+            let (c, m) = sub("predict");
+            let (_propensity, _cell_names) = predict(args, &ModelOnlyFlags::given(c, m))?;
         }
         Commands::Impute(args) => {
-            run_impute(args)?;
+            let (c, m) = sub("impute");
+            run_impute(args, &util::input::SrtInputArgs::qc_flags_given(c, m))?;
         }
         Commands::LrActivity(args) => {
             fit_srt_lr_activity(args)?;
@@ -1081,3 +1095,7 @@ mod tests;
 #[cfg(all(test, feature = "view"))]
 #[path = "tests/session_cli.rs"]
 mod session_cli_tests;
+
+#[cfg(test)]
+#[path = "tests/surface.rs"]
+mod surface_tests;

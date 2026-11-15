@@ -5,7 +5,7 @@
 //! project's records, a background job unless asked otherwise. The reply lists the residual's files for
 //! `run_fit`, the second stage of the two-stage fit.
 
-use super::mcp::{as_run, in_background, launch, out_or_free, parsed, rooted};
+use super::mcp::{as_run, background, in_background, launch, out_arg, out_or_free, parsed, rooted};
 use super::script;
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::residual::{Adapt, Excess, Plan, ResidualArgs};
@@ -30,8 +30,8 @@ pub(super) struct ResidualToolArgs {
     pub adapt: Option<String>,
     #[serde(default)]
     pub adapt_cells: Option<f64>,
-    #[serde(default)]
-    pub feature_names: Option<String>,
+    #[serde(default, alias = "feature_names")]
+    pub feature_name_mode: Option<String>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -50,7 +50,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
         ("--excess", a.excess.clone()),
         ("--adapt", a.adapt.clone()),
         ("--adapt-cells", a.adapt_cells.map(|x| x.to_string())),
-        ("--feature-names", a.feature_names.clone()),
+        ("--feature-name-mode", a.feature_name_mode.clone()),
     ] {
         if let Some(v) = value {
             argv.push(flag_value(flag, v));
@@ -118,7 +118,8 @@ pub(super) fn residual(
 }
 
 pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
-    let flag = |id: &str, schema: Value| super::mcp::flag_arg(cli, "residual", id, schema);
+    let sub = super::mcp::subcommand(cli, "residual");
+    let flag = |id: &str, schema: Value| super::mcp::flag_arg(sub, id, schema);
     vec![ToolSpec::new(
         "run_residual",
         "The counts a fitted lc, cage or dsvd run leaves unexplained, as new data files \
@@ -141,13 +142,13 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             "type": "object",
             "properties": {
                 "run": {"type": "string", "description": "The stage-1 run: an lc, cage or dsvd run's prefix or .pinto.json (--from; --run also works)"},
-                "out": {"type": "string", "description": "Output folder (-o); left out, a free residual name in today's results folder"},
+                "out": out_arg("folder", "residual"),
                 "data_files": flag("data_files", json!({"type": "array", "items": {"type": "string"}})),
                 "excess": flag("excess", json!({"type": "string", "enum": choices::<Excess>()})),
                 "adapt": flag("adapt", json!({"type": "string", "enum": choices::<Adapt>()})),
                 "adapt_cells": flag("adapt_cells", json!({"type": "number", "minimum": 0})),
-                "feature_names": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
-                "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                "feature_name_mode": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
+                "background": background(),
             },
             "required": ["run"],
             "additionalProperties": false,

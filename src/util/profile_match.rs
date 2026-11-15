@@ -105,6 +105,10 @@ pub fn match_profiles(
     })
 }
 
+/// EM iterations of a unit's community proportions ([`em_proportions`]):
+/// impute's profile projection, held-out scoring and residual's θ.
+pub const EM_ITERS: usize = 100;
+
 /// One unit's community proportions `π` by EM over the profile mixture,
 /// written into `pi`: `π ← Σ_g x_g · r_g` with responsibilities
 /// `r_{g,k} ∝ π_k p̃_k(g)`, iterated to convergence. `obs` is the unit's
@@ -171,7 +175,6 @@ pub fn em_proportions(
 /// counts here gets, and the honest one: the model has no abundance for it.
 pub fn training_feature_totals(
     files: &[Box<str>],
-    common: &crate::util::input::SrtInputArgs,
     feature_kind: &data_beans::aux::feature_names::FeatureNameKind,
     target_features: &[Box<str>],
 ) -> anyhow::Result<Vec<f64>> {
@@ -187,11 +190,11 @@ pub fn training_feature_totals(
             .expect("with_row_canonicalizer on empty SparseIoVec");
     }
     for f in files {
-        let data = crate::util::input::open_sparse(f, common.preload_data)?;
+        let data = crate::util::input::open_sparse(f)?;
         loaded.push(std::sync::Arc::from(data), None)?;
     }
     let axis = crate::util::feature_axis::FeatureAxis::resolve(&loaded.row_names()?)?;
-    let per_row = crate::link_community::profiles::compute_row_totals(&loaded, common.block_size)?;
+    let per_row = crate::link_community::profiles::compute_row_totals(&loaded)?;
     let per_feature = axis.pool_totals(&per_row);
 
     let total_of: HashMap<&str, f64> = axis

@@ -598,9 +598,8 @@ pub struct DictMergeFiles {
     /// `cut_cosine` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
-    /// Detection cutoff the merge scored on. Chosen from the data when
-    /// `--merge-min-nnz` is unset, so a run is not reproducible from its
-    /// outputs without it.
+    /// Detection cutoff the merge scored on. Chosen from the data, so a run
+    /// is not reproducible from its outputs without it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_nnz: Option<usize>,
     /// How many features cleared that cutoff.
