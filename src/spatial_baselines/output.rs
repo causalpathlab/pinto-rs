@@ -16,7 +16,8 @@ use super::input::{SpatialData, SpatialInputArgs};
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
 use crate::util::metadata::{
-    delta_files, manifest_path, now_secs, BatchLabels, OutputFiles, PintoMetadata,
+    delta_files, manifest_path, now_secs, BaselineInput, BaselineMode, BaselineRun, BatchLabels,
+    OutputFiles, PintoMetadata, PseudobulkInput,
 };
 use crate::util::parquet_io::{cells_table_path, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -51,6 +52,23 @@ pub struct Fitted<'a> {
     pub embedding_name: &'a str,
     /// The settings as run, recorded in `{out}.baseline.json`.
     pub settings: serde_json::Value,
+    /// The super-cells a `-pb` command fitted on; `None` on cells.
+    pub pseudobulk: Option<PseudobulkInput>,
+}
+
+/// The run's formulation (`--reference` or the sparse default) and input.
+fn baseline_run(input: &SpatialInputArgs, pseudobulk: Option<PseudobulkInput>) -> BaselineRun {
+    BaselineRun {
+        mode: match input.reference {
+            true => BaselineMode::Reference,
+            false => BaselineMode::Sparse,
+        },
+        input: match pseudobulk {
+            Some(_) => BaselineInput::Pseudobulk,
+            None => BaselineInput::Cells,
+        },
+        pseudobulk,
+    }
 }
 
 /// One-hot rows of 0-based `labels` over `k` labels.
@@ -106,6 +124,7 @@ pub fn write_run(
     anyhow::ensure!(fit.labels.len() == n, "one label per cell");
     anyhow::ensure!(fit.embedding.nrows() == n, "one embedding row per cell");
     let k = fit.labels.iter().max().map_or(0, |&m| m + 1);
+    let run = baseline_run(input, fit.pseudobulk);
     log::info!("{}: {k} clusters", fit.method);
     let one_hot_labels;
     let membership = match fit.membership {
@@ -137,6 +156,7 @@ pub fn write_run(
         "coord_files": input.coord_files,
         "batch_files": input.batch_files,
         "seed": input.seed,
+        "run": run,
         "batch_correction": batch_correction(input, data),
         "n_clusters_found": k,
         "settings": fit.settings,
@@ -169,6 +189,7 @@ pub fn write_run(
             Some(_) => BatchLabels::BatchFiles,
             None => BatchLabels::Files,
         }),
+        baseline: Some(run),
         ..Default::default()
     };
     meta.write(std::path::Path::new(&manifest_path(prefix)))?;

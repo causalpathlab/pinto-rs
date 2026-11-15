@@ -58,6 +58,11 @@ pub struct SpatialInputArgs {
     #[arg(long, default_value_t = false)]
     pub ignore_batch: bool,
 
+    /// Run the original method's own formulation instead of pinto's sparse
+    /// one (the default; see --help)
+    #[arg(long, default_value_t = false)]
+    pub reference: bool,
+
     /// Output prefix
     #[arg(long, short, required = true)]
     pub out: Box<str>,

@@ -240,6 +240,52 @@ pub struct PintoMetadata {
     /// δ, and on manifests written before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_labels: Option<BatchLabels>,
+
+    /// Present on a spatial baseline's run (`stagate`, `spatialde2` and
+    /// their `-pb` commands): its formulation and what it was fitted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineRun>,
+}
+
+/// A spatial baseline's formulation and what it was fitted on.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BaselineRun {
+    /// `sparse` (pinto's scalable formulation, the default) or
+    /// `reference` (the original method's own).
+    pub mode: BaselineMode,
+    /// `cells`, or `pseudobulk` for a `-pb` command.
+    pub input: BaselineInput,
+    /// The super-cells a `-pb` run was fitted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pseudobulk: Option<PseudobulkInput>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaselineMode {
+    Sparse,
+    Reference,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaselineInput {
+    Cells,
+    Pseudobulk,
+}
+
+/// The super-cells a `-pb` baseline was fitted on, and how their graph
+/// was weighted.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PseudobulkInput {
+    /// `-d --n-pseudobulk`, the target.
+    pub n_pseudobulk: usize,
+    /// Super-cells fitted on.
+    pub n_super_cells: usize,
+    /// Super-edges of the collapsed graph.
+    pub n_super_edges: usize,
+    /// What a super-edge's weight is.
+    pub edge_weighting: String,
 }
 
 /// What a run's batch labels are: one per data file (by its position), the
@@ -1027,6 +1073,7 @@ pub fn create_lc_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1073,6 +1120,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1133,6 +1181,7 @@ pub fn create_cage_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1178,5 +1227,6 @@ pub fn create_prop_metadata(
         ablation: None,
         holdout: None,
         batch_labels: None,
+        baseline: None,
     }
 }

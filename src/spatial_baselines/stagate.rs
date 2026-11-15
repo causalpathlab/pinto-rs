@@ -987,6 +987,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &emb,
             embedding_name: "STAGATE",
             settings,
+            pseudobulk: None,
         },
     )?;
     Ok(())

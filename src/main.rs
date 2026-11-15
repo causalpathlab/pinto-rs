@@ -706,7 +706,11 @@ enum Commands {
         long_about = concat!(
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
              faithful to its reference code at the model level, on pinto's inputs:\n\
-             the data, -c, -b, -o and --seed flags lc takes.\n\n",
+             the data, -c, -b, -o and --seed flags lc takes.\n\n\
+             Sparse by default: each cell's --neighbors nearest in its section,\n\
+             the reference's own neighbors=k option. --reference connects every\n\
+             pair of cells in a section, the reference's default, at O(N^2) work\n\
+             per update (no N x N matrix is held).\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

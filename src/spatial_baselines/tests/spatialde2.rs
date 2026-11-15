@@ -392,3 +392,38 @@ fn genes_by_total_counts_and_size_factors_over_all() {
     assert_eq!(all.nonzeros, 5);
     assert_eq!(selected_counts(&d, &all.genes).n_genes, 3);
 }
+
+/// The reference's default graph, every pair of a section, computed as
+/// visited, is the kNN graph with every other cell of the section listed:
+/// the same neighbours, weights and neighbourhood prior.
+#[test]
+fn all_pairs_is_the_knn_graph_with_every_cell_listed() {
+    // an irregular layout, a coincident pair, two sections
+    let xy: Vec<(f32, f32)> = (0..14)
+        .map(|i| ((i as f32 * 1.7).sin() * 4.0, (i as f32 * 0.9).cos() * 3.0))
+        .chain([(1.0, 1.0), (1.0, 1.0)])
+        .collect();
+    let section: Vec<usize> = (0..16).map(|i| usize::from(i % 3 == 0)).collect();
+    let d = toy(&xy, &section);
+    let full = graph_of(&d, 15, 1.5);
+    let pairs = WeightedGraph::all_pairs(&d.xy, &d.section, 1.5);
+    let labels: Vec<usize> = (0..16).map(|i| (i * 7) % 4).collect();
+    for i in 0..16 {
+        let mut a: Vec<(usize, f64)> = full.neighbours(i).collect();
+        let mut b: Vec<(usize, f64)> = pairs.neighbours(i).collect();
+        a.sort_by_key(|p| p.0);
+        b.sort_by_key(|p| p.0);
+        assert_eq!(a.len(), b.len(), "cell {i}");
+        assert!(b.iter().all(|&(j, _)| section[j] == section[i] && j != i));
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.0, y.0);
+            assert!((x.1 - y.1).abs() < 1e-5 * x.1, "{x:?} vs {y:?}");
+        }
+        let (mut pa, mut pb) = (vec![0.0; 4], vec![0.0; 4]);
+        neighbourhood_log_prior_into(&full, &labels, i, &mut pa);
+        neighbourhood_log_prior_into(&pairs, &labels, i, &mut pb);
+        for (x, y) in pa.iter().zip(&pb) {
+            assert!((x - y).abs() < 1e-4 * (1.0 + x.abs()), "{pa:?} vs {pb:?}");
+        }
+    }
+}

@@ -214,6 +214,7 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
         ..spatialde2::Spatialde2Sizes {
             neighbors: 100,
             n_clusters: None,
+            all_pairs: false,
         }
         .memory_shape(
             &InputShape {
@@ -223,6 +224,40 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
             },
             nonzeros,
         )
+    }
+}
+
+/// Maximum resident memory (MiB) of `spatialde2 --reference` runs on one
+/// srt-simulate L1 section (2000 genes, every gene segmented on, 4
+/// threads): (cells, nonzeros, MiB).
+const SPATIALDE2_REFERENCE_MEASURED: [(usize, usize, f64); 3] = [
+    (1024, 788_258, 80.22),
+    (4096, 3_156_044, 238.45),
+    (8100, 6_238_351, 434.44),
+];
+
+/// `--reference` holds no edge list and no kNN search: its estimate
+/// covers every measured run and is not far above it.
+#[test]
+fn spatialde2_reference_holds_no_graph_and_its_estimate_covers_the_measured_runs() {
+    for (cells, nonzeros, measured) in SPATIALDE2_REFERENCE_MEASURED {
+        let shape = spatialde2::Spatialde2Sizes {
+            neighbors: 100,
+            n_clusters: None,
+            all_pairs: true,
+        }
+        .memory_shape(
+            &InputShape {
+                genes: 2000,
+                nonzeros,
+                section_sizes: vec![cells],
+            },
+            nonzeros,
+        );
+        assert_eq!((shape.edges, shape.gram, shape.pair_cells), (0, 0, cells));
+        let est = mib(spatialde2_peak_bytes(&shape));
+        assert!(est >= measured, "{cells}: {est:.0} < {measured} MiB");
+        assert!(est <= 1.5 * measured, "{cells}: {est:.0} MiB");
     }
 }
 
@@ -301,6 +336,7 @@ fn the_read_of_the_counts_is_charged() {
         edges: 0,
         regions: 1,
         gram: 0,
+        pair_cells: 0,
     };
     assert_eq!(
         spatialde2_peak_bytes(&spatialde2),

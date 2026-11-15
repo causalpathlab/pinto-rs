@@ -542,6 +542,17 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
 
+Each has two modes, recorded in the manifest (`baseline.mode`) and in
+`baseline.json`: pinto's sparse formulation, the default, which never
+holds an `N × N` matrix, and `--reference`, the original's own. For
+`spatialde2` the sparse mode is the reference's own `neighbors=k` option
+(`--neighbors`, 100 by default) and `--reference` its default graph, every
+pair of cells in a section connected; for `stagate` both are the same
+model and give the same numbers up to float rounding (the sparse one keeps
+the input sparse). Segmentation runs on every gene by default, as
+SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
+the most expressed.
+
 One deviation is shared: with two or more batches (data files, or `-b`
 labels) the counts are divided by the input's own batch effects (δ,
 estimated as `cage` estimates them and written to `{out}.delta.parquet`)

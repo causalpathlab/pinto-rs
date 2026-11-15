@@ -200,7 +200,15 @@ pub struct Spatialde2Shape {
     pub regions: usize,
     /// [`knn_gram_bytes`] of the graph's kNN.
     pub gram: usize,
+    /// Cells an all-pairs graph (`--reference`) holds, each its 2-D
+    /// coordinates, its section and its place in the section's list.
+    pub pair_cells: usize,
 }
+
+/// Bytes a cell holds in an all-pairs graph: two f64 coordinates, its
+/// section and its entry in its section's list (8 each), with as much again
+/// for the lists' growth.
+const PAIR_CELL_BYTES: usize = 48;
 
 /// Bytes a selected nonzero holds at once in SpatialDE2's copy of the
 /// counts: 16 while copied, 24 as kept (by cell and by gene), and 16 of
@@ -231,6 +239,7 @@ pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
         + GRAPH_EDGE_BYTES * s.edges
         + 16 * s.cells * s.regions
         + 6 * 8 * s.genes * s.regions
+        + PAIR_CELL_BYTES * s.pair_cells
         + s.gram;
     peak(SPATIALDE2_PROCESS_BYTES, s.nonzeros, held)
 }

@@ -22,12 +22,11 @@
 //!
 //! # Steps, as the reference code runs them
 //!
-//! - **Genes** (`figure_2.ipynb`): the paper segments on the spatially
-//!   variable genes at FDR 0.001 (SpatialDE2's GP score test), the 2000
-//!   with the highest total counts. *Deviation:* the GP test is not ported;
-//!   the 2000 genes with the highest total counts are used
-//!   (`--n-top-genes`, 0 for every gene, which is also
-//!   `tissue_segmentation`'s own default `genes=None`).
+//! - **Genes** (`tissue_segmentation(genes=None)`): every gene, the
+//!   reference's default; `--n-top-genes N` passes the `N` with the highest
+//!   total counts as its `genes` list. The paper's own analyses
+//!   (`figure_2.ipynb`) pass the 2000 most expressed of the spatially
+//!   variable genes at FDR 0.001 (SpatialDE2's GP score test, not ported).
 //! - **Size factors** (`tissue_segmentation` → `calc_sizefactors`): each
 //!   cell's total count over *all* genes (computed before the gene subset).
 //! - **Spatial energy** (`tissue_segmentation`, Supplementary eq. 2): the
@@ -77,22 +76,25 @@
 //! - **Batch effects.** With two or more batches the counts are divided by
 //!   the input's own δ before the size factors and the gene selection (see
 //!   [`super`]); `--ignore-batch` runs the original.
-//! - **Sparse graph.** The reference builds a dense `N × N` distance matrix
-//!   in every mode, and its default `neighbors=None` connects every pair of
-//!   spots. Here the graph is the `--neighbors` nearest cells within each
-//!   section ([`super::graph::knn_within_sections`]), symmetrised, so memory
-//!   stays linear in cells; the energy is the same sum, truncated to the
-//!   graph. `--neighbors 0` drops space, as `neighbors=0` does in the
-//!   reference (a Poisson mixture with a DP prior).
+//! - **Sparse graph (the default) and `--reference`.** The reference
+//!   builds a dense `N × N` distance matrix in every mode. Its default
+//!   (`neighbors=None`) connects every pair of spots; `--reference` runs
+//!   that model within each section, the weights recomputed from the
+//!   coordinates as each update visits them
+//!   ([`WeightedGraph::all_pairs`]): the same sums, at `O(N)` memory and
+//!   the reference's `O(N²)` work per update. The sparse default is the
+//!   reference's own `neighbors=k` option, the `--neighbors` nearest cells
+//!   within each section ([`super::graph::knn_within_sections`]),
+//!   symmetrised as the reference symmetrises them, `min d²` over the
+//!   graph's pairs as there, so memory stays linear in cells.
+//!   `--neighbors 0` drops space, as `neighbors=0` does in the reference (a
+//!   Poisson mixture with a DP prior).
 //!
 //!   The default of 100 neighbours is a choice of this port, not a
 //!   reference value. Cutting the `1/d²` sum does more than truncate it:
 //!   in 2-D the far shells carry much of each cell's total weight, so a
-//!   cut graph has a weaker effective `smoothness_factor`. On the 6 × 1600
-//!   spot simulation the regions found went from shared ARI 0.638 at
-//!   `--neighbors 100` to 0.753 with every pair in a section connected
-//!   (`--neighbors` at least the section size, which is the reference's
-//!   model within each section, at `k · N` memory).
+//!   cut graph has a weaker effective `smoothness_factor`, and its regions
+//!   can be coarser than `--reference`'s.
 //! - **Memory at the default cap.** The posteriors are `N × K₀` with the
 //!   reference's default `K₀ = ceil(sqrt(N))`, so memory and work per
 //!   update grow as `N^1.5` (about 8 GB for the posteriors alone at 1M
@@ -169,8 +171,8 @@ const ETA_1: f64 = 1.0;
 const ETA_2: f64 = 1.0;
 /// `gammahat_1`, `gammahat_2` at the start (`tf.fill(..., 1e-6)`).
 const GAMMAHAT_INIT: f64 = 1e-6;
-/// The paper's segmentation genes: the top 2000 by total counts.
-const N_TOP_GENES: usize = 2000;
+/// Genes segmented on: every gene, as `tissue_segmentation(genes=None)`.
+const N_TOP_GENES: usize = 0;
 /// Neighbours per cell in place of the reference's fully connected graph
 /// (a choice of this port, not a reference value).
 const NEIGHBORS: usize = 100;
@@ -192,11 +194,11 @@ pub struct Args {
     #[arg(long)]
     pub n_clusters: Option<usize>,
 
-    /// Spatial neighbours per cell, within a section (100 is this port's
-    /// choice: the reference connects every pair, and cutting its 1/d^2
-    /// sum weakens the smoothing; the section size reproduces it at
-    /// cells × section memory; 0 ignores space: a Poisson DP mixture)
-    #[arg(long, default_value_t = NEIGHBORS)]
+    /// Spatial neighbours per cell, within a section: the reference's own
+    /// `neighbors` (kNN, symmetrised). 100 is this port's sparse default;
+    /// --reference connects every pair of a section, the reference's
+    /// default; 0 ignores space (a Poisson DP mixture)
+    #[arg(long, default_value_t = NEIGHBORS, conflicts_with = "reference")]
     pub neighbors: usize,
 
     /// Spatial smoothness; larger values give finer segmentations
@@ -204,9 +206,9 @@ pub struct Args {
     #[arg(long, default_value_t = SMOOTHNESS_FACTOR)]
     pub smoothness_factor: f64,
 
-    /// Genes to segment on: the top N by total counts (0: every gene). The
-    /// paper takes the 2000 most expressed spatially variable genes; the
-    /// SVG test is not ported
+    /// Genes to segment on: the top N by total counts, as a gene list the
+    /// reference takes (`genes`). 0, the default, takes every gene, as the
+    /// reference does without a list
     #[arg(long, default_value_t = N_TOP_GENES)]
     pub n_top_genes: usize,
 
@@ -360,11 +362,32 @@ impl CellCounts {
     }
 }
 
-/// Each cell's spatial neighbours with their pairwise weights `w_nm`.
+/// Each cell's spatial neighbours with their pairwise weights `w_nm`:
+/// listed (a kNN graph, the reference's `neighbors=k`), or every other cell
+/// of its section (the reference's default `neighbors=None`), computed from
+/// the coordinates as they are visited so no `N × N` matrix is held.
 pub struct WeightedGraph {
-    offsets: Vec<usize>,
-    index: Vec<usize>,
-    weight: Vec<f64>,
+    kind: GraphKind,
+}
+
+enum GraphKind {
+    Lists {
+        offsets: Vec<usize>,
+        index: Vec<usize>,
+        weight: Vec<f64>,
+    },
+    AllPairs {
+        /// Coordinates, cells × `dims`, row-major.
+        xy: Vec<f64>,
+        dims: usize,
+        /// Each cell's section, and the cells of each section.
+        section: Vec<usize>,
+        members: Vec<Vec<usize>>,
+        /// `min d²` of each section.
+        min_d2: Vec<f64>,
+        /// `2 · smoothness_factor`.
+        scale: f64,
+    },
 }
 
 impl WeightedGraph {
@@ -403,18 +426,99 @@ impl WeightedGraph {
             offsets.push(flat.len());
         }
         WeightedGraph {
-            offsets,
-            index: flat,
-            weight,
+            kind: GraphKind::Lists {
+                offsets,
+                index: flat,
+                weight,
+            },
         }
     }
 
-    pub fn neighbours(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-        let r = self.offsets[i]..self.offsets[i + 1];
-        self.index[r.clone()]
+    /// The reference's default graph (`neighbors=None`): every pair of
+    /// cells of a section, `w_nm = 2 s min d² / d²_nm` with `min d²` the
+    /// smallest positive squared distance of the section, from coordinates
+    /// `xy` (cells × dims). The weights are recomputed as they are visited:
+    /// the same sum as the reference's dense `N × N` matrix, at `O(N)`
+    /// memory and the reference's `O(N²)` work per update.
+    pub fn all_pairs(xy: &Mat, section: &[usize], smoothness: f64) -> Self {
+        let (n, dims) = xy.shape();
+        let flat: Vec<f64> = (0..n)
+            .flat_map(|i| (0..dims).map(move |j| xy[(i, j)] as f64))
+            .collect();
+        let mut members = vec![Vec::new(); n_sections(section)];
+        for (i, &s) in section.iter().enumerate() {
+            members[s].push(i);
+        }
+        let d2 = |a: usize, b: usize| -> f64 {
+            (0..dims)
+                .map(|j| (flat[a * dims + j] - flat[b * dims + j]).powi(2))
+                .sum()
+        };
+        let min_d2 = members
             .iter()
-            .zip(&self.weight[r])
-            .map(|(&j, &w)| (j, w))
+            .map(|cells| {
+                cells
+                    .par_iter()
+                    .enumerate()
+                    .map(|(a, &i)| {
+                        cells[a + 1..]
+                            .iter()
+                            .map(|&j| d2(i, j))
+                            .filter(|&v| v > 0.0)
+                            .fold(f64::INFINITY, f64::min)
+                    })
+                    .reduce(|| f64::INFINITY, f64::min)
+            })
+            .collect();
+        WeightedGraph {
+            kind: GraphKind::AllPairs {
+                xy: flat,
+                dims,
+                section: section.to_vec(),
+                members,
+                min_d2,
+                scale: 2.0 * smoothness,
+            },
+        }
+    }
+
+    /// Cell `i`'s neighbours and their weights.
+    pub fn neighbours(&self, i: usize) -> Box<dyn Iterator<Item = (usize, f64)> + '_> {
+        match &self.kind {
+            GraphKind::Lists {
+                offsets,
+                index,
+                weight,
+            } => {
+                let r = offsets[i]..offsets[i + 1];
+                Box::new(
+                    index[r.clone()]
+                        .iter()
+                        .copied()
+                        .zip(weight[r].iter().copied()),
+                )
+            }
+            GraphKind::AllPairs {
+                xy,
+                dims,
+                section,
+                members,
+                min_d2,
+                scale,
+            } => {
+                let s = section[i];
+                let (dims, min_d2, scale) = (*dims, min_d2[s], *scale);
+                let at = &xy[i * dims..(i + 1) * dims];
+                Box::new(members[s].iter().filter(move |&&j| j != i).map(move |&j| {
+                    let d2: f64 = at
+                        .iter()
+                        .zip(&xy[j * dims..(j + 1) * dims])
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum();
+                    (j, scale * min_d2 / d2.max(min_d2))
+                }))
+            }
+        }
     }
 }
 
@@ -933,6 +1037,19 @@ pub fn selected_counts(data: &SpatialData, genes: &[usize]) -> CellCounts {
     CellCounts::from_rows(genes.len(), &rows)
 }
 
+/// The reference's `neighbors=k` graph: each cell's `k` nearest within its
+/// section, symmetrised; none at 0.
+fn spatial_graph(data: &SpatialData, k: usize, smoothness: f64) -> Option<WeightedGraph> {
+    (k > 0).then(|| {
+        let nb = knn_within_sections(data, k).symmetrised();
+        log::info!(
+            "spatialde2: {} spatial edges (k = {k}, symmetrised)",
+            nb.n_edges()
+        );
+        WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, smoothness)
+    })
+}
+
 /// What would lower SpatialDE2's peak memory, for [`ensure_fits`].
 const LOWER_MEMORY: &str = "lower --n-top-genes, --neighbors or --n-clusters";
 
@@ -983,16 +1100,18 @@ impl Args {
         Spatialde2Sizes {
             neighbors: self.neighbors,
             n_clusters: self.n_clusters,
+            all_pairs: self.input.reference,
         }
     }
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
-/// cell's `neighbors` nearest (none at 0), starting from `n_clusters`
-/// regions.
+/// cell's `neighbors` nearest (none at 0), or with `all_pairs` every pair
+/// of a section, computed as visited; starting from `n_clusters` regions.
 pub(crate) struct Spatialde2Sizes {
     pub neighbors: usize,
     pub n_clusters: Option<usize>,
+    pub all_pairs: bool,
 }
 
 impl Spatialde2Sizes {
@@ -1011,13 +1130,17 @@ impl Spatialde2Sizes {
             selected_nonzeros,
             genes: input.genes,
             // symmetrising at most doubles the edges
-            edges: 2 * knn_edges(sizes, self.neighbors),
+            edges: match self.all_pairs {
+                true => 0,
+                false => 2 * knn_edges(sizes, self.neighbors),
+            },
             regions: initial_regions(n, self.n_clusters),
-            gram: if self.neighbors > 0 {
+            gram: if self.neighbors > 0 && !self.all_pairs {
                 knn_gram_bytes(sizes, rayon::current_num_threads())
             } else {
                 0
             },
+            pair_cells: if self.all_pairs { n } else { 0 },
         }
     }
 }
@@ -1053,15 +1176,19 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len(),
         data.genes.len()
     );
-    let graph = (args.neighbors > 0).then(|| {
-        let nb = knn_within_sections(&data, args.neighbors).symmetrised();
+    let graph = if args.input.reference {
         log::info!(
-            "spatialde2: {} spatial edges (k = {}, symmetrised)",
-            nb.n_edges(),
-            args.neighbors
+            "spatialde2: every pair of cells in a section connected (--reference); \
+             each update visits them all"
         );
-        WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, params.smoothness_factor)
-    });
+        Some(WeightedGraph::all_pairs(
+            &data.xy,
+            &data.section,
+            params.smoothness_factor,
+        ))
+    } else {
+        spatial_graph(&data, args.neighbors, params.smoothness_factor)
+    };
     let seg = segment(
         &counts,
         &sizefactors,
@@ -1081,7 +1208,8 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let settings = serde_json::json!({
         "nclasses": k0,
         "n_clusters": args.n_clusters,
-        "neighbors": args.neighbors,
+        "neighbors": if args.input.reference { None } else { Some(args.neighbors) },
+        "graph": if args.input.reference { "all pairs within a section" } else { "kNN within a section, symmetrised" },
         "smoothness_factor": params.smoothness_factor,
         "n_top_genes": args.n_top_genes,
         "n_genes_used": genes.len(),
@@ -1111,6 +1239,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &probs,
             embedding_name: "spatialde2_prob",
             settings,
+            pseudobulk: None,
         },
     )
 }
