@@ -143,7 +143,7 @@
 //!   have it.
 
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
-use super::input::{OpenedInput, SpatialData, SpatialInputArgs};
+use super::input::{section_sizes, OpenedInput, SpatialData, SpatialInputArgs};
 use super::memory::{knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape};
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
@@ -869,7 +869,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len()
     );
 
-    let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
+    let sizes = section_sizes(&data.section);
     let change = lower_memory(&args.device);
     let mut shape = memory_shape(args, &sizes, genes.len(), counts.nnz());
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;

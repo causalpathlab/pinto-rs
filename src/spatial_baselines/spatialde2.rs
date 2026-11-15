@@ -141,7 +141,7 @@
 //! classes, cells × K.
 
 use super::graph::knn_within_sections;
-use super::input::{OpenedInput, SpatialData, SpatialInputArgs};
+use super::input::{n_sections, section_sizes, OpenedInput, SpatialData, SpatialInputArgs};
 use super::memory::{knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape};
 use super::output::{write_run, Fitted};
 use crate::util::common::Mat;
@@ -372,8 +372,7 @@ impl WeightedGraph {
         section: &[usize],
         smoothness: f64,
     ) -> Self {
-        let n_sections = section.iter().max().map_or(0, |&m| m + 1);
-        let mut min_d2 = vec![f64::INFINITY; n_sections];
+        let mut min_d2 = vec![f64::INFINITY; n_sections(section)];
         for (ds, &s) in dist.iter().zip(section) {
             for &d in ds {
                 let d2 = (d as f64) * (d as f64);
@@ -1001,7 +1000,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let params = args.params();
     let (genes, sizefactors) = top_genes(&data, args.n_top_genes);
     let n = data.cells.len();
-    let sizes: Vec<usize> = data.section_cells().iter().map(Vec::len).collect();
+    let sizes = section_sizes(&data.section);
     let spatial = args.neighbors > 0;
     let shape = memory_shape(
         args,

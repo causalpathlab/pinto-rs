@@ -84,6 +84,21 @@ impl SpatialData {
     }
 }
 
+/// Sections of cells labelled `section` (0-based): one more than the
+/// largest label.
+pub fn n_sections(section: &[usize]) -> usize {
+    section.iter().max().map_or(0, |&m| m + 1)
+}
+
+/// Cells in each of the [`n_sections`] sections `section` labels.
+pub fn section_sizes(section: &[usize]) -> Vec<usize> {
+    let mut sizes = vec![0; n_sections(section)];
+    for &s in section {
+        sizes[s] += 1;
+    }
+    sizes
+}
+
 /// The input files opened, their counts not yet read: what a run can know
 /// of its size from the files alone.
 pub struct OpenedInput {
@@ -130,15 +145,10 @@ impl OpenedInput {
     /// store its nonzero count.
     pub fn shape(&self) -> Option<InputShape> {
         let nonzeros = self.srt.data.num_non_zeros().ok()?;
-        let n_sections = self.section.iter().max().map_or(0, |&m| m + 1);
-        let mut section_sizes = vec![0; n_sections];
-        for &s in &self.section {
-            section_sizes[s] += 1;
-        }
         Some(InputShape {
             genes: self.srt.data.num_rows(),
             nonzeros,
-            section_sizes,
+            section_sizes: section_sizes(&self.section),
         })
     }
 
@@ -156,7 +166,7 @@ impl OpenedInput {
             .iter()
             .map(|&j| srt.coordinate_names[j].clone())
             .collect();
-        let n_sections = section.iter().max().map_or(0, |&m| m + 1);
+        let n_sections = n_sections(&section);
         log::info!(
             "{} cells, {} genes, {} sections, {d}-D coordinates",
             cells.len(),

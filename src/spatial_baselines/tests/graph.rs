@@ -1,5 +1,5 @@
 use crate::spatial_baselines::graph::knn_within_sections;
-use crate::spatial_baselines::input::SpatialData;
+use crate::spatial_baselines::input::{n_sections, section_sizes, SpatialData};
 use crate::test_support::{boxed, numbered};
 use crate::util::common::Mat;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
@@ -15,7 +15,7 @@ pub(crate) fn toy(xy: &[(f32, f32)], section: &[usize]) -> SpatialData {
         coord_names: boxed(&["x", "y"]),
         batches: section.iter().map(|s| format!("S{s}").into()).collect(),
         section: section.to_vec(),
-        n_sections: section.iter().max().map_or(0, |&m| m + 1),
+        n_sections: n_sections(section),
     }
 }
 
@@ -30,4 +30,14 @@ fn neighbours_stay_within_sections() {
     assert_eq!(g.dist[2], vec![2.0, 3.0]);
     let s = g.symmetrised();
     assert_eq!(s.n_edges(), g.n_edges());
+}
+
+/// Sections are numbered from 0, so one more than the largest label; a
+/// section with no cells (none labelled 1 here) still has its size, 0.
+#[test]
+fn section_sizes_count_every_section_from_its_labels() {
+    assert_eq!(n_sections(&[]), 0);
+    assert_eq!(n_sections(&[0, 2, 2]), 3);
+    assert_eq!(section_sizes(&[0, 2, 2, 0, 2]), vec![2, 0, 3]);
+    assert!(section_sizes(&[]).is_empty());
 }
