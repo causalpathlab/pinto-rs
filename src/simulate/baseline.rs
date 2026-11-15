@@ -1,3 +1,9 @@
+// The single-cell helpers here follow scanpy
+// (https://github.com/scverse/scanpy), BSD 3-Clause License, Copyright (c)
+// 2025 scverse and Copyright (c) 2017 F. Alexander Wolf, P. Angerer, Theis
+// Lab. Its license and the commit followed are in THIRD_PARTY_NOTICES.md at
+// the crate root.
+
 //! `pinto srt-sim-baseline`: standard single-cell pipelines run on a
 //! simulation, as baselines for `srt-sim-score`.
 //!

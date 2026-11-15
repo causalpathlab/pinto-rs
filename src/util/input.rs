@@ -30,6 +30,12 @@ pub struct SRTData {
     pub batches: Vec<Box<str>>,
 }
 
+/// `--coord-column-names`' default, shared by every command that reads
+/// coordinates: names absent from a file are skipped, so it covers the
+/// common single-cell and spot layouts at once.
+pub const COORD_COLUMN_NAMES: &str =
+    "pxl_row_in_fullres,pxl_col_in_fullres,cell_centroid_x,cell_centroid_y,x_centroid,y_centroid";
+
 /// Help for `--preload-data`, shared by every command that takes it.
 pub const PRELOAD_HELP: &str = "Preload sparse data even with LEGUME_AUTO_PRELOAD=off";
 pub const PRELOAD_LONG_HELP: &str = "Sparse column data is preloaded into memory by default\n\

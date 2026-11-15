@@ -14,6 +14,7 @@ mod residual;
 #[cfg(feature = "view")]
 mod run;
 mod simulate;
+mod spatial_baselines;
 mod svd;
 #[cfg(feature = "view")]
 mod tui;
@@ -83,6 +84,13 @@ fn print_logo() {
                   \x20       Choose data, methods and flags, then run them.\n\n\
                   \x20 mcp   Server for agents (Model Context Protocol)\n\
                   \x20       pinto run's fits and the viewer's map as tools, on stdio.\n\n\
+                  BASELINES (published spatial methods, model-level ports, to compare\n\
+                  against; same data, -c, -b, -o and --seed flags as lc; each writes a\n\
+                  run with labels and a cell embedding):\n\n\
+                  \x20 spatialde2  SpatialDE2 tissue segmentation (Kats et al. 2021)\n\
+                  \x20             Poisson HMRF with a Dirichlet-process prior.\n\n\
+                  \x20 stagate     STAGATE (Dong and Zhang 2022)\n\
+                  \x20             Graph-attention autoencoder on the spatial graph.\n\n\
                   QUICK START:\n\n\
                   \x20 # Prepare data (convert MTX to HDF5):\n\
                   \x20 data-beans from-mtx -r features.tsv.gz -c barcodes.tsv.gz \\\n\
@@ -119,6 +127,20 @@ pub(crate) fn built_cli() -> clap::Command {
     let mut cli = Cli::command();
     cli.build();
     cli
+}
+
+/// The spatial baselines' outputs, as `spatial_baselines/output.rs`
+/// writes them, for their `long_about`.
+macro_rules! baseline_outputs {
+    () => {
+        "The output is a pinto run, which `pinto view`, compare and lra read\n\
+         as they read an lc run: the manifest {out}.pinto.json (rerunning into\n\
+         the same --out overwrites it), {out}.propensity.parquet (cells x K:\n\
+         the method's posteriors when it has them, else one-hot labels),\n\
+         {out}.cells.parquet (cells with coordinates), {out}.labels.tsv (for\n\
+         srt-sim-score --labels), {out}.cell_embedding.parquet (the method's\n\
+         per-cell vectors) and {out}.baseline.json (the settings as run)."
+    };
 }
 
 #[derive(Subcommand, Debug)]
@@ -637,6 +659,29 @@ enum Commands {
     SrtSimBaseline(Box<simulate::BaselineArgs>),
 
     #[command(
+        about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
+        long_about = concat!(
+            "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
+             faithful to its reference code at the model level, on pinto's inputs.\n\n",
+            baseline_outputs!()
+        )
+    )]
+    Spatialde2(Box<spatial_baselines::spatialde2::Args>),
+
+    #[command(
+        about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
+        long_about = concat!(
+            "STAGATE (Dong and Zhang 2022), faithful to its reference code at the\n\
+             model level, on pinto's inputs. Its embedding is clustered by pinto's\n\
+             own methods: seeded k-means into --n-clusters domains, or Leiden\n\
+             without it. With --n-clusters this differs from the STAGATE tutorial,\n\
+             which fits a Gaussian mixture in R at that step.\n\n",
+            baseline_outputs!()
+        )
+    )]
+    Stagate(Box<spatial_baselines::stagate::Args>),
+
+    #[command(
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
@@ -801,6 +846,8 @@ impl Commands {
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
+            Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
+            Commands::Stagate(a) => (&mut a.input.out, "stagate"),
             _ => return None,
         })
     }
@@ -881,6 +928,8 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimScore(args) => simulate::run_score(args)?,
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
+        Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
+        Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {

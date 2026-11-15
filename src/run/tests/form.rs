@@ -200,6 +200,46 @@ fn a_method_found_by_its_alias_is_typed_as_the_alias() {
     assert!(Method::new(&cli, "nope").is_err());
 }
 
+/// Every method `pinto run` offers, the spatial baselines among them, reads
+/// as a form from pinto's own definition: data, coordinate and batch files
+/// passed as lc's are, `--out` and the files filled by `pinto run` alone,
+/// and the line it builds taken by pinto.
+#[test]
+fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
+    let cli = crate::built_cli();
+    let coord_names = |m: &Method| {
+        m.fields
+            .iter()
+            .find(|f| f.long == "coord-column-names")
+            .map(|f| f.default.clone())
+    };
+    let lc_coord_names = coord_names(&Method::new(&cli, "lc").unwrap());
+    assert!(lc_coord_names.is_some());
+    for name in crate::run::METHODS {
+        let m = Method::new(&cli, name).unwrap();
+        assert_eq!(m.name, name);
+        assert_eq!(coord_names(&m), lc_coord_names, "{name} coordinate columns");
+        assert!(!m.about.is_empty(), "{name}");
+        assert!(
+            m.takes_coords() && m.takes_batches() && !m.from_run,
+            "{name}"
+        );
+        assert!(
+            m.fields.iter().all(|f| !OWN.contains(&f.long.as_str())),
+            "{name}"
+        );
+        assert!(m.fields.iter().any(|f| f.long == "seed"), "{name} --seed");
+        let argv = m.argv(
+            &["a.zarr".into(), "b.zarr".into()],
+            &["a.csv".into(), "b.csv".into()],
+            &["a.txt".into(), "b.txt".into()],
+            "o",
+        );
+        assert_eq!(check(&cli, &argv), Ok(()), "{argv:?}");
+    }
+    assert_eq!(crate::run::BASELINES, ["spatialde2", "stagate"]);
+}
+
 /// A negative value is the flag's own word, `--flag=value`, so it reaches
 /// the command's check and is refused with its reason, or taken, never
 /// read as a flag pinto does not know.

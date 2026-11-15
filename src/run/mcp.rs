@@ -6,7 +6,7 @@
 
 use super::form::{blamed, check, Kind, Method};
 use super::script::{self, is_header, outputs, under};
-use super::METHODS;
+use super::{BASELINES, METHODS, MODELS};
 use crate::mcp::{parse, shown_path};
 use crate::tui::flag_value;
 use anyhow::Context as _;
@@ -715,13 +715,24 @@ fn text(v: &Value) -> String {
 }
 
 fn specs() -> Vec<ToolSpec> {
-    let methods =
-        json!({"enum": METHODS, "description": "lc (link community, recommended), cage, or dsvd"});
+    let methods = json!({
+        "enum": METHODS,
+        "description": format!(
+            "{} (lc, link community, is recommended); or a spatial baseline: {}",
+            MODELS.join(", "),
+            BASELINES.join(", ")
+        ),
+    });
     vec![
         ToolSpec::new(
             "run_methods",
-            "pinto's fitting methods (what pinto run sets up); with a method, its flags: \
-             name, help, default, choices, and whether it is a switch.",
+            &format!(
+                "pinto's fitting methods (what pinto run sets up): {}, then the spatial \
+                 baselines {}; with a method, its flags: name, help, default, choices, and \
+                 whether it is a switch.",
+                MODELS.join(", "),
+                BASELINES.join(", ")
+            ),
             json!({
                 "type": "object",
                 "properties": { "method": methods },
