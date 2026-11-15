@@ -470,19 +470,15 @@ pub fn fit_cell_activity_graph_embedding(
             };
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
-                None => {
-                    let plane = coordinates.select_columns(
-                        &crate::util::ablation::non_batch_columns(&coordinate_names),
-                    );
-                    cell_inclusion(
-                        &data_vec,
-                        &feature_axis,
-                        &plane,
-                        &section_ids,
-                        spatial_edges,
-                        args.inclusion_blocks,
-                    )?
-                }
+                None => cell_inclusion(
+                    &data_vec,
+                    &feature_axis,
+                    (&coordinates, &coordinate_names),
+                    &section_ids,
+                    spatial_edges,
+                    args.inclusion_blocks,
+                    c.block_size.unwrap_or(4096),
+                )?,
                 Some(fine) => {
                     anyhow::ensure!(
                         fine.cell_labels == pb_frame.cell_to_finest_pb,

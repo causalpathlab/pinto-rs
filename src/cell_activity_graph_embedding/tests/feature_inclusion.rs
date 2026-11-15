@@ -418,3 +418,67 @@ fn one_extreme_t_does_not_inflate_the_density() {
     assert!(null < 0.05, "null features' mean π {null}");
     assert!(pi[999] > 0.99);
 }
+
+/// Cells read section by section in column blocks score as the same units
+/// held in memory, tiles as blocks; one coordinate column is refused.
+#[test]
+fn cells_stream_to_the_same_inclusion() {
+    use crate::cell_activity_graph_embedding::feature_inclusion::{cell_inclusion, log_normalise};
+    use crate::test_support::{numbered, sparse_vec};
+    use crate::util::common::Mat;
+    use crate::util::feature_axis::FeatureAxis;
+    let dir = tempfile::tempdir().unwrap();
+    let (xy, edges) = grid(6);
+    let n = xy.len();
+    // two sections of the grid; feature 0 left/right, 1 and 2 scattered
+    let mut triplets = Vec::new();
+    for c in 0..2 * n {
+        let (x, y) = xy[c % n];
+        triplets.push((0, c as u64, if x < 3.0 { 5.0 } else { 1.0 }));
+        triplets.push((1, c as u64, 1.0 + ((c * 7) % 5) as f32));
+        if (x as usize + y as usize).is_multiple_of(2) {
+            triplets.push((2, c as u64, 2.0));
+        }
+    }
+    let rows = numbered("g", 3);
+    let data = sparse_vec(dir.path(), "d", &rows, &numbered("c", 2 * n), &triplets);
+    let axis = FeatureAxis::resolve_or_identity(&rows).unwrap();
+    let section: Vec<u32> = (0..2 * n).map(|c| (c / n) as u32).collect();
+    let all_edges: Edges = edges
+        .iter()
+        .flat_map(|&(i, j)| [(i, j), (i + n, j + n)])
+        .collect();
+    let names: Vec<Box<str>> = vec!["x".into(), "y".into()];
+    let plane = Mat::from_fn(
+        2 * n,
+        2,
+        |c, k| if k == 0 { xy[c % n].0 } else { xy[c % n].1 },
+    );
+    let inc = cell_inclusion(&data, &axis, (&plane, &names), &section, &all_edges, 4, 5).unwrap();
+
+    let mut profiles: Vec<Vec<(u32, f32)>> = vec![Vec::new(); 2 * n];
+    for &(r, c, v) in &triplets {
+        profiles[c as usize].push((r as u32, v));
+    }
+    profiles.iter_mut().for_each(|p| log_normalise(p));
+    let tile = tile_of(&xy, 2);
+    let unit = UnitGraph {
+        profiles,
+        section,
+        block: (0..2 * n).map(|c| tile[c % n] + 4 * (c / n)).collect(),
+        edges: all_edges.clone(),
+    };
+    let held = inclusion_of(3, &unit);
+    for f in 0..3 {
+        assert!((inc.moran[f] - held.moran[f]).abs() < 1e-6, "feature {f}");
+        assert!((inc.se[f] - held.se[f]).abs() < 1e-6, "feature {f}");
+    }
+
+    let one: Vec<Box<str>> = vec!["x".into()];
+    let line = plane.columns(0, 1).into_owned();
+    let section: Vec<u32> = (0..2 * n).map(|c| (c / n) as u32).collect();
+    let e = cell_inclusion(&data, &axis, (&line, &one), &section, &all_edges, 4, 5)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("two coordinate columns"), "{e}");
+}

@@ -631,49 +631,58 @@ pub fn pb_inclusion(
 /// [`FeatureInclusion`] over cells (cage-cell, which builds no pseudobulks):
 /// each cell's log-normalised counts, the spatial graph `edges` (global cell
 /// pairs; pairs across sections are left out), and a grid of geometric
-/// tiles over each section's plane (`xy`, cells × ≥2) as jackknife blocks,
-/// about `per_section` per section. Sections are read in parallel, each
-/// reduced to its sums before its memory is released.
+/// tiles over each section's plane (the first two non-batch columns of
+/// `coordinates`, named) as jackknife blocks, about `per_section` per
+/// section. One section at a time, read `column_block` cells at once and
+/// reduced to its sums before the next, so memory holds one section's
+/// profiles.
 pub fn cell_inclusion(
     data: &SparseIoVec,
     axis: &FeatureAxis,
-    xy: &Mat,
+    (coordinates, names): (&Mat, &[Box<str>]),
     section: &[u32],
     edges: &[(usize, usize)],
     per_section: usize,
+    column_block: usize,
 ) -> anyhow::Result<FeatureInclusion> {
+    let (cx, cy) = crate::util::ablation::plane_columns(names).map_err(|_| {
+        anyhow::anyhow!(
+            "--feature-inclusion moran on cells tiles each section's plane, which needs \
+             two coordinate columns; found {names:?}"
+        )
+    })?;
     let tiles = (per_section as f64).sqrt().ceil().max(1.0) as usize;
     let n_features = axis.n_features();
     let (cells_of, edges_of) = split_sections(section, edges);
-    let sections: Vec<SectionJack> = cells_of
-        .par_iter()
-        .zip(&edges_of)
-        .map(|(cells, es)| -> anyhow::Result<SectionJack> {
-            let csc = data.read_columns_csc(cells.iter().copied())?;
-            let profiles: Vec<Vec<(u32, f32)>> = csc
-                .col_iter()
-                .map(|col| {
-                    let obs: Vec<(u32, f32)> = col
-                        .row_indices()
-                        .iter()
-                        .zip(col.values())
-                        .map(|(&r, &v)| (r as u32, v))
-                        .collect();
-                    let mut p = axis.pool_profile(obs);
-                    p.sort_by_key(|&(f, _)| f);
-                    log_normalise(&mut p);
-                    p
-                })
-                .collect();
-            drop(csc);
-            let plane: Vec<(f32, f32)> = cells.iter().map(|&i| (xy[(i, 0)], xy[(i, 1)])).collect();
-            Ok(section_jack(
-                n_features,
-                &profiles,
-                &tile_of(&plane, tiles),
-                es,
-            ))
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let mut sections = Vec::with_capacity(cells_of.len());
+    for (cells, es) in cells_of.iter().zip(&edges_of) {
+        let mut profiles: Vec<Vec<(u32, f32)>> = Vec::with_capacity(cells.len());
+        for chunk in cells.chunks(column_block.max(1)) {
+            let csc = data.read_columns_csc(chunk.iter().copied())?;
+            profiles.par_extend((0..csc.ncols()).into_par_iter().map(|j| {
+                let col = csc.col(j);
+                let obs: Vec<(u32, f32)> = col
+                    .row_indices()
+                    .iter()
+                    .zip(col.values())
+                    .map(|(&r, &v)| (r as u32, v))
+                    .collect();
+                let mut p = axis.pool_profile(obs);
+                p.sort_by_key(|&(f, _)| f);
+                log_normalise(&mut p);
+                p
+            }));
+        }
+        let plane: Vec<(f32, f32)> = cells
+            .iter()
+            .map(|&i| (coordinates[(i, cx)], coordinates[(i, cy)]))
+            .collect();
+        sections.push(section_jack(
+            n_features,
+            &profiles,
+            &tile_of(&plane, tiles),
+            es,
+        ));
+    }
     Ok(finish(n_features, &sections, "cells"))
 }
