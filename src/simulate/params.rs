@@ -244,20 +244,9 @@ impl SimParams {
             })
     }
 
-    /// Set fields by `key=value`, the value read as JSON when it parses
-    /// (numbers, booleans, lists) and as a string otherwise.
+    /// Set fields by `key=value` ([`set_fields`]).
     pub fn with_overrides(self, sets: &[String]) -> anyhow::Result<Self> {
-        let mut v = serde_json::to_value(&self)?;
-        let obj = v.as_object_mut().expect("params serialize to an object");
-        for s in sets {
-            let (k, raw) = s
-                .split_once('=')
-                .ok_or_else(|| anyhow::anyhow!("--set {s:?}: expected key=value"))?;
-            anyhow::ensure!(obj.contains_key(k), "--set {k}: no such parameter");
-            let val = serde_json::from_str(raw).unwrap_or(serde_json::Value::String(raw.into()));
-            obj.insert(k.to_string(), val);
-        }
-        Ok(serde_json::from_value(v)?)
+        set_fields(&self, sets, "parameter")
     }
 
     /// The share of spot noise in the log rate: what the PVE terms leave.
@@ -426,4 +415,31 @@ impl SimParams {
         );
         Ok(())
     }
+}
+
+/// `value` with fields set by `key=value` (`--set`), the value read as JSON
+/// when it parses (numbers, booleans, lists) and as a string otherwise. A key
+/// that is no field of `value` is an error naming the fields, each one a
+/// `noun`.
+pub fn set_fields<T: Serialize + serde::de::DeserializeOwned>(
+    value: &T,
+    sets: &[String],
+    noun: &str,
+) -> anyhow::Result<T> {
+    let mut v = serde_json::to_value(value)?;
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("--set: the {noun}s are not named fields"))?;
+    for s in sets {
+        let (k, raw) = s
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--set {s:?}: expected key=value"))?;
+        if !obj.contains_key(k) {
+            let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+            anyhow::bail!("--set {k}: no such {noun} (one of {})", keys.join(", "));
+        }
+        let val = serde_json::from_str(raw).unwrap_or(serde_json::Value::String(raw.into()));
+        obj.insert(k.to_string(), val);
+    }
+    serde_json::from_value(v).map_err(|e| anyhow::anyhow!("--set: {e}"))
 }

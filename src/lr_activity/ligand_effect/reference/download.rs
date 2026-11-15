@@ -228,7 +228,7 @@ impl Drop for BuildLock {
 }
 
 /// Hex sha256 of a file's bytes.
-fn sha256_file(path: &Path) -> Result<String> {
+pub fn sha256_file(path: &Path) -> Result<String> {
     let mut f = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
