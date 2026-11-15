@@ -858,18 +858,29 @@ pub fn segment(
     })
 }
 
+/// What [`top_genes`] selects.
+pub struct TopGenes {
+    /// The genes segmented on, in index order.
+    pub genes: Vec<usize>,
+    /// Each cell's total over all genes (`calc_sizefactors`).
+    pub sizefactors: Vec<f64>,
+    /// Nonzeros of `genes`, as [`selected_counts`] keeps them.
+    pub nonzeros: usize,
+}
+
 /// The `n_top` genes with the highest totals, in index order (every gene
-/// when `n_top` is 0 or covers them), and each cell's total over all genes
-/// (`calc_sizefactors`).
-pub fn top_genes(data: &SpatialData, n_top: usize) -> (Vec<usize>, Vec<f64>) {
+/// when `n_top` is 0 or covers them), with the cells' size factors.
+pub fn top_genes(data: &SpatialData, n_top: usize) -> TopGenes {
     let n_genes = data.genes.len();
     let csc = &data.counts;
     let mut total = vec![0.0f64; n_genes];
+    let mut nonzeros = vec![0usize; n_genes];
     let mut sizefactors = vec![0.0f64; data.cells.len()];
     for (i, col) in csc.col_iter().enumerate() {
         for (&g, &v) in col.row_indices().iter().zip(col.values()) {
             total[g] += v as f64;
             sizefactors[i] += v as f64;
+            nonzeros[g] += usize::from(v != 0.0);
         }
     }
     let mut order: Vec<usize> = (0..n_genes).collect();
@@ -878,7 +889,11 @@ pub fn top_genes(data: &SpatialData, n_top: usize) -> (Vec<usize>, Vec<f64>) {
         order.truncate(n_top);
     }
     order.sort_unstable();
-    (order, sizefactors)
+    TopGenes {
+        nonzeros: order.iter().map(|&g| nonzeros[g]).sum(),
+        genes: order,
+        sizefactors,
+    }
 }
 
 /// `genes` (sorted) renumbered `0..genes.len()`, by gene index; other
@@ -907,15 +922,6 @@ pub fn selected_counts(data: &SpatialData, genes: &[usize]) -> CellCounts {
         })
         .collect();
     CellCounts::from_rows(genes.len(), &rows)
-}
-
-/// Nonzeros [`selected_counts`] keeps.
-pub fn selected_nonzeros(data: &SpatialData, genes: &[usize]) -> usize {
-    let map = gene_map(data.genes.len(), genes);
-    data.counts
-        .triplet_iter()
-        .filter(|&(g, _, &v)| map[g] != usize::MAX && v != 0.0)
-        .count()
 }
 
 /// What would lower SpatialDE2's peak memory, for [`ensure_fits`].
@@ -998,16 +1004,15 @@ fn memory_shape(
 /// and the graph is built.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let params = args.params();
-    let (genes, sizefactors) = top_genes(&data, args.n_top_genes);
+    let TopGenes {
+        genes,
+        sizefactors,
+        nonzeros: selected,
+    } = top_genes(&data, args.n_top_genes);
     let n = data.cells.len();
     let sizes = section_sizes(&data.section);
     let spatial = args.neighbors > 0;
-    let shape = memory_shape(
-        args,
-        &sizes,
-        data.counts.nnz(),
-        selected_nonzeros(&data, &genes),
-    );
+    let shape = memory_shape(args, &sizes, data.counts.nnz(), selected);
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),

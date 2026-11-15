@@ -451,13 +451,10 @@ fn srt_simulate_reads_as_the_measured_runs_assume() {
         (per_cell - want).abs() < 0.03 * want,
         "{per_cell} nonzeros per cell"
     );
-    let (genes, _) = spatialde2::top_genes(&data, args.n_top_genes);
-    assert_eq!(
-        spatialde2::selected_nonzeros(&data, &genes),
-        data.counts.nnz()
-    );
+    let top = spatialde2::top_genes(&data, args.n_top_genes);
+    assert_eq!(top.nonzeros, data.counts.nnz());
     let (hvg, _) = stagate::seurat_v3_hvg(&data.counts, 3000);
-    assert_eq!((genes.len(), hvg.len()), (2000, 2000));
+    assert_eq!((top.genes.len(), hvg.len()), (2000, 2000));
 }
 
 /// Each command's help names the budget variable.

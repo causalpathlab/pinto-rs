@@ -382,25 +382,28 @@ fn class_cap_and_no_space() {
 
 #[test]
 fn genes_by_total_counts_and_size_factors_over_all() {
-    // genes × cells: gene 0 total 3, gene 1 total 10, gene 2 total 5
+    // genes × cells: gene 0 total 3, gene 1 total 10, gene 2 total 5, and
+    // a stored zero of gene 2 the selected counts drop
     let mut coo = CooMatrix::<f32>::new(3, 2);
     coo.push(0, 0, 1.0);
     coo.push(0, 1, 2.0);
     coo.push(1, 0, 4.0);
     coo.push(1, 1, 6.0);
+    coo.push(2, 0, 0.0);
     coo.push(2, 1, 5.0);
     let mut d = toy(&[(0., 0.), (1., 0.)], &[0, 0]);
     d.counts = CscMatrix::from(&coo);
     d.genes = vec!["a".into(), "b".into(), "c".into()];
     d.xy = Mat::zeros(2, 2);
-    let (genes, sf) = top_genes(&d, 2);
-    assert_eq!(genes, vec![1, 2]);
-    assert_eq!(sf, vec![5.0, 13.0]);
-    let counts = selected_counts(&d, &genes);
-    assert_eq!(selected_nonzeros(&d, &genes), 3);
+    let top = top_genes(&d, 2);
+    assert_eq!(top.genes, vec![1, 2]);
+    assert_eq!(top.sizefactors, vec![5.0, 13.0]);
+    let counts = selected_counts(&d, &top.genes);
+    assert_eq!(top.nonzeros, 3);
     assert_eq!(counts.n_genes, 2);
     assert_eq!(counts.n_cells(), 2);
-    let (genes, _) = top_genes(&d, 0);
-    assert_eq!(genes, vec![0, 1, 2]);
-    assert_eq!(selected_counts(&d, &genes).n_genes, 3);
+    let all = top_genes(&d, 0);
+    assert_eq!(all.genes, vec![0, 1, 2]);
+    assert_eq!(all.nonzeros, 5);
+    assert_eq!(selected_counts(&d, &all.genes).n_genes, 3);
 }
