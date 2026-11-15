@@ -15,9 +15,12 @@
 //! ([`kit`]), the gene selection, the super-cells of the `-pb` commands and
 //! the step from factors to domains. Each method keeps its own estimator.
 
+pub mod bandwidth;
 pub mod kit;
 pub mod prep;
 pub mod prior;
+pub mod sct;
+pub mod sparkx;
 
 use super::cluster::{cluster_embedding, refine_by_neighbours};
 use super::graph::{knn_within_sections, Neighbours};

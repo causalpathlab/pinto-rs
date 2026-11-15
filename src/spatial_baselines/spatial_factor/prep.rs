@@ -1,16 +1,19 @@
-//! The expression the factor models read, kept implicit: a sparse matrix on
-//! the counts' own pattern, less a few rank-one terms, rows scaled,
+//! The expression the factor models read: MEFISTO's kept implicit, a
+//! sparse matrix on the counts' own pattern, less a few rank-one terms,
+//! rows scaled,
 //!
 //! `Y = D (S - sum_j a_j b_j^T)` (genes × cells),
 //!
 //! so `Y V` and `Y^T U` cost `O(nnz + J (m + n))` a column and no dense
-//! genes × cells matrix is ever held. Two recipes, one per method:
+//! genes × cells matrix is ever held; SpatialPCA's held as dense rows of
+//! f32, as SCTransform's residuals are dense:
 //!
-//! - [`ResidualOp::pearson`] (SpatialPCA): analytic Pearson residuals of a
-//!   Poisson model with a gene's share of each cell's library as its mean
+//! - [`ResidualOp::sct`] (SpatialPCA): SCTransform's Pearson residuals
+//!   ([`super::sct`]), clipped at `+-sqrt(N)`, then each gene standardised
+//!   (mean 0, sample SD 1), the paper's input;
+//! - [`ResidualOp::pearson`]: analytic Pearson residuals of a Poisson model
 //!   (Lause, Berens and Kobak 2021, Genome Biology 22:258,
-//!   doi:10.1186/s13059-021-02451-7, the `theta = infinity` limit), clipped
-//!   at `+-sqrt(N)`, then each gene standardised (mean 0, sample SD 1);
+//!   doi:10.1186/s13059-021-02451-7), for tests;
 //! - [`ResidualOp::log_centred`] (MEFISTO): Seurat's `LogNormalize`,
 //!   `ln(1 + 1e4 x / lib)`, each gene centred within each section (a
 //!   MEFISTO group).
@@ -49,7 +52,11 @@ pub struct ResidualOp {
     /// The row scaling `D`.
     scale: Vec<f64>,
     /// Entries the negative clip added off the counts' pattern.
+    #[cfg(test)]
     pub clipped_zeros: usize,
+    /// The whole matrix as dense rows (genes × cells, row-major), in place
+    /// of the sparse part and its terms, when not empty.
+    rows: Vec<f32>,
 }
 
 impl ResidualOp {
@@ -97,8 +104,54 @@ impl ResidualOp {
             c_val,
             terms: Vec::new(),
             scale: vec![1.0; m],
+            #[cfg(test)]
             clipped_zeros: 0,
+            rows: Vec::new(),
         }
+    }
+
+    /// The matrix held as dense rows (`m` genes × `n` cells, row-major).
+    pub fn from_rows(m: usize, n: usize, rows: Vec<f32>) -> Self {
+        assert_eq!(rows.len(), m * n);
+        let mut op = Self::from_cells(m, vec![Vec::new(); n]);
+        op.rows = rows;
+        op
+    }
+
+    /// SCTransform's residuals of `counts` (all genes × cells, libraries
+    /// `lib` over them) on the genes `genes`, each gene standardised to
+    /// mean 0 and sample SD 1 (a gene with no variance a row of zeros);
+    /// the models' report.
+    pub fn sct(
+        counts: &CscMatrix<f32>,
+        lib: &[f64],
+        genes: &[usize],
+        seed: u64,
+    ) -> (Self, super::sct::SctReport) {
+        let (m_all, n) = (counts.nrows(), counts.ncols());
+        let mut by_gene: Vec<super::sct::GeneCounts> = vec![Vec::new(); m_all];
+        for (c, col) in counts.col_iter().enumerate() {
+            for (&g, &v) in col.row_indices().iter().zip(col.values()) {
+                if v != 0.0 {
+                    by_gene[g].push((c as u32, v as f64));
+                }
+            }
+        }
+        let (models, report) = super::sct::sctransform(&by_gene, lib, genes, seed);
+        let t: Vec<f64> = lib.iter().map(|&v| v.log10()).collect();
+        let mut flat = vec![0f32; genes.len() * n];
+        flat.par_chunks_mut(n.max(1))
+            .zip(genes.par_iter().zip(&models))
+            .for_each(|(row, (&g, model))| {
+                let mut z = super::sct::residuals(&by_gene[g], &t, model);
+                standardise(&mut z);
+                row.iter_mut().zip(z).for_each(|(r, v)| *r = v as f32);
+            });
+        (Self::from_rows(genes.len(), n, flat), report)
+    }
+
+    fn dense_row(&self, g: usize) -> &[f32] {
+        &self.rows[g * self.n..(g + 1) * self.n]
     }
 
     #[cfg(test)]
@@ -134,6 +187,7 @@ impl ResidualOp {
     /// with all-gene libraries `lib`, clipped at `+-sqrt(N)`, each gene
     /// standardised to mean 0 and sample SD 1 (a gene with no variance is
     /// a row of zeros).
+    #[cfg(test)]
     pub fn pearson(counts: &CscMatrix<f32>, lib: &[f64]) -> Self {
         let (m, n) = (counts.nrows(), counts.ncols());
         let total: f64 = lib.iter().sum();
@@ -259,6 +313,23 @@ impl ResidualOp {
         let k = v.ncols();
         let n = self.n;
         let vs = v.as_slice();
+        if !self.rows.is_empty() {
+            let out: Vec<Vec<f64>> = (0..self.m)
+                .into_par_iter()
+                .map(|g| {
+                    let row = self.dense_row(g);
+                    (0..k)
+                        .map(|j| {
+                            row.iter()
+                                .zip(&vs[j * n..(j + 1) * n])
+                                .map(|(&y, &x)| y as f64 * x)
+                                .sum()
+                        })
+                        .collect()
+                })
+                .collect();
+            return Dense::from_fn(self.m, k, |g, j| out[g][j]);
+        }
         let proj: Vec<Vec<f64>> = self
             .terms
             .iter()
@@ -299,6 +370,9 @@ impl ResidualOp {
     pub fn apply_t(&self, u: &Dense) -> Dense {
         let k = u.ncols();
         let m = self.m;
+        if !self.rows.is_empty() {
+            return self.dense_t(|_| u, k);
+        }
         let us: Vec<f64> = (0..k)
             .flat_map(|j| (0..m).map(move |g| (j, g)))
             .map(|(j, g)| self.scale[g] * u[(g, j)])
@@ -345,9 +419,38 @@ impl ResidualOp {
         out
     }
 
+    /// The dense rows' `Y^T U_c` with `U_c` (genes × k) chosen per cell.
+    fn dense_t<'a>(&self, u_of: impl Fn(usize) -> &'a Dense + Sync, k: usize) -> Dense {
+        const BLOCK: usize = 256;
+        let n = self.n;
+        let blocks: Vec<Vec<f64>> = (0..n.div_ceil(BLOCK))
+            .into_par_iter()
+            .map(|b| {
+                let cells = b * BLOCK..((b + 1) * BLOCK).min(n);
+                let w = cells.len();
+                let mut acc = vec![0f64; w * k];
+                for g in 0..self.m {
+                    let row = &self.dense_row(g)[cells.clone()];
+                    for (r, (&y, c)) in row.iter().zip(cells.clone()).enumerate() {
+                        let u = u_of(c);
+                        let y = y as f64;
+                        for j in 0..k {
+                            acc[r * k + j] += y * u[(g, j)];
+                        }
+                    }
+                }
+                acc
+            })
+            .collect();
+        Dense::from_fn(n, k, |c, j| blocks[c / BLOCK][(c % BLOCK) * k + j])
+    }
+
     /// Gene `g`'s row of `Y`, dense over the cells (for tests).
     #[cfg(test)]
     pub fn gene_row(&self, g: usize) -> Vec<f64> {
+        if !self.rows.is_empty() {
+            return self.dense_row(g).iter().map(|&v| v as f64).collect();
+        }
         let mut out = vec![0f64; self.n];
         for e in self.g_ptr[g]..self.g_ptr[g + 1] {
             out[self.g_cell[e] as usize] = self.g_val[e] as f64;
@@ -367,6 +470,19 @@ impl ResidualOp {
     /// is `D_g^2 [sum S^2 - 2 sum_j a_jg sum S b_j + sum_{j,j'} a_jg a_j'g
     /// sum b_j b_j']`, each sum over the section's cells.
     pub fn section_sumsq(&self, section: &[usize], n_sections: usize) -> Dense {
+        if !self.rows.is_empty() {
+            let rows: Vec<Vec<f64>> = (0..self.m)
+                .into_par_iter()
+                .map(|g| {
+                    let mut acc = vec![0f64; n_sections];
+                    for (&y, &s) in self.dense_row(g).iter().zip(section) {
+                        acc[s] += (y as f64).powi(2);
+                    }
+                    acc
+                })
+                .collect();
+            return Dense::from_fn(self.m, n_sections, |g, s| rows[g][s]);
+        }
         let t = self.terms.len();
         // sum_{c in s} b_j[c] b_j'[c], per section
         let mut bb = vec![vec![0f64; t * t]; n_sections];
@@ -423,6 +539,15 @@ impl ResidualOp {
         let k = v.ncols();
         let n = self.n;
         let vs = v.as_slice();
+        if !self.rows.is_empty() {
+            return (0..n_sections)
+                .map(|s| {
+                    let masked =
+                        Dense::from_fn(n, k, |c, j| if section[c] == s { v[(c, j)] } else { 0.0 });
+                    self.apply(&masked)
+                })
+                .collect();
+        }
         // sum_{c in s} b_j[c] v[c, :], per term, section and column
         let proj: Vec<Vec<f64>> = self
             .terms
@@ -467,6 +592,9 @@ impl ResidualOp {
     /// entries.
     pub fn apply_t_by_section(&self, u: &[Dense], section: &[usize]) -> Dense {
         let k = u.first().map_or(0, |x| x.ncols());
+        if !self.rows.is_empty() {
+            return self.dense_t(|c| &u[section[c]], k);
+        }
         let m = self.m;
         let n_sections = u.len();
         // the scaled U_s, section by section, column-major within each
@@ -525,6 +653,15 @@ impl ResidualOp {
             .collect();
         Dense::from_fn(self.m, self.n, |g, c| rows[g][c])
     }
+}
+
+/// `z` to mean 0 and sample SD 1 (all zeros when it has no variance).
+pub fn standardise(z: &mut [f64]) {
+    let n = z.len() as f64;
+    let mean = z.iter().sum::<f64>() / n;
+    let var = z.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
+    let scale = if var > 1e-12 { 1.0 / var.sqrt() } else { 0.0 };
+    z.iter_mut().for_each(|v| *v = (*v - mean) * scale);
 }
 
 /// Rows `genes` of `counts`, in that order.

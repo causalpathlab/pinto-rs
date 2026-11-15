@@ -1003,44 +1003,49 @@ fn help_names_the_memory_budget() {
 }
 
 /// Maximum resident memory (MiB) of full CPU runs of the factor baselines
-/// on one srt-simulate section (2000 genes, all modelled; at their
-/// defaults otherwise, `-d 1024` for the `-pb` forms, 4 threads): (cells,
-/// MiB) for spatialpca, mefisto, spatialpca-pb and mefisto-pb.
-const FACTOR_MEASURED: [(&str, [(usize, f64); 4]); 4] = [
+/// on one srt-simulate section (2000 genes; at their defaults otherwise,
+/// `-d 1024` for the `-pb` forms, 4 threads): (cells, MiB, genes modelled)
+/// for spatialpca, mefisto, spatialpca-pb and mefisto-pb. MEFISTO models
+/// all 2000; SpatialPCA the genes SPARK-X declares, the same for its `-pb`
+/// form, which selects on the cells.
+/// A measured run: cells, MiB, genes modelled.
+type Measured = (usize, f64, usize);
+
+const FACTOR_MEASURED: [(&str, [Measured; 4]); 4] = [
     (
         "spatialpca",
         [
-            (1024, 98.77),
-            (4096, 265.45),
-            (8100, 463.78),
-            (16384, 850.14),
+            (1024, 101.69, 28),
+            (4096, 243.89, 54),
+            (8100, 409.84, 135),
+            (16384, 768.97, 159),
         ],
     ),
     (
         "mefisto",
         [
-            (1024, 87.45),
-            (4096, 254.97),
-            (8100, 462.45),
-            (16384, 839.08),
+            (1024, 87.45, 2000),
+            (4096, 254.97, 2000),
+            (8100, 462.45, 2000),
+            (16384, 839.08, 2000),
         ],
     ),
     (
         "spatialpca-pb",
         [
-            (1024, 113.34),
-            (4096, 368.91),
-            (8100, 569.27),
-            (16384, 1166.91),
+            (1024, 122.67, 28),
+            (4096, 330.30, 54),
+            (8100, 515.22, 135),
+            (16384, 1275.56, 159),
         ],
     ),
     (
         "mefisto-pb",
         [
-            (1024, 107.98),
-            (4096, 383.13),
-            (8100, 590.23),
-            (16384, 1173.61),
+            (1024, 107.98, 2000),
+            (4096, 383.13, 2000),
+            (8100, 590.23, 2000),
+            (16384, 1173.61, 2000),
         ],
     ),
 ];
@@ -1051,7 +1056,7 @@ const FACTOR_MEASURED: [(&str, [(usize, f64); 4]); 4] = [
 fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
     use crate::spatial_baselines::{mefisto, spatialpca};
     for (cmd, runs) in FACTOR_MEASURED {
-        for (cells, measured) in runs {
+        for (cells, measured, genes) in runs {
             let input = InputShape {
                 genes: 2000,
                 nonzeros: NONZEROS_PER_CELL * cells,
@@ -1062,18 +1067,18 @@ fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
             let shape = match parse(&argv) {
                 crate::Commands::Spatialpca(a) => {
                     a.fit
-                        .memory_shape(&input, 2000, spatialpca::Variant::Sparse)
+                        .memory_shape(&input, genes, spatialpca::Variant::Sparse)
                 }
                 crate::Commands::SpatialpcaPb(a) => {
                     a.fit
-                        .memory_shape(&input, 2000, spatialpca::Variant::Pseudobulk(1024))
+                        .memory_shape(&input, genes, spatialpca::Variant::Pseudobulk(1024))
                 }
                 crate::Commands::Mefisto(a) => {
-                    a.fit.memory_shape(&input, 2000, mefisto::Variant::Sparse)
+                    a.fit.memory_shape(&input, genes, mefisto::Variant::Sparse)
                 }
                 crate::Commands::MefistoPb(a) => {
                     a.fit
-                        .memory_shape(&input, 2000, mefisto::Variant::Pseudobulk(1024))
+                        .memory_shape(&input, genes, mefisto::Variant::Pseudobulk(1024))
                 }
                 _ => unreachable!(),
             };

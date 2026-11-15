@@ -225,6 +225,8 @@ impl FitArgs {
                 Variant::Pseudobulk(target) => target,
                 _ => 0,
             },
+            dense_bytes: 0,
+            nonzero_bytes: super::memory::FACTOR_NONZERO_BYTES,
         }
     }
 }

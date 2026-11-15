@@ -36,6 +36,16 @@
 //! refinement after SpaGCN; Hu et al. 2021, Nature Methods 18:1342,
 //! doi:10.1038/s41592-021-01255-8).
 //!
+//! # Preprocessing, as the paper's
+//!
+//! Genes: the spatially variable genes by SPARK-X at a
+//! Benjamini-Yekutieli FDR of 0.05, at most `--n-genes` (3000, the paper's
+//! cap) by p-value. Expression: SCTransform's Pearson residuals
+//! (Hafemeister and Satija 2019, Genome Biology 20:296,
+//! doi:10.1186/s13059-019-1874-1; [`super::spatial_factor::sct`], written
+//! from its paper) on those genes, each gene standardised to mean 0 and
+//! SD 1. The residuals are dense, held as f32 rows (genes × cells).
+//!
 //! # Deviations
 //!
 //! - **Batch effects** (δ): with two or more batches the counts are divided
@@ -45,15 +55,12 @@
 //!   sections.
 //! - **Clustering** (licence): the paper's Walktrap and Louvain (GPL
 //!   packages) are replaced by k-means (`--n-clusters`) or Leiden.
-//! - **Gene selection**: the paper's SPARK / SPARK-X spatially variable
-//!   genes are not available here (SPARK is GPL; SPARK-X is not yet
-//!   written from its paper), so the `--n-genes` most variable genes
-//!   (seurat_v3 flavour) are modelled, one of the gene sets the paper
-//!   itself reports runs on.
-//! - **Normalisation**: SCTransform's VST is replaced by
-//!   analytic Pearson residuals of a Poisson model (Lause, Berens and
-//!   Kobak 2021, Genome Biology 22:258, doi:10.1186/s13059-021-02451-7),
-//!   clipped at `+-sqrt(N)`, then standardised per gene as the paper does.
+//! - **Gene selection**: SPARK-X on every data set (Zhu, Sun and Zhou
+//!   2021, Genome Biology 22:184, doi:10.1186/s13059-021-02404-0;
+//!   [`super::spatial_factor::sparkx`], written from its paper), the
+//!   paper's choice for large data; the paper takes SPARK on small data
+//!   sets, a GPL package not ported. Each section is centred apart (the
+//!   test's covariate form).
 //! - **The sparse prior** (cost, above): its `rho` by maximum
 //!   likelihood; spectral sums by stochastic Lanczos quadrature on
 //!   sections of more than 2000 cells; solves by conjugate gradients and
@@ -76,9 +83,11 @@ use super::input::{InputShape, SpatialData};
 use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
-use super::spatial_factor::prep::{library, select_rows, ResidualOp};
+use super::spatial_factor::prep::{library, ResidualOp};
+use super::spatial_factor::sct::SctReport;
+use super::spatial_factor::sparkx;
 use super::spatial_factor::{
-    cell_graph, coarsen, domains, pseudobulk_input, select_genes, spectrum, to_mat, CoreArgs,
+    cell_graph, coarsen, domains, pseudobulk_input, spectrum, to_mat, CoreArgs,
 };
 use crate::util::ablation::section_sizes;
 use crate::util::memory::{ensure_fits, Budget};
@@ -100,8 +109,8 @@ pub struct FitArgs {
     #[arg(long, visible_alias = "n-pcs", default_value_t = N_FACTORS)]
     pub n_factors: usize,
 
-    /// Genes modelled: the most variable (seurat_v3 flavour), at most this
-    /// many
+    /// Genes modelled: SPARK-X's spatially variable genes (FDR 0.05), at
+    /// most this many by p-value
     #[arg(long, default_value_t = N_GENES)]
     pub n_genes: usize,
 
@@ -167,6 +176,11 @@ impl FitArgs {
         variant: Variant,
     ) -> FactorShape {
         let d = self.n_factors.min(m);
+        let n: usize = input.section_sizes.iter().sum();
+        let super_cells = match variant {
+            Variant::Pseudobulk(target) => target,
+            _ => 0,
+        };
         FactorShape {
             input: input.clone(),
             genes: m,
@@ -178,6 +192,10 @@ impl FitArgs {
                 Variant::Pseudobulk(target) => target,
                 _ => 0,
             },
+            // SCTransform's residuals as f32 rows, the cells' and with -pb
+            // the super-cells', and each gene's residuals in f64 as formed
+            dense_bytes: 4 * m * (n + super_cells) + 8 * n * rayon::current_num_threads(),
+            nonzero_bytes: super::memory::SCT_NONZERO_BYTES,
         }
     }
 }
@@ -222,11 +240,34 @@ fn read_shape(data: &SpatialData) -> InputShape {
 }
 
 /// The genes, the expression on them and its libraries, the counts freed.
-fn expression(data: &mut SpatialData, genes: &[usize]) -> ResidualOp {
+/// SpatialPCA's genes: SPARK-X's spatially variable genes at a
+/// Benjamini-Yekutieli FDR of [`sparkx::FDR`], at most `n_genes` by
+/// p-value; and how many were significant.
+fn spatial_genes(data: &SpatialData, n_genes: usize) -> anyhow::Result<(Vec<usize>, usize)> {
+    let xy = nalgebra::DMatrix::from_fn(data.xy.nrows(), data.xy.ncols(), |i, j| {
+        data.xy[(i, j)] as f64
+    });
+    let p = sparkx::sparkx(&data.counts, &xy, &data.section, data.n_sections);
+    let (genes, significant) = sparkx::significant(&p, n_genes);
+    log::info!(
+        "spatialpca: SPARK-X finds {significant} spatially variable genes, {} modelled",
+        genes.len()
+    );
+    anyhow::ensure!(
+        genes.len() >= 2,
+        "SPARK-X finds {significant} spatially variable genes at FDR {}; spatialpca needs \
+         at least 2",
+        sparkx::FDR
+    );
+    Ok((genes, significant))
+}
+
+/// SCTransform's standardised residuals on `genes`, the counts freed.
+fn expression(data: &mut SpatialData, genes: &[usize], seed: u64) -> (ResidualOp, SctReport) {
     let lib = library(&data.counts);
-    let sel = select_rows(&data.counts, genes);
+    let out = ResidualOp::sct(&data.counts, &lib, genes, seed);
     data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
-    ResidualOp::pearson(&sel, &lib)
+    out
 }
 
 /// The domains of the PCs `z`, refined over each cell's `refine_k`
@@ -245,14 +286,17 @@ fn base_settings(
     genes: &[usize],
     names: &[Box<str>],
     clustering: &str,
+    pre: &Preprocessing,
 ) -> serde_json::Value {
     serde_json::json!({
         "paper": "Shang and Zhou 2022, doi:10.1038/s41467-022-34879-1",
         "d": fit.n_factors,
         "n_genes": fit.n_genes,
         "genes_used": genes.iter().map(|&g| names[g].as_ref()).collect::<Vec<_>>(),
-        "gene_selection": "seurat_v3 highly variable genes",
-        "normalisation": "analytic Pearson residuals, clipped at sqrt(N), standardised per gene",
+        "gene_selection": "SPARK-X, Benjamini-Yekutieli FDR 0.05, at most n_genes by p",
+        "n_significant": pre.significant,
+        "normalisation": "SCTransform v1 Pearson residuals, clipped at sqrt(N), standardised per gene",
+        "sctransform": pre.sct,
         "clustering": clustering,
         "n_clusters": fit.core.n_clusters,
         "resolution": fit.core.n_clusters.is_none().then_some(fit.core.resolution),
@@ -263,14 +307,15 @@ fn base_settings(
 /// [`run`] on `data` as read.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let genes = select_genes(&data, fit.n_genes)?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
     ensure_fits(
         "spatialpca",
         factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), Variant::Sparse)),
         budget,
         LOWER_MEMORY,
     )?;
-    let op = expression(&mut data, &genes);
+    let (op, sct) = expression(&mut data, &genes, fit.core.input.seed);
+    let pre = Preprocessing { significant, sct };
     let d = fit.n_factors.min(op.m);
     let n = op.n;
     let (z, w, mut settings) = {
@@ -288,7 +333,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         (best.z, best.w, settings)
     };
     let (labels, clustering) = cell_domains(fit, &data, &z)?;
-    let base = base_settings(fit, &genes, &data.genes, clustering);
+    let base = base_settings(fit, &genes, &data.genes, clustering, &pre);
     merge(&mut settings, base);
     let loadings = to_mat(&w);
     let gene_names: Vec<Box<str>> = genes.iter().map(|&g| data.genes[g].clone()).collect();
@@ -314,6 +359,12 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             pseudobulk: None,
         },
     )
+}
+
+/// What a run's preprocessing records.
+struct Preprocessing {
+    significant: usize,
+    sct: SctReport,
 }
 
 fn merge(into: &mut serde_json::Value, from: serde_json::Value) {
@@ -354,7 +405,7 @@ pub(crate) fn run_pb_on(
     budget: &Budget,
 ) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let genes = select_genes(&data, fit.n_genes)?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
     ensure_fits(
         "spatialpca-pb",
         factor_peak_bytes(&fit.memory_shape(
@@ -368,11 +419,12 @@ pub(crate) fn run_pb_on(
     let (nb, lap) = cell_graph(&data, fit.core.knn);
     let mut coarse = coarsen(&mut data, args.n_pseudobulk, &nb)?;
     drop(nb);
-    let pb_op = expression(&mut coarse.cells.data, &genes);
-    let op = expression(&mut data, &genes);
+    let seed = fit.core.input.seed;
+    let (pb_op, pb_sct) = expression(&mut coarse.cells.data, &genes, seed);
+    let (op, sct) = expression(&mut data, &genes, seed);
+    let pre = Preprocessing { significant, sct };
     let (m, n, d) = (op.m, op.n, fit.n_factors.min(op.m));
     let pb_spec = spectrum(&coarse.lap, &fit.core);
-    let seed = fit.core.input.seed;
     let (pb_fit, pb_evals) =
         Profile::new(&pb_op, &coarse.lap, &pb_spec, d, fit.cg_tol, seed).fit(fit.max_evals);
     let (pb_labels, _) = domains(&to_mat(&pb_fit.z), &fit.core, None)?;
@@ -393,9 +445,10 @@ pub(crate) fn run_pb_on(
     let mut settings = sparse_settings(&best, m, n, evals, fit);
     merge(
         &mut settings,
-        base_settings(fit, &genes, &data.genes, clustering),
+        base_settings(fit, &genes, &data.genes, clustering, &pre),
     );
     settings["super_cell_fit"] = sparse_settings(&pb_fit, m, pb_op.n, pb_evals, fit);
+    settings["super_cell_fit"]["sctransform"] = serde_json::json!(pb_sct);
     settings["unravel"] = serde_json::json!({
         "method": "W fixed from the super-cell fit; sigma0^2, tau and rho refitted on the cells and their graph",
         "broadcast": "the super-cells' own labels, clustered apart, in cell_pb.parquet (a diagnostic)",

@@ -298,6 +298,11 @@ pub struct FactorShape {
     /// A `-pb` run's target number of super-cells (0 on cells): the
     /// coarsening's memory too.
     pub super_cells: usize,
+    /// Bytes of expression held dense (SpatialPCA's residuals).
+    pub dense_bytes: usize,
+    /// Bytes a stored nonzero takes over the run ([`FACTOR_NONZERO_BYTES`]
+    /// or [`SCT_NONZERO_BYTES`]).
+    pub nonzero_bytes: usize,
 }
 
 /// Bytes a stored nonzero takes over a factor baseline's run, summed
@@ -306,14 +311,18 @@ pub struct FactorShape {
 /// grows): the read ([`read_bytes`]), the selected genes' copy (12) and
 /// the implicit expression (16, by gene and by cell), every nonzero
 /// counted as selected.
-const FACTOR_NONZERO_BYTES: usize = 32 + 12 + 16;
+pub const FACTOR_NONZERO_BYTES: usize = 32 + 12 + 16;
+
+/// [`FACTOR_NONZERO_BYTES`] for SpatialPCA, whose expression is dense: the
+/// read and SCTransform's per-gene lists of every gene's nonzeros (16).
+pub const SCT_NONZERO_BYTES: usize = 32 + 16;
 
 /// A factor baseline's peak: the process, every nonzero's
-/// [`FACTOR_NONZERO_BYTES`], the graph as built (the kNN's Gram blocks,
+/// `nonzero_bytes`, the graph as built (the kNN's Gram blocks,
 /// [`GRAPH_EDGE_BYTES`] an edge of the symmetrised kNN, then its lists and
 /// its Laplacian, 12 bytes an entry each), the dense blocks of the exactly
 /// decomposed sections (three `n_s^2` copies, a thread each), the fit's
-/// vectors, and with `-pb` the coarsening and
+/// vectors, the expression held dense, and with `-pb` the coarsening and
 /// the super-cells' own expression.
 pub fn factor_peak_bytes(s: &FactorShape) -> usize {
     let sizes = &s.input.section_sizes;
@@ -339,10 +348,11 @@ pub fn factor_peak_bytes(s: &FactorShape) -> usize {
         0
     };
     FACTOR_PROCESS_BYTES
-        + FACTOR_NONZERO_BYTES * nnz
+        + s.nonzero_bytes * nnz
         + graph
         + exact
         + 8 * n * s.cell_vectors
         + 8 * s.genes * s.gene_vectors
+        + s.dense_bytes
         + pb
 }

@@ -771,8 +771,9 @@ enum Commands {
              fitted with the rest; no N x N matrix is held. There is no\n\
              --reference: the paper's dense kernel costs too much time and memory\n\
              at real cell counts; spatialpca-pb fits on super-cells for scale.\n\
-             Genes: the most variable (the paper's spatially variable gene step\n\
-             is not ported); counts normalised by analytic Pearson residuals.\n\n",
+             Genes: SPARK-X's spatially variable genes (FDR 0.05, at most\n\
+             --n-genes); expression: SCTransform's Pearson residuals, as the\n\
+             paper preprocesses.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

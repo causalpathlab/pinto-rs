@@ -580,10 +580,15 @@ with the rest (one `rho` for SpatialPCA, one per factor for MEFISTO), so
 no `N × N` matrix and no `O(N^3)` step is met: determinants and traces come
 from the graph's spectrum (exact on sections of at most 2000 cells,
 stochastic Lanczos quadrature above), solves from conjugate gradients.
-What differs from the papers besides the prior: genes are the most
-variable (`--n-genes`; SpatialPCA's spatially variable gene step is not
-ported), and SpatialPCA's SCTransform normalisation is replaced by
-analytic Pearson residuals. Each module's documentation lists every
+SpatialPCA's preprocessing is the paper's, each step written from its
+own paper: the spatially variable genes by SPARK-X (Zhu, Sun and Zhou
+2021, Genome Biology 22:184, doi:10.1186/s13059-021-02404-0) at a
+Benjamini-Yekutieli FDR of 0.05, at most `--n-genes` (3000), then
+SCTransform's Pearson residuals (Hafemeister and Satija 2019, Genome
+Biology 20:296, doi:10.1186/s13059-019-1874-1), standardised per gene
+(the paper takes SPARK, a GPL package, on small data sets; SPARK-X serves
+all here). MEFISTO models the most variable genes (`--n-genes`), as its
+paper does. Each module's documentation lists every
 deviation. The visible flags are the number of factors (`--n-factors`,
 `--n-pcs` for `spatialpca`; 20 and 4 by default) and of genes (3000 and
 2000); the papers' tuning knobs are hidden.

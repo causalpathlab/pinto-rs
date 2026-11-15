@@ -4,6 +4,7 @@ mod graph;
 mod mefisto;
 mod memory;
 mod notices;
+mod preprocess;
 mod pseudobulk;
 mod spatial_factor;
 mod spatialde2;
