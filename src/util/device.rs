@@ -96,7 +96,11 @@ fn hold_lock(path: &Path) -> std::io::Result<()> {
                  PINTO_GPU_LOCK=0 skips the wait",
                 path.display()
             );
+            // Wait without holding `HELD`, so a wait on one GPU does not
+            // hold up this process taking another.
+            drop(held);
             file.lock()?;
+            held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
         }
         Err(TryLockError::Error(e)) => return Err(e),
     }
