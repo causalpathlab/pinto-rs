@@ -11,7 +11,11 @@
 
 use crate::util::batch_effects::RunDelta;
 use crate::util::common::*;
+use crate::util::input::SrtInputArgs;
+use crate::util::lupin_rounds::same_file;
 use crate::util::metadata::BatchLabels;
+use legume_numeric::matrix::common_io::open_buf_reader;
+use std::path::Path;
 
 /// How a query's batch labels name batches, and so how they can be matched
 /// to the model's.
@@ -48,6 +52,23 @@ impl<'a> QueryLabels<'a> {
     }
 }
 
+/// Whether a model labelled its batches by file: as its manifest records
+/// (`model_source`), else read from its labels, which are then exactly the
+/// positions of its data files.
+fn model_labels_files(
+    model: &[Box<str>],
+    model_source: Option<BatchLabels>,
+    model_files: &[String],
+) -> bool {
+    match model_source {
+        Some(source) => source == BatchLabels::Files,
+        None => {
+            model.len() == model_files.len()
+                && (0..model_files.len()).all(|i| model.iter().any(|m| m.as_ref() == i.to_string()))
+        }
+    }
+}
+
 /// For each query batch label, the model's batch it is, if any. `model_source`
 /// is how the model labelled its batches, from its manifest; a manifest
 /// that does not record it (an older fit) is read from the labels: by file
@@ -69,49 +90,93 @@ pub(crate) fn match_batches(
             query_files,
             model_files,
         } => {
-            let by_file = match model_source {
-                Some(source) => source == BatchLabels::Files,
-                None => {
-                    model.len() == model_files.len()
-                        && (0..model_files.len()).all(|i| col_of(&i.to_string()).is_some())
-                }
-            };
+            let by_file = model_labels_files(model, model_source, model_files);
             query
                 .iter()
                 .map(|q| {
                     let file = query_files.get(q.parse::<usize>().ok()?)?;
-                    let i = model_files.iter().position(|m| same_file(m, file));
-                    if i.is_none() && by_file {
-                        warn_if_renamed(file, model_files);
-                    }
-                    by_file.then(|| col_of(&i?.to_string())).flatten()
+                    let i = model_files
+                        .iter()
+                        .position(|m| same_file(Path::new(m), Path::new(file.as_ref())))?;
+                    by_file.then(|| col_of(&i.to_string())).flatten()
                 })
                 .collect()
         }
     }
 }
 
+/// Whether every batch a query with inputs `c` (labels `how`) can have is
+/// one of the model's, decided before any data is read: per-file labels
+/// are the files' positions, `--batch-files` labels are those files' lines,
+/// and `--auto-batch` components are never the model's. Read from the
+/// inputs, so a label only cells QC drops would carry counts too: it can
+/// ask for an estimate the kept cells do not need, never skip one they
+/// do. Warns, once, of a query file named as a model file but not that
+/// file.
+pub(crate) fn every_batch_known(
+    c: &SrtInputArgs,
+    how: &QueryLabels<'_>,
+    model: &[Box<str>],
+    model_source: Option<BatchLabels>,
+) -> anyhow::Result<bool> {
+    let labels: Vec<Box<str>> = match how {
+        QueryLabels::Components => return Ok(false),
+        QueryLabels::Files {
+            query_files,
+            model_files,
+        } => {
+            if model_labels_files(model, model_source, model_files) {
+                for file in query_files.iter() {
+                    warn_if_renamed(file, model_files);
+                }
+            }
+            (0..query_files.len())
+                .map(|i| i.to_string().into())
+                .collect()
+        }
+        // a model labelled otherwise shares no named batch: no need to read
+        QueryLabels::Named if model_source.is_some_and(|s| s != BatchLabels::BatchFiles) => {
+            return Ok(false)
+        }
+        QueryLabels::Named => {
+            // one entry per distinct label, read a line at a time: no
+            // per-cell list
+            use std::io::BufRead;
+            let mut labels = std::collections::BTreeSet::new();
+            for file in c.batch_files.iter().flatten() {
+                for line in open_buf_reader(file)?.lines() {
+                    let line = line?;
+                    if !labels.contains(line.as_str()) {
+                        labels.insert(Box::<str>::from(line));
+                    }
+                }
+            }
+            labels.into_iter().collect()
+        }
+    };
+    Ok(match_batches(&labels, model, model_source, how)
+        .iter()
+        .all(Option::is_some))
+}
+
 /// A query file not among the model's, but named as one of them is: most
 /// likely the model's file moved, or the model's path no longer resolves.
 fn warn_if_renamed(file: &str, model_files: &[String]) {
-    let name = std::path::Path::new(file).file_name();
+    if model_files
+        .iter()
+        .any(|m| same_file(Path::new(m), Path::new(file)))
+    {
+        return;
+    }
+    let name = Path::new(file).file_name();
     if let Some(m) = model_files
         .iter()
-        .find(|m| name.is_some() && std::path::Path::new(m).file_name() == name)
+        .find(|m| name.is_some() && Path::new(m).file_name() == name)
     {
         log::warn!(
             "{file} is named as the model's data file {m} but is not that file; its batch \
              is taken as new to the model"
         );
-    }
-}
-
-/// Whether two paths name one file: by their canonical paths when both
-/// resolve, else as written.
-fn same_file(a: &str, b: &str) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
     }
 }
 
@@ -137,36 +202,36 @@ pub(crate) fn combine(
         .enumerate()
         .filter_map(|(q, m)| m.map(|m| (q, m)))
         .collect();
-    let est = |plane: fn(&RunDelta) -> &Mat, g: usize, q: usize, none: f32| {
-        estimate.map_or(none, |e| plane(e)[(g, q)])
-    };
     let log_anchor: Vec<f32> = (0..n_rows)
-        .map(|g| {
-            if !model_has_row[g] || shared.is_empty() || estimate.is_none() {
-                return 0.0;
+        .map(|g| match estimate {
+            Some(e) if model_has_row[g] && !shared.is_empty() => {
+                let log_ratio: f32 = shared
+                    .iter()
+                    .map(|&(q, m)| model.mean[(g, m)].ln() - e.mean[(g, q)].ln())
+                    .sum();
+                log_ratio / shared.len() as f32
             }
-            let log_ratio: f32 = shared
-                .iter()
-                .map(|&(q, m)| model.mean[(g, m)].ln() - est(|e| &e.mean, g, q, 1.0).ln())
-                .sum();
-            log_ratio / shared.len() as f32
+            _ => 0.0,
         })
         .collect();
-    let plane = |of: fn(&RunDelta) -> &Mat, none: f32, moved: &dyn Fn(f32, usize) -> f32| {
-        Mat::from_fn(n_rows, matched.len(), |g, q| match matched[q] {
-            Some(m) if model_has_row[g] => of(model)[(g, m)],
-            _ => moved(est(of, g, q, none), g),
-        })
+    // how each plane of the estimate moves into the model's frame: the
+    // mean and its spread scale, the log mean shifts, the log spread stays
+    let moved = |p: usize, v: f32, g: usize| match p {
+        0 | 1 => v * log_anchor[g].exp(),
+        2 => v + log_anchor[g],
+        _ => v,
     };
-    let scale = |v: f32, g: usize| v * log_anchor[g].exp();
-    RunDelta {
-        rows: model.rows.clone(),
-        batches: query_batches.to_vec(),
-        mean: plane(|d| &d.mean, 1.0, &scale),
-        sd: plane(|d| &d.sd, 0.0, &scale),
-        log_mean: plane(|d| &d.log_mean, 0.0, &|v, g| v + log_anchor[g]),
-        log_sd: plane(|d| &d.log_sd, 0.0, &|v, _| v),
-    }
+    let est = estimate.map(RunDelta::planes);
+    model.map_planes(
+        model.rows.clone(),
+        query_batches.to_vec(),
+        |p, of_model, fill| {
+            Mat::from_fn(n_rows, matched.len(), |g, q| match matched[q] {
+                Some(m) if model_has_row[g] => of_model[(g, m)],
+                _ => moved(p, est.map_or(fill, |e| e[p][(g, q)]), g),
+            })
+        },
+    )
 }
 
 /// The δ predict divides the query by, given the model's δ (read from

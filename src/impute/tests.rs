@@ -218,6 +218,34 @@ fn a_missing_manifest_names_the_flag_as_the_way_out() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A manifest's recorded reference files resolve beside it, as predict
+/// resolves the model's, whatever the working directory; one in neither
+/// place is an error naming the flag.
+#[test]
+fn recorded_reference_files_resolve_beside_the_manifest() -> anyhow::Result<()> {
+    use crate::util::metadata::{manifest_path, PintoMetadata, Run};
+    let dir = tempfile::tempdir()?;
+    let model = dir.path().join("run").to_string_lossy().to_string();
+    std::fs::write(dir.path().join("a.zarr"), b"")?;
+    let mut meta = PintoMetadata {
+        data_files: Some(vec!["a.zarr".into()]),
+        ..Default::default()
+    };
+    meta.write(std::path::Path::new(&manifest_path(&model)))?;
+    let args = parse_impute(&["impute", "q.zarr", "--model", &model, "-o", "out"])?;
+    let files = resolve_reference_data(&args, Some(&Run::open(&model)?))?;
+    assert_eq!(
+        std::path::Path::new(files[0].as_ref()),
+        dir.path().join("a.zarr")
+    );
+
+    meta.data_files = Some(vec!["gone.zarr".into()]);
+    meta.write(std::path::Path::new(&manifest_path(&model)))?;
+    let err = resolve_reference_data(&args, Some(&Run::open(&model)?)).unwrap_err();
+    assert!(err.to_string().contains("--reference-data"), "{err}");
+    Ok(())
+}
+
 ////////////////////////////////////////////
 // Reference propensity onto the data axis //
 ////////////////////////////////////////////

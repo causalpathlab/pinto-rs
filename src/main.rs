@@ -166,6 +166,7 @@ enum Commands {
                       `pinto prop` re-cuts the same latent at a fixed K.\n\n\
                       Outputs:\n\
                       - {out}.delta.parquet: batch effects (when multi-batch)\n\
+                      - {out}.delta_cells.parquet: each cell's batch, as δ's columns name it\n\
                       - {out}.coord_pairs.parquet: cell pair coordinates\n\
                       - {out}.basis.parquet: SVD basis (2G x T)\n\
                       - {out}.latent.parquet: per-pair latent codes (E x T)\n\
@@ -311,6 +312,7 @@ enum Commands {
                       \x20                                conditional, so it need not rise every sweep.\n\
                       \x20 {out}.delta.parquet           Batch effects δ (multi-sample only;\n\
                       \x20                                named in the manifest)\n\
+                      \x20 {out}.delta_cells.parquet     Each cell's batch, as δ's columns name it\n\
                       \x20 {out}.feature_graph.parquet      Feature-feature pairs (feature-pair mode only)\n\
                       \x20 {out}.L{l}.*.parquet          Per-cascade-level outputs (unless --no-level-outputs)\n\
                       \x20 {out}.draft.*.parquet         Pre-merge fine partition (when a --merge-cut collapsed)\n\
@@ -405,6 +407,7 @@ enum Commands {
                       \x20 {out}.fisher_weights.parquet  per-ROW NB precisions w_r\n\
                       \x20 {out}.delta.parquet           batch effects (multi-batch only;\n\
                       \x20                                optional `--cnv-clones` on the δ path)\n\
+                      \x20 {out}.delta_cells.parquet     each cell's batch, as δ's columns name it\n\
                       \x20 {out}.pinto.json           manifest"
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),
@@ -542,7 +545,8 @@ enum Commands {
                       \x20  and accumulate those cells' full-feature counts.\n\
                       \x20  For a cage model each reference cell's counts are first\n\
                       \x20  divided by the run's δ for its batch (the batches as\n\
-                      \x20  estimated, from {model}.coord_pairs.parquet), as predict\n\
+                      \x20  estimated, from {model}.delta_cells.parquet, or the\n\
+                      \x20  coord_pairs of a run fitted before it), as predict\n\
                       \x20  divides the query. lc / dsvd models stay on raw counts on\n\
                       \x20  both sides: their feature_community profiles are fitted on\n\
                       \x20  raw counts, so dividing the cells would match them against\n\

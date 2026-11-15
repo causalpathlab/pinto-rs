@@ -121,20 +121,13 @@ pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<us
 }
 
 /// Estimate per-feature batch effect multipliers (δ) via hierarchical
-/// pseudobulk collapsing with cross-batch KNN matching.
-///
-/// Returns `None` if fewer than 2 batches are present.
-pub fn estimate_batch(
+/// pseudobulk collapsing with cross-batch KNN matching. The caller counts
+/// the batches ([`estimate_and_write_batch_effects`] needs two or more).
+fn estimate_batch(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     args: EstimateBatchArgs,
 ) -> anyhow::Result<Option<GammaMatrix>> {
-    let batch_hash: HashSet<Box<str>> = batch_membership.iter().cloned().collect();
-    let nbatch = batch_hash.len();
-    if nbatch < 2 {
-        return Ok(None);
-    }
-
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
         args.block_size,
@@ -163,43 +156,107 @@ pub fn estimate_batch(
     Ok(collapse_out.delta)
 }
 
-/// Estimate batch effects and write them to parquet.
+/// Estimate batch effects, and (with `out_prefix`) write them to
+/// `{out_prefix}.delta.parquet` and each cell's batch to
+/// `{out_prefix}.delta_cells.parquet`.
 ///
-/// Skips estimation when fewer than 2 batches are present.
-/// Returns the posterior mean matrix `[n_features × n_batches]` when
-/// multi-batch, or `None` for single-batch.
+/// `labels` are the sorted, distinct labels of `batch_membership`; nothing
+/// is estimated with fewer than 2. Returns the posterior on the data's
+/// rows, its batches in label order (data-beans' batch ids), so a caller
+/// indexing cells by sorted label indexes its columns.
 pub fn estimate_and_write_batch_effects(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
+    labels: &[Box<str>],
     args: EstimateBatchArgs,
-    out_prefix: &str,
-) -> anyhow::Result<Option<Mat>> {
-    let uniq_batches: HashSet<&Box<str>> = batch_membership.iter().collect();
-    let n_batches = uniq_batches.len();
-    drop(uniq_batches);
-
-    if n_batches < 2 {
+    out_prefix: Option<&str>,
+) -> anyhow::Result<Option<BatchPosterior>> {
+    if labels.len() < 2 {
         return Ok(None);
     }
 
-    info!("Estimating batch effects ({} batches)...", n_batches);
-    let batch_effects = estimate_batch(data_vec, batch_membership, args)?;
-
-    if let Some(batch_db) = batch_effects.as_ref() {
-        let outfile = out_prefix.to_string() + ".delta.parquet";
-        let batch_names = data_vec.batch_names();
-        let feature_names = data_vec.row_names()?;
-        batch_db.to_melted_parquet(
-            &outfile,
-            (Some(&feature_names), Some("feature")),
-            (batch_names.as_deref(), Some("batch")),
+    info!("Estimating batch effects ({} batches)...", labels.len());
+    let Some(gamma) = estimate_batch(data_vec, batch_membership, args)? else {
+        return Ok(None);
+    };
+    let batches = data_vec
+        .batch_names()
+        .ok_or_else(|| anyhow::anyhow!("batch effects estimated without batch names"))?;
+    let rows = data_vec.row_names()?;
+    if let Some(prefix) = out_prefix {
+        gamma.to_melted_parquet(
+            &format!("{prefix}.delta.parquet"),
+            (Some(&rows), Some("feature")),
+            (Some(&batches), Some("batch")),
+        )?;
+        write_cell_batches(
+            &delta_cells_path(prefix),
+            &data_vec.column_names()?,
+            batch_membership,
         )?;
     }
-
-    Ok(batch_effects.map(|x| x.posterior_mean().clone()))
+    Ok(Some(BatchPosterior {
+        gamma,
+        rows,
+        batches,
+    }))
 }
 
-/// A run's batch effects, read back from its `{prefix}.delta.parquet`: the
+/// The batch effect posterior an estimate gives, on its rows and batches.
+/// A fit divides by the mean alone ([`Self::into_mean`]); `predict` carries
+/// the posterior in full ([`Self::into_delta`]).
+pub struct BatchPosterior {
+    pub gamma: GammaMatrix,
+    pub rows: Vec<Box<str>>,
+    pub batches: Vec<Box<str>>,
+}
+
+impl BatchPosterior {
+    /// The mean, `[rows × batches]`, its other planes left alone.
+    pub fn into_mean(self) -> anyhow::Result<Mat> {
+        self.check_mean()?;
+        Ok(self.gamma.posterior_mean().clone())
+    }
+
+    /// The posterior in full. The mean must be `[rows × batches]`; a spread
+    /// plane the estimate left unallocated is filled (no spread, log 0), as
+    /// the writer has it.
+    pub fn into_delta(self) -> anyhow::Result<RunDelta> {
+        self.check_mean()?;
+        let shape = (self.rows.len(), self.batches.len());
+        let g = &self.gamma;
+        let plane = |m: &Mat, fill: f32| {
+            if m.shape() == shape {
+                m.clone()
+            } else {
+                Mat::from_element(shape.0, shape.1, fill)
+            }
+        };
+        let planes = [
+            g.posterior_mean().clone(),
+            plane(g.posterior_sd(), FILL[1]),
+            plane(g.posterior_log_mean(), FILL[2]),
+            plane(g.posterior_log_sd(), FILL[3]),
+        ];
+        Ok(RunDelta::from_planes(self.rows, self.batches, planes))
+    }
+
+    fn check_mean(&self) -> anyhow::Result<()> {
+        let shape = self.gamma.posterior_mean().shape();
+        let want = (self.rows.len(), self.batches.len());
+        anyhow::ensure!(
+            shape == want,
+            "batch effect mean is {} x {}, not {} rows x {} batches",
+            shape.0,
+            shape.1,
+            want.0,
+            want.1
+        );
+        Ok(())
+    }
+}
+
+/// A run's batch effects, as its `{prefix}.delta.parquet` holds them: the
 /// posterior of δ, one row per matrix row the run read (a splice channel
 /// such as `FEATURE/count/spliced` is a row of its own) and one column per
 /// batch label as estimated (after `--auto-batch`), sorted. The mean is
@@ -220,6 +277,10 @@ pub struct RunDelta {
 /// fits write them.
 const DELTA_PLANES: [&str; 4] = ["mean", "sd", "log_mean", "log_sd"];
 
+/// Each plane's value for a row or batch a δ lacks: no shift (mean 1, no
+/// spread, log 0).
+const FILL: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+
 /// Read a melted `delta.parquet` (`feature`, `batch`, `mean`, and the fits'
 /// `sd`, `log_mean`, `log_sd`; a table with the mean alone reads with the
 /// spread planes zero).
@@ -233,47 +294,82 @@ pub fn read_delta(path: &str) -> anyhow::Result<RunDelta> {
         nums.iter().all(|c| c.len() == feature.len()) && feature.len() == batch.len(),
         "{path}: columns of different lengths"
     );
-    let mut batches: Vec<Box<str>> = batch.clone();
-    batches.sort();
-    batches.dedup();
+    let batches: Vec<Box<str>> = batch
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .map(Box::from)
+        .collect();
     let col_of: HashMap<&str, usize> = batches
         .iter()
         .enumerate()
         .map(|(j, b)| (b.as_ref(), j))
         .collect();
     let mut rows: Vec<Box<str>> = Vec::new();
-    let mut row_of: HashMap<Box<str>, usize> = HashMap::default();
+    let mut row_of: HashMap<&str, usize> = HashMap::default();
     for f in &feature {
-        if !row_of.contains_key(f) {
-            row_of.insert(f.clone(), rows.len());
+        if !row_of.contains_key(f.as_ref()) {
+            row_of.insert(f, rows.len());
             rows.push(f.clone());
         }
     }
-    let plane = |k: usize, fill: f32| {
+    let planes: [Mat; 4] = std::array::from_fn(|k| {
+        // the mean has no fill: every (feature, batch) pair must be there
+        let fill = if k == 0 { f32::NAN } else { FILL[k] };
         let mut m = Mat::from_element(rows.len(), batches.len(), fill);
         if let Some(values) = nums.get(k) {
             for ((f, b), &v) in feature.iter().zip(&batch).zip(values) {
-                m[(row_of[f], col_of[b.as_ref()])] = v as f32;
+                m[(row_of[f.as_ref()], col_of[b.as_ref()])] = v as f32;
             }
         }
         m
-    };
-    let mean = plane(0, f32::NAN);
+    });
     anyhow::ensure!(
-        mean.iter().all(|v| v.is_finite()),
+        planes[0].iter().all(|v| v.is_finite()),
         "{path}: not every (feature, batch) pair has a finite mean"
     );
-    Ok(RunDelta {
-        sd: plane(1, 0.0),
-        log_mean: plane(2, 0.0),
-        log_sd: plane(3, 0.0),
-        mean,
-        rows,
-        batches,
-    })
+    Ok(RunDelta::from_planes(rows, batches, planes))
 }
 
 impl RunDelta {
+    /// A δ from its planes, in [`DELTA_PLANES`] order.
+    pub fn from_planes(
+        rows: Vec<Box<str>>,
+        batches: Vec<Box<str>>,
+        [mean, sd, log_mean, log_sd]: [Mat; 4],
+    ) -> Self {
+        Self {
+            rows,
+            batches,
+            mean,
+            sd,
+            log_mean,
+            log_sd,
+        }
+    }
+
+    /// The planes, in [`DELTA_PLANES`] order.
+    pub fn planes(&self) -> [&Mat; 4] {
+        [&self.mean, &self.sd, &self.log_mean, &self.log_sd]
+    }
+
+    /// A δ on `rows` and `batches` whose planes are `plane(p, this δ's
+    /// plane p, its fill)`.
+    pub(crate) fn map_planes(
+        &self,
+        rows: Vec<Box<str>>,
+        batches: Vec<Box<str>>,
+        plane: impl Fn(usize, &Mat, f32) -> Mat,
+    ) -> Self {
+        let mats = self.planes();
+        Self::from_planes(
+            rows,
+            batches,
+            std::array::from_fn(|p| plane(p, mats[p], FILL[p])),
+        )
+    }
+
     /// Each of `rows`' row in this δ, by name; `None` for a row the run did
     /// not read.
     pub fn row_index(&self, rows: &[Box<str>]) -> Vec<Option<usize>> {
@@ -286,24 +382,25 @@ impl RunDelta {
         rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
     }
 
+    /// The mean alone on another matrix's `rows`, matched by name; a row
+    /// the run did not read is no shift.
+    pub fn mean_on_rows(&self, rows: &[Box<str>]) -> Mat {
+        let idx = self.row_index(rows);
+        Mat::from_fn(rows.len(), self.batches.len(), |i, j| {
+            idx[i].map_or(FILL[0], |r| self.mean[(r, j)])
+        })
+    }
+
     /// This δ on another matrix's `rows`, matched by name, and which of
     /// them the run read; a row it did not read is no shift (mean 1, no
     /// spread).
     pub fn on_rows(&self, rows: &[Box<str>]) -> (Self, Vec<bool>) {
         let idx = self.row_index(rows);
-        let pick = |m: &Mat, fill: f32| {
+        let on = self.map_planes(rows.to_vec(), self.batches.clone(), |_, m, fill| {
             Mat::from_fn(rows.len(), self.batches.len(), |i, j| {
                 idx[i].map_or(fill, |r| m[(r, j)])
             })
-        };
-        let on = Self {
-            rows: rows.to_vec(),
-            batches: self.batches.clone(),
-            mean: pick(&self.mean, 1.0),
-            sd: pick(&self.sd, 0.0),
-            log_mean: pick(&self.log_mean, 0.0),
-            log_sd: pick(&self.log_sd, 0.0),
-        };
+        });
         (on, idx.iter().map(Option::is_some).collect())
     }
 
@@ -313,19 +410,11 @@ impl RunDelta {
             .iter()
             .map(|b| self.batches.iter().position(|m| m == b))
             .collect();
-        let pick = |m: &Mat, fill: f32| {
+        self.map_planes(self.rows.clone(), batches.to_vec(), |_, m, fill| {
             Mat::from_fn(self.rows.len(), batches.len(), |i, j| {
                 idx[j].map_or(fill, |c| m[(i, c)])
             })
-        };
-        Self {
-            rows: self.rows.clone(),
-            batches: batches.to_vec(),
-            mean: pick(&self.mean, 1.0),
-            sd: pick(&self.sd, 0.0),
-            log_mean: pick(&self.log_mean, 0.0),
-            log_sd: pick(&self.log_sd, 0.0),
-        }
+        })
     }
 
     /// Write this δ melted to `path`, in the fits' schema (`feature`,
@@ -336,15 +425,12 @@ impl RunDelta {
         let n = self.rows.len() * self.batches.len();
         let (mut feature, mut batch) = (Vec::with_capacity(n), Vec::with_capacity(n));
         let mut planes: [Vec<f32>; 4] = Default::default();
+        let mats = self.planes();
         for (b, label) in self.batches.iter().enumerate() {
             for (g, row) in self.rows.iter().enumerate() {
                 feature.push(row.clone());
                 batch.push(label.clone());
-                for (p, m) in
-                    planes
-                        .iter_mut()
-                        .zip([&self.mean, &self.sd, &self.log_mean, &self.log_sd])
-                {
+                for (p, m) in planes.iter_mut().zip(mats) {
                     p.push(m[(g, b)]);
                 }
             }
@@ -360,26 +446,85 @@ impl RunDelta {
     }
 }
 
-/// The δ a fitted run left at `prefix`, when it has one: the run's manifest
-/// says whether it wrote one (a stale file from an earlier fit under the
-/// same prefix is not read); a run without a manifest is taken at its
+/// The δ a fitted run left at `prefix`, when it has one. With the run's
+/// manifest (`run`), the file it records ([`Run::recorded_output`]: never
+/// from the working directory, and an error when it is nowhere); a stale
+/// file from an earlier fit under the same prefix is not read when it
+/// records none. A run without a manifest is taken at its
 /// `{prefix}.delta.parquet`.
-pub fn run_delta_path(prefix: &str) -> Option<String> {
-    let path = format!("{prefix}.delta.parquet");
-    let manifest = crate::util::metadata::manifest_path(prefix);
-    let recorded = match crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest))
-    {
-        Ok(meta) => meta.outputs.batch_effects.is_some(),
-        Err(_) => true,
+///
+/// [`Run::recorded_output`]: crate::util::metadata::Run::recorded_output
+pub fn run_delta_path(
+    prefix: &str,
+    run: Option<&crate::util::metadata::Run>,
+) -> anyhow::Result<Option<String>> {
+    let Some(run) = run else {
+        let path = format!("{prefix}.delta.parquet");
+        return Ok(std::path::Path::new(&path).is_file().then_some(path));
     };
-    (recorded && std::path::Path::new(&path).is_file()).then_some(path)
+    let found = run.recorded_output(run.meta.outputs.batch_effects.as_deref(), "delta.parquet")?;
+    Ok(found.map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// Where a run records each cell's batch, when it does: the table its
+/// manifest records, found as its δ is ([`run_delta_path`]). `None` for a
+/// run that records none (fitted before it was written); an error when
+/// one is recorded but nowhere.
+pub fn run_delta_cells_path(run: &crate::util::metadata::Run) -> anyhow::Result<Option<String>> {
+    let found = run.recorded_output(
+        run.meta.outputs.delta_cells.as_deref(),
+        "delta_cells.parquet",
+    )?;
+    Ok(found.map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// Where a fit writes each cell's batch label as δ's columns name it.
+pub fn delta_cells_path(prefix: &str) -> String {
+    format!("{prefix}.delta_cells.parquet")
+}
+
+/// `path`: one row per cell (`cell`), with the label of the δ column its
+/// counts are divided by (`batch`), after `--auto-batch`.
+fn write_cell_batches(
+    path: &str,
+    cells: &[Box<str>],
+    batch_membership: &[Box<str>],
+) -> anyhow::Result<()> {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    anyhow::ensure!(
+        cells.len() == batch_membership.len(),
+        "{path}: {} batch labels for {} cells",
+        batch_membership.len(),
+        cells.len()
+    );
+    write_named_table(
+        path,
+        "cell",
+        cells,
+        &[("batch".into(), Column::Str(batch_membership))],
+    )
+}
+
+/// Each cell's batch label as the run estimated it, from the table
+/// [`delta_cells_path`] names.
+pub fn read_cell_batches(path: &str) -> anyhow::Result<HashMap<Box<str>, Box<str>>> {
+    let (strs, _) = read_table_columns(path, &["cell", "batch"], &[])?;
+    let [cell, batch]: [Vec<Box<str>>; 2] = strs
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{path}: expected cell and batch columns"))?;
+    anyhow::ensure!(
+        cell.len() == batch.len(),
+        "{path}: columns of different lengths"
+    );
+    Ok(cell.into_iter().zip(batch).collect())
 }
 
 /// Each cell's batch label as the run estimated it, from its
-/// `coord_pairs.parquet` (`left_batch` / `right_batch`). These are the
-/// labels δ's columns are named by; the cells table keeps the labels as
-/// read, before `--auto-batch`. Empty when the table has no batch columns
-/// (a single-batch run).
+/// `coord_pairs.parquet` (`left_batch` / `right_batch`), for a run fitted
+/// before it wrote [`delta_cells_path`]. These are the labels δ's columns
+/// are named by; the cells table keeps the labels as read, before
+/// `--auto-batch`. Empty when the table has no batch columns (a
+/// single-batch run).
 pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<str>, Box<str>>> {
     let pairs = crate::lr_activity::io::read_pair_table(path, false)?;
     let mut out: HashMap<Box<str>, Box<str>> = HashMap::default();

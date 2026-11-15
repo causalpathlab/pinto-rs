@@ -41,7 +41,8 @@ pinto lc data.h5 -o out   # expression-only
 With several batches (data files, or `--batch-files` labels), lc estimates
 batch effects δ, as dsvd and cage do, and divides every count of its edge
 profiles by its batch's δ; `{out}.feature_community.parquet` stays on raw
-counts. The manifest names `{out}.delta.parquet`. `--ignore-batch` fits
+counts. The manifest names `{out}.delta.parquet`, and
+`{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
 
 A fit is reproducible at a fixed `--seed` and thread count

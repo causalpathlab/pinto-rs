@@ -140,6 +140,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         batch_membership,
         section_ids: _,
         seeding,
+        batch_labels: _,
         batch_effects: batch_db,
         graph,
         knn,
@@ -158,7 +159,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: false,
-        batch_effects: BatchEstimate::Always,
+        batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Rows,
         // `dsvd` takes its own projection because it asks for a different one:
         // it batch-corrects whenever `--ignore-batch` is not given, where
@@ -174,6 +175,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         cell_projection: false,
         feature_kind: None,
     })?;
+    // Only the mean divides; the full posterior is the file preprocessing wrote.
+    let batch_db = batch_db
+        .map(crate::util::batch_effects::BatchPosterior::into_mean)
+        .transpose()?;
     let feature_names = data_vec.row_names()?;
 
     // Wrap graph with data for pair-level operations
@@ -340,22 +345,19 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     {
         use crate::util::metadata::{create_dsvd_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let mut meta = create_dsvd_metadata(
-            has_batch_effects,
-            &RunInputs {
-                prefix: &c.out,
-                data_files: &c.data_files,
-                coord_file: coord_file_str.as_deref(),
-                coord_columns: &coordinate_names,
-                n_cells,
-                n_features: data_vec.num_rows(),
-                n_edges: edges.len(),
-                graph: (&knn).into(),
-                ablation,
-                k: n_clusters,
-            },
-        );
-        meta.record_batch_labels(c);
+        let meta = create_dsvd_metadata(&RunInputs {
+            prefix: &c.out,
+            data_files: &c.data_files,
+            coord_file: coord_file_str.as_deref(),
+            coord_columns: &coordinate_names,
+            n_cells,
+            n_features: data_vec.num_rows(),
+            n_edges: edges.len(),
+            graph: (&knn).into(),
+            ablation,
+            k: n_clusters,
+            delta: has_batch_effects.then(|| crate::util::metadata::DeltaWritten::fit(c)),
+        });
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

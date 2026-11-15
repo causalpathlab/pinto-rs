@@ -68,11 +68,7 @@ impl Run {
     /// the manifest records, so it still finds the run's files (its own
     /// name less `.json` when it records none).
     pub fn open(run: &str) -> anyhow::Result<Self> {
-        let manifest = if Path::new(run).is_file() {
-            std::path::PathBuf::from(run)
-        } else {
-            std::path::PathBuf::from(run_manifest(run))
-        };
+        let manifest = Self::manifest_of(run);
         anyhow::ensure!(
             manifest.is_file(),
             "{}: no such manifest (a prior run's {{prefix}}.pinto.json)",
@@ -97,9 +93,68 @@ impl Run {
         })
     }
 
+    /// The run `run` names, as [`Self::open`] has it, or `None` when no
+    /// manifest file is there. A manifest that is there but cannot be read
+    /// is an error, not a run without one.
+    pub fn open_if_exists(run: &str) -> anyhow::Result<Option<Self>> {
+        if Self::manifest_of(run).is_file() {
+            Self::open(run).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// The manifest file `run` names: itself when it is a file, else the
+    /// manifest of the prefix it is.
+    fn manifest_of(run: &str) -> PathBuf {
+        if Path::new(run).is_file() {
+            PathBuf::from(run)
+        } else {
+            PathBuf::from(run_manifest(run))
+        }
+    }
+
     /// A path as the manifest writes it ([`resolve_beside`]).
     pub fn resolve(&self, path: &str) -> Option<std::path::PathBuf> {
         resolve_beside(&self.manifest, path)
+    }
+
+    /// An output the manifest records as `recorded`, found without the
+    /// working directory: the recorded path when absolute, beside the
+    /// manifest when relative. A record that names the run's own
+    /// `{prefix}.{suffix}` as the fit's prefix had it (an older manifest,
+    /// relative to the directory it was fitted from, or a run moved since)
+    /// is also found at the run's own file under its prefix now; any other
+    /// record is not, so a stale file under the prefix is never taken for
+    /// a recorded one that is gone. `None` when the manifest records none;
+    /// an error when it records one that is not found.
+    pub fn recorded_output(
+        &self,
+        recorded: Option<&str>,
+        suffix: &str,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        let Some(recorded) = recorded else {
+            return Ok(None);
+        };
+        let dir = self.manifest.parent().unwrap_or(Path::new(""));
+        // `join` keeps an absolute path as it is
+        let beside = dir.join(recorded);
+        if beside.is_file() {
+            return Ok(Some(beside));
+        }
+        let own = PathBuf::from(format!("{}.{suffix}", self.prefix));
+        let names_own = recorded == format!("{}.{suffix}", self.meta.prefix);
+        anyhow::ensure!(
+            names_own && own.is_file(),
+            "{}: records {recorded}, which is not there{}",
+            self.manifest.display(),
+            if names_own {
+                format!(" nor at {}", own.display())
+            } else {
+                String::new()
+            }
+        );
+        Ok(Some(own))
     }
 }
 
@@ -218,8 +273,9 @@ fn recorded_files(files: &[Box<str>]) -> Vec<String> {
     files
         .iter()
         .map(|f| {
-            std::fs::canonicalize(f.as_ref())
-                .map_or_else(|_| f.to_string(), |p| p.to_string_lossy().into_owned())
+            crate::util::lupin_rounds::canonical(Path::new(f.as_ref()))
+                .to_string_lossy()
+                .into_owned()
         })
         .collect()
 }
@@ -356,6 +412,12 @@ pub struct OutputFiles {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_effects: Option<String>,
+
+    /// Each cell's batch label as δ's columns name it (after
+    /// `--auto-batch`), beside `batch_effects`. Absent on runs fitted
+    /// before it was written; their `coord_pairs` carry the labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_cells: Option<String>,
 
     /// Cosine dictionary-merge artifacts: the merge tree, and its consensus
     /// cut when `--merge-cut` was given. Absent when the merge did not run.
@@ -494,16 +556,6 @@ pub struct LevelInfo {
 }
 
 impl PintoMetadata {
-    /// Record what named the batches of the run's δ (inputs `c`), when it
-    /// wrote one.
-    pub fn record_batch_labels(&mut self, c: &crate::util::input::SrtInputArgs) {
-        self.batch_labels = self
-            .outputs
-            .batch_effects
-            .is_some()
-            .then(|| BatchLabels::of(c));
-    }
-
     /// The method that made the run, as `pinto run` names it: the command,
     /// except that a cell-level cage run is `cage-cell`. Read by the viewer.
     #[cfg(any(feature = "view", test))]
@@ -854,6 +906,51 @@ pub struct RunInputs<'a> {
     pub graph: GraphParams,
     /// The ablation this run is, if any.
     pub ablation: Option<crate::util::ablation::Ablation>,
+    /// The δ the run wrote to `delta.parquet`; `None` when it wrote none.
+    pub delta: Option<DeltaWritten>,
+}
+
+/// A δ a run wrote: what named its batches, and whether each cell's batch
+/// was written beside it (a fit's; `predict` writes the δ alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeltaWritten {
+    pub labels: BatchLabels,
+    pub cells: bool,
+}
+
+impl DeltaWritten {
+    /// A fit's δ, with its cells, for a run with inputs `c`.
+    pub fn fit(c: &crate::util::input::SrtInputArgs) -> Self {
+        Self {
+            labels: BatchLabels::of(c),
+            cells: true,
+        }
+    }
+}
+
+/// The δ outputs a run with `inputs` wrote: `delta.parquet`, and each
+/// cell's batch when it was written. Recorded relative to the manifest
+/// (which is written under the same prefix), so a later run finds them
+/// from any working directory, and wherever the run is moved.
+fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
+    let Some(delta) = inputs.delta else {
+        return (None, None);
+    };
+    // the manifest's own file name less its suffix: `-o out/` writes
+    // `out/.pinto.json` and `out/.delta.parquet`
+    let manifest = manifest_path(inputs.prefix);
+    let name = Path::new(&manifest)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(|f| f.strip_suffix(".pinto.json"))
+        .unwrap_or_default()
+        .to_string();
+    (
+        Some(format!("{name}.delta.parquet")),
+        delta
+            .cells
+            .then(|| crate::util::batch_effects::delta_cells_path(&name)),
+    )
 }
 
 /// Helper to create metadata for `pinto lc` runs.
@@ -863,16 +960,15 @@ pub struct RunInputs<'a> {
 /// (skipped levels are absent — the cascade drops levels with too few
 /// super-edges, so indices need not be contiguous and may not start at 0).
 /// `merge` is `Some` when the dictionary merge wrote its tree, with the cut
-/// it was cut at, if any. `has_batch_effects` is `true` when the run
-/// estimated batch effects and so wrote `delta.parquet`.
+/// it was cut at, if any.
 pub fn create_lc_metadata(
     inputs: &RunInputs<'_>,
-    has_batch_effects: bool,
     merge: Option<DictMergeSummary>,
     splice: Option<SpliceTrackInfo>,
     cascade_level_indices: &[usize],
 ) -> PintoMetadata {
     let prefix = inputs.prefix;
+    let (batch_effects, delta_cells) = delta_outputs(inputs);
     let dict_merge = merge.map(|m| DictMergeFiles {
         merges: format!("{prefix}.dict_merges.parquet"),
         cut: m
@@ -917,14 +1013,15 @@ pub fn create_lc_metadata(
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
             scores: Some(format!("{prefix}.scores.parquet")),
-            batch_effects: has_batch_effects.then(|| format!("{prefix}.delta.parquet")),
+            batch_effects,
+            delta_cells,
             dict_merge,
             ..Default::default()
         },
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
-        batch_labels: None,
+        batch_labels: inputs.delta.map(|d| d.labels),
     }
 }
 
@@ -937,10 +1034,10 @@ fn coord_columns_field(cols: &[Box<str>]) -> Option<Vec<String>> {
 }
 
 /// Helper for `pinto dsvd` runs. Only one "final" level is produced;
-/// the cascade does not run. `has_batch_effects` is `true` when the run
-/// estimated batch effects and so wrote `delta.parquet`.
-pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> PintoMetadata {
+/// the cascade does not run.
+pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
     let prefix = inputs.prefix;
+    let (batch_effects, delta_cells) = delta_outputs(inputs);
     let levels = vec![final_level_info(prefix, 0)];
 
     PintoMetadata {
@@ -963,13 +1060,14 @@ pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> 
             cells: inputs.coord_file.map(|_| cells_table_path(prefix)),
             propensity: Some(format!("{prefix}.propensity.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
-            batch_effects: has_batch_effects.then(|| format!("{prefix}.delta.parquet")),
+            batch_effects,
+            delta_cells,
             ..Default::default()
         },
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
-        batch_labels: None,
+        batch_labels: inputs.delta.map(|d| d.labels),
     }
 }
 
@@ -979,18 +1077,17 @@ pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> 
 /// propensity from incident-edge fractions — so the level's slots point at
 /// the same three parquets, `entropy` included.
 ///
-/// `has_batch_effects` is `true` when the run had ≥2 batches and
-/// `{prefix}.delta.parquet` was written. The pair encoder is part of every
+/// The pair encoder is part of every
 /// cage model — `predict` and `impute` place a sample with it and nothing
 /// else — so its slot is always filled. `inputs.k` is the number of edge
 /// clusters, which is what `n_communities` reports — not the embedding
 /// width, which is a different quantity and has no slot here.
 pub fn create_cage_metadata(
     inputs: &RunInputs<'_>,
-    has_batch_effects: bool,
     splice: Option<SpliceTrackInfo>,
 ) -> PintoMetadata {
     let prefix = inputs.prefix;
+    let (batch_effects, delta_cells) = delta_outputs(inputs);
 
     let levels = vec![final_level_info(prefix, 0)];
 
@@ -1016,7 +1113,8 @@ pub fn create_cage_metadata(
             link_community: Some(format!("{prefix}.link_community.parquet")),
             feature_community: Some(format!("{prefix}.feature_community.parquet")),
             scores: Some(format!("{prefix}.scores.parquet")),
-            batch_effects: has_batch_effects.then(|| format!("{prefix}.delta.parquet")),
+            batch_effects,
+            delta_cells,
             cell_embedding: Some(format!("{prefix}.cell_embedding.parquet")),
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
             pb_embedding: Some(format!("{prefix}.pb_embedding.parquet")),
@@ -1029,7 +1127,7 @@ pub fn create_cage_metadata(
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
-        batch_labels: None,
+        batch_labels: inputs.delta.map(|d| d.labels),
     }
 }
 

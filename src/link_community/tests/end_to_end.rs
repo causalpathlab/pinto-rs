@@ -108,8 +108,12 @@ fn lc_records_its_batch_effects_in_the_manifest() {
     };
     let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
     let delta = recorded(&lc).expect("the manifest names no delta.parquet");
-    assert_eq!(delta, format!("{lc}.delta.parquet"));
-    assert!(std::path::Path::new(&delta).is_file());
+    assert_eq!(delta, "lc.delta.parquet", "recorded beside the manifest");
+    let run = crate::util::metadata::Run::open(&lc).unwrap();
+    assert_eq!(
+        crate::util::batch_effects::run_delta_path(&lc, Some(&run)).unwrap(),
+        Some(format!("{lc}.delta.parquet"))
+    );
 
     let raw = fit_lc(dir.path(), &data, &coords, "raw", &["--ignore-batch"]);
     assert!(recorded(&raw).is_none());
@@ -214,4 +218,37 @@ fn halves_and_sections(
         agreement(&|i| (i % (side * side)) % side < side / 2),
         agreement(&|i| i >= side * side),
     )
+}
+
+/// An lc model named by its manifest under another file name is predicted
+/// from (held-out scoring), as one named by its prefix: the manifest is
+/// the model's, though no `{prefix}.pinto.json` is there.
+#[test]
+fn an_lc_model_named_by_a_renamed_manifest_predicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
+    let renamed = dir.path().join("first.json");
+    std::fs::rename(crate::util::metadata::manifest_path(&lc), &renamed).unwrap();
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        predict: crate::predict::PredictArgs,
+    }
+    let out = dir.path().join("pred").to_str().unwrap().to_string();
+    let argv = [
+        "x",
+        data.as_str(),
+        "-c",
+        coords.as_str(),
+        "--coord-column-names",
+        "x,y",
+        "--model",
+        renamed.to_str().unwrap(),
+        "-o",
+        &out,
+    ];
+    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict)
+        .expect("a model opened by its manifest was refused");
 }

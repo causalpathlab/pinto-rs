@@ -177,10 +177,10 @@ mod batch_effects {
 fn the_query_is_divided_only_when_the_model_has_a_delta() {
     use crate::util::batch_effects::RunDelta;
     use crate::util::common::Mat;
-    use crate::util::metadata::{manifest_path, PintoMetadata};
+    use crate::util::metadata::{manifest_path, PintoMetadata, Run};
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("run").to_string_lossy().to_string();
-    assert!(super::model_delta(&model, false).unwrap().is_none());
+    assert!(super::model_delta(&model, None, false).unwrap().is_none());
 
     let file = format!("{model}.delta.parquet");
     RunDelta {
@@ -196,23 +196,31 @@ fn the_query_is_divided_only_when_the_model_has_a_delta() {
     let mut meta = PintoMetadata::default();
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
+    let run = Run::open(&model).unwrap();
     assert!(
-        super::model_delta(&model, false).unwrap().is_none(),
+        super::model_delta(&model, Some(&run), false)
+            .unwrap()
+            .is_none(),
         "a delta the manifest does not name"
     );
     meta.outputs.batch_effects = Some(file);
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
-    let (d, _) = super::model_delta(&model, false).unwrap().unwrap();
+    let run = Run::open(&model).unwrap();
+    let (d, _) = super::model_delta(&model, Some(&run), false)
+        .unwrap()
+        .unwrap();
     assert_eq!(d.mean[(0, 1)], 2.0);
-    assert!(super::model_delta(&model, true).unwrap().is_none());
+    assert!(super::model_delta(&model, Some(&run), true)
+        .unwrap()
+        .is_none());
 }
 
 /// A manifest's data files: canonical ones as recorded; an older relative
 /// entry beside the manifest, whatever the working directory.
 #[test]
 fn model_data_files_resolve_beside_the_manifest() {
-    use crate::util::metadata::{manifest_path, PintoMetadata};
+    use crate::util::metadata::{manifest_path, PintoMetadata, Run};
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("run").to_string_lossy().to_string();
     std::fs::write(dir.path().join("a.zarr"), b"").unwrap();
@@ -222,11 +230,118 @@ fn model_data_files_resolve_beside_the_manifest() {
     };
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
-    let files = super::model_data_files(&model);
+    let files = super::model_data_files(Some(&Run::open(&model).unwrap()));
     assert_eq!(
         std::path::Path::new(&files[0]),
         dir.path().join("a.zarr"),
         "a relative entry beside the manifest"
     );
     assert_eq!(files[1], "gone.zarr", "kept as written");
+    assert!(super::model_data_files(None).is_empty());
+}
+
+/// A model named by its manifest's own path, whatever that file is called,
+/// opens as the run its manifest records: the prefix beside the manifest,
+/// so its δ (recorded elsewhere) and its files are found. A model named
+/// by prefix opens the same run; one without a manifest keeps its prefix.
+#[test]
+fn a_model_named_by_its_manifest_opens_once_with_its_prefix() {
+    use crate::util::metadata::PintoMetadata;
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let delta = dir.path().join("kept").join("run.delta.parquet");
+    std::fs::create_dir(dir.path().join("kept")).unwrap();
+    std::fs::write(&delta, b"").unwrap();
+    std::fs::write(format!("{prefix}.delta.parquet"), b"").unwrap();
+    let meta = PintoMetadata {
+        command: "cage".into(),
+        prefix: "somewhere/else/run".into(),
+        outputs: crate::util::metadata::OutputFiles {
+            batch_effects: Some("kept/run.delta.parquet".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let manifest = dir.path().join("first.json");
+    meta.write(&manifest).unwrap();
+
+    let mut model: Box<str> = manifest.to_string_lossy().into();
+    let run = super::open_model(&mut model)
+        .unwrap()
+        .expect("the manifest opens");
+    assert_eq!(model.as_ref(), prefix);
+    assert_eq!(run.meta.command, "cage");
+    assert_eq!(
+        crate::util::batch_effects::run_delta_path(&model, Some(&run))
+            .unwrap()
+            .map(std::path::PathBuf::from),
+        Some(delta),
+        "the δ the manifest records, not the one under the prefix"
+    );
+
+    let mut bare: Box<str> = format!("{prefix}.pinto.json").into();
+    assert!(super::open_model(&mut bare).unwrap().is_none());
+    assert_eq!(bare.as_ref(), prefix, "no manifest: the prefix as named");
+}
+
+/// Only a manifest that is not there means a model without one: one that
+/// is there but cannot be read is an error, not a model found by its files.
+#[test]
+fn an_unreadable_manifest_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let manifest = crate::util::metadata::manifest_path(&prefix);
+    std::fs::write(&manifest, b"{ not json").unwrap();
+    let mut model: Box<str> = prefix.as_str().into();
+    assert!(
+        super::open_model(&mut model).is_err(),
+        "a broken manifest was taken as none"
+    );
+    let mut named: Box<str> = manifest.as_str().into();
+    assert!(super::open_model(&mut named).is_err());
+}
+
+/// Whether every batch is known is decided from the inputs, before any
+/// data is read: per-file labels are known when each file is one of the
+/// model's, `--batch-files` labels when each line names a model batch, and
+/// `--auto-batch` components never.
+#[test]
+fn every_batch_is_known_from_the_inputs() {
+    use super::delta::{every_batch_known, QueryLabels};
+    use crate::test_support::boxed;
+    use crate::util::input::SrtInputArgs;
+    use crate::util::metadata::BatchLabels;
+    use clap::Parser;
+    let dir = tempfile::tempdir().unwrap();
+    let file = |n: &str, body: &str| {
+        let p = dir.path().join(n);
+        std::fs::write(&p, body).unwrap();
+        p.to_str().unwrap().to_string()
+    };
+    let (a, b, new) = (file("a.zarr", ""), file("b.zarr", ""), file("c.zarr", ""));
+    let model_files = vec![a.clone(), b.clone()];
+    let by_file = boxed(&["0", "1"]);
+    let known = |args: &[&str], model: &[Box<str>], source| {
+        let mut argv = vec!["x"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&["-o", "o"]);
+        let c = SrtInputArgs::try_parse_from(argv).unwrap();
+        let how = QueryLabels::of(BatchLabels::of(&c), &c.data_files, &model_files);
+        every_batch_known(&c, &how, model, source).unwrap()
+    };
+    let files = Some(BatchLabels::Files);
+    assert!(known(&[&b, &a], &by_file, files));
+    assert!(known(&[&b], &by_file, files));
+    assert!(!known(&[&a, &new], &by_file, files), "a new file");
+
+    let named = boxed(&["s1", "s2"]);
+    let batch_files = Some(BatchLabels::BatchFiles);
+    let (l1, l2) = (file("a.txt", "s1\ns2\n"), file("b.txt", "s2\ns3\n"));
+    assert!(known(&[&a, "--batch-files", &l1], &named, batch_files));
+    let both = format!("{l1},{l2}");
+    assert!(
+        !known(&[&a, &b, "--batch-files", &both], &named, batch_files),
+        "s3 is new"
+    );
+    assert!(!known(&[&a, &b, "--auto-batch"], &by_file, files));
 }

@@ -188,6 +188,7 @@ pub fn fit_cell_activity_graph_embedding(
         batch_membership,
         section_ids,
         seeding,
+        batch_labels: _,
         batch_effects: batch_db,
         graph,
         knn,
@@ -208,11 +209,15 @@ pub fn fit_cell_activity_graph_embedding(
         fisher_weights: !args.no_fisher_weights,
         // cage-cell too: the estimate is preprocessing (fitted on data-beans'
         // pseudobulk samples), not training; --ignore-batch turns it off
-        batch_effects: BatchEstimate::Always,
+        batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && !args.cell_level,
         feature_kind: Some(feature_kind.clone()),
     })?;
+    // Only the mean divides; the full posterior is the file preprocessing wrote.
+    let batch_db = batch_db
+        .map(crate::util::batch_effects::BatchPosterior::into_mean)
+        .transpose()?;
 
     let cell_names = data_vec.column_names()?;
     let row_names = data_vec.row_names()?;
@@ -914,12 +919,13 @@ pub fn fit_cell_activity_graph_embedding(
                 graph: (&knn).into(),
                 ablation,
                 k: n_edge_clusters,
+                delta: batch_db
+                    .is_some()
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
             },
-            batch_db.is_some(),
             splice_report,
         );
         meta.cell_level = args.cell_level;
-        meta.record_batch_labels(c);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

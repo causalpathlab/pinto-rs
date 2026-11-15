@@ -73,6 +73,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         batch_membership,
         section_ids,
         seeding,
+        batch_labels: _,
         batch_effects,
         graph,
         knn,
@@ -91,7 +92,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: true,
-        batch_effects: BatchEstimate::Always,
+        batch_effects: BatchEstimate::Fit,
         // Everything `lc` filters, weights and reports is per FEATURE. On a
         // channelized matrix a row is half a feature, and reading one as the other
         // is what let the merge filter pick its cutoff by splice track.
@@ -102,6 +103,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_kind: None,
         cell_projection: true,
     })?;
+    // Only the mean divides; the full posterior is the file preprocessing wrote.
+    let batch_effects = batch_effects
+        .map(crate::util::batch_effects::BatchPosterior::into_mean)
+        .transpose()?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
     let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
     let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
@@ -511,7 +516,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     {
         use crate::util::metadata::{create_lc_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let mut meta = create_lc_metadata(
+        let meta = create_lc_metadata(
             &RunInputs {
                 prefix: &c.out,
                 data_files: &c.data_files,
@@ -523,8 +528,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 k,
                 graph: (&knn).into(),
                 ablation,
+                delta: batch_effects
+                    .is_some()
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
             },
-            batch_effects.is_some(),
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a
             // fitted contrast.
@@ -538,7 +545,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 }),
             &cascade_level_indices,
         );
-        meta.record_batch_labels(c);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

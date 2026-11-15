@@ -32,6 +32,16 @@ pub(super) fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> 
 }
 
 pub(super) fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed {
+    preprocess_with(files, out, extra, BatchEstimate::Fit)
+}
+
+/// [`preprocess`] doing `batch` about batch effects.
+pub(super) fn preprocess_with(
+    files: &[Box<str>],
+    out: &str,
+    extra: &[&str],
+    batch: BatchEstimate,
+) -> SrtPreprocessed {
     let mut argv = vec!["pinto"];
     argv.extend(files.iter().map(|f| f.as_ref()));
     argv.extend_from_slice(&["-o", out, "--no-qc", "--knn-expr", "5"]);
@@ -41,7 +51,7 @@ pub(super) fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPr
         common: &args,
         ablation: None,
         fisher_weights: false,
-        batch_effects: BatchEstimate::Always,
+        batch_effects: batch,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
         cell_projection: false,

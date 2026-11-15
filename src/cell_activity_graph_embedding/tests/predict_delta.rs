@@ -167,7 +167,9 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
 
 /// `pinto impute` with a cage model divides each reference cell's counts by
 /// the run's δ for its batch before pooling: with one neighbour per query
-/// cell, every imputed row is one training cell's counts so divided.
+/// cell, every imputed row is one training cell's counts so divided. The
+/// cells' batches come from the table the fit wrote beside its δ, or, for
+/// a model fitted before it wrote one, from its coord_pairs: the same.
 #[test]
 fn impute_divides_the_reference_by_the_runs_delta() {
     let dir = tempfile::tempdir().unwrap();
@@ -190,25 +192,37 @@ fn impute_divides_the_reference_by_the_runs_delta() {
         #[command(flatten)]
         impute: crate::impute::ImputeArgs,
     }
-    let out = dir.path().join("imputed").to_str().unwrap().to_string();
-    let argv = [
-        "x",
-        &s2.0,
-        "-c",
-        &s2.1,
-        "--coord-column-names",
-        "x,y",
-        "--model",
-        &model,
-        "-o",
-        &out,
-        "--impute-knn",
-        "1",
-    ];
-    crate::impute::run_impute(&Cli::try_parse_from(argv).unwrap().impute).unwrap();
-    let imputed = Mat::from_parquet(&format!("{out}.imputed.parquet"))
-        .unwrap()
-        .mat;
+    let impute = |name: &str| {
+        let out = dir.path().join(name).to_str().unwrap().to_string();
+        let argv = [
+            "x",
+            &s2.0,
+            "-c",
+            &s2.1,
+            "--coord-column-names",
+            "x,y",
+            "--model",
+            &model,
+            "-o",
+            &out,
+            "--impute-knn",
+            "1",
+        ];
+        crate::impute::run_impute(&Cli::try_parse_from(argv).unwrap().impute)?;
+        anyhow::Ok(
+            Mat::from_parquet(&format!("{out}.imputed.parquet"))
+                .unwrap()
+                .mat,
+        )
+    };
+    let manifest = crate::util::metadata::manifest_path(&model);
+    let mut meta =
+        crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    assert!(
+        meta.outputs.delta_cells.is_some(),
+        "the fit records each cell's batch"
+    );
+    let imputed = impute("imputed").unwrap();
 
     // every training cell's counts divided by its file's δ column ("0", "1")
     let mut divided: Vec<Vec<f32>> = Vec::new();
@@ -223,11 +237,13 @@ fn impute_divides_the_reference_by_the_runs_delta() {
             divided.push(v);
         }
     }
+    let mut n_divided = 0;
     for q in 0..imputed.nrows() {
         let row: Vec<f32> = imputed.row(q).iter().copied().collect();
         if row.iter().all(|&v| v == 0.0) {
             continue;
         }
+        n_divided += 1;
         assert!(
             divided
                 .iter()
@@ -235,4 +251,21 @@ fn impute_divides_the_reference_by_the_runs_delta() {
             "imputed row {q} is no training cell's divided counts: {row:?}"
         );
     }
+    assert!(n_divided > 0, "nothing was imputed");
+
+    // the table recorded but gone: an error, not the coord_pairs labels
+    std::fs::remove_file(crate::util::batch_effects::delta_cells_path(&model)).unwrap();
+    assert!(
+        impute("gone").is_err(),
+        "a recorded cells table that is gone fell back to coord_pairs"
+    );
+
+    // an older model: no table of the cells' batches, so its coord_pairs
+    meta.outputs.delta_cells = None;
+    meta.write(std::path::Path::new(&manifest)).unwrap();
+    let older = impute("older").unwrap();
+    assert!(
+        (&older - &imputed).abs().max() < 1e-6,
+        "the coord_pairs labels divide as the fit's table does"
+    );
 }
