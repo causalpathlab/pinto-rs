@@ -7,9 +7,9 @@
 //! place (tissue positions, or a layout synthesized from expression).
 
 use crate::util::common::*;
-use crate::util::knn_graph::{KnnGraph, KnnGraphArgs};
 use dashmap::DashMap;
 use data_beans::alg::cell_pairs::CellPairs;
+use legume_numeric::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
 use legume_numeric::matrix::parquet::Column;
 use legume_numeric::matrix::traits::RandomizedAlgs;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};

@@ -6,6 +6,7 @@
 //! - Data statistics (n_cells, n_edges, n_communities, etc.)
 //! - Hierarchical level information
 
+use crate::util::cli::value_name;
 use crate::util::parquet_io::cells_table_path;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -219,20 +220,13 @@ impl From<&crate::util::input::ResolvedKnn> for GraphParams {
     /// what the run did rather than what was typed. Those differ on every
     /// defaulted run, which is most of them.
     fn from(knn: &crate::util::input::ResolvedKnn) -> Self {
-        use clap::ValueEnum;
         Self {
             knn_base: knn.base,
             knn_expr: knn.augment,
             // Only recorded when a search actually ran. Writing it
             // unconditionally would assert a scoping decision the run never
             // made, which is the whole failure this struct exists to prevent.
-            knn_expr_scope: (knn.augment > 0).then(|| {
-                knn.scope
-                    .to_possible_value()
-                    .expect("KnnExprScope has no skipped variants")
-                    .get_name()
-                    .to_string()
-            }),
+            knn_expr_scope: (knn.augment > 0).then(|| value_name(&knn.scope)),
             reciprocal: knn.reciprocal,
         }
     }

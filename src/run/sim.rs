@@ -196,7 +196,7 @@ pub(super) fn simulate(
         p.n_sections()
     );
     let reply = json!({
-        "command": format!("pinto {}", script::line(&argv)),
+        "command": script::pinto_line(&argv),
         "out": out,
         "truth": truth,
         "fit": fit,
@@ -338,7 +338,7 @@ pub(super) fn baseline(
     check_inputs(&truth).map_err(|e| bad_truth(&a.truth, e))?;
     let summary = format!("srt-sim-baseline into {labels}");
     let reply = json!({
-        "command": format!("pinto {}", script::line(&argv)),
+        "command": script::pinto_line(&argv),
         "labels": labels,
     });
     let then = format!("run_sim_score with truth {truth} and labels [{labels}]");

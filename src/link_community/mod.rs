@@ -2,6 +2,7 @@ pub mod args;
 pub mod cascade;
 pub mod dict_merge;
 pub(crate) mod fast_math;
+pub mod feature_modules;
 pub mod fit;
 pub mod gibbs;
 pub mod incidence;

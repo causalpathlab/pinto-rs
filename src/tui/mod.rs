@@ -116,19 +116,10 @@ pub fn shown(p: &Path) -> String {
 #[path = "tests/mod.rs"]
 mod tests;
 
-/// `word` as one shell word: as it is when nothing in it is special, else
-/// in single quotes.
+/// `pinto` and its arguments `argv` as one shell line.
 #[must_use]
-pub fn quote(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    if plain {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
+pub fn pinto_line(argv: &[String]) -> String {
+    format!("pinto {}", legume_tui::form::script::line(argv))
 }
 
 /// A flag and its value as one word of a command line, `--flag=value`: a

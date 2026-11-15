@@ -20,6 +20,8 @@ use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
 use crate::util::parquet_io::parse_community_col_name;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use legume_tui::map::kitty::cellart::{Cells, Glyphs};
 use legume_tui::map::viewport::{Limits, YAxis};
 use std::ops::RangeInclusive;
@@ -297,8 +299,8 @@ impl Frame {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
         self.encode(
             file,
-            png::ColorType::Rgba,
-            png::Compression::Fast,
+            ExtendedColorType::Rgba8,
+            CompressionType::Fast,
             &self.rgba,
         )
     }
@@ -314,22 +316,28 @@ impl Frame {
             .flat_map(|&[r, g, b, _]| [r, g, b])
             .collect();
         let mut out = Vec::new();
-        self.encode(&mut out, png::ColorType::Rgb, png::Compression::High, &rgb)?;
+        self.encode(
+            &mut out,
+            ExtendedColorType::Rgb8,
+            CompressionType::Best,
+            &rgb,
+        )?;
         Ok(out)
     }
 
     fn encode(
         &self,
         out: impl std::io::Write,
-        colour: png::ColorType,
-        compression: png::Compression,
+        colour: ExtendedColorType,
+        compression: CompressionType,
         data: &[u8],
     ) -> anyhow::Result<()> {
-        let mut enc = png::Encoder::new(out, self.w as u32, self.h as u32);
-        enc.set_color(colour);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.set_compression(compression);
-        enc.write_header()?.write_image_data(data)?;
+        PngEncoder::new_with_quality(out, compression, FilterType::Adaptive).write_image(
+            data,
+            self.w as u32,
+            self.h as u32,
+            colour,
+        )?;
         Ok(())
     }
 }

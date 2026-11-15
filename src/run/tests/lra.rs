@@ -1,14 +1,8 @@
 use super::*;
+use crate::built_cli as cli;
 use crate::lr_activity::ligand_effect::output::SimRun;
 use crate::lr_activity::ligand_effect::simulate::Scenario;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
-
-fn cli() -> clap::Command {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
 
 fn lra_args(v: Value) -> LraToolArgs {
     crate::mcp::parse(v).unwrap()

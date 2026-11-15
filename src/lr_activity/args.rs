@@ -380,30 +380,12 @@ pub enum RegionJackknife {
     NoRefit,
 }
 
-impl RegionJackknife {
-    /// As `--region-jackknife` spells it.
-    pub fn name(self) -> String {
-        self.to_possible_value()
-            .map(|v| v.get_name().to_string())
-            .unwrap_or_default()
-    }
-}
-
 /// Species of the contact-effect reference.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceSpecies {
     Auto,
     Human,
     Mouse,
-}
-
-impl ReferenceSpecies {
-    /// As `--species` spells it.
-    pub fn name(self) -> String {
-        self.to_possible_value()
-            .map(|v| v.get_name().to_string())
-            .unwrap_or_default()
-    }
 }
 
 // * lra-simulate

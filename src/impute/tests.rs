@@ -4,29 +4,18 @@
 //! cannot see keep a zero row instead of a made-up assignment.
 
 use super::*;
-use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
+use crate::test_support::{boxed, numbered, sparse_vec};
 
+/// `{tag}.zarr` in `dir`, its columns named `cell_0`, `cell_1`, ….
 fn make_data(
     dir: &tempfile::TempDir,
-    name: &str,
+    tag: &str,
     feature_names: &[&str],
     triplets: &[(u64, u64, f32)],
     n_cells: usize,
-) -> anyhow::Result<SparseIoVec> {
-    let path = dir.path().join(name);
-    let mut backend = create_sparse_from_triplets(
-        triplets,
-        (feature_names.len(), n_cells, triplets.len()),
-        Some(path.to_str().unwrap()),
-        Some(&SparseIoBackend::Zarr),
-    )?;
-    let features: Vec<Box<str>> = feature_names.iter().map(|s| Box::from(*s)).collect();
-    let cells: Vec<Box<str>> = (0..n_cells).map(|i| format!("cell_{i}").into()).collect();
-    backend.register_row_names_vec(&features);
-    backend.register_column_names_vec(&cells);
-    let mut data_vec = SparseIoVec::new();
-    data_vec.push(std::sync::Arc::from(backend), None)?;
-    Ok(data_vec)
+) -> SparseIoVec {
+    let cells = numbered("cell_", n_cells);
+    sparse_vec(dir.path(), tag, &boxed(feature_names), &cells, triplets)
 }
 
 /// Two communities with disjoint expression: C0 lives on {a, b}, C1 on
@@ -53,7 +42,7 @@ fn pure_cells_land_on_their_community() -> anyhow::Result<()> {
     // cell_0 expresses only C0 features, cell_1 only C1 features, cell_2 both.
     let data = make_data(
         &dir,
-        "q.zarr",
+        "q",
         &["a", "b", "c", "d"],
         &[
             (0, 0, 5.0),
@@ -64,7 +53,7 @@ fn pure_cells_land_on_their_community() -> anyhow::Result<()> {
             (2, 2, 3.0),
         ],
         3,
-    )?;
+    );
     let prop = project_profile_propensity(
         &data,
         &profiles,
@@ -94,11 +83,11 @@ fn feature_matching_goes_through_the_canonicalizer() -> anyhow::Result<()> {
     // them onto the model's bare symbols.
     let data = make_data(
         &dir,
-        "ens.zarr",
+        "ens",
         &["ENSG01_a", "ENSG02_b", "ENSG03_c", "ENSG04_d"],
         &[(0, 0, 5.0), (1, 0, 3.0)],
         1,
-    )?;
+    );
     let prop = project_profile_propensity(
         &data,
         &profiles,
@@ -129,9 +118,14 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
         "chr1:2000-3000",
     ];
     let mut files: Vec<Box<str>> = Vec::new();
-    for name in ["a.zarr", "b.zarr"] {
-        make_data(&dir, name, &peaks, &[(0, 0, 5.0), (1, 0, 3.0)], 1)?;
-        files.push(dir.path().join(name).to_string_lossy().into());
+    for tag in ["a", "b"] {
+        make_data(&dir, tag, &peaks, &[(0, 0, 5.0), (1, 0, 3.0)], 1);
+        files.push(
+            dir.path()
+                .join(format!("{tag}.zarr"))
+                .to_string_lossy()
+                .into(),
+        );
     }
     let data = open_backends("test", &files, false)?;
     let prop = project_profile_propensity(
@@ -156,13 +150,7 @@ fn a_cell_off_the_model_axis_keeps_a_zero_row() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let (profiles, features) = disjoint_profiles();
     // cell_0 expresses only a feature the model never saw; cell_1 is normal.
-    let data = make_data(
-        &dir,
-        "off.zarr",
-        &["zzz", "a"],
-        &[(0, 0, 9.0), (1, 1, 4.0)],
-        2,
-    )?;
+    let data = make_data(&dir, "off", &["zzz", "a"], &[(0, 0, 9.0), (1, 1, 4.0)], 2);
     let prop = project_profile_propensity(
         &data,
         &profiles,
@@ -181,7 +169,7 @@ fn a_cell_off_the_model_axis_keeps_a_zero_row() -> anyhow::Result<()> {
 fn no_shared_feature_is_an_error_not_a_uniform_guess() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let (profiles, features) = disjoint_profiles();
-    let data = make_data(&dir, "none.zarr", &["x", "y"], &[(0, 0, 1.0)], 1)?;
+    let data = make_data(&dir, "none", &["x", "y"], &[(0, 0, 1.0)], 1);
     assert!(project_profile_propensity(
         &data,
         &profiles,
@@ -209,7 +197,7 @@ fn parse_impute(argv: &[&str]) -> anyhow::Result<ImputeArgs> {
 fn explicit_reference_data_bypasses_the_manifest() -> anyhow::Result<()> {
     let args = parse_impute(&[
         "impute",
-        "q.zarr",
+        "q",
         "--model",
         "no/such/model",
         "-o",
@@ -234,10 +222,6 @@ fn a_missing_manifest_names_the_flag_as_the_way_out() -> anyhow::Result<()> {
 // Reference propensity onto the data axis //
 ////////////////////////////////////////////
 
-fn names(v: &[&str]) -> Vec<Box<str>> {
-    v.iter().map(|s| (*s).into()).collect()
-}
-
 #[test]
 fn a_reference_cell_the_run_never_placed_gets_a_zero_row() -> anyhow::Result<()> {
     // The run kept b and d (in that order); the files hold a, b, c, d.
@@ -245,8 +229,8 @@ fn a_reference_cell_the_run_never_placed_gets_a_zero_row() -> anyhow::Result<()>
     let aligned = align_to_columns(
         "p",
         prop,
-        &names(&["b", "d"]),
-        &names(&["a", "b", "c", "d"]),
+        &boxed(&["b", "d"]),
+        &boxed(&["a", "b", "c", "d"]),
     )?;
     assert_eq!(aligned.nrows(), 4);
     assert_eq!(
@@ -272,13 +256,13 @@ fn a_reference_cell_the_run_never_placed_gets_a_zero_row() -> anyhow::Result<()>
 fn matching_axes_pass_through_and_foreign_files_are_refused() {
     let prop = Mat::from_row_slice(2, 1, &[1.0, 2.0]);
     let same =
-        align_to_columns("p", prop.clone(), &names(&["a", "b"]), &names(&["a", "b"])).unwrap();
+        align_to_columns("p", prop.clone(), &boxed(&["a", "b"]), &boxed(&["a", "b"])).unwrap();
     assert_eq!(same, prop);
     let err =
-        align_to_columns("p", prop.clone(), &names(&["a", "z"]), &names(&["a", "b"])).unwrap_err();
+        align_to_columns("p", prop.clone(), &boxed(&["a", "z"]), &boxed(&["a", "b"])).unwrap_err();
     assert!(err.to_string().contains("1 of its 2 cells"), "{err}");
     let err =
-        align_to_columns("p", prop, &names(&["a", "b"]), &names(&["a", "a", "b"])).unwrap_err();
+        align_to_columns("p", prop, &boxed(&["a", "b"]), &boxed(&["a", "a", "b"])).unwrap_err();
     assert!(err.to_string().contains("not unique"), "{err}");
 }
 
@@ -288,7 +272,7 @@ fn matching_axes_pass_through_and_foreign_files_are_refused() {
 fn zero_reference_neighbours_is_an_argument_error() {
     let e = parse_impute(&[
         "impute",
-        "q.zarr",
+        "q",
         "--model",
         "m",
         "-o",

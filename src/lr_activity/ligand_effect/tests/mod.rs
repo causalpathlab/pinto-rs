@@ -33,6 +33,7 @@ use super::regression::standardize;
 use super::response::Response;
 use super::simulate::{calibrate_producers, Scenario, SimBase, SimRow, SimShared};
 use super::tissue::Tissue;
+use crate::lr_activity::input::UNASSIGNED;
 
 /// [`crate::lr_activity::ligand_effect::effects::effects_on`] with the
 /// threshold's propensities fitted for it.
@@ -83,6 +84,49 @@ pub(super) fn overlap_terms(
     };
     let e = propensity(design, cf, pair.t, &extra, opts, &mut FoldStarts::default())?.e;
     overlap_terms_with(design, cf, &pair, &e, opts)
+}
+
+/// Cell coordinates and contacts.
+pub(super) type Lattice = (Vec<Option<(f32, f32)>>, Vec<(usize, usize)>);
+
+/// A `side` by `side` grid of cells 10 apart, cell `i` in column `i % side`
+/// and row `i / side`, and its four-neighbour contacts `(i, i + 1)` and
+/// `(i, i + side)`, leaving out those where `cut` holds.
+pub(super) fn lattice_cut(side: usize, cut: impl Fn(usize, usize) -> bool) -> Lattice {
+    let n = side * side;
+    let coords = (0..n)
+        .map(|i| Some(((i % side) as f32 * 10.0, (i / side) as f32 * 10.0)))
+        .collect();
+    let mut pairs = Vec::new();
+    for i in 0..n {
+        if i % side + 1 < side && !cut(i, i + 1) {
+            pairs.push((i, i + 1));
+        }
+        if i / side + 1 < side && !cut(i, i + side) {
+            pairs.push((i, i + side));
+        }
+    }
+    (coords, pairs)
+}
+
+/// [`lattice_cut`] with every contact kept.
+pub(super) fn lattice(side: usize) -> Lattice {
+    lattice_cut(side, |_, _| false)
+}
+
+/// The contacts of `copies` [`lattice`]s numbered one after another, none
+/// between them.
+pub(super) fn lattice_contacts(side: usize, copies: usize) -> Vec<(usize, usize)> {
+    let (_, pairs) = lattice(side);
+    let per = side * side;
+    (0..copies)
+        .flat_map(|s| pairs.iter().map(move |&(i, j)| (i + s * per, j + s * per)))
+        .collect()
+}
+
+/// Three named cell types and the unassigned.
+pub(super) fn type_names() -> Vec<Box<str>> {
+    ["CT1", "CT2", "CT3", UNASSIGNED].map(Into::into).to_vec()
 }
 
 /// The rows where `mask` holds, ascending.

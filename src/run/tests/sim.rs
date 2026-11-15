@@ -1,14 +1,8 @@
 use super::*;
+use crate::built_cli as cli;
 use crate::run::mcp::checked;
 use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
 use serde_json::Value;
-
-fn cli() -> clap::Command {
-    use clap::CommandFactory;
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
 
 /// A tool call's arguments, as the server parses them.
 fn args<T: serde::de::DeserializeOwned>(v: Value) -> T {

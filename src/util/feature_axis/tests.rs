@@ -1,15 +1,12 @@
 //! What a row means, and the fold each answer implies.
 
 use super::*;
-
-fn names(v: &[&str]) -> Vec<Box<str>> {
-    v.iter().map(|s| Box::<str>::from(*s)).collect()
-}
+use crate::test_support::boxed;
 
 /// Two channel rows per feature, deliberately NOT adjacent and not in feature order,
 /// because nothing guarantees a producer emits them that way.
 fn channelized() -> Vec<Box<str>> {
-    names(&[
+    boxed(&[
         "FEATURE1/count/spliced",
         "FEATURE2/count/unspliced",
         "FEATURE1/count/unspliced",
@@ -19,7 +16,7 @@ fn channelized() -> Vec<Box<str>> {
 
 #[test]
 fn a_matrix_without_channels_resolves_to_the_identity_axis() {
-    let rows = names(&["FEATURE1", "FEATURE2", "FEATURE3"]);
+    let rows = boxed(&["FEATURE1", "FEATURE2", "FEATURE3"]);
     let axis = FeatureAxis::resolve(&rows).unwrap();
 
     assert!(!axis.is_channelized());
@@ -39,7 +36,7 @@ fn a_fully_channelized_matrix_pairs_the_two_tracks_of_each_feature() {
     assert_eq!(axis.n_features(), 2);
     assert_eq!(
         axis.feature_names(),
-        names(&["FEATURE1", "FEATURE2"]).as_slice()
+        boxed(&["FEATURE1", "FEATURE2"]).as_slice()
     );
     assert_eq!(axis.feature_of_row(0), axis.feature_of_row(2));
     assert_eq!(axis.feature_of_row(1), axis.feature_of_row(3));
@@ -52,7 +49,7 @@ fn a_fully_channelized_matrix_pairs_the_two_tracks_of_each_feature() {
 /// are already inside the other two.
 #[test]
 fn a_mixed_matrix_is_a_hard_error_naming_the_offenders() {
-    let rows = names(&[
+    let rows = boxed(&[
         "FEATURE1/count/spliced",
         "FEATURE1/count/unspliced",
         "FEATURE1/count/total",
@@ -94,7 +91,7 @@ fn pooling_two_channels_equals_the_single_channel_matrix() {
 
 #[test]
 fn the_identity_axis_folds_are_pass_throughs() {
-    let rows = names(&["FEATURE1", "FEATURE2"]);
+    let rows = boxed(&["FEATURE1", "FEATURE2"]);
     let axis = FeatureAxis::resolve(&rows).unwrap();
     let m = Mat::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
 
@@ -135,7 +132,7 @@ fn delta_is_identified_only_where_both_tracks_carry_counts() {
     let totals = [7.0, 0.0, 3.0, 9.0];
     assert_eq!(axis.delta_identified(&totals), vec![true, false]);
 
-    let flat = FeatureAxis::resolve(&names(&["FEATURE1", "FEATURE2"])).unwrap();
+    let flat = FeatureAxis::resolve(&boxed(&["FEATURE1", "FEATURE2"])).unwrap();
     assert_eq!(flat.delta_identified(&[1.0, 1.0]), vec![false, false]);
 }
 
@@ -147,7 +144,7 @@ fn delta_is_identified_only_where_both_tracks_carry_counts() {
 /// Here `row_to_feature` is `[0,1,0,2,1]` and `row % 3` is `[0,1,2,0,1]`, so the
 /// coincidence is gone.
 fn lopsided() -> Vec<Box<str>> {
-    names(&[
+    boxed(&[
         "FEATURE1/count/spliced",
         "FEATURE2/count/unspliced",
         "FEATURE1/count/unspliced",
@@ -182,7 +179,7 @@ fn a_per_feature_vector_spreads_back_over_that_feature_s_rows() {
 
 #[test]
 fn broadcasting_on_the_identity_axis_is_a_pass_through() {
-    let axis = FeatureAxis::resolve(&names(&["A", "B", "C"])).unwrap();
+    let axis = FeatureAxis::resolve(&boxed(&["A", "B", "C"])).unwrap();
     // Both element types, since the broadcast is generic and the count filter
     // uses the f64 form while the weights use the f32 one.
     assert_eq!(

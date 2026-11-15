@@ -10,6 +10,7 @@ use super::script;
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::residual::{Adapt, Excess, Plan, ResidualArgs};
 use crate::tui::flag_value;
+use crate::util::cli::choices;
 use crate::util::metadata::Run;
 use legume_mcp::{Call, Content, ToolSpec};
 use serde::Deserialize;
@@ -97,7 +98,7 @@ pub(super) fn residual(
         plan.files.len()
     );
     let reply = json!({
-        "command": format!("pinto {}", script::line(&argv)),
+        "command": script::pinto_line(&argv),
         "out": out,
         "record": plan.summary,
         "fit": fit_lists(&plan),
@@ -114,15 +115,6 @@ pub(super) fn residual(
         reply,
         then,
     )?)])
-}
-
-/// The values a flag of type `T` takes, as the command line names them.
-fn choices<T: clap::ValueEnum>() -> Vec<String> {
-    T::value_variants()
-        .iter()
-        .filter_map(|v| v.to_possible_value())
-        .map(|p| p.get_name().to_string())
-        .collect()
 }
 
 pub(super) fn specs() -> Vec<ToolSpec> {

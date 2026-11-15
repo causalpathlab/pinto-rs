@@ -229,12 +229,7 @@ impl Still<'_> {
 
     /// The `pinto view` command that draws this view into `png` and `pdf`.
     pub(super) fn command(&self, png: Option<&str>, pdf: Option<&str>) -> String {
-        let args: Vec<String> = self
-            .args(png, pdf)
-            .iter()
-            .map(|a| crate::tui::quote(a))
-            .collect();
-        format!("pinto {}", args.join(" "))
+        crate::tui::pinto_line(&self.args(png, pdf))
     }
 
     /// [`Still::command`]'s arguments, after `pinto`.

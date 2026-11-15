@@ -107,7 +107,6 @@ impl crate::util::metadata::LraOptions {
         only: &[String],
     ) -> Vec<String> {
         use crate::tui::flag_value;
-        use clap::ValueEnum;
         let mut argv: Vec<String> = vec!["lra".into()];
         if let Some(from) = from {
             argv.push(flag_value("--from", from));
@@ -126,9 +125,7 @@ impl crate::util::metadata::LraOptions {
         // each value in its flag's word, so a negative one reaches lra's check
         let mut flag = |name: &str, value: String| argv.push(flag_value(name, value));
         if method != args::LraMethod::default() {
-            if let Some(m) = method.to_possible_value() {
-                flag("--method", m.get_name().into());
-            }
+            flag("--method", crate::util::cli::value_name(&method));
         }
         if let Some(p) = &self.lr_pairs {
             flag("--lr-pairs", p.clone());
@@ -162,12 +159,7 @@ impl crate::util::metadata::LraOptions {
 /// `path` as every lra method records it in the `--from` run's manifest:
 /// absolute, so it reads the same from the manifest's directory and from
 /// wherever lra ran.
-pub fn recorded(path: &std::path::Path) -> String {
-    std::path::absolute(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
+pub use crate::util::paths::shown_path as recorded;
 
 /// `pinto lra --help`: the three methods, the reference, the verdicts.
 pub fn lra_long_about() -> String {
