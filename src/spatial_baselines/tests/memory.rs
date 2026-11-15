@@ -8,35 +8,36 @@ use crate::util::memory::{ensure_fits, Budget, MEMORY_BUDGET_VAR};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
 const MIB: f64 = (1u64 << 20) as f64;
-/// Threads of the machine the peaks were measured on.
-const THREADS: usize = 10;
 
-/// Maximum resident memory (MiB) of full CPU runs on square grids at the
-/// defaults (2000 genes, all trained on; for stagate hidden width 512 and
-/// 6 neighbours, for spatialde2 100 neighbours): (cells per section,
-/// sections, MiB).
-const STAGATE_MEASURED: [(usize, usize, f64); 5] = [
-    (1024, 1, 426.19),
-    (4096, 1, 1394.23),
-    (8100, 1, 2699.27),
-    (16384, 1, 4917.27),
-    (4096, 2, 2627.53),
+/// Maximum resident memory (MiB) of full CPU runs on srt-simulate square
+/// grids at the defaults (2000 genes, all trained on; for stagate hidden
+/// width 512 and 6 neighbours, for spatialde2 100 neighbours): (cells per
+/// section, sections, threads, MiB).
+const STAGATE_MEASURED: [(usize, usize, usize, f64); 5] = [
+    (1024, 1, 10, 426.19),
+    (4096, 1, 10, 1394.23),
+    (8100, 1, 10, 2699.27),
+    (16384, 1, 10, 4917.27),
+    (4096, 2, 10, 2627.53),
 ];
-const SPATIALDE2_MEASURED: [(usize, usize, f64); 8] = [
-    (1024, 1, 89.84),
-    (4096, 1, 310.94),
-    (8100, 1, 698.50),
-    (16384, 1, 1490.67),
-    (32761, 1, 2397.05),
-    (65536, 1, 4202.14),
-    (99856, 1, 5664.56),
-    (4096, 2, 598.58),
+const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 11] = [
+    (1024, 1, 10, 89.84),
+    (4096, 1, 10, 310.94),
+    (8100, 1, 10, 698.50),
+    (10000, 1, 10, 926.0),
+    (10000, 1, 4, 693.14),
+    (14400, 1, 4, 982.05),
+    (16384, 1, 10, 1490.67),
+    (32761, 1, 10, 2397.05),
+    (65536, 1, 10, 4202.14),
+    (99856, 1, 10, 5664.56),
+    (4096, 2, 10, 598.58),
 ];
-/// Nonzeros per cell of those runs' counts: what their slope, 12 + 40
-/// bytes a nonzero, fits.
-const NONZEROS_PER_CELL: usize = 1000;
+/// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
+/// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
+const NONZEROS_PER_CELL: usize = 765;
 
-fn stagate_shape(per_section: usize, sections: usize) -> StagateShape {
+fn stagate_shape(per_section: usize, sections: usize, threads: usize) -> StagateShape {
     let sizes = vec![per_section; sections];
     let n = per_section * sections;
     StagateShape {
@@ -45,7 +46,7 @@ fn stagate_shape(per_section: usize, sections: usize) -> StagateShape {
         genes: 2000,
         hidden: 512,
         nonzeros: NONZEROS_PER_CELL * n,
-        gram: knn_gram_bytes(&sizes, THREADS),
+        gram: knn_gram_bytes(&sizes, threads),
         searched: knn_edges(&sizes, 6),
         train_on_host: true,
     }
@@ -57,8 +58,8 @@ fn mib(bytes: usize) -> f64 {
 
 #[test]
 fn stagate_estimate_covers_every_measured_peak_and_is_not_far_above() {
-    for (per, sections, measured) in STAGATE_MEASURED {
-        let est = mib(stagate_peak_bytes(&stagate_shape(per, sections)));
+    for (per, sections, threads, measured) in STAGATE_MEASURED {
+        let est = mib(stagate_peak_bytes(&stagate_shape(per, sections, threads)));
         assert!(
             est >= measured,
             "{per}x{sections}: {est:.0} < {measured} MiB"
@@ -73,7 +74,7 @@ fn stagate_estimate_covers_every_measured_peak_and_is_not_far_above() {
 /// the measured runs grew by.
 #[test]
 fn stagate_estimate_grows_by_at_least_the_measured_slope() {
-    let at = |n| stagate_training_bytes(&stagate_shape(n, 1));
+    let at = |n| stagate_training_bytes(&stagate_shape(n, 1, 10));
     let slope = mib(at(200_000) - at(100_000)) / 100_000.0;
     assert!((0.285..0.35).contains(&slope), "{slope} MiB per cell");
 }
@@ -82,7 +83,7 @@ fn stagate_estimate_grows_by_at_least_the_measured_slope() {
 /// count; on CUDA the host holds the counts and the input only.
 #[test]
 fn stagate_estimate_follows_edges_genes_and_device() {
-    let base = stagate_shape(10_000, 1);
+    let base = stagate_shape(10_000, 1, 10);
     let peak = stagate_peak_bytes(&base);
     let radius = StagateShape {
         edges: 257 * base.cells,
@@ -112,7 +113,7 @@ fn stagate_estimate_follows_edges_genes_and_device() {
     );
 }
 
-fn spatialde2_shape(per_section: usize, sections: usize) -> Spatialde2Shape {
+fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spatialde2Shape {
     let sizes = vec![per_section; sections];
     let n = per_section * sections;
     Spatialde2Shape {
@@ -121,14 +122,16 @@ fn spatialde2_shape(per_section: usize, sections: usize) -> Spatialde2Shape {
         selected_nonzeros: NONZEROS_PER_CELL * n,
         edges: 2 * knn_edges(&sizes, 100),
         regions: spatialde2::initial_regions(n, None),
-        gram: knn_gram_bytes(&sizes, THREADS),
+        gram: knn_gram_bytes(&sizes, threads),
     }
 }
 
 #[test]
 fn spatialde2_estimate_covers_every_measured_peak_and_is_not_far_above() {
-    for (per, sections, measured) in SPATIALDE2_MEASURED {
-        let est = mib(spatialde2_peak_bytes(&spatialde2_shape(per, sections)));
+    for (per, sections, threads, measured) in SPATIALDE2_MEASURED {
+        let est = mib(spatialde2_peak_bytes(&spatialde2_shape(
+            per, sections, threads,
+        )));
         assert!(
             est >= measured,
             "{per}x{sections}: {est:.0} < {measured} MiB"
@@ -413,6 +416,35 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     let input = args.input.open().unwrap();
     let bound = spatialde2::input_peak_bytes(&args, &input).unwrap();
     spatialde2::run_on(&args, input.read().unwrap(), &set(&bound.to_string())).unwrap();
+}
+
+/// The measured runs' shapes, from an srt-simulate read at their settings:
+/// the nonzeros per cell [`NONZEROS_PER_CELL`] takes, and every gene kept
+/// (spatialde2's selection holds every nonzero; stagate's highly variable
+/// genes are all 2000).
+#[test]
+fn srt_simulate_reads_as_the_measured_runs_assume() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = simulated(dir.path(), 32);
+    let crate::Commands::Spatialde2(args) =
+        on_files("spatialde2", &files, &dir.path().join("x"), &[])
+    else {
+        unreachable!()
+    };
+    let data = args.input.open().unwrap().read().unwrap();
+    let per_cell = data.counts.nnz() as f64 / data.cells.len() as f64;
+    let want = NONZEROS_PER_CELL as f64;
+    assert!(
+        (per_cell - want).abs() < 0.03 * want,
+        "{per_cell} nonzeros per cell"
+    );
+    let (genes, _) = spatialde2::top_genes(&data, args.n_top_genes);
+    assert_eq!(
+        spatialde2::selected_nonzeros(&data, &genes),
+        data.counts.nnz()
+    );
+    let (hvg, _) = stagate::seurat_v3_hvg(&data.counts, 3000);
+    assert_eq!((genes.len(), hvg.len()), (2000, 2000));
 }
 
 /// Each command's help names the budget variable.

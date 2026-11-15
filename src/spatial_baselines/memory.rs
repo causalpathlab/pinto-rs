@@ -117,15 +117,22 @@ pub struct Spatialde2Shape {
     pub gram: usize,
 }
 
+/// Bytes a selected nonzero holds at once in SpatialDE2's copy of the
+/// counts: 16 while copied, 24 as kept (by cell and by gene), and 16 of
+/// growth slack (the copied and the by-cell arrays grow by push, so their
+/// capacity runs up to twice their length). The slack is calibrated so
+/// that every measured peak is covered at the counts' real nonzeros.
+const SELECTED_NONZERO_BYTES: usize = 16 + 24 + 16;
+
 /// SpatialDE2's peak, f64 throughout, summed as if all were live at once:
-/// the counts as read (12 per nonzero) beside the selected counts while they
-/// are copied (16) and as kept, by cell and by gene (24); the weighted graph
-/// (16 per edge); the posteriors, cells × regions, twice while pruning; and
-/// the kNN's Gram blocks.
+/// the counts as read (12 per nonzero) beside the selected counts
+/// ([`SELECTED_NONZERO_BYTES`]); the weighted graph (16 per edge); the
+/// posteriors, cells × regions, twice while pruning; and the kNN's Gram
+/// blocks.
 pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
     SPATIALDE2_PROCESS_BYTES
         + 12 * s.nonzeros
-        + 40 * s.selected_nonzeros
+        + SELECTED_NONZERO_BYTES * s.selected_nonzeros
         + 16 * s.edges
         + 16 * s.cells * s.regions
         + s.gram
