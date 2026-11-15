@@ -137,6 +137,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
                 plant_region: None,
                 region_jackknife: RegionJackknife::NoRefit,
                 marginal: Some(PERMUTATIONS),
+                memory_budget: None,
             },
             data: &data,
             axis: &axis,

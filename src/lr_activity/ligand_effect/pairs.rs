@@ -5,6 +5,7 @@ use super::targets::TargetSets;
 use super::{reference, PairChoices, INTERNALS, LOG_TARGET};
 use crate::lr_activity::args::ReferenceSpecies;
 use crate::util::common::*;
+use crate::util::memory::human_bytes;
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
 
@@ -82,25 +83,20 @@ fn reference(
     Ok(files)
 }
 
-fn dir_size(dir: &Path) -> u64 {
+/// Bytes of the files under `dir`, for messages ([`human_bytes`]): a file
+/// too large to count in a `usize` counts as `usize::MAX`.
+fn dir_size(dir: &Path) -> usize {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return 0;
     };
     rd.filter_map(|e| e.ok())
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_size(&e.path()),
-            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => e
+                .metadata()
+                .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX)),
         })
-        .sum()
-}
-
-fn human_bytes(b: u64) -> String {
-    let mb = b as f64 / (1u64 << 20) as f64;
-    if mb >= 1024.0 {
-        format!("{:.1} GB", mb / 1024.0)
-    } else {
-        format!("{mb:.0} MB")
-    }
+        .fold(0, usize::saturating_add)
 }
 
 /// The pairs this data can estimate: the reference's for its species,

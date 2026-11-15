@@ -11,6 +11,7 @@ pub mod feature_axis;
 pub mod graph_coarsen;
 pub mod input;
 pub mod lupin_rounds;
+pub mod memory;
 pub mod metadata;
 pub mod parquet_io;
 pub mod paths;
