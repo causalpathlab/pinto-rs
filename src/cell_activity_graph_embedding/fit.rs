@@ -62,7 +62,8 @@ use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig};
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
 use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
+    SrtPreprocessed,
 };
 
 use data_beans::alg::gene_weighting::save_fisher_weights;
@@ -187,6 +188,7 @@ pub fn fit_cell_activity_graph_embedding(
         batch_membership,
         section_ids,
         seeding,
+        batch_labels: _,
         batch_effects: batch_db,
         graph,
         knn,
@@ -207,11 +209,15 @@ pub fn fit_cell_activity_graph_embedding(
         fisher_weights: !args.no_fisher_weights,
         // cage-cell too: the estimate is preprocessing (fitted on data-beans'
         // pseudobulk samples), not training; --ignore-batch turns it off
-        batch_effects: true,
+        batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && !args.cell_level,
         feature_kind: Some(feature_kind.clone()),
     })?;
+    // Only the mean divides; the full posterior is the file preprocessing wrote.
+    let batch_db = batch_db
+        .map(crate::util::batch_effects::BatchPosterior::into_mean)
+        .transpose()?;
 
     let cell_names = data_vec.column_names()?;
     let row_names = data_vec.row_names()?;
@@ -913,8 +919,10 @@ pub fn fit_cell_activity_graph_embedding(
                 graph: (&knn).into(),
                 ablation,
                 k: n_edge_clusters,
+                delta: batch_db
+                    .is_some()
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
             },
-            batch_db.is_some(),
             splice_report,
         );
         meta.cell_level = args.cell_level;

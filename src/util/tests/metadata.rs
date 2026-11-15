@@ -25,6 +25,7 @@ fn an_lc_run_without_a_cut_names_the_tree_and_no_cut() {
             k: 4,
             graph: GraphParams::default(),
             ablation: None,
+            delta: None,
         },
         Some(DictMergeSummary {
             min_nnz: 1,
@@ -62,6 +63,10 @@ fn metadata_roundtrip_lc() {
             k: 12,
             graph: GraphParams::default(),
             ablation: None,
+            delta: Some(DeltaWritten {
+                labels: BatchLabels::Files,
+                cells: true,
+            }),
         },
         Some(DictMergeSummary {
             min_nnz: 1,
@@ -97,6 +102,11 @@ fn metadata_roundtrip_lc() {
         .as_deref()
         .is_some_and(|c| c.ends_with("run.dict_merges.cut.parquet")));
     assert_eq!(merge.centred_sections, Some(3));
+    assert!(back
+        .outputs
+        .batch_effects
+        .as_deref()
+        .is_some_and(|d| d.ends_with("run.delta.parquet")));
     assert!(back.outputs.lr_activity.is_none());
     assert_eq!(
         back.outputs.coord_columns.as_deref(),
@@ -134,8 +144,11 @@ fn metadata_roundtrip_cage() {
             k: 16, // edge clusters
             graph: GraphParams::default(),
             ablation: None,
+            delta: Some(DeltaWritten {
+                labels: BatchLabels::Files,
+                cells: true,
+            }),
         },
-        true,
         Some(SpliceTrackInfo {
             n_rows: 40000,
             n_delta_identified: 15000,
@@ -210,8 +223,8 @@ fn metadata_roundtrip_cage_no_batch() {
             k: 8,
             graph: GraphParams::default(),
             ablation: None,
+            delta: None,
         },
-        false,
         None,
     );
     // The encoder is part of every cage model, batches or not.
@@ -245,6 +258,7 @@ fn metadata_roundtrip_lc_merge_no_collapse() {
             k: 8,
             graph: GraphParams::default(),
             ablation: None,
+            delta: None,
         },
         None,
         None,
@@ -282,6 +296,7 @@ fn roundtrip_graph(graph: GraphParams) -> (tempfile::TempDir, GraphParams) {
             k: 12,
             graph,
             ablation: None,
+            delta: None,
         },
         None,
         None,
@@ -536,6 +551,7 @@ fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
             k: 4,
             graph: GraphParams::default(),
             ablation: None,
+            delta: None,
         },
         None,
         None,
@@ -588,4 +604,111 @@ fn a_cell_level_run_is_marked_and_named_cage_cell() {
     assert!(back.cell_level);
     assert_eq!(back.command, "cage", "readers that take any cage still do");
     assert_eq!(back.method(), "cage-cell");
+}
+
+/// A fit records its data files canonical (absolute, `..` resolved), so a
+/// later run matches them from any working directory; a file that does
+/// not resolve is kept as given. With a δ, the manifest says what named
+/// its batches and where each cell's batch is; without one, neither.
+#[test]
+fn a_fit_records_canonical_data_files_and_its_batch_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("a.zarr"), b"").unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let roundabout = dir
+        .path()
+        .join("sub/../a.zarr")
+        .to_string_lossy()
+        .to_string();
+    let data_files: Vec<Box<str>> = vec![roundabout.into(), "gone.zarr".into()];
+    let inputs = |labels: Option<BatchLabels>| RunInputs {
+        prefix: &prefix,
+        data_files: &data_files,
+        coord_file: None,
+        coord_columns: &[],
+        n_cells: 1,
+        n_features: 1,
+        n_edges: 1,
+        k: 1,
+        graph: GraphParams::default(),
+        ablation: None,
+        delta: labels.map(|labels| DeltaWritten {
+            labels,
+            cells: true,
+        }),
+    };
+    let meta = create_cage_metadata(&inputs(Some(BatchLabels::Files)), None);
+    let want = std::fs::canonicalize(dir.path().join("a.zarr")).unwrap();
+    let files = meta.data_files.clone().unwrap();
+    assert_eq!(std::path::Path::new(&files[0]), want);
+    assert_eq!(files[1], "gone.zarr");
+
+    let path = dir.path().join("run.pinto.json");
+    meta.write(&path).unwrap();
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("\"batch_labels\": \"files\""));
+    let back = PintoMetadata::read(&path).unwrap();
+    assert_eq!(back.batch_labels, Some(BatchLabels::Files));
+    // recorded beside the manifest, so a run is found from any directory
+    assert_eq!(
+        back.outputs.batch_effects.as_deref(),
+        Some("run.delta.parquet")
+    );
+    assert_eq!(
+        back.outputs.delta_cells.as_deref(),
+        Some("run.delta_cells.parquet")
+    );
+    // a δ written alone (predict's) records no cells table
+    let alone = RunInputs {
+        delta: Some(DeltaWritten {
+            labels: BatchLabels::Files,
+            cells: false,
+        }),
+        ..inputs(None)
+    };
+    let meta = create_cage_metadata(&alone, None);
+    assert!(meta.outputs.batch_effects.is_some());
+    assert!(meta.outputs.delta_cells.is_none());
+    // `-o out/` writes `out/.pinto.json` and `out/.delta.parquet`: recorded
+    // as the manifest's own name has it
+    let slash = format!("{}/", dir.path().join("out").display());
+    let meta = create_cage_metadata(
+        &RunInputs {
+            prefix: &slash,
+            ..inputs(Some(BatchLabels::Files))
+        },
+        None,
+    );
+    assert_eq!(
+        meta.outputs.batch_effects.as_deref(),
+        Some(".delta.parquet")
+    );
+    assert_eq!(
+        meta.outputs.delta_cells.as_deref(),
+        Some(".delta_cells.parquet")
+    );
+    let auto = Some(BatchLabels::AutoBatch);
+    for meta in [
+        create_lc_metadata(&inputs(auto), None, None, &[]),
+        create_dsvd_metadata(&inputs(auto)),
+        create_cage_metadata(&inputs(auto), None),
+    ] {
+        assert_eq!(meta.batch_labels, auto, "{}", meta.command);
+        assert!(meta.outputs.batch_effects.is_some(), "{}", meta.command);
+    }
+    for meta in [
+        create_lc_metadata(&inputs(None), None, None, &[]),
+        create_dsvd_metadata(&inputs(None)),
+        create_cage_metadata(&inputs(None), None),
+    ] {
+        assert_eq!(
+            meta.batch_labels, None,
+            "{}: no δ, nothing to name",
+            meta.command
+        );
+        assert!(meta.outputs.batch_effects.is_none());
+        assert!(meta.outputs.delta_cells.is_none());
+    }
 }

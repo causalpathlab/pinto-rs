@@ -47,6 +47,9 @@ pub enum ProfileMode<'a> {
     },
     Projection {
         basis: &'a Mat,
+        /// The run's batch effect `[rows × batches]`, divided out of every
+        /// count before it is pooled or projected; `None` without one.
+        delta: Option<&'a Mat>,
     },
 }
 
@@ -263,13 +266,13 @@ fn build_level_profiles(
                 basis,
             ))
         }
-        ProfileMode::Projection { basis } => {
-            // Coarsen fine-cell raw expression to pb-samples, then project
+        ProfileMode::Projection { basis, delta } => {
+            // Coarsen fine-cell expression to pb-samples, then project
             // pb-sample aggregates through the basis. Previously this path
             // passed fine-cell data with cluster-label indices, which read
             // arbitrary fine cells as if they were pb-samples — a bug that
             // made super-edge profiles decoupled from pb-sample biology.
-            let super_expr = coarsen_cell_expression_dense(data, cell_labels, n_pb_samples)?;
+            let super_expr = coarsen_cell_expression_dense(data, cell_labels, n_pb_samples, delta)?;
             Ok(build_super_edge_projection_profiles(
                 &super_expr,
                 super_edges,

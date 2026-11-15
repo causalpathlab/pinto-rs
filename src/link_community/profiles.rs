@@ -92,11 +92,38 @@ pub fn filter_basis_by_feature_count(
     n_kept
 }
 
-/// Collect unique cells from a chunk of edges, read their sparse columns,
-/// and build an index map from global cell index to local column index.
+/// Columns `cells` of `data`, each count divided by its row's fold in its
+/// cell's batch when `delta` (`[rows × batches]`, the run's batch effect) is
+/// given; the batches are the ones the estimate registered on `data`.
+///
+/// A plain `x / δ`, not the self-normalising Poisson-ratio divide dsvd and
+/// cage apply: that one also divides by the cell's own rate, so a cell comes
+/// back as ratios near 1 rather than counts. lc scores count profiles, and
+/// δ has geometric mean 1 over the batches, so the plain divide keeps them
+/// on the count scale.
+pub(crate) fn read_columns_divided<I>(
+    data: &SparseIoVec,
+    cells: I,
+    delta: Option<&Mat>,
+) -> anyhow::Result<CscMatrix<f32>>
+where
+    I: Iterator<Item = usize> + Clone,
+{
+    let mut x = data.read_columns_csc(cells.clone())?;
+    if let Some(delta) = delta {
+        let batches = data.get_batch_membership(cells);
+        crate::util::batch_effects::divide_columns(&mut x, delta, |j| Some(batches[j]));
+    }
+    Ok(x)
+}
+
+/// Collect unique cells from a chunk of edges, read their sparse columns
+/// (divided by `delta`, see [`read_columns_divided`]), and build an index map
+/// from global cell index to local column index.
 pub(crate) fn read_unique_cells_for_edges(
     data: &SparseIoVec,
     chunk_edges: &[(usize, usize)],
+    delta: Option<&Mat>,
 ) -> anyhow::Result<(CscMatrix<f32>, HashMap<usize, usize>)> {
     let mut unique_set: HashSet<usize> = Default::default();
     for &(i, j) in chunk_edges {
@@ -106,7 +133,7 @@ pub(crate) fn read_unique_cells_for_edges(
     let mut unique_cells: Vec<usize> = unique_set.into_iter().collect();
     unique_cells.sort_unstable();
 
-    let x_dn = data.read_columns_csc(unique_cells.iter().copied())?;
+    let x_dn = read_columns_divided(data, unique_cells.iter().copied(), delta)?;
 
     let cell_to_col: HashMap<usize, usize> = unique_cells
         .iter()
@@ -131,12 +158,14 @@ pub(crate) fn read_unique_cells_for_edges(
 /// * `all_edges` - Full edge list from KNN graph
 /// * `basis` - Projection basis [n_features × proj_dim]
 /// * `block_size` - Edges per parallel chunk (None ⇒ adaptive default)
+/// * `delta` - The run's batch effect, divided out of every count first
 pub fn build_projection_profiles_for_edges(
     data: &SparseIoVec,
     edge_indices: &[usize],
     all_edges: &[(usize, usize)],
     basis: &Mat,
     block_size: Option<usize>,
+    delta: Option<&Mat>,
 ) -> anyhow::Result<LinkProfileStore> {
     let n_edges = edge_indices.len();
     let m = basis.ncols(); // proj_dim
@@ -170,7 +199,7 @@ pub fn build_projection_profiles_for_edges(
         .progress_with(prog_bar.clone())
         .try_for_each(|(out_em, &(edge_begin, edge_end))| -> anyhow::Result<()> {
             let job_edges = &edges[edge_begin..edge_end];
-            let (x_gc, col_of_cell) = read_unique_cells_for_edges(data, job_edges)?;
+            let (x_gc, col_of_cell) = read_unique_cells_for_edges(data, job_edges, delta)?;
             let n_features = x_gc.nrows();
             // The pooled endpoint profile `x_u + x_v`, reused across edges.
             let mut pooled_g = DVec::zeros(n_features);
@@ -210,10 +239,14 @@ pub fn build_projection_profiles_for_edges(
 /// The return buffer is dense (not sparse) because the pb-sample expression
 /// is dense by construction: any feature expressed in any fine cell within a
 /// cluster contributes to that cluster's column.
+///
+/// With `delta`, each cell's counts are divided by its batch's fold first
+/// ([`read_columns_divided`]); `None` pools the raw counts.
 pub fn coarsen_cell_expression_dense(
     data: &SparseIoVec,
     cell_labels: &[usize],
     n_pb_samples: usize,
+    delta: Option<&Mat>,
 ) -> anyhow::Result<Mat> {
     let n_features = data.num_rows();
     // Checked, not `debug_assert`ed. The loop below is driven by `cell_labels`
@@ -302,7 +335,7 @@ pub fn coarsen_cell_expression_dense(
                 return Ok(());
             }
 
-            let x_gc = data.read_columns_csc(cells_to_read.iter().copied())?;
+            let x_gc = read_columns_divided(data, cells_to_read.iter().copied(), delta)?;
             // Walk the samples this job owns and consume their runs in step, so
             // the pb id never has to be stored per column.
             for pb_local in 0..(pb_end - pb_begin) {

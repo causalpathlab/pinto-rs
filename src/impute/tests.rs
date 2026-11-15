@@ -218,6 +218,34 @@ fn a_missing_manifest_names_the_flag_as_the_way_out() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A manifest's recorded reference files resolve beside it, as predict
+/// resolves the model's, whatever the working directory; one in neither
+/// place is an error naming the flag.
+#[test]
+fn recorded_reference_files_resolve_beside_the_manifest() -> anyhow::Result<()> {
+    use crate::util::metadata::{manifest_path, PintoMetadata, Run};
+    let dir = tempfile::tempdir()?;
+    let model = dir.path().join("run").to_string_lossy().to_string();
+    std::fs::write(dir.path().join("a.zarr"), b"")?;
+    let mut meta = PintoMetadata {
+        data_files: Some(vec!["a.zarr".into()]),
+        ..Default::default()
+    };
+    meta.write(std::path::Path::new(&manifest_path(&model)))?;
+    let args = parse_impute(&["impute", "q.zarr", "--model", &model, "-o", "out"])?;
+    let files = resolve_reference_data(&args, Some(&Run::open(&model)?))?;
+    assert_eq!(
+        std::path::Path::new(files[0].as_ref()),
+        dir.path().join("a.zarr")
+    );
+
+    meta.data_files = Some(vec!["gone.zarr".into()]);
+    meta.write(std::path::Path::new(&manifest_path(&model)))?;
+    let err = resolve_reference_data(&args, Some(&Run::open(&model)?)).unwrap_err();
+    assert!(err.to_string().contains("--reference-data"), "{err}");
+    Ok(())
+}
+
 ////////////////////////////////////////////
 // Reference propensity onto the data axis //
 ////////////////////////////////////////////
@@ -283,4 +311,77 @@ fn zero_reference_neighbours_is_an_argument_error() {
     .unwrap_err();
     let kind = e.downcast_ref::<clap::Error>().map(clap::Error::kind);
     assert_eq!(kind, Some(clap::error::ErrorKind::ValueValidation), "{e}");
+}
+
+mod retrieval {
+    use super::super::retrieval::{retrieval_impute, RefDivide};
+    use crate::test_support::{boxed, numbered, sparse_vec};
+    use crate::util::common::*;
+    use data_beans::alg::retrieval_impute::RetrievalImputeConfig;
+
+    /// A reference of four cells over three features, on a propensity that
+    /// sets every cell apart, and queries sitting on its cells.
+    fn reference(dir: &tempfile::TempDir) -> (SparseIoVec, Mat) {
+        let triplets: Vec<(u64, u64, f32)> = (0..4u64)
+            .flat_map(|c| (0..3u64).map(move |g| (g, c, (1 + c * 3 + g) as f32)))
+            .collect();
+        let data = sparse_vec(
+            dir.path(),
+            "ref",
+            &boxed(&["GENE0", "GENE1", "GENE2"]),
+            &numbered("cell_", 4),
+            &triplets,
+        );
+        let prop = Mat::from_row_slice(4, 2, &[1.0, 0.0, 0.0, 1.0, 0.7, 0.7, 0.2, 0.9]);
+        (data, prop)
+    }
+
+    fn cfg(knn: usize) -> RetrievalImputeConfig {
+        RetrievalImputeConfig {
+            knn,
+            temperature: 0.3,
+            chunk: 64,
+        }
+    }
+
+    /// Without a divide it is the upstream retrieval, number for number.
+    #[test]
+    fn undivided_it_is_the_upstream_retrieval() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, prop) = reference(&dir);
+        let query = Mat::from_row_slice(3, 2, &[0.9, 0.1, 0.0, 0.0, 0.5, 0.6]);
+        let ours = retrieval_impute(&query, &prop, &data, &cfg(3), None).unwrap();
+        let upstream =
+            data_beans::alg::retrieval_impute::retrieval_impute(&query, &prop, &data, &cfg(3))
+                .unwrap();
+        assert!((ours - upstream).abs().max() < 1e-6);
+    }
+
+    /// Each reference cell's counts are divided by its batch's δ before they
+    /// are pooled; a cell with no batch is left as is.
+    #[test]
+    fn reference_counts_are_divided_by_their_batch_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let (data, prop) = reference(&dir);
+        let delta = Mat::from_row_slice(3, 2, &[0.5, 2.0, 1.0, 1.0, 4.0, 0.25]);
+        let divide = RefDivide {
+            delta: delta.clone(),
+            batch_of_cell: vec![Some(0), Some(1), Some(1), None],
+        };
+        // each query is one reference cell, so it retrieves that cell alone
+        let imputed = retrieval_impute(&prop, &prop, &data, &cfg(1), Some(&divide)).unwrap();
+        for c in 0..4usize {
+            for g in 0..3usize {
+                let raw = (1 + c * 3 + g) as f32;
+                let want = match divide.batch_of_cell[c] {
+                    Some(b) => raw / delta[(g, b)],
+                    None => raw,
+                };
+                assert!(
+                    (imputed[(c, g)] - want).abs() < 1e-4,
+                    "cell {c}, feature {g}"
+                );
+            }
+        }
+    }
 }

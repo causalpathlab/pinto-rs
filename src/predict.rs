@@ -38,9 +38,9 @@ use crate::link_community::outputs::{write_partition_outputs, PartitionInputs};
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
 use crate::util::device::ComputeDevice;
-use crate::util::metadata::{create_cage_metadata, RunInputs};
+use crate::util::metadata::{create_cage_metadata, BatchLabels, DeltaWritten, Run, RunInputs};
 use crate::util::srt_pipeline::{
-    preprocess_srt, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, BatchEstimate, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
 };
 use clap::Args;
 use data_beans::aux::frozen_features::{load_frozen_feature_host_matching, FrozenLoadArgs};
@@ -326,18 +326,18 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     // A model named by its manifest is the same model: records name runs that
     // way, so a held-out scoring links to the fit it scores.
     let mut args = args.clone();
-    args.model = crate::util::metadata::run_prefix(&args.model).into();
+    let run = open_model(&mut args.model)?;
     let args = &args;
     let c = &args.common;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
     let model = args.model.as_ref();
-    check_model(model)?;
-    let meta = crate::util::metadata::PintoMetadata::read(Path::new(
-        &crate::util::metadata::manifest_path(model),
-    ));
+    // a model opened by its manifest is there, whatever the manifest's name
+    if run.is_none() {
+        check_model(model)?;
+    }
     let defaults = default_args()?;
-    match meta {
-        Ok(meta) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
+    match run.as_ref() {
+        Some(Run { meta, .. }) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
             let unused = cage_only_flags(args, &defaults);
             anyhow::ensure!(
                 unused.is_empty(),
@@ -345,7 +345,7 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
                 meta.command,
                 unused.join(", ")
             );
-            crate::holdout::predict_profiles(args, &meta)
+            crate::holdout::predict_profiles(args, meta)
         }
         _ => {
             anyhow::ensure!(
@@ -353,9 +353,23 @@ pub fn predict(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
                 "{model} is not an lc / dsvd model: the held-out scoring flags \
                  (--held-out, --holdout-*, --ablate-features) apply to those only"
             );
-            predict_cage(args)
+            predict_cage(args, run.as_ref())
         }
     }
+}
+
+/// The model `model` names, opened once: its manifest (by prefix, or by the
+/// manifest's own path, whatever its file name), with `model` set to the
+/// run's prefix. `None` only when no manifest file is there (a cage model
+/// is then found by its files), `model` its prefix as named; a manifest
+/// that is there but cannot be read is an error.
+pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
+    let run = Run::open_if_exists(model)?;
+    *model = match &run {
+        Some(run) => run.prefix.as_str().into(),
+        None => crate::util::metadata::run_prefix(model).into(),
+    };
+    Ok(run)
 }
 
 /// `PredictArgs` as parsed with nothing set: what a flag left alone reads.
@@ -397,31 +411,56 @@ pub(crate) fn cage_only_flags(args: &PredictArgs, d: &PredictArgs) -> Vec<&'stat
     .collect()
 }
 
-/// Whether the model at prefix `model` trained on batch-corrected counts:
-/// its manifest records batch effects. A model fitted on one batch, with
-/// `--ignore-batch`, or an older cage-cell fit records none, and its
-/// encoder saw uncorrected counts, so the query must not be corrected
-/// either. A model with no readable manifest is taken to be corrected,
-/// as cage always was.
-fn model_batch_corrected(model: &str) -> bool {
-    crate::util::metadata::PintoMetadata::read(Path::new(&crate::util::metadata::manifest_path(
-        model,
-    )))
-    .map_or(true, |m| m.outputs.batch_effects.is_some())
+/// The δ of the model at prefix `model` (its manifest `run`) and its path,
+/// when it has one and `--ignore-batch` is not given. A model without one
+/// (one batch, `--ignore-batch`, or an older cage-cell fit) trained its
+/// encoder on undivided counts, so its query is not divided either.
+fn model_delta(
+    model: &str,
+    run: Option<&Run>,
+    ignore_batch: bool,
+) -> anyhow::Result<Option<(crate::util::batch_effects::RunDelta, String)>> {
+    use crate::util::batch_effects::{read_delta, run_delta_path};
+    if ignore_batch {
+        return Ok(None);
+    }
+    run_delta_path(model, run)?
+        .map(|path| Ok((read_delta(&path)?, path)))
+        .transpose()
 }
 
-pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+/// `pinto predict` of the cage model at prefix `args.model`, its manifest
+/// `run` (`None` for a model without one).
+pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 
-    let model_corrected = model_batch_corrected(&args.model);
-    if !model_corrected {
+    // A query batch the model trained on is divided by the model's own δ,
+    // and only a new one is estimated, on the query; a model without a δ
+    // trained on undivided counts, so the query is not divided.
+    let model_delta = model_delta(&args.model, run, c.ignore_batch)?;
+    if model_delta.is_none() && !c.ignore_batch {
         info!(
-            "{}: the model records no batch effects, so the query is not batch-corrected",
+            "{}: the model has no batch effects, so the query is not batch-corrected",
             args.model
         );
     }
+    let model_source = run.and_then(|r| r.meta.batch_labels);
+    let model_files = model_data_files(run);
+    let how = delta::QueryLabels::of(BatchLabels::of(c), &c.data_files, &model_files);
+    let all_known = match &model_delta {
+        Some((d, _)) => delta::every_batch_known(c, &how, &d.batches, model_source)?,
+        None => false,
+    };
+    if all_known {
+        info!("Every batch of this sample is the model's; none is estimated");
+    }
+    // The δ is written once, below: the one the query is divided by.
+    let batch_plan = match model_delta {
+        Some(_) => BatchEstimate::Query { all_known },
+        None => BatchEstimate::Skip,
+    };
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
@@ -432,7 +471,8 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         coordinate_names,
         batch_membership,
         section_ids: _,
-        batch_effects,
+        batch_labels: query_batches,
+        batch_effects: estimate,
         graph,
         knn,
         edge_source,
@@ -447,7 +487,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
         common: c,
         ablation: None,
         fisher_weights: !args.no_fisher_weights,
-        batch_effects: model_corrected,
+        batch_effects: batch_plan,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: true,
         feature_kind: Some(feature_kind.clone()),
@@ -533,7 +573,7 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
                 0,
             );
             let row_profiles = crate::link_community::profiles::coarsen_cell_expression_dense(
-                &data_vec, &labels, n_pb,
+                &data_vec, &labels, n_pb, None,
             )?;
             Ok(feature_axis
                 .pool_rows_opt(&row_profiles)
@@ -645,18 +685,37 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
          check --coord and the neighbourhood flags (-k / --knn-expr)"
     );
 
-    let batch_id_of: HashMap<Box<str>, u32> = {
-        let mut uniq: Vec<Box<str>> = batch_membership.to_vec();
-        uniq.sort();
-        uniq.dedup();
-        uniq.into_iter()
-            .enumerate()
-            .map(|(i, b)| (b, i as u32))
-            .collect()
-    };
-    let batch_of_cell: Vec<u32> = batch_membership.iter().map(|b| batch_id_of[b]).collect();
+    let batch_id_of: HashMap<&str, u32> = query_batches
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.as_ref(), i as u32))
+        .collect();
+    let batch_of_cell: Vec<u32> = batch_membership
+        .iter()
+        .map(|b| batch_id_of[b.as_ref()])
+        .collect();
+
+    let rows = data_vec.row_names()?;
+    // The estimate in full (its spread too), on this sample's rows, by
+    // sorted label (as data-beans numbers batches; `on_batches` holds it).
+    let estimate = estimate
+        .map(|e| e.into_delta().map(|d| d.on_batches(&query_batches)))
+        .transpose()?;
+    let batch_effects = model_delta.as_ref().and_then(|(model, path)| {
+        let matched = delta::match_batches(&query_batches, &model.batches, model_source, &how);
+        delta::query_delta(
+            (model, path),
+            &matched,
+            &rows,
+            &query_batches,
+            estimate.as_ref(),
+        )
+    });
+    if let Some(d) = &batch_effects {
+        d.write(&format!("{}.delta.parquet", c.out))?;
+    }
     let pair_batch = batch_effects.as_ref().map(|delta| PairBatchDivisor {
-        delta,
+        delta: &delta.mean,
         batch_of_cell: &batch_of_cell,
     });
 
@@ -771,8 +830,13 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
             graph: (&knn).into(),
             ablation: None,
             k,
+            // the δ alone: the cells' batches are its own labels, in its
+            // coord_pairs
+            delta: batch_effects.as_ref().map(|_| DeltaWritten {
+                labels: BatchLabels::of(c),
+                cells: false,
+            }),
         },
-        batch_effects.is_some(),
         None,
     );
     meta.command = "predict".to_string();
@@ -784,6 +848,25 @@ pub fn predict_cage(args: &PredictArgs) -> anyhow::Result<(Mat, Vec<Box<str>>)> 
     info!("Wrote {meta_path}");
     info!("Done");
     Ok((propensity, cell_names))
+}
+
+/// The data files a model's manifest `run` records (none without one).
+/// Fits record them canonical; an older manifest's relative entry is
+/// resolved beside the manifest, else from here, and kept as written when
+/// it resolves in neither.
+fn model_data_files(run: Option<&Run>) -> Vec<String> {
+    let Some(run) = run else {
+        return Vec::new();
+    };
+    run.meta
+        .data_files
+        .iter()
+        .flatten()
+        .map(|f| {
+            run.resolve(f)
+                .map_or_else(|| f.clone(), |p| p.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 /// Per-pair held-out scores, under the same column names `senna predict` uses
@@ -853,6 +936,8 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
     info!("Wrote {out}.predictive.parquet");
     Ok(())
 }
+
+mod delta;
 
 #[cfg(test)]
 mod tests;

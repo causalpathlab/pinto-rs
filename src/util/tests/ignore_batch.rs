@@ -5,12 +5,14 @@
 use crate::test_support::write_zarr;
 use crate::util::input::SrtInputArgs;
 use crate::util::srt_pipeline::FeatureAxisMode;
-use crate::util::srt_pipeline::{preprocess_srt, SrtPreprocessConfig, SrtPreprocessed};
+use crate::util::srt_pipeline::{
+    preprocess_srt, BatchEstimate, SrtPreprocessConfig, SrtPreprocessed,
+};
 use clap::Parser;
 
 /// Two data files of `cells` cells over twelve features, the second with its
 /// first six features three times the first's: a batch effect to estimate.
-fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
+pub(super) fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
     let rows: Vec<String> = (0..12).map(|g| format!("GENE{g}")).collect();
     let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
     ["a", "b"]
@@ -29,7 +31,17 @@ fn two_batches(dir: &std::path::Path, cells: usize) -> Vec<Box<str>> {
         .collect()
 }
 
-fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed {
+pub(super) fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed {
+    preprocess_with(files, out, extra, BatchEstimate::Fit)
+}
+
+/// [`preprocess`] doing `batch` about batch effects.
+pub(super) fn preprocess_with(
+    files: &[Box<str>],
+    out: &str,
+    extra: &[&str],
+    batch: BatchEstimate,
+) -> SrtPreprocessed {
     let mut argv = vec!["pinto"];
     argv.extend(files.iter().map(|f| f.as_ref()));
     argv.extend_from_slice(&["-o", out, "--no-qc", "--knn-expr", "5"]);
@@ -39,7 +51,7 @@ fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPreprocessed 
         common: &args,
         ablation: None,
         fisher_weights: false,
-        batch_effects: true,
+        batch_effects: batch,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
         cell_projection: false,

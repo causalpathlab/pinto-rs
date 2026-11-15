@@ -80,7 +80,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
             .last()
             .expect("coarsening produced no levels");
         let n_pb = finest.iter().copied().max().map_or(0, |m| m + 1);
-        let row_profiles = coarsen_cell_expression_dense(data_vec, finest, n_pb)?;
+        let row_profiles = coarsen_cell_expression_dense(data_vec, finest, n_pb, None)?;
         Ok(feature_axis
             .pool_rows_opt(&row_profiles)
             .unwrap_or(row_profiles))

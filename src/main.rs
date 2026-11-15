@@ -177,6 +177,7 @@ enum Commands {
                       `pinto prop` re-cuts the same latent at a fixed K.\n\n\
                       Outputs:\n\
                       - {out}.delta.parquet: batch effects (when multi-batch)\n\
+                      - {out}.delta_cells.parquet: each cell's batch, as δ's columns name it\n\
                       - {out}.coord_pairs.parquet: cell pair coordinates\n\
                       - {out}.basis.parquet: SVD basis (2G x T)\n\
                       - {out}.latent.parquet: per-pair latent codes (E x T)\n\
@@ -285,7 +286,9 @@ enum Commands {
                       \x20    stays out of δ — does not gate spatial coarsening)\n\
                       \x20 3. Multi-level graph coarsening\n\
                       \x20 4. Resolve feature modules (projection or SNN + k-core + Leiden)\n\
-                      \x20 5. Build sparse edge profiles (projection or module-pair residual)\n\
+                      \x20 5. Build sparse edge profiles (projection or module-pair residual),\n\
+                      \x20    each count divided by its batch's δ, as dsvd and cage divide\n\
+                      \x20    (feature_community stays on raw counts; --ignore-batch: no δ)\n\
                       \x20 6. V-cycle Gibbs + greedy across coarsening levels\n\
                       \x20 7. Component-EM + greedy on full fine-resolution edges\n\
                       \x20 8. Extract cell propensity + feature-community statistics (+ cosine dictionary merge)\n\n\
@@ -318,7 +321,9 @@ enum Commands {
                       \x20                                log-likelihood per edge unit.\n\
                       \x20                                A report: the sweeps move on the collapsed\n\
                       \x20                                conditional, so it need not rise every sweep.\n\
-                      \x20 {out}.delta.parquet           Batch effects (multi-sample only)\n\
+                      \x20 {out}.delta.parquet           Batch effects δ (multi-sample only;\n\
+                      \x20                                named in the manifest)\n\
+                      \x20 {out}.delta_cells.parquet     Each cell's batch, as δ's columns name it\n\
                       \x20 {out}.feature_graph.parquet      Feature-feature pairs (feature-pair mode only)\n\
                       \x20 {out}.L{l}.*.parquet          Per-cascade-level outputs (unless --no-level-outputs)\n\
                       \x20 {out}.draft.*.parquet         Pre-merge fine partition (when a --merge-cut collapsed)\n\
@@ -413,6 +418,7 @@ enum Commands {
                       \x20 {out}.fisher_weights.parquet  per-ROW NB precisions w_r\n\
                       \x20 {out}.delta.parquet           batch effects (multi-batch only;\n\
                       \x20                                optional `--cnv-clones` on the δ path)\n\
+                      \x20 {out}.delta_cells.parquet     each cell's batch, as δ's columns name it\n\
                       \x20 {out}.pinto.json           manifest"
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),
@@ -487,7 +493,15 @@ enum Commands {
                       Pass the same --eval-features file to every arm, and to\n\
                       `senna predict`, or the arms are graded on different features.\n\n\
                       Steps:\n\
-                      \x20 1. Preprocess the new data as cage does (graph, batches)\n\
+                      \x20 1. Preprocess the new data as cage does (graph, batches).\n\
+                      \x20    Batch effects: a batch the model trained on is divided by the\n\
+                      \x20    model's own {model}.delta.parquet; only a new batch is\n\
+                      \x20    estimated on the sample, carried into the model's frame through\n\
+                      \x20    the batches the two share. Batches match by --batch-files label;\n\
+                      \x20    without one, a data file matches when it is one of the model's\n\
+                      \x20    own (the model labelled by file too). A model without a δ\n\
+                      \x20    trained on undivided counts: its query is not divided.\n\
+                      \x20    {out}.delta.parquet is the δ used. --ignore-batch: none.\n\
                       \x20 2. Align {model}.feature_embedding.parquet to its feature axis by name.\n\
                       \x20    Features without a model row are dropped, never seeded.\n\
                       \x20 3. Place every cell pair, and every cell, on the frozen dictionary\n\
@@ -540,6 +554,14 @@ enum Commands {
                       2. For each query cell, find its nearest reference cells\n  \
                       \x20  in propensity space, softmax-weight the distances,\n  \
                       \x20  and accumulate those cells' full-feature counts.\n\
+                      \x20  For a cage model each reference cell's counts are first\n\
+                      \x20  divided by the run's δ for its batch (the batches as\n\
+                      \x20  estimated, from {model}.delta_cells.parquet, or the\n\
+                      \x20  coord_pairs of a run fitted before it), as predict\n\
+                      \x20  divides the query. lc / dsvd models stay on raw counts on\n\
+                      \x20  both sides: their feature_community profiles are fitted on\n\
+                      \x20  raw counts, so dividing the cells would match them against\n\
+                      \x20  profiles on another scale. --ignore-batch: no δ.\n\
                       \n\
                       The reference data defaults to the files recorded in\n\
                       {model}.pinto.json; --reference-data overrides.\n\

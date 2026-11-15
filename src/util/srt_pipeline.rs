@@ -16,7 +16,7 @@ use crate::util::ablation::{
     Ablation, AblationArgs, AblationKind, MaskMode, PermuteCoords,
 };
 use crate::util::batch_effects::{
-    estimate_and_write_batch_effects, load_cnv_cell_strata, EstimateBatchArgs,
+    estimate_and_write_batch_effects, load_cnv_cell_strata, BatchPosterior, EstimateBatchArgs,
 };
 use crate::util::cell_pairs::{
     build_expression_graph, build_expression_knn, build_expression_knn_within, build_spatial_graph,
@@ -48,8 +48,8 @@ pub struct SrtPreprocessConfig<'a> {
     /// Compute per-feature NB Fisher-info weights. `lc` needs them; `svd`
     /// and (v1) `cage` do not.
     pub fisher_weights: bool,
-    /// Estimate per-batch effects. All current subcommands set this.
-    pub batch_effects: bool,
+    /// Whether to estimate per-batch effects, and what to do with them.
+    pub batch_effects: BatchEstimate,
     /// Whether, and how strictly, to resolve the FEATURE unit axis from the row
     /// names and fold the running statistics onto it in the same pass.
     pub feature_axis: FeatureAxisMode,
@@ -63,6 +63,34 @@ pub struct SrtPreprocessConfig<'a> {
     /// back on [`SrtPreprocessed::cell_proj`]. `lc` and `cage` both need one
     /// for coarsening, so taking it here spares them a second full pass.
     pub cell_projection: bool,
+}
+
+/// What preprocessing does about batch effects (nothing under
+/// `--ignore-batch`, or with one batch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchEstimate {
+    /// A fit's: estimate, and write the estimate to `{out}.delta.parquet`
+    /// with each cell's batch beside it.
+    Fit,
+    /// Nothing: the caller divides by a fitted δ of its own, or by none.
+    Skip,
+    /// A query of a model with a δ (`predict`, which writes the δ it
+    /// divides by itself): estimate, unwritten, unless every batch is
+    /// known to the model's δ (`all_known`); then the projection is still
+    /// corrected by batch, as an estimate would have it.
+    Query { all_known: bool },
+}
+
+/// Whether preprocessing estimates batch effects over `n_labels` distinct
+/// labels, and whether, without an estimate, the batches are still
+/// corrected for (two or more, every one known to a fitted model).
+pub(crate) fn batch_plan(mode: BatchEstimate, ignore_batch: bool, n_labels: usize) -> (bool, bool) {
+    match mode {
+        _ if ignore_batch => (false, false),
+        BatchEstimate::Fit | BatchEstimate::Query { all_known: false } => (true, false),
+        BatchEstimate::Skip => (false, false),
+        BatchEstimate::Query { all_known: true } => (false, n_labels > 1),
+    }
 }
 
 /// How a caller wants the feature axis resolved.
@@ -110,9 +138,12 @@ pub struct SrtPreprocessed {
     /// the scrambled ones the graph was built on, or real-space structure
     /// would leak into the ablation; `coordinates` stays the cells' own.
     pub seeding: Option<Seeding>,
-    /// Posterior batch-effect mean `[n_features × n_batches]`. `None`
-    /// when single-batch.
-    pub batch_effects: Option<Mat>,
+    /// The batch labels of [`Self::batch_membership`], sorted and
+    /// distinct: δ's columns, when there is one.
+    pub batch_labels: Vec<Box<str>>,
+    /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
+    /// single-batch or not estimated.
+    pub batch_effects: Option<BatchPosterior>,
     pub graph: KnnGraph,
     /// The k's [`Self::graph`] was actually built with. Carried rather than
     /// re-derived from the args, so a manifest cannot describe a graph the run
@@ -490,7 +521,15 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // (the projection's correction below, a model's own divide). The labels
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
-    let batch_effects = if cfg.batch_effects && !c.ignore_batch {
+    let batch_labels: Vec<Box<str>> = batch_membership
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .map(Box::from)
+        .collect();
+    let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, batch_labels.len());
+    let batch_effects = if estimate {
         let batch_sort_dim = c.proj_dim.min(10);
         let strata = match c.cnv_clones.as_deref() {
             Some(path) => Some(load_cnv_cell_strata(path, &data_vec)?),
@@ -499,6 +538,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         estimate_and_write_batch_effects(
             &mut data_vec,
             &batch_membership,
+            &batch_labels,
             EstimateBatchArgs {
                 proj_dim: c.proj_dim,
                 sort_dim: batch_sort_dim,
@@ -507,7 +547,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 num_levels: c.num_levels,
                 strata,
             },
-            &c.out,
+            (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref()),
         )?
     } else {
         None
@@ -529,9 +569,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     //
     // And the expression graph should be built on a batch-corrected
     // projection, or its neighbours match batch rather than cell type.
-    let batch_arg: Option<&[Box<str>]> = batch_effects
-        .is_some()
-        .then_some(batch_membership.as_slice());
+    let batch_arg: Option<&[Box<str>]> =
+        (batch_effects.is_some() || known).then_some(batch_membership.as_slice());
 
     // `ResolvedKnn::augment` is already 0 without coordinates, so these two
     // tests stay in step by construction rather than by both remembering to
@@ -668,6 +707,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         batch_membership,
         section_ids,
         seeding,
+        batch_labels,
         batch_effects,
         graph,
         knn,

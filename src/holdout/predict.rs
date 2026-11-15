@@ -11,7 +11,7 @@ use crate::util::common::*;
 use crate::util::metadata::PintoMetadata;
 use crate::util::profile_match::{em_proportions, match_profiles, training_feature_totals};
 use crate::util::srt_pipeline::{
-    preprocess_srt, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, BatchEstimate, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
 };
 use legume_numeric::matrix::common_io::{mkdir_parent, read_name_list};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -118,7 +118,7 @@ pub fn predict_profiles(
         fisher_weights: false,
         // The model's profiles are what is scored; δ is estimated below from
         // the fitting parts, not from this sample's whole counts.
-        batch_effects: false,
+        batch_effects: BatchEstimate::Skip,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: Some(feature_kind.clone()),
         cell_projection: false,
