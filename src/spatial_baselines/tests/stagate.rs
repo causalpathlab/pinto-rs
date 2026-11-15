@@ -326,9 +326,19 @@ fn filter_genes_keeps_genes_in_enough_cells() {
     coo.push(2, 1, 2.0);
     let counts = CscMatrix::from(&coo);
     let kept = filter_genes(counts.clone(), 2);
-    assert_eq!(kept.nrows(), 2);
+    assert_eq!((kept.nrows(), kept.ncols()), (2, 4));
     let t: Vec<(usize, usize, f32)> = kept.triplet_iter().map(|(r, c, &v)| (r, c, v)).collect();
-    assert!(t.contains(&(1, 1, 2.0)) && !t.iter().any(|&(_, c, _)| c == 3));
+    // genes 0 and 2 renumbered 0 and 1, by cell then gene
+    assert_eq!(
+        t,
+        [
+            (0, 0, 1.0),
+            (1, 0, 2.0),
+            (0, 1, 1.0),
+            (1, 1, 2.0),
+            (0, 2, 1.0)
+        ]
+    );
     assert_eq!(filter_genes(counts.clone(), 0).nnz(), counts.nnz());
 }
 

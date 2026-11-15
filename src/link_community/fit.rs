@@ -634,7 +634,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     // comparison. The edge profiles the partition was fitted on are
     // divided by the batch estimate, by choice, so that lc corrects
     // batches the way dsvd and cage do.
-    let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
+    let n_sections = crate::util::ablation::n_sections(section_ids);
     let share = community_group_shares(
         final_membership,
         k,

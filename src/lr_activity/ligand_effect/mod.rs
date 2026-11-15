@@ -116,7 +116,6 @@ pub mod verdict;
 mod tests;
 
 pub use baselines::PERMUTATIONS;
-pub use memory::check_memory_budget;
 
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::cli::value_name;
@@ -203,6 +202,10 @@ pub struct Settings<'a> {
     /// baseline (`--marginal-permutations`); `None` without the flag, and
     /// always for `lra-simulate`, which scores its own.
     pub marginal: Option<usize>,
+    /// The bytes `PINTO_MEMORY_BUDGET` sets, read once at the start
+    /// ([`crate::util::memory::budget_var`]); `None` sizes the pairs at once
+    /// by half the memory available then ([`memory::pair_memory_budget`]).
+    pub memory_budget: Option<usize>,
 }
 
 impl Settings<'_> {

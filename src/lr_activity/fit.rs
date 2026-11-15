@@ -623,8 +623,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
 /// contacts, from the `--from` run or built from the coordinates given.
 fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyhow::Result<()> {
     use crate::lr_activity::ligand_effect::pipeline::run;
-    use crate::lr_activity::ligand_effect::{check_memory_budget, RunInputs, Settings};
-    check_memory_budget()?;
+    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
+    let memory_budget = crate::util::memory::budget_var()?;
     let contacts = load_contacts(input)?;
     let manifest = record_manifest(input, out, &contacts)?;
     run(&RunInputs {
@@ -643,6 +643,7 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             marginal: args
                 .marginal_baselines
                 .then_some(args.marginal_permutations),
+            memory_budget,
         },
         data: &contacts.data,
         axis: &contacts.axis,
@@ -686,7 +687,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
     use crate::lr_activity::ligand_effect::pipeline::{
         clear_single_outputs, run_simulate, run_simulate_one,
     };
-    use crate::lr_activity::ligand_effect::{check_memory_budget, RunInputs, Settings};
+    use crate::lr_activity::ligand_effect::{RunInputs, Settings};
     // A single scenario is checked before any data is read, and needs its
     // own prefix: calls run side by side would all write the run's.
     let single = args.single()?;
@@ -695,7 +696,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         "a single scenario (--one, --set, --pairs, --null-pairs) needs --out: calls side by \
          side would all write {{prefix}}.lra-simulate.parquet"
     );
-    check_memory_budget()?;
+    let memory_budget = crate::util::memory::budget_var()?;
     let input = args.input.resolve()?;
     let out = input.out(args.out.as_deref())?;
     mkdir_parent(&out)?;
@@ -732,6 +733,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             plant_region: args.plant_region.as_deref(),
             region_jackknife: args.input.region_jackknife,
             marginal: None,
+            memory_budget,
         },
         data: &contacts.data,
         axis: &contacts.axis,

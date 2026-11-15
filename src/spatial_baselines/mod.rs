@@ -22,6 +22,7 @@
 
 pub mod graph;
 pub mod input;
+pub mod memory;
 pub mod output;
 pub mod spatialde2;
 pub mod stagate;

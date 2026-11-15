@@ -73,6 +73,8 @@ struct Prepared {
     reference_record: Option<std::path::PathBuf>,
     /// The genes the receivers' identity leaves out, by name, sorted.
     identity_excluded: Vec<String>,
+    /// [`Settings::memory_budget`].
+    memory_budget: Option<usize>,
 }
 
 impl Prepared {
@@ -218,6 +220,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         eopts: effect_opts(a.seed, a.region_jackknife),
         reference_record: Some(record),
         identity_excluded,
+        memory_budget: a.memory_budget,
     })
 }
 
@@ -246,7 +249,7 @@ fn ligands_at_once(prep: &Prepared, ligands: usize) -> usize {
     let nc = eopts.competences.len();
     let threshold_fits = 2 * nc + 2 + 1 + 3;
     let per_ligand = ligand_memory(34 + threshold_fits, tissue, &eopts.nuisance);
-    pair_workers(per_ligand, tissue, &eopts.nuisance).min(ligands)
+    pair_workers(per_ligand, tissue, &eopts.nuisance, prep.memory_budget).min(ligands)
 }
 
 /// The pairs grouped by ligand (its genes, so a complex is one ligand), each
@@ -701,7 +704,7 @@ impl Benchmark<'_> {
         // Scenarios are independent: run as many at once as the memory
         // budget allows (each holds about a pair's worth of vectors).
         let per_run = pair_memory(50, tissue, &eopts.nuisance);
-        let concurrent = pair_workers(per_run, tissue, &eopts.nuisance);
+        let concurrent = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         run_bounded(&jobs, concurrent, |&(si, scen)| {
             let seed = legume_numeric::matrix::rand_util::mix_seed(
