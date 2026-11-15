@@ -3,6 +3,7 @@ mod batch_effects;
 mod cell_pairs;
 mod dictionary_rows;
 mod edge_clustering;
+mod expression_graph;
 mod graph_augmentation;
 mod graph_coarsen;
 mod ignore_batch;

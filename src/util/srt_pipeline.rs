@@ -471,10 +471,16 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             "Building expression KNN graph (k={}, proj_dim={})...",
             base_knn, c.proj_dim
         );
+        // On the batch-corrected projection when there are batches to
+        // correct for, or neighbours match batch rather than cell state. It
+        // reads the counts as they are: nothing is divided by δ yet.
+        let n_batches = sorted_batch_labels(&batch_membership).len();
+        let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, n_batches);
+        let correct = (estimate || known) && n_batches > 1;
         let cell_proj_pre = data_vec.project_columns_with_batch_correction(
             c.proj_dim,
             c.block_size,
-            None::<&[Box<str>]>,
+            correct.then_some(batch_membership.as_slice()),
         )?;
         let (g, embedding) = build_expression_graph(
             &cell_proj_pre.proj,
@@ -560,8 +566,9 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // auto-batch sees it by construction — there a component is not a section
     // and was never claimed to be, which is why that path folds no fragments.
     //
-    // And the expression graph should be built on a batch-corrected
-    // projection, or its neighbours match batch rather than cell type.
+    // The expression graph is built on a batch-corrected projection, or its
+    // neighbours match batch rather than cell type: the base graph above in
+    // expression mode, the augmenting one here.
     let batch_arg: Option<&[Box<str>]> =
         (batch_effects.is_some() || known).then_some(batch_membership.as_slice());
 
