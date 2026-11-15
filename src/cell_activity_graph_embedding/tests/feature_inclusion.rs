@@ -298,3 +298,14 @@ fn inclusion_and_modules_are_exclusive() {
         "{e}"
     );
 }
+
+/// An epoch visits every feature, or Σπ of them under inclusion (at least
+/// one).
+#[test]
+fn expected_visits_are_the_sum_of_pi() {
+    use crate::cell_activity_graph_embedding::feature_inclusion::expected_visits;
+    let pi = [0.0f32, 1.0, 0.6, 0.9, 0.2];
+    assert_eq!(expected_visits(&[0, 1, 2, 3], None), 4);
+    assert_eq!(expected_visits(&[1, 2, 3, 4], Some(&pi)), 3);
+    assert_eq!(expected_visits(&[0, 4], Some(&pi)), 1);
+}

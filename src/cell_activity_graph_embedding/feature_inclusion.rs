@@ -324,6 +324,16 @@ pub fn sample_included(features: &mut Vec<usize>, pi: &[f32], rng: &mut impl ran
     }
 }
 
+/// Features an epoch visits in expectation: every one of `features`, or
+/// `Σ π` over them under inclusion, rounded and at least one (an epoch is
+/// never empty, see [`sample_included`]).
+pub fn expected_visits(features: &[usize], pi: Option<&[f32]>) -> usize {
+    match pi {
+        Some(pi) => (features.iter().map(|&g| pi[g]).sum::<f32>().round() as usize).max(1),
+        None => features.len(),
+    }
+}
+
 fn std_normal_pdf(z: f64) -> f64 {
     (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
 }

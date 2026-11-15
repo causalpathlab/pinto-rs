@@ -154,6 +154,9 @@ pub(super) struct TrainInputs<'a> {
     /// Each feature's probability of being visited in an epoch
     /// (`--feature-inclusion`); `None` visits every one.
     pub inclusion: Option<&'a [f32]>,
+    /// Features an epoch visits in expectation: every trainable one, or
+    /// `Σ π` under inclusion (at least one).
+    pub expected_visits: usize,
     pub module_cfg: Option<&'a FeatureModuleConfig>,
     pub module_profiles: Option<&'a Mat>,
     pub n_exp_batches: usize,
@@ -161,6 +164,32 @@ pub(super) struct TrainInputs<'a> {
     pub n_features: usize,
     pub n_chain_levels: usize,
     pub dev: &'a Device,
+}
+
+/// An epoch's mean loss and per-level losses from its sums over the
+/// `chunks` that stepped, `features` features in all. The per-level sum is
+/// of chunk means, so it averages per chunk. The loss sums every feature's
+/// rows, so it averages per chunk too, except under `--feature-inclusion`
+/// (`full_chunk` the feature batch size), where an epoch's feature count
+/// is a random draw: there it is per feature, scaled to a full chunk, so
+/// the loss the convergence test reads does not move with the draw.
+pub(super) fn epoch_means(
+    loss_sum: f64,
+    per_level_sum: &[f32],
+    chunks: usize,
+    features: usize,
+    full_chunk: Option<usize>,
+) -> (f64, Vec<f64>) {
+    let chunks = chunks.max(1) as f64;
+    let loss = match full_chunk {
+        Some(b) => loss_sum * b as f64 / features.max(1) as f64,
+        None => loss_sum / chunks,
+    };
+    let per_level = per_level_sum
+        .iter()
+        .map(|&v| f64::from(v) / chunks)
+        .collect();
+    (loss, per_level)
 }
 
 /// Runs the epochs; the score trace is what comes back.
@@ -176,6 +205,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         feature_batch_size,
         feature_fisher_weights,
         inclusion,
+        expected_visits,
         module_cfg,
         module_profiles,
         n_exp_batches,
@@ -204,15 +234,6 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // Under --feature-inclusion an epoch visits each feature with its
     // probability, so its length is that expectation (for the bar and the
     // per-step ridge share only).
-    let expected_visits = match inclusion {
-        Some(pi) => (trainable_features
-            .iter()
-            .map(|&g| pi[g])
-            .sum::<f32>()
-            .round() as usize)
-            .max(1),
-        None => trainable_features.len(),
-    };
     let features_per_epoch_actual = if args.features_per_epoch > 0 {
         args.features_per_epoch.min(expected_visits)
     } else {
@@ -288,8 +309,9 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         let mut per_level_acc: Option<Tensor> = None;
         let mut pair_acc: Option<Tensor> = None;
         let mut chunk_count: usize = 0;
-        // Features this epoch will actually visit.
-        let visited = perm.len();
+        // Features in the chunks that reached a step (not a chunk that drew
+        // nothing, nor one after a stop).
+        let mut processed: usize = 0;
         debug_assert!(inclusion.is_some() || perm.len() == features_per_epoch_actual);
         for chunk in perm.chunks(feature_batch_size) {
             if stop.load(Ordering::Relaxed) {
@@ -470,6 +492,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 None => per_level_chunk_mean,
             });
             chunk_count += 1;
+            processed += chunk.len();
         }
 
         // ONE host sync per epoch — pull accumulated tensors only now.
@@ -484,16 +507,12 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 .unwrap()
                 .to_vec1::<f32>()
                 .unwrap_or_default();
-            // Under --feature-inclusion an epoch's feature count is a random
-            // draw: average per feature visited (as full chunks), so the loss
-            // the convergence test reads does not move with the draw.
-            let scale = match inclusion {
-                Some(_) => visited as f64 / feature_batch_size.max(1) as f64,
-                None => chunk_count as f64,
-            };
-            (
-                (loss_sum as f64) / scale,
-                pl_sum.iter().map(|v| *v as f64 / scale).collect::<Vec<_>>(),
+            epoch_means(
+                f64::from(loss_sum),
+                &pl_sum,
+                chunk_count,
+                processed,
+                inclusion.map(|_| feature_batch_size),
             )
         } else {
             (f64::NAN, vec![0.0; n_chain_levels])
@@ -598,4 +617,24 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // percentages as a split of per-step cost, not of the whole phase.
     timers.log_summary();
     Ok(score_trace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::epoch_means;
+
+    /// The per-level losses average per chunk that stepped, with or
+    /// without inclusion; under inclusion the loss is per feature processed,
+    /// as a full chunk, however few features the epoch drew.
+    #[test]
+    fn epoch_means_divide_by_what_was_processed() {
+        // one chunk of one feature, batch size 4
+        let (loss, per_level) = epoch_means(3.0, &[2.0, 6.0], 1, 1, Some(4));
+        assert_eq!(per_level, vec![2.0, 6.0]);
+        assert_eq!(loss, 12.0);
+        // without inclusion both average per chunk
+        let (loss, per_level) = epoch_means(3.0, &[2.0, 6.0], 2, 7, None);
+        assert_eq!(per_level, vec![1.0, 3.0]);
+        assert_eq!(loss, 1.5);
+    }
 }
