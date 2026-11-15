@@ -67,7 +67,7 @@ fn a_left_out_tile_leaves_every_fold_and_gram() {
 
 #[test]
 fn jackknife_se_by_hand() {
-    use crate::lr_activity::ligand_effect::jackknife::jackknife_se;
+    use crate::util::common::jackknife_se;
     // Replicates 1, 2, 3: mean 2, (G - 1)/G * 2 = 4/3.
     assert!((jackknife_se(&[1.0, 2.0, 3.0]) - (4.0f64 / 3.0).sqrt()).abs() < 1e-12);
     assert!(jackknife_se(&[1.0]).is_nan());

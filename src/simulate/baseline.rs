@@ -19,7 +19,7 @@
 use super::harmony::{harmonize, HarmonyParams};
 use super::run::{domains_path, truth_run_path};
 use super::score::{sim_folder, TruthSpots};
-use crate::util::common::HashMap;
+use crate::util::common::{HashMap, LIBRARY_SCALE};
 use crate::util::metadata::Run;
 use legume_numeric::matrix::pca::pc_scores;
 use legume_numeric::matrix::traits::{MatElemOps, MatOps};
@@ -27,11 +27,11 @@ use log::info;
 use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
 
-/// Each spot's counts scaled to 1e4 in total, then `ln(1 + x)`
+/// Each spot's counts scaled to [`LIBRARY_SCALE`] in total, then `ln(1 + x)`
 /// (genes × spots; an empty spot stays empty).
 pub fn normalise_log(x: &mut CscMatrix<f32>) {
     x.sum_to_one_columns_inplace();
-    x.values_mut().iter_mut().for_each(|v| *v *= 1e4);
+    x.values_mut().iter_mut().for_each(|v| *v *= LIBRARY_SCALE);
     x.log1p_inplace();
 }
 

@@ -48,7 +48,6 @@ use super::thresholds::over_thresholds;
 pub use super::thresholds::PairFit;
 use super::tissue::Tissue;
 use crate::lr_activity::args::RegionJackknife;
-pub use crate::util::common::jackknife_se;
 use crate::util::common::*;
 
 /// A scope's headline p below which its region rows are jackknifed: above

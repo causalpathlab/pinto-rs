@@ -100,3 +100,16 @@ fn frame_rejects_non_nested_levels() {
     let err = build_pb_frame(&ml, &graph, &batches, 2).unwrap_err();
     assert!(err.to_string().contains("do not nest"), "{err}");
 }
+
+/// A unit's majority label breaks ties to the highest label, as the
+/// frame's batch vote always has, and units of mixed labels are counted.
+#[test]
+fn majority_label_ties_to_the_highest() {
+    use crate::cell_activity_graph_embedding::pb_frame::majority_label;
+    // unit 0: labels [0, 1] tie; unit 1: [2, 2, 0]; unit 2: [1]
+    let unit_of = [0, 0, 1, 1, 1, 2];
+    let label = [0u32, 1, 2, 2, 0, 1];
+    let (majority, mixed) = majority_label(&unit_of, 3, &label, 3);
+    assert_eq!(majority, vec![1, 2, 1]);
+    assert_eq!(mixed, 2);
+}

@@ -45,9 +45,11 @@
 //! bulk; B. W. Silverman, "Density Estimation for Statistics and Data
 //! Analysis" (1986), for the kernel bandwidth.
 
+use crate::cell_activity_graph_embedding::pb_frame::majority_label;
 use crate::util::ablation::{dense_ids, group};
-use crate::util::common::{jackknife_se, Mat};
+use crate::util::common::{jackknife_se, quantile_sorted, upper_median, Mat, LIBRARY_SCALE};
 use crate::util::feature_axis::FeatureAxis;
+use crate::util::graph_coarsen::fold_edges_to_super;
 use data_beans::sparse_io_vector::SparseIoVec;
 use log::info;
 use rayon::prelude::*;
@@ -67,17 +69,18 @@ pub struct FeatureInclusion {
 /// Per-feature arrays of blocks are row-major, `blocks × features`.
 #[derive(Debug, Clone)]
 pub struct SectionJack {
-    n_features: usize,
     /// Units and edges of the section.
     n: f64,
     w: f64,
     /// `Σ_edges (x_i − μ)(x_j − μ)` and `Σ_units (x_i − μ)²` per feature.
     num: Vec<f64>,
     den: Vec<f64>,
-    /// Per block: the change in units and edges, and in `num` and `den`,
-    /// when it is deleted (the section re-centred without it).
-    dn: Vec<f64>,
-    dw: Vec<f64>,
+    /// Per block: its units, and the edges touching it, which deleting it
+    /// removes.
+    nb: Vec<f64>,
+    mb: Vec<f64>,
+    /// Per block: the change in `num` and `den` when it is deleted (the
+    /// section re-centred without it).
     dnum: Vec<f64>,
     dden: Vec<f64>,
 }
@@ -92,12 +95,13 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
     )
 }
 
-/// `ln(1 + 1e4 x / Σ x)` in place; an empty unit stays empty.
+/// `ln(1 + s x / Σ x)` in place, `s` the [`LIBRARY_SCALE`]; an empty unit
+/// stays empty.
 pub fn log_normalise(p: &mut [(u32, f32)]) {
     let lib: f32 = p.iter().map(|&(_, v)| v).sum();
     if lib > 0.0 {
         p.iter_mut()
-            .for_each(|(_, v)| *v = (1e4 * *v / lib).ln_1p());
+            .for_each(|(_, v)| *v = (LIBRARY_SCALE * *v / lib).ln_1p());
     }
 }
 
@@ -143,7 +147,7 @@ pub fn tile_of(xy: &[(f32, f32)], tiles: usize) -> Vec<usize> {
 /// (`(feature, value)` lists sorted by feature), each unit's block (any
 /// labels; made dense here, so a label with no unit is no block), and the
 /// section's edges as local unit pairs. Memory is `blocks × features` per
-/// array, with at most one edge accumulator per worker thread.
+/// array, with at most one accumulator of edge products per worker thread.
 pub fn section_jack<P: AsRef<[(u32, f32)]> + Sync>(
     n_features: usize,
     profiles: &[P],
@@ -156,63 +160,85 @@ pub fn section_jack<P: AsRef<[(u32, f32)]> + Sync>(
         .map(|b| b as usize)
         .collect();
     let n_blocks = block.iter().max().map_or(0, |&b| b + 1);
-    // raw sums per block
-    let mut nb = vec![0f64; n_blocks];
-    let (mut sx, mut sxx) = (vec![0f64; n_blocks * g], vec![0f64; n_blocks * g]);
-    for (i, p) in profiles.iter().enumerate() {
-        let o = block[i] * g;
-        nb[block[i]] += 1.0;
-        for &(f, v) in p.as_ref() {
-            let v = f64::from(v);
-            sx[o + f as usize] += v;
-            sxx[o + f as usize] += v * v;
+    // Per-row sums run over the edges touching each block, and in the last
+    // row over every edge. An edge touches its ends' blocks, so a unit's
+    // edges all touch its own block and the last row (its degree counts
+    // them), and an edge between blocks also the other end's: count those
+    // per unit and block.
+    let rows = n_blocks + 1;
+    let mut m = vec![0f64; rows];
+    let mut degree = vec![0f64; profiles.len()];
+    let mut across: Vec<(usize, usize)> = Vec::new();
+    for &(i, j) in edges {
+        let (a, b) = (block[i], block[j]);
+        degree[i] += 1.0;
+        degree[j] += 1.0;
+        m[n_blocks] += 1.0;
+        m[a] += 1.0;
+        if a != b {
+            m[b] += 1.0;
+            across.push((i, b));
+            across.push((j, a));
         }
     }
-    // raw edge sums per block, over the edges touching it, and in the last
-    // row over every edge: count, `Σ x_i x_j`, `Σ (x_i + x_j)`
-    let rows = n_blocks + 1;
-    let zero = || (vec![0f64; rows], vec![0f64; rows * g], vec![0f64; rows * g]);
+    across.sort_unstable();
+    // raw sums per block, and per row the linear edge term `Σ (x_i + x_j)`,
+    // each unit's value times its edges touching the row
+    let mut nb = vec![0f64; n_blocks];
+    let (mut sx, mut sxx) = (vec![0f64; n_blocks * g], vec![0f64; n_blocks * g]);
+    let mut ex = vec![0f64; rows * g];
+    let mut others = across.chunk_by(|x, y| x.0 == y.0).peekable();
+    let mut touch: Vec<(usize, f64)> = Vec::new();
+    for (i, p) in profiles.iter().enumerate() {
+        let a = block[i];
+        nb[a] += 1.0;
+        touch.clear();
+        touch.extend([(n_blocks, degree[i]), (a, degree[i])]);
+        if let Some(run) = others.next_if(|run| run[0].0 == i) {
+            touch.extend(
+                run.chunk_by(|x, y| x.1 == y.1)
+                    .map(|r| (r[0].1, r.len() as f64)),
+            );
+        }
+        for &(f, v) in p.as_ref() {
+            let (f, v) = (f as usize, f64::from(v));
+            sx[a * g + f] += v;
+            sxx[a * g + f] += v * v;
+            for &(r, c) in &touch {
+                ex[r * g + f] += c * v;
+            }
+        }
+    }
+    // `Σ x_i x_j` per row over the edges touching it
+    let zero = || vec![0f64; rows * g];
     let per_thread = edges.len().div_ceil(rayon::current_num_threads()).max(1);
-    let (m, exy, ex) = edges
-        .par_chunks(per_thread)
-        .map(|chunk| {
-            let (mut m, mut exy, mut ex) = zero();
-            for &(i, j) in chunk {
-                let (a, b) = (block[i], block[j]);
-                let touch = [n_blocks, a, b];
-                let touch = &touch[..if a == b { 2 } else { 3 }];
-                let (pa, pb) = (profiles[i].as_ref(), profiles[j].as_ref());
-                for &r in touch {
-                    m[r] += 1.0;
-                }
-                for &(f, v) in pa.iter().chain(pb) {
-                    for &r in touch {
-                        ex[r * g + f as usize] += f64::from(v);
-                    }
-                }
-                let (mut p, mut q) = (0, 0);
-                while p < pa.len() && q < pb.len() {
-                    match pa[p].0.cmp(&pb[q].0) {
-                        std::cmp::Ordering::Less => p += 1,
-                        std::cmp::Ordering::Greater => q += 1,
-                        std::cmp::Ordering::Equal => {
-                            let xy = f64::from(pa[p].1) * f64::from(pb[q].1);
-                            for &r in touch {
-                                exy[r * g + pa[p].0 as usize] += xy;
-                            }
-                            p += 1;
-                            q += 1;
+    let exy = edges
+        .par_iter()
+        .with_min_len(per_thread)
+        .fold(zero, |mut exy, &(i, j)| {
+            let (a, b) = (block[i], block[j]);
+            let touch = [n_blocks, a, b];
+            let touch = &touch[..if a == b { 2 } else { 3 }];
+            let (pa, pb) = (profiles[i].as_ref(), profiles[j].as_ref());
+            let (mut p, mut q) = (0, 0);
+            while p < pa.len() && q < pb.len() {
+                match pa[p].0.cmp(&pb[q].0) {
+                    std::cmp::Ordering::Less => p += 1,
+                    std::cmp::Ordering::Greater => q += 1,
+                    std::cmp::Ordering::Equal => {
+                        let xy = f64::from(pa[p].1) * f64::from(pb[q].1);
+                        for &r in touch {
+                            exy[r * g + pa[p].0 as usize] += xy;
                         }
+                        p += 1;
+                        q += 1;
                     }
                 }
             }
-            (m, exy, ex)
+            exy
         })
         .reduce(zero, |mut x, y| {
-            let add = |a: &mut [f64], b: &[f64]| a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
-            add(&mut x.0, &y.0);
-            add(&mut x.1, &y.1);
-            add(&mut x.2, &y.2);
+            x.iter_mut().zip(&y).for_each(|(a, b)| *a += b);
             x
         });
     // the section's totals, then each block's deletion, feature innermost
@@ -229,8 +255,6 @@ pub fn section_jack<P: AsRef<[(u32, f32)]> + Sync>(
     let (num, den): (Vec<f64>, Vec<f64>) = (0..g)
         .map(|f| centred(n, tsx[f], tsxx[f], w, texy[f], tex[f]))
         .unzip();
-    let dn: Vec<f64> = nb.iter().map(|&c| -c).collect();
-    let dw: Vec<f64> = m[..n_blocks].iter().map(|&c| -c).collect();
     let (mut dnum, mut dden) = (vec![0f64; n_blocks * g], vec![0f64; n_blocks * g]);
     for k in 0..n_blocks {
         for f in 0..g {
@@ -247,14 +271,14 @@ pub fn section_jack<P: AsRef<[(u32, f32)]> + Sync>(
             dden[x] = de - den[f];
         }
     }
+    m.truncate(n_blocks);
     SectionJack {
-        n_features,
         n,
         w,
         num,
         den,
-        dn,
-        dw,
+        nb,
+        mb: m,
         dnum,
         dden,
     }
@@ -265,7 +289,7 @@ pub fn section_jack<P: AsRef<[(u32, f32)]> + Sync>(
 /// (0 where a feature does not vary). Deleting a block changes only its own
 /// section.
 pub fn jackknife_moran(sections: &[SectionJack]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let g = sections.first().map_or(0, |s| s.n_features);
+    let g = sections.first().map_or(0, |s| s.num.len());
     let n: f64 = sections.iter().map(|s| s.n).sum();
     let w: f64 = sections.iter().map(|s| s.w).sum();
     let moran =
@@ -281,9 +305,9 @@ pub fn jackknife_moran(sections: &[SectionJack]) -> (Vec<f64>, Vec<f64>, Vec<f64
             let loo: Vec<f64> = sections
                 .iter()
                 .flat_map(|s| {
-                    (0..s.dn.len()).filter_map(move |k| {
+                    (0..s.nb.len()).filter_map(move |k| {
                         let x = k * g + f;
-                        moran(n + s.dn[k], w + s.dw[k], num + s.dnum[x], den + s.dden[x])
+                        moran(n - s.nb[k], w - s.mb[k], num + s.dnum[x], den + s.dden[x])
                     })
                 })
                 .collect();
@@ -307,25 +331,19 @@ pub fn jackknife_moran(sections: &[SectionJack]) -> (Vec<f64>, Vec<f64>, Vec<f64
 /// epoch always trains.
 pub fn sample_included(features: &mut Vec<usize>, pi: &[f32], rng: &mut impl rand::Rng) {
     use rand::RngExt;
+    use rand_distr::weighted::WeightedIndex;
+    use rand_distr::Distribution;
     if features.is_empty() {
         return;
     }
     let all = features.clone();
     features.retain(|&g| rng.random::<f32>() < pi[g]);
     if features.is_empty() {
-        let total: f32 = all.iter().map(|&g| pi[g]).sum();
-        let pick = if total > 0.0 {
-            let mut u = rng.random::<f32>() * total;
-            *all.iter()
-                .find(|&&g| {
-                    u -= pi[g];
-                    u <= 0.0
-                })
-                .unwrap_or(&all[all.len() - 1])
-        } else {
-            all[rng.random_range(0..all.len())]
+        let pick = match WeightedIndex::new(all.iter().map(|&g| pi[g])) {
+            Ok(by_pi) => by_pi.sample(rng),
+            Err(_) => rng.random_range(0..all.len()),
         };
-        features.push(pick);
+        features.push(all[pick]);
     }
 }
 
@@ -343,18 +361,6 @@ fn std_normal_pdf(z: f64) -> f64 {
     (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
 }
 
-fn median(v: &mut [f64]) -> f64 {
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    if n == 0 {
-        0.0
-    } else if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        0.5 * (v[n / 2 - 1] + v[n / 2])
-    }
-}
-
 /// `π_g = 1 − lfdr_g` from the two-group model on `t`, with the null share
 /// `π₀`. See the module docs.
 pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
@@ -363,9 +369,11 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
         return (vec![1.0; n], 0.0);
     }
     let mut s = t.to_vec();
-    let med = median(&mut s);
+    s.sort_by(f64::total_cmp);
+    let at = |q: f64| quantile_sorted(&s, q).unwrap_or(0.0);
+    let med = at(0.5);
     let mut dev: Vec<f64> = t.iter().map(|v| (v - med).abs()).collect();
-    let mad = 1.4826 * median(&mut dev);
+    let mad = 1.4826 * upper_median(&mut dev).unwrap_or(0.0);
     if mad <= 0.0 {
         return (vec![1.0; n], 0.0);
     }
@@ -375,7 +383,7 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
     // mixture density: Gaussian kernel (Silverman's bandwidth) on a grid
     let mean = t.iter().sum::<f64>() / n as f64;
     let sd = (t.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0)).sqrt();
-    let (q1, q3) = (s[n / 4], s[(3 * n) / 4]);
+    let (q1, q3) = (at(0.25), at(0.75));
     let iqr = (q3 - q1) / 1.34;
     let spread = if iqr > 0.0 { sd.min(iqr) } else { sd }.max(f64::EPSILON);
     let h = 0.9 * spread * (n as f64).powf(-0.2);
@@ -433,19 +441,14 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
     (pi, pi0)
 }
 
-/// Units (cells, or the finest PB super-cells) with their log-normalised
-/// profiles, section, jackknife block and the spatial edges between them:
-/// what [`inclusion_of`] scores. A block lies within one section.
-#[derive(Debug, Clone)]
-pub struct UnitGraph {
-    pub profiles: Vec<Vec<(u32, f32)>>,
-    pub section: Vec<u32>,
-    pub block: Vec<usize>,
-    pub edges: Vec<(usize, usize)>,
-}
-
 /// One section's edges as pairs of its own unit indices.
 type LocalEdges = Vec<(usize, usize)>;
+
+/// A section's unit profiles, and each unit's jackknife block.
+type SectionInputs<P> = (Vec<P>, Vec<usize>);
+
+/// The PB frame's super edges, and each cell's batch.
+pub type FrameEdges<'a> = (&'a [(u32, u32)], &'a [u32]);
 
 /// The units of each section, and the edges within each as local unit
 /// pairs (edges across sections are left out).
@@ -466,12 +469,38 @@ fn split_sections(section: &[u32], edges: &[(usize, usize)]) -> (Vec<Vec<usize>>
     (units_of, edges_of)
 }
 
+/// [`FeatureInclusion`] of units in sections, the spatial `edges` between
+/// them (global unit pairs; pairs across sections are left out): Moran's I
+/// per section, pooled, jackknifed over blocks, then the two-group model.
+/// `inputs` gives a section's units' profiles and blocks from its units
+/// (ascending global ids); sections run one at a time, so memory holds one
+/// section's profiles (the edge pass inside is parallel). `units` names
+/// them in the log.
+pub(super) fn score_sections<P: AsRef<[(u32, f32)]> + Sync>(
+    n_features: usize,
+    section: &[u32],
+    edges: &[(usize, usize)],
+    units: &str,
+    mut inputs: impl FnMut(&[usize]) -> anyhow::Result<SectionInputs<P>>,
+) -> anyhow::Result<FeatureInclusion> {
+    let (units_of, edges_of) = split_sections(section, edges);
+    let sections = units_of
+        .iter()
+        .zip(&edges_of)
+        .map(|(members, es)| {
+            let (profiles, block) = inputs(members)?;
+            Ok(section_jack(n_features, &profiles, &block, es))
+        })
+        .collect::<anyhow::Result<Vec<SectionJack>>>()?;
+    Ok(finish(n_features, &sections, units))
+}
+
 /// Jackknife blocks from a tree of nested labels per unit (`levels`, coarse
 /// to fine, the units themselves taken as the finest): about `per_section`
 /// blocks in every section, never spanning two. In each section the
 /// coarsest level holding at least `per_section` labels there is taken,
 /// and its labels, ordered by their parent so siblings stay together, are
-/// merged into `per_section` runs of about equal units. Dense ids.
+/// merged into `per_section` runs of about equal units.
 pub fn tree_blocks(levels: &[Vec<usize>], section: &[u32], per_section: usize) -> Vec<usize> {
     let per_section = per_section.max(1);
     let units: Vec<usize> = (0..section.len()).collect();
@@ -510,32 +539,12 @@ pub fn tree_blocks(levels: &[Vec<usize>], section: &[u32], per_section: usize) -
             block[u] = run_of[&tree[at][u]];
         }
     }
-    dense_ids(block.iter())
-        .into_iter()
-        .map(|b| b as usize)
-        .collect()
-}
-
-/// [`FeatureInclusion`] of the units of `g`: Moran's I per section, pooled,
-/// jackknifed over `g`'s blocks, then the two-group model.
-pub fn inclusion_of(n_features: usize, g: &UnitGraph) -> FeatureInclusion {
-    let (units_of, edges_of) = split_sections(&g.section, &g.edges);
-    let sections: Vec<SectionJack> = units_of
-        .par_iter()
-        .zip(&edges_of)
-        .map(|(units, es)| {
-            let profiles: Vec<&[(u32, f32)]> =
-                units.iter().map(|&u| g.profiles[u].as_slice()).collect();
-            let block: Vec<usize> = units.iter().map(|&u| g.block[u]).collect();
-            section_jack(n_features, &profiles, &block, es)
-        })
-        .collect();
-    finish(n_features, &sections, "units")
+    block
 }
 
 /// Jackknife, two-group model and a log line, over `sections`.
 fn finish(n_features: usize, sections: &[SectionJack], units: &str) -> FeatureInclusion {
-    let n_blocks: usize = sections.iter().map(|s| s.dn.len()).sum();
+    let n_blocks: usize = sections.iter().map(|s| s.nb.len()).sum();
     let n_edges: f64 = sections.iter().map(|s| s.w).sum();
     let (moran, se, t) = jackknife_moran(sections);
     // only features with spread enter the two-group model; one with none
@@ -564,24 +573,35 @@ fn finish(n_features: usize, sections: &[SectionJack], units: &str) -> FeatureIn
     FeatureInclusion { moran, se, t, pi }
 }
 
-/// Each PB's section: the most common section of its cells (ties to the
-/// lowest).
-fn majority_section(cell_to_pb: &[usize], n_pb: usize, section: &[u32]) -> Vec<u32> {
-    let n_sections = section.iter().map(|&s| s as usize + 1).max().unwrap_or(0);
-    let mut count = vec![0usize; n_pb * n_sections];
-    for (&p, &s) in cell_to_pb.iter().zip(section) {
-        count[p * n_sections + s as usize] += 1;
-    }
-    (0..n_pb)
-        .map(|p| {
-            let row = &count[p * n_sections..(p + 1) * n_sections];
-            let best = row
+/// The spatial graph's cell edges folded onto the finest PBs: distinct
+/// pairs of different PBs, from cell edges within one section. `frame` is
+/// the PB frame's super edges and each cell's batch, given when the spatial
+/// graph is the frame's own graph: the frame folded the same edges, keeping
+/// those within one batch, so where that keeps the same edges its super
+/// edges are reused rather than folded again.
+pub fn pb_spatial_edges(
+    cell_to_pb: &[usize],
+    section: &[u32],
+    spatial_edges: &[(usize, usize)],
+    frame: Option<FrameEdges<'_>>,
+) -> Vec<(usize, usize)> {
+    let same_section: Vec<bool> = spatial_edges
+        .iter()
+        .map(|&(i, j)| section[i] == section[j])
+        .collect();
+    if let Some((super_edges, batch)) = frame {
+        let same = spatial_edges
+            .iter()
+            .zip(&same_section)
+            .all(|(&(i, j), &s)| (batch[i] == batch[j]) == s);
+        if same {
+            return super_edges
                 .iter()
-                .enumerate()
-                .fold(0, |b, (s, &c)| if c > row[b] { s } else { b });
-            best as u32
-        })
-        .collect()
+                .map(|&(a, b)| (a as usize, b as usize))
+                .collect();
+        }
+    }
+    fold_edges_to_super(cell_to_pb, spatial_edges, Some(&same_section)).0
 }
 
 /// The finest PBs' inputs to [`pb_inclusion`].
@@ -592,40 +612,37 @@ pub struct PbUnits<'a> {
     pub cell_to_pb: &'a [usize],
     /// Each PB's parent at every level coarser than the finest, coarse first.
     pub parents: &'a [Vec<usize>],
+    /// The spatial edges between PBs (see [`pb_spatial_edges`]).
+    pub edges: &'a [(usize, usize)],
 }
 
 /// [`FeatureInclusion`] over the finest PB super-cells: their pooled
-/// counts, the spatial graph's edges mapped onto them (distinct pairs of
-/// different PBs), each PB's majority section, and coarse super-cells of
-/// the PB tree as jackknife blocks (about `per_section` per section).
+/// counts, the spatial edges between them, each PB's majority section, and
+/// coarse super-cells of the PB tree as jackknife blocks (about
+/// `per_section` per section).
 pub fn pb_inclusion(
     axis: &FeatureAxis,
     pb: &PbUnits<'_>,
     section: &[u32],
-    spatial_edges: &[(usize, usize)],
     per_section: usize,
-) -> FeatureInclusion {
+) -> anyhow::Result<FeatureInclusion> {
     let n_pb = pb.counts.ncols();
     let pooled = axis.pool_rows_opt(pb.counts);
     let profiles = normalised_profiles(pooled.as_ref().unwrap_or(pb.counts));
     drop(pooled);
-    let pb_section = majority_section(pb.cell_to_pb, n_pb, section);
-    let mut edges: Vec<(usize, usize)> = spatial_edges
-        .iter()
-        .map(|&(i, j)| (pb.cell_to_pb[i], pb.cell_to_pb[j]))
-        .filter(|&(a, b)| a != b)
-        .map(|(a, b)| (a.min(b), a.max(b)))
-        .collect();
-    edges.sort_unstable();
-    edges.dedup();
+    let n_sections = section.iter().map(|&s| s as usize + 1).max().unwrap_or(0);
+    let (pb_section, _) = majority_label(pb.cell_to_pb, n_pb, section, n_sections);
     let block = tree_blocks(pb.parents, &pb_section, per_section);
-    let g = UnitGraph {
-        profiles,
-        section: pb_section,
-        block,
-        edges,
+    let inputs = |units: &[usize]| {
+        Ok((
+            units
+                .iter()
+                .map(|&u| profiles[u].as_slice())
+                .collect::<Vec<_>>(),
+            units.iter().map(|&u| block[u]).collect(),
+        ))
     };
-    inclusion_of(axis.n_features(), &g)
+    score_sections(axis.n_features(), &pb_section, pb.edges, "units", inputs)
 }
 
 /// [`FeatureInclusion`] over cells (cage-cell, which builds no pseudobulks):
@@ -633,9 +650,9 @@ pub fn pb_inclusion(
 /// pairs; pairs across sections are left out), and a grid of geometric
 /// tiles over each section's plane (the first two non-batch columns of
 /// `coordinates`, named) as jackknife blocks, about `per_section` per
-/// section. One section at a time, read `column_block` cells at once and
-/// reduced to its sums before the next, so memory holds one section's
-/// profiles.
+/// section. One section at a time, its contiguous runs of cells read
+/// `column_block` at once in parallel and reduced to its sums before the
+/// next, so memory holds one section's profiles.
 pub fn cell_inclusion(
     data: &SparseIoVec,
     axis: &FeatureAxis,
@@ -652,37 +669,48 @@ pub fn cell_inclusion(
         )
     })?;
     let tiles = (per_section as f64).sqrt().ceil().max(1.0) as usize;
-    let n_features = axis.n_features();
-    let (cells_of, edges_of) = split_sections(section, edges);
-    let mut sections = Vec::with_capacity(cells_of.len());
-    for (cells, es) in cells_of.iter().zip(&edges_of) {
-        let mut profiles: Vec<Vec<(u32, f32)>> = Vec::with_capacity(cells.len());
-        for chunk in cells.chunks(column_block.max(1)) {
-            let csc = data.read_columns_csc(chunk.iter().copied())?;
-            profiles.par_extend((0..csc.ncols()).into_par_iter().map(|j| {
-                let col = csc.col(j);
-                let obs: Vec<(u32, f32)> = col
-                    .row_indices()
-                    .iter()
-                    .zip(col.values())
-                    .map(|(&r, &v)| (r as u32, v))
-                    .collect();
-                let mut p = axis.pool_profile(obs);
-                p.sort_by_key(|&(f, _)| f);
-                log_normalise(&mut p);
-                p
-            }));
+    let column_block = column_block.max(1);
+    let inputs = |cells: &[usize]| -> anyhow::Result<SectionInputs<Vec<(u32, f32)>>> {
+        // runs of consecutive cells, cut to `column_block`
+        let mut intervals: Vec<(usize, usize)> = Vec::new();
+        for run in cells.chunk_by(|a, b| b == &(a + 1)) {
+            let (lo, hi) = (run[0], run[run.len() - 1] + 1);
+            intervals.extend(
+                (lo..hi)
+                    .step_by(column_block)
+                    .map(|a| (a, (a + column_block).min(hi))),
+            );
         }
+        let blocks = intervals
+            .par_iter()
+            .map(|&(lo, hi)| {
+                let csc = data.read_columns_csc(lo..hi)?;
+                // CSC row indices ascend, and pooling sorts by feature, so
+                // every profile is sorted by feature
+                Ok((0..csc.ncols())
+                    .map(|j| {
+                        let col = csc.col(j);
+                        let obs: Vec<(u32, f32)> = col
+                            .row_indices()
+                            .iter()
+                            .zip(col.values())
+                            .map(|(&r, &v)| (r as u32, v))
+                            .collect();
+                        let mut p = axis.pool_profile(obs);
+                        log_normalise(&mut p);
+                        p
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let plane: Vec<(f32, f32)> = cells
             .iter()
             .map(|&i| (coordinates[(i, cx)], coordinates[(i, cy)]))
             .collect();
-        sections.push(section_jack(
-            n_features,
-            &profiles,
-            &tile_of(&plane, tiles),
-            es,
-        ));
-    }
-    Ok(finish(n_features, &sections, "cells"))
+        Ok((
+            blocks.into_iter().flatten().collect(),
+            tile_of(&plane, tiles),
+        ))
+    };
+    score_sections(axis.n_features(), section, edges, "cells", inputs)
 }

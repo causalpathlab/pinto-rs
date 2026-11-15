@@ -21,6 +21,30 @@ pub(crate) fn make_test_graph(n_nodes: usize, edges: Vec<(usize, usize)>) -> Knn
     }
 }
 
+/// Points in the plane, and edges between them by index.
+pub(crate) type PlaneGraph = (Vec<(f32, f32)>, Vec<(usize, usize)>);
+
+/// A `side × side` grid's coordinates, cell `r * side + c` at `(c, r)`,
+/// and its rook edges (each once).
+pub(crate) fn rook_grid(side: usize) -> PlaneGraph {
+    let xy = (0..side * side)
+        .map(|c| ((c % side) as f32, (c / side) as f32))
+        .collect();
+    let mut e = Vec::new();
+    for r in 0..side {
+        for c in 0..side {
+            let i = r * side + c;
+            if c + 1 < side {
+                e.push((i, i + 1));
+            }
+            if r + 1 < side {
+                e.push((i, i + side));
+            }
+        }
+    }
+    (xy, e)
+}
+
 /// Owned copies of `names`.
 pub(crate) fn boxed(names: &[&str]) -> Vec<Box<str>> {
     names.iter().map(|&s| s.into()).collect()

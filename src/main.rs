@@ -405,10 +405,7 @@ enum Commands {
                       \x20 {out}.fisher_weights.parquet  per-ROW NB precisions w_r\n\
                       \x20 {out}.delta.parquet           batch effects (multi-batch only;\n\
                       \x20                                optional `--cnv-clones` on the δ path)\n\
-                      \x20 {out}.pinto.json           manifest",
-        mut_arg("feature_modules", |a| a.long_help(
-            cell_activity_graph_embedding::args::FEATURE_MODULES_LONG_HELP
-        ))
+                      \x20 {out}.pinto.json           manifest"
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),
 
@@ -434,10 +431,7 @@ enum Commands {
                       refused. --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
                       its manifest says `cell_level`.",
-        mut_arg("embedding_l2", |a| a.default_value("0")),
-        mut_arg("feature_modules", |a| a.long_help(
-            cell_activity_graph_embedding::args::FEATURE_MODULES_LONG_HELP
-        ))
+        mut_arg("embedding_l2", |a| a.default_value("0"))
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
 

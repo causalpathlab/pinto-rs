@@ -467,7 +467,7 @@ pub fn fit_cell_activity_graph_embedding(
         FeatureInclusionMode::All => None,
         FeatureInclusionMode::Moran => {
             use crate::cell_activity_graph_embedding::feature_inclusion::{
-                cell_inclusion, pb_inclusion, PbUnits,
+                cell_inclusion, pb_inclusion, pb_spatial_edges, PbUnits,
             };
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
@@ -485,18 +485,23 @@ pub fn fit_cell_activity_graph_embedding(
                         fine.cell_labels == pb_frame.cell_to_finest_pb,
                         "feature inclusion: the basis's finest level is not the PB frame's"
                     );
+                    // the frame folded `graph`'s edges, which are the
+                    // spatial ones when no separate spatial graph was built
+                    let edges = pb_spatial_edges(
+                        &pb_frame.cell_to_finest_pb,
+                        &section_ids,
+                        spatial_edges,
+                        spatial_graph
+                            .is_none()
+                            .then_some((&pb_frame.super_edges[..], &batch_membership_u32[..])),
+                    );
                     let units = PbUnits {
                         counts: &fine.counts,
                         cell_to_pb: &pb_frame.cell_to_finest_pb,
                         parents: &pb_frame.pb_parent_maps,
+                        edges: &edges,
                     };
-                    pb_inclusion(
-                        &feature_axis,
-                        &units,
-                        &section_ids,
-                        spatial_edges,
-                        args.inclusion_blocks,
-                    )
+                    pb_inclusion(&feature_axis, &units, &section_ids, args.inclusion_blocks)?
                 }
             };
             write_feature_inclusion(&c.out, &feature_names, &inc)?;
@@ -608,10 +613,11 @@ pub fn fit_cell_activity_graph_embedding(
     // List of features with at least one cached (feature, batch) entry — used
     // to skip empty features in every epoch's permutation. Computed now so
     // we can free `activities` afterwards.
-    // Features with π = 0 under --feature-inclusion stay on this list: they
-    // are never drawn, but taking them off made results worse on the
-    // simulations, for a reason not yet understood, so the list is the same
-    // with or without inclusion.
+    // Features with π = 0 under --feature-inclusion stay on this list,
+    // though never drawn. Open gap: the bar for taking them off is a fixed
+    // seed giving the same result with and without them here. It is not met
+    // yet, likely because the epoch shuffle and the inclusion draw take
+    // random numbers per listed feature, so the list moves the stream.
     let trainable_features: Vec<usize> = (0..n_features)
         .filter(|&g| cache.entries[g].iter().any(|e| e.is_some()))
         .collect();
@@ -744,7 +750,6 @@ pub fn fit_cell_activity_graph_embedding(
         feature_batch_size,
         feature_fisher_weights: feature_fisher_weights.as_deref(),
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
-        expected_visits,
         module_cfg: module_cfg.as_ref(),
         module_profiles: module_profiles.as_ref(),
         n_exp_batches,
