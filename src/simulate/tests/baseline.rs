@@ -206,7 +206,9 @@ fn pooled_recovers_the_domains_of_a_clean_run() {
 /// stays one where there is a donor effect to remove.
 #[test]
 fn harmony_removes_most_of_the_donor_dependence() {
-    let (_dir, truth) = simulate(DONOR_WIDE);
+    // A smaller grid than DONOR_WIDE's (a later --set wins): Harmony's cost
+    // grows with the spots, and the donor effect is still there to remove.
+    let (_dir, truth) = simulate(&[DONOR_WIDE, &["grid_side=12"]].concat());
     let pooled = scored(&baseline_args(&truth, Method::Pooled));
     let harmony = scored(&baseline_args(&truth, Method::Harmony));
     let (p, h) = (pooled.donor_dependence, harmony.donor_dependence);
@@ -244,7 +246,7 @@ fn matching_sees_through_a_donor_wide_shift() {
     assert_eq!(matched[0], order.to_vec());
 }
 
-/// Per donor on the large donor-wide effect of the Harmony test: each donor
+/// Per donor on the large donor-wide effect of [`DONOR_WIDE`]: each donor
 /// alone has no donor effect, and the matching centres each donor before
 /// comparing, so the shared domains must come back with ARI >= 0.8 (a bar
 /// set before measuring; lower than pooled's 0.9 on a clean run because

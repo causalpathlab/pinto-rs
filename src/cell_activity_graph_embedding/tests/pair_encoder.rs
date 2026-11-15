@@ -73,12 +73,14 @@ fn random_pairs(n_cells: usize, n_pairs: usize, seed: u64) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Small steps: training takes at least a fixed number of optimizer steps,
+/// so on this fixture the step's size, not the epoch count, sets the cost.
 fn spec(epochs: usize) -> PairEncoderSpec {
     PairEncoderSpec {
         trunk_width: 32,
         n_experts: 4,
         epochs,
-        batch: 128,
+        batch: 16,
         ridge: RIDGE,
     }
 }
@@ -106,8 +108,10 @@ fn trained() -> &'static Trained {
         let cells = planted_cells(N_TRAIN_CELLS, 1);
         let corpus = corpus_of(&dict, &cells);
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
-        let enc = PairEncoder::build(&dict, &corpus, &spec(20), 7, &Device::Cpu).unwrap();
-        enc.train(&corpus, &edges, &spec(20), 7).unwrap();
+        // One epoch asked for: the floor of optimizer steps decides.
+        let train_spec = spec(1);
+        let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
+        enc.train(&corpus, &edges, &train_spec, 7).unwrap();
         Trained {
             dict,
             cells,
@@ -313,7 +317,8 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
     let edges = random_pairs(60, 300, 3);
     let saved = dir.path().join("run.pair_encoder.safetensors");
     let saved = saved.to_str().unwrap();
-    let spec = spec(15);
+    // As in `trained`, the floor of optimizer steps decides.
+    let spec = spec(1);
     let fitted = project_pairs(
         &data,
         &edges,
