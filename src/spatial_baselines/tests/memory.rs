@@ -13,23 +13,26 @@ const MIB: f64 = (1u64 << 20) as f64;
 /// grids at the defaults (2000 genes, all trained on; for stagate hidden
 /// width 512 and 6 neighbours, for spatialde2 100 neighbours): (cells per
 /// section, sections, threads, MiB).
-const STAGATE_MEASURED: [(usize, usize, usize, f64); 8] = [
+const STAGATE_MEASURED: [(usize, usize, usize, f64); 9] = [
     (1024, 1, 10, 426.19),
     (4096, 1, 10, 1394.23),
     (8100, 1, 10, 2699.27),
     (10000, 1, 10, 3492.0),
     (10000, 1, 4, 3280.91),
     (14400, 1, 4, 4691.03),
+    (16384, 1, 4, 4901.41),
     (16384, 1, 10, 4917.27),
     (4096, 2, 10, 2627.53),
 ];
-const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 11] = [
+const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 13] = [
     (1024, 1, 10, 89.84),
+    (4096, 1, 4, 299.66),
     (4096, 1, 10, 310.94),
     (8100, 1, 10, 698.50),
+    (10000, 1, 4, 688.91),
     (10000, 1, 10, 926.0),
-    (10000, 1, 4, 693.14),
-    (14400, 1, 4, 982.05),
+    (14400, 1, 4, 968.00),
+    (16384, 1, 4, 1090.64),
     (16384, 1, 10, 1490.67),
     (32761, 1, 10, 2397.05),
     (65536, 1, 10, 4202.14),
