@@ -5,14 +5,17 @@ use super::graph::grid;
 use crate::spatial_baselines::input::InputShape;
 use crate::spatial_baselines::memory::*;
 use crate::spatial_baselines::{spatialde2, stagate};
+use crate::util::batch_effects::{delta_estimate_bytes, DELTA_SAMPLES_PER_BATCH};
 use crate::util::memory::{ensure_fits, Budget, MEMORY_BUDGET_VAR};
+use crate::util::metadata::InputLayout;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
 const MIB: f64 = (1u64 << 20) as f64;
 
 /// Maximum resident memory (MiB) of full CPU runs on srt-simulate square
 /// grids at the defaults (2000 genes, all trained on; for stagate hidden
-/// width 512 and 6 neighbours, for spatialde2 100 neighbours): (cells per
+/// width 512 and 6 neighbours, its dense input, now `--reference`; for
+/// spatialde2 100 neighbours): (cells per
 /// section, sections, threads, MiB).
 const STAGATE_MEASURED: [(usize, usize, usize, f64); 9] = [
     (1024, 1, 10, 426.19),
@@ -40,6 +43,168 @@ const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 13] = [
     (99856, 1, 10, 5664.56),
     (4096, 2, 10, 598.58),
 ];
+/// Maximum resident memory (MiB) of spatialde2 runs whose peak is the δ
+/// estimate (two srt-simulate L1 sections, the fit cut to nothing:
+/// `--neighbors 0 --max-iter 1 --n-clusters 2`, 4 threads): (cells per
+/// section, genes, nonzeros, MiB).
+const DELTA_MEASURED: [(usize, usize, usize, f64); 5] = [
+    (256, 500, 100_906, 82.69),
+    (1024, 2000, 1_584_782, 566.12),
+    (4096, 500, 1_615_747, 261.30),
+    (4096, 2000, 6_360_230, 783.44),
+    (8100, 2000, 12_581_100, 1079.61),
+];
+
+/// The input arguments of a spatialde2 run with `extra`.
+fn input_args(extra: &[&str]) -> crate::spatial_baselines::input::SpatialInputArgs {
+    let mut argv = vec!["pinto", "spatialde2", "d.zarr", "-c", "c.csv", "-o", "x"];
+    argv.extend(extra);
+    let crate::Commands::Spatialde2(args) = parse(&argv) else {
+        unreachable!()
+    };
+    args.fit.input
+}
+
+/// The δ estimate's peak covers every measured run whose peak it is, and
+/// is not far above it.
+#[test]
+fn delta_estimate_covers_every_measured_peak_and_is_not_far_above() {
+    for (per, genes, nonzeros, measured) in DELTA_MEASURED {
+        let shape = InputShape {
+            genes,
+            nonzeros,
+            section_sizes: vec![per; 2],
+            batches: 2,
+        };
+        let args = input_args(&[]);
+        let est = mib(SPATIALDE2_PROCESS_BYTES + args.delta_bytes(&shape));
+        assert!(
+            est >= measured,
+            "{per}x2, {genes} genes: {est:.0} < {measured} MiB"
+        );
+        assert!(
+            est <= 1.25 * measured,
+            "{per}x2, {genes} genes: {est:.0} MiB"
+        );
+        let ignored = input_args(&["--ignore-batch"]);
+        assert_eq!(ignored.delta_bytes(&shape), 0);
+        let one = InputShape {
+            section_sizes: vec![per],
+            batches: 1,
+            ..shape
+        };
+        assert_eq!(args.delta_bytes(&one), 0, "one file, no batch files");
+    }
+}
+
+/// With batch files the δ estimate holds at most
+/// [`DELTA_SAMPLES_PER_BATCH`] samples in each section the stored shape
+/// lists, not one per cell: a large input split by batch files passes a
+/// check its δ fits, and its estimate is that of the same sections without
+/// them.
+#[test]
+fn a_large_input_with_batch_files_is_charged_its_delta_samples() {
+    let shape = InputShape {
+        genes: 2000,
+        nonzeros: 400_000 * 800,
+        section_sizes: vec![100_000; 4],
+        batches: 4,
+    };
+    let with = input_args(&["-b", "a.batch"]);
+    let without = input_args(&[]);
+    assert_eq!(with.delta_bytes(&shape), without.delta_bytes(&shape));
+    assert_eq!(
+        with.delta_bytes(&shape),
+        delta_estimate_bytes(2000, shape.nonzeros, 4 * DELTA_SAMPLES_PER_BATCH)
+    );
+    let budget = set(2 * (SPATIALDE2_PROCESS_BYTES + without.delta_bytes(&shape)));
+    let est = SPATIALDE2_PROCESS_BYTES + with.delta_bytes(&shape);
+    check_stored_shape("spatialde2", Some(est), &budget, "lower it").unwrap();
+    let one = InputShape {
+        section_sizes: vec![400_000],
+        batches: 1,
+        ..shape
+    };
+    assert_eq!(with.delta_bytes(&one), 0, "one section has one batch");
+}
+
+/// Maximum resident memory (MiB) of sparse (default) stagate runs on one
+/// srt-simulate section at the defaults (2000 genes, all of them highly
+/// variable; hidden width 512, 6 neighbours; 20 epochs, which peak as 1000
+/// do), 4 threads: (cells, nonzeros, MiB).
+const STAGATE_SPARSE_MEASURED: [(usize, usize, f64); 4] = [
+    (1024, 788_258, 398.84),
+    (4096, 3_156_044, 1106.34),
+    (8100, 6_238_351, 2067.0),
+    (16384, 12_572_357, 4162.81),
+];
+
+/// The sparse estimate covers every measured sparse run, and from 4096
+/// cells is not far above it; the dense estimate of the same input is
+/// larger (the dense input and reconstruction are gone).
+#[test]
+fn stagate_sparse_estimate_covers_every_measured_peak_and_is_not_far_above() {
+    for (cells, nonzeros, measured) in STAGATE_SPARSE_MEASURED {
+        let sizes = stagate::StagateSizes {
+            layout: InputLayout::Sparse,
+            ..STAGATE_MEASURED_SIZES
+        };
+        let mut shape = sizes.memory_shape(&InputShape {
+            genes: 2000,
+            nonzeros,
+            section_sizes: vec![cells],
+            batches: 1,
+        });
+        shape.gram = knn_gram_bytes(&[cells], 4);
+        let est = mib(stagate_peak_bytes(&shape));
+        assert!(est >= measured, "{cells}: {est:.0} < {measured} MiB");
+        if cells >= 4096 {
+            assert!(est <= 1.35 * measured, "{cells}: {est:.0} MiB");
+        }
+        let dense = StagateShape {
+            sparse: false,
+            ..shape
+        };
+        assert!(stagate_peak_bytes(&dense) > stagate_peak_bytes(&shape));
+    }
+}
+
+/// Maximum resident memory (MiB) of spatialde2-pb on one srt-simulate
+/// section (2000 genes, `-d 1024`, at the defaults otherwise, 4 threads):
+/// (cells, nonzeros, MiB).
+const PSEUDOBULK_MEASURED: [(usize, usize, f64); 4] = [
+    (1024, 788_258, 136.20),
+    (4096, 3_156_044, 466.98),
+    (8100, 6_238_351, 695.89),
+    (16384, 12_572_357, 1316.26),
+];
+
+/// spatialde2-pb's estimate, its cell-level fit's and the coarsening's,
+/// covers every measured run (it fits on super-cells, but unravels on
+/// every cell).
+#[test]
+fn pseudobulk_estimate_covers_every_measured_peak() {
+    for (cells, nonzeros, measured) in PSEUDOBULK_MEASURED {
+        let input = InputShape {
+            genes: 2000,
+            nonzeros,
+            section_sizes: vec![cells],
+            batches: 1,
+        };
+        let sd = spatialde2::Spatialde2Sizes {
+            neighbors: 100,
+            n_clusters: None,
+            all_pairs: false,
+        }
+        .memory_shape(&input, nonzeros);
+        let est = mib(spatialde2_peak_bytes(&sd) + pseudobulk_bytes(cells, nonzeros, sd.edges));
+        assert!(
+            est >= measured,
+            "spatialde2-pb {cells}: {est:.0} < {measured}"
+        );
+    }
+}
+
 /// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
 /// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
 const NONZEROS_PER_CELL: usize = 765;
@@ -51,6 +216,7 @@ const STAGATE_MEASURED_SIZES: stagate::StagateSizes = stagate::StagateSizes {
     rad_cutoff: None,
     hidden: 512,
     train_on_host: true,
+    layout: InputLayout::Dense,
 };
 
 fn stagate_shape(per_section: usize, sections: usize, threads: usize) -> StagateShape {
@@ -62,6 +228,7 @@ fn stagate_shape(per_section: usize, sections: usize, threads: usize) -> Stagate
             genes: 2000,
             nonzeros,
             section_sizes: sizes,
+            batches: sections,
         })
     }
 }
@@ -162,15 +329,52 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
         ..spatialde2::Spatialde2Sizes {
             neighbors: 100,
             n_clusters: None,
+            all_pairs: false,
         }
         .memory_shape(
             &InputShape {
                 genes: 2000,
                 nonzeros,
                 section_sizes: sizes,
+                batches: sections,
             },
             nonzeros,
         )
+    }
+}
+
+/// Maximum resident memory (MiB) of `spatialde2 --reference` runs on one
+/// srt-simulate L1 section (2000 genes, every gene segmented on, 4
+/// threads): (cells, nonzeros, MiB).
+const SPATIALDE2_REFERENCE_MEASURED: [(usize, usize, f64); 3] = [
+    (1024, 788_258, 80.22),
+    (4096, 3_156_044, 238.45),
+    (8100, 6_238_351, 434.44),
+];
+
+/// `--reference` holds no edge list and no kNN search: its estimate
+/// covers every measured run and is not far above it.
+#[test]
+fn spatialde2_reference_holds_no_graph_and_its_estimate_covers_the_measured_runs() {
+    for (cells, nonzeros, measured) in SPATIALDE2_REFERENCE_MEASURED {
+        let shape = spatialde2::Spatialde2Sizes {
+            neighbors: 100,
+            n_clusters: None,
+            all_pairs: true,
+        }
+        .memory_shape(
+            &InputShape {
+                genes: 2000,
+                nonzeros,
+                section_sizes: vec![cells],
+                batches: 1,
+            },
+            nonzeros,
+        );
+        assert_eq!((shape.edges, shape.gram, shape.pair_cells), (0, 0, cells));
+        let est = mib(spatialde2_peak_bytes(&shape));
+        assert!(est >= measured, "{cells}: {est:.0} < {measured} MiB");
+        assert!(est <= 1.5 * measured, "{cells}: {est:.0} MiB");
     }
 }
 
@@ -236,6 +440,8 @@ fn the_read_of_the_counts_is_charged() {
         gram: 0,
         searched: 0,
         train_on_host: true,
+        sparse: false,
+        selected_nonzeros: 0,
     };
     assert_eq!(
         stagate_peak_bytes(&stagate),
@@ -249,6 +455,7 @@ fn the_read_of_the_counts_is_charged() {
         edges: 0,
         regions: 1,
         gram: 0,
+        pair_cells: 0,
     };
     assert_eq!(
         spatialde2_peak_bytes(&spatialde2),
@@ -391,6 +598,67 @@ fn stagate_on_a_gpu_is_not_told_to_use_cuda() {
     }
 }
 
+/// The sparse formulation is the CPU path: on a GPU the input is held
+/// dense, and the estimate charges it so; the layout is recorded apart
+/// from the mode, which is `--reference`'s alone.
+#[test]
+fn stagate_holds_its_input_dense_off_the_cpu() {
+    let dir = tempfile::tempdir().unwrap();
+    for (extra, dense, reference) in [
+        (&["--device", "cpu"][..], false, false),
+        (&["--device", "cpu", "--reference"][..], true, true),
+        (&["--device", "cuda"][..], true, false),
+        (&["--device", "metal"][..], true, false),
+    ] {
+        let args = stagate_args(&dir.path().join("st"), extra);
+        assert_eq!(args.reference, reference, "{extra:?}");
+        let layout = match dense {
+            true => InputLayout::Dense,
+            false => InputLayout::Sparse,
+        };
+        assert_eq!(args.input_layout(), layout, "{extra:?}");
+        assert_eq!(args.sizes().layout, layout, "{extra:?}");
+    }
+}
+
+/// A CPU run records `baseline.mode` from `--reference` and the layout
+/// held as `input_layout`, in the manifest and `baseline.json`'s `run`.
+#[test]
+fn stagate_records_its_mode_and_layout_apart() {
+    use crate::util::metadata::{BaselineMode, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    for (tag, extra, mode, layout) in [
+        ("s", &[][..], BaselineMode::Sparse, InputLayout::Sparse),
+        (
+            "r",
+            &["--reference"][..],
+            BaselineMode::Reference,
+            InputLayout::Dense,
+        ),
+    ] {
+        let out = dir.path().join(tag);
+        let mut flags = vec!["--n-epochs", "2"];
+        flags.extend(extra);
+        stagate::run_on(&stagate_args(&out, &flags), tissue(6), &set(usize::MAX)).unwrap();
+        let prefix = out.to_string_lossy();
+        let meta: PintoMetadata =
+            serde_json::from_str(&std::fs::read_to_string(format!("{prefix}.pinto.json")).unwrap())
+                .unwrap();
+        let run = meta.baseline.unwrap();
+        assert_eq!(run.mode, mode, "{tag}");
+        assert_eq!(run.input_layout, Some(layout), "{tag}");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{prefix}.baseline.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["run"]["input_layout"],
+            serde_json::to_value(layout).unwrap(),
+            "{tag}"
+        );
+    }
+}
+
 /// A radius graph's edges are counted once it is built: a budget that
 /// holds its self loops alone refuses it then.
 #[test]
@@ -402,11 +670,13 @@ fn stagate_counts_a_radius_graph_once_built() {
         rad_cutoff: Some(1.5),
         hidden: 8,
         train_on_host: true,
+        layout: InputLayout::Dense,
     }
     .memory_shape(&InputShape {
         genes: 8,
         nonzeros: data.counts.nnz(),
         section_sizes: vec![36, 36],
+        batches: 2,
     });
     assert_eq!(loops_only.edges, data.cells.len());
     let budget = stagate_peak_bytes(&loops_only) + 1;
@@ -515,18 +785,18 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     let crate::Commands::Stagate(args) = on_files("stagate", &files, &out, &st) else {
         unreachable!()
     };
-    let shape = args.input.stored_shape().unwrap().unwrap();
+    let shape = args.input.stored().unwrap().unwrap();
     let bound = stagate::input_peak_bytes(&args, &shape);
-    stagate::run_on(&args, args.input.read().unwrap(), &set(bound)).unwrap();
+    stagate::run_on(&args, args.input.read(false).unwrap(), &set(bound)).unwrap();
 
     let crate::Commands::Spatialde2(args) =
         on_files("spatialde2", &files, &out, &["--neighbors", "4"])
     else {
         unreachable!()
     };
-    let shape = args.input.stored_shape().unwrap().unwrap();
-    let bound = spatialde2::input_peak_bytes(&args, &shape);
-    spatialde2::run_on(&args, args.input.read().unwrap(), &set(bound)).unwrap();
+    let shape = args.fit.input.stored().unwrap().unwrap();
+    let bound = spatialde2::input_peak_bytes(&args.fit, args.variant(), &shape);
+    spatialde2::run_on(&args, args.fit.input.read(false).unwrap(), &set(bound)).unwrap();
 }
 
 /// The stored shape of one file, taken from its metadata before any count
@@ -539,14 +809,15 @@ fn one_file_s_stored_shape_is_its_read_shape() {
     let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, &[]) else {
         unreachable!()
     };
-    let shape = args.input.stored_shape().unwrap().unwrap();
-    let data = args.input.read().unwrap();
+    let shape = args.fit.input.stored().unwrap().unwrap();
+    let data = args.fit.input.read(false).unwrap();
     assert_eq!(
         shape,
         InputShape {
             genes: data.genes.len(),
             nonzeros: data.counts.nnz(),
             section_sizes: vec![64],
+            batches: 1,
         }
     );
 }
@@ -561,7 +832,7 @@ fn the_stored_shape_is_taken_with_no_counts_in_memory() {
     let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, &[]) else {
         unreachable!()
     };
-    for file in args.input.metadata() {
+    for file in args.fit.input.metadata() {
         assert!(file.unwrap().csc_column_arrays().is_none());
     }
 }
@@ -574,8 +845,8 @@ fn no_data_files_have_no_stored_shape() {
     else {
         unreachable!()
     };
-    args.input.data_files.clear();
-    assert_eq!(args.input.stored_shape().unwrap(), None);
+    args.fit.input.data_files.clear();
+    assert_eq!(args.fit.input.stored().unwrap(), None);
 }
 
 /// Data files `inputs`, each a (tag, rows, cells) with every count 1 and
@@ -617,8 +888,8 @@ fn several_files(
 /// On files with different rows, and files a batch file splits into
 /// several sections, the stored shape bounds the read's on every field an
 /// estimate takes: the genes the files share (exactly those the read
-/// keeps), the nonzeros, and the sections' kNN edges and Gram blocks,
-/// which are the read's sections themselves when no batch file splits them.
+/// keeps), the nonzeros, and the sections' kNN edges and Gram blocks; its
+/// sections are the read's, batch files read for them.
 #[test]
 fn the_stored_shape_of_several_files_bounds_their_read_shape() {
     let dir = tempfile::tempdir().unwrap();
@@ -636,16 +907,14 @@ fn the_stored_shape_of_several_files_bounds_their_read_shape() {
         let crate::Commands::Spatialde2(args) = parse(&argv) else {
             unreachable!()
         };
-        let shape = args.input.stored_shape().unwrap().unwrap();
-        let data = args.input.read().unwrap();
+        let shape = args.fit.input.stored().unwrap().unwrap();
+        let data = args.fit.input.read(false).unwrap();
         let read = crate::util::ablation::section_sizes(&data.section);
         assert_eq!(shape.genes, data.genes.len(), "{labels:?}");
         assert!(shape.nonzeros >= data.counts.nnz(), "{labels:?}");
         assert_eq!(shape.section_sizes.iter().sum::<usize>(), data.cells.len());
-        match labels {
-            None => assert_eq!(shape.section_sizes, read),
-            Some(_) => assert!(read.len() > shape.section_sizes.len()),
-        }
+        assert_eq!(shape.section_sizes, read, "{labels:?}");
+        assert_eq!(shape.batches, data.n_batches(), "{labels:?}");
         for k in 1..=4 {
             let (stored, read) = (knn_edges(&shape.section_sizes, k), knn_edges(&read, k));
             assert!(stored >= read, "{labels:?}, k = {k}");
@@ -654,6 +923,38 @@ fn the_stored_shape_of_several_files_bounds_their_read_shape() {
             let stored = knn_gram_bytes(&shape.section_sizes, threads);
             assert!(stored >= knn_gram_bytes(&read, threads), "{labels:?}");
         }
+    }
+}
+
+/// Several files whose batch files give them one shared label are one
+/// batch: no δ is estimated, so none is charged, though each file is a
+/// section of its own; without batch files each file is a batch, and
+/// charged.
+#[test]
+fn files_sharing_one_batch_label_are_not_charged_a_delta() {
+    let dir = tempfile::tempdir().unwrap();
+    let inputs: [(&str, &[&str], usize); 3] = [
+        ("a", &["GENE1", "GENE2"], 5),
+        ("b", &["GENE1", "GENE2"], 4),
+        ("c", &["GENE1", "GENE2"], 3),
+    ];
+    let shared: [&[&str]; 3] = [&["L1"; 5], &["L1"; 4], &["L1"; 3]];
+    for (labels, batches) in [(Some(&shared[..]), 1), (None, 3)] {
+        let files = several_files(dir.path(), &inputs, labels);
+        let mut argv = vec!["pinto", "spatialde2"];
+        argv.extend(files.iter().map(String::as_str));
+        argv.extend(["--coord-column-names", "x,y", "-o", "x"]);
+        let crate::Commands::Spatialde2(args) = parse(&argv) else {
+            unreachable!()
+        };
+        let shape = args.fit.input.stored().unwrap().unwrap();
+        assert_eq!(shape.section_sizes, vec![5, 4, 3], "{labels:?}");
+        assert_eq!(shape.batches, batches, "{labels:?}");
+        assert_eq!(
+            args.fit.input.delta_bytes(&shape) == 0,
+            batches == 1,
+            "{labels:?}"
+        );
     }
 }
 
@@ -670,14 +971,14 @@ fn srt_simulate_reads_as_the_measured_runs_assume() {
     else {
         unreachable!()
     };
-    let data = args.input.read().unwrap();
+    let data = args.fit.input.read(false).unwrap();
     let per_cell = data.counts.nnz() as f64 / data.cells.len() as f64;
     let want = NONZEROS_PER_CELL as f64;
     assert!(
         (per_cell - want).abs() < 0.03 * want,
         "{per_cell} nonzeros per cell"
     );
-    let top = spatialde2::top_genes(&data, args.n_top_genes);
+    let top = spatialde2::top_genes(&data, args.fit.n_top_genes);
     assert_eq!(top.nonzeros, data.counts.nnz());
     let (hvg, _) = stagate::seurat_v3_hvg(&data.counts, 3000);
     assert_eq!((top.genes.len(), hvg.len()), (2000, 2000));

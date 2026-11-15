@@ -56,7 +56,6 @@ use rustc_hash::FxHashMap;
 pub struct EstimateBatchArgs {
     pub proj_dim: usize,
     pub sort_dim: usize,
-    pub block_size: Option<usize>,
     /// KNN for cross-batch pb-sample matching during hierarchical
     /// collapsing. Searches are over coarsened pb-sample centroids,
     /// not individual cells, so this stays small.
@@ -65,6 +64,64 @@ pub struct EstimateBatchArgs {
     /// Per-cell CNV stratum from `mung clones` (`0` = mixable). Maps to
     /// [`MultilevelParams::strata`].
     pub strata: Option<Vec<usize>>,
+}
+
+/// The finest `sort_dim` of the estimate's levels at most: its finest
+/// level splits each batch into at most `2^BATCH_SORT_DIM` groups.
+pub const BATCH_SORT_DIM: usize = 10;
+
+impl EstimateBatchArgs {
+    /// The estimate at projection `proj_dim`, its finest level at
+    /// [`BATCH_SORT_DIM`] (or `proj_dim`, when smaller).
+    pub fn at(
+        proj_dim: usize,
+        batch_knn: usize,
+        num_levels: usize,
+        strata: Option<Vec<usize>>,
+    ) -> Self {
+        EstimateBatchArgs {
+            proj_dim,
+            sort_dim: proj_dim.min(BATCH_SORT_DIM),
+            batch_knn,
+            num_levels,
+            strata,
+        }
+    }
+}
+
+/// The distinct labels of `batches`, sorted: δ's columns.
+pub fn sorted_batch_labels(batches: &[Box<str>]) -> Vec<Box<str>> {
+    batches
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .map(Box::from)
+        .collect()
+}
+
+/// Bytes a stored nonzero holds while δ is estimated (data-beans'
+/// multilevel collapse): the preloaded counts, the cells' projection and
+/// the collapse's per-cell buffers. Calibrated on srt-simulate runs of two
+/// sections (500 and 2000 genes, 512 to 16200 cells): the largest measured
+/// residual per nonzero, with a margin.
+const DELTA_NONZERO_BYTES: usize = 52;
+
+/// Bytes a gene holds per pseudobulk sample while δ is estimated: the
+/// collapse's dense gene × sample statistics over its levels. Calibrated
+/// with [`DELTA_NONZERO_BYTES`].
+const DELTA_GENE_SAMPLE_BYTES: usize = 128;
+
+/// Pseudobulk samples the estimate's finest level holds per batch at most:
+/// `2^sort_dim` groups, at [`BATCH_SORT_DIM`].
+pub const DELTA_SAMPLES_PER_BATCH: usize = 1 << BATCH_SORT_DIM;
+
+/// What the δ estimate holds at once, above the process's own, for
+/// `genes` genes, `nonzeros` stored nonzeros and at most `samples`
+/// pseudobulk samples (each batch's cells, at most
+/// [`DELTA_SAMPLES_PER_BATCH`] of them).
+pub fn delta_estimate_bytes(genes: usize, nonzeros: usize, samples: usize) -> usize {
+    DELTA_NONZERO_BYTES * nonzeros + DELTA_GENE_SAMPLE_BYTES * genes * samples
 }
 
 /// Read a `mung clones` table and align strata to `data_vec` column order.
@@ -121,20 +178,21 @@ pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<us
 }
 
 /// Estimate per-feature batch effect multipliers (δ) via hierarchical
-/// pseudobulk collapsing with cross-batch KNN matching. The caller counts
-/// the batches ([`estimate_and_write_batch_effects`] needs two or more).
+/// pseudobulk collapsing with cross-batch KNN matching, and the
+/// batch-corrected projection it collapses on. The caller counts the
+/// batches ([`estimate_and_write_batch_effects`] needs two or more).
 fn estimate_batch(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     args: EstimateBatchArgs,
-) -> anyhow::Result<Option<GammaMatrix>> {
+) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut)> {
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
-        args.block_size,
+        None,
         Some(batch_membership),
     )?;
 
-    let cell_proj_kn = proj_out.proj;
+    let cell_proj_kn = &proj_out.proj;
     info!(
         "Proj: {} x {} ...",
         cell_proj_kn.nrows(),
@@ -142,7 +200,7 @@ fn estimate_batch(
     );
 
     let collapse_out = data_vec.collapse_columns_multilevel(
-        &cell_proj_kn,
+        cell_proj_kn,
         batch_membership,
         &MultilevelParams {
             knn_pb_samples: args.batch_knn,
@@ -153,30 +211,43 @@ fn estimate_batch(
         },
     )?;
 
-    Ok(collapse_out.delta)
+    Ok((collapse_out.delta, proj_out))
+}
+
+/// What [`estimate_and_write_batch_effects`] gives: the posterior, and the
+/// batch-corrected random projection (`proj_dim × cells`) the estimate
+/// collapsed on, when the caller keeps it.
+pub struct BatchEffects {
+    pub posterior: BatchPosterior,
+    pub projection: Option<RandColProjOut>,
 }
 
 /// Estimate batch effects, and (with `out_prefix`) write them to
 /// `{out_prefix}.delta.parquet` and each cell's batch to
 /// `{out_prefix}.delta_cells.parquet`.
 ///
-/// `labels` are the sorted, distinct labels of `batch_membership`; nothing
-/// is estimated with fewer than 2. Returns the posterior on the data's
-/// rows, its batches in label order (data-beans' batch ids), so a caller
-/// indexing cells by sorted label indexes its columns.
+/// `labels` are the sorted, distinct labels of `batch_membership`
+/// ([`sorted_batch_labels`]); nothing is estimated with fewer than 2.
+/// Returns the posterior on the data's rows, its batches in label order
+/// (data-beans' batch ids), so a caller indexing cells by sorted label
+/// indexes its columns; with `keep_projection`, the projection too, which
+/// is otherwise freed before the writes.
 pub fn estimate_and_write_batch_effects(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     labels: &[Box<str>],
     args: EstimateBatchArgs,
     out_prefix: Option<&str>,
-) -> anyhow::Result<Option<BatchPosterior>> {
+    keep_projection: bool,
+) -> anyhow::Result<Option<BatchEffects>> {
     if labels.len() < 2 {
         return Ok(None);
     }
 
     info!("Estimating batch effects ({} batches)...", labels.len());
-    let Some(gamma) = estimate_batch(data_vec, batch_membership, args)? else {
+    let (gamma, proj) = estimate_batch(data_vec, batch_membership, args)?;
+    let projection = keep_projection.then_some(proj);
+    let Some(gamma) = gamma else {
         return Ok(None);
     };
     let batches = data_vec
@@ -195,10 +266,13 @@ pub fn estimate_and_write_batch_effects(
             batch_membership,
         )?;
     }
-    Ok(Some(BatchPosterior {
-        gamma,
-        rows,
-        batches,
+    Ok(Some(BatchEffects {
+        posterior: BatchPosterior {
+            gamma,
+            rows,
+            batches,
+        },
+        projection,
     }))
 }
 
@@ -294,13 +368,7 @@ pub fn read_delta(path: &str) -> anyhow::Result<RunDelta> {
         nums.iter().all(|c| c.len() == feature.len()) && feature.len() == batch.len(),
         "{path}: columns of different lengths"
     );
-    let batches: Vec<Box<str>> = batch
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<std::collections::BTreeSet<&str>>()
-        .into_iter()
-        .map(Box::from)
-        .collect();
+    let batches = sorted_batch_labels(&batch);
     let col_of: HashMap<&str, usize> = batches
         .iter()
         .enumerate()

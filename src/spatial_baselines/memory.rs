@@ -98,6 +98,21 @@ pub fn knn_edges(section_sizes: &[usize], k: usize) -> usize {
         .sum()
 }
 
+/// What `spatialde2-pb` holds above its cell-level fit: the cells'
+/// projection (cage's `-p` f32 a cell), which the coarsening takes and
+/// normalises in place, and the seeds' features (two), the coarsening
+/// graph (cage's `-k` neighbours a cell, as lists, edges and adjacency: 64
+/// bytes a neighbour), the
+/// super-cells' counts (at most every nonzero: 12 as built, 12 held), and
+/// the fold of the method's `edges` listed edges onto the super-cells (an
+/// undirected copy, 24 bytes a pair, and the fold's map and fine-to-super
+/// index, 48 a pair: 36 a listed edge, 40 with a margin).
+pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize) -> usize {
+    let proj = 2 * 4 * crate::util::input::DEFAULT_PROJ_DIM * cells;
+    let graph = 64 * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
+    proj + graph + 24 * nonzeros + 40 * edges
+}
+
 /// What a STAGATE run holds at once.
 #[derive(Debug, Clone)]
 pub struct StagateShape {
@@ -118,6 +133,11 @@ pub struct StagateShape {
     /// Whether training runs in host memory (the CPU, and Metal's unified
     /// memory); on CUDA the device holds it.
     pub train_on_host: bool,
+    /// Whether the input is sparse (the default) or dense (`--reference`).
+    pub sparse: bool,
+    /// Nonzeros of the genes trained on, which the sparse input holds; at
+    /// most [`Self::nonzeros`].
+    pub selected_nonzeros: usize,
 }
 
 /// Training memory, f32, counted from what candle keeps for autograd and
@@ -137,21 +157,56 @@ pub fn stagate_training_bytes(s: &StagateShape) -> usize {
     (4.0 * floats as f64 * STAGATE_SAFETY) as usize
 }
 
+/// Bytes a nonzero of the sparse input holds: a gene index and a value by
+/// cell, a cell index and a value by gene.
+const SPARSE_INPUT_NONZERO_BYTES: usize = 16;
+
+/// The sparse formulation's peak over its counted training memory, as
+/// [`STAGATE_SAFETY`] is the dense one's. Calibrated on sparse CPU runs at
+/// the measured runs' settings (1024 to 16384 cells, 4 threads): there the
+/// ratio of a run's peak, above the process and the sparse input, to its
+/// count rises with the cells toward the ratio of their per-cell slopes,
+/// about 1.37, so it is that slope's ratio with a margin rather than the
+/// largest ratio measured.
+pub const STAGATE_SPARSE_SAFETY: f64 = 1.45;
+
+/// The sparse formulation's training memory, f32, per cell at `E` edges
+/// as [`stagate_training_bytes`] counts the dense one's, less the input
+/// and reconstruction it never holds whole (`5G` a cell): the first
+/// layer's product as a leaf, its gradient and their host copies (`4H`); a
+/// loss block of `B` cells (its dense rows, reconstruction, residual and
+/// its square, and the residual's gradient, `5BG`, with the block's
+/// gradient to `h3`, `BH`, and the gradient to `h3` gathered, `NH`); the
+/// weights, gradients and moments (`6GH`) and a host copy of `W1`
+/// (`GH`); beside the sparse input itself.
+pub fn stagate_sparse_training_bytes(s: &StagateShape) -> usize {
+    let (n, e, g, h) = (s.cells, s.edges, s.genes, s.hidden);
+    let b = crate::spatial_baselines::stagate::loss_block_cells(g).min(n);
+    let floats = 10 * e * h + 19 * h * n + 5 * b * g + b * h + 7 * g * h;
+    (4.0 * floats as f64 * STAGATE_SPARSE_SAFETY) as usize
+        + SPARSE_INPUT_NONZERO_BYTES * s.selected_nonzeros
+}
+
 /// STAGATE's peak, in the order of a run: the largest of the read
 /// ([`read_bytes`]; the gene filter after it holds the counts beside their
-/// filtered copy, 24 bytes a nonzero, less), the dense input built beside
-/// the counts, the graph (the dense input, the counts freed; the Gram
+/// filtered copy, 24 bytes a nonzero, less), the input (dense, or sparse)
+/// built beside the counts, the graph (the dense input, the counts freed; the Gram
 /// blocks; 28 bytes a neighbour searched: 12 as found, beside the 16 of the
-/// edge list made from them) and training ([`stagate_training_bytes`], or
-/// on CUDA the input copied to the device).
+/// edge list made from them) and training ([`stagate_training_bytes`],
+/// [`stagate_sparse_training_bytes`] for the sparse input, or on CUDA the
+/// input copied to the device).
 pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     let counts = HELD_NONZERO_BYTES * s.nonzeros;
-    let dense = 4 * s.cells * s.genes;
+    // the input: dense, or sparse (on the host, wherever training runs)
+    let dense = match s.sparse {
+        true => SPARSE_INPUT_NONZERO_BYTES * s.selected_nonzeros,
+        false => 4 * s.cells * s.genes,
+    };
     let graph = dense + s.gram + 28 * s.searched;
-    let training = if s.train_on_host {
-        stagate_training_bytes(s)
-    } else {
-        dense
+    let training = match (s.train_on_host, s.sparse) {
+        (true, false) => stagate_training_bytes(s),
+        (true, true) => stagate_sparse_training_bytes(s),
+        (false, _) => dense,
     };
     peak(
         STAGATE_PROCESS_BYTES,
@@ -176,7 +231,15 @@ pub struct Spatialde2Shape {
     pub regions: usize,
     /// [`knn_gram_bytes`] of the graph's kNN.
     pub gram: usize,
+    /// Cells an all-pairs graph (`--reference`) holds, each its 2-D
+    /// coordinates, its section and its place in the section's list.
+    pub pair_cells: usize,
 }
+
+/// Bytes a cell holds in an all-pairs graph: two f64 coordinates, its
+/// section and its entry in its section's list (8 each), with as much again
+/// for the lists' growth.
+const PAIR_CELL_BYTES: usize = 48;
 
 /// Bytes a selected nonzero holds at once in SpatialDE2's copy of the
 /// counts: 16 while copied, 24 as kept (by cell and by gene), and 16 of
@@ -207,6 +270,7 @@ pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
         + GRAPH_EDGE_BYTES * s.edges
         + 16 * s.cells * s.regions
         + 6 * 8 * s.genes * s.regions
+        + PAIR_CELL_BYTES * s.pair_cells
         + s.gram;
     peak(SPATIALDE2_PROCESS_BYTES, s.nonzeros, held)
 }

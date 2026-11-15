@@ -23,8 +23,9 @@ flags; `run_fit` runs one as a background job (follow it with `job_status` / \
 `job_wait`) and never writes over a run. pinto's models are lc (link \
 communities) and dsvd (shared and difference channels by SVD), the two \
 recommended, and cage (a learned cell-graph embedding; cage-cell trains it \
-on cells); spatialde2 and stagate are spatial baselines, ports of published \
-methods to compare pinto against, fit and scored as lc is. Where most \
+on cells); spatialde2, stagate and spatialde2-pb (spatialde2 on cage's \
+super-cells) are spatial baselines, ports of published methods to compare \
+pinto against, fit and scored as lc is. Where most \
 features are noise, cage takes feature-inclusion moran or feature-modules M, \
 never both; lc takes feature modules from a feature network file the user \
 supplies (feature-network), as pinto has none. Ablations are lc, cage or \

@@ -168,7 +168,7 @@ pub struct SrtInputArgs {
 
     #[arg(
         long,
-        default_value_t = 5,
+        default_value_t = DEFAULT_NUM_LEVELS,
         help = "Number of multi-level coarsening levels",
         long_help = "Number of hierarchical coarsening levels, coarse to fine.\n\
                      Each level merges cells by graph-constrained matching.\n\
@@ -182,7 +182,7 @@ pub struct SrtInputArgs {
     #[arg(
         long,
         short = 'p',
-        default_value_t = 200,
+        default_value_t = DEFAULT_PROJ_DIM,
         help = "Random projection dimension for cell embeddings",
         long_help = "Dimension of the random projection for cell embeddings.\n\
                      Cells are projected from G feature dimensions down to this one.\n\
@@ -361,7 +361,13 @@ pub const BATCH_KNN: usize = 10;
 /// Spelled out by hand in the `-k` and `--knn-expr` help text: dropping
 /// `default_value_t` means clap no longer renders it, so those strings are the
 /// only place a user learns this and the only place it can drift.
-const DEFAULT_KNN: usize = 5;
+pub const DEFAULT_KNN: usize = 5;
+
+/// `--num-levels`'s default.
+pub const DEFAULT_NUM_LEVELS: usize = 5;
+
+/// `-p --proj-dim`'s default.
+pub const DEFAULT_PROJ_DIM: usize = 200;
 
 /// The graph spec a run's flags resolve to.
 ///

@@ -42,8 +42,9 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("srt-sim-score", 6),
         ("srt-sim-pairs", 8),
         ("srt-sim-baseline", 6),
-        ("spatialde2", 10),
-        ("stagate", 15),
+        ("spatialde2", 12),
+        ("stagate", 17),
+        ("spatialde2-pb", 12),
         ("compare", 7),
         #[cfg(feature = "view")]
         ("view", 27),

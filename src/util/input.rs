@@ -6,7 +6,9 @@ use data_beans::sparse_io_vector::data_name_of;
 use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
-pub use args::{ResolvedKnn, SrtInputArgs, BATCH_KNN};
+pub use args::{
+    ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+};
 
 pub struct SRTReadArgs {
     pub data_files: Vec<Box<str>>,
@@ -136,6 +138,19 @@ pub fn open_fit_data(
     Ok(data_vec)
 }
 
+/// One batch file's labels, one per line, checked to number its data
+/// file's `cells`.
+pub fn read_batch_file(batch_file: &str, cells: usize) -> anyhow::Result<Vec<Box<str>>> {
+    info!("Reading batch file: {}", batch_file);
+    let labels = read_lines(batch_file)?;
+    anyhow::ensure!(
+        labels.len() == cells,
+        "{batch_file}: {} labels for its data file's {cells} cells",
+        labels.len()
+    );
+    Ok(labels)
+}
+
 /// Each cell's batch label, with each data file's cell count: from the
 /// batch files (one label per line, one file per data file), else one batch
 /// per data file.
@@ -151,14 +166,7 @@ fn read_batch_membership(
             "# batch files != # of data files"
         );
         for (batch_file, &nn) in batch_files.iter().zip(&cells_per_file) {
-            info!("Reading batch file: {}", batch_file);
-            let lines = read_lines(batch_file)?;
-            anyhow::ensure!(
-                lines.len() == nn,
-                "{batch_file}: {} labels for its data file's {nn} cells",
-                lines.len()
-            );
-            batch_membership.extend(lines);
+            batch_membership.extend(read_batch_file(batch_file, nn)?);
         }
     } else {
         if cells_per_file.len() > 1 {
