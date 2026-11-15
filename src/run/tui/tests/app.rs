@@ -850,9 +850,9 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
         names[..8],
         [
             "lc",
+            "dsvd",
             "cage",
             "cage-cell",
-            "dsvd",
             "spatialde2",
             "stagate",
             "lra",
@@ -1058,9 +1058,9 @@ fn the_residual_row_is_listed_only_where_pinto_has_the_command() {
         labels,
         [
             "lc",
+            "dsvd",
             "cage",
             "cage-cell",
-            "dsvd",
             "spatialde2",
             "stagate",
             "lra",

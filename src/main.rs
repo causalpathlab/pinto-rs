@@ -241,7 +241,7 @@ enum Commands {
                       \x20 pinto lc data.h5 -o out\n\n\
                       \x20 # With external feature-feature network:\n\
                       \x20 pinto lc data.h5 -c coords.csv -o out \\\n\
-                      \x20   --feature-network biogrid_pairs.tsv\n\n\
+                      \x20   --feature-network feature_pairs.tsv\n\n\
                       \x20 # Multi-sample with batch correction:\n\
                       \x20 pinto lc s1.h5,s2.h5 -c c1.csv,c2.csv -o out\n\n\
                       INPUT FILES:\n\n\
@@ -260,7 +260,8 @@ enum Commands {
                       \x20   (no features dropped); M = proj-dim just compresses the feature axis.\n\
                       \x20   Optionally zero basis rows for features below --min-feature-count.\n\n\
                       \x20 Feature-network module-pair profile (--feature-network file.tsv):\n\
-                      \x20   External feature-feature edges (two-column TSV), optionally SNN-\n\
+                      \x20   Feature-feature edges you supply (two-column TSV; pinto has\n\
+                      \x20   no network of its own), optionally SNN-\n\
                       \x20   augmented, k-core-trimmed, Leiden-clustered into feature modules.\n\
                       \x20   Edge profile is SPARSE over module-pairs (a, b) with entries\n\
                       \x20   max(0, x_{i,a}·x_{j,b} + x_{i,b}·x_{j,a} − X_i·X_j · deg(a)·deg(b)/(2W)²).\n\
@@ -757,8 +758,8 @@ enum Commands {
         long_about = format!(
             "Set up pinto fits in the terminal and run them.\n\n\
              Pick the data files with the coordinate and batch files of\n\
-             each, queue one or more of lc, cage and dsvd, and change\n\
-             their flags. Every flag a method has is listed with its help;\n\
+             each, queue one or more of lc, dsvd, cage and cage-cell, and\n\
+             change their flags. Every flag a method has is listed with its help;\n\
              hidden ones under `a`. On a fitted run, lra, lra-simulate and\n\
              residual can be queued too: the residual brings a stage-2 fit\n\
              on its files (`m` picks its method), and lra on that fit is\n\

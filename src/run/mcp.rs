@@ -721,7 +721,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
     let methods = json!({
         "enum": METHODS,
         "description": format!(
-            "{} (lc, link community, is recommended); or a spatial baseline: {}",
+            "{} (lc and dsvd are recommended); or a spatial baseline: {}",
             MODELS.join(", "),
             BASELINES.join(", ")
         ),
@@ -732,7 +732,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             &format!(
                 "pinto's fitting methods (what pinto run sets up): {}, then the spatial \
                  baselines {}; with a method, its flags: name, help, default, choices, and \
-                 whether it is a switch.",
+                 whether it is a switch (hidden tuning flags are left out).",
                 MODELS.join(", "),
                 BASELINES.join(", ")
             ),

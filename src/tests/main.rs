@@ -581,3 +581,65 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
         }
     }
 }
+
+/// Each of pinto's models, and each choice that handles noisy features,
+/// is named where a user or an agent picks a method: the README, `pinto
+/// run`'s help and the MCP instructions. dsvd is presented beside lc and
+/// cage, not after them.
+#[cfg(feature = "view")]
+#[test]
+fn the_models_and_their_feature_choices_are_named_where_methods_are_picked() {
+    let mut cli = built_cli();
+    let run = cli
+        .find_subcommand_mut("run")
+        .expect("run")
+        .render_long_help()
+        .to_string();
+    let readme = include_str!("../../README.md");
+    let mcp = mcp::instructions();
+    for (what, text) in [("README", readme), ("pinto run", &run), ("mcp", &mcp)] {
+        for model in ["lc", "dsvd", "cage"] {
+            assert!(text.contains(model), "{what} does not name {model}");
+        }
+    }
+    for (what, text) in [("README", readme), ("mcp", &mcp)] {
+        for choice in ["feature-inclusion", "feature-modules", "feature-network"] {
+            assert!(text.contains(choice), "{what} does not name {choice}");
+        }
+    }
+    assert_eq!(run::MODELS[..2], ["lc", "dsvd"], "dsvd listed beside lc");
+    assert!(readme.contains("### `dsvd` (delta-svd), recommended"));
+}
+
+/// lc's `--feature-network` help says what the file is and what the
+/// modules do, and that pinto brings no network of its own.
+#[test]
+fn lc_says_what_its_feature_network_is() {
+    let mut cli = built_cli();
+    let lc = cli.find_subcommand_mut("lc").expect("lc");
+    let arg = lc
+        .get_arguments()
+        .find(|a| a.get_id() == "feature_network")
+        .expect("--feature-network")
+        .clone();
+    let help = arg.get_long_help().expect("long help").to_string();
+    assert!(!help.contains("do not come from feature modules"), "{help}");
+    for says in ["two-column", "Leiden", "module pairs", "ships no network"] {
+        assert!(help.contains(says), "lacks {says:?}: {help}");
+    }
+    let readme = include_str!("../../README.md");
+    assert!(readme.contains("ships no network"));
+}
+
+/// The README says that pinto's default thread cap changes lc's draws on a
+/// machine with more cores, and that RAYON_NUM_THREADS sets it.
+#[test]
+fn the_readme_says_the_thread_cap_changes_lc_on_large_machines() {
+    let readme = include_str!("../../README.md");
+    let cap = util::common::MAX_DEFAULT_THREADS.to_string();
+    assert!(
+        readme.contains(&format!("at most {cap} worker threads")),
+        "README does not state the cap"
+    );
+    assert!(readme.contains(&format!("more than {cap} cores")));
+}

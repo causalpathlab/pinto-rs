@@ -18,8 +18,15 @@ pub fn instructions() -> String {
 
 const FITS: &str = "\
 Use pinto's MCP tools to fit spatial link-community models and to look at \
-them on the tissue. A fit: `run_methods` lists the methods (lc is the \
-recommended one) and, with a method, its flags; `run_fit` runs one on data \
+them on the tissue. A fit: `run_methods` lists the methods and, with a \
+method, its flags. pinto's models are lc (link communities) and dsvd \
+(shared and difference channels by SVD), the two recommended, and cage (a \
+learned cell-graph embedding; cage-cell trains it on cells). Where most \
+features are noise, cage takes one of two flags per run, never both: \
+feature-inclusion moran (each feature trained with its probability of \
+spatial signal) or feature-modules M (features embedded through M learned \
+modules); lc takes feature modules from a feature network file the user \
+supplies (feature-network), as pinto has none. `run_fit` runs one on data \
 files with their coordinates, in the background for anything but a small \
 data set (follow its job with `job_status` / `job_wait`), and never writes \
 over a run. Its methods also hold two spatial baselines, model-level \

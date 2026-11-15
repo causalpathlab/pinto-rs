@@ -47,11 +47,38 @@ random stream and sees the other blocks' moves only at the end of a sweep,
 so a different thread count gives different blocks and different draws. Set
 `RAYON_NUM_THREADS` to the same value to repeat a run exactly.
 
-### `dsvd` (delta-svd)
+By default pinto takes at most 16 worker threads, or the machine's core count
+when that is smaller; `RAYON_NUM_THREADS` sets the count instead. Because lc's
+draws depend on the thread count, on a machine with more than 16 cores a
+default lc run gives different results from a run on every core. To repeat a
+run there, set `RAYON_NUM_THREADS` to the count it ran with.
+
+Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
+you supply, a two-column file of feature pairs named as the data's features
+(tab-separated, or comma-separated for `.csv`; lines naming features the data
+lacks are skipped). pinto ships no network of its own. lc clusters the network
+into feature modules (Leiden; Traag, Waltman and van Eck 2019) and profiles
+each cell pair by how far its two cells co-express pairs of modules, in place
+of the random projection of all features. It writes
+`{out}.feature_graph.parquet`, the pairs it kept.
+
+```sh
+pinto lc data.h5 -c coords.csv -o out --feature-network pairs.tsv
+```
+
+### `dsvd` (delta-svd), recommended
 
 ```sh
 pinto dsvd data.h5 -c coords.csv -o out
 ```
+
+dsvd takes, for each spatial cell pair and feature, a shared channel (the two
+cells' log counts summed) and a difference channel (their absolute
+difference), pools them over graph-coarsened samples of pairs, and factors the
+pooled Poisson-Gamma means by a randomized SVD; each pair's latent code is cut
+into link communities. It stands beside lc as a first fit: it writes the same
+propensity, link-community and feature-community tables, so `pinto view`,
+`lra`, `residual` and `prop` read a dsvd run as they read an lc run.
 
 ### `prop` (propensity)
 
@@ -59,9 +86,27 @@ pinto dsvd data.h5 -c coords.csv -o out
 pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 ```
 
-### `cage` / `predict` / `impute`
+### `cage`, `cage-cell` / `predict` / `impute`
 
-See `pinto --help` and per-subcommand `--help`.
+```sh
+pinto cage data.h5 -c coords.csv -o out
+pinto cage data.h5 -c coords.csv -o out --feature-inclusion moran
+pinto cage data.h5 -c coords.csv -o out --feature-modules 20
+pinto cage-cell data.h5 -c coords.csv -o out
+```
+
+cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
+the coarsened spatial graph, one feature at a time, and places every cell and
+cell pair on it. Where most features are noise, a run takes one of two
+remedies, never both: `--feature-inclusion moran` trains each feature with its
+probability of spatial signal (a jackknifed Moran's I, Moran 1950, through the
+two-group local fdr of Efron et al. 2001), writing
+`{out}.feature_inclusion.parquet`; `--feature-modules M` embeds the features
+through M learned modules (sparsemax membership, Martins and Astudillo 2016),
+writing the module tables. `cage-cell` is cage trained on cells and cell
+pairs, for comparison with cell-level methods; it estimates and removes batch
+effects as cage does (`--ignore-batch` runs it without). `pinto predict`
+applies a cage or cage-cell run to new data; see each command's `--help`.
 
 ### `lra`: ligand-receptor analysis
 
@@ -310,16 +355,16 @@ hidden field the call drew, and each pair's the field it ran under, the
 same for every pair. It records nothing in the run's manifest.
 
 Each pair's draws start from `mix_seed(--seed, rank)`, with `rep` mixed in,
-and the hidden field from `--seed` and `rep` alone, so a pair's rows depend
-on its rank and label alone, not on the other pairs of the call (save under
+and the hidden field from `--seed` and `rep` alone, so a pair's rows depend on
+its rank and label alone, not on the other pairs of the call (save under
 `realgene`, whose gene can change with `--pairs` and `--null-pairs`; the
-counts also decide which ranks take which label), and the same flags give
-the same table, byte for byte, on any number of threads. These streams are not the
+counts also decide which ranks take which label), and the same flags give the
+same table, byte for byte, on any number of threads. These streams are not the
 built-in grid's: a point of the grid and the same point run alone give
-different draws. Pairs run at once as memory allows within
-`RAYON_NUM_THREADS`; a runner starting several calls side by side sets
-`PINTO_MEMORY_BUDGET` (bytes) per call, since each process otherwise takes
-half the free memory for itself.
+different draws. Pairs run at once as memory allows within pinto's worker
+threads (`RAYON_NUM_THREADS`, at most 16 by default); a runner starting
+several calls side by side sets `PINTO_MEMORY_BUDGET` (bytes) per call, since
+each process otherwise takes half the free memory for itself.
 
 ### `srt-simulate`, `srt-sim-score`, `srt-sim-pairs`, `srt-sim-baseline`: multi-donor data with a planted truth
 
@@ -629,19 +674,19 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 ### `run`
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
-batch files beside them are paired by sample name), queue `lc`, `cage` and
-`dsvd` (or the spatial baselines `spatialde2` and `stagate`, listed
+batch files beside them are paired by sample name), queue `lc`, `dsvd`, `cage`
+and `cage-cell` (or the spatial baselines `spatialde2` and `stagate`, listed
 after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
-and runs them in turn with their log on screen; each fit shows a progress
-bar, plus a sparkline of its score (loss, NLL or moves) once it has two
-values and the row has room. Tab or shift-enter moves to the next screen
-(shift-enter only where the terminal can tell it apart from enter).
-Once a run ends, the methods it finished are unqueued (marked ✓), so
-ctrl+r again, or `r` on the Run screen, runs only the ones stopped, failed
-or not reached; space queues one again. Each reruns into its old `--out`,
-after first clearing the script and batch files its unfinished run left
-there (a residual's, the files it had written in `{out}/`).
+and runs them in turn with their log on screen; each fit shows a progress bar,
+plus a sparkline of its score (loss, NLL or moves) once it has two values and
+the row has room. Tab or shift-enter moves to the next screen (shift-enter
+only where the terminal can tell it apart from enter). Once a run ends, the
+methods it finished are unqueued (marked ✓), so ctrl+r again, or `r` on the
+Run screen, runs only the ones stopped, failed or not reached; space queues
+one again. Each reruns into its old `--out`, after first clearing the script
+and batch files its unfinished run left there (a residual's, the files it had
+written in `{out}/`).
 
 ```sh
 pinto run data/        # the file browser starts in data/
@@ -943,7 +988,7 @@ to the model; with one of them, put that text in the agent's own instructions
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `cage`, `dsvd`, then the spatial baselines `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

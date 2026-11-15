@@ -87,11 +87,19 @@ pub struct SrtLinkCommunityArgs {
 
     #[arg(
         long,
-        help = "External feature-feature network file (two-column TSV: feature1, feature2)",
-        long_help = "External feature-feature network, a two-column TSV of feature1, feature2. When given,\n\
-                     edge profiles come from feature-pair deltas.\n\
-                     They do not come from feature modules. Each edge e=(i,j) gets the profile:\n\
-                     y_e[p] = sum of positive co-expression deltas for pair p."
+        help = "Feature network file (two columns of feature pairs); profiles cell pairs by feature modules",
+        long_help = "A feature-feature network you supply: a two-column text file, one pair of\n\
+                     features per line, named as the data's features (tab-separated, or\n\
+                     comma-separated when it ends in .csv). A line naming a feature the data\n\
+                     lacks, such as a header, is skipped. pinto ships no network of its own.\n\n\
+                     With it, lc groups the features into modules: the network, densified by\n\
+                     shared neighbours (--snn-min-shared) and k-core trimmed\n\
+                     (--feature-trim-min-degree), is clustered by Leiden (Traag, Waltman and\n\
+                     van Eck 2019; --feature-modules-resolution). Each cell pair's profile is\n\
+                     then sparse over module pairs (a, b): how far the two cells co-express a\n\
+                     and b beyond what their totals predict, in place of the random-projection\n\
+                     profile. A feature trimmed away joins no module.\n\
+                     Writes {out}.feature_graph.parquet, the feature pairs kept."
     )]
     #[arg(alias = "gene-network")]
     pub feature_network: Option<Box<str>>,

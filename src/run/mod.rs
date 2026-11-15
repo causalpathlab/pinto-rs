@@ -14,11 +14,12 @@ pub(crate) mod sim;
 pub(crate) mod tui;
 
 /// The methods `pinto run` sets up, in the order listed, each as typed:
-/// the short alias of its subcommand. pinto's own models first, then the
-/// spatial baselines (model-level ports of published methods, for
-/// comparison), which take the same data, coordinate and batch files and
-/// write a run of the same shape.
-pub const METHODS: [&str; 6] = ["lc", "cage", "cage-cell", "dsvd", "spatialde2", "stagate"];
+/// the short alias of its subcommand. pinto's own models first (lc and
+/// dsvd, then cage and its cell-level form), then the spatial baselines
+/// (model-level ports of published methods, for comparison), which take
+/// the same data, coordinate and batch files and write a run of the same
+/// shape.
+pub const METHODS: [&str; 6] = ["lc", "dsvd", "cage", "cage-cell", "spatialde2", "stagate"];
 
 /// pinto's own models among [`METHODS`].
 pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;
