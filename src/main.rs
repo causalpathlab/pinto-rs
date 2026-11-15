@@ -402,6 +402,28 @@ enum Commands {
     Cage(Box<CellActivityGraphEmbeddingArgs>),
 
     #[command(
+        name = "cage-cell",
+        about = "cage trained on cells and cell pairs, with no pseudobulks",
+        long_about = "cage trained on cells instead of super-cells, as cell-level\n\
+                      methods such as STAGATE are, for a like-for-like comparison: the\n\
+                      same model and outputs.\n\n\
+                      Each cell is its own unit and each within-batch spatial cell pair\n\
+                      a positive; negatives are other cells of the same batch, never\n\
+                      the pair's own two. Nothing is pseudobulked: no coarsening\n\
+                      hierarchy, no pseudobulk SVD warm start (the cell table starts at\n\
+                      random), and no batch-effect estimate, so no batch correction is\n\
+                      applied, and `pinto predict` applies none to a query either.\n\
+                      --n-pseudobulk, --num-levels, --batch-knn and the HVG flags do\n\
+                      nothing here (a warning says so); --chain-levels, --cnv-clones,\n\
+                      --feature-modules and --feature-embedding are refused.\n\
+                      --embedding-l2 defaults to 0 here.\n\n\
+                      Writes what cage writes, without {out}.delta.parquet and\n\
+                      {out}.pseudobulk_cells.parquet; its manifest says `cell_level`.",
+        mut_arg("embedding_l2", |a| a.default_value("0"))
+    )]
+    CageCell(Box<CellActivityGraphEmbeddingArgs>),
+
+    #[command(
         about = "Apply a trained run to a new sample (cage), or score held-out cells (lc, dsvd)",
         long_about = "Apply a trained run to a new sample.\n\n\
                       LC / DSVD MODELS -- held-out scoring. Fit lc without a donor\n\
@@ -811,6 +833,7 @@ impl Commands {
             Commands::DeltaSvd(a) => (&mut a.common.out, "dsvd"),
             Commands::LinkCommunity(a) => (&mut a.common.out, "lc"),
             Commands::Cage(a) => (&mut a.common.out, "cage"),
+            Commands::CageCell(a) => (&mut a.common.out, "cage-cell"),
             Commands::Predict(a) => (&mut a.common.out, "predict"),
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
@@ -853,10 +876,30 @@ fn main() -> anyhow::Result<()> {
 
     let argv: Vec<String> = std::env::args().collect();
     check_removed_lra_flags(&argv)?;
-    let mut cli = Cli::parse_from(argv);
+    // `Cli::parse_from`, keeping the matches: cage-cell asks which flags
+    // were given rather than left at their defaults.
+    let matches = <Cli as clap::CommandFactory>::command().get_matches_from(argv);
+    let mut cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| {
+        e.format(&mut <Cli as clap::CommandFactory>::command())
+            .exit()
+    });
     name_folder_out(&mut cli.commands);
+    if let Commands::CageCell(a) = &mut cli.commands {
+        a.cell_level = true;
+    }
 
     crate::util::common::init_logger(cli.verbose);
+
+    if let Some(m) = matches.subcommand_matches("cage-cell") {
+        let no_ops = cell_activity_graph_embedding::fit::cell_level_no_ops_given(m);
+        if !no_ops.is_empty() {
+            log::warn!(
+                "cage-cell: {} shape only the HVG projection, coarsening or batch-effect \
+                 estimate that cage-cell skips; they do nothing here",
+                no_ops.join(", ")
+            );
+        }
+    }
 
     match &cli.commands {
         Commands::Propensity(args) => {
@@ -868,7 +911,7 @@ fn main() -> anyhow::Result<()> {
         Commands::LinkCommunity(args) => {
             fit_srt_link_community(args)?;
         }
-        Commands::Cage(args) => {
+        Commands::Cage(args) | Commands::CageCell(args) => {
             fit_cell_activity_graph_embedding(args)?;
         }
         Commands::Predict(args) => {

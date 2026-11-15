@@ -20,6 +20,7 @@ use graph_embedding_util::loss::{
 };
 use rand::Rng;
 use rand_distr::weighted::WeightedIndex;
+use rand_distr::Distribution;
 use rayon::prelude::*;
 
 use crate::cell_activity_graph_embedding::feature_gating::FeatureActiveEdges;
@@ -173,6 +174,12 @@ pub struct FeatureGatedChainSampler<'a> {
     /// Not an SGD minibatch size: see `UnitChainBatchArgs::n_positives`.
     pub positives_per_draw: usize,
     pub n_negatives: usize,
+    /// Redraw a negative that is its positive's anchor or partner. Needed at
+    /// cell level only: there the chain group is the unit itself, so the
+    /// upstream rejection excludes just the anchor. On pseudobulks the
+    /// partner shares the anchor's group at every chain level and is
+    /// rejected already.
+    pub exclude_partner: bool,
 }
 
 impl<'a> FeatureGatedChainSampler<'a> {
@@ -196,11 +203,43 @@ impl<'a> FeatureGatedChainSampler<'a> {
             n_negatives: self.n_negatives,
             unit_to_group_per_level: self.unit_to_group_per_level,
         };
-        Some(sample_unit_chain_batch_with_pos(
-            args,
-            &entry.pos,
-            &entry.local_to_global,
-            rng,
-        ))
+        let (mut batch, stats) =
+            sample_unit_chain_batch_with_pos(args, &entry.pos, &entry.local_to_global, rng);
+        if self.exclude_partner {
+            redraw_pair_negatives(&mut batch, batch_sampler, rng);
+        }
+        Some((batch, stats))
+    }
+}
+
+/// Redraw, from the batch's weighted negative pool, every negative that is
+/// its positive's anchor or partner. Bounded as the upstream draw is: a
+/// batch of two cells keeps its last draw.
+fn redraw_pair_negatives<R: Rng>(batch: &mut UnitChainBatch, s: &PerBatchUnitSampler, rng: &mut R) {
+    const MAX_TRIES: u32 = 16;
+    let UnitChainBatch {
+        left_units,
+        right_units,
+        per_level_neg,
+        n_negatives,
+    } = batch;
+    if *n_negatives == 0 {
+        return;
+    }
+    for neg in per_level_neg.iter_mut() {
+        for (row, pair) in neg
+            .chunks_mut(*n_negatives)
+            .zip(left_units.iter().zip(right_units.iter()))
+        {
+            let pair = [*pair.0, *pair.1];
+            for c in row.iter_mut().filter(|c| pair.contains(c)) {
+                for _ in 0..MAX_TRIES {
+                    *c = s.unit_pool[s.neg.sample(rng)];
+                    if !pair.contains(c) {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }

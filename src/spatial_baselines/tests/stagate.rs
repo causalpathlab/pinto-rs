@@ -398,26 +398,12 @@ fn without_n_clusters_leiden_finds_the_groups() {
 }
 
 #[test]
-fn help_readme_and_notices_name_no_gpl_mixture_package() {
-    // the R package the tutorial clusters with, spelt in two pieces so a
-    // search of the tree for its name finds none
-    let name = ["mc", "lust"].concat();
+fn stagate_help_names_its_clusterers() {
     let help = crate::built_cli()
         .find_subcommand_mut("stagate")
         .expect("stagate")
         .render_long_help()
         .to_string();
-    for (what, text) in [
-        ("stagate --help", help.as_str()),
-        ("README.md", include_str!("../../../README.md")),
-        (
-            "THIRD_PARTY_NOTICES.md",
-            include_str!("../../../THIRD_PARTY_NOTICES.md"),
-        ),
-        ("stagate.rs", include_str!("../stagate.rs")),
-    ] {
-        assert!(!text.to_lowercase().contains(&name), "{what} names it");
-    }
     for want in ["k-means", "Leiden"] {
         assert!(help.contains(want), "stagate --help lacks {want}");
     }

@@ -209,7 +209,7 @@ fn geojson_features_carry_their_section() {
         r#"{"type":"FeatureCollection","features":[
             {"type":"Feature","properties":{"section":"S1"},
              "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}},
-            {"type":"Feature","properties":{"sample":"s2","name":"Tumor"},
+            {"type":"Feature","properties":{"sample":"s2","name":"R1"},
              "geometry":{"type":"MultiPolygon","coordinates":[[[[5,5],[6,5],[6,6]]],[[[7,7],[8,7],[8,8]]]]}}
         ]}"#,
     )

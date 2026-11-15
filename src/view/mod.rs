@@ -497,7 +497,7 @@ fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
     if run.manifest.is_some() {
         println!(
             "manifest {} v{}: {} cells, {} features, {} edges",
-            meta.command,
+            meta.method(),
             meta.version,
             meta.n_cells,
             meta.n_features,

@@ -116,7 +116,7 @@ fn describe_run(path: &Path) -> String {
     match PintoMetadata::read(path) {
         Ok(m) => {
             let mut parts = vec![
-                m.command.clone(),
+                m.method().to_string(),
                 format!("{} cells", super::thousands(m.n_cells)),
             ];
             let tags: Vec<String> = m.level_list().into_iter().map(|l| l.tag).collect();

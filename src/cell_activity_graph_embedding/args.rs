@@ -328,6 +328,11 @@ pub struct CellActivityGraphEmbeddingArgs {
     )]
     pub chain_levels: Option<Vec<usize>>,
 
+    /// Cells and cell pairs are the trained unit, with no pseudobulks:
+    /// set by `pinto cage-cell`, not a flag.
+    #[arg(skip)]
+    pub cell_level: bool,
+
     /// HVG selection: senna-style shared CLI (`--n-hvg`,
     /// `--feature-list-file`). cage **weights the random projection** with it,
     /// exactly as `senna bge` and `senna gem` do — non-selected features get

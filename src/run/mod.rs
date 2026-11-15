@@ -18,7 +18,7 @@ pub(crate) mod tui;
 /// spatial baselines (model-level ports of published methods, for
 /// comparison), which take the same data, coordinate and batch files and
 /// write a run of the same shape.
-pub const METHODS: [&str; 5] = ["lc", "cage", "dsvd", "spatialde2", "stagate"];
+pub const METHODS: [&str; 6] = ["lc", "cage", "cage-cell", "dsvd", "spatialde2", "stagate"];
 
 /// pinto's own models among [`METHODS`].
 pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;
@@ -26,7 +26,7 @@ pub const MODELS: &[&str] = METHODS.split_at(N_MODELS).0;
 /// The spatial baselines among [`METHODS`].
 pub const BASELINES: &[&str] = METHODS.split_at(N_MODELS).1;
 
-const N_MODELS: usize = 3;
+const N_MODELS: usize = 4;
 
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power

@@ -408,10 +408,10 @@ fn lra_identity_genes_are_one_line_and_read_back() {
         identity_excluded: genes.iter().map(|g| g.to_string()).collect(),
         ..LraOptions::default()
     };
-    let o = options(&["ENSG1_CFH", "GCLC", "NFYA"]);
+    let o = options(&["ENSG1_GENE1", "GENE2", "GENE3"]);
     let json = serde_json::to_string_pretty(&o).unwrap();
     assert!(
-        json.contains("\"identity_excluded\": \"ENSG1_CFH,GCLC,NFYA\""),
+        json.contains("\"identity_excluded\": \"ENSG1_GENE1,GENE2,GENE3\""),
         "{json}"
     );
     assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), o);
@@ -563,4 +563,29 @@ fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
     }"#;
     let back: PintoMetadata = serde_json::from_str(old).expect("an old manifest reads");
     assert_eq!(back.levels.expect("levels")[0].tag, "final");
+}
+
+/// A cell-level cage run says so in its manifest, and is named `cage-cell`
+/// wherever a run is named by its method; an ordinary run writes no field.
+#[test]
+fn a_cell_level_run_is_marked_and_named_cage_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("run.pinto.json");
+    let mut meta = PintoMetadata {
+        command: "cage".into(),
+        ..Default::default()
+    };
+    meta.write(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("cell_level"), "{text}");
+    let back = PintoMetadata::read(&path).unwrap();
+    assert!(!back.cell_level);
+    assert_eq!(back.method(), "cage");
+
+    meta.cell_level = true;
+    meta.write(&path).unwrap();
+    let back = PintoMetadata::read(&path).unwrap();
+    assert!(back.cell_level);
+    assert_eq!(back.command, "cage", "readers that take any cage still do");
+    assert_eq!(back.method(), "cage-cell");
 }
