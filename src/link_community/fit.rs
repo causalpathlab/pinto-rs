@@ -77,10 +77,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         batch_membership,
         section_ids,
         seeding,
-        batch_labels: _,
+        batch_labels,
         batch_effects,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
         cell_proj,
@@ -286,8 +287,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             basis: proj_basis.as_ref().expect("projection basis must be set"),
             // The batch effect divides every count lc profiles (the edge
             // profiles at every level, the module expression), as dsvd and
-            // cage divide theirs; feature_community and the feature filters
-            // stay on raw counts.
+            // cage divide theirs, and the written feature_community; the
+            // feature filters stay on raw counts.
             delta: batch_effects.as_ref(),
         }
     };
@@ -329,6 +330,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         alpha: DIRICHLET_ALPHA,
         no_level_outputs: args.no_level_outputs,
     };
+    // Every written feature_community is fitted on the divided counts, as
+    // the profiles are.
+    let batch_of_cell = batch_effects
+        .as_ref()
+        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
     let partition_inputs = PartitionInputs {
         edges,
         edge_kind,
@@ -336,6 +342,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         data_vec: &data_vec,
         feature_weights: &feature_weights,
         axis: &feature_axis,
+        divisor: crate::util::batch_effects::BatchDivisor::of(
+            batch_effects.as_ref(),
+            batch_of_cell.as_deref(),
+        ),
     };
     let cascade_result = run_cascade(
         &c.out,
@@ -476,6 +486,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         args,
         feature_stats: &feature_stats,
         section_ids: &section_ids,
+        batch_of_cell: batch_of_cell.as_deref(),
         final_membership: &final_membership,
         k,
         draft: &draft,
@@ -516,7 +527,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 n_features,
                 n_edges: edges.len(),
                 k,
-                graph: (&knn).into(),
+                graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
                 delta: batch_effects
                     .is_some()
@@ -549,6 +560,8 @@ struct MergeInputs<'a> {
     args: &'a SrtLinkCommunityArgs,
     feature_stats: &'a legume_numeric::matrix::sparse_stat::SparseRunningStatistics<f32>,
     section_ids: &'a [u32],
+    /// Each cell's batch, for a run that divides by a batch effect.
+    batch_of_cell: Option<&'a [u32]>,
     final_membership: &'a [usize],
     k: usize,
     draft: &'a crate::link_community::outputs::Partition,
@@ -576,6 +589,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
         args,
         feature_stats,
         section_ids,
+        batch_of_cell,
         final_membership,
         k,
         draft,
@@ -628,31 +642,45 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
         k
     );
     // Across sections, communities are compared within their section
-    // (see `remove_group_means`); also under --ignore-batch. The merge
-    // compares feature_community, which stays on raw counts (as dsvd's
-    // and cage's do), so a section's shift has to be removed here, in the
-    // comparison. The edge profiles the partition was fitted on are
-    // divided by the batch estimate, by choice, so that lc corrects
-    // batches the way dsvd and cage do.
-    let n_sections = crate::util::ablation::n_sections(section_ids);
+    // (see `remove_group_means`); also under --ignore-batch, where nothing
+    // else removes a section's shift. With a batch estimate the dictionary
+    // is fitted on divided counts, as the edge profiles the partition was
+    // fitted on are, and the groups are sections crossed with batches
+    // (`section_batch_groups`; one per section unless spatial --auto-batch
+    // splits one). A group lies in one batch, so the divide shifts each of
+    // its (feature, group) log-rates by a constant, which the centring
+    // takes out: the merge compares what it would on undivided counts (for
+    // a community inside one group, but for the prior's pull).
+    //
+    // Dividing is a trade-off: it removes donor dependence from the
+    // partition, but lowered shared-domain recovery when measured on the
+    // donor-nuisance simulation. It is kept so that lc corrects batches
+    // as dsvd and cage do; `--ignore-batch` gives the undivided fit.
+    let (group_of, n_groups) =
+        crate::link_community::dict_merge::section_batch_groups(section_ids, batch_of_cell);
     let share = community_group_shares(
         final_membership,
         k,
         partition_inputs.edges,
-        section_ids,
-        n_sections,
+        &group_of,
+        n_groups,
     );
-    // sections holding an edge end, and those centred on their own mean
-    let n_present = (0..n_sections)
+    // groups holding an edge end, and those centred on their own mean
+    let n_present = (0..n_groups)
         .filter(|&g| share.column(g).sum() > 0.0)
         .count();
     let n_own = groups_with_own_mean(&share);
     let centred_sections = (n_present > 1).then_some(n_own);
     if let Some(n_own) = centred_sections {
         info!(
-            "Dictionary merge: the mean profile of {} of {} sections is removed first{}",
+            "Dictionary merge: the mean profile of {} of {} {} is removed first{}",
             n_own,
             n_present,
+            if batch_of_cell.is_some() {
+                "(section, batch) groups"
+            } else {
+                "sections"
+            },
             if n_own < n_present {
                 "; the rest are held by about one community and are compared \
                  against the overall mean"

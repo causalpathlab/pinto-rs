@@ -193,7 +193,8 @@ mod batch_effects {
 
 /// The query is divided only by a model's δ: a model without one (one
 /// batch, `--ignore-batch`, or an older cage-cell fit) trained its encoder
-/// on undivided counts; `--ignore-batch` on predict leaves it unused.
+/// on undivided counts; `--ignore-batch` on predict leaves it unused, and
+/// is refused for a model fitted on δ-divided counts.
 #[test]
 fn the_query_is_divided_only_when_the_model_has_a_delta() {
     use crate::util::batch_effects::RunDelta;
@@ -235,6 +236,20 @@ fn the_query_is_divided_only_when_the_model_has_a_delta() {
     assert!(super::model_delta(&model, Some(&run), true)
         .unwrap()
         .is_none());
+    // fitted on δ-divided counts: an undivided query is refused
+    meta.outputs.feature_community_batch_adjusted = true;
+    meta.write(std::path::Path::new(&manifest_path(&model)))
+        .unwrap();
+    let run = Run::open(&model).unwrap();
+    let err = super::model_delta(&model, Some(&run), true)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("--ignore-batch"), "{err}");
+    // a cage query reads no held-out flag, so none is offered
+    assert!(!err.to_string().contains("--holdout"), "{err}");
+    assert!(super::model_delta(&model, Some(&run), false)
+        .unwrap()
+        .is_some());
 }
 
 /// A manifest's data files: canonical ones as recorded; an older relative

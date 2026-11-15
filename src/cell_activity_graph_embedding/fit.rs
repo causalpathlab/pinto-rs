@@ -188,10 +188,11 @@ pub fn fit_cell_activity_graph_embedding(
         batch_membership,
         section_ids,
         seeding,
-        batch_labels: _,
+        batch_labels,
         batch_effects: batch_db,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
         cell_proj: shared_cell_proj,
@@ -283,9 +284,12 @@ pub fn fit_cell_activity_graph_embedding(
 
     // Per-ROW count totals, streamed ONCE. Two consumers need them and both are
     // whole-matrix passes: the splice go/no-go here, and the pair projection's
-    // partition at the end of the run. The counts do not change in between —
-    // batch effects and QC are both already applied — so a second pass would
-    // re-read every column of the zarr to rebuild the same vector.
+    // partition at the end of the run. The counts do not change in between
+    // (QC is already applied, and δ divides a pair's counts as they are read,
+    // never the matrix), so a second pass would re-read every column of the
+    // zarr to rebuild the same vector. These totals are undivided: they set
+    // the pair projection's abundance offset, a part of the model, not the
+    // written feature_community, which is fitted on divided counts.
     // Off the streaming pass; `sum()` IS the per-row total.
     let row_totals: Vec<f64> = row_stats.sum().iter().map(|&x| f64::from(x)).collect();
     let feature_totals = feature_axis.pool_totals(&row_totals);
@@ -388,20 +392,9 @@ pub fn fit_cell_activity_graph_embedding(
     // Batch ids + the PB TRAINING FRAME, built BEFORE the pseudobulk basis:
     // its nesting / density / batch checks are cheap, and failing them
     // here costs milliseconds instead of a full collapse.
-    let batch_id_of: HashMap<Box<str>, u32> = {
-        let mut uniq: Vec<Box<str>> = batch_membership.to_vec();
-        uniq.sort();
-        uniq.dedup();
-        uniq.into_iter()
-            .enumerate()
-            .map(|(i, b)| (b, i as u32))
-            .collect()
-    };
-    let n_exp_batches = batch_id_of.len().max(1);
-    let batch_membership_u32: Vec<u32> = batch_membership
-        .iter()
-        .map(|b| *batch_id_of.get(b).expect("batch id"))
-        .collect();
+    let n_exp_batches = batch_labels.len().max(1);
+    let batch_membership_u32 =
+        crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
 
     let (pb_frame, fine_to_super) = crate::cell_activity_graph_embedding::pb_frame::build_pb_frame(
         &ml,
@@ -889,6 +882,9 @@ pub fn fit_cell_activity_graph_embedding(
             // same axis its feature filter chose on.
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
+            // batch-adjusted, with the plain divide (the pairs' is the
+            // self-normalising Poisson ratio)
+            divisor: pair_batch,
         },
         &c.out,
     )?;
@@ -916,7 +912,7 @@ pub fn fit_cell_activity_graph_embedding(
                 n_cells,
                 n_features,
                 n_edges: n_fine_edges,
-                graph: (&knn).into(),
+                graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
                 k: n_edge_clusters,
                 delta: batch_db

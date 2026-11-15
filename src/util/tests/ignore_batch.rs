@@ -90,3 +90,66 @@ fn it_cannot_be_combined_with_auto_batch() {
     ];
     assert!(SrtInputArgs::try_parse_from(argv).is_err());
 }
+
+/// dsvd's per-cell projection is corrected by batch unless
+/// `--ignore-batch`: preprocessing's is taken when it is that one (with a
+/// δ, or under `--ignore-batch`), and dsvd's own is taken otherwise (one
+/// batch); either way, the projection a fresh pass gives.
+#[test]
+fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
+    use data_beans::alg::random_projection::RandProjOps;
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = crate::test_support::two_sections(dir.path(), 8);
+    let first = data.split(',').next().unwrap().to_string();
+    let first_coords = coords.split(',').next().unwrap().to_string();
+    let out = dir.path().join("run").to_str().unwrap().to_string();
+    let cases = [
+        (&data, &coords, None, true),
+        (&data, &coords, Some("--ignore-batch"), false),
+        (&first, &first_coords, None, false),
+    ];
+    for (data, coords, extra, has_delta) in cases {
+        let mut argv = vec![
+            "pinto",
+            data.as_str(),
+            "-c",
+            coords.as_str(),
+            "--coord-column-names",
+            "x,y",
+            "-o",
+            &out,
+            "-p",
+            "8",
+        ];
+        argv.extend(extra);
+        let args = SrtInputArgs::try_parse_from(argv).unwrap();
+        let pre = preprocess_srt(SrtPreprocessConfig {
+            common: &args,
+            ablation: None,
+            batch_effects: BatchEstimate::Fit,
+            feature_axis: FeatureAxisMode::Rows,
+            feature_kind: None,
+            cell_projection: true,
+        })
+        .unwrap();
+        assert_eq!(pre.batch_effects.is_some(), has_delta, "{extra:?}");
+        let got = crate::svd::fit::dsvd_cell_projection(
+            pre.cell_proj,
+            pre.batch_effects.is_some(),
+            &args,
+            &pre.data_vec,
+            &pre.batch_membership,
+        )
+        .unwrap();
+        let fresh = pre
+            .data_vec
+            .project_columns_with_batch_correction(
+                8,
+                None,
+                (!args.ignore_batch).then_some(pre.batch_membership.as_slice()),
+            )
+            .unwrap();
+        assert_eq!(got.proj, fresh.proj, "{extra:?}, delta {has_delta}");
+        assert_eq!(got.basis, fresh.basis, "{extra:?}, delta {has_delta}");
+    }
+}

@@ -151,6 +151,16 @@ pub fn read_batch_file(batch_file: &str, cells: usize) -> anyhow::Result<Vec<Box
     Ok(labels)
 }
 
+/// Each of `data_vec`'s cells' batch label as a run with inputs `args`
+/// reads it, before QC or `--auto-batch`: its `--batch-files` line, else
+/// its data file's position ([`read_batch_membership`] without the counts).
+pub(crate) fn read_batch_labels(
+    args: &SRTReadArgs,
+    data_vec: &SparseIoVec,
+) -> anyhow::Result<Vec<Box<str>>> {
+    Ok(read_batch_membership(args, data_vec)?.0)
+}
+
 /// Each cell's batch label, with each data file's cell count: from the
 /// batch files (one label per line, one file per data file), else one batch
 /// per data file.

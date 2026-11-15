@@ -16,8 +16,8 @@ use crate::util::ablation::{
     Ablation, AblationArgs, AblationKind, MaskMode, PermuteCoords,
 };
 use crate::util::batch_effects::{
-    estimate_and_write_batch_effects, load_cnv_cell_strata, sorted_batch_labels, BatchPosterior,
-    EstimateBatchArgs,
+    estimate_and_write_batch_effects, load_cnv_cell_strata, sorted_batch_labels, BatchEffects,
+    BatchPosterior, EstimateBatchArgs,
 };
 use crate::util::cell_pairs::{
     build_expression_graph, build_expression_knn, build_expression_knn_within, build_spatial_graph,
@@ -75,8 +75,14 @@ pub enum BatchEstimate {
     /// A query of a model with a δ (`predict`, which writes the δ it
     /// divides by itself): estimate, unwritten, unless every batch is
     /// known to the model's δ (`all_known`); then the projection is still
-    /// corrected by batch, as an estimate would have it.
-    Query { all_known: bool },
+    /// corrected by batch, as an estimate would have it. Expression mode's
+    /// base graph is built on the batch-corrected projection exactly when
+    /// the model's was (`base_corrected`, its manifest's
+    /// [`crate::util::metadata::GraphParams::base_batch_corrected`]).
+    Query {
+        all_known: bool,
+        base_corrected: bool,
+    },
 }
 
 /// Whether preprocessing estimates batch effects over `n_labels` distinct
@@ -85,9 +91,14 @@ pub enum BatchEstimate {
 pub(crate) fn batch_plan(mode: BatchEstimate, ignore_batch: bool, n_labels: usize) -> (bool, bool) {
     match mode {
         _ if ignore_batch => (false, false),
-        BatchEstimate::Fit | BatchEstimate::Query { all_known: false } => (true, false),
+        BatchEstimate::Fit
+        | BatchEstimate::Query {
+            all_known: false, ..
+        } => (true, false),
         BatchEstimate::Skip => (false, false),
-        BatchEstimate::Query { all_known: true } => (false, n_labels > 1),
+        BatchEstimate::Query {
+            all_known: true, ..
+        } => (false, n_labels > 1),
     }
 }
 
@@ -106,6 +117,13 @@ pub enum FeatureAxisMode {
     /// unit per row is a defined answer and aborting would reject multimodal
     /// matrices that used to work.
     Lenient,
+}
+
+/// Expression mode's base-graph projection, and whether it is corrected by
+/// the cells' batch labels.
+struct BaseProjection {
+    proj: data_beans::alg::random_projection::RandColProjOut,
+    corrected: bool,
 }
 
 /// Spatial seeding's inputs (see [`seeding_inputs`]).
@@ -142,6 +160,10 @@ pub struct SrtPreprocessed {
     /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
     /// single-batch or not estimated.
     pub batch_effects: Option<BatchPosterior>,
+    /// Expression mode's base graph was built on the batch-corrected
+    /// projection, for the manifest's
+    /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
+    pub base_batch_corrected: bool,
     pub graph: KnnGraph,
     /// The k's [`Self::graph`] was actually built with. Carried rather than
     /// re-derived from the args, so a manifest cannot describe a graph the run
@@ -167,6 +189,36 @@ pub struct SrtPreprocessed {
     /// What `--permute-coords`, `--drop-features` or `--mask-cells` did, for
     /// the manifest's `ablation` block. `None` on an ordinary fit.
     pub ablation: Option<Ablation>,
+}
+
+/// The batch-effect estimate of inputs `c` over `batch_membership` (its
+/// sorted labels `batch_labels`), written under `out` when given (a fit);
+/// the projection it collapsed on kept with `keep_projection`.
+pub(crate) fn estimate_batches(
+    c: &SrtInputArgs,
+    out: Option<&str>,
+    data_vec: &mut SparseIoVec,
+    batch_membership: &[Box<str>],
+    batch_labels: &[Box<str>],
+    keep_projection: bool,
+) -> anyhow::Result<Option<BatchEffects>> {
+    let strata = match c.cnv_clones.as_deref() {
+        Some(path) => Some(load_cnv_cell_strata(path, data_vec)?),
+        None => None,
+    };
+    estimate_and_write_batch_effects(
+        data_vec,
+        batch_membership,
+        batch_labels,
+        EstimateBatchArgs::at(
+            c.proj_dim,
+            crate::util::input::BATCH_KNN,
+            c.num_levels,
+            strata,
+        ),
+        out,
+        keep_projection,
+    )
 }
 
 /// The graph neighbourhood algorithms must navigate, given the modelled graph
@@ -203,8 +255,11 @@ pub fn topology_graph<'a>(
 /// per-batch effects, and (optionally) compute NB Fisher feature weights.
 ///
 /// In expression mode (no `--coord`), the cell embedding used to build
-/// the graph is the random-projected count matrix with no batch
-/// correction (batch effects haven't been estimated yet at this point).
+/// the graph is the random-projected count matrix, batch-corrected when a
+/// fit's counts are divided by an estimated δ (batches from files or
+/// `--batch-files`; not under `--auto-batch`, whose batches are that
+/// graph's components), and for a query when the model's was. The
+/// estimate then runs before the graph, which reads the counts undivided.
 pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreprocessed> {
     let c = cfg.common;
 
@@ -432,6 +487,15 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         _ => None,
     };
 
+    // Where a fit writes its estimate; a query's is unwritten.
+    let fit_out = (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref());
+    // `--auto-batch` relabels the cells by the graph's components.
+    let auto_relabels = c.auto_batch && c.batch_files.is_none();
+    // Expression mode's projection, kept for the cells' projection below
+    // while it is theirs (the same cells and labels).
+    let mut base_proj: Option<BaseProjection> = None;
+    // Expression mode's estimate, when it runs before the graph (`Some`).
+    let mut early_estimate: Option<Option<BatchEffects>> = None;
     let graph = if has_coords {
         info!("Building spatial KNN graph (k={})...", base_knn);
         build_spatial_graph(
@@ -446,13 +510,44 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             "Building expression KNN graph (k={}, proj_dim={})...",
             base_knn, c.proj_dim
         );
-        let cell_proj_pre = data_vec.project_columns_with_batch_correction(
-            c.proj_dim,
-            None,
-            None::<&[Box<str>]>,
-        )?;
+        // On the batch-corrected projection when its counts are divided by
+        // an estimated δ, or neighbours match batch rather than cell state:
+        // a fit estimates here, first, on the labels it would estimate on
+        // below (nothing is cut or relabelled in between), and builds the
+        // graph on the estimate's projection only when it gave a δ. A
+        // query builds its graph as the model's was. It reads the counts
+        // as they are: nothing is divided by δ yet. Not under --auto-batch:
+        // its batches are this graph's components, and the labels it
+        // starts from are not them.
+        let labels = sorted_batch_labels(&batch_membership);
+        let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, labels.len());
+        let labelled = (estimate || known) && labels.len() > 1 && !auto_relabels;
+        let model = match cfg.batch_effects {
+            BatchEstimate::Query { base_corrected, .. } => Some(base_corrected),
+            _ => None,
+        };
+        let mut correct = labelled && model == Some(true);
+        let mut proj = None;
+        if labelled && estimate && model != Some(false) {
+            let mut effects =
+                estimate_batches(c, fit_out, &mut data_vec, &batch_membership, &labels, true)?;
+            correct =
+                model.unwrap_or_else(|| effects.as_ref().is_some_and(|e| e.posterior.is_some()));
+            if correct {
+                proj = effects.as_mut().and_then(|e| e.projection.take());
+            }
+            early_estimate = Some(effects);
+        }
+        let proj = match proj {
+            Some(proj) => proj,
+            None => data_vec.project_columns_with_batch_correction(
+                c.proj_dim,
+                None,
+                correct.then_some(batch_membership.as_slice()),
+            )?,
+        };
         let (g, embedding) = build_expression_graph(
-            &cell_proj_pre.proj,
+            &proj.proj,
             SrtCellPairsArgs {
                 knn: base_knn,
                 reciprocal: knn.reciprocal,
@@ -460,11 +555,18 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         )?;
         coordinates = embedding;
         coordinate_names = vec!["pc_1".into(), "pc_2".into()];
+        base_proj = Some(BaseProjection {
+            proj,
+            corrected: correct,
+        });
         g
     };
+    let base_batch_corrected = base_proj.as_ref().is_some_and(|b| b.corrected);
 
     let (graph, n_cells) = match cut_after_graph {
         Some(keep) => {
+            // the projection is of the cells before the cut
+            base_proj = None;
             let graph = induced_subgraph(&graph, &keep);
             mask_cells(
                 &keep,
@@ -488,7 +590,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // The kept cells' read-time labels, before `--auto-batch` relabels them.
     let read_batches = (has_coords && multi_sample).then(|| batch_membership.clone());
 
-    if c.auto_batch && c.batch_files.is_none() {
+    if auto_relabels {
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
     }
 
@@ -503,27 +605,21 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
     let augment_knn = knn.augment;
     let take_projection = cfg.cell_projection || augment_knn > 0;
-    let mut batch_effects = if estimate {
-        let strata = match c.cnv_clones.as_deref() {
-            Some(path) => Some(load_cnv_cell_strata(path, &data_vec)?),
-            None => None,
-        };
-        estimate_and_write_batch_effects(
+    // An estimate that gives no δ is no estimate: nothing is divided, and
+    // nothing is corrected for it.
+    let mut batch_effects = match early_estimate {
+        Some(effects) => effects,
+        None if estimate => estimate_batches(
+            c,
+            fit_out,
             &mut data_vec,
             &batch_membership,
             &batch_labels,
-            EstimateBatchArgs::at(
-                c.proj_dim,
-                crate::util::input::BATCH_KNN,
-                c.num_levels,
-                strata,
-            ),
-            (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref()),
             take_projection,
-        )?
-    } else {
-        None
-    };
+        )?,
+        None => None,
+    }
+    .filter(|b| b.posterior.is_some());
 
     // Augmentation happens AFTER this point, never before, for two reasons.
     //
@@ -539,18 +635,22 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // auto-batch sees it by construction — there a component is not a section
     // and was never claimed to be, which is why that path folds no fragments.
     //
-    // And the expression graph should be built on a batch-corrected
-    // projection, or its neighbours match batch rather than cell type.
+    // The expression graph is built on a batch-corrected projection, or its
+    // neighbours match batch rather than cell type: the base graph above in
+    // expression mode, the augmenting one here.
     let batch_arg: Option<&[Box<str>]> =
         (batch_effects.is_some() || known).then_some(batch_membership.as_slice());
 
     // With an estimate, its projection is this one: the same `-p` and batch
-    // membership.
+    // membership; so is expression mode's, when corrected alike (its labels
+    // are these: a relabel leaves it uncorrected, and an estimate before the
+    // graph took its projection there).
     let cell_proj = match batch_effects.as_mut().and_then(|b| b.projection.take()) {
         Some(proj) => Some(proj),
-        None if take_projection => {
-            Some(data_vec.project_columns_with_batch_correction(c.proj_dim, None, batch_arg)?)
-        }
+        None if take_projection => match base_proj {
+            Some(b) if b.corrected == batch_arg.is_some() => Some(b.proj),
+            _ => Some(data_vec.project_columns_with_batch_correction(c.proj_dim, None, batch_arg)?),
+        },
         None => None,
     };
 
@@ -639,7 +739,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         section_ids,
         seeding,
         batch_labels,
-        batch_effects: batch_effects.map(|b| b.posterior),
+        batch_effects: batch_effects.and_then(|b| b.posterior),
+        base_batch_corrected,
         graph,
         knn,
         spatial_graph,

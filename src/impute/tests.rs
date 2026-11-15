@@ -18,6 +18,24 @@ fn make_data(
     sparse_vec(dir.path(), tag, &boxed(feature_names), &cells, triplets)
 }
 
+/// [`project_profile_propensity`] of `data` through `profiles` (rows
+/// `features`, matched as `kind`), undivided.
+fn project(
+    data: &SparseIoVec,
+    profiles: &Mat,
+    features: &[Box<str>],
+    kind: &data_beans::aux::feature_names::FeatureNameKind,
+    iters: usize,
+) -> anyhow::Result<Mat> {
+    let p = ProfileProjection {
+        profiles,
+        model_features: features,
+        feature_kind: kind,
+        iters,
+    };
+    project_profile_propensity(data, &p, None, "test")
+}
+
 /// Two communities with disjoint expression: C0 lives on {a, b}, C1 on
 /// {c, d}.
 fn disjoint_profiles() -> (Mat, Vec<Box<str>>) {
@@ -54,13 +72,12 @@ fn pure_cells_land_on_their_community() -> anyhow::Result<()> {
         ],
         3,
     );
-    let prop = project_profile_propensity(
+    let prop = project(
         &data,
         &profiles,
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         100,
-        "test",
     )?;
     assert!(prop[(0, 0)] > 0.99, "pure C0 cell: {}", prop[(0, 0)]);
     assert!(prop[(1, 1)] > 0.99, "pure C1 cell: {}", prop[(1, 1)]);
@@ -87,13 +104,12 @@ fn feature_matching_goes_through_the_canonicalizer() -> anyhow::Result<()> {
         &[(0, 0, 5.0), (1, 0, 3.0)],
         1,
     );
-    let prop = project_profile_propensity(
+    let prop = project(
         &data,
         &profiles,
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Gene { delim: '_' },
         100,
-        "test",
     )?;
     assert!(prop[(0, 0)] > 0.99, "canonicalized match: {}", prop[(0, 0)]);
     Ok(())
@@ -126,7 +142,7 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
         );
     }
     let data = open_backends("test", &files)?;
-    let prop = project_profile_propensity(
+    let prop = project(
         &data,
         &profiles,
         &features,
@@ -134,7 +150,6 @@ fn locus_rows_on_sex_chromosomes_match_the_model() -> anyhow::Result<()> {
             merge_overlapping: false,
         },
         100,
-        "test",
     )?;
     for c in 0..2 {
         assert!(prop[(c, 0)] > 0.99, "chrX peaks matched: {}", prop[(c, 0)]);
@@ -148,13 +163,12 @@ fn a_cell_off_the_model_axis_keeps_a_zero_row() -> anyhow::Result<()> {
     let (profiles, features) = disjoint_profiles();
     // cell_0 expresses only a feature the model never saw; cell_1 is normal.
     let data = make_data(&dir, "off", &["zzz", "a"], &[(0, 0, 9.0), (1, 1, 4.0)], 2);
-    let prop = project_profile_propensity(
+    let prop = project(
         &data,
         &profiles,
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         100,
-        "test",
     )?;
     assert!(prop.row(0).iter().all(|&x| x == 0.0));
     assert!(prop[(1, 0)] > 0.99);
@@ -166,13 +180,12 @@ fn no_shared_feature_is_an_error_not_a_uniform_guess() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let (profiles, features) = disjoint_profiles();
     let data = make_data(&dir, "none", &["x", "y"], &[(0, 0, 1.0)], 1);
-    assert!(project_profile_propensity(
+    assert!(project(
         &data,
         &profiles,
         &features,
         &data_beans::aux::feature_names::FeatureNameKind::Exact,
         10,
-        "test",
     )
     .is_err());
     Ok(())
@@ -379,4 +392,184 @@ mod retrieval {
             }
         }
     }
+}
+
+//////////////////////////////////////////
+// lc / dsvd: the dictionary's scale    //
+//////////////////////////////////////////
+
+/// An lc model of [`crate::test_support::two_sections`] (two batches, the
+/// second folded on every third feature) at `dir/run`, with `extra` fit
+/// flags: its prefix, data and coordinate files.
+fn two_batch_lc(dir: &std::path::Path, extra: &[&str]) -> (String, String, String) {
+    use clap::Parser;
+    let side = 8;
+    let (data, coords) = crate::test_support::two_sections(dir, side);
+    let prefix = dir.join("run").to_str().unwrap().to_string();
+    let mut argv = vec![
+        "lc",
+        data.as_str(),
+        "-c",
+        coords.as_str(),
+        "--coord-column-names",
+        "x,y",
+        "-o",
+        prefix.as_str(),
+        "--n-communities",
+        "4",
+        "--num-gibbs",
+        "2",
+        "--num-greedy",
+        "1",
+        "--num-levels",
+        "2",
+    ];
+    argv.extend_from_slice(extra);
+    crate::link_community::fit::fit_srt_link_community(
+        &crate::link_community::args::SrtLinkCommunityArgs::try_parse_from(argv).unwrap(),
+    )
+    .unwrap();
+    (prefix, data, coords)
+}
+
+/// The manifest at `prefix`, its batch-adjusted flag set to `adjusted`.
+fn set_adjusted(prefix: &str, adjusted: bool) {
+    use crate::util::metadata::{manifest_path, PintoMetadata};
+    let path = manifest_path(prefix);
+    let mut meta = PintoMetadata::read(std::path::Path::new(&path)).unwrap();
+    meta.outputs.feature_community_batch_adjusted = adjusted;
+    meta.write(std::path::Path::new(&path)).unwrap();
+}
+
+/// How far `prop`'s rows (two files of `side²` cells each, a cell's type
+/// its half of the grid) split by batch: over the two types, the L1 gap
+/// between the batches' mean propensities.
+fn batch_split(prop: &Mat, side: usize) -> f32 {
+    let n = side * side;
+    let mut gap = 0.0;
+    for left in [true, false] {
+        let mean = |file: usize| {
+            let rows: Vec<usize> = (0..n)
+                .filter(|c| (c % side < side / 2) == left)
+                .map(|c| file * n + c)
+                .collect();
+            let mut m = vec![0.0f32; prop.ncols()];
+            for &r in &rows {
+                for (k, x) in m.iter_mut().enumerate() {
+                    *x += prop[(r, k)] / rows.len() as f32;
+                }
+            }
+            m
+        };
+        let (a, b) = (mean(0), mean(1));
+        gap += a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum::<f32>();
+    }
+    gap
+}
+
+/// [`profile_propensities`] of the training data against itself.
+fn sides(prefix: &str, data: &str, extra: &[&str]) -> anyhow::Result<ProfileSides> {
+    let out = format!("{prefix}.impute");
+    let mut argv = vec!["impute", data, "--model", prefix, "-o", out.as_str()];
+    argv.extend_from_slice(extra);
+    let args = parse_impute(&argv)?;
+    let run = crate::util::metadata::Run::open(prefix)?;
+    let files = resolve_reference_data(&args, Some(&run))?;
+    mkdir_parent(&out)?;
+    profile_propensities(&args, Some(&run), &files)
+}
+
+/// A multi-batch lc model's profiles are batch-adjusted, so impute divides
+/// the reference by the run's δ (and the query, the same cells, by the
+/// model's): a type's reference propensity no longer splits by batch, as
+/// it does matched raw. A model without the flag (an older fit) is matched
+/// raw on both sides, as before.
+#[test]
+fn an_adjusted_lc_model_puts_both_sides_on_its_profiles_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, data, _) = two_batch_lc(dir.path(), &[]);
+    let (q_adj, _, r_adj, _, divide) = sides(&prefix, &data, &[]).unwrap();
+    assert!(divide.is_some(), "the reference is divided");
+
+    set_adjusted(&prefix, false);
+    let (q_raw, _, r_raw, ref_data, divide) = sides(&prefix, &data, &[]).unwrap();
+    assert!(divide.is_none(), "an older model's reference is not");
+    let (adjusted, raw) = (batch_split(&r_adj, 8), batch_split(&r_raw, 8));
+    assert!(
+        raw > 0.2 && adjusted < 0.5 * raw,
+        "reference split by batch: adjusted {adjusted}, raw {raw}"
+    );
+    assert!(batch_split(&q_adj, 8) < 0.5 * batch_split(&q_raw, 8));
+
+    // flag absent: the undivided projection, through the same profiles
+    let (profiles, features) = crate::util::parquet_io::read_feature_community(
+        std::path::Path::new(&format!("{prefix}.feature_community.parquet")),
+    )
+    .unwrap();
+    let undivided = project(
+        &ref_data,
+        &profiles,
+        &features,
+        &data_beans::aux::feature_names::FeatureNameKind::Exact,
+        100,
+    )
+    .unwrap();
+    assert_eq!(r_raw, undivided);
+    assert_eq!(q_raw, undivided);
+}
+
+/// `--ignore-batch` would match undivided cells to batch-adjusted
+/// profiles, so impute refuses it for such a model; an older one takes it.
+#[test]
+fn ignore_batch_is_refused_for_an_adjusted_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, data, _) = two_batch_lc(dir.path(), &[]);
+    let err = sides(&prefix, &data, &["--ignore-batch"])
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("--ignore-batch"), "{err}");
+    // impute takes no held-out flag, so none is offered
+    assert!(!err.to_string().contains("--holdout"), "{err}");
+    set_adjusted(&prefix, false);
+    assert!(sides(&prefix, &data, &["--ignore-batch"]).is_ok());
+}
+
+/// The fit's own arguments run impute, `--auto-batch` among them: its
+/// components are never the model's batches, and impute builds no graph
+/// to find them, so the query is one batch, new to the model, which
+/// nothing estimates: undivided, as `pinto predict` leaves a cage query
+/// of one component. The reference is divided by the run's δ.
+#[test]
+fn impute_takes_the_fits_auto_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let auto = ["--auto-batch"];
+    let (prefix, data, coords) = two_batch_lc(dir.path(), &auto);
+    let path = crate::util::metadata::manifest_path(&prefix);
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&path)).unwrap();
+    assert!(
+        meta.outputs.feature_community_batch_adjusted,
+        "two components, a δ"
+    );
+    let fit_args = [
+        "-c",
+        coords.as_str(),
+        "--coord-column-names",
+        "x,y",
+        auto[0],
+    ];
+    let (query, _, _, ref_data, divide) = sides(&prefix, &data, &fit_args).unwrap();
+    assert!(divide.is_some(), "the reference is divided");
+    let (profiles, features) = crate::util::parquet_io::read_feature_community(
+        std::path::Path::new(&format!("{prefix}.feature_community.parquet")),
+    )
+    .unwrap();
+    let undivided = project(
+        &ref_data,
+        &profiles,
+        &features,
+        &data_beans::aux::feature_names::FeatureNameKind::Exact,
+        100,
+    )
+    .unwrap();
+    assert_eq!(query, undivided);
 }

@@ -302,7 +302,7 @@ enum Commands {
                       \x20 4. Resolve feature modules (projection or SNN + k-core + Leiden)\n\
                       \x20 5. Build sparse edge profiles (projection or module-pair residual),\n\
                       \x20    each count divided by its batch's δ, as dsvd and cage divide\n\
-                      \x20    (feature_community stays on raw counts; --ignore-batch: no δ)\n\
+                      \x20    (the written feature_community too; --ignore-batch: no δ)\n\
                       \x20 6. V-cycle Gibbs + greedy across coarsening levels\n\
                       \x20 7. Component-EM + greedy on full fine-resolution edges\n\
                       \x20 8. Extract cell propensity + feature-community statistics (+ cosine dictionary merge)\n\n\
@@ -517,7 +517,12 @@ enum Commands {
                       \x20    without one, a data file matches when it is one of the model's\n\
                       \x20    own (the model labelled by file too). A model without a δ\n\
                       \x20    trained on undivided counts: its query is not divided.\n\
-                      \x20    {out}.delta.parquet is the δ used. --ignore-batch: none.\n\
+                      \x20    {out}.delta.parquet is the δ used. --ignore-batch: none,\n\
+                      \x20    refused for a model fitted on δ-divided counts (its manifest's\n\
+                      \x20    feature_community_batch_adjusted): its query would not be on\n\
+                      \x20    the model's scale. An lc / dsvd model's held-out sample: a\n\
+                      \x20    batch it knows takes its δ, a new one is estimated from the\n\
+                      \x20    fitting parts (--holdout-delta-iters 0: left unshifted).\n\
                       \x20 2. Align {model}.feature_embedding.parquet to its feature axis by name.\n\
                       \x20    Features without a model row are dropped, never seeded.\n\
                       \x20 3. Place every cell pair, and every cell, on the frozen dictionary\n\
@@ -574,10 +579,17 @@ enum Commands {
                       \x20  divided by the run's δ for its batch (the batches as\n\
                       \x20  estimated, from {model}.delta_cells.parquet, or the\n\
                       \x20  coord_pairs of a run fitted before it), as predict\n\
-                      \x20  divides the query. lc / dsvd models stay on raw counts on\n\
-                      \x20  both sides: their feature_community profiles are fitted on\n\
-                      \x20  raw counts, so dividing the cells would match them against\n\
-                      \x20  profiles on another scale. --ignore-batch: no δ.\n\
+                      \x20  divides the query. An lc / dsvd model fitted on δ-divided\n\
+                      \x20  counts (its manifest's feature_community_batch_adjusted)\n\
+                      \x20  puts both sides on its profiles' scale: the reference cells\n\
+                      \x20  divided so, in the EM and in the pooling, and the query by\n\
+                      \x20  the model's δ for a batch it knows, by an estimate (moved\n\
+                      \x20  into the model's frame) for a new one, as predict divides a\n\
+                      \x20  cage query (--auto-batch: no graph is built here to find its\n\
+                      \x20  components, so the query is one new batch, undivided). An\n\
+                      \x20  older lc / dsvd model leaves both sides\n\
+                      \x20  undivided, on its raw-count profiles' scale. --ignore-batch:\n\
+                      \x20  no δ, refused for a model fitted on δ-divided counts.\n\
                       \n\
                       The reference data defaults to the files recorded in\n\
                       {model}.pinto.json; --reference-data overrides.\n\

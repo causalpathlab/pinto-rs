@@ -75,7 +75,9 @@ pub struct SpatialInputArgs {
 
 /// Counts and coordinates of every cell, sections kept apart.
 pub struct SpatialData {
-    /// Raw counts, genes × cells.
+    /// Counts, genes × cells: as stored for one batch or under
+    /// `--ignore-batch`, otherwise each divided by its gene's δ in its
+    /// cell's batch ([`Self::delta`]).
     pub counts: CscMatrix<f32>,
     pub genes: Vec<Box<str>>,
     pub cells: Vec<Box<str>>,
@@ -265,7 +267,9 @@ impl SpatialInputArgs {
         let mut estimate = (!self.ignore_batch)
             .then(|| estimate_delta(&mut srt.data, &srt.batches, &self.out, with_projection))
             .transpose()?
-            .flatten();
+            .flatten()
+            // an estimate without a δ is none
+            .filter(|e| e.posterior.is_some());
         // the projection cage coarsens on, taken as cage takes it: with a
         // δ, the batch-corrected one its estimate collapsed on
         let projection = match estimate.as_mut().and_then(|e| e.projection.take()) {
@@ -281,13 +285,10 @@ impl SpatialInputArgs {
             ),
             None => None,
         };
-        let (mean, applied) = match estimate {
-            Some(e) => {
-                let batches = e.posterior.batches.clone();
-                (
-                    Some(e.posterior.into_mean()?),
-                    Some(AppliedDelta { batches }),
-                )
+        let (mean, applied) = match estimate.and_then(|e| e.posterior) {
+            Some(posterior) => {
+                let batches = posterior.batches.clone();
+                (Some(posterior.into_mean()?), Some(AppliedDelta { batches }))
             }
             None => (None, None),
         };

@@ -333,14 +333,14 @@ pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Ma
         check_model(model)?;
     }
     match run.as_ref() {
-        Some(Run { meta, .. }) if matches!(meta.command.as_str(), "lc" | "dsvd") => {
+        Some(run) if matches!(run.meta.command.as_str(), "lc" | "dsvd") => {
             anyhow::ensure!(
                 given.cage.is_empty(),
                 "{model} is an {} model: {} apply to cage models only",
-                meta.command,
+                run.meta.command,
                 given.cage.join(", ")
             );
-            crate::holdout::predict_profiles(args, meta)
+            crate::holdout::predict_profiles(args, run)
         }
         _ => {
             anyhow::ensure!(
@@ -392,13 +392,16 @@ pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
 /// The δ of the model at prefix `model` (its manifest `run`) and its path,
 /// when it has one and `--ignore-batch` is not given. A model without one
 /// (one batch, `--ignore-batch`, or an older cage-cell fit) trained its
-/// encoder on undivided counts, so its query is not divided either.
+/// encoder on undivided counts, so its query is not divided either. A
+/// model whose manifest says its dictionary is batch-adjusted refuses
+/// `--ignore-batch` ([`delta::batch_adjusted`]).
 fn model_delta(
     model: &str,
     run: Option<&Run>,
     ignore_batch: bool,
 ) -> anyhow::Result<Option<(crate::util::batch_effects::RunDelta, String)>> {
     use crate::util::batch_effects::{read_delta, run_delta_path};
+    delta::batch_adjusted(model, run, ignore_batch, delta::QueryReader::Cage)?;
     if ignore_batch {
         return Ok(None);
     }
@@ -439,10 +442,18 @@ pub fn predict_cage(
         info!("Every batch of this sample is the model's; none is estimated");
     }
     // The δ is written once, below: the one the query is divided by.
+    // Without coordinates the query's graph is built as the model's was,
+    // on the batch-corrected projection or not, as its manifest records.
     let batch_plan = match model_delta {
-        Some(_) => BatchEstimate::Query { all_known },
+        Some(_) => BatchEstimate::Query {
+            all_known,
+            base_corrected: run.is_some_and(|r| r.meta.base_graph_batch_corrected()),
+        },
         None => BatchEstimate::Skip,
     };
+    // A model whose dictionary is batch-adjusted has its query's written
+    // alike; an older one's stays on the counts as read.
+    let model_adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
@@ -462,6 +473,7 @@ pub fn predict_cage(
         n_cells,
         n_rows: _,
         cell_proj,
+        base_batch_corrected,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
@@ -663,15 +675,7 @@ pub fn predict_cage(
          check --coord and the neighbourhood flags (-k / --knn-expr)"
     );
 
-    let batch_id_of: HashMap<&str, u32> = query_batches
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.as_ref(), i as u32))
-        .collect();
-    let batch_of_cell: Vec<u32> = batch_membership
-        .iter()
-        .map(|b| batch_id_of[b.as_ref()])
-        .collect();
+    let batch_of_cell = crate::util::batch_effects::batch_ids(&batch_membership, &query_batches);
 
     let rows = data_vec.row_names()?;
     // The estimate in full (its spread too), on this sample's rows, by
@@ -781,6 +785,8 @@ pub fn predict_cage(
             data_vec: &data_vec,
             feature_weights: &feature_weights,
             axis: &feature_axis,
+            // batch-adjusted when the model's is
+            divisor: pair_batch.filter(|_| model_adjusted),
         },
         &labels,
         k,
@@ -804,7 +810,7 @@ pub fn predict_cage(
             n_cells,
             n_features,
             n_edges,
-            graph: (&knn).into(),
+            graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
             ablation: None,
             k,
             // the δ alone: the cells' batches are its own labels, in its
@@ -817,6 +823,7 @@ pub fn predict_cage(
         None,
     );
     meta.command = "predict".to_string();
+    meta.outputs.feature_community_batch_adjusted &= model_adjusted;
     // A predicted sample is placed by the model's encoder; it is not a model
     // and carries none of its own.
     meta.outputs.pair_encoder = None;
@@ -831,7 +838,7 @@ pub fn predict_cage(
 /// Fits record them canonical; an older manifest's relative entry is
 /// resolved beside the manifest, else from here, and kept as written when
 /// it resolves in neither.
-fn model_data_files(run: Option<&Run>) -> Vec<String> {
+pub(crate) fn model_data_files(run: Option<&Run>) -> Vec<String> {
     let Some(run) = run else {
         return Vec::new();
     };
@@ -914,7 +921,7 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
     Ok(())
 }
 
-mod delta;
+pub(crate) mod delta;
 
 #[cfg(test)]
 mod tests;

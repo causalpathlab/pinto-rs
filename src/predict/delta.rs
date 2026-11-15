@@ -283,3 +283,127 @@ pub(crate) fn query_delta(
         query_batches,
     ))
 }
+
+/// What reads a query of a model, for the way out `--ignore-batch` is
+/// refused with ([`batch_adjusted`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueryReader {
+    /// `pinto predict` of a cage model, also under `pinto impute`.
+    Cage,
+    /// `pinto predict` of an lc / dsvd model: held-out scoring.
+    Holdout,
+    /// `pinto impute` of an lc / dsvd model.
+    Impute,
+}
+
+impl QueryReader {
+    /// What a run without `--ignore-batch` does instead.
+    fn without_ignore_batch(self) -> &'static str {
+        match self {
+            Self::Cage => {
+                "each batch the model knows is then divided by the model's δ, a new one by \
+                 an estimate on this sample"
+            }
+            Self::Holdout => {
+                "each batch the model knows then takes the model's δ; with \
+                 --holdout-delta-iters 0 every other batch is scored unshifted"
+            }
+            Self::Impute => {
+                "the reference is then divided by the run's δ, the query by the model's δ \
+                 for a batch it knows and by an estimate for a new one"
+            }
+        }
+    }
+}
+
+/// Whether the model at prefix `model` (its manifest `run`) wrote a
+/// batch-adjusted feature_community, fitted on counts divided by its δ, as
+/// its manifest says. A query of such a model goes onto that scale: each
+/// batch the model knows divided by the model's δ, a new one by an
+/// estimate. `--ignore-batch` (no δ) is refused for it, since an undivided
+/// query is not on the scale of its dictionary or its encoder, with what
+/// `reader` does without it; a model without the flag (one batch,
+/// `--ignore-batch`, an older fit) takes it.
+pub(crate) fn batch_adjusted(
+    model: &str,
+    run: Option<&crate::util::metadata::Run>,
+    ignore_batch: bool,
+    reader: QueryReader,
+) -> anyhow::Result<bool> {
+    let adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
+    anyhow::ensure!(
+        !(adjusted && ignore_batch),
+        "{model} was fitted on counts divided by its batch effect, so an undivided query \
+         is not on its scale: drop --ignore-batch ({})",
+        reader.without_ignore_batch()
+    );
+    Ok(adjusted)
+}
+
+/// What divides a query of the batch-adjusted model at prefix `model` (its
+/// manifest `run`), read with inputs `c` into `data`, its cells' batch
+/// labels `membership` as read: the δ on `data`'s rows over the sorted
+/// labels, and each cell's column of it. Each batch the model knows takes
+/// the model's δ; when one is new and there are two or more, the query's
+/// own estimate, moved into the model's frame ([`query_delta`]), as
+/// `pinto predict` divides a cage query. `None`: nothing to divide by.
+/// `--auto-batch` labels are a graph's components, never the model's
+/// batches; no graph is built here, so the query is one component, one
+/// batch new to the model, which nothing estimates: undivided, as
+/// `pinto predict` leaves a cage query whose graph is one component.
+pub(crate) fn adjusted_query_delta(
+    model: &str,
+    run: &crate::util::metadata::Run,
+    c: &SrtInputArgs,
+    data: &mut SparseIoVec,
+    membership: &[Box<str>],
+) -> anyhow::Result<Option<(Mat, Vec<u32>)>> {
+    use crate::util::batch_effects::{batch_ids, sorted_batch_labels};
+    if BatchLabels::of(c) == BatchLabels::AutoBatch {
+        info!(
+            "--auto-batch takes batches from a cell graph, which impute does not build: \
+             the query is one batch, new to the model, and is not divided"
+        );
+        return Ok(None);
+    }
+    let (model_delta, path) = adjusted_model_delta(model, run)?;
+    let source = run.meta.batch_labels;
+    let model_files = crate::predict::model_data_files(Some(run));
+    let how = QueryLabels::of(BatchLabels::of(c), &c.data_files, &model_files);
+    let labels = sorted_batch_labels(membership);
+    let all_known = every_batch_known(c, &how, &model_delta.batches, source)?;
+    let estimate = if all_known {
+        None
+    } else {
+        crate::util::srt_pipeline::estimate_batches(c, None, data, membership, &labels, false)?
+            .and_then(|e| e.posterior)
+            .map(|p| p.into_delta().map(|d| d.on_batches(&labels)))
+            .transpose()?
+    };
+    let matched = match_batches(&labels, &model_delta.batches, source, &how);
+    let rows = data.row_names()?;
+    Ok(query_delta(
+        (&model_delta, &path),
+        &matched,
+        &rows,
+        &labels,
+        estimate.as_ref(),
+    )
+    .map(|d| (d.mean, batch_ids(membership, &labels))))
+}
+
+/// The δ of the batch-adjusted model at prefix `model` (its manifest
+/// `run`) and its path: an error when the manifest records none.
+pub(crate) fn adjusted_model_delta(
+    model: &str,
+    run: &crate::util::metadata::Run,
+) -> anyhow::Result<(RunDelta, String)> {
+    use crate::util::batch_effects::{read_delta, run_delta_path};
+    let path = run_delta_path(model, Some(run))?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{model}: its manifest says it was fitted on counts divided by its batch \
+             effect, but it records no delta.parquet to divide a query by"
+        )
+    })?;
+    Ok((read_delta(&path)?, path))
+}

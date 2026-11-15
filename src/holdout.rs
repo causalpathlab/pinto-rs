@@ -29,12 +29,15 @@
 //! over one profile. A non-spatial model (an lc fit without `-c`) scored here on
 //! the same sample is scored on the same pairs.
 //!
-//! lc fits its profiles on raw counts, so the held-out sample is on their
-//! scale; what it lacks is its own per-feature batch shift `δ`. That is
-//! estimated per batch from the FITTING parts only (`--holdout-delta-iters`
-//! rounds of `δ_g ← δ_g (obs_g + 1) / (pred_g + 1)`), so the scored parts never
-//! inform it. Hidden features under `--ablate-features` keep `δ = 1`: nothing in
-//! the fit sees them.
+//! lc's profiles are on the fit's counts (divided by its batch effect when it
+//! has one, so on the batch-free scale, as its manifest's
+//! `feature_community_batch_adjusted` says); what the held-out sample lacks
+//! is its own per-feature batch shift `δ` from that scale. A batch the
+//! model knows takes the model's own δ (batch-adjusted profiles only). Any
+//! other is estimated per batch from the FITTING parts only
+//! (`--holdout-delta-iters` rounds of `δ_g ← δ_g (obs_g + 1) / (pred_g + 1)`),
+//! so the scored parts never inform it; there, hidden features under
+//! `--ablate-features` keep `δ = 1`: nothing in the fit sees them.
 
 use crate::util::common::*;
 use crate::util::profile_match::em_proportions;
@@ -129,7 +132,8 @@ pub struct HoldoutArgs {
                      then set δ_g ← δ_g (obs_g + 1) / (pred_g + 1) per batch, over the\n\
                      FITTING parts only, so the scored parts never inform it. Same\n\
                      default as `senna predict --delta-iters`. 0 applies the model's\n\
-                     profiles unshifted.",
+                     profiles unshifted, but for a batch the model knows, which keeps\n\
+                     the model's own δ when its profiles are batch-adjusted.",
         hide = true
     )]
     pub holdout_delta_iters: usize,
@@ -181,7 +185,15 @@ pub struct HoldoutInfo {
     /// Where the null came from: `--null-from`, the model's own training data,
     /// or (with a warning) the held-out sample, which makes it a second ceiling.
     pub null_from: String,
+    /// Rounds estimating δ from the fitting parts, for each batch not at
+    /// the model's own δ; with 0 those are scored unshifted.
     pub delta_iters: usize,
+    /// For a batch-adjusted model: how many of the sample's batches are
+    /// the model's and were scored under its own δ, whatever
+    /// `delta_iters`. Absent for an older model (every batch's δ starts
+    /// at 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_delta_batches: Option<usize>,
     /// Counts in the scored parts.
     #[serde(deserialize_with = "nan_as_null::deserialize")]
     pub eval_count: f64,

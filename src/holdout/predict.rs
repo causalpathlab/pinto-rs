@@ -8,7 +8,7 @@ use super::{
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::predict::PredictArgs;
 use crate::util::common::*;
-use crate::util::metadata::PintoMetadata;
+use crate::util::metadata::{PintoMetadata, Run};
 use crate::util::profile_match::{em_proportions, match_profiles, training_feature_totals};
 use crate::util::srt_pipeline::{
     preprocess_srt, BatchEstimate, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
@@ -72,21 +72,35 @@ fn slots_named(
     Ok(on)
 }
 
-/// `pinto predict` for an lc / dsvd model. Returns the per-cell propensity
-/// and cell names it writes.
-pub fn predict_profiles(
-    args: &PredictArgs,
-    meta: &PintoMetadata,
-) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+/// `pinto predict` for an lc / dsvd model (its manifest `run`). Returns the
+/// per-cell propensity and cell names it writes.
+///
+/// A model whose manifest says its profiles are batch-adjusted
+/// ([`crate::predict::delta::batch_adjusted`], which refuses
+/// `--ignore-batch` for it) has the held-out sample put on their scale: a
+/// batch the model knows takes the model's own δ, a new one is estimated
+/// from the fitting parts. Without coordinates its graph is built as the
+/// model's was, on the batch-corrected projection when its manifest says
+/// so ([`PintoMetadata::base_graph_batch_corrected`]). An older model's
+/// profiles are on raw counts, and every batch is estimated from the
+/// fitting parts, as before.
+pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+    let meta = &run.meta;
     let c = &args.core.common;
     let h = &args.holdout;
+    let model = args.core.model.as_ref();
+    let adjusted = crate::predict::delta::batch_adjusted(
+        model,
+        Some(run),
+        c.ignore_batch,
+        crate::predict::delta::QueryReader::Holdout,
+    )?;
     // `--ignore-batch`: no δ here either.
     let delta_iters = if c.ignore_batch {
         0
     } else {
         h.holdout_delta_iters
     };
-    let model = args.core.model.as_ref();
     mkdir_parent(&c.out)?;
 
     let gc_path = format!("{model}.feature_community.parquet");
@@ -111,13 +125,24 @@ pub fn predict_profiles(
         data_vec,
         graph,
         batch_membership,
+        batch_labels,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
         ablation: None,
         // The model's profiles are what is scored; δ is estimated below from
-        // the fitting parts, not from this sample's whole counts.
-        batch_effects: BatchEstimate::Skip,
+        // the fitting parts, not from this sample's whole counts. Nothing is
+        // estimated either way: "every batch known" only builds the
+        // expression graph on the batch-corrected projection, as the
+        // model's was.
+        batch_effects: if meta.base_graph_batch_corrected() {
+            BatchEstimate::Query {
+                all_known: true,
+                base_corrected: true,
+            }
+        } else {
+            BatchEstimate::Skip
+        },
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: Some(feature_kind.clone()),
         cell_projection: false,
@@ -295,16 +320,24 @@ pub fn predict_profiles(
     );
 
     // Batches: one δ each. A pair's batch is its first cell's (the graph keeps
-    // sections apart).
-    let mut batch_names: Vec<&str> = batch_membership.iter().map(|b| b.as_ref()).collect();
-    batch_names.sort_unstable();
-    batch_names.dedup();
-    let batch_of: Vec<usize> = batch_membership
-        .iter()
-        .map(|b| batch_names.binary_search(&b.as_ref()).expect("listed"))
-        .collect();
-    let n_batches = batch_names.len();
+    // sections apart). A batch the model knows takes the model's δ, fixed,
+    // when its profiles are batch-adjusted; the rest start at 1.
+    let batch_of = crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
+    let batch_of: Vec<usize> = batch_of.into_iter().map(|b| b as usize).collect();
+    let n_batches = batch_labels.len();
     let mut delta = vec![vec![1.0f64; g]; n_batches];
+    let mut fixed = vec![false; n_batches];
+    let model_delta_batches = adjusted
+        .then(|| {
+            models_delta(
+                (model, run),
+                c,
+                &batch_labels,
+                (&row_names, &matched.row_to_matched),
+                (&mut delta, &mut fixed),
+            )
+        })
+        .transpose()?;
     let build = |delta: &[Vec<f64>]| -> Vec<BatchProfiles> {
         delta
             .iter()
@@ -352,7 +385,7 @@ pub fn predict_profiles(
                 }
                 (o1, a1)
             });
-        for b in 0..n_batches {
+        for b in (0..n_batches).filter(|&b| !fixed[b]) {
             let pred: Vec<f64> = (0..g)
                 .map(|s| {
                     (0..k)
@@ -364,19 +397,7 @@ pub fn predict_profiles(
         }
         profs = build(&delta);
     }
-    if delta_iters == 0 {
-        notes.push(
-            "no δ: the model's profiles are applied unshifted, so a batch shift of this \
-             sample counts against the model"
-                .into(),
-        );
-    } else {
-        notes.push(format!(
-            "δ per batch from the fitting parts only ({} rounds); features hidden by \
-             --ablate-features keep δ = 1",
-            delta_iters
-        ));
-    }
+    notes.push(delta_note(model_delta_batches, n_batches, delta_iters));
 
     info!("Scoring {} units...", units.len());
     let scored_units: Vec<Scored> = units
@@ -440,6 +461,7 @@ pub fn predict_profiles(
         n_features_ablated: ablated.as_ref().map(|a| a.iter().filter(|&&x| x).count()),
         null_from,
         delta_iters,
+        model_delta_batches,
         eval_count: total.count,
         eval_llik_per_count: total.per_count(total.llik),
         eval_null_llik_per_count: total.per_count(total.null),
@@ -494,6 +516,92 @@ pub fn predict_profiles(
     out_meta.write(Path::new(&meta_path))?;
     info!("Wrote {meta_path}");
     Ok((prop, cells))
+}
+
+/// What δ the held-out sample's `n_batches` batches were scored under:
+/// `model_delta_batches` of them (`Some` for a batch-adjusted model) at the
+/// model's own δ, the rest estimated over `delta_iters` rounds, or, with
+/// none, unshifted.
+pub(crate) fn delta_note(
+    model_delta_batches: Option<usize>,
+    n_batches: usize,
+    delta_iters: usize,
+) -> String {
+    let n_known = model_delta_batches.unwrap_or(0);
+    let known = match model_delta_batches {
+        Some(n) => format!(
+            "the model's profiles are batch-adjusted: {n} of this sample's {n_batches} \
+             batches are the model's and take its δ; "
+        ),
+        None => String::new(),
+    };
+    let rest = if n_known == n_batches {
+        "no other batch".to_string()
+    } else if delta_iters == 0 {
+        format!(
+            "{} the model's profiles unshifted (no δ rounds), so a batch shift of this \
+             sample counts against the model",
+            if n_known == 0 {
+                "every batch takes"
+            } else {
+                "the rest take"
+            }
+        )
+    } else {
+        format!(
+            "δ for {} from the fitting parts only ({delta_iters} rounds); features hidden \
+             by --ablate-features keep δ = 1",
+            if n_known == 0 {
+                "each batch"
+            } else {
+                "each of the rest"
+            }
+        )
+    };
+    format!("{known}{rest}")
+}
+
+/// Each of the sample's batches (`labels`, sorted) the model `run` (prefix
+/// `model`) knows, as `pinto predict` matches them for inputs `c`: its
+/// `delta` set to the model's δ on the matched slots (`rows` and their
+/// `row_to_matched` slot; a row the model's δ lacks keeps 1) and marked
+/// `fixed`. Returns how many.
+fn models_delta(
+    (model, run): (&str, &Run),
+    c: &crate::util::input::SrtInputArgs,
+    labels: &[Box<str>],
+    (rows, row_to_matched): (&[Box<str>], &[Option<usize>]),
+    (delta, fixed): (&mut [Vec<f64>], &mut [bool]),
+) -> anyhow::Result<usize> {
+    use crate::predict::delta::{adjusted_model_delta, match_batches, QueryLabels};
+    let (model_delta, path) = adjusted_model_delta(model, run)?;
+    let model_files = crate::predict::model_data_files(Some(run));
+    let how = QueryLabels::of(
+        crate::util::metadata::BatchLabels::of(c),
+        &c.data_files,
+        &model_files,
+    );
+    let matched = match_batches(labels, &model_delta.batches, run.meta.batch_labels, &how);
+    let (on_rows, has_row) = model_delta.on_rows(rows);
+    for (b, m) in matched.iter().enumerate() {
+        let Some(m) = *m else { continue };
+        let mut seen = vec![false; delta[b].len()];
+        for (row, slot) in row_to_matched.iter().enumerate() {
+            if let Some(s) = *slot {
+                if has_row[row] && !seen[s] {
+                    delta[b][s] = f64::from(on_rows.mean[(row, m)]);
+                }
+                seen[s] = true;
+            }
+        }
+        fixed[b] = true;
+    }
+    let n_known = fixed.iter().filter(|&&f| f).count();
+    info!(
+        "{n_known} of this sample's {} batches take the model's δ ({path})",
+        labels.len()
+    );
+    Ok(n_known)
 }
 
 /// `{out}.predictive.parquet`, one row per unit, under the column names
