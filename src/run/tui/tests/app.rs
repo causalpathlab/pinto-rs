@@ -678,7 +678,8 @@ fn shift_enter_moves_to_the_next_screen_and_enter_on_data_does_not() {
 fn methods_a_run_finished_are_unqueued_so_the_run_key_again_runs_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = app(dir.path());
-    let (lc, cage) = (0, 1);
+    let at_name = |name: &str| METHODS.iter().position(|m| *m == name).unwrap();
+    let (lc, cage) = (at_name("lc"), at_name("cage"));
     a.pairs = data(dir.path(), &["d.zarr"]);
     a.rows[lc].on = true;
     a.rows[cage].on = true;

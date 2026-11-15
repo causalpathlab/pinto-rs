@@ -298,3 +298,187 @@ fn inclusion_and_modules_are_exclusive() {
         "{e}"
     );
 }
+
+/// An epoch visits every feature, or Σπ of them under inclusion (at least
+/// one).
+#[test]
+fn expected_visits_are_the_sum_of_pi() {
+    use crate::cell_activity_graph_embedding::feature_inclusion::expected_visits;
+    let pi = [0.0f32, 1.0, 0.6, 0.9, 0.2];
+    assert_eq!(expected_visits(&[0, 1, 2, 3], None), 4);
+    assert_eq!(expected_visits(&[1, 2, 3, 4], Some(&pi)), 3);
+    assert_eq!(expected_visits(&[0, 4], Some(&pi)), 1);
+}
+
+/// Inclusion scores spatial signal, so a run without coordinates is
+/// refused before any data is read (here there is none to read).
+#[test]
+fn inclusion_without_coordinates_is_refused_up_front() {
+    use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
+    use crate::cell_activity_graph_embedding::fit::fit_cell_activity_graph_embedding;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        cage: CellActivityGraphEmbeddingArgs,
+    }
+    let a = Cli::try_parse_from(["x", "-o", "out", "d.zarr", "--feature-inclusion", "moran"])
+        .unwrap()
+        .cage;
+    let e = fit_cell_activity_graph_embedding(&a)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("needs coordinates"), "{e}");
+}
+
+/// A tree whose levels jump past the asked-for count (few coarse groups,
+/// then many fine ones) is merged to about that many blocks per section,
+/// siblings kept together, rather than taking the whole finer level.
+#[test]
+fn blocks_are_merged_to_about_the_count_asked_for() {
+    // two sections of 12 PBs; the coarse level has 2 groups per section,
+    // the next one 12
+    let section: Vec<u32> = (0..24).map(|u| (u / 12) as u32).collect();
+    let levels = vec![
+        (0..24).map(|u| u / 6).collect::<Vec<usize>>(),
+        (0..24).collect(),
+    ];
+    let b = tree_blocks(&levels, &section, 3);
+    for s in 0..2 {
+        let mut ids: Vec<usize> = (0..24).filter(|&u| u / 12 == s).map(|u| b[u]).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "section {s}: {b:?}");
+    }
+    // about equal blocks of 4, never across sections
+    assert_eq!(
+        b,
+        [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5]
+    );
+    // with no level fine enough, the finest units themselves
+    let b = tree_blocks(&levels[..1], &section, 6);
+    assert_eq!(b.iter().max(), Some(&11));
+}
+
+/// Features that carry no spread (no variation, or no edges) are not part
+/// of the two-group fit and get π = 0: were they in it, a majority of them
+/// would make the MAD zero and every π one.
+#[test]
+fn features_without_spread_get_no_inclusion() {
+    let mut rng = SmallRng::seed_from_u64(11);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let (xy, edges) = grid(20);
+    let tile = tile_of(&xy, 4);
+    // 10 signal, 90 noise, 300 never observed
+    let (n_signal, n_noise, g) = (10usize, 90usize, 400usize);
+    let profiles: Vec<Vec<(u32, f32)>> = xy
+        .iter()
+        .map(|&(x, _)| {
+            (0..(n_signal + n_noise) as u32)
+                .map(|f| {
+                    let s = if (f as usize) < n_signal && x < 10.0 {
+                        3.0
+                    } else {
+                        0.0
+                    };
+                    (f, (s + noise.sample(&mut rng)) as f32)
+                })
+                .collect()
+        })
+        .collect();
+    let unit = UnitGraph {
+        profiles,
+        section: vec![0; xy.len()],
+        block: tile,
+        edges,
+    };
+    let inc = inclusion_of(g, &unit);
+    assert!(inc.pi[n_signal + n_noise..].iter().all(|&p| p == 0.0));
+    let noise_pi = inc.pi[n_signal..n_signal + n_noise].iter().sum::<f32>() / n_noise as f32;
+    assert!(noise_pi < 0.1, "noise features' mean π {noise_pi}");
+    assert!(
+        inc.pi[..n_signal].iter().all(|&p| p > 0.9),
+        "{:?}",
+        &inc.pi[..n_signal]
+    );
+}
+
+/// One extreme t widens the range but not the kernel: the density stays a
+/// density, so the null bulk is not called signal.
+#[test]
+fn one_extreme_t_does_not_inflate_the_density() {
+    let mut rng = SmallRng::seed_from_u64(13);
+    let noise = Normal::new(0.0, 1.0).unwrap();
+    let t: Vec<f64> = (0..999)
+        .map(|_| noise.sample(&mut rng))
+        .chain([1e6])
+        .collect();
+    let (pi, _) = two_group_inclusion(&t);
+    let null = pi[..999].iter().sum::<f32>() / 999.0;
+    assert!(null < 0.05, "null features' mean π {null}");
+    assert!(pi[999] > 0.99);
+}
+
+/// Cells read section by section in column blocks score as the same units
+/// held in memory, tiles as blocks; one coordinate column is refused.
+#[test]
+fn cells_stream_to_the_same_inclusion() {
+    use crate::cell_activity_graph_embedding::feature_inclusion::{cell_inclusion, log_normalise};
+    use crate::test_support::{numbered, sparse_vec};
+    use crate::util::common::Mat;
+    use crate::util::feature_axis::FeatureAxis;
+    let dir = tempfile::tempdir().unwrap();
+    let (xy, edges) = grid(6);
+    let n = xy.len();
+    // two sections of the grid; feature 0 left/right, 1 and 2 scattered
+    let mut triplets = Vec::new();
+    for c in 0..2 * n {
+        let (x, y) = xy[c % n];
+        triplets.push((0, c as u64, if x < 3.0 { 5.0 } else { 1.0 }));
+        triplets.push((1, c as u64, 1.0 + ((c * 7) % 5) as f32));
+        if (x as usize + y as usize).is_multiple_of(2) {
+            triplets.push((2, c as u64, 2.0));
+        }
+    }
+    let rows = numbered("g", 3);
+    let data = sparse_vec(dir.path(), "d", &rows, &numbered("c", 2 * n), &triplets);
+    let axis = FeatureAxis::resolve_or_identity(&rows).unwrap();
+    let section: Vec<u32> = (0..2 * n).map(|c| (c / n) as u32).collect();
+    let all_edges: Edges = edges
+        .iter()
+        .flat_map(|&(i, j)| [(i, j), (i + n, j + n)])
+        .collect();
+    let names: Vec<Box<str>> = vec!["x".into(), "y".into()];
+    let plane = Mat::from_fn(
+        2 * n,
+        2,
+        |c, k| if k == 0 { xy[c % n].0 } else { xy[c % n].1 },
+    );
+    let inc = cell_inclusion(&data, &axis, (&plane, &names), &section, &all_edges, 4, 5).unwrap();
+
+    let mut profiles: Vec<Vec<(u32, f32)>> = vec![Vec::new(); 2 * n];
+    for &(r, c, v) in &triplets {
+        profiles[c as usize].push((r as u32, v));
+    }
+    profiles.iter_mut().for_each(|p| log_normalise(p));
+    let tile = tile_of(&xy, 2);
+    let unit = UnitGraph {
+        profiles,
+        section,
+        block: (0..2 * n).map(|c| tile[c % n] + 4 * (c / n)).collect(),
+        edges: all_edges.clone(),
+    };
+    let held = inclusion_of(3, &unit);
+    for f in 0..3 {
+        assert!((inc.moran[f] - held.moran[f]).abs() < 1e-6, "feature {f}");
+        assert!((inc.se[f] - held.se[f]).abs() < 1e-6, "feature {f}");
+    }
+
+    let one: Vec<Box<str>> = vec!["x".into()];
+    let line = plane.columns(0, 1).into_owned();
+    let section: Vec<u32> = (0..2 * n).map(|c| (c / n) as u32).collect();
+    let e = cell_inclusion(&data, &axis, (&line, &one), &section, &all_edges, 4, 5)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("two coordinate columns"), "{e}");
+}

@@ -369,7 +369,7 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Jackknife blocks per section for --feature-inclusion",
         long_help = "About this many blocks per section, which the jackknife\n\
                      leaves out one at a time: coarse super-cells of the PB tree\n\
-                     (the coarsest level giving every section this many), or\n\
+                     (merged to this many per section), or\n\
                      on cells (cage-cell) a grid of ceil(sqrt(N)) tiles per side.\n\
                      Blocks within sections, never whole sections, so a domain\n\
                      that only one section holds is not penalised."

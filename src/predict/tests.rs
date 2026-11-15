@@ -109,3 +109,25 @@ mod batch_effects {
         assert_eq!((d[(1, 0)], d[(1, 1)]), (3.0, 1.0 / 3.0), "no model row");
     }
 }
+
+/// The query is corrected for batch only when the model was: a model
+/// whose manifest records no batch effects (one batch, `--ignore-batch`,
+/// or an older cage-cell fit) trained its encoder on uncorrected counts.
+/// A model without a readable manifest keeps the correction.
+#[test]
+fn the_query_is_batch_corrected_only_when_the_model_was() {
+    use crate::util::metadata::{manifest_path, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("run").to_string_lossy().to_string();
+    assert!(super::model_batch_corrected(&model));
+
+    let mut meta = PintoMetadata::default();
+    meta.write(std::path::Path::new(&manifest_path(&model)))
+        .unwrap();
+    assert!(!super::model_batch_corrected(&model));
+
+    meta.outputs.batch_effects = Some(format!("{model}.delta.parquet"));
+    meta.write(std::path::Path::new(&manifest_path(&model)))
+        .unwrap();
+    assert!(super::model_batch_corrected(&model));
+}

@@ -148,6 +148,10 @@ pub fn fit_cell_activity_graph_embedding(
         !(module_cfg.is_some() && args.feature_inclusion == FeatureInclusionMode::Moran),
         "--feature-inclusion moran and --feature-modules are alternatives; pick one"
     );
+    anyhow::ensure!(
+        args.feature_inclusion != FeatureInclusionMode::Moran || !c.coord_files.is_empty(),
+        "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
+    );
 
     anyhow::ensure!(
         !(module_cfg.is_some() && args.feature_embedding.is_some()),
@@ -464,25 +468,17 @@ pub fn fit_cell_activity_graph_embedding(
             use crate::cell_activity_graph_embedding::feature_inclusion::{
                 cell_inclusion, pb_inclusion, PbUnits,
             };
-            anyhow::ensure!(
-                !c.coord_files.is_empty(),
-                "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
-            );
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
-                None => {
-                    let plane = coordinates.select_columns(
-                        &crate::util::ablation::non_batch_columns(&coordinate_names),
-                    );
-                    cell_inclusion(
-                        &data_vec,
-                        &feature_axis,
-                        &plane,
-                        &section_ids,
-                        spatial_edges,
-                        args.inclusion_blocks,
-                    )?
-                }
+                None => cell_inclusion(
+                    &data_vec,
+                    &feature_axis,
+                    (&coordinates, &coordinate_names),
+                    &section_ids,
+                    spatial_edges,
+                    args.inclusion_blocks,
+                    c.block_size.unwrap_or(4096),
+                )?,
                 Some(fine) => {
                     anyhow::ensure!(
                         fine.cell_labels == pb_frame.cell_to_finest_pb,
@@ -627,27 +623,21 @@ pub fn fit_cell_activity_graph_embedding(
     // `--positives-per-epoch` overrides `--per-feature-batch` with an absolute
     // total. See `FeatureGatedChainSampler::batch_size` for why the budget is not
     // split per-feature.
+    // Features an epoch visits: all of them, or Σπ under inclusion.
+    let expected_visits = crate::cell_activity_graph_embedding::feature_inclusion::expected_visits(
+        &trainable_features,
+        inclusion.as_ref().map(|f| f.pi.as_slice()),
+    );
     let positives_per_feature_exp_batch = match args.positives_per_epoch {
-        // per feature actually visited: all of them, or Σπ under inclusion
-        Some(total) => {
-            let visits = match &inclusion {
-                Some(inc) => trainable_features
-                    .iter()
-                    .map(|&g| inc.pi[g])
-                    .sum::<f32>()
-                    .round() as usize,
-                None => trainable_features.len(),
-            };
-            (total / (visits.max(1) * n_exp_batches).max(1)).max(1)
-        }
+        Some(total) => (total / (expected_visits * n_exp_batches).max(1)).max(1),
         None => args.per_feature_batch,
     };
     info!(
         "Positive budget: {} super-edge draws per (feature, batch), {} features x {} batch(es) = {} per epoch{}",
         positives_per_feature_exp_batch,
-        trainable_features.len(),
+        expected_visits,
         n_exp_batches,
-        positives_per_feature_exp_batch * trainable_features.len() * n_exp_batches,
+        positives_per_feature_exp_batch * expected_visits * n_exp_batches,
         if args.positives_per_epoch.is_some() {
             " (--positives-per-epoch)"
         } else {
@@ -753,6 +743,7 @@ pub fn fit_cell_activity_graph_embedding(
         feature_batch_size,
         feature_fisher_weights: feature_fisher_weights.as_deref(),
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
+        expected_visits,
         module_cfg: module_cfg.as_ref(),
         module_profiles: module_profiles.as_ref(),
         n_exp_batches,
