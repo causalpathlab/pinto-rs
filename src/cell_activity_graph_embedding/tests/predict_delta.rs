@@ -143,6 +143,26 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
             "row {g}: the new section's fold is {fold}, not {want}"
         );
     }
+
+    // a model whose manifest records no δ trained on undivided counts: the
+    // same two sections are neither estimated nor divided (the last step,
+    // as it rewrites the model's manifest)
+    let manifest = crate::util::metadata::manifest_path(&model);
+    let mut meta =
+        crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    meta.outputs.batch_effects = None;
+    meta.write(std::path::Path::new(&manifest)).unwrap();
+    let undivided = predict(
+        dir.path(),
+        (&format!("{},{}", s1.0, s3.0), &format!("{},{}", s1.1, s3.1)),
+        &model,
+        &training,
+        "undivided",
+    );
+    assert!(
+        !std::path::Path::new(&format!("{undivided}.delta.parquet")).exists(),
+        "a model without a δ had its query estimated"
+    );
 }
 
 /// `pinto impute` with a cage model divides each reference cell's counts by

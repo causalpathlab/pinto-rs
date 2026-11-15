@@ -57,7 +57,7 @@ mod batch_effects {
         let model = boxed(&["0", "1"]);
         let q = boxed(&["1", "x"]);
         assert_eq!(
-            match_batches(&q, &model, &QueryLabels::Named),
+            match_batches(&q, &model, None, &QueryLabels::Named),
             vec![Some(1), None]
         );
         let dir = tempfile::tempdir().unwrap();
@@ -75,20 +75,60 @@ mod batch_effects {
         };
         // query "0" is c (new), query "1" is a (the model's "0")
         assert_eq!(
-            match_batches(&boxed(&["0", "1"]), &model, &how),
+            match_batches(&boxed(&["0", "1"]), &model, None, &how),
             vec![None, Some(0)]
         );
         // a model whose labels are not file positions shares none by file,
         // even labels that look like positions
         for labels in [&["d1", "d2"][..], &["0", "1", "2"][..]] {
             assert_eq!(
-                match_batches(&boxed(&["0", "1"]), &boxed(labels), &how),
+                match_batches(&boxed(&["0", "1"]), &boxed(labels), None, &how),
                 vec![None, None]
             );
         }
         assert_eq!(
-            match_batches(&q, &model, &QueryLabels::Components),
+            match_batches(&q, &model, None, &QueryLabels::Components),
             vec![None, None]
+        );
+    }
+
+    /// A manifest that records how the model's batches were named is
+    /// matched on that, not on how the labels look: a model labelled by
+    /// file never matches `--batch-files` names, and one labelled by name
+    /// never matches by file, even where the labels read as positions.
+    #[test]
+    fn batches_match_only_labels_of_the_models_kind() {
+        use crate::util::metadata::BatchLabels;
+        let model = boxed(&["0", "1"]);
+        let q = boxed(&["0", "1"]);
+        let named = QueryLabels::Named;
+        assert_eq!(
+            match_batches(&q, &model, Some(BatchLabels::Files), &named),
+            vec![None, None]
+        );
+        assert_eq!(
+            match_batches(&q, &model, Some(BatchLabels::BatchFiles), &named),
+            vec![Some(0), Some(1)]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let file = |n: &str| {
+            let p = dir.path().join(n);
+            std::fs::write(&p, b"").unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        let model_files = vec![file("a.zarr"), file("b.zarr")];
+        let query_files: Vec<Box<str>> = model_files.iter().map(|f| f.as_str().into()).collect();
+        let how = QueryLabels::Files {
+            query_files: &query_files,
+            model_files: &model_files,
+        };
+        assert_eq!(
+            match_batches(&q, &model, Some(BatchLabels::BatchFiles), &how),
+            vec![None, None]
+        );
+        assert_eq!(
+            match_batches(&q, &model, Some(BatchLabels::Files), &how),
+            vec![Some(0), Some(1)]
         );
     }
 
@@ -130,24 +170,63 @@ mod batch_effects {
     }
 }
 
-/// The query is corrected for batch only when the model was: a model
-/// whose manifest records no batch effects (one batch, `--ignore-batch`,
-/// or an older cage-cell fit) trained its encoder on uncorrected counts.
-/// A model without a readable manifest keeps the correction.
+/// The query is divided only by a model's δ: a model without one (one
+/// batch, `--ignore-batch`, or an older cage-cell fit) trained its encoder
+/// on undivided counts; `--ignore-batch` on predict leaves it unused.
 #[test]
-fn the_query_is_batch_corrected_only_when_the_model_was() {
+fn the_query_is_divided_only_when_the_model_has_a_delta() {
+    use crate::util::batch_effects::RunDelta;
+    use crate::util::common::Mat;
     use crate::util::metadata::{manifest_path, PintoMetadata};
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("run").to_string_lossy().to_string();
-    assert!(super::model_batch_corrected(&model));
+    assert!(super::model_delta(&model, false).unwrap().is_none());
 
+    let file = format!("{model}.delta.parquet");
+    RunDelta {
+        rows: vec!["GENE1".into()],
+        batches: vec!["0".into(), "1".into()],
+        mean: Mat::from_row_slice(1, 2, &[0.5, 2.0]),
+        sd: Mat::zeros(1, 2),
+        log_mean: Mat::zeros(1, 2),
+        log_sd: Mat::zeros(1, 2),
+    }
+    .write(&file)
+    .unwrap();
     let mut meta = PintoMetadata::default();
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
-    assert!(!super::model_batch_corrected(&model));
-
-    meta.outputs.batch_effects = Some(format!("{model}.delta.parquet"));
+    assert!(
+        super::model_delta(&model, false).unwrap().is_none(),
+        "a delta the manifest does not name"
+    );
+    meta.outputs.batch_effects = Some(file);
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
-    assert!(super::model_batch_corrected(&model));
+    let (d, _) = super::model_delta(&model, false).unwrap().unwrap();
+    assert_eq!(d.mean[(0, 1)], 2.0);
+    assert!(super::model_delta(&model, true).unwrap().is_none());
+}
+
+/// A manifest's data files: canonical ones as recorded; an older relative
+/// entry beside the manifest, whatever the working directory.
+#[test]
+fn model_data_files_resolve_beside_the_manifest() {
+    use crate::util::metadata::{manifest_path, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("run").to_string_lossy().to_string();
+    std::fs::write(dir.path().join("a.zarr"), b"").unwrap();
+    let meta = PintoMetadata {
+        data_files: Some(vec!["a.zarr".into(), "gone.zarr".into()]),
+        ..Default::default()
+    };
+    meta.write(std::path::Path::new(&manifest_path(&model)))
+        .unwrap();
+    let files = super::model_data_files(&model);
+    assert_eq!(
+        std::path::Path::new(&files[0]),
+        dir.path().join("a.zarr"),
+        "a relative entry beside the manifest"
+    );
+    assert_eq!(files[1], "gone.zarr", "kept as written");
 }

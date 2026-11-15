@@ -4,12 +4,14 @@
 //! geometric mean 1 over the training batches. A query cell from one of
 //! those batches is divided by the model's own δ, which is the transform
 //! the encoder saw. Only a batch the model never had needs an estimate:
-//! the query's own (estimated during preprocessing, over the query's
-//! batches), carried into the model's frame through the batches the two
-//! share.
+//! the query's own (estimated during preprocessing, and only when such a
+//! batch exists), carried into the model's frame through the batches the
+//! two share. A model without a δ trained on undivided counts, so its
+//! query is not divided either.
 
-use crate::util::batch_effects::{read_delta, run_delta_path, RunDelta};
+use crate::util::batch_effects::RunDelta;
 use crate::util::common::*;
+use crate::util::metadata::BatchLabels;
 
 /// How a query's batch labels name batches, and so how they can be matched
 /// to the model's.
@@ -28,31 +30,79 @@ pub(crate) enum QueryLabels<'a> {
     Components,
 }
 
-/// For each query batch label, the model's batch it is, if any.
+impl<'a> QueryLabels<'a> {
+    /// The labels a query with label source `source` has.
+    pub(crate) fn of(
+        source: BatchLabels,
+        query_files: &'a [Box<str>],
+        model_files: &'a [String],
+    ) -> Self {
+        match source {
+            BatchLabels::BatchFiles => Self::Named,
+            BatchLabels::AutoBatch => Self::Components,
+            BatchLabels::Files => Self::Files {
+                query_files,
+                model_files,
+            },
+        }
+    }
+}
+
+/// For each query batch label, the model's batch it is, if any. `model_source`
+/// is how the model labelled its batches, from its manifest; a manifest
+/// that does not record it (an older fit) is read from the labels: by file
+/// when they are exactly the positions of its data files.
 pub(crate) fn match_batches(
     query: &[Box<str>],
     model: &[Box<str>],
+    model_source: Option<BatchLabels>,
     how: &QueryLabels<'_>,
 ) -> Vec<Option<usize>> {
     let col_of = |label: &str| model.iter().position(|m| m.as_ref() == label);
     match how {
-        QueryLabels::Named => query.iter().map(|q| col_of(q)).collect(),
+        QueryLabels::Named => match model_source {
+            Some(BatchLabels::BatchFiles) | None => query.iter().map(|q| col_of(q)).collect(),
+            Some(_) => vec![None; query.len()],
+        },
         QueryLabels::Components => vec![None; query.len()],
         QueryLabels::Files {
             query_files,
             model_files,
         } => {
-            let by_file = model.len() == model_files.len()
-                && (0..model_files.len()).all(|i| col_of(&i.to_string()).is_some());
+            let by_file = match model_source {
+                Some(source) => source == BatchLabels::Files,
+                None => {
+                    model.len() == model_files.len()
+                        && (0..model_files.len()).all(|i| col_of(&i.to_string()).is_some())
+                }
+            };
             query
                 .iter()
                 .map(|q| {
                     let file = query_files.get(q.parse::<usize>().ok()?)?;
-                    let i = model_files.iter().position(|m| same_file(m, file))?;
-                    by_file.then(|| col_of(&i.to_string())).flatten()
+                    let i = model_files.iter().position(|m| same_file(m, file));
+                    if i.is_none() && by_file {
+                        warn_if_renamed(file, model_files);
+                    }
+                    by_file.then(|| col_of(&i?.to_string())).flatten()
                 })
                 .collect()
         }
+    }
+}
+
+/// A query file not among the model's, but named as one of them is: most
+/// likely the model's file moved, or the model's path no longer resolves.
+fn warn_if_renamed(file: &str, model_files: &[String]) {
+    let name = std::path::Path::new(file).file_name();
+    if let Some(m) = model_files
+        .iter()
+        .find(|m| name.is_some() && std::path::Path::new(m).file_name() == name)
+    {
+        log::warn!(
+            "{file} is named as the model's data file {m} but is not that file; its batch \
+             is taken as new to the model"
+        );
     }
 }
 
@@ -119,34 +169,26 @@ pub(crate) fn combine(
     }
 }
 
-/// The δ predict divides the query by, given the query's own estimate
-/// (`None` under `--ignore-batch` or with one batch), and whether it is
-/// not the query's estimate alone. `query_batches` are the query's sorted,
-/// distinct labels; `rows` its matrix rows.
+/// The δ predict divides the query by, given the model's δ (read from
+/// `path`), each query batch's model batch (`matched`), and the query's
+/// own estimate on its rows and batches (`None` when every batch is the
+/// model's, or with one batch). `query_batches` are the query's sorted,
+/// distinct labels; `rows` its matrix rows. `None`: nothing to divide by.
 pub(crate) fn query_delta(
-    model_prefix: &str,
-    how: &QueryLabels<'_>,
+    (model, path): (&RunDelta, &str),
+    matched: &[Option<usize>],
     rows: &[Box<str>],
     query_batches: &[Box<str>],
-    estimate: Option<RunDelta>,
-    ignore_batch: bool,
-) -> anyhow::Result<(Option<RunDelta>, bool)> {
-    if ignore_batch {
-        return Ok((None, false));
-    }
-    let Some(path) = run_delta_path(model_prefix) else {
-        return Ok((estimate, false));
-    };
-    let model: RunDelta = read_delta(&path)?;
-    let matched = match_batches(query_batches, &model.batches, how);
+    estimate: Option<&RunDelta>,
+) -> Option<RunDelta> {
     let n_known = matched.iter().flatten().count();
     if n_known == 0 {
-        info!(
+        log::warn!(
             "No batch of this sample is one of the model's {}; batch effects are the \
-             sample's own estimate",
+             sample's own estimate, not in the model's frame",
             model.batches.len()
         );
-        return Ok((estimate, false));
+        return estimate.cloned();
     }
     let n_new = matched.len() - n_known;
     if n_new > 0 && estimate.is_none() {
@@ -168,14 +210,11 @@ pub(crate) fn query_delta(
          {n_new} new",
         matched.len()
     );
-    Ok((
-        Some(combine(
-            &on_rows,
-            &has_row,
-            estimate.as_ref(),
-            &matched,
-            query_batches,
-        )),
-        true,
+    Some(combine(
+        &on_rows,
+        &has_row,
+        estimate,
+        matched,
+        query_batches,
     ))
 }

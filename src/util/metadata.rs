@@ -179,6 +179,49 @@ pub struct PintoMetadata {
     /// scoring, what the model left out, and its log-likelihoods.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<crate::holdout::HoldoutInfo>,
+
+    /// What named the batches the run's `delta.parquet` is over, so a
+    /// later sample's batches can be matched to them. Absent without a
+    /// δ, and on manifests written before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_labels: Option<BatchLabels>,
+}
+
+/// What a run's batch labels are: one per data file (by its position), the
+/// `--batch-files` labels, or `--auto-batch` components.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BatchLabels {
+    Files,
+    BatchFiles,
+    AutoBatch,
+}
+
+impl BatchLabels {
+    /// The labels a run with inputs `c` gives its cells (`--batch-files`
+    /// wins over `--auto-batch`, as preprocessing has it).
+    pub fn of(c: &crate::util::input::SrtInputArgs) -> Self {
+        if c.batch_files.is_some() {
+            Self::BatchFiles
+        } else if c.auto_batch {
+            Self::AutoBatch
+        } else {
+            Self::Files
+        }
+    }
+}
+
+/// Data files as a manifest records them: each canonical (absolute) when
+/// it resolves, as given otherwise, so a later run finds them from any
+/// working directory.
+fn recorded_files(files: &[Box<str>]) -> Vec<String> {
+    files
+        .iter()
+        .map(|f| {
+            std::fs::canonicalize(f.as_ref())
+                .map_or_else(|_| f.to_string(), |p| p.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 /// The k's that decided the cell-pair graph.
@@ -451,6 +494,16 @@ pub struct LevelInfo {
 }
 
 impl PintoMetadata {
+    /// Record what named the batches of the run's δ (inputs `c`), when it
+    /// wrote one.
+    pub fn record_batch_labels(&mut self, c: &crate::util::input::SrtInputArgs) {
+        self.batch_labels = self
+            .outputs
+            .batch_effects
+            .is_some()
+            .then(|| BatchLabels::of(c));
+    }
+
     /// The method that made the run, as `pinto run` names it: the command,
     /// except that a cell-level cage run is `cage-cell`. Read by the viewer.
     #[cfg(any(feature = "view", test))]
@@ -847,7 +900,7 @@ pub fn create_lc_metadata(
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: now_secs(),
         prefix: prefix.to_string(),
-        data_files: Some(inputs.data_files.iter().map(|s| s.to_string()).collect()),
+        data_files: Some(recorded_files(inputs.data_files)),
         coord_file: inputs.coord_file.map(|s| s.to_string()),
         n_cells: inputs.n_cells,
         n_features: inputs.n_features,
@@ -871,6 +924,7 @@ pub fn create_lc_metadata(
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        batch_labels: None,
     }
 }
 
@@ -894,7 +948,7 @@ pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> 
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: now_secs(),
         prefix: prefix.to_string(),
-        data_files: Some(inputs.data_files.iter().map(|s| s.to_string()).collect()),
+        data_files: Some(recorded_files(inputs.data_files)),
         coord_file: inputs.coord_file.map(|s| s.to_string()),
         n_cells: inputs.n_cells,
         n_features: inputs.n_features,
@@ -915,6 +969,7 @@ pub fn create_dsvd_metadata(has_batch_effects: bool, inputs: &RunInputs<'_>) -> 
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        batch_labels: None,
     }
 }
 
@@ -944,7 +999,7 @@ pub fn create_cage_metadata(
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: now_secs(),
         prefix: prefix.to_string(),
-        data_files: Some(inputs.data_files.iter().map(|s| s.to_string()).collect()),
+        data_files: Some(recorded_files(inputs.data_files)),
         coord_file: inputs.coord_file.map(|s| s.to_string()),
         n_cells: inputs.n_cells,
         n_features: inputs.n_features,
@@ -974,6 +1029,7 @@ pub fn create_cage_metadata(
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        batch_labels: None,
     }
 }
 
@@ -1018,5 +1074,6 @@ pub fn create_prop_metadata(
         levels: Some(levels),
         ablation: None,
         holdout: None,
+        batch_labels: None,
     }
 }

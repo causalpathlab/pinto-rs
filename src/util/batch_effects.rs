@@ -205,6 +205,7 @@ pub fn estimate_and_write_batch_effects(
 /// batch label as estimated (after `--auto-batch`), sorted. The mean is
 /// what the run divided by; the spread planes are carried so a table
 /// written from this one has the fits' schema.
+#[derive(Clone)]
 pub struct RunDelta {
     pub rows: Vec<Box<str>>,
     pub batches: Vec<Box<str>>,

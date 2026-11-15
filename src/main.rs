@@ -491,7 +491,9 @@ enum Commands {
                       \x20    estimated on the sample, carried into the model's frame through\n\
                       \x20    the batches the two share. Batches match by --batch-files label;\n\
                       \x20    without one, a data file matches when it is one of the model's\n\
-                      \x20    own. {out}.delta.parquet is the δ used. --ignore-batch: none.\n\
+                      \x20    own (the model labelled by file too). A model without a δ\n\
+                      \x20    trained on undivided counts: its query is not divided.\n\
+                      \x20    {out}.delta.parquet is the δ used. --ignore-batch: none.\n\
                       \x20 2. Align {model}.feature_embedding.parquet to its feature axis by name.\n\
                       \x20    Features without a model row are dropped, never seeded.\n\
                       \x20 3. Place every cell pair, and every cell, on the frozen dictionary\n\

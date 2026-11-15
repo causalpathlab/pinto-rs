@@ -5,7 +5,8 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
+    SrtPreprocessed,
 };
 use data_beans::alg::cell_pairs::CellPairs;
 use data_beans::alg::random_projection::*;
@@ -157,7 +158,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: false,
-        batch_effects: true,
+        batch_effects: BatchEstimate::Always,
         feature_axis: FeatureAxisMode::Rows,
         // `dsvd` takes its own projection because it asks for a different one:
         // it batch-corrects whenever `--ignore-batch` is not given, where
@@ -339,7 +340,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     {
         use crate::util::metadata::{create_dsvd_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let meta = create_dsvd_metadata(
+        let mut meta = create_dsvd_metadata(
             has_batch_effects,
             &RunInputs {
                 prefix: &c.out,
@@ -354,6 +355,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
                 k: n_clusters,
             },
         );
+        meta.record_batch_labels(c);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

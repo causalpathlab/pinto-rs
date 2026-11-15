@@ -62,7 +62,8 @@ use crate::util::graph_coarsen::{graph_coarsen_multilevel, CoarsenConfig};
 use crate::util::metadata::{create_cage_metadata, RunInputs, SpliceTrackInfo, DELTA_BASE_SPLICED};
 use crate::util::score_trace::write_score_trace;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
+    SrtPreprocessed,
 };
 
 use data_beans::alg::gene_weighting::save_fisher_weights;
@@ -207,7 +208,7 @@ pub fn fit_cell_activity_graph_embedding(
         fisher_weights: !args.no_fisher_weights,
         // cage-cell too: the estimate is preprocessing (fitted on data-beans'
         // pseudobulk samples), not training; --ignore-batch turns it off
-        batch_effects: true,
+        batch_effects: BatchEstimate::Always,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && !args.cell_level,
         feature_kind: Some(feature_kind.clone()),
@@ -913,6 +914,7 @@ pub fn fit_cell_activity_graph_embedding(
             splice_report,
         );
         meta.cell_level = args.cell_level;
+        meta.record_batch_labels(c);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

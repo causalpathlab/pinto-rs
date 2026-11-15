@@ -599,3 +599,67 @@ fn a_cell_level_run_is_marked_and_named_cage_cell() {
     assert_eq!(back.command, "cage", "readers that take any cage still do");
     assert_eq!(back.method(), "cage-cell");
 }
+
+/// A fit records its data files canonical (absolute, `..` resolved), so a
+/// later run matches them from any working directory; a file that does
+/// not resolve is kept as given. With a δ, the manifest says what named
+/// its batches.
+#[test]
+fn a_fit_records_canonical_data_files_and_its_batch_labels() {
+    use clap::Parser;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("a.zarr"), b"").unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().to_string();
+    let roundabout = dir
+        .path()
+        .join("sub/../a.zarr")
+        .to_string_lossy()
+        .to_string();
+    let data_files: Vec<Box<str>> = vec![roundabout.into(), "gone.zarr".into()];
+    let mut meta = create_cage_metadata(
+        &RunInputs {
+            prefix: &prefix,
+            data_files: &data_files,
+            coord_file: None,
+            coord_columns: &[],
+            n_cells: 1,
+            n_features: 1,
+            n_edges: 1,
+            k: 1,
+            graph: GraphParams::default(),
+            ablation: None,
+        },
+        true,
+        None,
+    );
+    let want = std::fs::canonicalize(dir.path().join("a.zarr")).unwrap();
+    let files = meta.data_files.clone().unwrap();
+    assert_eq!(std::path::Path::new(&files[0]), want);
+    assert_eq!(files[1], "gone.zarr");
+
+    let c = crate::util::input::SrtInputArgs::try_parse_from(["x", "d.zarr", "-o", "o"]).unwrap();
+    meta.record_batch_labels(&c);
+    let path = dir.path().join("run.pinto.json");
+    meta.write(&path).unwrap();
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("\"batch_labels\": \"files\""));
+    assert_eq!(
+        PintoMetadata::read(&path).unwrap().batch_labels,
+        Some(BatchLabels::Files)
+    );
+    let c = crate::util::input::SrtInputArgs::try_parse_from([
+        "x",
+        "d.zarr",
+        "-o",
+        "o",
+        "--auto-batch",
+    ])
+    .unwrap();
+    meta.record_batch_labels(&c);
+    assert_eq!(meta.batch_labels, Some(BatchLabels::AutoBatch));
+    meta.outputs.batch_effects = None;
+    meta.record_batch_labels(&c);
+    assert_eq!(meta.batch_labels, None, "no δ, nothing to name");
+}

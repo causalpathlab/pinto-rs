@@ -153,3 +153,29 @@ fn a_written_delta_reads_back_with_its_spread() {
         assert!((a - b).abs().max() < 1e-6);
     }
 }
+
+/// Preprocessing estimates batch effects when asked to always, never when
+/// told to skip, and, against a fitted model, only when a batch is new;
+/// with every one of two batches known it still corrects for them.
+#[test]
+fn batches_are_estimated_only_when_one_is_new() {
+    use crate::util::srt_pipeline::{batch_plan, BatchEstimate};
+    let labels: Vec<Box<str>> = vec!["a".into(), "b".into()];
+    assert_eq!(batch_plan(&BatchEstimate::Always, &labels), (true, false));
+    assert_eq!(batch_plan(&BatchEstimate::Skip, &labels), (false, false));
+    let known = |l: &[Box<str>]| l.iter().all(|b| b.as_ref() == "a" || b.as_ref() == "b");
+    assert_eq!(
+        batch_plan(&BatchEstimate::New(&known), &labels),
+        (false, true)
+    );
+    let with_new: Vec<Box<str>> = vec!["a".into(), "c".into()];
+    assert_eq!(
+        batch_plan(&BatchEstimate::New(&known), &with_new),
+        (true, false)
+    );
+    let one: Vec<Box<str>> = vec!["a".into()];
+    assert_eq!(
+        batch_plan(&BatchEstimate::New(&known), &one),
+        (false, false)
+    );
+}

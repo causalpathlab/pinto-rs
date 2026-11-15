@@ -5,7 +5,9 @@
 use crate::test_support::write_zarr;
 use crate::util::input::SrtInputArgs;
 use crate::util::srt_pipeline::FeatureAxisMode;
-use crate::util::srt_pipeline::{preprocess_srt, SrtPreprocessConfig, SrtPreprocessed};
+use crate::util::srt_pipeline::{
+    preprocess_srt, BatchEstimate, SrtPreprocessConfig, SrtPreprocessed,
+};
 use clap::Parser;
 
 /// Two data files of `cells` cells over twelve features, the second with its
@@ -39,7 +41,7 @@ pub(super) fn preprocess(files: &[Box<str>], out: &str, extra: &[&str]) -> SrtPr
         common: &args,
         ablation: None,
         fisher_weights: false,
-        batch_effects: true,
+        batch_effects: BatchEstimate::Always,
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
         cell_projection: false,

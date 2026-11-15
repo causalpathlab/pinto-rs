@@ -42,7 +42,8 @@ use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
 use crate::util::srt_pipeline::{
-    preprocess_srt, topology_graph, FeatureAxisMode, Seeding, SrtPreprocessConfig, SrtPreprocessed,
+    preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
+    SrtPreprocessed,
 };
 use data_beans::qc::suggest_nnz_cutoff;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -90,7 +91,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         common: c,
         ablation: Some(&args.ablation),
         fisher_weights: true,
-        batch_effects: true,
+        batch_effects: BatchEstimate::Always,
         // Everything `lc` filters, weights and reports is per FEATURE. On a
         // channelized matrix a row is half a feature, and reading one as the other
         // is what let the merge filter pick its cutoff by splice track.
@@ -510,7 +511,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     {
         use crate::util::metadata::{create_lc_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let meta = create_lc_metadata(
+        let mut meta = create_lc_metadata(
             &RunInputs {
                 prefix: &c.out,
                 data_files: &c.data_files,
@@ -537,6 +538,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 }),
             &cascade_level_indices,
         );
+        meta.record_batch_labels(c);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());
