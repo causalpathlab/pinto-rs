@@ -936,9 +936,16 @@ fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
     let Some(delta) = inputs.delta else {
         return (None, None);
     };
+    let (delta_file, cells) = delta_files(inputs.prefix);
+    (Some(delta_file), delta.cells.then_some(cells))
+}
+
+/// The δ table and each cell's batch beside it, as a fit under `prefix`
+/// writes them, relative to its manifest.
+pub(crate) fn delta_files(prefix: &str) -> (String, String) {
     // the manifest's own file name less its suffix: `-o out/` writes
     // `out/.pinto.json` and `out/.delta.parquet`
-    let manifest = manifest_path(inputs.prefix);
+    let manifest = manifest_path(prefix);
     let name = Path::new(&manifest)
         .file_name()
         .and_then(|f| f.to_str())
@@ -946,10 +953,8 @@ fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
         .unwrap_or_default()
         .to_string();
     (
-        Some(format!("{name}.delta.parquet")),
-        delta
-            .cells
-            .then(|| crate::util::batch_effects::delta_cells_path(&name)),
+        format!("{name}.delta.parquet"),
+        crate::util::batch_effects::delta_cells_path(&name),
     )
 }
 

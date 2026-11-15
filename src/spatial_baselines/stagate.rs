@@ -106,6 +106,9 @@
 //!
 //! Deliberate deviations:
 //!
+//! - Batch effects: with two or more batches the counts are divided by the
+//!   input's own δ before step 0 (see [`super`]); `--ignore-batch` runs
+//!   the original.
 //! - The loess is evaluated exactly at every gene (`surface="direct"`),
 //!   where scikit-misc's default interpolates a kd-tree of vertex fits
 //!   (`surface="interpolate"`); the two agree to the interpolation error.
@@ -146,6 +149,7 @@ use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
     check_stored_shape, knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape,
+    STAGATE_PROCESS_BYTES,
 };
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
@@ -794,12 +798,14 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
 
 /// The peak of a run on an input of stored shape `s`, checked before its
 /// counts are read: every stored nonzero and as many genes as
-/// `--n-top-genes` could keep, so it bounds the checks after the read.
+/// `--n-top-genes` could keep, so it bounds the checks after the read; or
+/// the δ estimate's, made during the read, when it is larger.
 pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
-    stagate_peak_bytes(&args.sizes().memory_shape(&InputShape {
+    let fit = stagate_peak_bytes(&args.sizes().memory_shape(&InputShape {
         genes: s.genes.min(args.n_top_genes),
         ..s.clone()
-    }))
+    }));
+    fit.max(STAGATE_PROCESS_BYTES + args.input.delta_bytes(s))
 }
 
 impl Args {

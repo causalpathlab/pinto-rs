@@ -98,6 +98,30 @@ pub fn knn_edges(section_sizes: &[usize], k: usize) -> usize {
         .sum()
 }
 
+/// Bytes a stored nonzero holds while δ is estimated (cage's estimator,
+/// data-beans' multilevel collapse): the preloaded counts, the cells'
+/// projection and the collapse's per-cell buffers. Calibrated on
+/// srt-simulate runs of two sections (500 and 2000 genes, 512 to 16200
+/// cells): the largest measured residual per nonzero, with a margin.
+const DELTA_NONZERO_BYTES: usize = 52;
+
+/// Bytes a gene holds per pseudobulk sample while δ is estimated: the
+/// collapse's dense gene × sample statistics over its levels. Calibrated
+/// with [`DELTA_NONZERO_BYTES`].
+const DELTA_GENE_SAMPLE_BYTES: usize = 128;
+
+/// Pseudobulk samples the δ estimate's finest level holds per batch at
+/// most: `2^sort_dim` groups, `sort_dim` 10 as cage sets it.
+pub const DELTA_SAMPLES_PER_BATCH: usize = 1 << 10;
+
+/// What the δ estimate holds at once, above the process's own, for
+/// `genes` genes, `nonzeros` stored nonzeros and at most `samples`
+/// pseudobulk samples (each batch's cells, at most
+/// [`DELTA_SAMPLES_PER_BATCH`] of them).
+pub fn delta_estimate_bytes(genes: usize, nonzeros: usize, samples: usize) -> usize {
+    DELTA_NONZERO_BYTES * nonzeros + DELTA_GENE_SAMPLE_BYTES * genes * samples
+}
+
 /// What a STAGATE run holds at once.
 #[derive(Debug, Clone)]
 pub struct StagateShape {

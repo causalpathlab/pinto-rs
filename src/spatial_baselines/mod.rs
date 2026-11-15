@@ -19,6 +19,14 @@
 //! - `{out}.cell_embedding.parquet`: a `cell` column and the method's
 //!   per-cell vectors, for `pinto srt-sim-pairs --vectors`;
 //! - `{out}.baseline.json`: the method, its settings and its inputs.
+//!
+//! Batch effects are the one deviation every baseline shares: with two or
+//! more batches, the counts are divided by the input's own δ estimate
+//! (cage's estimator at cage's defaults, written to `{out}.delta.parquet`
+//! with each cell's batch) before the method's own preprocessing
+//! ([`input::SpatialInputArgs::read`]); `--ignore-batch` gives the original
+//! method its counts as stored. The manifest records the δ files and
+//! `baseline.json` records `batch_correction`.
 
 pub mod graph;
 pub mod input;

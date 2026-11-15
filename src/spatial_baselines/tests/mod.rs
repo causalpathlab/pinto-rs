@@ -1,3 +1,4 @@
+mod delta;
 mod graph;
 mod memory;
 mod notices;

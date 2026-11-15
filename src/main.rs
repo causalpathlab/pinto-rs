@@ -115,6 +115,18 @@ macro_rules! baseline_memory {
     };
 }
 
+/// What the spatial baselines do about batch effects, for their
+/// `long_about`.
+macro_rules! baseline_batch {
+    () => {
+        "With two or more batches (data files, or -b labels) the counts are\n\
+         divided by the input's own batch effects (δ, estimated as cage does\n\
+         and written to {out}.delta.parquet) before the method's own\n\
+         preprocessing. That is a deviation from the original method;\n\
+         --ignore-batch runs the original.\n\n"
+    };
+}
+
 /// The spatial baselines' outputs, as `spatial_baselines/output.rs`
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
@@ -695,6 +707,7 @@ enum Commands {
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
              faithful to its reference code at the model level, on pinto's inputs:\n\
              the data, -c, -b, -o and --seed flags lc takes.\n\n",
+            baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
         )
@@ -710,6 +723,7 @@ enum Commands {
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
              Gaussian mixture in R at that step.\n\n",
+            baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
         )

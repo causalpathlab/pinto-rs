@@ -40,6 +40,58 @@ const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 13] = [
     (99856, 1, 10, 5664.56),
     (4096, 2, 10, 598.58),
 ];
+/// Maximum resident memory (MiB) of spatialde2 runs whose peak is the δ
+/// estimate (two srt-simulate L1 sections, the fit cut to nothing:
+/// `--neighbors 0 --max-iter 1 --n-clusters 2`, 4 threads): (cells per
+/// section, genes, nonzeros, MiB).
+const DELTA_MEASURED: [(usize, usize, usize, f64); 5] = [
+    (256, 500, 100_906, 82.69),
+    (1024, 2000, 1_584_782, 566.12),
+    (4096, 500, 1_615_747, 261.30),
+    (4096, 2000, 6_360_230, 783.44),
+    (8100, 2000, 12_581_100, 1079.61),
+];
+
+/// The input arguments of a spatialde2 run with `extra`.
+fn input_args(extra: &[&str]) -> crate::spatial_baselines::input::SpatialInputArgs {
+    let mut argv = vec!["pinto", "spatialde2", "d.zarr", "-c", "c.csv", "-o", "x"];
+    argv.extend(extra);
+    let crate::Commands::Spatialde2(args) = parse(&argv) else {
+        unreachable!()
+    };
+    args.input
+}
+
+/// The δ estimate's peak covers every measured run whose peak it is, and
+/// is not far above it.
+#[test]
+fn delta_estimate_covers_every_measured_peak_and_is_not_far_above() {
+    for (per, genes, nonzeros, measured) in DELTA_MEASURED {
+        let shape = InputShape {
+            genes,
+            nonzeros,
+            section_sizes: vec![per; 2],
+        };
+        let args = input_args(&[]);
+        let est = mib(SPATIALDE2_PROCESS_BYTES + args.delta_bytes(&shape));
+        assert!(
+            est >= measured,
+            "{per}x2, {genes} genes: {est:.0} < {measured} MiB"
+        );
+        assert!(
+            est <= 1.25 * measured,
+            "{per}x2, {genes} genes: {est:.0} MiB"
+        );
+        let ignored = input_args(&["--ignore-batch"]);
+        assert_eq!(ignored.delta_bytes(&shape), 0);
+        let one = InputShape {
+            section_sizes: vec![per],
+            ..shape
+        };
+        assert_eq!(args.delta_bytes(&one), 0, "one file, no batch files");
+    }
+}
+
 /// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
 /// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
 const NONZEROS_PER_CELL: usize = 765;

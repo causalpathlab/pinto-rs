@@ -74,6 +74,9 @@
 //!
 //! # Deliberate deviations
 //!
+//! - **Batch effects.** With two or more batches the counts are divided by
+//!   the input's own δ before the size factors and the gene selection (see
+//!   [`super`]); `--ignore-batch` runs the original.
 //! - **Sparse graph.** The reference builds a dense `N × N` distance matrix
 //!   in every mode, and its default `neighbors=None` connects every pair of
 //!   spots. Here the graph is the `--neighbors` nearest cells within each
@@ -144,6 +147,7 @@ use super::graph::knn_within_sections;
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
     check_stored_shape, knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape,
+    SPATIALDE2_PROCESS_BYTES,
 };
 use super::output::{write_run, Fitted};
 use crate::util::ablation::{n_sections, section_sizes};
@@ -962,14 +966,15 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
 /// The peak of a run on an input of stored shape `s`, checked before its
 /// counts are read: every stored nonzero counted as selected too, and as
 /// many genes as `--n-top-genes` could keep, so it bounds the check after
-/// the read.
+/// the read; or the δ estimate's, made during the read, when it is larger.
 pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
     let genes = match args.n_top_genes {
         0 => s.genes,
         n => s.genes.min(n),
     };
     let input = InputShape { genes, ..s.clone() };
-    spatialde2_peak_bytes(&args.sizes().memory_shape(&input, s.nonzeros))
+    let fit = spatialde2_peak_bytes(&args.sizes().memory_shape(&input, s.nonzeros));
+    fit.max(SPATIALDE2_PROCESS_BYTES + args.input.delta_bytes(s))
 }
 
 impl Args {

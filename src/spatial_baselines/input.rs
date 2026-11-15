@@ -3,6 +3,7 @@
 //! named, ordered and split into sections exactly as `lc`, `dsvd` and `cage`
 //! name, order and split them.
 
+use super::memory::{delta_estimate_bytes, DELTA_SAMPLES_PER_BATCH};
 use crate::util::ablation;
 use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
@@ -50,6 +51,13 @@ pub struct SpatialInputArgs {
     #[arg(long, default_value_t = false, help = PRELOAD_HELP)]
     pub preload_data: bool,
 
+    /// Run the original method: no batch effects (δ) are estimated or
+    /// divided out. Without it, a multi-batch input's counts are divided by
+    /// its own δ estimate (as cage estimates it) before the method's own
+    /// preprocessing
+    #[arg(long, default_value_t = false)]
+    pub ignore_batch: bool,
+
     /// Output prefix
     #[arg(long, short, required = true)]
     pub out: Box<str>,
@@ -74,6 +82,17 @@ pub struct SpatialData {
     /// Each cell's section, 0..n_sections, in order of first appearance.
     pub section: Vec<usize>,
     pub n_sections: usize,
+    /// The batch effects the counts were divided by, when they were.
+    pub delta: Option<AppliedDelta>,
+}
+
+/// The δ a baseline's counts were divided by: estimated on the input
+/// itself, as cage estimates it, and written to `{out}.delta.parquet` with
+/// each cell's batch beside it.
+#[derive(Debug, Clone)]
+pub struct AppliedDelta {
+    /// δ's columns, the batch labels sorted.
+    pub batches: Vec<Box<str>>,
 }
 
 impl SpatialData {
@@ -148,6 +167,28 @@ impl SpatialInputArgs {
         }))
     }
 
+    /// What the δ estimate holds above the process's own on an input of
+    /// stored shape `s` ([`delta_estimate_bytes`]); 0 when none is made
+    /// (`--ignore-batch`, or one data file and no batch files). With batch
+    /// files the batches are not known before the read: every cell may be
+    /// a sample.
+    pub fn delta_bytes(&self, s: &InputShape) -> usize {
+        let files = s.section_sizes.len();
+        if self.ignore_batch || (files < 2 && self.batch_files.is_none()) {
+            return 0;
+        }
+        let cells: usize = s.section_sizes.iter().sum();
+        let samples = match self.batch_files {
+            Some(_) => cells,
+            None => s
+                .section_sizes
+                .iter()
+                .map(|&n| n.min(DELTA_SAMPLES_PER_BATCH))
+                .sum(),
+        };
+        delta_estimate_bytes(s.genes, s.nonzeros, samples)
+    }
+
     /// Each data file opened for its metadata, its counts not read or
     /// preloaded.
     pub(crate) fn metadata(&self) -> impl Iterator<Item = anyhow::Result<StoredFile>> + '_ {
@@ -159,7 +200,7 @@ impl SpatialInputArgs {
     /// allows): a preloaded read leaves less memory resident than a
     /// streamed one.
     pub fn read(&self) -> anyhow::Result<SpatialData> {
-        let srt = read_data_with_coordinates(SRTReadArgs {
+        let mut srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
             preload_data: self.preload_data,
@@ -178,8 +219,17 @@ impl SpatialInputArgs {
                 .collect();
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
-        let counts = srt.data.read_columns_csc(0..cells.len())?;
+        let delta = if self.ignore_batch {
+            None
+        } else {
+            estimate_delta(&mut srt.data, &srt.batches, &self.out)?
+        };
+        let mut counts = srt.data.read_columns_csc(0..cells.len())?;
         drop(srt.data);
+        let applied = delta.map(|(mean, batches)| {
+            divide_by_delta(&mut counts, &mean, &batches, &srt.batches);
+            AppliedDelta { batches }
+        });
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();
         anyhow::ensure!(d >= 1, "no spatial coordinate columns");
@@ -204,6 +254,78 @@ impl SpatialInputArgs {
             batches: srt.batches,
             section,
             n_sections,
+            delta: applied,
         })
     }
+}
+
+/// δ estimated on the input itself, by cage's estimator at cage's default
+/// settings (`-p 200`, `--batch-knn 10`, `--num-levels 5`), and written
+/// under `out` as cage writes it: its mean, `[genes × batches]`, and its
+/// batch labels. `None` with fewer than two batches.
+fn estimate_delta(
+    data: &mut data_beans::sparse_io_vector::SparseIoVec,
+    batches: &[Box<str>],
+    out: &str,
+) -> anyhow::Result<Option<(crate::util::common::Mat, Vec<Box<str>>)>> {
+    use crate::util::batch_effects::{estimate_and_write_batch_effects, EstimateBatchArgs};
+    let labels = sorted_labels(batches);
+    if labels.len() < 2 {
+        return Ok(None);
+    }
+    legume_numeric::matrix::common_io::mkdir_parent(out)?;
+    let Some(posterior) = estimate_and_write_batch_effects(
+        data,
+        batches,
+        &labels,
+        EstimateBatchArgs {
+            proj_dim: DELTA_PROJ_DIM,
+            sort_dim: DELTA_PROJ_DIM.min(10),
+            block_size: None,
+            batch_knn: DELTA_BATCH_KNN,
+            num_levels: DELTA_NUM_LEVELS,
+            strata: None,
+        },
+        Some(out),
+    )?
+    else {
+        return Ok(None);
+    };
+    let names = posterior.batches.clone();
+    Ok(Some((posterior.into_mean()?, names)))
+}
+
+/// cage's defaults for the δ estimate (`-p`, `--batch-knn`, `--num-levels`).
+const DELTA_PROJ_DIM: usize = 200;
+const DELTA_BATCH_KNN: usize = 10;
+const DELTA_NUM_LEVELS: usize = 5;
+
+/// The distinct labels of `batches`, sorted: δ's columns.
+fn sorted_labels(batches: &[Box<str>]) -> Vec<Box<str>> {
+    batches
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .map(Box::from)
+        .collect()
+}
+
+/// Each count divided by its gene's δ in its cell's batch (`x / δ`, as lc
+/// divides): `mean` is `[genes × columns]`, its columns named `columns`,
+/// and `batch_of_cell` each cell's label.
+pub fn divide_by_delta(
+    counts: &mut CscMatrix<f32>,
+    mean: &crate::util::common::Mat,
+    columns: &[Box<str>],
+    batch_of_cell: &[Box<str>],
+) {
+    let col: std::collections::HashMap<&str, usize> = columns
+        .iter()
+        .enumerate()
+        .map(|(j, b)| (b.as_ref(), j))
+        .collect();
+    crate::util::batch_effects::divide_columns(counts, mean, |j| {
+        col.get(batch_of_cell[j].as_ref()).copied()
+    });
 }

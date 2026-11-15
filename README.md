@@ -542,6 +542,12 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
 
+One deviation is shared: with two or more batches (data files, or `-b`
+labels) the counts are divided by the input's own batch effects (δ,
+estimated as `cage` estimates them and written to `{out}.delta.parquet`)
+before the method's own preprocessing. `--ignore-batch` runs the original
+method on the counts as stored.
+
 Both fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
 exceeds the memory budget: `PINTO_MEMORY_BUDGET` (bytes) when set, else

@@ -15,7 +15,9 @@
 use super::input::{SpatialData, SpatialInputArgs};
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
-use crate::util::metadata::{manifest_path, now_secs, OutputFiles, PintoMetadata};
+use crate::util::metadata::{
+    delta_files, manifest_path, now_secs, BatchLabels, OutputFiles, PintoMetadata,
+};
 use crate::util::parquet_io::{cells_table_path, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::traits::IoOps;
@@ -80,6 +82,19 @@ fn write_embedding(prefix: &str, cells: &[Box<str>], x: &Mat, name: &str) -> any
     )
 }
 
+/// What was done about batch effects: δ divided out (the one deviation
+/// from the original method), or nothing, under `--ignore-batch` or with a
+/// single batch.
+fn batch_correction(input: &SpatialInputArgs, data: &SpatialData) -> serde_json::Value {
+    match &data.delta {
+        Some(d) => serde_json::json!({"delta": true, "batches": d.batches}),
+        None => serde_json::json!({
+            "delta": false,
+            "why": if input.ignore_batch { "--ignore-batch" } else { "one batch" },
+        }),
+    }
+}
+
 /// Write every output of a fitted baseline under `input.out`.
 pub fn write_run(
     input: &SpatialInputArgs,
@@ -122,6 +137,7 @@ pub fn write_run(
         "coord_files": input.coord_files,
         "batch_files": input.batch_files,
         "seed": input.seed,
+        "batch_correction": batch_correction(input, data),
         "n_clusters_found": k,
         "settings": fit.settings,
     });
@@ -129,6 +145,7 @@ pub fn write_run(
         settings_path(prefix),
         serde_json::to_string_pretty(&settings)? + "\n",
     )?;
+    let (batch_effects, delta_cells) = data.delta.as_ref().map(|_| delta_files(prefix)).unzip();
     let meta = PintoMetadata {
         command: fit.method.into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -144,8 +161,14 @@ pub fn write_run(
             coord_columns: Some(data.coord_names.iter().map(|c| c.to_string()).collect()),
             propensity: Some(propensity_path(prefix)),
             cell_embedding: Some(embedding_path(prefix)),
+            batch_effects,
+            delta_cells,
             ..Default::default()
         },
+        batch_labels: data.delta.as_ref().map(|_| match input.batch_files {
+            Some(_) => BatchLabels::BatchFiles,
+            None => BatchLabels::Files,
+        }),
         ..Default::default()
     };
     meta.write(std::path::Path::new(&manifest_path(prefix)))?;
