@@ -29,12 +29,16 @@ modules); lc takes feature modules from a feature network file the user \
 supplies (feature-network), as pinto has none. `run_fit` runs one on data \
 files with their coordinates, in the background for anything but a small \
 data set (follow its job with `job_status` / `job_wait`), and never writes \
-over a run. Its methods also hold two spatial baselines, model-level \
+over a run. Its methods also hold four spatial baselines, model-level \
 ports of published methods to compare pinto against: spatialde2 \
-(SpatialDE2's tissue segmentation) and stagate (STAGATE, its embedding \
+(SpatialDE2's tissue segmentation), stagate (STAGATE, its embedding \
+clustered by pinto's k-means or Leiden), spatialpca (SpatialPCA, spatially \
+aware probabilistic PCA, its spatial PCs clustered by pinto's k-means or \
+Leiden) and mefisto (MEFISTO, spatially smooth factor analysis, its factors \
 clustered by pinto's k-means or Leiden), sparse by default (reference runs \
-the original's own formulation), and spatialde2-pb, spatialde2 fitted on \
-cage's super-cells and unravelled to cells; \
+the original's own formulation), and their -pb forms (spatialde2-pb, \
+spatialpca-pb, mefisto-pb), fitted on cage's super-cells and unravelled to \
+cells; \
 run_fit runs them as it runs lc, and each writes a run with its labels and \
 a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's \
 ablation flags (permute-coords, drop-features, mask-cells with \

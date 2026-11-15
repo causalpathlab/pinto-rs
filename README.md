@@ -514,7 +514,7 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 `run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
 
-### Spatial baselines: `spatialde2`, `stagate` and their `-pb` forms
+### Spatial baselines: `spatialde2`, `stagate`, `spatialpca`, `mefisto` and their `-pb` forms
 
 Published spatial-domain methods, ported to run on pinto's inputs so they
 can be scored beside `lc`, `cage` and `dsvd`:
@@ -527,9 +527,18 @@ can be scored beside `lc`, `cage` and `dsvd`:
   clustered by pinto's own methods: seeded k-means into exactly
   `--n-clusters` domains, or Leiden when `--n-clusters` is not given. With
   `--n-clusters` this differs from the STAGATE tutorial, which fits a
-  Gaussian mixture in R (a GPL package, not ported) at that step.
+  Gaussian mixture in R (a GPL package, not ported) at that step;
+- `spatialpca`: SpatialPCA, probabilistic PCA whose spatial PCs carry a
+  spatial kernel prior (Shang and Zhou 2022, Nature Communications
+  13:7203, doi:10.1038/s41467-022-34879-1), its PCs clustered by pinto's
+  k-means or Leiden (in place of the paper's Walktrap and Louvain) and
+  refined by the paper's majority vote over each cell's 6 nearest;
+- `mefisto`: MEFISTO, multi-group Bayesian factor analysis with spatially
+  smooth factors (Velten et al. 2022, Nature Methods 19:179,
+  doi:10.1038/s41592-021-01343-9), the sections as its groups, its factors
+  clustered by pinto's k-means or Leiden (the paper does not cluster).
 
-Each is a model-level port of its reference code: the same preprocessing,
+`spatialde2` and `stagate` are model-level ports of its reference code: the same preprocessing,
 model, loss or updates, defaults, stopping rule and clustering step (but
 for stagate's fixed-K clustering, above), not bit-for-bit output; each
 module's documentation names the repository and commit read, the function
@@ -555,6 +564,28 @@ mode still `sparse`, and `baseline.json` records the layout held as
 SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
 the most expressed.
 
+`spatialpca` and `mefisto` are written from their papers and supplements
+alone (their reference code is GPL or otherwise copyleft, and none of it is
+read or translated), over one shared sparse factor core: the latent factor
+model `Y = W Z + E` with a spatial prior on each factor. With
+`--reference` each runs its paper's prior: SpatialPCA's Gaussian kernel,
+one block per section, its bandwidth by the paper's rule and its low-rank
+approximation above 5000 cells; MEFISTO's Gaussian processes (a
+squared-exponential kernel times a group kernel), on inducing cells above
+1000 cells. By default each replaces that prior by a sparse precision on
+the per-section kNN graph, `(I + rho L) cbar(rho)`, its strength fitted
+with the rest (one `rho` for SpatialPCA, one per factor for MEFISTO), so
+no `N × N` matrix and no `O(N^3)` step is met: determinants and traces come
+from the graph's spectrum (exact on sections of at most 2000 cells,
+stochastic Lanczos quadrature above), solves from conjugate gradients.
+What differs from the papers besides the prior: genes are the most
+variable (`--n-genes`; SpatialPCA's spatially variable gene step is not
+ported), and SpatialPCA's SCTransform normalisation is replaced by
+analytic Pearson residuals. Each module's documentation lists every
+deviation. The visible flags are the number of factors (`--n-factors`,
+`--n-pcs` for `spatialpca`; 20 and 4 by default) and of genes (3000 and
+2000); the papers' tuning knobs are hidden.
+
 `spatialde2-pb` fits `spatialde2` on super-cells and unravels the fit
 back to cells. The cells are coarsened as `cage` coarsens them, to about
 `-d` (`--n-pseudobulk`) super-cells within each section, each with its
@@ -570,13 +601,20 @@ to: on a simulated section at one super-cell per eight cells, within 0.1
 ARI of the cell-level fit and better than the broadcast labels at domain
 boundaries.
 
+`spatialpca-pb` and `mefisto-pb` fit the sparse model on the same
+super-cells and collapsed graph, then unravel to cells by conditional
+re-inference with the fit's loadings held fixed: SpatialPCA's `W` (its
+noise, `tau` and `rho` refitted on the cells), MEFISTO's weights, ARD and
+sparsity (its noise, factors and each factor's `rho` refitted). Both were
+held to the same bar and met it.
+
 One deviation is shared: with two or more batches (data files, or `-b`
 labels) the counts are divided by the input's own batch effects (δ,
 estimated as `cage` estimates them and written to `{out}.delta.parquet`)
 before the method's own preprocessing. `--ignore-batch` runs the original
 method on the counts as stored.
 
-Both fit the whole tissue in memory, so each estimates its peak before its
+All fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
 exceeds the memory budget: `PINTO_MEMORY_BUDGET` (bytes) when set, else
 half the memory available to the process at the start (cgroup limits
@@ -588,7 +626,10 @@ store its nonzero count leaves that read unchecked.
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for
 `spatialde2`), train `stagate` on a GPU (`--device cuda`, in a build with
-the `cuda` feature), or raise
+the `cuda` feature), lower `--n-genes` for `spatialpca` and `mefisto`
+(whose sparse modes grow linearly with the cells; `spatialpca
+--reference` holds a dense kernel block per section and refuses runs over
+a kernel-evaluation cap too), or raise
 `PINTO_MEMORY_BUDGET` knowingly; a runner starting several at once gives
 each its share.
 
@@ -738,8 +779,8 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `dsvd`, `cage`
-and `cage-cell` (or the spatial baselines `spatialde2` and `stagate` and
-their `-pb` forms, listed after them), and change any flag; each method's form is read from its own
+and `cage-cell` (or the spatial baselines `spatialde2`, `stagate`,
+`spatialpca` and `mefisto` and their `-pb` forms, listed after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen; each fit shows a progress bar,
 plus a sparkline of its score (loss, NLL or moves) once it has two values and
@@ -1051,7 +1092,7 @@ to the model; with one of them, put that text in the agent's own instructions
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialde2-pb`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto`, `spatialde2-pb`, `spatialpca-pb`, `mefisto-pb`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

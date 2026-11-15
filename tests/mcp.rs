@@ -402,7 +402,11 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
             "cage-cell",
             "spatialde2",
             "stagate",
+            "spatialpca",
+            "mefisto",
             "spatialde2-pb",
+            "spatialpca-pb",
+            "mefisto-pb",
         ]
     );
     let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));
