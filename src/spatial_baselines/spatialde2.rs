@@ -141,9 +141,12 @@
 //! classes, cells × K.
 
 use super::graph::knn_within_sections;
-use super::input::{n_sections, section_sizes, OpenedInput, SpatialData, SpatialInputArgs};
-use super::memory::{knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape};
+use super::input::{InputShape, SpatialData, SpatialInputArgs};
+use super::memory::{
+    check_stored_shape, knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape,
+};
 use super::output::{write_run, Fitted};
+use crate::util::ablation::{n_sections, section_sizes};
 use crate::util::common::Mat;
 use crate::util::memory::{ensure_fits, Budget};
 use rand::rngs::SmallRng;
@@ -946,64 +949,71 @@ impl Args {
 pub fn run(args: &Args) -> anyhow::Result<()> {
     args.params().check()?;
     let budget = Budget::now()?;
-    let input = args.input.open()?;
-    check_input(args, &input, &budget)?;
-    run_on(args, input.read()?, &budget)
-}
-
-/// The first memory check, from the files before their counts are read:
-/// every stored nonzero counted as selected too, and as many genes as
-/// `--n-top-genes` could keep, so it bounds the check after the read. A file that does not store its nonzero count leaves the
-/// read unchecked.
-fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Result<()> {
-    let Some(estimate) = input_peak_bytes(args, input) else {
-        log::info!("spatialde2: a file does not store its nonzero count; its read is not checked");
-        return Ok(());
-    };
-    ensure_fits(
-        "spatialde2 (from the input's stored shape)",
-        estimate,
-        budget,
+    let stored = args.input.stored_shape()?;
+    check_stored_shape(
+        "spatialde2",
+        stored.map(|s| input_peak_bytes(args, &s)),
+        &budget,
         LOWER_MEMORY,
-    )
+    )?;
+    run_on(args, args.input.read()?, &budget)
 }
 
-/// The peak [`check_input`] checks, `None` when a file does not store its
-/// nonzero count.
-pub(crate) fn input_peak_bytes(args: &Args, input: &OpenedInput) -> Option<usize> {
-    let s = input.shape()?;
+/// The peak of a run on an input of stored shape `s`, checked before its
+/// counts are read: every stored nonzero counted as selected too, and as
+/// many genes as `--n-top-genes` could keep, so it bounds the check after
+/// the read.
+pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
     let genes = match args.n_top_genes {
         0 => s.genes,
         n => s.genes.min(n),
     };
-    let shape = memory_shape(args, &s.section_sizes, s.nonzeros, s.nonzeros, genes);
-    Some(spatialde2_peak_bytes(&shape))
+    let input = InputShape { genes, ..s.clone() };
+    spatialde2_peak_bytes(&args.sizes().memory_shape(&input, s.nonzeros))
 }
 
-/// What a run on `nonzeros` counts, `selected` of them on the `genes`
-/// segmented on, and sections of `section_sizes` cells holds
-/// ([`Spatialde2Shape`]).
-fn memory_shape(
-    args: &Args,
-    section_sizes: &[usize],
-    nonzeros: usize,
-    selected: usize,
-    genes: usize,
-) -> Spatialde2Shape {
-    let n = section_sizes.iter().sum();
-    Spatialde2Shape {
-        cells: n,
-        nonzeros,
-        selected_nonzeros: selected,
-        genes,
-        // symmetrising at most doubles the edges
-        edges: 2 * knn_edges(section_sizes, args.neighbors),
-        regions: initial_regions(n, args.n_clusters),
-        gram: if args.neighbors > 0 {
-            knn_gram_bytes(section_sizes, rayon::current_num_threads())
-        } else {
-            0
-        },
+impl Args {
+    /// The arguments a run's peak memory depends on.
+    fn sizes(&self) -> Spatialde2Sizes {
+        Spatialde2Sizes {
+            neighbors: self.neighbors,
+            n_clusters: self.n_clusters,
+        }
+    }
+}
+
+/// What a run's peak memory depends on beside its input: its graph each
+/// cell's `neighbors` nearest (none at 0), starting from `n_clusters`
+/// regions.
+pub(crate) struct Spatialde2Sizes {
+    pub neighbors: usize,
+    pub n_clusters: Option<usize>,
+}
+
+impl Spatialde2Sizes {
+    /// What a run on `input`, `selected_nonzeros` of its nonzeros on the
+    /// genes it segments on, holds ([`Spatialde2Shape`]).
+    pub(crate) fn memory_shape(
+        &self,
+        input: &InputShape,
+        selected_nonzeros: usize,
+    ) -> Spatialde2Shape {
+        let sizes = &input.section_sizes;
+        let n = sizes.iter().sum();
+        Spatialde2Shape {
+            cells: n,
+            nonzeros: input.nonzeros,
+            selected_nonzeros,
+            genes: input.genes,
+            // symmetrising at most doubles the edges
+            edges: 2 * knn_edges(sizes, self.neighbors),
+            regions: initial_regions(n, self.n_clusters),
+            gram: if self.neighbors > 0 {
+                knn_gram_bytes(sizes, rayon::current_num_threads())
+            } else {
+                0
+            },
+        }
     }
 }
 
@@ -1018,9 +1028,12 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         nonzeros: selected,
     } = top_genes(&data, args.n_top_genes);
     let n = data.cells.len();
-    let sizes = section_sizes(&data.section);
-    let spatial = args.neighbors > 0;
-    let shape = memory_shape(args, &sizes, data.counts.nnz(), selected, genes.len());
+    let input = InputShape {
+        genes: genes.len(),
+        nonzeros: data.counts.nnz(),
+        section_sizes: section_sizes(&data.section),
+    };
+    let shape = args.sizes().memory_shape(&input, selected);
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),
@@ -1035,7 +1048,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len(),
         data.genes.len()
     );
-    let graph = spatial.then(|| {
+    let graph = (args.neighbors > 0).then(|| {
         let nb = knn_within_sections(&data, args.neighbors).symmetrised();
         log::info!(
             "spatialde2: {} spatial edges (k = {}, symmetrised)",

@@ -143,10 +143,13 @@
 //!   have it.
 
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
-use super::input::{section_sizes, OpenedInput, SpatialData, SpatialInputArgs};
-use super::memory::{knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape};
+use super::input::{InputShape, SpatialData, SpatialInputArgs};
+use super::memory::{
+    check_stored_shape, knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape,
+};
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
+use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
@@ -394,28 +397,25 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 /// copied column by column into arrays of their exact size, so the counts
 /// and their filtered copy are all it holds (24 bytes a nonzero).
 pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
+    // per gene, its nonzero cells and its stored entries
     let mut nnz = vec![0usize; counts.nrows()];
+    let mut stored = vec![0usize; counts.nrows()];
     for (g, _, &v) in counts.triplet_iter() {
-        if v != 0.0 {
-            nnz[g] += 1;
-        }
+        nnz[g] += usize::from(v != 0.0);
+        stored[g] += 1;
     }
     let mut at = vec![None; counts.nrows()];
-    let mut kept = 0;
+    let (mut kept, mut total) = (0, 0);
     for (g, &c) in nnz.iter().enumerate() {
         if c >= min_cells {
             at[g] = Some(kept);
             kept += 1;
+            total += stored[g];
         }
     }
     if kept == counts.nrows() {
         return counts;
     }
-    let total = counts
-        .row_indices()
-        .iter()
-        .filter(|&&g| at[g].is_some())
-        .count();
     let mut offsets = Vec::with_capacity(counts.ncols() + 1);
     let mut rows = Vec::with_capacity(total);
     let mut values = Vec::with_capacity(total);
@@ -782,69 +782,72 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
     let budget = Budget::now()?;
-    let input = args.input.open()?;
-    check_input(args, &input, &budget)?;
-    run_on(args, input.read()?, &budget)
-}
-
-/// The first memory check, from the files before their counts are read:
-/// every stored nonzero and as many genes as `--n-top-genes` could keep, so
-/// it bounds the checks after the read. A file that does not store its
-/// nonzero count leaves the read unchecked.
-fn check_input(args: &Args, input: &OpenedInput, budget: &Budget) -> anyhow::Result<()> {
-    let Some(estimate) = input_peak_bytes(args, input) else {
-        info!("stagate: a file does not store its nonzero count; its read is not checked");
-        return Ok(());
-    };
-    ensure_fits(
-        "stagate (from the input's stored shape)",
-        estimate,
-        budget,
+    let stored = args.input.stored_shape()?;
+    check_stored_shape(
+        "stagate",
+        stored.map(|s| input_peak_bytes(args, &s)),
+        &budget,
         lower_memory(&args.device),
-    )
+    )?;
+    run_on(args, args.input.read()?, &budget)
 }
 
-/// The peak [`check_input`] checks, `None` when a file does not store its
-/// nonzero count.
-pub(crate) fn input_peak_bytes(args: &Args, input: &OpenedInput) -> Option<usize> {
-    let s = input.shape()?;
-    let genes = s.genes.min(args.n_top_genes);
-    Some(stagate_peak_bytes(&memory_shape(
-        args,
-        &s.section_sizes,
-        genes,
-        s.nonzeros,
-    )))
+/// The peak of a run on an input of stored shape `s`, checked before its
+/// counts are read: every stored nonzero and as many genes as
+/// `--n-top-genes` could keep, so it bounds the checks after the read.
+pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
+    stagate_peak_bytes(&args.sizes().memory_shape(&InputShape {
+        genes: s.genes.min(args.n_top_genes),
+        ..s.clone()
+    }))
 }
 
-/// What a run on `genes` genes, `nonzeros` counts and sections of
-/// `section_sizes` cells holds ([`StagateShape`]). A radius graph's edges
-/// are not known before it is built: its self loops at least, counted
-/// again once it is.
-fn memory_shape(
-    args: &Args,
-    section_sizes: &[usize],
-    genes: usize,
-    nonzeros: usize,
-) -> StagateShape {
-    let n = section_sizes.iter().sum();
-    let searched = knn_edges(
-        section_sizes,
-        args.rad_cutoff.map_or(args.k_cutoff, |_| RADIUS_MAX_K),
-    );
-    StagateShape {
-        cells: n,
-        edges: n + if args.rad_cutoff.is_some() {
-            0
-        } else {
-            searched
-        },
-        genes,
-        hidden: args.hidden_dims[0],
-        nonzeros,
-        gram: knn_gram_bytes(section_sizes, rayon::current_num_threads()),
-        searched,
-        train_on_host: args.device != ComputeDevice::Cuda,
+impl Args {
+    /// The arguments a run's peak memory depends on.
+    fn sizes(&self) -> StagateSizes {
+        StagateSizes {
+            k_cutoff: self.k_cutoff,
+            rad_cutoff: self.rad_cutoff,
+            hidden: self.hidden_dims[0],
+            train_on_host: self.device != ComputeDevice::Cuda,
+        }
+    }
+}
+
+/// What a run's peak memory depends on beside its input: its graph each
+/// cell's `k_cutoff` nearest or, with `rad_cutoff`, those within it, the
+/// model `hidden` wide, training on the host or not (`train_on_host`).
+pub(crate) struct StagateSizes {
+    pub k_cutoff: usize,
+    pub rad_cutoff: Option<f32>,
+    pub hidden: usize,
+    pub train_on_host: bool,
+}
+
+impl StagateSizes {
+    /// What a run on `input` holds ([`StagateShape`]). A radius graph's
+    /// edges are not known before it is built: its self loops at least,
+    /// counted again once it is.
+    pub(crate) fn memory_shape(&self, input: &InputShape) -> StagateShape {
+        let sizes = &input.section_sizes;
+        let n = sizes.iter().sum();
+        let (searched, found) = match self.rad_cutoff {
+            Some(_) => (knn_edges(sizes, RADIUS_MAX_K), 0),
+            None => {
+                let edges = knn_edges(sizes, self.k_cutoff);
+                (edges, edges)
+            }
+        };
+        StagateShape {
+            cells: n,
+            edges: n + found,
+            genes: input.genes,
+            hidden: self.hidden,
+            nonzeros: input.nonzeros,
+            gram: knn_gram_bytes(sizes, rayon::current_num_threads()),
+            searched,
+            train_on_host: self.train_on_host,
+        }
     }
 }
 
@@ -884,9 +887,12 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len()
     );
 
-    let sizes = section_sizes(&data.section);
     let change = lower_memory(&args.device);
-    let mut shape = memory_shape(args, &sizes, genes.len(), counts.nnz());
+    let mut shape = args.sizes().memory_shape(&InputShape {
+        genes: genes.len(),
+        nonzeros: counts.nnz(),
+        section_sizes: section_sizes(&data.section),
+    });
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
 
     // the dense input first, so the counts are freed before the graph

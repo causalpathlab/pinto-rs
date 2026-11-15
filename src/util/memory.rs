@@ -29,11 +29,6 @@ pub fn half_available(available: Option<usize>) -> usize {
     available.map_or(MIN_MEMORY_BUDGET, |a| (a / 2).max(MIN_MEMORY_BUDGET))
 }
 
-/// Refuse a [`MEMORY_BUDGET_VAR`] that does not parse, before any work.
-pub fn check_memory_budget() -> anyhow::Result<()> {
-    budget_var().map(|_| ())
-}
-
 /// The bytes [`MEMORY_BUDGET_VAR`] sets, refused when it does not parse (a
 /// value that is not UTF-8 included: it is not taken as unset).
 pub fn budget_var() -> anyhow::Result<Option<usize>> {
@@ -78,6 +73,11 @@ pub struct Budget {
 }
 
 impl Budget {
+    /// The budget in bytes.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// `set` bytes ([`MEMORY_BUDGET_VAR`]) when given, else half the
     /// `available` memory ([`half_available`]).
     pub fn new(set: Option<usize>, available: Option<usize>) -> Self {
@@ -91,11 +91,13 @@ impl Budget {
     /// taken before the data are read, so what they take is not counted
     /// again beside an estimate that counts them.
     pub fn now() -> anyhow::Result<Self> {
-        let set = budget_var()?;
-        Ok(Self::new(
-            set,
-            set.is_none().then(available_memory).flatten(),
-        ))
+        Ok(Self::measured(budget_var()?))
+    }
+
+    /// `set` bytes when given, else half of what is available now
+    /// ([`available_memory`]), read only when `set` is not given.
+    pub fn measured(set: Option<usize>) -> Self {
+        Self::new(set, set.is_none().then(available_memory).flatten())
     }
 }
 

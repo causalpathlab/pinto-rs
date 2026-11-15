@@ -4,22 +4,14 @@
 use super::overlap::NuisanceOpts;
 use super::tissue::Tissue;
 
-pub use crate::util::memory::check_memory_budget;
-use crate::util::memory::{available_memory, budget_var, half_available};
+use crate::util::memory::Budget;
 
-/// The memory budget: [`budget_var`] when set, else [`half_available`] of
-/// what is available now ([`available_memory`]). A variable that does not
-/// parse is refused at the start ([`check_memory_budget`]); one that
-/// reaches here anyway is warned about once and counts as unset.
-pub(super) fn pair_memory_budget() -> usize {
-    static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    let set = SET.get_or_init(|| {
-        budget_var()
-            .map_err(|e| log::warn!("{e}; using half the available memory"))
-            .ok()
-            .flatten()
-    });
-    set.unwrap_or_else(|| half_available(available_memory()))
+/// The memory budget the pairs are sized by: the `set` bytes
+/// ([`crate::util::memory::budget_var`], read once at the start of the run),
+/// else half of what is available now, as each sizing finds it
+/// ([`Budget::measured`]).
+pub(super) fn pair_memory_budget(set: Option<usize>) -> usize {
+    Budget::measured(set).bytes()
 }
 
 /// Bytes of `rows` rows of a propensity fit ([`super::regression::logistic_base`]) on
@@ -70,12 +62,18 @@ const FITS_IN_CACHE: usize = 4 << 20;
 /// bytes: what the memory budget allows, and on a tissue whose fits outgrow
 /// the cache a quarter of the threads, the rest serving each pair's parallel
 /// steps ([`run_bounded`]). Fits slow each other down past that: more of them
-/// at once take longer in all.
-pub(super) fn pair_workers(per_pair: usize, tissue: &Tissue, nuisance: &NuisanceOpts) -> usize {
+/// at once take longer in all. `budget` is the bytes the budget variable
+/// sets, if any ([`pair_memory_budget`]).
+pub(super) fn pair_workers(
+    per_pair: usize,
+    tissue: &Tissue,
+    nuisance: &NuisanceOpts,
+    budget: Option<usize>,
+) -> usize {
     let rows = tissue.n().min(nuisance.max_propensity_rows);
     let fit_bytes = propensity_bytes(rows, tissue.design.p());
     workers_within(
-        pair_memory_budget(),
+        pair_memory_budget(budget),
         per_pair,
         rayon::current_num_threads(),
         fit_bytes,

@@ -1,24 +1,9 @@
-use super::graph::toy;
+use super::graph::{grid, toy};
 use crate::spatial_baselines::graph::knn_within_sections;
 use crate::spatial_baselines::input::SpatialData;
 use crate::spatial_baselines::spatialde2::*;
 use crate::util::common::Mat;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
-
-/// A `side × side` grid of unit spacing, in `n_sections` copies.
-fn grid(side: usize, n_sections: usize) -> SpatialData {
-    let mut xy = Vec::new();
-    let mut sec = Vec::new();
-    for s in 0..n_sections {
-        for r in 0..side {
-            for c in 0..side {
-                xy.push((r as f32, c as f32));
-                sec.push(s);
-            }
-        }
-    }
-    toy(&xy, &sec)
-}
 
 fn graph_of(data: &SpatialData, k: usize, smoothness: f64) -> WeightedGraph {
     let nb = knn_within_sections(data, k).symmetrised();

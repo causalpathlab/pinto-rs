@@ -1,7 +1,9 @@
 //! Peak memory of a `stagate` or `spatialde2` run, estimated before its
 //! large allocations, so a run that would not fit stops with an error
-//! ([`crate::util::memory::ensure_fits`]) instead of swapping the machine
+//! ([`ensure_fits`]) instead of swapping the machine
 //! to a halt. Every estimate is in bytes.
+
+use crate::util::memory::{ensure_fits, Budget};
 
 /// The binary, its libraries and the allocator's own arenas: what a run of
 /// a few hundred cells already holds, above its counted memory (candle's
@@ -32,9 +34,43 @@ pub const STAGATE_SAFETY: f64 = 1.65;
 /// decoded chunks) are within the process's own.
 const READ_NONZERO_BYTES: usize = 32;
 
+/// Bytes a nonzero of the counts holds once read (CSC: an f32 value, a row
+/// index).
+const HELD_NONZERO_BYTES: usize = 12;
+
 /// Peak bytes of reading counts of `nonzeros` stored nonzeros.
 pub fn read_bytes(nonzeros: usize) -> usize {
     READ_NONZERO_BYTES * nonzeros
+}
+
+/// A run's peak: the `process`'s own bytes, then the read of `nonzeros`
+/// ([`read_bytes`]) or the most it `held` at once after it.
+fn peak(process: usize, nonzeros: usize, held: usize) -> usize {
+    process + read_bytes(nonzeros).max(held)
+}
+
+/// The first memory check, from the input's stored shape before its
+/// counts are read: `what`'s `estimate` from it, `None` when the files do
+/// not store their shape, which leaves the read unchecked.
+pub fn check_stored_shape(
+    what: &str,
+    estimate: Option<usize>,
+    budget: &Budget,
+    change: &str,
+) -> anyhow::Result<()> {
+    let Some(estimate) = estimate else {
+        log::info!(
+            "{what}: the data files do not store their column and nonzero counts; \
+             their read is not checked"
+        );
+        return Ok(());
+    };
+    ensure_fits(
+        &format!("{what} (from the input's stored shape)"),
+        estimate,
+        budget,
+        change,
+    )
 }
 
 /// Gram block bytes of the all-pairs kNN in flight at once: each task holds
@@ -109,7 +145,7 @@ pub fn stagate_training_bytes(s: &StagateShape) -> usize {
 /// edge list made from them) and training ([`stagate_training_bytes`], or
 /// on CUDA the input copied to the device).
 pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
-    let counts = 12 * s.nonzeros;
+    let counts = HELD_NONZERO_BYTES * s.nonzeros;
     let dense = 4 * s.cells * s.genes;
     let graph = dense + s.gram + 28 * s.searched;
     let training = if s.train_on_host {
@@ -117,11 +153,11 @@ pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     } else {
         dense
     };
-    STAGATE_PROCESS_BYTES
-        + read_bytes(s.nonzeros)
-            .max(counts + dense)
-            .max(graph)
-            .max(training)
+    peak(
+        STAGATE_PROCESS_BYTES,
+        s.nonzeros,
+        (counts + dense).max(graph).max(training),
+    )
 }
 
 /// What a SpatialDE2 run holds at once.
@@ -159,18 +195,18 @@ const GRAPH_EDGE_BYTES: usize = 38;
 
 /// SpatialDE2's peak: the read ([`read_bytes`]), or after it, f64
 /// throughout and summed as if all were live at once, the counts as read
-/// (12 per nonzero) beside the selected counts
+/// ([`HELD_NONZERO_BYTES`] a nonzero) beside the selected counts
 /// ([`SELECTED_NONZERO_BYTES`]); the graph as built
 /// ([`GRAPH_EDGE_BYTES`]); the posteriors, cells × regions, twice while
 /// pruning; an update's genes × regions arrays (E[λ], E[log λ] in both
 /// layouts, π̂ Y, the old and the new gammahat_1: six); and the kNN's Gram
 /// blocks.
 pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
-    let held = 12 * s.nonzeros
+    let held = HELD_NONZERO_BYTES * s.nonzeros
         + SELECTED_NONZERO_BYTES * s.selected_nonzeros
         + GRAPH_EDGE_BYTES * s.edges
         + 16 * s.cells * s.regions
         + 6 * 8 * s.genes * s.regions
         + s.gram;
-    SPATIALDE2_PROCESS_BYTES + read_bytes(s.nonzeros).max(held)
+    peak(SPATIALDE2_PROCESS_BYTES, s.nonzeros, held)
 }

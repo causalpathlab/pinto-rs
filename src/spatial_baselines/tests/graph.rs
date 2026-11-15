@@ -1,6 +1,7 @@
 use crate::spatial_baselines::graph::knn_within_sections;
-use crate::spatial_baselines::input::{n_sections, section_sizes, SpatialData};
+use crate::spatial_baselines::input::SpatialData;
 use crate::test_support::{boxed, numbered};
+use crate::util::ablation::{n_sections, section_sizes};
 use crate::util::common::Mat;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
@@ -17,6 +18,21 @@ pub(crate) fn toy(xy: &[(f32, f32)], section: &[usize]) -> SpatialData {
         section: section.to_vec(),
         n_sections: n_sections(section),
     }
+}
+
+/// A `side × side` grid of unit spacing, in `n_sections` copies.
+pub(crate) fn grid(side: usize, n_sections: usize) -> SpatialData {
+    let mut xy = Vec::new();
+    let mut sec = Vec::new();
+    for s in 0..n_sections {
+        for r in 0..side {
+            for c in 0..side {
+                xy.push((r as f32, c as f32));
+                sec.push(s);
+            }
+        }
+    }
+    toy(&xy, &sec)
 }
 
 #[test]
@@ -36,10 +52,12 @@ fn neighbours_stay_within_sections() {
 /// section with no cells (none labelled 1 here) still has its size, 0.
 #[test]
 fn section_sizes_count_every_section_from_its_labels() {
-    assert_eq!(n_sections(&[]), 0);
+    assert_eq!(n_sections::<usize>(&[]), 0);
     assert_eq!(n_sections(&[0, 2, 2]), 3);
     assert_eq!(section_sizes(&[0, 2, 2, 0, 2]), vec![2, 0, 3]);
-    assert!(section_sizes(&[]).is_empty());
+    assert!(section_sizes::<usize>(&[]).is_empty());
+    // the reader's u32 labels as well
+    assert_eq!(section_sizes(&[1u32, 1, 0]), vec![1, 2]);
 }
 
 /// Each edge whose reverse the kNN lacks is added to its other end, the

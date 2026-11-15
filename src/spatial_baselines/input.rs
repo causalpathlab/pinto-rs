@@ -4,11 +4,14 @@
 //! name, order and split them.
 
 use crate::util::ablation;
-use crate::util::common::Mat;
+use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
-    open_fit_data, read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
+    read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
 };
+use anyhow::Context;
 use data_beans::aux::feature_names::FeatureNameKind;
+use data_beans::convert::try_open_or_convert;
+use data_beans::sparse_io::SparseIo;
 use nalgebra_sparse::CscMatrix;
 
 /// Data files, their coordinates, the output prefix and the seed.
@@ -84,51 +87,82 @@ impl SpatialData {
     }
 }
 
-/// Sections of cells labelled `section` (0-based): one more than the
-/// largest label.
-pub fn n_sections(section: &[usize]) -> usize {
-    section.iter().max().map_or(0, |&m| m + 1)
-}
-
-/// Cells in each of the [`n_sections`] sections `section` labels.
-pub fn section_sizes(section: &[usize]) -> Vec<usize> {
-    let mut sizes = vec![0; n_sections(section)];
-    for &s in section {
-        sizes[s] += 1;
-    }
-    sizes
-}
-
-/// The input files opened, their counts not yet read: what a run can know
-/// of its size from the files alone.
-pub struct OpenedInput {
-    srt: crate::util::input::SRTData,
-    /// Each cell's section, as [`SpatialData::section`].
-    section: Vec<usize>,
-    data_files: Vec<Box<str>>,
-    preload_data: bool,
-}
-
-/// An input's size from its files' metadata, before its counts are read.
-#[derive(Debug, Clone)]
+/// An input's size, what its peak memory is estimated from: from its files'
+/// metadata ([`SpatialInputArgs::stored_shape`]), before its counts are
+/// read, at least what the read gives on every field, so an estimate from
+/// it bounds the estimates after the read.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputShape {
+    /// Genes: from the metadata, the row names every file stores, which
+    /// the read keeps.
     pub genes: usize,
-    /// Nonzeros of the counts, as the files store them.
+    /// Nonzeros of the counts: from the metadata, those the files store
+    /// over all their rows.
     pub nonzeros: usize,
-    /// Cells in each section.
+    /// Cells in each section: from the metadata, each file taken as a
+    /// section, which bounds the smaller sections a batch file splits it
+    /// into.
     pub section_sizes: Vec<usize>,
 }
 
+/// A data file opened ([`try_open_or_convert`]).
+pub(crate) type StoredFile = Box<dyn SparseIo<IndexIter = Vec<usize>>>;
+
 impl SpatialInputArgs {
-    /// Open the files and read the coordinates and batches, not the counts:
-    /// nothing is preloaded, so the memory check from the files' stored
-    /// shape comes before the counts are in memory.
-    pub fn open(&self) -> anyhow::Result<OpenedInput> {
+    /// The input's size from its files' stored shape, or `None` when there
+    /// are no files or a file does not store its column or nonzero count.
+    /// Each file is opened for its metadata alone ([`Self::metadata`]), no
+    /// counts read or preloaded, and opened again by [`Self::read`]: a
+    /// check on this shape runs before any count is in memory.
+    pub fn stored_shape(&self) -> anyhow::Result<Option<InputShape>> {
+        if self.data_files.is_empty() {
+            return Ok(None);
+        }
+        let mut shared: Option<HashSet<Box<str>>> = None;
+        let mut nonzeros = 0;
+        let mut section_sizes = Vec::with_capacity(self.data_files.len());
+        for (file, data) in self.data_files.iter().zip(self.metadata()) {
+            let data = data?;
+            let (Some(cells), Some(stored)) = (data.num_columns(), data.num_non_zeros()) else {
+                return Ok(None);
+            };
+            let rows: HashSet<Box<str>> = data
+                .row_names()
+                .with_context(|| format!("{file}: row names"))?
+                .into_iter()
+                .collect();
+            shared = Some(match shared {
+                Some(mut kept) => {
+                    kept.retain(|r| rows.contains(r));
+                    kept
+                }
+                None => rows,
+            });
+            section_sizes.push(cells);
+            nonzeros += stored;
+        }
+        Ok(Some(InputShape {
+            genes: shared.map_or(0, |s| s.len()),
+            nonzeros,
+            section_sizes,
+        }))
+    }
+
+    /// Each data file opened for its metadata, its counts not read or
+    /// preloaded.
+    pub(crate) fn metadata(&self) -> impl Iterator<Item = anyhow::Result<StoredFile>> + '_ {
+        self.data_files.iter().map(|file| try_open_or_convert(file))
+    }
+
+    /// Read the counts and coordinates, the files opened as the other
+    /// commands open them (preloaded by default, as data-beans' budget
+    /// allows): a preloaded read leaves less memory resident than a
+    /// streamed one.
+    pub fn read(&self) -> anyhow::Result<SpatialData> {
         let srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
-            preload_data: false,
-            auto_preload: false,
+            preload_data: self.preload_data,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),
@@ -137,57 +171,15 @@ impl SpatialInputArgs {
         })?;
         // a section is a (data file, batch label) pair, as the reader keeps
         // them apart; its appended `batch` offset column is not a coordinate
-        let section = ablation::sections(&srt.data.num_columns_by_data()?, &srt.batches)
-            .into_iter()
-            .map(|s| s as usize)
-            .collect();
-        Ok(OpenedInput {
-            srt,
-            section,
-            data_files: self.data_files.clone(),
-            preload_data: self.preload_data,
-        })
-    }
-}
-
-impl OpenedInput {
-    /// Whether a file's columns are in memory already.
-    #[cfg(test)]
-    pub fn preloaded(&self) -> bool {
-        (0..self.srt.data.len()).any(|i| self.srt.data[i].csc_column_arrays().is_some())
-    }
-
-    /// The input's size from its files, or `None` when a file does not
-    /// store its nonzero count.
-    pub fn shape(&self) -> Option<InputShape> {
-        let nonzeros = self.srt.data.num_non_zeros().ok()?;
-        Some(InputShape {
-            genes: self.srt.data.num_rows(),
-            nonzeros,
-            section_sizes: section_sizes(&self.section),
-        })
-    }
-
-    /// Read the counts, the files opened again as the other commands open
-    /// them (preloaded by default, as data-beans' budget allows): a
-    /// preloaded read leaves less memory resident than a streamed one.
-    pub fn read(self) -> anyhow::Result<SpatialData> {
-        let OpenedInput {
-            srt,
-            section,
-            data_files,
-            preload_data,
-        } = self;
-        let data = open_fit_data(&data_files, &FeatureNameKind::Exact, preload_data)?;
-        anyhow::ensure!(
-            (data.num_rows(), data.num_columns()) == (srt.data.num_rows(), srt.data.num_columns()),
-            "the data files changed since they were opened"
-        );
+        let section: Vec<usize> =
+            ablation::sections(&srt.data.num_columns_by_data()?, &srt.batches)
+                .into_iter()
+                .map(|s| s as usize)
+                .collect();
+        let cells = srt.data.column_names()?;
+        let genes = srt.data.row_names()?;
+        let counts = srt.data.read_columns_csc(0..cells.len())?;
         drop(srt.data);
-        let cells = data.column_names()?;
-        let genes = data.row_names()?;
-        let counts = data.read_columns_csc(0..cells.len())?;
-        drop(data);
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();
         anyhow::ensure!(d >= 1, "no spatial coordinate columns");
@@ -196,7 +188,7 @@ impl OpenedInput {
             .iter()
             .map(|&j| srt.coordinate_names[j].clone())
             .collect();
-        let n_sections = n_sections(&section);
+        let n_sections = ablation::n_sections(&section);
         log::info!(
             "{} cells, {} genes, {} sections, {d}-D coordinates",
             cells.len(),

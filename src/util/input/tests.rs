@@ -336,7 +336,6 @@ mod row_alignment {
             data_files,
             coord_files,
             preload_data: false,
-            auto_preload: true,
             coord_columns: vec![],
             coord_column_names: vec!["x".into(), "y".into()],
             batch_files: None,

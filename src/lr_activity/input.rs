@@ -378,7 +378,6 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         data_files: input.data_files.clone(),
         coord_files: input.coord_files.clone(),
         preload_data: input.preload_data,
-        auto_preload: true,
         coord_columns: Vec::new(),
         coord_column_names: input.coord_column_names.clone(),
         batch_files: input.batch_files.clone(),
