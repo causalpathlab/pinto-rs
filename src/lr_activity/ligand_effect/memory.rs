@@ -5,20 +5,19 @@ use super::overlap::NuisanceOpts;
 use super::tissue::Tissue;
 
 pub use crate::util::memory::check_memory_budget;
-pub(super) use crate::util::memory::memory_budget;
 use crate::util::memory::{available_memory, budget_var, half_available};
 
-/// [`memory_budget`] now, of what is available ([`available_memory`]). A
-/// variable that does not parse is refused at the start
-/// ([`check_memory_budget`]); one that reaches here anyway is warned about
-/// once and counts as unset.
+/// The memory budget: [`budget_var`] when set, else [`half_available`] of
+/// what is available now ([`available_memory`]). A variable that does not
+/// parse is refused at the start ([`check_memory_budget`]); one that
+/// reaches here anyway is warned about once and counts as unset.
 pub(super) fn pair_memory_budget() -> usize {
     static SET: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     let set = SET.get_or_init(|| {
-        let var = budget_var()
+        budget_var()
             .map_err(|e| log::warn!("{e}; using half the available memory"))
-            .ok()??;
-        memory_budget(Some(&var), None).ok()
+            .ok()
+            .flatten()
     });
     set.unwrap_or_else(|| half_available(available_memory()))
 }

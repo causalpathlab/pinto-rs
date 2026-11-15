@@ -178,8 +178,8 @@ fn gram_blocks_in_flight_are_bounded_by_the_threads_and_the_blocks() {
 // ---------------------------------------------------------------- runs
 
 /// The budget `bytes` sets ([`MEMORY_BUDGET_VAR`]).
-fn set(bytes: &str) -> Budget {
-    Budget::new(Some(bytes), None).unwrap()
+fn set(bytes: usize) -> Budget {
+    Budget::new(Some(bytes), None)
 }
 
 /// Unset, the budget is half of the memory available when it was taken
@@ -187,7 +187,7 @@ fn set(bytes: &str) -> Budget {
 #[test]
 fn an_unset_budget_is_half_the_memory_available_when_taken() {
     let gib = 1usize << 30;
-    let budget = Budget::new(None, Some(8 * gib)).unwrap();
+    let budget = Budget::new(None, Some(8 * gib));
     let e = ensure_fits("run", 4 * gib + 1, &budget, "lower it")
         .unwrap_err()
         .to_string();
@@ -196,7 +196,7 @@ fn an_unset_budget_is_half_the_memory_available_when_taken() {
         "{e}"
     );
     ensure_fits("run", 4 * gib, &budget, "lower it").unwrap();
-    assert!(set("1000").to_string().contains(MEMORY_BUDGET_VAR));
+    assert!(set(1000).to_string().contains(MEMORY_BUDGET_VAR));
 }
 
 /// `side × side` cells in each of two sections, 12 genes of counts that
@@ -264,11 +264,11 @@ fn stagate_args(out: &std::path::Path, extra: &[&str]) -> stagate::Args {
 fn stagate_refuses_a_run_over_the_budget_before_training() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("st");
-    let run = |epochs: &str, budget: &str| {
+    let run = |epochs: &str, budget: usize| {
         let args = stagate_args(&out, &["--n-epochs", epochs]);
         stagate::run_on(&args, tissue(6), &set(budget))
     };
-    let e = run("1000000000", "1000").unwrap_err().to_string();
+    let e = run("1000000000", 1000).unwrap_err().to_string();
     for want in [
         "estimated",
         "budget",
@@ -279,7 +279,7 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
         assert!(e.contains(want), "{want} missing from: {e}");
     }
     assert!(!dir.path().join("st.labels.tsv").exists());
-    run("3", &usize::MAX.to_string()).unwrap();
+    run("3", usize::MAX).unwrap();
     assert!(dir.path().join("st.labels.tsv").exists());
 }
 
@@ -288,7 +288,7 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
 fn stagate_on_cuda_is_not_told_to_use_cuda() {
     let dir = tempfile::tempdir().unwrap();
     let args = stagate_args(&dir.path().join("st"), &["--device", "cuda"]);
-    let e = stagate::run_on(&args, tissue(6), &set("1000"))
+    let e = stagate::run_on(&args, tissue(6), &set(1000))
         .unwrap_err()
         .to_string();
     assert!(e.contains("--n-top-genes"), "{e}");
@@ -311,12 +311,12 @@ fn stagate_counts_a_radius_graph_once_built() {
         searched: knn_edges(&[36, 36], 256),
         train_on_host: true,
     };
-    let budget = (stagate_peak_bytes(&loops_only) + 1).to_string();
+    let budget = stagate_peak_bytes(&loops_only) + 1;
     let args = stagate_args(
         &dir.path().join("st"),
         &["--rad-cutoff", "1.5", "--n-epochs", "1"],
     );
-    let e = stagate::run_on(&args, data, &set(&budget)).unwrap_err();
+    let e = stagate::run_on(&args, data, &set(budget)).unwrap_err();
     assert!(e.to_string().contains("estimated"), "{e}");
 }
 
@@ -324,7 +324,7 @@ fn stagate_counts_a_radius_graph_once_built() {
 fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sd");
-    let run = |budget: &str| {
+    let run = |budget: usize| {
         let crate::Commands::Spatialde2(args) = parse(&[
             "pinto",
             "spatialde2",
@@ -340,12 +340,12 @@ fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
         };
         spatialde2::run_on(&args, tissue(6), &set(budget))
     };
-    let e = run("1000").unwrap_err().to_string();
+    let e = run(1000).unwrap_err().to_string();
     for want in ["estimated", "budget", "--n-clusters", "PINTO_MEMORY_BUDGET"] {
         assert!(e.contains(want), "{want} missing from: {e}");
     }
     assert!(!dir.path().join("sd.labels.tsv").exists());
-    run(&usize::MAX.to_string()).unwrap();
+    run(usize::MAX).unwrap();
     assert!(dir.path().join("sd.labels.tsv").exists());
 }
 
@@ -419,7 +419,7 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     };
     let input = args.input.open().unwrap();
     let bound = stagate::input_peak_bytes(&args, &input).unwrap();
-    stagate::run_on(&args, input.read().unwrap(), &set(&bound.to_string())).unwrap();
+    stagate::run_on(&args, input.read().unwrap(), &set(bound)).unwrap();
 
     let crate::Commands::Spatialde2(args) =
         on_files("spatialde2", &files, &out, &["--neighbors", "4"])
@@ -428,7 +428,7 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     };
     let input = args.input.open().unwrap();
     let bound = spatialde2::input_peak_bytes(&args, &input).unwrap();
-    spatialde2::run_on(&args, input.read().unwrap(), &set(&bound.to_string())).unwrap();
+    spatialde2::run_on(&args, input.read().unwrap(), &set(bound)).unwrap();
 }
 
 /// The measured runs' shapes, from an srt-simulate read at their settings:

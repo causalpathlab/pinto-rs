@@ -12,19 +12,15 @@ const MIN_MEMORY_BUDGET: usize = 2 << 30;
 /// is free, read by each process alone, would overcommit.
 pub const MEMORY_BUDGET_VAR: &str = "PINTO_MEMORY_BUDGET";
 
-/// The memory budget: `set` bytes ([`MEMORY_BUDGET_VAR`]) when given, else
-/// [`half_available`]. A `set` that is not a whole number of bytes is an
-/// error.
-pub fn memory_budget(set: Option<&str>, available: Option<usize>) -> anyhow::Result<usize> {
-    set.map_or(Ok(half_available(available)), |s| {
-        s.trim()
-            .parse()
-            .ok()
-            .filter(|&b: &usize| b > 0)
-            .ok_or_else(|| {
-                anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
-            })
-    })
+/// A [`MEMORY_BUDGET_VAR`] value `s` as a positive number of bytes.
+pub fn parse_budget(s: &str) -> anyhow::Result<usize> {
+    s.trim()
+        .parse()
+        .ok()
+        .filter(|&b: &usize| b > 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!("{MEMORY_BUDGET_VAR}={s:?}: expected a positive number of bytes")
+        })
 }
 
 /// Half of the `available` memory, the rest left to the data and the
@@ -38,17 +34,16 @@ pub fn check_memory_budget() -> anyhow::Result<()> {
     budget_var().map(|_| ())
 }
 
-/// [`MEMORY_BUDGET_VAR`] as set, refused when it does not parse (a value
-/// that is not UTF-8 included: it is not taken as unset).
-pub fn budget_var() -> anyhow::Result<Option<String>> {
+/// The bytes [`MEMORY_BUDGET_VAR`] sets, refused when it does not parse (a
+/// value that is not UTF-8 included: it is not taken as unset).
+pub fn budget_var() -> anyhow::Result<Option<usize>> {
     let Some(raw) = std::env::var_os(MEMORY_BUDGET_VAR) else {
         return Ok(None);
     };
     let set = raw.into_string().map_err(|raw| {
         anyhow::anyhow!("{MEMORY_BUDGET_VAR}={raw:?}: expected a positive number of bytes")
     })?;
-    memory_budget(Some(&set), None)?;
-    Ok(Some(set))
+    parse_budget(&set).map(Some)
 }
 
 /// Bytes this process could still allocate: the system's available memory, or
@@ -84,12 +79,12 @@ pub struct Budget {
 
 impl Budget {
     /// `set` bytes ([`MEMORY_BUDGET_VAR`]) when given, else half the
-    /// `available` memory ([`memory_budget`]).
-    pub fn new(set: Option<&str>, available: Option<usize>) -> anyhow::Result<Self> {
-        Ok(Budget {
-            bytes: memory_budget(set, available)?,
+    /// `available` memory ([`half_available`]).
+    pub fn new(set: Option<usize>, available: Option<usize>) -> Self {
+        Budget {
+            bytes: set.unwrap_or_else(|| half_available(available)),
             set: set.is_some(),
-        })
+        }
     }
 
     /// [`MEMORY_BUDGET_VAR`] when set, else half of what is available now:
@@ -97,10 +92,10 @@ impl Budget {
     /// again beside an estimate that counts them.
     pub fn now() -> anyhow::Result<Self> {
         let set = budget_var()?;
-        Self::new(
-            set.as_deref(),
+        Ok(Self::new(
+            set,
             set.is_none().then(available_memory).flatten(),
-        )
+        ))
     }
 }
 
