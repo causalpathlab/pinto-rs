@@ -242,3 +242,67 @@ fn the_estimate_s_projection_is_a_fresh_one_taken_after_it() {
     assert_eq!(kept.proj, fresh.proj);
     assert_eq!(kept.basis, fresh.basis);
 }
+
+/// A planted batch shift shrinks: two sections alike but for every third
+/// gene of the second, three times the first's. Read with δ, each shifted
+/// gene's total in the second section over its total in the first falls
+/// within 1.5 of 1 either way; under `--ignore-batch` it stays near three.
+#[test]
+fn a_planted_batch_shift_shrinks() {
+    use crate::test_support::section;
+    const SHIFT: f32 = 3.0;
+    let dir = tempfile::tempdir().unwrap();
+    let (s1, c1) = section(dir.path(), "s1", 10, &|_| 1.0);
+    let (s2, c2) = section(dir.path(), "s2", 10, &|g| {
+        if g % 3 == 0 {
+            SHIFT
+        } else {
+            1.0
+        }
+    });
+    let files = vec![
+        format!("{s1},{s2}"),
+        "-c".into(),
+        format!("{c1},{c2}"),
+        "--coord-column-names".into(),
+        "x,y".into(),
+    ];
+    let ratios = |tag: &str, extra: &[&str]| -> Vec<(usize, f32)> {
+        let out = dir.path().join(tag).to_string_lossy().to_string();
+        let data = spatialde2_args(&files, &out, extra)
+            .fit
+            .input
+            .read(false)
+            .unwrap();
+        let mut total = vec![[0f32; 2]; data.genes.len()];
+        for (j, col) in data.counts.col_iter().enumerate() {
+            for (&g, &x) in col.row_indices().iter().zip(col.values()) {
+                total[g][data.section[j]] += x;
+            }
+        }
+        data.genes
+            .iter()
+            .zip(&total)
+            .map(|(name, t)| {
+                let g: usize = name.trim_start_matches("GENE").parse().unwrap();
+                (g, t[1] / t[0])
+            })
+            .collect()
+    };
+    let corrected = ratios("corrected", &[]);
+    let original = ratios("original", &["--ignore-batch"]);
+    let shifted = |r: &[(usize, f32)]| -> Vec<f32> {
+        r.iter()
+            .filter(|(g, _)| g % 3 == 0)
+            .map(|&(_, x)| x)
+            .collect()
+    };
+    let (before, after) = (shifted(&original), shifted(&corrected));
+    assert_eq!(before.len(), 4);
+    for x in before {
+        assert!((x - SHIFT).abs() < 0.05 * SHIFT, "uncorrected ratio {x}");
+    }
+    for x in after {
+        assert!((1.0 / 1.5..=1.5).contains(&x), "corrected ratio {x}");
+    }
+}

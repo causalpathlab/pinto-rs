@@ -75,7 +75,9 @@ pub struct SpatialInputArgs {
 
 /// Counts and coordinates of every cell, sections kept apart.
 pub struct SpatialData {
-    /// Raw counts, genes × cells.
+    /// Counts, genes × cells: as stored for one batch or under
+    /// `--ignore-batch`, otherwise each divided by its gene's δ in its
+    /// cell's batch ([`Self::delta`]).
     pub counts: CscMatrix<f32>,
     pub genes: Vec<Box<str>>,
     pub cells: Vec<Box<str>>,

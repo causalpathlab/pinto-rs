@@ -645,13 +645,17 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     // (see `remove_group_means`); also under --ignore-batch, where nothing
     // else removes a section's shift. With a batch estimate the dictionary
     // is fitted on divided counts, as the edge profiles the partition was
-    // fitted on are (by choice, so that lc corrects batches the way dsvd
-    // and cage do), and the groups are sections crossed with batches
+    // fitted on are, and the groups are sections crossed with batches
     // (`section_batch_groups`; one per section unless spatial --auto-batch
     // splits one). A group lies in one batch, so the divide shifts each of
     // its (feature, group) log-rates by a constant, which the centring
     // takes out: the merge compares what it would on undivided counts (for
     // a community inside one group, but for the prior's pull).
+    //
+    // Dividing is a trade-off: it removes donor dependence from the
+    // partition, but lowered shared-domain recovery when measured on the
+    // donor-nuisance simulation. It is kept so that lc corrects batches
+    // as dsvd and cage do; `--ignore-batch` gives the undivided fit.
     let (group_of, n_groups) =
         crate::link_community::dict_merge::section_batch_groups(section_ids, batch_of_cell);
     let share = community_group_shares(
