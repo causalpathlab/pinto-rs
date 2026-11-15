@@ -149,7 +149,7 @@ use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
-use crate::util::memory::{budget_var, ensure_fits};
+use crate::util::memory::{ensure_fits, Budget};
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
@@ -766,8 +766,8 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     if let Some(k) = args.n_clusters {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
-    let budget = budget_var()?;
-    run_on(args, args.input.read()?, budget.as_deref())
+    let budget = Budget::now()?;
+    run_on(args, args.input.read()?, &budget)
 }
 
 /// What would lower STAGATE's peak memory, for [`ensure_fits`]: a GPU too,
@@ -781,14 +781,10 @@ fn lower_memory(device: &ComputeDevice) -> &'static str {
 }
 
 /// [`run`] on `data` as read, the arguments checked. The peak memory is
-/// checked against the budget (`budget`, [`budget_var`] as read) before
+/// checked against the budget (`budget`, taken before the read) before
 /// the graph, the dense input and training are allocated, and for a radius
 /// graph once more when its edges are known.
-pub(crate) fn run_on(
-    args: &Args,
-    mut data: SpatialData,
-    budget: Option<&str>,
-) -> anyhow::Result<()> {
+pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let n = data.cells.len();
 
     // the model reads its own copy from here on

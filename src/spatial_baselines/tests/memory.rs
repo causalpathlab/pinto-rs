@@ -4,6 +4,7 @@
 use super::graph::toy;
 use crate::spatial_baselines::memory::*;
 use crate::spatial_baselines::{spatialde2, stagate};
+use crate::util::memory::{ensure_fits, Budget, MEMORY_BUDGET_VAR};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
 const MIB: f64 = (1u64 << 20) as f64;
@@ -160,6 +161,28 @@ fn gram_blocks_in_flight_are_bounded_by_the_threads_and_the_blocks() {
 
 // ---------------------------------------------------------------- runs
 
+/// The budget `bytes` sets ([`MEMORY_BUDGET_VAR`]).
+fn set(bytes: &str) -> Budget {
+    Budget::new(Some(bytes), None).unwrap()
+}
+
+/// Unset, the budget is half of the memory available when it was taken
+/// (before the data were read), not of what is left when a check runs.
+#[test]
+fn an_unset_budget_is_half_the_memory_available_when_taken() {
+    let gib = 1usize << 30;
+    let budget = Budget::new(None, Some(8 * gib)).unwrap();
+    let e = ensure_fits("run", 4 * gib + 1, &budget, "lower it")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("4.00 GiB") && e.contains("half the available"),
+        "{e}"
+    );
+    ensure_fits("run", 4 * gib, &budget, "lower it").unwrap();
+    assert!(set("1000").to_string().contains(MEMORY_BUDGET_VAR));
+}
+
 /// `side × side` cells in each of two sections, 12 genes of counts that
 /// vary along the grid.
 fn tissue(side: usize) -> crate::spatial_baselines::input::SpatialData {
@@ -227,7 +250,7 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
     let out = dir.path().join("st");
     let run = |epochs: &str, budget: &str| {
         let args = stagate_args(&out, &["--n-epochs", epochs]);
-        stagate::run_on(&args, tissue(6), Some(budget))
+        stagate::run_on(&args, tissue(6), &set(budget))
     };
     let e = run("1000000000", "1000").unwrap_err().to_string();
     for want in [
@@ -249,7 +272,7 @@ fn stagate_refuses_a_run_over_the_budget_before_training() {
 fn stagate_on_cuda_is_not_told_to_use_cuda() {
     let dir = tempfile::tempdir().unwrap();
     let args = stagate_args(&dir.path().join("st"), &["--device", "cuda"]);
-    let e = stagate::run_on(&args, tissue(6), Some("1000"))
+    let e = stagate::run_on(&args, tissue(6), &set("1000"))
         .unwrap_err()
         .to_string();
     assert!(e.contains("--n-top-genes"), "{e}");
@@ -277,7 +300,7 @@ fn stagate_counts_a_radius_graph_once_built() {
         &dir.path().join("st"),
         &["--rad-cutoff", "1.5", "--n-epochs", "1"],
     );
-    let e = stagate::run_on(&args, data, Some(&budget)).unwrap_err();
+    let e = stagate::run_on(&args, data, &set(&budget)).unwrap_err();
     assert!(e.to_string().contains("estimated"), "{e}");
 }
 
@@ -299,7 +322,7 @@ fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
         ]) else {
             unreachable!()
         };
-        spatialde2::run_on(&args, tissue(6), Some(budget))
+        spatialde2::run_on(&args, tissue(6), &set(budget))
     };
     let e = run("1000").unwrap_err().to_string();
     for want in ["estimated", "budget", "--n-clusters", "PINTO_MEMORY_BUDGET"] {

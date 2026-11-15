@@ -74,33 +74,67 @@ pub fn human_bytes(bytes: usize) -> String {
     }
 }
 
+/// The budget a run plans its peak against, taken once at its start.
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    bytes: usize,
+    /// Whether [`MEMORY_BUDGET_VAR`] set it.
+    set: bool,
+}
+
+impl Budget {
+    /// `set` bytes ([`MEMORY_BUDGET_VAR`]) when given, else half the
+    /// `available` memory ([`memory_budget`]).
+    pub fn new(set: Option<&str>, available: Option<usize>) -> anyhow::Result<Self> {
+        Ok(Budget {
+            bytes: memory_budget(set, available)?,
+            set: set.is_some(),
+        })
+    }
+
+    /// [`MEMORY_BUDGET_VAR`] when set, else half of what is available now:
+    /// taken before the data are read, so what they take is not counted
+    /// again beside an estimate that counts them.
+    pub fn now() -> anyhow::Result<Self> {
+        let set = budget_var()?;
+        Self::new(
+            set.as_deref(),
+            set.is_none().then(available_memory).flatten(),
+        )
+    }
+}
+
+impl std::fmt::Display for Budget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bytes = human_bytes(self.bytes);
+        if self.set {
+            write!(f, "{bytes} ({MEMORY_BUDGET_VAR})")
+        } else {
+            write!(
+                f,
+                "{bytes} (half the available memory; {MEMORY_BUDGET_VAR} sets it)"
+            )
+        }
+    }
+}
+
 /// Log `what`'s estimated peak of `estimate` bytes, and refuse it when it
-/// exceeds the budget: `set` ([`MEMORY_BUDGET_VAR`], as read at the start)
-/// or, unset, half of what is available now. `change` names what would
-/// lower the estimate.
+/// exceeds `budget`. `change` names what would lower the estimate.
 pub fn ensure_fits(
     what: &str,
     estimate: usize,
-    set: Option<&str>,
+    budget: &Budget,
     change: &str,
 ) -> anyhow::Result<()> {
-    let budget = memory_budget(set, set.is_none().then(available_memory).flatten())?;
-    let source = if set.is_some() {
-        MEMORY_BUDGET_VAR.to_string()
-    } else {
-        format!("half the available memory; {MEMORY_BUDGET_VAR} sets it")
-    };
     log::info!(
-        "{what}: estimated peak memory {}, budget {} ({source})",
-        human_bytes(estimate),
-        human_bytes(budget)
+        "{what}: estimated peak memory {}, budget {budget}",
+        human_bytes(estimate)
     );
     anyhow::ensure!(
-        estimate <= budget,
-        "{what} would need an estimated {} of memory at its peak, over the budget of {} \
-         ({source}); {change}, or raise {MEMORY_BUDGET_VAR} (bytes) knowingly",
-        human_bytes(estimate),
-        human_bytes(budget)
+        estimate <= budget.bytes,
+        "{what} would need an estimated {} of memory at its peak, over the budget of \
+         {budget}; {change}, or raise {MEMORY_BUDGET_VAR} (bytes) knowingly",
+        human_bytes(estimate)
     );
     Ok(())
 }

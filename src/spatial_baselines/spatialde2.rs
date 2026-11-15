@@ -145,7 +145,7 @@ use super::input::{SpatialData, SpatialInputArgs};
 use super::memory::{knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape};
 use super::output::{write_run, Fitted};
 use crate::util::common::Mat;
-use crate::util::memory::{budget_var, ensure_fits};
+use crate::util::memory::{ensure_fits, Budget};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -938,18 +938,14 @@ impl Args {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     args.params().check()?;
-    let budget = budget_var()?;
-    run_on(args, args.input.read()?, budget.as_deref())
+    let budget = Budget::now()?;
+    run_on(args, args.input.read()?, &budget)
 }
 
 /// [`run`] on `data` as read: its peak memory is checked against the
-/// budget (`budget`, [`budget_var`] as read) before the counts are copied
+/// budget (`budget`, taken before the read) before the counts are copied
 /// and the graph is built.
-pub(crate) fn run_on(
-    args: &Args,
-    mut data: SpatialData,
-    budget: Option<&str>,
-) -> anyhow::Result<()> {
+pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let params = args.params();
     let (genes, sizefactors) = top_genes(&data, args.n_top_genes);
     let n = data.cells.len();
