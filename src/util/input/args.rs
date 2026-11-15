@@ -153,7 +153,11 @@ pub struct SrtInputArgs {
     #[arg(skip)]
     pub preload_data: bool,
 
-    #[arg(long, default_value_t = 42, help = "Random seed for reproducibility")]
+    #[arg(
+        long,
+        default_value_t = crate::util::common::DEFAULT_SEED,
+        help = crate::util::common::SEED_HELP
+    )]
     pub seed: u64,
 
     #[arg(

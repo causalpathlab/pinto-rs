@@ -18,8 +18,8 @@ pub struct SrtPropensityArgs {
 
     #[arg(
         long,
-        default_value_t = 42,
-        help = "Random seed for Leiden edge clustering"
+        default_value_t = crate::util::common::DEFAULT_SEED,
+        help = "Random seed for the edge clustering"
     )]
     seed: u64,
 

@@ -88,7 +88,12 @@ fn print_logo() {
     term_width = 80
 )]
 struct Cli {
-    #[arg(short = 'v', long, global = true)]
+    #[arg(
+        short = 'v',
+        long,
+        global = true,
+        help = "Log progress (info level; RUST_LOG overrides)"
+    )]
     verbose: bool,
 
     #[command(subcommand)]

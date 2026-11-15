@@ -51,8 +51,11 @@ pub struct SpatialInputArgs {
     #[arg(long, short, required = true)]
     pub out: Box<str>,
 
-    /// Random seed
-    #[arg(long, default_value_t = 42)]
+    #[arg(
+        long,
+        default_value_t = crate::util::common::DEFAULT_SEED,
+        help = crate::util::common::SEED_HELP
+    )]
     pub seed: u64,
 }
 

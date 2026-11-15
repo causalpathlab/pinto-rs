@@ -152,3 +152,19 @@ fn renamed_flags_parse_by_their_new_and_old_names() {
         }
     }
 }
+
+/// Every flag a help page shows says what it does.
+#[test]
+fn every_shown_flag_has_a_help_line() {
+    let mut cli = Cli::command();
+    cli.build();
+    let mut bare = Vec::new();
+    for sub in cli.get_subcommands() {
+        for a in sub.get_arguments().filter(|a| !a.is_hide_set()) {
+            if a.get_help().is_none() && a.get_long_help().is_none() {
+                bare.push(format!("{} {}", sub.get_name(), a.get_id()));
+            }
+        }
+    }
+    assert!(bare.is_empty(), "no help: {bare:?}");
+}

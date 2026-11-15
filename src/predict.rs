@@ -79,7 +79,7 @@ pub struct PredictArgs {
     #[arg(
         long,
         default_value_t = 0,
-        help = "Device index (for cuda)",
+        help = "Device ordinal (for cuda/metal)",
         hide = true
     )]
     pub device_no: usize,

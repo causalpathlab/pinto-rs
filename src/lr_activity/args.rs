@@ -3,7 +3,7 @@
 use clap::{Args, Parser, ValueEnum, ValueHint};
 
 /// `--seed`'s default.
-pub const DEFAULT_SEED: u64 = 42;
+pub const DEFAULT_SEED: u64 = crate::util::common::DEFAULT_SEED;
 
 // * Input
 
@@ -139,7 +139,7 @@ pub struct LraInputArgs {
     )]
     pub knn_spatial: usize,
 
-    #[arg(long, default_value_t = DEFAULT_SEED, help = "Random seed for reproducibility")]
+    #[arg(long, default_value_t = DEFAULT_SEED, help = crate::util::common::SEED_HELP)]
     pub seed: u64,
 
     /// Cells per parallel block: none, so it scales with the feature count
