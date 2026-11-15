@@ -20,6 +20,7 @@ use crate::simulate::run::{
 };
 use crate::simulate::score::{read_labels, score, table_header, table_rows, TruthSpots};
 use crate::simulate::write::COORD_COLUMNS;
+use crate::tui::flag_value;
 use legume_mcp::{Call, Content, ToolSpec};
 use serde::Deserialize;
 use serde_json::json;
@@ -151,21 +152,21 @@ pub(super) fn fit_lists(out: &str, p: &SimParams) -> serde_json::Value {
 pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
     let mut argv: Vec<String> = vec!["srt-simulate".into()];
     if let Some(s) = &a.scenario {
-        argv.extend(["--scenario".into(), s.clone()]);
+        argv.push(flag_value("--scenario", s));
     }
     for s in &a.set {
-        argv.extend(["--set".into(), s.clone()]);
+        argv.push(flag_value("--set", s));
     }
     if !a.coords.is_empty() {
-        argv.extend(["--coords".into(), rooted(&a.coords).join(",")]);
+        argv.push(flag_value("--coords", rooted(&a.coords).join(",")));
         if !a.coord_column_names.is_empty() {
-            argv.extend([
-                "--coord-column-names".into(),
+            argv.push(flag_value(
+                "--coord-column-names",
                 a.coord_column_names.join(","),
-            ]);
+            ));
         }
     }
-    argv.extend(["-o".into(), out.into()]);
+    argv.push(flag_value("--out", out));
     argv
 }
 
@@ -300,17 +301,17 @@ pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
 /// `pinto srt-sim-baseline` for `a` on the simulation `truth`, writing the
 /// table `table`: only what was given.
 pub(super) fn baseline_argv(a: &SimBaselineToolArgs, truth: &str, table: &str) -> Vec<String> {
-    let mut argv: Vec<String> = vec!["srt-sim-baseline".into(), "--truth".into(), truth.into()];
+    let mut argv: Vec<String> = vec!["srt-sim-baseline".into(), flag_value("--truth", truth)];
     if let Some(m) = &a.method {
-        argv.extend(["--method".into(), m.clone()]);
+        argv.push(flag_value("--method", m));
     }
     if let Some(k) = a.k {
-        argv.extend(["--k".into(), k.to_string()]);
+        argv.push(flag_value("--k", k));
     }
     if let Some(s) = a.seed {
-        argv.extend(["--seed".into(), s.to_string()]);
+        argv.push(flag_value("--seed", s));
     }
-    argv.extend(["-o".into(), table.into()]);
+    argv.push(flag_value("--out", table));
     argv
 }
 

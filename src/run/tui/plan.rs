@@ -321,9 +321,11 @@ impl App {
                     }
                 }
             }
-            let mut argv = form.argv(&data, &coords, &batches, &out);
-            // Files typed where pinto run started, read where it runs.
-            relative_values(&form, &mut argv, &self.here, &dir);
+            // Files typed where pinto run started, read where it runs; the
+            // form keeps them as typed, for what is said about them.
+            let mut passed = form.clone();
+            relative_values(&mut passed, &self.here, &dir);
+            let argv = passed.argv(&data, &coords, &batches, &out);
             let on_run = form.from_run;
             let label = r.label();
             let mut job = if on_run {
@@ -707,27 +709,15 @@ fn residual_plan(dir: &Path, a: &ResidualArgs) -> anyhow::Result<Plan> {
 /// Values of `form`'s flags that name files ([`form::Field::path`]), as
 /// typed in `here`, rewritten for a run started in `dir`; `--from` names
 /// the run's manifest, given its prefix.
-fn relative_values(form: &Method, argv: &mut [String], here: &Path, dir: &Path) {
-    let flags: Vec<String> = form
-        .fields
-        .iter()
-        .filter(|f| f.path)
-        .map(|f| format!("--{}", f.long))
-        .collect();
-    for k in 1..argv.len() {
-        if !flags.contains(&argv[k - 1]) {
-            continue;
-        }
-        let files: Vec<String> = argv[k]
-            .split(',')
-            .map(|f| {
-                let mut p = here.join(f);
-                if argv[k - 1] == "--from" {
-                    p = PathBuf::from(crate::util::metadata::run_manifest(&p.to_string_lossy()));
-                }
-                script::relative(&p, dir).to_string_lossy().into_owned()
-            })
-            .collect();
-        argv[k] = files.join(",");
+fn relative_values(form: &mut Method, here: &Path, dir: &Path) {
+    for f in form.fields.iter_mut().filter(|f| f.path) {
+        let from = f.long == "from";
+        f.map_values(|v| {
+            let mut p = here.join(v);
+            if from {
+                p = PathBuf::from(crate::util::metadata::run_manifest(&p.to_string_lossy()));
+            }
+            script::relative(&p, dir).to_string_lossy().into_owned()
+        });
     }
 }

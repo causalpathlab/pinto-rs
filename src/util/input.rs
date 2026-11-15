@@ -522,24 +522,14 @@ pub fn read_one_coord_file(
                     Some(indices),
                     Some(names),
                 ),
-                _ => {
-                    let header_row = header_in_coord
-                        .or_else(|| detect_header_row(coord_file, &['\t', ',', ' '], names))
-                        .or_else(|| {
-                            legume_numeric::matrix::common_io::detect_header_row_numeric(
-                                coord_file,
-                                &['\t', ',', ' '],
-                            )
-                        });
-                    Mat::read_data(
-                        coord_file,
-                        &['\t', ',', ' '],
-                        header_row,
-                        Some(0),
-                        Some(indices),
-                        Some(names),
-                    )
-                }
+                _ => Mat::read_data(
+                    coord_file,
+                    &COORD_DELIMITERS,
+                    coord_header_row(coord_file, names, header_in_coord),
+                    Some(0),
+                    Some(indices),
+                    Some(names),
+                ),
             }
         }
     };
@@ -570,27 +560,27 @@ pub fn read_one_coord_file(
         // positions puts every cell in the same place and the run looks
         // healthy. A wrong answer that announces nothing is worse than an
         // error, and the caller already has an exact way to say what it meant.
-        let mut hint = match &initial {
+        let read = match &initial {
             Err(e) => format!(" Reading it: {e:#}."),
             Ok(_) => String::new(),
         };
-        if !is_zarr {
-            if let Ok(first) =
-                legume_numeric::matrix::common_io::first_line_fields(coord_file, &['\t', ',', ' '])
-            {
-                hint += &format!(" The file's first line reads {first:?}.");
-            }
-        }
+        let columns = if is_zarr {
+            None
+        } else if ext.as_ref() == "parquet" {
+            parquet_columns(coord_file)
+        } else {
+            text_columns(
+                coord_file,
+                coord_header_row(coord_file, user_names, header_in_coord),
+            )
+        };
         let matched = initial.as_ref().map_or(0, named);
         return Err(anyhow::anyhow!(
             "coord file '{}' resolved {matched} of the coordinate columns asked for \
-             {:?}, and two are needed.{} \
-             Pass --coord-column-names with the names it does have, or \
-             --coord-column-indices with their 0-based positions. For the classic \
-             spot layout that is --coord-column-indices 4,5.",
+             {:?}, and two are needed.{read}{}",
             coord_file,
             user_names,
-            hint,
+            coord_hint(columns.as_ref()),
         ));
     }
 
@@ -607,6 +597,154 @@ pub fn read_one_coord_file(
         }
     }
     initial
+}
+
+/// What a coordinate file holds, for the hint when its columns are not
+/// found: each column's name (the first line's fields when it has no
+/// header) and whether its values are numbers.
+struct FileColumns {
+    names: Vec<Box<str>>,
+    numeric: Vec<bool>,
+    header: bool,
+}
+
+/// A parquet file's columns, as its schema lists them: its top-level
+/// fields, numbered as the reader numbers them.
+fn parquet_columns(path: &str) -> Option<FileColumns> {
+    use parquet::basic::Type;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let reader = SerializedFileReader::new(std::fs::File::open(path).ok()?).ok()?;
+    let (names, numeric) = reader
+        .metadata()
+        .file_metadata()
+        .schema()
+        .get_fields()
+        .iter()
+        .map(|f| {
+            let number = f.is_primitive()
+                && matches!(
+                    f.get_physical_type(),
+                    Type::INT32 | Type::INT64 | Type::FLOAT | Type::DOUBLE
+                );
+            (Box::from(f.name()), number)
+        })
+        .unzip();
+    Some(FileColumns {
+        names,
+        numeric,
+        header: true,
+    })
+}
+
+/// The delimiters a text coordinate file is split on.
+const COORD_DELIMITERS: [char; 3] = ['\t', ',', ' '];
+
+/// The header line of a text coordinate file, as the reader takes it: the
+/// one the caller gave, else the first when it holds a name asked for or
+/// a field after the first (the cell names) that is not a number.
+fn coord_header_row(
+    path: &str,
+    names: &[Box<str>],
+    header_in_coord: Option<usize>,
+) -> Option<usize> {
+    header_in_coord
+        .or_else(|| detect_header_row(path, &COORD_DELIMITERS, names))
+        .or_else(|| {
+            legume_numeric::matrix::common_io::detect_header_row_numeric(path, &COORD_DELIMITERS)
+        })
+}
+
+/// A delimited file's columns, its fields split as the reader splits
+/// them: the `header` line's names and whether the line after it holds
+/// numbers; with no header, the first line's fields stand for the names.
+fn text_columns(path: &str, header: Option<usize>) -> Option<FileColumns> {
+    use legume_numeric::matrix::common_io::{open_buf_reader, unquote_field};
+    let mut lines = std::io::BufRead::lines(open_buf_reader(path).ok()?).skip(header.unwrap_or(0));
+    let mut fields = || -> Vec<String> {
+        lines
+            .next()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .split(COORD_DELIMITERS)
+            .map(|f| unquote_field(f).to_string())
+            .collect()
+    };
+    let first = fields();
+    let values = if header.is_some() {
+        fields()
+    } else {
+        first.clone()
+    };
+    Some(FileColumns {
+        numeric: (0..first.len())
+            .map(|j| values.get(j).is_some_and(|v| v.parse::<f64>().is_ok()))
+            .collect(),
+        names: first.into_iter().map(Into::into).collect(),
+        header: header.is_some(),
+    })
+}
+
+/// How to name the coordinates of a file holding `columns`: its columns,
+/// and the numeric ones after the first (the cell names), by name and by
+/// 0-based position.
+fn coord_hint(columns: Option<&FileColumns>) -> String {
+    let Some(c) = columns else {
+        return " Pass --coord-column-names with the names it does have, or \
+                 --coord-column-indices with their 0-based positions."
+            .into();
+    };
+    let at: Vec<usize> = (1..c.names.len()).filter(|&j| c.numeric[j]).collect();
+    let positions = |sep: &str| {
+        at.iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    let named = |sep: &str| {
+        at.iter()
+            .map(|&j| c.names[j].as_ref())
+            .collect::<Vec<_>>()
+            .join(sep)
+    };
+    let (mut hint, listed, what) = if c.header {
+        let listed = at
+            .iter()
+            .map(|&j| format!("{} ({j})", c.names[j]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            format!(" Its columns are {:?}.", c.names),
+            listed,
+            "columns",
+        )
+    } else {
+        let listed = format!("at 0-based positions {}", positions(", "));
+        let first = format!(" It has no header; its first line reads {:?}.", c.names);
+        (first, listed, "fields")
+    };
+    let pass = match (at.len(), c.header) {
+        (0 | 1, _) => {
+            hint.push_str(&format!(
+                " It has fewer than two numeric {what} after the first (the cell names), \
+                 so no two of them can be coordinates."
+            ));
+            return hint;
+        }
+        (2, true) => format!(
+            "pass --coord-column-names {}, or --coord-column-indices {}",
+            named(","),
+            positions(",")
+        ),
+        (2, false) => format!("pass --coord-column-indices {}", positions(",")),
+        (_, true) => "pass the two that are coordinates by name with --coord-column-names, \
+                      or by 0-based position with --coord-column-indices"
+            .into(),
+        (_, false) => "pass the two that are coordinates with --coord-column-indices".into(),
+    };
+    hint.push_str(&format!(
+        " Its numeric {what} after the first (the cell names) are {listed}: {pass}."
+    ));
+    hint
 }
 
 /// Auto-detect whether the first line of a delimited file is a header row

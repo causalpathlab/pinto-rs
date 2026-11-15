@@ -130,3 +130,12 @@ pub fn quote(word: &str) -> String {
         format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
+
+/// A flag and its value as one word of a command line, `--flag=value`: a
+/// value that starts with `-`, such as a negative number, is then read as
+/// the flag's value, not as a flag of its own, and reaches the command's
+/// own check of it.
+#[must_use]
+pub fn flag_value(flag: &str, value: impl std::fmt::Display) -> String {
+    format!("{flag}={value}")
+}

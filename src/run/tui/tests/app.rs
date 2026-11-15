@@ -54,9 +54,9 @@ fn run_key(a: &mut App) {
     a.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
 }
 
-/// A fit of method `m` in `dir`, writing to `--out m`.
+/// A fit of method `m` in `dir`, writing to `--out=m`.
 fn job(dir: &Path, m: &str) -> jobs::Job {
-    jobs::Job::fit(m, 0, dir, m, vec![m.into(), "--out".into(), m.into()])
+    jobs::Job::fit(m, 0, dir, m, vec![m.into(), format!("--out={m}")])
 }
 
 /// A stand-in pinto in `dir`: the shell script `body`.
@@ -110,15 +110,12 @@ fn queued_methods_share_the_data_and_write_their_own_out() {
         assert_eq!(
             p.job.argv,
             [
-                p.job.method.as_str(),
-                "d1.zarr.zip",
-                "d2.zarr.zip",
-                "--coord",
-                "c1.csv,c2.csv",
-                "--batch-files",
-                "b1.tsv,b2.tsv",
-                "--out",
-                p.job.method.as_str()
+                p.job.method.clone(),
+                "d1.zarr.zip".into(),
+                "d2.zarr.zip".into(),
+                "--coord=c1.csv,c2.csv".into(),
+                "--batch-files=b1.tsv,b2.tsv".into(),
+                format!("--out={}", p.job.method)
             ]
         );
     }
@@ -372,7 +369,7 @@ fn only_a_finished_fit_opens_in_the_viewer() {
     // A stand-in pinto that writes the manifest its --out names, or fails.
     let fake = fake_pinto(
         dir.path(),
-        "[ \"$1\" = bad ] && exit 1\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done",
+        "[ \"$1\" = bad ] && exit 1\nfor w; do case \"$w\" in --out=*) touch \"${w#--out=}.pinto.json\" ;; esac; done",
     );
     let job = |m| job(dir.path(), m);
     a.queue = Some(Queue::start(vec![job("good"), job("bad")], fake));
@@ -425,13 +422,10 @@ fn named_batches_reach_the_command_line_as_files_written_for_the_run() {
     a.pairs[1].cells = Some(2);
     let p = &a.plan()[0];
     assert_eq!(p.problem, None);
-    let at = p
-        .job
-        .argv
-        .iter()
-        .position(|w| w == "--batch-files")
-        .unwrap();
-    assert_eq!(p.job.argv[at + 1], "lc.batches/d1.txt,lc.batches/d2.txt");
+    assert_eq!(
+        after(&p.job.argv, "--batch-files"),
+        Some("lc.batches/d1.txt,lc.batches/d2.txt")
+    );
     assert_eq!(
         p.job.made[1],
         (
@@ -448,7 +442,7 @@ fn named_batches_reach_the_command_line_as_files_written_for_the_run() {
     key(&mut a, KeyCode::Backspace);
     key(&mut a, KeyCode::Enter);
     let p = &a.plan()[0];
-    assert!(!p.job.argv.contains(&"--batch-files".to_string()));
+    assert_eq!(after(&p.job.argv, "--batch-files"), None);
     assert!(p.job.made.is_empty());
 }
 
@@ -899,16 +893,11 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
         j.argv,
         [
             "lra",
-            "--out",
-            "lra",
-            "--from",
-            "../res/run.pinto.json",
-            "--seed",
-            "7",
-            "--lr-pairs",
-            "../pairs.tsv",
-            "--only",
-            "L1:R1,L2"
+            "--out=lra",
+            "--from=../res/run.pinto.json",
+            "--seed=7",
+            "--lr-pairs=../pairs.tsv",
+            "--only=L1:R1,L2"
         ]
     );
     assert_eq!(j.manifest(), j.dir.join("lra.lra.only-l1-r1+l2.parquet"));
@@ -944,13 +933,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     assert!(p.problem.is_none(), "{:?}", p.problem);
     assert_eq!(
         p.job.argv,
-        [
-            "lra-simulate",
-            "--out",
-            "sim",
-            "--from",
-            "res/run.pinto.json"
-        ]
+        ["lra-simulate", "--out=sim", "--from=res/run.pinto.json"]
     );
     assert_eq!(p.job.manifest(), here.join("sim.lra-simulate.parquet"));
     // A table there already is in the way.
@@ -1032,10 +1015,10 @@ fn set_flag(a: &mut App, m: usize, long: &str, v: &str) {
     f.value = v.into();
 }
 
-/// The value after `flag` in `argv`.
+/// The value `flag` is given in `argv`, as `--flag=value`.
 fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
-    let k = argv.iter().position(|w| w == flag)?;
-    argv.get(k + 1).map(String::as_str)
+    argv.iter()
+        .find_map(|w| w.strip_prefix(flag)?.strip_prefix('='))
 }
 
 /// What `pinto residual --from {here}/res/fit -o {here}/{out}` plans.
@@ -1132,11 +1115,9 @@ fn a_residual_sets_up_a_stage_two_fit_on_its_files() {
     assert_eq!(
         r.argv,
         [
-            "residual",
-            "--out",
-            a.rows[res].out.as_str(),
-            "--from",
-            "res/fit.pinto.json"
+            "residual".to_string(),
+            format!("--out={}", a.rows[res].out),
+            "--from=res/fit.pinto.json".into()
         ]
     );
     // Done when its residual.json is there.
@@ -1324,7 +1305,7 @@ fn the_copied_commands_replay_the_residual_then_stage_two() {
     let done = &a.confirm.as_ref().unwrap().planned[0].job.done_name();
     let guard = format!("[ -f {} ] && pinto dsvd ", script::quote(done));
     assert!(
-        lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names cx,cy"),
+        lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names=cx,cy"),
         "{text}"
     );
     let planned = &a.confirm.as_ref().unwrap().planned;
@@ -1470,8 +1451,8 @@ fn lra_on_a_finished_stage_two_fit_runs_again_on_it() {
         here,
         "case \"$1\" in \
          lra) case \"$*\" in *residual*) exit 1 ;; esac ;; \
-         residual) mkdir -p \"$3\" && touch \"$3/residual.json\" ;; \
-         *) while [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done ;; \
+         residual) mkdir -p \"${2#--out=}\" && touch \"${2#--out=}/residual.json\" ;; \
+         *) for w; do case \"$w\" in --out=*) touch \"${w#--out=}.pinto.json\" ;; esac; done ;; \
          esac",
     );
     let jobs: Vec<jobs::Job> = a.plan().into_iter().map(|p| p.job).collect();
@@ -1538,9 +1519,9 @@ fn a_new_stage_two_method_is_not_marked_done() {
 
 /// A stand-in pinto's residual: it writes every file of the plan of the
 /// run [`fitted_run`] makes, its summary last.
-const WRITES_RESIDUAL: &str = "residual) mkdir -p \"$3\" && \
+const WRITES_RESIDUAL: &str = "residual) mkdir -p \"${2#--out=}\" && \
      for f in d1.zarr d1.coords.parquet d2.zarr d2.coords.parquet residual.json; \
-     do touch \"$3/$f\"; done ;;";
+     do touch \"${2#--out=}/$f\"; done ;;";
 
 /// Run `a`'s plan with the stand-in pinto `body`, until the queue ends,
 /// and take the end in.
@@ -1592,7 +1573,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     run_plan(
         &mut a,
         here,
-        "case \"$1\" in residual) mkdir -p \"$3\" && touch \"$3/d1.zarr\" ;; esac; exit 1",
+        "case \"$1\" in residual) mkdir -p \"${2#--out=}\" && touch \"${2#--out=}/d1.zarr\" ;; esac; exit 1",
     );
     assert!(a.rows[res].on && !a.rows[res].done());
     assert_eq!(a.rows[res].out, out);
@@ -1605,7 +1586,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
         &mut a,
         here,
         &format!(
-            "case \"$1\" in residual) [ ! -e \"$3/d1.zarr\" ] || exit 1 ;; esac; \
+            "case \"$1\" in residual) [ ! -e \"${{2#--out=}}/d1.zarr\" ] || exit 1 ;; esac; \
              case \"$1\" in {WRITES_RESIDUAL} esac"
         ),
     );
@@ -1703,7 +1684,7 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
     run_plan(
         &mut a,
         here,
-        "while [ $# -gt 0 ]; do [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done",
+        "for w; do case \"$w\" in --out=*) touch \"${w#--out=}.pinto.json\" ;; esac; done",
     );
     assert!(a.rows[two].done());
     a.method_row = res;
@@ -1725,8 +1706,8 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
         &mut a,
         here,
         &format!(
-            "case \"$1\" in {WRITES_RESIDUAL} *) while [ $# -gt 0 ]; do \
-             [ \"$1\" = --out ] && touch \"$2.pinto.json\"; shift; done ;; esac"
+            "case \"$1\" in {WRITES_RESIDUAL} *) for w; do \
+             case \"$w\" in --out=*) touch \"${{w#--out=}}.pinto.json\" ;; esac; done ;; esac"
         ),
     );
     assert!(a.rows[res].done() && a.rows[two].done());
