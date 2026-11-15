@@ -16,10 +16,11 @@ const GRAM_BLOCK_BYTES: usize = 64 << 20;
 /// STAGATE's peak over its counted training memory: candle keeps buffers
 /// the count misses (the zeroed buffer each first gradient is added to,
 /// allocator retention). Calibrated on full runs on the CPU at 2000 genes,
-/// hidden width 512 and 6 neighbours, whose resident memory grew by 0.285
-/// MiB per cell (fit slope 0.29): the count there is 0.202 MiB per cell,
-/// times 1.5 is 0.303, never below what was measured.
-const STAGATE_SAFETY: f64 = 1.5;
+/// hidden width 512 and 6 neighbours: the largest ratio of a run's
+/// resident memory above [`STAGATE_PROCESS_BYTES`] to its count, over
+/// every measured run (not the fitted slope: single runs scatter above
+/// it), with a small margin.
+pub const STAGATE_SAFETY: f64 = 1.65;
 
 /// Gram block bytes of the all-pairs kNN in flight at once: each task holds
 /// one `cells × block` f32 block of a section, and at most `threads` run at

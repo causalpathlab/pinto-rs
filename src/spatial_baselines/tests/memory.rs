@@ -13,10 +13,13 @@ const MIB: f64 = (1u64 << 20) as f64;
 /// grids at the defaults (2000 genes, all trained on; for stagate hidden
 /// width 512 and 6 neighbours, for spatialde2 100 neighbours): (cells per
 /// section, sections, threads, MiB).
-const STAGATE_MEASURED: [(usize, usize, usize, f64); 5] = [
+const STAGATE_MEASURED: [(usize, usize, usize, f64); 8] = [
     (1024, 1, 10, 426.19),
     (4096, 1, 10, 1394.23),
     (8100, 1, 10, 2699.27),
+    (10000, 1, 10, 3492.0),
+    (10000, 1, 4, 3280.91),
+    (14400, 1, 4, 4691.03),
     (16384, 1, 10, 4917.27),
     (4096, 2, 10, 2627.53),
 ];
@@ -70,13 +73,23 @@ fn stagate_estimate_covers_every_measured_peak_and_is_not_far_above() {
     }
 }
 
-/// The safety factor's calibration: per cell, never below the 0.285 MiB
-/// the measured runs grew by.
+/// The safety factor's calibration: the largest ratio of a measured peak,
+/// above the process's own, to the counted training memory, with a small
+/// margin.
 #[test]
-fn stagate_estimate_grows_by_at_least_the_measured_slope() {
-    let at = |n| stagate_training_bytes(&stagate_shape(n, 1, 10));
-    let slope = mib(at(200_000) - at(100_000)) / 100_000.0;
-    assert!((0.285..0.35).contains(&slope), "{slope} MiB per cell");
+fn stagate_safety_is_the_largest_measured_residual() {
+    let largest = STAGATE_MEASURED
+        .iter()
+        .map(|&(per, sections, threads, measured)| {
+            let shape = stagate_shape(per, sections, threads);
+            let counted = stagate_training_bytes(&shape) as f64 / STAGATE_SAFETY;
+            (measured * MIB - STAGATE_PROCESS_BYTES as f64) / counted
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        (largest..largest + 0.1).contains(&STAGATE_SAFETY),
+        "{STAGATE_SAFETY} against {largest}"
+    );
 }
 
 /// A radius graph's edges, the input's genes and the hidden width all
@@ -91,7 +104,7 @@ fn stagate_estimate_follows_edges_genes_and_device() {
     };
     // 4 bytes, 10 E×H floats per edge, times the safety factor
     let added = stagate_peak_bytes(&radius) - peak;
-    let want = 1.5 * 4.0 * 10.0 * 512.0 * (radius.edges - base.edges) as f64;
+    let want = STAGATE_SAFETY * 4.0 * 10.0 * 512.0 * (radius.edges - base.edges) as f64;
     assert!(
         (added as f64 - want).abs() < 1e-6 * want,
         "{added} vs {want}"
