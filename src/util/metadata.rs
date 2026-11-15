@@ -144,9 +144,11 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n_communities: Option<usize>,
 
-    /// A cage fit on cells (`pinto cage-cell`): no pseudobulks and no
-    /// batch-effect estimate, so a reader applies no batch correction to
-    /// it either. Absent (false) on every other run.
+    /// A cage fit on cells (`pinto cage-cell`): cells and cell pairs are
+    /// its trained units, with no pseudobulk table. Batch effects are
+    /// estimated and removed as in cage (unless `--ignore-batch`), so a
+    /// reader corrects a query as it would for cage. Absent (false) on
+    /// every other run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cell_level: bool,
 

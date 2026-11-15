@@ -407,16 +407,20 @@ enum Commands {
         long_about = "cage trained on cells instead of super-cells, as cell-level\n\
                       methods such as STAGATE are, for a like-for-like comparison: the\n\
                       same model and outputs.\n\n\
-                      Each cell is its own unit and each within-batch spatial cell pair\n\
-                      a positive; negatives are other cells of the same batch, never\n\
-                      the pair's own two. Nothing is trained on pseudobulks: no\n\
+                      Cells and cell pairs are the training units: each cell is its own\n\
+                      unit and each within-batch spatial cell pair a positive; negatives\n\
+                      are other cells of the same batch, never the pair's own two. No\n\
                       coarsening hierarchy and no pseudobulk SVD warm start (the cell\n\
-                      table starts at random). Batch effects are estimated and removed\n\
-                      as in cage; --ignore-batch leaves them in, as STAGATE does.\n\
-                      --n-pseudobulk, --num-levels, --batch-knn and the HVG flags do\n\
-                      nothing here (a warning says so); --chain-levels, --cnv-clones,\n\
-                      --feature-modules and --feature-embedding are refused.\n\
-                      --embedding-l2 defaults to 0 here.\n\n\
+                      table starts at random).\n\n\
+                      Batch effects (δ) are estimated and removed as in cage, and\n\
+                      `pinto predict` corrects a query as it does for cage. The δ\n\
+                      estimate pools cells internally, only to estimate δ (so\n\
+                      --num-levels, --batch-knn and --cnv-clones shape it); training\n\
+                      never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
+                      does.\n\n\
+                      --n-pseudobulk and the HVG flags do nothing here (a warning says\n\
+                      so); --chain-levels, --feature-modules and --feature-embedding are\n\
+                      refused. --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
                       its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0"))
@@ -903,8 +907,8 @@ fn main() -> anyhow::Result<()> {
         let no_ops = cell_activity_graph_embedding::fit::cell_level_no_ops_given(m);
         if !no_ops.is_empty() {
             log::warn!(
-                "cage-cell: {} shape only the HVG projection, coarsening or batch-effect \
-                 estimate that cage-cell skips; they do nothing here",
+                "cage-cell: {} shape only the HVG projection or the pseudobulks that \
+                 cage-cell skips; they do nothing here",
                 no_ops.join(", ")
             );
         }

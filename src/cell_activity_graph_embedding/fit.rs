@@ -958,9 +958,8 @@ fn write_feature_inclusion(
 
 /// What `cage-cell` cannot combine with, checked here because it sets
 /// the mode after parsing: flags that pick from, or pool over, a hierarchy
-/// of pseudobulks, and an input to the batch-effect estimate it skips.
-/// Flags that only shape what it skips are warned of in `main`, which
-/// knows which were given (see [`cell_level_no_ops_given`]).
+/// of pseudobulks. Flags that only shape what it skips are warned of in
+/// `main`, which knows which were given (see [`cell_level_no_ops_given`]).
 fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         args.chain_levels.is_none(),
@@ -972,26 +971,20 @@ fn check_cell_level(args: &CellActivityGraphEmbeddingArgs, modules: bool) -> any
         "cage-cell: --feature-modules and --feature-embedding pool counts per \
          trained unit, a dense features × cells matrix on cells"
     );
-    anyhow::ensure!(
-        args.common.cnv_clones.is_none(),
-        "cage-cell: --cnv-clones stratifies the batch-effect estimate, which \
-         cage-cell does not make"
-    );
     Ok(())
 }
 
 /// The flags `cage-cell` was given on its command line (`m`, its
 /// subcommand's matches) that shape only what it skips: the HVG weighting
-/// of the projection that builds pseudobulks, the coarsening, and the
-/// batch-effect estimate. Their defaults are not reported.
+/// of the projection that builds pseudobulks, and the pseudobulks
+/// themselves. (`--num-levels` and `--batch-knn` shape the batch-effect
+/// estimate, which cage-cell makes.) Their defaults are not reported.
 pub(crate) fn cell_level_no_ops_given(m: &clap::ArgMatches) -> Vec<&'static str> {
-    const NO_OPS: [(&str, &str); 6] = [
+    const NO_OPS: [(&str, &str); 4] = [
         ("n_hvg", "--n-hvg"),
         ("feature_list_file", "--feature-list-file"),
         ("must_train_features", "--must-train-features"),
         ("n_pseudobulk", "--n-pseudobulk"),
-        ("num_levels", "--num-levels"),
-        ("batch_knn", "--batch-knn"),
     ];
     NO_OPS
         .into_iter()

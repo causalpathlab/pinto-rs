@@ -519,8 +519,8 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
 }
 
 /// cage-cell names the flags given on its command line that shape only the
-/// coarsening or the batch-effect estimate it skips, and none it was not
-/// given (their defaults are not the user's doing).
+/// pseudobulks it skips, and none it was not given (their defaults are not
+/// the user's doing).
 #[test]
 fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     use cell_activity_graph_embedding::fit::cell_level_no_ops_given;
@@ -533,10 +533,11 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     assert!(given(&[]).is_empty());
     assert_eq!(
         given(&["-d", "3", "--n-hvg", "100", "--batch-knn", "4"]),
-        ["--n-hvg", "--n-pseudobulk", "--batch-knn"]
+        ["--n-hvg", "--n-pseudobulk"]
     );
+    // the batch-effect estimate reads these, so they are not no-ops
     assert_eq!(
         given(&["--num-levels=9", "--must-train-features", "f.txt"]),
-        ["--must-train-features", "--num-levels"]
+        ["--must-train-features"]
     );
 }

@@ -7,6 +7,7 @@ use crate::cell_activity_graph_embedding::fit::{
 use crate::test_support::write_zarr;
 use crate::util::common::Mat;
 use clap::Parser;
+use legume_numeric::matrix::parquet::{write_named_table, Column};
 use legume_numeric::matrix::traits::IoOps;
 
 #[derive(Parser)]
@@ -30,15 +31,12 @@ fn every_cell_is_its_own_unit_at_both_levels() {
 }
 
 /// `cage-cell` sets the mode after parsing, so fit itself refuses what
-/// needs a hierarchy of pseudobulks or a batch-effect estimate.
+/// needs a hierarchy of pseudobulks.
 #[test]
 fn cell_level_refuses_hierarchy_flags() {
     for extra in [
         &["--chain-levels", "1"][..],
         &["--feature-embedding", "dict.parquet"][..],
-        // an input to the batch-effect estimate cage-cell skips: refused,
-        // not left unopened
-        &["--cnv-clones", "clones.tsv"][..],
     ] {
         let mut a = parse(&[&["-o", "out", "d.zarr"][..], extra].concat()).unwrap();
         a.cell_level = true;
@@ -130,6 +128,37 @@ fn cell_level_of(prefix: &str) -> bool {
         .cell_level
 }
 
+/// `pinto predict` of `model` on the files it was fitted on; returns the
+/// output prefix.
+fn predict(dir: &std::path::Path, data: &str, coords: &str, model: &str) -> String {
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        predict: crate::predict::PredictArgs,
+    }
+    let out = dir.join("predicted").to_str().unwrap().to_string();
+    let argv = [
+        "x",
+        data,
+        "-c",
+        coords,
+        "--coord-column-names",
+        "x,y",
+        "--model",
+        model,
+        "-o",
+        &out,
+    ];
+    crate::predict::predict(&Cli::try_parse_from(argv).unwrap().predict).unwrap();
+    out
+}
+
+fn cell_embedding(prefix: &str) -> Mat {
+    Mat::from_parquet(&format!("{prefix}.cell_embedding.parquet"))
+        .unwrap()
+        .mat
+}
+
 #[test]
 fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let dir = tempfile::tempdir().unwrap();
@@ -165,6 +194,14 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         "the manifest says the run is cell-level"
     );
 
+    // Predicted on its own training files, a cell-level model places the
+    // cells where it trained them: the query is batch-corrected, as the
+    // training was.
+    let predicted = predict(dir.path(), &data, &coords, &cell);
+    let (fitted, placed) = (cell_embedding(&cell), cell_embedding(&predicted));
+    let diff = (&fitted - &placed).abs().max();
+    assert!(diff < 1e-4, "predict moved the cells by up to {diff}");
+
     // the same data without the flag trains on pseudobulks, and builds both
     let pb = fit(dir.path(), &data, &coords, "pb", &[]);
     let trained = Mat::from_parquet(&format!("{pb}.pb_embedding.parquet")).unwrap();
@@ -179,6 +216,37 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         !cell_level_of(&pb),
         "an ordinary cage run is not cell-level"
     );
+}
+
+/// cage-cell estimates batch effects as cage does, so `--cnv-clones`
+/// stratifies that estimate here too.
+#[test]
+fn cell_level_takes_cnv_clones_into_its_batch_estimate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    // every other cell in a private clone (stratum 1), the rest mixable
+    let clones = dir.path().join("x.clones.parquet");
+    let clones = clones.to_str().unwrap();
+    let cells: Vec<Box<str>> = ["s1", "s2"]
+        .iter()
+        .flat_map(|tag| (0..8 * 8).map(move |c| format!("{tag}_{c}@{tag}").into()))
+        .collect();
+    let stratum: Vec<i32> = (0..cells.len() as i32).map(|c| c % 2).collect();
+    write_named_table(
+        clones,
+        "cell",
+        &cells,
+        &[("stratum".into(), Column::I32(&stratum))],
+    )
+    .unwrap();
+    let cell = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "cell",
+        &["cell", "--cnv-clones", clones],
+    );
+    assert!(std::path::Path::new(&format!("{cell}.delta.parquet")).exists());
 }
 
 /// On cells the chain group is the cell, so the upstream rejection
