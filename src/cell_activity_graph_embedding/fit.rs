@@ -192,6 +192,7 @@ pub fn fit_cell_activity_graph_embedding(
         batch_effects: batch_db,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
         cell_proj: shared_cell_proj,
@@ -916,7 +917,7 @@ pub fn fit_cell_activity_graph_embedding(
                 n_cells,
                 n_features,
                 n_edges: n_fine_edges,
-                graph: (&knn).into(),
+                graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
                 k: n_edge_clusters,
                 delta: batch_db

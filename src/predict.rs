@@ -457,8 +457,13 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         info!("Every batch of this sample is the model's; none is estimated");
     }
     // The δ is written once, below: the one the query is divided by.
+    // Without coordinates the query's graph is built as the model's was,
+    // on the batch-corrected projection or not, as its manifest records.
     let batch_plan = match model_delta {
-        Some(_) => BatchEstimate::Query { all_known },
+        Some(_) => BatchEstimate::Query {
+            all_known,
+            base_corrected: run.is_some_and(|r| r.meta.base_graph_batch_corrected()),
+        },
         None => BatchEstimate::Skip,
     };
 
@@ -482,6 +487,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
         n_cells,
         n_rows: _,
         cell_proj,
+        base_batch_corrected,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
         common: c,
@@ -827,7 +833,7 @@ pub fn predict_cage(args: &PredictArgs, run: Option<&Run>) -> anyhow::Result<(Ma
             n_cells,
             n_features,
             n_edges,
-            graph: (&knn).into(),
+            graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
             ablation: None,
             k,
             // the δ alone: the cells' batches are its own labels, in its

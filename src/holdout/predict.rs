@@ -117,8 +117,18 @@ pub fn predict_profiles(
         ablation: None,
         fisher_weights: false,
         // The model's profiles are what is scored; δ is estimated below from
-        // the fitting parts, not from this sample's whole counts.
-        batch_effects: BatchEstimate::Skip,
+        // the fitting parts, not from this sample's whole counts. Nothing is
+        // estimated either way: "every batch known" only builds the
+        // expression graph on the batch-corrected projection, as the
+        // model's was.
+        batch_effects: if meta.base_graph_batch_corrected() {
+            BatchEstimate::Query {
+                all_known: true,
+                base_corrected: true,
+            }
+        } else {
+            BatchEstimate::Skip
+        },
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: Some(feature_kind.clone()),
         cell_projection: false,

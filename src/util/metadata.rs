@@ -381,6 +381,24 @@ pub struct GraphParams {
     /// the run builds and changes the edge set, so two runs differing only in
     /// this would otherwise emit identical blocks with different `n_edges`.
     pub reciprocal: bool,
+    /// Expression mode's base graph (no `--coord`) was built on the
+    /// batch-corrected projection: by a fit only when it estimated a δ, so
+    /// its counts are divided too. A query of the model builds its graph
+    /// alike. Absent: on the projection as read (spatial, one batch, no
+    /// δ, `--ignore-batch`, `--auto-batch`, or an older run).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub base_batch_corrected: bool,
+}
+
+impl GraphParams {
+    /// The graph a run built with resolved k's `knn`, its base graph on
+    /// the batch-corrected projection or not (`base_batch_corrected`).
+    pub fn of(knn: &crate::util::input::ResolvedKnn, base_batch_corrected: bool) -> Self {
+        Self {
+            base_batch_corrected,
+            ..knn.into()
+        }
+    }
 }
 
 impl From<&crate::util::input::ResolvedKnn> for GraphParams {
@@ -396,6 +414,7 @@ impl From<&crate::util::input::ResolvedKnn> for GraphParams {
             // made, which is the whole failure this struct exists to prevent.
             knn_expr_scope: (knn.augment > 0).then(|| value_name(&knn.scope)),
             reciprocal: knn.reciprocal,
+            base_batch_corrected: false,
         }
     }
 }
@@ -620,6 +639,13 @@ impl PintoMetadata {
         } else {
             &self.command
         }
+    }
+
+    /// Whether the run's expression-mode base graph was built on the
+    /// batch-corrected projection, as its manifest records
+    /// ([`GraphParams::base_batch_corrected`]); false for an older run.
+    pub fn base_graph_batch_corrected(&self) -> bool {
+        self.graph.as_ref().is_some_and(|g| g.base_batch_corrected)
     }
 
     /// Read a run's manifest, change it, write it back, holding the

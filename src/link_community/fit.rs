@@ -77,6 +77,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         batch_effects,
         graph,
         knn,
+        base_batch_corrected,
         spatial_graph,
         edge_source,
         cell_proj,
@@ -526,7 +527,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 n_features,
                 n_edges: edges.len(),
                 k,
-                graph: (&knn).into(),
+                graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
                 delta: batch_effects
                     .is_some()
