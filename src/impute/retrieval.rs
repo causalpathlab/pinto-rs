@@ -6,6 +6,8 @@
 //! `w ∝ exp(-d² / 2τ²)`, and a streamed weighted average of the reference
 //! columns. The divide has no hook upstream, so the core is repeated here;
 //! without one the result is the upstream one (a test holds them equal).
+//! This mirrors `data_beans::alg::retrieval_impute::retrieval_impute`, and
+//! should go once that function takes a per-column transform.
 
 use crate::util::common::*;
 use data_beans::alg::retrieval_impute::RetrievalImputeConfig;

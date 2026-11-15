@@ -102,10 +102,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         cell_projection: true,
     })?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
-    // The batch effect divides every count lc profiles (the edge profiles at
-    // every level, the module expression), as dsvd and cage divide theirs;
-    // feature_community and the feature filters stay on raw counts.
-    let has_batch_effects = batch_effects.is_some();
     let feature_weights = feature_weights.expect("fisher_weights=true must yield Some");
     let feature_stats = feature_stats.expect("fisher_weights with a feature axis must yield Some");
     let n_features = feature_axis.n_features();
@@ -288,6 +284,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     } else {
         ProfileMode::Projection {
             basis: proj_basis.as_ref().expect("projection basis must be set"),
+            // The batch effect divides every count lc profiles (the edge
+            // profiles at every level, the module expression), as dsvd and
+            // cage divide theirs; feature_community and the feature filters
+            // stay on raw counts.
             delta: batch_effects.as_ref(),
         }
     };
@@ -523,7 +523,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 graph: (&knn).into(),
                 ablation,
             },
-            has_batch_effects,
+            batch_effects.is_some(),
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a
             // fitted contrast.
@@ -643,8 +643,7 @@ fn merge_dictionary(m: &MergeInputs<'_>) -> anyhow::Result<MergeOutcome> {
     // compares feature_community, which stays on raw counts (as dsvd's
     // and cage's do), so a section's shift has to be removed here, in the
     // comparison. The edge profiles the partition was fitted on are
-    // divided by the batch estimate. That divide once measured lower
-    // purity than centring alone; lc divides anyway, so that it corrects
+    // divided by the batch estimate, by choice, so that lc corrects
     // batches the way dsvd and cage do.
     let n_sections = section_ids.iter().max().map_or(0, |&m| m as usize + 1);
     let share = community_group_shares(
