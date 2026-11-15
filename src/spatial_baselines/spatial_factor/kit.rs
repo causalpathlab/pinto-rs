@@ -147,6 +147,33 @@ pub fn lbfgs_box(
     pgtol: f64,
     ftol: f64,
 ) -> BoxMin {
+    lbfgs_box_with(
+        |x| {
+            let (f, g) = fg(x);
+            (f, g, ())
+        },
+        x0,
+        lo,
+        hi,
+        max_evals,
+        pgtol,
+        ftol,
+    )
+    .0
+}
+
+/// [`lbfgs_box`] with what each evaluation computes alongside its value
+/// and gradient, returned for the point it stops at (no evaluation
+/// repeated there).
+pub fn lbfgs_box_with<T>(
+    mut fg: impl FnMut(&[f64]) -> (f64, Vec<f64>, T),
+    x0: &[f64],
+    lo: &[f64],
+    hi: &[f64],
+    max_evals: usize,
+    pgtol: f64,
+    ftol: f64,
+) -> (BoxMin, T) {
     const MEMORY: usize = 8;
     let p = x0.len();
     let clamp = |x: &mut [f64]| {
@@ -167,7 +194,7 @@ pub fn lbfgs_box(
     };
     let mut x = x0.to_vec();
     clamp(&mut x);
-    let (mut f, mut g) = fg(&x);
+    let (mut f, mut g, mut at) = fg(&x);
     let mut evals = 1;
     let mut hist: Vec<(Vec<f64>, Vec<f64>, f64)> = Vec::new();
     let norm_inf = |v: &[f64]| v.iter().fold(0f64, |m, &a| m.max(a.abs()));
@@ -175,7 +202,7 @@ pub fn lbfgs_box(
     loop {
         let pg = projected(&x, &g);
         if norm_inf(&pg) < pgtol || evals >= max_evals {
-            return BoxMin { x, evals };
+            return (BoxMin { x, evals }, at);
         }
         // two-loop recursion on the projected gradient
         let mut q = pg.clone();
@@ -218,16 +245,16 @@ pub fn lbfgs_box(
             if norm_inf(&dx) == 0.0 {
                 break;
             }
-            let (fnew, gnew) = fg(&xn);
+            let (fnew, gnew, tnew) = fg(&xn);
             evals += 1;
             if fnew.is_finite() && fnew <= f + 1e-4 * dot(&g, &dx) {
-                accepted = Some((xn, fnew, gnew, dx));
+                accepted = Some((xn, fnew, gnew, dx, tnew));
                 break;
             }
             step *= 0.5;
         }
-        let Some((xn, fnew, gnew, s)) = accepted else {
-            return BoxMin { x, evals };
+        let Some((xn, fnew, gnew, s, tnew)) = accepted else {
+            return (BoxMin { x, evals }, at);
         };
         let y: Vec<f64> = gnew.iter().zip(&g).map(|(a, b)| a - b).collect();
         let sy = dot(&s, &y);
@@ -241,8 +268,9 @@ pub fn lbfgs_box(
         x = xn;
         f = fnew;
         g = gnew;
+        at = tnew;
         if change < ftol {
-            return BoxMin { x, evals };
+            return (BoxMin { x, evals }, at);
         }
     }
 }

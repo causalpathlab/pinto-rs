@@ -1091,9 +1091,16 @@ fn factor_estimates_cover_every_measured_peak_and_are_not_far_above() {
     }
 }
 
+/// Maximum resident memory (MiB) of a default `mefisto --reference` run
+/// on the 1024-cell section below (one group: the eigenbasis search, its
+/// bases kept), 4 threads.
+const MEFISTO_REFERENCE_MIB: f64 = 177.66;
+
 /// The `--reference` estimates cover the measured runs (one srt-simulate
 /// section of 1024 cells, 2000 genes, 4 threads; MEFISTO's on its 1000
-/// inducing cells): spatialpca 246.48 MiB, mefisto 177.66 MiB.
+/// inducing cells): spatialpca 208.19 MiB, mefisto
+/// [`MEFISTO_REFERENCE_MIB`]; and spatialpca on three sections of 400
+/// cells (`--ignore-batch`), 249.16 MiB.
 #[test]
 fn factor_reference_estimates_cover_the_measured_runs() {
     use crate::spatial_baselines::{mefisto, spatialpca};
@@ -1110,7 +1117,7 @@ fn factor_reference_estimates_cover_the_measured_runs() {
     };
     let sp = a
         .fit
-        .memory_shape(&input, 2000, spatialpca::Variant::Reference);
+        .memory_shape(&input, 2000, spatialpca::Variant::Reference(None));
     let crate::Commands::Mefisto(m) =
         parse(&["pinto", "mefisto", "d.zarr", "-c", "c.csv", "-o", "x"])
     else {
@@ -1125,6 +1132,23 @@ fn factor_reference_estimates_cover_the_measured_runs() {
         .unwrap();
     let (est_sp, est_mf) =
         pool.install(|| (mib(factor_peak_bytes(&sp)), mib(factor_peak_bytes(&mf))));
-    assert!(est_sp >= 246.48, "spatialpca --reference {est_sp:.0}");
-    assert!(est_mf >= 177.66, "mefisto --reference {est_mf:.0}");
+    assert!(est_sp >= 208.19, "spatialpca --reference {est_sp:.0}");
+    assert!(
+        est_mf >= MEFISTO_REFERENCE_MIB,
+        "mefisto --reference {est_mf:.0}"
+    );
+    // three sections of 400 cells, one kernel block each
+    let three = InputShape {
+        nonzeros: NONZEROS_PER_CELL * 1200,
+        section_sizes: vec![400; 3],
+        ..input
+    };
+    let sp3 = a
+        .fit
+        .memory_shape(&three, 2000, spatialpca::Variant::Reference(None));
+    let est3 = pool.install(|| mib(factor_peak_bytes(&sp3)));
+    assert!(
+        est3 >= 249.16,
+        "spatialpca --reference, 3 sections {est3:.0}"
+    );
 }

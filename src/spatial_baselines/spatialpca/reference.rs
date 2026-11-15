@@ -2,7 +2,8 @@
 //! kernel `K(s, s') = exp(-||s - s'||^2 / gamma)` of Eq. (2), one block per
 //! section (the multi-sample extension), `gamma` by the paper's rule of
 //! thumb, `tau` by Brent on the profile SN(7), the Woodbury forms SN(11) and
-//! the low-rank approximation SN(12), SN(13) with the paper's rank rule.
+//! the low-rank approximation (SN(11) on the rank-`r` kernel, see
+//! [`TauProfile::eval`]), SN(13) with the paper's rank rule.
 //!
 //! The kernel is never stored whole: each block's eigenpairs are taken
 //! densely when the block has at most [`DENSE_KERNEL_MAX`] cells (as the
@@ -68,41 +69,78 @@ pub fn silverman(x: &[f64]) -> f64 {
     0.9 * sd.min(iqr / 1.34) * n.powf(-0.2)
 }
 
-/// Distinct values of `x` with their counts.
-fn tallied(x: &[f64]) -> Vec<(f64, f64)> {
-    let mut s = x.to_vec();
-    s.sort_by(f64::total_cmp);
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for v in s {
-        match out.last_mut() {
-            Some((u, c)) if *u == v => *c += 1.0,
-            _ => out.push((v, 1.0)),
-        }
-    }
-    out
+/// Bins of the pairwise differences in [`sheather_jones`], as R's `bw.SJ`
+/// takes by default.
+pub const SJ_BINS: usize = 1000;
+
+/// A sample binned for its pairwise sums (Scott and Sheather 1985,
+/// "Kernel density estimation with binned data", Communications in
+/// Statistics: Theory and Methods 14:1353; the binning of R's `bw.SJ`, `nb` equal-width bins over the range): each
+/// value at its bin, and the unordered pairs of distinct values counted by
+/// the distance in bins between them, so a pairwise sum costs at most `nb`
+/// terms whatever the sample's size.
+pub struct PairBins {
+    pub n: f64,
+    pub width: f64,
+    /// `counts[k]`: pairs `k` bins apart.
+    pub counts: Vec<f64>,
 }
 
-/// `sum_i sum_j phi^(r)((x_i - x_j) / a)` over every ordered pair (the
-/// diagonal included), `r` 4 or 6, from the tallied values.
-fn pair_sum(t: &[(f64, f64)], a: f64, r: u32) -> f64 {
-    let phi = |u: f64| (-0.5 * u * u).exp() / (2.0 * std::f64::consts::PI).sqrt();
-    let deriv = |u: f64| {
-        let u2 = u * u;
-        match r {
-            4 => (u2 * u2 - 6.0 * u2 + 3.0) * phi(u),
-            _ => (u2 * u2 * u2 - 15.0 * u2 * u2 + 45.0 * u2 - 15.0) * phi(u),
+impl PairBins {
+    pub fn new(x: &[f64], nb: usize) -> Self {
+        let lo = x.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let nb = nb.max(1);
+        let width = ((hi - lo) / nb as f64).max(f64::MIN_POSITIVE);
+        let mut occ = vec![0f64; nb];
+        for &v in x {
+            occ[(((v - lo) / width) as usize).min(nb - 1)] += 1.0;
         }
-    };
-    t.par_iter()
-        .enumerate()
-        .map(|(i, &(xi, ci))| {
-            let mut s = ci * ci * deriv(0.0);
-            for &(xj, cj) in &t[i + 1..] {
-                s += 2.0 * ci * cj * deriv((xi - xj) / a);
+        let full: Vec<(usize, f64)> = occ
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c > 0.0)
+            .map(|(b, &c)| (b, c))
+            .collect();
+        let mut counts = vec![0f64; nb];
+        for (i, &(bi, ci)) in full.iter().enumerate() {
+            counts[0] += ci * (ci - 1.0) / 2.0;
+            for &(bj, cj) in &full[i + 1..] {
+                counts[bj - bi] += ci * cj;
             }
-            s
-        })
-        .sum()
+        }
+        while counts.len() > 1 && counts.last() == Some(&0.0) {
+            counts.pop();
+        }
+        PairBins {
+            n: x.len() as f64,
+            width,
+            counts,
+        }
+    }
+
+    /// `sum_i sum_j phi^(r)((x_i - x_j) / a)` over every ordered pair (the
+    /// diagonal included), `r` 4 or 6, each difference at its bins'.
+    pub fn pair_sum(&self, a: f64, r: u32) -> f64 {
+        let off: f64 = self
+            .counts
+            .iter()
+            .enumerate()
+            .map(|(k, &c)| c * gauss_deriv(k as f64 * self.width / a, r))
+            .sum();
+        self.n * gauss_deriv(0.0, r) + 2.0 * off
+    }
+}
+
+/// `phi^(r)(u)`, the `r`-th derivative of the standard normal density, `r`
+/// 4 or 6.
+pub fn gauss_deriv(u: f64, r: u32) -> f64 {
+    let phi = (-0.5 * u * u).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    let u2 = u * u;
+    match r {
+        4 => (u2 * u2 - 6.0 * u2 + 3.0) * phi,
+        _ => (u2 * u2 * u2 - 15.0 * u2 * u2 + 45.0 * u2 - 15.0) * phi,
+    }
 }
 
 /// Sheather and Jones' plug-in bandwidth, the solve-the-equation variant
@@ -111,9 +149,10 @@ fn pair_sum(t: &[(f64, f64)], a: f64, r: u32) -> f64 {
 /// S(alpha2(h)))]^(1/5)` with the Gaussian kernel, `alpha2(h) = 1.357
 /// [S(a) / T(b)]^(1/7) h^(5/7)`, `a = 0.920 lambda n^(-1/7)`, `b = 0.912
 /// lambda n^(-1/9)`, `lambda` the interquartile range, and the density
-/// functionals `S`, `T` summed exactly over all pairs. 0 when the
-/// interquartile range is 0 (as Silverman's rule then gives); Silverman's
-/// rule when the functionals are not positive.
+/// functionals `S`, `T` summed over all pairs on [`SJ_BINS`] bins
+/// ([`PairBins`]). 0 when the interquartile range is 0 (as Silverman's
+/// rule then gives); Silverman's rule when the functionals are not
+/// positive.
 pub fn sheather_jones(x: &[f64]) -> f64 {
     let n = x.len() as f64;
     let mut s = x.to_vec();
@@ -122,10 +161,10 @@ pub fn sheather_jones(x: &[f64]) -> f64 {
     if lambda <= 0.0 || n < 2.0 {
         return 0.0;
     }
-    let t = tallied(x);
+    let bins = PairBins::new(x, SJ_BINS);
     let nn = n * (n - 1.0);
-    let s_hat = |a: f64| pair_sum(&t, a, 4) / (nn * a.powi(5));
-    let t_hat = |b: f64| -pair_sum(&t, b, 6) / (nn * b.powi(7));
+    let s_hat = |a: f64| bins.pair_sum(a, 4) / (nn * a.powi(5));
+    let t_hat = |b: f64| -bins.pair_sum(b, 6) / (nn * b.powi(7));
     let a = 0.920 * lambda * n.powf(-1.0 / 7.0);
     let b = 0.912 * lambda * n.powf(-1.0 / 9.0);
     let (sa, tb) = (s_hat(a), t_hat(b));
@@ -189,7 +228,7 @@ pub fn sheather_jones(x: &[f64]) -> f64 {
 /// on the gene's standardised expression; `gamma` the median over genes.
 pub fn bandwidth(rows: &[Vec<f64>]) -> f64 {
     let mut h: Vec<f64> = rows
-        .iter()
+        .par_iter()
         .map(|x| {
             if x.len() > DENSE_KERNEL_MAX {
                 silverman(x)
@@ -309,29 +348,53 @@ pub fn ranks(values: &[f64], n: usize, set: Option<usize>) -> (usize, usize) {
     (values.len(), values.len())
 }
 
-/// Eigenpairs of the block-diagonal kernel: each block's top `want`, then
-/// merged.
+/// Eigenpairs each block takes on `n` cells in all: every one at or below
+/// [`DENSE_KERNEL_MAX`] cells, else the larger of 20 and `rank` (a tenth
+/// of the cells by default).
+pub fn kernel_want(n: usize, rank: Option<usize>) -> usize {
+    if n > DENSE_KERNEL_MAX {
+        rank.unwrap_or(n.div_ceil(10)).max(LARGE_RANK)
+    } else {
+        n
+    }
+}
+
+/// Eigenpairs of the block-diagonal kernel: each block's top `want`,
+/// written into the `n × sum_s min(want, n_s)` matrix as it is taken (no
+/// block's held past its own), then the columns sorted in place.
 pub fn kernel_eigen(blocks: &[KernelBlock], n: usize, want: usize, seed: u64) -> Eigen {
-    let per: Vec<(Vec<f64>, Dense)> = blocks
-        .iter()
-        .enumerate()
-        .map(|(s, b)| b.eigs(want, seed ^ s as u64))
-        .collect();
-    let mut all: Vec<(f64, usize, usize)> = per
-        .iter()
-        .enumerate()
-        .flat_map(|(s, (vals, _))| vals.iter().enumerate().map(move |(j, &v)| (v, s, j)))
-        .collect();
-    all.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let mut vectors = Dense::zeros(n, all.len());
-    for (c, &(_, s, j)) in all.iter().enumerate() {
-        for (a, &cell) in blocks[s].cells.iter().enumerate() {
-            vectors[(cell, c)] = per[s].1[(a, j)];
+    let width: usize = blocks.iter().map(|b| want.min(b.cells.len())).sum();
+    let mut vectors = Dense::zeros(n, width);
+    let mut values = Vec::with_capacity(width);
+    for (s, b) in blocks.iter().enumerate() {
+        let (vals, vecs) = b.eigs(want, seed ^ s as u64);
+        let at = values.len();
+        for j in 0..vals.len() {
+            for (a, &cell) in b.cells.iter().enumerate() {
+                vectors[(cell, at + j)] = vecs[(a, j)];
+            }
+        }
+        values.extend(vals);
+    }
+    let mut order: Vec<usize> = (0..values.len()).collect();
+    order.sort_by(|&i, &j| values[j].total_cmp(&values[i]));
+    // column c takes column order[c], cycle by cycle
+    let mut placed = vec![false; order.len()];
+    for start in 0..order.len() {
+        let mut c = start;
+        while !placed[c] {
+            placed[c] = true;
+            let from = order[c];
+            if from == start {
+                break;
+            }
+            vectors.swap_columns(c, from);
+            c = from;
         }
     }
     Eigen {
-        values: all.iter().map(|e| e.0).collect(),
-        vectors,
+        values: order.iter().map(|&i| values[i]).collect(),
+        vectors: vectors.columns(0, order.len()).into_owned(),
     }
 }
 
@@ -350,10 +413,10 @@ pub fn kernel_apply(blocks: &[KernelBlock], v: &Dense) -> Dense {
     out
 }
 
-/// What the profile in `tau` reads, precomputed once: `Y Y^T`, `Y U`,
+/// What the profile in `tau` reads, precomputed once: `tr(Y Y^T)`, `Y U`,
 /// `U^T 1` and the kernel eigenvalues, all at the search's rank.
 pub struct TauProfile {
-    pub yy: Dense,
+    pub trace: f64,
     pub ytil: Dense,
     pub u1: Vec<f64>,
     pub delta: Vec<f64>,
@@ -380,7 +443,7 @@ impl TauProfile {
         let ytil = y * u;
         let u1 = (0..r).map(|j| u.column(j).sum()).collect();
         TauProfile {
-            yy: y * y.transpose(),
+            trace: y.norm_squared(),
             ytil,
             u1,
             delta: eig.values[..r].iter().map(|v| v.max(0.0)).collect(),
@@ -390,26 +453,34 @@ impl TauProfile {
         }
     }
 
-    /// SN(6) to SN(8) at `tau`, by SN(11) and SN(12) as printed:
-    /// `F = I - U (tau D + I)^{-1} U^T`, `G = Y F Y^T + g g^T / q` with `g =
-    /// Y F 1` and `q = n - 1^T F 1`, `S = tr(Y Y^T) - sum_{l<=d} lambda_l(G)`,
-    /// and `ell = -(m (n - 1) / 2) log S - (d / 2) log|tau K + I| - (d / 2)
-    /// log|1^T (tau K + I)^{-1} 1|`, the determinants on the kept
-    /// eigenpairs (`|1^T U (I + tau D)^{-1} U^T 1|`, the printed form).
+    /// SN(6) to SN(8) at `tau` on the rank-`r` kernel `K = U D U^T`, by
+    /// SN(11)'s Woodbury identity: `H^{-1} = (I + tau K)^{-1} = I - U (I -
+    /// f) U^T`, `f = (tau D + I)^{-1}`, so with `Y 1 = 0`, `G = Y (I -
+    /// H^{-1}) Y^T + g g^T / q = Y U (I - f) U^T Y^T + g g^T / q`, `g = Y
+    /// H^{-1} 1 = -Y U (I - f) U^T 1` and `q = 1^T H^{-1} 1 = n - 1^T U
+    /// (I - f) U^T 1`; `S = tr(Y Y^T) - sum_{l<=d} lambda_l(G)`, and `ell
+    /// = -(m (n - 1) / 2) log S - (d / 2) log|tau K + I| - (d / 2) log
+    /// q`.
+    /// The kernel's discarded directions `I - U U^T` carry no prior
+    /// variance, as in `K`; SN(12) as printed keeps them at full weight
+    /// in `G`. At full rank the two agree.
     pub fn eval(&self, tau: f64) -> TauEval {
-        let f: Vec<f64> = self.delta.iter().map(|&d| 1.0 / (tau * d + 1.0)).collect();
-        let r = f.len();
+        // 1 - f_j = tau d_j / (tau d_j + 1)
+        let h: Vec<f64> = self
+            .delta
+            .iter()
+            .map(|&d| tau * d / (tau * d + 1.0))
+            .collect();
+        let r = h.len();
         let mut scaled = self.ytil.clone();
-        for (j, &fj) in f.iter().enumerate() {
-            scaled.column_mut(j).scale_mut(fj);
+        for (j, &hj) in h.iter().enumerate() {
+            scaled.column_mut(j).scale_mut(hj);
         }
-        let mut g = &self.yy - &scaled * self.ytil.transpose();
-        let fu: Vec<f64> = (0..r).map(|j| f[j] * self.u1[j]).collect();
-        let q: f64 = (0..r).map(|j| self.u1[j] * fu[j]).sum();
-        if q > 1e-300 {
-            let gv = &self.ytil * nalgebra::DVector::from_vec(fu);
-            g += &gv * gv.transpose() / q;
-        }
+        let mut g = &scaled * self.ytil.transpose();
+        let hu: Vec<f64> = (0..r).map(|j| h[j] * self.u1[j]).collect();
+        let q = (self.n as f64 - (0..r).map(|j| self.u1[j] * hu[j]).sum::<f64>()).max(1e-300);
+        let gv = &self.ytil * nalgebra::DVector::from_vec(hu);
+        g += &gv * gv.transpose() / q;
         let (vals, vecs) = if self.m <= 1500 {
             sym_eig_desc(&g)
         } else {
@@ -424,14 +495,11 @@ impl TauProfile {
             (v, w)
         };
         let top: f64 = vals[..self.d].iter().sum();
-        let s = (self.yy.trace() - top).max(1e-300);
+        let s = (self.trace - top).max(1e-300);
         let logdet: f64 = self.delta.iter().map(|&d| (tau * d).ln_1p()).sum();
-        let xdet: f64 = (0..r)
-            .map(|j| self.u1[j] * self.u1[j] / (1.0 + tau * self.delta[j]))
-            .sum();
         let k = self.m as f64 * (self.n as f64 - 1.0) / 2.0;
         let d = self.d as f64;
-        let ell = -k * s.ln() - d / 2.0 * logdet - d / 2.0 * xdet.max(1e-300).ln();
+        let ell = -k * s.ln() - d / 2.0 * logdet - d / 2.0 * q.ln();
         TauEval {
             tau,
             s,
@@ -471,13 +539,13 @@ pub fn pcs(y: &Dense, w: &Dense, tau: f64, eig: &Eigen, r: usize, blocks: &[Kern
     let n = y.ncols();
     let a1t = y.transpose() * w; // n × d, (W^T Y)^T
     let ka = kernel_apply(blocks, &a1t);
-    let u = eig.vectors.columns(0, r).into_owned();
+    let u = eig.vectors.columns(0, r);
     let delta: Vec<f64> = eig.values[..r].iter().map(|v| v.max(1e-12)).collect();
     let u1 = u.row_sum().transpose();
     let ones = Dense::from_element(n, 1, 1.0);
     let k1 = kernel_apply(blocks, &ones);
     // K M U = U D - (K 1)(1^T U) / n
-    let mut kmu = u.clone();
+    let mut kmu = u.clone_owned();
     for (j, &dj) in delta.iter().enumerate() {
         kmu.column_mut(j).scale_mut(dj);
     }
@@ -486,7 +554,7 @@ pub fn pcs(y: &Dense, w: &Dense, tau: f64, eig: &Eigen, r: usize, blocks: &[Kern
     for j in 0..r {
         mid[(j, j)] += 1.0 / (tau * delta[j]);
     }
-    let yz = a1t.transpose() * &u; // d × r
+    let yz = a1t.transpose() * u; // d × r
     let inner = mid
         .lu()
         .solve(&yz.transpose())

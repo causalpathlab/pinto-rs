@@ -313,6 +313,227 @@ fn reference_forms_are_the_paper_s_at_full_rank() {
     }
 }
 
+/// Below full rank (the 90% rule's `r < n`), at a kernel that is exactly
+/// rank `r` (a Gaussian kernel's top `r` eigenpairs), the low-rank profile
+/// is the exact one: `G`'s top eigenvalues those of the dense `Y Y^T - Y
+/// M_H Y^T`, `M_H = H^{-1} - H^{-1} 1 1^T H^{-1} / (1^T H^{-1} 1)`, `H = I
+/// + tau K_r`, and `ell` differing across `tau` as the brute-force
+/// restricted likelihood. SN(12) as printed (the discarded directions at
+/// full weight in `G`) is not.
+#[test]
+fn low_rank_profile_is_exact_on_a_kernel_of_that_rank() {
+    let (m, n, d) = (5, 30, 2);
+    let xy = random_points(n, 9);
+    let (_, eig, _) = kernel(&xy, 1.0);
+    let (r, _) = reference::ranks(&eig.values, n, None);
+    assert!(r < n && r > d, "rank {r} of {n}");
+    let u = eig.vectors.columns(0, r).into_owned();
+    let dd = Dense::from_diagonal(&nalgebra::DVector::from_column_slice(&eig.values[..r]));
+    let kr = &u * dd * u.transpose();
+    let y = centred_integers(m, n, 10);
+    let prof = TauProfile::new(&y, &eig, r, d);
+    let ones = Dense::from_element(n, 1, 1.0);
+    let mut prev: Option<(f64, f64)> = None;
+    for tau in [0.3, 2.0, 12.0] {
+        let e = prof.eval(tau);
+        let hi = (Dense::identity(n, n) + &kr * tau).try_inverse().unwrap();
+        let h1 = &hi * &ones;
+        let q = (ones.transpose() * &h1)[(0, 0)];
+        let mh = &hi - &h1 * h1.transpose() / q;
+        let g = &y * y.transpose() - &y * mh * y.transpose();
+        let (vals, _) = sym_eig_desc(&g);
+        for l in 0..d {
+            assert!((e.eigvals[l] - vals[l]).abs() < 1e-8 * vals[0], "{l}");
+        }
+        // SN(12) as printed: Y Y^T in place of Y U U^T Y^T
+        let ytil = &y * &u;
+        let f = Dense::from_fn(r, r, |a, b| {
+            if a == b {
+                1.0 / (tau * eig.values[a] + 1.0)
+            } else {
+                0.0
+            }
+        });
+        let fu = &f * u.transpose() * &ones;
+        let gv = &ytil * &fu;
+        let printed = &y * y.transpose() - &ytil * &f * ytil.transpose()
+            + &gv * gv.transpose() / (u.transpose() * &ones).dot(&fu);
+        let (pvals, _) = sym_eig_desc(&printed);
+        assert!((pvals[0] - vals[0]).abs() > 1e-4 * vals[0], "as printed");
+        let s2 = e.s / (m as f64 * (n as f64 - 1.0));
+        let brute = restricted_loglik(&y, &e.w, s2, tau, &kr, true);
+        if let Some((pe, pb)) = prev {
+            let want = brute - pb;
+            assert!(
+                ((e.ell - pe) - want).abs() < 1e-7 * want.abs().max(1.0),
+                "{} vs {want}",
+                e.ell - pe
+            );
+        }
+        prev = Some((e.ell, brute));
+    }
+}
+
+/// Several blocks' eigenpairs: `n × sum_s min(want, n_s)`, sorted, each
+/// column an eigenvector of its own block's kernel and zero off it.
+#[test]
+fn kernel_eigen_stacks_each_block_s_top_eigenpairs_sorted() {
+    let sizes = [8usize, 12, 5];
+    let n: usize = sizes.iter().sum();
+    let xy = random_points(n, 11);
+    let pts: Vec<Vec<f64>> = xy.iter().map(|p| vec![p.0 as f64, p.1 as f64]).collect();
+    let mut start = 0;
+    let blocks: Vec<KernelBlock> = sizes
+        .iter()
+        .map(|&s| {
+            let cells: Vec<usize> = (start..start + s).collect();
+            start += s;
+            let local: Vec<Vec<f64>> = cells.iter().map(|&c| pts[c].clone()).collect();
+            KernelBlock {
+                cells,
+                xy: reference::standardised(&local),
+                gamma: 1.5,
+            }
+        })
+        .collect();
+    let want = 6;
+    let eig = reference::kernel_eigen(&blocks, n, want, 0);
+    let width: usize = sizes.iter().map(|&s| want.min(s)).sum();
+    assert_eq!(eig.vectors.shape(), (n, width));
+    assert!(eig.values.windows(2).all(|w| w[0] >= w[1]));
+    let kv = reference::kernel_apply(&blocks, &eig.vectors);
+    for j in 0..width {
+        let v = eig.vectors.column(j);
+        assert!((v.norm() - 1.0).abs() < 1e-10);
+        let resid = (kv.column(j) - v * eig.values[j]).amax();
+        assert!(resid < 1e-9, "column {j}: {resid}");
+        let on: Vec<usize> = (0..n).filter(|&c| v[c].abs() > 0.0).collect();
+        let s0 = blocks
+            .iter()
+            .position(|b| b.cells.contains(&on[0]))
+            .unwrap();
+        assert!(
+            on.iter().all(|c| blocks[s0].cells.contains(c)),
+            "column {j}"
+        );
+    }
+}
+
+/// `--reference`'s estimate on sections above the paper's 5000 cells
+/// covers what it holds at once: `Y`, the stacked eigenvectors (`n ×
+/// sum_s min(want, n_s)`) and the PCs' `n × r_Z` (the old estimate,
+/// counting `2 n r_Z` for both, did not on three sections).
+#[test]
+fn reference_estimate_covers_the_stacked_eigenvectors_of_several_sections() {
+    let sizes = vec![6000usize, 6000, 6000];
+    let (n, m, d) = (18000usize, 2000usize, 20usize);
+    let input = crate::spatial_baselines::input::InputShape {
+        genes: m,
+        nonzeros: 0,
+        section_sizes: sizes.clone(),
+        batches: 1,
+    };
+    let crate::Commands::Spatialpca(a) = parse(
+        "spatialpca",
+        &["d.zarr".into(), "-c".into(), "c.csv".into()],
+        "x",
+        &[],
+    ) else {
+        unreachable!()
+    };
+    let want = reference::kernel_want(n, None);
+    let width: usize = sizes.iter().map(|&s| want.min(s)).sum();
+    let rz = n.div_ceil(10);
+    let held = 8 * (m * n + n * width + n * rz + 4 * n * d);
+    for rank in [None, Some(3000)] {
+        let est = a
+            .fit
+            .memory_shape(
+                &input,
+                m,
+                crate::spatial_baselines::spatialpca::Variant::Reference(rank),
+            )
+            .reference;
+        let width = sizes
+            .iter()
+            .map(|&s| reference::kernel_want(n, rank).min(s))
+            .sum::<usize>();
+        assert!(est >= held.max(8 * n * width), "{rank:?}: {est} < {held}");
+    }
+}
+
+/// The exact pairwise sum of Sheather-Jones, over every ordered pair.
+fn exact_pair_sum(x: &[f64], a: f64, r: u32) -> f64 {
+    x.iter()
+        .map(|xi| {
+            x.iter()
+                .map(|xj| reference::gauss_deriv((xi - xj) / a, r))
+                .sum::<f64>()
+        })
+        .sum()
+}
+
+/// The binned pairwise sums are close to the exact ones on small samples
+/// at the bandwidths Sheather-Jones evaluates; a sum costs at most the
+/// bins' count of terms however many values; one bin is not close.
+#[test]
+fn sheather_jones_binned_sums_are_close_and_bounded() {
+    let mut rng = SmallRng::seed_from_u64(12);
+    let normal: Vec<f64> = gaussian(400, 1, 13).iter().copied().collect();
+    let bimodal: Vec<f64> = (0..300)
+        .map(|i| if i % 3 == 0 { 4.0 } else { 0.0 } + rng.random_range(-1.0..1.0))
+        .collect();
+    for x in [normal, bimodal] {
+        let bins = reference::PairBins::new(&x, reference::SJ_BINS);
+        let coarse = reference::PairBins::new(&x, 1);
+        // about the a and b of Sheather-Jones on a few hundred values
+        for (a, r) in [(0.5, 4), (0.8, 4), (0.6, 6), (1.0, 6)] {
+            let want = exact_pair_sum(&x, a, r);
+            let got = bins.pair_sum(a, r);
+            assert!(
+                (got - want).abs() < 1e-2 * want.abs(),
+                "a {a} r {r}: {got} vs {want}"
+            );
+            assert!((coarse.pair_sum(a, r) - want).abs() > 1e-2 * want.abs());
+        }
+    }
+    let many: Vec<f64> = gaussian(20_000, 1, 14).iter().copied().collect();
+    let bins = reference::PairBins::new(&many, reference::SJ_BINS);
+    assert!(bins.counts.len() <= reference::SJ_BINS);
+    let pairs: f64 = bins.counts.iter().sum();
+    assert_eq!(pairs, 20_000.0 * 19_999.0 / 2.0);
+}
+
+/// The sparse fit returns the evaluation at its optimum as a fresh
+/// evaluation there gives it, profiled or with the loadings fixed (their
+/// own returned).
+#[test]
+fn sparse_fit_returns_the_evaluation_at_its_optimum() {
+    let n = 120;
+    let xy = random_points(n, 15);
+    let section = vec![0; n];
+    let lap = lap_of(&xy, &section, 5);
+    let spec = Spectrum::new(&lap, &exact());
+    let mut y = gaussian(12, n, 16);
+    for g in 0..4 {
+        for c in 0..n {
+            y[(g, c)] += 2.0 * (xy[c].1 as f64).cos();
+        }
+    }
+    let op = ResidualOp::from_dense(&y);
+    let prof = Profile::new(&op, &lap, &spec, 2, 1e-12, 0);
+    let (fit, _) = prof.fit(50);
+    let again = prof.eval(fit.tau.ln(), fit.rho.ln());
+    assert!((fit.ell - again.ell).abs() < 1e-9 * again.ell.abs());
+    let fixed = Profile::new(&op, &lap, &spec, 2, 1e-12, 0).with_loadings(fit.w.clone());
+    let (ffit, _) = fixed.fit(50);
+    assert_eq!(ffit.w, fit.w);
+    let again = fixed.eval(ffit.tau.ln(), ffit.rho.ln());
+    assert_eq!(again.w.len(), 0);
+    assert!((ffit.ell - again.ell).abs() < 1e-9 * again.ell.abs());
+    assert!((&ffit.z - &again.z).amax() < 1e-8 * again.z.amax());
+}
+
 /// The rank rule: 90% of the trace at or below 5000 cells; 20 and a tenth
 /// of the cells above; a set rank for both.
 #[test]
@@ -399,7 +620,8 @@ pub(crate) fn planted(sim: &str, cells: &[Box<str>]) -> (Vec<usize>, usize) {
 }
 
 /// Bar, set before measuring: on a simulated section of 576 cells, both
-/// modes recover the planted domains at an ARI of at least 0.5. The run
+/// modes recover the planted domains at an ARI of at least 0.5, within 0.1
+/// of each other. The run
 /// writes the shared outputs and its loadings.
 #[test]
 fn spatialpca_recovers_planted_domains() {
@@ -437,6 +659,8 @@ fn spatialpca_recovers_planted_domains() {
         assert_eq!(meta["command"], "spatialpca");
     }
     eprintln!("spatialpca ARI: {scores:?}");
+    // --reference close to the sparse default
+    assert!((scores[0].1 - scores[1].1).abs() <= 0.1, "{scores:?}");
     for (name, a) in scores {
         assert!(a >= 0.5, "{name}: ARI {a}");
     }

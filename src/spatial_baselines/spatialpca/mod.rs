@@ -23,10 +23,11 @@
 //!   exp(-||s - s'||^2 / gamma)`, one block per section (the paper's
 //!   multi-sample extension), each section's coordinates standardised per
 //!   axis, `gamma` per section by the paper's rule (Silverman above 5000
-//!   cells, Sheather-Jones at or below, per gene on the standardised
-//!   expression, the median over genes); the kernel's eigenpairs, the
-//!   Woodbury form SN(11) and the low-rank forms SN(12) (as printed) and
-//!   SN(13) at the paper's ranks (the 90% rule at or below 5000 cells; 20
+//!   cells, Sheather-Jones at or below, its pairwise sums on R's `bw.SJ`
+//!   binning of 1000 bins, per gene on the standardised expression, the
+//!   median over genes); the kernel's eigenpairs, the
+//!   Woodbury form SN(11) on the rank-`r` kernel and SN(13) at the
+//!   paper's ranks (the 90% rule at or below 5000 cells; 20
 //!   for the `tau` search and `ceil(0.1 n)` for the PCs above);
 //!   `tau` by Brent on `log tau` after a 41-point grid on `[1e-4, 1e4]`.
 //! - The default, sparse ([`sparse`]): the kernel replaced by the sparse
@@ -64,6 +65,10 @@
 //!   sections of more than 2000 cells; solves by conjugate gradients and
 //!   `G`'s eigenpairs by subspace iteration, to tolerance; `(tau, rho)` by a
 //!   projected L-BFGS from the best of a 3 × 3 grid.
+//! - **Low rank** (`--reference`): `G`, `g` and `q` of the `tau` profile
+//!   from SN(11)'s Woodbury identity on the rank-`r` kernel `U D U^T`, in
+//!   place of SN(12) as printed, which keeps the kernel's discarded
+//!   directions at full weight in `G` (the two agree at full rank).
 //! - **Exact reformulations**: the scalar forms of SN(11) with `q = 1` and
 //!   centred `Y`; the kernel applied in tiles; `R = I` with each loading's
 //!   largest entry positive; the refinement over the `k` nearest cells
@@ -170,7 +175,8 @@ pub struct PbArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     Sparse,
-    Reference,
+    /// `--reference`, its `--rank` when set.
+    Reference(Option<usize>),
     /// A `-pb` run, its target number of super-cells.
     Pseudobulk(usize),
 }
@@ -204,7 +210,7 @@ impl FitArgs {
                 _ => 0,
             },
             reference: match variant {
-                Variant::Reference => reference_bytes(input, m, d),
+                Variant::Reference(rank) => reference_bytes(input, m, d, rank),
                 _ => 0,
             },
         }
@@ -212,23 +218,34 @@ impl FitArgs {
 }
 
 /// What `--reference` holds beyond the sparse path's: `Y` dense (m × n),
-/// `Y Y^T`, `G` and its eigenvectors (m × m), the largest section's dense
-/// kernel and its eigenvectors (three copies as sorted), and the kept
-/// eigenvectors over all cells (`n × r_Z`).
-fn reference_bytes(input: &InputShape, m: usize, d: usize) -> usize {
-    let n: usize = input.section_sizes.iter().sum();
-    let largest = input.section_sizes.iter().copied().max().unwrap_or(0);
-    let dense_block = if largest <= reference::DENSE_KERNEL_MAX {
+/// `G`, its rank-one term, its eigenvectors and their workspace (m × m), the kernel's
+/// eigenvectors over all cells (`n × sum_s min(want, n_s)`) with one
+/// block's own while it is taken (its dense kernel and eigenvectors, three
+/// copies as sorted, at or below the paper's 5000 cells), `Y U` and its
+/// scaled copy (m × r_est), and the PCs' `K M U` (n × r_Z) and products
+/// (n × d).
+fn reference_bytes(input: &InputShape, m: usize, d: usize, rank: Option<usize>) -> usize {
+    let sizes = &input.section_sizes;
+    let n: usize = sizes.iter().sum();
+    let want = reference::kernel_want(n, rank);
+    let width: usize = sizes.iter().map(|&s| want.min(s)).sum();
+    let largest = sizes.iter().copied().max().unwrap_or(0);
+    let block = if largest <= reference::DENSE_KERNEL_MAX {
         3 * largest * largest
     } else {
-        2 * largest * (n / 10 + 10)
+        // subspace iteration: a few blocks of want + 10 vectors
+        4 * largest * (want + 10)
     };
-    let rz = if n > reference::DENSE_KERNEL_MAX {
-        n.div_ceil(10)
+    // the ranks at most: all of the kernel's at or below 5000 cells
+    let (r_est, r_z) = if n > reference::DENSE_KERNEL_MAX {
+        (
+            rank.unwrap_or(20).min(width),
+            rank.unwrap_or(n.div_ceil(10)).min(width),
+        )
     } else {
-        n
+        (width, width)
     };
-    8 * (m * n + 4 * m * m + dense_block + 2 * n * rz + 4 * n * d)
+    8 * (m * n + 4 * m * m + block + n * width + 2 * m * r_est + n * r_z + 4 * n * d)
 }
 
 /// Kernel evaluations of a `--reference` run, from its section sizes:
@@ -273,7 +290,7 @@ fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> 
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let variant = if args.reference {
-        Variant::Reference
+        Variant::Reference(args.rank)
     } else {
         Variant::Sparse
     };
@@ -355,7 +372,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let fit = &args.fit;
     let genes = select_genes(&data, fit.n_genes)?;
     let variant = if args.reference {
-        Variant::Reference
+        Variant::Reference(args.rank)
     } else {
         Variant::Sparse
     };
@@ -380,11 +397,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             })
             .collect();
         let blocks = reference::blocks(&y, &xy, &data.section_cells(), args.bandwidth)?;
-        let want = if n > reference::DENSE_KERNEL_MAX {
-            args.rank.unwrap_or(n.div_ceil(10)).max(20)
-        } else {
-            n
-        };
+        let want = reference::kernel_want(n, args.rank);
         let eig = reference::kernel_eigen(&blocks, n, want, fit.core.input.seed);
         let (r_est, r_z) = reference::ranks(&eig.values, n, args.rank);
         let prof = reference::TauProfile::new(&y, &eig, r_est, d);
@@ -409,7 +422,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             "eigenvalues_g": best.eigvals,
             "r_est": r_est,
             "r_z": r_z,
-            "low_rank_variant": "SN(12) as printed",
+            "low_rank_variant": "SN(11) Woodbury on the rank-r kernel",
             "ell": best.ell,
             "evaluations": evals,
         });

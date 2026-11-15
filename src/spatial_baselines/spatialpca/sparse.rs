@@ -21,7 +21,7 @@
 //! spectrum; `(tau, rho)` maximise `ell` by a projected L-BFGS with its
 //! analytic gradient (the envelope theorem: `dS = sum_l z_l^T dC z_l`).
 
-use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
+use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box_with, top_eigs, Dense, EigOpts};
 use crate::spatial_baselines::spatial_factor::prep::ResidualOp;
 use crate::spatial_baselines::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
 use std::cell::RefCell;
@@ -48,7 +48,8 @@ pub struct Eval {
     pub ell: f64,
     /// `d ell / d (log tau, log rho)`.
     pub grad: [f64; 2],
-    /// Loadings, genes × d.
+    /// Loadings, genes × d (from [`Profile::eval`] with the loadings fixed,
+    /// empty: they are the profile's own; [`Profile::fit`] returns them).
     pub w: Dense,
     /// Spatial PCs, cells × d.
     pub z: Dense,
@@ -121,8 +122,8 @@ impl<'a> Profile<'a> {
         let t = tau / cbar;
         let shift = vec![1.0 + 1.0 / t; self.lap.sections.len()];
         let beta = rho / t;
-        let (w, u) = match &self.fixed {
-            Some((w, u)) => (w.clone(), u.clone()),
+        let profiled = match &self.fixed {
+            Some(_) => None,
             None => {
                 let block = (self.d + EXTRA_BLOCK).min(m);
                 let o = EigOpts {
@@ -144,10 +145,14 @@ impl<'a> Profile<'a> {
                 );
                 *self.warm.borrow_mut() = Some(last);
                 let u = self.op.apply_t(&w);
-                (w, u)
+                Some((w, u))
             }
         };
-        let z = self.solve(&shift, beta, &u);
+        let u = match (&self.fixed, &profiled) {
+            (Some((_, u)), _) | (None, Some((_, u))) => u,
+            (None, None) => unreachable!("loadings fixed or profiled"),
+        };
+        let z = self.solve(&shift, beta, u);
         let d = self.d as f64;
         let explained: Vec<f64> = (0..self.d).map(|l| u.column(l).dot(&z.column(l))).collect();
         let s = (self.trace - explained.iter().sum::<f64>()).max(1e-300);
@@ -174,7 +179,7 @@ impl<'a> Profile<'a> {
             h,
             ell,
             grad: [dl_dt * t, dl_drho * rho + dl_dt * dt_dlog_rho],
-            w,
+            w: profiled.map_or_else(|| Dense::zeros(0, 0), |(w, _)| w),
             z,
             explained,
         }
@@ -196,10 +201,10 @@ impl<'a> Profile<'a> {
                 }
             }
         }
-        let r = lbfgs_box(
+        let (r, mut e) = lbfgs_box_with(
             |x| {
                 let e = self.eval(x[0], x[1]);
-                (-e.ell, vec![-e.grad[0], -e.grad[1]])
+                (-e.ell, vec![-e.grad[0], -e.grad[1]], e)
             },
             &best.1,
             &[LOG_TAU.0, LOG_RHO.0],
@@ -208,9 +213,9 @@ impl<'a> Profile<'a> {
             1e-6,
             1e-10,
         );
-        let mut e = self.eval(r.x[0], r.x[1]);
-        if self.fixed.is_none() {
-            fix_signs(&mut e.w, &mut e.z);
+        match &self.fixed {
+            Some((w, _)) => e.w = w.clone(),
+            None => fix_signs(&mut e.w, &mut e.z),
         }
         let on_bound = (r.x[0] - LOG_TAU.0).abs() < 1e-9
             || (r.x[0] - LOG_TAU.1).abs() < 1e-9
@@ -223,7 +228,7 @@ impl<'a> Profile<'a> {
                 e.rho
             );
         }
-        (e, 9 + r.evals + 1)
+        (e, 9 + r.evals)
     }
 }
 
