@@ -45,20 +45,17 @@ counts. The manifest names `{out}.delta.parquet`, and
 `{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
 
-A fit is reproducible at a fixed `--seed` and thread count
-(`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
-the edges by connected component, which does not depend on the thread count,
-then splits any component larger than the edge count over the thread count
-(at least 256 edges) into blocks of that size. Each block draws its own
-random stream and sees the other blocks' moves only at the end of a sweep,
-so a different thread count gives different blocks and different draws. Set
-`RAYON_NUM_THREADS` to the same value to repeat a run exactly.
+lc's Gibbs step groups the edges by connected component and splits a
+component of at least 16,384 edges into near-equal blocks of at least 8,192
+edges, at most 16 blocks a component. Each block is swept in order with its
+own random stream; the blocks, split or whole components alike, run in
+parallel against one snapshot of the others and see their moves only at the
+end of a sweep. The block layout and the Gibbs draws depend on `--seed` and
+the data, not on the thread count.
 
 By default pinto takes at most 16 worker threads, or the machine's core count
-when that is smaller; `RAYON_NUM_THREADS` sets the count instead. Because lc's
-draws depend on the thread count, on a machine with more than 16 cores a
-default lc run gives different results from a run on every core. To repeat a
-run there, set `RAYON_NUM_THREADS` to the count it ran with.
+when that is smaller; `RAYON_NUM_THREADS` sets the count instead. On a
+machine with more than 16 cores, a default run leaves the other cores free.
 
 Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
 you supply, a two-column file of feature pairs named as the data's features

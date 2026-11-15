@@ -250,10 +250,11 @@ fn test_memoized_em_two_components() {
     );
 }
 
-/// Test memoized EM on a single-component graph (balanced partitioning splits it).
+/// Memoized EM on one chain component, split into four blocks of 25 edges,
+/// recovers the planted halves.
 #[test]
 fn test_memoized_em_single_component() {
-    let (store, _true_labels) = make_planted_profiles(100, 10);
+    let (store, true_labels) = make_planted_profiles(100, 10);
     let k = 2;
 
     // Build a connected graph for edges 0..100
@@ -264,7 +265,7 @@ fn test_memoized_em_single_component() {
 
     let mut membership: Vec<usize> = (0..100).map(|e| e % k).collect();
 
-    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42));
+    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42)).with_blocks(4, 25);
 
     let comp_args = ComponentGibbsArgs {
         graph: &graph,
@@ -273,8 +274,37 @@ fn test_memoized_em_single_component() {
         alpha: 0.0,
         incidence: None,
     };
-    let moves = sampler.run_components_em(&mut membership, &store, &comp_args, 10);
-    assert!(moves > 0 || membership.iter().all(|&m| m < k));
+    sampler.run_components_em(&mut membership, &store, &comp_args, 10);
+    assert_eq!(
+        sampler.last_run.block_sizes, [25; 4],
+        "one component, four even blocks"
+    );
+    sampler.run_greedy_by_components(&mut membership, &store, &comp_args, 10);
+    let direct = (0..100)
+        .filter(|&e| membership[e] == true_labels[e])
+        .count();
+    let best = direct.max(100 - direct);
+    assert!(best >= 98, "split sweeps recover {best}/100 planted labels");
+}
+
+/// A component splits into `len / min` near-equal blocks of consecutive
+/// edges, one at the least and `blocks` at the most.
+#[test]
+fn components_split_into_near_equal_blocks() {
+    let sizes = |n: usize, blocks: usize, min: usize| {
+        let edges: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
+        let labels = vec![0; n + 1];
+        let split = split_components_into_blocks(&edges, &labels, 1, blocks, min);
+        let order: Vec<usize> = split.iter().flatten().copied().collect();
+        assert_eq!(order, (0..n).collect::<Vec<_>>(), "edges lost or reordered");
+        split.iter().map(Vec::len).collect::<Vec<_>>()
+    };
+    assert_eq!(sizes(15, 16, 8), [15], "below twice the minimum, one block");
+    assert_eq!(sizes(20, 16, 8), [10, 10]);
+    assert_eq!(
+        sizes(100, 16, 1),
+        [6, 6, 6, 7, 6, 6, 6, 7, 6, 6, 6, 7, 6, 6, 6, 7]
+    );
 }
 
 /// Test that memoized stats delta preserves exact global stats.
@@ -340,4 +370,183 @@ fn a_sweep_bar_scores_the_edges_it_moved() {
     // The sweep's count is not the score, and tells one sweep's from the next.
     assert_eq!(said(11, 0).score(), Some(0.));
     assert_ne!(said(1, 0).what, said(2, 0).what);
+}
+
+/// For each pair of edges, the share of labelings with the two together,
+/// weighted by the posterior over every labeling listed out.
+fn pairs_together_in_truth(store: &LinkProfileStore, k: usize) -> Vec<f64> {
+    let n = store.n_edges;
+    let labelings: Vec<Vec<usize>> = (0..k.pow(n as u32))
+        .map(|code| (0..n).map(|e| code / k.pow(e as u32) % k).collect())
+        .collect();
+    let log_joint: Vec<f64> = labelings
+        .iter()
+        .map(|labels| LinkCommunityStats::from_profiles(store, k, labels).log_marginal(0.0))
+        .collect();
+    let top = log_joint.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let weight: Vec<f64> = log_joint.iter().map(|l| (l - top).exp()).collect();
+    let total: f64 = weight.iter().sum();
+    edge_pairs(n)
+        .map(|(a, b)| {
+            labelings
+                .iter()
+                .zip(&weight)
+                .filter(|(labels, _)| labels[a] == labels[b])
+                .map(|(_, w)| w / total)
+                .sum()
+        })
+        .collect()
+}
+
+fn edge_pairs(n: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..n).flat_map(move |a| (a + 1..n).map(move |b| (a, b)))
+}
+
+const SPLIT_SWEEPS: usize = 20_000;
+
+/// Sweeps per call to the sampler: each call starts from stats counted afresh
+/// and patches them between sweeps.
+const SPLIT_SWEEPS_PER_CALL: usize = 20;
+
+/// The global stats the component sweeps patched between sweeps are the
+/// stats of the labels they ended on, counted afresh.
+fn assert_patched_stats_are_counts(
+    sampler: &LinkGibbsSampler,
+    store: &LinkProfileStore,
+    k: usize,
+    membership: &[usize],
+) {
+    let counted = LinkCommunityStats::from_profiles(store, k, membership);
+    let run = &sampler.last_run;
+    assert_eq!(run.edge_count, counted.edge_count, "edge counts drift");
+    let near = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+    assert!(near(&run.size_sum, &counted.size_sum), "sizes drift");
+    assert!(
+        near(&run.feature_sum, &counted.feature_sum),
+        "feature sums drift"
+    );
+}
+
+/// The largest gap, over pairs of edges along a chain with two features
+/// each, between the share of `SPLIT_SWEEPS` calls to the component sweeps
+/// that end with the two together and the posterior's share, listed out.
+/// The sweeps split the chain into `blocks` blocks, and the stats they patch
+/// must stay the stats of their labels.
+fn split_gap(profiles: Vec<f32>, k: usize, blocks: usize) -> f64 {
+    let n = profiles.len() / 2;
+    let edges: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
+    let graph = make_test_graph(n + 1, edges.clone());
+    let store = LinkProfileStore::new(profiles, n, 2);
+    let truth = pairs_together_in_truth(&store, k);
+    let args = ComponentGibbsArgs {
+        graph: &graph,
+        edges: &edges,
+        k,
+        alpha: 0.0,
+        incidence: None,
+    };
+    let mut sampler =
+        LinkGibbsSampler::new(SmallRng::seed_from_u64(5)).with_blocks(blocks, n / blocks);
+    let mut membership: Vec<usize> = (0..n).map(|e| e % k).collect();
+    let mut together = vec![0usize; truth.len()];
+    for _ in 0..SPLIT_SWEEPS {
+        sampler.run_components_em(&mut membership, &store, &args, SPLIT_SWEEPS_PER_CALL);
+        assert_patched_stats_are_counts(&sampler, &store, k, &membership);
+        for (count, (a, b)) in together.iter_mut().zip(edge_pairs(n)) {
+            *count += usize::from(membership[a] == membership[b]);
+        }
+    }
+    assert_eq!(sampler.last_run.block_sizes, vec![n / blocks; blocks]);
+    truth
+        .iter()
+        .zip(&together)
+        .map(|(t, &c)| (t - c as f64 / SPLIT_SWEEPS as f64).abs())
+        .fold(0.0, f64::max)
+}
+
+/// Eight edges of two kinds, alternating along the chain, so each block of
+/// four holds two of each kind and every pair of alike edges has members in
+/// both blocks. Each community holds several edges, so one block's moves
+/// barely change the snapshot the other block sweeps against, and the split
+/// sweeps stay near the posterior, which is not sure of any pair.
+#[test]
+fn split_blocks_stay_near_the_posterior() {
+    let (x, y) = ([36.0, 24.0], [24.0, 36.0]);
+    let profiles: Vec<f32> = [x, y, x, y, x, y, x, y].concat();
+    let gap = split_gap(profiles, 2, 2);
+    assert!(gap < 0.03, "split sweeps stray {gap} from the posterior");
+}
+
+/// The check above can fail, where the approximation does: two alike edges
+/// at the ends of a chain, each in its own block, with a loud pair between
+/// that never parts and a community to spare. Each alike edge, alone in its
+/// community, sees the other's community in the snapshot, and they trade
+/// labels rather than meet.
+#[test]
+fn alike_singletons_in_different_blocks_fail_the_same_check() {
+    let (alike, loud) = ([50.0, 50.0], [2000.0, 50.0]);
+    let profiles: Vec<f32> = [alike, loud, loud, alike].concat();
+    let gap = split_gap(profiles, 3, 2);
+    assert!(gap > 0.1, "the split went unnoticed: {gap}");
+}
+
+/// The blocks the component sweeps split a graph into depend on the data,
+/// not on the machine: one seed gives one partition whatever the thread count.
+#[test]
+fn a_seed_gives_one_partition_whatever_the_thread_count() {
+    use rand::RngExt;
+    // One chain component, long enough for four blocks at the real layout.
+    let (n_edges, m, k) = (4 * GIBBS_MIN_BLOCK_EDGES + 1000, 8, 4);
+    let edges: Vec<(usize, usize)> = (0..n_edges).map(|i| (i, i + 1)).collect();
+    let graph = make_test_graph(n_edges + 1, edges.clone());
+
+    let mut rng = SmallRng::seed_from_u64(7);
+    // Four planted communities along the chain, each loud on two features,
+    // under noise so the draws matter.
+    let profiles: Vec<f32> = (0..n_edges * m)
+        .map(|i| {
+            let (e, g) = (i / m, i % m);
+            let loud = g / 2 == e * k / n_edges;
+            rng.random_range(0.0..3.0) + if loud { 2.0 } else { 0.0 }
+        })
+        .collect();
+    let store = LinkProfileStore::new(profiles, n_edges, m);
+    // A frozen incidence table, as the fit passes.
+    let incidence: Vec<f32> = (0..(n_edges + 1) * k)
+        .map(|_| rng.random_range(-1.0..0.0))
+        .collect();
+    let args = ComponentGibbsArgs {
+        graph: &graph,
+        edges: &edges,
+        k,
+        alpha: 0.5,
+        incidence: Some(&incidence),
+    };
+
+    let partition = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut membership: Vec<usize> = (0..n_edges).map(|e| e % k).collect();
+            let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(42));
+            sampler.run_components_em(&mut membership, &store, &args, 3);
+            assert_eq!(
+                sampler.last_run.block_sizes.len(),
+                4,
+                "the chain is not split as planned"
+            );
+            sampler.run_greedy_by_components(&mut membership, &store, &args, 3);
+            membership
+        })
+    };
+    let one = partition(1);
+    let used = (0..k).filter(|c| one.contains(c)).count();
+    assert!(used > 1, "the fit collapsed into one community");
+    for threads in [2, 4, 8] {
+        let other = partition(threads);
+        let differ = (0..n_edges).filter(|&e| other[e] != one[e]).count();
+        assert_eq!(differ, 0, "{threads} threads move {differ} edges");
+    }
 }

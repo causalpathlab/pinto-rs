@@ -664,10 +664,10 @@ fn lc_says_what_its_feature_network_is() {
     assert!(readme.contains("ships no network"));
 }
 
-/// The README says that pinto's default thread cap changes lc's draws on a
-/// machine with more cores, and that RAYON_NUM_THREADS sets it.
+/// The README states pinto's default thread cap, what it means on a machine
+/// with more cores, and lc's Gibbs block layout as the code has it.
 #[test]
-fn the_readme_says_the_thread_cap_changes_lc_on_large_machines() {
+fn the_readme_states_the_thread_cap_and_lc_blocks() {
     let readme = include_str!("../../README.md");
     let cap = util::common::MAX_DEFAULT_THREADS.to_string();
     assert!(
@@ -675,6 +675,18 @@ fn the_readme_says_the_thread_cap_changes_lc_on_large_machines() {
         "README does not state the cap"
     );
     assert!(readme.contains(&format!("more than {cap} cores")));
+    use crate::link_community::gibbs::{GIBBS_BLOCKS, GIBBS_MIN_BLOCK_EDGES};
+    let thousands = |n: usize| format!("{},{:03}", n / 1000, n % 1000);
+    for said in [
+        format!(
+            "at least {} edges into",
+            thousands(2 * GIBBS_MIN_BLOCK_EDGES)
+        ),
+        format!("blocks of at least {}", thousands(GIBBS_MIN_BLOCK_EDGES)),
+        format!("at most {GIBBS_BLOCKS} blocks a component"),
+    ] {
+        assert!(readme.contains(&said), "README does not say {said:?}");
+    }
 }
 
 /// A one-cell manifest at `{dir}/run` naming `command`, the model kind
