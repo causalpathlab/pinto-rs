@@ -237,7 +237,6 @@ pub fn write_truth_run(
                 propensity: format!("{recorded}.{tag}.propensity.parquet"),
                 link_community: None,
                 feature_community: None,
-                entropy_present: Some(true),
                 community_names: Some(names),
             })
         };
@@ -271,5 +270,7 @@ pub fn write_truth_run(
         levels: Some(levels),
         ..Default::default()
     };
-    meta.write(std::path::Path::new(&format!("{prefix}.pinto.json")))
+    meta.write(std::path::Path::new(&crate::util::metadata::manifest_path(
+        &prefix,
+    )))
 }

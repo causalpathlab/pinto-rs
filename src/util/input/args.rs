@@ -275,7 +275,7 @@ pub struct SrtInputArgs {
                      the graph, and components become batches in that mode.\n\
                      Note it also sets the k of the force-directed layout, so it\n\
                      decides pc_1/pc_2, the coordinates written to\n\
-                     coord_pairs.parquet, and what `pinto plot` draws.\n\
+                     coord_pairs.parquet, and what `pinto view` draws.\n\
                      \n\
                      The rest of this applies to the --coord case.\n\
                      \n\

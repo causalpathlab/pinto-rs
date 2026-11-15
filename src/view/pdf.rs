@@ -10,6 +10,7 @@ use super::color::{Rgb, Theme};
 use super::render::{Frame, Viewport};
 use super::scalebar::{self, Units};
 use super::thousands;
+use legume_tui::export::font::{helvetica_width, win_ansi};
 use legume_tui::export::Page;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
 use std::io::Write;
@@ -306,34 +307,8 @@ fn unit(v: u8) -> f32 {
     v as f32 / 255.
 }
 
-/// Encode for the base fonts' WinAnsi table; unknown characters become '?'.
-pub(super) fn win_ansi(s: &str) -> Vec<u8> {
-    s.chars()
-        .map(|ch| match ch {
-            ' '..='~' => ch as u8,
-            'µ' => 0xB5,
-            '×' => 0xD7,
-            '·' => 0xB7,
-            '…' => 0x85,
-            _ => b'?',
-        })
-        .collect()
-}
-
-/// Helvetica advance width, points, for right-aligning numbers. Digits are
-/// exact; other characters use a typical width.
+/// Width of `s` in Helvetica (the regular face every number and label
+/// this measures is set in) at `size`, points: for right-aligning.
 fn width(s: &str, size: f32) -> f32 {
-    let units: u32 = s
-        .chars()
-        .map(|ch| match ch {
-            '0'..='9' => 556,
-            ',' | '.' | ' ' => 278,
-            '×' => 584,
-            'f' | 't' => 278,
-            'o' | 'd' => 556,
-            'l' | 'i' => 222,
-            _ => 556,
-        })
-        .sum();
-    units as f32 / 1000. * size
+    helvetica_width(&win_ansi(s), false) * size
 }

@@ -7,8 +7,10 @@
 use super::form::{blamed, check, Kind, Method};
 use super::script::{self, is_header, outputs, under};
 use super::{BASELINES, METHODS, MODELS};
+use crate::lr_activity::args::{LraMethod, ReferenceSpecies, RegionJackknife};
 use crate::mcp::{parse, shown_path};
 use crate::tui::flag_value;
+use crate::util::cli::choices;
 use anyhow::Context as _;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde::Deserialize;
@@ -30,8 +32,8 @@ impl Default for Tools {
 
 impl Handler for Tools {
     fn tools(&self) -> Vec<ToolSpec> {
-        let mut tools = specs();
-        tools.extend(super::residual::specs());
+        let mut tools = specs(&self.cli);
+        tools.extend(super::residual::specs(&self.cli));
         tools.extend(super::sim::specs());
         tools
     }
@@ -714,7 +716,9 @@ fn text(v: &Value) -> String {
     }
 }
 
-fn specs() -> Vec<ToolSpec> {
+fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
+    let lra = |id: &str, schema: Value| flag_arg(cli, "lra", id, schema);
+    let sim = |id: &str, schema: Value| flag_arg(cli, "lra-simulate", id, schema);
     let methods = json!({
         "enum": METHODS,
         "description": format!(
@@ -856,21 +860,21 @@ fn specs() -> Vec<ToolSpec> {
              same run and out once done, it reads the tables instead of running; a call asking \
              for other options than those the manifest records for them is refused. Never \
              written over.",
-            with_lra_input(json!({
+            with_lra_input(cli, "lra", json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run whose cells, expression and contacts are read: its .pinto.json (--from); or give data_files and coord_files"},
-                    "method": {"enum": ["contact-effect", "coexpression-test", "coexpression-scores"], "description": "What to compute [default: contact-effect]"},
+                    "method": lra("method", json!({"enum": choices::<LraMethod>()})),
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
-                    "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference (--lr-pairs); the co-expression methods test only these"},
-                    "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
-                    "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference; auto reads it from the gene-name case [default: auto]"},
-                    "only": {"type": "array", "items": {"type": "string"}, "description": "Estimate only these pairs (--only): LIGAND:RECEPTOR (a complex joins subunits with _, L2:R1_R2) or a bare LIGAND for all its pairs. Writes {out}.lra.only-<tag>.parquet, recorded under lra.subsets; q is corrected within the subset only"},
-                    "n_permutations": {"type": "integer", "minimum": 1, "description": "coexpression-test: sample permutations for the null (--n-permutations) [default: 1000]"},
-                    "json_fwer_threshold": {"type": "number", "description": "coexpression-test: FWER cutoff for the JSON sidecar of significant pairs (--json-fwer-threshold) [default: 0.05]"},
-                    "min_gene_count": {"type": "number", "description": "Co-expression methods: minimum total count of a ligand or receptor gene for its pair to be scored (--min-gene-count) [default: 50]"},
-                    "marginal_baselines": {"type": "boolean", "description": "contact-effect: also score each pair's unadjusted co-expression baselines (--marginal-baselines): cell-type label permutation (CellPhoneDB v2, CellChat's score) on the run's cell types (the identity bins when it has none), bivariate Moran's I (SpatialDM) and the contact score (NICHES, COMMOT). Adds celltype_score, celltype_p, celltype_tested, moran_i, moran_p, contact_score, contact_p to the pooled rows and writes {out}.lra.celltype.parquet (slot lra.celltype), one row per tested sender type x receiver type. None adjusts for confounding. Slow on a full reference [default: false]"},
-                    "marginal_permutations": {"type": "integer", "minimum": 1, "description": "marginal_baselines: permutations of each test (--marginal-permutations); Moran's I and the contact score stop early once their 5% verdict is settled, the cell-type test runs all N (its per-type-pair p and q need them); with m tested type pairs its summary can reject only when m / (1 + N) < 0.05. Needs marginal_baselines [default: 2000]"},
+                    "lr_pairs": lra("lr_pairs", json!({"type": "string"})),
+                    "targets": lra("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "species": lra("species", json!({"enum": choices::<ReferenceSpecies>()})),
+                    "only": lra("only", json!({"type": "array", "items": {"type": "string"}})),
+                    "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
+                    "json_fwer_threshold": lra("json_fwer_threshold", json!({"type": "number"})),
+                    "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
+                    "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
+                    "marginal_permutations": lra("marginal_permutations", json!({"type": "integer", "minimum": 1})),
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
@@ -893,19 +897,19 @@ fn specs() -> Vec<ToolSpec> {
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \
              as a background job unless asked; called again with the same run and out once \
              done, it reads the table instead of running.",
-            with_lra_input(json!({
+            with_lra_input(cli, "lra-simulate", json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in / names it lra in that folder; left out, a free name after the run in today's results folder"},
-                    "species": {"enum": ["auto", "human", "mouse"], "description": "Species of the reference [default: auto]"},
-                    "lr_pairs": {"type": "string", "description": "Ligand-receptor pairs (two-column TSV/CSV) added to the reference pairs the benchmark picks from (--lr-pairs); needed for gene names no reference knows"},
-                    "targets": {"type": "array", "items": {"type": "string"}, "description": "Response programme files (TSV or GMT) added to the reference (--targets)"},
-                    "plant_region": {"type": "string", "description": "Plant every effect only in this region of region (--plant-region), and read it on that region's row beside the pooled one; the table names it (column planted_region)"},
-                    "one": {"type": "boolean", "description": "Run one scenario at its defaults (--one): no effect and no confounding unless set says otherwise; set, pairs or null_pairs select the single-scenario mode too"},
-                    "set": {"type": "array", "items": {"type": "string"}, "description": "One scenario's keys, KEY=VALUE each (--set), the table's column names: effect_pve, ligand_field_pve, response_field_pve (signed), confound_scale, confounder (fourier, bumps, realgene), confound_shape (linear, quadratic), heterogeneous, marker, dose_response (true/false or 1/0), dose_midpoint, dose_order, rep; unset keys are no effect and no confounding. Selects the single-scenario mode"},
-                    "pairs": {"type": "integer", "minimum": 1, "description": "Pairs the single scenario's effect is planted on (--pairs), interleaved with the null pairs by abundance rank [default: 10]. Selects the single-scenario mode"},
-                    "null_pairs": {"type": "integer", "minimum": 1, "description": "Further pairs it withholds the effect from (--null-pairs), interleaved with the planted pairs by abundance rank [default: 10]. Selects the single-scenario mode"},
+                    "species": sim("species", json!({"enum": choices::<ReferenceSpecies>()})),
+                    "lr_pairs": sim("lr_pairs", json!({"type": "string"})),
+                    "targets": sim("targets", json!({"type": "array", "items": {"type": "string"}})),
+                    "plant_region": sim("plant_region", json!({"type": "string"})),
+                    "one": sim("one", json!({"type": "boolean"})),
+                    "set": sim("set", json!({"type": "array", "items": {"type": "string"}})),
+                    "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
+                    "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
                     "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
                 },
                 "additionalProperties": false,
@@ -915,21 +919,52 @@ fn specs() -> Vec<ToolSpec> {
 }
 
 /// `schema` with the arguments of what lra reads beside a run, which `run_lra`
-/// and `run_lra_simulate` share.
-fn with_lra_input(mut schema: Value) -> Value {
+/// and `run_lra_simulate` share, described by `pinto {command}`'s flags.
+fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Value {
+    let flag = |id: &str, schema: Value| flag_arg(cli, command, id, schema);
+    let files = || json!({"type": "array", "items": {"type": "string"}});
     let shared = json!({
-                    "data_files": {"type": "array", "items": {"type": "string"}, "description": "Expression data files (.zarr or .h5) to read directly instead of run; need coord_files. With run, they replace the run's"},
-                    "coord_files": {"type": "array", "items": {"type": "string"}, "description": "Coordinate files, one per data file (--coord), without run; contacts are the knn_spatial nearest neighbours within a batch"},
-                    "batch_files": {"type": "array", "items": {"type": "string"}, "description": "Batch (section) label files, one per data file (--batch-files), without run"},
-                    "knn_spatial": {"type": "integer", "minimum": 1, "description": "Spatial contacts per cell when building them from coordinates (--knn-spatial) [default: 5]"},
-                    "seed": {"type": "integer", "minimum": 0, "description": "Random seed (--seed) [default: 42]"},
-                    "cell_types": {"type": "string", "description": "Cell types per cell, a table with cell and cell_type columns (--cell-types), in place of the run's lupin round; for a residual fit, the stage-1 types"},
-                    "region": {"type": "string", "description": "Region per cell, a table with cell and region columns (--region): adjusted for within each section, and a row per region (section region:<name>); for a residual fit, its communities"},
-                    "region_jackknife": {"enum": ["refit", "no-refit"], "description": "How a region row near significance (p < 0.2) is jackknifed over its sections' tiles, its SEs widened, never narrowed (--region-jackknife): no-refit keeps the nuisance fits and reads every replicate from one pass of them (on srt-simulate L2, 7.6% of one-donor nulls rejected against 10.5% without, power 0.79 against 0.84 at effect PVE 0.02); refit refits them per tile and is conservative (0% rejected, power 0.13) at one refit per tile [default: no-refit]"}
+        "data_files": flag("data_files", files()),
+        "coord_files": flag("coord_files", files()),
+        "batch_files": flag("batch_files", files()),
+        "knn_spatial": flag("knn_spatial", json!({"type": "integer", "minimum": 1})),
+        "seed": flag("seed", json!({"type": "integer", "minimum": 0})),
+        "cell_types": flag("cell_types", json!({"type": "string"})),
+        "region": flag("region", json!({"type": "string"})),
+        "region_jackknife": flag("region_jackknife", json!({"enum": choices::<RegionJackknife>()})),
     });
     if let (Some(props), Value::Object(shared)) = (schema["properties"].as_object_mut(), shared) {
         props.extend(shared);
     }
+    schema
+}
+
+/// A tool argument that passes `pinto {command}`'s argument `id`: `schema`
+/// keeps its type (and any enum), and its description is the flag's own
+/// help, the flag, and clap's default, so the two cannot drift.
+pub(super) fn flag_arg(cli: &clap::Command, command: &str, id: &str, mut schema: Value) -> Value {
+    let arg = cli
+        .find_subcommand(command)
+        .and_then(|c| c.get_arguments().find(|a| a.get_id() == id))
+        .unwrap_or_else(|| panic!("pinto {command} has no argument {id}"));
+    let help = arg
+        .get_long_help()
+        .or_else(|| arg.get_help())
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let mut said = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(long) = arg.get_long() {
+        said.push_str(&format!(" (--{long})"));
+    }
+    let default: Vec<String> = arg
+        .get_default_values()
+        .iter()
+        .map(|v| v.to_string_lossy().into_owned())
+        .collect();
+    if !default.is_empty() {
+        said.push_str(&format!(" [default: {}]", default.join(",")));
+    }
+    schema["description"] = said.into();
     schema
 }
 

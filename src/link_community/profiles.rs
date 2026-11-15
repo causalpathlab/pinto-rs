@@ -850,10 +850,7 @@ pub fn compute_propensity_and_feature_community_stat(
     )?;
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads
-    // (`left_cell` / `right_cell` / `community`). This used to be a local
-    // writer emitting `{prefix}.edge_cluster.parquet` with the label column
-    // named `cluster` — a file `dsvd`'s own manifest never pointed at and
-    // `plot::load::read_link_community` could not parse.
+    // (`left_cell` / `right_cell` / `community`).
     crate::link_community::outputs::write_link_communities(
         &(out_prefix.to_string() + ".link_community.parquet"),
         edges,

@@ -7,12 +7,10 @@
 //! place (tissue positions, or a layout synthesized from expression).
 
 use crate::util::common::*;
-use dashmap::DashMap;
 use data_beans::alg::cell_pairs::CellPairs;
 use legume_numeric::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
 use legume_numeric::matrix::parquet::Column;
 use legume_numeric::matrix::traits::RandomizedAlgs;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 /// `edge_kind` for a physically adjacent pair.
 pub const EDGE_KIND_SPATIAL: i32 = 0;
@@ -485,8 +483,9 @@ fn force_directed_layout(embedding: &Mat, graph: &KnnGraph) -> anyhow::Result<Ma
 /// Find connected components of a KNN graph.
 ///
 /// Returns `(labels, n_components)` where `labels[i]` is the component index
-/// of node `i`. Uses Union-Find for edge processing, then DashMap for parallel
-/// label compaction.
+/// of node `i`. Union-Find over the edges, then one serial pass that numbers
+/// the components in the order their first node appears, so the labels (and
+/// the `component_N` batch names made from them) are the same on every run.
 pub fn connected_components(graph: &KnnGraph) -> (Vec<usize>, usize) {
     let n = graph.n_nodes;
 
@@ -518,20 +517,17 @@ pub fn connected_components(graph: &KnnGraph) -> (Vec<usize>, usize) {
         }
     }
 
-    // Resolve all roots (serial, since find mutates)
-    let roots: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
-
-    // Parallel label compaction with DashMap
-    let rep_to_label = DashMap::new();
-    let next = AtomicUsize::new(0);
-    let labels: Vec<usize> = roots
-        .par_iter()
-        .map(|&r| {
-            *rep_to_label
-                .entry(r)
-                .or_insert_with(|| next.fetch_add(1, AtomicOrdering::Relaxed))
+    let mut label_of_root = vec![usize::MAX; n];
+    let mut n_components = 0;
+    let labels: Vec<usize> = (0..n)
+        .map(|i| {
+            let root = find(&mut parent, i);
+            if label_of_root[root] == usize::MAX {
+                label_of_root[root] = n_components;
+                n_components += 1;
+            }
+            label_of_root[root]
         })
         .collect();
-
-    (labels, next.load(AtomicOrdering::Relaxed))
+    (labels, n_components)
 }

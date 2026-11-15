@@ -6,8 +6,8 @@ use legume_mcp::{Call, Content, Handler, ToolSpec};
 use serde_json::Value;
 
 /// What the agent is told when it connects: what the tools are for, and in
-/// which order to call them. The README gives the same, for clients that
-/// do not pass it on. The verdicts are `pinto lra --help`'s, from the one
+/// which order to call them. `pinto mcp --help` prints the same, for clients
+/// that do not pass it on. The verdicts are `pinto lra --help`'s, from the one
 /// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(

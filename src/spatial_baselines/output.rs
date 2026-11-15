@@ -15,7 +15,7 @@
 use super::input::{SpatialData, SpatialInputArgs};
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
-use crate::util::metadata::{now_secs, OutputFiles, PintoMetadata};
+use crate::util::metadata::{manifest_path, now_secs, OutputFiles, PintoMetadata};
 use crate::util::parquet_io::{cells_table_path, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::traits::IoOps;
@@ -34,10 +34,6 @@ fn propensity_path(prefix: &str) -> String {
 
 fn settings_path(prefix: &str) -> String {
     format!("{prefix}.baseline.json")
-}
-
-fn manifest_path(prefix: &str) -> String {
-    format!("{prefix}.pinto.json")
 }
 
 /// What a baseline fit produced, for [`write_run`].

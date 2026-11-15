@@ -28,7 +28,7 @@ fn manifest(dir: &Path, command: &str, files: &[&str]) -> String {
 
 #[test]
 fn the_residual_tool_is_listed_with_its_schema() {
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     let spec = tools.iter().find(|t| t.name == "run_residual").unwrap();
     assert_eq!(spec.input_schema["additionalProperties"], false);
     assert_eq!(spec.input_schema["required"], json!(["run"]));
@@ -128,7 +128,7 @@ fn a_value_the_command_refuses_is_refused_with_its_reason() {
 /// `--run` works too.
 #[test]
 fn the_run_is_named_by_the_commands_own_flag() {
-    let tools = specs();
+    let tools = specs(&crate::built_cli());
     let spec = tools.iter().find(|t| t.name == "run_residual").unwrap();
     let run = spec.input_schema["properties"]["run"]["description"]
         .as_str()

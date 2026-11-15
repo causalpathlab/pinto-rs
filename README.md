@@ -38,6 +38,15 @@ pinto lc data.h5 -c coords.csv -o out --n-communities 25
 pinto lc data.h5 -o out   # expression-only
 ```
 
+A fit is reproducible at a fixed `--seed` and thread count
+(`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
+the edges by connected component, which does not depend on the thread count,
+then splits any component larger than the edge count over the thread count
+(at least 256 edges) into blocks of that size. Each block draws its own
+random stream and sees the other blocks' moves only at the end of a sweep,
+so a different thread count gives different blocks and different draws. Set
+`RAYON_NUM_THREADS` to the same value to repeat a run exactly.
+
 ### `dsvd` (delta-svd)
 
 ```sh
@@ -204,9 +213,8 @@ on most.
 
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
-row (`effect_competent_df` is that count less one; it used to be every
-carrying tile less one). A row whose signal sits in a few of many tiles, as a region
-of one donor does, is now tested on few, so its p-value is larger than before.
+row (`effect_competent_df` is that count less one). A row whose signal sits in
+a few of many tiles, as a region of one donor does, is tested on those few.
 
 A significant effect then has to exceed the negative control, the same way:
 the effect in receptor-negative receivers (`effect_contrast_q`), the
@@ -929,76 +937,9 @@ the machine). An image reaches the model only if the client passes images on.
 #### What the agent does
 
 The server tells the agent how to work when it connects (the MCP
-`instructions`). Some clients do not pass those to the model; with one of them,
-put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
-
-> Use pinto's MCP tools to fit spatial link-community models and to look at
-> them on the tissue. A fit: `run_methods` lists the methods (lc is the
-> recommended one) and, with a method, its flags; `run_fit` runs one on data
-> files with their coordinates, in the background for anything but a small
-> data set (follow its job with `job_status` / `job_wait`), and never writes
-> over a run. Its methods also hold two spatial baselines, model-level
-> ports of published methods to compare pinto against: spatialde2
-> (SpatialDE2's tissue segmentation) and stagate (STAGATE, its embedding
-> clustered by pinto's k-means or Leiden);
-> run_fit runs them as it runs lc, and each writes a run with its labels and
-> a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's
-> ablation flags (permute-coords, drop-features, mask-cells with
-> ablation-parent; the baselines have none);
-> `run_region` turns a polygon into the cell list mask-cells takes;
-> `run_compare` sets two runs' communities against each other (ARI, NMI,
-> matched communities, and which vanish, split or merge); `run_predict` scores
-> held-out cells on a fitted lc model. Simulation with a planted truth:
-> `run_simulate` writes donors' sections (a background job); `view_open` its
-> `<out>/truth/truth.pinto.json` shows the planted domains; fit with `run_fit`,
-> passing the reply's `fit.data` and `fit.coords` (the sections and their
-> coordinates, in order) as its data and coords, and `fit.flags` as its
-> flags; `run_sim_score` scores the fits' labels against the reply's truth,
-> `run_sim_pairs` scores their per-cell vectors on pairs of spots, with no
-> clustering, and `run_sim_baseline` writes a standard pipeline's labels to
-> score next to them; a spatial baseline's run is scored as a fit is, its
-> labels by `run_sim_score` and its `{out}.cell_embedding.parquet` by
-> `run_sim_pairs`. Two-stage fit: `run_residual` writes the counts an lc,
-> cage or dsvd run leaves unexplained as new data files (a background job);
-> fit them with `run_fit`, passing the reply's `fit.data`, `fit.coords` and
-> `fit.flags` as its data, coords and flags, and `run_lra` on that second
-> fit reads the raw counts, not the excess. Ligand-receptor analysis: `run_lra` on
-> a run asks, per ligand-receptor pair, whether receivers touching
-> ligand-carrying neighbours change their response programme compared with
-> similar cells that do not (adjusted for region, section, cell identity,
-> neighbour make-up, depth and segmentation bleed, with a negative control);
-> `run_lra_simulate` plants effects of known size on the same tissue and
-> reports, per scenario, power and type I error beside the co-expression
-> baselines. Run
-> lra-simulate to check power and calibration before trusting lra on a new
-> tissue. `run_lra` with `only` estimates a few pairs into a subset table of
-> its own (its q corrected within the subset). `view_lra` lists a run's pairs
-> with their verdicts and, given a pair, makes `view_map` draw it: senders,
-> and receivers exposed or not and receptor-competent or not; `view_export`
-> with `curve: true` writes its threshold-response curve. Each pair's verdict
-> is one of: supported: receivers next to
-> ligand-carrying cells change their response programme, ligand and receptor
-> are co-expressed across contacts, and the effect exceeds every negative control;
-> effect_without_coexpression: receivers respond to neighbouring ligand, but
-> ligand and receptor are not co-expressed across contacts beyond chance;
-> colocation_only: ligand and receptor sit together across contacts, but
-> receivers show no change in their response programme; no_evidence: neither a
-> response nor co-expression at this false discovery rate; control_failed: an
-> effect appeared, but it does not exceed the negative control (receivers without the
-> receptor), or that could not be checked: likely confounding; celltype_inseparable: being exposed to the ligand is
-> nearly the same as having a neighbour of one cell type, so the ligand cannot
-> be told apart from that cell type; insufficient_data: too few exposed or
-> unexposed receptor-carrying receivers, or too little overlap between them,
-> to estimate an effect. Looking: start with `view_open` on a run prefix (the
-> `out` of a fit, or its `.pinto.json`): it lists the run's levels, batches,
-> groups and any lupin rounds. `view_map` draws the map as a PNG with its
-> legend; its arguments stay set until changed, so pass only what changes.
-> `view_markers` lists a group's top features, `view_cell` names the cell
-> under a pixel of the last map (or at a world point, or by name), and
-> `view_export` writes the current view as PNG/PDF files. World coordinates
-> are those `view_open` reports, with y running down the map. lupin rounds are
-> read here as they are on disk; annotating and relabelling them is lupin's
-> own server.
+`instructions`); `pinto mcp --help` prints them. Some clients do not pass those
+to the model; with one of them, put that text in the agent's own instructions
+(an `AGENTS.md`, a system prompt).
 
 | Tool | Does |
 |---|---|

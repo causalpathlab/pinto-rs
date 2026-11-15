@@ -31,6 +31,41 @@ fn test_connected_components_isolates() {
     assert_eq!(unique.len(), 4);
 }
 
+/// Components are numbered in the order their first cell appears, so the
+/// `component_N` batch names they become are the same on every run, on one
+/// thread or many.
+#[test]
+fn components_are_numbered_the_same_on_any_number_of_threads() {
+    // Many two-cell components, then isolates, then one long chain.
+    let n = 6000;
+    let mut edges: Vec<(usize, usize)> = (0..2000).map(|i| (2 * i, 2 * i + 1)).collect();
+    edges.extend((5000..n - 1).map(|i| (i, i + 1)));
+    let graph = make_test_graph(n, edges);
+    let on = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| connected_components(&graph))
+    };
+    let (one, n_one) = on(1);
+    for threads in [2, 8] {
+        assert!(
+            on(threads) == (one.clone(), n_one),
+            "{threads} threads differ"
+        );
+    }
+    let mut seen = 0;
+    for &l in &one {
+        assert!(l <= seen, "label {l} before {seen}");
+        if l == seen {
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, n_one);
+    assert_eq!(n_one, 2000 + 1000 + 1);
+}
+
 /// `Both` means the pair is physically adjacent AND expression-similar. It
 /// must read as spatial, because every consumer that filters on `spatial` is
 /// asking whether the two cells are neighbours, and for a `Both` edge they

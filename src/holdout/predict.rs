@@ -490,7 +490,7 @@ pub fn predict_profiles(
         holdout: Some(info),
         ..Default::default()
     };
-    let meta_path = format!("{}.pinto.json", c.out);
+    let meta_path = crate::util::metadata::manifest_path(&c.out);
     out_meta.write(Path::new(&meta_path))?;
     info!("Wrote {meta_path}");
     Ok((prop, cells))

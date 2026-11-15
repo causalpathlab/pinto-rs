@@ -100,16 +100,13 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         mat: proj_mk,
     } = Mat::from_parquet(args.latent_data_file.as_ref())?;
 
-    let pair_names = names_from_parquet(
-        &args.coord_pair_file,
-        &[args.left_name.clone(), args.right_name.clone()],
-    )?;
+    let pair_names = read_pair_names(&args.coord_pair_file, &args.left_name, &args.right_name)?;
 
     // Pair provenance, when the source run was augmented. Positionally
     // parallel to the pair rows, so it can be re-emitted with the re-cut
     // communities; dropping it would make every expression pair read as
-    // physically adjacent downstream (lr-activity's spatial filter, plot's
-    // mesh) through the missing-column fallback.
+    // physically adjacent downstream (lr-activity's spatial filter, the
+    // viewer's mesh) through the missing-column fallback.
     let edge_kind: Option<Vec<i32>> =
         if legume_numeric::matrix::parquet::peek_parquet_field_names(&args.coord_pair_file)?
             .iter()
@@ -244,10 +241,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
     }
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads
-    // (`left_cell` / `right_cell` / `community`). This used to be a local
-    // writer emitting `.edge_cluster.parquet` with the label column named
-    // `cluster` — which `plot::load::read_link_community` cannot parse, so a
-    // `prop` run silently lost its mesh overlay.
+    // (`left_cell` / `right_cell` / `community`).
     {
         info!("Writing link communities");
         // Map name pairs back to vertex indices. Strict rather than filtered:
@@ -307,9 +301,9 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
             nvertices,
             num_clusters,
         );
-        let meta_path = std::path::PathBuf::from(format!("{}.pinto.json", args.out));
-        meta.write(&meta_path)?;
-        info!("Wrote {}", meta_path.display());
+        let meta_path = crate::util::metadata::manifest_path(&args.out);
+        meta.write(std::path::Path::new(&meta_path))?;
+        info!("Wrote {meta_path}");
     }
 
     info!("Done");
@@ -400,10 +394,59 @@ fn feature_stats(
     Ok((sum_dk, denom_dk))
 }
 
+/// Each pair's two cell names, `[left, right]`, from the columns named so.
+fn read_pair_names(path: &str, left: &str, right: &str) -> anyhow::Result<Vec<[Box<str>; 2]>> {
+    let [lefts, rights]: [Vec<Box<str>>; 2] =
+        legume_numeric::matrix::parquet::read_parquet_string_columns_by_name(path, &[left, right])?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("{path}: two columns asked, not two read"))?;
+    // The reader gives an empty cell for a null one; a pair needs both cells.
+    anyhow::ensure!(
+        !lefts.iter().chain(&rights).any(|c| c.is_empty()),
+        "{path}: a pair with no {left} or {right}"
+    );
+    Ok(lefts.into_iter().zip(rights).map(|(l, r)| [l, r]).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::write_zarr;
+
+    /// Pairs read in the order the flags name the columns, whatever the
+    /// file's column order.
+    #[test]
+    fn pair_names_follow_the_flags_not_the_file_s_column_order() {
+        use legume_numeric::matrix::parquet::{write_table, Column};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.parquet").to_string_lossy().into_owned();
+        let right: Vec<Box<str>> = vec!["b".into(), "d".into()];
+        let left: Vec<Box<str>> = vec!["a".into(), "c".into()];
+        write_table(
+            &path,
+            &[
+                ("right_cell".into(), Column::Str(&right)),
+                ("left_cell".into(), Column::Str(&left)),
+            ],
+        )
+        .unwrap();
+        let pairs = read_pair_names(&path, "left_cell", "right_cell").unwrap();
+        assert_eq!(pairs, [["a".into(), "b".into()], ["c".into(), "d".into()]]);
+        assert!(read_pair_names(&path, "left_cell", "nowhere").is_err());
+
+        // A pair with an empty (or null) cell is refused, not read as a cell
+        // named "".
+        let left: Vec<Box<str>> = vec!["a".into(), "".into()];
+        write_table(
+            &path,
+            &[
+                ("left_cell".into(), Column::Str(&left)),
+                ("right_cell".into(), Column::Str(&right)),
+            ],
+        )
+        .unwrap();
+        assert!(read_pair_names(&path, "left_cell", "right_cell").is_err());
+    }
 
     #[test]
     fn a_feature_s_sums_divide_by_the_cells_of_files_that_measured_it() {

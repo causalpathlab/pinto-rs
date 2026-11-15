@@ -41,7 +41,13 @@ pub fn run_stem(run: &str) -> String {
 
 /// A run named by its prefix or by its manifest: the manifest's path.
 pub fn run_manifest(run: &str) -> String {
-    format!("{}.pinto.json", run_prefix(run))
+    manifest_path(run_prefix(run))
+}
+
+/// The manifest a run writes under the output prefix `prefix`, taken as
+/// given.
+pub fn manifest_path(prefix: &str) -> String {
+    format!("{prefix}.pinto.json")
 }
 
 /// A prior run, opened by its prefix or its manifest.
@@ -371,14 +377,6 @@ pub struct OutputFiles {
     /// held-out log-likelihood beside the pooled K = 1 profile's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predictive: Option<String>,
-
-    /// Legacy slot: hard cluster labels `[N × 1]` from a run that
-    /// clustered CELLS directly. No subcommand writes it now — cage
-    /// clusters cell PAIRS and publishes `propensity` /
-    /// `link_community` / `feature_community` like `lc` and `dsvd`. Kept so
-    /// manifests written by older runs still round-trip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clusters: Option<String>,
 }
 
 /// What the dictionary merge actually did, when it wrote its tree. `None`
@@ -431,16 +429,12 @@ pub struct LevelInfo {
     pub propensity: String,
     /// Per-edge community parquet. Every subcommand that clusters cell
     /// pairs (lc / dsvd / cage) writes one; `None` is kept for
-    /// runs that produce no per-edge table at all, which plot's
-    /// `discover_levels` falls back from gracefully.
+    /// runs that produce no per-edge table at all, such as a simulation's
+    /// truth run, whose levels the viewer draws without edges.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_community: Option<String>,
     #[serde(alias = "gene_community", skip_serializing_if = "Option::is_none")]
     pub feature_community: Option<String>,
-    /// `Some(true)` if the propensity parquet at this level carries an
-    /// `entropy` column (post-Phase-1 runs). `None` for older runs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entropy_present: Option<bool>,
     /// A name per community, `C{k}` → `community_names[k]`, for levels
     /// whose communities have names of their own (a simulation's planted
     /// domains). Absent: the viewer names them `C{k}`.
@@ -527,7 +521,6 @@ impl PintoMetadata {
                     propensity: propensity.clone(),
                     link_community: self.outputs.link_community.clone(),
                     feature_community: self.outputs.feature_community.clone(),
-                    entropy_present: None,
                     community_names: None,
                 })
                 .collect(),
@@ -580,7 +573,6 @@ impl PintoMetadata {
                     let stem = l.propensity.strip_suffix(".propensity.parquet")?;
                     keep(Some(format!("{stem}.gene_topic.parquet")))
                 }),
-                entropy_present: None,
                 community_names: None,
                 ..l
             })
@@ -749,7 +741,6 @@ pub fn lc_level_info(prefix: &str, level_index: usize) -> LevelInfo {
         propensity: format!("{prefix}.{tag}.propensity.parquet"),
         link_community: Some(format!("{prefix}.{tag}.link_community.parquet")),
         feature_community: Some(format!("{prefix}.{tag}.feature_community.parquet")),
-        entropy_present: Some(true),
         community_names: None,
     }
 }
@@ -767,7 +758,6 @@ pub fn final_level_info(prefix: &str, level_index: usize) -> LevelInfo {
         propensity: format!("{prefix}.propensity.parquet"),
         link_community: Some(format!("{prefix}.link_community.parquet")),
         feature_community: Some(format!("{prefix}.feature_community.parquet")),
-        entropy_present: Some(true),
         community_names: None,
     }
 }
@@ -978,7 +968,6 @@ pub fn create_prop_metadata(
         propensity: format!("{prefix}.propensity.parquet"),
         link_community: Some(format!("{prefix}.link_community.parquet")),
         feature_community: None,
-        entropy_present: Some(true),
         community_names: None,
     }];
 

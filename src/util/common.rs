@@ -38,62 +38,6 @@ pub use data_beans::alg::gene_weighting::{
     apply_gene_weights as apply_feature_weights, compute_nb_fisher_weights,
 };
 
-/// take names from parquet file
-/// * `file_path` - file path
-/// * `select_columns` - column names to extract
-pub fn names_from_parquet(
-    file_path: &str,
-    select_columns: &[Box<str>],
-) -> anyhow::Result<Vec<Vec<Box<str>>>> {
-    use parquet::file::reader::{FileReader, SerializedFileReader};
-    use parquet::record::RowAccessor;
-    use std::fs::File;
-
-    let file = File::open(file_path)?;
-    let reader = SerializedFileReader::new(file)?;
-    let metadata = reader.metadata();
-    let nrows = metadata.file_metadata().num_rows() as usize;
-
-    let fields = metadata.file_metadata().schema().get_fields();
-
-    let select_columns: HashSet<Box<str>> = select_columns.iter().cloned().collect();
-
-    let select_indices: Vec<usize> = fields
-        .iter()
-        .enumerate()
-        .filter_map(|(j, f)| {
-            if select_columns.contains(f.name()) {
-                Some(j)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if select_indices.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no columns matching with {:?}",
-            select_columns
-        ));
-    }
-
-    let row_iter = reader.get_row_iter(None)?;
-
-    let mut pairs = Vec::with_capacity(nrows);
-
-    for record in row_iter {
-        let row = record?;
-        let pp = select_indices
-            .iter()
-            .map(|&j| Ok(row.get_string(j)?.clone().into_boxed_str()))
-            .collect::<Result<Vec<_>, parquet::errors::ParquetError>>()?;
-
-        pairs.push(pp);
-    }
-
-    Ok(pairs)
-}
-
 /// A clap value parser for a finite number, 0 or more.
 pub fn non_negative_f64(text: &str) -> Result<f64, String> {
     let v: f64 = text.parse().map_err(|e| format!("{e}"))?;
