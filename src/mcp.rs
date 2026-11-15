@@ -18,29 +18,20 @@ pub fn instructions() -> String {
 
 const FITS: &str = "\
 Use pinto's MCP tools to fit spatial link-community models and to look at \
-them on the tissue. A fit: `run_methods` lists the methods and, with a \
-method, its flags. pinto's models are lc (link communities) and dsvd \
-(shared and difference channels by SVD), the two recommended, and cage (a \
-learned cell-graph embedding; cage-cell trains it on cells). Where most \
-features are noise, cage takes one of two flags per run, never both: \
-feature-inclusion moran (each feature trained with its probability of \
-spatial signal) or feature-modules M (features embedded through M learned \
-modules); lc takes feature modules from a feature network file the user \
-supplies (feature-network), as pinto has none. `run_fit` runs one on data \
-files with their coordinates, in the background for anything but a small \
-data set (follow its job with `job_status` / `job_wait`), and never writes \
-over a run. Its methods also hold two spatial baselines, model-level \
-ports of published methods to compare pinto against: spatialde2 \
-(SpatialDE2's tissue segmentation) and stagate (STAGATE, its embedding \
-clustered by pinto's k-means or Leiden); \
-run_fit runs them as it runs lc, and each writes a run with its labels and \
-a cell embedding. Ablations are lc, cage or dsvd fits with run_fit's \
-ablation flags (permute-coords, drop-features, mask-cells with \
-ablation-parent; the baselines have none); \
-`run_region` turns a polygon into the cell list mask-cells takes; \
-`run_compare` sets two runs' communities against each other (ARI, NMI, \
-matched communities, and which vanish, split or merge); `run_predict` scores \
-held-out cells on a fitted lc model.";
+them on the tissue. `run_methods` lists the methods and, with a method, its \
+flags; `run_fit` runs one as a background job (follow it with `job_status` / \
+`job_wait`) and never writes over a run. pinto's models are lc (link \
+communities) and dsvd (shared and difference channels by SVD), the two \
+recommended, and cage (a learned cell-graph embedding; cage-cell trains it \
+on cells); spatialde2 and stagate are spatial baselines, ports of published \
+methods to compare pinto against, fit and scored as lc is. Where most \
+features are noise, cage takes feature-inclusion moran or feature-modules M, \
+never both; lc takes feature modules from a feature network file the user \
+supplies (feature-network), as pinto has none. Ablations are lc, cage or \
+dsvd fits with run_fit's ablation flags (permute-coords, drop-features, \
+mask-cells with ablation-parent); `run_region` turns a polygon into the cell \
+list mask-cells takes; `run_compare` sets two runs' communities against each \
+other; `run_predict` scores held-out cells on a fitted model.";
 
 const SIMULATE: &str = "\
 Simulation with a planted truth: `run_simulate` writes donors' sections \
@@ -61,19 +52,13 @@ its data, coords and flags, and `run_lra` on that second fit reads the raw \
 counts, not the excess.";
 
 const LRA: &str = "\
-Ligand-receptor analysis: `run_lra` on a run asks, per ligand-receptor pair, \
-whether receivers touching ligand-carrying neighbours change their response \
-programme compared with similar cells that do not (adjusted for region, \
-section, cell identity, neighbour make-up, depth and segmentation bleed, with \
-a negative control); `run_lra_simulate` plants effects of known size on the \
-same tissue and reports, per scenario, power and type I error beside the \
-co-expression baselines. \
-Run lra-simulate to check power and calibration before trusting lra on a new \
-tissue. `run_lra` with `only` estimates a few pairs into a subset table of its \
-own (its q corrected within the subset). `view_lra` lists a run's pairs with \
-their verdicts and, given a pair, makes `view_map` draw it: senders, and \
-receivers exposed or not and receptor-competent or not; `view_export` with \
-`curve: true` writes its threshold-response curve.";
+Ligand-receptor analysis: `run_lra` asks, per ligand-receptor pair, whether \
+receivers touching ligand-carrying neighbours change their response \
+programme; `run_lra_simulate` plants effects of known size on the same \
+tissue and reports power and type I error. Run lra-simulate to check power \
+and calibration before trusting lra on a new tissue. `view_lra` lists a \
+run's pairs with their verdicts and, given a pair, makes `view_map` draw it; \
+`view_export` with `curve: true` writes its threshold-response curve.";
 
 const LOOKING: &str = "\
 Looking: start with `view_open` on a run prefix (the `out` of a \

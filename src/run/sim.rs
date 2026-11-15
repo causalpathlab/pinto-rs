@@ -6,7 +6,7 @@
 //! `pinto srt-sim-score`'s two tests and `pinto srt-sim-pairs`'s pair sets,
 //! computed in the call, as they take a moment.
 
-use super::mcp::{in_background, launch, out_or_free, parsed, rooted};
+use super::mcp::{background, in_background, launch, out_arg, out_or_free, parsed, rooted};
 use super::script;
 use crate::mcp::shown_path;
 use crate::simulate::baseline::{check_inputs, BaselineArgs};
@@ -383,8 +383,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto srt-simulate --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, clean_donors (a list, [0]), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coords); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
-                    "out": {"type": "string", "description": "Output folder (-o); left out, a free sim name in today's results folder"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "out": out_arg("folder", "sim"),
+                    "background": background(),
                 },
                 "additionalProperties": false,
             }),
@@ -457,7 +457,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "k": {"type": "integer", "minimum": 1, "description": "Clusters to tune Leiden toward [default: the domains among the spots clustered]"},
                     "seed": {"type": "integer", "minimum": 0, "description": "Leiden and Harmony seed [default: 1]"},
                     "out": {"type": "string", "description": "Output prefix, the table at {out}.tsv; left out, a free baseline-<method> name in today's results folder"},
-                    "background": {"type": "boolean", "description": "Run as a background job and return at once [default: true]; false waits"},
+                    "background": background(),
                 },
                 "required": ["truth"],
                 "additionalProperties": false,

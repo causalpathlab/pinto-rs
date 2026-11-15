@@ -216,7 +216,6 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
         "knn_spatial": 7,
         "seed": 3,
         "n_permutations": 20,
-        "json_fwer_threshold": 0.1,
         "min_gene_count": 5.0,
     }));
     assert_eq!(a.input().run().unwrap(), None);
@@ -228,7 +227,6 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
         "--knn-spatial",
         "--seed",
         "--n-permutations",
-        "--json-fwer-threshold",
         "--min-gene-count",
     ] {
         let given = format!("{flag}=");

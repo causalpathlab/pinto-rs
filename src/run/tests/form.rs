@@ -17,7 +17,7 @@ struct Fit {
     coord: Vec<Box<str>>,
     #[arg(long, short, value_delimiter = ',')]
     batch_files: Option<Vec<Box<str>>>,
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, alias = "n-steps", default_value_t = 10)]
     steps: usize,
     #[arg(long)]
     seed: Option<u64>,
@@ -299,4 +299,15 @@ fn the_script_replays_the_command_line_word_for_word() {
     assert_eq!(words.lines().collect::<Vec<_>>(), argv, "{words}");
     let why = check(&cli, &argv).unwrap_err();
     assert!(why.contains("-0.5 must not be negative"), "{why}");
+}
+
+/// A flag given by an old name kept as an alias is the flag itself, so an
+/// agent's call made before a rename still sets it.
+#[test]
+fn a_flag_is_found_by_its_alias() {
+    let mut m = Method::new(&cli(), "fit").unwrap();
+    m.field_mut("n-steps").unwrap().value = "3".into();
+    assert_eq!(m.value("steps"), Some("3"));
+    assert!(m.field_mut("--steps").is_some());
+    assert!(m.field_mut("no-steps").is_none());
 }

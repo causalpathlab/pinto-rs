@@ -39,6 +39,8 @@ enum Many {
 pub struct Field {
     /// The long name, without `--`.
     pub long: String,
+    /// Its other long names, old spellings kept working.
+    aliases: Vec<String>,
     pub help: String,
     pub long_help: String,
     pub kind: Kind,
@@ -112,6 +114,12 @@ impl Field {
                 a.get_value_hint(),
                 ValueHint::FilePath | ValueHint::AnyPath | ValueHint::DirPath
             ),
+            aliases: a
+                .get_all_aliases()
+                .into_iter()
+                .flatten()
+                .map(str::to_string)
+                .collect(),
             kind,
             many,
             long,
@@ -306,6 +314,15 @@ impl Method {
             .iter()
             .find(|f| f.long == long && !f.is_default())
             .map(|f| f.value.trim())
+    }
+
+    /// The row of the flag named `name` (with or without `--`), by its
+    /// long name or an alias.
+    pub fn field_mut(&mut self, name: &str) -> Option<&mut Field> {
+        let name = name.trim_start_matches('-');
+        self.fields
+            .iter_mut()
+            .find(|f| f.long == name || f.aliases.iter().any(|a| a == name))
     }
 
     /// Set the flag `long` to `value`, when the method has it.

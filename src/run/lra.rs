@@ -84,8 +84,6 @@ lra_tool_args!(LraToolArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_permutations: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub json_fwer_threshold: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_gene_count: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
@@ -426,9 +424,6 @@ pub(super) fn lra_argv(
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {
         argv.push(flag_value("--n-permutations", n));
-    }
-    if let Some(x) = a.json_fwer_threshold {
-        argv.push(flag_value("--json-fwer-threshold", x));
     }
     if let Some(x) = a.min_gene_count {
         argv.push(flag_value("--min-gene-count", x));

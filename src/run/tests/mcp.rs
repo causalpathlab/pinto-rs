@@ -73,23 +73,6 @@ fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
     assert_eq!(props["method"]["enum"], json!(methods));
 }
 
-#[test]
-fn the_lra_tools_take_every_flag_the_command_line_shows() {
-    use clap::CommandFactory;
-    let cli = crate::Cli::command();
-    let tools = specs(&crate::built_cli());
-    for (tool, command) in [("run_lra", "lra"), ("run_lra_simulate", "lra-simulate")] {
-        let spec = tools.iter().find(|t| t.name == tool).unwrap();
-        let props = spec.input_schema["properties"].as_object().unwrap();
-        let flags = cli.find_subcommand(command).unwrap().get_arguments();
-        for arg in flags.filter(|a| !a.is_hide_set()) {
-            let id = arg.get_id().as_str();
-            let name = if id == "from" { "run" } else { id };
-            assert!(props.contains_key(name), "{tool} lacks {name}");
-        }
-    }
-}
-
 /// A writer the test reads back.
 #[derive(Clone, Default)]
 struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -341,7 +324,8 @@ fn run_compare_refuses_a_negative_tau_with_the_command_s_reason() {
 }
 
 /// The lra and residual tools describe each flag they pass as clap does:
-/// its help, then the flag, then clap's default. Every default a
+/// its short help (the long one where it carries a vocabulary), then the
+/// flag, then clap's default. Every default a
 /// description states is clap's.
 #[test]
 fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
@@ -365,11 +349,13 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
             }
             let Some(p) = props.get(id) else { continue };
             let said = p["description"].as_str().unwrap();
-            let help = arg
-                .get_long_help()
-                .or_else(|| arg.get_help())
-                .map(ToString::to_string)
-                .unwrap_or_default();
+            let (short, long) = (arg.get_help(), arg.get_long_help());
+            let help = if LONG_HELP_FIELDS.contains(&id) {
+                long.or(short)
+            } else {
+                short.or(long)
+            };
+            let help = help.map(ToString::to_string).unwrap_or_default();
             let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(
                 said.starts_with(&help),
@@ -425,7 +411,12 @@ type Mirror = (
 
 /// The tools whose fields pass a command's flags.
 const MIRRORS: &[Mirror] = &[
-    ("run_lra", "lra", &[("run", "from")], &[]),
+    (
+        "run_lra",
+        "lra",
+        &[("run", "from")],
+        &["json_fwer_threshold"],
+    ),
     ("run_lra_simulate", "lra-simulate", &[("run", "from")], &[]),
     ("run_residual", "residual", &[], &["em_iters", "block_size"]),
     ("run_compare", "compare", &[], &[]),
