@@ -211,3 +211,89 @@ fn spatialde2_pb_meets_the_bar_on_a_simulated_section() {
         "boundary: unravelled {b_pb} vs broadcast {b_bc}"
     );
 }
+
+/// A factor baseline's `-pb` command against the bar: within 0.1 ARI of
+/// the cell-level command, and above the broadcast labels on the boundary
+/// cells; both at the planted number of domains.
+fn factor_pb_meets_the_bar(cmd: &str) {
+    use super::spatialpca::{parse, planted, simulated_section};
+    let dir = tempfile::tempdir().unwrap();
+    let (sim, files) = simulated_section(dir.path(), 40, 500, 2);
+    let cell_out = dir.path().join("cells").to_string_lossy().to_string();
+    let pb_out = dir.path().join("pb").to_string_lossy().to_string();
+    let probe = parse(cmd, &files, &cell_out, &[]);
+    let data = match &probe {
+        crate::Commands::Spatialpca(a) => a.fit.core.input.read(false).unwrap(),
+        crate::Commands::Mefisto(a) => a.fit.core.input.read(false).unwrap(),
+        _ => unreachable!(),
+    };
+    let cells = &data.cells;
+    let (domain, k) = planted(&sim, cells);
+    let k = k.to_string();
+    let pb_cmd = format!("{cmd}-pb");
+    // quadrature on the cell graph, as on any section above 400 cells
+    let quad = ["--exact-eig-max", "400"];
+    match parse(
+        cmd,
+        &files,
+        &cell_out,
+        &["--n-clusters", &k, quad[0], quad[1]],
+    ) {
+        crate::Commands::Spatialpca(a) => crate::spatial_baselines::spatialpca::run(&a).unwrap(),
+        crate::Commands::Mefisto(a) => crate::spatial_baselines::mefisto::run(&a).unwrap(),
+        _ => unreachable!(),
+    }
+    match parse(
+        &pb_cmd,
+        &files,
+        &pb_out,
+        &["--n-clusters", &k, "-d", "200", quad[0], quad[1]],
+    ) {
+        crate::Commands::SpatialpcaPb(a) => {
+            crate::spatial_baselines::spatialpca::run_pb(&a).unwrap()
+        }
+        crate::Commands::MefistoPb(a) => crate::spatial_baselines::mefisto::run_pb(&a).unwrap(),
+        _ => unreachable!(),
+    }
+    let cell_fit = labels_of(cells, &read_labels(&cell_out));
+    let unravelled = labels_of(cells, &read_labels(&pb_out));
+    let broadcast = labels_of(
+        cells,
+        &read_column(&format!("{pb_out}.cell_pb.parquet"), "cell", "pb_label"),
+    );
+    let nb = knn_within_sections(&data, 6);
+    let boundary: Vec<usize> = (0..cells.len())
+        .filter(|&i| nb.index[i].iter().any(|&j| domain[j] != domain[i]))
+        .collect();
+    assert!(boundary.len() > 50, "{} boundary cells", boundary.len());
+    let on = |l: &[usize]| boundary.iter().map(|&i| l[i]).collect::<Vec<_>>();
+    let (a_cell, a_pb) = (ari(&domain, &cell_fit), ari(&domain, &unravelled));
+    let a_bc = ari(&domain, &broadcast);
+    let (b_cell, b_pb, b_bc) = (
+        ari(&on(&domain), &on(&cell_fit)),
+        ari(&on(&domain), &on(&unravelled)),
+        ari(&on(&domain), &on(&broadcast)),
+    );
+    eprintln!(
+        "{cmd}: ARI cells {a_cell:.3}, unravelled {a_pb:.3}, broadcast {a_bc:.3}; \
+         boundary cells {b_cell:.3}, unravelled {b_pb:.3}, broadcast {b_bc:.3}"
+    );
+    assert!(
+        a_pb >= a_cell - 0.1,
+        "{cmd}: unravelled {a_pb} vs cells {a_cell}"
+    );
+    assert!(
+        b_pb > b_bc,
+        "{cmd} boundary: unravelled {b_pb} vs broadcast {b_bc}"
+    );
+}
+
+#[test]
+fn spatialpca_pb_meets_the_bar_on_a_simulated_section() {
+    factor_pb_meets_the_bar("spatialpca");
+}
+
+#[test]
+fn mefisto_pb_meets_the_bar_on_a_simulated_section() {
+    factor_pb_meets_the_bar("mefisto");
+}
