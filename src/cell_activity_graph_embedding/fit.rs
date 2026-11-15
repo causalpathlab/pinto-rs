@@ -612,9 +612,9 @@ pub fn fit_cell_activity_graph_embedding(
     // to skip empty features in every epoch's permutation. Computed now so
     // we can free `activities` afterwards.
     // Features with π = 0 under --feature-inclusion stay on this list: they
-    // are never drawn, but taking them off changed results on the simulations
-    // (5 seeds, one donor's new-state domain: ARI 0.86 → 0.74) for a reason
-    // not yet understood, so the list is the same with or without inclusion.
+    // are never drawn, but taking them off made results worse on the
+    // simulations, for a reason not yet understood, so the list is the same
+    // with or without inclusion.
     let trainable_features: Vec<usize> = (0..n_features)
         .filter(|&g| cache.entries[g].iter().any(|e| e.is_some()))
         .collect();

@@ -266,6 +266,31 @@ fn run_methods_lists_the_baselines_as_it_lists_lc() {
         .is_err());
 }
 
+/// `run_methods` lists cage's choices, the inclusion mode and the module
+/// count, and leaves its tuning knobs (hidden flags) out.
+#[test]
+fn run_methods_lists_cage_s_choices_and_no_hidden_knob() {
+    let tools = Tools::default();
+    let reply = match tools
+        .methods(MethodsArgs {
+            method: Some("cage".into()),
+        })
+        .unwrap()
+        .into_iter()
+        .next()
+    {
+        Some(Content::Json(v)) => v,
+        _ => panic!("no JSON reply"),
+    };
+    let flags = reply["flags"].as_array().unwrap();
+    let flag = |name: &str| flags.iter().find(|f| f["flag"] == name);
+    let inclusion = flag("--feature-inclusion").expect("listed");
+    assert_eq!(inclusion["choices"], json!(["all", "moran"]));
+    assert!(flag("--feature-modules").is_some());
+    assert!(flag("--inclusion-blocks").is_none());
+    assert!(flags.iter().all(|f| f.get("advanced").is_none()));
+}
+
 /// run_fit's method is one of METHODS, and a baseline's fit is checked as
 /// lc's is: an unknown flag is refused, and so is a run already there.
 #[test]

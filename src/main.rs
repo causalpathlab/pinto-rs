@@ -333,6 +333,10 @@ enum Commands {
                       That gates a shared multi-scale PB hierarchy.\n\n\
                       Chain levels differ only in their negative pools.\n\
                       This is embedding-only. There is no count decoder.\n\n\
+                      Where most features are noise, a run can take one of two\n\
+                      remedies: --feature-inclusion moran trains each feature with\n\
+                      its probability of spatial signal; --feature-modules M embeds\n\
+                      features through M learned modules. Not both.\n\n\
                       --n-hvg weights the random projection that builds the\n\
                       coarsening hierarchy, as in senna bge and senna gem;\n\
                       it does not subset the trained feature axis.\n\
@@ -397,7 +401,10 @@ enum Commands {
                       \x20 {out}.fisher_weights.parquet  per-ROW NB precisions w_r\n\
                       \x20 {out}.delta.parquet           batch effects (multi-batch only;\n\
                       \x20                                optional `--cnv-clones` on the δ path)\n\
-                      \x20 {out}.pinto.json           manifest"
+                      \x20 {out}.pinto.json           manifest",
+        mut_arg("feature_modules", |a| a.long_help(
+            cell_activity_graph_embedding::args::FEATURE_MODULES_LONG_HELP
+        ))
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),
 
@@ -423,7 +430,10 @@ enum Commands {
                       refused. --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
                       its manifest says `cell_level`.",
-        mut_arg("embedding_l2", |a| a.default_value("0"))
+        mut_arg("embedding_l2", |a| a.default_value("0")),
+        mut_arg("feature_modules", |a| a.long_help(
+            cell_activity_graph_embedding::args::FEATURE_MODULES_LONG_HELP
+        ))
     )]
     CageCell(Box<CellActivityGraphEmbeddingArgs>),
 

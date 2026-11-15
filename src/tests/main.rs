@@ -541,3 +541,43 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
         ["--must-train-features"]
     );
 }
+
+/// cage's `--feature-modules` help is pinto's own: cage draws its NCE
+/// negatives over pseudobulks, never within a module, and a run takes
+/// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
+/// is a tuning knob, hidden.
+#[test]
+fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
+    let mut cli = built_cli();
+    for cmd in ["cage", "cage-cell"] {
+        let sub = cli.find_subcommand_mut(cmd).expect(cmd);
+        let arg = |id: &str| {
+            sub.get_arguments()
+                .find(|a| a.get_id() == id)
+                .unwrap_or_else(|| panic!("{cmd}: no {id}"))
+                .clone()
+        };
+        assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
+        assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
+        let help = sub.render_long_help().to_string();
+        // the flag's entry: from its line up to the next flag's
+        let flag_line = |l: &str| {
+            let l = l.trim_start();
+            l.starts_with("--") || l.as_bytes().get(2) == Some(&b',')
+        };
+        let modules: String = help
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("--feature-modules <"))
+            .enumerate()
+            .take_while(|&(i, l)| i == 0 || !flag_line(l))
+            .map(|(_, l)| format!("{l}\n"))
+            .collect();
+        assert!(!modules.is_empty(), "{cmd}: --feature-modules not listed");
+        for wrong in ["own module", "WITHIN a module", "senna", "--multiome"] {
+            assert!(!modules.contains(wrong), "{cmd} says {wrong:?}: {modules}");
+        }
+        for right in ["never within a module", "--feature-inclusion moran"] {
+            assert!(modules.contains(right), "{cmd} lacks {right:?}: {modules}");
+        }
+    }
+}

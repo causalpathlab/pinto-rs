@@ -31,6 +31,17 @@
 //! Each epoch then visits feature `g` with probability `π_g` (a seeded
 //! Bernoulli mask), so the expected objective is `Σ_g π_g L_g`. A feature
 //! the model calls null (`π_g = 0`, at or below the bulk) is never drawn.
+//!
+//! References: P. A. P. Moran, "Notes on continuous stochastic phenomena",
+//! Biometrika 37 (1950); H. R. Künsch, "The jackknife and the bootstrap for
+//! general stationary observations", Ann. Statist. 17 (1989), for deleting
+//! blocks rather than single units of dependent data; B. Efron, R.
+//! Tibshirani, J. D. Storey and V. Tusher, "Empirical Bayes analysis of a
+//! microarray experiment", JASA 96 (2001), for the two-group model and the
+//! local fdr; B. Efron, "Large-scale simultaneous hypothesis testing: the
+//! choice of a null hypothesis", JASA 99 (2004), for the null fitted to the
+//! bulk; B. W. Silverman, "Density Estimation for Statistics and Data
+//! Analysis" (1986), for the kernel bandwidth.
 
 use crate::util::ablation::{dense_ids, group};
 use crate::util::common::{jackknife_se, Mat};

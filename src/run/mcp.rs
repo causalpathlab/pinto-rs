@@ -77,9 +77,11 @@ impl Tools {
             return Ok(vec![Content::Json(json!({ "methods": methods }))]);
         };
         let method = self.method(&name)?;
+        // Hidden flags are tuning knobs: left out, as `--help` leaves them.
         let flags: Vec<Value> = method
             .fields
             .iter()
+            .filter(|f| !f.advanced)
             .map(|f| {
                 let mut flag = json!({
                     "flag": format!("--{}", f.long),
@@ -95,9 +97,6 @@ impl Tools {
                 }
                 if f.required {
                     flag["required"] = true.into();
-                }
-                if f.advanced {
-                    flag["advanced"] = true.into();
                 }
                 flag
             })

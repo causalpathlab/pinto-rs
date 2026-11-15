@@ -348,23 +348,24 @@ pub struct CellActivityGraphEmbeddingArgs {
                      all: every trainable feature, every epoch.\n\
                      moran: feature g with probability π_g, its posterior\n\
                      probability of spatial signal. Each feature's Moran's I\n\
-                     over the spatial graph (log-normalised, centred per\n\
-                     section, pooled; on the PB tree's finest super-cells and\n\
+                     (Moran 1950) over the spatial graph (log-normalised, centred\n\
+                     per section, pooled; on the PB tree's finest super-cells and\n\
                      super edges, or on cells for cage-cell) gets a\n\
-                     delete-one-block jackknife standard\n\
-                     error (--inclusion-blocks); a two-group empirical-Bayes\n\
-                     model on the t statistics gives π_g = 1 − local fdr, with\n\
-                     no threshold to choose. Features are weighted, not cut:\n\
-                     the expected objective is Σ π_g L_g, and the likely-noise\n\
-                     features mostly cost nothing. An alternative to\n\
-                     --feature-modules, not a companion: a run takes one. Writes\n\
-                     {out}.feature_inclusion.parquet."
+                     delete-one-block jackknife standard error; a two-group\n\
+                     empirical-Bayes model on the t statistics gives\n\
+                     π_g = 1 − local fdr (Efron 2004), with no threshold to\n\
+                     choose. Features are weighted, not cut: the expected\n\
+                     objective is Σ π_g L_g, and the likely-noise features\n\
+                     mostly cost nothing. Needs coordinates (-c).\n\
+                     An alternative to --feature-modules, not a companion: a\n\
+                     run takes one. Writes {out}.feature_inclusion.parquet."
     )]
     pub feature_inclusion: FeatureInclusionMode,
 
     #[arg(
         long,
         default_value_t = 16,
+        hide = true,
         help = "Jackknife blocks per section for --feature-inclusion",
         long_help = "About this many blocks per section, which the jackknife\n\
                      leaves out one at a time: coarse super-cells of the PB tree\n\
@@ -616,6 +617,37 @@ pub enum FeatureEmbeddingMode {
     /// neighbor-seeded rows train.
     Lora,
 }
+
+/// cage's own long help for `--feature-modules`, set over the shared flag
+/// group's (whose text describes within-module negatives, which cage does
+/// not draw) by `mut_arg` on the cage subcommands.
+pub const FEATURE_MODULES_LONG_HELP: &str = "\
+Put a learned mixed-membership module layer in front of the feature embedding.
+Each feature's row becomes a sparse mixture of M shared module vectors, plus a
+residual of its own (ridge-shrunk by --embedding-l2). Off unless given.
+
+WHY. A free row receives gradient only on the steps that draw its feature. A
+rare feature, or one absent from a later dataset, has nothing standing in for
+it. Through a module, every edge on any member trains the shared vector, so a
+feature that is never drawn still inherits a trained row from its siblings.
+
+HOW. Membership is sparsemax (Martins and Astudillo 2016) over learned logits:
+a feature sits on a few modules with exact zeros elsewhere. It starts from a
+partition of the features by their profiles over the finest pseudobulks, held
+fixed for the first quarter of the epochs, then trains. An exact softmax over
+all M modules scores each pseudobulk's module-pooled counts, so every module
+gets gradient on every step, and a load-balance prior keeps every module in
+use. cage's NCE is unchanged: its negatives are other pseudobulks of the
+batch, never within a module.
+
+A run takes this or --feature-inclusion moran, not both, and not with
+--feature-embedding. cage-cell refuses it.
+
+OUTPUTS. {out}.module_membership.parquet (feature x M),
+{out}.module_dictionary.parquet (M x H), {out}.module_residual.parquet and
+{out}.module_bias.parquet. {out}.feature_embedding.parquet holds the composed
+row, so nothing that reads it has to know modules exist; `pinto predict` places
+features the model never saw through these tables.";
 
 /// The width when neither the flag nor a pinned dictionary decides it.
 pub const DEFAULT_EMBEDDING_DIM: usize = 16;
