@@ -10,7 +10,7 @@
 //!   (STAGATE, Dong and Zhang 2022, Nature Communications 13:1739,
 //!   doi:10.1038/s41467-022-29439-6).
 //!
-//! Each also runs on super-cells (`spatialde2-pb`, `stagate-pb`): the cells
+//! [`spatialde2`] also runs on super-cells (`spatialde2-pb`): the cells
 //! coarsened as cage coarsens them ([`pseudobulk`]), the fit then
 //! unravelled to cells by conditional re-inference.
 //!

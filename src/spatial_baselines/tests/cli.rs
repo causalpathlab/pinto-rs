@@ -1,7 +1,7 @@
 //! The baselines' command lines stay small: a short `--help` each.
 
 /// The baselines whose `-h` is kept short.
-pub(crate) const BASELINES: &[&str] = &["stagate", "spatialde2", "stagate-pb", "spatialde2-pb"];
+pub(crate) const BASELINES: &[&str] = &["stagate", "spatialde2", "spatialde2-pb"];
 
 /// Most lines a baseline's `-h` may take.
 const HELP_LINES: usize = 60;

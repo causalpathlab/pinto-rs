@@ -1,12 +1,12 @@
-//! The `-pb` commands: super-cells as cage builds them, the collapsed
+//! `spatialde2-pb`: super-cells as cage builds them, the collapsed
 //! graph, and the unravelling back to cells.
 //!
 //! Success bar, set before measuring: on an srt-simulate section (a few
 //! thousand cells at most), fitted on about one super-cell per 8 cells,
 //! the unravelled labels recover the planted domains within 0.1 ARI of
 //! the cell-level fit, and beat the super-cells' labels broadcast to their
-//! cells on the cells at a domain boundary. A method that fails it is
-//! marked approximate in its `-pb` help.
+//! cells on the cells at a domain boundary. A method that fails it has no
+//! `-pb` command.
 
 use super::graph::grid;
 use crate::spatial_baselines::graph::knn_within_sections;
@@ -205,83 +205,4 @@ fn spatialde2_pb_meets_the_bar_on_a_simulated_section() {
         b_pb > b_bc,
         "boundary: unravelled {b_pb} vs broadcast {b_bc}"
     );
-}
-
-/// stagate-pb on two sections with δ: a run of the cells, recorded as fitted
-/// on super-cells, each within one section, with each cell's super-cell
-/// written; --reference is refused. It fails the bar (its unravelled
-/// domains fall well short of stagate's on cells), so its help says it is
-/// approximate.
-#[test]
-fn stagate_pb_runs_on_super_cells_and_says_it_is_approximate() {
-    use crate::util::metadata::{BaselineInput, PintoMetadata};
-    let dir = tempfile::tempdir().unwrap();
-    let files = super::delta::two_sections(dir.path(), 10, 60);
-    let out = dir.path().join("st").to_string_lossy().to_string();
-    let parse = |extra: &[&str]| {
-        let mut argv: Vec<String> = vec!["pinto".into(), "stagate-pb".into()];
-        argv.extend(files.iter().cloned());
-        argv.extend(
-            [
-                "-o",
-                &out,
-                "-d",
-                "40",
-                "--n-epochs",
-                "3",
-                "--hidden-dims",
-                "8,2",
-            ]
-            .map(String::from),
-        );
-        argv.extend(["--n-clusters", "2"].map(String::from));
-        argv.extend(extra.iter().map(|s| s.to_string()));
-        let crate::Commands::StagatePb(mut args) =
-            <crate::Cli as clap::Parser>::try_parse_from(argv)
-                .unwrap()
-                .commands
-        else {
-            unreachable!()
-        };
-        args.input.pseudobulk = true;
-        args
-    };
-    crate::spatial_baselines::stagate::run(&parse(&[])).unwrap();
-    let meta: PintoMetadata =
-        serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
-            .unwrap();
-    let run = meta.baseline.unwrap();
-    assert_eq!(run.input, BaselineInput::Pseudobulk);
-    let pb = run.pseudobulk.unwrap();
-    assert!(
-        pb.n_super_cells < meta.n_cells && pb.n_super_cells >= 2,
-        "{pb:?}"
-    );
-    assert_eq!(meta.n_cells, 200);
-    assert!(meta.outputs.batch_effects.is_some());
-    let of_cell = read_column(&format!("{out}.cell_pb.parquet"), "cell", "pb");
-    let data = parse(&[]).input.read().unwrap();
-    let section: HashMap<&str, usize> = data
-        .cells
-        .iter()
-        .zip(&data.section)
-        .map(|(c, &s)| (c.as_ref(), s))
-        .collect();
-    let mut section_of: HashMap<Box<str>, usize> = HashMap::new();
-    for (cell, pb) in &of_cell {
-        let s = section[cell.as_ref()];
-        assert_eq!(
-            *section_of.entry(pb.clone()).or_insert(s),
-            s,
-            "{pb} spans sections"
-        );
-    }
-    assert_eq!(section_of.len(), pb.n_super_cells);
-    assert!(crate::spatial_baselines::stagate::run(&parse(&["--reference"])).is_err());
-    let help = crate::built_cli()
-        .find_subcommand_mut("stagate-pb")
-        .unwrap()
-        .render_long_help()
-        .to_string();
-    assert!(help.contains("Approximate"), "{help}");
 }

@@ -1,5 +1,4 @@
-//! The super-cells the `-pb` commands (`stagate-pb`, `spatialde2-pb`) fit
-//! on, built as cage builds its pseudobulks, and the way back to cells.
+//! The super-cells `spatialde2-pb` fits on, built as cage builds its pseudobulks, and the way back to cells.
 //!
 //! The cells are coarsened by cage's graph-constrained agglomeration
 //! ([`graph_coarsen_multilevel`]) along a kNN graph within each section, on
@@ -14,7 +13,7 @@
 //!
 //! A `-pb` fit is unravelled to cells by conditional re-inference on each
 //! cell's own counts and the cell graph, the fit's parameters held fixed
-//! (each method's module says how); the super-cell's label broadcast to
+//! ([`super::spatialde2`] says how); the super-cell's label broadcast to
 //! its cells is kept only as a diagnostic.
 
 use super::graph::{knn_within_sections, Neighbours};

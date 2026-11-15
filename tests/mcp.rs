@@ -403,7 +403,6 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
             "spatialde2",
             "stagate",
             "spatialde2-pb",
-            "stagate-pb"
         ]
     );
     let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));

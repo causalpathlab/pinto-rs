@@ -553,24 +553,20 @@ the input sparse). Segmentation runs on every gene by default, as
 SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
 the most expressed.
 
-`spatialde2-pb` and `stagate-pb` fit the same methods on super-cells and
-unravel the fit back to cells. The cells are coarsened as `cage` coarsens
-them, to about `-d` (`--n-pseudobulk`) super-cells within each section,
-each with its cells' counts summed and their centroid as coordinates, on
-the method's cell graph collapsed onto them (a super-edge records the
-cell-cell edges it collapses; for `spatialde2` its weight sums theirs, so
-the super-cells' model is the cells' model with each super-cell's cells
-sharing a region; STAGATE's graph is unweighted). Each cell is then
-re-inferred on its own counts and the cell graph with the fit held fixed:
-`spatialde2-pb` sweeps the cells' region posteriors, `stagate-pb` embeds
-each cell with the trained encoder and gives it the nearest domain
-centroid of the super-cells. `{out}.cell_pb.parquet` records each cell's
-super-cell and that super-cell's label (broadcasting it is a diagnostic,
-not the output), and the manifest's `baseline` block records the input.
-The bar each was held to: on a simulated section at one super-cell per
-eight cells, within 0.1 ARI of the cell-level fit and better than the
-broadcast labels at domain boundaries. `spatialde2-pb` meets it there;
-`stagate-pb` does not and says it is approximate in its help.
+`spatialde2-pb` fits `spatialde2` on super-cells and unravels the fit
+back to cells. The cells are coarsened as `cage` coarsens them, to about
+`-d` (`--n-pseudobulk`) super-cells within each section, each with its
+cells' counts summed and their centroid as coordinates, on the cell graph
+collapsed onto them (a super-edge's weight sums the cell-cell edges it
+collapses, so the super-cells' model is the cells' model with each
+super-cell's cells sharing a region). Each cell's region posterior is then
+re-inferred on its own counts and the cell graph with the fit held fixed.
+`{out}.cell_pb.parquet` records each cell's super-cell and that
+super-cell's label (broadcasting it is a diagnostic, not the output), and
+the manifest's `baseline` block records the input. The bar it was held
+to: on a simulated section at one super-cell per eight cells, within 0.1
+ARI of the cell-level fit and better than the broadcast labels at domain
+boundaries.
 
 One deviation is shared: with two or more batches (data files, or `-b`
 labels) the counts are divided by the input's own batch effects (δ,
@@ -1053,7 +1049,7 @@ to the model; with one of them, put that text in the agent's own instructions
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialde2-pb`, `stagate-pb`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialde2-pb`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

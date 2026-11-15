@@ -16,11 +16,11 @@ pub(crate) mod tui;
 /// The methods `pinto run` sets up, in the order listed, each as typed:
 /// the short alias of its subcommand. pinto's own models first (lc and
 /// dsvd, then cage and its cell-level form), then the spatial baselines
-/// (model-level ports of published methods, for comparison, then their
-/// `-pb` forms fitted on super-cells), which take
+/// (model-level ports of published methods, for comparison, then
+/// spatialde2's `-pb` form fitted on super-cells), which take
 /// the same data, coordinate and batch files and write a run of the same
 /// shape.
-pub const METHODS: [&str; 8] = [
+pub const METHODS: [&str; 7] = [
     "lc",
     "dsvd",
     "cage",
@@ -28,7 +28,6 @@ pub const METHODS: [&str; 8] = [
     "spatialde2",
     "stagate",
     "spatialde2-pb",
-    "stagate-pb",
 ];
 
 /// pinto's own models among [`METHODS`].
