@@ -22,12 +22,11 @@
 //!
 //! # Steps, as the reference code runs them
 //!
-//! - **Genes** (`figure_2.ipynb`): the paper segments on the spatially
-//!   variable genes at FDR 0.001 (SpatialDE2's GP score test), the 2000
-//!   with the highest total counts. *Deviation:* the GP test is not ported;
-//!   the 2000 genes with the highest total counts are used
-//!   (`--n-top-genes`, 0 for every gene, which is also
-//!   `tissue_segmentation`'s own default `genes=None`).
+//! - **Genes** (`tissue_segmentation(genes=None)`): every gene, the
+//!   reference's default; `--n-top-genes N` passes the `N` with the highest
+//!   total counts as its `genes` list. The paper's own analyses
+//!   (`figure_2.ipynb`) pass the 2000 most expressed of the spatially
+//!   variable genes at FDR 0.001 (SpatialDE2's GP score test, not ported).
 //! - **Size factors** (`tissue_segmentation` → `calc_sizefactors`): each
 //!   cell's total count over *all* genes (computed before the gene subset).
 //! - **Spatial energy** (`tissue_segmentation`, Supplementary eq. 2): the
@@ -74,22 +73,28 @@
 //!
 //! # Deliberate deviations
 //!
-//! - **Sparse graph.** The reference builds a dense `N × N` distance matrix
-//!   in every mode, and its default `neighbors=None` connects every pair of
-//!   spots. Here the graph is the `--neighbors` nearest cells within each
-//!   section ([`super::graph::knn_within_sections`]), symmetrised, so memory
-//!   stays linear in cells; the energy is the same sum, truncated to the
-//!   graph. `--neighbors 0` drops space, as `neighbors=0` does in the
-//!   reference (a Poisson mixture with a DP prior).
+//! - **Batch effects.** With two or more batches the counts are divided by
+//!   the input's own δ before the size factors and the gene selection (see
+//!   [`super`]); `--ignore-batch` runs the original.
+//! - **Sparse graph (the default) and `--reference`.** The reference
+//!   builds a dense `N × N` distance matrix in every mode. Its default
+//!   (`neighbors=None`) connects every pair of spots; `--reference` runs
+//!   that model within each section, the weights recomputed from the
+//!   coordinates as each update visits them
+//!   ([`WeightedGraph::all_pairs`]): the same sums, at `O(N)` memory and
+//!   the reference's `O(N²)` work per update. The sparse default is the
+//!   reference's own `neighbors=k` option, the `--neighbors` nearest cells
+//!   within each section ([`super::graph::knn_within_sections`]),
+//!   symmetrised as the reference symmetrises them, `min d²` over the
+//!   graph's pairs as there, so memory stays linear in cells.
+//!   `--neighbors 0` drops space, as `neighbors=0` does in the reference (a
+//!   Poisson mixture with a DP prior).
 //!
 //!   The default of 100 neighbours is a choice of this port, not a
 //!   reference value. Cutting the `1/d²` sum does more than truncate it:
 //!   in 2-D the far shells carry much of each cell's total weight, so a
-//!   cut graph has a weaker effective `smoothness_factor`. On the 6 × 1600
-//!   spot simulation the regions found went from shared ARI 0.638 at
-//!   `--neighbors 100` to 0.753 with every pair in a section connected
-//!   (`--neighbors` at least the section size, which is the reference's
-//!   model within each section, at `k · N` memory).
+//!   cut graph has a weaker effective `smoothness_factor`, and its regions
+//!   can be coarser than `--reference`'s.
 //! - **Memory at the default cap.** The posteriors are `N × K₀` with the
 //!   reference's default `K₀ = ceil(sqrt(N))`, so memory and work per
 //!   update grow as `N^1.5` (about 8 GB for the posteriors alone at 1M
@@ -140,15 +145,17 @@
 //! embedding (`spatialde2_prob_*`) = the posteriors over the retained
 //! classes, cells × K.
 
-use super::graph::knn_within_sections;
+use super::graph::{knn_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
-    check_stored_shape, knn_edges, knn_gram_bytes, spatialde2_peak_bytes, Spatialde2Shape,
+    check_stored_shape, knn_edges, knn_gram_bytes, pseudobulk_bytes, spatialde2_peak_bytes,
+    Spatialde2Shape, SPATIALDE2_PROCESS_BYTES,
 };
-use super::output::{write_run, Fitted};
+use super::output::{write_run, Fitted, PbFit};
 use crate::util::ablation::{n_sections, section_sizes};
 use crate::util::common::Mat;
 use crate::util::memory::{ensure_fits, Budget};
+use crate::util::metadata::PseudobulkInput;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
@@ -165,8 +172,8 @@ const ETA_1: f64 = 1.0;
 const ETA_2: f64 = 1.0;
 /// `gammahat_1`, `gammahat_2` at the start (`tf.fill(..., 1e-6)`).
 const GAMMAHAT_INIT: f64 = 1e-6;
-/// The paper's segmentation genes: the top 2000 by total counts.
-const N_TOP_GENES: usize = 2000;
+/// Genes segmented on: every gene, as `tissue_segmentation(genes=None)`.
+const N_TOP_GENES: usize = 0;
 /// Neighbours per cell in place of the reference's fully connected graph
 /// (a choice of this port, not a reference value).
 const NEIGHBORS: usize = 100;
@@ -175,8 +182,22 @@ const SUM_CHUNK: usize = 4096;
 /// Posterior size above which a warning names `--n-clusters`.
 const PI_WARN_BYTES: f64 = 4e9;
 
+/// `spatialde2`'s arguments: the model's, and the formulation.
 #[derive(clap::Args, Debug)]
 pub struct Args {
+    #[command(flatten)]
+    pub fit: FitArgs,
+
+    /// Run the original method's own formulation instead of pinto's sparse
+    /// one (the default; see --help): every pair of a section connected,
+    /// the reference's default graph, in place of --neighbors
+    #[arg(long, default_value_t = false, conflicts_with = "neighbors")]
+    pub reference: bool,
+}
+
+/// The model's arguments, shared by `spatialde2` and `spatialde2-pb`.
+#[derive(clap::Args, Debug)]
+pub struct FitArgs {
     #[command(flatten)]
     pub input: SpatialInputArgs,
 
@@ -188,10 +209,9 @@ pub struct Args {
     #[arg(long)]
     pub n_clusters: Option<usize>,
 
-    /// Spatial neighbours per cell, within a section (100 is this port's
-    /// choice: the reference connects every pair, and cutting its 1/d^2
-    /// sum weakens the smoothing; the section size reproduces it at
-    /// cells × section memory; 0 ignores space: a Poisson DP mixture)
+    /// Spatial neighbours per cell, within a section: the reference's own
+    /// `neighbors` (kNN, symmetrised). 100 is this port's sparse default;
+    /// 0 ignores space (a Poisson DP mixture)
     #[arg(long, default_value_t = NEIGHBORS)]
     pub neighbors: usize,
 
@@ -200,9 +220,9 @@ pub struct Args {
     #[arg(long, default_value_t = SMOOTHNESS_FACTOR)]
     pub smoothness_factor: f64,
 
-    /// Genes to segment on: the top N by total counts (0: every gene). The
-    /// paper takes the 2000 most expressed spatially variable genes; the
-    /// SVG test is not ported
+    /// Genes to segment on: the top N by total counts, as a gene list the
+    /// reference takes (`genes`). 0, the default, takes every gene, as the
+    /// reference does without a list
     #[arg(long, default_value_t = N_TOP_GENES)]
     pub n_top_genes: usize,
 
@@ -221,6 +241,24 @@ pub struct Args {
     /// Maximum number of iterations
     #[arg(long, default_value_t = MAXITER)]
     pub max_iter: usize,
+}
+
+/// `spatialde2-pb`'s arguments: the model's (the sparse formulation
+/// only), and the super-cells to fit on.
+#[derive(clap::Args, Debug)]
+pub struct PbArgs {
+    #[command(flatten)]
+    pub fit: FitArgs,
+
+    /// Target number of super-cells to fit on (as cage's -d: the cells are
+    /// coarsened until about this many remain)
+    #[arg(
+        long,
+        short = 'd',
+        default_value_t = 1024,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
+    pub n_pseudobulk: usize,
 }
 
 /// `TissueSegmentationParameters`, as run.
@@ -356,19 +394,61 @@ impl CellCounts {
     }
 }
 
-/// Each cell's spatial neighbours with their pairwise weights `w_nm`.
-pub struct WeightedGraph {
-    offsets: Vec<usize>,
-    index: Vec<usize>,
-    weight: Vec<f64>,
+/// Each cell's spatial neighbours with their pairwise weights `w_nm`:
+/// listed (a kNN graph, the reference's `neighbors=k`), or every other cell
+/// of its section (the reference's default `neighbors=None`), computed from
+/// the coordinates as they are visited so no `N × N` matrix is held.
+pub enum WeightedGraph {
+    Lists {
+        offsets: Vec<usize>,
+        index: Vec<usize>,
+        weight: Vec<f64>,
+    },
+    AllPairs {
+        /// Coordinates, cells × `dims`, row-major.
+        xy: Vec<f64>,
+        dims: usize,
+        /// Each cell's section, and the cells of each section.
+        section: Vec<usize>,
+        members: Vec<Vec<usize>>,
+        /// `min d²` of each section.
+        min_d2: Vec<f64>,
+        /// `2 · smoothness_factor`.
+        scale: f64,
+    },
 }
 
 impl WeightedGraph {
+    /// Lists of `edges` weighted neighbours in all, one list per cell.
+    fn from_lists<L: IntoIterator<Item = (usize, f64)>>(
+        lists: impl ExactSizeIterator<Item = L>,
+        edges: usize,
+    ) -> Self {
+        let mut offsets = Vec::with_capacity(lists.len() + 1);
+        offsets.push(0);
+        let mut index = Vec::with_capacity(edges);
+        let mut weight = Vec::with_capacity(edges);
+        for l in lists {
+            for (j, w) in l {
+                index.push(j);
+                weight.push(w);
+            }
+            offsets.push(index.len());
+        }
+        WeightedGraph::Lists {
+            offsets,
+            index,
+            weight,
+        }
+    }
+
     /// `w_nm = 2 s min d² / d²_nm` on symmetric neighbour lists (cell
     /// indices and Euclidean distances), `min d²` over the listed pairs of
     /// the cell's own section (`section[i]`), as the reference computes it
     /// over one dataset: a section's weights do not depend on another
-    /// section's spot spacing.
+    /// section's spot spacing. A section with no positive distance (its
+    /// cells at one point) weighs every pair alike, `2 s`
+    /// ([`no_spacing_as_one`]).
     pub fn from_neighbours(
         index: &[Vec<usize>],
         dist: &[Vec<f32>],
@@ -384,39 +464,156 @@ impl WeightedGraph {
                 }
             }
         }
-        let edges = index.iter().map(Vec::len).sum();
-        let mut offsets = Vec::with_capacity(index.len() + 1);
-        offsets.push(0);
-        let mut flat = Vec::with_capacity(edges);
-        let mut weight = Vec::with_capacity(edges);
-        for ((js, ds), &s) in index.iter().zip(dist).zip(section) {
+        no_spacing_as_one(&mut min_d2);
+        let min_d2 = &min_d2;
+        let lists = index.iter().zip(dist).zip(section).map(|((js, ds), &s)| {
             let min_d2 = min_d2[s];
-            for (&j, &d) in js.iter().zip(ds) {
+            js.iter().zip(ds).map(move |(&j, &d)| {
                 let d2 = ((d as f64) * (d as f64)).max(min_d2);
-                flat.push(j);
-                weight.push(2.0 * smoothness * min_d2 / d2);
-            }
-            offsets.push(flat.len());
+                (j, 2.0 * smoothness * min_d2 / d2)
+            })
+        });
+        Self::from_lists(lists, index.iter().map(Vec::len).sum())
+    }
+
+    /// Lists of `n` cells from undirected weighted edges `(a, b)`, each
+    /// listed both ways (a `spatialde2-pb` fit's super-graph).
+    pub fn from_pairs(n: usize, edges: &[(usize, usize)], weight: &[f64]) -> Self {
+        let mut lists: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for (&(a, b), &w) in edges.iter().zip(weight) {
+            lists[a].push((b, w));
+            lists[b].push((a, w));
         }
-        WeightedGraph {
-            offsets,
-            index: flat,
-            weight,
+        Self::from_lists(lists.into_iter(), 2 * edges.len())
+    }
+
+    /// The reference's default graph (`neighbors=None`): every pair of
+    /// cells of a section of `data`, `w_nm = 2 s min d² / d²_nm` with `min
+    /// d²` the smallest positive squared distance of the section. The
+    /// weights are recomputed as they are visited: the same sum as the
+    /// reference's dense `N × N` matrix, at `O(N)` memory and the
+    /// reference's `O(N²)` work per update. A section with no positive
+    /// distance weighs every pair `2 s` ([`no_spacing_as_one`]).
+    pub fn all_pairs(data: &SpatialData, smoothness: f64) -> Self {
+        let xy = &data.xy;
+        let (n, dims) = xy.shape();
+        let flat: Vec<f64> = (0..n)
+            .flat_map(|i| (0..dims).map(move |j| xy[(i, j)] as f64))
+            .collect();
+        let members = data.section_cells();
+        let d2 = |a: usize, b: usize| -> f64 {
+            (0..dims)
+                .map(|j| (flat[a * dims + j] - flat[b * dims + j]).powi(2))
+                .sum()
+        };
+        let mut min_d2: Vec<f64> = members
+            .iter()
+            .map(|cells| {
+                cells
+                    .par_iter()
+                    .enumerate()
+                    .map(|(a, &i)| {
+                        cells[a + 1..]
+                            .iter()
+                            .map(|&j| d2(i, j))
+                            .filter(|&v| v > 0.0)
+                            .fold(f64::INFINITY, f64::min)
+                    })
+                    .reduce(|| f64::INFINITY, f64::min)
+            })
+            .collect();
+        no_spacing_as_one(&mut min_d2);
+        WeightedGraph::AllPairs {
+            xy: flat,
+            dims,
+            section: data.section.clone(),
+            members,
+            min_d2,
+            scale: 2.0 * smoothness,
         }
     }
 
-    pub fn neighbours(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-        let r = self.offsets[i]..self.offsets[i + 1];
-        self.index[r.clone()]
-            .iter()
-            .zip(&self.weight[r])
-            .map(|(&j, &w)| (j, w))
+    /// Cells the graph is on.
+    pub fn n_cells(&self) -> usize {
+        match self {
+            WeightedGraph::Lists { offsets, .. } => offsets.len() - 1,
+            WeightedGraph::AllPairs { section, .. } => section.len(),
+        }
+    }
+
+    /// Each undirected edge `(i, j)`, `i < j`, once, with its weight
+    /// (symmetric lists give each edge one weight).
+    pub fn undirected(&self) -> (Vec<(usize, usize)>, Vec<f64>) {
+        let mut out = (Vec::new(), Vec::new());
+        for i in 0..self.n_cells() {
+            self.for_each_neighbour(i, |j, w| {
+                if i < j {
+                    out.0.push((i, j));
+                    out.1.push(w);
+                }
+            });
+        }
+        out
+    }
+
+    /// `each(j, w_ij)` over cell `i`'s neighbours, in order.
+    pub fn for_each_neighbour(&self, i: usize, mut each: impl FnMut(usize, f64)) {
+        match self {
+            WeightedGraph::Lists {
+                offsets,
+                index,
+                weight,
+            } => {
+                let r = offsets[i]..offsets[i + 1];
+                for (&j, &w) in index[r.clone()].iter().zip(&weight[r]) {
+                    each(j, w);
+                }
+            }
+            WeightedGraph::AllPairs {
+                xy,
+                dims,
+                section,
+                members,
+                min_d2,
+                scale,
+            } => {
+                let s = section[i];
+                let (dims, min_d2) = (*dims, min_d2[s]);
+                let at = &xy[i * dims..(i + 1) * dims];
+                for &j in members[s].iter().filter(|&&j| j != i) {
+                    let d2: f64 = at
+                        .iter()
+                        .zip(&xy[j * dims..(j + 1) * dims])
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum();
+                    each(j, scale * min_d2 / d2.max(min_d2));
+                }
+            }
+        }
+    }
+
+    /// Cell `i`'s neighbours and their weights, in order.
+    #[cfg(test)]
+    pub fn neighbours(&self, i: usize) -> std::vec::IntoIter<(usize, f64)> {
+        let mut out = Vec::new();
+        self.for_each_neighbour(i, |j, w| out.push((j, w)));
+        out.into_iter()
     }
 }
 
-/// `p_x_neighborhood` for one cell: `log p(x_n = c | x̂_N(n))` over the
-/// `k` classes, the log-normalised `-Σ_m w_nm [x̂_m ≠ c]`.
-/// One cell's spatial log prior, written into `row` (one entry per class).
+/// A section's `min d²` when it has no positive distance, every cell at
+/// one point: the reference's `min d² / d²` is `∞ / ∞` there, NaN. Taken
+/// as 1, each pair's `d²` (0, raised to `min d²`) gives `min d² / d² = 1`,
+/// so every pair weighs the same, `2 s`.
+fn no_spacing_as_one(min_d2: &mut [f64]) {
+    for m in min_d2.iter_mut().filter(|m| !m.is_finite()) {
+        *m = 1.0;
+    }
+}
+
+/// `p_x_neighborhood` for one cell, written into `row` (one entry per
+/// class): `log p(x_n = c | x̂_N(n))` over the `k` classes, the
+/// log-normalised `-Σ_m w_nm [x̂_m ≠ c]`.
 pub fn neighbourhood_log_prior_into(
     graph: &WeightedGraph,
     labels: &[usize],
@@ -426,12 +623,12 @@ pub fn neighbourhood_log_prior_into(
     let k = row.len();
     row.fill(0.0);
     let mut total = 0.0;
-    for (j, w) in graph.neighbours(i) {
+    graph.for_each_neighbour(i, |j, w| {
         total += w;
         if labels[j] < k {
             row[labels[j]] += w;
         }
-    }
+    });
     for r in row.iter_mut() {
         *r = -(total - *r);
     }
@@ -509,12 +706,162 @@ impl State {
     }
 }
 
+impl State {
+    /// The state on classes `idx` (sorted, at least one), as
+    /// `prune_components` keeps it: the sticks of all but the last.
+    pub fn retain(&self, idx: &[usize], n_genes: usize) -> State {
+        let g = n_genes;
+        let sticks = &idx[..idx.len() - 1];
+        State {
+            k: idx.len(),
+            alpha_1: sticks.iter().map(|&c| self.alpha_1[c]).collect(),
+            alpha_2: sticks.iter().map(|&c| self.alpha_2[c]).collect(),
+            eta_hat_2: self.eta_hat_2,
+            gamma_hat_1: idx
+                .iter()
+                .flat_map(|&c| self.gamma_hat_1[c * g..(c + 1) * g].iter().copied())
+                .collect(),
+            gamma_hat_2: idx.iter().map(|&c| self.gamma_hat_2[c]).collect(),
+        }
+    }
+}
+
 /// What one `_segment` call returns: the posteriors (cells × k, row-major),
 /// the next state and the ELBO.
 pub struct Update {
     pub pi: Vec<f64>,
     pub state: State,
     pub elbo: f64,
+}
+
+/// What a state's `φ` takes, fixed while the state is: `E[log λ]`
+/// (G × k, for the per-count sweep), `Σ_g E[λ]` per class and the stick
+/// terms' `Σ` ([`posteriors`]).
+pub struct PhiRates {
+    k: usize,
+    lam2_t: Vec<f64>,
+    lam1_sum: Vec<f64>,
+    vsum: Vec<f64>,
+}
+
+/// [`PhiRates`], and what the update reads beside them: `E[λ]` and
+/// `E[log λ]` (k × G), the other stick terms and `α̂`.
+pub struct Rates {
+    phi: PhiRates,
+    lam1: Vec<f64>,
+    lam2: Vec<f64>,
+    v2: Vec<f64>,
+    v3: Vec<f64>,
+    alphahat: f64,
+}
+
+impl PhiRates {
+    /// The `φ` rates of state `st` over `g` genes.
+    pub fn of(st: &State, g: usize) -> Self {
+        let (vsum, _, _) = stick_terms(&st.alpha_1, &st.alpha_2);
+        Self::with_vsum(st, g, vsum, |_, _, _| {})
+    }
+
+    /// The `φ` rates of state `st` over `g` genes, its stick terms' `Σ`
+    /// `vsum`: `E[λ]` and `E[log λ]` of each class and gene handed to
+    /// `each(c · g + j, E[λ], E[log λ])` too, in class then gene order.
+    fn with_vsum(
+        st: &State,
+        g: usize,
+        vsum: Vec<f64>,
+        mut each: impl FnMut(usize, f64, f64),
+    ) -> Self {
+        let k = st.k;
+        let mut lam2_t = vec![0.0; g * k];
+        let mut lam1_sum = vec![0.0; k];
+        for (c, &g2) in st.gamma_hat_2.iter().enumerate() {
+            let lg2 = g2.ln();
+            for j in 0..g {
+                let g1 = st.gamma_hat_1[c * g + j];
+                let (l1, l2) = (g1 / g2, g1.digamma() - lg2);
+                lam2_t[j * k + c] = l2;
+                lam1_sum[c] += l1;
+                each(c * g + j, l1, l2);
+            }
+        }
+        PhiRates {
+            k,
+            lam2_t,
+            lam1_sum,
+            vsum,
+        }
+    }
+}
+
+impl Rates {
+    /// The rates of state `st` over `g` genes, `k0` classes at the start.
+    pub fn of(st: &State, g: usize, k0: usize, p: &Params) -> Self {
+        let eta_1_nclasses = p.eta_1 + k0 as f64;
+        let mut lam1 = vec![0.0; st.k * g];
+        let mut lam2 = vec![0.0; st.k * g];
+        let (vsum, v2, v3) = stick_terms(&st.alpha_1, &st.alpha_2);
+        let phi = PhiRates::with_vsum(st, g, vsum, |x, l1, l2| {
+            lam1[x] = l1;
+            lam2[x] = l2;
+        });
+        Rates {
+            phi,
+            lam1,
+            lam2,
+            v2,
+            v3,
+            alphahat: (eta_1_nclasses - 1.0) / st.eta_hat_2,
+        }
+    }
+}
+
+/// Cell `i`'s `φ` into `row` under `rates` and the spatial `prior`, made
+/// its posterior (`softmax φ`); `logsumexp φ` returned.
+fn posterior_row(
+    i: usize,
+    row: &mut [f64],
+    counts: &CellCounts,
+    sizefactors: &[f64],
+    prior: Option<(&WeightedGraph, &[usize])>,
+    rates: &PhiRates,
+) -> f64 {
+    let k = rates.k;
+    if let Some((gr, labels)) = prior {
+        neighbourhood_log_prior_into(gr, labels, i, row);
+    }
+    for (r, (&v, &l)) in row.iter_mut().zip(rates.vsum.iter().zip(&rates.lam1_sum)) {
+        *r += v - sizefactors[i] * l;
+    }
+    for (j, y) in counts.row(i) {
+        for (r, &l) in row.iter_mut().zip(&rates.lam2_t[j * k..(j + 1) * k]) {
+            *r += l * y;
+        }
+    }
+    let m = logsumexp(row);
+    for r in row.iter_mut() {
+        *r = (*r - m).exp();
+    }
+    m
+}
+
+/// The E-step of `_segment`: the posteriors `π̂ = softmax φ` (cells × k,
+/// written into `scratch`) under `rates` and the spatial `prior` (none:
+/// no spatial prior), and `logsumexp φ` per cell, which the ELBO sums.
+pub fn posteriors(
+    mut scratch: Vec<f64>,
+    counts: &CellCounts,
+    sizefactors: &[f64],
+    prior: Option<(&WeightedGraph, &[usize])>,
+    rates: &PhiRates,
+) -> (Vec<f64>, Vec<f64>) {
+    scratch.clear();
+    scratch.resize(counts.n_cells() * rates.k, 0.0);
+    let lse = scratch
+        .par_chunks_mut(rates.k)
+        .enumerate()
+        .map(|(i, row)| posterior_row(i, row, counts, sizefactors, prior, rates))
+        .collect();
+    (scratch, lse)
 }
 
 /// One `_segment` update. `k0` is the starting class count (`fnclasses`).
@@ -534,52 +881,16 @@ pub fn update(
     let g = counts.n_genes;
     let k = st.k;
     let eta_1_nclasses = p.eta_1 + k0 as f64;
-
-    // E[λ], E[log λ]; E[log λ] stored genes × k for the per-count sweep
-    let mut lam1 = vec![0.0; k * g];
-    let mut lam2 = vec![0.0; k * g];
-    let mut lam2_t = vec![0.0; g * k];
-    let mut lam1_sum = vec![0.0; k];
-    for c in 0..k {
-        let g2 = st.gamma_hat_2[c];
-        let lg2 = g2.ln();
-        for j in 0..g {
-            let g1 = st.gamma_hat_1[c * g + j];
-            lam1[c * g + j] = g1 / g2;
-            lam2[c * g + j] = g1.digamma() - lg2;
-            lam2_t[j * k + c] = lam2[c * g + j];
-            lam1_sum[c] += lam1[c * g + j];
-        }
-    }
-    let (vsum, v2, v3) = stick_terms(&st.alpha_1, &st.alpha_2);
-    let alphahat = (eta_1_nclasses - 1.0) / st.eta_hat_2;
-
-    // φ, π̂ = softmax φ, and logsumexp φ per cell
-    let mut pi = scratch;
-    pi.clear();
-    pi.resize(n * k, 0.0);
-    let lse: Vec<f64> = pi
-        .par_chunks_mut(k)
-        .enumerate()
-        .map(|(i, row)| {
-            if let Some((gr, labels)) = prior {
-                neighbourhood_log_prior_into(gr, labels, i, row);
-            }
-            for (r, (&v, &l)) in row.iter_mut().zip(vsum.iter().zip(&lam1_sum)) {
-                *r += v - sizefactors[i] * l;
-            }
-            for (j, y) in counts.row(i) {
-                for (r, &l) in row.iter_mut().zip(&lam2_t[j * k..(j + 1) * k]) {
-                    *r += l * y;
-                }
-            }
-            let m = logsumexp(row);
-            for r in row.iter_mut() {
-                *r = (*r - m).exp();
-            }
-            m
-        })
-        .collect();
+    let rates = Rates::of(st, g, k0, p);
+    let (pi, lse) = posteriors(scratch, counts, sizefactors, prior, &rates.phi);
+    let Rates {
+        lam1,
+        lam2,
+        v2,
+        v3,
+        alphahat,
+        ..
+    } = rates;
 
     // sufficient statistics: π̂ Y (genes × k, gene by gene), then π̂ s,
     // Σ_n π̂ and Σ_n Σ_{l>c} π̂ (k each)
@@ -743,8 +1054,12 @@ pub struct Segmentation {
     /// Updates run (the reference's `niter`, 0-based last index).
     pub niter: usize,
     pub elbo_trace: Vec<f64>,
+    /// Classes after each update, the first `fnclasses`.
     pub nclasses_trace: Vec<usize>,
     pub prune_iterations: Vec<usize>,
+    /// The variational state on the retained classes, as the last update
+    /// left it.
+    pub state: State,
 }
 
 /// Regions at the start: `nclasses`, else ceil(sqrt(cells)), one at least.
@@ -817,19 +1132,7 @@ pub fn segment(
             anyhow::ensure!(!idx.is_empty(), "{ALL_PRUNED}");
             if idx.len() < k_old {
                 prune_iterations.push(i);
-                let g = counts.n_genes;
-                let sticks = &idx[..idx.len() - 1];
-                st = State {
-                    k: idx.len(),
-                    alpha_1: sticks.iter().map(|&c| st.alpha_1[c]).collect(),
-                    alpha_2: sticks.iter().map(|&c| st.alpha_2[c]).collect(),
-                    eta_hat_2: st.eta_hat_2,
-                    gamma_hat_1: idx
-                        .iter()
-                        .flat_map(|&c| st.gamma_hat_1[c * g..(c + 1) * g].iter().copied())
-                        .collect(),
-                    gamma_hat_2: idx.iter().map(|&c| st.gamma_hat_2[c]).collect(),
-                };
+                st = st.retain(&idx, counts.n_genes);
                 // keep `pi` on the retained classes, so it and the
                 // renumbered labels agree should the loop end here
                 pi = pi
@@ -844,6 +1147,7 @@ pub fn segment(
     let (idx, labels) = prune(&pi, k_now, &labels, p.class_prune_threshold);
     anyhow::ensure!(!idx.is_empty(), "{ALL_PRUNED}");
     let k = idx.len();
+    let state = st.retain(&idx, counts.n_genes);
     let pi: Vec<f64> = pi
         .chunks(k_now)
         .flat_map(|row| {
@@ -860,6 +1164,7 @@ pub fn segment(
         elbo_trace,
         nclasses_trace,
         prune_iterations,
+        state,
     })
 }
 
@@ -867,26 +1172,29 @@ pub fn segment(
 pub struct TopGenes {
     /// The genes segmented on, in index order.
     pub genes: Vec<usize>,
-    /// Each cell's total over all genes (`calc_sizefactors`).
+    /// Each cell's total over all genes ([`cell_totals`]).
     pub sizefactors: Vec<f64>,
     /// Nonzeros of `genes`, as [`selected_counts`] keeps them.
     pub nonzeros: usize,
+}
+
+/// Each cell's total over all genes (`calc_sizefactors`).
+pub fn cell_totals(data: &SpatialData) -> Vec<f64> {
+    data.counts
+        .col_iter()
+        .map(|col| col.values().iter().fold(0.0, |t, &v| t + v as f64))
+        .collect()
 }
 
 /// The `n_top` genes with the highest totals, in index order (every gene
 /// when `n_top` is 0 or covers them), with the cells' size factors.
 pub fn top_genes(data: &SpatialData, n_top: usize) -> TopGenes {
     let n_genes = data.genes.len();
-    let csc = &data.counts;
     let mut total = vec![0.0f64; n_genes];
     let mut nonzeros = vec![0usize; n_genes];
-    let mut sizefactors = vec![0.0f64; data.cells.len()];
-    for (i, col) in csc.col_iter().enumerate() {
-        for (&g, &v) in col.row_indices().iter().zip(col.values()) {
-            total[g] += v as f64;
-            sizefactors[i] += v as f64;
-            nonzeros[g] += usize::from(v != 0.0);
-        }
+    for (g, _, &v) in data.counts.triplet_iter() {
+        total[g] += v as f64;
+        nonzeros[g] += usize::from(v != 0.0);
     }
     let mut order: Vec<usize> = (0..n_genes).collect();
     order.sort_by(|&a, &b| total[b].total_cmp(&total[a]).then(a.cmp(&b)));
@@ -897,7 +1205,7 @@ pub fn top_genes(data: &SpatialData, n_top: usize) -> TopGenes {
     TopGenes {
         nonzeros: order.iter().map(|&g| nonzeros[g]).sum(),
         genes: order,
-        sizefactors,
+        sizefactors: cell_totals(data),
     }
 }
 
@@ -929,10 +1237,47 @@ pub fn selected_counts(data: &SpatialData, genes: &[usize]) -> CellCounts {
     CellCounts::from_rows(genes.len(), &rows)
 }
 
+/// The reference's `neighbors=k` graph: each cell's `k` nearest within its
+/// section, symmetrised; none at 0.
+fn spatial_graph(data: &SpatialData, k: usize, smoothness: f64) -> Option<WeightedGraph> {
+    (k > 0).then(|| knn_graph(data, knn_within_sections(data, k), k, smoothness))
+}
+
+/// The weighted graph of `nb`, each cell's `k` nearest within its section,
+/// symmetrised; `nb` is freed before the weights are taken.
+fn knn_graph(data: &SpatialData, nb: Neighbours, k: usize, smoothness: f64) -> WeightedGraph {
+    let nb = nb.symmetrised();
+    log::info!(
+        "spatialde2: {} spatial edges (k = {k}, symmetrised)",
+        nb.n_edges()
+    );
+    WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, smoothness)
+}
+
 /// What would lower SpatialDE2's peak memory, for [`ensure_fits`].
 const LOWER_MEMORY: &str = "lower --n-top-genes, --neighbors or --n-clusters";
 
+/// Which run: `spatialde2` on its sparse graph or (`--reference`) on all
+/// pairs of a section, or `spatialde2-pb` (the sparse graph, on
+/// super-cells).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Variant {
+    Sparse,
+    Reference,
+    Pseudobulk,
+}
+
 impl Args {
+    /// The run these arguments ask for.
+    pub(crate) fn variant(&self) -> Variant {
+        match self.reference {
+            true => Variant::Reference,
+            false => Variant::Sparse,
+        }
+    }
+}
+
+impl FitArgs {
     fn params(&self) -> Params {
         Params {
             nclasses: self.n_clusters,
@@ -944,50 +1289,108 @@ impl Args {
             ..Params::default()
         }
     }
+
+    /// The arguments a `variant` run's peak memory depends on.
+    fn sizes(&self, variant: Variant) -> Spatialde2Sizes {
+        Spatialde2Sizes {
+            neighbors: self.neighbors,
+            n_clusters: self.n_clusters,
+            all_pairs: variant == Variant::Reference,
+        }
+    }
+
+    /// What `baseline.json` records of a fit `seg` on `genes` (of
+    /// `gene_names`), on all pairs of a section with `reference`.
+    fn settings(
+        &self,
+        params: &Params,
+        reference: bool,
+        genes: &[usize],
+        gene_names: &[Box<str>],
+        seg: &Segmentation,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "nclasses": seg.nclasses_trace.first(),
+            "n_clusters": self.n_clusters,
+            "neighbors": if reference { None } else { Some(self.neighbors) },
+            "graph": if reference { "all pairs within a section" } else { "kNN within a section, symmetrised" },
+            "smoothness_factor": params.smoothness_factor,
+            "n_top_genes": self.n_top_genes,
+            "n_genes_used": genes.len(),
+            "genes_used": genes.iter().map(|&g| gene_names[g].as_ref()).collect::<Vec<_>>(),
+            "class_prune_threshold": params.class_prune_threshold,
+            "abstol": params.abstol,
+            "reltol": params.reltol,
+            "maxiter": params.maxiter,
+            "gamma_1": params.gamma_1,
+            "gamma_2": params.gamma_2,
+            "eta_1": params.eta_1,
+            "eta_2": params.eta_2,
+            "status": seg.status,
+            "iterations": seg.niter + 1,
+            "n_regions": seg.k,
+            "prune_iterations": seg.prune_iterations,
+            "elbo_final": seg.elbo_trace.last(),
+            "reference": "PMBio/SpatialDE@6dbdb559a566d639da0f6fd3acc9e17104c0674f SpatialDE/dp_hmrf.py",
+        })
+    }
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    args.params().check()?;
+    let budget = check_before_read(&args.fit, args.variant())?;
+    run_on(args, args.fit.input.read(false)?, &budget)
+}
+
+/// `spatialde2-pb`: [`run_pb_on`] on the input read with its projection.
+pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
+    let budget = check_before_read(&args.fit, Variant::Pseudobulk)?;
+    run_pb_on(args, args.fit.input.read(true)?, &budget)
+}
+
+/// The arguments checked, and the peak of a `variant` run on the input's
+/// stored shape; the budget taken.
+fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> {
+    fit.params().check()?;
     let budget = Budget::now()?;
-    let stored = args.input.stored_shape()?;
     check_stored_shape(
         "spatialde2",
-        stored.map(|s| input_peak_bytes(args, &s)),
+        fit.input
+            .stored()?
+            .map(|s| input_peak_bytes(fit, variant, &s)),
         &budget,
         LOWER_MEMORY,
     )?;
-    run_on(args, args.input.read()?, &budget)
+    Ok(budget)
 }
 
-/// The peak of a run on an input of stored shape `s`, checked before its
-/// counts are read: every stored nonzero counted as selected too, and as
-/// many genes as `--n-top-genes` could keep, so it bounds the check after
-/// the read.
-pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
-    let genes = match args.n_top_genes {
+/// The peak of a `variant` run on an input of stored shape `s`, checked
+/// before its counts are read: every stored nonzero counted as selected
+/// too, and as many genes as `--n-top-genes` could keep, so it bounds the
+/// check after the read; or the δ estimate's, made during the read, when
+/// it is larger. A `spatialde2-pb` run's counts the coarsening's too.
+pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) -> usize {
+    let genes = match fit.n_top_genes {
         0 => s.genes,
         n => s.genes.min(n),
     };
     let input = InputShape { genes, ..s.clone() };
-    spatialde2_peak_bytes(&args.sizes().memory_shape(&input, s.nonzeros))
-}
-
-impl Args {
-    /// The arguments a run's peak memory depends on.
-    fn sizes(&self) -> Spatialde2Sizes {
-        Spatialde2Sizes {
-            neighbors: self.neighbors,
-            n_clusters: self.n_clusters,
-        }
-    }
+    let shape = fit.sizes(variant).memory_shape(&input, s.nonzeros);
+    let peak = spatialde2_peak_bytes(&shape);
+    let pb = match variant {
+        Variant::Pseudobulk => pseudobulk_bytes(shape.cells, s.nonzeros, shape.edges),
+        Variant::Sparse | Variant::Reference => 0,
+    };
+    fit.input
+        .peak_with_delta(peak + pb, SPATIALDE2_PROCESS_BYTES, s)
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
-/// cell's `neighbors` nearest (none at 0), starting from `n_clusters`
-/// regions.
+/// cell's `neighbors` nearest (none at 0), or with `all_pairs` every pair
+/// of a section, computed as visited; starting from `n_clusters` regions.
 pub(crate) struct Spatialde2Sizes {
     pub neighbors: usize,
     pub n_clusters: Option<usize>,
+    pub all_pairs: bool,
 }
 
 impl Spatialde2Sizes {
@@ -1006,14 +1409,29 @@ impl Spatialde2Sizes {
             selected_nonzeros,
             genes: input.genes,
             // symmetrising at most doubles the edges
-            edges: 2 * knn_edges(sizes, self.neighbors),
+            edges: match self.all_pairs {
+                true => 0,
+                false => 2 * knn_edges(sizes, self.neighbors),
+            },
             regions: initial_regions(n, self.n_clusters),
-            gram: if self.neighbors > 0 {
+            gram: if self.neighbors > 0 && !self.all_pairs {
                 knn_gram_bytes(sizes, rayon::current_num_threads())
             } else {
                 0
             },
+            pair_cells: if self.all_pairs { n } else { 0 },
         }
+    }
+}
+
+/// The shape of `data` as read, its counts on `genes` genes, for the
+/// checks after the read.
+fn read_shape(data: &SpatialData, genes: usize) -> InputShape {
+    InputShape {
+        genes,
+        nonzeros: data.counts.nnz(),
+        section_sizes: section_sizes(&data.section),
+        batches: data.n_batches(),
     }
 }
 
@@ -1021,19 +1439,18 @@ impl Spatialde2Sizes {
 /// budget (`budget`, taken before the read) before the counts are copied
 /// and the graph is built.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
-    let params = args.params();
+    let reference = args.reference;
+    let args_fit = &args.fit;
+    let params = args_fit.params();
     let TopGenes {
         genes,
         sizefactors,
         nonzeros: selected,
-    } = top_genes(&data, args.n_top_genes);
+    } = top_genes(&data, args_fit.n_top_genes);
     let n = data.cells.len();
-    let input = InputShape {
-        genes: genes.len(),
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-    };
-    let shape = args.sizes().memory_shape(&input, selected);
+    let shape = args_fit
+        .sizes(args.variant())
+        .memory_shape(&read_shape(&data, genes.len()), selected);
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),
@@ -1048,21 +1465,21 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len(),
         data.genes.len()
     );
-    let graph = (args.neighbors > 0).then(|| {
-        let nb = knn_within_sections(&data, args.neighbors).symmetrised();
+    let graph = if reference {
         log::info!(
-            "spatialde2: {} spatial edges (k = {}, symmetrised)",
-            nb.n_edges(),
-            args.neighbors
+            "spatialde2: every pair of cells in a section connected (--reference); \
+             each update visits them all"
         );
-        WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, params.smoothness_factor)
-    });
+        Some(WeightedGraph::all_pairs(&data, params.smoothness_factor))
+    } else {
+        spatial_graph(&data, args_fit.neighbors, params.smoothness_factor)
+    };
     let seg = segment(
         &counts,
         &sizefactors,
         graph.as_ref(),
         &params,
-        args.input.seed,
+        args_fit.input.seed,
     )?;
     log::info!(
         "spatialde2: {:?} after {} iterations, {} regions, ELBO {:.6e}",
@@ -1072,32 +1489,9 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         seg.elbo_trace.last().copied().unwrap_or(f64::NAN)
     );
     let probs = Mat::from_fn(n, seg.k, |i, c| seg.pi[i * seg.k + c] as f32);
-    let k0 = seg.nclasses_trace.first().copied().unwrap_or(0);
-    let settings = serde_json::json!({
-        "nclasses": k0,
-        "n_clusters": args.n_clusters,
-        "neighbors": args.neighbors,
-        "smoothness_factor": params.smoothness_factor,
-        "n_top_genes": args.n_top_genes,
-        "n_genes_used": genes.len(),
-        "genes_used": genes.iter().map(|&g| data.genes[g].as_ref()).collect::<Vec<_>>(),
-        "class_prune_threshold": params.class_prune_threshold,
-        "abstol": params.abstol,
-        "reltol": params.reltol,
-        "maxiter": params.maxiter,
-        "gamma_1": params.gamma_1,
-        "gamma_2": params.gamma_2,
-        "eta_1": params.eta_1,
-        "eta_2": params.eta_2,
-        "status": seg.status,
-        "iterations": seg.niter + 1,
-        "n_regions": seg.k,
-        "prune_iterations": seg.prune_iterations,
-        "elbo_final": seg.elbo_trace.last(),
-        "reference": "PMBio/SpatialDE@6dbdb559a566d639da0f6fd3acc9e17104c0674f SpatialDE/dp_hmrf.py",
-    });
+    let settings = args_fit.settings(&params, reference, &genes, &data.genes, &seg);
     write_run(
-        &args.input,
+        &args_fit.input,
         &data,
         Fitted {
             method: "spatialde2",
@@ -1106,6 +1500,176 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &probs,
             embedding_name: "spatialde2_prob",
             settings,
+            reference,
+            input_layout: None,
+            pseudobulk: None,
+        },
+    )
+}
+
+// ---------------------------------------------------------------- -pb
+
+/// Sweeps at most of the unravelling's class posteriors.
+pub const MAX_UNRAVEL_SWEEPS: usize = 100;
+
+/// A `spatialde2-pb` fit unravelled to cells: mean-field sweeps of each
+/// cell's class posterior on its own counts and the cell graph, the fit's
+/// state (region rates, sticks and concentration) held fixed: `_segment`'s
+/// `φ` with the cell's counts and size factor, and the neighbourhood prior
+/// from its neighbours' labels of the sweep before, starting from the
+/// super-cells' labels (`start`), until no label moves. The posteriors
+/// (cells × k), the labels and the sweeps run.
+pub fn unravel(
+    counts: &CellCounts,
+    sizefactors: &[f64],
+    graph: Option<&WeightedGraph>,
+    fit: &Segmentation,
+    start: &[usize],
+) -> (Vec<f64>, Vec<usize>, usize) {
+    // the state is held fixed: its φ rates once, then the E-step alone
+    let rates = PhiRates::of(&fit.state, counts.n_genes);
+    let mut labels = start.to_vec();
+    let mut next = vec![0; labels.len()];
+    let mut pi = Vec::new();
+    for sweep in 1..=MAX_UNRAVEL_SWEEPS {
+        let prior = graph.map(|g| (g, labels.as_slice()));
+        (pi, _) = posteriors(std::mem::take(&mut pi), counts, sizefactors, prior, &rates);
+        next.par_iter_mut()
+            .zip(pi.par_chunks(fit.k))
+            .for_each(|(l, row)| *l = argmax(row.iter().copied()));
+        if next == labels {
+            return (pi, next, sweep);
+        }
+        std::mem::swap(&mut labels, &mut next);
+    }
+    (pi, labels, MAX_UNRAVEL_SWEEPS)
+}
+
+/// `spatialde2-pb` on `data` as read (with its projection): the fit on
+/// super-cells, then [`unravel`]. A super-cell's counts and size factor are
+/// its cells' sums, and a super-edge's weight the sum of the cell-level
+/// `w_nm` over the cell-cell edges it collapses, so the super-cells'
+/// model is the cells' model with each super-cell's cells sharing a label.
+pub(crate) fn run_pb_on(
+    pb_args: &PbArgs,
+    mut data: SpatialData,
+    budget: &Budget,
+) -> anyhow::Result<()> {
+    use super::pseudobulk::{broadcast_agreement, fold_weighted, super_cells, COARSEN_K};
+    let args = &pb_args.fit;
+    let params = args.params();
+    let n = data.cells.len();
+    let input = read_shape(&data, data.genes.len());
+    let shape = args
+        .sizes(Variant::Pseudobulk)
+        .memory_shape(&input, input.nonzeros);
+    ensure_fits(
+        "spatialde2-pb",
+        spatialde2_peak_bytes(&shape) + pseudobulk_bytes(n, input.nonzeros, shape.edges),
+        budget,
+        LOWER_MEMORY,
+    )?;
+    // the projection is the coarsening's alone: taken, it is freed with it
+    let proj = data
+        .projection
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("spatialde2-pb reads the cells' projection"))?;
+    // one search serves both graphs when the cell graph is the wider: its
+    // lists are sorted by distance, so their first COARSEN_K are the
+    // coarsening's
+    let mut cell_knn =
+        (args.neighbors >= COARSEN_K).then(|| knn_within_sections(&data, args.neighbors));
+    let coarsen_knn = match &cell_knn {
+        Some(nb) => nb.truncated(COARSEN_K),
+        None => knn_within_sections(&data, COARSEN_K),
+    };
+    let sc = super_cells(&data, proj, pb_args.n_pseudobulk, coarsen_knn)?;
+    let m = sc.data.cells.len();
+    let TopGenes {
+        genes,
+        sizefactors: pb_sizefactors,
+        ..
+    } = top_genes(&sc.data, args.n_top_genes);
+    let pb_counts = selected_counts(&sc.data, &genes);
+    let of_cell = sc.of_cell;
+    // the super-cells' own data is not read again
+    drop(sc.data);
+    let cell_sizefactors = cell_totals(&data);
+    let cell_counts = selected_counts(&data, &genes);
+    data.counts = nalgebra_sparse::CscMatrix::zeros(0, 0);
+    log::info!(
+        "spatialde2-pb: {n} cells in {m} super-cells, {} genes",
+        genes.len()
+    );
+
+    let cell_graph = match cell_knn.take() {
+        Some(nb) => Some(knn_graph(
+            &data,
+            nb,
+            args.neighbors,
+            params.smoothness_factor,
+        )),
+        None => spatial_graph(&data, args.neighbors, params.smoothness_factor),
+    };
+    let (pb_graph, n_super_edges) = match &cell_graph {
+        Some(g) => {
+            let (edges, w) = g.undirected();
+            let (super_edges, sw) = fold_weighted(&of_cell, &edges, &w);
+            let count = super_edges.len();
+            (Some(WeightedGraph::from_pairs(m, &super_edges, &sw)), count)
+        }
+        None => (None, 0),
+    };
+    let fit = segment(
+        &pb_counts,
+        &pb_sizefactors,
+        pb_graph.as_ref(),
+        &params,
+        args.input.seed,
+    )?;
+    let broadcast: Vec<usize> = of_cell.iter().map(|&s| fit.labels[s]).collect();
+    let (pi, labels, sweeps) = unravel(
+        &cell_counts,
+        &cell_sizefactors,
+        cell_graph.as_ref(),
+        &fit,
+        &broadcast,
+    );
+    log::info!(
+        "spatialde2-pb: {} regions on super-cells, unravelled to cells in {sweeps} sweeps",
+        fit.k
+    );
+    let probs = Mat::from_fn(n, fit.k, |i, c| pi[i * fit.k + c] as f32);
+    let mut settings = args.settings(&params, false, &genes, &data.genes, &fit);
+    settings["unravel"] = serde_json::json!({
+        "method": "mean-field sweeps of the class posteriors on each cell's counts and the cell graph, the fit's state fixed",
+        "sweeps": sweeps,
+        "max_sweeps": MAX_UNRAVEL_SWEEPS,
+        "broadcast_agreement": broadcast_agreement(&labels, &broadcast),
+    });
+    write_run(
+        &args.input,
+        &data,
+        Fitted {
+            method: "spatialde2-pb",
+            labels: &labels,
+            membership: Some(&probs),
+            embedding: &probs,
+            embedding_name: "spatialde2_prob",
+            settings,
+            reference: false,
+            input_layout: None,
+            pseudobulk: Some(PbFit {
+                input: PseudobulkInput {
+                    n_pseudobulk: pb_args.n_pseudobulk,
+                    n_super_cells: m,
+                    n_super_edges,
+                    edge_weighting: "sum of the cell-level w_nm over the cell-cell edges collapsed"
+                        .into(),
+                },
+                super_cell: &of_cell,
+                broadcast: &broadcast,
+            }),
         },
     )
 }

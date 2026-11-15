@@ -115,6 +115,18 @@ macro_rules! baseline_memory {
     };
 }
 
+/// What the spatial baselines do about batch effects, for their
+/// `long_about`.
+macro_rules! baseline_batch {
+    () => {
+        "With two or more batches (data files, or -b labels) the counts are\n\
+         divided by the input's own batch effects (δ, estimated as cage does\n\
+         and written to {out}.delta.parquet) before the method's own\n\
+         preprocessing. That is a deviation from the original method;\n\
+         --ignore-batch runs the original.\n\n"
+    };
+}
+
 /// The spatial baselines' outputs, as `spatial_baselines/output.rs`
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
@@ -694,7 +706,12 @@ enum Commands {
         long_about = concat!(
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
              faithful to its reference code at the model level, on pinto's inputs:\n\
-             the data, -c, -b, -o and --seed flags lc takes.\n\n",
+             the data, -c, -b, -o and --seed flags lc takes.\n\n\
+             Sparse by default: each cell's --neighbors nearest in its section,\n\
+             the reference's own neighbors=k option. --reference connects every\n\
+             pair of cells in a section, the reference's default, at O(N^2) work\n\
+             per update (no N x N matrix is held).\n\n",
+            baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
         )
@@ -709,12 +726,36 @@ enum Commands {
              lc takes. Its embedding is clustered by pinto's own methods: seeded\n\
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
-             Gaussian mixture in R at that step.\n\n",
+             Gaussian mixture in R at that step.\n\n\
+             Sparse by default on the CPU: the input stays sparse and the loss is\n\
+             summed over blocks of cells. --reference holds the dense input, as\n\
+             the original does, and so does a GPU (--device), its mode still\n\
+             sparse; both give the same numbers up to float rounding.\n\n",
+            baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
         )
     )]
     Stagate(Box<spatial_baselines::stagate::Args>),
+
+    #[command(
+        name = "spatialde2-pb",
+        about = "spatialde2 fitted on cage's super-cells, unravelled to cells (baseline)",
+        long_about = concat!(
+            "spatialde2 fitted on super-cells, then unravelled to cells.\n\n\
+             The cells are coarsened as cage coarsens them, to about -d super-cells\n\
+             within each section. A super-cell's counts are its cells' summed, and a\n\
+             super-edge's weight sums the cell-level weights of the cell-cell edges\n\
+             it collapses: the cells' model with each super-cell's cells sharing a\n\
+             region. Each cell's region posterior is then re-inferred on its own\n\
+             counts and the cell graph, the fit's region rates held fixed. Takes\n\
+             spatialde2's flags but --reference: it fits the sparse graph.\n\n",
+            baseline_batch!(),
+            baseline_memory!(),
+            baseline_outputs!()
+        )
+    )]
+    Spatialde2Pb(Box<spatial_baselines::spatialde2::PbArgs>),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",
@@ -882,8 +923,9 @@ impl Commands {
             Commands::Impute(a) => (&mut a.predict.common.out, "impute"),
             Commands::LrActivity(a) => (a.out.as_mut()?, "lra"),
             Commands::LraSimulate(a) => (a.out.as_mut()?, "lra"),
-            Commands::Spatialde2(a) => (&mut a.input.out, "spatialde2"),
+            Commands::Spatialde2(a) => (&mut a.fit.input.out, "spatialde2"),
             Commands::Stagate(a) => (&mut a.input.out, "stagate"),
+            Commands::Spatialde2Pb(a) => (&mut a.fit.input.out, "spatialde2-pb"),
             _ => return None,
         })
     }
@@ -987,6 +1029,7 @@ fn main() -> anyhow::Result<()> {
         Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
         Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
         Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
+        Commands::Spatialde2Pb(args) => spatial_baselines::spatialde2::run_pb(args)?,
         Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]

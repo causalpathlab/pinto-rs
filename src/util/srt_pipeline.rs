@@ -16,7 +16,8 @@ use crate::util::ablation::{
     Ablation, AblationArgs, AblationKind, MaskMode, PermuteCoords,
 };
 use crate::util::batch_effects::{
-    estimate_and_write_batch_effects, load_cnv_cell_strata, BatchPosterior, EstimateBatchArgs,
+    estimate_and_write_batch_effects, load_cnv_cell_strata, sorted_batch_labels, BatchPosterior,
+    EstimateBatchArgs,
 };
 use crate::util::cell_pairs::{
     build_expression_graph, build_expression_knn, build_expression_knn_within, build_spatial_graph,
@@ -521,16 +522,14 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // (the projection's correction below, a model's own divide). The labels
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
-    let batch_labels: Vec<Box<str>> = batch_membership
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<std::collections::BTreeSet<&str>>()
-        .into_iter()
-        .map(Box::from)
-        .collect();
+    let batch_labels = sorted_batch_labels(&batch_membership);
     let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, batch_labels.len());
-    let batch_effects = if estimate {
-        let batch_sort_dim = c.proj_dim.min(10);
+    // `ResolvedKnn::augment` is already 0 without coordinates, so these two
+    // tests stay in step by construction rather than by both remembering to
+    // say `&& has_coords`. That agreement is what the `expect` below rests on.
+    let augment_knn = knn.augment;
+    let take_projection = cfg.cell_projection || augment_knn > 0;
+    let mut batch_effects = if estimate {
         let strata = match c.cnv_clones.as_deref() {
             Some(path) => Some(load_cnv_cell_strata(path, &data_vec)?),
             None => None,
@@ -539,15 +538,9 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             &mut data_vec,
             &batch_membership,
             &batch_labels,
-            EstimateBatchArgs {
-                proj_dim: c.proj_dim,
-                sort_dim: batch_sort_dim,
-                block_size: c.block_size,
-                batch_knn: c.batch_knn,
-                num_levels: c.num_levels,
-                strata,
-            },
+            EstimateBatchArgs::at(c.proj_dim, c.block_size, c.batch_knn, c.num_levels, strata),
             (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref()),
+            take_projection,
         )?
     } else {
         None
@@ -572,15 +565,16 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let batch_arg: Option<&[Box<str>]> =
         (batch_effects.is_some() || known).then_some(batch_membership.as_slice());
 
-    // `ResolvedKnn::augment` is already 0 without coordinates, so these two
-    // tests stay in step by construction rather than by both remembering to
-    // say `&& has_coords`. That agreement is what the `expect` below rests on.
-    let augment_knn = knn.augment;
-
-    let cell_proj = if cfg.cell_projection || augment_knn > 0 {
-        Some(data_vec.project_columns_with_batch_correction(c.proj_dim, c.block_size, batch_arg)?)
-    } else {
-        None
+    // With an estimate, its projection is this one: the same `-p`, block
+    // size and batch membership.
+    let cell_proj = match batch_effects.as_mut().and_then(|b| b.projection.take()) {
+        Some(proj) => Some(proj),
+        None if take_projection => Some(data_vec.project_columns_with_batch_correction(
+            c.proj_dim,
+            c.block_size,
+            batch_arg,
+        )?),
+        None => None,
     };
 
     let (graph, spatial_graph, edge_source) = if augment_knn == 0 {
@@ -708,7 +702,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         section_ids,
         seeding,
         batch_labels,
-        batch_effects,
+        batch_effects: batch_effects.map(|b| b.posterior),
         graph,
         knn,
         spatial_graph,

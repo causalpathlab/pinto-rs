@@ -418,6 +418,46 @@ fn spatial_seeding_seeds_each_group_in_its_own_frame() {
     );
 }
 
+/// Every level's labels are dense, `0..k` each held by a cell, with the
+/// spatial seeding pre-pass (an input over [`SEEDING_THRESHOLD`] cells,
+/// in two groups) and without it: a pseudobulk built on a level has no
+/// empty unit.
+#[test]
+fn every_level_s_labels_are_dense_with_and_without_seeding() {
+    let side = 150;
+    let n = side * side;
+    assert!(n > SEEDING_THRESHOLD);
+    let (graph, features, half) = noisy_two_region_grid(side, 4, 7);
+    let mut coords = Mat::zeros(n, 2);
+    for i in 0..n {
+        coords[(i, 0)] = (i % side) as f32;
+        coords[(i, 1)] = (i / side) as f32;
+    }
+    let groups: Vec<u32> = half.iter().map(|&h| h as u32).collect();
+    for seeded in [false, true] {
+        let ml = graph_coarsen_multilevel(
+            &graph,
+            &mut features.clone(),
+            &graph.edges,
+            CoarsenConfig {
+                n_clusters: 40,
+                num_levels: 3,
+                seeding: seeded.then_some(SeedingParams {
+                    coordinates: &coords,
+                    groups: Some(&groups),
+                }),
+                modularity_veto: None,
+            },
+        );
+        for (l, labels) in ml.all_cell_labels.iter().enumerate() {
+            assert!(
+                sizes(labels).iter().all(|&s| s > 0),
+                "seeded {seeded}, level {l}: a label no cell holds"
+            );
+        }
+    }
+}
+
 //////////////////////////////////////////////
 // balance of the clusters a cut hands back //
 //////////////////////////////////////////////

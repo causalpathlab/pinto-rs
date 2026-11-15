@@ -240,6 +240,61 @@ pub struct PintoMetadata {
     /// δ, and on manifests written before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_labels: Option<BatchLabels>,
+
+    /// Present on a spatial baseline's run (`stagate`, `spatialde2` and
+    /// `spatialde2-pb`): its formulation and what it was fitted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineRun>,
+}
+
+/// A spatial baseline's formulation and what it was fitted on.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BaselineRun {
+    /// `sparse` (pinto's scalable formulation, the default) or
+    /// `reference` (the original method's own).
+    pub mode: BaselineMode,
+    /// How the input was held, `dense` or `sparse`, for a method whose
+    /// layout is not the mode's alone (a dense GPU run in `sparse` mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_layout: Option<InputLayout>,
+    /// `cells`, or the super-cells `spatialde2-pb` was fitted on.
+    pub input: BaselineInput,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaselineMode {
+    Sparse,
+    Reference,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputLayout {
+    Dense,
+    Sparse,
+}
+
+/// What a baseline was fitted on: the cells, or super-cells.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BaselineInput {
+    Cells,
+    Pseudobulk(PseudobulkInput),
+}
+
+/// The super-cells a `spatialde2-pb` run was fitted on, and how their
+/// graph was weighted.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PseudobulkInput {
+    /// `-d --n-pseudobulk`, the target.
+    pub n_pseudobulk: usize,
+    /// Super-cells fitted on.
+    pub n_super_cells: usize,
+    /// Super-edges of the collapsed graph.
+    pub n_super_edges: usize,
+    /// What a super-edge's weight is.
+    pub edge_weighting: String,
 }
 
 /// What a run's batch labels are: one per data file (by its position), the
@@ -936,9 +991,16 @@ fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
     let Some(delta) = inputs.delta else {
         return (None, None);
     };
+    let (delta_file, cells) = delta_files(inputs.prefix);
+    (Some(delta_file), delta.cells.then_some(cells))
+}
+
+/// The δ table and each cell's batch beside it, as a fit under `prefix`
+/// writes them, relative to its manifest.
+pub(crate) fn delta_files(prefix: &str) -> (String, String) {
     // the manifest's own file name less its suffix: `-o out/` writes
     // `out/.pinto.json` and `out/.delta.parquet`
-    let manifest = manifest_path(inputs.prefix);
+    let manifest = manifest_path(prefix);
     let name = Path::new(&manifest)
         .file_name()
         .and_then(|f| f.to_str())
@@ -946,10 +1008,8 @@ fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
         .unwrap_or_default()
         .to_string();
     (
-        Some(format!("{name}.delta.parquet")),
-        delta
-            .cells
-            .then(|| crate::util::batch_effects::delta_cells_path(&name)),
+        format!("{name}.delta.parquet"),
+        crate::util::batch_effects::delta_cells_path(&name),
     )
 }
 
@@ -1022,6 +1082,7 @@ pub fn create_lc_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1068,6 +1129,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1119,7 +1181,7 @@ pub fn create_cage_metadata(
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
             pb_embedding: Some(format!("{prefix}.pb_embedding.parquet")),
             pb_bias: Some(format!("{prefix}.pb_bias.parquet")),
-            cell_pb: Some(format!("{prefix}.cell_pb.parquet")),
+            cell_pb: Some(crate::util::parquet_io::cell_pb_path(prefix)),
             feature_embedding: Some(format!("{prefix}.feature_embedding.parquet")),
             feature_bias: Some(format!("{prefix}.feature_bias.parquet")),
             ..Default::default()
@@ -1128,6 +1190,7 @@ pub fn create_cage_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        baseline: None,
     }
 }
 
@@ -1173,5 +1236,6 @@ pub fn create_prop_metadata(
         ablation: None,
         holdout: None,
         batch_labels: None,
+        baseline: None,
     }
 }

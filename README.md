@@ -514,7 +514,7 @@ writes such a table:
 Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
 `run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
 
-### Spatial baselines: `spatialde2`, `stagate`
+### Spatial baselines: `spatialde2`, `stagate` and their `-pb` forms
 
 Published spatial-domain methods, ported to run on pinto's inputs so they
 can be scored beside `lc`, `cage` and `dsvd`:
@@ -541,6 +541,40 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 `--seed`; spatial graphs are built within a section only. `--n-clusters`
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
+
+Each has two modes, recorded in the manifest (`baseline.mode`) and in
+`baseline.json`: pinto's sparse formulation, the default, which never
+holds an `N × N` matrix, and `--reference`, the original's own. For
+`spatialde2` the sparse mode is the reference's own `neighbors=k` option
+(`--neighbors`, 100 by default) and `--reference` its default graph, every
+pair of cells in a section connected; for `stagate` both are the same
+model and give the same numbers up to float rounding (the sparse one keeps
+the input sparse, on the CPU only: on a GPU `stagate` holds it dense, its
+mode still `sparse`, and `baseline.json` records the layout held as
+`input_layout`). Segmentation runs on every gene by default, as
+SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
+the most expressed.
+
+`spatialde2-pb` fits `spatialde2` on super-cells and unravels the fit
+back to cells. The cells are coarsened as `cage` coarsens them, to about
+`-d` (`--n-pseudobulk`) super-cells within each section, each with its
+cells' counts summed and their centroid as coordinates, on the cell graph
+collapsed onto them (a super-edge's weight sums the cell-cell edges it
+collapses, so the super-cells' model is the cells' model with each
+super-cell's cells sharing a region). Each cell's region posterior is then
+re-inferred on its own counts and the cell graph with the fit held fixed.
+`{out}.cell_pb.parquet` records each cell's super-cell and that
+super-cell's label (broadcasting it is a diagnostic, not the output), and
+the manifest's `baseline` block records the input. The bar it was held
+to: on a simulated section at one super-cell per eight cells, within 0.1
+ARI of the cell-level fit and better than the broadcast labels at domain
+boundaries.
+
+One deviation is shared: with two or more batches (data files, or `-b`
+labels) the counts are divided by the input's own batch effects (δ,
+estimated as `cage` estimates them and written to `{out}.delta.parquet`)
+before the method's own preprocessing. `--ignore-batch` runs the original
+method on the counts as stored.
 
 Both fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
@@ -704,8 +738,8 @@ and Wilcoxon tests over donors, and a donor bootstrap interval.
 
 Set up fits in the terminal and run them. Pick data files (coordinate and
 batch files beside them are paired by sample name), queue `lc`, `dsvd`, `cage`
-and `cage-cell` (or the spatial baselines `spatialde2` and `stagate`, listed
-after them), and change any flag; each method's form is read from its own
+and `cage-cell` (or the spatial baselines `spatialde2` and `stagate` and
+their `-pb` forms, listed after them), and change any flag; each method's form is read from its own
 `--help`. ctrl+r shows the exact commands, checked as pinto would parse them,
 and runs them in turn with their log on screen; each fit shows a progress bar,
 plus a sparkline of its score (loss, NLL or moves) once it has two values and
@@ -1017,7 +1051,7 @@ to the model; with one of them, put that text in the agent's own instructions
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialde2-pb`); with a method, its flags: name, help, default, choices (hidden tuning flags are left out) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

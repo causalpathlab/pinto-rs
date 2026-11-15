@@ -233,7 +233,7 @@ fn training_lowers_the_reconstruction_loss() {
         weight_decay: 1e-4,
         gradient_clipping: 5.0,
     };
-    let losses = m.fit(&x, &g, &opts).unwrap();
+    let losses = m.fit(&Input::Dense(x.clone()), &g, &opts).unwrap();
     assert_eq!(losses.len(), 200);
     assert!(
         losses[199] < 0.5 * losses[0],
@@ -259,7 +259,7 @@ fn decoder_stays_tied_to_the_encoder() {
         gradient_clipping: 5.0,
     };
     let w1_before: Vec<Vec<f32>> = m.w1.as_tensor().to_vec2().unwrap();
-    m.step(&x, &g, &opts).unwrap();
+    m.step(&Input::Dense(x.clone()), &g, &opts).unwrap();
     let w1_after: Vec<Vec<f32>> = m.w1.as_tensor().to_vec2().unwrap();
     // two Adam updates of at most lr each land on W1 (its own and conv4's)
     let mut max_move = 0f32;
@@ -487,7 +487,7 @@ fn model_and_training_match_a_torch_replica() {
         weight_decay: f.weight_decay,
         gradient_clipping: f.gradient_clipping,
     };
-    let losses = m.fit(&x, &g, &opts).unwrap();
+    let losses = m.fit(&Input::Dense(x.clone()), &g, &opts).unwrap();
     // looser after training: Adam's early steps are about lr · sign(g), so
     // rounding that differs between matmul backends moves the weights
     // more than it moves one forward pass
@@ -500,4 +500,139 @@ fn model_and_training_match_a_torch_replica() {
         &f.recon_final,
         1e-4,
     );
+}
+
+/// The toy input with some entries zero, as a sparse input (genes × cells
+/// log data, every gene kept) whose loss runs in blocks of `block` cells.
+fn toy_sparse(x: &Tensor, block: usize) -> (Tensor, SparseInput) {
+    let rows: Vec<Vec<f32>> = x.to_vec2().unwrap();
+    let (n, p) = (rows.len(), rows[0].len());
+    let mut coo = CooMatrix::<f32>::new(p, n);
+    let mut dense = vec![0f32; n * p];
+    for (i, r) in rows.iter().enumerate() {
+        for (j, &v) in r.iter().enumerate() {
+            if (i * 5 + j * 3) % 4 != 0 {
+                coo.push(j, i, v);
+                dense[i * p + j] = v;
+            }
+        }
+    }
+    let mut sparse = SparseInput::from_rows(&CscMatrix::from(&coo), &(0..p).collect::<Vec<_>>());
+    sparse.block_cells = block;
+    let dense = Tensor::from_vec(dense, (n, p), x.device()).unwrap();
+    (dense, sparse)
+}
+
+/// The sparse products and blocks are the dense input's.
+#[test]
+fn sparse_input_products_are_the_dense_ones() {
+    let dev = Device::Cpu;
+    let (x, _) = toy_model_input(&dev);
+    let (dense, sparse) = toy_sparse(&x, 7);
+    let (n, p, h) = (40, 12, 5);
+    let w: Vec<f32> = (0..p * h).map(|k| (k as f32 * 0.37).sin()).collect();
+    let d: Vec<f32> = (0..n * h).map(|k| (k as f32 * 0.11).cos()).collect();
+    let wt = Tensor::from_vec(w.clone(), (p, h), &dev).unwrap();
+    let dt = Tensor::from_vec(d.clone(), (n, h), &dev).unwrap();
+    assert_close(
+        "x W",
+        &sparse.matmul(&w, h),
+        &flat(&dense.matmul(&wt).unwrap()),
+        1e-6,
+    );
+    let xt_d = dense.t().unwrap().matmul(&dt).unwrap();
+    assert_close("xᵀ D", &sparse.t_matmul(&d, h), &flat(&xt_d), 1e-6);
+    let rows = dense.narrow(0, 7, 14).unwrap();
+    assert_eq!(sparse.dense_block(7..21), flat(&rows));
+}
+
+/// The sparse formulation (the default) trains to the same numbers as the
+/// dense one (`--reference`): every epoch's loss and the embedding, within
+/// float rounding, with the loss summed over uneven blocks of cells.
+#[test]
+fn sparse_training_matches_the_dense_reference() {
+    let dev = Device::Cpu;
+    let (x, g) = toy_model_input(&dev);
+    let (dense, sparse) = toy_sparse(&x, 7);
+    let opts = TrainOpts {
+        n_epochs: 40,
+        lr: 1e-2,
+        weight_decay: 1e-4,
+        gradient_clipping: 5.0,
+    };
+    let (dense, sparse) = (Input::Dense(dense), Input::Sparse(sparse));
+    let mut a = Stagate::new(12, 16, 3, 7, &dev).unwrap();
+    let mut b = Stagate::new(12, 16, 3, 7, &dev).unwrap();
+    let la = a.fit(&dense, &g, &opts).unwrap();
+    let lb = b.fit(&sparse, &g, &opts).unwrap();
+    assert_close("losses", &lb, &la, 1e-5);
+    let za = flat(&a.embed(&dense, &g).unwrap());
+    let zb = flat(&b.embed(&sparse, &g).unwrap());
+    assert_close("embedding", &zb, &za, 1e-4);
+    assert_close("W1", &flat(b.w1.as_tensor()), &flat(a.w1.as_tensor()), 1e-4);
+}
+
+/// The sparse formulation matches the torch replica too.
+#[test]
+fn sparse_training_matches_the_torch_replica() {
+    let f: Parity = serde_json::from_str(include_str!("stagate_parity.json")).unwrap();
+    let dev = Device::Cpu;
+    let g = EdgeIndex::new(&f.src, &f.dst, f.n, &dev).unwrap();
+    let mut coo = CooMatrix::<f32>::new(f.p, f.n);
+    for (k, &v) in f.x.iter().enumerate() {
+        if v != 0.0 {
+            coo.push(k % f.p, k / f.p, v);
+        }
+    }
+    let mut x = SparseInput::from_rows(&CscMatrix::from(&coo), &(0..f.p).collect::<Vec<_>>());
+    x.block_cells = 3;
+    let x = Input::Sparse(x);
+    let mut m = Stagate::new(f.p, f.hidden, f.latent, 0, &dev).unwrap();
+    let set = |v: &Var, w: &[f32], r: usize, c: usize| {
+        v.set(&Tensor::from_vec(w.to_vec(), (r, c), &dev).unwrap())
+            .unwrap()
+    };
+    set(&m.w1, &f.w1, f.p, f.hidden);
+    set(&m.a_src, &f.a_src, f.hidden, 1);
+    set(&m.a_dst, &f.a_dst, f.hidden, 1);
+    set(&m.w2, &f.w2, f.hidden, f.latent);
+    assert_close(
+        "z at init",
+        &flat(&m.embed(&x, &g).unwrap()),
+        &f.z_init,
+        1e-5,
+    );
+    let opts = TrainOpts {
+        n_epochs: f.losses.len(),
+        lr: f.lr,
+        weight_decay: f.weight_decay,
+        gradient_clipping: f.gradient_clipping,
+    };
+    let losses = m.fit(&x, &g, &opts).unwrap();
+    assert_close("losses", &losses, &f.losses, 1e-4);
+    assert_close(
+        "z after training",
+        &flat(&m.embed(&x, &g).unwrap()),
+        &f.z_final,
+        1e-4,
+    );
+}
+
+/// A step's loss holds no graph: training keeps a hundred of them before
+/// reading them, and a traced one would keep its step's tensors alive.
+#[test]
+fn a_step_s_loss_is_detached() {
+    let dev = Device::Cpu;
+    let (x, g) = toy_model_input(&dev);
+    let (dense, sparse) = toy_sparse(&x, 7);
+    let opts = TrainOpts {
+        n_epochs: 1,
+        lr: 1e-3,
+        weight_decay: 0.0,
+        gradient_clipping: 5.0,
+    };
+    for input in [Input::Dense(dense), Input::Sparse(sparse)] {
+        let mut m = Stagate::new(12, 8, 2, 3, &dev).unwrap();
+        assert!(!m.step(&input, &g, &opts).unwrap().track_op());
+    }
 }

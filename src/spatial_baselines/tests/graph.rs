@@ -17,6 +17,8 @@ pub(crate) fn toy(xy: &[(f32, f32)], section: &[usize]) -> SpatialData {
         batches: section.iter().map(|s| format!("S{s}").into()).collect(),
         section: section.to_vec(),
         n_sections: n_sections(section),
+        delta: None,
+        projection: None,
     }
 }
 

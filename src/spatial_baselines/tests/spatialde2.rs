@@ -392,3 +392,92 @@ fn genes_by_total_counts_and_size_factors_over_all() {
     assert_eq!(all.nonzeros, 5);
     assert_eq!(selected_counts(&d, &all.genes).n_genes, 3);
 }
+
+/// The reference's default graph, every pair of a section, computed as
+/// visited, is the kNN graph with every other cell of the section listed:
+/// the same neighbours, weights and neighbourhood prior.
+#[test]
+fn all_pairs_is_the_knn_graph_with_every_cell_listed() {
+    // an irregular layout, a coincident pair, two sections
+    let xy: Vec<(f32, f32)> = (0..14)
+        .map(|i| ((i as f32 * 1.7).sin() * 4.0, (i as f32 * 0.9).cos() * 3.0))
+        .chain([(1.0, 1.0), (1.0, 1.0)])
+        .collect();
+    let section: Vec<usize> = (0..16).map(|i| usize::from(i % 3 == 0)).collect();
+    let d = toy(&xy, &section);
+    let full = graph_of(&d, 15, 1.5);
+    let pairs = WeightedGraph::all_pairs(&d, 1.5);
+    let labels: Vec<usize> = (0..16).map(|i| (i * 7) % 4).collect();
+    for i in 0..16 {
+        let mut a: Vec<(usize, f64)> = full.neighbours(i).collect();
+        let mut b: Vec<(usize, f64)> = pairs.neighbours(i).collect();
+        a.sort_by_key(|p| p.0);
+        b.sort_by_key(|p| p.0);
+        assert_eq!(a.len(), b.len(), "cell {i}");
+        assert!(b.iter().all(|&(j, _)| section[j] == section[i] && j != i));
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.0, y.0);
+            assert!((x.1 - y.1).abs() < 1e-5 * x.1, "{x:?} vs {y:?}");
+        }
+        let (mut pa, mut pb) = (vec![0.0; 4], vec![0.0; 4]);
+        neighbourhood_log_prior_into(&full, &labels, i, &mut pa);
+        neighbourhood_log_prior_into(&pairs, &labels, i, &mut pb);
+        for (x, y) in pa.iter().zip(&pb) {
+            assert!((x - y).abs() < 1e-4 * (1.0 + x.abs()), "{pa:?} vs {pb:?}");
+        }
+    }
+}
+
+/// A section whose cells all sit at one point has no positive distance:
+/// every pair weighs the same (`2 s`), on the kNN lists and on all pairs,
+/// and the fit's posteriors stay finite.
+#[test]
+fn coincident_cells_weigh_alike_and_fit_without_nan() {
+    let xy = vec![(1.0f32, 1.0f32); 16];
+    let d = toy(&xy, &[0; 16]);
+    let (counts, sf, _) = two_region_counts(4, 1);
+    for g in [graph_of(&d, 6, 1.5), WeightedGraph::all_pairs(&d, 1.5)] {
+        for i in 0..16 {
+            assert!(g.neighbours(i).all(|(_, w)| w == 3.0), "cell {i}");
+        }
+        let seg = segment(&counts, &sf, Some(&g), &Params::default(), 3).unwrap();
+        assert!(seg.pi.iter().all(|p| p.is_finite()), "{:?}", seg.pi);
+    }
+}
+
+/// The unravelling's sweeps are full updates' posteriors with the fit held
+/// fixed: the same posteriors, labels and sweeps as running [`update`]
+/// until no label moves.
+#[test]
+fn unravel_is_full_updates_with_the_fit_held_fixed() {
+    let d = grid(10, 2);
+    let g = graph_of(&d, 8, 2.0);
+    let (counts, sf, _) = two_region_counts(10, 2);
+    let p = Params::default();
+    let fit = segment(&counts, &sf, Some(&g), &p, 7).unwrap();
+    let start: Vec<usize> = (0..200).map(|i| (i / 7) % fit.k).collect();
+    let (pi, labels, sweeps) = unravel(&counts, &sf, Some(&g), &fit, &start);
+    let (mut want_pi, mut want, mut want_sweeps) = (Vec::new(), start, MAX_UNRAVEL_SWEEPS);
+    for sweep in 1..=MAX_UNRAVEL_SWEEPS {
+        let u = update(
+            std::mem::take(&mut want_pi),
+            &counts,
+            &sf,
+            Some((&g, want.as_slice())),
+            &fit.state,
+            fit.nclasses_trace[0],
+            &p,
+        );
+        want_pi = u.pi;
+        let next = argmax_rows(&want_pi, fit.k);
+        let done = next == want;
+        want = next;
+        if done {
+            want_sweeps = sweep;
+            break;
+        }
+    }
+    assert!(sweeps > 1, "{sweeps}");
+    assert_eq!((labels, sweeps), (want, want_sweeps));
+    assert_eq!(pi, want_pi);
+}

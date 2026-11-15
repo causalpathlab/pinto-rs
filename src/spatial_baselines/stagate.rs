@@ -100,12 +100,28 @@
 //!    Eck 2019, "From Louvain to Leiden: guaranteeing well-connected
 //!    communities", Scientific Reports 9:5233, doi:10.1038/s41598-019-41721-w).
 //!
-//! Memory is linear in the cells: the input is dense cells × variable genes,
-//! as in the reference, and the graph, attention and messages live on the
-//! edge list (cells × (k + 1) entries).
+//! Two formulations of the same model ([`Input`]), recorded as the run's
+//! mode. The default, sparse, keeps the input sparse: the first layer is a
+//! sparse × dense product, kept out of autograd (`x W1` is the graph's
+//! leaf, its gradient carried to `W1` as `xᵀ G`), and the reconstruction
+//! loss is summed over blocks of cells, each block's residual dense only
+//! while it is summed ([`Stagate::step`]). Both are exact: the loss and
+//! every gradient are the reference's, to float rounding (a test trains
+//! both and a torch replica). The dense one holds the cells × variable
+//! genes input, as the reference does: with `--reference`, the run's mode
+//! then `reference`, and on a GPU, where the sparse products would cross
+//! to the host each step, the mode staying `sparse` (the flag's). The
+//! layout held is recorded apart from the mode, as `input_layout` in the
+//! manifest's `baseline` and `baseline.json`'s `run`. Either way the
+//! graph, attention and messages live on the edge list (cells × (k + 1)
+//! entries), so memory is linear in the cells; the messages, `edges ×
+//! width`, are the larger part of it.
 //!
 //! Deliberate deviations:
 //!
+//! - Batch effects: with two or more batches the counts are divided by the
+//!   input's own δ before step 0 (see [`super`]); `--ignore-batch` runs
+//!   the original.
 //! - The loess is evaluated exactly at every gene (`surface="direct"`),
 //!   where scikit-misc's default interpolates a kd-tree of vertex fits
 //!   (`surface="interpolate"`); the two agree to the interpolation error.
@@ -146,6 +162,7 @@ use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
     check_stored_shape, knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape,
+    STAGATE_PROCESS_BYTES,
 };
 use super::output::{write_run, Fitted};
 use crate::simulate::baseline::normalise_log;
@@ -153,6 +170,7 @@ use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
+use crate::util::metadata::InputLayout;
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
@@ -187,6 +205,12 @@ const KMEANS_MAX_ITER: usize = 300;
 pub struct Args {
     #[command(flatten)]
     pub input: SpatialInputArgs,
+
+    /// Run the original method's own formulation instead of pinto's sparse
+    /// one (see --help). The default holds the input sparse on the CPU and
+    /// dense on GPU devices
+    #[arg(long, default_value_t = false)]
+    pub reference: bool,
 
     /// Number of domains. Given, the embedding is clustered by pinto's
     /// seeded k-means (k-means++ from --seed, then Lloyd) into exactly this
@@ -395,8 +419,8 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 /// `sc.pp.filter_genes(min_cells)`: the rows (genes) of `counts` nonzero in
 /// at least `min_cells` columns (cells), in order. The kept entries are
 /// copied column by column into arrays of their exact size, so the counts
-/// and their filtered copy are all it holds (24 bytes a nonzero).
-pub fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
+/// and their copy are all it holds (24 bytes a nonzero).
+pub(crate) fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
     // per gene, its nonzero cells and its stored entries
     let mut nnz = vec![0usize; counts.nrows()];
     let mut stored = vec![0usize; counts.nrows()];
@@ -448,6 +472,150 @@ fn dense_rows(log: &CscMatrix<f32>, genes: &[usize]) -> Vec<f32> {
         }
     }
     x
+}
+
+/// The input, cells × genes, kept sparse for the sparse formulation: by
+/// cell for `x W` and by gene for `xᵀ D` (8 bytes a nonzero each way).
+pub struct SparseInput {
+    pub n_cells: usize,
+    pub n_genes: usize,
+    /// Cells in a block of the loss ([`loss_block_cells`]).
+    pub block_cells: usize,
+    cell_ptr: Vec<usize>,
+    cell_gene: Vec<u32>,
+    cell_val: Vec<f32>,
+    gene_ptr: Vec<usize>,
+    gene_cell: Vec<u32>,
+    gene_val: Vec<f32>,
+}
+
+impl SparseInput {
+    /// Rows `genes` (sorted) of log data (genes × cells), renumbered
+    /// `0..genes.len()`: the same entries [`dense_rows`] writes.
+    pub fn from_rows(log: &CscMatrix<f32>, genes: &[usize]) -> Self {
+        let mut at = vec![u32::MAX; log.nrows()];
+        for (j, &g) in genes.iter().enumerate() {
+            at[g] = j as u32;
+        }
+        let (mut cell_ptr, mut cell_gene, mut cell_val) = (vec![0], Vec::new(), Vec::new());
+        for col in log.col_iter() {
+            for (&g, &v) in col.row_indices().iter().zip(col.values()) {
+                if at[g] != u32::MAX && v != 0.0 {
+                    cell_gene.push(at[g]);
+                    cell_val.push(v);
+                }
+            }
+            cell_ptr.push(cell_gene.len());
+        }
+        let p = genes.len();
+        let mut gene_ptr = vec![0usize; p + 1];
+        for &g in &cell_gene {
+            gene_ptr[g as usize + 1] += 1;
+        }
+        for g in 0..p {
+            gene_ptr[g + 1] += gene_ptr[g];
+        }
+        let mut next = gene_ptr.clone();
+        let mut gene_cell = vec![0u32; cell_gene.len()];
+        let mut gene_val = vec![0f32; cell_gene.len()];
+        for c in 0..log.ncols() {
+            for x in cell_ptr[c]..cell_ptr[c + 1] {
+                let slot = &mut next[cell_gene[x] as usize];
+                gene_cell[*slot] = c as u32;
+                gene_val[*slot] = cell_val[x];
+                *slot += 1;
+            }
+        }
+        Self {
+            n_cells: log.ncols(),
+            n_genes: p,
+            block_cells: loss_block_cells(p),
+            cell_ptr,
+            cell_gene,
+            cell_val,
+            gene_ptr,
+            gene_cell,
+            gene_val,
+        }
+    }
+
+    /// `x W` for `w` (genes × `width`, row-major): cells × `width`.
+    pub fn matmul(&self, w: &[f32], width: usize) -> Vec<f32> {
+        let mut out = vec![0f32; self.n_cells * width];
+        out.par_chunks_mut(width).enumerate().for_each(|(c, row)| {
+            for x in self.cell_ptr[c]..self.cell_ptr[c + 1] {
+                let (g, v) = (self.cell_gene[x] as usize, self.cell_val[x]);
+                for (o, &wv) in row.iter_mut().zip(&w[g * width..(g + 1) * width]) {
+                    *o += v * wv;
+                }
+            }
+        });
+        out
+    }
+
+    /// `xᵀ D` for `d` (cells × `width`, row-major): genes × `width`.
+    pub fn t_matmul(&self, d: &[f32], width: usize) -> Vec<f32> {
+        let mut out = vec![0f32; self.n_genes * width];
+        out.par_chunks_mut(width).enumerate().for_each(|(g, row)| {
+            for x in self.gene_ptr[g]..self.gene_ptr[g + 1] {
+                let (c, v) = (self.gene_cell[x] as usize, self.gene_val[x]);
+                for (o, &dv) in row.iter_mut().zip(&d[c * width..(c + 1) * width]) {
+                    *o += v * dv;
+                }
+            }
+        });
+        out
+    }
+
+    /// Cells `rows` dense, `rows.len()` × genes, row-major.
+    pub fn dense_block(&self, rows: std::ops::Range<usize>) -> Vec<f32> {
+        let p = self.n_genes;
+        let mut out = vec![0f32; rows.len() * p];
+        for (r, c) in rows.enumerate() {
+            for x in self.cell_ptr[c]..self.cell_ptr[c + 1] {
+                out[r * p + self.cell_gene[x] as usize] = self.cell_val[x];
+            }
+        }
+        out
+    }
+}
+
+/// STAGATE's input: dense, as the reference holds it (with `--reference`,
+/// or on a GPU), or sparse (the CPU default), whose first layer is a
+/// sparse × dense product and whose loss is summed over blocks of cells.
+pub enum Input {
+    Dense(Tensor),
+    Sparse(SparseInput),
+}
+
+impl Input {
+    /// `x W` on `w`'s device.
+    fn times(&self, w: &Tensor) -> anyhow::Result<Tensor> {
+        match self {
+            Input::Dense(x) => Ok(x.matmul(w)?),
+            Input::Sparse(x) => sparse_times(x, w),
+        }
+    }
+}
+
+/// `x W` for the sparse `x`, on the host, onto `w`'s device.
+fn sparse_times(x: &SparseInput, w: &Tensor) -> anyhow::Result<Tensor> {
+    let width = w.dim(1)?;
+    let host = w.flatten_all()?.to_vec1::<f32>()?;
+    Ok(Tensor::from_vec(
+        x.matmul(&host, width),
+        (x.n_cells, width),
+        w.device(),
+    )?)
+}
+
+/// Floats of a block of the sparse formulation's loss, its dense input
+/// rows: the block's rows are this over the genes (at least one).
+pub const LOSS_BLOCK_FLOATS: usize = 1 << 21;
+
+/// Cells in a block of the sparse loss over `genes` genes.
+pub fn loss_block_cells(genes: usize) -> usize {
+    (LOSS_BLOCK_FLOATS / genes.max(1)).max(1)
 }
 
 // ---------------------------------------------------------------- graph
@@ -584,6 +752,7 @@ fn xavier_normal(
 }
 
 /// The forward pass's outputs.
+#[cfg(test)]
 pub struct Forward {
     pub z: Tensor,
     pub recon: Tensor,
@@ -623,8 +792,25 @@ impl Stagate {
         })
     }
 
+    /// STAGATE.forward from the first layer's product `xw1 = x W1`, with
+    /// the decoder weight `w3` (latent × hidden) given: the embedding and
+    /// the decoder's last hidden layer `h3`, before `W4`.
+    fn forward_from(
+        &self,
+        xw1: &Tensor,
+        g: &EdgeIndex,
+        w3: &Tensor,
+    ) -> anyhow::Result<(Tensor, Tensor)> {
+        let alpha = attention(xw1, self.a_src.as_tensor(), self.a_dst.as_tensor(), g)?;
+        let h1 = aggregate(&alpha, xw1, g)?.elu(1.0)?;
+        let z = h1.matmul(self.w2.as_tensor())?;
+        let h3 = aggregate(&alpha, &z.matmul(w3)?, g)?.elu(1.0)?;
+        Ok((z, h3))
+    }
+
     /// STAGATE.forward with the decoder weights `w3` (latent × hidden) and
     /// `w4` (hidden × in) given.
+    #[cfg(test)]
     pub fn forward_with(
         &self,
         x: &Tensor,
@@ -632,32 +818,40 @@ impl Stagate {
         w3: &Tensor,
         w4: &Tensor,
     ) -> anyhow::Result<Forward> {
-        let xw1 = x.matmul(self.w1.as_tensor())?;
-        let alpha = attention(&xw1, self.a_src.as_tensor(), self.a_dst.as_tensor(), g)?;
-        let h1 = aggregate(&alpha, &xw1, g)?.elu(1.0)?;
-        let z = h1.matmul(self.w2.as_tensor())?;
-        let h3 = aggregate(&alpha, &z.matmul(w3)?, g)?.elu(1.0)?;
+        let (z, h3) = self.forward_from(&x.matmul(self.w1.as_tensor())?, g, w3)?;
         let recon = h3.matmul(w4)?;
         Ok(Forward { z, recon })
     }
 
     /// The forward pass with the decoder tied to the encoder.
+    #[cfg(test)]
     pub fn forward(&self, x: &Tensor, g: &EdgeIndex) -> anyhow::Result<Forward> {
         let w3 = self.w2.as_tensor().t()?.contiguous()?;
         let w4 = self.w1.as_tensor().t()?.contiguous()?;
         self.forward_with(x, g, &w3, &w4)
     }
 
-    /// One training step (Train_STAGATE.py's loop body); the loss before
-    /// the step.
-    pub fn step(&mut self, x: &Tensor, g: &EdgeIndex, opts: &TrainOpts) -> anyhow::Result<Tensor> {
-        // conv3/conv4.lin_src: their own leaves, set to the transposes
-        let w3 = Var::from_tensor(&self.w2.as_tensor().t()?.contiguous()?)?;
-        let w4 = Var::from_tensor(&self.w1.as_tensor().t()?.contiguous()?)?;
-        let out = self.forward_with(x, g, w3.as_tensor(), w4.as_tensor())?;
+    /// The embedding `h2` of input `x` on graph `g`.
+    pub fn embed(&self, x: &Input, g: &EdgeIndex) -> anyhow::Result<Tensor> {
+        let w3 = self.w2.as_tensor().t()?.contiguous()?;
+        Ok(self.forward_from(&x.times(self.w1.as_tensor())?, g, &w3)?.0)
+    }
+
+    /// The loss and the gradients of the six parameters (`w1`, `a_src`,
+    /// `a_dst`, `w2`, then the decoder's own leaves `w3`, `w4`), on the
+    /// dense input as the reference computes them.
+    fn dense_gradients(
+        &self,
+        x: &Tensor,
+        g: &EdgeIndex,
+        w3: &Var,
+        w4: &Var,
+    ) -> anyhow::Result<(Tensor, Vec<Tensor>)> {
+        let (_, h3) = self.forward_from(&x.matmul(self.w1.as_tensor())?, g, w3.as_tensor())?;
+        let recon = h3.matmul(w4.as_tensor())?;
         // F.mse_loss, the mean over every entry: by rows, then over cells,
         // since one f32 sum over every entry drifts on the CPU
-        let loss = (x - &out.recon)?.sqr()?.mean(1)?.mean_all()?;
+        let loss = (x - &recon)?.sqr()?.mean(1)?.mean_all()?;
         let grads = loss.backward()?;
         let params = [
             self.w1.as_tensor(),
@@ -667,7 +861,7 @@ impl Stagate {
             w3.as_tensor(),
             w4.as_tensor(),
         ];
-        let gs: Vec<Tensor> = params
+        let gs = params
             .iter()
             .map(|p| {
                 grads
@@ -676,6 +870,88 @@ impl Stagate {
                     .context("a STAGATE parameter has no gradient")
             })
             .collect::<anyhow::Result<_>>()?;
+        Ok((loss.detach(), gs))
+    }
+
+    /// [`Self::dense_gradients`] on the sparse input, exactly: the first
+    /// layer's product `x W1` is a leaf of the graph (`x` holds no
+    /// gradient), its gradient `G` carried to `W1` as `xᵀ G`; the loss is
+    /// summed over blocks of cells, each block's residual dense only while
+    /// it is summed, its gradients to `h3` and `W4` taken by hand
+    /// (`2 r / (N P)` back through `h3 W4`) and `h3`'s carried back through
+    /// the rest of the graph by the surrogate `Σ h3 ⊙ ∂L/∂h3`.
+    fn sparse_gradients(
+        &self,
+        x: &SparseInput,
+        g: &EdgeIndex,
+        w3: &Var,
+        w4: &Var,
+    ) -> anyhow::Result<(Tensor, Vec<Tensor>)> {
+        let dev = self.w1.as_tensor().device().clone();
+        let (n, p) = (x.n_cells, x.n_genes);
+        let xw1 = Var::from_tensor(&sparse_times(x, self.w1.as_tensor())?)?;
+        let (_, h3) = self.forward_from(xw1.as_tensor(), g, w3.as_tensor())?;
+        let h3_value = h3.detach();
+        // the block terms are taken by hand: none of them is traced
+        let w4t = w4.as_tensor().detach();
+        let scale = 2.0 / (n as f64 * p as f64);
+        let mut row_means = Vec::new();
+        let mut grad_h3 = Vec::new();
+        let mut grad_w4 = w4t.zeros_like()?;
+        let block = x.block_cells;
+        for start in (0..n).step_by(block) {
+            let len = block.min(n - start);
+            let xb = Tensor::from_vec(x.dense_block(start..start + len), (len, p), &dev)?;
+            let hb = h3_value.narrow(0, start, len)?;
+            let r = (&xb - hb.matmul(&w4t)?)?;
+            row_means.push(r.sqr()?.mean(1)?);
+            // ∂L/∂recon = -2 r / (N P)
+            let d_recon = (r * (-scale))?;
+            grad_h3.push(d_recon.matmul(&w4t.t()?)?);
+            grad_w4 = (grad_w4 + hb.t()?.matmul(&d_recon)?)?;
+        }
+        let loss = Tensor::cat(&row_means, 0)?.mean_all()?.detach();
+        let grad_h3 = Tensor::cat(&grad_h3, 0)?;
+        let grads = (h3 * grad_h3)?.sum_all()?.backward()?;
+        let grad = |t: &Tensor| {
+            grads
+                .get(t)
+                .map(Tensor::detach)
+                .context("a STAGATE parameter has no gradient")
+        };
+        let g_xw1 = grad(xw1.as_tensor())?;
+        let width = g_xw1.dim(1)?;
+        let host = g_xw1.flatten_all()?.to_vec1::<f32>()?;
+        let grad_w1 = Tensor::from_vec(x.t_matmul(&host, width), (p, width), &dev)?;
+        let gs = vec![
+            grad_w1,
+            grad(self.a_src.as_tensor())?,
+            grad(self.a_dst.as_tensor())?,
+            grad(self.w2.as_tensor())?,
+            grad(w3.as_tensor())?,
+            grad_w4,
+        ];
+        Ok((loss, gs))
+    }
+
+    /// One training step (Train_STAGATE.py's loop body); the loss before
+    /// the step.
+    pub fn step(&mut self, x: &Input, g: &EdgeIndex, opts: &TrainOpts) -> anyhow::Result<Tensor> {
+        // conv3/conv4.lin_src: their own leaves, set to the transposes
+        let w3 = Var::from_tensor(&self.w2.as_tensor().t()?.contiguous()?)?;
+        let w4 = Var::from_tensor(&self.w1.as_tensor().t()?.contiguous()?)?;
+        let (loss, gs) = match x {
+            Input::Dense(x) => self.dense_gradients(x, g, &w3, &w4)?,
+            Input::Sparse(x) => self.sparse_gradients(x, g, &w3, &w4)?,
+        };
+        let params = [
+            self.w1.as_tensor(),
+            self.a_src.as_tensor(),
+            self.a_dst.as_tensor(),
+            self.w2.as_tensor(),
+            w3.as_tensor(),
+            w4.as_tensor(),
+        ];
         // clip_grad_norm_: one coefficient min(1, max / (norm + 1e-6))
         let mut sq = gs[0].sqr()?.sum_all()?;
         for gr in &gs[1..] {
@@ -697,11 +973,11 @@ impl Stagate {
         self.w2.set(&w2.contiguous()?)?;
         self.a_src.set(&a_src)?;
         self.a_dst.set(&a_dst)?;
-        Ok(loss.detach())
+        Ok(loss)
     }
 
     /// Train for `opts.n_epochs`; the loss of every epoch.
-    pub fn fit(&mut self, x: &Tensor, g: &EdgeIndex, opts: &TrainOpts) -> anyhow::Result<Vec<f32>> {
+    pub fn fit(&mut self, x: &Input, g: &EdgeIndex, opts: &TrainOpts) -> anyhow::Result<Vec<f32>> {
         let mut losses = Vec::with_capacity(opts.n_epochs);
         let mut pending = Vec::new();
         for epoch in 1..=opts.n_epochs {
@@ -782,46 +1058,63 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         anyhow::ensure!(k >= 1, "--n-clusters must be positive");
     }
     let budget = Budget::now()?;
-    let stored = args.input.stored_shape()?;
     check_stored_shape(
         "stagate",
-        stored.map(|s| input_peak_bytes(args, &s)),
+        args.input.stored()?.map(|s| input_peak_bytes(args, &s)),
         &budget,
         lower_memory(&args.device),
     )?;
-    run_on(args, args.input.read()?, &budget)
+    run_on(args, args.input.read(false)?, &budget)
 }
 
 /// The peak of a run on an input of stored shape `s`, checked before its
 /// counts are read: every stored nonzero and as many genes as
-/// `--n-top-genes` could keep, so it bounds the checks after the read.
+/// `--n-top-genes` could keep, so it bounds the checks after the read; or
+/// the δ estimate's, made during the read, when it is larger.
 pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
-    stagate_peak_bytes(&args.sizes().memory_shape(&InputShape {
+    let shape = args.sizes().memory_shape(&InputShape {
         genes: s.genes.min(args.n_top_genes),
         ..s.clone()
-    }))
+    });
+    args.input
+        .peak_with_delta(stagate_peak_bytes(&shape), STAGATE_PROCESS_BYTES, s)
 }
 
 impl Args {
     /// The arguments a run's peak memory depends on.
-    fn sizes(&self) -> StagateSizes {
+    pub(crate) fn sizes(&self) -> StagateSizes {
         StagateSizes {
             k_cutoff: self.k_cutoff,
             rad_cutoff: self.rad_cutoff,
             hidden: self.hidden_dims[0],
             train_on_host: self.device != ComputeDevice::Cuda,
+            layout: self.input_layout(),
+        }
+    }
+
+    /// The layout the input is held in, recorded apart from the mode (the
+    /// `--reference` flag's): dense with `--reference`, and on any device
+    /// but the CPU. The sparse formulation is the CPU path: its sparse
+    /// products run on the host, so on a GPU each step would copy the
+    /// weights and products across.
+    pub(crate) fn input_layout(&self) -> InputLayout {
+        match self.reference || self.device != ComputeDevice::Cpu {
+            true => InputLayout::Dense,
+            false => InputLayout::Sparse,
         }
     }
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
 /// cell's `k_cutoff` nearest or, with `rad_cutoff`, those within it, the
-/// model `hidden` wide, training on the host or not (`train_on_host`).
+/// model `hidden` wide, training on the host or not (`train_on_host`),
+/// its input held as `layout`.
 pub(crate) struct StagateSizes {
     pub k_cutoff: usize,
     pub rad_cutoff: Option<f32>,
     pub hidden: usize,
     pub train_on_host: bool,
+    pub layout: InputLayout,
 }
 
 impl StagateSizes {
@@ -847,6 +1140,9 @@ impl StagateSizes {
             gram: knn_gram_bytes(sizes, rayon::current_num_threads()),
             searched,
             train_on_host: self.train_on_host,
+            sparse: self.layout == InputLayout::Sparse,
+            // every nonzero, until the genes are chosen
+            selected_nonzeros: input.nonzeros,
         }
     }
 }
@@ -892,13 +1188,23 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes: genes.len(),
         nonzeros: counts.nnz(),
         section_sizes: section_sizes(&data.section),
+        batches: data.n_batches(),
     });
+    shape.selected_nonzeros = selected_nonzeros(&counts, &genes);
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
 
-    // the dense input first, so the counts are freed before the graph
+    // the input first, so the counts are freed before the graph
+    let dev = args.device.to_device(args.device_no)?;
     let mut log = counts;
     normalise_log(&mut log);
-    let x = dense_rows(&log, &genes);
+    let layout = args.input_layout();
+    if layout == InputLayout::Dense && !args.reference {
+        info!(
+            "the input is held dense on {}: sparse is the CPU path",
+            args.device
+        );
+    }
+    let x = model_input(&log, &genes, layout, &dev)?;
     drop(log);
 
     let nb = spatial_network(&data, args);
@@ -914,9 +1220,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;
     }
 
-    let dev = args.device.to_device(args.device_no)?;
     let g = EdgeIndex::new(&src, &dst, n, &dev)?;
-    let xt = Tensor::from_vec(x, (n, genes.len()), &dev)?;
     let mut model = Stagate::new(
         genes.len(),
         args.hidden_dims[0],
@@ -931,14 +1235,14 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         gradient_clipping: args.gradient_clipping,
     };
     let t0 = std::time::Instant::now();
-    let losses = model.fit(&xt, &g, &opts)?;
+    let losses = model.fit(&x, &g, &opts)?;
     info!(
         "trained {} epochs in {:.1?} on {}",
         args.n_epochs,
         t0.elapsed(),
         args.device
     );
-    let z = model.forward(&xt, &g)?.z.to_vec2::<f32>()?;
+    let z = model.embed(&x, &g)?.to_vec2::<f32>()?;
     let emb = Mat::from_fn(n, args.hidden_dims[1], |i, j| z[i][j]);
 
     let (labels, clustering) =
@@ -981,9 +1285,38 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &emb,
             embedding_name: "STAGATE",
             settings,
+            reference: args.reference,
+            input_layout: Some(layout),
+            pseudobulk: None,
         },
     )?;
     Ok(())
+}
+
+/// The model's input, rows `genes` of the log data held as `layout`:
+/// dense on `dev`, as the reference holds it, or sparse.
+fn model_input(
+    log: &CscMatrix<f32>,
+    genes: &[usize],
+    layout: InputLayout,
+    dev: &Device,
+) -> anyhow::Result<Input> {
+    Ok(match layout {
+        InputLayout::Dense => {
+            let x = dense_rows(log, genes);
+            Input::Dense(Tensor::from_vec(x, (log.ncols(), genes.len()), dev)?)
+        }
+        InputLayout::Sparse => Input::Sparse(SparseInput::from_rows(log, genes)),
+    })
+}
+
+/// Stored nonzeros of rows `genes` of `counts`.
+fn selected_nonzeros(counts: &CscMatrix<f32>, genes: &[usize]) -> usize {
+    let mut keep = vec![false; counts.nrows()];
+    for &g in genes {
+        keep[g] = true;
+    }
+    counts.row_indices().iter().filter(|&&g| keep[g]).count()
 }
 
 fn spatial_network(data: &SpatialData, args: &Args) -> Neighbours {
