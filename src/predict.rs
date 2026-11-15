@@ -175,6 +175,7 @@ pub struct PredictArgs {
         long,
         value_name = "FILE",
         num_args = 1..,
+        value_delimiter = ',',
         help = "Training data supplying the per-feature totals (b_g) and the null; pass the train half"
     )]
     pub null_from: Option<Vec<Box<str>>>,

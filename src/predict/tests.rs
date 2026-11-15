@@ -345,3 +345,22 @@ fn every_batch_is_known_from_the_inputs() {
     );
     assert!(!known(&[&a, &b, "--auto-batch"], &by_file, files));
 }
+
+/// `--null-from` takes a comma list, as every other file-list flag does,
+/// and still takes the files listed after it.
+#[test]
+fn null_from_takes_a_comma_list() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Probe {
+        #[command(flatten)]
+        args: super::PredictArgs,
+    }
+    let null_from = |extra: &[&str]| {
+        let argv = [&["predict", "d.zarr", "--model", "m", "-o", "o"][..], extra].concat();
+        Probe::try_parse_from(argv).unwrap().args.null_from.unwrap()
+    };
+    let two: Vec<Box<str>> = vec!["a.zarr".into(), "b.zarr".into()];
+    assert_eq!(null_from(&["--null-from", "a.zarr,b.zarr"]), two);
+    assert_eq!(null_from(&["--null-from", "a.zarr", "b.zarr"]), two);
+}
