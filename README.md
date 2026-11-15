@@ -489,8 +489,9 @@ large allocations, logs it, and stops with an error when the estimate
 exceeds the memory budget: `PINTO_MEMORY_BUDGET` (bytes) when set, else
 half the memory available to the process at the start (cgroup limits
 included). The first check comes from the files' stored shape (cells,
-genes and nonzeros), before the counts are read; a file that does not
-store its nonzero count leaves that read unchecked.
+genes and nonzeros), before the counts are read: they are streamed from
+disk in one read after it (`--preload-data` preloads them before it), and
+a file that does not store its nonzero count leaves that read unchecked.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for

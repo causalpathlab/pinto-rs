@@ -22,6 +22,20 @@ const GRAM_BLOCK_BYTES: usize = 64 << 20;
 /// it), with a small margin.
 pub const STAGATE_SAFETY: f64 = 1.65;
 
+/// Bytes a stored nonzero holds while the counts are read
+/// (`SparseIoVec::read_columns_csc`): streamed, a file's `(row, column,
+/// value)` triplets (24) beside the `(row, value)` buckets of each column
+/// they fill (8), then the buckets beside the CSC assembled from them (12);
+/// with `--preload-data`, the preloaded arrays (12) beside the buckets and
+/// the CSC. The read's buffers of fixed size (a fused retrieve of at most
+/// 48 MB, a file's cache of decoded chunks) are within the process's own.
+const READ_NONZERO_BYTES: usize = 32;
+
+/// Peak bytes of reading counts of `nonzeros` stored nonzeros.
+pub fn read_bytes(nonzeros: usize) -> usize {
+    READ_NONZERO_BYTES * nonzeros
+}
+
 /// Gram block bytes of the all-pairs kNN in flight at once: each task holds
 /// one `cells × block` f32 block of a section, and at most `threads` run at
 /// once.
@@ -56,8 +70,8 @@ pub struct StagateShape {
     /// Genes trained on.
     pub genes: usize,
     pub hidden: usize,
-    /// Nonzeros of the counts, held while the graph and the dense input are
-    /// built.
+    /// Nonzeros of the counts: read ([`read_bytes`]), then held while the
+    /// graph and the dense input are built.
     pub nonzeros: usize,
     /// [`knn_gram_bytes`] of the graph's kNN.
     pub gram: usize,
@@ -86,10 +100,10 @@ pub fn stagate_training_bytes(s: &StagateShape) -> usize {
     (4.0 * floats as f64 * STAGATE_SAFETY) as usize
 }
 
-/// STAGATE's peak: the largest of the kNN (the counts, the Gram blocks and
-/// the neighbours found), the dense input built beside the counts, and
-/// training ([`stagate_training_bytes`], or on CUDA the input copied to the
-/// device), the counts freed by then.
+/// STAGATE's peak: the largest of the read ([`read_bytes`]), the kNN (the
+/// counts, the Gram blocks and the neighbours found), the dense input built
+/// beside the counts, and training ([`stagate_training_bytes`], or on CUDA
+/// the input copied to the device), the counts freed by then.
 pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     let counts = 12 * s.nonzeros;
     let knn = counts + s.gram + 12 * s.searched;
@@ -99,14 +113,18 @@ pub fn stagate_peak_bytes(s: &StagateShape) -> usize {
     } else {
         dense
     };
-    STAGATE_PROCESS_BYTES + knn.max(counts + dense).max(training)
+    STAGATE_PROCESS_BYTES
+        + read_bytes(s.nonzeros)
+            .max(knn)
+            .max(counts + dense)
+            .max(training)
 }
 
 /// What a SpatialDE2 run holds at once.
 #[derive(Debug, Clone)]
 pub struct Spatialde2Shape {
     pub cells: usize,
-    /// Nonzeros of all the counts, as read.
+    /// Nonzeros of all the counts, as read ([`read_bytes`]).
     pub nonzeros: usize,
     /// Nonzeros of the genes segmented on.
     pub selected_nonzeros: usize,
@@ -125,16 +143,17 @@ pub struct Spatialde2Shape {
 /// that every measured peak is covered at the counts' real nonzeros.
 const SELECTED_NONZERO_BYTES: usize = 16 + 24 + 16;
 
-/// SpatialDE2's peak, f64 throughout, summed as if all were live at once:
-/// the counts as read (12 per nonzero) beside the selected counts
+/// SpatialDE2's peak: the read ([`read_bytes`]), or after it, f64
+/// throughout and summed as if all were live at once, the counts as read
+/// (12 per nonzero) beside the selected counts
 /// ([`SELECTED_NONZERO_BYTES`]); the weighted graph (16 per edge); the
 /// posteriors, cells × regions, twice while pruning; and the kNN's Gram
 /// blocks.
 pub fn spatialde2_peak_bytes(s: &Spatialde2Shape) -> usize {
-    SPATIALDE2_PROCESS_BYTES
-        + 12 * s.nonzeros
+    let held = 12 * s.nonzeros
         + SELECTED_NONZERO_BYTES * s.selected_nonzeros
         + 16 * s.edges
         + 16 * s.cells * s.regions
-        + s.gram
+        + s.gram;
+    SPATIALDE2_PROCESS_BYTES + read_bytes(s.nonzeros).max(held)
 }

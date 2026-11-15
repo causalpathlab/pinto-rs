@@ -155,6 +155,40 @@ fn spatialde2_estimate_covers_every_measured_peak_and_is_not_far_above() {
     }
 }
 
+/// Reading the counts holds more per nonzero than they keep once read,
+/// so a run whose counts dwarf the rest peaks in the read.
+#[test]
+fn the_read_of_the_counts_is_charged() {
+    let nonzeros = 1 << 30;
+    let stagate = StagateShape {
+        cells: 10,
+        edges: 10,
+        genes: 1,
+        hidden: 1,
+        nonzeros,
+        gram: 0,
+        searched: 0,
+        train_on_host: true,
+    };
+    assert_eq!(
+        stagate_peak_bytes(&stagate),
+        STAGATE_PROCESS_BYTES + read_bytes(nonzeros)
+    );
+    let spatialde2 = Spatialde2Shape {
+        cells: 10,
+        nonzeros,
+        selected_nonzeros: 0,
+        edges: 0,
+        regions: 1,
+        gram: 0,
+    };
+    assert_eq!(
+        spatialde2_peak_bytes(&spatialde2),
+        SPATIALDE2_PROCESS_BYTES + read_bytes(nonzeros)
+    );
+    assert!(read_bytes(nonzeros) > 12 * nonzeros);
+}
+
 /// The task holding a section's Gram block holds `cells × block` floats,
 /// the block 64 MiB over the cells' bytes (16 to 1024 columns); at most
 /// one task per thread is in flight.
@@ -432,6 +466,21 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
     let input = args.input.open().unwrap();
     let bound = spatialde2::input_peak_bytes(&args, &input).unwrap();
     spatialde2::run_on(&args, input.read().unwrap(), &set(bound)).unwrap();
+}
+
+/// Opening the input preloads no counts unless `--preload-data` asks, so
+/// the check from the stored shape runs before the counts are in memory.
+#[test]
+fn opening_the_input_preloads_the_counts_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = simulated(dir.path(), 8);
+    let out = dir.path().join("run");
+    for (extra, want) in [(&[][..], false), (&["--preload-data"][..], true)] {
+        let crate::Commands::Spatialde2(args) = on_files("spatialde2", &files, &out, extra) else {
+            unreachable!()
+        };
+        assert_eq!(args.input.open().unwrap().preloaded(), want, "{extra:?}");
+    }
 }
 
 /// The measured runs' shapes, from an srt-simulate read at their settings:

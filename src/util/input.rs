@@ -12,6 +12,9 @@ pub struct SRTReadArgs {
     pub data_files: Vec<Box<str>>,
     pub coord_files: Vec<Box<str>>,
     pub preload_data: bool,
+    /// Whether to preload by default, as data-beans' budget allows
+    /// ([`open_sparse`]); off, only `preload_data` preloads.
+    pub auto_preload: bool,
     pub coord_columns: Vec<usize>,
     pub coord_column_names: Vec<Box<str>>,
     pub batch_files: Option<Vec<Box<str>>>,
@@ -55,8 +58,18 @@ pub fn open_sparse(
     data_file: &str,
     preload: bool,
 ) -> anyhow::Result<Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>> {
+    open_sparse_as(data_file, preload, true)
+}
+
+/// [`open_sparse`], its default preload off unless `auto`.
+fn open_sparse_as(
+    data_file: &str,
+    preload: bool,
+    auto: bool,
+) -> anyhow::Result<Box<dyn data_beans::sparse_io::SparseIo<IndexIter = Vec<usize>>>> {
     let mut data = try_open_or_convert(data_file)?;
-    let auto = data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some();
+    let auto =
+        auto && data_beans::sparse_io::auto_preload_enabled() && data.num_non_zeros().is_some();
     if preload || auto {
         data.preload_columns()?;
     }
@@ -110,7 +123,12 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
 /// lists them: a feature one sample never measured is not a zero there.
 /// Other kinds canonicalize names first and keep their union, as before.
 fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
-    open_fit_data(&args.data_files, &args.feature_kind, args.preload_data)
+    open_fit_data_as(
+        &args.data_files,
+        &args.feature_kind,
+        args.preload_data,
+        args.auto_preload,
+    )
 }
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
@@ -120,6 +138,16 @@ pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,
     preload_data: bool,
+) -> anyhow::Result<SparseIoVec> {
+    open_fit_data_as(data_files, feature_kind, preload_data, true)
+}
+
+/// [`open_fit_data`], each file opened by [`open_sparse_as`] with `auto_preload`.
+fn open_fit_data_as(
+    data_files: &[Box<str>],
+    feature_kind: &FeatureNameKind,
+    preload_data: bool,
+    auto_preload: bool,
 ) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
     if let Some(canon) = feature_kind.clone().into_canonicalizer() {
@@ -131,7 +159,7 @@ pub fn open_fit_data(
     for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
         info!("Importing data file: {}", data_file);
 
-        let data = open_sparse(data_file, preload_data)?;
+        let data = open_sparse_as(data_file, preload_data, auto_preload)?;
 
         data_vec.push(Arc::from(data), data_name)?;
     }

@@ -587,6 +587,7 @@ impl SrtInputArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
             preload_data: self.preload_data,
+            auto_preload: true,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),

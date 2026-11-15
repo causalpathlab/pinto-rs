@@ -5,9 +5,7 @@
 
 use crate::util::ablation;
 use crate::util::common::Mat;
-use crate::util::input::{
-    read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES, PRELOAD_HELP,
-};
+use crate::util::input::{read_data_with_coordinates, SRTReadArgs, COORD_COLUMN_NAMES};
 use data_beans::aux::feature_names::FeatureNameKind;
 use nalgebra_sparse::CscMatrix;
 
@@ -44,7 +42,9 @@ pub struct SpatialInputArgs {
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
 
-    #[arg(long, default_value_t = false, help = PRELOAD_HELP)]
+    /// Preload the counts when the files are opened, before the memory
+    /// check (by default they are streamed from disk in one read, after it)
+    #[arg(long, default_value_t = false)]
     pub preload_data: bool,
 
     /// Output prefix
@@ -124,6 +124,9 @@ impl SpatialInputArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
             preload_data: self.preload_data,
+            // the counts are read once, after the memory check: streamed,
+            // never preloaded before it unless asked
+            auto_preload: false,
             coord_columns: self.coord_columns.clone().unwrap_or_default(),
             coord_column_names: self.coord_column_names.clone(),
             batch_files: self.batch_files.clone(),
@@ -141,6 +144,12 @@ impl SpatialInputArgs {
 }
 
 impl OpenedInput {
+    /// Whether a file's columns are in memory already.
+    #[cfg(test)]
+    pub fn preloaded(&self) -> bool {
+        (0..self.srt.data.len()).any(|i| self.srt.data[i].csc_column_arrays().is_some())
+    }
+
     /// The input's size from its files, or `None` when a file does not
     /// store its nonzero count.
     pub fn shape(&self) -> Option<InputShape> {
