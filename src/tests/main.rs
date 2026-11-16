@@ -558,8 +558,8 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
 /// the user's doing).
 #[test]
 fn cage_cell_names_only_the_no_op_flags_it_was_given() {
-    use cell_activity_graph_embedding::fit::{cell_level_given, OnCells};
-    let given = |extra: &[&str]| cage_cell(extra, |c, m| cell_level_given(c, m, OnCells::Warn));
+    use cell_activity_graph_embedding::fit::cell_level_no_ops;
+    let given = |extra: &[&str]| cage_cell(extra, cell_level_no_ops);
     assert!(given(&[]).is_empty());
     assert_eq!(
         given(&["-d", "3", "--n-hvg", "100"]),
@@ -570,6 +570,17 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
         given(&["--num-levels=9", "--must-train-features", "f.txt"]),
         ["--must-train-features"]
     );
+    // nor is any of them when modules are seeded from the pseudobulks
+    assert!(given(&["-d", "3", "--n-hvg", "100", "--feature-modules", "4"]).is_empty());
+}
+
+/// cage-cell takes `--feature-modules` as cage does, before it reads a
+/// file.
+#[test]
+fn cage_cell_takes_feature_modules() {
+    use cell_activity_graph_embedding::fit::check_cell_level;
+    let modules = ["--feature-modules", "4", "--n-pseudobulk", "3"];
+    assert!(cage_cell(&modules, check_cell_level).is_ok());
 }
 
 /// cage-cell refuses, before it reads a file, what needs a hierarchy of
@@ -580,7 +591,6 @@ fn cage_cell_refuses_hierarchy_flags() {
     for extra in [
         &["--chain-levels", "1"][..],
         &["--feature-embedding", "dict.parquet"][..],
-        &["--feature-modules", "4"][..],
     ] {
         let e = cage_cell(extra, |c, m| {
             check_cell_level(c, m).unwrap_err().to_string()
@@ -608,7 +618,8 @@ fn cage_cell<T>(extra: &[&str], f: impl Fn(&clap::Command, &clap::ArgMatches) ->
 /// cage's `--feature-modules` help is pinto's own: cage draws its NCE
 /// negatives over pseudobulks, never within a module, and a run takes
 /// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
-/// is a tuning knob, hidden; cage-cell, which refuses modules, hides them.
+/// is a tuning knob, hidden. cage-cell says the same, and how it trains
+/// them on cells.
 #[test]
 fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
     let mut cli = built_cli();
@@ -622,11 +633,7 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
         };
         assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
         assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
-        // cage-cell refuses modules, so its help leaves them out
-        if cmd == "cage-cell" {
-            assert!(arg("feature_modules").is_hide_set());
-            continue;
-        }
+        assert!(!arg("feature_modules").is_hide_set(), "{cmd}");
         let help = sub.render_long_help().to_string();
         // the flag's entry: from its line up to the next flag's
         let flag_line = |l: &str| {
@@ -644,7 +651,11 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
         for wrong in ["own module", "WITHIN a module", "senna", "--multiome"] {
             assert!(!modules.contains(wrong), "{cmd} says {wrong:?}: {modules}");
         }
-        for right in ["never within a module", "--feature-inclusion moran"] {
+        for right in [
+            "never within a module",
+            "--feature-inclusion moran",
+            "cage-cell trains on cells",
+        ] {
             assert!(modules.contains(right), "{cmd} lacks {right:?}: {modules}");
         }
     }

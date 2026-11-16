@@ -560,13 +560,16 @@ HOW. Membership is sparsemax (Martins and Astudillo 2016) over learned logits:
 a feature sits on a few modules with exact zeros elsewhere. It starts from a
 partition of the features by their profiles over the finest pseudobulks, held
 fixed for the first quarter of the epochs, then trains. An exact softmax over
-all M modules scores each pseudobulk's module-pooled counts, so every module
+all M modules scores each trained unit's module-pooled counts, so every module
 gets gradient on every step, and a load-balance prior keeps every module in
-use. cage's NCE is unchanged: its negatives are other pseudobulks of the
-batch, never within a module.
+use. cage's NCE is unchanged: its negatives are other units of the batch,
+never within a module.
+
+cage-cell trains on cells, so it builds the pseudobulks only to start the
+partition, and each step pools the sparse counts of the cells it draws.
 
 A run takes this or --feature-inclusion moran, not both, and not with
---feature-embedding. cage-cell refuses it.
+--feature-embedding.
 
 OUTPUTS. {out}.module_membership.parquet (feature x M),
 {out}.module_dictionary.parquet (M x H), {out}.module_residual.parquet and

@@ -9,7 +9,6 @@ use crate::link_community::profiles::coarsen_cell_expression_dense;
 use crate::util::common::*;
 
 use crate::util::feature_axis::FeatureAxis;
-use crate::util::graph_coarsen::MultiLevelCoarsenResult;
 use data_beans::aux::feature_names::FeatureNameKind;
 use graph_embedding_util::model::{
     AdapterInit, JointEmbedModel, ModelArgs, ModelInit, ModuleInit, ModuleWarmStart,
@@ -22,7 +21,10 @@ use legume_numeric::candle::candle_nn::VarMap;
 /// What the model is built from.
 pub(super) struct ModelInputs<'a> {
     pub args: &'a CellActivityGraphEmbeddingArgs,
-    pub ml: &'a MultiLevelCoarsenResult,
+    /// Each cell's finest pseudobulk, which pools the feature profiles: the
+    /// trained hierarchy's, or under cage-cell that of the coarsening built
+    /// to seed its modules.
+    pub profile_labels: &'a [usize],
     pub data_vec: &'a SparseIoVec,
     pub feature_axis: &'a FeatureAxis,
     pub feature_kind: &'a FeatureNameKind,
@@ -35,7 +37,8 @@ pub(super) struct ModelInputs<'a> {
     pub dev: &'a Device,
 }
 
-/// The model, its freeze state, and the profiles a module term pools.
+/// The model, its freeze state, and the profiles that seeded its modules
+/// (cage's module term pools them too).
 pub(super) struct BuiltModel {
     pub model: JointEmbedModel,
     pub frozen_feature: Option<pretrained::FrozenGene>,
@@ -45,7 +48,7 @@ pub(super) struct BuiltModel {
 pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel> {
     let ModelInputs {
         args,
-        ml,
+        profile_labels,
         data_vec,
         feature_axis,
         feature_kind,
@@ -75,12 +78,8 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
     // the loader finds a feature with no dictionary row); materialized once for the
     // module path, which reads it every step.
     let build_profiles = || -> anyhow::Result<Mat> {
-        let finest = ml
-            .all_cell_labels
-            .last()
-            .expect("coarsening produced no levels");
-        let n_pb = finest.iter().copied().max().map_or(0, |m| m + 1);
-        let row_profiles = coarsen_cell_expression_dense(data_vec, finest, n_pb, None)?;
+        let n_pb = profile_labels.iter().copied().max().map_or(0, |m| m + 1);
+        let row_profiles = coarsen_cell_expression_dense(data_vec, profile_labels, n_pb, None)?;
         Ok(feature_axis
             .pool_rows_opt(&row_profiles)
             .unwrap_or(row_profiles))
@@ -171,24 +170,16 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
             let gm = module_cfg.expect("checked above");
             let profiles = module_profiles.as_ref().expect("built with the config");
             anyhow::ensure!(
-                profiles.nrows() == n_features && profiles.ncols() == n_pb,
-                "module profiles [{} x {}] do not match {} features x {} pseudobulks",
+                profiles.nrows() == n_features,
+                "module profiles of {} rows for {} features",
                 profiles.nrows(),
-                profiles.ncols(),
-                n_features,
-                n_pb
+                n_features
             );
             // The profiles are the finest pseudobulks' count sums; a
             // pseudobulk's size is its cell count.
-            let finest = ml
-                .all_cell_labels
-                .last()
-                .expect("coarsening produced no levels");
-            let mut sizes = vec![0f32; n_pb];
-            for &pb in finest {
-                if pb < n_pb {
-                    sizes[pb] += 1.0;
-                }
+            let mut sizes = vec![0f32; profiles.ncols()];
+            for &pb in profile_labels {
+                sizes[pb] += 1.0;
             }
             let labels =
                 graph_embedding_util::partition_modules(profiles, &sizes, gm.n_modules, c.seed)?;
