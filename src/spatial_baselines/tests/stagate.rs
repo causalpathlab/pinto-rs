@@ -125,6 +125,30 @@ fn nearest_centroid_skips_a_label_no_unit_holds() {
     assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 0, 2]);
 }
 
+/// The encoder places single cells on another scale than the super-cells
+/// it was trained on (here shrunk towards the origin), so every cell is
+/// nearer one super-cell centroid than the others. The unravel takes its
+/// centroids in the cells' own embedding, from their super-cells' domains:
+/// each cell keeps its domain, and one that sits among the other domain's
+/// cells moves to it.
+#[test]
+fn unravel_takes_centroids_on_the_cells_own_scale() {
+    let supers = Mat::from_row_slice(4, 2, &[50.0, 2.0, 50.0, 3.0, 44.0, 9.0, 44.0, 10.0]);
+    let pb_labels = [0, 0, 1, 1];
+    let of_cell = [0, 0, 1, 1, 2, 2, 3, 3, 1];
+    let mut cells = Mat::from_fn(of_cell.len(), 2, |c, j| 0.7 * supers[(of_cell[c], j)]);
+    // the last cell sits in super-cell 1 but among domain 1's cells
+    cells[(8, 0)] = 0.7 * 44.0;
+    cells[(8, 1)] = 0.7 * 9.5;
+    // against the super-cells' centroids, every cell takes one domain
+    let raw = nearest_centroid(&cells, &supers, &pb_labels);
+    assert!(raw.iter().all(|&l| l == raw[0]), "{raw:?}");
+    assert_eq!(
+        unravel_to_cells(&cells, &of_cell, &pb_labels),
+        [0, 0, 0, 0, 1, 1, 1, 1, 1]
+    );
+}
+
 /// The domains held by a cell are numbered `0..found` in their order, the
 /// rest after them.
 #[test]

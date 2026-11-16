@@ -387,14 +387,13 @@ fn stagate_against_its_pb() -> (Vec<usize>, [Vec<usize>; 3], Vec<usize>) {
 }
 
 /// stagate-pb against the bar: within 0.1 ARI of stagate on cells, and
-/// above the broadcast labels on the boundary cells. It misses both (the
-/// encoder trained on super-cells' summed counts places single cells'
-/// sparser counts apart from every domain centroid), so its help says it is
-/// approximate, and this pins the miss loosely: should it meet the bar, the
-/// help is to be revisited. The unravelled labels are the cells' own, not
-/// the broadcast ones, which score far higher here.
+/// above the broadcast labels on the boundary cells. The unravelled labels
+/// are the cells' own: they hold every domain the super-cells hold, and
+/// agree with the broadcast labels on most cells away from a boundary (a
+/// guard against the unravel collapsing onto one domain, as it did with
+/// centroids taken on the super-cells' embedding).
 #[test]
-fn stagate_pb_misses_the_bar_on_a_simulated_section_and_is_approximate() {
+fn stagate_pb_meets_the_bar_on_a_simulated_section() {
     let (domain, [cell_fit, unravelled, broadcast], boundary) = stagate_against_its_pb();
     let on = |l: &[usize]| boundary.iter().map(|&i| l[i]).collect::<Vec<_>>();
     let (a_cell, a_pb, a_bc) = (
@@ -411,20 +410,29 @@ fn stagate_pb_misses_the_bar_on_a_simulated_section_and_is_approximate() {
         "stagate: ARI cells {a_cell:.3}, unravelled {a_pb:.3}, broadcast {a_bc:.3}; \
          boundary cells {b_cell:.3}, unravelled {b_pb:.3}, broadcast {b_bc:.3}"
     );
+    let held = |l: &[usize]| {
+        let mut h = l.to_vec();
+        h.sort_unstable();
+        h.dedup();
+        h.len()
+    };
+    assert_eq!(held(&unravelled), held(&broadcast), "domains held");
+    // boundary is ascending, as collected
+    let interior: Vec<usize> = (0..domain.len())
+        .filter(|i| boundary.binary_search(i).is_err())
+        .collect();
+    let same = interior
+        .iter()
+        .filter(|&&i| unravelled[i] == broadcast[i])
+        .count();
+    let agree = same as f64 / interior.len() as f64;
+    assert!(agree >= 0.8, "interior agreement with broadcast {agree}");
     assert!(a_cell >= 0.7, "stagate on cells {a_cell}");
-    assert!(a_bc >= 0.5, "broadcast {a_bc}");
-    assert!(a_pb < a_cell - 0.1, "unravelled {a_pb} meets the bar");
-    assert!(a_pb < a_bc - 0.2, "unravelled {a_pb} vs broadcast {a_bc}");
+    assert!(a_pb >= a_cell - 0.1, "unravelled {a_pb} vs cells {a_cell}");
     assert!(
-        b_pb <= b_bc,
+        b_pb > b_bc,
         "boundary: unravelled {b_pb} vs broadcast {b_bc}"
     );
-    let help = crate::built_cli()
-        .find_subcommand_mut("stagate-pb")
-        .unwrap()
-        .render_long_help()
-        .to_string();
-    assert!(help.contains("Approximate"), "{help}");
 }
 
 /// stagate-pb on two sections with δ: a run of the cells, recorded as

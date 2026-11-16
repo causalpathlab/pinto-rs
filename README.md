@@ -627,11 +627,11 @@ weights) and symmetric. The trained encoder then embeds every cell from
 its own counts on the cell graph, made symmetric the same way; the domains
 are clustered on the super-cells' embedding (k-means or Leiden, as
 `stagate`), each cell takes the nearest domain centroid, and the domains
-no cell takes are dropped, so `n_domains` counts those present. It was
-held to the same bar and misses it: on a simulated section its unravelled
-domains fall short of `stagate`'s on cells, as single cells' sparser
-counts sit apart from the super-cells' centroids. It is kept as an
-approximate baseline, and its help says so.
+no cell takes are dropped, so `n_domains` counts those present. The
+centroids are taken on the cells' embedding, grouped by their
+super-cells' domains, since single cells' sparser counts sit on another
+scale than the summed counts the encoder was trained on. It was held to
+the same bar and met it.
 
 One deviation is shared: with two or more batches (data files, `-b`
 labels, or `--auto-batch` components) the counts are divided by the

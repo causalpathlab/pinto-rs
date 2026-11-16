@@ -798,12 +798,9 @@ enum Commands {
              within each section, each with its cells' counts summed, on the cell\n\
              graph folded onto them (unweighted, as STAGATE's attention takes it).\n\
              The trained encoder then embeds each cell from its own counts on the\n\
-             cell graph, and each cell takes the nearest centroid of the domains\n\
-             clustered on the super-cells. Sparse, as stagate on the CPU. Takes\n\
-             stagate's flags.\n\n\
-             Approximate: on simulated sections its unravelled domains fall short of\n\
-             stagate's on cells (the encoder trained on super-cells does not carry\n\
-             over to single cells' sparser counts).\n\n",
+             cell graph, and each cell takes the nearest centroid, on the cells'\n\
+             embedding, of the domains clustered on the super-cells. Sparse, as\n\
+             stagate on the CPU. Takes stagate's flags.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

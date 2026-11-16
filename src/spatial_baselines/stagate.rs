@@ -123,11 +123,11 @@
 //! symmetric, with self loops ([`looped_edges`]). The trained encoder then
 //! embeds every cell from its own counts on the cell graph made symmetric
 //! the same way, the domains are clustered on the super-cells' embedding,
-//! and each cell takes the nearest domain centroid ([`nearest_centroid`]),
-//! the domains no cell takes dropped from the numbering
-//! ([`renumber_present`]). It is approximate: on a simulated section its
-//! domains fall short of stagate's on cells (single cells' sparser counts
-//! sit apart from the centroids of the super-cells' embedding).
+//! and each cell takes the nearest domain centroid ([`unravel_to_cells`]),
+//! the centroids taken on the cells' own embedding from their
+//! super-cells' domains (single cells' sparser counts sit on another scale
+//! than the summed counts the encoder was trained on), the domains no cell
+//! takes dropped from the numbering ([`renumber_present`]).
 //!
 //! Deliberate deviations:
 //!
@@ -1425,6 +1425,17 @@ pub fn nearest_centroid(z: &Mat, fitted: &Mat, labels: &[usize]) -> Vec<usize> {
         .collect()
 }
 
+/// Each cell's domain (of `0..k`), from its row of the cells' embedding
+/// `z` (cells × d): the nearest centroid of the cells grouped by their
+/// super-cell's (`of_cell`) domain of `pb_labels`. The centroids are taken
+/// on the cells' own embedding, as the encoder places single cells on
+/// another scale than the summed counts it was trained on: against the
+/// super-cells' centroids every cell can fall nearest one domain.
+pub fn unravel_to_cells(z: &Mat, of_cell: &[usize], pb_labels: &[usize]) -> Vec<usize> {
+    let broadcast: Vec<usize> = of_cell.iter().map(|&s| pb_labels[s]).collect();
+    nearest_centroid(z, z, &broadcast)
+}
+
 /// The domains `labels` (of `0..k`) renumbered so the ones held by some
 /// cell are `0..found`, in their order, and those held by none follow:
 /// the map, old id to new, and `found`.
@@ -1461,7 +1472,8 @@ fn to_mat(z: &Tensor) -> anyhow::Result<Mat> {
 /// STAGATE's attention takes it, and symmetric); then unravelled to cells:
 /// the trained encoder embeds each cell from its own counts on the cell
 /// graph, made symmetric the same way, and each cell takes the nearest
-/// centroid of the domains clustered on the super-cells' embedding.
+/// centroid, on the cells' embedding, of the domains clustered on the
+/// super-cells' embedding.
 pub(crate) fn run_pb_on(
     pb_args: &PbArgs,
     mut data: SpatialData,
@@ -1565,7 +1577,7 @@ pub(crate) fn run_pb_on(
         cluster_embedding(&z_pb, args.n_clusters, args.resolution, args.input.seed)?;
     let k = pb_labels.iter().max().map_or(0, |&l| l + 1);
     let (_, on_super) = renumber_present(&pb_labels, k);
-    let nearest = nearest_centroid(&z, &z_pb, &pb_labels);
+    let nearest = unravel_to_cells(&z, &of_cell, &pb_labels);
     // a domain no cell is nearest to is dropped from the numbering
     let (map, found) = renumber_present(&nearest, k);
     let labels: Vec<usize> = nearest.iter().map(|&l| map[l]).collect();
@@ -1600,7 +1612,7 @@ pub(crate) fn run_pb_on(
         "n_domains_on_super_cells": on_super,
         "n_domains": found,
         "unravel": {
-            "method": "the trained encoder on each cell's counts and the cell graph; each cell takes the nearest domain centroid of the super-cells' embedding",
+            "method": "the trained encoder on each cell's counts and the cell graph; each cell takes the nearest domain centroid of the cells' embedding, grouped by their super-cells' domains",
             "broadcast_agreement": broadcast_agreement(&labels, &broadcast),
         },
     });

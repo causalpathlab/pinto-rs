@@ -25,7 +25,7 @@ communities) and dsvd (shared and difference channels by SVD), the two \
 recommended, and cage (a learned cell-graph embedding; cage-cell trains it \
 on cells); spatialde2, stagate, spatialpca and mefisto, and the -pb forms \
 spatialde2-pb, stagate-pb, spatialpca-pb and mefisto-pb (fitted on cage's \
-super-cells; stagate-pb is approximate) are spatial baselines, ports of published methods to compare pinto \
+super-cells) are spatial baselines, ports of published methods to compare pinto \
 against, fit and scored as lc is. Where most \
 features are noise, cage takes feature-inclusion moran or feature-modules M, \
 never both; lc takes feature modules from a feature network file the user \

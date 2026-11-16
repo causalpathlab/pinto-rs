@@ -25,7 +25,7 @@
 //! Each also runs on super-cells (its `-pb` command): the cells coarsened
 //! as cage coarsens them ([`pseudobulk`]), the fit then unravelled to
 //! cells by conditional re-inference (`stagate-pb`: the trained encoder on
-//! each cell, which is approximate).
+//! each cell).
 //!
 //! Each is faithful at the model level: the preprocessing, model, loss or
 //! updates, defaults and clustering step of its reference code or paper,
