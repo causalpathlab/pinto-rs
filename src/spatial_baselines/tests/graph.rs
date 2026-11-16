@@ -15,6 +15,7 @@ pub(crate) fn toy(xy: &[(f32, f32)], section: &[usize]) -> SpatialData {
         xy: Mat::from_fn(n, 2, |i, j| if j == 0 { xy[i].0 } else { xy[i].1 }),
         coord_names: boxed(&["x", "y"]),
         batches: section.iter().map(|s| format!("S{s}").into()).collect(),
+        read_batches: section.iter().map(|s| format!("S{s}").into()).collect(),
         section: section.to_vec(),
         n_sections: n_sections(section),
         delta: None,

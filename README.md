@@ -622,11 +622,16 @@ noise, `tau` and `rho` refitted on the cells), MEFISTO's weights, ARD and
 sparsity (its noise, factors and each factor's `rho` refitted). Both were
 held to the same bar and met it.
 
-One deviation is shared: with two or more batches (data files, or `-b`
-labels) the counts are divided by the input's own batch effects (δ,
-estimated as `cage` estimates them and written to `{out}.delta.parquet`)
-before the method's own preprocessing. `--ignore-batch` runs the original
-method on the counts as stored.
+One deviation is shared: with two or more batches (data files, `-b`
+labels, or `--auto-batch` components) the counts are divided by the
+input's own batch effects (δ, estimated as `cage` estimates them and
+written to `{out}.delta.parquet`) before the method's own preprocessing.
+The baselines take cage's batch flags under the same names and defaults
+(`--batch-files`, `--auto-batch`, `--ignore-batch`, `--cnv-clones`). The
+baselines run no cell QC, so a baseline estimates the δ cage estimates
+under the same flags and `--no-qc`; under `--auto-batch` it finds the
+components on cage's spatial graph at cage's default `-k` and matching.
+`--ignore-batch` runs the original method on the counts as stored.
 
 All fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
@@ -635,7 +640,9 @@ half the memory available to the process at the start (cgroup limits
 included). The first check comes from the files' stored shape (cells,
 genes and nonzeros), with nothing preloaded: the counts are read after
 it, preloaded as the other commands read them, and a file that does not
-store its nonzero count leaves that read unchecked.
+store its nonzero count leaves that read unchecked. Under `--auto-batch`
+the batches are known only once the read has found the components, so the
+δ estimate over them is checked again then, before it is made.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for

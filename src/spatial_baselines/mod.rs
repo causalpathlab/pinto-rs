@@ -39,8 +39,9 @@
 //!
 //! Batch effects are the one deviation every baseline shares: with two or
 //! more batches, the counts are divided by the input's own δ estimate
-//! (cage's estimator at cage's defaults, written to `{out}.delta.parquet`
-//! with each cell's batch) before the method's own preprocessing
+//! (cage's estimator under cage's batch options, the same flags and
+//! defaults, written to `{out}.delta.parquet` with each cell's batch)
+//! before the method's own preprocessing
 //! ([`input::SpatialInputArgs::read`]); `--ignore-batch` gives the original
 //! method its counts as stored. The manifest records the δ files and
 //! `baseline.json` records `batch_correction`.

@@ -42,13 +42,13 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("srt-sim-score", 7),
         ("srt-sim-pairs", 9),
         ("srt-sim-baseline", 7),
-        ("spatialde2", 13),
-        ("stagate", 18),
-        ("spatialpca", 12),
-        ("mefisto", 12),
-        ("spatialde2-pb", 13),
-        ("spatialpca-pb", 13),
-        ("mefisto-pb", 13),
+        ("spatialde2", 15),
+        ("stagate", 20),
+        ("spatialpca", 14),
+        ("mefisto", 14),
+        ("spatialde2-pb", 15),
+        ("spatialpca-pb", 15),
+        ("mefisto-pb", 15),
         ("compare", 8),
         #[cfg(feature = "view")]
         ("view", 28),
@@ -211,4 +211,73 @@ fn every_shown_flag_has_a_help_line() {
         }
     }
     assert!(bare.is_empty(), "no help: {bare:?}");
+}
+
+/// cage's `--help` lists its flags in the order it always has, and
+/// `pinto run`'s form and the MCP schema, which take every argument in
+/// order, list the batch options where cage's own stood: `-o` and
+/// `--seed` between `--ignore-batch` and `--num-levels`.
+#[test]
+fn cage_s_help_keeps_its_flag_order() {
+    const SHOWN: &[&str] = &[
+        "coord_files",
+        "coord_columns",
+        "coord_column_names",
+        "batch_files",
+        "auto_batch",
+        "ignore_batch",
+        "out",
+        "seed",
+        "cnv_clones",
+        "n_pseudobulk",
+        "knn_spatial",
+        "knn_expr",
+        "no_qc",
+        "permute_coords",
+        "drop_features",
+        "mask_cells",
+        "ablation_parent",
+        "device",
+        "embedding_dim",
+        "epochs",
+        "feature_inclusion",
+        "n_hvg",
+        "feature_list_file",
+        "must_train_features",
+        "edge_cluster_method",
+        "leiden_resolution",
+        "n_edge_clusters",
+        "feature_embedding",
+        "feature_embedding_bias",
+        "feature_embedding_mode",
+        "feature_init_mode",
+        "feature_modules",
+        "verbose",
+        "max_threads",
+    ];
+    const FIRST: &[&str] = &[
+        "data_files",
+        "coord_files",
+        "coord_columns",
+        "coord_column_names",
+        "coord_header_row",
+        "batch_files",
+        "auto_batch",
+        "ignore_batch",
+        "out",
+        "seed",
+        "num_levels",
+        "proj_dim",
+        "cnv_clones",
+        "n_pseudobulk",
+    ];
+    let cli = crate::built_cli();
+    let cage = cli.find_subcommand("cage").unwrap();
+    assert_eq!(visible_flags(cage), SHOWN);
+    let all: Vec<String> = cage
+        .get_arguments()
+        .take(FIRST.len())
+        .map(|a| a.get_id().to_string())
+        .collect();
+    assert_eq!(all, FIRST);
 }

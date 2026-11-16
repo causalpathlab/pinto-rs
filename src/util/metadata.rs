@@ -315,9 +315,9 @@ pub enum BatchLabels {
 }
 
 impl BatchLabels {
-    /// The labels a run with inputs `c` gives its cells (`--batch-files`
-    /// wins over `--auto-batch`, as preprocessing has it).
-    pub fn of(c: &crate::util::input::SrtInputArgs) -> Self {
+    /// The labels a run with batch options `c` gives its cells
+    /// (`--batch-files` wins over `--auto-batch`, as preprocessing has it).
+    pub fn of(c: &crate::util::input::BatchArgs) -> Self {
         if c.batch_files.is_some() {
             Self::BatchFiles
         } else if c.auto_batch {
@@ -1017,7 +1017,7 @@ impl DeltaWritten {
     /// A fit's δ, with its cells, for a run with inputs `c`.
     pub fn fit(c: &crate::util::input::SrtInputArgs) -> Self {
         Self {
-            labels: BatchLabels::of(c),
+            labels: BatchLabels::of(&c.batch),
             cells: true,
         }
     }

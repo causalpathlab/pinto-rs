@@ -79,7 +79,7 @@
 pub mod sparse;
 
 use super::input::{InputShape, SpatialData};
-use super::memory::{factor_peak_bytes, FactorShape};
+use super::memory::{factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, DenseRows};
@@ -180,6 +180,7 @@ impl FitArgs {
             cell_vectors: 7 * (d + 10) + 2 * d,
             gene_vectors: 3 * (d + 10) + d,
             super_cells,
+            proj_dim: self.core.input.collapse.proj_dim,
             // SPARK-X's accumulators over every gene (three coordinates at
             // most) and its kernels' coordinates (`n x d` for each of the
             // eleven, and three more as they are formed); SCTransform's
@@ -211,12 +212,26 @@ fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> 
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(args, args.fit.core.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(false, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk))?;
-    run_pb_on(args, args.fit.core.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(true, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// SpatialPCA's genes: SPARK-X's spatially variable genes at a

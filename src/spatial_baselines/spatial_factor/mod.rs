@@ -147,6 +147,7 @@ pub fn read_shape(data: &SpatialData) -> InputShape {
         nonzeros: data.counts.nnz(),
         section_sizes: section_sizes(&data.section),
         batches: data.n_batches(),
+        strata: 1,
     }
 }
 

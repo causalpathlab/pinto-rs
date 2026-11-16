@@ -424,8 +424,8 @@ pub fn predict_cage(
     // A query batch the model trained on is divided by the model's own δ,
     // and only a new one is estimated, on the query; a model without a δ
     // trained on undivided counts, so the query is not divided.
-    let model_delta = model_delta(&args.model, run, c.ignore_batch)?;
-    if model_delta.is_none() && !c.ignore_batch {
+    let model_delta = model_delta(&args.model, run, c.batch.ignore_batch)?;
+    if model_delta.is_none() && !c.batch.ignore_batch {
         info!(
             "{}: the model has no batch effects, so the query is not batch-corrected",
             args.model
@@ -433,7 +433,7 @@ pub fn predict_cage(
     }
     let model_source = run.and_then(|r| r.meta.batch_labels);
     let model_files = model_data_files(run);
-    let how = delta::QueryLabels::of(BatchLabels::of(c), &c.data_files, &model_files);
+    let how = delta::QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
     let all_known = match &model_delta {
         Some((d, _)) => delta::every_batch_known(c, &how, &d.batches, model_source)?,
         None => false,
@@ -816,7 +816,7 @@ pub fn predict_cage(
             // the δ alone: the cells' batches are its own labels, in its
             // coord_pairs
             delta: batch_effects.as_ref().map(|_| DeltaWritten {
-                labels: BatchLabels::of(c),
+                labels: BatchLabels::of(&c.batch),
                 cells: false,
             }),
         },

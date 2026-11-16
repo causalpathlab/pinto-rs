@@ -362,7 +362,7 @@ fn every_batch_is_known_from_the_inputs() {
         argv.extend_from_slice(args);
         argv.extend_from_slice(&["-o", "o"]);
         let c = SrtInputArgs::try_parse_from(argv).unwrap();
-        let how = QueryLabels::of(BatchLabels::of(&c), &c.data_files, &model_files);
+        let how = QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
         every_batch_known(&c, &how, model, source).unwrap()
     };
     let files = Some(BatchLabels::Files);
