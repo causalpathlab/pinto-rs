@@ -399,10 +399,13 @@ enum Commands {
                       That gates a shared multi-scale PB hierarchy.\n\n\
                       Chain levels differ only in their negative pools.\n\
                       This is embedding-only. There is no count decoder.\n\n\
-                      Where most features are noise, a run can take one of two\n\
-                      remedies: --feature-inclusion moran trains each feature with\n\
-                      its probability of spatial signal; --feature-modules M embeds\n\
-                      features through M learned modules. Not both.\n\n\
+                      Where most features are noise, a run takes one of two\n\
+                      remedies, not both. By default features are embedded through\n\
+                      learned modules, their number M taken from the data\n\
+                      (--feature-modules auto; a count fixes M, 0 turns them off).\n\
+                      --feature-inclusion moran instead trains each feature with\n\
+                      its probability of spatial signal, and turns the default\n\
+                      modules off.\n\n\
                       --n-hvg weights the random projection that builds the\n\
                       coarsening hierarchy, as in senna bge and senna gem;\n\
                       it does not subset the trained feature axis.\n\
@@ -487,12 +490,14 @@ enum Commands {
                       --num-levels and --cnv-clones shape it); training\n\
                       never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
                       does.\n\n\
-                      Where most features are noise, --feature-inclusion moran or\n\
-                      --feature-modules M apply as in cage, never both. The modules\n\
-                      start from pseudobulks built for that alone; training pools the\n\
-                      sparse counts of the cells each step draws.\n\n\
+                      Where most features are noise, feature modules (the default,\n\
+                      --feature-modules auto, a count M, or 0 for none) or\n\
+                      --feature-inclusion moran apply as in cage, never both. The\n\
+                      modules start from pseudobulks built for that alone; training\n\
+                      pools the sparse counts of the cells each step draws.\n\n\
                       --n-pseudobulk and the HVG flags shape only those starting\n\
-                      pseudobulks, and do nothing without --feature-modules (a warning\n\
+                      pseudobulks, and do nothing in a run without modules\n\
+                      (--feature-modules 0, or --feature-inclusion moran; a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
                       --embedding-l2 defaults to 0 here.\n\n\
                       Writes what cage writes; its manifest says `cell_level`.",
@@ -1240,8 +1245,9 @@ fn run_command() -> anyhow::Result<()> {
         }
         Commands::CageCell(args) => {
             let (c, m) = sub("cage-cell");
-            cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
-            fit_cell_activity_graph_embedding(args)?;
+            let mut args = args.clone();
+            args.seeding_flags = cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
+            fit_cell_activity_graph_embedding(&args)?;
         }
         Commands::Predict(args) => {
             // The return value serves `pinto impute`; the CLI path only wants
