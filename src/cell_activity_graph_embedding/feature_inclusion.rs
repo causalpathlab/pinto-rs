@@ -47,7 +47,7 @@
 
 use crate::cell_activity_graph_embedding::pb_frame::majority_label;
 use crate::util::ablation::{dense_ids, group};
-use crate::util::common::{jackknife_se, quantile_sorted, upper_median, Mat, LIBRARY_SCALE};
+use crate::util::common::{jackknife_se, log_normalise, quantile_sorted, upper_median, Mat};
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::fold_edges_to_super;
 use data_beans::sparse_io_vector::SparseIoVec;
@@ -93,16 +93,6 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
         exy - mu * ex + w * mu * mu,
         sxx - 2.0 * mu * sx + n * mu * mu,
     )
-}
-
-/// `ln(1 + s x / Σ x)` in place, `s` the [`LIBRARY_SCALE`]; an empty unit
-/// stays empty.
-pub fn log_normalise(p: &mut [(u32, f32)]) {
-    let lib: f32 = p.iter().map(|&(_, v)| v).sum();
-    if lib > 0.0 {
-        p.iter_mut()
-            .for_each(|(_, v)| *v = (LIBRARY_SCALE * *v / lib).ln_1p());
-    }
 }
 
 /// Each column of `pooled` (features × units, raw counts) as a sparse,

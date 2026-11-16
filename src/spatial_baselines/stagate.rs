@@ -178,9 +178,8 @@ use super::memory::{
     StagateShape, STAGATE_PROCESS_BYTES,
 };
 use super::output::{write_run, Fitted, PbFit};
-use crate::simulate::baseline::normalise_log;
 use crate::util::ablation::section_sizes;
-use crate::util::common::Mat;
+use crate::util::common::{normalise_log, Mat};
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
 use crate::util::metadata::{InputLayout, PseudobulkInput};
