@@ -100,22 +100,21 @@
 //!    Eck 2019, "From Louvain to Leiden: guaranteeing well-connected
 //!    communities", Scientific Reports 9:5233, doi:10.1038/s41598-019-41721-w).
 //!
-//! Two formulations of the same model ([`Input`]), recorded as the run's
-//! mode. The default, sparse, keeps the input sparse: the first layer is a
-//! sparse × dense product, kept out of autograd (`x W1` is the graph's
-//! leaf, its gradient carried to `W1` as `xᵀ G`), and the reconstruction
-//! loss is summed over blocks of cells, each block's residual dense only
-//! while it is summed ([`Stagate::step`]). Both are exact: the loss and
-//! every gradient are the reference's, to float rounding (a test trains
-//! both and a torch replica). The dense one holds the cells × variable
-//! genes input, as the reference does: with `--reference`, the run's mode
-//! then `reference`, and on a GPU, where the sparse products would cross
-//! to the host each step, the mode staying `sparse` (the flag's). The
-//! layout held is recorded apart from the mode, as `input_layout` in the
-//! manifest's `baseline` and `baseline.json`'s `run`. Either way the
-//! graph, attention and messages live on the edge list (cells × (k + 1)
-//! entries), so memory is linear in the cells; the messages, `edges ×
-//! width`, are the larger part of it.
+//! pinto runs a sparse formulation of the model ([`Input`]): the
+//! reference holds the cells × variable genes input dense, which costs too
+//! much time and memory at real cell counts. The first layer is a sparse ×
+//! dense product, kept out of autograd (`x W1` is the graph's leaf, its
+//! gradient carried to `W1` as `xᵀ G`), and the reconstruction loss is
+//! summed over blocks of cells, each block's residual dense only while it
+//! is summed ([`Stagate::step`]). It is exact: the loss and every gradient
+//! are the reference's, to float rounding (tests train it against the
+//! dense layout and a torch replica). On a GPU, where the sparse products
+//! would cross to the host each step, the selected genes are held dense on
+//! the device instead; the layout held is recorded as `input_layout` in the
+//! manifest's `baseline` and `baseline.json`'s `run`. Either way the graph,
+//! attention and messages live on the edge list (cells × (k + 1) entries),
+//! so memory is linear in the cells; the messages, `edges × width`, are the
+//! larger part of it.
 //!
 //! Deliberate deviations:
 //!
@@ -203,12 +202,6 @@ const LOUVAIN_RESOLUTION: f64 = 0.5;
 pub struct Args {
     #[command(flatten)]
     pub input: SpatialInputArgs,
-
-    /// Run the original method's own formulation instead of pinto's sparse
-    /// one (see --help). The default holds the input sparse on the CPU and
-    /// dense on GPU devices
-    #[arg(long, default_value_t = false)]
-    pub reference: bool,
 
     /// Number of domains. Given, the embedding is clustered by pinto's
     /// seeded k-means (k-means++ from --seed, then Lloyd) into exactly this
@@ -583,9 +576,9 @@ impl SparseInput {
     }
 }
 
-/// STAGATE's input: dense, as the reference holds it (with `--reference`,
-/// or on a GPU), or sparse (the CPU default), whose first layer is a
-/// sparse × dense product and whose loss is summed over blocks of cells.
+/// STAGATE's input: dense, as the reference holds it (on a GPU), or sparse
+/// (on the CPU), whose first layer is a sparse × dense product and whose
+/// loss is summed over blocks of cells.
 pub enum Input {
     Dense(Tensor),
     Sparse(SparseInput),
@@ -1047,13 +1040,11 @@ impl Args {
         }
     }
 
-    /// The layout the input is held in, recorded apart from the mode (the
-    /// `--reference` flag's): dense with `--reference`, and on any device
-    /// but the CPU. The sparse formulation is the CPU path: its sparse
-    /// products run on the host, so on a GPU each step would copy the
-    /// weights and products across.
+    /// The layout the input is held in: sparse on the CPU, dense on any
+    /// other device. The sparse products run on the host, so on a GPU each
+    /// step would copy the weights and products across.
     pub(crate) fn input_layout(&self) -> InputLayout {
-        match self.reference || self.device != ComputeDevice::Cpu {
+        match self.device != ComputeDevice::Cpu {
             true => InputLayout::Dense,
             false => InputLayout::Sparse,
         }
@@ -1154,7 +1145,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let mut log = counts;
     normalise_log(&mut log);
     let layout = args.input_layout();
-    if layout == InputLayout::Dense && !args.reference {
+    if layout == InputLayout::Dense {
         info!(
             "the input is held dense on {}: sparse is the CPU path",
             args.device
@@ -1242,7 +1233,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &emb,
             embedding_name: "STAGATE",
             settings,
-            reference: args.reference,
             input_layout: Some(layout),
             pseudobulk: None,
         },

@@ -16,8 +16,8 @@ use super::input::{SpatialData, SpatialInputArgs};
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
 use crate::util::metadata::{
-    delta_files, manifest_path, now_secs, BaselineInput, BaselineMode, BaselineRun, BatchLabels,
-    InputLayout, OutputFiles, PintoMetadata, PseudobulkInput,
+    delta_files, manifest_path, now_secs, BaselineInput, BaselineRun, BatchLabels, InputLayout,
+    OutputFiles, PintoMetadata, PseudobulkInput,
 };
 use crate::util::parquet_io::{cell_pb_path, cells_table_path, write_cell_pb, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -53,10 +53,8 @@ pub struct Fitted<'a> {
     pub embedding_name: &'a str,
     /// The settings as run, recorded in `{out}.baseline.json`.
     pub settings: serde_json::Value,
-    /// Whether `--reference` was given (`baseline.mode`).
-    pub reference: bool,
     /// How the input was held (`baseline.input_layout`), for a method
-    /// whose layout is not the mode's alone; `None` otherwise.
+    /// whose layout depends on the device; `None` otherwise.
     pub input_layout: Option<InputLayout>,
     /// What a `-pb` run fitted on and its cells' super-cells; `None`
     /// on cells.
@@ -88,14 +86,9 @@ fn write_pb_labels(prefix: &str, cells: &[Box<str>], pb: &PbFit<'_>) -> anyhow::
     )
 }
 
-/// The run's formulation (the original's own, `reference`, or the sparse
-/// default) and input.
+/// The run's input layout and what it was fitted on.
 fn baseline_run(fit: &Fitted<'_>) -> BaselineRun {
     BaselineRun {
-        mode: match fit.reference {
-            true => BaselineMode::Reference,
-            false => BaselineMode::Sparse,
-        },
         input_layout: fit.input_layout,
         input: match &fit.pseudobulk {
             Some(pb) => BaselineInput::Pseudobulk(pb.input.clone()),

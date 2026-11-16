@@ -76,13 +76,10 @@
 //! - **Batch effects.** With two or more batches the counts are divided by
 //!   the input's own δ before the size factors and the gene selection (see
 //!   [`super`]); `--ignore-batch` runs the original.
-//! - **Sparse graph (the default) and `--reference`.** The reference
-//!   builds a dense `N × N` distance matrix in every mode. Its default
-//!   (`neighbors=None`) connects every pair of spots; `--reference` runs
-//!   that model within each section, the weights recomputed from the
-//!   coordinates as each update visits them
-//!   ([`WeightedGraph::all_pairs`]): the same sums, at `O(N)` memory and
-//!   the reference's `O(N²)` work per update. The sparse default is the
+//! - **Sparse graph only.** The reference builds a dense `N × N`
+//!   distance matrix in every mode, and its default (`neighbors=None`)
+//!   connects every pair of spots: `O(N²)` time and memory, too much at
+//!   real cell counts, so that formulation is not run. pinto runs the
 //!   reference's own `neighbors=k` option, the `--neighbors` nearest cells
 //!   within each section ([`super::graph::knn_within_sections`]),
 //!   symmetrised as the reference symmetrises them, `min d²` over the
@@ -94,7 +91,7 @@
 //!   reference value. Cutting the `1/d²` sum does more than truncate it:
 //!   in 2-D the far shells carry much of each cell's total weight, so a
 //!   cut graph has a weaker effective `smoothness_factor`, and its regions
-//!   can be coarser than `--reference`'s.
+//!   can be coarser than the fully connected graph's.
 //! - **Memory at the default cap.** The posteriors are `N × K₀` with the
 //!   reference's default `K₀ = ceil(sqrt(N))`, so memory and work per
 //!   update grow as `N^1.5` (about 8 GB for the posteriors alone at 1M
@@ -182,17 +179,11 @@ const SUM_CHUNK: usize = 4096;
 /// Posterior size above which a warning names `--n-clusters`.
 const PI_WARN_BYTES: f64 = 4e9;
 
-/// `spatialde2`'s arguments: the model's, and the formulation.
+/// `spatialde2`'s arguments: the model's.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     #[command(flatten)]
     pub fit: FitArgs,
-
-    /// Run the original method's own formulation instead of pinto's sparse
-    /// one (the default; see --help): every pair of a section connected,
-    /// the reference's default graph, in place of --neighbors
-    #[arg(long, default_value_t = false, conflicts_with = "neighbors")]
-    pub reference: bool,
 }
 
 /// The model's arguments, shared by `spatialde2` and `spatialde2-pb`.
@@ -394,28 +385,12 @@ impl CellCounts {
     }
 }
 
-/// Each cell's spatial neighbours with their pairwise weights `w_nm`:
-/// listed (a kNN graph, the reference's `neighbors=k`), or every other cell
-/// of its section (the reference's default `neighbors=None`), computed from
-/// the coordinates as they are visited so no `N × N` matrix is held.
-pub enum WeightedGraph {
-    Lists {
-        offsets: Vec<usize>,
-        index: Vec<usize>,
-        weight: Vec<f64>,
-    },
-    AllPairs {
-        /// Coordinates, cells × `dims`, row-major.
-        xy: Vec<f64>,
-        dims: usize,
-        /// Each cell's section, and the cells of each section.
-        section: Vec<usize>,
-        members: Vec<Vec<usize>>,
-        /// `min d²` of each section.
-        min_d2: Vec<f64>,
-        /// `2 · smoothness_factor`.
-        scale: f64,
-    },
+/// Each cell's spatial neighbours with their pairwise weights `w_nm`, one
+/// list per cell (a kNN graph, the reference's `neighbors=k`).
+pub struct WeightedGraph {
+    offsets: Vec<usize>,
+    index: Vec<usize>,
+    weight: Vec<f64>,
 }
 
 impl WeightedGraph {
@@ -435,7 +410,7 @@ impl WeightedGraph {
             }
             offsets.push(index.len());
         }
-        WeightedGraph::Lists {
+        WeightedGraph {
             offsets,
             index,
             weight,
@@ -487,58 +462,9 @@ impl WeightedGraph {
         Self::from_lists(lists.into_iter(), 2 * edges.len())
     }
 
-    /// The reference's default graph (`neighbors=None`): every pair of
-    /// cells of a section of `data`, `w_nm = 2 s min d² / d²_nm` with `min
-    /// d²` the smallest positive squared distance of the section. The
-    /// weights are recomputed as they are visited: the same sum as the
-    /// reference's dense `N × N` matrix, at `O(N)` memory and the
-    /// reference's `O(N²)` work per update. A section with no positive
-    /// distance weighs every pair `2 s` ([`no_spacing_as_one`]).
-    pub fn all_pairs(data: &SpatialData, smoothness: f64) -> Self {
-        let xy = &data.xy;
-        let (n, dims) = xy.shape();
-        let flat: Vec<f64> = (0..n)
-            .flat_map(|i| (0..dims).map(move |j| xy[(i, j)] as f64))
-            .collect();
-        let members = data.section_cells();
-        let d2 = |a: usize, b: usize| -> f64 {
-            (0..dims)
-                .map(|j| (flat[a * dims + j] - flat[b * dims + j]).powi(2))
-                .sum()
-        };
-        let mut min_d2: Vec<f64> = members
-            .iter()
-            .map(|cells| {
-                cells
-                    .par_iter()
-                    .enumerate()
-                    .map(|(a, &i)| {
-                        cells[a + 1..]
-                            .iter()
-                            .map(|&j| d2(i, j))
-                            .filter(|&v| v > 0.0)
-                            .fold(f64::INFINITY, f64::min)
-                    })
-                    .reduce(|| f64::INFINITY, f64::min)
-            })
-            .collect();
-        no_spacing_as_one(&mut min_d2);
-        WeightedGraph::AllPairs {
-            xy: flat,
-            dims,
-            section: data.section.clone(),
-            members,
-            min_d2,
-            scale: 2.0 * smoothness,
-        }
-    }
-
     /// Cells the graph is on.
     pub fn n_cells(&self) -> usize {
-        match self {
-            WeightedGraph::Lists { offsets, .. } => offsets.len() - 1,
-            WeightedGraph::AllPairs { section, .. } => section.len(),
-        }
+        self.offsets.len() - 1
     }
 
     /// Each undirected edge `(i, j)`, `i < j`, once, with its weight
@@ -558,37 +484,9 @@ impl WeightedGraph {
 
     /// `each(j, w_ij)` over cell `i`'s neighbours, in order.
     pub fn for_each_neighbour(&self, i: usize, mut each: impl FnMut(usize, f64)) {
-        match self {
-            WeightedGraph::Lists {
-                offsets,
-                index,
-                weight,
-            } => {
-                let r = offsets[i]..offsets[i + 1];
-                for (&j, &w) in index[r.clone()].iter().zip(&weight[r]) {
-                    each(j, w);
-                }
-            }
-            WeightedGraph::AllPairs {
-                xy,
-                dims,
-                section,
-                members,
-                min_d2,
-                scale,
-            } => {
-                let s = section[i];
-                let (dims, min_d2) = (*dims, min_d2[s]);
-                let at = &xy[i * dims..(i + 1) * dims];
-                for &j in members[s].iter().filter(|&&j| j != i) {
-                    let d2: f64 = at
-                        .iter()
-                        .zip(&xy[j * dims..(j + 1) * dims])
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum();
-                    each(j, scale * min_d2 / d2.max(min_d2));
-                }
-            }
+        let r = self.offsets[i]..self.offsets[i + 1];
+        for (&j, &w) in self.index[r.clone()].iter().zip(&self.weight[r]) {
+            each(j, w);
         }
     }
 
@@ -1257,24 +1155,12 @@ fn knn_graph(data: &SpatialData, nb: Neighbours, k: usize, smoothness: f64) -> W
 /// What would lower SpatialDE2's peak memory, for [`ensure_fits`].
 const LOWER_MEMORY: &str = "lower --n-top-genes, --neighbors or --n-clusters";
 
-/// Which run: `spatialde2` on its sparse graph or (`--reference`) on all
-/// pairs of a section, or `spatialde2-pb` (the sparse graph, on
-/// super-cells).
+/// Which run: `spatialde2` on cells or `spatialde2-pb` on super-cells,
+/// each on the sparse graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Variant {
     Sparse,
-    Reference,
     Pseudobulk,
-}
-
-impl Args {
-    /// The run these arguments ask for.
-    pub(crate) fn variant(&self) -> Variant {
-        match self.reference {
-            true => Variant::Reference,
-            false => Variant::Sparse,
-        }
-    }
 }
 
 impl FitArgs {
@@ -1290,21 +1176,19 @@ impl FitArgs {
         }
     }
 
-    /// The arguments a `variant` run's peak memory depends on.
-    fn sizes(&self, variant: Variant) -> Spatialde2Sizes {
+    /// The arguments a run's peak memory depends on.
+    fn sizes(&self) -> Spatialde2Sizes {
         Spatialde2Sizes {
             neighbors: self.neighbors,
             n_clusters: self.n_clusters,
-            all_pairs: variant == Variant::Reference,
         }
     }
 
     /// What `baseline.json` records of a fit `seg` on `genes` (of
-    /// `gene_names`), on all pairs of a section with `reference`.
+    /// `gene_names`).
     fn settings(
         &self,
         params: &Params,
-        reference: bool,
         genes: &[usize],
         gene_names: &[Box<str>],
         seg: &Segmentation,
@@ -1312,8 +1196,8 @@ impl FitArgs {
         serde_json::json!({
             "nclasses": seg.nclasses_trace.first(),
             "n_clusters": self.n_clusters,
-            "neighbors": if reference { None } else { Some(self.neighbors) },
-            "graph": if reference { "all pairs within a section" } else { "kNN within a section, symmetrised" },
+            "neighbors": self.neighbors,
+            "graph": "kNN within a section, symmetrised",
             "smoothness_factor": params.smoothness_factor,
             "n_top_genes": self.n_top_genes,
             "n_genes_used": genes.len(),
@@ -1337,7 +1221,7 @@ impl FitArgs {
 }
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
-    let budget = check_before_read(&args.fit, args.variant())?;
+    let budget = check_before_read(&args.fit, Variant::Sparse)?;
     run_on(
         args,
         args.fit
@@ -1386,7 +1270,7 @@ pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) 
         n => s.genes.min(n),
     };
     let input = InputShape { genes, ..s.clone() };
-    let shape = fit.sizes(variant).memory_shape(&input, s.nonzeros);
+    let shape = fit.sizes().memory_shape(&input, s.nonzeros);
     let peak = spatialde2_peak_bytes(&shape);
     let pb = match variant {
         Variant::Pseudobulk => pseudobulk_bytes(
@@ -1395,19 +1279,18 @@ pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) 
             shape.edges,
             fit.input.collapse.proj_dim,
         ),
-        Variant::Sparse | Variant::Reference => 0,
+        Variant::Sparse => 0,
     };
     fit.input
         .peak_with_delta(peak + pb, SPATIALDE2_PROCESS_BYTES, s)
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
-/// cell's `neighbors` nearest (none at 0), or with `all_pairs` every pair
-/// of a section, computed as visited; starting from `n_clusters` regions.
+/// cell's `neighbors` nearest (none at 0), starting from `n_clusters`
+/// regions.
 pub(crate) struct Spatialde2Sizes {
     pub neighbors: usize,
     pub n_clusters: Option<usize>,
-    pub all_pairs: bool,
 }
 
 impl Spatialde2Sizes {
@@ -1426,17 +1309,13 @@ impl Spatialde2Sizes {
             selected_nonzeros,
             genes: input.genes,
             // symmetrising at most doubles the edges
-            edges: match self.all_pairs {
-                true => 0,
-                false => 2 * knn_edges(sizes, self.neighbors),
-            },
+            edges: 2 * knn_edges(sizes, self.neighbors),
             regions: initial_regions(n, self.n_clusters),
-            gram: if self.neighbors > 0 && !self.all_pairs {
+            gram: if self.neighbors > 0 {
                 knn_gram_bytes(sizes, rayon::current_num_threads())
             } else {
                 0
             },
-            pair_cells: if self.all_pairs { n } else { 0 },
         }
     }
 }
@@ -1457,7 +1336,6 @@ fn read_shape(data: &SpatialData, genes: usize) -> InputShape {
 /// budget (`budget`, taken before the read) before the counts are copied
 /// and the graph is built.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
-    let reference = args.reference;
     let args_fit = &args.fit;
     let params = args_fit.params();
     let TopGenes {
@@ -1467,7 +1345,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     } = top_genes(&data, args_fit.n_top_genes);
     let n = data.cells.len();
     let shape = args_fit
-        .sizes(args.variant())
+        .sizes()
         .memory_shape(&read_shape(&data, genes.len()), selected);
     ensure_fits(
         "spatialde2",
@@ -1483,15 +1361,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         genes.len(),
         data.genes.len()
     );
-    let graph = if reference {
-        log::info!(
-            "spatialde2: every pair of cells in a section connected (--reference); \
-             each update visits them all"
-        );
-        Some(WeightedGraph::all_pairs(&data, params.smoothness_factor))
-    } else {
-        spatial_graph(&data, args_fit.neighbors, params.smoothness_factor)
-    };
+    let graph = spatial_graph(&data, args_fit.neighbors, params.smoothness_factor);
     let seg = segment(
         &counts,
         &sizefactors,
@@ -1507,7 +1377,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         seg.elbo_trace.last().copied().unwrap_or(f64::NAN)
     );
     let probs = Mat::from_fn(n, seg.k, |i, c| seg.pi[i * seg.k + c] as f32);
-    let settings = args_fit.settings(&params, reference, &genes, &data.genes, &seg);
+    let settings = args_fit.settings(&params, &genes, &data.genes, &seg);
     write_run(
         &args_fit.input,
         &data,
@@ -1518,7 +1388,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &probs,
             embedding_name: "spatialde2_prob",
             settings,
-            reference,
             input_layout: None,
             pseudobulk: None,
         },
@@ -1578,9 +1447,7 @@ pub(crate) fn run_pb_on(
     let params = args.params();
     let n = data.cells.len();
     let input = read_shape(&data, data.genes.len());
-    let shape = args
-        .sizes(Variant::Pseudobulk)
-        .memory_shape(&input, input.nonzeros);
+    let shape = args.sizes().memory_shape(&input, input.nonzeros);
     ensure_fits(
         "spatialde2-pb",
         spatialde2_peak_bytes(&shape)
@@ -1659,7 +1526,7 @@ pub(crate) fn run_pb_on(
         fit.k
     );
     let probs = Mat::from_fn(n, fit.k, |i, c| pi[i * fit.k + c] as f32);
-    let mut settings = args.settings(&params, false, &genes, &data.genes, &fit);
+    let mut settings = args.settings(&params, &genes, &data.genes, &fit);
     settings["unravel"] = serde_json::json!({
         "method": "mean-field sweeps of the class posteriors on each cell's counts and the cell graph, the fit's state fixed",
         "sweeps": sweeps,
@@ -1676,7 +1543,6 @@ pub(crate) fn run_pb_on(
             embedding: &probs,
             embedding_name: "spatialde2_prob",
             settings,
-            reference: false,
             input_layout: None,
             pseudobulk: Some(PbFit {
                 input: PseudobulkInput {

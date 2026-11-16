@@ -242,7 +242,7 @@ pub struct PintoMetadata {
     pub batch_labels: Option<BatchLabels>,
 
     /// Present on a spatial baseline's run (`stagate`, `spatialde2` and
-    /// `spatialde2-pb`): its formulation and what it was fitted on.
+    /// `spatialde2-pb`): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<BaselineRun>,
 
@@ -254,25 +254,17 @@ pub struct PintoMetadata {
     pub max_threads: Option<usize>,
 }
 
-/// A spatial baseline's formulation and what it was fitted on.
+/// A spatial baseline's input layout and what it was fitted on. Each runs
+/// pinto's sparse formulation; the `mode` an earlier pinto recorded is
+/// read past.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BaselineRun {
-    /// `sparse` (pinto's scalable formulation, the default) or
-    /// `reference` (the original method's own).
-    pub mode: BaselineMode,
     /// How the input was held, `dense` or `sparse`, for a method whose
-    /// layout is not the mode's alone (a dense GPU run in `sparse` mode).
+    /// layout depends on the device (stagate: dense on a GPU).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_layout: Option<InputLayout>,
     /// `cells`, or the super-cells `spatialde2-pb` was fitted on.
     pub input: BaselineInput,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum BaselineMode {
-    Sparse,
-    Reference,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

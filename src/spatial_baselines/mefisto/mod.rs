@@ -29,8 +29,8 @@
 //!    processes (a squared-exponential kernel times a group kernel, SI
 //!    (8)-(13)), which with their inducing-point approximation cost too
 //!    much time and memory at real cell counts; pinto offers the model
-//!    with a sparse graph prior instead, and `mefisto-pb` for scale, and
-//!    there is no `--reference`. The precision `c_k (I + rho_k L)` on the
+//!    with a sparse graph prior instead, and `mefisto-pb` for scale. The
+//!    precision `c_k (I + rho_k L)` on the
 //!    per-section kNN graph, one strength `rho_k` per factor by a log grid
 //!    then Brent; traces and log-determinants by the graph's spectrum,
 //!    means by conjugate gradients.
@@ -386,7 +386,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &to_mat(&st.mu),
             embedding_name: "mefisto",
             settings: s,
-            reference: false,
             input_layout: None,
             pseudobulk: None,
         },
@@ -527,7 +526,6 @@ pub(crate) fn run_pb_on(
             embedding: &to_mat(&st.mu),
             embedding_name: "mefisto",
             settings: s,
-            reference: false,
             input_layout: None,
             pseudobulk: Some(PbFit {
                 input: pseudobulk_input(args.n_pseudobulk, &coarse),

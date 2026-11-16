@@ -24,21 +24,20 @@ fn each_baseline_s_help_is_short() {
             .to_string();
         let lines = help.lines().count();
         assert!(lines <= HELP_LINES, "{cmd} -h: {lines} lines\n{help}");
-        // only stagate and spatialde2 have --reference; the -pb forms take -d
+        // no baseline has --reference; the -pb forms take -d
         let pb = cmd.ends_with("-pb");
-        let reference = matches!(*cmd, "stagate" | "spatialde2");
         let flag = |f: &str| help.lines().any(|l| l.trim_start().starts_with(f));
-        assert_eq!(flag("--reference"), reference, "{cmd}");
+        assert!(!flag("--reference"), "{cmd}");
         assert_eq!(flag("-d, --n-pseudobulk"), pb, "{cmd}");
         assert!(help.contains("--ignore-batch"), "{cmd}");
     }
 }
 
-/// `-d` belongs to spatialde2-pb alone, at least 1 as it parses, and
-/// spatialde2-pb has no `--reference`, hidden or not (so `pinto run`'s
-/// form and the MCP schema do not offer it).
+/// `-d` belongs to spatialde2-pb alone, at least 1 as it parses, and no
+/// baseline has a `--reference`, hidden or not (so neither `pinto run`'s
+/// form nor the MCP schema offers it): each runs its sparse formulation.
 #[test]
-fn only_spatialde2_pb_takes_d_and_it_has_no_reference() {
+fn only_spatialde2_pb_takes_d_and_no_baseline_has_reference() {
     let parse = |cmd: &str, extra: &[&str]| {
         let mut argv = vec!["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
         argv.extend(extra);
@@ -46,26 +45,27 @@ fn only_spatialde2_pb_takes_d_and_it_has_no_reference() {
     };
     for cmd in ["spatialde2", "stagate"] {
         assert!(parse(cmd, &["-d", "5"]).is_err(), "{cmd} -d");
-        assert!(parse(cmd, &["--reference"]).is_ok(), "{cmd} --reference");
     }
     let Ok(crate::Commands::Spatialde2Pb(pb)) = parse("spatialde2-pb", &["-d", "5"]) else {
         panic!("spatialde2-pb -d")
     };
     assert_eq!(pb.n_pseudobulk, 5);
     assert!(parse("spatialde2-pb", &["-d", "0"]).is_err(), "-d 0");
-    assert!(parse("spatialde2-pb", &["--reference"]).is_err());
     let cli = crate::built_cli();
-    let pb = cli.find_subcommand("spatialde2-pb").unwrap();
-    assert!(
-        pb.get_arguments().all(|a| a.get_id() != "reference"),
-        "spatialde2-pb carries a --reference"
-    );
+    for cmd in BASELINES {
+        assert!(parse(cmd, &["--reference"]).is_err(), "{cmd} --reference");
+        let sub = cli.find_subcommand(cmd).unwrap();
+        assert!(
+            sub.get_arguments().all(|a| a.get_id() != "reference"),
+            "{cmd} carries a --reference"
+        );
+    }
 }
 
 /// The factor baselines show two method flags each, at their papers'
 /// defaults, `--n-pcs` naming SpatialPCA's; their tuning knobs are hidden
-/// (so neither `pinto run`'s form nor the MCP schema offers them), none
-/// takes `--reference`, and the `-pb` forms take `-d`.
+/// (so neither `pinto run`'s form nor the MCP schema offers them), and the
+/// `-pb` forms take `-d`.
 #[test]
 fn factor_baselines_show_few_flags_at_their_papers_defaults() {
     let parse = |argv: &[&str]| {
@@ -85,10 +85,7 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         panic!("--n-pcs")
     };
     assert_eq!(a.fit.n_factors, 7);
-    // no dense-kernel mode: --reference and its knobs are not flags
-    for cmd in ["spatialpca", "mefisto", "spatialpca-pb", "mefisto-pb"] {
-        assert!(parse(&[cmd, "--reference"]).is_err(), "{cmd} --reference");
-    }
+    // no dense-kernel knobs
     assert!(parse(&["spatialpca", "--bandwidth", "1.5"]).is_err());
     assert!(parse(&["mefisto", "--n-inducing", "100"]).is_err());
     let Ok(crate::Commands::Mefisto(m)) = parse(&["mefisto"]) else {
@@ -102,7 +99,6 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         assert!(parse(&[cmd, "-d", "5"]).is_err(), "{cmd} -d");
         let pb = format!("{cmd}-pb");
         assert!(parse(&[&pb, "-d", "5"]).is_ok(), "{pb} -d");
-        assert!(parse(&[&pb, "--reference"]).is_err(), "{pb} --reference");
     }
     let cli = crate::built_cli();
     let visible = |cmd: &str| -> Vec<String> {
@@ -123,9 +119,6 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         }
     }
     assert!(!visible("mefisto").iter().any(|f| f == "n-inducing"));
-    for cmd in ["spatialpca", "mefisto"] {
-        assert!(!visible(cmd).iter().any(|f| f == "reference"), "{cmd}");
-    }
 }
 
 /// A baseline's `--ignore-batch` help says what it does there: no batch
