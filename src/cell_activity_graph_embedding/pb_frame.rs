@@ -2,11 +2,9 @@
 //! unit is a finest-level super-cell (pseudobulk) rather than a cell.
 //!
 //! Built from arm-independent inputs (the coarsening labels and the
-//! pair graph), so both gate modes train the same way; the sampled
-//! arm's collapse SVD enters only as the optional warm start, wired in
-//! `fit.rs`. Cell-cell edges appear here exactly once, at build time,
-//! to be folded into PB-PB super edges; the training loop never sees a
-//! cell id again.
+//! pair graph), so both gate modes train the same way. Cell-cell edges
+//! appear here exactly once, at build time, to be folded into PB-PB super
+//! edges; the training loop never sees a cell id again.
 
 use crate::util::graph_coarsen::{fold_edges_to_super, MultiLevelCoarsenResult};
 use legume_numeric::matrix::knn_graph::KnnGraph;

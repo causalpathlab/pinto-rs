@@ -9,6 +9,7 @@ mod graph_augmentation;
 mod graph_coarsen;
 mod ignore_batch;
 mod knn_resolution;
+mod log_normalise;
 mod manifest_update;
 mod metadata;
 mod parquet_io;

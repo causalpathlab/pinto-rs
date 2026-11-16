@@ -32,7 +32,6 @@ pub(super) struct ModelInputs<'a> {
     pub lora_spec: Option<LoraSpec>,
     pub n_pb: usize,
     pub embedding_dim: usize,
-    pub e_pb_warm: Option<&'a Mat>,
     pub varmap: &'a VarMap,
     pub dev: &'a Device,
 }
@@ -56,7 +55,6 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
         lora_spec,
         n_pb,
         embedding_dim,
-        e_pb_warm,
         varmap,
         dev,
     } = inputs;
@@ -135,36 +133,8 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
     // in sequence — the fixed copy is taken directly after registration, so it
     // is structurally the loaded dictionary and never a gated view.
     let b_pb_init = vec![0.0_f32; n_pb];
-    // Warm start from the collapse SVD: the shared basis becomes the INIT of
-    // the trained PB table. Both shapes derive from the same finest labels and
-    // --embedding-dim, so a mismatch is an internal bug, not a condition to
-    // fall back from. The adapter arm has no table init and ignores it.
-    if let Some(w) = e_pb_warm {
-        anyhow::ensure!(
-            w.nrows() == n_pb && w.ncols() == embedding_dim,
-            "collapse SVD [{} x {}] does not match the trained PB table [{} x {}]",
-            w.nrows(),
-            w.ncols(),
-            n_pb,
-            embedding_dim
-        );
-    }
-    match (e_pb_warm, args.feature_embedding_mode) {
-        (Some(w), FeatureEmbeddingMode::Adapt) => {
-            let _ = w;
-            info!(
-                "Warm start SKIPPED: the adapter arm has no PB-table init; \
-                 the trained table starts random as on the learned arm"
-            );
-        }
-        (Some(w), _) => info!(
-            "PB table warm-started from the collapse SVD [{} x {}], |E| = {:.4}",
-            w.nrows(),
-            w.ncols(),
-            w.norm() / (w.nrows() as f32).sqrt()
-        ),
-        (None, _) => info!("PB table starts from seeded random init (no collapse SVD)"),
-    }
+    // The unit table (pseudobulks, or cells under cage-cell) starts from the
+    // seeded random draw in every arm: nothing is fitted to the counts for it.
     let (model, frozen_feature) = match (&pretrained_feature, args.feature_embedding_mode) {
         // Learned feature modules: every feature row is `Σ_m π_gm μ_m + r_g`, warm-started
         // from a k-means over the pseudobulk profiles. Same detached-snapshot
@@ -241,7 +211,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
                 },
                 &ModelInit {
                     e_feat: pre.as_ref().map(|p| &p.e_feat),
-                    e_cell: e_pb_warm,
+                    e_cell: None,
                     b_feat: &b_feat_init,
                     b_cell: &b_pb_init,
                 },
@@ -311,3 +281,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
         module_profiles,
     })
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

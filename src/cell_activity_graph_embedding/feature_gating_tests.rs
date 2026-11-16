@@ -5,6 +5,9 @@
 //! evidence twice over rather than from the feature once. The property that says it
 //! is fixed is an EQUALITY — a two-channel matrix must produce exactly the
 //! activities of the single-channel matrix whose counts are its per-feature sums.
+//!
+//! Also pinned here: the activity is `log1p` of the raw count, which keeps a
+//! cell's depth.
 
 use super::feature_gating::{build_feature_active_fine_edges, ActivityNorm, FeatureActiveEdges};
 use crate::test_support::{numbered, sparse_vec};
@@ -71,9 +74,13 @@ fn channelized_input(dir: &tempfile::TempDir) -> SparseIoVec {
     write(dir, "channelized", &rows, &triplets)
 }
 
-fn activities(data: &SparseIoVec, norm: ActivityNorm) -> anyhow::Result<FeatureActiveEdges> {
+fn activities(
+    data: &SparseIoVec,
+    edges: &[(u32, u32)],
+    norm: ActivityNorm,
+) -> anyhow::Result<FeatureActiveEdges> {
     let axis = FeatureAxis::resolve(&data.row_names()?)?;
-    build_feature_active_fine_edges(data, &EDGES, norm, &axis)
+    build_feature_active_fine_edges(data, edges, norm, &axis)
 }
 
 /// Break it by indexing `feature_active_edges` with the row instead of the feature and
@@ -90,8 +97,8 @@ fn two_channels_give_exactly_the_pooled_single_channel_activities() -> anyhow::R
     assert_eq!(axis.feature_names(), pooled.row_names()?.as_slice());
 
     for norm in [ActivityNorm::Log1p, ActivityNorm::L1, ActivityNorm::L2] {
-        let a = activities(&pooled, norm)?;
-        let b = activities(&channelized, norm)?;
+        let a = activities(&pooled, &EDGES, norm)?;
+        let b = activities(&channelized, &EDGES, norm)?;
 
         assert_eq!(
             a.feature_active_edges.len(),
@@ -113,7 +120,7 @@ fn two_channels_give_exactly_the_pooled_single_channel_activities() -> anyhow::R
 #[test]
 fn pooling_happens_on_counts_not_on_log1p_activities() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let a = activities(&channelized_input(&dir), ActivityNorm::Log1p)?;
+    let a = activities(&channelized_input(&dir), &EDGES, ActivityNorm::Log1p)?;
 
     // FEATURE0 at cell 0 is (spliced 5, unspliced 2); edge (0,1) has FEATURE0 active
     // at both endpoints, where cell 1 is (3, 0).
@@ -129,6 +136,33 @@ fn pooling_happens_on_counts_not_on_log1p_activities() -> anyhow::Result<()> {
     assert!(
         (got - wrong).abs() > 1e-3,
         "log1p is not additive across tracks"
+    );
+    Ok(())
+}
+
+/// The activity is `log1p` of the cell's raw count, not of a depth-scaled
+/// one: two cells of one composition, one nine times as deep, get
+/// different activities, each the `log1p` of what was counted there.
+#[test]
+fn activities_are_log1p_of_raw_counts_whatever_the_depth() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    // cells 0 and 1 hold FEATURE0 at 2 and at 18; their neighbour, cell 2, at 4
+    let triplets = [(0, 0, 2.0), (0, 1, 18.0), (0, 2, 4.0)];
+    let data = sparse_vec(
+        dir.path(),
+        "depth",
+        &numbered("FEATURE", 1),
+        &numbered("c", 3),
+        &triplets,
+    );
+    let a = activities(&data, &[(0, 2), (1, 2)], ActivityNorm::Log1p)?;
+    assert_eq!(a.feature_active_edges[0], vec![0, 1]);
+    let w = &a.feature_active_edge_weights[0];
+    let (shallow, deep) = (2f32.ln_1p() * 4f32.ln_1p(), 18f32.ln_1p() * 4f32.ln_1p());
+    assert!((w[0] - shallow).abs() < 1e-5 * shallow, "{w:?}");
+    assert!(
+        (w[1] - deep).abs() < 1e-5 * deep,
+        "depth left no mark: {w:?}"
     );
     Ok(())
 }

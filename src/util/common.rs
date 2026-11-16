@@ -93,6 +93,58 @@ pub fn upper_median(v: &mut [f64]) -> Option<f64> {
 /// (counts per ten thousand); a unit with no counts stays empty.
 pub const LIBRARY_SCALE: f32 = 1e4;
 
+/// The depth normalisation for a site that takes counts into a
+/// transformed space (a log, a projection, a similarity, an SVD):
+/// `ln(1 + s x / total)`, `s` the [`LIBRARY_SCALE`] and `total` the unit's
+/// (a cell's, a pseudobulk's) summed counts, so the value depends on the
+/// unit's composition and not on its depth. This is scanpy's
+/// `normalize_total(target_sum=1e4)` followed by `log1p` (Wolf, Angerer and
+/// Theis 2018, Genome Biology 19:15, doi:10.1186/s13059-017-1382-0). A unit
+/// with no counts (`total <= 0`) gives 0, and a zero count gives 0, so
+/// sparse data stays sparse; a NaN total is not an empty unit and gives NaN.
+///
+/// The arithmetic order is fixed, `(s * x) / total`, and every form below
+/// goes through it, so the forms agree to the bit.
+///
+/// In pinto's own methods `total` covers every row of the unit as read:
+/// after cell QC and after a batch (δ) divide, which changes the total, and
+/// before any feature subset; on a pooled feature axis (channel rows summed
+/// per feature) it is the total over that axis. A baseline takes the total
+/// where its original does (STAGATE after its gene filter). Count models
+/// with their own depth term take raw counts and do not come through here,
+/// and neither does a weight meant to keep a unit's depth (cage's
+/// activities, a sampling weight).
+///
+/// [`log_normalise`] and [`normalise_log`] apply this with the unit's own
+/// total; call it directly where the total covers more rows than are at
+/// hand.
+pub fn log_cp10k<T: nalgebra::RealField + Copy>(x: T, total: T) -> T {
+    if total <= T::zero() {
+        T::zero()
+    } else {
+        (nalgebra::convert::<f64, T>(f64::from(LIBRARY_SCALE)) * x / total).ln_1p()
+    }
+}
+
+/// [`log_cp10k`] in place on one unit's sparse `(index, count)` list, the
+/// total taken over the list.
+pub fn log_normalise(p: &mut [(u32, f32)]) {
+    let total: f32 = p.iter().map(|&(_, v)| v).sum();
+    p.iter_mut().for_each(|(_, v)| *v = log_cp10k(*v, total));
+}
+
+/// [`log_cp10k`] in place on every column of `x` (features × units), the
+/// total taken over the column's stored values.
+pub fn normalise_log(x: &mut nalgebra_sparse::CscMatrix<f32>) {
+    for mut column in x.col_iter_mut() {
+        let total: f32 = column.values().iter().sum();
+        column
+            .values_mut()
+            .iter_mut()
+            .for_each(|v| *v = log_cp10k(*v, total));
+    }
+}
+
 /// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`; NaN
 /// with a non-finite replicate or fewer than two.
 pub fn jackknife_se(v: &[f64]) -> f64 {

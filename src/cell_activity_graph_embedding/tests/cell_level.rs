@@ -30,6 +30,9 @@ fn every_cell_is_its_own_unit_at_both_levels() {
     assert_eq!(ml.all_num_samples, vec![3, 3]);
 }
 
+/// The small widths the short test fits run at.
+const SMALL_WIDTHS: [&str; 6] = ["--embedding-dim", "4", "-d", "24", "--num-levels", "3"];
+
 /// A short cage fit of `data` (`cage-cell` when `extra` holds `"cell"`)
 /// to `{dir}/{name}`; its prefix, or why it failed.
 pub(super) fn try_fit(
@@ -37,6 +40,18 @@ pub(super) fn try_fit(
     data: &str,
     coords: &str,
     name: &str,
+    extra: &[&str],
+) -> anyhow::Result<String> {
+    try_fit_at(dir, data, coords, name, &SMALL_WIDTHS, extra)
+}
+
+/// [`try_fit`] at the `widths` given (none: cage's defaults).
+pub(super) fn try_fit_at(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    widths: &[&str],
     extra: &[&str],
 ) -> anyhow::Result<String> {
     let out = dir.join(name).to_str().unwrap().to_string();
@@ -51,18 +66,13 @@ pub(super) fn try_fit(
         &out,
         "--epochs",
         "2",
-        "--embedding-dim",
-        "4",
-        "-d",
-        "24",
-        "--num-levels",
-        "3",
         "--n-edge-clusters",
         "2",
         "--edge-cluster-method",
         "kmeans",
     ]
     .into_iter()
+    .chain(widths.iter().copied())
     .chain(extra.iter().copied().filter(|&e| e != "cell"))
     .collect();
     let mut args = parse(&argv).unwrap();
@@ -133,10 +143,6 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
     let trained = Mat::from_parquet(&format!("{cell}.pb_embedding.parquet")).unwrap();
     assert_eq!(trained.mat.nrows(), n_cells, "one trained row per cell");
-    assert!(
-        !std::path::Path::new(&format!("{cell}.pseudobulk_cells.parquet")).exists(),
-        "cage-cell wrote pseudobulk_cells.parquet"
-    );
     // batch effects are estimated and removed, as in cage, unless asked not to
     assert!(
         std::path::Path::new(&format!("{cell}.delta.parquet")).exists(),
@@ -167,16 +173,14 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let diff = (&fitted - &placed).abs().max();
     assert!(diff < 1e-4, "predict moved the cells by up to {diff}");
 
-    // the same data without the flag trains on pseudobulks, and builds both
+    // the same data without the flag trains on pseudobulks
     let pb = fit(dir.path(), &data, &coords, "pb", &[]);
     let trained = Mat::from_parquet(&format!("{pb}.pb_embedding.parquet")).unwrap();
     assert!(
         trained.mat.nrows() < n_cells,
         "the default trains on super-cells"
     );
-    for built in ["delta", "pseudobulk_cells"] {
-        assert!(std::path::Path::new(&format!("{pb}.{built}.parquet")).exists());
-    }
+    assert!(std::path::Path::new(&format!("{pb}.delta.parquet")).exists());
     assert!(
         !cell_level_of(&pb),
         "an ordinary cage run is not cell-level"

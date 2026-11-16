@@ -470,9 +470,9 @@ fn one_extreme_t_does_not_inflate_the_density() {
 /// held in memory, tiles as blocks; one coordinate column is refused.
 #[test]
 fn cells_stream_to_the_same_inclusion() {
-    use crate::cell_activity_graph_embedding::feature_inclusion::{cell_inclusion, log_normalise};
+    use crate::cell_activity_graph_embedding::feature_inclusion::cell_inclusion;
     use crate::test_support::{numbered, sparse_vec};
-    use crate::util::common::Mat;
+    use crate::util::common::{log_normalise, Mat};
     use crate::util::feature_axis::FeatureAxis;
     let dir = tempfile::tempdir().unwrap();
     let (xy, edges) = grid(6);

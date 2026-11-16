@@ -23,6 +23,7 @@
 //! selected.
 
 use super::kit::Dense;
+use crate::util::common::log_cp10k;
 use nalgebra_sparse::CscMatrix;
 use rayon::prelude::*;
 
@@ -227,8 +228,8 @@ impl SparseOp {
         op
     }
 
-    /// `ln(1 + 1e4 x / lib)` of `counts` (the selected genes × cells) with
-    /// all-gene libraries `lib` (a cell with none is all zeros), each gene
+    /// [`log_cp10k`] of `counts` (the selected genes × cells) with all-gene
+    /// libraries `lib` (a cell with none stores nothing), each gene
     /// centred within each section (`section[c]`, `0..n_sections`).
     pub fn log_centred(
         counts: &CscMatrix<f32>,
@@ -247,7 +248,7 @@ impl SparseOp {
                 col.row_indices()
                     .iter()
                     .zip(col.values())
-                    .map(|(&g, &x)| (g as u32, (1e4 * x as f64 / lib[c]).ln_1p() as f32))
+                    .map(|(&g, &x)| (g as u32, log_cp10k(f64::from(x), lib[c]) as f32))
                     .collect()
             })
             .collect();

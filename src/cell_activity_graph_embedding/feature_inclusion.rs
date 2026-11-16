@@ -46,8 +46,9 @@
 //! Analysis" (1986), for the kernel bandwidth.
 
 use crate::cell_activity_graph_embedding::pb_frame::majority_label;
+use crate::link_community::profiles::coarsen_cell_expression_dense;
 use crate::util::ablation::{dense_ids, group};
-use crate::util::common::{jackknife_se, quantile_sorted, upper_median, Mat, LIBRARY_SCALE};
+use crate::util::common::{jackknife_se, log_normalise, quantile_sorted, upper_median, Mat};
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::fold_edges_to_super;
 use data_beans::sparse_io_vector::SparseIoVec;
@@ -93,16 +94,6 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
         exy - mu * ex + w * mu * mu,
         sxx - 2.0 * mu * sx + n * mu * mu,
     )
-}
-
-/// `ln(1 + s x / Σ x)` in place, `s` the [`LIBRARY_SCALE`]; an empty unit
-/// stays empty.
-pub fn log_normalise(p: &mut [(u32, f32)]) {
-    let lib: f32 = p.iter().map(|&(_, v)| v).sum();
-    if lib > 0.0 {
-        p.iter_mut()
-            .for_each(|(_, v)| *v = (LIBRARY_SCALE * *v / lib).ln_1p());
-    }
 }
 
 /// Each column of `pooled` (features × units, raw counts) as a sparse,
@@ -639,8 +630,10 @@ pub fn pb_spatial_edges(
 
 /// The finest PBs' inputs to [`pb_inclusion`].
 pub struct PbUnits<'a> {
-    /// Pooled raw counts on the matrix ROW axis, `rows × n_pb`.
-    pub counts: &'a Mat,
+    /// The cells' counts, which are summed per PB here: raw, undivided.
+    pub data: &'a SparseIoVec,
+    /// The number of finest PBs.
+    pub n_pb: usize,
     /// Each cell's finest PB.
     pub cell_to_pb: &'a [usize],
     /// Each PB's parent at every level coarser than the finest, coarse first.
@@ -659,10 +652,12 @@ pub fn pb_inclusion(
     section: &[u32],
     per_section: usize,
 ) -> anyhow::Result<FeatureInclusion> {
-    let n_pb = pb.counts.ncols();
-    let pooled = axis.pool_rows_opt(pb.counts);
-    let profiles = normalised_profiles(pooled.as_ref().unwrap_or(pb.counts));
-    drop(pooled);
+    let n_pb = pb.n_pb;
+    let profiles = {
+        let counts = coarsen_cell_expression_dense(pb.data, pb.cell_to_pb, n_pb, None)?;
+        let pooled = axis.pool_rows_opt(&counts);
+        normalised_profiles(pooled.as_ref().unwrap_or(&counts))
+    };
     let n_sections = section.iter().map(|&s| s as usize + 1).max().unwrap_or(0);
     let (pb_section, _) = majority_label(pb.cell_to_pb, n_pb, section, n_sections);
     let block = tree_blocks(pb.parents, &pb_section, per_section);

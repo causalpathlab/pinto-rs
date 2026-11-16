@@ -1,10 +1,11 @@
 use crate::simulate::baseline::{
-    cluster, domains_per_donor, gene_mean_dispersion, hvg, match_to_reference, normalise_log,
+    cluster, domains_per_donor, gene_mean_dispersion, hvg, match_to_reference,
     normalised_dispersion, read_counts, reference_donor, run_baseline, scale, scanpy_pcs,
     BaselineArgs, Method, KNN, N_HVG, N_PCS, SEED,
 };
 use crate::simulate::harmony::HarmonyParams;
 use crate::simulate::score::{read_labels, score, Score, TruthSpots};
+use crate::util::common::normalise_log;
 use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
 use tempfile::TempDir;
@@ -14,22 +15,6 @@ fn csc(rows: &[&[f32]]) -> CscMatrix<f32> {
     CscMatrix::from(&DMatrix::from_fn(rows.len(), rows[0].len(), |g, s| {
         rows[g][s]
     }))
-}
-
-/// Each spot is scaled to 1e4 counts and then log1p'd; an empty spot stays
-/// empty.
-#[test]
-fn normalise_log_scales_each_spot_to_1e4_then_log1p() {
-    let mut x = csc(&[&[1.0, 3.0, 0.0], &[1.0, 1.0, 0.0]]);
-    normalise_log(&mut x);
-    let d = DMatrix::from(&x);
-    let want = [[5000f32, 7500.0, 0.0], [5000.0, 2500.0, 0.0]];
-    for g in 0..2 {
-        for s in 0..3 {
-            let w = want[g][s].ln_1p();
-            assert!((d[(g, s)] - w).abs() < 1e-4, "{g},{s}: {}", d[(g, s)]);
-        }
-    }
 }
 
 /// Mean and dispersion are taken on the counts scale (expm1 of the log

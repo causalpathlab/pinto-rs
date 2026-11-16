@@ -450,7 +450,6 @@ enum Commands {
                       \x20 {out}.cell_embedding.parquet  cell × embedding_dim (same map as the pairs)\n\
                       \x20 {out}.pair_encoder.safetensors  the pair encoder, for `pinto predict`\n\
                       \x20 {out}.feature_embedding.parquet  feature × embedding_dim\n\
-                      \x20 {out}.pseudobulk_cells.parquet  cell × (coords, super-cell, e_pb)\n\
                       \x20 {out}.feature_bias.parquet       per-feature scalar\n\
                       \x20 {out}.coord_pairs.parquet     cell pair list, tagged by kind\n\
                       \x20 {out}.latent.parquet          cell pair × embedding_dim\n\
@@ -475,8 +474,7 @@ enum Commands {
                       Cells and cell pairs are the training units: each cell is its own\n\
                       unit and each within-batch spatial cell pair a positive; negatives\n\
                       are other cells of the same batch, never the pair's own two. No\n\
-                      coarsening hierarchy is trained on and there is no pseudobulk SVD\n\
-                      warm start (the cell table starts at random).\n\n\
+                      coarsening hierarchy is trained on.\n\n\
                       Batch effects (δ) are estimated and removed as in cage, and\n\
                       `pinto predict` corrects a query as it does for cage. The δ\n\
                       estimate pools cells internally, only to estimate δ (so\n\
@@ -491,8 +489,7 @@ enum Commands {
                       pseudobulks, and do nothing without --feature-modules (a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
                       --embedding-l2 defaults to 0 here.\n\n\
-                      Writes what cage writes, without {out}.pseudobulk_cells.parquet;\n\
-                      its manifest says `cell_level`.",
+                      Writes what cage writes; its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0")),
         // What cage-cell refuses, or warns does nothing on cells, is off its
         // help.
