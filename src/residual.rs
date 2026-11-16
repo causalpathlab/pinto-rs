@@ -738,10 +738,6 @@ fn residual_marker(
     Ok(marker)
 }
 
-fn summary_path(out: &str) -> String {
-    in_dir(out, MARKER)
-}
-
 pub use crate::util::residual_input::MARKER;
 
 /// Each data file's residual zarr under `out`, checked not to be its input.

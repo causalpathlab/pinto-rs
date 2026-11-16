@@ -43,7 +43,7 @@ fn planted() -> (Mat, Vec<f32>) {
 #[test]
 fn auto_separates_the_planted_groups_and_backgrounds_the_noise() {
     let (counts, sizes) = planted();
-    assert!(N_PB > PROFILE_SVD_RANK && 2 * GROUP > PROFILE_SVD_RANK);
+    const { assert!(N_PB > PROFILE_SVD_RANK && 2 * GROUP > PROFILE_SVD_RANK) };
     let part = auto_partition(&counts, &sizes, 7).unwrap();
     assert!(part.n_modules >= 2, "{} modules", part.n_modules);
     assert_eq!(part.labels.len(), N_FEATURES);

@@ -71,7 +71,13 @@ pub(super) fn resolve_modules(
                 );
                 return Ok(None);
             }
-            info!("--feature-modules auto: M = {}", part.n_modules);
+            match part.background {
+                Some(id) => info!(
+                    "--feature-modules auto: M = {}, the background module is {id}",
+                    part.n_modules
+                ),
+                None => info!("--feature-modules auto: M = {}", part.n_modules),
+            }
             (part.labels, part.n_modules)
         }
     };

@@ -174,7 +174,10 @@ fn batch_options_are_refused_on_a_residual_s_files() {
     for (flag, extra) in [
         ("--batch-files", vec!["--batch-files", batch_files.as_str()]),
         ("--auto-batch", vec!["--auto-batch"]),
-        ("--cnv-clones", vec!["--cnv-clones", clones.to_str().unwrap()]),
+        (
+            "--cnv-clones",
+            vec!["--cnv-clones", clones.to_str().unwrap()],
+        ),
     ] {
         let e = fit_error(&res, &out, &extra);
         assert!(

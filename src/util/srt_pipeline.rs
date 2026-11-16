@@ -26,12 +26,12 @@ use crate::util::cell_pairs::{
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
-use crate::util::metadata::NoBatchEffect;
-use crate::util::residual_input::{log_no_batch_effect, no_batch_effect_on};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
     CollapseArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
+use crate::util::metadata::NoBatchEffect;
+use crate::util::residual_input::{log_no_batch_effect, no_batch_effect_on};
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
 use data_beans::aux::feature_names::FeatureNameKind;

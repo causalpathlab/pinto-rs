@@ -182,7 +182,10 @@ fn a_baseline_estimates_no_batch_effect_on_a_residual_s_files() {
         args.fit.input.read(false).err().map(|e| e.to_string()),
     ] {
         let e = e.expect("--auto-batch should be refused");
-        assert!(e.contains("none is made on a residual's excess counts"), "{e}");
+        assert!(
+            e.contains("none is made on a residual's excess counts"),
+            "{e}"
+        );
     }
     // and no estimate is budgeted for
     let plain = spatialde2_args(&files, &out, &[]).fit.input;

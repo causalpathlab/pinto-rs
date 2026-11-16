@@ -6,8 +6,8 @@ use crate::lr_activity::args::LraInputArgs;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::lupin_rounds::{latest_rounds, read_json};
-use crate::util::residual_input::{excess_marker, same_data_name, ResidualBlock};
 use crate::util::metadata::{resolve_beside, GraphParams, PintoMetadata, Run};
+use crate::util::residual_input::{excess_marker, same_data_name, ResidualBlock};
 use std::path::{Path, PathBuf};
 
 /// The label of a cell no cell-type or region table names.

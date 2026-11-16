@@ -157,9 +157,8 @@ fn lc_estimates_no_batch_effect_on_a_residual_s_files() {
         std::fs::create_dir_all(&folder).unwrap();
         two_sections(&folder, 8)
     };
-    let meta = |prefix: &str| {
-        PintoMetadata::read(std::path::Path::new(&manifest_path(prefix))).unwrap()
-    };
+    let meta =
+        |prefix: &str| PintoMetadata::read(std::path::Path::new(&manifest_path(prefix))).unwrap();
     let delta = |prefix: &str| std::path::Path::new(&format!("{prefix}.delta.parquet")).exists();
 
     let (data, coords) = sections("plain");
