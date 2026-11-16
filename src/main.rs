@@ -442,7 +442,8 @@ enum Commands {
                       --edge-cluster-method picks the cut.\n\
                       leiden is the default,\n\
                       deciding the count from --leiden-resolution.\n\
-                      kmeans instead uses a fixed --n-communities,\n\
+                      kmeans instead uses a fixed --n-communities\n\
+                      (without it, the embedding width),\n\
                       spherical on the pair latent and seeded by --seed.\n\n\
                       A cell's embedding is its own placement on the feature embedding,\n\
                       by the same encoder that places its pairs,\n\

@@ -154,13 +154,15 @@ pub struct CellActivityGraphEmbeddingArgs {
         value_name = "H",
         default_value_t = graph_embedding_util::EmbeddingDim::Auto,
         value_name = "H|auto",
-        help = "Cell embedding dimensionality (auto = a pinned dictionary's width, else 16)",
+        help = "Cell embedding dimensionality (auto = a pinned dictionary's width, else 64)",
         long_help = "Cell embedding dimensionality. auto is the default.\n\
                      With --feature-embedding under freeze, free or lora the rows are\n\
                      installed verbatim, so auto is the dictionary's width and a\n\
                      given width must agree with it.\n\
-                     Otherwise auto is 16; the adapt mode maps the dictionary into\n\
-                     this run's own width."
+                     Otherwise auto is 64; the adapt mode maps the dictionary into\n\
+                     this run's own width.\n\
+                     Under --edge-cluster-method kmeans with no --n-communities,\n\
+                     the width is also the number of communities."
     )]
     pub embedding_dim: graph_embedding_util::EmbeddingDim,
 
@@ -578,7 +580,7 @@ row, so nothing that reads it has to know modules exist; `pinto predict` places
 features the model never saw through these tables.";
 
 /// The width when neither the flag nor a pinned dictionary decides it.
-pub const DEFAULT_EMBEDDING_DIM: usize = 16;
+pub const DEFAULT_EMBEDDING_DIM: usize = 64;
 
 impl CellActivityGraphEmbeddingArgs {
     /// The rules between `--feature-embedding-mode` and the flags only one mode
