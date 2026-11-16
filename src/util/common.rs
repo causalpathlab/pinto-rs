@@ -56,18 +56,20 @@ pub fn non_negative_f64(text: &str) -> Result<f64, String> {
     }
 }
 
-/// Most worker threads a pinto command takes by default: a shared machine
-/// is not a command's to fill, and past this the fits gain little.
-pub const MAX_DEFAULT_THREADS: usize = 16;
+/// Default of `--max-threads`, the most worker threads a pinto command
+/// takes: a shared machine is not a command's to fill, and past this the
+/// fits gain little.
+pub const DEFAULT_MAX_THREADS: usize = 16;
 
-/// The worker threads to start with: `min(MAX_DEFAULT_THREADS, cores)`,
-/// unless `RAYON_NUM_THREADS` (`rayon_env`) is set, when rayon's own choice
-/// stands (`None`).
-pub fn default_threads(rayon_env: Option<&str>, cores: usize) -> Option<usize> {
-    match rayon_env {
-        Some(v) if !v.trim().is_empty() => None,
-        _ => Some(cores.clamp(1, MAX_DEFAULT_THREADS)),
-    }
+/// The worker threads a run starts: rayon's own count (`RAYON_NUM_THREADS`,
+/// `rayon_env`, when it is a positive number, else the `cores`), at most
+/// `max_threads`.
+pub fn pool_threads(max_threads: usize, rayon_env: Option<&str>, cores: usize) -> usize {
+    let own = rayon_env
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(cores);
+    own.min(max_threads).max(1)
 }
 
 /// The `q` quantile of `sorted` (ascending), the element at

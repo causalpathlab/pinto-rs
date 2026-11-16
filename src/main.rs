@@ -96,6 +96,22 @@ struct Cli {
     )]
     verbose: bool,
 
+    #[arg(
+        long,
+        global = true,
+        default_value_t = util::common::DEFAULT_MAX_THREADS,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help = "Most threads a run uses; lc's Gibbs splits a component into up to this many \
+                blocks, so the same --seed and --max-threads give the same draws on any machine",
+        long_help = "Most worker threads a run uses: rayon's own count\n\
+                     (RAYON_NUM_THREADS, else the machine's cores), at most this.\n\
+                     Raise it to use more cores.\n\
+                     lc's Gibbs splits each large component into up to this many\n\
+                     blocks, whatever threads run them, so the same --seed, data\n\
+                     and --max-threads give the same draws on any machine."
+    )]
+    max_threads: usize,
+
     #[command(subcommand)]
     commands: Commands,
 }
@@ -1043,6 +1059,14 @@ fn name_folder_out(commands: &mut Commands) {
     }
 }
 
+/// `--max-threads` handed to the commands whose results depend on it: lc's
+/// Gibbs splits a component into up to that many blocks.
+fn pass_max_threads(cli: &mut Cli) {
+    if let Commands::LinkCommunity(a) = &mut cli.commands {
+        a.max_threads = cli.max_threads;
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // A session's host runs this binary again: it serves the session and
     // exits here, before any of pinto's own work.
@@ -1055,15 +1079,6 @@ fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-
-    // At most 16 worker threads unless RAYON_NUM_THREADS says otherwise.
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let env = std::env::var("RAYON_NUM_THREADS").ok();
-    if let Some(n) = util::common::default_threads(env.as_deref(), cores) {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .build_global()?;
     }
 
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
@@ -1084,6 +1099,20 @@ fn main() -> anyhow::Result<()> {
             .exit()
     });
     name_folder_out(&mut cli.commands);
+
+    // Rayon's own count, at most --max-threads.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let env = std::env::var("RAYON_NUM_THREADS").ok();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(util::common::pool_threads(
+            cli.max_threads,
+            env.as_deref(),
+            cores,
+        ))
+        .build_global()?;
+    pass_max_threads(&mut cli);
+    #[cfg(feature = "view")]
+    tui::keep_max_threads(cli.max_threads);
     if let Commands::CageCell(a) = &mut cli.commands {
         a.cell_level = true;
     }

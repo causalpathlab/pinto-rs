@@ -5,7 +5,10 @@
 //! project's records, a background job unless asked otherwise. The reply lists the residual's files for
 //! `run_fit`, the second stage of the two-stage fit.
 
-use super::mcp::{as_run, background, in_background, launch, out_arg, out_or_free, parsed, rooted};
+use super::mcp::{
+    as_run, background, in_background, launch, max_threads_arg, max_threads_flag, out_arg,
+    out_or_free, parsed, rooted,
+};
 use super::script;
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::residual::{Adapt, Excess, Plan, ResidualArgs};
@@ -32,6 +35,8 @@ pub(super) struct ResidualToolArgs {
     pub adapt_cells: Option<f64>,
     #[serde(default, alias = "feature_names")]
     pub feature_name_mode: Option<String>,
+    #[serde(default)]
+    pub max_threads: Option<usize>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -56,6 +61,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
             argv.push(flag_value(flag, v));
         }
     }
+    argv.extend(max_threads_flag(a.max_threads));
     argv.push(flag_value("--out", out));
     Ok(argv)
 }
@@ -148,6 +154,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "adapt": flag("adapt", json!({"type": "string", "enum": choices::<Adapt>()})),
                 "adapt_cells": flag("adapt_cells", json!({"type": "number", "minimum": 0})),
                 "feature_name_mode": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
+                "max_threads": max_threads_arg(cli),
                 "background": background(),
             },
             "required": ["run"],

@@ -29,7 +29,7 @@ impl Default for Tools {
         let cli = crate::built_cli();
         let mut specs = specs(&cli);
         specs.extend(super::residual::specs(&cli));
-        specs.extend(super::sim::specs());
+        specs.extend(super::sim::specs(&cli));
         Tools { cli, specs }
     }
 }
@@ -82,7 +82,7 @@ impl Tools {
         let flags: Vec<Value> = method
             .fields
             .iter()
-            .filter(|f| !f.advanced)
+            .filter(|f| !f.advanced && f.long != MAX_THREADS)
             .map(|f| {
                 let mut flag = json!({
                     "flag": format!("--{}", f.long),
@@ -145,6 +145,7 @@ impl Tools {
             batches: a.batches,
             out: a.out,
             flags,
+            max_threads: a.max_threads,
             background: a.background,
         };
         let (mut reply, manifest) =
@@ -191,6 +192,10 @@ impl Tools {
         }
         for (flag, value) in &a.flags {
             let flag = flag.trim_start_matches('-');
+            anyhow::ensure!(
+                flag != MAX_THREADS,
+                "give --{MAX_THREADS} as max_threads, not as a flag"
+            );
             let field = method.field_mut(flag).ok_or_else(|| {
                 anyhow::anyhow!("{} has no flag --{flag}: {lister} lists them", a.method)
             })?;
@@ -224,7 +229,8 @@ impl Tools {
         if let Some(there) = made.iter().find(|p| p.exists()) {
             anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
         }
-        let argv = method.argv(&data, &coords, &batches, &out);
+        let mut argv = method.argv(&data, &coords, &batches, &out);
+        argv.extend(max_threads_flag(a.max_threads));
         check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
             Some(flag) => anyhow::anyhow!("pinto {} --{flag}: {e}", a.method),
             None => anyhow::anyhow!("pinto {}: {e}", a.method),
@@ -302,7 +308,7 @@ pub(super) fn spawn(
     summary: &str,
     background: bool,
 ) -> anyhow::Result<Option<String>> {
-    let mut cmd = legume_mcp::own_command(argv)?;
+    let mut cmd = crate::tui::own_command(argv)?;
     if std::env::var_os("RUST_LOG").is_none() {
         cmd.env("RUST_LOG", script::LOG_LEVEL);
     }
@@ -449,9 +455,10 @@ fn compare_paired(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Res
     if let Some(n) = a.bootstrap {
         argv.push(flag_value("--bootstrap", n));
     }
+    argv.extend(max_threads_flag(a.max_threads));
     checked(cli, &argv)?;
     let summary = format!("paired held-out comparison of {run_a} vs {run_b}");
-    cx.run_making(legume_mcp::own_command(&argv)?, &made, &summary)?;
+    cx.run_making(crate::tui::own_command(&argv)?, &made, &summary)?;
 
     let mut reply = reply_from(&made[0], &["a", "b"], &argv)?;
     reply.insert("written".into(), json!([shown_path(&made[0])]));
@@ -520,10 +527,11 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
     if let Some(tau) = a.tau {
         argv.push(flag_value("--tau", tau));
     }
+    argv.extend(max_threads_flag(a.max_threads));
     // checked as the child parses it, so a value it refuses says why here
     checked(cli, &argv)?;
     let summary = format!("community comparison of {run_a} vs {run_b}");
-    let cmd = legume_mcp::own_command(&argv)?;
+    let cmd = crate::tui::own_command(&argv)?;
     cx.run_making(cmd, &made, &summary)?;
 
     let mut reply = reply_from(
@@ -658,6 +666,8 @@ struct PredictToolArgs {
     out: String,
     #[serde(default)]
     flags: Map<String, Value>,
+    #[serde(default)]
+    max_threads: Option<usize>,
     #[serde(default = "in_background")]
     background: bool,
 }
@@ -681,6 +691,8 @@ struct CompareArgs {
     donor_map: Option<String>,
     #[serde(default)]
     bootstrap: Option<usize>,
+    #[serde(default)]
+    max_threads: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -701,12 +713,42 @@ struct FitArgs {
     out: String,
     #[serde(default)]
     flags: Map<String, Value>,
+    #[serde(default)]
+    max_threads: Option<usize>,
     #[serde(default = "in_background")]
     background: bool,
 }
 
 pub(super) fn in_background() -> bool {
     true
+}
+
+/// pinto's `--max-threads`, without its dashes.
+const MAX_THREADS: &str = "max-threads";
+
+/// The `max_threads` field of each tool that starts a pinto command:
+/// pinto's `--max-threads`, described as its help has it.
+pub(super) fn max_threads_arg(cli: &clap::Command) -> Value {
+    let mut arg = flag_arg(
+        subcommand(cli, "lc"),
+        "max_threads",
+        json!({"type": "integer", "minimum": 1}),
+    );
+    if let Some(said) = arg["description"].as_str() {
+        let default = format!("[default: {}]", crate::util::common::DEFAULT_MAX_THREADS);
+        arg["description"] = said.replace(&default, SERVER_MAX_THREADS).into();
+    }
+    arg
+}
+
+/// The default of a tool's `max_threads`.
+const SERVER_MAX_THREADS: &str = "[default: the server's own --max-threads]";
+
+/// `--max-threads` for the command line: the tool's, else the server's
+/// own when it was started with one.
+pub(super) fn max_threads_flag(n: Option<usize>) -> Option<String> {
+    n.or_else(crate::tui::parent_max_threads)
+        .map(|n| flag_value(&format!("--{MAX_THREADS}"), n))
 }
 
 /// The `background` field every tool that starts a job takes.
@@ -774,6 +816,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file"},
                     "out": {"type": "string", "description": "Output prefix (-o); ending in /, _, - or . names the run for its method (res/ → res/lc)"},
                     "flags": {"type": "object", "description": "The method's flags by name, as run_methods lists them (a switch takes true or false): {\"n-communities\": 12}"},
+                    "max_threads": max_threads_arg(cli),
                     "background": background(),
                 },
                 "required": ["method", "data", "out"],
@@ -801,6 +844,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file (one δ per batch)"},
                     "out": {"type": "string", "description": "Output prefix (-o)"},
                     "flags": {"type": "object", "description": "pinto predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), ablate-features, eval-features, null-from, seed (pinto predict --help lists them)"},
+                    "max_threads": max_threads_arg(cli),
                     "background": background(),
                 },
                 "required": ["model", "data", "out"],
@@ -852,6 +896,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "paired": {"type": "boolean", "description": "Compare held-out scores instead: a and b are run_predict outputs of two models on the same held-out cells (same seed and split flags); the donor is the replicate"},
                     "donor_map": {"type": "string", "description": "paired: file of section → donor (two columns); an unlisted section is its own donor"},
                     "bootstrap": {"type": "integer", "description": "paired: donor bootstrap replicates [default: 2000]"},
+                    "max_threads": max_threads_arg(cli),
                 },
                 "required": ["a", "b"],
                 "additionalProperties": false,
@@ -946,6 +991,7 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
         "cell_types": flag("cell_types", json!({"type": "string"})),
         "region": flag("region", json!({"type": "string"})),
         "region_jackknife": flag("region_jackknife", json!({"enum": choices::<RegionJackknife>()})),
+        "max_threads": max_threads_arg(cli),
     });
     if let (Some(props), Value::Object(shared)) = (schema["properties"].as_object_mut(), shared) {
         props.extend(shared);

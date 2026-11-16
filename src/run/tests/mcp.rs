@@ -37,6 +37,7 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
         paired: false,
         donor_map: None,
         bootstrap: None,
+        max_threads: None,
     };
     assert_eq!(default_name(&args), "run.draft_vs_other");
 }
@@ -344,7 +345,8 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
         for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
             let id = arg.get_id().as_str();
             // The run and where it is written are the tool's own to explain.
-            if matches!(id, "from" | "run" | "out") {
+            // max_threads defaults to the server's own, not clap's.
+            if matches!(id, "from" | "run" | "out" | "max_threads") {
                 continue;
             }
             let Some(p) = props.get(id) else { continue };
@@ -424,8 +426,19 @@ const MIRRORS: &[Mirror] = &[
         &[],
     ),
     ("run_simulate", "srt-simulate", &[], &[]),
-    ("run_sim_score", "srt-sim-score", &[], &["out"]),
-    ("run_sim_pairs", "srt-sim-pairs", &[], &["out"]),
+    // These two run in the call, in the server's own threads.
+    (
+        "run_sim_score",
+        "srt-sim-score",
+        &[],
+        &["out", "max_threads"],
+    ),
+    (
+        "run_sim_pairs",
+        "srt-sim-pairs",
+        &[],
+        &["out", "max_threads"],
+    ),
     (
         "run_sim_baseline",
         "srt-sim-baseline",
@@ -469,6 +482,38 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
     }
 }
 
+/// A tool's `max_threads` reaches the child pinto as `--max-threads`, which
+/// the command parses; `run_fit` takes it as its own field, not in `flags`.
+#[test]
+fn max_threads_reaches_the_child_s_command_line() {
+    let cli = crate::built_cli();
+    let a: super::super::sim::SimBaselineToolArgs =
+        serde_json::from_value(json!({"truth": "t", "max_threads": 8})).unwrap();
+    let argv = super::super::sim::baseline_argv(&a, "t", "o.tsv");
+    assert!(argv.contains(&"--max-threads=8".to_string()), "{argv:?}");
+    checked(&cli, &argv).unwrap();
+    let none: super::super::sim::SimBaselineToolArgs =
+        serde_json::from_value(json!({"truth": "t"})).unwrap();
+    let argv = super::super::sim::baseline_argv(&none, "t", "o.tsv");
+    assert!(!argv.iter().any(|a| a.contains("max-threads")), "{argv:?}");
+
+    for tool in [
+        "run_fit",
+        "run_predict",
+        "run_compare",
+        "run_lra",
+        "run_residual",
+    ] {
+        let spec = all_tools().into_iter().find(|t| t.name == tool).unwrap();
+        let said = spec.input_schema["properties"]["max_threads"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tool} has no max_threads"))
+            .to_string();
+        let tail = format!("(--max-threads) {}", super::SERVER_MAX_THREADS);
+        assert!(said.ends_with(&tail), "{tool}: {said}");
+    }
+}
+
 /// `run_methods` lists exactly the flags a method's `--help` shows, less
 /// those `run_fit` takes as its own fields.
 #[test]
@@ -505,7 +550,18 @@ fn run_methods_lists_exactly_each_method_s_visible_flags() {
             .get_arguments()
             .filter(|a| !a.is_hide_set())
             .filter_map(|a| a.get_long())
-            .filter(|l| !["out", "coord", "batch-files", "help", "version", "verbose"].contains(l))
+            .filter(|l| {
+                ![
+                    "out",
+                    "coord",
+                    "batch-files",
+                    "help",
+                    "version",
+                    "verbose",
+                    "max-threads",
+                ]
+                .contains(l)
+            })
             .map(str::to_string)
             .collect();
         assert_eq!(listed, shown, "run_methods {name}");

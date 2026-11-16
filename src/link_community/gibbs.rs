@@ -5,7 +5,7 @@
 
 use crate::link_community::model::*;
 use crate::util::cell_pairs::connected_components;
-use crate::util::common::new_progress_bar;
+use crate::util::common::{new_progress_bar, DEFAULT_MAX_THREADS};
 use legume_numeric::matrix::knn_graph::KnnGraph;
 use log::info;
 use rand::rngs::SmallRng;
@@ -36,12 +36,43 @@ pub struct ComponentGibbsArgs<'a> {
 /// Collapsed Gibbs sampler for link community assignments.
 pub struct LinkGibbsSampler {
     rng: SmallRng,
+    /// The most blocks a component splits into and the fewest edges a
+    /// split-off block holds: `--max-threads` and [`GIBBS_MIN_BLOCK_EDGES`]
+    /// in a fit; a test may set them to split a small graph.
+    block_layout: (usize, usize),
+    /// What the last component sweeps ran with and ended on.
+    #[cfg(test)]
+    pub(crate) last_run: LastComponentRun,
+}
+
+/// The blocks the last component sweeps ran with, and the global stats as
+/// patched between sweeps when they ended, for tests to check.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct LastComponentRun {
+    pub block_sizes: Vec<usize>,
+    pub feature_sum: Vec<f64>,
+    pub size_sum: Vec<f64>,
+    pub edge_count: Vec<usize>,
 }
 
 impl LinkGibbsSampler {
     /// Create a new sampler with the given RNG.
     pub fn new(rng: SmallRng) -> Self {
-        LinkGibbsSampler { rng }
+        LinkGibbsSampler {
+            rng,
+            block_layout: (DEFAULT_MAX_THREADS, GIBBS_MIN_BLOCK_EDGES),
+            #[cfg(test)]
+            last_run: LastComponentRun::default(),
+        }
+    }
+
+    /// The same sampler with at most `blocks` blocks a component of at least
+    /// `min_block_edges` edges each. A fit passes `--max-threads` and
+    /// [`GIBBS_MIN_BLOCK_EDGES`]; a test may split a small graph.
+    pub fn with_blocks(mut self, blocks: usize, min_block_edges: usize) -> Self {
+        self.block_layout = (blocks.max(1), min_block_edges);
+        self
     }
 
     /// Run `num_sweeps` sequential Gibbs sweeps over all edges.
@@ -149,8 +180,8 @@ impl LinkGibbsSampler {
     /// Run greedy (argmax) sweeps over all edges with early exit on convergence.
     ///
     /// Deterministic, sequential argmax, used for per-level finalization in the
-    /// V-cycle cascade. For full fine-resolution greedy with component-balanced
-    /// parallelism, use [`Self::run_greedy_by_components`].
+    /// V-cycle cascade. For full fine-resolution greedy, the blocks of each
+    /// component in parallel, use [`Self::run_greedy_by_components`].
     ///
     /// `alpha` is the Dirichlet concentration on community mixing weights;
     /// pass `0.0` to disable the prior.
@@ -197,7 +228,10 @@ impl LinkGibbsSampler {
     /// partitions this only approximates the conditional: two alike edges, each
     /// alone in its community and in different partitions, can trade labels.
     ///
-    /// Edges are partitioned by connected component (balanced across threads).
+    /// Edges are partitioned by connected component, and a large component is
+    /// split into near-equal blocks (see [`split_components_into_blocks`]).
+    /// The layout depends on the edges alone, so the draws do not depend on
+    /// the thread count.
     /// Each sweep: partitions run sequential edge updates in parallel using a
     /// frozen snapshot of global stats, then global stats are patched with
     /// per-partition deltas.
@@ -224,7 +258,9 @@ impl LinkGibbsSampler {
         let incidence_scores = *incidence;
 
         let (comp_labels, n_comp) = connected_components(graph);
-        let comp_edges = partition_edges_balanced(edges, &comp_labels, n_comp);
+        let (blocks, min_block_edges) = self.block_layout;
+        let comp_edges =
+            split_components_into_blocks(edges, &comp_labels, n_comp, blocks, min_block_edges);
         let n_parts = comp_edges.len();
 
         let sub_stores: Vec<LinkProfileStore> = comp_edges
@@ -283,11 +319,6 @@ impl LinkGibbsSampler {
                 .into_par_iter()
                 .map(|c| {
                     let indices = &comp_edges[c];
-                    if indices.is_empty() {
-                        prog_bar.inc(1);
-                        return ComponentResult::empty(k, profiles.m);
-                    }
-
                     let mut local_stats = LinkCommunityStats {
                         k,
                         m: profiles.m,
@@ -359,11 +390,20 @@ impl LinkGibbsSampler {
             }
         }
         prog_bar.finish_and_clear();
+        #[cfg(test)]
+        {
+            self.last_run = LastComponentRun {
+                block_sizes: comp_edges.iter().map(Vec::len).collect(),
+                feature_sum: global_stats.feature_sum,
+                size_sum: global_stats.size_sum,
+                edge_count: global_stats.edge_count,
+            };
+        }
 
         total_moves
     }
 
-    /// Memoized EM Gibbs sampling across balanced partitions.
+    /// Memoized EM Gibbs sampling, the blocks of each component in parallel.
     pub fn run_components_em(
         &mut self,
         membership: &mut [usize],
@@ -374,7 +414,7 @@ impl LinkGibbsSampler {
         self.run_components(membership, profiles, args, num_sweeps, MoveStrategy::Sample)
     }
 
-    /// Memoized greedy finalization across balanced partitions.
+    /// Memoized greedy finalization, the blocks of each component in parallel.
     pub fn run_greedy_by_components(
         &mut self,
         membership: &mut [usize],
@@ -429,16 +469,6 @@ struct ComponentResult {
     moves: usize,
 }
 
-impl ComponentResult {
-    fn empty(k: usize, m: usize) -> Self {
-        ComponentResult {
-            membership: Vec::new(),
-            new_stats: (vec![0.0; k * m], vec![0.0; k], vec![0; k]),
-            moves: 0,
-        }
-    }
-}
-
 /// Partition edge indices by connected component.
 ///
 /// Returns `n_comp` vectors, each containing the global edge indices belonging
@@ -455,34 +485,40 @@ fn partition_edges_by_component(
     comp_edges
 }
 
-/// Balanced partitioning: partition by connected component, then split large
-/// components so no partition exceeds `total_edges / n_threads`.
+/// Fewest edges a block split off a component holds: a component of fewer
+/// than twice this many is one exact block.
 ///
-/// This ensures the memoized EM approach works even for single-component graphs
-/// and avoids bottlenecks from imbalanced component sizes.
-fn partition_edges_balanced(
+/// A block runs one exact sequential sweep; blocks run in parallel, each
+/// against one snapshot of the others, which they see only at the end of the
+/// sweep. Fewer, larger blocks are closer to exact; more spread a component
+/// over more threads. Their most is `--max-threads`, a setting the user
+/// chooses and the manifest records, not the pool's size, so the draws
+/// depend on the seed, the data and that setting, not on the machine.
+pub(crate) const GIBBS_MIN_BLOCK_EDGES: usize = 256;
+
+/// Partition by connected component, then split each component into
+/// `len / min_block_edges` near-equal blocks, at least one and at most
+/// `blocks`, of consecutive edges.
+pub(crate) fn split_components_into_blocks(
     edges: &[(usize, usize)],
     comp_labels: &[usize],
     n_comp: usize,
+    blocks: usize,
+    min_block_edges: usize,
 ) -> Vec<Vec<usize>> {
-    let n_threads = rayon::current_num_threads().max(1);
-    let target_size = (edges.len() / n_threads).max(256);
-
-    let mut comp_edges = partition_edges_by_component(edges, comp_labels, n_comp);
-
-    let mut balanced = Vec::new();
-    for group in comp_edges.drain(..) {
-        if group.len() <= target_size {
-            if !group.is_empty() {
-                balanced.push(group);
-            }
-        } else {
-            for chunk in group.chunks(target_size) {
-                balanced.push(chunk.to_vec());
-            }
+    let (blocks, min_block_edges) = (blocks.max(1), min_block_edges.max(1));
+    let mut split = Vec::new();
+    for group in partition_edges_by_component(edges, comp_labels, n_comp) {
+        if group.is_empty() {
+            continue;
         }
+        let n = group.len();
+        let n_blocks = (n / min_block_edges).clamp(1, blocks);
+        split.extend(
+            (0..n_blocks).map(|b| group[b * n / n_blocks..(b + 1) * n / n_blocks].to_vec()),
+        );
     }
-    balanced
+    split
 }
 
 /// A sweep bar's message: its name, which sweep, and the edges it moved
