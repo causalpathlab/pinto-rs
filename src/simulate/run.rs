@@ -82,8 +82,11 @@ pub fn coords_path(out: &str, section: &str) -> String {
 
 /// The manifest under `out`.
 pub fn manifest_path(out: &str) -> String {
-    in_dir(out, "manifest.json")
+    in_dir(out, MANIFEST)
 }
+
+/// The manifest's file name: written last, it marks the simulation whole.
+pub const MANIFEST: &str = "manifest.json";
 
 /// The truth run under `out`, as `pinto view` opens it.
 pub fn truth_run_path(out: &str) -> String {
@@ -134,8 +137,10 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         std::fs::remove_dir_all(&staged)?;
     }
     // written in place only over a folder that already holds something;
-    // missing or empty, the run is staged and moved there whole
-    let in_place = done_path.read_dir().is_ok_and(|mut d| d.next().is_some());
+    // missing or empty, the run is staged and moved there whole. A folder
+    // `--atomic-outputs` staged is written in place: it is moved at the end.
+    let at_final = crate::util::staging::final_str(&done);
+    let in_place = at_final != done || done_path.read_dir().is_ok_and(|mut d| d.next().is_some());
     let out = if in_place {
         done.as_str()
     } else {
@@ -208,7 +213,10 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         }
         std::fs::rename(out, &done_path)?;
     }
-    info!("Wrote {done}/sections, {done}/truth and {done}/manifest.json");
-    info!("See the truth with: pinto view {}", truth_run_path(&done));
+    info!("Wrote {at_final}/sections, {at_final}/truth and {at_final}/manifest.json");
+    info!(
+        "See the truth with: pinto view {}",
+        truth_run_path(&at_final)
+    );
     Ok(())
 }

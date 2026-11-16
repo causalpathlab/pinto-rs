@@ -146,6 +146,7 @@ impl Tools {
             out: a.out,
             flags,
             max_threads: a.max_threads,
+            atomic_outputs: a.atomic_outputs,
             background: a.background,
         };
         let (mut reply, manifest) =
@@ -196,6 +197,10 @@ impl Tools {
                 flag != MAX_THREADS,
                 "give --{MAX_THREADS} as max_threads, not as a flag"
             );
+            anyhow::ensure!(
+                flag != ATOMIC_OUTPUTS,
+                "give --{ATOMIC_OUTPUTS} as atomic_outputs, not as a flag"
+            );
             let field = method.field_mut(flag).ok_or_else(|| {
                 anyhow::anyhow!("{} has no flag --{flag}: {lister} lists them", a.method)
             })?;
@@ -230,7 +235,7 @@ impl Tools {
             anyhow::bail!("{} exists: {NOT_WRITTEN_OVER}", shown_path(there));
         }
         let mut argv = method.argv(&data, &coords, &batches, &out);
-        argv.extend(max_threads_flag(a.max_threads));
+        argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
         check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
             Some(flag) => anyhow::anyhow!("pinto {} --{flag}: {e}", a.method),
             None => anyhow::anyhow!("pinto {}: {e}", a.method),
@@ -455,7 +460,7 @@ fn compare_paired(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Res
     if let Some(n) = a.bootstrap {
         argv.push(flag_value("--bootstrap", n));
     }
-    argv.extend(max_threads_flag(a.max_threads));
+    argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
     checked(cli, &argv)?;
     let summary = format!("paired held-out comparison of {run_a} vs {run_b}");
     cx.run_making(crate::tui::own_command(&argv)?, &made, &summary)?;
@@ -527,7 +532,7 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
     if let Some(tau) = a.tau {
         argv.push(flag_value("--tau", tau));
     }
-    argv.extend(max_threads_flag(a.max_threads));
+    argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
     // checked as the child parses it, so a value it refuses says why here
     checked(cli, &argv)?;
     let summary = format!("community comparison of {run_a} vs {run_b}");
@@ -668,6 +673,8 @@ struct PredictToolArgs {
     flags: Map<String, Value>,
     #[serde(default)]
     max_threads: Option<usize>,
+    #[serde(default)]
+    atomic_outputs: Option<bool>,
     #[serde(default = "in_background")]
     background: bool,
 }
@@ -693,6 +700,8 @@ struct CompareArgs {
     bootstrap: Option<usize>,
     #[serde(default)]
     max_threads: Option<usize>,
+    #[serde(default)]
+    atomic_outputs: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -715,6 +724,8 @@ struct FitArgs {
     flags: Map<String, Value>,
     #[serde(default)]
     max_threads: Option<usize>,
+    #[serde(default)]
+    atomic_outputs: Option<bool>,
     #[serde(default = "in_background")]
     background: bool,
 }
@@ -746,9 +757,50 @@ const SERVER_MAX_THREADS: &str = "[default: the server's own --max-threads]";
 
 /// `--max-threads` for the command line: the tool's, else the server's
 /// own when it was started with one.
-pub(super) fn max_threads_flag(n: Option<usize>) -> Option<String> {
+fn max_threads_flag(n: Option<usize>) -> Option<String> {
     n.or_else(crate::tui::parent_max_threads)
         .map(|n| flag_value(&format!("--{MAX_THREADS}"), n))
+}
+
+/// The `atomic_outputs` field of each tool that starts a run:
+/// pinto's `--atomic-outputs`, described as its help has it.
+pub(super) fn atomic_outputs_arg(cli: &clap::Command) -> Value {
+    let mut arg = flag_arg(
+        subcommand(cli, "lc"),
+        "atomic_outputs",
+        json!({"type": "boolean"}),
+    );
+    if let Some(said) = arg["description"].as_str() {
+        arg["description"] = said
+            .replace("[default: false]", SERVER_ATOMIC_OUTPUTS)
+            .into();
+    }
+    arg
+}
+
+/// pinto's `--atomic-outputs`, without its dashes.
+const ATOMIC_OUTPUTS: &str = "atomic-outputs";
+
+/// The default of a tool's `atomic_outputs`.
+const SERVER_ATOMIC_OUTPUTS: &str = "[default: the server's own --atomic-outputs]";
+
+/// `--atomic-outputs` for the command line: as the tool says, true or
+/// false, else as the server was started.
+fn atomic_outputs_flag(on: Option<bool>) -> Option<String> {
+    on.unwrap_or_else(crate::util::staging::enabled)
+        .then(|| format!("--{ATOMIC_OUTPUTS}"))
+}
+
+/// The flags every tool that starts a pinto command gives it:
+/// `--max-threads` ([`max_threads_flag`]) and `--atomic-outputs`
+/// ([`atomic_outputs_flag`]).
+pub(super) fn shared_flags(
+    max_threads: Option<usize>,
+    atomic_outputs: Option<bool>,
+) -> impl Iterator<Item = String> {
+    max_threads_flag(max_threads)
+        .into_iter()
+        .chain(atomic_outputs_flag(atomic_outputs))
 }
 
 /// The `background` field every tool that starts a job takes.
@@ -817,6 +869,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "out": {"type": "string", "description": "Output prefix (-o); ending in /, _, - or . names the run for its method (res/ → res/lc)"},
                     "flags": {"type": "object", "description": "The method's flags by name, as run_methods lists them (a switch takes true or false): {\"n-communities\": 12}"},
                     "max_threads": max_threads_arg(cli),
+                    "atomic_outputs": atomic_outputs_arg(cli),
                     "background": background(),
                 },
                 "required": ["method", "data", "out"],
@@ -845,6 +898,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "out": {"type": "string", "description": "Output prefix (-o)"},
                     "flags": {"type": "object", "description": "pinto predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), ablate-features, eval-features, null-from, seed (pinto predict --help lists them)"},
                     "max_threads": max_threads_arg(cli),
+                    "atomic_outputs": atomic_outputs_arg(cli),
                     "background": background(),
                 },
                 "required": ["model", "data", "out"],
@@ -897,6 +951,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "donor_map": {"type": "string", "description": "paired: file of section → donor (two columns); an unlisted section is its own donor"},
                     "bootstrap": {"type": "integer", "description": "paired: donor bootstrap replicates [default: 2000]"},
                     "max_threads": max_threads_arg(cli),
+                    "atomic_outputs": atomic_outputs_arg(cli),
                 },
                 "required": ["a", "b"],
                 "additionalProperties": false,
@@ -992,6 +1047,7 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
         "region": flag("region", json!({"type": "string"})),
         "region_jackknife": flag("region_jackknife", json!({"enum": choices::<RegionJackknife>()})),
         "max_threads": max_threads_arg(cli),
+        "atomic_outputs": atomic_outputs_arg(cli),
     });
     if let (Some(props), Value::Object(shared)) = (schema["properties"].as_object_mut(), shared) {
         props.extend(shared);

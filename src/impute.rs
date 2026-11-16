@@ -190,9 +190,10 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
         Some(&ref_feature_names),
     )?;
     info!(
-        "Wrote imputed {} × {} matrix to {imputed_path}",
+        "Wrote imputed {} × {} matrix to {}",
         imputed.nrows(),
-        imputed.ncols()
+        imputed.ncols(),
+        crate::util::staging::final_str(&imputed_path)
     );
     Ok(())
 }
@@ -500,7 +501,10 @@ fn profile_propensities(
     let query_prop =
         project_profile_propensity(&query_data, &projection, query_divide.as_ref(), "query")?;
     write_propensity_matrix(&c.out, &query_prop, &query_cells)?;
-    info!("Wrote {}.propensity.parquet (profile-projected)", c.out);
+    info!(
+        "Wrote {}.propensity.parquet (profile-projected)",
+        crate::util::staging::final_str(&c.out)
+    );
     // Everything needed from the query is extracted; release it before the
     // reference opens so two (possibly preloaded) datasets never coexist;
     // dropping it also gives its preload budget back to the reference.

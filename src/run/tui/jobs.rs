@@ -186,10 +186,11 @@ pub struct Queue {
 
 impl Queue {
     /// Start `jobs` in order with `program` (pinto itself).
-    /// Each runs with this pinto's `--max-threads` unless it gives its own.
+    /// Each runs with this pinto's `--max-threads` unless it gives its own,
+    /// and with its `--atomic-outputs`.
     pub fn start(mut jobs: Vec<Job>, program: PathBuf) -> Self {
         for job in &mut jobs {
-            crate::tui::inherit_max_threads(&mut job.argv);
+            crate::tui::inherit_flags(&mut job.argv);
         }
         let shared = Arc::new(Mutex::new(Shared {
             states: vec![State::Waiting; jobs.len()],

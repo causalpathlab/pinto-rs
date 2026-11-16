@@ -228,9 +228,12 @@ fn writes_leave_the_manifest_and_a_hidden_lock_only() {
 fn backfilling_a_missing_manifest_makes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("gone.pinto.json");
-    let mut called = false;
-    PintoMetadata::backfill(&path, |_| called = true);
-    assert!(!called);
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = called.clone();
+    PintoMetadata::backfill(&path, move |_| {
+        seen.store(true, std::sync::atomic::Ordering::Relaxed)
+    });
+    assert!(!called.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 

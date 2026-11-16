@@ -655,9 +655,10 @@ impl App {
         planned
             .iter()
             .map(|p| {
-                // as the queue runs it, with this pinto's --max-threads
+                // as the queue runs it, with this pinto's --max-threads and
+                // --atomic-outputs
                 let mut argv = p.job.argv.clone();
-                crate::tui::inherit_max_threads(&mut argv);
+                crate::tui::inherit_flags(&mut argv);
                 let mut cmd = script::pinto_line(&argv);
                 // A job that reads an earlier one's result waits for it, as
                 // the queue does: it runs only once that one's done file is

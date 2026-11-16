@@ -26,12 +26,39 @@ pub(crate) fn parent_max_threads() -> Option<usize> {
 }
 
 /// `argv`, a pinto command line without the program, given this pinto's
-/// `--max-threads` (see [`with_max_threads`]).
-pub(crate) fn inherit_max_threads(argv: &mut Vec<String>) {
+/// `--max-threads` (see [`with_max_threads`]) and `--atomic-outputs`
+/// (see [`with_atomic_outputs`]): what a job of a `pinto run` session
+/// takes from it.
+pub(crate) fn inherit_flags(argv: &mut Vec<String>) {
+    inherit_max_threads(argv);
+    if crate::util::staging::enabled() {
+        with_atomic_outputs(argv);
+    }
+}
+
+/// `argv` given this pinto's `--max-threads` (see [`with_max_threads`]).
+fn inherit_max_threads(argv: &mut Vec<String>) {
     if let Some(parent) = parent_max_threads() {
         with_max_threads(argv, parent);
     }
 }
+
+/// `argv` given `--atomic-outputs` ahead of its command, unless it has
+/// the flag already.
+fn with_atomic_outputs(argv: &mut Vec<String>) {
+    if !gives(argv, |a| a == ATOMIC_OUTPUTS_FLAG) {
+        argv.insert(0, ATOMIC_OUTPUTS_FLAG.into());
+    }
+}
+
+/// Whether a word of `argv` ahead of any `--`, after which a word is no
+/// flag, `is` the flag asked about.
+fn gives(argv: &[String], is: impl Fn(&str) -> bool) -> bool {
+    argv.iter().take_while(|a| *a != "--").any(|a| is(a))
+}
+
+/// pinto's `--atomic-outputs`.
+pub(crate) const ATOMIC_OUTPUTS_FLAG: &str = "--atomic-outputs";
 
 /// `argv` given `--max-threads={parent}` ahead of its command, so a pinto
 /// started from this one uses no more threads (and lc no more Gibbs
@@ -39,17 +66,17 @@ pub(crate) fn inherit_max_threads(argv: &mut Vec<String>) {
 /// `parent` is the default the child takes anyway.
 fn with_max_threads(argv: &mut Vec<String>, parent: usize) {
     const FLAG: &str = "--max-threads";
-    let own = argv
-        .iter()
-        .take_while(|a| *a != "--")
-        .any(|a| a == FLAG || a.starts_with(&format!("{FLAG}=")));
+    let own = gives(argv, |a| a == FLAG || a.starts_with(&format!("{FLAG}=")));
     if !own && parent != crate::util::common::DEFAULT_MAX_THREADS {
         argv.insert(0, flag_value(FLAG, parent));
     }
 }
 
 /// [`legume_mcp::own_command`] for `argv`, given this pinto's
-/// `--max-threads` as [`inherit_max_threads`] gives it.
+/// `--max-threads`. Its `--atomic-outputs` is not given here: a tool that
+/// starts a run gives the flag itself, by its own field or else by the
+/// server's setting, so a tool can also leave it out
+/// (`crate::run::mcp::shared_flags`).
 pub(crate) fn own_command(argv: &[String]) -> anyhow::Result<std::process::Command> {
     let mut argv = argv.to_vec();
     inherit_max_threads(&mut argv);

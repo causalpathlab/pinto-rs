@@ -5,7 +5,7 @@
 //! reply is read from the tables the child wrote.
 
 use super::mcp::{
-    as_run, checked, in_background, max_threads_flag, out_or_free, out_or_free_by, rooted, spawn,
+    as_run, checked, in_background, out_or_free, out_or_free_by, rooted, shared_flags, spawn,
     NOT_WRITTEN_OVER,
 };
 use super::script;
@@ -61,6 +61,8 @@ macro_rules! lra_tool_args {
             pub region_jackknife: Option<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub max_threads: Option<usize>,
+            #[serde(default, skip_serializing)]
+            pub atomic_outputs: Option<bool>,
             $($tail)*
             #[serde(default = "in_background", skip_serializing)]
             pub background: bool,
@@ -78,6 +80,7 @@ macro_rules! lra_tool_args {
                     region: self.region.as_deref(),
                     region_jackknife: self.region_jackknife.as_deref(),
                     max_threads: self.max_threads,
+                    atomic_outputs: self.atomic_outputs,
                 }
             }
         }
@@ -268,6 +271,7 @@ struct Input<'a> {
     region: Option<&'a str>,
     region_jackknife: Option<&'a str>,
     max_threads: Option<usize>,
+    atomic_outputs: Option<bool>,
 }
 
 impl Input<'_> {
@@ -335,7 +339,7 @@ impl Input<'_> {
         if let Some(j) = self.region_jackknife {
             argv.push(flag_value("--region-jackknife", j));
         }
-        argv.extend(max_threads_flag(self.max_threads));
+        argv.extend(shared_flags(self.max_threads, self.atomic_outputs));
         argv
     }
 

@@ -15,9 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod lra;
 pub use lra::{LraFiles, LraOptions, LraSubset};
 
+/// What a run's manifest is named by, after its prefix.
+pub(crate) const MANIFEST_SUFFIX: &str = ".pinto.json";
+
 /// A run named by its prefix or by its manifest: the prefix.
 pub fn run_prefix(run: &str) -> &str {
-    run.strip_suffix(".pinto.json").unwrap_or(run)
+    run.strip_suffix(MANIFEST_SUFFIX).unwrap_or(run)
 }
 
 /// A run's file name without its directory or the suffix of the file it was
@@ -28,7 +31,7 @@ pub fn run_stem(run: &str) -> String {
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_default();
     [
-        ".pinto.json",
+        MANIFEST_SUFFIX,
         ".predictive.parquet",
         ".propensity.parquet",
         ".parquet",
@@ -47,7 +50,7 @@ pub fn run_manifest(run: &str) -> String {
 /// The manifest a run writes under the output prefix `prefix`, taken as
 /// given.
 pub fn manifest_path(prefix: &str) -> String {
-    format!("{prefix}.pinto.json")
+    format!("{prefix}{MANIFEST_SUFFIX}")
 }
 
 /// A prior run, opened by its prefix or its manifest.
@@ -79,7 +82,7 @@ impl Run {
         let m = manifest.to_string_lossy();
         let dir = manifest.parent().unwrap_or(Path::new(""));
         let prefix = match (
-            m.strip_suffix(".pinto.json"),
+            m.strip_suffix(MANIFEST_SUFFIX),
             Path::new(&meta.prefix).file_name(),
         ) {
             (Some(p), _) => p.to_string(),
@@ -699,7 +702,13 @@ impl PintoMetadata {
     /// manifest's lock throughout ([`PintoMetadata::update`]). A missing
     /// manifest is left alone (at debug level); one that cannot be read or
     /// written is warned about and left as it was.
-    pub fn backfill(path: &Path, set: impl FnOnce(&mut PintoMetadata)) {
+    ///
+    /// Under `--atomic-outputs` the manifest is changed when this run's
+    /// outputs are in place, the same way ([`crate::util::staging`]).
+    pub fn backfill(path: &Path, set: impl FnOnce(&mut PintoMetadata) + Send + 'static) {
+        let Some(set) = crate::util::staging::defer_update(path, set) else {
+            return;
+        };
         if !path.exists() {
             log::debug!("no upstream manifest at {} to update", path.display());
             return;
@@ -714,7 +723,7 @@ impl PintoMetadata {
     /// Both `lr-activity` modes back-fill the upstream manifest this way;
     /// keeping it in one place stops the two call sites from drifting on
     /// error handling (one used to swallow write failures silently).
-    pub fn backfill_output(path: &Path, set: impl FnOnce(&mut OutputFiles)) {
+    pub fn backfill_output(path: &Path, set: impl FnOnce(&mut OutputFiles) + Send + 'static) {
         Self::backfill(path, |m| set(&mut m.outputs));
     }
 
@@ -738,8 +747,13 @@ impl PintoMetadata {
     }
 
     /// [`PintoMetadata::write`] when no manifest is at `path`; one that is
-    /// there, even one written since the caller looked, is kept.
+    /// there, even one written since the caller looked, is kept. Under
+    /// `--atomic-outputs` that is done when the run's outputs are in place
+    /// ([`crate::util::staging`]).
     pub fn write_if_missing(&self, path: &Path) -> anyhow::Result<()> {
+        if crate::util::staging::defer_write_if_missing(path, self) {
+            return Ok(());
+        }
         locked(path, |path| {
             if !path.exists() {
                 replace(path, &self.json()?)?;
@@ -860,7 +874,7 @@ fn hidden_name(path: &Path) -> String {
 
 /// Replace the manifest at `path` with `json`, whole: write a temporary
 /// file beside it, flush it to disk and rename it over `path`, so a reader
-/// sees the old manifest or the new one. A manifest [`in_place`] says to
+/// sees the old manifest or the new one. A manifest [`why_in_place`] says to
 /// keep is written in place instead, still under the lock; so is one in a
 /// folder that takes no new file. Call it under the lock ([`locked`]).
 fn replace(path: &Path, json: &str) -> anyhow::Result<()> {
@@ -872,7 +886,7 @@ fn replace(path: &Path, json: &str) -> anyhow::Result<()> {
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => return Err(fail(e)),
     };
-    if old.as_ref().is_some_and(in_place) {
+    if old.as_ref().and_then(why_in_place).is_some() {
         return write_in_place();
     }
     let dir = match path.parent() {
@@ -881,7 +895,7 @@ fn replace(path: &Path, json: &str) -> anyhow::Result<()> {
     };
     let mut tmp = match tempfile::Builder::new()
         .prefix(&format!("{}.", hidden_name(path)))
-        .suffix(".tmp")
+        .suffix(TMP_SUFFIX)
         .tempfile_in(dir)
     {
         Ok(t) => t,
@@ -901,6 +915,47 @@ fn replace(path: &Path, json: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Put the staged manifest `staged` at `path`, whole and under its lock,
+/// as [`PintoMetadata::write`] writes one.
+pub(crate) fn install(staged: &Path, path: &Path) -> anyhow::Result<()> {
+    let json = std::fs::read_to_string(staged)?;
+    locked(path, |path| replace(path, &json))
+}
+
+/// Move the manifest at `path` to `to`, under its lock, so no manifest is
+/// at `path` while the run it describes is replaced. One that could only
+/// be written in place ([`kept_in_place`]) is not moved, and that is an
+/// error.
+pub(crate) fn retire(path: &Path, to: &Path) -> anyhow::Result<()> {
+    locked(path, |real| {
+        if let Some(why) = kept_in_place(path) {
+            anyhow::bail!("it is {why}, and is written in place");
+        }
+        Ok(std::fs::rename(real, to)?)
+    })
+}
+
+/// Why the manifest at `path` is written in place rather than replaced by
+/// a rename, when it is ([`why_in_place`], and a link, which a rename would
+/// replace): what `--atomic-outputs` cannot take away and put back whole.
+pub(crate) fn kept_in_place(path: &Path) -> Option<&'static str> {
+    if path.is_symlink() {
+        return Some("a link");
+    }
+    why_in_place(&std::fs::metadata(path).ok()?)
+}
+
+/// Whether a file named `name` is the manifest writer's own, a lock or a
+/// temporary file ([`locked`], [`replace`]), and no output.
+pub(crate) fn is_scratch(name: &str) -> bool {
+    name.starts_with('.') && (name.ends_with(LOCK_SUFFIX) || name.ends_with(TMP_SUFFIX))
+}
+
+/// What the lock and the temporary file of a manifest are named by, after
+/// its [`hidden_name`].
+const LOCK_SUFFIX: &str = ".lock";
+const TMP_SUFFIX: &str = ".tmp";
+
 /// The file `path` names: through links (to a file not made yet among
 /// them), the name at the end of the chain, so a rename over it keeps
 /// every link.
@@ -919,21 +974,24 @@ fn through_link(path: &Path) -> PathBuf {
     at
 }
 
-/// Whether the manifest `m` describes is written in place rather than
-/// replaced by a rename: a read-only one (refused, as a write in place
-/// was), one another user owns (a rename would make it this user's and
-/// shut its owner out), or one with other hard links (a rename would leave
-/// them on the old manifest).
-fn in_place(m: &std::fs::Metadata) -> bool {
+/// Why the manifest `m` describes is written in place rather than replaced
+/// by a rename, when it is: one another user owns (a rename would make it
+/// this user's and shut its owner out), one with other hard links (a
+/// rename would leave them on the old manifest), or a read-only one
+/// (refused, as a write in place was).
+fn why_in_place(m: &std::fs::Metadata) -> Option<&'static str> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         // SAFETY: geteuid has no preconditions and cannot fail.
-        if m.uid() != unsafe { libc::geteuid() } || m.nlink() > 1 {
-            return true;
+        if m.uid() != unsafe { libc::geteuid() } {
+            return Some("another user's");
+        }
+        if m.nlink() > 1 {
+            return Some("hard-linked");
         }
     }
-    m.permissions().readonly()
+    m.permissions().readonly().then_some("read-only")
 }
 
 /// Run `then` on the manifest at `path` ([`through_link`]) holding the
@@ -946,7 +1004,7 @@ fn in_place(m: &std::fs::Metadata) -> bool {
 fn locked<T>(path: &Path, then: impl FnOnce(&Path) -> anyhow::Result<T>) -> anyhow::Result<T> {
     static WARNED: AtomicBool = AtomicBool::new(false);
     let path = through_link(path);
-    let lock_path = path.with_file_name(format!("{}.lock", hidden_name(&path)));
+    let lock_path = path.with_file_name(format!("{}{LOCK_SUFFIX}", hidden_name(&path)));
     let open = |write: bool| {
         std::fs::OpenOptions::new()
             .read(true)
@@ -1077,7 +1135,7 @@ pub(crate) fn delta_files(prefix: &str) -> (String, String) {
     let name = Path::new(&manifest)
         .file_name()
         .and_then(|f| f.to_str())
-        .and_then(|f| f.strip_suffix(".pinto.json"))
+        .and_then(|f| f.strip_suffix(MANIFEST_SUFFIX))
         .unwrap_or_default()
         .to_string();
     (

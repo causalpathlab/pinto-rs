@@ -7,8 +7,17 @@
 use crate::tui::flag_value;
 use clap::{Arg, ArgAction, Command, ValueHint};
 
-/// Flags `pinto run` fills from its own screens or never passes.
-const OWN: &[&str] = &["out", "coord", "batch-files", "help", "version", "verbose"];
+/// Flags `pinto run` fills from its own screens or never passes, and the
+/// one it takes for the whole session (`--atomic-outputs`).
+const OWN: &[&str] = &[
+    "out",
+    "coord",
+    "batch-files",
+    "help",
+    "version",
+    "verbose",
+    "atomic-outputs",
+];
 
 /// What a row holds and how it is changed.
 #[derive(Clone, Debug, PartialEq, Eq)]

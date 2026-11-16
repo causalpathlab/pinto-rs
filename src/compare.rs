@@ -150,8 +150,12 @@ fn fraction(s: &str) -> Result<f64, String> {
 
 /// Where `{out}.compare.json` goes.
 pub fn json_path(out: &str) -> String {
-    format!("{out}.compare.json")
+    format!("{out}{REPORT_SUFFIX}")
 }
+
+/// What a comparison's report is named by, after its prefix: the file
+/// that marks the comparison complete.
+pub(crate) const REPORT_SUFFIX: &str = ".compare.json";
 
 /// Where `{out}.contingency.parquet` goes.
 pub fn contingency_path(out: &str) -> String {
@@ -698,9 +702,10 @@ pub fn paired_path(out: &str) -> String {
 fn run_paired(args: &CompareArgs) -> anyhow::Result<()> {
     use crate::paired::{paired, read_donor_map, read_side};
     let json = paired_path(&args.out);
+    let at_final = crate::util::staging::final_str(&json);
     anyhow::ensure!(
-        !Path::new(&json).exists(),
-        "{json} exists: a comparison is not written over; give another --out"
+        !Path::new(&at_final).exists(),
+        "{at_final} exists: a comparison is not written over; give another --out"
     );
     let list = |s: &str| -> Vec<String> {
         s.split(',')
@@ -726,7 +731,7 @@ fn run_paired(args: &CompareArgs) -> anyhow::Result<()> {
     )?;
     mkdir_parent(&args.out)?;
     std::fs::write(&json, serde_json::to_string_pretty(&report)?)?;
-    println!(
+    crate::util::staging::say(format!(
         "{} shared units over {} donor(s): Δ {:+.5} nats/count (A {:.4}, B {:.4}), 95% donor \
          bootstrap [{:+.5}, {:+.5}]",
         report.n_units,
@@ -736,14 +741,14 @@ fn run_paired(args: &CompareArgs) -> anyhow::Result<()> {
         report.b_llik_per_count,
         report.bootstrap.ci95[0],
         report.bootstrap.ci95[1]
-    );
+    ));
     for d in &report.donors {
-        println!(
+        crate::util::staging::say(format!(
             "  {:<24} {:>8} units  Δ {:+.5}",
             d.donor, d.n_units, d.delta_per_count
-        );
+        ));
     }
-    println!(
+    crate::util::staging::say(format!(
         "donors A better {} / B better {}: sign test p {:.3}, Wilcoxon p {}",
         report.donors_a_better,
         report.donors_b_better,
@@ -751,8 +756,8 @@ fn run_paired(args: &CompareArgs) -> anyhow::Result<()> {
         report
             .wilcoxon_p
             .map_or("n/a".into(), |p| format!("{p:.3}"))
-    );
-    println!("wrote {json}");
+    ));
+    crate::util::staging::say(format!("wrote {at_final}"));
     Ok(())
 }
 
@@ -762,8 +767,9 @@ pub fn run_compare(args: &CompareArgs) -> anyhow::Result<()> {
     }
     let (json, table_path) = (json_path(&args.out), contingency_path(&args.out));
     for p in [&json, &table_path] {
+        let p = crate::util::staging::final_str(p);
         anyhow::ensure!(
-            !Path::new(p).exists(),
+            !Path::new(&p).exists(),
             "{p} exists: a comparison is not written over; give another --out"
         );
     }
@@ -795,22 +801,23 @@ pub fn run_compare(args: &CompareArgs) -> anyhow::Result<()> {
     write_contingency(&table_path, &table)?;
     std::fs::write(&json, serde_json::to_string_pretty(&report)?)?;
 
-    println!(
+    crate::util::staging::say(format!(
         "{} vs {}: {} shared cells ({} only in A, {} only in B)",
         report.a.input, report.b.input, report.n_shared, report.n_only_a, report.n_only_b
-    );
-    println!(
+    ));
+    crate::util::staging::say(format!(
         "ARI {:.4}  NMI {:.4}  mean Jaccard {:.4}  ({} vs {} communities)",
         report.ari, report.nmi, report.mean_jaccard, report.a.n_communities, report.b.n_communities
-    );
-    println!(
+    ));
+    crate::util::staging::say(format!(
         "vanished {}  split {}  merged into {}  new {}",
         report.vanished.len(),
         report.split.len(),
         report.merged.len(),
         report.new.len()
-    );
-    println!("wrote {json} and {table_path}");
+    ));
+    let shown = crate::util::staging::final_str;
+    crate::util::staging::say(format!("wrote {} and {}", shown(&json), shown(&table_path)));
     Ok(())
 }
 

@@ -18,6 +18,7 @@ pub mod paths;
 pub mod profile_match;
 pub mod score_trace;
 pub mod srt_pipeline;
+pub mod staging;
 
 #[cfg(test)]
 mod tests;

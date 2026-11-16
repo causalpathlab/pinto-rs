@@ -112,6 +112,20 @@ struct Cli {
     )]
     max_threads: usize,
 
+    #[arg(
+        long,
+        global = true,
+        help = "Write outputs under a temporary name; move them into place only if the run succeeds",
+        long_help = "Write the outputs in a hidden folder beside them\n\
+                     (.{name}.partial-{pid}-{random}) and rename them into place\n\
+                     only when the run succeeds, the manifest ({out}.pinto.json)\n\
+                     last: a manifest on disk means the run completed. A run\n\
+                     that fails or panics removes the folder and leaves nothing\n\
+                     under the final names; one that is killed leaves the folder\n\
+                     behind. run and mcp pass it to the commands they start."
+    )]
+    atomic_outputs: bool,
+
     #[command(subcommand)]
     commands: Commands,
 }
@@ -1079,6 +1093,41 @@ fn name_folder_out(commands: &mut Commands) {
     }
 }
 
+/// Under `--atomic-outputs`, each command's out made its staged one
+/// ([`util::staging`]): a fit's prefix, srt-simulate's and residual's
+/// folder, the file srt-sim-score, srt-sim-pairs and srt-sim-baseline
+/// write, compare's prefix. lra without `--out` stages its `--from` run's
+/// prefix when it resolves it.
+fn stage_outputs(commands: &mut Commands) -> anyhow::Result<()> {
+    use util::staging::{stage_folder, stage_prefix, stage_run};
+    let prefix = |o: &mut Box<str>| -> anyhow::Result<()> {
+        *o = stage_prefix(o)?.into();
+        Ok(())
+    };
+    // lra changes the manifest at its out and never replaces it; a fit
+    // writes its own
+    let changes = matches!(commands, Commands::LrActivity(_) | Commands::LraSimulate(_));
+    if let Some((out, _)) = commands.out_mut() {
+        if changes {
+            return prefix(out);
+        }
+        *out = stage_run(out)?.into();
+        return Ok(());
+    }
+    match commands {
+        Commands::SrtSimulate(a) => a.out = stage_folder(&a.out)?.into(),
+        Commands::Residual(a) => a.out = stage_folder(&a.out)?.into(),
+        Commands::SrtSimScore(a) => a.out.as_mut().map_or(Ok(()), prefix)?,
+        Commands::SrtSimPairs(a) => a.out.as_mut().map_or(Ok(()), prefix)?,
+        Commands::SrtSimBaseline(a) => prefix(&mut a.out)?,
+        Commands::Compare(a) => a.out = stage_prefix(&a.out)?,
+        // lra stages as it names its out; view writes its stills in
+        // place, and the rest write no files of their own
+        _ => {}
+    }
+    Ok(())
+}
+
 /// `--max-threads` handed to the commands whose results depend on it: lc's
 /// Gibbs splits a component into up to that many blocks.
 fn pass_max_threads(cli: &mut Cli) {
@@ -1088,6 +1137,18 @@ fn pass_max_threads(cli: &mut Cli) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // removes what a run staged when it ends before its commit: on an
+    // error return and on a panic
+    let _abort = util::staging::AbortOnDrop;
+    run_command().map_err(util::staging::final_error)?;
+    util::staging::commit()?;
+    // what the run held back to say once its outputs are in place
+    util::staging::say_held();
+    Ok(())
+}
+
+/// Parse the command line and run its command.
+fn run_command() -> anyhow::Result<()> {
     // A session's host runs this binary again: it serves the session and
     // exits here, before any of pinto's own work.
     #[cfg(feature = "view")]
@@ -1119,6 +1180,10 @@ fn main() -> anyhow::Result<()> {
             .exit()
     });
     name_folder_out(&mut cli.commands);
+    if cli.atomic_outputs {
+        util::staging::enable();
+        stage_outputs(&mut cli.commands)?;
+    }
 
     // Rayon's own count, at most --max-threads.
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());

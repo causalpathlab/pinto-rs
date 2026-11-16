@@ -158,8 +158,12 @@ impl crate::util::metadata::LraOptions {
 
 /// `path` as every lra method records it in the `--from` run's manifest:
 /// absolute, so it reads the same from the manifest's directory and from
-/// wherever lra ran.
-pub use crate::util::paths::shown_path as recorded;
+/// wherever lra ran, and the final path of one staged under
+/// `--atomic-outputs`, which is what the manifest holds once the run is in
+/// place.
+pub fn recorded(path: &std::path::Path) -> String {
+    crate::util::paths::shown_path(&crate::util::staging::final_path(path))
+}
 
 /// `pinto lra --help`: the three methods, the reference, the verdicts.
 pub fn lra_long_about() -> String {
