@@ -184,9 +184,13 @@ enum Commands {
         long_about = "Feature-level cell-cell interaction analysis by SVD.\n\
                       It uses shared and difference channels.\n\n\
                       Model:\n\
+                      \x20 Each cell's counts x (divided by its batch's effects\n\
+                      \x20 when there are batches) are scaled to a total of 1e4\n\
+                      \x20 and logged, so cells are compared at one depth:\n\
+                      \x20   y_ig = log1p(1e4 * x_ig / sum_g x_ig)\n\
                       \x20 For each cell pair e=(i,j) and feature g:\n\
-                      \x20   sigma_e^g = log1p(x_ig) + log1p(x_jg)    shared\n\
-                      \x20   delta_e^g = |log1p(x_ig) - log1p(x_jg)|  difference\n\
+                      \x20   sigma_e^g = y_ig + y_jg    shared\n\
+                      \x20   delta_e^g = |y_ig - y_jg|  difference\n\
                       \x20 Pairs grouped into S pseudobulk samples via\n\
                       \x20 graph-constrained coarsening.\n\
                       \x20 Per sample s, feature g:\n\
@@ -205,8 +209,8 @@ enum Commands {
                       \x20 4. Random projection of cells [N x P]\n\
                       \x20 5. Graph coarsening -> assign pairs to S samples\n\
                       \x20 6. Collapse: accumulate sigma/delta per feature per sample\n\
-                      \x20    Sigma[g,s] += log1p(x_ig) + log1p(x_jg)\n\
-                      \x20    Delta[g,s] += |log1p(x_ig) - log1p(x_jg)|\n\
+                      \x20    Sigma[g,s] += y_ig + y_jg\n\
+                      \x20    Delta[g,s] += |y_ig - y_jg|\n\
                       \x20 7. Fit Poisson-Gamma -> posterior log means\n\
                       \x20    mu_hat[g,s] = E[ln mu_g | Y_s^g]\n\
                       \x20 8. Stack M = [mu_shared; mu_diff] [2G x S]\n\

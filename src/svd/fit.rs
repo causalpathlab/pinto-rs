@@ -39,19 +39,21 @@ pub struct SrtDeltaSvdArgs {
 }
 
 /// Input for the pair-delta visitor (finest coarsening level only).
-struct FusedDeltaInput<'a> {
-    batch_effect: Option<&'a Mat>,
-    pair_to_sample: &'a [usize],
+pub(super) struct FusedDeltaInput<'a> {
+    pub(super) batch_effect: Option<&'a Mat>,
+    pub(super) pair_to_sample: &'a [usize],
 }
 
 /// Accumulated shared/difference statistics per feature per sample.
 ///
-/// For each cell pair (left, right) and each feature g:
-///   shared_g = log1p(x_left_g) + log1p(x_right_g)
-///   diff_g   = |log1p(x_left_g) - log1p(x_right_g)|
+/// For each cell pair (left, right) and each feature g, with
+/// `y = ln(1 + 1e4 x / Σ x)` each cell's log-normalised counts
+/// ([`read_log_normalised`]):
+///   shared_g = y_left_g + y_right_g
+///   diff_g   = |y_left_g - y_right_g|
 pub(crate) struct PairDeltaCollapsedStat {
-    shared_ds: Mat,
-    diff_ds: Mat,
+    pub(super) shared_ds: Mat,
+    pub(super) diff_ds: Mat,
     size_s: DVec,
     n_features: usize,
     n_samples: usize,
@@ -147,7 +149,8 @@ pub(crate) fn dsvd_cell_projection(
 /// 2. Estimate batch effects
 /// 3. Build spatial cell-cell KNN graph
 /// 4. Random projection → assign pairs to samples
-/// 5. Collapse: compute shared/diff per feature per sample
+/// 5. Collapse: compute shared/diff per feature per sample, on counts
+///    divided by batch effects, scaled per cell to 1e4 and logged
 /// 6. Fit Poisson-Gamma on each channel
 /// 7. SVD on vertically stacked [shared; diff] posterior log means
 /// 8. Nystrom projection → per-pair latent codes
@@ -393,9 +396,55 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `ln(1 + s x / total)`, `s` the [`LIBRARY_SCALE`]: a count of a unit whose
+/// counts sum to `total`, scaled to the common total and logged (scanpy's
+/// `normalize_total(target_sum=1e4)` then `log1p`; Wolf, Angerer and Theis
+/// 2018, Genome Biology 19:15).
+// Private until the shared log-normalisation helper lands in `util::common`;
+// this then moves there.
+fn log_cp10k(x: f32, total: f32) -> f32 {
+    (LIBRARY_SCALE * x / total).ln_1p()
+}
+
+/// Each cell (column) of `y` scaled to [`LIBRARY_SCALE`] and logged
+/// ([`log_cp10k`]), in place on its stored entries. The total is the cell's
+/// own, over every row it has. A cell with no positive finite total (no
+/// counts, or stored zeros a batch divide turned into `0 / 0`) is all zero.
+pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
+    for mut cell in y.col_iter_mut() {
+        let values = cell.values_mut();
+        let total: f32 = values.iter().sum();
+        if total > 0.0 && total.is_finite() {
+            values.iter_mut().for_each(|v| *v = log_cp10k(*v, total));
+        } else {
+            values.fill(0.0);
+        }
+    }
+}
+
+/// The columns of `cells` as both pair visitors take them: divided by the
+/// batch effects of each cell's batch when there are any, then
+/// log-normalised ([`log_normalise_cells`]) on the total after the divide.
+/// The divide's per-cell rate is a constant of the cell, so it cancels in
+/// the rescaling and a cell reads the same with a unit batch effect as with
+/// none. Sparse throughout.
+fn read_log_normalised(
+    data: &CellPairs,
+    cells: impl Iterator<Item = usize> + Clone,
+    batch_effect: Option<&Mat>,
+) -> anyhow::Result<nalgebra_sparse::CscMatrix<f32>> {
+    let mut y = data.data.read_columns_csc(cells.clone())?;
+    if let Some(delta_db) = batch_effect {
+        let batches = data.data.get_batch_membership(cells);
+        y.adjust_by_division_of_selected_inplace(delta_db, &batches);
+    }
+    log_normalise_cells(&mut y);
+    Ok(y)
+}
+
 /// Block visitor: read each pair's two columns once, merge their sparse
 /// feature sets, and scatter the touched features into the finest level's stats.
-fn fused_pair_delta_visitor(
+pub(super) fn fused_pair_delta_visitor(
     bound: (usize, usize),
     data: &CellPairs,
     input: &FusedDeltaInput,
@@ -412,18 +461,8 @@ fn fused_pair_delta_visitor(
     // order and zipping them.
     let left = pairs.iter().map(|x| x.0);
     let right = pairs.iter().map(|x| x.1);
-    let mut y_left = data.data.read_columns_csc(left)?;
-    let mut y_right = data.data.read_columns_csc(right)?;
-
-    // batch adjustment
-    if let Some(delta_db) = input.batch_effect {
-        let left = pairs.iter().map(|x| x.0);
-        let right = pairs.iter().map(|x| x.1);
-        let left_batches = data.data.get_batch_membership(left);
-        y_left.adjust_by_division_of_selected_inplace(delta_db, &left_batches);
-        let right_batches = data.data.get_batch_membership(right);
-        y_right.adjust_by_division_of_selected_inplace(delta_db, &right_batches);
-    }
+    let y_left = read_log_normalised(data, left, input.batch_effect)?;
+    let y_right = read_log_normalised(data, right, input.batch_effect)?;
 
     // Per-pair SPARSE contributions: a pair touches its nonzero features, not
     // all of them, and the lock below only pays for what it touches.
@@ -442,30 +481,30 @@ fn fused_pair_delta_visitor(
             match (li.get(a), ri.get(b)) {
                 (Some(&lg), Some(&rg)) => match lg.cmp(&rg) {
                     std::cmp::Ordering::Less => {
-                        let l = lv[a].ln_1p();
+                        let l = lv[a];
                         entries.push((lg as u32, l, l));
                         a += 1;
                     }
                     std::cmp::Ordering::Greater => {
-                        let r = rv[b].ln_1p();
+                        let r = rv[b];
                         entries.push((rg as u32, r, r));
                         b += 1;
                     }
                     std::cmp::Ordering::Equal => {
-                        let l = lv[a].ln_1p();
-                        let r = rv[b].ln_1p();
+                        let l = lv[a];
+                        let r = rv[b];
                         entries.push((lg as u32, l + r, (l - r).abs()));
                         a += 1;
                         b += 1;
                     }
                 },
                 (Some(&lg), None) => {
-                    let l = lv[a].ln_1p();
+                    let l = lv[a];
                     entries.push((lg as u32, l, l));
                     a += 1;
                 }
                 (None, Some(&rg)) => {
-                    let r = rv[b].ln_1p();
+                    let r = rv[b];
                     entries.push((rg as u32, r, r));
                     b += 1;
                 }
@@ -492,22 +531,23 @@ fn fused_pair_delta_visitor(
 }
 
 /// Shared input for Nystrom pair-delta projection.
-struct NystromPairInput {
-    basis_shared: Mat,
-    basis_diff: Mat,
-    batch_effect: Option<Mat>,
+pub(super) struct NystromPairInput {
+    pub(super) basis_shared: Mat,
+    pub(super) basis_diff: Mat,
+    pub(super) batch_effect: Option<Mat>,
 }
 
 /// Nystrom projection visitor: project each pair onto the split basis.
 ///
-/// For each pair and each feature present in either cell:
+/// For each pair and each feature present in either cell, with `y` the
+/// cells' log-normalised counts ([`read_log_normalised`]), as collapsed:
 ///
 /// ```text
-/// shared = log1p(x_left) + log1p(x_right)
-/// diff   = |log1p(x_left) - log1p(x_right)|
+/// shared = y_left + y_right
+/// diff   = |y_left - y_right|
 /// proj  += shared * basis_shared[feature] + diff * basis_diff[feature]
 /// ```
-fn nystrom_pair_delta_visitor(
+pub(super) fn nystrom_pair_delta_visitor(
     bound: (usize, usize),
     data: &CellPairs,
     shared_in: &NystromPairInput,
@@ -518,18 +558,8 @@ fn nystrom_pair_delta_visitor(
     let left = pairs.iter().map(|pp| pp.0);
     let right = pairs.iter().map(|pp| pp.1);
 
-    let mut y_left = data.data.read_columns_csc(left)?;
-    let mut y_right = data.data.read_columns_csc(right)?;
-
-    // batch adjustment
-    if let Some(delta_db) = &shared_in.batch_effect {
-        let left = pairs.iter().map(|x| x.0);
-        let right = pairs.iter().map(|x| x.1);
-        let left_batches = data.data.get_batch_membership(left);
-        y_left.adjust_by_division_of_selected_inplace(delta_db, &left_batches);
-        let right_batches = data.data.get_batch_membership(right);
-        y_right.adjust_by_division_of_selected_inplace(delta_db, &right_batches);
-    }
+    let y_left = read_log_normalised(data, left, shared_in.batch_effect.as_ref())?;
+    let y_right = read_log_normalised(data, right, shared_in.batch_effect.as_ref())?;
 
     let n_topics = shared_in.basis_shared.ncols();
     let n_pairs_block = ub - lb;
@@ -540,14 +570,13 @@ fn nystrom_pair_delta_visitor(
             .row_indices()
             .iter()
             .zip(right_col.values().iter())
-            .map(|(&g, &v)| (g, v.ln_1p()))
+            .map(|(&g, &v)| (g, v))
             .collect();
 
         let mut proj_k = DVec::zeros(n_topics);
         let mut left_visited: HashSet<usize> = Default::default();
 
-        for (&feature, &val) in left_col.row_indices().iter().zip(left_col.values().iter()) {
-            let log_left = val.ln_1p();
+        for (&feature, &log_left) in left_col.row_indices().iter().zip(left_col.values().iter()) {
             let log_right = right_log.get(&feature).copied().unwrap_or(0.0);
             let sigma = log_left + log_right;
             let delta = (log_left - log_right).abs();
