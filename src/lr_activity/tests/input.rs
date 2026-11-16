@@ -249,7 +249,7 @@ fn residual_fits_are_read_on_their_raw_counts() {
 /// its cells' names.
 #[test]
 fn raw_and_residual_files_match_by_the_cells_name() {
-    use crate::lr_activity::input::same_data_name;
+    use crate::util::residual_input::same_data_name;
     assert!(same_data_name("raw/S1.zarr.zip", "resid/S1.zarr"));
     assert!(same_data_name("raw/S1.zarr", "resid/S1.zarr"));
     assert!(!same_data_name("raw/S2.zarr", "resid/S1.zarr"));

@@ -5,7 +5,8 @@
 use crate::lr_activity::args::LraInputArgs;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
-use crate::util::lupin_rounds::{latest_rounds, read_json, same_file};
+use crate::util::lupin_rounds::{latest_rounds, read_json};
+use crate::util::residual_input::{excess_marker, same_data_name, ResidualBlock};
 use crate::util::metadata::{resolve_beside, GraphParams, PintoMetadata, Run};
 use std::path::{Path, PathBuf};
 
@@ -100,30 +101,6 @@ impl LraInputArgs {
 
 // * Residual fits
 
-/// The `residual` block a residual fit's manifest carries, and that `pinto
-/// residual` writes into `{out}/residual.json` beside its excess-count
-/// backends: one schema for both sides. lra reads only what decides its
-/// input. Paths are absolute, or relative to the file holding the block.
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-pub(crate) struct ResidualBlock {
-    /// `excess` for counts a fitted run left unexplained.
-    pub counts: String,
-    /// The stage-1 run's manifest.
-    #[serde(default)]
-    pub stage1: Option<String>,
-    /// Aligned with the run's `data_files`, index for index.
-    #[serde(default)]
-    pub raw_data_files: Vec<String>,
-}
-
-/// Whether two data files give their cells the same name, as a fit names
-/// them by [`basename`] (a second extension such as `.zarr` in `.zarr.zip`
-/// dropped): a residual's file and the raw file it came from must.
-pub(crate) fn same_data_name(a: &str, b: &str) -> bool {
-    let name = |p: &str| basename(p.trim_end_matches('/')).ok();
-    name(a).is_some() && name(a) == name(b)
-}
-
 /// What lra takes from a residual fit: the raw data files, the stage-1 run,
 /// and where the block was read (its paths are relative to that file).
 #[derive(Debug)]
@@ -131,26 +108,6 @@ pub struct ResidualInput {
     pub raw_data_files: Vec<std::path::PathBuf>,
     pub stage1: Option<Run>,
     pub holder: PathBuf,
-}
-
-/// The excess-count marker beside data file `path`: `residual.json` in its
-/// directory saying `counts: excess`, with the marker's block. A raw file
-/// the marker names is not excess.
-fn excess_marker(path: &Path) -> Option<(PathBuf, serde_json::Value)> {
-    let marker = path.parent()?.join("residual.json");
-    let value = read_json(&marker)?;
-    let block: ResidualBlock = serde_json::from_value(value.clone()).ok()?;
-    let raw = block
-        .raw_data_files
-        .iter()
-        .filter_map(|f| resolve_beside(&marker, f))
-        .any(|f| same_file(&f, path));
-    (block.counts == "excess" && !raw).then_some((marker, value))
-}
-
-/// Whether data file `path` holds excess counts, by the marker beside it.
-pub(crate) fn is_excess(path: &Path) -> bool {
-    excess_marker(path).is_some()
 }
 
 /// `run` as a residual fit: its manifest's `residual` block, else the

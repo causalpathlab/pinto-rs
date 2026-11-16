@@ -136,6 +136,7 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
         let got = crate::svd::fit::dsvd_cell_projection(
             pre.cell_proj,
             pre.batch_effects.is_some(),
+            pre.no_batch_effect.is_some(),
             &args,
             &pre.data_vec,
             &pre.batch_membership,

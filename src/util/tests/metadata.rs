@@ -26,6 +26,7 @@ fn an_lc_run_without_a_cut_names_the_tree_and_no_cut() {
             graph: GraphParams::default(),
             ablation: None,
             delta: None,
+            no_batch_effect: None,
         },
         Some(DictMergeSummary {
             min_nnz: 1,
@@ -67,6 +68,7 @@ fn metadata_roundtrip_lc() {
                 labels: BatchLabels::Files,
                 cells: true,
             }),
+            no_batch_effect: None,
         },
         Some(DictMergeSummary {
             min_nnz: 1,
@@ -148,6 +150,7 @@ fn metadata_roundtrip_cage() {
                 labels: BatchLabels::Files,
                 cells: true,
             }),
+            no_batch_effect: None,
         },
         Some(SpliceTrackInfo {
             n_rows: 40000,
@@ -224,6 +227,7 @@ fn metadata_roundtrip_cage_no_batch() {
             graph: GraphParams::default(),
             ablation: None,
             delta: None,
+            no_batch_effect: None,
         },
         None,
     );
@@ -259,6 +263,7 @@ fn metadata_roundtrip_lc_merge_no_collapse() {
             graph: GraphParams::default(),
             ablation: None,
             delta: None,
+            no_batch_effect: None,
         },
         None,
         None,
@@ -297,6 +302,7 @@ fn roundtrip_graph(graph: GraphParams) -> (tempfile::TempDir, GraphParams) {
             graph,
             ablation: None,
             delta: None,
+            no_batch_effect: None,
         },
         None,
         None,
@@ -554,6 +560,7 @@ fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
             graph: GraphParams::default(),
             ablation: None,
             delta: None,
+            no_batch_effect: None,
         },
         None,
         None,
@@ -639,6 +646,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
             labels,
             cells: true,
         }),
+        no_batch_effect: None,
     };
     let meta = create_cage_metadata(&inputs(Some(BatchLabels::Files)), None);
     let want = std::fs::canonicalize(dir.path().join("a.zarr")).unwrap();
@@ -683,6 +691,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
             labels: BatchLabels::Files,
             cells: false,
         }),
+        no_batch_effect: None,
         ..inputs(None)
     };
     let meta = create_cage_metadata(&alone, None);

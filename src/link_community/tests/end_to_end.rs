@@ -144,6 +144,56 @@ fn lc_records_its_batch_effects_in_the_manifest() {
     assert!(!std::path::Path::new(&format!("{raw}.delta.parquet")).exists());
 }
 
+/// A stage-2 fit, on a residual's excess counts, estimates no batch effect:
+/// no δ table, none named in the manifest, and the manifest says why, with
+/// and without `--ignore-batch`. The same sections in a folder that is no
+/// residual's are estimated on.
+#[test]
+fn lc_estimates_no_batch_effect_on_a_residual_s_files() {
+    use crate::util::metadata::{manifest_path, NoBatchEffect, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    let sections = |name: &str| {
+        let folder = dir.path().join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        two_sections(&folder, 8)
+    };
+    let meta = |prefix: &str| {
+        PintoMetadata::read(std::path::Path::new(&manifest_path(prefix))).unwrap()
+    };
+    let delta = |prefix: &str| std::path::Path::new(&format!("{prefix}.delta.parquet")).exists();
+
+    let (data, coords) = sections("plain");
+    let plain = fit_lc(dir.path(), &data, &coords, "plain_fit", &[]);
+    assert!(delta(&plain), "two sections, two batches");
+    assert!(meta(&plain).outputs.batch_effects.is_some());
+    assert_eq!(meta(&plain).no_batch_effect, None);
+
+    let (data, coords) = sections("res");
+    crate::test_support::mark_residual(&data.split(',').collect::<Vec<_>>());
+    for (name, extra) in [("stage2", &[][..]), ("stage2i", &["--ignore-batch"][..])] {
+        let fit = fit_lc(dir.path(), &data, &coords, name, extra);
+        assert!(!delta(&fit), "{name}: a δ table was written");
+        let meta = meta(&fit);
+        assert!(meta.outputs.batch_effects.is_none(), "{name}");
+        assert!(meta.batch_labels.is_none(), "{name}");
+        assert!(!meta.outputs.feature_community_batch_adjusted, "{name}");
+        assert_eq!(
+            meta.no_batch_effect,
+            Some(NoBatchEffect::ResidualInput),
+            "{name}"
+        );
+    }
+    let recorded = std::fs::read_to_string(manifest_path(&format!(
+        "{}/stage2",
+        dir.path().to_str().unwrap()
+    )))
+    .unwrap();
+    assert!(
+        recorded.contains(r#""no_batch_effect": "residual-input""#),
+        "{recorded}"
+    );
+}
+
 /// Two sections of the same tissue, a left half and a right half that
 /// differ only weakly, the second section's `folded` features four times
 /// the first's. Undivided, that batch fold is the strongest signal and lc

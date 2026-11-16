@@ -168,3 +168,19 @@ pub(crate) fn from_cwd(p: &std::path::Path) -> std::path::PathBuf {
         .collect();
     up.join(p.strip_prefix("/").unwrap())
 }
+
+/// Marks `files`, all in one folder, as a residual's excess counts: a
+/// `residual.json` beside them as `pinto residual` writes its block, naming
+/// raw data files of their names in a folder `raw` beside that folder.
+pub(crate) fn mark_residual(files: &[&str]) {
+    let folder = std::path::Path::new(files[0]).parent().unwrap();
+    let raw: Vec<String> = files
+        .iter()
+        .map(|f| {
+            let name = std::path::Path::new(f).file_name().unwrap();
+            format!("../raw/{}", name.to_str().unwrap())
+        })
+        .collect();
+    let marker = serde_json::json!({ "counts": "excess", "raw_data_files": raw });
+    std::fs::write(folder.join("residual.json"), marker.to_string()).unwrap();
+}

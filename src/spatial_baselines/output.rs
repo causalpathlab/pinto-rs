@@ -17,7 +17,7 @@ use crate::link_community::outputs::write_propensity_matrix;
 use crate::util::common::Mat;
 use crate::util::metadata::{
     delta_files, manifest_path, now_secs, BaselineInput, BaselineRun, BatchLabels, InputLayout,
-    OutputFiles, PintoMetadata, PseudobulkInput,
+    NoBatchEffect, OutputFiles, PintoMetadata, PseudobulkInput,
 };
 use crate::util::parquet_io::{cell_pb_path, cells_table_path, write_cell_pb, write_cells_table};
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -148,14 +148,21 @@ pub fn write_loadings(
 }
 
 /// What was done about batch effects: δ divided out (the one deviation
-/// from the original method), or nothing, under `--ignore-batch` or with a
-/// single batch.
-fn batch_correction(input: &SpatialInputArgs, data: &SpatialData) -> serde_json::Value {
+/// from the original method), or nothing, on a residual's excess counts
+/// (`no_batch_effect`), under `--ignore-batch` or with a single batch.
+fn batch_correction(
+    data: &SpatialData,
+    no_batch_effect: Option<NoBatchEffect>,
+) -> serde_json::Value {
     match &data.delta {
         Some(d) => serde_json::json!({"delta": true, "batches": d.batches}),
         None => serde_json::json!({
             "delta": false,
-            "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
+            "why": match no_batch_effect {
+                Some(NoBatchEffect::ResidualInput) => "a residual's excess counts",
+                Some(NoBatchEffect::IgnoreBatch) => "--ignore-batch",
+                None => "one batch",
+            },
         }),
     }
 }
@@ -172,6 +179,7 @@ pub fn write_run(
     anyhow::ensure!(fit.embedding.nrows() == n, "one embedding row per cell");
     let k = fit.labels.iter().max().map_or(0, |&m| m + 1);
     let run = baseline_run(&fit);
+    let no_batch_effect = NoBatchEffect::of(&input.batch, input.residual_input()?.is_some());
     log::info!("{}: {k} clusters", fit.method);
     let one_hot_labels;
     let membership = match fit.membership {
@@ -209,7 +217,7 @@ pub fn write_run(
         "cnv_clones": input.collapse.cnv_clones,
         "seed": input.seed,
         "run": run,
-        "batch_correction": batch_correction(input, data),
+        "batch_correction": batch_correction(data, no_batch_effect),
         "n_clusters_found": k,
         "settings": fit.settings,
     });
@@ -243,6 +251,7 @@ pub fn write_run(
             data.delta.as_ref().map(|_| BatchLabels::of(&input.batch)),
             &input.data_files,
         ),
+        no_batch_effect,
         baseline: Some(run),
         ..Default::default()
     };

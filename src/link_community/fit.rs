@@ -79,6 +79,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         seeding,
         batch_labels,
         batch_effects,
+        no_batch_effect,
         graph,
         knn,
         base_batch_corrected,
@@ -533,6 +534,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 delta: batch_effects
                     .is_some()
                     .then(|| crate::util::metadata::DeltaWritten::fit(c)),
+                no_batch_effect,
             },
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a

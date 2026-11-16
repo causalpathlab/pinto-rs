@@ -47,7 +47,13 @@
 //! file shares (as an exact-name fit reads them; with `--feature-name-mode` as
 //! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
 //! the run's first two coordinates for those cells. The excess keeps counts,
-//! so the count models fit it as they fit data. `{out}/residual.json`
+//! so the count models fit it as they fit data, but for the batch effect:
+//! a fit whose data files this folder's `residual.json` names estimates
+//! none, as under `--ignore-batch`
+//! ([`crate::util::residual_input::no_batch_effect_on`]). The per-batch
+//! profiles above already took out a shift of a whole community in a
+//! batch, and what is left in a batch is its local structure, which a
+//! second estimate would take out. `{out}/residual.json`
 //! records, per file, the counts in and the excess out, how `μ` was made
 //! (`excess`, `adapt`, `adapt_cells`, `formula`), and carries the block
 //! `pinto lra` reads to take a fit on these files on its raw counts: the
@@ -331,7 +337,7 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
     let on_residual = crate::lr_activity::input::residual_of(run)?.is_some()
         || files
             .iter()
-            .any(|f| crate::lr_activity::input::is_excess(Path::new(f.as_ref())));
+            .any(|f| crate::util::residual_input::is_excess(Path::new(f.as_ref())));
     anyhow::ensure!(
         !on_residual,
         "{}: a fit on a residual; a residual is taken from a fit on raw counts, not \
@@ -686,7 +692,7 @@ fn residual_marker(
             .to_string_lossy()
             .into_owned())
     };
-    let block = crate::lr_activity::input::ResidualBlock {
+    let block = crate::util::residual_input::ResidualBlock {
         counts: "excess".into(),
         stage1: Some(canonical(&run.manifest)?),
         raw_data_files: files
@@ -709,8 +715,7 @@ fn summary_path(out: &str) -> String {
     in_dir(out, MARKER)
 }
 
-/// The marker's file name: written last, it marks the residual whole.
-pub const MARKER: &str = "residual.json";
+pub use crate::util::residual_input::MARKER;
 
 /// Each data file's residual zarr under `out`, checked not to be its input.
 fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
