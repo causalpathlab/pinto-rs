@@ -149,9 +149,11 @@ pinto lc data.h5 -c coords.csv -o out --feature-network pairs.tsv
 pinto dsvd data.h5 -c coords.csv -o out
 ```
 
-dsvd takes, for each spatial cell pair and feature, a shared channel (the two
-cells' log counts summed) and a difference channel (their absolute
-difference), pools them over graph-coarsened samples of pairs, and factors the
+dsvd scales each cell's counts to a total of 1e4 and takes their log
+(after the batch divide, when there are batches), so cells are compared at
+one sequencing depth. For each spatial cell pair and feature it then takes a shared
+channel (the two cells' values summed) and a difference channel (their
+absolute difference), pools them over graph-coarsened samples of pairs, and factors the
 pooled Poisson-Gamma means by a randomized SVD; each pair's latent code is cut
 into link communities. It stands beside lc as a first fit: it writes the same
 propensity, link-community and feature-community tables, so `pinto view`,
