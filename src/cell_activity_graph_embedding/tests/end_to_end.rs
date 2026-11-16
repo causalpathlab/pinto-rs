@@ -55,6 +55,48 @@ fn feature_modules_train_and_write_their_tables() {
     }
 }
 
+/// Left at its default, the flag resolves its count from the data and every
+/// module table is written at that one count; `--feature-modules 0` writes
+/// none, and neither does a run whose `--feature-inclusion moran` the
+/// default yielded to. For cage and cage-cell alike.
+#[test]
+fn default_modules_size_every_table_and_zero_writes_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    let rows_cols = |out: &str, table: &str| {
+        let m = Mat::from_parquet(&format!("{out}.{table}.parquet")).unwrap();
+        (m.mat.nrows(), m.mat.ncols())
+    };
+    for mode in [&[][..], &["cell"][..]] {
+        let tag = mode.first().copied().unwrap_or("pb");
+        let out = fit(dir.path(), &data, &coords, &format!("{tag}_auto"), mode);
+        let (features, m) = rows_cols(&out, "module_membership");
+        assert_eq!(features, 12, "{tag}");
+        assert!(m >= 2, "{tag}: auto resolved {m} modules");
+        assert_eq!(rows_cols(&out, "module_dictionary"), (m, 4), "{tag}");
+        assert_eq!(rows_cols(&out, "module_bias").0, m, "{tag}");
+        assert_eq!(rows_cols(&out, "module_residual"), (12, 4), "{tag}");
+        for (name, off) in [
+            ("zero", &["--feature-modules", "0"][..]),
+            ("moran", &["--feature-inclusion", "moran"][..]),
+        ] {
+            let name = format!("{tag}_{name}");
+            let out = fit(dir.path(), &data, &coords, &name, &[off, mode].concat());
+            for table in [
+                "module_membership",
+                "module_dictionary",
+                "module_residual",
+                "module_bias",
+            ] {
+                assert!(
+                    !std::path::Path::new(&format!("{out}.{table}.parquet")).exists(),
+                    "{name}: {table} written"
+                );
+            }
+        }
+    }
+}
+
 /// Modules and inclusion are alternatives: a run given both is refused,
 /// naming both, before it writes anything, in cage and in cage-cell.
 #[test]

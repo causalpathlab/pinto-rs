@@ -1,8 +1,9 @@
 //! Building the model: the optional pre-trained feature side, then the one
 //! match that constructs the model and its freeze state.
 
+use super::modules::{pseudobulk_sizes, resolve_modules, ModuleStart};
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInitMode,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInitMode, ModulePlan,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::coarsen_cell_expression_dense;
@@ -28,7 +29,9 @@ pub(super) struct ModelInputs<'a> {
     pub data_vec: &'a SparseIoVec,
     pub feature_axis: &'a FeatureAxis,
     pub feature_kind: &'a FeatureNameKind,
-    pub module_cfg: Option<&'a FeatureModuleConfig>,
+    /// What the run's flags ask of the module layer; the count is resolved
+    /// here, where the profiles exist.
+    pub module_plan: ModulePlan,
     pub lora_spec: Option<LoraSpec>,
     pub n_pb: usize,
     pub embedding_dim: usize,
@@ -36,12 +39,13 @@ pub(super) struct ModelInputs<'a> {
     pub dev: &'a Device,
 }
 
-/// The model, its freeze state, and the profiles that seeded its modules
-/// (cage's module term pools them too).
+/// The model, its freeze state, and the module layer it was built with
+/// (`None`: no layer): its settings at the resolved count, and the profiles
+/// that seeded it (cage's module term pools them too).
 pub(super) struct BuiltModel {
     pub model: JointEmbedModel,
     pub frozen_feature: Option<pretrained::FrozenGene>,
-    pub module_profiles: Option<Mat>,
+    pub modules: Option<(FeatureModuleConfig, Mat)>,
 }
 
 pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel> {
@@ -51,7 +55,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
         data_vec,
         feature_axis,
         feature_kind,
-        module_cfg,
+        module_plan,
         lora_spec,
         n_pb,
         embedding_dim,
@@ -82,9 +86,24 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
             .pool_rows_opt(&row_profiles)
             .unwrap_or(row_profiles))
     };
-    let module_profiles: Option<Mat> = match module_cfg {
-        Some(_) => Some(build_profiles()?),
-        None => None,
+    // The module count is known only against the profiles, so the layer is
+    // resolved here: a fixed count, or the one `auto` finds (none when it
+    // finds fewer than two modules).
+    let module_start: Option<(ModuleStart, Mat)> = match module_plan {
+        ModulePlan::Off => None,
+        plan => {
+            let profiles = build_profiles()?;
+            anyhow::ensure!(
+                profiles.nrows() == n_features,
+                "module profiles of {} rows for {} features",
+                profiles.nrows(),
+                n_features
+            );
+            // The profiles are the finest pseudobulks' count sums; a
+            // pseudobulk's size is its cell count.
+            let sizes = pseudobulk_sizes(profile_labels, profiles.ncols());
+            resolve_modules(plan, &profiles, &sizes, c.seed)?.map(|start| (start, profiles))
+        }
     };
     let pretrained_feature = match args.feature_embedding.as_deref() {
         None => None,
@@ -137,25 +156,11 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
     // seeded random draw in every arm: nothing is fitted to the counts for it.
     let (model, frozen_feature) = match (&pretrained_feature, args.feature_embedding_mode) {
         // Learned feature modules: every feature row is `Σ_m π_gm μ_m + r_g`, warm-started
-        // from a k-means over the pseudobulk profiles. Same detached-snapshot
+        // from the partition of the pseudobulk profiles resolved above. Same detached-snapshot
         // contract as the adapter arm.
-        _ if module_cfg.is_some() => {
-            let gm = module_cfg.expect("checked above");
-            let profiles = module_profiles.as_ref().expect("built with the config");
-            anyhow::ensure!(
-                profiles.nrows() == n_features,
-                "module profiles of {} rows for {} features",
-                profiles.nrows(),
-                n_features
-            );
-            // The profiles are the finest pseudobulks' count sums; a
-            // pseudobulk's size is its cell count.
-            let mut sizes = vec![0f32; profiles.ncols()];
-            for &pb in profile_labels {
-                sizes[pb] += 1.0;
-            }
-            let labels =
-                graph_embedding_util::partition_modules(profiles, &sizes, gm.n_modules, c.seed)?;
+        _ if module_start.is_some() => {
+            let (ModuleStart { cfg: gm, labels }, _) =
+                module_start.as_ref().expect("checked above");
             info!(
                 "learned feature modules: {} features → {} modules (mixed membership), feature dropout {}, \
                  exact module term λ={}, balance λ={}",
@@ -169,7 +174,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
                         embedding_dim,
                         n_modules: gm.n_modules,
                         warm: ModuleWarmStart::Labels {
-                            labels: &labels,
+                            labels,
                             own_mass: gm.init_own_mass,
                         },
                         b_feat: &b_feat_init,
@@ -278,7 +283,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
     Ok(BuiltModel {
         model,
         frozen_feature,
-        module_profiles,
+        modules: module_start.map(|(start, profiles)| (start.cfg, profiles)),
     })
 }
 

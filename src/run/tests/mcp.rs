@@ -271,7 +271,13 @@ fn run_methods_lists_cage_s_choices_and_no_hidden_knob() {
     let flag = |name: &str| flags.iter().find(|f| f["flag"] == name);
     let inclusion = flag("--feature-inclusion").expect("listed");
     assert_eq!(inclusion["choices"], json!(["all", "moran"]));
-    assert!(flag("--feature-modules").is_some());
+    // the module count's help says what its default is and how to turn it off
+    let modules = flag("--feature-modules").expect("listed")["help"]
+        .as_str()
+        .expect("a help line");
+    for word in ["auto (default)", "0 turns them off"] {
+        assert!(modules.contains(word), "{modules}");
+    }
     assert!(flag("--inclusion-blocks").is_none());
     assert!(flags.iter().all(|f| f.get("advanced").is_none()));
 }

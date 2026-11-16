@@ -27,9 +27,11 @@ on cells); spatialde2, stagate, spatialpca and mefisto, and the -pb forms \
 spatialde2-pb, stagate-pb, spatialpca-pb and mefisto-pb (fitted on cage's \
 super-cells) are spatial baselines, ports of published methods to compare pinto \
 against, fit and scored as lc is. Where most \
-features are noise, cage and cage-cell take feature-inclusion moran or \
-feature-modules M, \
-never both; lc takes feature modules from a feature network file the user \
+features are noise, cage and cage-cell embed features through learned \
+modules by default (feature-modules auto takes their number from the data, \
+a count fixes it, 0 for none); feature-inclusion moran given alone replaces \
+the default modules, and given beside an explicit feature-modules value is \
+refused; lc takes feature modules from a feature network file the user \
 supplies (feature-network), as pinto has none. Ablations are lc, cage or \
 dsvd fits with run_fit's ablation flags (permute-coords, drop-features, \
 mask-cells with ablation-parent); `run_region` turns a polygon into the cell \
