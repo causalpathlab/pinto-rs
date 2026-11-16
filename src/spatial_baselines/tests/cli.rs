@@ -7,6 +7,7 @@ pub(crate) const BASELINES: &[&str] = &[
     "spatialpca",
     "mefisto",
     "spatialde2-pb",
+    "stagate-pb",
     "spatialpca-pb",
     "mefisto-pb",
 ];
@@ -33,11 +34,12 @@ fn each_baseline_s_help_is_short() {
     }
 }
 
-/// `-d` belongs to spatialde2-pb alone, at least 1 as it parses, and no
+/// `-d` belongs to the -pb forms of spatialde2 and stagate, not to them,
+/// at least 1 as it parses, and no
 /// baseline has a `--reference`, hidden or not (so neither `pinto run`'s
 /// form nor the MCP schema offers it): each runs its sparse formulation.
 #[test]
-fn only_spatialde2_pb_takes_d_and_no_baseline_has_reference() {
+fn only_the_pb_forms_take_d_and_no_baseline_has_reference() {
     let parse = |cmd: &str, extra: &[&str]| {
         let mut argv = vec!["pinto", cmd, "d.zarr", "-c", "c.csv", "-o", "x"];
         argv.extend(extra);
@@ -51,6 +53,11 @@ fn only_spatialde2_pb_takes_d_and_no_baseline_has_reference() {
     };
     assert_eq!(pb.n_pseudobulk, 5);
     assert!(parse("spatialde2-pb", &["-d", "0"]).is_err(), "-d 0");
+    let Ok(crate::Commands::StagatePb(pb)) = parse("stagate-pb", &["-d", "5"]) else {
+        panic!("stagate-pb -d")
+    };
+    assert_eq!(pb.n_pseudobulk, 5);
+    assert!(parse("stagate-pb", &["-d", "0"]).is_err(), "-d 0");
     let cli = crate::built_cli();
     for cmd in BASELINES {
         assert!(parse(cmd, &["--reference"]).is_err(), "{cmd} --reference");

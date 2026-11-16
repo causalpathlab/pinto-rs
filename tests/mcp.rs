@@ -405,6 +405,7 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
             "spatialpca",
             "mefisto",
             "spatialde2-pb",
+            "stagate-pb",
             "spatialpca-pb",
             "mefisto-pb",
         ]

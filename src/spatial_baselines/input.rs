@@ -111,7 +111,7 @@ pub struct SpatialData {
     pub delta: Option<AppliedDelta>,
     /// The cells' random projection (`proj_dim × cells`, batch-corrected
     /// with δ when there is one), as cage coarsens on it; read for
-    /// `spatialde2-pb` only ([`SpatialInputArgs::read`]).
+    /// the `-pb` commands only ([`SpatialInputArgs::read`]).
     pub projection: Option<Mat>,
 }
 

@@ -1,12 +1,12 @@
-//! `spatialde2-pb`: super-cells as cage builds them, the collapsed
+//! The `-pb` commands: super-cells as cage builds them, the collapsed
 //! graph, and the unravelling back to cells.
 //!
 //! Success bar, set before measuring: on an srt-simulate section (a few
 //! thousand cells at most), fitted on about one super-cell per 8 cells,
 //! the unravelled labels recover the planted domains within 0.1 ARI of
 //! the cell-level fit, and beat the super-cells' labels broadcast to their
-//! cells on the cells at a domain boundary. A method that fails it has no
-//! `-pb` command.
+//! cells on the cells at a domain boundary. A baseline's `-pb` command
+//! that fails it is kept, and marked approximate in its help.
 
 use super::graph::grid;
 use crate::spatial_baselines::graph::knn_within_sections;
@@ -323,4 +323,194 @@ fn spatialpca_pb_meets_the_bar_on_a_simulated_section() {
 #[test]
 fn mefisto_pb_meets_the_bar_on_a_simulated_section() {
     factor_pb_meets_the_bar("mefisto");
+}
+
+/// stagate and stagate-pb on one simulated section at the planted number
+/// of domains: (planted, the cell fit's, the unravelled and the broadcast
+/// labels, in the order of the cells) and the boundary cells.
+fn stagate_against_its_pb() -> (Vec<usize>, [Vec<usize>; 3], Vec<usize>) {
+    use super::spatialpca::{parse, planted, simulated_section};
+    let dir = tempfile::tempdir().unwrap();
+    let (sim, files) = simulated_section(dir.path(), 40, 500, 2);
+    let cell_out = dir.path().join("cells").to_string_lossy().to_string();
+    let pb_out = dir.path().join("pb").to_string_lossy().to_string();
+    let crate::Commands::Stagate(probe) = parse("stagate", &files, &cell_out, &[]) else {
+        unreachable!()
+    };
+    let data = probe.input.read(false).unwrap();
+    let cells = &data.cells;
+    let (domain, k) = planted(&sim, cells);
+    let k = k.to_string();
+    let small = [
+        "--n-clusters",
+        &k,
+        "--hidden-dims",
+        "64,16",
+        "--n-epochs",
+        "300",
+    ];
+    let crate::Commands::Stagate(a) = parse("stagate", &files, &cell_out, &small) else {
+        unreachable!()
+    };
+    crate::spatial_baselines::stagate::run(&a).unwrap();
+    let mut pb_flags = small.to_vec();
+    pb_flags.extend(["-d", "200"]);
+    let crate::Commands::StagatePb(a) = parse("stagate-pb", &files, &pb_out, &pb_flags) else {
+        unreachable!()
+    };
+    crate::spatial_baselines::stagate::run_pb(&a).unwrap();
+    let fits = [
+        labels_of(cells, &read_labels(&cell_out)),
+        labels_of(cells, &read_labels(&pb_out)),
+        labels_of(
+            cells,
+            &read_column(&format!("{pb_out}.cell_pb.parquet"), "cell", "pb_label"),
+        ),
+    ];
+    // no domain id is left unused: the run's count is the labels held
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{pb_out}.baseline.json")).unwrap())
+            .unwrap();
+    let mut held = fits[1].clone();
+    held.sort_unstable();
+    held.dedup();
+    assert_eq!(
+        settings["n_clusters_found"].as_u64(),
+        Some(held.len() as u64)
+    );
+    let nb = knn_within_sections(&data, 6);
+    let boundary: Vec<usize> = (0..cells.len())
+        .filter(|&i| nb.index[i].iter().any(|&j| domain[j] != domain[i]))
+        .collect();
+    assert!(boundary.len() > 50, "{} boundary cells", boundary.len());
+    (domain, fits, boundary)
+}
+
+/// stagate-pb against the bar: within 0.1 ARI of stagate on cells, and
+/// above the broadcast labels on the boundary cells. The unravelled labels
+/// are the cells' own: they hold every domain the super-cells hold, and
+/// agree with the broadcast labels on most cells away from a boundary (a
+/// guard against the unravel collapsing onto one domain, as it did with
+/// centroids taken on the super-cells' embedding).
+#[test]
+fn stagate_pb_meets_the_bar_on_a_simulated_section() {
+    let (domain, [cell_fit, unravelled, broadcast], boundary) = stagate_against_its_pb();
+    let on = |l: &[usize]| boundary.iter().map(|&i| l[i]).collect::<Vec<_>>();
+    let (a_cell, a_pb, a_bc) = (
+        ari(&domain, &cell_fit),
+        ari(&domain, &unravelled),
+        ari(&domain, &broadcast),
+    );
+    let (b_cell, b_pb, b_bc) = (
+        ari(&on(&domain), &on(&cell_fit)),
+        ari(&on(&domain), &on(&unravelled)),
+        ari(&on(&domain), &on(&broadcast)),
+    );
+    eprintln!(
+        "stagate: ARI cells {a_cell:.3}, unravelled {a_pb:.3}, broadcast {a_bc:.3}; \
+         boundary cells {b_cell:.3}, unravelled {b_pb:.3}, broadcast {b_bc:.3}"
+    );
+    let held = |l: &[usize]| {
+        let mut h = l.to_vec();
+        h.sort_unstable();
+        h.dedup();
+        h.len()
+    };
+    assert_eq!(held(&unravelled), held(&broadcast), "domains held");
+    // boundary is ascending, as collected
+    let interior: Vec<usize> = (0..domain.len())
+        .filter(|i| boundary.binary_search(i).is_err())
+        .collect();
+    let same = interior
+        .iter()
+        .filter(|&&i| unravelled[i] == broadcast[i])
+        .count();
+    let agree = same as f64 / interior.len() as f64;
+    assert!(agree >= 0.8, "interior agreement with broadcast {agree}");
+    assert!(a_cell >= 0.7, "stagate on cells {a_cell}");
+    assert!(a_pb >= a_cell - 0.1, "unravelled {a_pb} vs cells {a_cell}");
+    assert!(
+        b_pb > b_bc,
+        "boundary: unravelled {b_pb} vs broadcast {b_bc}"
+    );
+}
+
+/// stagate-pb on two sections with δ: a run of the cells, recorded as
+/// trained on super-cells (sparse), each within one section, with each
+/// cell's super-cell written; its domains are numbered `0..n_domains`,
+/// each held by a cell.
+#[test]
+fn stagate_pb_runs_on_super_cells_within_sections() {
+    use crate::util::metadata::{BaselineInput, InputLayout, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    let files = super::delta::two_sections(dir.path(), 10, 60);
+    let out = dir.path().join("st").to_string_lossy().to_string();
+    let flags = [
+        "-d",
+        "40",
+        "--n-epochs",
+        "3",
+        "--hidden-dims",
+        "8,2",
+        "--n-clusters",
+        "4",
+    ];
+    let crate::Commands::StagatePb(args) =
+        super::spatialpca::parse("stagate-pb", &files, &out, &flags)
+    else {
+        unreachable!()
+    };
+    crate::spatial_baselines::stagate::run_pb(&args).unwrap();
+    let meta: PintoMetadata =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
+            .unwrap();
+    let run = meta.baseline.unwrap();
+    assert_eq!(run.input_layout, Some(InputLayout::Sparse));
+    let BaselineInput::Pseudobulk(pb) = run.input else {
+        panic!("{:?}", run.input)
+    };
+    assert!(
+        pb.n_super_cells < meta.n_cells && pb.n_super_cells >= 2,
+        "{pb:?}"
+    );
+    assert_eq!(meta.n_cells, 200);
+    assert!(meta.outputs.batch_effects.is_some());
+
+    let data = args.fit.input.read(false).unwrap();
+    let section: HashMap<&str, usize> = data
+        .cells
+        .iter()
+        .zip(&data.section)
+        .map(|(c, &s)| (c.as_ref(), s))
+        .collect();
+    let of_cell = read_column(&format!("{out}.cell_pb.parquet"), "cell", "pb");
+    let mut section_of: HashMap<Box<str>, usize> = HashMap::new();
+    for (cell, pb) in &of_cell {
+        let s = section[cell.as_ref()];
+        assert_eq!(
+            *section_of.entry(pb.clone()).or_insert(s),
+            s,
+            "{pb} spans sections"
+        );
+    }
+    assert_eq!(section_of.len(), pb.n_super_cells);
+
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}.baseline.json")).unwrap())
+            .unwrap();
+    // every cell embedded on the kNN made symmetric, with self loops
+    let (_, dist) = knn_within_sections(&data, 6).undirected();
+    let undirected = dist.iter().filter(|&&d| d > 0.0).count();
+    assert_eq!(
+        settings["settings"]["n_edges_with_self_loops"].as_u64(),
+        Some((2 * undirected + data.cells.len()) as u64)
+    );
+    let found = settings["settings"]["n_domains"].as_u64().unwrap() as usize;
+    assert_eq!(settings["n_clusters_found"].as_u64(), Some(found as u64));
+    let mut held: Vec<Box<str>> = read_labels(&out).into_values().collect();
+    held.sort();
+    held.dedup();
+    let mut want: Vec<Box<str>> = (0..found).map(|l| format!("C{l}").into()).collect();
+    want.sort();
+    assert_eq!(held, want);
 }

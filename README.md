@@ -648,6 +648,18 @@ noise, `tau` and `rho` refitted on the cells), MEFISTO's weights, ARD and
 sparsity (its noise, factors and each factor's `rho` refitted). Both were
 held to the same bar and met it.
 
+`stagate-pb` trains `stagate` (sparse) on the same super-cells, on the
+cell graph folded onto them, unweighted (STAGATE's attention takes no edge
+weights) and symmetric. The trained encoder then embeds every cell from
+its own counts on the cell graph, made symmetric the same way; the domains
+are clustered on the super-cells' embedding (k-means or Leiden, as
+`stagate`), each cell takes the nearest domain centroid, and the domains
+no cell takes are dropped, so `n_domains` counts those present. The
+centroids are taken on the cells' embedding, grouped by their
+super-cells' domains, since single cells' sparser counts sit on another
+scale than the summed counts the encoder was trained on. It was held to
+the same bar and met it.
+
 One deviation is shared: with two or more batches (data files, `-b`
 labels, or `--auto-batch` components) the counts are divided by the
 input's own batch effects (δ, estimated as `cage` estimates them and
@@ -1142,7 +1154,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 
 | Tool | Does |
 |---|---|
-| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto`, `spatialde2-pb`, `spatialpca-pb`, `mefisto-pb`); with a method, the flags its `--help` shows: name, short help, default, choices (hidden flags are in no tool schema) |
+| `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto`, `spatialde2-pb`, `stagate-pb`, `spatialpca-pb`, `mefisto-pb`); with a method, the flags its `--help` shows: name, short help, default, choices (hidden flags are in no tool schema) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run; `flags` takes the flags `run_methods` lists by name (a flag renamed keeps its old name as an alias) |
 | `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |

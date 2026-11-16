@@ -82,6 +82,84 @@ fn spatial_edges_add_self_loops_and_drop_zero_distance() {
     assert_eq!(sorted.len(), edges.len());
 }
 
+/// stagate-pb's graphs list each undirected edge both ways and one self
+/// loop a unit, once each, as [`spatial_edges`] lists its own.
+#[test]
+fn looped_edges_are_symmetric_with_self_loops() {
+    let (src, dst) = looped_edges(4, &[(0, 1), (2, 1), (0, 1)]);
+    let edges: Vec<(u32, u32)> = src.into_iter().zip(dst).collect();
+    assert_eq!(
+        edges,
+        [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (2, 1),
+            (2, 2),
+            (3, 3)
+        ]
+    );
+}
+
+/// A cell takes the label whose units' mean is nearest, not the nearest
+/// unit's.
+#[test]
+fn nearest_centroid_takes_the_nearest_mean() {
+    let fitted = Mat::from_row_slice(4, 1, &[0.0, 4.0, 5.0, 6.0]);
+    let labels = [0, 0, 1, 1];
+    // 2.5: nearest unit 4.0 (label 0), nearest mean 2.0 (label 0) vs 5.5
+    // 3.9: nearest unit 4.0 (label 0), but nearer the mean 5.5 than 2.0
+    let z = Mat::from_row_slice(3, 1, &[2.5, 3.9, -1.0]);
+    assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 1, 0]);
+}
+
+/// A label no unit holds (k-means can leave one empty) has no centroid, so
+/// no cell takes it, even a cell at the origin.
+#[test]
+fn nearest_centroid_skips_a_label_no_unit_holds() {
+    let fitted = Mat::from_row_slice(2, 1, &[3.0, 5.0]);
+    let labels = [0, 2];
+    let z = Mat::from_row_slice(3, 1, &[0.0, 0.5, 6.0]);
+    assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 0, 2]);
+}
+
+/// The encoder places single cells on another scale than the super-cells
+/// it was trained on (here shrunk towards the origin), so every cell is
+/// nearer one super-cell centroid than the others. The unravel takes its
+/// centroids in the cells' own embedding, from their super-cells' domains:
+/// each cell keeps its domain, and one that sits among the other domain's
+/// cells moves to it.
+#[test]
+fn unravel_takes_centroids_on_the_cells_own_scale() {
+    let supers = Mat::from_row_slice(4, 2, &[50.0, 2.0, 50.0, 3.0, 44.0, 9.0, 44.0, 10.0]);
+    let pb_labels = [0, 0, 1, 1];
+    let of_cell = [0, 0, 1, 1, 2, 2, 3, 3, 1];
+    let mut cells = Mat::from_fn(of_cell.len(), 2, |c, j| 0.7 * supers[(of_cell[c], j)]);
+    // the last cell sits in super-cell 1 but among domain 1's cells
+    cells[(8, 0)] = 0.7 * 44.0;
+    cells[(8, 1)] = 0.7 * 9.5;
+    // against the super-cells' centroids, every cell takes one domain
+    let raw = nearest_centroid(&cells, &supers, &pb_labels);
+    assert!(raw.iter().all(|&l| l == raw[0]), "{raw:?}");
+    assert_eq!(
+        unravel_to_cells(&cells, &of_cell, &pb_labels),
+        [0, 0, 0, 0, 1, 1, 1, 1, 1]
+    );
+}
+
+/// The domains held by a cell are numbered `0..found` in their order, the
+/// rest after them.
+#[test]
+fn renumbering_leaves_no_domain_id_unused() {
+    let (map, found) = renumber_present(&[3, 1, 3, 1], 4);
+    assert_eq!(found, 2);
+    assert_eq!(map, [2, 0, 3, 1]);
+    let (map, found) = renumber_present(&[0, 1, 2], 3);
+    assert_eq!((map, found), (vec![0, 1, 2], 3));
+}
+
 fn ring(n: usize, dev: &Device) -> EdgeIndex {
     // each node i sends to i-1, i, i+1
     let mut src = Vec::new();

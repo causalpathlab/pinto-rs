@@ -116,6 +116,19 @@
 //! so memory is linear in the cells; the messages, `edges × width`, are the
 //! larger part of it.
 //!
+//! `stagate-pb` trains the same model on super-cells ([`super::pseudobulk`]):
+//! genes chosen on the cells as above, the super-cells' summed counts
+//! normalised and log-transformed as a cell's, on the cell graph folded
+//! onto them, unweighted (STAGATE's attention takes no edge weights) and
+//! symmetric, with self loops ([`looped_edges`]). The trained encoder then
+//! embeds every cell from its own counts on the cell graph made symmetric
+//! the same way, the domains are clustered on the super-cells' embedding,
+//! and each cell takes the nearest domain centroid ([`unravel_to_cells`]),
+//! the centroids taken on the cells' own embedding from their
+//! super-cells' domains (single cells' sparser counts sit on another scale
+//! than the summed counts the encoder was trained on), the domains no cell
+//! takes dropped from the numbering ([`renumber_present`]).
+//!
 //! Deliberate deviations:
 //!
 //! - Batch effects: with two or more batches the counts are divided by the
@@ -161,16 +174,16 @@ use super::cluster::{cluster_embedding, KMEANS_MAX_ITER, KMEANS_RESTARTS};
 use super::graph::{knn_within_sections, radius_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{
-    check_stored_shape, knn_edges, knn_gram_bytes, stagate_peak_bytes, StagateShape,
-    STAGATE_PROCESS_BYTES,
+    check_stored_shape, knn_edges, knn_gram_bytes, pseudobulk_bytes, stagate_peak_bytes,
+    StagateShape, STAGATE_PROCESS_BYTES,
 };
-use super::output::{write_run, Fitted};
+use super::output::{write_run, Fitted, PbFit};
 use crate::simulate::baseline::normalise_log;
 use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
-use crate::util::metadata::InputLayout;
+use crate::util::metadata::{InputLayout, PseudobulkInput};
 use anyhow::Context;
 use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::ops::sigmoid;
@@ -270,6 +283,23 @@ pub struct Args {
         hide = true
     )]
     pub device_no: usize,
+}
+
+/// `stagate-pb`'s arguments: stagate's, and the super-cells to train on.
+#[derive(clap::Args, Debug)]
+pub struct PbArgs {
+    #[command(flatten)]
+    pub fit: Args,
+
+    /// Target number of super-cells to train on (as cage's -d: the cells
+    /// are coarsened until about this many remain)
+    #[arg(
+        long,
+        short = 'd',
+        default_value_t = 1024,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
+    pub n_pseudobulk: usize,
 }
 
 // ---------------------------------------------------------------- genes
@@ -413,29 +443,41 @@ pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<
 }
 
 /// `sc.pp.filter_genes(min_cells)`: the rows (genes) of `counts` nonzero in
-/// at least `min_cells` columns (cells), in order. The kept entries are
-/// copied column by column into arrays of their exact size, so the counts
-/// and their copy are all it holds (24 bytes a nonzero).
+/// at least `min_cells` columns (cells), in order ([`genes_in`],
+/// [`keep_rows`]).
 pub(crate) fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatrix<f32> {
-    // per gene, its nonzero cells and its stored entries
+    let kept = genes_in(&counts, min_cells);
+    keep_rows(counts, &kept)
+}
+
+/// The rows (genes) of `counts` nonzero in at least `min_cells` columns,
+/// in order.
+pub(crate) fn genes_in(counts: &CscMatrix<f32>, min_cells: usize) -> Vec<usize> {
     let mut nnz = vec![0usize; counts.nrows()];
-    let mut stored = vec![0usize; counts.nrows()];
     for (g, _, &v) in counts.triplet_iter() {
         nnz[g] += usize::from(v != 0.0);
-        stored[g] += 1;
     }
-    let mut at = vec![None; counts.nrows()];
-    let (mut kept, mut total) = (0, 0);
-    for (g, &c) in nnz.iter().enumerate() {
-        if c >= min_cells {
-            at[g] = Some(kept);
-            kept += 1;
-            total += stored[g];
-        }
-    }
-    if kept == counts.nrows() {
+    (0..counts.nrows())
+        .filter(|&g| nnz[g] >= min_cells)
+        .collect()
+}
+
+/// Rows `kept` (sorted) of `counts`, renumbered `0..kept.len()`. The kept
+/// entries are copied column by column into arrays of their exact size, so
+/// the counts and their copy are all it holds (24 bytes a nonzero).
+pub(crate) fn keep_rows(counts: CscMatrix<f32>, kept: &[usize]) -> CscMatrix<f32> {
+    if kept.len() == counts.nrows() {
         return counts;
     }
+    let mut at = vec![None; counts.nrows()];
+    for (r, &g) in kept.iter().enumerate() {
+        at[g] = Some(r);
+    }
+    let total = counts
+        .row_indices()
+        .iter()
+        .filter(|&&g| at[g].is_some())
+        .count();
     let mut offsets = Vec::with_capacity(counts.ncols() + 1);
     let mut rows = Vec::with_capacity(total);
     let mut values = Vec::with_capacity(total);
@@ -449,7 +491,7 @@ pub(crate) fn filter_genes(counts: CscMatrix<f32>, min_cells: usize) -> CscMatri
         }
         offsets.push(rows.len());
     }
-    CscMatrix::try_from_csc_data(kept, counts.ncols(), offsets, rows, values)
+    CscMatrix::try_from_csc_data(kept.len(), counts.ncols(), offsets, rows, values)
         .expect("kept rows stay sorted within each column")
 }
 
@@ -992,6 +1034,31 @@ impl Stagate {
 // ---------------------------------------------------------------- run
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
+    let budget = check_before_read("stagate", args, false)?;
+    run_on(
+        args,
+        args.input
+            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
+}
+
+/// `stagate-pb`: [`run_pb_on`] on the input read with its projection.
+pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
+    let budget = check_before_read("stagate-pb", &args.fit, true)?;
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
+}
+
+/// The arguments checked, and the peak of a run of command `what` (on
+/// super-cells with `pseudobulk`) on the input's stored shape; the budget
+/// taken.
+fn check_before_read(what: &str, args: &Args, pseudobulk: bool) -> anyhow::Result<Budget> {
     anyhow::ensure!(
         args.hidden_dims.len() == 2 && args.hidden_dims.iter().all(|&h| h > 0),
         "--hidden-dims takes two positive sizes (hidden, embedding)"
@@ -1002,30 +1069,64 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
     }
     let budget = Budget::now()?;
     check_stored_shape(
-        "stagate",
-        args.input.stored()?.map(|s| input_peak_bytes(args, &s)),
+        what,
+        args.input
+            .stored()?
+            .map(|s| input_peak_bytes(args, pseudobulk, &s)),
         &budget,
         lower_memory(&args.device),
     )?;
-    run_on(
-        args,
-        args.input
-            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
-        &budget,
-    )
+    Ok(budget)
 }
 
-/// The peak of a run on an input of stored shape `s`, checked before its
-/// counts are read: every stored nonzero and as many genes as
-/// `--n-top-genes` could keep, so it bounds the checks after the read; or
-/// the δ estimate's, made during the read, when it is larger.
-pub(crate) fn input_peak_bytes(args: &Args, s: &InputShape) -> usize {
-    let shape = args.sizes().memory_shape(&InputShape {
+/// The peak of a run (on super-cells with `pseudobulk`) on an input of
+/// stored shape `s`, checked before its counts are read: every stored
+/// nonzero and as many genes as `--n-top-genes` could keep, so it bounds
+/// the checks after the read; or the δ estimate's, made during the read,
+/// when it is larger.
+pub(crate) fn input_peak_bytes(args: &Args, pseudobulk: bool, s: &InputShape) -> usize {
+    let input = InputShape {
         genes: s.genes.min(args.n_top_genes),
         ..s.clone()
-    });
-    args.input
-        .peak_with_delta(stagate_peak_bytes(&shape), STAGATE_PROCESS_BYTES, s)
+    };
+    let peak = match pseudobulk {
+        true => pb_peak_bytes(args, &input),
+        false => stagate_peak_bytes(&args.sizes().memory_shape(&input)),
+    };
+    args.input.peak_with_delta(peak, STAGATE_PROCESS_BYTES, s)
+}
+
+/// `stagate-pb`'s peak on `input` (its genes those trained on), bounded
+/// by stagate's on every cell with the sparse input ([`pb_shape`]), and
+/// the coarsening's on top ([`pseudobulk_bytes`]): it trains on fewer
+/// units, then embeds every cell on the cell graph made symmetric. That
+/// forward pass keeps 4 floats an edge a hidden unit (the gathered and
+/// weighted messages of two layers), on at most twice the kNN's edges and
+/// the self loops; training on every cell keeps 10 on the kNN's.
+pub(crate) fn pb_peak_bytes(args: &Args, input: &InputShape) -> usize {
+    pb_shape_bytes(args, &pb_shape(args, input))
+}
+
+/// [`pb_peak_bytes`] of a shape [`pb_shape`] gave (its edges counted again
+/// once a radius graph is built).
+fn pb_shape_bytes(args: &Args, shape: &StagateShape) -> usize {
+    stagate_peak_bytes(shape)
+        + pseudobulk_bytes(
+            shape.cells,
+            shape.nonzeros,
+            shape.edges,
+            args.input.collapse.proj_dim,
+        )
+}
+
+/// The cell-level shape [`pb_peak_bytes`] charges: stagate's on `input`,
+/// its input sparse.
+fn pb_shape(args: &Args, input: &InputShape) -> StagateShape {
+    StagateSizes {
+        layout: InputLayout::Sparse,
+        ..args.sizes()
+    }
+    .memory_shape(input)
 }
 
 impl Args {
@@ -1189,8 +1290,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         t0.elapsed(),
         args.device
     );
-    let z = model.embed(&x, &g)?.to_vec2::<f32>()?;
-    let emb = Mat::from_fn(n, args.hidden_dims[1], |i, j| z[i][j]);
+    let emb = to_mat(&model.embed(&x, &g)?)?;
 
     let (labels, clustering) =
         cluster_embedding(&emb, args.n_clusters, args.resolution, args.input.seed)?;
@@ -1271,4 +1371,272 @@ fn spatial_network(data: &SpatialData, args: &Args) -> Neighbours {
         Some(r) => radius_within_sections(data, r, RADIUS_MAX_K),
         None => knn_within_sections(data, args.k_cutoff),
     }
+}
+
+// ---------------------------------------------------------------- -pb
+
+/// The self-looped edge list of `n` units with undirected edges `edges`,
+/// each both ways, sorted and merged as [`spatial_edges`] lists its own:
+/// the graph `stagate-pb` trains on (folded onto super-cells) and embeds
+/// every cell on, symmetric alike.
+pub fn looped_edges(n: usize, edges: &[(usize, usize)]) -> (Vec<u32>, Vec<u32>) {
+    let mut pairs: Vec<(u32, u32)> = edges
+        .iter()
+        .flat_map(|&(a, b)| [(a as u32, b as u32), (b as u32, a as u32)])
+        .chain((0..n as u32).map(|i| (i, i)))
+        .collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs.into_iter().unzip()
+}
+
+/// Each row of `z` (cells × d) given the label of the nearest (Euclidean)
+/// centroid of the rows of `fitted` (units × d) sharing a label of
+/// `labels` (of `0..k`); a label no unit holds has no centroid and is
+/// never taken.
+pub fn nearest_centroid(z: &Mat, fitted: &Mat, labels: &[usize]) -> Vec<usize> {
+    let k = labels.iter().max().map_or(0, |&m| m + 1);
+    let d = fitted.ncols();
+    let mut centroid = Mat::zeros(k, d);
+    let mut size = vec![0f32; k];
+    for (r, &l) in labels.iter().enumerate() {
+        size[l] += 1.0;
+        for j in 0..d {
+            centroid[(l, j)] += fitted[(r, j)];
+        }
+    }
+    for (l, &s) in size.iter().enumerate() {
+        for j in 0..d {
+            centroid[(l, j)] /= s.max(1.0);
+        }
+    }
+    (0..z.nrows())
+        .into_par_iter()
+        .map(|i| {
+            (0..k)
+                .filter(|&l| size[l] > 0.0)
+                .map(|l| {
+                    let d2: f32 = (0..d).map(|j| (z[(i, j)] - centroid[(l, j)]).powi(2)).sum();
+                    (l, d2)
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map_or(0, |(l, _)| l)
+        })
+        .collect()
+}
+
+/// Each cell's domain (of `0..k`), from its row of the cells' embedding
+/// `z` (cells × d): the nearest centroid of the cells grouped by their
+/// super-cell's (`of_cell`) domain of `pb_labels`. The centroids are taken
+/// on the cells' own embedding, as the encoder places single cells on
+/// another scale than the summed counts it was trained on: against the
+/// super-cells' centroids every cell can fall nearest one domain.
+pub fn unravel_to_cells(z: &Mat, of_cell: &[usize], pb_labels: &[usize]) -> Vec<usize> {
+    let broadcast: Vec<usize> = of_cell.iter().map(|&s| pb_labels[s]).collect();
+    nearest_centroid(z, z, &broadcast)
+}
+
+/// The domains `labels` (of `0..k`) renumbered so the ones held by some
+/// cell are `0..found`, in their order, and those held by none follow:
+/// the map, old id to new, and `found`.
+pub fn renumber_present(labels: &[usize], k: usize) -> (Vec<usize>, usize) {
+    let mut held = vec![false; k];
+    for &l in labels {
+        held[l] = true;
+    }
+    let found = held.iter().filter(|&&h| h).count();
+    let (mut next_held, mut next_empty) = (0, found);
+    let map = held
+        .iter()
+        .map(|&h| {
+            let slot = if h { &mut next_held } else { &mut next_empty };
+            *slot += 1;
+            *slot - 1
+        })
+        .collect();
+    (map, found)
+}
+
+/// Rows of an embedding tensor (n × d) as a [`Mat`].
+fn to_mat(z: &Tensor) -> anyhow::Result<Mat> {
+    let (n, d) = z.dims2()?;
+    let v = z.flatten_all()?.to_vec1::<f32>()?;
+    Ok(Mat::from_fn(n, d, |i, j| v[i * d + j]))
+}
+
+/// `stagate-pb` on `data` as read (with its projection): the cells
+/// coarsened to super-cells as cage coarsens them; genes filtered and
+/// chosen on the cells, as stagate chooses them; STAGATE trained on the
+/// super-cells (their summed counts, each normalised and log-transformed
+/// as a cell is) and the cell graph folded onto them (unweighted, as
+/// STAGATE's attention takes it, and symmetric); then unravelled to cells:
+/// the trained encoder embeds each cell from its own counts on the cell
+/// graph, made symmetric the same way, and each cell takes the nearest
+/// centroid, on the cells' embedding, of the domains clustered on the
+/// super-cells' embedding.
+pub(crate) fn run_pb_on(
+    pb_args: &PbArgs,
+    mut data: SpatialData,
+    budget: &Budget,
+) -> anyhow::Result<()> {
+    use super::pseudobulk::{broadcast_agreement, super_cells, COARSEN_K};
+    use crate::util::graph_coarsen::fold_edges_to_super;
+    let args = &pb_args.fit;
+    let n = data.cells.len();
+    let change = lower_memory(&args.device);
+    let input = InputShape {
+        genes: data.genes.len().min(args.n_top_genes),
+        nonzeros: data.counts.nnz(),
+        section_sizes: section_sizes(&data.section),
+        batches: data.n_batches(),
+        strata: 1,
+    };
+    ensure_fits("stagate-pb", pb_peak_bytes(args, &input), budget, change)?;
+    let mut shape = pb_shape(args, &input);
+
+    // the projection is the coarsening's alone: taken, it is freed with it
+    let proj = data
+        .projection
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stagate-pb reads the cells' projection"))?;
+    let sc = super_cells(
+        &data,
+        proj,
+        pb_args.n_pseudobulk,
+        knn_within_sections(&data, COARSEN_K),
+    )?;
+    let m = sc.data.cells.len();
+    let of_cell = sc.of_cell;
+
+    // genes as stagate chooses them, on the cells
+    let raw = std::mem::replace(&mut data.counts, CscMatrix::zeros(0, 0));
+    let kept = genes_in(&raw, args.min_cells);
+    let counts = keep_rows(raw, &kept);
+    let (genes, _) = seurat_v3_hvg(&counts, args.n_top_genes);
+    anyhow::ensure!(!genes.is_empty(), "no genes to train on");
+    info!(
+        "stagate-pb: {n} cells in {m} super-cells, {} highly variable genes (seurat_v3, on the cells)",
+        genes.len()
+    );
+    let dev = args.device.to_device(args.device_no)?;
+    let mut log = counts;
+    normalise_log(&mut log);
+    let cell_x = Input::Sparse(SparseInput::from_rows(&log, &genes));
+    drop(log);
+    let mut log = keep_rows(sc.data.counts, &kept);
+    normalise_log(&mut log);
+    let pb_x = Input::Sparse(SparseInput::from_rows(&log, &genes));
+    drop(log);
+
+    // STAGATE's network drops edges of distance 0, as spatial_edges does
+    let nb = spatial_network(&data, args);
+    let (cell_edges, dist) = nb.undirected();
+    drop(nb);
+    let cell_edges: Vec<(usize, usize)> = cell_edges
+        .into_iter()
+        .zip(dist)
+        .filter(|&(_, d)| d > 0.0)
+        .map(|(e, _)| e)
+        .collect();
+    let (src, dst) = looped_edges(n, &cell_edges);
+    if args.rad_cutoff.is_some() {
+        shape.edges = src.len();
+        ensure_fits("stagate-pb", pb_shape_bytes(args, &shape), budget, change)?;
+    }
+    let (super_edges, _) = fold_edges_to_super(&of_cell, &cell_edges, None);
+    drop(cell_edges);
+    let (pb_src, pb_dst) = looped_edges(m, &super_edges);
+    let pb_g = EdgeIndex::new(&pb_src, &pb_dst, m, &dev)?;
+    let cell_g = EdgeIndex::new(&src, &dst, n, &dev)?;
+
+    let mut model = Stagate::new(
+        genes.len(),
+        args.hidden_dims[0],
+        args.hidden_dims[1],
+        args.input.seed,
+        &dev,
+    )?;
+    let opts = TrainOpts {
+        n_epochs: args.n_epochs,
+        lr: args.lr,
+        weight_decay: args.weight_decay,
+        gradient_clipping: args.gradient_clipping,
+    };
+    let t0 = std::time::Instant::now();
+    let losses = model.fit(&pb_x, &pb_g, &opts)?;
+    info!(
+        "stagate-pb: trained {} epochs on {m} super-cells in {:.1?} on {}",
+        args.n_epochs,
+        t0.elapsed(),
+        args.device
+    );
+    let z_pb = to_mat(&model.embed(&pb_x, &pb_g)?)?;
+    drop(pb_x);
+    let z = to_mat(&model.embed(&cell_x, &cell_g)?)?;
+    let (pb_labels, clustering) =
+        cluster_embedding(&z_pb, args.n_clusters, args.resolution, args.input.seed)?;
+    let k = pb_labels.iter().max().map_or(0, |&l| l + 1);
+    let (_, on_super) = renumber_present(&pb_labels, k);
+    let nearest = unravel_to_cells(&z, &of_cell, &pb_labels);
+    // a domain no cell is nearest to is dropped from the numbering
+    let (map, found) = renumber_present(&nearest, k);
+    let labels: Vec<usize> = nearest.iter().map(|&l| map[l]).collect();
+    let broadcast: Vec<usize> = of_cell.iter().map(|&s| map[pb_labels[s]]).collect();
+    info!("stagate-pb: {clustering} into {on_super} domains on super-cells, {found} on cells");
+
+    let settings = serde_json::json!({
+        "reference": "STAGATE_pyG ae1158c (Dong and Zhang 2022)",
+        "min_cells": args.min_cells,
+        "n_genes_kept": kept.len(),
+        "n_top_genes": args.n_top_genes,
+        "n_hvg": genes.len(),
+        "hvg_flavor": "seurat_v3, on the cells",
+        "spatial_net": match args.rad_cutoff {
+            Some(r) => serde_json::json!({"model": "Radius", "rad_cutoff": r}),
+            None => serde_json::json!({"model": "KNN", "k_cutoff": args.k_cutoff}),
+        },
+        "graph": "symmetric, unweighted, with self loops; folded onto the super-cells to train",
+        "n_edges_with_self_loops": src.len(),
+        "hidden_dims": args.hidden_dims,
+        "n_epochs": args.n_epochs,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "gradient_clipping": args.gradient_clipping,
+        "device": args.device.to_string(),
+        "final_loss": losses.last(),
+        "clustering": clustering,
+        "n_clusters": args.n_clusters,
+        "kmeans_max_iter": args.n_clusters.is_some().then_some(KMEANS_MAX_ITER),
+        "kmeans_restarts": args.n_clusters.is_some().then_some(KMEANS_RESTARTS),
+        "resolution": args.n_clusters.is_none().then_some(args.resolution),
+        "n_domains_on_super_cells": on_super,
+        "n_domains": found,
+        "unravel": {
+            "method": "the trained encoder on each cell's counts and the cell graph; each cell takes the nearest domain centroid of the cells' embedding, grouped by their super-cells' domains",
+            "broadcast_agreement": broadcast_agreement(&labels, &broadcast),
+        },
+    });
+    write_run(
+        &args.input,
+        &data,
+        Fitted {
+            method: "stagate-pb",
+            labels: &labels,
+            membership: None,
+            embedding: &z,
+            embedding_name: "STAGATE",
+            settings,
+            input_layout: Some(InputLayout::Sparse),
+            pseudobulk: Some(PbFit {
+                input: PseudobulkInput {
+                    n_pseudobulk: pb_args.n_pseudobulk,
+                    n_super_cells: m,
+                    n_super_edges: super_edges.len(),
+                    edge_weighting: "none: STAGATE's attention takes an unweighted graph".into(),
+                },
+                super_cell: &of_cell,
+                broadcast: &broadcast,
+            }),
+        },
+    )
 }

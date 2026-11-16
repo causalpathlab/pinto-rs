@@ -20,7 +20,7 @@ pub(crate) mod tui;
 /// their `-pb` forms fitted on super-cells), which take
 /// the same data, coordinate and batch files and write a run of the same
 /// shape.
-pub const METHODS: [&str; 11] = [
+pub const METHODS: [&str; 12] = [
     "lc",
     "dsvd",
     "cage",
@@ -30,6 +30,7 @@ pub const METHODS: [&str; 11] = [
     "spatialpca",
     "mefisto",
     "spatialde2-pb",
+    "stagate-pb",
     "spatialpca-pb",
     "mefisto-pb",
 ];
