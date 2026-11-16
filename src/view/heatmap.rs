@@ -7,8 +7,9 @@
 //!
 //! Genes are chosen in two stages. The model's levels, ln(1 + rate), rank
 //! every gene cheaply and propose [`CANDIDATES`](chart::CANDIDATES) × N per
-//! group; the groups' mean observed ln(1 + count) then ranks those
-//! candidates again, and each group keeps its top N. Without readable
+//! group; the groups' mean observed level, ln(1 + 1e4 · count / total) with
+//! the cell's total count, then ranks those candidates again, and each
+//! group keeps its top N. Without readable
 //! counts the model's levels do both. Rows are z-scored across the groups
 //! and clipped to ±[`CLIP`], so a few outliers do not wash out the rest.
 //! With one group in view, genes at 0 there are left out. The ranking, the
@@ -16,6 +17,7 @@
 
 use super::color::{to_linear, Rgb, Theme};
 use super::data::Communities;
+use super::gene::OBSERVED_SCALE;
 use super::markers::{self, FeatureRates};
 use super::pdf::{chart_fits, chart_page, CHART_PAGE};
 use legume_tui::chart::heatmap::{self as chart, Above, ByFn, Levels};
@@ -29,22 +31,22 @@ pub struct Heatmap {
     pub groups: Vec<usize>,
     /// Rows: feature name, symbol, and the group it marks.
     pub genes: Vec<(Box<str>, String, usize)>,
-    /// What is shown, rows × columns: mean ln(1 + count), or the model's
-    /// ln(1 + rate).
+    /// What is shown, rows × columns: mean observed level (log1p CP10k),
+    /// or the model's ln(1 + rate).
     pub values: Vec<f32>,
     /// `values` z-scored per row and clipped to ±[`CLIP`].
     pub z: Vec<f32>,
-    /// Whether `values` are observed counts.
+    /// Whether `values` are observed levels, not the model's.
     pub observed: bool,
 }
 
-/// Observed mean ln(1 + count) of each named feature over every group of
+/// Observed mean level (log1p CP10k) of each named feature over every group of
 /// the grouping; `None` for a feature not in the data, or no data at all.
 pub type Observe<'a> = dyn FnOnce(&[&str]) -> Option<Vec<Option<Vec<f32>>>> + 'a;
 
 impl Heatmap {
     /// Up to `per_group` genes for each non-empty group of `comm`, ranked
-    /// by `observe`'s counts when it has them.
+    /// by `observe`'s levels when it has them.
     pub fn build(
         rates: &FeatureRates,
         comm: &Communities,
@@ -116,15 +118,11 @@ impl Heatmap {
 
     /// Tab-separated: gene, the group it marks, then the value per group.
     pub fn tsv(&self, comm: &Communities) -> String {
-        let what = if self.observed {
-            "mean ln(1+count)"
-        } else {
-            "model ln(1+rate)"
-        };
+        let what = self.scale();
         let rows: Vec<String> = self.genes.iter().map(|(n, _, _)| n.to_string()).collect();
         let marks: Vec<String> = self.genes.iter().map(|&(_, _, c)| comm.name(c)).collect();
         let cols = self.group_names(comm);
-        chart::tsv(what, "gene", &rows, &marks, &cols, &self.values)
+        chart::tsv(&what, "gene", &rows, &marks, &cols, &self.values)
     }
 
     /// The heatmap as a page for a PDF: `title`, a cell per gene and group
@@ -162,6 +160,15 @@ impl Heatmap {
             chart::draw_heat(frame, &heat, font, bold, theme.page(), &style)
         });
         drawn.map(|_| page)
+    }
+
+    /// What `values` are, as the chart's key and the table's header name it.
+    pub fn scale(&self) -> String {
+        if self.observed {
+            format!("mean {OBSERVED_SCALE}")
+        } else {
+            "model ln(1+rate)".into()
+        }
     }
 
     /// Each column's group, by name.

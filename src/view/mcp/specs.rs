@@ -45,7 +45,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     },
                     "focus": {"type": "array", "items": group, "description": "Groups to show; the rest are dimmed. [] shows every group"},
                     "gene": {"type": "string", "description": "Colour cells by one feature, by symbol or full name; \"\" shows the groups again"},
-                    "source": {"enum": ["observed", "expected"], "description": "The gene's observed ln(1+count), or the model's expected level"},
+                    "source": {"enum": ["observed", "expected"], "description": "The gene's observed log1p CP10k (ln(1 + 1e4 * count / the cell's total count)), or the model's expected level"},
                     "clip": {"type": "number", "minimum": 50, "maximum": 100, "description": "Top of the gene's colour ramp, a percentile of its positive values [default: 99]"},
                     "edges": {"type": "boolean", "description": "Draw adjacent cell pairs by link community, where zoomed in far enough"},
                     "point_size": {"type": "number", "minimum": 0.25, "maximum": 8, "description": "Cell disc size, × the default"},

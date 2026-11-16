@@ -171,6 +171,7 @@ pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 pinto cage data.h5 -c coords.csv -o out
 pinto cage data.h5 -c coords.csv -o out --feature-inclusion moran
 pinto cage data.h5 -c coords.csv -o out --feature-modules 20
+pinto cage data.h5 -c coords.csv -o out --feature-modules 0
 pinto cage-cell data.h5 -c coords.csv -o out
 pinto cage-cell data.h5 -c coords.csv -o out --feature-modules 20
 ```
@@ -178,12 +179,20 @@ pinto cage-cell data.h5 -c coords.csv -o out --feature-modules 20
 cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
 the coarsened spatial graph, one feature at a time, and places every cell and
 cell pair on it. Where most features are noise, a run takes one of two
-remedies, never both: `--feature-inclusion moran` trains each feature with its
-probability of spatial signal (a jackknifed Moran's I, Moran 1950, through the
-two-group local fdr of Efron et al. 2001), writing
-`{out}.feature_inclusion.parquet`; `--feature-modules M` embeds the features
-through M learned modules (sparsemax membership, Martins and Astudillo 2016),
-writing the module tables. `cage-cell` is cage trained on cells and cell
+remedies, never both. By default the features are embedded through M learned
+modules (sparsemax membership, Martins and Astudillo 2016), writing the module
+tables. `--feature-modules auto`, the default, takes M from the data: features
+with no grouping evidence share one background module, and the rest are the
+communities Leiden (Traag, Waltman and van Eck 2019) finds in the
+nearest-neighbour graph of their profiles over the finest pseudobulks; the
+resolved M is logged, and a run that finds fewer than two modules trains
+without them. `--feature-modules 20` fixes M, and `--feature-modules 0` turns
+the modules off. `--feature-inclusion moran` instead trains each feature with
+its probability of spatial signal (a jackknifed Moran's I, Moran 1950, through
+the two-group local fdr of Efron et al. 2001), writing
+`{out}.feature_inclusion.parquet`; given alone it turns the default modules
+off, and given beside an explicit `--feature-modules` it is refused.
+`cage-cell` is cage trained on cells and cell
 pairs, for comparison with cell-level methods; it estimates and removes batch
 effects as cage does (`--ignore-batch` runs it without), and takes either
 remedy as cage does: its modules start from pseudobulks built for that alone,
@@ -995,7 +1004,7 @@ pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
 pinto view out --png big.png --point-size 2     # larger cell discs
 pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
-pinto view out --png gene.png --gene SYMBOL     # one gene: observed ln(1+count)
+pinto view out --png gene.png --gene SYMBOL     # one gene: observed log1p CP10k
 pinto view out --png gene.png --gene SYMBOL --expected --clip 95
 pinto view out --png pair.png --pair L1:R3  # an lra pair: senders, exposed
                                                 # and receptor+ receivers
@@ -1117,8 +1126,9 @@ round's cell types or clusters):
   shows its propensity. Click again or `Esc` to let go;
 - **heatmap**: each group's top genes by their margin over the next highest
   group, so each row peaks in its own column: the model proposes candidates,
-  and the groups' mean observed ln(1 + count) chooses among them (the model's
-  rates alone when there are no data files). Values are z-scored per gene and
+  and the groups' mean observed log1p CP10k, ln(1 + 1e4 · count / the cell's
+  total count), chooses among them (the model's rates alone when there are
+  no data files). Values are z-scored per gene and
   clipped to ±2.5. `+`/`-` change the genes per group; clicking a gene maps
   it. The heatmap takes only its own keys, `c`, `s`, `f`, `?` and `q`.
 

@@ -375,8 +375,8 @@ impl App<'_> {
             let level = self.level();
             let rates = level.features.as_ref().expect("just loaded");
             let comm = &level.comm;
-            // Observed counts rank the model's candidates when the run's
-            // data files read.
+            // Observed levels (log1p CP10k) rank the model's candidates when
+            // the run's data files read.
             let mut failed = None;
             let observe = |names: &[&str]| match base.expression() {
                 Ok(Some(expr)) => match expr.group_means(names, &comm.cluster, comm.k) {
@@ -417,11 +417,15 @@ impl App<'_> {
             Line::from(vec![
                 Span::styled(format!(" top {per_group} genes per {what}"), bold),
                 Span::styled(
-                    if heat.observed {
-                        "  mean ln(1+count), z per gene"
-                    } else {
-                        "  model ln(1+rate) (no data files), z per gene"
-                    },
+                    format!(
+                        "  {}{}, z per gene",
+                        heat.scale(),
+                        if heat.observed {
+                            ""
+                        } else {
+                            " (no data files)"
+                        }
+                    ),
                     dim,
                 ),
             ]),

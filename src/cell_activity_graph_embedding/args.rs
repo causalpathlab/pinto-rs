@@ -110,7 +110,6 @@ pub const PAIR_BLOCK: usize = 8192;
 // size knob, and the learning-rate ratio and ridge stay at upstream's
 // defaults until it drops them.
 #[command(
-    mut_arg("feature_modules", |a| a.long_help(FEATURE_MODULES_LONG_HELP)),
     mut_arg("lora_rank", |a| a.hide(true)),
     mut_arg("lora_lr_ratio", |a| a.hide(true)),
     mut_arg("lora_ridge", |a| a.hide(true))
@@ -348,7 +347,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      objective is Σ π_g L_g, and the likely-noise features\n\
                      mostly cost nothing. Needs coordinates (-c).\n\
                      An alternative to --feature-modules, not a companion: a\n\
-                     run takes one. Writes {out}.feature_inclusion.parquet."
+                     run takes one, and moran given alone turns the default\n\
+                     modules off. Writes {out}.feature_inclusion.parquet."
     )]
     pub feature_inclusion: FeatureInclusionMode,
 
@@ -370,6 +370,12 @@ pub struct CellActivityGraphEmbeddingArgs {
     /// set by `pinto cage-cell`, not a flag.
     #[arg(skip)]
     pub cell_level: bool,
+
+    /// cage-cell only: the flags given that shape nothing but the
+    /// pseudobulks seeding `--feature-modules auto`, which did nothing if
+    /// no module layer is found (see `fit::check_cell_level`).
+    #[arg(skip)]
+    pub seeding_flags: Vec<String>,
 
     /// HVG selection: senna-style shared CLI (`--n-hvg`,
     /// `--feature-list-file`). cage **weights the random projection** with it,
@@ -512,13 +518,24 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(alias = "gene-init-mode")]
     pub feature_init_mode: FeatureInitMode,
 
-    /// The `--feature-modules` flag group (see `graph_embedding_util::FeatureModuleArgs`).
+    /// `--feature-modules`: unset is `auto` that yields to an explicit
+    /// `--feature-inclusion moran` or a `--feature-embedding`
+    /// ([`Self::module_plan`]). The flag's id and alias are those of
+    /// `graph_embedding_util::FeatureModuleArgs`, whose knob defaults a run
+    /// takes; that group's count cannot say `auto` or 0, so the flag is
+    /// cage's own.
     /// Cage has no feature-negative NCE, so the within-module negatives do not apply
     /// here; the composition, the exact pseudobulk–module term, the feature dropout
     /// and the warm start do. The residual takes `--embedding-l2` like every other
     /// feature-side table in cage.
-    #[command(flatten)]
-    pub modules: graph_embedding_util::FeatureModuleArgs,
+    #[arg(
+        long,
+        alias = "gene-modules",
+        value_name = "M|auto",
+        help = "Embed features through M learned modules: auto (default) takes M from the data, 0 turns them off",
+        long_help = FEATURE_MODULES_LONG_HELP
+    )]
+    pub feature_modules: Option<ModulePlan>,
 }
 
 /// How a feature with no dictionary row is initialized.
@@ -545,13 +562,83 @@ pub enum FeatureEmbeddingMode {
     Lora,
 }
 
-/// cage's own long help for `--feature-modules`, set over the shared flag
-/// group's (whose text describes within-module negatives, which cage does
-/// not draw) by `mut_arg` on [`CellActivityGraphEmbeddingArgs`].
+/// What a run does about feature modules: the value of `--feature-modules`
+/// (`auto`, a count of 2 or more, or 0 for none), and what the run's flags
+/// resolve to before any data is read ([`module_plan`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModulePlan {
+    /// No module layer.
+    Off,
+    /// A module layer whose count the profiles decide; fewer than two found
+    /// trains without the layer.
+    Auto,
+    /// A module layer of this many modules.
+    Fixed(usize),
+}
+
+impl std::str::FromStr for ModulePlan {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        match s.parse::<usize>() {
+            Ok(0) => Ok(Self::Off),
+            Ok(1) => Err("one module is no layer; pass 2 or more, `auto`, or 0 for none".into()),
+            Ok(m) => Ok(Self::Fixed(m)),
+            Err(_) => Err(format!("expected a module count or `auto`, got `{s}`")),
+        }
+    }
+}
+
+/// The [`ModulePlan`] of `--feature-modules` (`flag`; unset is the default)
+/// against the two other ways to shape the feature side: `moran`
+/// (`--feature-inclusion moran`) and `pretrained` (a `--feature-embedding`).
+/// The default yields to either; modules asked for by the flag beside
+/// either are refused.
+pub fn module_plan(
+    flag: Option<ModulePlan>,
+    moran: bool,
+    pretrained: bool,
+) -> anyhow::Result<ModulePlan> {
+    match flag {
+        None if moran || pretrained => Ok(ModulePlan::Off),
+        None => Ok(ModulePlan::Auto),
+        Some(ModulePlan::Off) => Ok(ModulePlan::Off),
+        Some(plan) => {
+            // Two ways to handle uninformative features; on the simulations
+            // they did worse together than either alone, so a run takes one.
+            anyhow::ensure!(
+                !moran,
+                "--feature-inclusion moran and --feature-modules are alternatives; pick one"
+            );
+            anyhow::ensure!(
+                !pretrained,
+                "--feature-modules learns the feature side through a module layer and \
+                 --feature-embedding installs a pre-trained one; the two parameterizations \
+                 are exclusive. Drop one."
+            );
+            Ok(plan)
+        }
+    }
+}
+
+/// cage's long help for `--feature-modules`.
 pub const FEATURE_MODULES_LONG_HELP: &str = "\
 Put a learned mixed-membership module layer in front of the feature embedding.
 Each feature's row becomes a sparse mixture of M shared module vectors, plus a
-residual of its own (ridge-shrunk by --embedding-l2). Off unless given.
+residual of its own (ridge-shrunk by --embedding-l2).
+
+M. auto (the default) takes the count from the data; a number of 2 or more
+fixes it; 0 trains without the layer. Under auto, the features whose counts
+carry no grouping evidence share one background module, and the rest are
+grouped by their profiles over the finest pseudobulks: the profiles are
+reduced by a truncated SVD, a nearest-neighbour graph is built on them, and
+Leiden (Traag, Waltman and van Eck 2019) cuts it into communities. M is the
+communities plus the background module, and is logged. If fewer than two
+modules are found the run trains without the layer and says so. A fixed M
+partitions the same profiles by k-means instead.
 
 WHY. A free row receives gradient only on the steps that draw its feature. A
 rare feature, or one absent from a later dataset, has nothing standing in for
@@ -559,19 +646,20 @@ it. Through a module, every edge on any member trains the shared vector, so a
 feature that is never drawn still inherits a trained row from its siblings.
 
 HOW. Membership is sparsemax (Martins and Astudillo 2016) over learned logits:
-a feature sits on a few modules with exact zeros elsewhere. It starts from a
-partition of the features by their profiles over the finest pseudobulks, held
-fixed for the first quarter of the epochs, then trains. An exact softmax over
-all M modules scores each trained unit's module-pooled counts, so every module
-gets gradient on every step, and a load-balance prior keeps every module in
-use. cage's NCE is unchanged: its negatives are other units of the batch,
-never within a module.
+a feature sits on a few modules with exact zeros elsewhere. It starts from the
+partition above, held fixed for the first quarter of the epochs, then trains.
+An exact softmax over all M modules scores each trained unit's module-pooled
+counts, so every module gets gradient on every step, and a load-balance prior
+keeps every module in use. cage's NCE is unchanged: its negatives are other
+units of the batch, never within a module.
 
 cage-cell trains on cells, so it builds the pseudobulks only to start the
 partition, and each step pools the sparse counts of the cells it draws.
 
 A run takes this or --feature-inclusion moran, not both, and not with
---feature-embedding.
+--feature-embedding. Left at its default, this flag yields: a run given
+--feature-inclusion moran or --feature-embedding trains without modules.
+Given beside either (auto or a count), it is refused.
 
 OUTPUTS. {out}.module_membership.parquet (feature x M),
 {out}.module_dictionary.parquet (M x H), {out}.module_residual.parquet and
@@ -583,6 +671,15 @@ features the model never saw through these tables.";
 pub const DEFAULT_EMBEDDING_DIM: usize = 64;
 
 impl CellActivityGraphEmbeddingArgs {
+    /// This run's [`ModulePlan`] (see [`module_plan`]).
+    pub fn module_plan(&self) -> anyhow::Result<ModulePlan> {
+        module_plan(
+            self.feature_modules,
+            self.feature_inclusion == FeatureInclusionMode::Moran,
+            self.feature_embedding.is_some(),
+        )
+    }
+
     /// The rules between `--feature-embedding-mode` and the flags only one mode
     /// reads, checked before any data is opened.
     pub fn validate_feature_embedding(&self) -> anyhow::Result<()> {

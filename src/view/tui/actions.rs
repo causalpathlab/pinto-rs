@@ -87,7 +87,8 @@ impl App<'_> {
         self.refresh_gene();
     }
 
-    /// Switch between observed counts and the model-expected level.
+    /// Switch between the observed level (log1p CP10k) and the
+    /// model-expected one.
     pub(super) fn toggle_source(&mut self) {
         self.source = self.source.other();
         self.refresh_gene();

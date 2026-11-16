@@ -72,7 +72,8 @@ fn observed_counts_rank_the_models_candidates() {
     assert_eq!(h.values, [1., 3., 0.]);
     assert!(h
         .tsv(&groups())
-        .starts_with("# mean ln(1+count)\ngene\tmarks\tc\ta\tb\ng1\ta\t"));
+        .starts_with("# mean log1p CP10k\ngene\tmarks\tc\ta\tb\ng1\ta\t"));
+    assert_eq!(h.scale(), "mean log1p CP10k");
 }
 
 #[test]
@@ -81,6 +82,7 @@ fn without_counts_the_model_chooses() {
     let h = Heatmap::build(&fr, &groups(), 1, Box::new(|_| Some(vec![None])));
     assert!(!h.observed);
     assert_eq!(h.genes.len(), 1);
+    assert_eq!(h.scale(), "model ln(1+rate)");
 }
 
 /// The heatmap as a figure for a PDF: its genes and groups are text.
