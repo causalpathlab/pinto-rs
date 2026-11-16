@@ -228,7 +228,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
     );
     let imputed = impute("imputed").unwrap();
 
-    // every training cell's counts divided by its file's δ column ("0", "1")
+    // every training cell's counts divided by its file's δ column ("s1", "s2")
     let mut divided: Vec<Vec<f32>> = Vec::new();
     for (b, (file, _)) in [&s1, &s2].iter().enumerate() {
         let data = data_beans::convert::try_open_or_convert(file).unwrap();
@@ -272,4 +272,167 @@ fn impute_divides_the_reference_by_the_runs_delta() {
         (&older - &imputed).abs().max() < 1e-6,
         "the coord_pairs labels divide as the fit's table does"
     );
+}
+
+/// The fold of the second training section on feature `g`.
+fn s2_fold(g: usize) -> f32 {
+    if g.is_multiple_of(3) {
+        4.0
+    } else {
+        1.0
+    }
+}
+
+/// The δ column of `delta` named `batch`.
+fn column(delta: &crate::util::batch_effects::RunDelta, batch: &str) -> Vec<f32> {
+    let b = delta
+        .batches
+        .iter()
+        .position(|n| n.as_ref() == batch)
+        .unwrap_or_else(|| panic!("no batch {batch} in {:?}", delta.batches));
+    delta.mean.column(b).iter().copied().collect()
+}
+
+/// The predicted δ of a one-file query `prefix` is the model's column
+/// `batch`, row for row.
+fn takes_models_column(
+    prefix: &str,
+    model: &crate::util::batch_effects::RunDelta,
+    batch: &str,
+) -> bool {
+    let used = read_delta(&format!("{prefix}.delta.parquet")).unwrap();
+    let want = column(model, batch);
+    used.batches.len() == 1
+        && model
+            .row_index(&used.rows)
+            .iter()
+            .enumerate()
+            .all(|(g, r)| r.is_some_and(|r| used.mean[(g, 0)] == want[r]))
+}
+
+/// A data file left to be its own batch is named by its stem: in the δ,
+/// each cell's batch beside it and the cells table, whatever order the
+/// files come in, and a query file of the same stem takes that batch's δ.
+#[test]
+fn file_batches_are_named_by_their_stems() {
+    use std::collections::BTreeSet;
+    let dir = tempfile::tempdir().unwrap();
+    let side = 8;
+    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
+    let s2 = section(dir.path(), "s2", side, &s2_fold);
+    let training = format!("{},{}", s1.0, s2.0);
+    let coords = format!("{},{}", s1.1, s2.1);
+    let model = fit(dir.path(), &training, &coords, "model", &[]);
+    let delta = read_delta(&format!("{model}.delta.parquet")).unwrap();
+    let stems = ["s1", "s2"].map(Box::<str>::from).to_vec();
+    assert_eq!(delta.batches, stems);
+
+    let by_cell = crate::util::batch_effects::read_cell_batches(
+        &crate::util::batch_effects::delta_cells_path(&model),
+    )
+    .unwrap();
+    assert_eq!(by_cell.len(), 2 * side * side);
+    for (cell, batch) in &by_cell {
+        assert!(cell.starts_with(&format!("{batch}_")), "{cell} in {batch}");
+    }
+    let manifest = crate::util::metadata::manifest_path(&model);
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    let cells = crate::util::parquet_io::read_cells_table(
+        std::path::Path::new(meta.outputs.cells.as_deref().unwrap()),
+        None,
+    )
+    .unwrap();
+    let in_table: BTreeSet<&str> = cells.batches.iter().flatten().map(|b| &**b).collect();
+    assert_eq!(in_table, BTreeSet::from(["s1", "s2"]));
+    let json = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        json.contains("\"batch_labels\": \"file-names\""),
+        "the manifest records how its batches were named: {json}"
+    );
+
+    // the files the other way round: the same batches, by name
+    let swapped = fit(
+        dir.path(),
+        &format!("{},{}", s2.0, s1.0),
+        &format!("{},{}", s2.1, s1.1),
+        "swapped",
+        &[],
+    );
+    let swapped = read_delta(&format!("{swapped}.delta.parquet")).unwrap();
+    assert_eq!(swapped.batches, stems);
+    for b in ["s1", "s2"] {
+        for (x, y) in column(&delta, b).iter().zip(column(&swapped, b)) {
+            assert!((x / y - 1.0).abs() < 1e-3, "{b}: {x} against {y}");
+        }
+    }
+
+    // s2's sample again, elsewhere: the model's s2, by its stem
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let again = section(&elsewhere, "s2", side, &s2_fold);
+    let query = predict(dir.path(), (&again.0, &again.1), &model, &training, "query");
+    assert!(
+        takes_models_column(&query, &delta, "s2"),
+        "a query file named s2 did not take the model's s2"
+    );
+}
+
+/// Two data files of one stem would be one batch name: refused.
+#[test]
+fn data_files_of_one_stem_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    let s1 = section(&a, "s1", 8, &|_| 1.0);
+    let s2 = section(&b, "s1", 8, &|_| 2.0);
+    let e = super::cell_level::try_fit(
+        dir.path(),
+        &format!("{},{}", s1.0, s2.0),
+        &format!("{},{}", s1.1, s2.1),
+        "model",
+        &[],
+    )
+    .unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.contains("same name s1"), "{e}");
+}
+
+/// A model an older pinto fitted named its file batches by position
+/// (`0`, `1`): a query file of one of its data files' stems still takes
+/// that file's δ, whether the manifest says `files` or records nothing.
+#[test]
+fn an_older_models_positional_batches_match_by_its_files() {
+    use crate::util::metadata::{BatchLabels, PintoMetadata};
+    let dir = tempfile::tempdir().unwrap();
+    let side = 8;
+    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
+    let s2 = section(dir.path(), "s2", side, &s2_fold);
+    let training = format!("{},{}", s1.0, s2.0);
+    let coords = format!("{},{}", s1.1, s2.1);
+    let model = fit(dir.path(), &training, &coords, "model", &[]);
+    let path = format!("{model}.delta.parquet");
+    let mut delta = read_delta(&path).unwrap();
+    delta.batches = vec!["0".into(), "1".into()];
+    delta.write(&path).unwrap();
+    let manifest = std::path::PathBuf::from(crate::util::metadata::manifest_path(&model));
+    for (i, labels) in [Some(BatchLabels::FilePositions), None]
+        .into_iter()
+        .enumerate()
+    {
+        let mut meta = PintoMetadata::read(&manifest).unwrap();
+        meta.batch_labels = labels;
+        meta.write(&manifest).unwrap();
+        let query = predict(
+            dir.path(),
+            (&s2.0, &s2.1),
+            &model,
+            &training,
+            &format!("query{i}"),
+        );
+        assert!(
+            takes_models_column(&query, &delta, "1"),
+            "{labels:?}: s2 did not take the older model's batch 1"
+        );
+    }
 }

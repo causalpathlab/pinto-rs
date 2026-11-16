@@ -90,6 +90,8 @@ pub fn read_pair_table(file_path: &str, community: bool) -> anyhow::Result<Vec<E
         };
         let sides: Vec<Option<(Box<str>, Box<str>)>> = if with_batch {
             let (l, r) = (labels(next())?, labels(next())?);
+            let all = l.iter().chain(&r).map(AsRef::as_ref);
+            crate::lr_activity::fit::refuse_reserved_batches(all, file_path)?;
             l.into_iter().zip(r).map(Some).collect()
         } else {
             vec![None; n]
@@ -135,6 +137,8 @@ pub fn attach_batch_from_coord_pairs(
     }
     let cols = read_named_columns(path, &["left_batch", "right_batch"])?;
     let (left, right) = (labels(&cols[0])?, labels(&cols[1])?);
+    let all = left.iter().chain(&right).map(AsRef::as_ref);
+    crate::lr_activity::fit::refuse_reserved_batches(all, coord_pairs_path)?;
     anyhow::ensure!(
         left.len() <= edges.len(),
         "coord_pairs.parquet has more rows than link_community.parquet"

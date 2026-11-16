@@ -239,6 +239,10 @@ pub fn write_run(
             ..Default::default()
         },
         batch_labels: data.delta.as_ref().map(|_| BatchLabels::of(&input.batch)),
+        file_batches: crate::util::metadata::file_batches(
+            data.delta.as_ref().map(|_| BatchLabels::of(&input.batch)),
+            &input.data_files,
+        ),
         baseline: Some(run),
         ..Default::default()
     };

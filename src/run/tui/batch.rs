@@ -2,7 +2,7 @@
 //! command line needs for that.
 //!
 //! A data file's batch is pinto's own rule (the file is its own batch,
-//! named by its order: 0, 1, …), one name typed for all its cells, or a
+//! named by the file: `s1.zarr` is `s1`), one name typed for all its cells, or a
 //! label file with one label per cell, whose labels can be renamed. Two
 //! files given one name are one batch. When any file is not left to
 //! pinto's rule, every file gets a label file: the one given when it is
@@ -31,6 +31,18 @@ pub fn kind(p: &Pair) -> Kind<'_> {
         (None, Some(f)) => Kind::Labels(f),
         (None, None) => Kind::File,
     }
+}
+
+/// Each of `pairs`' data file names, as the reader names them
+/// ([`crate::util::input::data_file_names`]): the batch pinto's rule makes
+/// of each file. Why the run will be refused otherwise: two files of one
+/// name, as the reader refuses them.
+fn own_names(pairs: &[Pair]) -> Result<Vec<Box<str>>, String> {
+    let files: Vec<Box<str>> = pairs
+        .iter()
+        .map(|p| p.data.to_string_lossy().into())
+        .collect();
+    crate::util::input::data_file_names(&files).map_err(|e| format!("{e:#}"))
 }
 
 /// Whether every file is left to pinto's rule: then no batch file is
@@ -62,6 +74,7 @@ pub enum Arg {
 /// The label file of each of `pairs`, none when every file is left to
 /// pinto's rule; why they cannot be made yet otherwise.
 pub fn args(pairs: &[Pair]) -> Result<Option<Vec<Arg>>, String> {
+    let names = own_names(pairs)?;
     if all_own(pairs) {
         return Ok(None);
     }
@@ -82,9 +95,10 @@ pub fn args(pairs: &[Pair]) -> Result<Option<Vec<Arg>>, String> {
     };
     pairs
         .iter()
-        .map(|p| {
+        .zip(names)
+        .map(|(p, own)| {
             Ok(match kind(p) {
-                Kind::File => Arg::Made(file_name(p), Made::Repeat(stem(&p.data), cells(p)?)),
+                Kind::File => Arg::Made(file_name(p), Made::Repeat(own.into(), cells(p)?)),
                 Kind::Named(n) => Arg::Made(file_name(p), Made::Repeat(n.to_string(), cells(p)?)),
                 Kind::Labels(f) if p.renames.is_empty() => Arg::Given(f.to_path_buf()),
                 Kind::Labels(f) => Arg::Made(
@@ -144,7 +158,8 @@ pub struct Batch {
 }
 
 /// The batches the files make, by name, and what is not known yet: label
-/// files still being read, or that did not read.
+/// files still being read, or that did not read, or why the run will be
+/// refused (two data files of one name).
 #[must_use]
 pub fn summary(pairs: &[Pair]) -> (Vec<Batch>, Vec<String>) {
     let mut out: BTreeMap<String, (std::collections::BTreeSet<usize>, Option<usize>)> =
@@ -155,12 +170,16 @@ pub fn summary(pairs: &[Pair]) -> (Vec<Batch>, Vec<String>) {
         e.0.insert(i);
         e.1 = e.1.zip(cells).map(|(a, b)| a + b);
     };
-    let own = all_own(pairs);
+    let names = own_names(pairs)
+        .map_err(|e| notes.push(format!("the run will be refused: {e}")))
+        .ok();
     for (i, p) in pairs.iter().enumerate() {
         match kind(p) {
-            // pinto numbers the files' batches in order.
-            Kind::File if own => add(i.to_string(), i, p.cells),
-            Kind::File => add(stem(&p.data), i, p.cells),
+            Kind::File => {
+                if let Some(names) = &names {
+                    add(names[i].to_string(), i, p.cells);
+                }
+            }
             Kind::Named(n) => add(n.to_string(), i, p.cells),
             Kind::Labels(f) => match &p.labels {
                 Some(Ok(counts)) => {

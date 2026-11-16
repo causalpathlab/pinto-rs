@@ -431,11 +431,9 @@ pub fn predict_cage(
             args.model
         );
     }
-    let model_source = run.and_then(|r| r.meta.batch_labels);
-    let model_files = model_data_files(run);
-    let how = delta::QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
+    let naming = delta::ModelNaming::of(run);
     let all_known = match &model_delta {
-        Some((d, _)) => delta::every_batch_known(c, &how, &d.batches, model_source)?,
+        Some((d, _)) => delta::every_batch_known(c, &d.batches, &naming)?,
         None => false,
     };
     if all_known {
@@ -684,7 +682,7 @@ pub fn predict_cage(
         .map(|e| e.into_delta().map(|d| d.on_batches(&query_batches)))
         .transpose()?;
     let batch_effects = model_delta.as_ref().and_then(|(model, path)| {
-        let matched = delta::match_batches(&query_batches, &model.batches, model_source, &how);
+        let matched = delta::match_batches(&query_batches, c, &model.batches, &naming);
         delta::query_delta(
             (model, path),
             &matched,

@@ -573,15 +573,9 @@ fn models_delta(
     (rows, row_to_matched): (&[Box<str>], &[Option<usize>]),
     (delta, fixed): (&mut [Vec<f64>], &mut [bool]),
 ) -> anyhow::Result<usize> {
-    use crate::predict::delta::{adjusted_model_delta, match_batches, QueryLabels};
+    use crate::predict::delta::{adjusted_model_delta, match_batches, ModelNaming};
     let (model_delta, path) = adjusted_model_delta(model, run)?;
-    let model_files = crate::predict::model_data_files(Some(run));
-    let how = QueryLabels::of(
-        crate::util::metadata::BatchLabels::of(&c.batch),
-        &c.data_files,
-        &model_files,
-    );
-    let matched = match_batches(labels, &model_delta.batches, run.meta.batch_labels, &how);
+    let matched = match_batches(labels, c, &model_delta.batches, &ModelNaming::of(Some(run)));
     let (on_rows, has_row) = model_delta.on_rows(rows);
     for (b, m) in matched.iter().enumerate() {
         let Some(m) = *m else { continue };

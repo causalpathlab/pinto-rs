@@ -473,3 +473,23 @@ fn files_with_one_name_are_refused() {
         .to_string();
     assert!(e.contains("same name"), "{e}");
 }
+
+/// A single data file needs no name: one without its own is named by the
+/// path it resolves to. With several, a file without a name is refused,
+/// saying so.
+#[test]
+fn only_several_data_files_need_their_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("s1.zarr").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let nameless: Box<str> = sub.join("..").to_string_lossy().into();
+    assert!(super::data_file_name(&nameless).is_err());
+    assert_eq!(
+        super::data_file_names(std::slice::from_ref(&nameless)).unwrap(),
+        [Box::<str>::from("s1")]
+    );
+    let e = super::data_file_names(&[nameless.clone(), "d/s2.zarr".into()])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no file name"), "{e}");
+}

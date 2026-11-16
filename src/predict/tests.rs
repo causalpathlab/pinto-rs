@@ -65,91 +65,177 @@ fn a_model_that_is_not_there_is_refused_by_its_path() {
 }
 
 mod batch_effects {
-    use super::super::delta::{combine, match_batches, QueryLabels};
+    use super::super::delta::{combine, match_batches, renamed_files, ModelNaming};
     use crate::test_support::boxed;
     use crate::util::common::Mat;
+    use crate::util::input::SrtInputArgs;
+    use crate::util::metadata::BatchLabels;
+    use clap::Parser;
 
-    /// Named labels match by name. Per-file labels match a query file only
-    /// when it is one of the model's own files (the model's labels are
-    /// file positions too); a new file at a known position is new.
-    /// Components never match.
-    #[test]
-    fn query_batches_are_matched_by_name_or_by_file() {
-        let model = boxed(&["0", "1"]);
-        let q = boxed(&["1", "x"]);
-        assert_eq!(
-            match_batches(&q, &model, None, &QueryLabels::Named),
-            vec![Some(1), None]
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let file = |n: &str| {
-            let p = dir.path().join(n);
-            std::fs::write(&p, b"").unwrap();
-            p.to_str().unwrap().to_string()
-        };
-        let (a, b, c) = (file("a.zarr"), file("b.zarr"), file("c.zarr"));
-        let model_files = vec![a.clone(), b.clone()];
-        let query_files = boxed(&[&c, &a]);
-        let how = QueryLabels::Files {
-            query_files: &query_files,
-            model_files: &model_files,
-        };
-        // query "0" is c (new), query "1" is a (the model's "0")
-        assert_eq!(
-            match_batches(&boxed(&["0", "1"]), &model, None, &how),
-            vec![None, Some(0)]
-        );
-        // a model whose labels are not file positions shares none by file,
-        // even labels that look like positions
-        for labels in [&["d1", "d2"][..], &["0", "1", "2"][..]] {
-            assert_eq!(
-                match_batches(&boxed(&["0", "1"]), &boxed(labels), None, &how),
-                vec![None, None]
-            );
+    /// A query's inputs, from its command line `args`.
+    fn query(args: &[&str]) -> SrtInputArgs {
+        let argv = [&["x"][..], args, &["-o", "o"]].concat();
+        SrtInputArgs::try_parse_from(argv).unwrap()
+    }
+
+    /// A model's naming: what named its batches, and its data files.
+    fn naming(source: Option<BatchLabels>, files: &[String]) -> ModelNaming {
+        ModelNaming {
+            source,
+            files: files.to_vec(),
+            names: Vec::new(),
         }
+    }
+
+    /// `name`, an empty file under `dir`, as a path.
+    fn touch(dir: &std::path::Path, name: &str) -> String {
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"").unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// `link`, under `dir`, a link to `to`, as a path.
+    fn link(dir: &std::path::Path, link: &str, to: &str) -> String {
+        let p = dir.join(link);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(to, &p).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// The canonical form of `p`, as a manifest records a data file.
+    fn canonical(p: &str) -> String {
+        std::fs::canonicalize(p)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Labels match by name, only between labels of one kind: file names
+    /// with file names, `--batch-files` labels with those. Components
+    /// never match.
+    #[test]
+    fn query_batches_match_by_name_within_their_kind() {
+        use BatchLabels::{AutoBatch, BatchFiles, Files};
+        let model = boxed(&["s1", "s2"]);
+        let q = boxed(&["s2", "x"]);
+        let by_file = query(&["d/s2.zarr", "d/x.zarr"]);
+        let by_name = query(&["d/a.zarr", "d/b.zarr", "--batch-files", "a.txt,b.txt"]);
+        let auto = query(&["d/s2.zarr", "d/x.zarr", "--auto-batch"]);
+        let m = |source| naming(Some(source), &[]);
         assert_eq!(
-            match_batches(&q, &model, None, &QueryLabels::Components),
-            vec![None, None]
+            match_batches(&q, &by_file, &model, &m(Files)),
+            [Some(1), None]
+        );
+        assert_eq!(
+            match_batches(&q, &by_name, &model, &m(BatchFiles)),
+            [Some(1), None]
+        );
+        assert_eq!(
+            match_batches(&q, &by_file, &model, &m(BatchFiles)),
+            [None, None]
+        );
+        assert_eq!(match_batches(&q, &by_name, &model, &m(Files)), [None, None]);
+        assert_eq!(
+            match_batches(&q, &auto, &model, &m(AutoBatch)),
+            [None, None]
         );
     }
 
-    /// A manifest that records how the model's batches were named is
-    /// matched on that, not on how the labels look: a model labelled by
-    /// file never matches `--batch-files` names, and one labelled by name
-    /// never matches by file, even where the labels read as positions.
+    /// An older model named its file batches by position (its manifest
+    /// says `files`, or records nothing and the labels are exactly its
+    /// files' positions): a query file is the batch of the model's data
+    /// file it is, through links, whatever either is called. A file that
+    /// only shares a name with one is not it.
     #[test]
-    fn batches_match_only_labels_of_the_models_kind() {
-        use crate::util::metadata::BatchLabels;
-        let model = boxed(&["0", "1"]);
-        let q = boxed(&["0", "1"]);
-        let named = QueryLabels::Named;
-        assert_eq!(
-            match_batches(&q, &model, Some(BatchLabels::Files), &named),
-            vec![None, None]
-        );
-        assert_eq!(
-            match_batches(&q, &model, Some(BatchLabels::BatchFiles), &named),
-            vec![Some(0), Some(1)]
-        );
+    fn an_older_models_positions_match_the_query_file_that_is_its_file() {
+        use BatchLabels::{FilePositions, Files};
         let dir = tempfile::tempdir().unwrap();
-        let file = |n: &str| {
-            let p = dir.path().join(n);
-            std::fs::write(&p, b"").unwrap();
-            p.to_str().unwrap().to_string()
-        };
-        let model_files = vec![file("a.zarr"), file("b.zarr")];
-        let query_files: Vec<Box<str>> = model_files.iter().map(|f| f.as_str().into()).collect();
-        let how = QueryLabels::Files {
-            query_files: &query_files,
-            model_files: &model_files,
-        };
+        let d = dir.path();
+        let (a, b) = (touch(d, "real/a.zarr"), touch(d, "real/b.zarr"));
+        let files = vec![canonical(&a), canonical(&b)];
+        let model = boxed(&["1", "0"]);
+        // s1 is b under another name; the other a is another file
+        let s1 = link(d, "links/s1.zarr", &b);
+        let other_a = touch(d, "other/a.zarr");
+        let q = boxed(&["s1", "a"]);
+        for source in [Some(FilePositions), None] {
+            let m = naming(source, &files);
+            assert_eq!(
+                match_batches(&q, &query(&[&s1, &a]), &model, &m),
+                [Some(0), Some(1)],
+                "{source:?}"
+            );
+            assert_eq!(
+                match_batches(&q, &query(&[&s1, &other_a]), &model, &m),
+                [Some(0), None],
+                "{source:?}: a file named as the model's a but not it"
+            );
+        }
+        // a model of this pinto whose files are named 0 and 1 is matched
+        // by name
+        let named = query(&[&touch(d, "q/1.zarr")]);
         assert_eq!(
-            match_batches(&q, &model, Some(BatchLabels::BatchFiles), &how),
-            vec![None, None]
+            match_batches(&boxed(&["1"]), &named, &model, &naming(Some(Files), &files)),
+            [Some(0)]
         );
+    }
+
+    /// An older model whose manifest records no data files names no file
+    /// batch: a query file named like one of its positions is new.
+    #[test]
+    fn an_older_model_without_its_files_shares_no_file_batch() {
+        let model = boxed(&["0", "1"]);
+        let q = query(&["d/0.zarr", "d/1.zarr"]);
+        for source in [Some(BatchLabels::FilePositions), None] {
+            assert_eq!(
+                match_batches(&boxed(&["0", "1"]), &q, &model, &naming(source, &[])),
+                [None, None],
+                "{source:?}"
+            );
+        }
+    }
+
+    /// A model that records nothing of how it labelled its batches matches
+    /// `--batch-files` labels by name, even labels that read as its files'
+    /// positions; a file's batch only through its files.
+    #[test]
+    fn unrecorded_labels_are_names_to_batch_files_labels() {
+        let files = vec!["d/a.zarr".to_string(), "d/b.zarr".to_string()];
+        let model = boxed(&["0", "1"]);
+        let q = query(&["d/a.zarr", "d/b.zarr", "--batch-files", "a.txt,b.txt"]);
         assert_eq!(
-            match_batches(&q, &model, Some(BatchLabels::Files), &how),
-            vec![Some(0), Some(1)]
+            match_batches(&boxed(&["1", "0"]), &q, &model, &naming(None, &files)),
+            [Some(1), Some(0)]
+        );
+        let named = boxed(&["s1", "s2"]);
+        assert_eq!(
+            match_batches(&boxed(&["s2"]), &q, &named, &naming(None, &files)),
+            [Some(1)]
+        );
+    }
+
+    /// A query file of a model file batch's name that is another file is
+    /// named, with the model's file (for a warning); one that is the
+    /// model's file, through a link, is not.
+    #[test]
+    fn a_query_file_named_as_a_model_file_but_not_it_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let a = touch(d, "real/a.zarr");
+        let model = ModelNaming {
+            source: Some(BatchLabels::Files),
+            files: vec![canonical(&a)],
+            names: boxed(&["s1"]),
+        };
+        let same = link(d, "links/s1.zarr", &a);
+        let other = touch(d, "other/s1.zarr");
+        let files = boxed(&[&same, &other]);
+        let names = boxed(&["s1", "s1"]);
+        assert_eq!(
+            renamed_files(&files, &names, &model),
+            [(other.as_str(), model.files[0].as_str())]
         );
     }
 
@@ -338,12 +424,12 @@ fn an_unreadable_manifest_is_an_error() {
 }
 
 /// Whether every batch is known is decided from the inputs, before any
-/// data is read: per-file labels are known when each file is one of the
-/// model's, `--batch-files` labels when each line names a model batch, and
+/// data is read: per-file labels are known when each file's name is a
+/// model batch, `--batch-files` labels when each line names one, and
 /// `--auto-batch` components never.
 #[test]
 fn every_batch_is_known_from_the_inputs() {
-    use super::delta::{every_batch_known, QueryLabels};
+    use super::delta::{every_batch_known, ModelNaming};
     use crate::test_support::boxed;
     use crate::util::input::SrtInputArgs;
     use crate::util::metadata::BatchLabels;
@@ -355,15 +441,17 @@ fn every_batch_is_known_from_the_inputs() {
         p.to_str().unwrap().to_string()
     };
     let (a, b, new) = (file("a.zarr", ""), file("b.zarr", ""), file("c.zarr", ""));
-    let model_files = vec![a.clone(), b.clone()];
-    let by_file = boxed(&["0", "1"]);
+    let by_file = boxed(&["a", "b"]);
     let known = |args: &[&str], model: &[Box<str>], source| {
         let mut argv = vec!["x"];
         argv.extend_from_slice(args);
         argv.extend_from_slice(&["-o", "o"]);
         let c = SrtInputArgs::try_parse_from(argv).unwrap();
-        let how = QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
-        every_batch_known(&c, &how, model, source).unwrap()
+        let naming = ModelNaming {
+            source,
+            ..Default::default()
+        };
+        every_batch_known(&c, model, &naming).unwrap()
     };
     let files = Some(BatchLabels::Files);
     assert!(known(&[&b, &a], &by_file, files));
@@ -380,6 +468,13 @@ fn every_batch_is_known_from_the_inputs() {
         "s3 is new"
     );
     assert!(!known(&[&a, &b, "--auto-batch"], &by_file, files));
+    // against a model labelled by file, a label file is not read at all
+    let unread = dir.path().join("not-there.txt");
+    assert!(!known(
+        &[&a, "--batch-files", unread.to_str().unwrap()],
+        &by_file,
+        files
+    ));
 }
 
 /// `--null-from` takes a comma list, as every other file-list flag does,

@@ -146,3 +146,37 @@ fn a_pair_table_reads_its_columns_at_any_width() -> anyhow::Result<()> {
         .all(|e| e.community == 0));
     Ok(())
 }
+
+/// A batch named as lra's own rows are (cells of no batch, the pooled
+/// rows) is refused as its table is read, by either reader, saying which.
+#[test]
+fn a_batch_named_as_lras_own_rows_is_refused() -> anyhow::Result<()> {
+    use crate::lr_activity::fit::{BATCH_LABEL_ALL, BATCH_LABEL_META};
+    let dir = tempfile::tempdir()?;
+    for reserved in [BATCH_LABEL_ALL, BATCH_LABEL_META] {
+        let path = dir.path().join(format!("{reserved}.coord_pairs.parquet"));
+        let path = path.to_str().unwrap();
+        let left_cells: Vec<Box<str>> = vec!["cell0".into()];
+        let right_cells: Vec<Box<str>> = vec!["cell1".into()];
+        let left_b: Vec<Box<str>> = vec!["s1".into()];
+        let right_b: Vec<Box<str>> = vec![reserved.into()];
+        write_named_table(
+            path,
+            "cell_pair",
+            &["0".into()],
+            &[
+                ("left_cell".into(), Column::Str(&left_cells)),
+                ("right_cell".into(), Column::Str(&right_cells)),
+                ("left_batch".into(), Column::Str(&left_b)),
+                ("right_batch".into(), Column::Str(&right_b)),
+            ],
+        )?;
+        let e = attach_batch_from_coord_pairs(&mut records(1), path).unwrap_err();
+        assert!(e.to_string().contains(&format!("batch {reserved}")), "{e}");
+        let e = crate::lr_activity::io::read_pair_table(path, false)
+            .err()
+            .expect("refused");
+        assert!(e.to_string().contains(&format!("batch {reserved}")), "{e}");
+    }
+    Ok(())
+}

@@ -648,11 +648,26 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
 
     let path = dir.path().join("run.pinto.json");
     meta.write(&path).unwrap();
-    assert!(std::fs::read_to_string(&path)
-        .unwrap()
-        .contains("\"batch_labels\": \"files\""));
+    let json = std::fs::read_to_string(&path).unwrap();
+    assert!(json.contains("\"batch_labels\": \"file-names\""));
     let back = PintoMetadata::read(&path).unwrap();
     assert_eq!(back.batch_labels, Some(BatchLabels::Files));
+    // each file batch's name, beside the file as given
+    let batches = back.file_batches.clone().unwrap();
+    let as_given: Vec<(&str, &str)> = batches
+        .iter()
+        .map(|b| (b.name.as_str(), b.path.as_str()))
+        .collect();
+    assert_eq!(as_given, [("a", &*data_files[0]), ("gone", "gone.zarr")]);
+    assert!(
+        create_cage_metadata(&inputs(Some(BatchLabels::BatchFiles)), None)
+            .file_batches
+            .is_none()
+    );
+    // an older pinto's `files` named file batches by position
+    let older = json.replace("\"file-names\"", "\"files\"");
+    let older: PintoMetadata = serde_json::from_str(&older).unwrap();
+    assert_eq!(older.batch_labels, Some(BatchLabels::FilePositions));
     // recorded beside the manifest, so a run is found from any directory
     assert_eq!(
         back.outputs.batch_effects.as_deref(),

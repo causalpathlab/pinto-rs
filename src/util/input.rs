@@ -1,5 +1,6 @@
 use crate::util::cell_pairs::{build_spatial_graph, connected_components, SrtCellPairsArgs};
 use crate::util::common::*;
+use anyhow::Context;
 use data_beans::aux::feature_names::FeatureNameKind;
 use data_beans::convert::try_open_or_convert;
 use data_beans::sparse_io_vector::data_name_of;
@@ -52,25 +53,57 @@ pub fn open_sparse(
     Ok(data)
 }
 
-/// The `data_name` each of `files` is stacked under, by data-beans' rule
-/// ([`data_name_of`]: its stem with several files, none with one), refused
-/// when two files would give their cells the same name.
-pub fn stacked_data_names(files: &[Box<str>]) -> anyhow::Result<Vec<Option<Box<str>>>> {
+/// A data file's name: data-beans' `data_name` for it as one of several
+/// stacked files ([`data_name_of`]: its stem, less a data extension, so
+/// `sampleA.zarr` and `sampleA.zarr.zip` are `sampleA`). It also names the
+/// batch of a file left to be its own.
+pub fn data_file_name(file: &str) -> anyhow::Result<Box<str>> {
+    data_name_of(file, 2)
+        .ok()
+        .flatten()
+        .with_context(|| format!("{file} has no file name to name its cells and batch by"))
+}
+
+/// [`data_file_name`] of each of `files`, refused when two files have the
+/// same one: their cells would share names and their batches one label.
+/// A single file needs no name: one it does not have is the name of the
+/// path it resolves to, else the path as given.
+pub fn data_file_names(files: &[Box<str>]) -> anyhow::Result<Vec<Box<str>>> {
+    if let [file] = files {
+        let name = data_file_name(file)
+            .or_else(|_| {
+                let resolved =
+                    crate::util::lupin_rounds::canonical(std::path::Path::new(file.as_ref()));
+                data_file_name(&resolved.to_string_lossy())
+            })
+            .unwrap_or_else(|_| file.clone());
+        return Ok(vec![name]);
+    }
     let names = files
         .iter()
-        .map(|f| data_name_of(f, files.len()))
+        .map(|f| data_file_name(f))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let mut seen = HashSet::default();
     for (f, n) in files.iter().zip(&names) {
-        if let Some(n) = n {
-            anyhow::ensure!(
-                seen.insert(n),
-                "{f} and an earlier data file have the same name {n}, so their cells \
-                 would share names; rename one"
-            );
-        }
+        anyhow::ensure!(
+            seen.insert(n),
+            "{f} and an earlier data file have the same name {n}, so their cells \
+             would share names and one batch; rename one"
+        );
     }
     Ok(names)
+}
+
+/// The `data_name` each file of `names` ([`data_file_names`]) is stacked
+/// under: its name with several files, none with one.
+fn stacked(names: &[Box<str>]) -> impl Iterator<Item = Option<Box<str>>> + '_ {
+    let several = names.len() > 1;
+    names.iter().map(move |n| several.then(|| n.clone()))
+}
+
+/// The `data_name` each of `files` is stacked under ([`stacked`]).
+pub fn stacked_data_names(files: &[Box<str>]) -> anyhow::Result<Vec<Option<Box<str>>>> {
+    Ok(stacked(&data_file_names(files)?).collect())
 }
 
 /// Open `data_files` on the union of their rows, for reading expression
@@ -98,8 +131,9 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
 /// files are read on the rows all of them share, in whatever order each
 /// lists them: a feature one sample never measured is not a zero there.
 /// Other kinds canonicalize names first and keep their union, as before.
-fn open_data_files(args: &SRTReadArgs) -> anyhow::Result<SparseIoVec> {
-    open_fit_data(&args.data_files, &args.feature_kind)
+/// `names` are the files' [`data_file_names`].
+fn open_data_files(args: &SRTReadArgs, names: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
+    open_named(&args.data_files, names, &args.feature_kind)
 }
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
@@ -109,6 +143,15 @@ pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,
 ) -> anyhow::Result<SparseIoVec> {
+    open_named(data_files, &data_file_names(data_files)?, feature_kind)
+}
+
+/// [`open_fit_data`] of `data_files`, whose [`data_file_names`] are `names`.
+fn open_named(
+    data_files: &[Box<str>],
+    names: &[Box<str>],
+    feature_kind: &FeatureNameKind,
+) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
     if let Some(canon) = feature_kind.clone().into_canonicalizer() {
         data_vec = data_vec.with_row_canonicalizer(move |name| canon(name))?;
@@ -116,7 +159,7 @@ pub fn open_fit_data(
         data_vec = data_vec.with_row_alignment(RowAlignment::Intersect)?;
     }
 
-    for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
+    for (data_file, data_name) in data_files.iter().zip(stacked(names)) {
         info!("Importing data file: {}", data_file);
 
         let data = open_sparse(data_file)?;
@@ -154,20 +197,26 @@ pub fn read_batch_file(batch_file: &str, cells: usize) -> anyhow::Result<Vec<Box
 
 /// Each of `data_vec`'s cells' batch label as a run with inputs `args`
 /// reads it, before QC or `--auto-batch`: its `--batch-files` line, else
-/// its data file's position ([`read_batch_membership`] without the counts).
+/// its data file's name ([`read_batch_membership`] without the counts).
 pub(crate) fn read_batch_labels(
     args: &SRTReadArgs,
     data_vec: &SparseIoVec,
 ) -> anyhow::Result<Vec<Box<str>>> {
-    Ok(read_batch_membership(args, data_vec)?.0)
+    let names = match args.batch_files {
+        Some(_) => Vec::new(),
+        None => data_file_names(&args.data_files)?,
+    };
+    Ok(read_batch_membership(args, data_vec, &names)?.0)
 }
 
 /// Each cell's batch label, with each data file's cell count: from the
 /// batch files (one label per line, one file per data file), else one batch
-/// per data file.
+/// per data file, named by the file (`names`, the files'
+/// [`data_file_names`]; unread with batch files).
 fn read_batch_membership(
     args: &SRTReadArgs,
     data_vec: &SparseIoVec,
+    names: &[Box<str>],
 ) -> anyhow::Result<(Vec<Box<str>>, Vec<usize>)> {
     let cells_per_file = data_vec.num_columns_by_data()?;
     let mut batch_membership: Vec<Box<str>> = Vec::with_capacity(data_vec.num_columns());
@@ -183,8 +232,8 @@ fn read_batch_membership(
         if cells_per_file.len() > 1 {
             info!("Each data file will be considered a different batch.");
         }
-        for (id, &nn) in cells_per_file.iter().enumerate() {
-            batch_membership.extend(vec![id.to_string().into_boxed_str(); nn]);
+        for (name, &nn) in names.iter().zip(&cells_per_file) {
+            batch_membership.extend(vec![name.clone(); nn]);
         }
     }
     Ok((batch_membership, cells_per_file))
@@ -198,7 +247,8 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
         args.data_files.len()
     );
 
-    let data_vec = open_data_files(&args)?;
+    let names = data_file_names(&args.data_files)?;
+    let data_vec = open_data_files(&args, &names)?;
 
     let mut coord_vec = Vec::with_capacity(args.coord_files.len());
 
@@ -262,7 +312,7 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
 
     let coord_nk = concatenate_vertical(&coord_vec)?;
 
-    let (batch_membership, cells_per_file) = read_batch_membership(&args, &data_vec)?;
+    let (batch_membership, cells_per_file) = read_batch_membership(&args, &data_vec, &names)?;
 
     // Push every (data file, batch label) group apart in the spatial KNN:
     // files can share one (x, y) frame, and a batch file that gives them all
@@ -296,9 +346,10 @@ pub fn read_data_with_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> 
 /// Use this when no coordinate files are provided (expression mode).
 /// Coordinates will be filled in later from expression embeddings.
 pub fn read_data_without_coordinates(args: SRTReadArgs) -> anyhow::Result<SRTData> {
-    let data_vec = open_data_files(&args)?;
+    let names = data_file_names(&args.data_files)?;
+    let data_vec = open_data_files(&args, &names)?;
 
-    let (batch_membership, _) = read_batch_membership(&args, &data_vec)?;
+    let (batch_membership, _) = read_batch_membership(&args, &data_vec, &names)?;
 
     let n_cells = data_vec.num_columns();
 

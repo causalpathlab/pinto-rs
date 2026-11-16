@@ -383,6 +383,10 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         coordinates.ncols() >= 2,
         "the coordinate files give fewer than two coordinates"
     );
+    crate::lr_activity::fit::refuse_reserved_batches(
+        batches.iter().map(AsRef::as_ref),
+        "the data files",
+    )?;
     // The batch pseudo-coordinate, when present, keeps sections apart.
     let graph = crate::util::cell_pairs::build_spatial_graph(
         &coordinates,
