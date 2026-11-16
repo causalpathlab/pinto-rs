@@ -107,6 +107,30 @@ mod embedding_dim {
             long.contains(&format!("auto is {DEFAULT_EMBEDDING_DIM};")),
             "{long}"
         );
+        // The width doubles as the k-means community count; the help says so.
+        assert!(long.contains("--n-communities"), "{long}");
+    }
+
+    /// What that help sentence rests on: k-means with no `--n-communities`
+    /// carries no count of its own, so the cut reads it off the latent width.
+    #[test]
+    fn kmeans_without_a_count_leaves_it_to_the_width() {
+        use crate::link_community::profiles::EdgeClustering;
+        let cut = |argv: &[&str]| super::parse(argv).edge_clustering.resolve(1);
+        assert!(matches!(
+            cut(&["--edge-cluster-method", "kmeans"]),
+            EdgeClustering::Kmeans {
+                n_clusters: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            cut(&["--edge-cluster-method", "kmeans", "--n-communities", "5"]),
+            EdgeClustering::Kmeans {
+                n_clusters: Some(5),
+                ..
+            }
+        ));
     }
 
     #[test]
