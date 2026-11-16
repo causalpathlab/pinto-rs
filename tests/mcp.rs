@@ -724,7 +724,7 @@ fn an_agent_simulates_looks_and_scores() {
 
     let (job, _) = c.ok(
         "run_simulate",
-        json!({"scenario": "L2", "set": tiny, "out": "sim"}),
+        json!({"scenario": "donor-confounded-donor-only-cell-type", "set": tiny, "out": "sim"}),
     );
     let id = job["job"].as_str().unwrap().to_string();
     let truth = job["truth"].as_str().unwrap().to_string();
@@ -942,7 +942,7 @@ fn an_agent_fits_the_residual_of_a_simulation() {
     let small = json!(["grid_side=24", "n_genes=40", "programme_genes=5"]);
     let (sim, _) = c.ok(
         "run_simulate",
-        json!({"scenario": "L2", "set": small, "out": "sim", "background": false}),
+        json!({"scenario": "donor-confounded-donor-only-cell-type", "set": small, "out": "sim", "background": false}),
     );
     let truth = sim["truth"].as_str().unwrap().to_string();
     let (lc, _) = c.ok(

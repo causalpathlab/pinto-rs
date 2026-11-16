@@ -161,7 +161,7 @@ fn spatialde2_pb_meets_the_bar_on_a_simulated_section() {
     let dir = tempfile::tempdir().unwrap();
     let sim = dir.path().join("sim").to_string_lossy().to_string();
     crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
-        scenario: "L0".into(),
+        scenario: "unconfounded".into(),
         set: [
             "grid_side=40".into(),
             "n_genes=500".into(),

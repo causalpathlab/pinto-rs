@@ -23,7 +23,7 @@ pub enum Stream {
     Programmes,
     /// Donor-wide nuisance of (gene).
     Donor,
-    /// Donor-by-type nuisance of (gene, state).
+    /// Donor-by-cell-type nuisance of (gene, state).
     Inter,
     /// Section nuisance of (gene).
     Section,
@@ -37,6 +37,9 @@ pub enum Stream {
     Unique,
     /// Copula factor of each gene outside every programme.
     Loading,
+    /// The unconfounded donors drawn (`n_unconfounded_donors`). Last, so
+    /// every other stream keeps its tag.
+    UnconfoundedDonors,
 }
 
 pub fn key(seed: u64, stream: Stream, idx: &[usize]) -> u64 {

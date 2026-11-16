@@ -293,7 +293,7 @@ pub(crate) fn simulated_section(
 ) -> (String, Vec<String>) {
     let sim = dir.join("sim").to_string_lossy().to_string();
     crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
-        scenario: "L0".into(),
+        scenario: "unconfounded".into(),
         set: [
             format!("grid_side={side}"),
             format!("n_genes={genes}"),
