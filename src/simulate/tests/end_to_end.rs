@@ -27,7 +27,7 @@ fn args(out: &str, scenario: &str, extra: &[&str]) -> SimulateArgs {
 fn a_run_writes_backends_truth_and_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
-    run_simulate(&args(&out, "L2", &[])).unwrap();
+    run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();
     for s in 1..=6 {
         let m = open_sparse_matrix_by_path(&format!("{out}/sections/S{s}.zarr")).unwrap();
         assert_eq!((m.num_rows(), m.num_columns()), (Some(60), Some(144)));
@@ -48,13 +48,14 @@ fn a_run_writes_backends_truth_and_manifest() {
     assert!(m["realised_pve_programme_genes"]["type"].as_f64().unwrap() > 0.0);
 }
 
-/// The same seed gives the same counts.
+/// The same seed gives the same counts, the scenario named by its earlier
+/// name or its own, and the manifest records its own name.
 #[test]
 fn a_run_is_reproducible() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a").to_string_lossy().to_string();
     let b = dir.path().join("b").to_string_lossy().to_string();
-    run_simulate(&args(&a, "L1", &[])).unwrap();
+    run_simulate(&args(&a, "donor-confounded", &[])).unwrap();
     run_simulate(&args(&b, "L1", &[])).unwrap();
     let read = |o: &str| {
         let m = open_sparse_matrix_by_path(&format!("{o}/sections/S3.zarr")).unwrap();
@@ -62,13 +63,21 @@ fn a_run_is_reproducible() {
             .unwrap()
     };
     assert_eq!(read(&a), read(&b));
+    let scenario = |o: &str| {
+        let m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(format!("{o}/manifest.json")).unwrap())
+                .unwrap();
+        m["scenario"].clone()
+    };
+    assert_eq!(scenario(&a), "donor-confounded");
+    assert_eq!(scenario(&b), "donor-confounded");
 }
 
 #[test]
 fn an_impossible_setting_is_refused_before_anything_is_written() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("bad").to_string_lossy().to_string();
-    assert!(run_simulate(&args(&out, "L0", &["pve_donor=0.9"])).is_err());
+    assert!(run_simulate(&args(&out, "unconfounded", &["pve_donor=0.9"])).is_err());
     assert!(!std::path::Path::new(&out).exists());
 }
 
@@ -78,7 +87,7 @@ fn an_impossible_setting_is_refused_before_anything_is_written() {
 fn the_truth_is_written_as_a_run() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
-    run_simulate(&args(&out, "L2", &[])).unwrap();
+    run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();
     let meta = truth_meta(&out);
     let tags: Vec<String> = meta.levels.unwrap().iter().map(|l| l.tag.clone()).collect();
     assert_eq!(tags, ["domain", "state", "donor"]);
@@ -99,7 +108,7 @@ fn backend_columns_join_onto_the_truth_cells() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join(tag).to_string_lossy().to_string();
-        run_simulate(&args(&out, "L0", &extra)).unwrap();
+        run_simulate(&args(&out, "unconfounded", &extra)).unwrap();
         let manifest = std::path::PathBuf::from(format!("{out}/truth/truth.pinto.json"));
         let files: Vec<Box<str>> = truth_meta(&out)
             .data_files
@@ -131,7 +140,7 @@ fn backend_columns_join_onto_the_truth_cells() {
 fn the_viewer_opens_the_truth() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
-    run_simulate(&args(&out, "L2", &[])).unwrap();
+    run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();
     let run = crate::view::data::Run::open(&format!("{out}/truth/truth")).unwrap();
     let geometry = run.load_geometry().unwrap();
     assert_eq!(geometry.names.len(), 6 * 144);
@@ -166,7 +175,7 @@ fn scoring_the_truth_and_the_donors() {
     use crate::simulate::score::{read_labels, score, TruthSpots};
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
-    run_simulate(&args(&out, "L2", &[])).unwrap();
+    run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();
     let t = TruthSpots::read(&out).unwrap();
     let write = |name: &str, f: &dyn Fn(usize) -> String| -> String {
         let path = dir.path().join(name).to_string_lossy().to_string();
@@ -201,7 +210,7 @@ fn a_simulation_appears_only_when_whole() {
     let partial = dir.path().join("sim.partial");
     std::fs::create_dir_all(partial.join("sections")).unwrap();
     std::fs::write(partial.join("sections/stale"), "").unwrap();
-    crate::simulate::run::run_simulate(&args(&out.to_string_lossy(), "L0", &[])).unwrap();
+    crate::simulate::run::run_simulate(&args(&out.to_string_lossy(), "unconfounded", &[])).unwrap();
     assert!(out.join("manifest.json").is_file());
     assert!(!out.join("sections/stale").exists());
     assert!(!partial.exists());
@@ -219,14 +228,107 @@ fn a_simulation_appears_only_when_whole() {
 fn a_simulation_into_a_slashed_or_empty_out_is_whole() {
     let dir = tempfile::tempdir().unwrap();
     let slashed = dir.path().join("a");
-    crate::simulate::run::run_simulate(&args(&format!("{}/", slashed.display()), "L0", &[]))
-        .unwrap();
+    crate::simulate::run::run_simulate(&args(
+        &format!("{}/", slashed.display()),
+        "unconfounded",
+        &[],
+    ))
+    .unwrap();
     assert!(slashed.join("manifest.json").is_file());
     let empty = dir.path().join("b");
     std::fs::create_dir(&empty).unwrap();
-    crate::simulate::run::run_simulate(&args(&empty.to_string_lossy(), "L0", &[])).unwrap();
+    crate::simulate::run::run_simulate(&args(&empty.to_string_lossy(), "unconfounded", &[]))
+        .unwrap();
     assert!(empty.join("truth/truth.pinto.json").is_file());
     for left in ["a.partial", "b.partial", "a/.partial"] {
         assert!(!dir.path().join(left).exists(), "{left} left behind");
+    }
+}
+
+/// Each donor's status is in the truth: a `confounded` column per donor in
+/// `donors.parquet` and per spot in `spots.parquet`, and in the manifest the
+/// unconfounded donors and whether they were drawn.
+#[test]
+fn the_truth_records_each_donors_status() {
+    use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
+    let dir = tempfile::tempdir().unwrap();
+    for (name, set, drawn) in [
+        ("drawn", "n_unconfounded_donors=1", true),
+        ("listed", "unconfounded_donors=[1]", false),
+    ] {
+        let out = dir.path().join(name).to_string_lossy().to_string();
+        run_simulate(&args(&out, "donor-confounded", &[set])).unwrap();
+        let m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(format!("{out}/manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(m["unconfounded_donors"]["drawn"], drawn, "{name}");
+        let free: Vec<String> = m["unconfounded_donors"]["donors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(free.len(), 1, "{name}");
+        if !drawn {
+            assert_eq!(free, ["D2"]);
+        }
+        let status = |d: &str| {
+            if free.iter().any(|f| f == d) {
+                "false"
+            } else {
+                "true"
+            }
+        };
+        let donors = read_parquet_string_columns_by_name(
+            &format!("{out}/truth/donors.parquet"),
+            &["donor", "confounded"],
+        )
+        .unwrap();
+        assert_eq!(donors[0].len(), 3, "{name}");
+        for (d, c) in donors[0].iter().zip(&donors[1]) {
+            assert_eq!(c.as_ref(), status(d), "{name} {d}");
+        }
+        let spots = read_parquet_string_columns_by_name(
+            &format!("{out}/truth/spots.parquet"),
+            &["donor", "confounded"],
+        )
+        .unwrap();
+        assert_eq!(spots[0].len(), 6 * 144);
+        for (d, c) in spots[0].iter().zip(&spots[1]) {
+            assert_eq!(c.as_ref(), status(d), "{name} {d}");
+        }
+    }
+}
+
+/// A donor is confounded only when some shift reaches it: with no nuisance
+/// term on (the unconfounded scenario, `nuisance_off`, or every nuisance
+/// share at 0) every donor and spot is written `false`.
+#[test]
+fn a_donor_with_no_shift_is_not_confounded() {
+    use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
+    let dir = tempfile::tempdir().unwrap();
+    for (name, scenario, set) in [
+        ("default", "unconfounded", &[][..]),
+        ("off", "donor-confounded", &["nuisance_off=true"][..]),
+        (
+            "zero",
+            "donor-confounded",
+            &["pve_donor=0", "pve_inter=0", "pve_section=0"][..],
+        ),
+    ] {
+        let out = dir.path().join(name).to_string_lossy().to_string();
+        run_simulate(&args(&out, scenario, set)).unwrap();
+        for table in ["donors", "spots"] {
+            let col = read_parquet_string_columns_by_name(
+                &format!("{out}/truth/{table}.parquet"),
+                &["confounded"],
+            )
+            .unwrap();
+            assert!(!col[0].is_empty(), "{name} {table}");
+            assert!(
+                col[0].iter().all(|c| c.as_ref() == "false"),
+                "{name} {table}"
+            );
+        }
     }
 }

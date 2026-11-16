@@ -1,11 +1,11 @@
 //! `pinto srt-simulate`: resolve the parameters, simulate, write.
 
 use super::panel::{donor_label, grid, read_coords};
-use super::params::{SimParams, SCENARIOS};
+use super::params::{find_scenario, SimParams, SCENARIOS};
 use super::sim::Sim;
 use super::write::{
-    write_backend, write_coords, write_domains, write_genes, write_spots, write_states,
-    write_truth_run,
+    write_backend, write_coords, write_domains, write_donors, write_genes, write_spots,
+    write_states, write_truth_run,
 };
 use crate::util::common::in_dir;
 use log::info;
@@ -14,7 +14,7 @@ use serde_json::json;
 #[derive(clap::Args, Debug)]
 pub struct SimulateArgs {
     /// Named scenario to start from (see the long help for the list)
-    #[arg(long, default_value = "L0", long_help = scenario_help())]
+    #[arg(long, default_value = "unconfounded", long_help = scenario_help())]
     pub scenario: String,
 
     /// Change any parameter, `key=value`, repeatable (e.g. --set pve_donor=0.3,
@@ -37,15 +37,37 @@ pub struct SimulateArgs {
 }
 
 fn scenario_help() -> String {
-    let mut s = String::from("Named scenario to start from:\n");
+    let mut s =
+        String::from("Named scenario to start from (a cell type is a cell state of the model):\n");
     for sc in SCENARIOS {
-        s.push_str(&format!("  {:<11} {}\n", sc.name, sc.about));
+        s.push_str(&format!("  {}\n", sc.name));
+        for line in wrapped(sc.about, 72) {
+            s.push_str(&format!("      {line}\n"));
+        }
     }
     s.push_str(
         "Any parameter can then be changed with --set key=value; the manifest records them all.\n\
-         --set nuisance_off=true with the same seed draws the exact counterfactual.",
+         --set nuisance_off=true with the same seed draws the exact counterfactual.\n\
+         --set n_unconfounded_donors=1 draws one donor from the seed (never the donor-only\n\
+         domain's owner) and gives it no donor-wide, donor-by-cell-type or section shift.",
     );
     s
+}
+
+/// `text`'s words in lines of at most `width` characters (a longer word
+/// alone on its line).
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 /// A section's counts under the simulation folder `out`.
@@ -81,14 +103,17 @@ fn partial_path(out: &std::path::Path) -> std::path::PathBuf {
     out.with_file_name(name)
 }
 
-pub fn resolve_params(args: &SimulateArgs) -> anyhow::Result<SimParams> {
-    let p = SimParams::scenario(&args.scenario)?.with_overrides(&args.set)?;
+/// The scenario's name, an earlier one read as its name, and the
+/// parameters it and the `--set`s give.
+pub fn resolve_params(args: &SimulateArgs) -> anyhow::Result<(&'static str, SimParams)> {
+    let sc = find_scenario(&args.scenario)?;
+    let p = (sc.params)().with_overrides(&args.set)?;
     p.validate()?;
-    Ok(p)
+    Ok((sc.name, p))
 }
 
 pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
-    let p = resolve_params(args)?;
+    let (scenario, p) = resolve_params(args)?;
     let mut geometries = args
         .coords
         .iter()
@@ -140,6 +165,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         info!("{}: {} spots, {} nonzero counts", sec.name, sec.n(), nnz);
     }
     write_spots(&in_dir(out, "truth/spots.parquet"), &sim)?;
+    write_donors(&in_dir(out, "truth/donors.parquet"), &sim)?;
     write_domains(&domains_path(out), &sim)?;
     write_states(&in_dir(out, "truth/states.parquet"), &sim)?;
     write_genes(&in_dir(out, "truth/genes.parquet"), &sim)?;
@@ -161,8 +187,12 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     let manifest = json!({
         "command": "srt-simulate",
         "version": env!("CARGO_PKG_VERSION"),
-        "scenario": args.scenario,
+        "scenario": scenario,
         "params": p,
+        "unconfounded_donors": {
+            "donors": sim.unconfounded_donors.iter().map(|&d| donor_label(d)).collect::<Vec<_>>(),
+            "drawn": p.n_unconfounded_donors > 0,
+        },
         "realised_pve_programme_genes": names.iter().zip(pve)
             .map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
         "sections": sim.sections.iter().map(|sec| json!({

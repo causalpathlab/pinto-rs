@@ -15,7 +15,7 @@ fn sim_args(v: Value) -> SimulateToolArgs {
 
 /// The parameters a `run_simulate` call sets, checked as it checks them.
 fn params(v: Value) -> anyhow::Result<SimParams> {
-    simulation(&cli(), &sim_args(v), "o").map(|(_, _, p)| p)
+    simulation(&cli(), &sim_args(v), "o").map(|(_, _, _, p)| p)
 }
 
 const TINY: [&str; 3] = ["grid_side=8", "n_genes=40", "programme_genes=5"];
@@ -78,7 +78,7 @@ fn the_sim_tools_are_listed_with_their_schemas() {
 #[test]
 fn a_simulate_call_becomes_its_command_line() {
     let a = sim_args(json!({
-        "scenario": "L2",
+        "scenario": "donor-confounded-donor-only-cell-type",
         "set": ["grid_side=8", "seed=2"],
         "coords": ["a.parquet", "b.parquet"],
         "coord_column_names": ["x", "y"],
@@ -91,7 +91,7 @@ fn a_simulate_call_becomes_its_command_line() {
     );
     let want: Vec<String> = [
         "srt-simulate",
-        "--scenario=L2",
+        "--scenario=donor-confounded-donor-only-cell-type",
         "--set=grid_side=8",
         "--set=seed=2",
         &format!("--coord={coords}"),
@@ -121,9 +121,42 @@ fn a_simulate_call_becomes_its_command_line() {
     );
 }
 
+/// A call naming a scenario by its earlier name sets what its name sets.
+#[test]
+fn a_simulate_call_takes_an_earlier_scenario_name() {
+    let new = "donor-confounded-donor-only-cell-type";
+    let old = params(json!({"scenario": "L2", "set": TINY})).unwrap();
+    assert_eq!(old, params(json!({"scenario": new, "set": TINY})).unwrap());
+    let schema = specs();
+    let simulate = schema.iter().find(|t| t.name == "run_simulate").unwrap();
+    let listed = &simulate.input_schema["properties"]["scenario"];
+    assert!(
+        listed.to_string().contains(new) && !listed.to_string().contains("\"L2\""),
+        "{listed}"
+    );
+    let about = listed["description"].as_str().unwrap();
+    assert!(about.contains("still accepted but not listed"), "{about}");
+    assert!(!about.contains("first-donor-unconfounded"), "{about}");
+    let set = simulate.input_schema["properties"]["set"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(set.contains("n_unconfounded_donors"), "{set}");
+    // the command it runs names the scenario as the summary does
+    let argv = simulate_argv(&sim_args(json!({"scenario": "L2"})), "o");
+    assert!(argv.contains(&format!("--scenario={new}")), "{argv:?}");
+    let (_, _, name, _) = simulation(
+        &cli(),
+        &sim_args(json!({"scenario": "L2", "set": TINY})),
+        "o",
+    )
+    .unwrap();
+    assert_eq!(name, new);
+}
+
 #[test]
 fn the_reply_lists_the_sections_to_fit_in_order() {
-    let p = params(json!({"scenario": "L2", "set": TINY})).unwrap();
+    let p =
+        params(json!({"scenario": "donor-confounded-donor-only-cell-type", "set": TINY})).unwrap();
     let n = p.n_donors * p.sections_per_donor;
     assert!(n > 1, "{n}");
     let fit = fit_lists("/p/sim", &p);
@@ -142,7 +175,8 @@ fn the_reply_lists_the_sections_to_fit_in_order() {
 /// manifest and the truth run once under it.
 #[test]
 fn a_folder_out_names_its_files_without_a_doubled_slash() {
-    let p = params(json!({"scenario": "L2", "set": TINY})).unwrap();
+    let p =
+        params(json!({"scenario": "donor-confounded-donor-only-cell-type", "set": TINY})).unwrap();
     let fit = fit_lists("/p/sim/", &p);
     assert_eq!(fit["data"][0], "/p/sim/sections/S1.zarr");
     assert_eq!(fit["coords"][0], "/p/sim/sections/S1.coords.parquet");
@@ -198,7 +232,7 @@ fn truth_labels(sim: &str, path: &Path) {
 fn scoring_the_truth_itself_is_perfect() {
     let dir = tempfile::tempdir().unwrap();
     let sim = dir.path().join("sim").to_string_lossy().into_owned();
-    let a = sim_args(json!({"scenario": "L2", "set": TINY}));
+    let a = sim_args(json!({"scenario": "donor-confounded-donor-only-cell-type", "set": TINY}));
     crate::simulate::run_simulate(&simulation(&cli(), &a, &sim).unwrap().1).unwrap();
     let table = dir.path().join("truth.tsv");
     truth_labels(&sim, &table);
@@ -226,7 +260,10 @@ fn scoring_the_truth_itself_is_perfect() {
     assert_eq!(s["n_unmatched"], 0, "{v}");
     assert!(v.get("warnings").is_none(), "{v}");
     let patches = s["patches"].as_array().unwrap();
-    assert!(!patches.is_empty(), "L2 plants a donor-specific domain");
+    assert!(
+        !patches.is_empty(),
+        "the scenario plants a domain only one donor has"
+    );
     for p in patches {
         for k in ["f1", "precision", "recall", "owner_share"] {
             assert_eq!(p[k], 1.0, "{k}: {p}");
@@ -285,7 +322,7 @@ fn scoring_the_truth_itself_is_perfect() {
 fn pair_scoring_the_truth_itself_is_perfect() {
     let dir = tempfile::tempdir().unwrap();
     let sim = dir.path().join("sim").to_string_lossy().into_owned();
-    let a = sim_args(json!({"scenario": "L2", "set": TINY}));
+    let a = sim_args(json!({"scenario": "donor-confounded-donor-only-cell-type", "set": TINY}));
     crate::simulate::run_simulate(&simulation(&cli(), &a, &sim).unwrap().1).unwrap();
     let truth = format!("{sim}/truth/truth.pinto.json");
     let call: SimPairsToolArgs = args(json!({
@@ -309,7 +346,10 @@ fn pair_scoring_the_truth_itself_is_perfect() {
         assert_eq!(s[set]["auprc"], 1.0, "{set}: {v}");
     }
     let patches = s["patches"].as_array().unwrap();
-    assert!(!patches.is_empty(), "L2 plants a donor-specific domain");
+    assert!(
+        !patches.is_empty(),
+        "the scenario plants a domain only one donor has"
+    );
     assert_eq!(patches[0]["pairs"]["auroc"], 1.0, "{v}");
     assert_eq!(text.lines().count(), 1 + patches.len(), "{text}");
     assert_eq!(v["failed"][0]["vectors"], "nowhere.tsv", "{v}");

@@ -404,9 +404,9 @@ holding a set share of the log rate's variance:
 
 | dial | share of |
 |---|---|
-| `pve_type` | the cell states, the signal that defines domains |
-| `pve_donor` | donor-wide effects, the same in every cell state |
-| `pve_inter` | donor-by-cell-state effects |
+| `pve_type` | the cell types (each a cell state of the model), the signal that defines domains |
+| `pve_donor` | donor-wide effects, the same in every cell type |
+| `pve_inter` | donor-by-cell-type effects |
 | `pve_section` | per-section effects |
 | (none) | spot noise: what the four shares leave |
 
@@ -414,12 +414,12 @@ Noise is the remainder, so raising one share with the others fixed shrinks
 the noise, not the other shares.
 
 **The size of the donor effect** is its share of the log rate's variance,
-`pve_donor + pve_inter`: donor-wide plus donor-by-cell-state, the two terms
+`pve_donor + pve_inter`: donor-wide plus donor-by-cell-type, the two terms
 that differ between donors. `pve_section` is the per-section share on top,
 so the whole nuisance is `N = pve_donor + pve_inter + pve_section`. Wherever
 a result says "the donor effect" or labels a sweep by it, it means
 `pve_donor + pve_inter` at a stated `pve_type`, and how the two donor terms
-split it should be stated too, since donor-by-type effects are the harder
+split it should be stated too, since donor-by-cell-type effects are the harder
 ones. A sweep over the nuisance shares has to choose what gives way, and
 the choice changes what a trend along N means:
 
@@ -432,24 +432,51 @@ the choice changes what a trend along N means:
 Every run logs the shares it has, noise spelt out as the remainder. A
 nuisance share that is set but off is named with the reason: with
 `nuisance_off`, or when it has nothing to vary across (one donor or
-section, or every one clean), the term is dropped and its share does not
+section, or every one unconfounded), the term is dropped and its share does not
 pass to the noise. With nuisance on, the log gives the type-to-noise ratio
 here and with the nuisance shares at 0. The `nuisance_off` counterfactual
 keeps the noise share, so its ratio is the run's own. The manifest records
-the shares realised on the programme genes. Donors and sections can be made clean of nuisance
-(`clean_donors`, `clean_sections`). Named scenarios (`L0`, `L1`, `L2`,
-`L2-mix`, `clean-one`, `null-shift`) set the rest; `--set key=value`
-changes any parameter, and `pinto srt-simulate --help` lists the scenarios.
+the shares realised on the programme genes. Sections can be freed of the
+section shift (`unconfounded_sections`), and donors of every shift: an
+unconfounded donor has no donor-wide, donor-by-cell-type or section shift on
+any of its sections. `--set n_unconfounded_donors=1` gives any scenario one
+such donor, drawn from the seed on a stream of its own (so the rest of the
+data is drawn as without it), never the owner of a domain only one donor
+has; more than the eligible donors is refused. `unconfounded_donors=[0]`
+names them instead (one way or the other, not both). `truth/donors.parquet`
+and each spot in `truth/spots.parquet` say whether the donor is
+`confounded` (some donor-wide, donor-by-cell-type or section shift reaches it;
+`false` throughout when no nuisance term is on), and the manifest lists the unconfounded donors and whether
+they were drawn.
+
+**Named scenarios** set the rest; `--set key=value` changes any parameter,
+and `pinto srt-simulate --help` lists them. Each has 3 donors with 2
+sections each, and 4 spatial domains shared by every donor, each 95% one
+cell type, with the cell type 30% of the log rate's variance:
+
+| scenario | donor and section shifts | a domain only one donor has |
+|---|---|---|
+| `unconfounded` (the default) | none | none |
+| `donor-confounded` | donor-wide 15%, donor-by-cell-type 15%, section 2% | none |
+| `donor-confounded-donor-only-cell-type` | donor-wide 15%, donor-by-cell-type 15%, section 2% | the third donor's, about 15% of its spots, a cell type no other donor has (its programme at cosine 0.3 to the first shared cell type's) |
+| `donor-confounded-donor-only-mix` | donor-wide 15%, donor-by-cell-type 15%, section 2% | the third donor's, about 15% of its spots, the first two shared cell types in equal parts, a mix no shared domain uses |
+| `composition-shift` | none, but donors differ in domain proportions (log-scale spread 0.5) | the third donor's, about 15% of its spots, a cell type no other donor has |
 
 ```sh
-pinto srt-simulate --scenario L2 --set pve_donor=0.2 --set seed=2 -o sim
+pinto srt-simulate --scenario donor-confounded-donor-only-cell-type \
+  --set pve_donor=0.2 --set seed=2 -o sim
 pinto view sim/truth/truth.pinto.json          # the planted domains, states and donors
+# one shift-free donor, drawn from the seed
+pinto srt-simulate --scenario donor-confounded-donor-only-cell-type \
+  --set n_unconfounded_donors=1 -o sim-one-free
 ```
 
 **Outputs.** `sim/sections/S*.zarr` (counts) and `S*.coords.parquet`
 (`row_um`, `col_um`) per section; `sim/truth/` with each spot's section,
-donor, domain and its owner, state and mixture, and the truth as a run that
-`pinto view` opens; `sim/manifest.json` with every parameter. A missing or
+donor and whether it is confounded, domain and its owner, state and mixture,
+each donor's status (`donors.parquet`), and the truth as a run that
+`pinto view` opens; `sim/manifest.json` with every parameter and the
+unconfounded donors. A missing or
 empty `sim` is written as `sim.partial` and moved into place once whole, so
 a stopped run leaves no `sim`; a `sim` that already holds files is written
 in place.

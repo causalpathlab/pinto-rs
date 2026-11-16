@@ -44,8 +44,8 @@ const SPATIALDE2_MEASURED: [(usize, usize, usize, f64); 13] = [
     (4096, 2, 10, 598.58),
 ];
 /// Maximum resident memory (MiB) of spatialde2 runs whose peak is the δ
-/// estimate (two srt-simulate L1 sections, the fit cut to nothing:
-/// `--neighbors 0 --max-iter 1 --n-clusters 2`, 4 threads): (cells per
+/// estimate (two srt-simulate donor-confounded sections, the fit cut to
+/// nothing: `--neighbors 0 --max-iter 1 --n-clusters 2`, 4 threads): (cells per
 /// section, genes, nonzeros, MiB).
 const DELTA_MEASURED: [(usize, usize, usize, f64); 5] = [
     (256, 500, 100_906, 82.69),
@@ -351,8 +351,8 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
 }
 
 /// Maximum resident memory (MiB) of `spatialde2 --reference` runs on one
-/// srt-simulate L1 section (2000 genes, every gene segmented on, 4
-/// threads): (cells, nonzeros, MiB).
+/// srt-simulate donor-confounded section (2000 genes, every gene segmented
+/// on, 4 threads): (cells, nonzeros, MiB).
 const SPATIALDE2_REFERENCE_MEASURED: [(usize, usize, f64); 3] = [
     (1024, 788_258, 80.22),
     (4096, 3_156_044, 238.45),
@@ -732,7 +732,7 @@ fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
 fn simulated(dir: &std::path::Path, side: usize) -> (String, String) {
     let out = dir.join("sim").to_string_lossy().to_string();
     crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
-        scenario: "L0".into(),
+        scenario: "unconfounded".into(),
         set: [
             format!("grid_side={side}"),
             "n_genes=2000".into(),

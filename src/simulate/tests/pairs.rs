@@ -282,7 +282,7 @@ fn a_simulations_truth_run_scores_one() {
     let out = dir.path().join("sim").to_string_lossy().to_string();
     let set = ["grid_side=12", "n_genes=40", "programme_genes=6", "seed=5"];
     run_simulate(&SimulateArgs {
-        scenario: "L2".into(),
+        scenario: "donor-confounded-donor-only-cell-type".into(),
         set: set.iter().map(|s| s.to_string()).collect(),
         coords: Vec::new(),
         coord_column_names: vec!["row_um".into(), "col_um".into()],

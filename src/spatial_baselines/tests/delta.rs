@@ -11,7 +11,7 @@ use crate::util::metadata::PintoMetadata;
 pub(crate) fn two_sections(dir: &std::path::Path, side: usize, genes: usize) -> Vec<String> {
     let out = dir.join("sim").to_string_lossy().to_string();
     crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
-        scenario: "L1".into(),
+        scenario: "donor-confounded".into(),
         set: [
             format!("grid_side={side}"),
             format!("n_genes={genes}"),

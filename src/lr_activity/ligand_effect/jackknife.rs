@@ -4,11 +4,12 @@
 //! the influence function, with the cross-fitted nuisances (propensity and
 //! outcome models) taken as known. On a scope inside a few tiles, a region
 //! of one donor say, those models' own error is not small, and it is shared
-//! by every receiver of a held-out fold: on `pinto srt-simulate` L2 a
-//! region's null z had an SD near 1.4. Deleting each tile in turn and
-//! refitting everything on the rest counts that error (Efron & Stein 1981,
-//! Ann Stat 9:586; a delete-one-cluster jackknife, as in MacKinnon, Nielsen
-//! & Webb 2023, J Econometrics 232:272).
+//! by every receiver of a held-out fold: on `pinto srt-simulate`
+//! donor-confounded-donor-only-cell-type a region's null z had an SD near
+//! 1.4. Deleting each tile in turn and refitting everything on the rest
+//! counts that error (Efron & Stein 1981, Ann Stat 9:586; a
+//! delete-one-cluster jackknife, as in MacKinnon, Nielsen & Webb 2023,
+//! J Econometrics 232:272).
 //!
 //! The tiles deleted are those of the sections the scope lies in: tiles of
 //! other sections reach the scope's estimate only through the shared
@@ -21,10 +22,10 @@
 //!
 //! `--region-jackknife no-refit`, the default, keeps the full nuisance fits
 //! and leaves the tile out of the averages alone; every replicate is read
-//! from one pass of the fits, as scopes of their own. On L2's one-donor
-//! region it cut the nulls rejected from 10.5% to 7.6% at a small loss of
-//! power (0.84 to 0.79). `refit` counts the nuisance error and is
-//! conservative on regions in few tiles (0% of nulls rejected on L2, power
+//! from one pass of the fits, as scopes of their own. On that scenario's
+//! one-donor region it cut the nulls rejected from 10.5% to 7.6% at a small
+//! loss of power (0.84 to 0.79). `refit` counts the nuisance error and is
+//! conservative on regions in few tiles (0% of nulls rejected there, power
 //! 0.13 at effect PVE 0.02), at one refit per tile.
 //!
 //! A replicate's fits are exact, but cheap: the outcome ridge is solved on

@@ -4,7 +4,7 @@
 use super::draw::{nb_quantile, phi, Latent};
 use super::expression::{
     active, draw_depth, draw_genes, draw_nuisance, scaling, spot_noise, Components, Genes,
-    Nuisance, Scaling, Terms,
+    Nuisance, Scaling, Term, Terms,
 };
 use super::field::mean_sd;
 use super::panel::{build_panel, Coords, Section};
@@ -21,6 +21,8 @@ pub struct Sim {
     pub scaling: Scaling,
     /// Per section, per spot.
     pub depth: Vec<Vec<f64>>,
+    /// The donors with no shift ([`SimParams::unconfounded_donor_set`]).
+    pub unconfounded_donors: Vec<usize>,
 }
 
 impl Sim {
@@ -31,6 +33,7 @@ impl Sim {
         let nuisance = draw_nuisance(&p, truth.n_states());
         let scaling = scaling(&p, &sections, &truth, &genes);
         let depth = draw_depth(&p, &sections);
+        let unconfounded_donors = p.unconfounded_donor_set();
         Self {
             p,
             sections,
@@ -39,7 +42,22 @@ impl Sim {
             nuisance,
             scaling,
             depth,
+            unconfounded_donors,
         }
+    }
+
+    /// Whether donor `d` carries a shift: the nuisance is on, `d` is not an
+    /// unconfounded donor, and a donor-wide or donor-by-cell-type term, or a
+    /// section term on one of its sections, has a nonzero scale.
+    pub fn confounded(&self, d: usize) -> bool {
+        let sc = &self.scaling;
+        let free_sections = self.p.unconfounded_section_set();
+        let section_shift = sc.section > 0.0
+            && (0..self.sections.len())
+                .any(|s| self.sections[s].donor == d && !free_sections.contains(&s));
+        active(&self.p)[Term::Donor as usize]
+            && !self.unconfounded_donors.contains(&d)
+            && (sc.donor > 0.0 || sc.inter > 0.0 || section_shift)
     }
 
     /// The scaled log-rate terms of gene `g` in section `s`.
