@@ -51,6 +51,12 @@ pub struct FeatureActiveEdges {
 /// evidence rather than two half-evidence copies competing for the same
 /// positives. `log1p(s) + log1p(u) != log1p(s + u)`, so the order matters and
 /// the summing cannot be moved after the transform.
+///
+/// The `log1p` is of the RAW count, deliberately not of a count scaled to a
+/// common library size ([`log_cp10k`]): the activity is a sampling weight,
+/// how much of the feature was seen at an edge's two ends, so a deeper cell
+/// carries more of it
+/// (`feature_gating_tests::activities_are_log1p_of_raw_counts_whatever_the_depth`).
 pub fn build_feature_active_fine_edges(
     data: &SparseIoVec,
     edges: &[(u32, u32)],

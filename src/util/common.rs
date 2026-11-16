@@ -111,7 +111,9 @@ pub const LIBRARY_SCALE: f32 = 1e4;
 /// before any feature subset; on a pooled feature axis (channel rows summed
 /// per feature) it is the total over that axis. A baseline takes the total
 /// where its original does (STAGATE after its gene filter). Count models
-/// with their own depth term take raw counts and do not come through here.
+/// with their own depth term take raw counts and do not come through here,
+/// and neither does a weight meant to keep a unit's depth (cage's
+/// activities, a sampling weight).
 ///
 /// [`log_normalise`] and [`normalise_log`] apply this with the unit's own
 /// total; call it directly where the total covers more rows than are at
