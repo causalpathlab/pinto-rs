@@ -6,6 +6,7 @@ use super::fit::*;
 use crate::test_support::make_test_graph;
 use crate::util::cell_pairs::SrtCellPairs;
 use crate::util::common::*;
+use data_beans::sparse_io::{create_sparse_from_triplets, SparseIo};
 
 const TOL: f32 = 1e-3;
 
@@ -26,12 +27,22 @@ fn counts() -> Mat {
 
 /// `counts` as one in-memory file, its cells in the batches `batch_of_cell`.
 fn data(counts: &Mat, batch_of_cell: &[usize]) -> SparseIoVec {
-    let mut sp = create_sparse_from_dmatrix(counts, None, None).unwrap();
+    let sp = create_sparse_from_dmatrix(counts, None, None).unwrap();
+    data_of(sp, counts.shape(), batch_of_cell)
+}
+
+/// The backend `sp` (features x cells of `shape`) as one in-memory file, its
+/// cells in the batches `batch_of_cell`.
+fn data_of(
+    mut sp: Box<dyn SparseIo<IndexIter = Vec<usize>>>,
+    shape: (usize, usize),
+    batch_of_cell: &[usize],
+) -> SparseIoVec {
     let names = |tag: &str, n: usize| -> Vec<Box<str>> {
         (0..n).map(|i| format!("{tag}{i}").into()).collect()
     };
-    sp.register_row_names_vec(&names("GENE", counts.nrows()));
-    sp.register_column_names_vec(&names("cell", counts.ncols()));
+    sp.register_row_names_vec(&names("GENE", shape.0));
+    sp.register_column_names_vec(&names("cell", shape.1));
     sp.preload_columns().unwrap();
     let mut data = SparseIoVec::new();
     data.push(Arc::from(sp), None).unwrap();
@@ -128,42 +139,81 @@ fn depth_alone_leaves_the_difference_channel_empty() {
     let g = x.nrows();
     let data = data(&x, &[0, 0, 1, 1]);
     let delta = uneven_delta(g);
-    // each cell alone, on its own total: what a pair of them shares
-    let want_shared = Mat::from_columns(&[2.0 * log_normalised(&x).column(0)]);
+    let no_effect = Mat::from_element(g, 2, 1.0);
     for delta in [None, Some(&delta)] {
         let (shared, diff, proj) = channels(&data, &[(0, 1)], delta, &difference_only_basis(g));
         let what = if delta.is_some() { "with" } else { "without" };
-        if delta.is_none() {
-            assert_close(&shared, &want_shared, what);
-        }
-        assert!(shared.iter().any(|&v| v > 1.0), "{what} delta: {shared}");
+        // each cell alone, on its own total after a plain division by its
+        // batch's effects: what a pair of them shares
+        let plain = plainly_divided(&x, delta.unwrap_or(&no_effect), &[0, 0, 1, 1]);
+        let want_shared = Mat::from_columns(&[2.0 * plain.column(0)]);
+        assert_close(&shared, &want_shared, what);
         assert!(diff.iter().all(|v| v.abs() < TOL), "{what} delta: {diff}");
         assert!(proj.iter().all(|v| v.abs() < TOL), "{what} delta: {proj}");
     }
 }
 
 /// A cell with nothing to scale stays all zero: no stored entry, stored
-/// zeros, or the `0 / 0` a batch divide makes of stored zeros. Its
+/// zeros, or a total that is not a positive finite number (the `0 / 0` a
+/// batch divide makes of stored zeros, or a count that is not finite). Its
 /// neighbour is untouched by it.
 #[test]
 fn a_cell_without_counts_stays_empty() {
     let mut y = nalgebra_sparse::CscMatrix::try_from_csc_data(
         3,
-        4,
-        vec![0, 0, 2, 4, 6],
-        vec![0, 2, 0, 1, 1, 2],
-        vec![0.0, 0.0, f32::NAN, f32::NAN, 1.0, 3.0],
+        5,
+        vec![0, 0, 2, 4, 6, 8],
+        vec![0, 2, 0, 1, 1, 2, 0, 1],
+        vec![0.0, 0.0, f32::NAN, f32::NAN, 1.0, 3.0, 2.0, f32::INFINITY],
     )
     .unwrap();
     log_normalise_cells(&mut y);
     assert_eq!(y.values()[..4], [0.0; 4]);
+    assert_eq!(y.values()[6..], [0.0; 2]);
     let want = [
         (LIBRARY_SCALE * 0.25).ln_1p(),
         (LIBRARY_SCALE * 0.75).ln_1p(),
     ];
-    for (got, want) in y.values()[4..].iter().zip(want) {
+    for (got, want) in y.values()[4..6].iter().zip(want) {
         assert!((got - want).abs() < TOL, "{got} vs {want}");
     }
+}
+
+/// A cell whose stored counts are all zero goes through the batch divide
+/// and both visitors as an empty cell: every channel is finite, and a pair
+/// of it and a neighbour reads as the neighbour alone.
+#[test]
+fn a_cell_of_stored_zeros_is_empty_after_the_batch_divide() {
+    let x = counts();
+    let (g, n) = x.shape();
+    let batch_of_cell = [0, 0, 1, 1];
+    let hollow = 2;
+    let mut triplets = Vec::new();
+    for j in 0..n {
+        for i in 0..g {
+            if j == hollow {
+                triplets.push((i as u64, j as u64, 0.0));
+            } else if x[(i, j)] > 0.0 {
+                triplets.push((i as u64, j as u64, x[(i, j)]));
+            }
+        }
+    }
+    let sp = create_sparse_from_triplets(&triplets, (g, n, triplets.len()), None, None).unwrap();
+    let data = data_of(sp, (g, n), &batch_of_cell);
+    let stored = data.read_columns_csc(std::iter::once(hollow)).unwrap();
+    assert_eq!(stored.nnz(), g, "the reader keeps stored zeros");
+
+    let delta = uneven_delta(g);
+    let basis = basis(g);
+    let pairs = [(0, hollow), (hollow, 3)];
+    let (shared, diff, proj) = channels(&data, &pairs, Some(&delta), &basis);
+
+    let plain = plainly_divided(&x, &delta, &batch_of_cell);
+    let alone = Mat::from_columns(&[plain.column(0), plain.column(3)]);
+    let want_proj = (basis.rows(0, g) + basis.rows(g, g)).transpose() * &alone;
+    assert_close(&shared, &alone, "shared");
+    assert_close(&diff, &alone, "difference");
+    assert_close(&proj, &want_proj, "projection");
 }
 
 /// The same counts read as one batch (no batch effects) and as two batches
@@ -196,6 +246,26 @@ fn log_normalised(x: &Mat) -> Mat {
     out
 }
 
+/// Each count of `x` divided by the effect of its feature in its cell's
+/// batch and nothing else, then each cell log-normalised.
+fn plainly_divided(x: &Mat, delta: &Mat, batch_of_cell: &[usize]) -> Mat {
+    log_normalised(&Mat::from_fn(x.nrows(), x.ncols(), |i, j| {
+        x[(i, j)] / delta[(i, batch_of_cell[j])]
+    }))
+}
+
+/// The pair channels of features x cells `y`: the sum and the absolute
+/// difference of each pair's two cells.
+fn pair_channels(y: &Mat, pairs: &[(usize, usize)]) -> (Mat, Mat) {
+    let mut shared = Mat::zeros(y.nrows(), pairs.len());
+    let mut diff = Mat::zeros(y.nrows(), pairs.len());
+    for (e, &(i, j)) in pairs.iter().enumerate() {
+        shared.set_column(e, &(y.column(i) + y.column(j)));
+        diff.set_column(e, &(y.column(i) - y.column(j)).abs());
+    }
+    (shared, diff)
+}
+
 /// The divide the visitors use estimates a per-cell rate as it divides. A
 /// per-cell constant is gone once the cell is rescaled, so the channels are
 /// those of a plain division of each count by its batch effect.
@@ -208,15 +278,8 @@ fn the_self_normalising_divide_reads_as_a_plain_divide_once_rescaled() {
     let pairs = [(0, 1), (1, 2), (2, 3), (0, 3)];
     let basis = basis(g);
 
-    let plain = log_normalised(&Mat::from_fn(g, x.ncols(), |i, j| {
-        x[(i, j)] / delta[(i, batch_of_cell[j])]
-    }));
-    let mut want_shared = Mat::zeros(g, pairs.len());
-    let mut want_diff = Mat::zeros(g, pairs.len());
-    for (e, &(i, j)) in pairs.iter().enumerate() {
-        want_shared.set_column(e, &(plain.column(i) + plain.column(j)));
-        want_diff.set_column(e, &(plain.column(i) - plain.column(j)).abs());
-    }
+    let plain = plainly_divided(&x, &delta, &batch_of_cell);
+    let (want_shared, want_diff) = pair_channels(&plain, &pairs);
     let want_proj =
         basis.rows(0, g).transpose() * &want_shared + basis.rows(g, g).transpose() * &want_diff;
 
@@ -224,4 +287,45 @@ fn the_self_normalising_divide_reads_as_a_plain_divide_once_rescaled() {
     assert_close(&shared, &want_shared, "shared");
     assert_close(&diff, &want_diff, "difference");
     assert_close(&proj, &want_proj, "projection");
+}
+
+/// The plain-divide reading holds for positive batch effects only. The
+/// divide leaves a count whose effect is not positive as it is, divided by
+/// neither the effect nor the cell's rate, so the rate no longer cancels:
+/// the cell is the divide's own output, rescaled, and two cells of one
+/// composition at different depths then differ.
+#[test]
+fn a_count_without_a_positive_effect_keeps_the_cell_rate() {
+    let x = counts();
+    let g = x.nrows();
+    let batch_of_cell = [0, 0, 1, 1];
+    let mut delta = uneven_delta(g);
+    delta[(1, 0)] = 0.0;
+    let pairs = [(0, 1), (1, 2), (2, 3), (0, 3)];
+    let basis = basis(g);
+
+    // the divide as documented: rate = Σ counts / Σ effects over the cell's
+    // stored rows, and a count is divided by effect x rate where the effect
+    // is positive
+    let mut divided = x.clone();
+    for (j, mut cell) in divided.column_iter_mut().enumerate() {
+        let d = delta.column(batch_of_cell[j]);
+        let stored = |i: &usize| x[(*i, j)] > 0.0;
+        let rate = cell.sum() / (0..g).filter(stored).map(|i| d[i]).sum::<f32>();
+        for i in (0..g).filter(|&i| d[i] > 0.0) {
+            cell[i] /= d[i] * rate;
+        }
+    }
+    let (want_shared, want_diff) = pair_channels(&log_normalised(&divided), &pairs);
+    let want_proj =
+        basis.rows(0, g).transpose() * &want_shared + basis.rows(g, g).transpose() * &want_diff;
+
+    let (shared, diff, proj) = channels(&data(&x, &batch_of_cell), &pairs, Some(&delta), &basis);
+    assert_close(&shared, &want_shared, "shared");
+    assert_close(&diff, &want_diff, "difference");
+    assert_close(&proj, &want_proj, "projection");
+    assert!(
+        diff.column(0).iter().any(|&v| v > 0.1),
+        "depth enters the pair of one composition: {diff}"
+    );
 }

@@ -1,6 +1,7 @@
 use crate::link_community::profiles::{
     compute_propensity_and_feature_community_stat, PropensityReportConfig,
 };
+use crate::simulate::baseline::normalise_log;
 use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
@@ -396,38 +397,38 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `ln(1 + s x / total)`, `s` the [`LIBRARY_SCALE`]: a count of a unit whose
-/// counts sum to `total`, scaled to the common total and logged (scanpy's
-/// `normalize_total(target_sum=1e4)` then `log1p`; Wolf, Angerer and Theis
-/// 2018, Genome Biology 19:15).
-// Private until the shared log-normalisation helper lands in `util::common`;
-// this then moves there.
-fn log_cp10k(x: f32, total: f32) -> f32 {
-    (LIBRARY_SCALE * x / total).ln_1p()
-}
-
-/// Each cell (column) of `y` scaled to [`LIBRARY_SCALE`] and logged
-/// ([`log_cp10k`]), in place on its stored entries. The total is the cell's
-/// own, over every row it has. A cell with no positive finite total (no
-/// counts, or stored zeros a batch divide turned into `0 / 0`) is all zero.
+/// Each cell (column) of `y` scaled to [`LIBRARY_SCALE`] and logged, in
+/// place on its stored entries: the crate's one transform on sparse columns
+/// ([`normalise_log`], scanpy's `normalize_total(target_sum=1e4)` then
+/// `log1p`; Wolf, Angerer and Theis 2018, Genome Biology 19:15). The total
+/// is the cell's own, over every row it has.
+///
+/// A cell whose total is not a positive finite number is set to zero first,
+/// so it reads as an empty cell and not as NaN. That is a cell of stored
+/// zeros after a batch divide (`0 / 0`, the reader keeps stored zeros), and
+/// also any cell holding a count that is not finite.
 pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
     for mut cell in y.col_iter_mut() {
         let values = cell.values_mut();
         let total: f32 = values.iter().sum();
-        if total > 0.0 && total.is_finite() {
-            values.iter_mut().for_each(|v| *v = log_cp10k(*v, total));
-        } else {
+        if !(total > 0.0 && total.is_finite()) {
             values.fill(0.0);
         }
     }
+    normalise_log(y);
 }
 
 /// The columns of `cells` as both pair visitors take them: divided by the
 /// batch effects of each cell's batch when there are any, then
 /// log-normalised ([`log_normalise_cells`]) on the total after the divide.
-/// The divide's per-cell rate is a constant of the cell, so it cancels in
-/// the rescaling and a cell reads the same with a unit batch effect as with
-/// none. Sparse throughout.
+/// Sparse throughout.
+///
+/// The divide scales a cell by a rate of its own as it divides. Where every
+/// effect the cell's counts meet is positive (the fitted effects are a Gamma
+/// posterior mean), that rate is a constant of the cell: it cancels in the
+/// rescaling, and a cell reads the same with a unit batch effect as with
+/// none. A count whose effect is not positive is left as it is, by the rate
+/// too, so for such a cell the rate does not cancel.
 fn read_log_normalised(
     data: &CellPairs,
     cells: impl Iterator<Item = usize> + Clone,
