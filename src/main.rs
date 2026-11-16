@@ -166,10 +166,11 @@ macro_rules! baseline_batch {
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
     () => {
-        "The output is a pinto run, which `pinto view`, compare and lra read\n\
-         as they read an lc run: the manifest {out}.pinto.json (rerunning into\n\
-         the same --out overwrites it), {out}.propensity.parquet (cells x K:\n\
-         the method's posteriors when it has them, else one-hot labels),\n\
+        "The output is a pinto run, which `pinto view`, compare, lra and\n\
+         residual read as they read an lc run: the manifest {out}.pinto.json\n\
+         (rerunning into the same --out overwrites it),\n\
+         {out}.propensity.parquet (cells x K: the method's posteriors when it\n\
+         has them, else one-hot labels),\n\
          {out}.cells.parquet (cells with coordinates), {out}.labels.tsv (for\n\
          srt-sim-score --labels), {out}.cell_embedding.parquet (the method's\n\
          per-cell vectors) and {out}.baseline.json (the settings as run)."

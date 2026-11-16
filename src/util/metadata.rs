@@ -367,7 +367,7 @@ pub fn file_batches(labels: Option<BatchLabels>, files: &[Box<str>]) -> Option<V
 /// Data files as a manifest records them: each canonical (absolute) when
 /// it resolves, as given otherwise, so a later run finds them from any
 /// working directory.
-fn recorded_files(files: &[Box<str>]) -> Vec<String> {
+pub fn recorded_files(files: &[Box<str>]) -> Vec<String> {
     files
         .iter()
         .map(|f| {

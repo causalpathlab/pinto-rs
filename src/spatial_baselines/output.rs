@@ -223,7 +223,7 @@ pub fn write_run(
         version: env!("CARGO_PKG_VERSION").into(),
         timestamp: now_secs(),
         prefix: prefix.into(),
-        data_files: Some(input.data_files.iter().map(|f| f.to_string()).collect()),
+        data_files: Some(crate::util::metadata::recorded_files(&input.data_files)),
         coord_file: Some(input.coord_files.join(",")),
         n_cells: n,
         n_features: data.genes.len(),

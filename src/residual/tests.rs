@@ -391,21 +391,58 @@ fn a_run_that_lacks_a_record_is_refused_by_its_name() {
     }
 }
 
-/// A recorded propensity that is gone is refused while planning, by name.
+/// A recorded table that is gone, the propensity or the cells table, is
+/// refused while planning, by name.
 #[test]
-fn a_recorded_propensity_that_is_gone_is_refused_while_planning() {
-    let dir = tempfile::tempdir().unwrap();
-    let d = dir.path().to_str().unwrap();
-    let (prefix, _) = fixture(d);
-    std::fs::remove_file(format!("{prefix}.propensity.parquet")).unwrap();
-    let a = args(&prefix, &format!("{d}/resid"), None);
-    let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
-        .expect_err("refused")
-        .to_string();
-    assert!(
-        e.contains("fit.propensity.parquet") && e.contains("not there"),
-        "{e}"
-    );
+fn a_recorded_table_that_is_gone_is_refused_while_planning() {
+    type Table = fn(&str) -> String;
+    let cases: [Table; 2] = [
+        |prefix| format!("{prefix}.propensity.parquet"),
+        |prefix| crate::util::parquet_io::cells_table_path(prefix),
+    ];
+    for table in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        let (prefix, _) = fixture(d);
+        let gone = table(&prefix);
+        std::fs::remove_file(&gone).unwrap();
+        let a = args(&prefix, &format!("{d}/resid"), None);
+        let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
+            .expect_err("refused")
+            .to_string();
+        let name = Path::new(&gone).file_name().unwrap().to_str().unwrap();
+        assert!(e.contains(name) && e.contains("not there"), "{e}");
+    }
+}
+
+/// A run whose manifest records no data files is refused while planning,
+/// the missing record named, and is taken with its files given as
+/// `--data-files`.
+#[test]
+fn a_run_that_records_no_data_files_takes_them_as_given() {
+    use crate::util::metadata::PintoMetadata;
+    type Unset = fn(&mut PintoMetadata);
+    let cases: [Unset; 2] = [|m| m.data_files = None, |m| m.data_files = Some(vec![])];
+    for unset in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        let (prefix, files) = fixture(d);
+        PintoMetadata::update(Path::new(&format!("{prefix}.pinto.json")), unset).unwrap();
+        let run = Run::open(&prefix).unwrap();
+        let out = format!("{d}/resid");
+        let e = Plan::new(&run, &args(&prefix, &out, None))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            e.contains("records no data files (data_files)") && e.contains("--data-files"),
+            "{e}"
+        );
+        assert!(!Path::new(&out).exists(), "nothing written");
+
+        let given: Vec<Box<str>> = files.iter().map(|f| f.as_str().into()).collect();
+        let plan = Plan::new(&run, &args(&prefix, &out, Some(given.clone()))).unwrap();
+        assert_eq!(plan.files, given);
+    }
 }
 
 /// The command that wrote the run does not matter, and one-hot memberships
@@ -444,22 +481,36 @@ fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
     assert!(g1(&read(&format!("{out}/S2.zarr")), 1) > 0.0);
 }
 
-/// A spatial baseline's run is taken as a fit's is: it records its data
-/// files, propensity (here the method's posterior), cells table (with the
-/// batch of each cell) and coordinate columns. Each data file gets its
-/// excess zarr and coordinates, and a fit reads them as it reads data: the
-/// rows every file shares, each file's own cells, a coordinate per cell.
+/// A spatial baseline's run is taken as a fit's is, on cells or on
+/// super-cells (`-pb`): it records its data files (as a fit does, so that
+/// they are found from any working directory), propensity, cells table
+/// (with the batch of each cell) and coordinate columns. Each data file
+/// gets its excess zarr and coordinates, and a fit reads them as it reads
+/// data: the rows every file shares, each file's own cells, a coordinate
+/// per cell.
 #[test]
 fn a_residual_is_taken_from_a_spatial_baseline_run() {
+    for command in ["spatialde2", "spatialde2-pb"] {
+        residual_from_baseline(command);
+    }
+}
+
+fn residual_from_baseline(command: &str) {
     use data_beans::aux::feature_names::FeatureNameKind;
     let dir = tempfile::tempdir().unwrap();
     let side = 6;
     let (data, coords) = crate::test_support::two_sections(dir.path(), side);
     let fit = dir.path().join("base").to_string_lossy().into_owned();
+    // the data files as typed are not their canonical paths
+    std::fs::create_dir(dir.path().join("aside")).unwrap();
+    let typed: Vec<String> = ["s1", "s2"]
+        .iter()
+        .map(|s| format!("{}/aside/../{s}.zarr", dir.path().display()))
+        .collect();
     let argv = [
         "pinto",
-        "spatialde2",
-        &data,
+        command,
+        &typed.join(","),
         "-c",
         &coords,
         "--coord-column-names",
@@ -469,16 +520,31 @@ fn a_residual_is_taken_from_a_spatial_baseline_run() {
         "--max-iter",
         "5",
     ];
-    let crate::Commands::Spatialde2(base) = <crate::Cli as clap::Parser>::try_parse_from(argv)
+    match <crate::Cli as clap::Parser>::try_parse_from(argv)
         .unwrap_or_else(|e| panic!("{e}"))
         .commands
-    else {
-        unreachable!()
-    };
-    crate::spatial_baselines::spatialde2::run(&base).unwrap();
+    {
+        crate::Commands::Spatialde2(base) => crate::spatial_baselines::spatialde2::run(&base),
+        crate::Commands::Spatialde2Pb(base) => crate::spatial_baselines::spatialde2::run_pb(&base),
+        _ => unreachable!(),
+    }
+    .unwrap();
+
+    let run = Run::open(&fit).unwrap();
+    let canonical: Vec<String> = typed
+        .iter()
+        .map(|f| {
+            let path = std::fs::canonicalize(f).unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    assert_eq!(
+        run.meta.data_files.as_deref(),
+        Some(&canonical[..]),
+        "{command}: data files are recorded as a fit records them"
+    );
 
     // the default --adapt batch groups by the run's own batches
-    let run = Run::open(&fit).unwrap();
     let recorded = run.meta.outputs.cells.as_deref().unwrap();
     let cells = crate::util::parquet_io::read_cells_table(Path::new(recorded), None).unwrap();
     assert!(cells.batches.is_some(), "the run's cells carry their batch");

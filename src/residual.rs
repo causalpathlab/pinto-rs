@@ -375,9 +375,11 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
             "{f} and an earlier data file have the same name {name}"
         );
     }
-    let n_run = run.meta.data_files.as_ref().map_or(files.len(), Vec::len);
+    // a manifest that records none (no list, or an empty one) says nothing
+    // of how many the run had
+    let n_run = run.meta.data_files.as_ref().map_or(0, Vec::len);
     anyhow::ensure!(
-        files.len() == n_run,
+        n_run == 0 || files.len() == n_run,
         "{} data files given for a run fitted on {n_run}: pass all of the run's files",
         files.len()
     );
