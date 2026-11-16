@@ -4,16 +4,20 @@
 //! ```text
 //! {out}/sections/S1.zarr            counts, genes × spots
 //! {out}/sections/S1.coords.parquet  spot, row_um, col_um
-//! {out}/truth/spots.parquet         per spot: section, donor, domain and its owner, state, depth, mixture;
+//! {out}/truth/spots.parquet         per spot: section, donor and whether it is confounded,
+//!                                   domain and its owner, state, depth, mixture;
 //!                                   `cell` as pinto names it (`barcode@section`, or the
 //!                                   bare barcode with one section), to join onto fits
+//! {out}/truth/donors.parquet        confounded (`false`: no donor-wide, donor-by-cell-type
+//!                                   or section shift), sections
 //! {out}/truth/domains.parquet       owner (empty: shared), composition
 //! {out}/truth/states.parquet        owner (empty: shared)
 //! {out}/truth/genes.parquet         baseline, dispersion, programmes
 //! {out}/truth/truth.pinto.json      the truth as a run `pinto view` opens:
 //!                                   truth.cells.parquet and the domain, state
 //!                                   and donor levels (truth.*.propensity.parquet)
-//! {out}/manifest.json               every parameter, and the realised PVE
+//! {out}/manifest.json               every parameter, the unconfounded donors and whether
+//!                                   they were drawn, and the realised PVE
 //! ```
 
 use super::panel::{donor_label, Section};
@@ -55,6 +59,12 @@ pub fn spot_index(sim: &Sim) -> (Vec<(usize, usize)>, Vec<Box<str>>) {
         })
         .collect();
     (spots, cells)
+}
+
+/// Whether donor `d` carries a shift ([`Sim::confounded`]), as the truth
+/// tables spell it.
+fn confounded(sim: &Sim, d: usize) -> Box<str> {
+    sim.confounded(d).to_string().into()
 }
 
 fn owner(info: &Info) -> Box<str> {
@@ -107,6 +117,7 @@ pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
     let barcode = strs(&|s, i| sec(s).barcodes[i].clone());
     let section = strs(&|s, _| sec(s).name.clone());
     let donor = strs(&|s, _| donor_label(sec(s).donor));
+    let confounded = strs(&|s, _| confounded(sim, sec(s).donor));
     let domain = strs(&|s, i| t.domains[t.domain[s][i]].label.clone());
     let domain_owner = strs(&|s, i| owner(&t.domains[t.domain[s][i]]));
     let state = strs(&|s, i| t.states[t.dominant[s][i]].label.clone());
@@ -120,6 +131,7 @@ pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
         ("barcode".into(), Column::Str(&barcode)),
         ("section".into(), Column::Str(&section)),
         ("donor".into(), Column::Str(&donor)),
+        ("confounded".into(), Column::Str(&confounded)),
         ("domain".into(), Column::Str(&domain)),
         ("domain_owner".into(), Column::Str(&domain_owner)),
         ("state".into(), Column::Str(&state)),
@@ -131,6 +143,34 @@ pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
         cols.push((format!("w_{}", st.label).into(), Column::F32(m)));
     }
     write_named_table(path, "cell", &cell, &cols)
+}
+
+/// Each donor, whether it is confounded, and its sections (comma-separated).
+pub fn write_donors(path: &str, sim: &Sim) -> anyhow::Result<()> {
+    let donors: Vec<usize> = (0..sim.p.n_donors).collect();
+    let labels: Vec<Box<str>> = donors.iter().map(|&d| donor_label(d)).collect();
+    let status: Vec<Box<str>> = donors.iter().map(|&d| confounded(sim, d)).collect();
+    let sections: Vec<Box<str>> = donors
+        .iter()
+        .map(|&d| {
+            let names: Vec<&str> = sim
+                .sections
+                .iter()
+                .filter(|sec| sec.donor == d)
+                .map(|sec| sec.name.as_ref())
+                .collect();
+            names.join(",").into()
+        })
+        .collect();
+    write_named_table(
+        path,
+        "donor",
+        &labels,
+        &[
+            ("confounded".into(), Column::Str(&status)),
+            ("sections".into(), Column::Str(&sections)),
+        ],
+    )
 }
 
 pub fn write_domains(path: &str, sim: &Sim) -> anyhow::Result<()> {

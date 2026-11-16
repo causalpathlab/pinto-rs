@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 pub enum PatchKind {
     /// No donor-specific domain.
     None,
-    /// Dominated by a cell state no other donor has.
+    /// Dominated by a cell type no other donor has.
     NewState,
-    /// The first two shared states, evenly: a mix no shared domain has.
+    /// The first two shared cell types, evenly: a mix no shared domain has.
     NewMix,
 }
 
@@ -30,7 +30,7 @@ pub struct SimParams {
 
     // genes
     pub n_genes: usize,
-    /// Genes in each cell state's programme.
+    /// Genes in each cell type's programme.
     pub programme_genes: usize,
     /// Mean and SD over genes of the baseline log rate per unit depth.
     pub log_mean: f64,
@@ -43,7 +43,7 @@ pub struct SimParams {
     pub depth_sd: f64,
 
     // planted truth
-    /// Shared domains, each dominated by its own shared cell state.
+    /// Shared domains, each dominated by its own shared cell type.
     pub n_domains: usize,
     /// Share of a domain's dominant state in its composition.
     pub dominant: f64,
@@ -58,7 +58,8 @@ pub struct SimParams {
     /// Share of the owner's spots in the donor-specific domain.
     pub patch_share: f64,
     pub patch_length_um: f64,
-    /// For a new state: cosine of its programme to the first shared state's.
+    /// For a new cell type: cosine of its programme to the first shared
+    /// cell type's.
     pub patch_cosine: f64,
 
     // The log rate, as proportions of variance explained (PVE).
@@ -74,17 +75,26 @@ pub struct SimParams {
     // [`SimParams::shares_summary`] spells out what a setting implies.
     /// Total variance of the log rate around its gene baselines.
     pub log_rate_var: f64,
-    /// Share of the cell states (the signal that defines domains).
+    /// Share of the cell types, each a cell state of the model (the signal
+    /// that defines domains).
     pub pve_type: f64,
-    /// Share of donor-wide effects, the same in every cell state.
+    /// Share of donor-wide effects, the same in every cell type.
     pub pve_donor: f64,
-    /// Share of donor-by-cell-state effects.
+    /// Share of donor-by-cell-type effects.
     pub pve_inter: f64,
     /// Share of per-section effects.
     pub pve_section: f64,
-    /// Donors and sections (0-based, in panel order) that carry no nuisance.
-    pub clean_donors: Vec<usize>,
-    pub clean_sections: Vec<usize>,
+    /// Donors (0-based, in panel order) with no shift: no donor-wide,
+    /// donor-by-cell-type or section shift, on any of their sections.
+    #[serde(alias = "clean_donors")]
+    pub unconfounded_donors: Vec<usize>,
+    /// Sections (0-based, in panel order) with no section shift.
+    #[serde(alias = "clean_sections")]
+    pub unconfounded_sections: Vec<usize>,
+    /// Unconfounded donors drawn at random from the seed instead of listed:
+    /// among the donors other than the donor-only domain's owner when there
+    /// is one, else among all donors. 0 draws none.
+    pub n_unconfounded_donors: usize,
 
     // Gaussian copula across genes; strength 0 turns it off
     pub copula_rank: usize,
@@ -99,12 +109,12 @@ pub struct SimParams {
 /// The log rate's terms, in the order every share array uses.
 pub const TERMS: [&str; 5] = ["type", "donor", "inter", "section", "noise"];
 
-/// Of groups `0..n`, those not in `clean`.
-fn on_count(n: usize, clean: &[usize]) -> usize {
-    (0..n).filter(|i| !clean.contains(i)).count()
+/// Of groups `0..n`, those not in `unconfounded`.
+fn on_count(n: usize, unconfounded: &[usize]) -> usize {
+    (0..n).filter(|i| !unconfounded.contains(i)).count()
 }
 
-/// Why a term that varies across `n` groups, `on` of them not clean, has
+/// Why a term that varies across `n` groups, `on` of them confounded, has
 /// nothing to vary across, if so.
 fn why_alone(n: usize, on: usize, one: &'static str, all: &'static str) -> Option<&'static str> {
     match (n, on) {
@@ -144,8 +154,9 @@ impl Default for SimParams {
             pve_donor: 0.0,
             pve_inter: 0.0,
             pve_section: 0.0,
-            clean_donors: Vec::new(),
-            clean_sections: Vec::new(),
+            unconfounded_donors: Vec::new(),
+            unconfounded_sections: Vec::new(),
+            n_unconfounded_donors: 0,
             copula_rank: 10,
             copula_strength: 0.1,
             nuisance_off: false,
@@ -153,7 +164,7 @@ impl Default for SimParams {
     }
 }
 
-fn l1() -> SimParams {
+fn donor_confounded() -> SimParams {
     SimParams {
         pve_donor: 0.15,
         pve_inter: 0.15,
@@ -162,28 +173,21 @@ fn l1() -> SimParams {
     }
 }
 
-fn l2() -> SimParams {
+fn donor_only_cell_type() -> SimParams {
     SimParams {
         patch_kind: PatchKind::NewState,
-        ..l1()
+        ..donor_confounded()
     }
 }
 
-fn l2_mix() -> SimParams {
+fn donor_only_mix() -> SimParams {
     SimParams {
         patch_kind: PatchKind::NewMix,
-        ..l1()
+        ..donor_confounded()
     }
 }
 
-fn clean_one() -> SimParams {
-    SimParams {
-        clean_donors: vec![0],
-        ..l2()
-    }
-}
-
-fn null_shift() -> SimParams {
+fn composition_shift() -> SimParams {
     SimParams {
         jit_b: 0.5,
         patch_kind: PatchKind::NewState,
@@ -194,54 +198,118 @@ fn null_shift() -> SimParams {
 /// A named scenario: what it is, and its settings.
 pub struct Scenario {
     pub name: &'static str,
+    /// Earlier names, still accepted and never listed.
+    pub aliases: &'static [&'static str],
     pub about: &'static str,
     pub params: fn() -> SimParams,
 }
 
-/// The named scenarios.
+/// The named scenarios. Each `about` stands alone, with its numbers; a
+/// test holds them to the settings.
 pub const SCENARIOS: &[Scenario] = &[
     Scenario {
-        name: "L0",
-        about: "shared domains only, no donor or section effect",
+        name: "unconfounded",
+        aliases: &["L0"],
+        about: "3 donors, 2 sections each; 4 spatial domains shared by every donor, \
+                each 95% one cell type; cell type 30% of the log rate's variance; \
+                no donor-wide, donor-by-cell-type or section shift",
         params: SimParams::default,
     },
     Scenario {
-        name: "L1",
-        about: "L0 + donor-wide and donor-by-type nuisance",
-        params: l1,
+        name: "donor-confounded",
+        aliases: &["L1"],
+        about: "3 donors, 2 sections each; 4 spatial domains shared by every donor, \
+                each 95% one cell type; cell type 30% of the log rate's variance, \
+                plus a donor-wide shift (15%), a donor-by-cell-type shift (15%) and a \
+                section shift (2%)",
+        params: donor_confounded,
     },
     Scenario {
-        name: "L2",
-        about: "L1 + a domain one donor alone has (a new state)",
-        params: l2,
+        name: "donor-confounded-donor-only-cell-type",
+        aliases: &["L2"],
+        about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
+                cell type 30% of the log rate's variance, a donor-wide shift (15%), \
+                a donor-by-cell-type shift (15%) and a section shift (2%); and a domain \
+                only the third donor has, about 15% of its spots, made of a cell type \
+                no other donor has (its programme at cosine 0.3 to the first shared cell type's)",
+        params: donor_only_cell_type,
     },
     Scenario {
-        name: "L2-mix",
-        about: "L1 + a domain one donor alone has (a new mix of shared states)",
-        params: l2_mix,
+        name: "donor-confounded-donor-only-mix",
+        aliases: &["L2-mix"],
+        about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
+                cell type 30% of the log rate's variance, a donor-wide shift (15%), \
+                a donor-by-cell-type shift (15%) and a section shift (2%); and a domain \
+                only the third donor has, about 15% of its spots, made of the first two \
+                shared cell types in equal parts, a mix no shared domain uses",
+        params: donor_only_mix,
     },
     Scenario {
-        name: "clean-one",
-        about: "L2 with one donor clean of nuisance",
-        params: clean_one,
-    },
-    Scenario {
-        name: "null-shift",
-        about: "no nuisance, but donor proportions and a donor-specific domain differ",
-        params: null_shift,
+        name: "composition-shift",
+        aliases: &["null-shift"],
+        about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
+                cell type 30% of the log rate's variance; no donor-wide, \
+                donor-by-cell-type or section shift, but donors differ in domain \
+                proportions (log-scale spread 0.5), and the third donor has a domain \
+                of its own, about 15% of its spots, made of a cell type no other donor \
+                has (its programme at cosine 0.3 to the first shared cell type's)",
+        params: composition_shift,
     },
 ];
 
+/// The scenario named `name`, by its name or an earlier one.
+pub fn find_scenario(name: &str) -> anyhow::Result<&'static Scenario> {
+    SCENARIOS
+        .iter()
+        .find(|s| s.name == name || s.aliases.contains(&name))
+        .ok_or_else(|| {
+            let names: Vec<&str> = SCENARIOS.iter().map(|s| s.name).collect();
+            anyhow::anyhow!("unknown scenario {name:?}; one of {}", names.join(", "))
+        })
+}
+
 impl SimParams {
-    pub fn scenario(name: &str) -> anyhow::Result<Self> {
-        SCENARIOS
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| (s.params)())
-            .ok_or_else(|| {
-                let names: Vec<&str> = SCENARIOS.iter().map(|s| s.name).collect();
-                anyhow::anyhow!("unknown scenario {name:?}; one of {}", names.join(", "))
+    /// The donors an unconfounded donor may be drawn from: all but the
+    /// donor-only domain's owner when there is one.
+    pub fn drawable_donors(&self) -> Vec<usize> {
+        let owner = (self.patch_kind != PatchKind::None).then_some(self.patch_owner);
+        (0..self.n_donors).filter(|&d| Some(d) != owner).collect()
+    }
+
+    /// The unconfounded donors, in order: `n_unconfounded_donors` drawn
+    /// uniformly from [`Self::drawable_donors`] on their own stream, so no
+    /// other draw moves, or else those `unconfounded_donors` lists.
+    pub fn unconfounded_donor_set(&self) -> Vec<usize> {
+        let mut out = if self.n_unconfounded_donors > 0 {
+            use rand::RngExt;
+            let mut pool = self.drawable_donors();
+            let mut r = super::rng::rng(self.seed, super::rng::Stream::UnconfoundedDonors, &[]);
+            let k = self.n_unconfounded_donors.min(pool.len());
+            // a partial Fisher-Yates shuffle: the first k are a uniform draw
+            for i in 0..k {
+                let j = r.random_range(i..pool.len());
+                pool.swap(i, j);
+            }
+            pool.truncate(k);
+            pool
+        } else {
+            self.unconfounded_donors.clone()
+        };
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The sections with no section shift: those `unconfounded_sections`
+    /// lists and every section of an unconfounded donor.
+    pub fn unconfounded_section_set(&self) -> Vec<usize> {
+        let donors = self.unconfounded_donor_set();
+        (0..self.n_sections())
+            .filter(|s| {
+                self.unconfounded_sections.contains(s)
+                    || donors.contains(&(s / self.sections_per_donor))
             })
+            .collect()
     }
 
     /// Set fields by `key=value` ([`set_fields`]).
@@ -254,25 +322,30 @@ impl SimParams {
         1.0 - self.pve_type - self.pve_donor - self.pve_inter - self.pve_section
     }
 
-    /// The nuisance terms (donor, donor x type, section): each one's
+    /// The nuisance terms (donor-wide, donor-by-cell-type, section): each one's
     /// parameter name, its share as set, and why it is off, if it is:
     /// `nuisance_off` (as [`crate::simulate::expression::active`] decides),
     /// or nothing for it to vary across (one donor or section, or every one
-    /// clean), where `expression::scaling` gives it no scale. A donor-by-type
-    /// term still varies across cell states with one donor. A test holds the
+    /// unconfounded), where `expression::scaling` gives it no scale. A
+    /// donor-by-cell-type term still varies across cell types with one donor. A test holds the
     /// two in step.
     pub fn nuisance_terms(&self) -> [(&'static str, f64, Option<&'static str>); 3] {
         let off = if crate::simulate::expression::active(self)[1] {
-            let donors = on_count(self.n_donors, &self.clean_donors);
-            let sections = on_count(self.n_sections(), &self.clean_sections);
+            let donors = on_count(self.n_donors, &self.unconfounded_donor_set());
+            let sections = on_count(self.n_sections(), &self.unconfounded_section_set());
             [
-                why_alone(self.n_donors, donors, "one donor", "every donor clean"),
-                (donors == 0).then_some("every donor clean"),
+                why_alone(
+                    self.n_donors,
+                    donors,
+                    "one donor",
+                    "every donor unconfounded",
+                ),
+                (donors == 0).then_some("every donor unconfounded"),
                 why_alone(
                     self.n_sections(),
                     sections,
                     "one section",
-                    "every section clean",
+                    "every section unconfounded",
                 ),
             ]
         } else {
@@ -305,8 +378,8 @@ impl SimParams {
     pub fn shares_summary(&self) -> String {
         let [t, d, i, sec, noise] = self.effective_shares();
         let mut s = format!(
-            "variance shares of the log rate: type {t:.3}, donor {d:.3}, donor x type {i:.3}, \
-             section {sec:.3}, noise {noise:.3} (the remainder)"
+            "variance shares of the log rate: cell type {t:.3}, donor-wide {d:.3}, \
+             donor-by-cell-type {i:.3}, section {sec:.3}, noise {noise:.3} (the remainder)"
         );
         for (name, set, off) in self.nuisance_terms() {
             if let (true, Some(why)) = (set > 0.0, off) {
@@ -322,7 +395,7 @@ impl SimParams {
             };
             s.push_str(&format!(
                 ". The nuisance ({nuisance:.3}) comes out of the noise, not the type share: \
-                 type to noise is {here} here, {:.3} with the nuisance shares at 0",
+                 cell type to noise is {here} here, {:.3} with the nuisance shares at 0",
                 self.pve_type / (1.0 - self.pve_type)
             ));
         } else if noise == 0.0 {
@@ -406,12 +479,25 @@ impl SimParams {
             );
         }
         anyhow::ensure!(
-            self.clean_donors.iter().all(|&d| d < self.n_donors),
-            "clean_donors names a donor that does not exist"
+            self.unconfounded_donors.iter().all(|&d| d < self.n_donors),
+            "unconfounded_donors names a donor that does not exist"
         );
         anyhow::ensure!(
-            self.clean_sections.iter().all(|&s| s < self.n_sections()),
-            "clean_sections names a section that does not exist"
+            self.unconfounded_sections
+                .iter()
+                .all(|&s| s < self.n_sections()),
+            "unconfounded_sections names a section that does not exist"
+        );
+        anyhow::ensure!(
+            self.n_unconfounded_donors == 0 || self.unconfounded_donors.is_empty(),
+            "set n_unconfounded_donors (drawn) or unconfounded_donors (listed), not both"
+        );
+        let drawable = self.drawable_donors().len();
+        anyhow::ensure!(
+            self.n_unconfounded_donors <= drawable,
+            "n_unconfounded_donors={} but only {drawable} donors can be drawn \
+             (every donor but the donor-only domain's owner)",
+            self.n_unconfounded_donors
         );
         Ok(())
     }
@@ -419,7 +505,8 @@ impl SimParams {
 
 /// `value` with fields set by `key=value` (`--set`), the value read as JSON
 /// when it parses (numbers, booleans, lists) and as a string otherwise. A key
-/// that is no field of `value` is an error naming the fields, each one a
+/// may be a field's earlier name, a serde alias, so `T` must deny unknown
+/// fields; a key that is neither is an error naming the fields, each one a
 /// `noun`.
 pub fn set_fields<T: Serialize + serde::de::DeserializeOwned>(
     value: &T,
@@ -434,12 +521,26 @@ pub fn set_fields<T: Serialize + serde::de::DeserializeOwned>(
         let (k, raw) = s
             .split_once('=')
             .ok_or_else(|| anyhow::anyhow!("--set {s:?}: expected key=value"))?;
-        if !obj.contains_key(k) {
-            let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-            anyhow::bail!("--set {k}: no such {noun} (one of {})", keys.join(", "));
-        }
+        let field = if obj.contains_key(k) {
+            k.to_string()
+        } else {
+            // an alias of the one field whose value it can stand in for
+            let alias_of = |f: &String| {
+                let mut o = obj.clone();
+                let v = o.remove(f);
+                o.insert(k.to_string(), v.unwrap_or_default());
+                serde_json::from_value::<T>(serde_json::Value::Object(o)).is_ok()
+            };
+            match obj.keys().find(|f| alias_of(f)) {
+                Some(f) => f.clone(),
+                None => {
+                    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+                    anyhow::bail!("--set {k}: no such {noun} (one of {})", keys.join(", "));
+                }
+            }
+        };
         let val = serde_json::from_str(raw).unwrap_or(serde_json::Value::String(raw.into()));
-        obj.insert(k.to_string(), val);
+        obj.insert(field, val);
     }
     serde_json::from_value(v).map_err(|e| anyhow::anyhow!("--set: {e}"))
 }
