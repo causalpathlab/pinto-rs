@@ -55,7 +55,3 @@ pub(super) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let nb: f32 = b.iter().map(|&x| x * x).sum::<f32>().sqrt();
     dot / (na * nb).max(1e-8)
 }
-
-pub(super) fn norm(a: &[f32]) -> f32 {
-    a.iter().map(|&x| x * x).sum::<f32>().sqrt()
-}

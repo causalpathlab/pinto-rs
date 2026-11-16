@@ -22,8 +22,8 @@
 //! spots left unlabelled are not scored and are counted. Label rows naming
 //! cells the truth lacks are counted too (`n_unmatched`) and warned of.
 
-use super::panel::{donor_label, parse_donor_label};
 use crate::compare::{ari, propensity_path, Partition, Table};
+use crate::simulate::panel::{donor_label, parse_donor_label};
 use crate::util::common::{in_dir, HashMap};
 use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
 use legume_numeric::matrix::table::TableReader;
@@ -69,7 +69,7 @@ impl TruthSpots {
         anyhow::ensure!(!out.trim().is_empty(), "no truth given");
         let out = &sim_folder(out);
         let dom = read_parquet_string_columns_by_name(
-            &super::run::domains_path(out),
+            &crate::simulate::run::domains_path(out),
             &["domain", "owner_donor"],
         )?;
         let donor_index = |d: &str| -> anyhow::Result<usize> {

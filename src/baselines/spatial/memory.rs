@@ -113,7 +113,7 @@ pub const GRAPH_NEIGHBOUR_BYTES: usize = 64;
 /// index, 48 a pair: 36 a listed edge, 40 with a margin).
 pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize, proj_dim: usize) -> usize {
     let proj = 2 * 4 * proj_dim * cells;
-    let graph = GRAPH_NEIGHBOUR_BYTES * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
+    let graph = GRAPH_NEIGHBOUR_BYTES * crate::baselines::spatial::pseudobulk::COARSEN_K * cells;
     proj + graph + 24 * nonzeros + 40 * edges
 }
 
@@ -185,7 +185,7 @@ pub const STAGATE_SPARSE_SAFETY: f64 = 1.45;
 /// (`GH`); beside the sparse input itself.
 pub fn stagate_sparse_training_bytes(s: &StagateShape) -> usize {
     let (n, e, g, h) = (s.cells, s.edges, s.genes, s.hidden);
-    let b = crate::spatial_baselines::stagate::loss_block_cells(g).min(n);
+    let b = crate::baselines::spatial::stagate::loss_block_cells(g).min(n);
     let floats = 10 * e * h + 19 * h * n + 5 * b * g + b * h + 7 * g * h;
     (4.0 * floats as f64 * STAGATE_SPARSE_SAFETY) as usize
         + SPARSE_INPUT_NONZERO_BYTES * s.selected_nonzeros

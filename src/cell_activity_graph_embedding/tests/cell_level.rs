@@ -30,8 +30,17 @@ fn every_cell_is_its_own_unit_at_both_levels() {
     assert_eq!(ml.all_num_samples, vec![3, 3]);
 }
 
-/// The small widths the short test fits run at.
-const SMALL_WIDTHS: [&str; 6] = ["--embedding-dim", "4", "-d", "24", "--num-levels", "3"];
+/// The small widths and the short encoder budget the test fits run at.
+const SMALL_WIDTHS: [&str; 8] = [
+    "--embedding-dim",
+    "4",
+    "-d",
+    "24",
+    "--num-levels",
+    "3",
+    "--pair-encoder-steps",
+    "8",
+];
 
 /// A short cage fit of `data` (`cage-cell` when `extra` holds `"cell"`)
 /// to `{dir}/{name}`; its prefix, or why it failed.
@@ -134,6 +143,31 @@ fn cell_embedding(prefix: &str) -> Mat {
         .mat
 }
 
+/// `feature_inclusion.parquet` of the run at `prefix` has a row per
+/// feature and every π in [0, 1].
+fn assert_scores_every_feature(prefix: &str) {
+    let t = Mat::from_parquet(&format!("{prefix}.feature_inclusion.parquet")).unwrap();
+    assert_eq!(t.rows.len(), 12, "{prefix}: one row per feature");
+    let pi = t
+        .mat
+        .column(t.cols.iter().position(|c| c.as_ref() == "pi").unwrap());
+    assert!(
+        pi.iter().all(|&p| (0.0..=1.0).contains(&p)),
+        "{prefix}: π outside [0, 1]"
+    );
+}
+
+fn pb_embedding(prefix: &str) -> Mat {
+    Mat::from_parquet(&format!("{prefix}.pb_embedding.parquet"))
+        .unwrap()
+        .mat
+}
+
+/// The short fits on one pair of sections: cage-cell trains on cells and
+/// estimates batch effects (stratified by `--cnv-clones` when given);
+/// `--positives-per-epoch` changes its fit; `--ignore-batch` skips the
+/// batch effects; plain cage trains on pseudobulks; and `--feature-inclusion
+/// moran` scores every feature in both modes.
 #[test]
 fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let dir = tempfile::tempdir().unwrap();
@@ -141,25 +175,17 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let n_cells = 2 * 8 * 8;
 
     let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
-    let trained = Mat::from_parquet(&format!("{cell}.pb_embedding.parquet")).unwrap();
-    assert_eq!(trained.mat.nrows(), n_cells, "one trained row per cell");
+    assert_eq!(
+        pb_embedding(&cell).nrows(),
+        n_cells,
+        "one trained row per cell"
+    );
     // batch effects are estimated and removed, as in cage, unless asked not to
     assert!(
         std::path::Path::new(&format!("{cell}.delta.parquet")).exists(),
         "cage-cell estimated no batch effects"
     );
     assert!(std::path::Path::new(&format!("{cell}.pinto.json")).exists());
-    let raw = fit(
-        dir.path(),
-        &data,
-        &coords,
-        "cell_raw",
-        &["cell", "--ignore-batch"],
-    );
-    assert!(
-        !std::path::Path::new(&format!("{raw}.delta.parquet")).exists(),
-        "--ignore-batch still estimated batch effects"
-    );
     assert!(
         cell_level_of(&cell),
         "the manifest says the run is cell-level"
@@ -173,11 +199,36 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let diff = (&fitted - &placed).abs().max();
     assert!(diff < 1e-4, "predict moved the cells by up to {diff}");
 
-    // the same data without the flag trains on pseudobulks
-    let pb = fit(dir.path(), &data, &coords, "pb", &[]);
-    let trained = Mat::from_parquet(&format!("{pb}.pb_embedding.parquet")).unwrap();
+    // `--positives-per-epoch` (hidden) replaces the per-feature budget
+    let one = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "one",
+        &["cell", "--positives-per-epoch", "1"],
+    );
     assert!(
-        trained.mat.nrows() < n_cells,
+        pb_embedding(&cell) != pb_embedding(&one),
+        "the budget left the fit unchanged"
+    );
+
+    let raw = fit(
+        dir.path(),
+        &data,
+        &coords,
+        "cell_raw",
+        &["cell", "--ignore-batch"],
+    );
+    assert!(
+        !std::path::Path::new(&format!("{raw}.delta.parquet")).exists(),
+        "--ignore-batch still estimated batch effects"
+    );
+
+    // the same data without the flag trains on pseudobulks
+    let inclusion = ["--feature-inclusion", "moran", "--inclusion-blocks", "4"];
+    let pb = fit(dir.path(), &data, &coords, "pb", &inclusion);
+    assert!(
+        pb_embedding(&pb).nrows() < n_cells,
         "the default trains on super-cells"
     );
     assert!(std::path::Path::new(&format!("{pb}.delta.parquet")).exists());
@@ -185,15 +236,11 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         !cell_level_of(&pb),
         "an ordinary cage run is not cell-level"
     );
-}
+    assert_scores_every_feature(&pb);
 
-/// cage-cell estimates batch effects as cage does, so `--cnv-clones`
-/// stratifies that estimate here too.
-#[test]
-fn cell_level_takes_cnv_clones_into_its_batch_estimate() {
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 8);
-    // every other cell in a private clone (stratum 1), the rest mixable
+    // cage-cell estimates batch effects as cage does, so `--cnv-clones`
+    // stratifies that estimate here too: every other cell in a private
+    // clone (stratum 1), the rest mixable
     let clones = dir.path().join("x.clones.parquet");
     let clones = clones.to_str().unwrap();
     let cells: Vec<Box<str>> = ["s1", "s2"]
@@ -208,14 +255,10 @@ fn cell_level_takes_cnv_clones_into_its_batch_estimate() {
         &[("stratum".into(), Column::I32(&stratum))],
     )
     .unwrap();
-    let cell = fit(
-        dir.path(),
-        &data,
-        &coords,
-        "cell",
-        &["cell", "--cnv-clones", clones],
-    );
-    assert!(std::path::Path::new(&format!("{cell}.delta.parquet")).exists());
+    let extra = [&inclusion[..], &["cell", "--cnv-clones", clones]].concat();
+    let cnv = fit(dir.path(), &data, &coords, "cnv", &extra);
+    assert!(std::path::Path::new(&format!("{cnv}.delta.parquet")).exists());
+    assert_scores_every_feature(&cnv);
 }
 
 /// On cells the chain group is the cell, so the upstream rejection
@@ -272,69 +315,14 @@ fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
     }
 }
 
-/// `--feature-inclusion moran` scores every feature, on the PB tree in cage
-/// and on cells in cage-cell, and writes the table.
+/// `--positives-per-epoch` (hidden) parses to an epoch total; unset keeps
+/// the per-feature default.
 #[test]
-fn feature_inclusion_scores_every_feature_in_both_modes() {
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 8);
-    for (name, extra) in [
-        (
-            "pb",
-            &["--feature-inclusion", "moran", "--inclusion-blocks", "4"][..],
-        ),
-        (
-            "cell",
-            &[
-                "--feature-inclusion",
-                "moran",
-                "--inclusion-blocks",
-                "4",
-                "cell",
-            ][..],
-        ),
-    ] {
-        let out = fit(dir.path(), &data, &coords, name, extra);
-        let t = Mat::from_parquet(&format!("{out}.feature_inclusion.parquet")).unwrap();
-        assert_eq!(t.rows.len(), 12, "{name}: one row per feature");
-        let pi = t
-            .mat
-            .column(t.cols.iter().position(|c| c.as_ref() == "pi").unwrap());
-        assert!(
-            pi.iter().all(|&p| (0.0..=1.0).contains(&p)),
-            "{name}: π outside [0, 1]"
-        );
-    }
-}
-
-/// `--positives-per-epoch` (hidden) replaces the per-feature budget with
-/// an epoch total; unset keeps the per-feature default.
-#[test]
-fn positives_per_epoch_sets_the_epoch_budget() {
+fn positives_per_epoch_parses() {
     let base = ["-o", "out", "d.zarr"];
     assert_eq!(parse(&base).unwrap().positives_per_epoch, None);
     let set = parse(&[&base[..], &["--positives-per-epoch", "5"]].concat()).unwrap();
     assert_eq!(set.positives_per_epoch, Some(5));
-
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 6);
-    let auto = fit(dir.path(), &data, &coords, "auto", &["cell"]);
-    let one = fit(
-        dir.path(),
-        &data,
-        &coords,
-        "one",
-        &["cell", "--positives-per-epoch", "1"],
-    );
-    let read = |p: &str| {
-        Mat::from_parquet(&format!("{p}.pb_embedding.parquet"))
-            .unwrap()
-            .mat
-    };
-    assert!(
-        read(&auto) != read(&one),
-        "the budget left the fit unchanged"
-    );
 }
 
 /// The per-(feature, batch) draws: the default when unset, else the epoch

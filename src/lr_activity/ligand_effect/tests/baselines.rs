@@ -17,6 +17,7 @@ fn rejections(b: &Baselines) -> [bool; 4] {
 /// Ligand and receptor drawn independently of each other, of cell type and
 /// of place: every baseline rejects about 5% of runs.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn baselines_are_calibrated_without_association() {
     let f = fixture();
     let n = f.tissue.n();
@@ -92,6 +93,7 @@ fn null_rejections(
 /// does not. (The types sit in patches, so their contacts are mostly
 /// homotypic and the contact baselines see less co-expression than chance.)
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn cell_type_expression_fools_the_cell_type_baseline_not_the_estimator() {
     let f = fixture();
     let scen = Scenario::default();

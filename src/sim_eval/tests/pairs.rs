@@ -1,7 +1,7 @@
-use crate::simulate::pairs::{
+use crate::sim_eval::pairs::{
     auroc, average_precision, read_vectors, score_pairs, PairOptions, PairScore, SpotLayout,
 };
-use crate::simulate::score::TruthSpots;
+use crate::sim_eval::score::TruthSpots;
 use crate::util::common::Mat;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -307,7 +307,7 @@ fn a_simulations_truth_run_scores_one() {
 /// the header puts them.
 #[test]
 fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
-    use crate::simulate::pairs::{pairs_header, pairs_rows, PairSet, PatchPairs};
+    use crate::sim_eval::pairs::{pairs_header, pairs_rows, PairSet, PatchPairs};
     let set = PairSet {
         n_pairs: 1,
         n_positive: 1,

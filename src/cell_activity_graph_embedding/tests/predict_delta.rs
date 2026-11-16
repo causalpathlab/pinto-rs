@@ -74,40 +74,73 @@ fn moved(model: &str, query: &str) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// Cells per side of each section.
+const SIDE: usize = 8;
+
+/// One cage model fitted on s1 and s2 (s2 folded by [`s2_fold`]), and s3,
+/// a new section folded on other features than s2.
+struct Trained {
+    dir: std::path::PathBuf,
+    s1: (String, String),
+    s2: (String, String),
+    s3: (String, String),
+    training: String,
+    coords: String,
+    model: String,
+}
+
+/// The model is fitted once; each step reads it, and the steps that
+/// rewrite it run after those that read what they rewrite.
 #[test]
-fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = 8;
-    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
-    let s2 = section(dir.path(), "s2", side, &|g| {
-        if g % 3 == 0 {
-            4.0
-        } else {
-            1.0
-        }
-    });
-    // a new section, folded on other features than s2
-    let s3 = section(dir.path(), "s3", side, &|g| {
-        if g % 3 == 1 {
-            8.0
-        } else {
-            1.0
-        }
-    });
+fn predict_and_impute_on_one_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let s1 = section(&dir, "s1", SIDE, &|_| 1.0);
+    let s2 = section(&dir, "s2", SIDE, &s2_fold);
+    let s3 = section(&dir, "s3", SIDE, &|g| if g % 3 == 1 { 8.0 } else { 1.0 });
     let training = format!("{},{}", s1.0, s2.0);
     let coords = format!("{},{}", s1.1, s2.1);
-    let model = fit(dir.path(), &training, &coords, "model", &[]);
+    let model = fit(&dir, &training, &coords, "model", &[]);
+    let t = Trained {
+        dir,
+        s1,
+        s2,
+        s3,
+        training,
+        coords,
+        model,
+    };
+    file_batches_are_named_by_their_stems(&t);
+    predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones(&t);
+    impute_divides_the_reference_by_the_runs_delta(&t);
+    an_older_models_positional_batches_match_by_its_files(&t);
+    a_model_without_a_delta_divides_nothing(&t);
+}
+
+/// `pinto predict` divides a query by the model's δ for the batches it
+/// trained on and estimates only the new ones.
+fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones(t: &Trained) {
+    let Trained {
+        dir,
+        s1,
+        s3,
+        training,
+        coords,
+        model,
+        ..
+    } = t;
+    let (dir, model) = (dir.as_path(), model.as_str());
     let model_delta = read_delta(&format!("{model}.delta.parquet")).unwrap();
 
     // the training files again: every cell where the model put it
-    let again = predict(dir.path(), (&training, &coords), &model, &training, "again");
-    let d = moved(&model, &again);
+    let again = predict(dir, (training, coords), model, training, "again");
+    let d = moved(model, &again);
     assert!(d < 1e-4, "predict moved the training cells by up to {d}");
 
     // one training section alone: one batch, nothing to estimate, so only
     // the model's δ can correct it
-    let alone = predict(dir.path(), (&s1.0, &s1.1), &model, &training, "alone");
-    let d = moved(&model, &alone);
+    let alone = predict(dir, (&s1.0, &s1.1), model, training, "alone");
+    let d = moved(model, &alone);
     assert!(
         d < 1e-4,
         "predict moved a known section's cells by up to {d}"
@@ -116,13 +149,13 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
     // a known section beside a new one: the known one keeps the model's δ,
     // the new one is estimated and carried into the model's frame
     let mixed = predict(
-        dir.path(),
+        dir,
         (&format!("{},{}", s1.0, s3.0), &format!("{},{}", s1.1, s3.1)),
-        &model,
-        &training,
+        model,
+        training,
         "mixed",
     );
-    let d = moved(&model, &mixed);
+    let d = moved(model, &mixed);
     assert!(
         d < 1e-4,
         "predict moved the known section's cells by up to {d}"
@@ -147,20 +180,30 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
             "row {g}: the new section's fold is {fold}, not {want}"
         );
     }
+}
 
-    // a model whose manifest records no δ trained on undivided counts: the
-    // same two sections are neither estimated nor divided (the last step,
-    // as it rewrites the model's manifest)
-    let manifest = crate::util::metadata::manifest_path(&model);
+/// A model whose manifest records no δ trained on undivided counts: a known
+/// and a new section are neither estimated nor divided. It rewrites the
+/// model's manifest, so it runs last.
+fn a_model_without_a_delta_divides_nothing(t: &Trained) {
+    let Trained {
+        dir,
+        s1,
+        s3,
+        training,
+        model,
+        ..
+    } = t;
+    let manifest = crate::util::metadata::manifest_path(model);
     let mut meta =
         crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
     meta.outputs.batch_effects = None;
     meta.write(std::path::Path::new(&manifest)).unwrap();
     let undivided = predict(
-        dir.path(),
+        dir,
         (&format!("{},{}", s1.0, s3.0), &format!("{},{}", s1.1, s3.1)),
-        &model,
-        &training,
+        model,
+        training,
         "undivided",
     );
     assert!(
@@ -174,21 +217,13 @@ fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones() {
 /// cell, every imputed row is one training cell's counts so divided. The
 /// cells' batches come from the table the fit wrote beside its δ, or, for
 /// a model fitted before it wrote one, from its coord_pairs: the same.
-#[test]
-fn impute_divides_the_reference_by_the_runs_delta() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = 8;
-    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
-    let s2 = section(dir.path(), "s2", side, &|g| {
-        if g % 3 == 0 {
-            4.0
-        } else {
-            1.0
-        }
-    });
-    let training = format!("{},{}", s1.0, s2.0);
-    let coords = format!("{},{}", s1.1, s2.1);
-    let model = fit(dir.path(), &training, &coords, "model", &[]);
+///
+/// It removes the cells table and its record, so it runs after the steps
+/// that read them.
+fn impute_divides_the_reference_by_the_runs_delta(t: &Trained) {
+    let Trained {
+        dir, s1, s2, model, ..
+    } = t;
     let delta = read_delta(&format!("{model}.delta.parquet")).unwrap();
 
     #[derive(Parser)]
@@ -197,7 +232,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
         impute: crate::impute::ImputeArgs,
     }
     let impute = |name: &str| {
-        let out = dir.path().join(name).to_str().unwrap().to_string();
+        let out = dir.join(name).to_str().unwrap().to_string();
         let argv = [
             "x",
             &s2.0,
@@ -206,7 +241,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
             "--coord-column-names",
             "x,y",
             "--model",
-            &model,
+            model,
             "-o",
             &out,
             "--impute-knn",
@@ -219,7 +254,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
                 .mat,
         )
     };
-    let manifest = crate::util::metadata::manifest_path(&model);
+    let manifest = crate::util::metadata::manifest_path(model);
     let mut meta =
         crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
     assert!(
@@ -230,9 +265,9 @@ fn impute_divides_the_reference_by_the_runs_delta() {
 
     // every training cell's counts divided by its file's δ column ("s1", "s2")
     let mut divided: Vec<Vec<f32>> = Vec::new();
-    for (b, (file, _)) in [&s1, &s2].iter().enumerate() {
+    for (b, (file, _)) in [s1, s2].iter().enumerate() {
         let data = data_beans::convert::try_open_or_convert(file).unwrap();
-        let x = data.read_columns_csc((0..side * side).collect()).unwrap();
+        let x = data.read_columns_csc((0..SIDE * SIDE).collect()).unwrap();
         for col in x.col_iter() {
             let mut v = vec![0.0f32; 12];
             for (&g, &c) in col.row_indices().iter().zip(col.values()) {
@@ -258,7 +293,7 @@ fn impute_divides_the_reference_by_the_runs_delta() {
     assert!(n_divided > 0, "nothing was imputed");
 
     // the table recorded but gone: an error, not the coord_pairs labels
-    std::fs::remove_file(crate::util::batch_effects::delta_cells_path(&model)).unwrap();
+    std::fs::remove_file(crate::util::batch_effects::delta_cells_path(model)).unwrap();
     assert!(
         impute("gone").is_err(),
         "a recorded cells table that is gone fell back to coord_pairs"
@@ -313,29 +348,29 @@ fn takes_models_column(
 /// A data file left to be its own batch is named by its stem: in the δ,
 /// each cell's batch beside it and the cells table, whatever order the
 /// files come in, and a query file of the same stem takes that batch's δ.
-#[test]
-fn file_batches_are_named_by_their_stems() {
+fn file_batches_are_named_by_their_stems(t: &Trained) {
     use std::collections::BTreeSet;
-    let dir = tempfile::tempdir().unwrap();
-    let side = 8;
-    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
-    let s2 = section(dir.path(), "s2", side, &s2_fold);
-    let training = format!("{},{}", s1.0, s2.0);
-    let coords = format!("{},{}", s1.1, s2.1);
-    let model = fit(dir.path(), &training, &coords, "model", &[]);
+    let Trained {
+        dir,
+        s1,
+        s2,
+        training,
+        model,
+        ..
+    } = t;
     let delta = read_delta(&format!("{model}.delta.parquet")).unwrap();
     let stems = ["s1", "s2"].map(Box::<str>::from).to_vec();
     assert_eq!(delta.batches, stems);
 
     let by_cell = crate::util::batch_effects::read_cell_batches(
-        &crate::util::batch_effects::delta_cells_path(&model),
+        &crate::util::batch_effects::delta_cells_path(model),
     )
     .unwrap();
-    assert_eq!(by_cell.len(), 2 * side * side);
+    assert_eq!(by_cell.len(), 2 * SIDE * SIDE);
     for (cell, batch) in &by_cell {
         assert!(cell.starts_with(&format!("{batch}_")), "{cell} in {batch}");
     }
-    let manifest = crate::util::metadata::manifest_path(&model);
+    let manifest = crate::util::metadata::manifest_path(model);
     let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
     let cells = crate::util::parquet_io::read_cells_table(
         std::path::Path::new(meta.outputs.cells.as_deref().unwrap()),
@@ -352,7 +387,7 @@ fn file_batches_are_named_by_their_stems() {
 
     // the files the other way round: the same batches, by name
     let swapped = fit(
-        dir.path(),
+        dir,
         &format!("{},{}", s2.0, s1.0),
         &format!("{},{}", s2.1, s1.1),
         "swapped",
@@ -367,10 +402,10 @@ fn file_batches_are_named_by_their_stems() {
     }
 
     // s2's sample again, elsewhere: the model's s2, by its stem
-    let elsewhere = dir.path().join("elsewhere");
+    let elsewhere = dir.join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
-    let again = section(&elsewhere, "s2", side, &s2_fold);
-    let query = predict(dir.path(), (&again.0, &again.1), &model, &training, "query");
+    let again = section(&elsewhere, "s2", SIDE, &s2_fold);
+    let query = predict(dir, (&again.0, &again.1), model, training, "query");
     assert!(
         takes_models_column(&query, &delta, "s2"),
         "a query file named s2 did not take the model's s2"
@@ -401,21 +436,23 @@ fn data_files_of_one_stem_are_refused() {
 /// A model an older pinto fitted named its file batches by position
 /// (`0`, `1`): a query file of one of its data files' stems still takes
 /// that file's δ, whether the manifest says `files` or records nothing.
-#[test]
-fn an_older_models_positional_batches_match_by_its_files() {
+///
+/// It renames the model's δ batches, so it runs after the steps that read
+/// them by name.
+fn an_older_models_positional_batches_match_by_its_files(t: &Trained) {
     use crate::util::metadata::{BatchLabels, PintoMetadata};
-    let dir = tempfile::tempdir().unwrap();
-    let side = 8;
-    let s1 = section(dir.path(), "s1", side, &|_| 1.0);
-    let s2 = section(dir.path(), "s2", side, &s2_fold);
-    let training = format!("{},{}", s1.0, s2.0);
-    let coords = format!("{},{}", s1.1, s2.1);
-    let model = fit(dir.path(), &training, &coords, "model", &[]);
+    let Trained {
+        dir,
+        s2,
+        training,
+        model,
+        ..
+    } = t;
     let path = format!("{model}.delta.parquet");
     let mut delta = read_delta(&path).unwrap();
     delta.batches = vec!["0".into(), "1".into()];
     delta.write(&path).unwrap();
-    let manifest = std::path::PathBuf::from(crate::util::metadata::manifest_path(&model));
+    let manifest = std::path::PathBuf::from(crate::util::metadata::manifest_path(model));
     for (i, labels) in [Some(BatchLabels::FilePositions), None]
         .into_iter()
         .enumerate()
@@ -423,13 +460,7 @@ fn an_older_models_positional_batches_match_by_its_files() {
         let mut meta = PintoMetadata::read(&manifest).unwrap();
         meta.batch_labels = labels;
         meta.write(&manifest).unwrap();
-        let query = predict(
-            dir.path(),
-            (&s2.0, &s2.1),
-            &model,
-            &training,
-            &format!("query{i}"),
-        );
+        let query = predict(dir, (&s2.0, &s2.1), model, training, &format!("query{i}"));
         assert!(
             takes_models_column(&query, &delta, "1"),
             "{labels:?}: s2 did not take the older model's batch 1"

@@ -52,9 +52,6 @@ pub struct SparseOp {
     terms: Vec<(Vec<f64>, Vec<f64>)>,
     /// The row scaling `D`.
     scale: Vec<f64>,
-    /// Entries the negative clip added off the counts' pattern.
-    #[cfg(test)]
-    pub clipped_zeros: usize,
 }
 
 /// The expression as dense f32 rows (`m` genes × `n` cells, row-major).
@@ -110,20 +107,7 @@ impl SparseOp {
             c_val,
             terms: Vec::new(),
             scale: vec![1.0; m],
-            #[cfg(test)]
-            clipped_zeros: 0,
         }
-    }
-
-    /// A dense genes × cells matrix as the operator, every entry stored
-    /// (for tests).
-    #[cfg(test)]
-    pub fn from_dense(y: &Dense) -> Self {
-        let (m, n) = y.shape();
-        let cells = (0..n)
-            .map(|c| (0..m).map(|g| (g as u32, y[(g, c)] as f32)).collect())
-            .collect();
-        Self::from_cells(m, cells)
     }
 
     /// Each gene's `(sum_c S_gc, sum_c S_gc^2, sum_c S_gc b_c)` for a cell
@@ -142,90 +126,6 @@ impl SparseOp {
                 (s, ss, sb)
             })
             .collect()
-    }
-
-    /// Analytic Pearson residuals of `counts` (the selected genes × cells)
-    /// with all-gene libraries `lib`, clipped at `+-sqrt(N)`, each gene
-    /// standardised to mean 0 and sample SD 1 (a gene with no variance is
-    /// a row of zeros).
-    #[cfg(test)]
-    pub fn pearson(counts: &CscMatrix<f32>, lib: &[f64]) -> Self {
-        let (m, n) = (counts.nrows(), counts.ncols());
-        let total: f64 = lib.iter().sum();
-        let mut row = vec![0f64; m];
-        for (g, _, &v) in counts.triplet_iter() {
-            row[g] += v as f64;
-        }
-        let p: Vec<f64> = row.iter().map(|r| r / total.max(1e-300)).collect();
-        let a: Vec<f64> = p.iter().map(|v| v.sqrt()).collect();
-        let b: Vec<f64> = lib.iter().map(|v| v.sqrt()).collect();
-        let clip = (n as f64).sqrt();
-        // cells by library, largest first: those where a zero count's
-        // residual -sqrt(mu) passes -sqrt(N)
-        let mut by_lib: Vec<usize> = (0..n).collect();
-        by_lib.sort_by(|&i, &j| lib[j].total_cmp(&lib[i]));
-        let mut extra: Vec<Vec<u32>> = vec![Vec::new(); n];
-        let mut clipped_zeros = 0;
-        for (g, &pg) in p.iter().enumerate() {
-            if pg <= 0.0 {
-                continue;
-            }
-            for &c in by_lib.iter().take_while(|&&c| pg * lib[c] > n as f64) {
-                extra[c].push(g as u32);
-                clipped_zeros += 1;
-            }
-        }
-        let cells: Vec<Vec<(u32, f32)>> = counts
-            .col_iter()
-            .zip(extra)
-            .enumerate()
-            .map(|(c, (col, ex))| {
-                let mut out: Vec<(u32, f32)> = Vec::with_capacity(col.nnz() + ex.len());
-                let mut have = std::collections::HashSet::new();
-                for (&g, &x) in col.row_indices().iter().zip(col.values()) {
-                    let mu = p[g] * lib[c];
-                    if mu <= 0.0 {
-                        continue;
-                    }
-                    let sm = mu.sqrt();
-                    let r = (x as f64 / sm - sm).clamp(-clip, clip);
-                    out.push((g as u32, (r + sm) as f32));
-                    if !ex.is_empty() {
-                        have.insert(g as u32);
-                    }
-                }
-                for g in ex {
-                    if have.contains(&g) {
-                        continue;
-                    }
-                    let sm = (p[g as usize] * lib[c]).sqrt();
-                    out.push((g, (sm - clip) as f32));
-                }
-                out.sort_unstable_by_key(|e| e.0);
-                out
-            })
-            .collect();
-        let mut op = Self::from_cells(m, cells);
-        op.clipped_zeros = clipped_zeros;
-        if clipped_zeros > 0 {
-            log::info!("pearson residuals: {clipped_zeros} zero counts clipped at -sqrt(N)");
-        }
-        let sums = op.row_sums(&b);
-        let (sb, sbb) = (b.iter().sum::<f64>(), b.iter().map(|v| v * v).sum::<f64>());
-        let nf = n as f64;
-        let mut mean = vec![0f64; m];
-        let mut scale = vec![0f64; m];
-        for g in 0..m {
-            let (s, ss, sx) = sums[g];
-            let sum = s - a[g] * sb;
-            let sq = ss - 2.0 * a[g] * sx + a[g] * a[g] * sbb;
-            mean[g] = sum / nf;
-            let var = (sq - nf * mean[g] * mean[g]) / (nf - 1.0).max(1.0);
-            scale[g] = if var > 1e-12 { 1.0 / var.sqrt() } else { 0.0 };
-        }
-        op.terms = vec![(a, b), (mean, vec![1.0; n])];
-        op.scale = scale;
-        op
     }
 
     /// [`log_cp10k`] of `counts` (the selected genes × cells) with all-gene
@@ -357,22 +257,6 @@ impl SparseOp {
                 out[(c, j)] = v;
             }
         }
-        out
-    }
-
-    /// Gene `g`'s row of `Y`, dense over the cells (for tests).
-    #[cfg(test)]
-    pub fn gene_row(&self, g: usize) -> Vec<f64> {
-        let mut out = vec![0f64; self.n];
-        for e in self.g_ptr[g]..self.g_ptr[g + 1] {
-            out[self.g_cell[e] as usize] = self.g_val[e] as f64;
-        }
-        for (a, b) in &self.terms {
-            for (o, bc) in out.iter_mut().zip(b) {
-                *o -= a[g] * bc;
-            }
-        }
-        out.iter_mut().for_each(|o| *o *= self.scale[g]);
         out
     }
 
@@ -525,16 +409,6 @@ impl SparseOp {
             .collect();
         Dense::from_fn(self.n, k, |c, j| cols[c][j])
     }
-
-    /// `Y` as a dense genes × cells matrix (for tests).
-    #[cfg(test)]
-    pub fn dense(&self) -> Dense {
-        let rows: Vec<Vec<f64>> = (0..self.m)
-            .into_par_iter()
-            .map(|g| self.gene_row(g))
-            .collect();
-        Dense::from_fn(self.m, self.n, |g, c| rows[g][c])
-    }
 }
 
 impl DenseRows {
@@ -542,13 +416,6 @@ impl DenseRows {
     pub fn from_rows(m: usize, n: usize, rows: Vec<f32>) -> Self {
         assert_eq!(rows.len(), m * n);
         DenseRows { m, n, rows }
-    }
-
-    /// A dense genes × cells matrix, held as f32 (for tests).
-    #[cfg(test)]
-    pub fn from_dense(y: &Dense) -> Self {
-        let (m, n) = y.shape();
-        Self::from_rows(m, n, (0..m * n).map(|i| y[(i / n, i % n)] as f32).collect())
     }
 
     /// SCTransform's residuals of `counts` (all genes × cells, libraries
@@ -642,12 +509,6 @@ impl DenseRows {
     /// `tr(Y Y^T)`.
     pub fn frob2(&self, section: &[usize], n_sections: usize) -> f64 {
         self.section_sumsq(section, n_sections).sum()
-    }
-
-    /// `Y` as a dense genes × cells matrix (for tests).
-    #[cfg(test)]
-    pub fn dense(&self) -> Dense {
-        Dense::from_fn(self.m, self.n, |g, c| self.rows[g * self.n + c] as f64)
     }
 }
 

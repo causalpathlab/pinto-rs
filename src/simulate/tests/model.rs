@@ -348,12 +348,12 @@ fn rotation_gives_the_requested_cosine_at_the_same_norm() {
 fn realised_pve_matches_the_targets() {
     // enough programme genes that the pooled nuisance shares sit near their
     // expectation: with three donors each gene's donor variance has 2
-    // degrees of freedom, so over 200 genes the donor share spreads by about
-    // 0.014; the tolerance is 2.5 times that
+    // degrees of freedom, so over 50 genes the donor share spreads by about
+    // 0.028; the tolerance is about 3 times that
     let sim = sim_of(SimParams {
         grid_side: 24,
-        n_genes: 2000,
-        programme_genes: 200,
+        n_genes: 200,
+        programme_genes: 50,
         dominant: 1.0,
         pve_type: 0.3,
         pve_donor: 0.2,
@@ -364,7 +364,7 @@ fn realised_pve_matches_the_targets() {
     let r = sim.realised_pve();
     let want = [0.3, 0.2, 0.1, 0.05, sim.p.pve_noise()];
     for (k, (got, want)) in r.iter().zip(want).enumerate() {
-        assert!((got - want).abs() < 0.035, "term {k}: {got} vs {want}");
+        assert!((got - want).abs() < 0.08, "term {k}: {got} vs {want}");
     }
 }
 

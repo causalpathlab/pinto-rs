@@ -181,6 +181,18 @@ pub struct CellActivityGraphEmbeddingArgs {
 
     #[arg(
         long,
+        default_value_t = 512,
+        help = "Optimizer steps for the pair encoder, about",
+        long_help = "Optimizer steps the pair encoder trains for, rounded up to whole\n\
+                     passes over the pairs, so the budget means the same at any data size.\n\
+                     A pass is the pairs split into steps of up to 4096.\n\
+                     Fewer is faster; too few leaves the encoder near its random start.\n\
+                     0 skips training."
+    )]
+    pub pair_encoder_steps: usize,
+
+    #[arg(
+        long,
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
         help = "Features per outer parallel sampling chunk",
         long_help = "The outer loop samples this many features in parallel via rayon.\n\

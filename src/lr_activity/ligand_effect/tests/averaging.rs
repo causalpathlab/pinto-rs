@@ -134,6 +134,24 @@ fn world_in(seed: u64, dose: f64, named: bool, regions: bool) -> World {
     }
 }
 
+/// [`world`] at seed 5 and dose 0.15, unnamed: built once, shared.
+fn plain_world() -> &'static World {
+    static W: std::sync::OnceLock<World> = std::sync::OnceLock::new();
+    W.get_or_init(|| world(5, 0.15, false))
+}
+
+/// [`plain_world`] with regions, and its rows at a competence of 0.1:
+/// built and estimated once, shared by the tests on regions.
+fn regions_world() -> &'static (World, Vec<EffectRow>) {
+    static W: std::sync::OnceLock<(World, Vec<EffectRow>)> = std::sync::OnceLock::new();
+    W.get_or_init(|| {
+        let w = world_in(5, 0.15, false, true);
+        let targets = [(1.0, w.response.as_slice())];
+        let rows = estimate_pair(&w.tissue, &data(&w, &targets), &opts(&[0.1], false)).unwrap();
+        (w, rows)
+    })
+}
+
 fn data<'a>(w: &'a World, targets: &'a [(f64, &'a [(u32, f32)])]) -> PairData<'a> {
     PairData {
         ligand: "L",
@@ -359,8 +377,9 @@ fn named_cell_types_add_one_row_each() {
         assert!(r.curve.is_empty());
     }
     // Without names, no type rows.
-    let w = world(5, 0.15, false);
-    let rows = estimate_pair(&w.tissue, &data(&w, &targets), &opts(&[0.1], false)).unwrap();
+    let w = plain_world();
+    let targets = [(1.0, w.response.as_slice())];
+    let rows = estimate_pair(&w.tissue, &data(w, &targets), &opts(&[0.1], false)).unwrap();
     assert_eq!(rows.len(), 1);
 }
 
@@ -368,9 +387,7 @@ fn named_cell_types_add_one_row_each() {
 /// gains a region group that the identity step admits.
 #[test]
 fn regions_add_one_row_each_but_unassigned() {
-    let w = world_in(5, 0.15, false, true);
-    let targets = [(1.0, w.response.as_slice())];
-    let rows = estimate_pair(&w.tissue, &data(&w, &targets), &opts(&[0.1], false)).unwrap();
+    let (w, rows) = regions_world();
     let labels: Vec<&str> = rows.iter().map(|r| &*r.section).collect();
     assert_eq!(labels, ["all", "region:a", "region:b"]);
     let n: usize = rows[1..].iter().map(|r| r.n_receivers).sum();
@@ -388,7 +405,7 @@ fn regions_add_one_row_each_but_unassigned() {
     // The same effect everywhere: a region differs from the rest by noise.
     let v = rows[1].effects.versus_rest;
     assert!(v.theta.abs() < 4.0 * v.se, "{} ± {}", v.theta, v.se);
-    let plain = world(5, 0.15, false);
+    let plain = plain_world();
     let p = w.tissue.design.p() - plain.tissue.design.p();
     // One section: a column for region b and one for unassigned, a the
     // reference.
@@ -406,7 +423,7 @@ fn regions_add_one_row_each_but_unassigned() {
 fn a_region_row_is_jackknifed_over_its_sections_tiles() {
     use crate::lr_activity::ligand_effect::contacts::competence;
     use crate::lr_activity::ligand_effect::jackknife::{jackknife, PairFit};
-    let w = world_in(5, 0.15, false, true);
+    let (w, rows) = regions_world();
     let targets = [(1.0, w.response.as_slice())];
     let o = opts(&[0.1], false);
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
@@ -428,7 +445,7 @@ fn a_region_row_is_jackknifed_over_its_sections_tiles() {
     );
     assert!(j.competent.is_finite() && j.competent > 0.0, "{j:?}");
     assert!(j.versus_rest.is_finite(), "{j:?}");
-    let mut e = estimate_pair(&w.tissue, &data(&w, &targets), &o).unwrap()[1].effects;
+    let mut e = rows[1].effects;
     let before = e.competent.se;
     j.widen(&mut e);
     assert!(e.competent.se >= before);
@@ -783,7 +800,7 @@ fn a_jackknife_without_refits_is_the_clustered_se() {
     use crate::lr_activity::args::RegionJackknife;
     use crate::lr_activity::ligand_effect::contacts::competence;
     use crate::lr_activity::ligand_effect::jackknife::{jackknife, PairFit};
-    let w = world_in(5, 0.15, false, true);
+    let (w, _) = regions_world();
     let targets = [(1.0, w.response.as_slice())];
     let detected: Vec<bool> = w.receptor.iter().map(|&r| r > 0.0).collect();
     let levels = vec![competence(&w.tissue.identity_bin, &detected, 0.1)];

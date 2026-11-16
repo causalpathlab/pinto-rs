@@ -5,7 +5,7 @@
 
 /// The notices file at the crate root, as `cargo package` ships it.
 const NOTICES_FILE: &str = "THIRD_PARTY_NOTICES.md";
-const NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.md");
+const NOTICES: &str = include_str!("../../THIRD_PARTY_NOTICES.md");
 
 /// The MIT terms below the copyright lines, as each source's LICENSE words
 /// them.
@@ -69,11 +69,11 @@ struct Port {
     copyright: &'static [&'static str],
 }
 
-const STAGATE_RS: &str = include_str!("../stagate.rs");
+const STAGATE_RS: &str = include_str!("spatial/stagate.rs");
 
 const PORTS: [Port; 4] = [
     Port {
-        modules: &[include_str!("../spatialde2.rs")],
+        modules: &[include_str!("spatial/spatialde2.rs")],
         source: "SpatialDE",
         url: "https://github.com/PMBio/SpatialDE",
         commit: "6dbdb559a566d639da0f6fd3acc9e17104c0674f",
@@ -100,7 +100,7 @@ const PORTS: [Port; 4] = [
         copyright: &["Copyright (c) 2021 Kangning Dong"],
     },
     Port {
-        modules: &[STAGATE_RS, include_str!("../../simulate/baseline.rs")],
+        modules: &[STAGATE_RS, include_str!("single_cell.rs")],
         source: "scanpy",
         url: "https://github.com/scverse/scanpy",
         commit: "3962176e93ba148bc0f61443c517877d736f2b3b",

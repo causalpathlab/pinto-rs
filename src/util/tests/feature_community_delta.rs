@@ -209,6 +209,8 @@ fn fit_cage(input: &[&str]) {
         cage: CellActivityGraphEmbeddingArgs,
     }
     let flags = [
+        "--pair-encoder-steps",
+        "8",
         "--epochs",
         "2",
         "--embedding-dim",

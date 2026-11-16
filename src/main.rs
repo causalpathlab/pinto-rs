@@ -1,3 +1,4 @@
+mod baselines;
 mod cell_activity_graph_embedding;
 mod compare;
 mod holdout;
@@ -12,8 +13,8 @@ mod propensity;
 mod residual;
 #[cfg(feature = "view")]
 mod run;
+mod sim_eval;
 mod simulate;
-mod spatial_baselines;
 mod svd;
 #[cfg(feature = "view")]
 mod tui;
@@ -162,7 +163,7 @@ macro_rules! baseline_batch {
     };
 }
 
-/// The spatial baselines' outputs, as `spatial_baselines/output.rs`
+/// The spatial baselines' outputs, as `baselines/spatial/output.rs`
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
     () => {
@@ -434,11 +435,7 @@ enum Commands {
                       Every CELL PAIR is placed on the frozen feature embedding.\n\
                       Its pooled counts x_gu + x_gv enter through one statistic,\n\
                       and a small encoder trained on this run's pairs\n\
-                      maps that statistic to the per-pair latent e_uv in one pass.\n\
-                      A seeded sample of pairs is always re-solved exactly\n\
-                      and the agreement is logged;\n\
-                      the few placements the certificate puts far out\n\
-                      are finished exactly.\n\n\
+                      maps that statistic to the per-pair latent e_uv in one pass.\n\n\
                       Clustering those pairs gives link communities.\n\
                       A cell's propensity is its incident-edge fraction.\n\
                       That is the same definition `lc` and `dsvd` use.\n\
@@ -723,7 +720,7 @@ enum Commands {
                       Labellings are pinto runs at --level, or tables with a cell column\n\
                       (--label-column names the labels)."
     )]
-    SrtSimScore(Box<simulate::SimScoreArgs>),
+    SrtSimScore(Box<sim_eval::SimScoreArgs>),
 
     #[command(
         name = "srt-sim-pairs",
@@ -744,7 +741,7 @@ enum Commands {
                       cell_embedding table, or any table with a cell column and numeric\n\
                       columns. Pairs are drawn from --seed, --pairs per sampled set."
     )]
-    SrtSimPairs(Box<simulate::SimPairsArgs>),
+    SrtSimPairs(Box<sim_eval::SimPairsArgs>),
 
     #[command(
         name = "srt-sim-baseline",
@@ -761,7 +758,7 @@ enum Commands {
                       correlated cluster of the largest donor (marker-correlation matching).\n\
                       Writes a cell<TAB>label table."
     )]
-    SrtSimBaseline(Box<simulate::BaselineArgs>),
+    SrtSimBaseline(Box<baselines::single_cell::BaselineArgs>),
 
     #[command(
         about = "SpatialDE2 tissue segmentation: Poisson DP-HMRF (baseline)",
@@ -778,7 +775,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    Spatialde2(Box<spatial_baselines::spatialde2::Args>),
+    Spatialde2(Box<baselines::spatial::spatialde2::Args>),
 
     #[command(
         about = "STAGATE: graph-attention autoencoder on the spatial graph (baseline)",
@@ -798,7 +795,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    Stagate(Box<spatial_baselines::stagate::Args>),
+    Stagate(Box<baselines::spatial::stagate::Args>),
 
     #[command(
         name = "spatialde2-pb",
@@ -817,7 +814,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    Spatialde2Pb(Box<spatial_baselines::spatialde2::PbArgs>),
+    Spatialde2Pb(Box<baselines::spatial::spatialde2::PbArgs>),
 
     #[command(
         name = "stagate-pb",
@@ -836,7 +833,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    StagatePb(Box<spatial_baselines::stagate::PbArgs>),
+    StagatePb(Box<baselines::spatial::stagate::PbArgs>),
 
     #[command(
         about = "SpatialPCA: spatially aware probabilistic PCA (baseline)",
@@ -860,7 +857,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    Spatialpca(Box<spatial_baselines::spatialpca::Args>),
+    Spatialpca(Box<baselines::spatial::spatialpca::Args>),
 
     #[command(
         name = "spatialpca-pb",
@@ -879,7 +876,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    SpatialpcaPb(Box<spatial_baselines::spatialpca::PbArgs>),
+    SpatialpcaPb(Box<baselines::spatial::spatialpca::PbArgs>),
 
     #[command(
         about = "MEFISTO: factor analysis with spatially smooth factors (baseline)",
@@ -899,7 +896,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    Mefisto(Box<spatial_baselines::mefisto::Args>),
+    Mefisto(Box<baselines::spatial::mefisto::Args>),
 
     #[command(
         name = "mefisto-pb",
@@ -917,7 +914,7 @@ enum Commands {
             baseline_outputs!()
         )
     )]
-    MefistoPb(Box<spatial_baselines::mefisto::PbArgs>),
+    MefistoPb(Box<baselines::spatial::mefisto::PbArgs>),
 
     #[command(
         about = "Compare two runs' communities over the cells they share",
@@ -1267,17 +1264,17 @@ fn run_command() -> anyhow::Result<()> {
         }
         Commands::Residual(args) => residual::run_residual(args)?,
         Commands::SrtSimulate(args) => simulate::run_simulate(args)?,
-        Commands::SrtSimScore(args) => simulate::run_score(args)?,
-        Commands::SrtSimPairs(args) => simulate::run_pairs(args)?,
-        Commands::SrtSimBaseline(args) => simulate::run_baseline(args)?,
-        Commands::Spatialde2(args) => spatial_baselines::spatialde2::run(args)?,
-        Commands::Spatialde2Pb(args) => spatial_baselines::spatialde2::run_pb(args)?,
-        Commands::Stagate(args) => spatial_baselines::stagate::run(args)?,
-        Commands::StagatePb(args) => spatial_baselines::stagate::run_pb(args)?,
-        Commands::Spatialpca(args) => spatial_baselines::spatialpca::run(args)?,
-        Commands::SpatialpcaPb(args) => spatial_baselines::spatialpca::run_pb(args)?,
-        Commands::Mefisto(args) => spatial_baselines::mefisto::run(args)?,
-        Commands::MefistoPb(args) => spatial_baselines::mefisto::run_pb(args)?,
+        Commands::SrtSimScore(args) => sim_eval::run_score(args)?,
+        Commands::SrtSimPairs(args) => sim_eval::run_pairs(args)?,
+        Commands::SrtSimBaseline(args) => baselines::single_cell::run_baseline(args)?,
+        Commands::Spatialde2(args) => baselines::spatial::spatialde2::run(args)?,
+        Commands::Spatialde2Pb(args) => baselines::spatial::spatialde2::run_pb(args)?,
+        Commands::Stagate(args) => baselines::spatial::stagate::run(args)?,
+        Commands::StagatePb(args) => baselines::spatial::stagate::run_pb(args)?,
+        Commands::Spatialpca(args) => baselines::spatial::spatialpca::run(args)?,
+        Commands::SpatialpcaPb(args) => baselines::spatial::spatialpca::run_pb(args)?,
+        Commands::Mefisto(args) => baselines::spatial::mefisto::run(args)?,
+        Commands::MefistoPb(args) => baselines::spatial::mefisto::run_pb(args)?,
         Commands::Compare(args) => run_compare(args)?,
         #[cfg(feature = "view")]
         Commands::View(args) => {

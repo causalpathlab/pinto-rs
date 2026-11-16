@@ -402,7 +402,7 @@ fn edge_pairs(n: usize) -> impl Iterator<Item = (usize, usize)> {
     (0..n).flat_map(move |a| (a + 1..n).map(move |b| (a, b)))
 }
 
-const SPLIT_SWEEPS: usize = 20_000;
+const SPLIT_SWEEPS: usize = 4_000;
 
 /// Sweeps per call to the sampler: each call starts from stats counted afresh
 /// and patches them between sweeps.

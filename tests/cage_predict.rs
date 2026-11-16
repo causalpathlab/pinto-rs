@@ -114,6 +114,8 @@ fn train(d: &Path, extra: &[&str]) -> (String, String, String) {
     let mut fit = vec!["cage", &train, "-c", &train_xy, "-o", &model];
     fit.extend(SMALL);
     fit.extend([
+        "--pair-encoder-steps",
+        "8",
         "--epochs",
         "1",
         "-d",
@@ -142,16 +144,22 @@ fn apply(d: &Path, command: &str, query: (&str, &str), named: &str, out: &str, e
     pinto(d, &argv);
 }
 
+/// Trained, predicted and imputed under `--atomic-outputs`: each step lands
+/// its outputs whole, records their final paths and leaves no staging
+/// folder. The prediction has a propensity row per query cell; the model
+/// imputes the same whether named by its prefix (under `--atomic-outputs`)
+/// or by its manifest (without).
 #[test]
 fn a_cage_model_predicts_and_imputes_a_new_sample() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
-    let (query, query_xy, model) = train(d, &[]);
+    let atomic = ["--atomic-outputs", "--verbose"];
+    let (query, query_xy, model) = train(d, &atomic);
     let query = (query.as_str(), query_xy.as_str());
     let pred = d.join("pred").to_string_lossy().into_owned();
     let imputed = d.join("imp").to_string_lossy().into_owned();
 
-    apply(d, "predict", query, &model, &pred, &[]);
+    apply(d, "predict", query, &model, &pred, &atomic);
     let made = manifest(&pred);
     assert_eq!(made["command"], "predict");
     for table in [
@@ -180,30 +188,16 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
     assert_eq!(prop[0].len(), 2, "the model's two communities");
 
     // Imputed by the model's prefix, and by its manifest: the same model.
-    let impute = |named: &str, out: &str| {
-        apply(d, "impute", query, named, out, &[]);
+    let impute = |named: &str, out: &str, extra: &[&str]| {
+        apply(d, "impute", query, named, out, extra);
         read_rows(&format!("{out}.imputed.parquet"), |_| true)
     };
-    let (cells, counts) = impute(&model, &imputed);
+    let (cells, counts) = impute(&model, &imputed, &atomic);
     assert_eq!(cells.len(), 100);
     assert_eq!(counts[0].len(), FEATURES);
     let by_manifest = d.join("imp2").to_string_lossy().into_owned();
-    assert!(impute(&format!("{model}.pinto.json"), &by_manifest) == (cells, counts));
-}
+    assert!(impute(&format!("{model}.pinto.json"), &by_manifest, &[]) == (cells, counts));
 
-/// The same three steps under `--atomic-outputs`: each lands its outputs
-/// whole, records their final paths and leaves no staging folder.
-#[test]
-fn cage_predict_and_impute_land_whole_under_atomic_outputs() {
-    let dir = tempfile::tempdir().unwrap();
-    let d = dir.path();
-    let atomic = ["--atomic-outputs", "--verbose"];
-    let (query, query_xy, model) = train(d, &atomic);
-    let query = (query.as_str(), query_xy.as_str());
-    let pred = d.join("pred").to_string_lossy().into_owned();
-    let imputed = d.join("imp").to_string_lossy().into_owned();
-    apply(d, "predict", query, &model, &pred, &atomic);
-    apply(d, "impute", query, &model, &imputed, &atomic);
     for (prefix, table) in [
         (&model, "propensity"),
         (&pred, "propensity"),

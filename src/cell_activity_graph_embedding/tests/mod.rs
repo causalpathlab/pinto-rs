@@ -5,6 +5,5 @@ mod feature_inclusion;
 mod feature_modules;
 mod fixture;
 mod pair_encoder;
-mod pair_projection;
 mod predict_delta;
 mod small_input;

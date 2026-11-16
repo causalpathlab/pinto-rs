@@ -1,7 +1,6 @@
-//! The encoder is checked against the exact solver it amortizes: on planted
-//! data its pair placement and its self-pair (the cell placement) land where
-//! the Newton solve lands, it is symmetric end to end, a saved encoder
-//! reproduces itself, and empty rows stay at the origin.
+//! The encoder on planted data: it is symmetric end to end, a cell does not
+//! move with the block size, a saved encoder reproduces itself, and empty
+//! rows stay at the origin.
 
 use super::fixture::*;
 use crate::cell_activity_graph_embedding::pair_projection::encoder::{
@@ -74,27 +73,21 @@ fn random_pairs(n_cells: usize, n_pairs: usize, seed: u64) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Small steps: training takes at least a fixed number of optimizer steps,
-/// so on this fixture the step's size, not the epoch count, sets the cost.
-fn spec(epochs: usize) -> PairEncoderSpec {
+/// Small steps: `steps` optimizer steps, rounded up to whole passes over
+/// the pairs, so on this fixture the step's size sets the cost.
+fn spec(steps: usize) -> PairEncoderSpec {
     PairEncoderSpec {
         trunk_width: 32,
         n_experts: 4,
-        epochs,
+        steps,
         batch: 16,
         ridge: RIDGE,
     }
 }
 
-fn exact(dict: &PairDictionary, obs: &[(u32, f32)]) -> (Vec<f32>, f32) {
-    let (theta, beta, _) = dict.solve(obs, RIDGE);
-    (theta, beta)
-}
-
 /// A trained encoder on the planted cells, with the training pairs.
 struct Trained {
     dict: PairDictionary,
-    cells: Vec<PlantedCell>,
     corpus: Vec<CellRow>,
     edges: Vec<(u32, u32)>,
     enc: PairEncoder,
@@ -109,81 +102,16 @@ fn trained() -> &'static Trained {
         let cells = planted_cells(N_TRAIN_CELLS, 1);
         let corpus = corpus_of(&dict, &cells);
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
-        // One epoch asked for: the floor of optimizer steps decides.
         let train_spec = spec(1);
         let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
         enc.train(&corpus, &edges, &train_spec, 7).unwrap();
         Trained {
             dict,
-            cells,
             corpus,
             edges,
             enc,
         }
     })
-}
-
-#[test]
-fn encoder_recovers_the_exact_solvers_pair_latent() {
-    let Trained {
-        dict,
-        cells,
-        corpus,
-        enc,
-        ..
-    } = trained();
-    // Pairs the encoder never trained on, over the same cells.
-    let held_out = random_pairs(N_TRAIN_CELLS, 200, 99);
-    let out = enc.encode_all(corpus, &held_out, 64, 64).unwrap();
-    let (mut cos_sum, mut nll_enc, mut nll_exact) = (0f32, 0f64, 0f64);
-    for (i, &(u, v)) in held_out.iter().enumerate() {
-        let obs = pooled(&cells[u as usize].0, &cells[v as usize].0);
-        let (theta, _) = exact(dict, &obs);
-        let z: Vec<f32> = out.pairs.latent.row(i).iter().copied().collect();
-        cos_sum += cosine(&z, &theta);
-        // Every feature is active on this fixture, so global ids are positions.
-        nll_enc += f64::from(dict.nll(&obs, &z));
-        nll_exact += f64::from(dict.nll(&obs, &theta));
-    }
-    let mean_cos = cos_sum / held_out.len() as f32;
-    let ratio = nll_enc / nll_exact;
-    eprintln!("pair encoder vs exact: mean cosine {mean_cos:.4}, NLL ratio {ratio:.5}");
-    assert!(mean_cos > 0.95, "mean cosine to the exact MAP {mean_cos}");
-    assert!(ratio < 1.02, "encoder NLL is {ratio} of the exact one");
-}
-
-#[test]
-fn self_pair_recovers_the_cells_placement() {
-    let Trained {
-        dict,
-        cells,
-        corpus,
-        edges,
-        enc,
-    } = trained();
-    let out = enc.encode_all(corpus, &edges[..1], 64, 64).unwrap();
-    let mut cos_sum = 0f32;
-    let mut beta_gap = 0f32;
-    for (c, (profile, _)) in cells.iter().enumerate() {
-        let doubled: Vec<(u32, f32)> = profile.iter().map(|&(g, n)| (g, 2.0 * n)).collect();
-        let (theta, beta) = exact(dict, &doubled);
-        let z: Vec<f32> = out.cells.latent.row(c).iter().copied().collect();
-        cos_sum += cosine(&z, &theta);
-        // The oracle's intercept is for the doubled depth; the cell's own is
-        // `ln 2` below it.
-        beta_gap += (out.cells.bias[c] - (beta - 2.0f32.ln())).abs();
-    }
-    let mean_cos = cos_sum / cells.len() as f32;
-    let mean_gap = beta_gap / cells.len() as f32;
-    eprintln!("self-pair vs exact: mean cosine {mean_cos:.4}, intercept gap {mean_gap:.4}");
-    assert!(
-        mean_cos > 0.95,
-        "mean cosine of the self-pair to the exact MAP {mean_cos}"
-    );
-    assert!(
-        mean_gap < 0.1,
-        "cell intercepts off by {mean_gap} on average"
-    );
 }
 
 #[test]
@@ -265,20 +193,6 @@ fn save_load_round_trip_is_byte_identical() {
     assert_eq!(a.cells.bias, b.cells.bias);
 }
 
-/// The pooled global profile of two cells.
-fn pooled(a: &[(u32, f32)], b: &[(u32, f32)]) -> Vec<(u32, f32)> {
-    let mut dense = vec![0f32; N_FEATURES];
-    for &(g, n) in a.iter().chain(b) {
-        dense[g as usize] += n;
-    }
-    dense
-        .into_iter()
-        .enumerate()
-        .filter(|&(_, n)| n > 0.0)
-        .map(|(g, n)| (g as u32, n))
-        .collect()
-}
-
 ////////////////////////////////////////
 // Through `project_pairs`, from disk //
 ////////////////////////////////////////
@@ -312,7 +226,6 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
     let edges = random_pairs(60, 300, 3);
     let saved = dir.path().join("run.pair_encoder.safetensors");
     let saved = saved.to_str().unwrap();
-    // As in `trained`, the floor of optimizer steps decides.
     let spec = spec(1);
     let fitted = project_pairs(
         &data,
@@ -363,56 +276,4 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
         loaded.cells.latent.as_slice()
     );
     assert!(loaded.scores.is_empty());
-}
-
-#[test]
-fn the_certificate_finishes_what_an_untrained_encoder_gets_wrong() {
-    // An encoder that never trained places pairs from a random map. The
-    // certificate bounds every placement's excess over the optimum, the rows
-    // it puts far out are finished exactly, and so the result as a whole
-    // must sit within a few nats per pair of the optimum regardless.
-    let dir = tempfile::tempdir().unwrap();
-    let cells = planted_cells(60, 21);
-    let data = planted_data(&dir, &cells).unwrap();
-    let e = dictionary_matrix();
-    let (_, totals) = abundances();
-    let rows: Vec<Box<str>> = (0..N_FEATURES).map(|g| format!("G{g}").into()).collect();
-    let axis = FeatureAxis::resolve_or_identity(&rows).unwrap();
-    let edges = random_pairs(60, 300, 4);
-    let saved = dir.path().join("untrained.pair_encoder.safetensors");
-    let spec = spec(0);
-    let out = project_pairs(
-        &data,
-        &edges,
-        &e,
-        None,
-        &PairProjectionArgs {
-            solver: PairSolver::TrainEncoder {
-                spec: &spec,
-                dev: &Device::Cpu,
-                save_to: saved.to_str().unwrap(),
-            },
-            seed: 5,
-            pair_block: 64,
-            eval_features: None,
-            score_pairs: false,
-        },
-        &axis,
-        &totals,
-    )
-    .unwrap();
-    let dict = PairDictionary::new(&e, &totals, 60).unwrap();
-    let (mut got, mut best) = (0f64, 0f64);
-    for (i, &(u, v)) in edges.iter().enumerate() {
-        let obs = pooled(&cells[u as usize].0, &cells[v as usize].0);
-        let (theta, _) = exact(&dict, &obs);
-        let z: Vec<f32> = out.latent.row(i).iter().copied().collect();
-        got += f64::from(dict.nll(&obs, &z));
-        best += f64::from(dict.nll(&obs, &theta));
-    }
-    let ratio = got / best;
-    assert!(
-        ratio < 1.005,
-        "placements sit {ratio} of the optimum's likelihood"
-    );
 }

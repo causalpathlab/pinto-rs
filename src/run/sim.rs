@@ -11,17 +11,17 @@ use super::mcp::{
     parsed, rooted, shared_flags,
 };
 use super::script;
+use crate::baselines::single_cell::{check_inputs, BaselineArgs};
 use crate::mcp::shown_path;
-use crate::simulate::baseline::{check_inputs, BaselineArgs};
-use crate::simulate::pairs::{
+use crate::sim_eval::pairs::{
     pairs_header, score_input, PairOptions, SpotLayout, DEFAULT_KNN, DEFAULT_PAIRS, DEFAULT_SEED,
 };
+use crate::sim_eval::score::{read_labels, score, table_header, table_rows, TruthSpots};
 use crate::simulate::panel::{read_coords, section_name};
 use crate::simulate::params::{find_scenario, SimParams, SCENARIOS, TERMS};
 use crate::simulate::run::{
     backend_path, coords_path, manifest_path, resolve_params, truth_run_path, SimulateArgs,
 };
-use crate::simulate::score::{read_labels, score, table_header, table_rows, TruthSpots};
 use crate::simulate::write::COORD_COLUMNS;
 use crate::tui::flag_value;
 use legume_mcp::{Call, Content, ToolSpec};

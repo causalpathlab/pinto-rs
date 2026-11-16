@@ -16,11 +16,13 @@
 //! `per-donor` runs it on each donor alone and carries the labels across
 //! with [`match_to_reference`].
 
-use super::harmony::{harmonize, HarmonyParams};
-use super::run::{domains_path, truth_run_path};
-use super::score::{sim_folder, TruthSpots};
+pub mod harmony;
+
+use crate::sim_eval::score::{sim_folder, TruthSpots};
+use crate::simulate::run::{domains_path, truth_run_path};
 use crate::util::common::{normalise_log, HashMap};
 use crate::util::metadata::Run;
+use harmony::{harmonize, HarmonyParams};
 use legume_numeric::matrix::pca::pc_scores;
 use legume_numeric::matrix::traits::MatOps;
 use log::info;
@@ -373,7 +375,7 @@ fn per_donor_labels(
     let reference = reference_donor(&spots.iter().map(Vec::len).collect::<Vec<_>>());
     info!(
         "per donor: reference {}, {} genes to match on",
-        super::panel::donor_label(ids[reference]),
+        crate::simulate::panel::donor_label(ids[reference]),
         union.len()
     );
     let matched = match_to_reference(&means, reference);

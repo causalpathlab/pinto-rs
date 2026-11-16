@@ -1,4 +1,4 @@
-use crate::simulate::score::{score, TruthSpots};
+use crate::sim_eval::score::{score, TruthSpots};
 
 /// Two donors, two shared domains (A, B) and a patch (P) owned by donor 1.
 /// Donor 0: 10 A, 10 B. Donor 1: 10 A, 6 B, 4 P.
@@ -22,7 +22,7 @@ fn truth() -> TruthSpots {
 }
 
 /// Each shared domain's dependence, rounded to 12 places.
-fn by_domain(s: &crate::simulate::score::Score) -> Vec<Option<f64>> {
+fn by_domain(s: &crate::sim_eval::score::Score) -> Vec<Option<f64>> {
     s.donor_dependence_by_domain
         .iter()
         .map(|d| d.dependence.map(|x| (x * 1e12).round() / 1e12))
@@ -160,7 +160,7 @@ fn a_domain_mostly_in_one_donor_is_not_a_split() {
 /// unassigned labels are none. A repeated cell is an error when scored.
 #[test]
 fn label_tables_mark_unlabelled_spots() {
-    use crate::simulate::score::read_labels;
+    use crate::sim_eval::score::read_labels;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.tsv").to_string_lossy().to_string();
     let text = "cell\tcell_type\tscore\nc1\tX\t1\nc2\tNA\t1\nc3\t\t1\nc4\t-1\t1\nc5\tunassigned\t1\nc6\tY\t1\n";
@@ -217,7 +217,7 @@ fn an_empty_truth_is_refused() {
 /// run's manifest or that run's prefix.
 #[test]
 fn a_simulation_is_named_any_way_a_run_is() {
-    use crate::simulate::score::sim_folder;
+    use crate::sim_eval::score::sim_folder;
     let dir = tempfile::tempdir().unwrap();
     let sim = dir.path().join("sim");
     std::fs::create_dir_all(sim.join("truth")).unwrap();
@@ -267,7 +267,7 @@ pub(super) fn spans(line: &str) -> Vec<(usize, usize)> {
 /// where their values do.
 #[test]
 fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
-    use crate::simulate::score::{table_header, table_rows, PatchScore, Score};
+    use crate::sim_eval::score::{table_header, table_rows, PatchScore, Score};
     let s = Score {
         n_spots: 4,
         n_scored: 4,

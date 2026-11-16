@@ -1,7 +1,6 @@
-//! Training the pair encoder, encoding every pair with it, and checking the
-//! amortized answer against the exact one.
+//! Training the pair encoder, and encoding every pair with it.
 
-use super::super::{PairDictionary, SCORE_CLAMP};
+use super::super::SCORE_CLAMP;
 use super::{
     rows_within_budget, CellRow, CorpusStats, Encoded, PairEncoder, PairEncoderSpec, Placement,
     Stats,
@@ -12,7 +11,6 @@ use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW};
 use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::vae::{clip_and_step_dense, PhaseTimers};
 use legume_numeric::matrix::rand_util::mix_seed;
-use legume_numeric::matrix::utils::{cosine, quantiles};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{RngExt, SeedableRng};
@@ -22,11 +20,7 @@ const WEIGHT_DECAY: f64 = 1e-4;
 const GRAD_CLIP: f64 = 5.0;
 /// A step with fewer pairs than this is skipped.
 const MIN_STEP_PAIRS: usize = 16;
-/// Optimizer steps a run makes at least, whatever its pair count: a small
-/// sample at the batch cap would otherwise train for a handful of steps.
-const MIN_STEPS: usize = 512;
-/// Pairs held out for the per-epoch evaluation line and the closing check
-/// against the exact solver.
+/// Pairs held out for the per-epoch evaluation line.
 const CHECK_PAIRS: usize = 2048;
 
 /// What training reports back.
@@ -114,11 +108,7 @@ impl PairEncoder {
         let batch = rows_within_budget(3 * self.dict.g, spec.batch).max(MIN_STEP_PAIRS);
         let steps_per_epoch = n_pairs.div_ceil(batch).max(1);
         let degree = Tensor::from_vec(degree, corpus.len(), self.dict.device())?;
-        let epochs = if spec.epochs == 0 {
-            0
-        } else {
-            spec.epochs.max(MIN_STEPS.div_ceil(steps_per_epoch))
-        };
+        let epochs = spec.steps.div_ceil(steps_per_epoch);
         let stats = CorpusStats::new(corpus, self.dict.d, self.dict.device())?;
         let mut adam = AdamW::new(
             self.varmap.all_vars(),
@@ -243,16 +233,12 @@ impl PairEncoder {
         let cell_block = rows_within_budget(g, cell_block);
         let pair_block = rows_within_budget(g, pair_block);
         let stats = CorpusStats::new(corpus, d, dev)?;
-        // The certificate's outer-product chunks, built once for the pass
-        // when they fit their budget, else per block.
-        let ee = self.dict.outer_chunks_cached()?;
 
         // Cells: the codes stay on the device for the pair pass; the
         // self-pairs are written out.
         let mut codes = Vec::new();
         let mut cell_latent = Mat::zeros(n_cells, d);
         let mut cell_bias = vec![0f32; n_cells];
-        let mut cell_gap = vec![0f32; n_cells];
         let bar = new_progress_bar(n_cells as u64).with_message("encoding cells");
         for (lb, ub) in legume_numeric::matrix::utils::generate_minibatch_intervals(
             n_cells,
@@ -267,7 +253,6 @@ impl PairEncoder {
             let z = self.self_pair_code(&h, &doubled)?;
             let scores = self.scores(&z)?;
             let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
-            let gap = self.decrement(&z, &scores, &doubled, ee.as_deref())?;
             let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
             for (i, c) in (lb..ub).enumerate() {
                 let total = corpus[c].total;
@@ -276,7 +261,6 @@ impl PairEncoder {
                         cell_latent[(c, j)] = z_host[i * d + j];
                     }
                     cell_bias[c] = (total.ln() - lse[i]).clamp(-SCORE_CLAMP, SCORE_CLAMP);
-                    cell_gap[c] = gap[i];
                 }
             }
             codes.push(h);
@@ -290,7 +274,6 @@ impl PairEncoder {
         let n_pairs = edges.len();
         let mut pair_latent = Mat::zeros(n_pairs, d);
         let mut pair_bias = vec![0f32; n_pairs];
-        let mut pair_gap = vec![0f32; n_pairs];
         let bar = new_progress_bar(n_pairs as u64).with_message("encoding pairs");
         for (lb, ub) in legume_numeric::matrix::utils::generate_minibatch_intervals(
             n_pairs,
@@ -312,7 +295,6 @@ impl PairEncoder {
             let (z, _) = self.pair_code(&h_u, &h_v, &pooled)?;
             let scores = self.scores(&z)?;
             let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
-            let gap = self.decrement(&z, &scores, &pooled, ee.as_deref())?;
             let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
             for (i, &(u, v)) in chunk.iter().enumerate() {
                 let total = corpus[u as usize].total + corpus[v as usize].total;
@@ -321,7 +303,6 @@ impl PairEncoder {
                         pair_latent[(lb + i, j)] = z_host[i * d + j];
                     }
                     pair_bias[lb + i] = (total.ln() - lse[i]).clamp(-SCORE_CLAMP, SCORE_CLAMP);
-                    pair_gap[lb + i] = gap[i];
                 }
             }
             bar.inc(b as u64);
@@ -332,116 +313,11 @@ impl PairEncoder {
             pairs: Placement {
                 latent: pair_latent,
                 bias: pair_bias,
-                gap: pair_gap,
             },
             cells: Placement {
                 latent: cell_latent,
                 bias: cell_bias,
-                gap: cell_gap,
             },
         })
-    }
-}
-
-///////////////////////////////
-// The check against the MAP //
-///////////////////////////////
-
-/// A seeded sample of pairs solved exactly once, so any placement of those
-/// pairs can be compared with the optimum.
-pub(crate) struct ExactCheck {
-    /// Pair index, its optimum `θ`, the NLL there, and its norm.
-    solved: Vec<(usize, Vec<f32>, f32, f32)>,
-    /// Each sampled pair's local profile.
-    profiles: Vec<Vec<(u32, f32)>>,
-}
-
-/// How far a placement sits from the exact per-pair optimum on the sample.
-pub(crate) struct AmortizationGap {
-    pub mean_cosine: f32,
-    /// Placement NLL over exact NLL, summed over the sample.
-    pub nll_ratio: f32,
-    /// Median and largest `‖z‖` of the placement and of the solver.
-    pub norm_encoder: (f32, f32),
-    pub norm_exact: (f32, f32),
-}
-
-impl ExactCheck {
-    pub(crate) fn new(
-        dict: &PairDictionary,
-        corpus: &[CellRow],
-        edges: &[(u32, u32)],
-        ridge: f32,
-        seed: u64,
-    ) -> Self {
-        let mut rng = StdRng::seed_from_u64(mix_seed(seed, 0x0047_4150));
-        let sample: Vec<usize> = (0..CHECK_PAIRS.min(edges.len()))
-            .map(|_| rng.random_range(0..edges.len()))
-            .filter(|&e| {
-                let (u, v) = edges[e];
-                corpus[u as usize].total + corpus[v as usize].total > 0.0
-            })
-            .collect();
-        let profiles: Vec<Vec<(u32, f32)>> = sample
-            .par_iter()
-            .map(|&e| {
-                let (u, v) = edges[e];
-                corpus[u as usize].pooled(&corpus[v as usize])
-            })
-            .collect();
-        let solved = sample
-            .par_iter()
-            .zip(&profiles)
-            .map(|(&e, obs)| {
-                let (theta, _, _) = super::super::solve_exact(obs, dict, ridge);
-                let norm = theta.iter().map(|v| v * v).sum::<f32>().sqrt();
-                let nll = dict.nll(obs, &theta);
-                (e, theta, nll, norm)
-            })
-            .collect();
-        Self { solved, profiles }
-    }
-
-    pub(crate) fn n_pairs(&self) -> usize {
-        self.solved.len()
-    }
-
-    /// Compare a placement of every pair (rows in `edges` order) with the
-    /// sample's optima. The dictionary is the one the check was built on.
-    pub(crate) fn compare(&self, dict: &PairDictionary, latent: &Mat) -> AmortizationGap {
-        let per_pair: Vec<(f32, f32, f32)> = self
-            .solved
-            .par_iter()
-            .zip(&self.profiles)
-            .map(|((e, theta, _, _), obs)| {
-                let z: Vec<f32> = latent.row(*e).iter().copied().collect();
-                (
-                    cosine(&z, theta),
-                    dict.nll(obs, &z),
-                    z.iter().map(|v| v * v).sum::<f32>().sqrt(),
-                )
-            })
-            .collect();
-        let n = per_pair.len().max(1) as f32;
-        let (enc, exact) = per_pair
-            .iter()
-            .zip(&self.solved)
-            .fold((0f64, 0f64), |(a, b), (p, s)| {
-                (a + f64::from(p.1), b + f64::from(s.2))
-            });
-        let median_max = |v: Vec<f32>| {
-            let q = quantiles(&v, &[0.5, 1.0]);
-            (q[0], q[1])
-        };
-        AmortizationGap {
-            mean_cosine: per_pair.iter().map(|p| p.0).sum::<f32>() / n,
-            nll_ratio: if exact != 0.0 {
-                (enc / exact) as f32
-            } else {
-                f32::NAN
-            },
-            norm_encoder: median_max(per_pair.iter().map(|p| p.2).collect()),
-            norm_exact: median_max(self.solved.iter().map(|s| s.3).collect()),
-        }
     }
 }

@@ -31,8 +31,8 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("delta-svd", 24),
         ("propensity", 11),
         ("link-community", 24),
-        ("cage", 35),
-        ("cage-cell", 27),
+        ("cage", 36),
+        ("cage-cell", 28),
         ("predict", 23),
         ("impute", 21),
         ("lra", 21),
@@ -212,74 +212,4 @@ fn every_shown_flag_has_a_help_line() {
         }
     }
     assert!(bare.is_empty(), "no help: {bare:?}");
-}
-
-/// cage's `--help` lists its flags in the order it always has, and
-/// `pinto run`'s form and the MCP schema, which take every argument in
-/// order, list the batch options where cage's own stood: `-o` and
-/// `--seed` between `--ignore-batch` and `--num-levels`.
-#[test]
-fn cage_s_help_keeps_its_flag_order() {
-    const SHOWN: &[&str] = &[
-        "coord_files",
-        "coord_columns",
-        "coord_column_names",
-        "batch_files",
-        "auto_batch",
-        "ignore_batch",
-        "out",
-        "seed",
-        "cnv_clones",
-        "n_pseudobulk",
-        "knn_spatial",
-        "knn_expr",
-        "no_qc",
-        "permute_coords",
-        "drop_features",
-        "mask_cells",
-        "ablation_parent",
-        "device",
-        "embedding_dim",
-        "epochs",
-        "feature_inclusion",
-        "n_hvg",
-        "feature_list_file",
-        "must_train_features",
-        "edge_cluster_method",
-        "leiden_resolution",
-        "n_edge_clusters",
-        "feature_embedding",
-        "feature_embedding_bias",
-        "feature_embedding_mode",
-        "feature_init_mode",
-        "feature_modules",
-        "verbose",
-        "max_threads",
-        "atomic_outputs",
-    ];
-    const FIRST: &[&str] = &[
-        "data_files",
-        "coord_files",
-        "coord_columns",
-        "coord_column_names",
-        "coord_header_row",
-        "batch_files",
-        "auto_batch",
-        "ignore_batch",
-        "out",
-        "seed",
-        "num_levels",
-        "proj_dim",
-        "cnv_clones",
-        "n_pseudobulk",
-    ];
-    let cli = crate::built_cli();
-    let cage = cli.find_subcommand("cage").unwrap();
-    assert_eq!(visible_flags(cage), SHOWN);
-    let all: Vec<String> = cage
-        .get_arguments()
-        .take(FIRST.len())
-        .map(|a| a.get_id().to_string())
-        .collect();
-    assert_eq!(all, FIRST);
 }

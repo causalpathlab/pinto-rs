@@ -13,7 +13,7 @@ methods are cited in each module's documentation.
 - Project: SpatialDE (SpatialDE2's tissue segmentation)
 - URL: https://github.com/PMBio/SpatialDE
 - Commit followed: 6dbdb559a566d639da0f6fd3acc9e17104c0674f
-- Ported in: `src/spatial_baselines/spatialde2.rs` (`pinto spatialde2`)
+- Ported in: `src/baselines/spatial/spatialde2.rs` (`pinto spatialde2`)
 
 ```text
 MIT License
@@ -46,7 +46,7 @@ SOFTWARE.
 - URL: https://github.com/QIFEIDKN/STAGATE_pyG (now served from
   https://github.com/RucDongLab/STAGATE_pyG)
 - Commit followed: ae1158ca8cf1eb6bb8ee198298552d44c9ac21db
-- Ported in: `src/spatial_baselines/stagate.rs` (`pinto stagate`)
+- Ported in: `src/baselines/spatial/stagate.rs` (`pinto stagate`)
 
 ```text
 MIT License
@@ -78,7 +78,7 @@ SOFTWARE.
   authors)
 - URL: https://github.com/zhanglabtools/STAGATE
 - Commit followed: d6dd9f4747ff4f0356347ee9f662d9404bd68143
-- Ported in: `src/spatial_baselines/stagate.rs` (`pinto stagate`): the
+- Ported in: `src/baselines/spatial/stagate.rs` (`pinto stagate`): the
   steps that follow its tutorials and trainer where they and STAGATE_pyG
   differ (the fixed-K tutorial's preprocessing: no gene filter by default,
   the spatial network of `utils.py:Cal_Spatial_Net` with its radius
@@ -113,10 +113,10 @@ SOFTWARE.
 - Project: scanpy
 - URL: https://github.com/scverse/scanpy
 - Commit followed: 3962176e93ba148bc0f61443c517877d736f2b3b
-- Ported in: `src/spatial_baselines/stagate.rs` (`pinto stagate`):
+- Ported in: `src/baselines/spatial/stagate.rs` (`pinto stagate`):
   `seurat_v3_hvg`, after `_highly_variable_genes_seurat_v3`
   (`highly_variable_genes(flavor="seurat_v3")`), and `filter_genes`, after
-  `pp.filter_genes(min_cells)`; `src/simulate/baseline.rs`
+  `pp.filter_genes(min_cells)`; `src/baselines/single_cell.rs`
   (`pinto srt-sim-baseline`): `normalise_log` (`pp.normalize_total` to
   1e4 then `pp.log1p`, also stagate's normalisation),
   `gene_mean_dispersion`, `normalised_dispersion` and `hvg`

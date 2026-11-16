@@ -14,7 +14,7 @@
 //! trace is a sum `sum_i f(lambda_i(L_s))` over each section's eigenvalues.
 
 use super::kit::sym_eig_desc;
-use crate::spatial_baselines::graph::Neighbours;
+use crate::baselines::spatial::graph::Neighbours;
 use nalgebra::DMatrix;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -240,12 +240,6 @@ impl Spectrum {
     /// `sum_s sum_i f(lambda_i(L_s))`.
     pub fn total(&self, f: impl Fn(f64) -> f64) -> f64 {
         (0..self.nodes.len()).map(|s| self.sum(s, &f)).sum()
-    }
-
-    /// Nodes over all sections.
-    #[cfg(test)]
-    pub fn n(&self) -> f64 {
-        self.total(|_| 1.0)
     }
 
     /// `cbar(rho) = tr((I + rho L)^{-1}) / N` and `d log cbar / d log rho`.

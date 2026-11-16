@@ -481,8 +481,7 @@ fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
     assert!(g1(&read(&format!("{out}/S2.zarr")), 1) > 0.0);
 }
 
-/// A spatial baseline's run is taken as a fit's is, on cells or on
-/// super-cells (`-pb`): it records its data files (as a fit does, so that
+/// A spatial baseline's run is taken as a fit's is: it records its data files (as a fit does, so that
 /// they are found from any working directory), propensity, cells table
 /// (with the batch of each cell) and coordinate columns. Each data file
 /// gets its excess zarr and coordinates, and a fit reads them as it reads
@@ -490,9 +489,7 @@ fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
 /// per cell.
 #[test]
 fn a_residual_is_taken_from_a_spatial_baseline_run() {
-    for command in ["spatialde2", "spatialde2-pb"] {
-        residual_from_baseline(command);
-    }
+    residual_from_baseline("spatialde2");
 }
 
 fn residual_from_baseline(command: &str) {
@@ -524,8 +521,7 @@ fn residual_from_baseline(command: &str) {
         .unwrap_or_else(|e| panic!("{e}"))
         .commands
     {
-        crate::Commands::Spatialde2(base) => crate::spatial_baselines::spatialde2::run(&base),
-        crate::Commands::Spatialde2Pb(base) => crate::spatial_baselines::spatialde2::run_pb(&base),
+        crate::Commands::Spatialde2(base) => crate::baselines::spatial::spatialde2::run(&base),
         _ => unreachable!(),
     }
     .unwrap();

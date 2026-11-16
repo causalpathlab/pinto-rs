@@ -40,6 +40,8 @@ jobs:
           key: clippy${{ matrix.features }}
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
+  # The full suite once (ubuntu, default features); elsewhere every target
+  # builds and the binary's unit tests run.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -53,7 +55,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: test${{ matrix.features }}
-      - run: cargo test ${{ matrix.features }}
+      - if: matrix.os == 'ubuntu-latest' && matrix.features == ''
+        run: cargo test
+      # (clippy already checks every target on ubuntu)
+      - if: matrix.os != 'ubuntu-latest'
+        run: cargo check --all-targets ${{ matrix.features }}
+      - if: matrix.os != 'ubuntu-latest' || matrix.features != ''
+        run: cargo test --bins ${{ matrix.features }}
 
   msrv:
     runs-on: ubuntu-latest
