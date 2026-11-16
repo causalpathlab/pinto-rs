@@ -1,7 +1,6 @@
 use crate::link_community::profiles::{
     compute_propensity_and_feature_community_stat, PropensityReportConfig,
 };
-use crate::simulate::baseline::normalise_log;
 use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
