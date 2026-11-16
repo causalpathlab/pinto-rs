@@ -245,6 +245,7 @@ fn every_method_pinto_run_offers_is_a_form_pinto_takes() {
             "spatialpca",
             "mefisto",
             "spatialde2-pb",
+            "stagate-pb",
             "spatialpca-pb",
             "mefisto-pb"
         ]

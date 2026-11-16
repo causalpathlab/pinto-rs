@@ -371,6 +371,44 @@ fn pseudobulk_estimate_covers_every_measured_peak() {
     }
 }
 
+/// Maximum resident memory (MiB) of stagate-pb on the same sections
+/// (2000 genes, `-d 1024`, 20 epochs, at the defaults otherwise, 4
+/// threads): (cells, nonzeros, MiB).
+const STAGATE_PB_MEASURED: [(usize, usize, f64); 4] = [
+    (1024, 788_258, 406.66),
+    (4096, 3_156_044, 903.95),
+    (8100, 6_238_351, 1452.31),
+    (16384, 12_572_357, 2649.89),
+];
+
+/// stagate-pb's estimate, stagate's on every cell (sparse) and the
+/// coarsening's, covers every measured run: an upper bound, as it trains
+/// on super-cells but embeds every cell.
+#[test]
+fn stagate_pb_estimate_covers_every_measured_peak() {
+    let crate::Commands::StagatePb(args) =
+        parse(&["pinto", "stagate-pb", "d.zarr", "-c", "c.csv", "-o", "x"])
+    else {
+        unreachable!()
+    };
+    for (cells, nonzeros, measured) in STAGATE_PB_MEASURED {
+        let input = InputShape {
+            genes: 2000,
+            nonzeros,
+            section_sizes: vec![cells],
+            batches: 1,
+            strata: 1,
+        };
+        let est = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| mib(stagate::pb_peak_bytes(&args.fit, &input)));
+        eprintln!("stagate-pb {cells}: {est:.0} MiB estimated, {measured} measured");
+        assert!(est >= measured, "stagate-pb {cells}: {est:.0} < {measured}");
+    }
+}
+
 /// Nonzeros per cell of those runs' counts, as srt-simulate draws them at
 /// those settings ([`srt_simulate_reads_as_the_measured_runs_assume`]).
 const NONZEROS_PER_CELL: usize = 765;
@@ -809,6 +847,56 @@ fn stagate_counts_a_radius_graph_once_built() {
     assert!(e.to_string().contains("estimated"), "{e}");
 }
 
+/// stagate-pb counts its radius graph once built too: a budget that holds
+/// its estimate with self loops alone refuses it then, before training.
+#[test]
+fn stagate_pb_counts_a_radius_graph_once_built() {
+    let dir = tempfile::tempdir().unwrap();
+    let projected = || {
+        let mut data = tissue(6);
+        let n = data.cells.len();
+        data.projection = Some(crate::util::common::Mat::from_fn(4, n, |r, c| {
+            ((r + 1) * (c % 6)) as f32 + 0.5
+        }));
+        data
+    };
+    let out = dir.path().join("st");
+    let mut argv = vec!["pinto", "stagate-pb", "d.zarr", "-c", "c.csv", "-o"];
+    argv.push(out.to_str().unwrap());
+    argv.extend([
+        "--n-top-genes",
+        "8",
+        "--hidden-dims",
+        "8,2",
+        "--n-clusters",
+        "2",
+        "-d",
+        "12",
+        "--n-epochs",
+        "1",
+    ]);
+    argv.extend(["--rad-cutoff", "1.5"]);
+    let run = |budget: Option<usize>| {
+        let crate::Commands::StagatePb(args) = parse(&argv) else {
+            unreachable!()
+        };
+        let input = InputShape {
+            genes: 8,
+            nonzeros: tissue(6).counts.nnz(),
+            section_sizes: vec![36, 36],
+            batches: 1,
+            strata: 1,
+        };
+        let budget = budget.unwrap_or(stagate::pb_peak_bytes(&args.fit, &input) + 1);
+        stagate::run_pb_on(&args, projected(), &set(budget))
+    };
+    let e = run(None).unwrap_err();
+    assert!(e.to_string().contains("estimated"), "{e}");
+    assert!(!dir.path().join("st.labels.tsv").exists());
+    run(Some(usize::MAX)).unwrap();
+    assert!(dir.path().join("st.labels.tsv").exists());
+}
+
 #[test]
 fn spatialde2_refuses_a_run_over_the_budget_before_fitting() {
     let dir = tempfile::tempdir().unwrap();
@@ -907,8 +995,15 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
         unreachable!()
     };
     let shape = args.input.stored().unwrap().unwrap();
-    let bound = stagate::input_peak_bytes(&args, &shape);
+    let bound = stagate::input_peak_bytes(&args, false, &shape);
     stagate::run_on(&args, args.input.read(false).unwrap(), &set(bound)).unwrap();
+    let mut pb = vec!["-d", "16"];
+    pb.extend(st);
+    let crate::Commands::StagatePb(args) = on_files("stagate-pb", &files, &out, &pb) else {
+        unreachable!()
+    };
+    let bound = stagate::input_peak_bytes(&args.fit, true, &shape);
+    stagate::run_pb_on(&args, args.fit.input.read(true).unwrap(), &set(bound)).unwrap();
 
     let crate::Commands::Spatialde2(args) =
         on_files("spatialde2", &files, &out, &["--neighbors", "4"])

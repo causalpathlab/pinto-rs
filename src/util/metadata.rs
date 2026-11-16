@@ -241,8 +241,8 @@ pub struct PintoMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_labels: Option<BatchLabels>,
 
-    /// Present on a spatial baseline's run (`stagate`, `spatialde2` and
-    /// `spatialde2-pb`): its input layout and what it was fitted on.
+    /// Present on a spatial baseline's run (each baseline and its `-pb`
+    /// form): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<BaselineRun>,
 
@@ -263,7 +263,7 @@ pub struct BaselineRun {
     /// layout depends on the device (stagate: dense on a GPU).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_layout: Option<InputLayout>,
-    /// `cells`, or the super-cells `spatialde2-pb` was fitted on.
+    /// `cells`, or the super-cells a `-pb` run was fitted on.
     pub input: BaselineInput,
 }
 
@@ -282,7 +282,7 @@ pub enum BaselineInput {
     Pseudobulk(PseudobulkInput),
 }
 
-/// The super-cells a `spatialde2-pb` run was fitted on, and how their
+/// The super-cells a `-pb` run was fitted on, and how their
 /// graph was weighted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PseudobulkInput {

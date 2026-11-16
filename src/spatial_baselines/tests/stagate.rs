@@ -82,6 +82,50 @@ fn spatial_edges_add_self_loops_and_drop_zero_distance() {
     assert_eq!(sorted.len(), edges.len());
 }
 
+/// stagate-pb's graphs list each undirected edge both ways and one self
+/// loop a unit, once each, as [`spatial_edges`] lists its own.
+#[test]
+fn looped_edges_are_symmetric_with_self_loops() {
+    let (src, dst) = looped_edges(4, &[(0, 1), (2, 1), (0, 1)]);
+    let edges: Vec<(u32, u32)> = src.into_iter().zip(dst).collect();
+    assert_eq!(
+        edges,
+        [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (2, 1),
+            (2, 2),
+            (3, 3)
+        ]
+    );
+}
+
+/// A cell takes the label whose units' mean is nearest, not the nearest
+/// unit's.
+#[test]
+fn nearest_centroid_takes_the_nearest_mean() {
+    let fitted = Mat::from_row_slice(4, 1, &[0.0, 4.0, 5.0, 6.0]);
+    let labels = [0, 0, 1, 1];
+    // 2.5: nearest unit 4.0 (label 0), nearest mean 2.0 (label 0) vs 5.5
+    // 3.9: nearest unit 4.0 (label 0), but nearer the mean 5.5 than 2.0
+    let z = Mat::from_row_slice(3, 1, &[2.5, 3.9, -1.0]);
+    assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 1, 0]);
+}
+
+/// The domains held by a cell are numbered `0..found` in their order, the
+/// rest after them.
+#[test]
+fn renumbering_leaves_no_domain_id_unused() {
+    let (map, found) = renumber_present(&[3, 1, 3, 1], 4);
+    assert_eq!(found, 2);
+    assert_eq!(map, [2, 0, 3, 1]);
+    let (map, found) = renumber_present(&[0, 1, 2], 3);
+    assert_eq!((map, found), (vec![0, 1, 2], 3));
+}
+
 fn ring(n: usize, dev: &Device) -> EdgeIndex {
     // each node i sends to i-1, i, i+1
     let mut src = Vec::new();

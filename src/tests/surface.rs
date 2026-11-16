@@ -47,6 +47,7 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("spatialpca", 14),
         ("mefisto", 14),
         ("spatialde2-pb", 15),
+        ("stagate-pb", 20),
         ("spatialpca-pb", 15),
         ("mefisto-pb", 15),
         ("compare", 8),
