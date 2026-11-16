@@ -550,10 +550,10 @@ fn sparse_input_products_are_the_dense_ones() {
 }
 
 /// The sparse formulation (the default) trains to the same numbers as the
-/// dense one (`--reference`): every epoch's loss and the embedding, within
+/// dense one (the GPU layout): every epoch's loss and the embedding, within
 /// float rounding, with the loss summed over uneven blocks of cells.
 #[test]
-fn sparse_training_matches_the_dense_reference() {
+fn sparse_training_matches_the_dense_layout() {
     let dev = Device::Cpu;
     let (x, g) = toy_model_input(&dev);
     let (dense, sparse) = toy_sparse(&x, 7);

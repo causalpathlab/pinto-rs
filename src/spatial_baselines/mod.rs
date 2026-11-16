@@ -29,8 +29,11 @@
 //!
 //! Each is faithful at the model level: the preprocessing, model, loss or
 //! updates, defaults and clustering step of its reference code or paper,
-//! cited per module. Each runs on the cells, one section at a time where the method
-//! builds a spatial graph, and writes the same outputs ([`output`]):
+//! cited per module. Each runs pinto's sparse formulation of the method
+//! only, because the original dense formulations cost too much time and
+//! memory at real cell counts; there is no `--reference` mode. Each runs on
+//! the cells, one section at a time where the method builds a spatial
+//! graph, and writes the same outputs ([`output`]):
 //!
 //! - `{out}.labels.tsv`: `cell<TAB>label`, for `pinto srt-sim-score --labels`;
 //! - `{out}.cell_embedding.parquet`: a `cell` column and the method's

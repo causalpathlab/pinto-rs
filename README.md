@@ -559,25 +559,24 @@ files, `--coord-column-names`, `-b` batch files, `-o` the output prefix and
 sets the number of domains as each original takes it (see each `--help` for
 its default and what it does when not given).
 
-`spatialde2` and `stagate` have two modes, recorded in the manifest
-(`baseline.mode`) and in `baseline.json`: pinto's sparse formulation, the
-default, which never holds an `N × N` matrix, and `--reference`, the
-original's own. For
-`spatialde2` the sparse mode is the reference's own `neighbors=k` option
-(`--neighbors`, 100 by default) and `--reference` its default graph, every
-pair of cells in a section connected; for `stagate` both are the same
-model and give the same numbers up to float rounding (the sparse one keeps
-the input sparse, on the CPU only: on a GPU `stagate` holds it dense, its
-mode still `sparse`, and `baseline.json` records the layout held as
-`input_layout`). Segmentation runs on every gene by default, as
+Every baseline runs pinto's sparse formulation of its method only, and
+none has a `--reference` mode: the original dense formulations cost too
+much time and memory at real cell counts. For `spatialde2` the graph is
+the reference's own `neighbors=k` option (`--neighbors`, 100 by default),
+in place of its default graph, every pair of cells in a section
+connected. For `stagate` the sparse form is the same model and gives the
+same numbers as the original's dense input up to float rounding; it keeps
+the input sparse on the CPU, while on a GPU `stagate` holds the selected
+genes dense, and the manifest and `baseline.json` record the layout held
+as `input_layout`. Segmentation runs on every gene by default, as
 SpatialDE2's `tissue_segmentation` does; `--n-top-genes` passes a list of
 the most expressed.
 
 `spatialpca` and `mefisto` are written from their papers and supplements
 alone (their reference code is GPL or otherwise copyleft, and none of it is
 read or translated), over one shared sparse factor core: the latent factor
-model `Y = W Z + E` with a spatial prior on each factor. They have no
-`--reference`: the papers' dense-kernel priors (SpatialPCA's Gaussian
+model `Y = W Z + E` with a spatial prior on each factor. The papers'
+dense-kernel priors (SpatialPCA's Gaussian
 kernel with its low-rank approximation, MEFISTO's Gaussian processes on
 inducing cells) cost too much time and memory at real cell counts, so
 pinto implements the papers' models with that prior replaced by a sparse

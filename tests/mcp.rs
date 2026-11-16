@@ -409,6 +409,13 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
             "mefisto-pb",
         ]
     );
+    // No baseline offers a --reference: each runs its sparse formulation.
+    for m in &names[4..] {
+        let (b, _) = c.ok("run_methods", json!({"method": m}));
+        let flags = b["flags"].as_array().unwrap();
+        assert!(!flags.is_empty(), "{m}: {b}");
+        assert!(!flags.iter().any(|f| f["flag"] == "--reference"), "{m}");
+    }
     let (lc, _) = c.ok("run_methods", json!({"method": "lc"}));
     assert_eq!(lc["coords"], true);
     let flags = lc["flags"].as_array().unwrap();

@@ -131,36 +131,32 @@ fn a_run_records_its_batch_correction() {
     }
 }
 
-/// `--reference` is recorded in the manifest and `baseline.json` (the
-/// sparse default otherwise), and spatialde2 refuses it with
-/// `--neighbors`, which only the sparse graph takes.
+/// A run records what it was fitted on and no mode, there being one
+/// formulation; a manifest written with a mode (by an earlier pinto) still
+/// reads.
 #[test]
-fn the_mode_is_recorded() {
-    use crate::util::metadata::{BaselineInput, BaselineMode};
+fn a_run_records_its_input_and_no_mode() {
+    use crate::util::metadata::BaselineInput;
     let dir = tempfile::tempdir().unwrap();
     let files = two_sections(dir.path(), 6, 60);
-    for (tag, flag, mode) in [
-        ("s", None, BaselineMode::Sparse),
-        ("r", Some("--reference"), BaselineMode::Reference),
-    ] {
-        let out = dir.path().join(tag).to_string_lossy().to_string();
-        let mut flags = vec!["--max-iter", "3", "--ignore-batch"];
-        flags.extend(flag);
-        crate::spatial_baselines::spatialde2::run(&spatialde2_args(&files, &out, &flags)).unwrap();
-        let meta: PintoMetadata =
-            serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
-                .unwrap();
-        let run = meta.baseline.unwrap();
-        assert_eq!((run.mode, run.input), (mode, BaselineInput::Cells), "{tag}");
-        let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(format!("{out}.baseline.json")).unwrap())
-                .unwrap();
-        assert_eq!(settings["run"]["mode"], serde_json::to_value(mode).unwrap());
+    let out = dir.path().join("s").to_string_lossy().to_string();
+    let flags = ["--max-iter", "3", "--ignore-batch"];
+    crate::spatial_baselines::spatialde2::run(&spatialde2_args(&files, &out, &flags)).unwrap();
+    let text = std::fs::read_to_string(format!("{out}.pinto.json")).unwrap();
+    let meta: PintoMetadata = serde_json::from_str(&text).unwrap();
+    assert_eq!(meta.baseline.unwrap().input, BaselineInput::Cells);
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}.baseline.json")).unwrap())
+            .unwrap();
+    assert!(settings["run"].get("mode").is_none(), "{}", settings["run"]);
+    // an earlier manifest's mode is read past
+    let mut old: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(old["baseline"].get("mode").is_none(), "{}", old["baseline"]);
+    for mode in ["sparse", "reference"] {
+        old["baseline"]["mode"] = mode.into();
+        let read: PintoMetadata = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(read.baseline.unwrap().input, BaselineInput::Cells, "{mode}");
     }
-    let mut argv: Vec<String> = vec!["pinto".into(), "spatialde2".into()];
-    argv.extend(files.iter().cloned());
-    argv.extend(["-o", "x", "--reference", "--neighbors", "4"].map(String::from));
-    assert!(<crate::Cli as clap::Parser>::try_parse_from(argv).is_err());
 }
 
 /// A multi-batch `-pb` read takes the projection the δ estimate collapsed

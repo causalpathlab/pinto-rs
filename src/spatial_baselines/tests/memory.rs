@@ -14,7 +14,7 @@ const MIB: f64 = (1u64 << 20) as f64;
 
 /// Maximum resident memory (MiB) of full CPU runs on srt-simulate square
 /// grids at the defaults (2000 genes, all trained on; for stagate hidden
-/// width 512 and 6 neighbours, its dense input, now `--reference`; for
+/// width 512 and 6 neighbours, its input held dense, as a GPU run holds it; for
 /// spatialde2 100 neighbours): (cells per
 /// section, sections, threads, MiB).
 const STAGATE_MEASURED: [(usize, usize, usize, f64); 9] = [
@@ -354,7 +354,6 @@ fn pseudobulk_estimate_covers_every_measured_peak() {
                 let sd = spatialde2::Spatialde2Sizes {
                     neighbors: 100,
                     n_clusters: None,
-                    all_pairs: false,
                 }
                 .memory_shape(&input, nonzeros);
                 mib(spatialde2_peak_bytes(&sd)
@@ -497,7 +496,6 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
         ..spatialde2::Spatialde2Sizes {
             neighbors: 100,
             n_clusters: None,
-            all_pairs: false,
         }
         .memory_shape(
             &InputShape {
@@ -509,42 +507,6 @@ fn spatialde2_shape(per_section: usize, sections: usize, threads: usize) -> Spat
             },
             nonzeros,
         )
-    }
-}
-
-/// Maximum resident memory (MiB) of `spatialde2 --reference` runs on one
-/// srt-simulate L1 section (2000 genes, every gene segmented on, 4
-/// threads): (cells, nonzeros, MiB).
-const SPATIALDE2_REFERENCE_MEASURED: [(usize, usize, f64); 3] = [
-    (1024, 788_258, 80.22),
-    (4096, 3_156_044, 238.45),
-    (8100, 6_238_351, 434.44),
-];
-
-/// `--reference` holds no edge list and no kNN search: its estimate
-/// covers every measured run and is not far above it.
-#[test]
-fn spatialde2_reference_holds_no_graph_and_its_estimate_covers_the_measured_runs() {
-    for (cells, nonzeros, measured) in SPATIALDE2_REFERENCE_MEASURED {
-        let shape = spatialde2::Spatialde2Sizes {
-            neighbors: 100,
-            n_clusters: None,
-            all_pairs: true,
-        }
-        .memory_shape(
-            &InputShape {
-                genes: 2000,
-                nonzeros,
-                section_sizes: vec![cells],
-                batches: 1,
-                strata: 1,
-            },
-            nonzeros,
-        );
-        assert_eq!((shape.edges, shape.gram, shape.pair_cells), (0, 0, cells));
-        let est = mib(spatialde2_peak_bytes(&shape));
-        assert!(est >= measured, "{cells}: {est:.0} < {measured} MiB");
-        assert!(est <= 1.5 * measured, "{cells}: {est:.0} MiB");
     }
 }
 
@@ -625,7 +587,6 @@ fn the_read_of_the_counts_is_charged() {
         edges: 0,
         regions: 1,
         gram: 0,
-        pair_cells: 0,
     };
     assert_eq!(
         spatialde2_peak_bytes(&spatialde2),
@@ -769,19 +730,16 @@ fn stagate_on_a_gpu_is_not_told_to_use_cuda() {
 }
 
 /// The sparse formulation is the CPU path: on a GPU the input is held
-/// dense, and the estimate charges it so; the layout is recorded apart
-/// from the mode, which is `--reference`'s alone.
+/// dense, and the estimate charges it so.
 #[test]
 fn stagate_holds_its_input_dense_off_the_cpu() {
     let dir = tempfile::tempdir().unwrap();
-    for (extra, dense, reference) in [
-        (&["--device", "cpu"][..], false, false),
-        (&["--device", "cpu", "--reference"][..], true, true),
-        (&["--device", "cuda"][..], true, false),
-        (&["--device", "metal"][..], true, false),
+    for (extra, dense) in [
+        (&["--device", "cpu"][..], false),
+        (&["--device", "cuda"][..], true),
+        (&["--device", "metal"][..], true),
     ] {
         let args = stagate_args(&dir.path().join("st"), extra);
-        assert_eq!(args.reference, reference, "{extra:?}");
         let layout = match dense {
             true => InputLayout::Dense,
             false => InputLayout::Sparse,
@@ -791,42 +749,34 @@ fn stagate_holds_its_input_dense_off_the_cpu() {
     }
 }
 
-/// A CPU run records `baseline.mode` from `--reference` and the layout
-/// held as `input_layout`, in the manifest and `baseline.json`'s `run`.
+/// A CPU run records the layout held as `input_layout`, in the manifest
+/// and `baseline.json`'s `run`, and no mode: there is one formulation.
 #[test]
-fn stagate_records_its_mode_and_layout_apart() {
-    use crate::util::metadata::{BaselineMode, PintoMetadata};
+fn stagate_records_its_layout() {
+    use crate::util::metadata::PintoMetadata;
     let dir = tempfile::tempdir().unwrap();
-    for (tag, extra, mode, layout) in [
-        ("s", &[][..], BaselineMode::Sparse, InputLayout::Sparse),
-        (
-            "r",
-            &["--reference"][..],
-            BaselineMode::Reference,
-            InputLayout::Dense,
-        ),
-    ] {
-        let out = dir.path().join(tag);
-        let mut flags = vec!["--n-epochs", "2"];
-        flags.extend(extra);
-        stagate::run_on(&stagate_args(&out, &flags), tissue(6), &set(usize::MAX)).unwrap();
-        let prefix = out.to_string_lossy();
-        let meta: PintoMetadata =
-            serde_json::from_str(&std::fs::read_to_string(format!("{prefix}.pinto.json")).unwrap())
-                .unwrap();
-        let run = meta.baseline.unwrap();
-        assert_eq!(run.mode, mode, "{tag}");
-        assert_eq!(run.input_layout, Some(layout), "{tag}");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(format!("{prefix}.baseline.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            settings["run"]["input_layout"],
-            serde_json::to_value(layout).unwrap(),
-            "{tag}"
-        );
-    }
+    let out = dir.path().join("s");
+    stagate::run_on(
+        &stagate_args(&out, &["--n-epochs", "2"]),
+        tissue(6),
+        &set(usize::MAX),
+    )
+    .unwrap();
+    let prefix = out.to_string_lossy();
+    let text = std::fs::read_to_string(format!("{prefix}.pinto.json")).unwrap();
+    let meta: PintoMetadata = serde_json::from_str(&text).unwrap();
+    let run = meta.baseline.unwrap();
+    assert_eq!(run.input_layout, Some(InputLayout::Sparse));
+    let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(raw["baseline"].get("mode").is_none(), "{}", raw["baseline"]);
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{prefix}.baseline.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        settings["run"]["input_layout"],
+        serde_json::to_value(InputLayout::Sparse).unwrap()
+    );
+    assert!(settings["run"].get("mode").is_none(), "{}", settings["run"]);
 }
 
 /// A radius graph's edges are counted once it is built: a budget that
@@ -966,7 +916,7 @@ fn the_check_before_the_read_bounds_the_checks_after_it() {
         unreachable!()
     };
     let shape = args.fit.input.stored().unwrap().unwrap();
-    let bound = spatialde2::input_peak_bytes(&args.fit, args.variant(), &shape);
+    let bound = spatialde2::input_peak_bytes(&args.fit, spatialde2::Variant::Sparse, &shape);
     spatialde2::run_on(&args, args.fit.input.read(false).unwrap(), &set(bound)).unwrap();
 }
 

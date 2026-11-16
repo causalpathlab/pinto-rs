@@ -739,10 +739,10 @@ enum Commands {
             "SpatialDE2's tissue segmentation (Kats, Vento-Tormo and Stegle 2021),\n\
              faithful to its reference code at the model level, on pinto's inputs:\n\
              the data, -c, -b, -o and --seed flags lc takes.\n\n\
-             Sparse by default: each cell's --neighbors nearest in its section,\n\
-             the reference's own neighbors=k option. --reference connects every\n\
-             pair of cells in a section, the reference's default, at O(N^2) work\n\
-             per update (no N x N matrix is held).\n\n",
+             Sparse: each cell's --neighbors nearest in its section, the\n\
+             reference's own neighbors=k option. The reference's default graph,\n\
+             every pair of cells connected, costs too much time and memory at\n\
+             real cell counts and is not run.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -759,10 +759,10 @@ enum Commands {
              k-means into --n-clusters domains, or Leiden without it. With\n\
              --n-clusters this differs from the STAGATE tutorial, which fits a\n\
              Gaussian mixture in R at that step.\n\n\
-             Sparse by default on the CPU: the input stays sparse and the loss is\n\
-             summed over blocks of cells. --reference holds the dense input, as\n\
-             the original does, and so does a GPU (--device), its mode still\n\
-             sparse; both give the same numbers up to float rounding.\n\n",
+             Sparse: on the CPU the input stays sparse and the loss is summed over\n\
+             blocks of cells, the same numbers as the original's dense input up to\n\
+             float rounding, without its time and memory at real cell counts. A\n\
+             GPU (--device) holds the selected genes dense.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -781,7 +781,7 @@ enum Commands {
              it collapses: the cells' model with each super-cell's cells sharing a\n\
              region. Each cell's region posterior is then re-inferred on its own\n\
              counts and the cell graph, the fit's region rates held fixed. Takes\n\
-             spatialde2's flags but --reference: it fits the sparse graph.\n\n",
+             spatialde2's flags.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()
@@ -798,11 +798,11 @@ enum Commands {
              pinto's seeded k-means (--n-clusters) or Leiden in place of the\n\
              paper's Walktrap and Louvain, then refined by the paper's majority\n\
              vote over spatial neighbours.\n\n\
-             Sparse by default: the paper's Gaussian kernel is replaced by a\n\
-             sparse precision on the kNN graph within each section, its strength\n\
-             fitted with the rest; no N x N matrix is held. There is no\n\
-             --reference: the paper's dense kernel costs too much time and memory\n\
-             at real cell counts; spatialpca-pb fits on super-cells for scale.\n\
+             Sparse: the paper's Gaussian kernel is replaced by a sparse precision\n\
+             on the kNN graph within each section, its strength fitted with the\n\
+             rest; no N x N matrix is held, as the paper's dense kernel costs too\n\
+             much time and memory at real cell counts. spatialpca-pb fits on\n\
+             super-cells for scale.\n\
              Genes: SPARK-X's spatially variable genes (FDR 0.05, at most\n\
              --n-genes); expression: SCTransform's Pearson residuals, as the\n\
              paper preprocesses.\n\n",
@@ -840,11 +840,11 @@ enum Commands {
              analysis with sparse weights, the sections as groups, each factor\n\
              spatially smooth. The paper does not cluster; pinto's seeded k-means\n\
              (--n-clusters) or Leiden turns the factors into domains.\n\n\
-             Sparse by default: each factor's Gaussian process is replaced by a\n\
-             sparse precision on the kNN graph within each section, its strength\n\
-             fitted per factor; no N x N matrix is held. There is no --reference:\n\
-             the paper's Gaussian processes cost too much time and memory at real\n\
-             cell counts; mefisto-pb fits on super-cells for scale.\n\n",
+             Sparse: each factor's Gaussian process is replaced by a sparse\n\
+             precision on the kNN graph within each section, its strength fitted\n\
+             per factor; no N x N matrix is held, as the paper's Gaussian\n\
+             processes cost too much time and memory at real cell counts.\n\
+             mefisto-pb fits on super-cells for scale.\n\n",
             baseline_batch!(),
             baseline_memory!(),
             baseline_outputs!()

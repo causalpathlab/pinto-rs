@@ -22,7 +22,7 @@
 //! The paper's dense Gaussian kernel `K(s, s') = exp(-||s - s'||^2 /
 //! gamma)` and its low-rank approximation cost too much time and memory at
 //! real cell counts, so pinto offers the model with a sparse graph prior
-//! in its place, and `spatialpca-pb` for scale; there is no `--reference`.
+//! in its place, and `spatialpca-pb` for scale.
 //!
 //! - The prior ([`sparse`]): the kernel replaced by the sparse
 //!   prior `R(rho) = (I + rho L)^{-1} / cbar(rho)` on the per-section kNN
@@ -351,7 +351,6 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             embedding: &z,
             embedding_name: "spatialpc",
             settings,
-            reference: false,
             input_layout: None,
             pseudobulk: None,
         },
@@ -456,7 +455,6 @@ pub(crate) fn run_pb_on(
             embedding: &z,
             embedding_name: "spatialpc",
             settings,
-            reference: false,
             input_layout: None,
             pseudobulk: Some(PbFit {
                 input: pseudobulk_input(args.n_pseudobulk, &coarse),
