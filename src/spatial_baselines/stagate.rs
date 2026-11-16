@@ -1392,7 +1392,8 @@ pub fn looped_edges(n: usize, edges: &[(usize, usize)]) -> (Vec<u32>, Vec<u32>) 
 
 /// Each row of `z` (cells × d) given the label of the nearest (Euclidean)
 /// centroid of the rows of `fitted` (units × d) sharing a label of
-/// `labels` (dense, `0..k`, each held by a unit).
+/// `labels` (of `0..k`); a label no unit holds has no centroid and is
+/// never taken.
 pub fn nearest_centroid(z: &Mat, fitted: &Mat, labels: &[usize]) -> Vec<usize> {
     let k = labels.iter().max().map_or(0, |&m| m + 1);
     let d = fitted.ncols();
@@ -1413,6 +1414,7 @@ pub fn nearest_centroid(z: &Mat, fitted: &Mat, labels: &[usize]) -> Vec<usize> {
         .into_par_iter()
         .map(|i| {
             (0..k)
+                .filter(|&l| size[l] > 0.0)
                 .map(|l| {
                     let d2: f32 = (0..d).map(|j| (z[(i, j)] - centroid[(l, j)]).powi(2)).sum();
                     (l, d2)
@@ -1562,12 +1564,13 @@ pub(crate) fn run_pb_on(
     let (pb_labels, clustering) =
         cluster_embedding(&z_pb, args.n_clusters, args.resolution, args.input.seed)?;
     let k = pb_labels.iter().max().map_or(0, |&l| l + 1);
+    let (_, on_super) = renumber_present(&pb_labels, k);
     let nearest = nearest_centroid(&z, &z_pb, &pb_labels);
     // a domain no cell is nearest to is dropped from the numbering
     let (map, found) = renumber_present(&nearest, k);
     let labels: Vec<usize> = nearest.iter().map(|&l| map[l]).collect();
     let broadcast: Vec<usize> = of_cell.iter().map(|&s| map[pb_labels[s]]).collect();
-    info!("stagate-pb: {clustering} into {k} domains on super-cells, {found} on cells");
+    info!("stagate-pb: {clustering} into {on_super} domains on super-cells, {found} on cells");
 
     let settings = serde_json::json!({
         "reference": "STAGATE_pyG ae1158c (Dong and Zhang 2022)",
@@ -1594,7 +1597,7 @@ pub(crate) fn run_pb_on(
         "kmeans_max_iter": args.n_clusters.is_some().then_some(KMEANS_MAX_ITER),
         "kmeans_restarts": args.n_clusters.is_some().then_some(KMEANS_RESTARTS),
         "resolution": args.n_clusters.is_none().then_some(args.resolution),
-        "n_domains_on_super_cells": k,
+        "n_domains_on_super_cells": on_super,
         "n_domains": found,
         "unravel": {
             "method": "the trained encoder on each cell's counts and the cell graph; each cell takes the nearest domain centroid of the super-cells' embedding",

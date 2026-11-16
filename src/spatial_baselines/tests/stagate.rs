@@ -115,6 +115,16 @@ fn nearest_centroid_takes_the_nearest_mean() {
     assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 1, 0]);
 }
 
+/// A label no unit holds (k-means can leave one empty) has no centroid, so
+/// no cell takes it, even a cell at the origin.
+#[test]
+fn nearest_centroid_skips_a_label_no_unit_holds() {
+    let fitted = Mat::from_row_slice(2, 1, &[3.0, 5.0]);
+    let labels = [0, 2];
+    let z = Mat::from_row_slice(3, 1, &[0.0, 0.5, 6.0]);
+    assert_eq!(nearest_centroid(&z, &fitted, &labels), [0, 0, 2]);
+}
+
 /// The domains held by a cell are numbered `0..found` in their order, the
 /// rest after them.
 #[test]
