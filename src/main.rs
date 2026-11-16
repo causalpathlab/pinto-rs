@@ -530,8 +530,8 @@ enum Commands {
                       \x20    model's own {model}.delta.parquet; only a new batch is\n\
                       \x20    estimated on the sample, carried into the model's frame through\n\
                       \x20    the batches the two share. Batches match by --batch-files label;\n\
-                      \x20    without one, a data file matches when it is one of the model's\n\
-                      \x20    own (the model labelled by file too). A model without a δ\n\
+                      \x20    without one, by data file name (s1.zarr is batch s1), when the\n\
+                      \x20    model labelled by file too. A model without a δ\n\
                       \x20    trained on undivided counts: its query is not divided.\n\
                       \x20    {out}.delta.parquet is the δ used. --ignore-batch: none,\n\
                       \x20    refused for a model fitted on δ-divided counts (its manifest's\n\

@@ -241,6 +241,12 @@ pub struct PintoMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_labels: Option<BatchLabels>,
 
+    /// With file batches ([`BatchLabels::Files`]), each data file's batch
+    /// name and the file's path as given, in `data_files`' order. Absent
+    /// otherwise, and on manifests written before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_batches: Option<Vec<FileBatch>>,
+
     /// Present on a spatial baseline's run (each baseline and its `-pb`
     /// form): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -296,12 +302,19 @@ pub struct PseudobulkInput {
     pub edge_weighting: String,
 }
 
-/// What a run's batch labels are: one per data file (by its position), the
-/// `--batch-files` labels, or `--auto-batch` components.
+/// What a run's batch labels are: one per data file (named by the file),
+/// the `--batch-files` labels, or `--auto-batch` components.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchLabels {
+    /// One batch per data file, named by it
+    /// ([`crate::util::input::data_file_name`]).
+    #[serde(rename = "file-names")]
     Files,
+    /// One batch per data file, named by its position (`0`, `1`, …): how
+    /// an older pinto named them, read to match a query to its batches.
+    #[serde(rename = "files")]
+    FilePositions,
     BatchFiles,
     AutoBatch,
 }
@@ -318,6 +331,34 @@ impl BatchLabels {
             Self::Files
         }
     }
+}
+
+/// A data file's batch, when the file is its own.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct FileBatch {
+    /// Its name ([`crate::util::input::data_file_name`]).
+    pub name: String,
+    /// The data file, as given.
+    pub path: String,
+}
+
+/// Each of `files`' batch when the batches are labelled by file
+/// (`labels`): see [`PintoMetadata::file_batches`].
+pub fn file_batches(labels: Option<BatchLabels>, files: &[Box<str>]) -> Option<Vec<FileBatch>> {
+    if labels != Some(BatchLabels::Files) {
+        return None;
+    }
+    let names = crate::util::input::data_file_names(files).ok()?;
+    Some(
+        names
+            .into_iter()
+            .zip(files)
+            .map(|(name, path)| FileBatch {
+                name: name.into(),
+                path: path.to_string(),
+            })
+            .collect(),
+    )
 }
 
 /// Data files as a manifest records them: each canonical (absolute) when
@@ -1115,6 +1156,7 @@ pub fn create_lc_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
         max_threads: None,
     }
@@ -1164,6 +1206,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
         max_threads: None,
     }
@@ -1227,6 +1270,7 @@ pub fn create_cage_metadata(
         ablation: inputs.ablation.clone(),
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
+        file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
         max_threads: None,
     }
@@ -1274,6 +1318,7 @@ pub fn create_prop_metadata(
         ablation: None,
         holdout: None,
         batch_labels: None,
+        file_batches: None,
         baseline: None,
         max_threads: None,
     }

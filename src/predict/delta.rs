@@ -11,134 +11,143 @@
 
 use crate::util::batch_effects::RunDelta;
 use crate::util::common::*;
-use crate::util::input::SrtInputArgs;
+use crate::util::input::{data_file_names, SrtInputArgs};
 use crate::util::lupin_rounds::same_file;
 use crate::util::metadata::BatchLabels;
 use legume_numeric::matrix::common_io::open_buf_reader;
 use std::path::Path;
 
-/// How a query's batch labels name batches, and so how they can be matched
-/// to the model's.
-pub(crate) enum QueryLabels<'a> {
-    /// `--batch-files` labels: a query batch is the model batch of that name.
-    Named,
-    /// One batch per data file, labelled by the file's position. Positions
-    /// mean nothing across runs, so a query file is the model's batch only
-    /// when it is one of the model's own data files, and the model labelled
-    /// its batches by file too.
-    Files {
-        query_files: &'a [Box<str>],
-        model_files: &'a [String],
-    },
-    /// `--auto-batch` components: labels a query cannot share with a model.
-    Components,
+/// How a model named its batches, from its manifest, for matching a
+/// query's batches to them.
+#[derive(Debug, Default)]
+pub(crate) struct ModelNaming {
+    /// What named them; `None` on a manifest that does not record it (an
+    /// older fit).
+    pub source: Option<BatchLabels>,
+    /// Its data files as its manifest records them (canonical), found from
+    /// here.
+    pub files: Vec<String>,
+    /// Each file batch's name, in `files`' order, when recorded.
+    pub names: Vec<Box<str>>,
 }
 
-impl<'a> QueryLabels<'a> {
-    /// The labels a query with label source `source` has.
-    pub(crate) fn of(
-        source: BatchLabels,
-        query_files: &'a [Box<str>],
-        model_files: &'a [String],
-    ) -> Self {
+impl ModelNaming {
+    /// The naming of the model whose run is `run`; none without a run.
+    pub(crate) fn of(run: Option<&crate::util::metadata::Run>) -> Self {
+        let Some(run) = run else {
+            return Self::default();
+        };
+        Self {
+            source: run.meta.batch_labels,
+            files: crate::predict::model_data_files(Some(run)),
+            names: (run.meta.file_batches.iter().flatten())
+                .map(|b| b.name.as_str().into())
+                .collect(),
+        }
+    }
+
+    /// Whether the model named its batches `model` by file position (`0`,
+    /// `1`, …), as an older pinto did: as its manifest records, else when
+    /// the labels are exactly the positions of its data files.
+    fn by_position(&self, model: &[Box<str>]) -> bool {
+        match self.source {
+            Some(source) => source == BatchLabels::FilePositions,
+            None => {
+                model.len() == self.files.len()
+                    && (0..self.files.len())
+                        .all(|i| model.iter().any(|m| m.as_ref() == i.to_string()))
+            }
+        }
+    }
+
+    /// Whether a query labelled by `source` can share a batch with the
+    /// model at all: decided without reading the query's labels.
+    fn may_share(&self, source: BatchLabels) -> bool {
+        use BatchLabels::*;
         match source {
-            BatchLabels::BatchFiles => Self::Named,
-            BatchLabels::AutoBatch => Self::Components,
-            BatchLabels::Files => Self::Files {
-                query_files,
-                model_files,
-            },
+            AutoBatch => false,
+            BatchFiles => matches!(self.source, Some(BatchFiles) | None),
+            Files | FilePositions => matches!(self.source, Some(Files | FilePositions) | None),
         }
     }
 }
 
-/// Whether a model labelled its batches by file: as its manifest records
-/// (`model_source`), else read from its labels, which are then exactly the
-/// positions of its data files.
-fn model_labels_files(
-    model: &[Box<str>],
-    model_source: Option<BatchLabels>,
-    model_files: &[String],
-) -> bool {
-    match model_source {
-        Some(source) => source == BatchLabels::Files,
-        None => {
-            model.len() == model_files.len()
-                && (0..model_files.len()).all(|i| model.iter().any(|m| m.as_ref() == i.to_string()))
-        }
-    }
-}
-
-/// For each query batch label, the model's batch it is, if any. `model_source`
-/// is how the model labelled its batches, from its manifest; a manifest
-/// that does not record it (an older fit) is read from the labels: by file
-/// when they are exactly the positions of its data files.
+/// For each query batch label, the model's batch it is, if any, for a
+/// query with inputs `c` and a model with batches `model`, named as
+/// `naming` says. `--batch-files` labels are the model batch of that name
+/// when the model is labelled so too, or records nothing (an older fit).
+/// A file's batch is the model's of the same name when the model named its
+/// batches by file too; an older pinto's, named by position, is the batch
+/// of the model's data file that is the query's file, through links.
+/// `--auto-batch` components are never the model's.
 pub(crate) fn match_batches(
     query: &[Box<str>],
+    c: &SrtInputArgs,
     model: &[Box<str>],
-    model_source: Option<BatchLabels>,
-    how: &QueryLabels<'_>,
+    naming: &ModelNaming,
 ) -> Vec<Option<usize>> {
     let col_of = |label: &str| model.iter().position(|m| m.as_ref() == label);
-    match how {
-        QueryLabels::Named => match model_source {
-            Some(BatchLabels::BatchFiles) | None => query.iter().map(|q| col_of(q)).collect(),
-            Some(_) => vec![None; query.len()],
-        },
-        QueryLabels::Components => vec![None; query.len()],
-        QueryLabels::Files {
-            query_files,
-            model_files,
-        } => {
-            let by_file = model_labels_files(model, model_source, model_files);
+    let by_name = || query.iter().map(|q| col_of(q)).collect();
+    match BatchLabels::of(&c.batch) {
+        BatchLabels::BatchFiles if naming.may_share(BatchLabels::BatchFiles) => by_name(),
+        BatchLabels::Files if naming.source == Some(BatchLabels::Files) => by_name(),
+        BatchLabels::Files if naming.by_position(model) => {
+            let names = data_file_names(&c.data_files).unwrap_or_default();
             query
                 .iter()
                 .map(|q| {
-                    let file = query_files.get(q.parse::<usize>().ok()?)?;
-                    let i = model_files
-                        .iter()
+                    let file = c.data_files.get(names.iter().position(|n| n == q)?)?;
+                    let i = (naming.files.iter())
                         .position(|m| same_file(Path::new(m), Path::new(file.as_ref())))?;
-                    by_file.then(|| col_of(&i.to_string())).flatten()
+                    col_of(&i.to_string())
                 })
                 .collect()
         }
+        _ => vec![None; query.len()],
     }
 }
 
-/// Whether every batch a query with inputs `c` (labels `how`) can have is
-/// one of the model's, decided before any data is read: per-file labels
-/// are the files' positions, `--batch-files` labels are those files' lines,
-/// and `--auto-batch` components are never the model's. Read from the
-/// inputs, so a label only cells QC drops would carry counts too: it can
-/// ask for an estimate the kept cells do not need, never skip one they
-/// do. Warns, once, of a query file named as a model file but not that
-/// file.
+/// Each of the query's data files `files` (named `names`) that has the
+/// name of one of the model's file batches but is not that file (through
+/// links), with the model's file: it takes that batch's δ, though it may
+/// be another sample.
+pub(crate) fn renamed_files<'a>(
+    files: &'a [Box<str>],
+    names: &[Box<str>],
+    naming: &'a ModelNaming,
+) -> Vec<(&'a str, &'a str)> {
+    files
+        .iter()
+        .zip(names)
+        .filter_map(|(file, name)| {
+            let k = naming.names.iter().position(|n| n == name)?;
+            let model_file = naming.files.get(k)?;
+            (!same_file(Path::new(model_file), Path::new(file.as_ref())))
+                .then_some((file.as_ref(), model_file.as_str()))
+        })
+        .collect()
+}
+
+/// Whether every batch a query with inputs `c` can have is one of the
+/// model's ([`match_batches`]), decided before any data is read: per-file
+/// labels are the files' names, `--batch-files` labels are those files'
+/// lines, and `--auto-batch` components are never the model's. Read from
+/// the inputs, so a label only cells QC drops would carry counts too: it
+/// can ask for an estimate the kept cells do not need, never skip one they
+/// do. Warns of a query file named as a model file but not that file.
 pub(crate) fn every_batch_known(
     c: &SrtInputArgs,
-    how: &QueryLabels<'_>,
     model: &[Box<str>],
-    model_source: Option<BatchLabels>,
+    naming: &ModelNaming,
 ) -> anyhow::Result<bool> {
-    let labels: Vec<Box<str>> = match how {
-        QueryLabels::Components => return Ok(false),
-        QueryLabels::Files {
-            query_files,
-            model_files,
-        } => {
-            if model_labels_files(model, model_source, model_files) {
-                for file in query_files.iter() {
-                    warn_if_renamed(file, model_files);
-                }
-            }
-            (0..query_files.len())
-                .map(|i| i.to_string().into())
-                .collect()
-        }
-        // a model labelled otherwise shares no named batch: no need to read
-        QueryLabels::Named if model_source.is_some_and(|s| s != BatchLabels::BatchFiles) => {
-            return Ok(false)
-        }
-        QueryLabels::Named => {
+    let source = BatchLabels::of(&c.batch);
+    // a model labelled otherwise shares no batch: no need to read
+    if !naming.may_share(source) {
+        return Ok(false);
+    }
+    let labels: Vec<Box<str>> = match source {
+        BatchLabels::AutoBatch => return Ok(false),
+        BatchLabels::BatchFiles => {
             // one entry per distinct label, read a line at a time: no
             // per-cell list
             use std::io::BufRead;
@@ -153,31 +162,22 @@ pub(crate) fn every_batch_known(
             }
             labels.into_iter().collect()
         }
+        BatchLabels::Files | BatchLabels::FilePositions => {
+            let names = data_file_names(&c.data_files)?;
+            if naming.source == Some(BatchLabels::Files) {
+                for (file, model_file) in renamed_files(&c.data_files, &names, naming) {
+                    log::warn!(
+                        "{file} has the name of the model's data file {model_file} but is not \
+                         that file; it takes that batch's δ"
+                    );
+                }
+            }
+            names
+        }
     };
-    Ok(match_batches(&labels, model, model_source, how)
+    Ok(match_batches(&labels, c, model, naming)
         .iter()
         .all(Option::is_some))
-}
-
-/// A query file not among the model's, but named as one of them is: most
-/// likely the model's file moved, or the model's path no longer resolves.
-fn warn_if_renamed(file: &str, model_files: &[String]) {
-    if model_files
-        .iter()
-        .any(|m| same_file(Path::new(m), Path::new(file)))
-    {
-        return;
-    }
-    let name = Path::new(file).file_name();
-    if let Some(m) = model_files
-        .iter()
-        .find(|m| name.is_some() && Path::new(m).file_name() == name)
-    {
-        log::warn!(
-            "{file} is named as the model's data file {m} but is not that file; its batch \
-             is taken as new to the model"
-        );
-    }
 }
 
 /// The δ for the query, `[query rows × query batches]`, from the model's δ
@@ -367,11 +367,9 @@ pub(crate) fn adjusted_query_delta(
         return Ok(None);
     }
     let (model_delta, path) = adjusted_model_delta(model, run)?;
-    let source = run.meta.batch_labels;
-    let model_files = crate::predict::model_data_files(Some(run));
-    let how = QueryLabels::of(BatchLabels::of(&c.batch), &c.data_files, &model_files);
+    let naming = ModelNaming::of(Some(run));
     let labels = sorted_batch_labels(membership);
-    let all_known = every_batch_known(c, &how, &model_delta.batches, source)?;
+    let all_known = every_batch_known(c, &model_delta.batches, &naming)?;
     let estimate = if all_known {
         None
     } else {
@@ -387,7 +385,7 @@ pub(crate) fn adjusted_query_delta(
         .map(|p| p.into_delta().map(|d| d.on_batches(&labels)))
         .transpose()?
     };
-    let matched = match_batches(&labels, &model_delta.batches, source, &how);
+    let matched = match_batches(&labels, c, &model_delta.batches, &naming);
     let rows = data.row_names()?;
     Ok(query_delta(
         (&model_delta, &path),

@@ -76,6 +76,23 @@ pub const BATCH_LABEL_ALL: &str = "all";
 /// Pseudo-batch label for pooled-across-batches rows emitted alongside per-batch rows.
 pub const BATCH_LABEL_META: &str = "pooled";
 
+/// Refuse a batch label of `what` that is one lra keeps for itself
+/// ([`BATCH_LABEL_ALL`], [`BATCH_LABEL_META`]): its cells would be taken
+/// for cells of no batch, or its rows for the pooled ones.
+pub fn refuse_reserved_batches<'a>(
+    labels: impl IntoIterator<Item = &'a str>,
+    what: &str,
+) -> anyhow::Result<()> {
+    for label in labels {
+        anyhow::ensure!(
+            label != BATCH_LABEL_ALL && label != BATCH_LABEL_META,
+            "{what}: batch {label} has a name lra keeps for its own rows \
+             ({BATCH_LABEL_ALL}, {BATCH_LABEL_META}); rename its data file or relabel the batch"
+        );
+    }
+    Ok(())
+}
+
 /// Don't compute a statistic when the stratum has fewer than this many
 /// samples — correlation + permutation are too noisy below this.
 const MIN_SAMPLES_PER_STRATUM: usize = 4;

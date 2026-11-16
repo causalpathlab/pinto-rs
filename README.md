@@ -38,6 +38,16 @@ pinto lc data.h5 -c coords.csv -o out --n-communities 25
 pinto lc data.h5 -o out   # expression-only
 ```
 
+Without `--batch-files` or `--auto-batch`, each data file is its own batch,
+named by the file less its data extension (`sampleA.zarr` and
+`sampleA.zarr.zip` are batch `sampleA`), so the names do not depend on the
+order the files are given in. Two data files of the same name in one run
+are refused. `pinto predict` and `pinto impute` give a query file the
+model's batch of the same name, warning when it is not the model's own
+file. An older pinto named them by position (`0`, `1`, …; its manifest has
+`"batch_labels": "files"`, this one `"file-names"`): a query file takes
+such a model's batch only when it is that model's data file.
+
 With several batches (data files, or `--batch-files` labels), lc estimates
 batch effects δ, as dsvd and cage do, and divides every count of its edge
 profiles by its batch's δ; `{out}.feature_community.parquet` stays on raw
@@ -121,9 +131,9 @@ writing the module tables. `cage-cell` is cage trained on cells and cell
 pairs, for comparison with cell-level methods; it estimates and removes batch
 effects as cage does (`--ignore-batch` runs it without). `pinto predict`
 applies a cage or cage-cell run to new data; see each command's `--help`.
-A query batch the model trained on (the same `--batch-files` label, or one
-of the model's own data files) is divided by the model's own batch effects;
-only a new batch is estimated on the query. `pinto impute` divides the
+A query batch the model trained on (the same `--batch-files` label, or a
+data file of the same name as one of the model's) is divided by the model's
+own batch effects; only a new batch is estimated on the query. `pinto impute` divides the
 reference cells of a cage run by the run's batch effects before pooling
 them; for lc and dsvd runs it stays on raw counts, since their
 feature-community profiles are fitted on raw counts.

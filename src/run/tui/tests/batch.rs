@@ -7,7 +7,7 @@ fn pair(name: &str, cells: Option<usize>) -> Pair {
 }
 
 #[test]
-fn files_left_to_pinto_pass_no_batch_files_and_are_numbered() {
+fn files_left_to_pinto_pass_no_batch_files_and_are_named_by_the_file() {
     let pairs = [pair("d/s1.zarr", Some(3)), pair("d/s2.zarr", None)];
     assert_eq!(args(&pairs), Ok(None));
     let (batches, notes) = summary(&pairs);
@@ -16,12 +16,12 @@ fn files_left_to_pinto_pass_no_batch_files_and_are_numbered() {
         batches,
         [
             Batch {
-                name: "0".into(),
+                name: "s1".into(),
                 files: 1,
                 cells: Some(3)
             },
             Batch {
-                name: "1".into(),
+                name: "s2".into(),
                 files: 1,
                 cells: None
             },
@@ -63,7 +63,9 @@ fn a_file_of_unknown_size_cannot_be_named_yet() {
 
 #[test]
 fn label_files_pass_as_they_are_unless_renamed_and_same_stems_do_not_collide() {
-    let mut pairs = [pair("d/s1.zarr", Some(3)), pair("e/s1.zarr", Some(3))];
+    // data files of two names (s1, s1.csv) and one stem: two files of one
+    // name are refused by the reader
+    let mut pairs = [pair("d/s1.zarr", Some(3)), pair("e/s1.csv.zarr", Some(3))];
     pairs[0].batch = Some("d/s1_batch.txt".into());
     pairs[1].batch = Some("e/s1_batch.txt".into());
     pairs[1].renames.insert("A".into(), "b2".into());
@@ -147,4 +149,24 @@ fn a_new_batch_file_forgets_the_old_names_and_a_cleared_row_is_its_own_again() {
     assert!(p.renames.is_empty() && p.labels.is_none());
     p.clear_batch();
     assert_eq!(kind(&p), Kind::File);
+}
+
+/// Two data files of one name are refused by the reader: the plan cannot
+/// be made, and the summary says the run will be refused.
+#[test]
+fn two_data_files_of_one_name_are_refused_as_the_reader_refuses_them() {
+    let mut pairs = [pair("d/s1.zarr", Some(3)), pair("e/s1.zarr.zip", Some(2))];
+    let e = args(&pairs).unwrap_err();
+    assert!(e.contains("same name s1"), "{e}");
+    let (batches, notes) = summary(&pairs);
+    assert!(batches.is_empty(), "{batches:?}");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("refused") && n.contains("same name s1")),
+        "{notes:?}"
+    );
+    // named batches do not make the files' own names differ
+    pairs[0].name = Some("b1".into());
+    assert!(args(&pairs).is_err());
 }
