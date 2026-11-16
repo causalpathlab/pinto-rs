@@ -1,5 +1,6 @@
 //! The response programme and the response-side covariates read from it.
 
+use super::receivers::log_normalized;
 use super::regression::standardize;
 use super::tissue::Tissue;
 use rayon::prelude::*;
@@ -72,8 +73,9 @@ pub(super) fn genes_and_weights<'t>(targets: &Targets<'t>) -> (Vec<Gene<'t>>, Ve
 /// weight.
 ///
 /// The response is the signed weighted mean of `log1p(x / size factor)`
-/// over the programme, accumulated over non-zeros only (a zero count
-/// contributes `log1p(0) = 0`).
+/// over the programme ([`log_normalized`]: the count per common library
+/// scale of the receiver's total), accumulated over non-zeros only (a zero
+/// count contributes `log1p(0) = 0`).
 ///
 /// The bleed is what contact neighbours' programme transcripts are expected to add to
 /// each receiver's response if segmentation handed it all of them: per
@@ -112,9 +114,9 @@ pub fn programme_columns(
         m.fill(0.0);
         for &(r, v) in *nz {
             let r = r as usize;
-            let x = v as f64 / sf[r];
-            m[identity_bin[r]] += x;
-            let l = x.ln_1p();
+            let v = v as f64;
+            m[identity_bin[r]] += v / sf[r];
+            let l = log_normalized(v, sf[r]);
             for &k in &on {
                 ys[k][r] += weightings[k][g] * l;
             }
@@ -156,7 +158,7 @@ pub fn expected_bleed(
                 .iter()
                 .map(|&j| sf[j as usize] * m[identity_bin[j as usize]])
                 .sum();
-            (e / sf[i]).ln_1p()
+            log_normalized(e, sf[i])
         })
         .collect()
 }

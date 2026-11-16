@@ -3,6 +3,7 @@
 use super::calibrate::Producers;
 use super::scenario::{ConfoundShape, ConfounderKind, Scenario};
 use crate::lr_activity::ligand_effect::confounders::fourier_features;
+use crate::lr_activity::ligand_effect::receivers::log_normalized;
 use crate::lr_activity::ligand_effect::regression::standardize;
 use crate::lr_activity::ligand_effect::tissue::Tissue;
 use crate::util::common::HashMap;
@@ -84,7 +85,7 @@ fn bump_field(tissue: &Tissue, scale: f64, seed: u64) -> Vec<f64> {
 fn gene_field(tissue: &Tissue, counts: &[f64], scale: f64) -> Vec<f64> {
     let n = tissue.n();
     let sf = &tissue.size_factor;
-    let v: Vec<f64> = (0..n).map(|i| (counts[i] / sf[i]).ln_1p()).collect();
+    let v: Vec<f64> = (0..n).map(|i| log_normalized(counts[i], sf[i])).collect();
     let mut z = vec![0.0; n];
     for s in 0..tissue.unit.len() {
         let w = scale * tissue.unit[s];

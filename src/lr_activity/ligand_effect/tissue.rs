@@ -79,7 +79,7 @@ pub struct Tissue {
     /// Nested adjustment steps, coarsest first, all short of the full
     /// design: section, spatial, identity.
     pub steps: Vec<AdjustmentStep>,
-    /// Depth over the median depth.
+    /// Total count over the common library scale ([`size_factors`]).
     pub size_factor: Vec<f64>,
     /// Identity bin of each row, for competence.
     pub identity_bin: Vec<usize>,

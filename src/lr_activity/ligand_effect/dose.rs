@@ -4,6 +4,7 @@
 use super::averaging::AbfSummary;
 use super::contacts::Contacts;
 use super::options::EffectOpts;
+use super::receivers::log_normalized;
 use super::tissue::Tissue;
 
 /// The exposure side of a pair's per-row quantities: the same under every
@@ -18,7 +19,8 @@ pub struct Exposure {
     /// neighbours.
     pub niche: Vec<f64>,
     /// Ligand / size factor summed over each row's contacts, which the
-    /// threshold is read from.
+    /// threshold is read from: the contacts' ligand per common library
+    /// scale ([`super::receivers::size_factors`]), so τ is on that scale.
     pub dose: Vec<f64>,
 }
 
@@ -30,7 +32,11 @@ impl Exposure {
         Self {
             tau,
             t: exposed(&dose, tau),
-            own: lnorm.iter().map(|v| v.ln_1p()).collect(),
+            own: ligand_counts
+                .iter()
+                .zip(&tissue.size_factor)
+                .map(|(&c, &s)| log_normalized(c, s))
+                .collect(),
             niche: niche_ligand(tissue, &lnorm),
             dose,
         }

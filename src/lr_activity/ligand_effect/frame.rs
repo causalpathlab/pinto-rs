@@ -20,7 +20,8 @@ use data_beans::utilities::name_matching::GeneIndex;
 /// One pair on the receivers, per row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PairMap {
-    /// Contact dose: neighbours' ligand over their size factors, summed.
+    /// Contact dose: neighbours' ligand over their size factors (their
+    /// totals over the common library scale), summed.
     pub exposure: Vec<f64>,
     /// The exposure threshold τ: a receiver is exposed above it.
     pub threshold: f64,
@@ -68,6 +69,17 @@ pub fn pair_map(
 /// the estimate's own choice is taken when it is `given` to `f32`
 /// precision, else the largest exposure that is; else `given` as it is.
 /// With none given (or not a number), the estimate's choice.
+///
+/// τ is a dose on the size factors' scale
+/// ([`super::receivers::size_factors`]: a cell's total over the common
+/// library scale), and nothing in a table says which scale it was made on.
+/// A table from when the size factor was taken over the receivers' median
+/// depth holds its τ above 0 on that scale: it matches no exposure here,
+/// is taken as it is like any other table's, and splits the receivers
+/// elsewhere than its estimate did. This is documented, not detected (a τ
+/// between exposures is a legitimate read of another table); a τ of 0
+/// reads the same on either scale, and running `pinto lra` again brings
+/// the table to the common scale.
 pub fn table_threshold(a: &[f64], given: Option<f64>) -> f64 {
     let opts = EffectOpts {
         threshold: None,

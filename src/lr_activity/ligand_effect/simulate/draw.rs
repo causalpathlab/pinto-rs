@@ -13,6 +13,7 @@ use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
 use crate::lr_activity::ligand_effect::jackknife::{jackknife, Jackknife, PairFit};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::FoldStarts;
+use crate::lr_activity::ligand_effect::receivers::log_normalized;
 use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
 use crate::lr_activity::ligand_effect::response::{expected_bleed, Response};
 use crate::lr_activity::ligand_effect::rows::EffectRow;
@@ -356,12 +357,11 @@ impl ProgrammeResponses {
         // [`super::super::response::programme_columns`] reads them: bin means,
         // then expected neighbour counts.
         let mut m = vec![0.0; bin_cells.len()];
-        for (i, s) in sf.iter().enumerate() {
-            let obs = c.obs[i] / s;
-            self.y_seen[i] += w * obs.ln_1p();
-            self.y1[i] += w * (c.c1[i] / s).ln_1p();
-            self.y0[i] += w * (c.c0[i] / s).ln_1p();
-            m[bin[i]] += obs;
+        for (i, &s) in sf.iter().enumerate() {
+            self.y_seen[i] += w * log_normalized(c.obs[i], s);
+            self.y1[i] += w * log_normalized(c.c1[i], s);
+            self.y0[i] += w * log_normalized(c.c0[i], s);
+            m[bin[i]] += c.obs[i] / s;
         }
         for (mb, &k) in m.iter_mut().zip(bin_cells) {
             *mb /= k.max(1) as f64;
@@ -578,6 +578,19 @@ pub fn simulate(
     opts: &EffectOpts,
     seed: u64,
 ) -> anyhow::Result<SimRow> {
+    Ok(simulate_with_response(tissue, base, shared, scen, opts, seed)?.0)
+}
+
+/// [`simulate`], and the response the run drew for the estimator, per
+/// receiver (which the tests read).
+pub(crate) fn simulate_with_response(
+    tissue: &Tissue,
+    base: &SimBase<'_>,
+    shared: &SimShared<'_>,
+    scen: &Scenario,
+    opts: &EffectOpts,
+    seed: u64,
+) -> anyhow::Result<(SimRow, Vec<f64>)> {
     let start = std::time::Instant::now();
     let opts = &EffectOpts {
         keep_arm_weights: true,
@@ -698,7 +711,7 @@ pub fn simulate(
     let comp_rows: Vec<u32> = (0..n as u32).filter(|&i| comp[i as usize]).collect();
     let log_dose: Vec<f64> = exposure.dose.iter().map(|d| d.ln_1p()).collect();
     let marginal_cor = marginal_correlation(&response.y, &log_dose, &comp_rows, rows.cf);
-    Ok(SimRow {
+    let row = SimRow {
         ligand: base.ligand.into(),
         receptor: base.receptor.into(),
         scenario: *scen,
@@ -719,5 +732,6 @@ pub fn simulate(
         baseline_seconds: seen.baseline_seconds,
         region,
         field_sha256: shared.field.map(|_| field_sha256(&run.f).into()),
-    })
+    };
+    Ok((row, response.y))
 }

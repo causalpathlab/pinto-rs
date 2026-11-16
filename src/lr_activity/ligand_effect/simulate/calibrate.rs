@@ -2,8 +2,13 @@
 //! the ligand.
 
 use crate::lr_activity::ligand_effect::tissue::Tissue;
+use crate::util::common::upper_median;
 
-/// Floor on a producer's true rate, in expected counts at median depth.
+/// Floor on a producer's true rate, in expected counts of a receiver at
+/// the receivers' median depth: a rate (a count per common library scale,
+/// [`crate::util::common::LIBRARY_SCALE`]) is floored at this over the
+/// median size factor. The median only places the floor at the depth the
+/// receivers typically have; it is no normalization target.
 const R_FLOOR: f64 = 0.5;
 
 /// Log-rate lift of the programme's baseline in the marker type (signed
@@ -19,8 +24,9 @@ pub struct SimBase<'a> {
     pub ligand_counts: &'a [f64],
     /// Signed weight of each programme gene.
     pub target_weights: &'a [f64],
-    /// Each programme gene's mean count / size factor per identity bin,
-    /// bins × genes, row-major ([`target_bin_means`]).
+    /// Each programme gene's mean count / size factor per identity bin
+    /// (counts per common library scale), bins × genes, row-major
+    /// ([`target_bin_means`]).
     pub target_bin_means: &'a [f64],
     pub competent: &'a [bool],
     /// The real receptor's counts per row (the scarcest subunit's): its
@@ -76,6 +82,8 @@ pub struct Producers {
 /// The zero-inflated Poisson moment fit of the module docs, per bin.
 pub fn calibrate_producers(tissue: &Tissue, counts: &[f64]) -> Vec<Producers> {
     let sf = &tissue.size_factor;
+    // [`R_FLOOR`] as a rate: that many counts at the median size factor.
+    let floor = upper_median(&mut sf.clone()).map_or(R_FLOOR, |median| R_FLOOR / median);
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); n_bins(tissue)];
     for (i, &b) in tissue.identity_bin.iter().enumerate() {
         members[b].push(i);
@@ -119,7 +127,7 @@ pub fn calibrate_producers(tissue: &Tissue, counts: &[f64]) -> Vec<Producers> {
                 }
                 0.5 * (lo + hi)
             };
-            let r = r.max(R_FLOOR);
+            let r = r.max(floor);
             Producers {
                 p: (m / r).min(1.0),
                 r,
