@@ -995,7 +995,7 @@ pinto view out --png zoom.png --bbox 8200,6800,8800,7250 --edges
 pinto view out --png big.png --point-size 2     # larger cell discs
 pinto view out --pdf fig.pdf --focus C3,C17     # figure page: map, scale bar,
                                                 # legend, focused markers
-pinto view out --png gene.png --gene SYMBOL     # one gene: observed ln(1+count)
+pinto view out --png gene.png --gene SYMBOL     # one gene: observed log1p CP10k
 pinto view out --png gene.png --gene SYMBOL --expected --clip 95
 pinto view out --png pair.png --pair L1:R3  # an lra pair: senders, exposed
                                                 # and receptor+ receivers
@@ -1117,8 +1117,9 @@ round's cell types or clusters):
   shows its propensity. Click again or `Esc` to let go;
 - **heatmap**: each group's top genes by their margin over the next highest
   group, so each row peaks in its own column: the model proposes candidates,
-  and the groups' mean observed ln(1 + count) chooses among them (the model's
-  rates alone when there are no data files). Values are z-scored per gene and
+  and the groups' mean observed log1p CP10k, ln(1 + 1e4 · count / the cell's
+  total count), chooses among them (the model's rates alone when there are
+  no data files). Values are z-scored per gene and
   clipped to ±2.5. `+`/`-` change the genes per group; clicking a gene maps
   it. The heatmap takes only its own keys, `c`, `s`, `f`, `?` and `q`.
 

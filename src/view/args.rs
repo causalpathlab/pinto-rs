@@ -67,15 +67,16 @@ pub struct ViewArgs {
         help = "Colour cells by one feature, by its symbol or full name (--png/--pdf)",
         long_help = "Colour cells by one feature instead of communities: its symbol\n\
                      (SYMBOL) or full name (ENSG…_SYMBOL). Shows the observed\n\
-                     ln(1+count) from the run's data files, or, with --expected or\n\
-                     when no data file is found, the community model's expected level.\n\
+                     log1p CP10k, ln(1 + 1e4 * count / the cell's total count), from\n\
+                     the run's data files, or, with --expected or when no data file\n\
+                     is found, the community model's expected level.\n\
                      In the terminal, click a marker in the panel instead."
     )]
     pub gene: Option<Box<str>>,
 
     #[arg(
         long,
-        help = "With --gene, show the model-expected level, not observed counts"
+        help = "With --gene, show the model-expected level, not the observed log1p CP10k"
     )]
     pub expected: bool,
 

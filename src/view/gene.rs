@@ -2,8 +2,10 @@
 //!
 //! Two sources:
 //!
-//! - **observed**: `ln(1 + count)` from the run's data files, read one row
-//!   at a time through the same reader the fits use;
+//! - **observed**: `ln(1 + 1e4 · count / total)` from the run's data files
+//!   ([`log_cp10k`], `total` the cell's count over every row), so a cell's
+//!   level is its composition and not its depth. A row is read at a time
+//!   through the same reader the fits use;
 //! - **expected**: what the community model predicts, `Σ_k p_ik · μ_gk`,
 //!   from the level's propensity and `feature_community` rates. The rates
 //!   carry a per-feature weight, so only the relative level means anything.
@@ -18,6 +20,11 @@ use super::markers::{symbol, FeatureRates};
 use crate::util::common::*;
 use crate::util::coverage::{measured_mass, Coverage};
 use crate::util::input::read_expr_data;
+use legume_numeric::matrix::utils::generate_minibatch_intervals;
+
+/// What an observed level is, as legends and exports name it: `ln(1 + x)`
+/// of counts per ten thousand of the cell's total ([`log_cp10k`]).
+pub const OBSERVED_SCALE: &str = "log1p CP10k";
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -151,7 +158,7 @@ impl GeneMap {
         }
     }
 
-    /// Whether this map fell back to the model because observed counts were
+    /// Whether this map fell back to the model because the observed level was
     /// asked for and the run has no data file.
     pub fn fell_back(&self, asked: Source) -> bool {
         asked == Source::Observed && self.source == Source::Expected
@@ -163,7 +170,7 @@ impl GeneMap {
             return label.to_string();
         }
         let what = match self.source {
-            Source::Observed => "ln(1+count)",
+            Source::Observed => OBSERVED_SCALE,
             Source::Expected => "expected, relative",
         };
         format!("{} {what}", symbol(&self.feature))
@@ -201,6 +208,9 @@ pub struct Expression {
     cell_of: Vec<Option<u32>>,
     /// Which file measured which feature, when some file lacks some.
     coverage: Option<Coverage>,
+    /// Total count of each data column over every row it has: what
+    /// [`log_cp10k`] scales its counts by.
+    totals: Vec<f32>,
 }
 
 impl Expression {
@@ -213,15 +223,17 @@ impl Expression {
             .map(|name| geom.index.get(name).map(|&i| i as u32))
             .collect();
         let coverage = Coverage::of(&data);
+        let totals = column_totals(&data)?;
         Ok(Expression {
             data,
             features,
             cell_of,
             coverage,
+            totals,
         })
     }
 
-    /// Mean observed `ln(1 + count)` of each of `features` over each of `k`
+    /// Mean observed level ([`log_cp10k`]) of each of `features` over each of `k`
     /// groups' cells (`group`, one per map cell; `NO_CLUSTER` for none):
     /// features × groups, row-major. `None` for a feature not in the data.
     pub fn group_means(
@@ -257,7 +269,7 @@ impl Expression {
                     let cell = self.cell_of.get(col).copied().flatten();
                     let c = cell.and_then(|i| group.get(i as usize));
                     if let Some(s) = c.and_then(|&c| sum.get_mut(c as usize)) {
-                        *s += count.ln_1p();
+                        *s += log_cp10k(count, self.totals[col]);
                     }
                 }
                 let n = measured_mass(&n_bk, cov, g);
@@ -268,7 +280,20 @@ impl Expression {
             .collect()
     }
 
-    /// Observed `ln(1 + count)` of `feature` in every cell on the map.
+    /// Observed level ([`log_cp10k`]) of data row `g` in each of the map's
+    /// `n` cells; 0 where the cell has no count of it, or no count at all.
+    pub(super) fn levels(&self, g: usize, n: usize) -> anyhow::Result<Vec<f32>> {
+        let row = self.data.read_rows_csr(std::iter::once(g))?;
+        let mut values = vec![0f32; n];
+        for (&col, &count) in row.col_indices().iter().zip(row.values()) {
+            if let Some(i) = self.cell_of[col] {
+                values[i as usize] = log_cp10k(count, self.totals[col]);
+            }
+        }
+        Ok(values)
+    }
+
+    /// Observed level ([`log_cp10k`]) of `feature` in every cell on the map.
     pub fn observed(
         &self,
         feature: &str,
@@ -278,13 +303,7 @@ impl Expression {
     ) -> anyhow::Result<GeneMap> {
         let g = find(&self.features, feature)
             .ok_or_else(|| anyhow::anyhow!("no feature {feature:?} in the data files"))?;
-        let row = self.data.read_rows_csr(std::iter::once(g))?;
-        let mut values = vec![0f32; geom.n()];
-        for (&col, &count) in row.col_indices().iter().zip(row.values()) {
-            if let Some(i) = self.cell_of[col] {
-                values[i as usize] = count.ln_1p();
-            }
-        }
+        let values = self.levels(g, geom.n())?;
         // A cell no data file holds, or whose file never measured the
         // feature, has no level.
         let cov = self.coverage.as_ref();
@@ -303,6 +322,23 @@ impl Expression {
             grid,
         ))
     }
+}
+
+/// Each column's total count over every row of `data`, read a block of
+/// columns at a time: one pass, and never more than a block in memory.
+/// The total is over every row of the cell as the viewer reads it.
+fn column_totals(data: &SparseIoVec) -> anyhow::Result<Vec<f32>> {
+    let blocks = generate_minibatch_intervals(data.num_columns(), data.num_rows().max(1), None);
+    let totals = blocks
+        .par_iter()
+        .map(|&(lb, ub)| -> anyhow::Result<Vec<f32>> {
+            let x = data.read_columns_csc(lb..ub)?;
+            Ok((0..x.ncols())
+                .map(|j| x.col(j).values().iter().map(|&v| f64::from(v)).sum::<f64>() as f32)
+                .collect())
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(totals.into_iter().flatten().collect())
 }
 
 /// Position of `feature` in `names`: the exact name, or else the first
