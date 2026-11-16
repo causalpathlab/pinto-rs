@@ -344,6 +344,15 @@ thresholds), so the weights do not depend on the response's units.
 prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
 on most.
 
+Counts enter the response and the dose depth-normalized as every pinto method
+normalizes before a log: each cell's counts scaled to a total of 1e4, the
+response `log1p` of that. `exposure_threshold` and `tau_top` are doses on
+that scale. A table made while lra divided by the cell's depth over the
+receivers' median depth holds its thresholds above 0 on that earlier scale, and
+its effects are logs of differently scaled counts: `pinto view` reads such a
+threshold as it stands, so run `pinto lra` again before drawing or comparing
+its pairs with a newer table's.
+
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
 row (`effect_competent_df` is that count less one). A row whose signal sits in

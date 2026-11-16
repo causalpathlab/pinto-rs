@@ -3,15 +3,21 @@
 //! plants or withholds an effect under a hidden regional confounder; the
 //! estimate should track the truth while the unadjusted difference is fooled.
 
-use super::{lattice, run_sim};
+use super::{lattice, run_sim, run_sim_with_response};
 use crate::lr_activity::ligand_effect::contacts::{competence, Contacts};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::NuisanceOpts;
 use crate::lr_activity::ligand_effect::simulate::{ConfounderKind, Scenario, SimBase, SimRow};
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
-use crate::util::common::Mat;
+use crate::util::common::{Mat, LIBRARY_SCALE};
 
 const SIDE: usize = 60;
+
+/// Cell `i`'s total count, and the middle of the cells' totals.
+fn depth(i: usize) -> f64 {
+    200.0 + (i % 17) as f64 * 30.0
+}
+const MIDDLE_DEPTH: f64 = 440.0;
 
 pub(super) struct Fixture {
     pub(super) tissue: Tissue,
@@ -40,9 +46,7 @@ pub(super) fn fixture() -> Fixture {
         base * (k as f32 + 1.0) + ((i * 31 + k * 7) % 11) as f32 * 0.05
     });
     let section: Vec<Box<str>> = vec!["s0".into(); n];
-    let log1p_depth: Vec<f32> = (0..n)
-        .map(|i| (200.0 + (i % 17) as f32 * 30.0).ln_1p())
-        .collect();
+    let log1p_depth: Vec<f32> = (0..n).map(|i| (depth(i) as f32).ln_1p()).collect();
     let tissue = Tissue::build(
         &TissueInputs {
             coords: &coords,
@@ -72,9 +76,12 @@ pub(super) fn fixture() -> Fixture {
             _ => 0.0,
         })
         .collect();
-    // One programme gene, higher in type 0.
+    // One programme gene, higher in type 0: three and two counts in a cell
+    // of the middle depth, as counts per library scale.
     let weights = vec![1.0];
-    let bin_means = vec![3.0, 2.0];
+    let bin_means = [3.0, 2.0]
+        .map(|counts| counts * f64::from(LIBRARY_SCALE) / MIDDLE_DEPTH)
+        .to_vec();
     let gene: Vec<f64> = (0..n)
         .map(|i| {
             let (x, y) = ((i % SIDE) as f64, (i / SIDE) as f64);
@@ -337,4 +344,33 @@ fn a_shared_field_is_the_run_s_field() {
     assert_eq!(bits(&same), bits(&drawn));
     let other = with(mix_seed(seed, 99));
     assert_ne!(bits(&other), bits(&drawn), "another field, another run");
+}
+
+/// The simulator draws a programme count at the cell's size factor times
+/// its rate, and reads the response back over the same size factor: with
+/// one gene of weight 1, each receiver's response undoes to a whole count
+/// through its total over the library scale, and the counts add up to the
+/// rates times those totals.
+#[test]
+fn draws_and_outcomes_share_the_size_factor() {
+    let f = fixture();
+    let t = &f.tissue;
+    let scale = f64::from(LIBRARY_SCALE);
+    let (_, y) = run_sim_with_response(t, &base(&f), &Scenario::default(), &opts(), 5).unwrap();
+    let (mut drawn, mut expected) = (0.0, 0.0);
+    for (r, &y) in y.iter().enumerate() {
+        let per_scale = depth(t.cell[r]) / scale;
+        let count = y.exp_m1() * per_scale;
+        assert!(
+            (count - count.round()).abs() < 1e-3,
+            "row {r}: {count} is no count"
+        );
+        drawn += count;
+        expected += per_scale * f.bin_means[t.identity_bin[r]];
+    }
+    assert!(drawn > 0.0);
+    assert!(
+        (drawn - expected).abs() < 0.15 * expected,
+        "{drawn} drawn, {expected} expected"
+    );
 }

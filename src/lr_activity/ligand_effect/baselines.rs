@@ -6,7 +6,8 @@
 //! and tested at the same 5% level, one-sided (more co-expression than
 //! chance). They see what the estimator sees: the detected (possibly
 //! shifted) ligand and the receptor, as depth-normalized `log1p(x / sf)`
-//! (detection for the co-expression log odds).
+//! ([`super::receivers::log_normalized`]; detection for the co-expression
+//! log odds).
 //!
 //! - **Cell-type label permutation** (CellPhoneDB v2, Efremova et al. 2020;
 //!   CellChat, Jin et al. 2021). In the benchmark, cell types are the
@@ -56,6 +57,7 @@
 //! a few thousand receivers.
 
 use super::inference::upper_normal_p;
+use super::receivers::log_normalized;
 use super::report::bh;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
@@ -319,10 +321,9 @@ pub fn marginals(
 ) -> (Baselines, CellTypeTest) {
     let n = tissue.n();
     let sf = &tissue.size_factor;
-    let xl: Vec<f64> = (0..n).map(|i| (ligand_counts[i] / sf[i]).ln_1p()).collect();
-    let xr: Vec<f64> = (0..n)
-        .map(|i| (receptor_counts[i] / sf[i]).ln_1p())
-        .collect();
+    let log_norm =
+        |counts: &[f64]| -> Vec<f64> { (0..n).map(|i| log_normalized(counts[i], sf[i])).collect() };
+    let (xl, xr) = (log_norm(ligand_counts), log_norm(receptor_counts));
     let types = celltype(
         labels,
         &xl,

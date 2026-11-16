@@ -40,7 +40,11 @@
 //!
 //! Exposure `T = 1{Σ_contacts ligand / size factor > τ}`. Response
 //! `Y = Σ_g w_g log1p(x_g / size factor) / Σ_g |w_g|` over the pair's
-//! programme. Extra confounders for the pair:
+//! programme. A cell's size factor is its total count over the common
+//! library scale ([`super::receivers::size_factors`]), so a count over it
+//! is the count per that scale of the cell's total, whatever the other
+//! cells' depths, and τ is a dose on that scale. Extra confounders for the
+//! pair:
 //!
 //! - the receiver's own ligand (bleed on the exposure side);
 //! - the contact-neighbour mean response, and the neighbours' expected

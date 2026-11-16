@@ -3,7 +3,7 @@
 //! them from here, so `pinto view` (`frame`) draws a pair as the table saw it.
 
 use super::contacts::Contacts;
-use crate::util::common::upper_median;
+use crate::util::common::{log_cp10k, LIBRARY_SCALE};
 
 /// Rows of the analysis: cells with coordinates and at least one contact
 /// to another such cell. A sender is itself in that set, so contacts stay
@@ -48,9 +48,22 @@ pub fn receiver_contacts(
     (cell, row_of, contacts)
 }
 
-/// Each receiver's depth over the median depth, from `log1p(total count)`.
+/// Each receiver's size factor, from `log1p(total count)`: its total count
+/// (at least 1) over [`LIBRARY_SCALE`], the scale every method takes a unit
+/// to before a log. It depends on the receiver alone, not on the other
+/// receivers of the run, so a count over it is the count per
+/// [`LIBRARY_SCALE`] of the cell's total.
 pub fn size_factors(log_depth: &[f64]) -> Vec<f64> {
-    let depth: Vec<f64> = log_depth.iter().map(|l| l.exp_m1().max(1.0)).collect();
-    let med = upper_median(&mut depth.clone()).unwrap_or(1.0).max(1.0);
-    depth.iter().map(|d| d / med).collect()
+    let scale = f64::from(LIBRARY_SCALE);
+    log_depth
+        .iter()
+        .map(|l| l.exp_m1().max(1.0) / scale)
+        .collect()
+}
+
+/// `ln(1 + count / size factor)`, the size factor one of [`size_factors`]:
+/// [`log_cp10k`] of the count in the cell's total, which every log of a
+/// depth-normalized count here goes through.
+pub fn log_normalized(count: f64, size_factor: f64) -> f64 {
+    log_cp10k(count, size_factor * f64::from(LIBRARY_SCALE))
 }

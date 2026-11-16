@@ -5,6 +5,7 @@ mod benchmark;
 mod clusters;
 mod combining;
 mod covariates;
+mod depth_scale;
 mod interface;
 mod marginal_run;
 mod marginals;
@@ -60,12 +61,23 @@ pub(super) fn run_sim(
     opts: &EffectOpts,
     seed: u64,
 ) -> anyhow::Result<SimRow> {
+    Ok(run_sim_with_response(tissue, base, scen, opts, seed)?.0)
+}
+
+/// [`run_sim`], and the response the run drew, per receiver.
+pub(super) fn run_sim_with_response(
+    tissue: &Tissue,
+    base: &SimBase<'_>,
+    scen: &Scenario,
+    opts: &EffectOpts,
+    seed: u64,
+) -> anyhow::Result<(SimRow, Vec<f64>)> {
     let shared = SimShared {
         producers: calibrate_producers(tissue, base.ligand_counts),
         gene_fields: &[],
         field: None,
     };
-    super::simulate::simulate(tissue, base, &shared, scen, opts, seed)
+    super::simulate::simulate_with_response(tissue, base, &shared, scen, opts, seed)
 }
 
 /// Cross-fit both nuisances on a (possibly nested) design and return the
