@@ -79,10 +79,33 @@ mod embedding_dim {
     #[test]
     fn without_a_dictionary_the_flag_or_the_default_decides() {
         assert_eq!(dim(&[], None).unwrap(), DEFAULT_EMBEDDING_DIM);
+        // The width cage and cage-cell train at when nothing else decides it.
+        assert_eq!(DEFAULT_EMBEDDING_DIM, 64);
         assert_eq!(dim(&["--embedding-dim", "32"], None).unwrap(), 32);
         assert_eq!(
             dim(&["--embedding-dim", "auto"], None).unwrap(),
             DEFAULT_EMBEDDING_DIM
+        );
+    }
+
+    /// Both help texts of `--embedding-dim` state the width `auto` falls
+    /// back to, so they cannot drift from the constant.
+    #[test]
+    fn the_help_states_the_default_width() {
+        let cmd = <super::Cli as clap::CommandFactory>::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("embedding-dim"))
+            .unwrap();
+        let short = arg.get_help().unwrap().to_string();
+        let long = arg.get_long_help().unwrap().to_string();
+        assert!(
+            short.contains(&format!("else {DEFAULT_EMBEDDING_DIM})")),
+            "{short}"
+        );
+        assert!(
+            long.contains(&format!("auto is {DEFAULT_EMBEDDING_DIM};")),
+            "{long}"
         );
     }
 
