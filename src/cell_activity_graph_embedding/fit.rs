@@ -40,8 +40,8 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ALPHA_NEG,
-    N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode,
+    ModulePlan, ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -81,6 +81,7 @@ use legume_numeric::matrix::common_io::mkdir_parent;
 
 mod model;
 mod module_cells;
+mod modules;
 mod tables;
 mod train;
 
@@ -142,23 +143,12 @@ pub fn fit_cell_activity_graph_embedding(
     }
     anyhow::ensure!(args.epochs > 0, "epochs must be > 0");
     anyhow::ensure!(!chain_levels.is_empty(), "chain-levels must be non-empty");
-    // Opt-in on cage.
-    let module_cfg = args.modules.resolve(None)?;
-    // Two ways to handle uninformative features; on the simulations they
-    // did worse together than either alone, so a run takes one.
-    anyhow::ensure!(
-        !(module_cfg.is_some() && args.feature_inclusion == FeatureInclusionMode::Moran),
-        "--feature-inclusion moran and --feature-modules are alternatives; pick one"
-    );
+    // On unless the flags turn the layer off; its count is resolved with
+    // the model, against the profiles.
+    let module_plan = args.module_plan()?;
     anyhow::ensure!(
         args.feature_inclusion != FeatureInclusionMode::Moran || !c.coord_files.is_empty(),
         "--feature-inclusion moran needs coordinates (-c): it scores spatial signal"
-    );
-
-    anyhow::ensure!(
-        !(module_cfg.is_some() && args.feature_embedding.is_some()),
-        "--feature-modules learns the feature side through a module layer and --feature-embedding \
-         installs a pre-trained one; the two parameterizations are exclusive. Drop one."
     );
     // Peek the first data file's row names so `auto` can dispatch
     // FeatureNameKind::auto_detect without paying for a full sparse
@@ -183,7 +173,7 @@ pub fn fit_cell_activity_graph_embedding(
     let hvg_enabled = args.hvg.n_hvg > 0 || args.hvg.feature_list_file.is_some();
     // cage trains on the coarsening; cage-cell builds one only to seed its
     // modules.
-    let coarsens = !args.cell_level || module_cfg.is_some();
+    let coarsens = !args.cell_level || module_plan != ModulePlan::Off;
 
     let SrtPreprocessed {
         data_vec,
@@ -316,7 +306,7 @@ pub fn fit_cell_activity_graph_embedding(
     /////////////////////////////////////////
     // The coarsening hierarchy: cage's trained units, and under cage-cell
     // (which trains on cells) only the pseudobulks whose profiles seed
-    // `--feature-modules`.
+    // its feature modules.
     let coarsen = |shared_cell_proj: Option<
         data_beans::alg::random_projection::RandColProjOut,
     >|
@@ -662,7 +652,7 @@ pub fn fit_cell_activity_graph_embedding(
     let BuiltModel {
         mut model,
         frozen_feature,
-        module_profiles,
+        modules,
     } = build_model(ModelInputs {
         args,
         profile_labels: module_seed_labels.as_deref().unwrap_or_else(|| {
@@ -673,7 +663,7 @@ pub fn fit_cell_activity_graph_embedding(
         data_vec: &data_vec,
         feature_axis: &feature_axis,
         feature_kind: &feature_kind,
-        module_cfg: module_cfg.as_ref(),
+        module_plan,
         lora_spec,
         n_pb,
         embedding_dim,
@@ -685,14 +675,22 @@ pub fn fit_cell_activity_graph_embedding(
     // cells' own sparse counts (the seeding pseudobulks have done their work
     // once the model is built).
     drop(module_seed_labels);
-    let module_units = match (&module_cfg, module_profiles) {
+    if modules.is_none() && !args.seeding_flags.is_empty() {
+        log::warn!(
+            "cage-cell: no feature modules were found, so {} had no effect: they shape \
+             only the HVG projection or the pseudobulks built to seed the modules",
+            args.seeding_flags.join(", ")
+        );
+    }
+    let (module_cfg, module_profiles) = modules.unzip();
+    // (matched by value, so cage-cell's unread profiles are freed here)
+    let module_units = match (module_profiles, args.cell_level) {
         (None, _) => None,
-        (Some(_), _) if args.cell_level => Some(ModuleUnits::Cells(CellCounts {
+        (Some(_), true) => Some(ModuleUnits::Cells(CellCounts {
             data: &data_vec,
             feature_axis: &feature_axis,
         })),
-        (Some(_), profiles) => {
-            let p = profiles.expect("built with the config");
+        (Some(p), false) => {
             anyhow::ensure!(
                 p.ncols() == n_pb,
                 "module profiles over {} pseudobulks, {} trained",
@@ -1009,8 +1007,9 @@ pub(crate) enum OnCells {
     Hide,
     /// Off its help, and warned of when given: it shapes only the HVG
     /// weighting of the projection that builds pseudobulks, or the
-    /// pseudobulks themselves, which cage-cell builds only to seed
-    /// `--feature-modules` (no warning then). (`--num-levels` and the batch
+    /// pseudobulks themselves, which cage-cell builds only to seed its
+    /// feature modules (no warning unless the run trains without them).
+    /// (`--num-levels` and the batch
     /// matching shape the batch-effect estimate, which cage-cell makes.)
     Warn,
     /// Off its help, and refused when given: it picks from a hierarchy of
@@ -1058,7 +1057,13 @@ pub(crate) fn cell_level_given(
 
 /// Refuse the flags `cage-cell` cannot combine with and warn of those that
 /// do nothing on cells, from its command line (`cmd`, its matches `m`).
-pub(crate) fn check_cell_level(cmd: &clap::Command, m: &clap::ArgMatches) -> anyhow::Result<()> {
+/// Returns the flags given that shape only the pseudobulks seeding
+/// `--feature-modules auto`: they will have done nothing if the fit finds
+/// no module layer, which only the fit can say.
+pub(crate) fn check_cell_level(
+    cmd: &clap::Command,
+    m: &clap::ArgMatches,
+) -> anyhow::Result<Vec<String>> {
     let refused = cell_level_given(cmd, m, OnCells::Refuse);
     anyhow::ensure!(
         refused.is_empty(),
@@ -1070,21 +1075,31 @@ pub(crate) fn check_cell_level(cmd: &clap::Command, m: &clap::ArgMatches) -> any
     if !no_ops.is_empty() {
         log::warn!(
             "cage-cell: {} shape only the HVG projection or the pseudobulks, which \
-             cage-cell builds only to seed --feature-modules; they do nothing here",
+             cage-cell builds only to seed its feature modules, off in this run; they \
+             do nothing here",
             no_ops.join(", ")
         );
     }
-    Ok(())
+    Ok(match cell_level_plan(m) {
+        Ok(ModulePlan::Auto) => cell_level_given(cmd, m, OnCells::Warn),
+        _ => Vec::new(),
+    })
+}
+
+/// The [`ModulePlan`] of `cage-cell`'s matches `m`.
+fn cell_level_plan(m: &clap::ArgMatches) -> anyhow::Result<ModulePlan> {
+    use clap::FromArgMatches;
+    CellActivityGraphEmbeddingArgs::from_arg_matches(m)?.module_plan()
 }
 
 /// The flags given to `cage-cell` (`cmd`, its matches `m`) that do nothing
-/// in this run: those marked [`OnCells::Warn`], unless `--feature-modules`
-/// is given, whose seeding pseudobulks they shape.
+/// in this run: those marked [`OnCells::Warn`], when the run's
+/// [`ModulePlan`] is off. With modules (the default) they shape the
+/// pseudobulks that seed them. A plan the run will refuse names none.
 pub(crate) fn cell_level_no_ops(cmd: &clap::Command, m: &clap::ArgMatches) -> Vec<String> {
-    if crate::util::cli::given_on_cli(cmd, m, ["feature_modules"]).is_empty() {
-        cell_level_given(cmd, m, OnCells::Warn)
-    } else {
-        Vec::new()
+    match cell_level_plan(m) {
+        Ok(ModulePlan::Off) => cell_level_given(cmd, m, OnCells::Warn),
+        _ => Vec::new(),
     }
 }
 

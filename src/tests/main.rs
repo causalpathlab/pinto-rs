@@ -554,24 +554,40 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
 }
 
 /// cage-cell names the flags given on its command line that shape only the
-/// pseudobulks it skips, and none it was not given (their defaults are not
-/// the user's doing).
+/// pseudobulks, in a run that builds none: one without feature modules
+/// (`--feature-modules 0`, or the default yielding to
+/// `--feature-inclusion moran`). It names none it was not given (their
+/// defaults are not the user's doing), and none in a run with modules, the
+/// default, whose seeding pseudobulks they shape.
 #[test]
 fn cage_cell_names_only_the_no_op_flags_it_was_given() {
     use cell_activity_graph_embedding::fit::cell_level_no_ops;
     let given = |extra: &[&str]| cage_cell(extra, cell_level_no_ops);
-    assert!(given(&[]).is_empty());
+    let shaping = ["-d", "3", "--n-hvg", "100"];
+    let with = |more: &[&str]| given(&[&shaping[..], more].concat());
+    for off in [
+        &["--feature-modules", "0"][..],
+        &["--feature-inclusion", "moran"][..],
+    ] {
+        assert!(given(off).is_empty(), "{off:?}");
+        assert_eq!(with(off), ["--n-hvg", "--n-pseudobulk"], "{off:?}");
+    }
+    // the batch-effect estimate reads --num-levels, so it is not a no-op
     assert_eq!(
-        given(&["-d", "3", "--n-hvg", "100"]),
-        ["--n-hvg", "--n-pseudobulk"]
-    );
-    // the batch-effect estimate reads these, so they are not no-ops
-    assert_eq!(
-        given(&["--num-levels=9", "--must-train-features", "f.txt"]),
+        given(&[
+            "--num-levels=9",
+            "--must-train-features",
+            "f.txt",
+            "--feature-modules",
+            "0"
+        ]),
         ["--must-train-features"]
     );
-    // nor is any of them when modules are seeded from the pseudobulks
-    assert!(given(&["-d", "3", "--n-hvg", "100", "--feature-modules", "4"]).is_empty());
+    // with modules, by default or by the flag, the pseudobulks seed them
+    assert!(given(&[]).is_empty());
+    assert!(with(&[]).is_empty());
+    assert!(with(&["--feature-modules", "4"]).is_empty());
+    assert!(with(&["--feature-modules", "auto"]).is_empty());
 }
 
 /// cage-cell takes `--feature-modules` as cage does, before it reads a
@@ -580,7 +596,17 @@ fn cage_cell_names_only_the_no_op_flags_it_was_given() {
 fn cage_cell_takes_feature_modules() {
     use cell_activity_graph_embedding::fit::check_cell_level;
     let modules = ["--feature-modules", "4", "--n-pseudobulk", "3"];
-    assert!(cage_cell(&modules, check_cell_level).is_ok());
+    assert!(cage_cell(&modules, check_cell_level).unwrap().is_empty());
+    // under auto the fit may find no module layer, and only then did the
+    // flags shaping its seeding pseudobulks do nothing: they are handed on
+    let seeding = |extra: &[&str]| cage_cell(extra, check_cell_level).unwrap();
+    assert_eq!(seeding(&["--n-pseudobulk", "3"]), ["--n-pseudobulk"]);
+    assert_eq!(
+        seeding(&["--n-hvg", "9", "--feature-modules", "auto"]),
+        ["--n-hvg"]
+    );
+    assert!(seeding(&[]).is_empty());
+    assert!(seeding(&["--n-hvg", "9", "--feature-modules", "0"]).is_empty());
 }
 
 /// cage-cell refuses, before it reads a file, what needs a hierarchy of
@@ -655,6 +681,9 @@ fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
             "never within a module",
             "--feature-inclusion moran",
             "cage-cell trains on cells",
+            "auto (the default)",
+            "0 trains without the layer",
+            "Traag, Waltman and van Eck 2019",
         ] {
             assert!(modules.contains(right), "{cmd} lacks {right:?}: {modules}");
         }
@@ -686,6 +715,19 @@ fn the_models_and_their_feature_choices_are_named_where_methods_are_picked() {
             assert!(text.contains(choice), "{what} does not name {choice}");
         }
     }
+    // cage's modules are on by default, and the instructions say how a run
+    // goes without them
+    let mcp_words = mcp.split_whitespace().collect::<Vec<_>>().join(" ");
+    for said in [
+        "modules by default",
+        "feature-modules auto",
+        "0 for none",
+        "moran given alone replaces the default modules",
+        "is refused",
+    ] {
+        assert!(mcp_words.contains(said), "mcp does not say {said:?}");
+    }
+    assert!(!mcp_words.contains("feature-modules M, never both"));
     assert_eq!(run::MODELS[..2], ["lc", "dsvd"], "dsvd listed beside lc");
     assert!(readme.contains("### `dsvd` (delta-svd), recommended"));
 }

@@ -262,7 +262,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     // second ^C = hard abort. See graph_embedding_util::stop.
     let stop = setup_stop_handler();
 
-    // Module warm-up: hold the k-means membership for the first epochs, release
+    // Module warm-up: hold the starting membership for the first epochs, release
     // it afterwards (geu's schedule).
     let module_run: Option<(usize, ModuleUnits)> = match (module_cfg, module_units) {
         (Some(gm), Some(units)) => {
