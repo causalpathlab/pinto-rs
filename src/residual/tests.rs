@@ -109,6 +109,8 @@ fn write_run(d: &str, sections: &[(&str, Vec<(f32, f32)>)], prop: Mat) -> (Strin
         ..Default::default()
     };
     meta.outputs.coord_columns = Some(vec!["row_um".into(), "col_um".into()]);
+    meta.outputs.propensity = Some(format!("{prefix}.propensity.parquet"));
+    meta.outputs.cells = Some(crate::util::parquet_io::cells_table_path(&prefix));
     meta.write(Path::new(&format!("{prefix}.pinto.json")))
         .unwrap();
     (prefix, files)
@@ -359,25 +361,174 @@ fn outputs_never_write_over_anything() {
     assert!(err.contains("same name"), "{err}");
 }
 
-/// Only an lc, cage or dsvd run is taken, and a run is checked whole before
-/// anything is written.
+/// A run is taken by what its manifest records, not by its command: one
+/// that records no propensity output, or no cells table (the coordinates
+/// and the batches), is refused, the missing record named, before anything
+/// is written, even with the file itself under its prefix.
 #[test]
-fn the_run_is_checked_before_anything_is_written() {
+fn a_run_that_lacks_a_record_is_refused_by_its_name() {
+    use crate::util::metadata::{OutputFiles, PintoMetadata};
+    type Unset = fn(&mut OutputFiles);
+    let cases: [(Unset, &str); 2] = [
+        (
+            |o| o.propensity = None,
+            "records no propensity output (outputs.propensity)",
+        ),
+        (|o| o.cells = None, "records no cells table (outputs.cells)"),
+    ];
+    for (unset, message) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        let (prefix, _) = fixture(d);
+        let manifest = format!("{prefix}.pinto.json");
+        PintoMetadata::update(Path::new(&manifest), |m| unset(&mut m.outputs)).unwrap();
+        let out = format!("{d}/resid");
+        let err = run_residual(&args(&prefix, &out, None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(message), "{err}");
+        assert!(!Path::new(&out).exists(), "nothing written");
+    }
+}
+
+/// A recorded propensity that is gone is refused while planning, by name.
+#[test]
+fn a_recorded_propensity_that_is_gone_is_refused_while_planning() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path().to_str().unwrap();
     let (prefix, _) = fixture(d);
+    std::fs::remove_file(format!("{prefix}.propensity.parquet")).unwrap();
+    let a = args(&prefix, &format!("{d}/resid"), None);
+    let e = Plan::new(&Run::open(&prefix).unwrap(), &a)
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        e.contains("fit.propensity.parquet") && e.contains("not there"),
+        "{e}"
+    );
+}
+
+/// The command that wrote the run does not matter, and one-hot memberships
+/// (hard labels) are read as propensities: with S2/b in a community of its
+/// own, each community's profile is its own cells', and nothing is left.
+/// With every cell in one community, S2/b keeps its excess as in the
+/// soft-weight fixture.
+#[test]
+fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let (prefix, _) = fixture(d);
+    let apart = Mat::from_row_slice(4, 2, &[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+    rewrite_run(&prefix, &CELLS, apart, "CT1-labels");
+    let out = format!("{d}/apart");
+    run_residual(&ResidualArgs {
+        adapt: Adapt::None,
+        ..args(&prefix, &out, None)
+    })
+    .unwrap();
+    let s2 = read(&format!("{out}/S2.zarr"));
+    assert_eq!(s2.nnz(), 0, "each cell sits at its own community's mean");
+
     rewrite_run(
         &prefix,
         &CELLS,
         Mat::from_column_slice(4, 1, &[1.0; 4]),
-        "lra",
+        "CT1-labels",
     );
-    let out = format!("{d}/resid");
-    let err = run_residual(&args(&prefix, &out, None))
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("lc, cage or dsvd"), "{err}");
-    assert!(!Path::new(&out).exists(), "nothing written");
+    let out = format!("{d}/together");
+    run_residual(&ResidualArgs {
+        adapt: Adapt::None,
+        ..args(&prefix, &out, None)
+    })
+    .unwrap();
+    assert!(g1(&read(&format!("{out}/S2.zarr")), 1) > 0.0);
+}
+
+/// A spatial baseline's run is taken as a fit's is: it records its data
+/// files, propensity (here the method's posterior), cells table (with the
+/// batch of each cell) and coordinate columns. Each data file gets its
+/// excess zarr and coordinates, and a fit reads them as it reads data: the
+/// rows every file shares, each file's own cells, a coordinate per cell.
+#[test]
+fn a_residual_is_taken_from_a_spatial_baseline_run() {
+    use data_beans::aux::feature_names::FeatureNameKind;
+    let dir = tempfile::tempdir().unwrap();
+    let side = 6;
+    let (data, coords) = crate::test_support::two_sections(dir.path(), side);
+    let fit = dir.path().join("base").to_string_lossy().into_owned();
+    let argv = [
+        "pinto",
+        "spatialde2",
+        &data,
+        "-c",
+        &coords,
+        "--coord-column-names",
+        "x,y",
+        "-o",
+        &fit,
+        "--max-iter",
+        "5",
+    ];
+    let crate::Commands::Spatialde2(base) = <crate::Cli as clap::Parser>::try_parse_from(argv)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .commands
+    else {
+        unreachable!()
+    };
+    crate::spatial_baselines::spatialde2::run(&base).unwrap();
+
+    // the default --adapt batch groups by the run's own batches
+    let run = Run::open(&fit).unwrap();
+    let recorded = run.meta.outputs.cells.as_deref().unwrap();
+    let cells = crate::util::parquet_io::read_cells_table(Path::new(recorded), None).unwrap();
+    assert!(cells.batches.is_some(), "the run's cells carry their batch");
+
+    let out = dir.path().join("resid").to_string_lossy().into_owned();
+    run_residual(&args(&fit, &out, None)).unwrap();
+    let marker: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["counts"], "excess", "{marker}");
+    assert_eq!(marker["files"].as_array().unwrap().len(), 2, "{marker}");
+
+    let raw: Vec<Box<str>> = data.split(',').map(Box::from).collect();
+    let zarrs: Vec<Box<str>> = ["s1", "s2"]
+        .iter()
+        .map(|s| format!("{out}/{s}.zarr").into())
+        .collect();
+    let open = |f: &[Box<str>]| crate::util::input::open_fit_data(f, &FeatureNameKind::Exact);
+    let (before, after) = (open(&raw).unwrap(), open(&zarrs).unwrap());
+    assert_eq!(after.num_rows(), before.num_rows());
+    assert_eq!(after.row_names().unwrap(), before.row_names().unwrap());
+    assert_eq!(after.num_columns(), 2 * side * side);
+    for (j, s) in ["s1", "s2"].iter().enumerate() {
+        let barcodes = after[j].column_names().unwrap();
+        assert_eq!(barcodes, before[j].column_names().unwrap(), "{s}");
+        let path = format!("{out}/{s}.coords.parquet");
+        let spots = read_parquet_string_columns_by_name(&path, &["spot"]).unwrap();
+        assert_eq!(spots[0], barcodes, "{s}: a coordinate per cell");
+        let table = crate::util::parquet_io::read_cells_table(
+            Path::new(&path),
+            Some(&["x".to_string(), "y".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(table.coords.len(), side * side, "{s}");
+    }
+    // some excess is left, and never more than the counts in
+    let kept: f64 = marker["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let (i, o) = (
+                f["counts_in"].as_f64().unwrap(),
+                f["excess_out"].as_f64().unwrap(),
+            );
+            assert!(o <= i, "{f}");
+            o
+        })
+        .sum();
+    assert!(kept > 0.0, "{marker}");
 }
 
 fn copy_dir(from: &str, to: &str) {

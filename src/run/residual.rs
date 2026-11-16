@@ -1,7 +1,8 @@
 //! `run_residual` for `pinto mcp`: `pinto residual` set up as the command
 //! line takes it, its run checked as the command checks it before anything
-//! runs (an lc, cage or dsvd run on raw counts, its data files found, `-o`
-//! a folder, nothing written over), and run as a child pinto in the
+//! runs (a run on raw counts whose manifest records its propensity and
+//! cells table, its data files found, `-o` a folder, nothing written
+//! over), and run as a child pinto in the
 //! project's records, a background job unless asked otherwise. The reply lists the residual's files for
 //! `run_fit`, the second stage of the two-stage fit.
 
@@ -130,9 +131,12 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
     let flag = |id: &str, schema: Value| super::mcp::flag_arg(sub, id, schema);
     vec![ToolSpec::new(
         "run_residual",
-        "The counts a fitted lc, cage or dsvd run leaves unexplained, as new data files \
+        "The counts a fitted run leaves unexplained, as new data files \
          (pinto residual), for a second fit to pick up what the first absorbed, such as a \
-         domain only one donor has. Each community's raw-count profile is refitted from the \
+         domain only one donor has. Any run is taken whose manifest records its data \
+         files, a propensity table (cell x community, soft or one-hot), a cells table and \
+         its coordinate columns, a fit's or a spatial baseline's; one that lacks a record \
+         is refused, the record named. Each community's raw-count profile is refitted from the \
          run's propensities (by default re-estimated per batch of the run and shrunk toward \
          the pooled profile, so a shift of a whole community in a batch is absorbed and a \
          local patch stays), each cell's mix by EM, and the excess max(y - mu, 0) is kept as \
@@ -149,7 +153,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         json!({
             "type": "object",
             "properties": {
-                "run": {"type": "string", "description": "The stage-1 run: an lc, cage or dsvd run's prefix or .pinto.json (--from; --run also works)"},
+                "run": {"type": "string", "description": "The stage-1 run: the prefix or .pinto.json of a run that recorded its propensity (--from; --run also works)"},
                 "out": out_arg("folder", "residual"),
                 "data_files": flag("data_files", json!({"type": "array", "items": {"type": "string"}})),
                 "excess": flag("excess", json!({"type": "string", "enum": choices::<Excess>()})),
