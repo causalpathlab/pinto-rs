@@ -118,9 +118,9 @@ fn scale_centres_unit_variance_and_clips() {
     assert_eq!(y[(0, 0)], 10.0);
 }
 
-/// A clean run (L0, no nuisance) small enough for a test, its cell-state
-/// signal raised until the domains are plain in the counts.
-const CLEAN: &[&str] = &[
+/// An unconfounded run (no donor or section shift) small enough for a
+/// test, its cell-state signal raised until the domains are plain in the counts.
+const UNCONFOUNDED: &[&str] = &[
     "grid_side=16",
     "n_genes=200",
     "programme_genes=50",
@@ -128,7 +128,7 @@ const CLEAN: &[&str] = &[
     "seed=3",
 ];
 
-/// The clean domains under a large donor-wide effect.
+/// The unconfounded domains under a large donor-wide effect.
 const DONOR_WIDE: &[&str] = &[
     "grid_side=16",
     "n_genes=200",
@@ -138,13 +138,13 @@ const DONOR_WIDE: &[&str] = &[
     "seed=3",
 ];
 
-/// An L0 simulation with `set`, in a fresh folder: the folder (kept alive)
+/// An unconfounded simulation with `set`, in a fresh folder: the folder (kept alive)
 /// and the simulation's path.
 fn simulate(set: &[&str]) -> (TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let truth = dir.path().join("sim").to_string_lossy().to_string();
     crate::simulate::run::run_simulate(&crate::simulate::run::SimulateArgs {
-        scenario: "L0".into(),
+        scenario: "unconfounded".into(),
         set: set.iter().map(|s| s.to_string()).collect(),
         coords: Vec::new(),
         coord_column_names: vec!["row_um".into(), "col_um".into()],
@@ -179,26 +179,26 @@ fn scored(args: &BaselineArgs) -> Score {
     s
 }
 
-/// On L0 (no donor or section nuisance; every domain dominated by its own
-/// cell state with its own programme genes), pooling the sections is all a
-/// method needs. A run this small has few spots, so the cell-state signal
-/// is raised (pve_type 0.6) until the domains are plain in the counts:
-/// there the pooled scanpy recipe at the true K must recover the shared
+/// On the unconfounded scenario (no donor or section shift; every domain
+/// dominated by its own cell state with its own programme genes), pooling
+/// the sections is all a method needs. A run this small has few spots, so
+/// the cell-state signal is raised (pve_type 0.6) until the domains are
+/// plain in the counts: there the pooled scanpy recipe at the true K must recover the shared
 /// domains with ARI >= 0.9 (the margin is for counting noise, so a miss
 /// means the pipeline is broken). Its output is a cell<TAB>label table the
 /// scorer reads, naming every spot.
 #[test]
-fn pooled_recovers_the_domains_of_a_clean_run() {
-    let (_dir, truth) = simulate(CLEAN);
+fn pooled_recovers_the_domains_of_an_unconfounded_run() {
+    let (_dir, truth) = simulate(UNCONFOUNDED);
     let args = baseline_args(&truth, Method::Pooled);
     let s = scored(&args);
     let text = std::fs::read_to_string(args.out.as_ref()).unwrap();
     assert!(text.starts_with("cell\tlabel\n"));
-    eprintln!("pooled shared ARI on L0: {:.3}", s.shared_ari);
+    eprintln!("pooled shared ARI, unconfounded: {:.3}", s.shared_ari);
     assert!(s.shared_ari >= 0.9, "shared ARI {}", s.shared_ari);
 }
 
-/// A large donor-wide effect (pve_donor 0.3) on the clean L0 domains:
+/// A large donor-wide effect (pve_donor 0.3) on the unconfounded domains:
 /// pooled labels then follow the donor within a domain, and Harmony on the
 /// donors' PCs must remove most of that. Its donor dependence (the score's
 /// I(label; donor | domain) / H(donor | domain) over shared domains) must
@@ -249,7 +249,7 @@ fn matching_sees_through_a_donor_wide_shift() {
 /// Per donor on the large donor-wide effect of [`DONOR_WIDE`]: each donor
 /// alone has no donor effect, and the matching centres each donor before
 /// comparing, so the shared domains must come back with ARI >= 0.8 (a bar
-/// set before measuring; lower than pooled's 0.9 on a clean run because
+/// set before measuring; lower than pooled's 0.9 on an unconfounded run because
 /// each donor's graph has a third of the spots).
 #[test]
 fn per_donor_runs_and_is_scored() {
@@ -264,12 +264,12 @@ fn per_donor_runs_and_is_scored() {
 
 /// With fewer HVGs asked for (150) than genes with a dispersion (all 200),
 /// the pipeline uses exactly [`hvg`]'s top 150, and on those alone the
-/// pooled recipe still recovers the clean run's shared domains with ARI >=
+/// pooled recipe still recovers the unconfounded run's shared domains with ARI >=
 /// 0.9, the bar of the all-genes test. The signal is spread over many genes
 /// in a run this small, so far fewer HVGs lose it.
 #[test]
 fn hvg_selection_keeps_the_top_genes_and_still_recovers_the_domains() {
-    let (_dir, truth) = simulate(CLEAN);
+    let (_dir, truth) = simulate(UNCONFOUNDED);
     let mut args = baseline_args(&truth, Method::Pooled);
     args.n_hvg = 150;
     let (mut log, _) = read_counts(&truth).unwrap();
@@ -281,7 +281,10 @@ fn hvg_selection_keeps_the_top_genes_and_still_recovers_the_domains() {
     let (_, genes) = scanpy_pcs(&log, &args).unwrap();
     assert_eq!(genes, hvg(&log, args.n_hvg));
     let s = scored(&args);
-    eprintln!("pooled shared ARI on L0 with 150 HVGs: {:.3}", s.shared_ari);
+    eprintln!(
+        "pooled shared ARI, unconfounded, with 150 HVGs: {:.3}",
+        s.shared_ari
+    );
     assert!(s.shared_ari >= 0.9, "shared ARI {}", s.shared_ari);
 }
 

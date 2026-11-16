@@ -2,12 +2,17 @@ use crate::simulate::draw::{nb_quantile, phi, Latent};
 use crate::simulate::expression::{active, draw_nuisance, rotate_to_cosine};
 use crate::simulate::field::{mean_sd, rff_field};
 use crate::simulate::panel::grid;
-use crate::simulate::params::{PatchKind, SimParams, SCENARIOS};
+use crate::simulate::params::{find_scenario, PatchKind, SimParams, SCENARIOS};
 use crate::simulate::rng::{key, Stream};
 use crate::simulate::sim::Sim;
 use crate::simulate::truth::assign_by_offsets;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+
+/// The settings of the scenario named `name`, by its name or an earlier one.
+fn scenario(name: &str) -> anyhow::Result<SimParams> {
+    find_scenario(name).map(|s| (s.params)())
+}
 
 /// 3 donors × 2 sections of a 24 × 24 grid, 200 genes.
 fn small(p: SimParams) -> Sim {
@@ -48,9 +53,110 @@ fn sorted(mut v: Vec<(u64, u64, f32)>) -> Vec<(u64, u64, f32)> {
 #[test]
 fn every_scenario_is_valid() {
     for sc in SCENARIOS {
-        SimParams::scenario(sc.name).unwrap().validate().unwrap();
+        scenario(sc.name).unwrap().validate().unwrap();
     }
-    assert!(SimParams::scenario("nope").is_err());
+    assert!(scenario("nope").is_err());
+}
+
+/// Each earlier scenario name is a hidden alias: it resolves to its new
+/// name's scenario and settings.
+#[test]
+fn old_scenario_names_resolve_to_their_new_ones() {
+    for (old, new) in [
+        ("L0", "unconfounded"),
+        ("L1", "donor-confounded"),
+        ("L2", "donor-confounded-donor-only-cell-type"),
+        ("L2-mix", "donor-confounded-donor-only-mix"),
+        ("null-shift", "composition-shift"),
+    ] {
+        assert_eq!(find_scenario(old).unwrap().name, new, "{old}");
+        assert_eq!(scenario(old).unwrap(), scenario(new).unwrap(), "{old}");
+    }
+    let err = scenario("nope").unwrap_err().to_string();
+    assert!(err.contains("unconfounded") && !err.contains("L0"), "{err}");
+}
+
+/// The scenario that left the first donor unconfounded is gone, under its
+/// name and its earlier one: `n_unconfounded_donors` replaces it.
+#[test]
+fn the_first_donor_unconfounded_scenario_is_unknown() {
+    for name in ["first-donor-unconfounded", "clean-one"] {
+        let err = scenario(name).unwrap_err().to_string();
+        assert!(err.contains("unknown scenario"), "{name}: {err}");
+    }
+}
+
+/// Each scenario's description states its own settings.
+#[test]
+fn every_scenario_says_its_numbers() {
+    let pct = |x: f64| format!("{}%", (x * 100.0).round());
+    for sc in SCENARIOS {
+        let p = (sc.params)();
+        let about = sc.about.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut says = vec![
+            format!(
+                "{} donors, {} sections each",
+                p.n_donors, p.sections_per_donor
+            ),
+            format!("{} spatial domains", p.n_domains),
+            format!("cell type {}", pct(p.pve_type)),
+        ];
+        let shifts = [
+            ("donor-wide shift", p.pve_donor),
+            ("donor-by-cell-type shift", p.pve_inter),
+            ("section shift", p.pve_section),
+        ];
+        for (term, pve) in shifts {
+            says.push(if pve > 0.0 {
+                format!("{term} ({})", pct(pve))
+            } else {
+                "no donor-wide, donor-by-cell-type or section shift".into()
+            });
+        }
+        match p.patch_kind {
+            PatchKind::None => assert!(!about.contains("of its spots"), "{}", sc.name),
+            kind => {
+                assert_eq!(p.patch_owner, 2, "{}", sc.name);
+                says.push("third donor".into());
+                says.push(format!("about {} of its spots", pct(p.patch_share)));
+                says.push(match kind {
+                    PatchKind::NewMix => "first two shared cell types in equal parts".into(),
+                    _ => format!("cosine {} to the first shared cell type's", p.patch_cosine),
+                });
+            }
+        }
+        if p.jit_b > 0.0 {
+            says.push(format!("log-scale spread {}", p.jit_b));
+        }
+        assert!(p.unconfounded_donors.is_empty(), "{}", sc.name);
+        assert_eq!(p.n_unconfounded_donors, 0, "{}", sc.name);
+        assert!(p.unconfounded_sections.is_empty(), "{}", sc.name);
+        for want in says {
+            assert!(
+                about.contains(&want),
+                "{}: {want:?} not in {about:?}",
+                sc.name
+            );
+        }
+    }
+}
+
+/// The earlier keys of the unconfounded donors and sections are read as the
+/// new ones, by --set and from a settings file; the new keys are written.
+#[test]
+fn old_unconfounded_keys_are_read_as_the_new_ones() {
+    let p = SimParams::default()
+        .with_overrides(&["clean_donors=[1]".into(), "clean_sections=[0,3]".into()])
+        .unwrap();
+    assert_eq!(p.unconfounded_donors, vec![1]);
+    assert_eq!(p.unconfounded_sections, vec![0, 3]);
+    let read: SimParams =
+        serde_json::from_str(r#"{"clean_donors": [2], "clean_sections": [1]}"#).unwrap();
+    assert_eq!(read.unconfounded_donors, vec![2]);
+    assert_eq!(read.unconfounded_sections, vec![1]);
+    let written = serde_json::to_value(&p).unwrap();
+    assert_eq!(written["unconfounded_donors"], serde_json::json!([1]));
+    assert!(written.get("clean_donors").is_none());
 }
 
 #[test]
@@ -67,16 +173,20 @@ fn overrides_set_fields_and_reject_unknown_keys() {
         .with_overrides(&[
             "pve_donor=0.2".into(),
             "patch_kind=new-mix".into(),
-            "clean_donors=[1]".into(),
+            "unconfounded_donors=[1]".into(),
             "nuisance_off=true".into(),
         ])
         .unwrap();
     assert_eq!(p.pve_donor, 0.2);
     assert_eq!(p.patch_kind, PatchKind::NewMix);
-    assert_eq!(p.clean_donors, vec![1]);
+    assert_eq!(p.unconfounded_donors, vec![1]);
     assert!(p.nuisance_off);
     assert!(SimParams::default()
         .with_overrides(&["pve_typo=1".into()])
+        .is_err());
+    // a near miss of an old key is not taken for the field it resembles
+    assert!(SimParams::default()
+        .with_overrides(&["clean_donor=[1]".into()])
         .is_err());
 }
 
@@ -165,7 +275,7 @@ fn offsets_bring_domain_shares_to_their_targets() {
 /// appears in no other donor.
 #[test]
 fn the_donor_patch_sits_in_its_owner_alone() {
-    let sim = small(SimParams::scenario("L2").unwrap());
+    let sim = small(scenario("donor-confounded-donor-only-cell-type").unwrap());
     let (p, truth) = (&sim.p, &sim.truth);
     let patch = p.n_domains;
     assert_eq!(truth.domains[patch].owner, Some(p.patch_owner));
@@ -185,7 +295,7 @@ fn the_donor_patch_sits_in_its_owner_alone() {
 
 #[test]
 fn a_new_state_appears_only_in_the_donor_patch() {
-    let sim = small(SimParams::scenario("L2").unwrap());
+    let sim = small(scenario("donor-confounded-donor-only-cell-type").unwrap());
     let (p, truth) = (&sim.p, &sim.truth);
     let new_state = p.n_domains;
     assert_eq!(truth.states[new_state].owner, Some(p.patch_owner));
@@ -202,7 +312,7 @@ fn a_new_state_appears_only_in_the_donor_patch() {
 /// A new mix holds two shared states evenly: no shared domain's composition.
 #[test]
 fn a_new_mix_is_made_of_shared_states_only() {
-    let sim = small(SimParams::scenario("L2-mix").unwrap());
+    let sim = small(scenario("donor-confounded-donor-only-mix").unwrap());
     let (p, truth) = (&sim.p, &sim.truth);
     assert_eq!(truth.n_states(), p.n_domains);
     let comp = &truth.composition[p.n_domains];
@@ -271,14 +381,14 @@ fn realised_pve_follows_nuisance_off() {
     assert!(r[1] < 1e-12 && r[2] < 1e-12 && r[3] < 1e-12, "{r:?}");
 }
 
-/// A clean donor's spots get no donor or donor-by-type term: switching all
+/// An unconfounded donor's spots get no donor or donor-by-type term: switching all
 /// nuisance off changes nothing there when there is no section term.
 #[test]
-fn a_clean_donor_carries_no_donor_nuisance() {
+fn an_unconfounded_donor_carries_no_donor_nuisance() {
     let p = SimParams {
         pve_donor: 0.2,
         pve_inter: 0.2,
-        clean_donors: vec![0],
+        unconfounded_donors: vec![0],
         ..SimParams::default()
     };
     let sim = small(p.clone());
@@ -303,12 +413,12 @@ fn a_clean_donor_carries_no_donor_nuisance() {
 }
 
 /// The same seed with nuisance off keeps every other draw: the counts of a
-/// clean donor are identical, and elsewhere the counts move with the rate.
+/// unconfounded donor are identical, and elsewhere the counts move with the rate.
 #[test]
 fn nuisance_off_is_the_exact_counterfactual() {
     let p = SimParams {
         pve_donor: 0.3,
-        clean_donors: vec![0],
+        unconfounded_donors: vec![0],
         ..SimParams::default()
     };
     let (a, b) = (
@@ -323,11 +433,12 @@ fn nuisance_off_is_the_exact_counterfactual() {
     assert_ne!(sorted(a.counts(last)), sorted(b.counts(last)));
 }
 
-/// Adding the donor-only state (L1 to L2) leaves every other nuisance
-/// draw as it was, so the two rungs are paired.
+/// Adding the donor-only cell type (donor-confounded to
+/// donor-confounded-donor-only-cell-type) leaves every other nuisance draw
+/// as it was, so the two scenarios are paired.
 #[test]
 fn adding_a_state_keeps_every_other_nuisance_draw() {
-    let p = SimParams::scenario("L1").unwrap();
+    let p = scenario("donor-confounded").unwrap();
     let (a, b) = (
         draw_nuisance(&p, p.n_domains),
         draw_nuisance(&p, p.n_domains + 1),
@@ -450,13 +561,17 @@ fn a_gene_keeps_its_draws_when_the_gene_count_changes() {
 /// No gene's nuisance term is far outside its target spread. A gene whose
 /// few donor or section draws happen to lie close together must not get a
 /// huge scale (and a huge offset): over a thousand genes, every scaled term
-/// stays within a few multiples of √(pve · V), with and without a clean donor.
+/// stays within a few multiples of √(pve · V), with and without an unconfounded donor.
 #[test]
 fn no_gene_gets_an_outsized_nuisance_term() {
-    for name in ["L1", "clean-one"] {
+    for (name, n_unconfounded_donors) in [
+        ("donor-confounded", 0),
+        ("donor-confounded-donor-only-cell-type", 1),
+    ] {
         let sim = sim_of(SimParams {
             grid_side: 12,
-            ..SimParams::scenario(name).unwrap()
+            n_unconfounded_donors,
+            ..scenario(name).unwrap()
         });
         let (p, nu, sc) = (&sim.p, &sim.nuisance, &sim.scaling);
         let bound = |pve: f64| 6.0 * (pve * p.log_rate_var).sqrt();
@@ -490,7 +605,7 @@ fn no_gene_gets_an_outsized_nuisance_term() {
 fn a_gene_keeps_its_nuisance_when_the_gene_count_changes() {
     let base = SimParams {
         grid_side: 12,
-        ..SimParams::scenario("L1").unwrap()
+        ..scenario("donor-confounded").unwrap()
     };
     let a = sim_of(SimParams {
         n_genes: 200,
@@ -596,7 +711,7 @@ fn no_noise_reads_as_none() {
 }
 
 /// What the note calls off is what the simulator drops: across panels with
-/// one or several donors and sections, clean ones and nuisance_off, a
+/// one or several donors and sections, unconfounded ones and nuisance_off, a
 /// nuisance term is off in the note exactly when the simulator gives it no
 /// scale or switches it off.
 #[test]
@@ -620,15 +735,23 @@ fn the_note_and_the_simulator_agree_on_which_terms_are_off() {
             ..base.clone()
         },
         SimParams {
-            clean_donors: vec![0, 1, 2],
+            unconfounded_donors: vec![0, 1, 2],
             ..base.clone()
         },
         SimParams {
-            clean_donors: vec![0, 2],
+            unconfounded_donors: vec![0, 2],
             ..base.clone()
         },
         SimParams {
-            clean_sections: (0..6).collect(),
+            unconfounded_sections: (0..6).collect(),
+            ..base.clone()
+        },
+        SimParams {
+            n_unconfounded_donors: 1,
+            ..base.clone()
+        },
+        SimParams {
+            n_unconfounded_donors: 3,
             ..base.clone()
         },
         SimParams {
@@ -668,4 +791,143 @@ fn a_donor_specific_state_is_named_with_its_owner() {
     let mut want: Vec<&str> = vec!["CT1", "CT2", "CT3", "CT4"];
     want.push(&specific);
     assert_eq!(states, want);
+}
+
+///////////////////////////////
+// drawn unconfounded donors //
+///////////////////////////////
+
+/// The same seed draws the same donors; across seeds every eligible donor
+/// is drawn, and the donor-only domain's owner never is (every donor is
+/// eligible without that domain).
+#[test]
+fn drawn_unconfounded_donors_follow_the_seed_and_skip_the_owner() {
+    let base = SimParams {
+        n_donors: 4,
+        n_unconfounded_donors: 1,
+        patch_kind: PatchKind::NewState,
+        ..SimParams::default()
+    };
+    base.validate().unwrap();
+    assert_eq!(
+        base.unconfounded_donor_set(),
+        base.clone().unconfounded_donor_set()
+    );
+    let tally = |p: &SimParams| {
+        let mut seen = vec![0usize; p.n_donors];
+        for seed in 0..200 {
+            let drawn = SimParams { seed, ..p.clone() }.unconfounded_donor_set();
+            assert_eq!(drawn.len(), p.n_unconfounded_donors);
+            drawn.iter().for_each(|&d| seen[d] += 1);
+        }
+        seen
+    };
+    let seen = tally(&base);
+    assert_eq!(seen[base.patch_owner], 0, "{seen:?}");
+    assert!(
+        (0..4)
+            .filter(|&d| d != base.patch_owner)
+            .all(|d| seen[d] > 0),
+        "{seen:?}"
+    );
+    let no_patch = SimParams {
+        patch_kind: PatchKind::None,
+        n_unconfounded_donors: 2,
+        ..base.clone()
+    };
+    assert!(tally(&no_patch).iter().all(|&n| n > 0));
+    // two drawn are two donors
+    let two = no_patch.unconfounded_donor_set();
+    assert!(two[0] < two[1], "{two:?}");
+}
+
+/// More drawn donors than are eligible, or both ways of choosing them at
+/// once, are refused.
+#[test]
+fn impossible_unconfounded_donors_are_refused() {
+    let owned = SimParams {
+        n_unconfounded_donors: 3,
+        ..scenario("donor-confounded-donor-only-cell-type").unwrap()
+    };
+    let err = owned.validate().unwrap_err().to_string();
+    assert!(err.contains("n_unconfounded_donors"), "{err}");
+    SimParams {
+        patch_kind: PatchKind::None,
+        ..owned.clone()
+    }
+    .validate()
+    .unwrap();
+    let both = SimParams {
+        n_unconfounded_donors: 1,
+        unconfounded_donors: vec![0],
+        ..SimParams::default()
+    };
+    let err = both.validate().unwrap_err().to_string();
+    assert!(err.contains("unconfounded_donors"), "{err}");
+}
+
+/// A drawn donor's spots carry no donor-wide, donor-by-cell-type or section
+/// shift: its terms are 0 and switching the nuisance off changes nothing
+/// there, while a confounded donor's rates move.
+#[test]
+fn drawn_unconfounded_donors_carry_no_shift() {
+    let p = SimParams {
+        n_unconfounded_donors: 1,
+        ..scenario("donor-confounded").unwrap()
+    };
+    assert!(p.pve_section > 0.0);
+    let sim = small(p.clone());
+    let drawn = sim.p.unconfounded_donor_set();
+    let off = active(&SimParams {
+        nuisance_off: true,
+        ..p.clone()
+    });
+    let on = active(&p);
+    for (s, sec) in sim.sections.iter().enumerate() {
+        let free = drawn.contains(&sec.donor);
+        let mut moved = false;
+        for g in 0..sim.p.n_genes {
+            let c = sim.components(s, g);
+            if free {
+                assert_eq!(c.donor, 0.0, "section {s} gene {g}");
+                assert_eq!(c.section, 0.0, "section {s} gene {g}");
+                assert!(c.inter.iter().all(|&x| x == 0.0), "section {s} gene {g}");
+            }
+            let (a, b) = (sim.mean(s, g, on), sim.mean(s, g, off));
+            moved |= a.iter().zip(&b).any(|(x, y)| (x - y).abs() > 1e-9);
+        }
+        assert_eq!(moved, !free, "section {s}");
+    }
+}
+
+/// With no drawn donor, every scenario's counts are the ones it gave before
+/// the draw existed: the draw's stream shifts no other draw.
+#[test]
+fn no_drawn_donor_keeps_every_scenario_counts() {
+    let want = [
+        ("unconfounded", 0x10ecbb69cf0345ea_u64),
+        ("donor-confounded", 0xd648801863e677dd),
+        ("donor-confounded-donor-only-cell-type", 0xdab437f804c518fa),
+        ("donor-confounded-donor-only-mix", 0xc9fb3cc565cafdc9),
+        ("composition-shift", 0x04903ef71561d4fd),
+    ];
+    assert_eq!(want.len(), SCENARIOS.len());
+    for (name, fingerprint) in want {
+        let sim = sim_of(SimParams {
+            grid_side: 10,
+            n_genes: 40,
+            programme_genes: 6,
+            ..scenario(name).unwrap()
+        });
+        // FNV-1a over every (gene, spot, count) in order
+        let mut h: u64 = 0xcbf29ce484222325;
+        for s in 0..sim.sections.len() {
+            for (g, i, y) in sorted(sim.counts(s)) {
+                for x in [g, i, y.to_bits() as u64] {
+                    h = (h ^ x).wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        assert_eq!(h, fingerprint, "{name}: {h:#018x}");
+    }
 }

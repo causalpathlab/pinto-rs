@@ -13,12 +13,12 @@
 //! takes `1 − Σ pve`, the convention `pinto lra-simulate` uses. The type
 //! term is scaled per gene, exactly, and centred (its level belongs to `a`).
 //! A nuisance term is a few draws per gene, so it gets one scale from its
-//! expected variance `Σ w (1 − w)` over the groups that are not clean (`w`
-//! their shares of the spots): `pve · V` in expectation over genes, with a
+//! expected variance `Σ w (1 − w)` over the confounded groups (`w` their
+//! shares of the spots): `pve · V` in expectation over genes, with a
 //! gene's terms depending on its own draws alone. Nuisance terms are not
-//! centred, so a clean donor or section keeps exactly 0. Genes outside every
-//! programme have no `T` and carry the other terms at the same variance, so
-//! nuisance is genome-wide.
+//! centred, so an unconfounded donor or section keeps exactly 0. Genes
+//! outside every programme have no `T` and carry the other terms at the
+//! same variance, so nuisance is genome-wide.
 
 use super::panel::Section;
 use super::params::SimParams;
@@ -139,7 +139,7 @@ pub fn draw_genes(p: &SimParams, truth: &Truth) -> Genes {
     }
 }
 
-/// Nuisance draws before scaling: standard normal, then 0 for clean donors
+/// Nuisance draws before scaling: standard normal, then 0 for unconfounded donors
 /// and sections. Each gene, and each gene and state, has its own stream.
 pub struct Nuisance {
     /// `donor[g][d]`
@@ -151,27 +151,34 @@ pub struct Nuisance {
 }
 
 pub fn draw_nuisance(p: &SimParams, n_states: usize) -> Nuisance {
-    let clean_d: Vec<bool> = (0..p.n_donors)
-        .map(|d| p.clean_donors.contains(&d))
-        .collect();
-    let clean_s: Vec<bool> = (0..p.n_sections())
-        .map(|s| p.clean_sections.contains(&s))
-        .collect();
-    let masked = |v: Vec<f64>, clean: &[bool]| -> Vec<f64> {
+    let (donors, sections) = (p.unconfounded_donor_set(), p.unconfounded_section_set());
+    let unconfounded_d: Vec<bool> = (0..p.n_donors).map(|d| donors.contains(&d)).collect();
+    let unconfounded_s: Vec<bool> = (0..p.n_sections()).map(|s| sections.contains(&s)).collect();
+    let masked = |v: Vec<f64>, unconfounded: &[bool]| -> Vec<f64> {
         v.into_iter()
-            .zip(clean)
-            .map(|(x, &c)| if c { 0.0 } else { x })
+            .zip(unconfounded)
+            .map(|(x, &u)| if u { 0.0 } else { x })
             .collect()
     };
     let nd = p.n_donors;
     Nuisance {
         donor: (0..p.n_genes)
-            .map(|g| masked(normals(rng(p.seed, Stream::Donor, &[g]), nd), &clean_d))
+            .map(|g| {
+                masked(
+                    normals(rng(p.seed, Stream::Donor, &[g]), nd),
+                    &unconfounded_d,
+                )
+            })
             .collect(),
         inter: (0..p.n_genes)
             .map(|g| {
                 (0..n_states)
-                    .map(|c| masked(normals(rng(p.seed, Stream::Inter, &[g, c]), nd), &clean_d))
+                    .map(|c| {
+                        masked(
+                            normals(rng(p.seed, Stream::Inter, &[g, c]), nd),
+                            &unconfounded_d,
+                        )
+                    })
                     .collect()
             })
             .collect(),
@@ -179,7 +186,7 @@ pub fn draw_nuisance(p: &SimParams, n_states: usize) -> Nuisance {
             .map(|g| {
                 masked(
                     normals(rng(p.seed, Stream::Section, &[g]), p.n_sections()),
-                    &clean_s,
+                    &unconfounded_s,
                 )
             })
             .collect(),
@@ -215,8 +222,8 @@ pub struct Scaling {
 }
 
 /// Expected variance over spots of a term that is iid N(0, 1) per group,
-/// the groups holding shares `w` of the spots (a clean group's share set to
-/// 0, its term being 0): `E[Σ w z² − (Σ w z)²] = Σ_g w_g (1 − w_g)`.
+/// the groups holding shares `w` of the spots (an unconfounded group's share
+/// set to 0, its term being 0): `E[Σ w z² − (Σ w z)²] = Σ_g w_g (1 − w_g)`.
 fn expected_variance(w: &[f64]) -> f64 {
     w.iter().map(|x| x * (1.0 - x)).sum()
 }
@@ -225,16 +232,17 @@ pub fn scaling(p: &SimParams, sections: &[Section], truth: &Truth, genes: &Genes
     let v = p.log_rate_var;
     let n_states = truth.n_states();
     // shares of the spots by state, and by donor, section and (state, donor)
-    // with clean groups at 0
+    // with unconfounded groups at 0
     let n: f64 = sections.iter().map(|s| s.n()).sum::<usize>() as f64;
     let mut by_state = vec![0.0; n_states];
     let mut by_donor = vec![0.0; p.n_donors];
     let mut by_section = vec![0.0; sections.len()];
     let mut by_state_donor = vec![0.0; n_states * p.n_donors];
+    let (free_donors, free_sections) = (p.unconfounded_donor_set(), p.unconfounded_section_set());
     for (s, sec) in sections.iter().enumerate() {
         let share = sec.n() as f64 / n;
-        let donor_on = !p.clean_donors.contains(&sec.donor);
-        if !p.clean_sections.contains(&s) {
+        let donor_on = !free_donors.contains(&sec.donor);
+        if !free_sections.contains(&s) {
             by_section[s] = share;
         }
         if donor_on {
@@ -276,7 +284,7 @@ pub fn scaling(p: &SimParams, sections: &[Section], truth: &Truth, genes: &Genes
 }
 
 /// The scaled terms of one gene in one section: per state, the type and
-/// donor-by-type terms; for the section, the donor and section terms; per
+/// donor-by-cell-type terms; for the section, the donor and section terms; per
 /// spot, the noise.
 pub struct Components {
     pub a: f64,

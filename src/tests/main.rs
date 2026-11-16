@@ -132,6 +132,41 @@ fn lra_help_lists_every_verdict() {
     }
 }
 
+/// `pinto srt-simulate --help` lists the scenarios by their names, each with
+/// what it is, and not by their earlier names, which still parse.
+#[test]
+fn simulate_help_lists_the_scenarios_by_name() {
+    let help = built_cli()
+        .find_subcommand_mut("srt-simulate")
+        .expect("srt-simulate")
+        .render_long_help()
+        .to_string();
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = words(&help);
+    // words with their punctuation stripped, a name's hyphens kept
+    let bare: Vec<&str> = help
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .collect();
+    for sc in crate::simulate::params::SCENARIOS {
+        assert!(
+            help.lines().any(|l| l.trim() == sc.name),
+            "{} not on a line of its own",
+            sc.name
+        );
+        assert!(flat.contains(&words(sc.about)), "{} undescribed", sc.name);
+        for old in sc.aliases {
+            assert!(!bare.contains(old), "{old} shown");
+        }
+    }
+    assert!(!bare.contains(&"first-donor-unconfounded"), "{help}");
+    assert!(flat.contains("--set n_unconfounded_donors=1"), "{help}");
+    let p = built_cli()
+        .try_get_matches_from(["pinto", "srt-simulate", "--scenario", "L2", "-o", "o"])
+        .unwrap();
+    let (_, m) = p.subcommand().unwrap();
+    assert_eq!(m.get_one::<String>("scenario").unwrap(), "L2");
+}
+
 /// `pinto run --help` names the methods that run on a fitted run, and the
 /// residual's stage-2 fit.
 #[cfg(feature = "view")]

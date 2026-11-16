@@ -808,8 +808,9 @@ impl RowValue for f32 {
 /// A logistic fit's rows are held in f32 and every sum over them is taken
 /// in f64. Memory traffic limits many fits side by side: a fit streams its
 /// rows once per Newton pass, and at 16 threads those passes took five
-/// times their one-thread time (srt-simulate L2). The design is f32
-/// already; only the pair's own columns are rounded, at 6e-8 relative.
+/// times their one-thread time (srt-simulate
+/// donor-confounded-donor-only-cell-type). The design is f32 already; only
+/// the pair's own columns are rounded, at 6e-8 relative.
 pub(super) type LogisticRow = f32;
 
 /// `Σ_r w_r z_r z_rᵀ`, the `z_r` contiguous in `rows`, a tile of rows at a
