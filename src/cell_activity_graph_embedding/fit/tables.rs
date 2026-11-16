@@ -5,7 +5,11 @@ use crate::util::input::SrtInputArgs;
 
 use crate::cell_activity_graph_embedding::pb_frame::PbFrame;
 use graph_embedding_util::embedding_col_names;
+use graph_embedding_util::eval::{save_bias, save_embedding};
 use graph_embedding_util::model::JointEmbedModel;
+use graph_embedding_util::transfer::{
+    MODULE_BIAS_SUFFIX, MODULE_DICTIONARY_SUFFIX, MODULE_MEMBERSHIP_SUFFIX, MODULE_RESIDUAL_SUFFIX,
+};
 use legume_numeric::candle::candle_core::Tensor;
 
 /// Writes the pseudobulk and feature tables, and returns the feature
@@ -69,7 +73,7 @@ pub(super) fn write_trained_tables(
     )?;
     // Learned-module tables (no-op without modules); the feature embedding above
     // already holds the composed row.
-    graph_embedding_util::write_module_tables(&c.out, model, feature_names)?;
+    write_module_tables(&c.out, model, feature_names)?;
 
     // The adapter map itself, so the spatial refinement can be applied OUTSIDE
     // this run: any feature with a row in the source dictionary, panel or not,
@@ -97,6 +101,57 @@ pub(super) fn write_trained_tables(
         Some(&[Box::from("b_feature")]),
     )?;
     Ok(e_feature_out)
+}
+
+/// The learned-module tables, as `graph_embedding_util::write_module_tables`
+/// writes them (same files, same layouts), logged under the final prefix
+/// rather than the staged one; nothing without modules.
+///
+/// * `{out}.module_membership.parquet`: `π [G × M]`, keyed on the features.
+/// * `{out}.module_dictionary.parquet`: `μ [M × H]`, rows `m0..`.
+/// * `{out}.module_residual.parquet`: `r [G × H]`, keyed on the features.
+/// * `{out}.module_bias.parquet`: the per-module bias, rows `m0..`.
+fn write_module_tables(
+    out: &str,
+    model: &JointEmbedModel,
+    feature_names: &[Box<str>],
+) -> anyhow::Result<()> {
+    let Some(modules) = &model.modules else {
+        return Ok(());
+    };
+    let pi = model
+        .module_membership()?
+        .ok_or_else(|| anyhow::anyhow!("a module model has no membership"))?;
+    let m = modules.n_modules;
+    let module_names: Vec<Box<str>> = (0..m).map(|i| format!("m{i}").into_boxed_str()).collect();
+    pi.to_parquet_with_names(
+        &format!("{out}.{MODULE_MEMBERSHIP_SUFFIX}"),
+        (Some(feature_names), Some("feature")),
+        Some(&module_names),
+    )?;
+    save_embedding(
+        &format!("{out}.{MODULE_DICTIONARY_SUFFIX}"),
+        &modules.mu.detach(),
+        &module_names,
+        "module",
+    )?;
+    save_embedding(
+        &format!("{out}.{MODULE_RESIDUAL_SUFFIX}"),
+        &modules.residual.detach(),
+        feature_names,
+        "feature",
+    )?;
+    save_bias(
+        &format!("{out}.{MODULE_BIAS_SUFFIX}"),
+        &modules.b_module.detach(),
+        &module_names,
+        "module",
+    )?;
+    info!(
+        "Wrote {m} learned gene modules: {}.{MODULE_MEMBERSHIP_SUFFIX} (+ module_dictionary / module_residual / module_bias)",
+        crate::util::staging::final_str(out)
+    );
+    Ok(())
 }
 
 /// Convert a 2-D `[R × C]` candle Tensor into an `nalgebra::DMatrix<f32>`

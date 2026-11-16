@@ -66,18 +66,10 @@ fn pinto(dir: &Path, args: &[&str]) {
         "pinto {args:?} failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // under --atomic-outputs no message of pinto's own names a staged path;
-    // a dependency's log line (legume-graph-embedding's module-table line
-    // names the prefix it was given) is not pinto's to rewrite
+    // under --atomic-outputs no message names a staged path
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let own = stdout.lines().chain(stderr.lines().filter(|l| {
-        !l.starts_with('[')
-            || l.split_whitespace()
-                .nth(2)
-                .is_some_and(|t| t.starts_with("pinto"))
-    }));
-    for line in own {
+    for line in stdout.lines().chain(stderr.lines()) {
         assert!(!line.contains(".partial-"), "pinto {args:?} said:\n{line}");
     }
 }

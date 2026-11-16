@@ -1,16 +1,14 @@
 //! Training the pair encoder, and encoding every pair with it.
 
-use super::super::SCORE_CLAMP;
-use super::{
-    rows_within_budget, CellRow, CorpusStats, Encoded, PairEncoder, PairEncoderSpec, Placement,
-    Stats,
-};
+use super::super::{CellLatent, PairLatent, SCORE_CLAMP};
+use super::{rows_within_budget, CellRow, CorpusStats, FullStats, PairEncoder, PairEncoderSpec};
 use crate::util::common::*;
 use legume_numeric::candle::candle_core::Tensor;
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW};
 use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::vae::{clip_and_step_dense, PhaseTimers};
 use legume_numeric::matrix::rand_util::mix_seed;
+use legume_numeric::matrix::utils::generate_minibatch_intervals;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{RngExt, SeedableRng};
@@ -20,8 +18,11 @@ const WEIGHT_DECAY: f64 = 1e-4;
 const GRAD_CLIP: f64 = 5.0;
 /// A step with fewer pairs than this is skipped.
 const MIN_STEP_PAIRS: usize = 16;
-/// Pairs held out for the per-epoch evaluation line.
+/// Pairs held out for the evaluation line.
 const CHECK_PAIRS: usize = 2048;
+/// Evaluations over a run, about, besides the one before training and the
+/// one after the last epoch.
+const CHECKS_PER_RUN: usize = 8;
 
 /// What training reports back.
 pub(crate) struct TrainStats {
@@ -31,13 +32,17 @@ pub(crate) struct TrainStats {
 
 impl PairEncoder {
     /// The statistics of cells `ids`, gathered on the device.
-    fn cell_stats(&self, corpus: &CorpusStats, ids: &[u32]) -> anyhow::Result<Stats> {
-        corpus.gather(&Tensor::from_slice(ids, ids.len(), self.dict.device())?)
+    fn cell_stats(&self, corpus: &CorpusStats, ids: &[u32]) -> anyhow::Result<FullStats> {
+        corpus.gather_full(&Tensor::from_slice(ids, ids.len(), self.dict.device())?)
     }
 
     /// The endpoint statistics of a chunk of pairs, the `u` rows then the
     /// `v` rows, gathered on the device.
-    fn endpoint_stats(&self, corpus: &CorpusStats, chunk: &[(u32, u32)]) -> anyhow::Result<Stats> {
+    fn endpoint_stats(
+        &self,
+        corpus: &CorpusStats,
+        chunk: &[(u32, u32)],
+    ) -> anyhow::Result<FullStats> {
         let ids: Vec<u32> = chunk
             .iter()
             .map(|&(u, _)| u)
@@ -58,7 +63,7 @@ impl PairEncoder {
         let mut pi_sum = vec![0f64; self.head.n_experts()];
         for chunk in pairs.chunks(batch.max(1)) {
             let fwd = self.pair_forward(self.endpoint_stats(corpus, chunk)?)?;
-            let pi: Vec<f32> = self.head.gate(&fwd.features)?.sum(0)?.to_vec1()?;
+            let pi: Vec<f32> = self.gate_weights(&fwd)?.sum(0)?.to_vec1()?;
             for (s, p) in pi_sum.iter_mut().zip(&pi) {
                 *s += f64::from(*p);
             }
@@ -67,7 +72,7 @@ impl PairEncoder {
                     .sum_all()?
                     .to_scalar::<f32>()?,
             );
-            count += f64::from(fwd.pairs.totals.sum_all()?.to_scalar::<f32>()?);
+            count += f64::from(fwd.pairs.stats.totals.sum_all()?.to_scalar::<f32>()?);
         }
         let n_rows = pairs.len().max(1) as f64;
         let pi_mean = pi_sum.iter().map(|&s| (s / n_rows) as f32).collect();
@@ -75,10 +80,11 @@ impl PairEncoder {
     }
 
     /// Train on the pairs' likelihood (and the endpoints' own), from the
-    /// current vars.
+    /// current vars; `stats` is [`Self::corpus_stats`] of `corpus`.
     pub(crate) fn train(
         &self,
         corpus: &[CellRow],
+        stats: &CorpusStats,
         edges: &[(u32, u32)],
         spec: &PairEncoderSpec,
         seed: u64,
@@ -101,15 +107,13 @@ impl PairEncoder {
         let mut cell_order: Vec<u32> = (0..corpus.len() as u32)
             .filter(|&c| degree[c as usize] > 0.0)
             .collect();
-        // The batch is sized as it always was, for a pair and its two
-        // endpoints, so the optimizer takes the same steps per epoch; a step
-        // now scores its pairs and only its share of the endpoint cells, and
-        // costs that much less.
+        // The batch is sized for a pair and its two endpoints; a step scores
+        // its pairs and only its share of the endpoint cells.
         let batch = rows_within_budget(3 * self.dict.g, spec.batch).max(MIN_STEP_PAIRS);
         let steps_per_epoch = n_pairs.div_ceil(batch).max(1);
         let degree = Tensor::from_vec(degree, corpus.len(), self.dict.device())?;
         let epochs = spec.steps.div_ceil(steps_per_epoch);
-        let stats = CorpusStats::new(corpus, self.dict.d, self.dict.device())?;
+        let check_every = epochs.div_ceil(CHECKS_PER_RUN).max(1);
         let mut adam = AdamW::new(
             self.varmap.all_vars(),
             ParamsAdamW {
@@ -119,14 +123,15 @@ impl PairEncoder {
             },
         )?;
 
-        // A fixed, seeded subset scored in evaluation mode after every epoch.
+        // A fixed, seeded subset scored in evaluation mode every
+        // `check_every` epochs and after the last.
         let check: Vec<(u32, u32)> = {
             let mut rng = StdRng::seed_from_u64(mix_seed(seed, 0x0043_4845_434b));
             (0..CHECK_PAIRS.min(n_pairs))
                 .map(|_| edges[rng.random_range(0..n_pairs)])
                 .collect()
         };
-        let (nll0, _) = self.evaluate(&stats, &check, batch)?;
+        let (nll0, _) = self.evaluate(stats, &check, batch)?;
         info!(
             "Pair encoder: {n_pairs} pairs, L={}, K={}, {epochs} epochs of {batch}-pair steps, \
              ridge λ={}; NLL/count before {nll0:.4}",
@@ -140,6 +145,8 @@ impl PairEncoder {
         let (mut steps, mut skipped) = (0usize, 0usize);
         let mut nll_per_count = nll0;
         let bar = new_progress_bar((epochs * steps_per_epoch) as u64).with_message("pair encoder");
+        // The mean step loss since the last evaluation line.
+        let (mut loss_sum, mut n_steps) = (0f64, 0usize);
         for epoch in 0..epochs {
             let mut rng = StdRng::seed_from_u64(mix_seed(seed, epoch as u64));
             order.shuffle(&mut rng);
@@ -155,18 +162,16 @@ impl PairEncoder {
             let cell_share = |k: usize| {
                 &cell_order[k * cell_order.len() / n_chunks..(k + 1) * cell_order.len() / n_chunks]
             };
-            let mut loss_sum = 0f64;
-            let mut n_steps = 0usize;
             for (k, chunk) in chunks.iter().enumerate() {
                 let t = std::time::Instant::now();
                 let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| edges[i]).collect();
-                let endpoints = self.endpoint_stats(&stats, &pairs)?;
+                let endpoints = self.endpoint_stats(stats, &pairs)?;
                 let cells = cell_share(k);
                 let selves = if cells.is_empty() {
                     None
                 } else {
                     let ids = Tensor::from_slice(cells, cells.len(), self.dict.device())?;
-                    Some((stats.gather(&ids)?, gather_rows(&degree, &ids)?))
+                    Some((stats.gather_full(&ids)?, gather_rows(&degree, &ids)?))
                 };
                 timers.precompute += t.elapsed();
 
@@ -189,7 +194,10 @@ impl PairEncoder {
                 steps += 1;
                 bar.inc(1);
             }
-            let (nll, pi) = self.evaluate(&stats, &check, batch)?;
+            if (epoch + 1) % check_every != 0 && epoch + 1 != epochs {
+                continue;
+            }
+            let (nll, pi) = self.evaluate(stats, &check, batch)?;
             nll_per_count = nll;
             // The held-out NLL first: it is the score `pinto run` draws.
             bar.set_message(format!(
@@ -206,6 +214,7 @@ impl PairEncoder {
                     .collect::<Vec<_>>()
                     .join(" ")
             );
+            (loss_sum, n_steps) = (0.0, 0);
         }
         bar.finish_and_clear();
         timers.log_summary();
@@ -218,21 +227,23 @@ impl PairEncoder {
         })
     }
 
-    /// Place every cell, then every pair, in evaluation mode. `cell_block`
-    /// cells share one pass and `pair_block` pairs one, at most: both are
-    /// held to [`super::BLOCK_ELEMENTS`] on the feature axis.
+    /// Place every cell, then every pair, in evaluation mode; `stats` is
+    /// [`Self::corpus_stats`] of `corpus`, and the placement's `scores` come
+    /// back empty. `cell_block` cells share one pass and `pair_block` pairs
+    /// one, at most: both are held to [`super::BLOCK_ELEMENTS`] on the
+    /// feature axis.
     pub(crate) fn encode_all(
         &self,
         corpus: &[CellRow],
+        stats: &CorpusStats,
         edges: &[(u32, u32)],
         pair_block: usize,
         cell_block: usize,
-    ) -> anyhow::Result<Encoded> {
+    ) -> anyhow::Result<PairLatent> {
         let dev = self.dict.device();
         let (n_cells, g, d) = (corpus.len(), self.dict.g, self.dict.d);
         let cell_block = rows_within_budget(g, cell_block);
         let pair_block = rows_within_budget(g, pair_block);
-        let stats = CorpusStats::new(corpus, d, dev)?;
 
         // Cells: the codes stay on the device for the pair pass; the
         // self-pairs are written out.
@@ -240,11 +251,7 @@ impl PairEncoder {
         let mut cell_latent = Mat::zeros(n_cells, d);
         let mut cell_bias = vec![0f32; n_cells];
         let bar = new_progress_bar(n_cells as u64).with_message("encoding cells");
-        for (lb, ub) in legume_numeric::matrix::utils::generate_minibatch_intervals(
-            n_cells,
-            0,
-            Some(cell_block),
-        ) {
+        for (lb, ub) in generate_minibatch_intervals(n_cells, 0, Some(cell_block)) {
             let ids = Tensor::from_vec((lb as u32..ub as u32).collect::<Vec<u32>>(), ub - lb, dev)?;
             let own = stats.gather(&ids)?;
             let h = self.cell_codes(&own)?;
@@ -275,11 +282,7 @@ impl PairEncoder {
         let mut pair_latent = Mat::zeros(n_pairs, d);
         let mut pair_bias = vec![0f32; n_pairs];
         let bar = new_progress_bar(n_pairs as u64).with_message("encoding pairs");
-        for (lb, ub) in legume_numeric::matrix::utils::generate_minibatch_intervals(
-            n_pairs,
-            0,
-            Some(pair_block),
-        ) {
+        for (lb, ub) in generate_minibatch_intervals(n_pairs, 0, Some(pair_block)) {
             let chunk = &edges[lb..ub];
             let b = chunk.len();
             let ids = |pick: fn(&(u32, u32)) -> u32| -> anyhow::Result<Tensor> {
@@ -292,7 +295,7 @@ impl PairEncoder {
             let (u, v) = (ids(|e| e.0)?, ids(|e| e.1)?);
             let (h_u, h_v) = (gather_rows(&codes, &u)?, gather_rows(&codes, &v)?);
             let pooled = stats.gather(&u)?.pooled(&stats.gather(&v)?)?;
-            let (z, _) = self.pair_code(&h_u, &h_v, &pooled)?;
+            let z = self.pair_code(&h_u, &h_v, &pooled)?;
             let scores = self.scores(&z)?;
             let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
             let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
@@ -309,12 +312,11 @@ impl PairEncoder {
         }
         bar.finish_and_clear();
 
-        Ok(Encoded {
-            pairs: Placement {
-                latent: pair_latent,
-                bias: pair_bias,
-            },
-            cells: Placement {
+        Ok(PairLatent {
+            latent: pair_latent,
+            bias: pair_bias,
+            scores: Vec::new(),
+            cells: CellLatent {
                 latent: cell_latent,
                 bias: cell_bias,
             },

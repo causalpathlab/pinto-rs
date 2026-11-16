@@ -83,8 +83,9 @@ pub enum PairSolver<'a> {
 #[derive(Debug, Clone)]
 pub struct PairProjectionArgs<'a> {
     pub solver: PairSolver<'a>,
-    /// Seed; each pair derives its own stream so the fit is reproducible
-    /// regardless of how rayon schedules the work.
+    /// Seed for training the encoder: its initial weights, each epoch's
+    /// shuffle of the pairs and cells, and the sample of pairs the
+    /// evaluation line scores. Unused when the encoder is loaded.
     pub seed: u64,
     /// Pairs per encoder block, and cells per read block.
     pub pair_block: usize,
@@ -187,12 +188,10 @@ impl PairDictionary {
             b.push(m.ln() as f32);
         }
 
-        // The mean library size, `Σ_g exp(b_g)`: a non-finite total anywhere
-        // would poison every log-rate.
-        let mean_lib: f64 = active.iter().map(|&g| feature_totals[g]).sum::<f64>() / n_cells as f64;
+        let total: f64 = active.iter().map(|&g| feature_totals[g]).sum();
         anyhow::ensure!(
-            mean_lib > 0.0 && mean_lib.is_finite(),
-            "pair projection: mean library size is {mean_lib}, expected a positive finite value"
+            total > 0.0 && total.is_finite(),
+            "pair projection: feature totals sum to {total}, expected a positive finite value"
         );
         Ok(Self {
             feat,
@@ -328,18 +327,11 @@ pub fn project_pairs(
     }
     let corpus = build_corpus(data, &dict, batch, axis, args.pair_block)?;
 
-    let enc = match args.solver {
-        PairSolver::TrainEncoder { spec, dev, save_to } => {
-            let enc = encoder::PairEncoder::build(&dict, &corpus, spec, args.seed, dev)?;
-            let stats = enc.train(&corpus, edges, spec, args.seed)?;
-            info!(
-                "Pair encoder: {} steps; held-out NLL/count after {:.4}",
-                stats.steps, stats.nll_per_count
-            );
-            enc.save(save_to)?;
-            info!("Wrote {}", crate::util::staging::final_str(save_to));
-            enc
-        }
+    let (enc, training) = match args.solver {
+        PairSolver::TrainEncoder { spec, dev, save_to } => (
+            encoder::PairEncoder::build(&dict, &corpus, spec, args.seed, dev)?,
+            Some((spec, save_to)),
+        ),
         PairSolver::LoadEncoder { path, dev } => {
             let enc = encoder::PairEncoder::load(&dict, path, dev)?;
             info!(
@@ -348,35 +340,36 @@ pub fn project_pairs(
                 enc.n_experts(),
                 enc.ridge()
             );
-            enc
+            (enc, None)
         }
     };
-    let encoded = enc.encode_all(&corpus, edges, args.pair_block, encoder::CELL_BLOCK)?;
+    let stats = enc.corpus_stats(&corpus)?;
+    if let Some((spec, save_to)) = training {
+        let trained = enc.train(&corpus, &stats, edges, spec, args.seed)?;
+        info!(
+            "Pair encoder: {} steps; held-out NLL/count after {:.4}",
+            trained.steps, trained.nll_per_count
+        );
+        enc.save(save_to)?;
+        info!("Wrote {}", crate::util::staging::final_str(save_to));
+    }
+    let mut placed =
+        enc.encode_all(&corpus, &stats, edges, args.pair_block, encoder::CELL_BLOCK)?;
+    // The device copy is not needed by the scoring pass.
+    drop(stats);
 
-    let scores = if args.score_pairs {
-        edges
+    if args.score_pairs {
+        placed.scores = edges
             .par_iter()
             .enumerate()
             .map(|(i, &(u, v))| {
                 let obs = corpus[u as usize].pooled(&corpus[v as usize]);
-                let z: Vec<f32> = encoded.pairs.latent.row(i).iter().copied().collect();
+                let z: Vec<f32> = placed.latent.row(i).iter().copied().collect();
                 dict.score_local(&obs, &z, &eval_axis)
             })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let encoder::Encoded { pairs, cells } = encoded;
-    Ok(PairLatent {
-        latent: pairs.latent,
-        bias: pairs.bias,
-        scores,
-        cells: CellLatent {
-            latent: cells.latent,
-            bias: cells.bias,
-        },
-    })
+            .collect();
+    }
+    Ok(placed)
 }
 
 ////////////////

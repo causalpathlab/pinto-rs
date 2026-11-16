@@ -4,7 +4,7 @@
 
 use super::fixture::*;
 use crate::cell_activity_graph_embedding::pair_projection::encoder::{
-    CellRow, PairEncoder, PairEncoderSpec,
+    CellRow, CorpusStats, PairEncoder, PairEncoderSpec,
 };
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, PairDictionary, PairProjectionArgs, PairSolver,
@@ -89,6 +89,7 @@ fn spec(steps: usize) -> PairEncoderSpec {
 struct Trained {
     dict: PairDictionary,
     corpus: Vec<CellRow>,
+    stats: CorpusStats,
     edges: Vec<(u32, u32)>,
     enc: PairEncoder,
 }
@@ -104,10 +105,12 @@ fn trained() -> &'static Trained {
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
         let train_spec = spec(1);
         let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
-        enc.train(&corpus, &edges, &train_spec, 7).unwrap();
+        let stats = enc.corpus_stats(&corpus).unwrap();
+        enc.train(&corpus, &stats, &edges, &train_spec, 7).unwrap();
         Trained {
             dict,
             corpus,
+            stats,
             edges,
             enc,
         }
@@ -117,25 +120,33 @@ fn trained() -> &'static Trained {
 #[test]
 fn pair_code_is_symmetric_end_to_end() {
     let Trained {
-        corpus, edges, enc, ..
+        corpus,
+        stats,
+        edges,
+        enc,
+        ..
     } = trained();
     let flipped: Vec<(u32, u32)> = edges.iter().map(|&(u, v)| (v, u)).collect();
-    let a = enc.encode_all(corpus, edges, 100, 64).unwrap();
-    let b = enc.encode_all(corpus, &flipped, 100, 64).unwrap();
-    assert_eq!(a.pairs.latent.as_slice(), b.pairs.latent.as_slice());
-    assert_eq!(a.pairs.bias, b.pairs.bias);
+    let a = enc.encode_all(corpus, stats, edges, 100, 64).unwrap();
+    let b = enc.encode_all(corpus, stats, &flipped, 100, 64).unwrap();
+    assert_eq!(a.latent.as_slice(), b.latent.as_slice());
+    assert_eq!(a.bias, b.bias);
 }
 
 #[test]
 fn blocks_do_not_move_a_cell() {
     let Trained {
-        corpus, edges, enc, ..
+        corpus,
+        stats,
+        edges,
+        enc,
+        ..
     } = trained();
     let whole = enc
-        .encode_all(corpus, &edges[..1], 64, corpus.len())
+        .encode_all(corpus, stats, &edges[..1], 64, corpus.len())
         .unwrap();
     let thirds = enc
-        .encode_all(corpus, &edges[..1], 64, corpus.len() / 3)
+        .encode_all(corpus, stats, &edges[..1], 64, corpus.len() / 3)
         .unwrap();
     for c in 0..corpus.len() {
         let a: Vec<f32> = whole.cells.latent.row(c).iter().copied().collect();
@@ -159,10 +170,11 @@ fn empty_endpoints_land_on_the_origin() {
     corpus.push(CellRow::from_profile(dict, &[]));
     let n = corpus.len() as u32;
     let probe = vec![(n - 2, n - 1), edges[0]];
-    let out = enc.encode_all(&corpus, &probe, 64, 64).unwrap();
-    assert!(out.pairs.latent.row(0).iter().all(|&v| v == 0.0));
-    assert_eq!(out.pairs.bias[0], 0.0);
-    assert!(out.pairs.latent.row(1).iter().any(|&v| v != 0.0));
+    let stats = enc.corpus_stats(&corpus).unwrap();
+    let out = enc.encode_all(&corpus, &stats, &probe, 64, 64).unwrap();
+    assert!(out.latent.row(0).iter().all(|&v| v == 0.0));
+    assert_eq!(out.bias[0], 0.0);
+    assert!(out.latent.row(1).iter().any(|&v| v != 0.0));
     for c in [n - 2, n - 1] {
         assert!(out.cells.latent.row(c as usize).iter().all(|&v| v == 0.0));
         assert_eq!(out.cells.bias[c as usize], 0.0);
@@ -174,9 +186,9 @@ fn save_load_round_trip_is_byte_identical() {
     let Trained {
         dict,
         corpus,
+        stats,
         edges,
         enc,
-        ..
     } = trained();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("enc.safetensors");
@@ -185,11 +197,11 @@ fn save_load_round_trip_is_byte_identical() {
     let back = PairEncoder::load(dict, path, &Device::Cpu).unwrap();
     assert_eq!(back.trunk_width(), 32);
     assert_eq!(back.n_experts(), 4);
-    let a = enc.encode_all(corpus, edges, 100, 64).unwrap();
-    let b = back.encode_all(corpus, edges, 100, 64).unwrap();
-    assert_eq!(a.pairs.latent.as_slice(), b.pairs.latent.as_slice());
+    let a = enc.encode_all(corpus, stats, edges, 100, 64).unwrap();
+    let b = back.encode_all(corpus, stats, edges, 100, 64).unwrap();
+    assert_eq!(a.latent.as_slice(), b.latent.as_slice());
     assert_eq!(a.cells.latent.as_slice(), b.cells.latent.as_slice());
-    assert_eq!(a.pairs.bias, b.pairs.bias);
+    assert_eq!(a.bias, b.bias);
     assert_eq!(a.cells.bias, b.cells.bias);
 }
 

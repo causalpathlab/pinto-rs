@@ -78,6 +78,10 @@ pub(crate) const CELL_BLOCK: usize = 4096;
 /// axis takes fewer rows per pass and a panel takes the caps, and the device
 /// holds a fixed amount of dense work either way.
 const BLOCK_ELEMENTS: usize = 1 << 25;
+/// [`PairEncoderSpec::steps`] by default, and `--pair-encoder-steps`'s.
+pub const DEFAULT_PAIR_ENCODER_STEPS: usize = 512;
+/// [`PairEncoderSpec::batch`] by default.
+pub const DEFAULT_PAIR_ENCODER_BATCH: usize = 4096;
 
 /// The encoder's shape and training budget. `cage` runs [`Default`]; a tiny
 /// fixture shrinks it.
@@ -87,8 +91,9 @@ pub struct PairEncoderSpec {
     pub trunk_width: usize,
     /// Experts `K` in the pair head; `1` is a plain linear head.
     pub n_experts: usize,
-    /// Optimizer steps, about: rounded up to whole passes over the pairs, so
-    /// the budget means the same at any pair count. `0` does not train.
+    /// Optimizer steps, at least: rounded up to whole passes over the pairs,
+    /// since a pass is always made whole, so many pairs take more. `0` does
+    /// not train.
     pub steps: usize,
     /// Pairs per optimizer step, at most: a step is also held to
     /// [`BLOCK_ELEMENTS`] on the feature axis.
@@ -104,8 +109,8 @@ impl Default for PairEncoderSpec {
         Self {
             trunk_width: 64,
             n_experts: 4,
-            steps: 512,
-            batch: 4096,
+            steps: DEFAULT_PAIR_ENCODER_STEPS,
+            batch: DEFAULT_PAIR_ENCODER_BATCH,
             ridge: 1.0,
         }
     }
@@ -194,7 +199,7 @@ impl CellRow {
 
 /// Every cell's `(S, N, c)` on the device, row `i` for cell `i`: the whole
 /// corpus's, uploaded once, gathered per block by endpoint id.
-struct CorpusStats {
+pub(crate) struct CorpusStats {
     /// `[n × D]`.
     sums: Tensor,
     /// `[n]` each.
@@ -213,11 +218,18 @@ impl CorpusStats {
         })
     }
 
-    /// The rows of `ids`.
+    /// The `(S, N)` of `ids`: what the encoder reads.
     fn gather(&self, ids: &Tensor) -> anyhow::Result<Stats> {
         Ok(Stats {
             sums: gather_rows(&self.sums, ids)?,
             totals: gather_rows(&self.totals, ids)?,
+        })
+    }
+
+    /// The `(S, N, c)` of `ids`: what the objective reads.
+    fn gather_full(&self, ids: &Tensor) -> anyhow::Result<FullStats> {
+        Ok(FullStats {
+            stats: self.gather(ids)?,
             offsets: gather_rows(&self.offsets, ids)?,
         })
     }
@@ -260,23 +272,6 @@ fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
         .map(|(&s, &q)| ((q / n - (s / n).powi(2)).max(0.0).sqrt() as f32).max(1e-3))
         .collect();
     (mean, std)
-}
-
-////////////////
-// Placements //
-////////////////
-
-/// Where a set of nodes (pairs, or cells) landed: latent and intercept.
-pub(crate) struct Placement {
-    /// `[n × D]`.
-    pub latent: Mat,
-    pub bias: Vec<f32>,
-}
-
-/// Every pair's and every cell's placement, in the callers' orders.
-pub(crate) struct Encoded {
-    pub pairs: Placement,
-    pub cells: Placement,
 }
 
 ////////////
@@ -386,11 +381,11 @@ pub(crate) struct PairEncoder {
     cap_per_count: f64,
 }
 
-/// One node's `(S, N, c)` on the device, `[n × D]`, `[n]`, `[n]`.
+/// Nodes' `(S, N)` on the device, `[n × D]` and `[n]`: what the encoder
+/// reads.
 struct Stats {
     sums: Tensor,
     totals: Tensor,
-    offsets: Tensor,
 }
 
 impl Stats {
@@ -399,7 +394,6 @@ impl Stats {
         Ok(Stats {
             sums: (&self.sums + &other.sums)?,
             totals: (&self.totals + &other.totals)?,
-            offsets: (&self.offsets + &other.offsets)?,
         })
     }
 
@@ -409,15 +403,38 @@ impl Stats {
     }
 }
 
-/// A block of pairs through the trunk and the head: what training,
-/// evaluation and inference all read.
+/// Nodes' `(S, N, c)` on the device: [`Stats`] and the data term's constant
+/// `c`, `[n]`, which only the objective reads.
+struct FullStats {
+    stats: Stats,
+    offsets: Tensor,
+}
+
+impl FullStats {
+    /// Two endpoints pooled: every sum adds.
+    fn pooled(&self, other: &FullStats) -> anyhow::Result<FullStats> {
+        Ok(FullStats {
+            stats: self.stats.pooled(&other.stats)?,
+            offsets: (&self.offsets + &other.offsets)?,
+        })
+    }
+
+    /// The self-pair: doubled.
+    fn doubled(&self) -> anyhow::Result<FullStats> {
+        self.pooled(self)
+    }
+}
+
+/// A block of pairs through the trunk and the head: what training and
+/// evaluation read.
 struct PairForward {
-    /// `[B, 2L + D + 1]` pair features.
-    features: Tensor,
+    /// `[B, L]` endpoint codes, for the gate readout.
+    h_u: Tensor,
+    h_v: Tensor,
     /// `[B, D]` pair codes.
     z_uv: Tensor,
     /// The pairs' pooled statistics.
-    pairs: Stats,
+    pairs: FullStats,
 }
 
 impl PairEncoder {
@@ -560,6 +577,12 @@ impl PairEncoder {
         self.ridge
     }
 
+    /// Every cell of `corpus`'s `(S, N, c)`, uploaded to this encoder's
+    /// device: built once per run, read by training and by inference.
+    pub(crate) fn corpus_stats(&self, corpus: &[CellRow]) -> anyhow::Result<CorpusStats> {
+        CorpusStats::new(corpus, self.dict.d, self.dict.device())
+    }
+
     /// `[S / max(N, 1) ‖ ln(N + 1)]` standardised by the population moments
     /// → `[n, D + 1]`.
     fn stat_of(&self, stats: &Stats) -> anyhow::Result<Tensor> {
@@ -579,16 +602,9 @@ impl PairEncoder {
 
     /// The pair code of two endpoints from their codes and pooled statistic:
     /// the head's output kept inside the optimum's ball for the pooled
-    /// depth. Also returns the pair features, for the gate readout.
-    fn pair_code(
-        &self,
-        h_u: &Tensor,
-        h_v: &Tensor,
-        pooled: &Stats,
-    ) -> anyhow::Result<(Tensor, Tensor)> {
-        let stat = self.stat_of(pooled)?;
-        let features = self.head.features(h_u, h_v, Some(&stat))?;
-        let z = self.head.forward(h_u, h_v, Some(&stat))?;
+    /// depth.
+    fn pair_code(&self, h_u: &Tensor, h_v: &Tensor, pooled: &Stats) -> anyhow::Result<Tensor> {
+        let z = self.head.forward(h_u, h_v, Some(&self.stat_of(pooled)?))?;
         let cap = pooled
             .totals
             .unsqueeze(1)?
@@ -596,34 +612,44 @@ impl PairEncoder {
         let norm = z.sqr()?.sum_keepdim(1)?.sqrt()?; // [B, 1]
                                                      // min(1, cap / ‖z‖), with ‖z‖ = 0 left alone.
         let scale = (cap / (norm + 1e-12)?)?.clamp(0.0, 1.0)?;
-        Ok((z.broadcast_mul(&scale)?, features))
+        Ok(z.broadcast_mul(&scale)?)
+    }
+
+    /// The expert weights of a block of pairs → `[B, K]`.
+    fn gate_weights(&self, fwd: &PairForward) -> anyhow::Result<Tensor> {
+        let stat = self.stat_of(&fwd.pairs.stats)?;
+        let features = self.head.features(&fwd.h_u, &fwd.h_v, Some(&stat))?;
+        Ok(self.head.gate(&features)?)
     }
 
     /// The self-pair of every row of a block: its code with itself, at the
     /// doubled depth (`doubled` is the rows' statistics doubled, which the
     /// caller also scores against).
     fn self_pair_code(&self, h: &Tensor, doubled: &Stats) -> anyhow::Result<Tensor> {
-        Ok(self.pair_code(h, h, doubled)?.0)
+        self.pair_code(h, h, doubled)
     }
 
     /// A block of pairs, from their endpoints' statistics (the `u`s then the
     /// `v`s), through the trunk and the head.
-    fn pair_forward(&self, endpoints: Stats) -> anyhow::Result<PairForward> {
-        let b = endpoints.totals.dim(0)? / 2;
-        let h = self.cell_codes(&endpoints)?;
+    fn pair_forward(&self, endpoints: FullStats) -> anyhow::Result<PairForward> {
+        let b = endpoints.stats.totals.dim(0)? / 2;
+        let h = self.cell_codes(&endpoints.stats)?;
         let half = |t: &Tensor, k: usize| t.narrow(0, k * b, b);
         let (h_u, h_v) = (half(&h, 0)?, half(&h, 1)?);
-        let side = |k: usize| -> anyhow::Result<Stats> {
-            Ok(Stats {
-                sums: half(&endpoints.sums, k)?,
-                totals: half(&endpoints.totals, k)?,
+        let side = |k: usize| -> anyhow::Result<FullStats> {
+            Ok(FullStats {
+                stats: Stats {
+                    sums: half(&endpoints.stats.sums, k)?,
+                    totals: half(&endpoints.stats.totals, k)?,
+                },
                 offsets: half(&endpoints.offsets, k)?,
             })
         };
         let pairs = side(0)?.pooled(&side(1)?)?;
-        let (z_uv, features) = self.pair_code(&h_u, &h_v, &pairs)?;
+        let z_uv = self.pair_code(&h_u, &h_v, &pairs.stats)?;
         Ok(PairForward {
-            features,
+            h_u,
+            h_v,
             z_uv,
             pairs,
         })
@@ -636,10 +662,10 @@ impl PairEncoder {
 
     /// The profiled multinomial NLL of placements `z` for the nodes `stats`,
     /// per row: `N·lse(s) − ⟨S, z⟩ − c`.
-    fn nll(&self, z: &Tensor, scores: &Tensor, stats: &Stats) -> anyhow::Result<Tensor> {
+    fn nll(&self, z: &Tensor, scores: &Tensor, full: &FullStats) -> anyhow::Result<Tensor> {
         let lse = scores.log_sum_exp(1)?;
-        let data = (z * &stats.sums)?.sum(1)?;
-        Ok((((&stats.totals * lse)? - data)? - &stats.offsets)?)
+        let data = (z * &full.stats.sums)?.sum(1)?;
+        Ok((((&full.stats.totals * lse)? - data)? - &full.offsets)?)
     }
 
     /// One step's loss: a block of pairs' objective, plus the self-pair
@@ -650,8 +676,8 @@ impl PairEncoder {
     /// of the rows: a cell is an endpoint of about `2E/n` pairs.
     fn step_loss(
         &self,
-        endpoints: Stats,
-        selves: Option<(Stats, Tensor)>,
+        endpoints: FullStats,
+        selves: Option<(FullStats, Tensor)>,
         batch: usize,
     ) -> anyhow::Result<Tensor> {
         let half_ridge = f64::from(self.ridge) / 2.0;
@@ -662,9 +688,9 @@ impl PairEncoder {
         let Some((cells, weight)) = selves else {
             return Ok(pairs);
         };
-        let h = self.cell_codes(&cells)?;
+        let h = self.cell_codes(&cells.stats)?;
         let doubled = cells.doubled()?;
-        let z_uu = self.self_pair_code(&h, &doubled)?;
+        let z_uu = self.self_pair_code(&h, &doubled.stats)?;
         let nll_uu = self.nll(&z_uu, &self.scores(&z_uu)?, &doubled)?;
         let ridge_uu = z_uu.sqr()?.sum(1)?.affine(half_ridge, 0.0)?;
         // Over the endpoint rows a step of `batch` pairs has.
