@@ -1338,13 +1338,25 @@ impl FitArgs {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, args.variant())?;
-    run_on(args, args.fit.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .input
+            .read_within(false, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// `spatialde2-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk)?;
-    run_pb_on(args, args.fit.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The arguments checked, and the peak of a `variant` run on the input's
@@ -1377,7 +1389,12 @@ pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) 
     let shape = fit.sizes(variant).memory_shape(&input, s.nonzeros);
     let peak = spatialde2_peak_bytes(&shape);
     let pb = match variant {
-        Variant::Pseudobulk => pseudobulk_bytes(shape.cells, s.nonzeros, shape.edges),
+        Variant::Pseudobulk => pseudobulk_bytes(
+            shape.cells,
+            s.nonzeros,
+            shape.edges,
+            fit.input.collapse.proj_dim,
+        ),
         Variant::Sparse | Variant::Reference => 0,
     };
     fit.input
@@ -1432,6 +1449,7 @@ fn read_shape(data: &SpatialData, genes: usize) -> InputShape {
         nonzeros: data.counts.nnz(),
         section_sizes: section_sizes(&data.section),
         batches: data.n_batches(),
+        strata: 1,
     }
 }
 
@@ -1565,7 +1583,8 @@ pub(crate) fn run_pb_on(
         .memory_shape(&input, input.nonzeros);
     ensure_fits(
         "spatialde2-pb",
-        spatialde2_peak_bytes(&shape) + pseudobulk_bytes(n, input.nonzeros, shape.edges),
+        spatialde2_peak_bytes(&shape)
+            + pseudobulk_bytes(n, input.nonzeros, shape.edges, args.input.collapse.proj_dim),
         budget,
         LOWER_MEMORY,
     )?;

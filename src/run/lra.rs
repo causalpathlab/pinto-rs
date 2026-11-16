@@ -5,7 +5,8 @@
 //! reply is read from the tables the child wrote.
 
 use super::mcp::{
-    as_run, checked, in_background, out_or_free, out_or_free_by, rooted, spawn, NOT_WRITTEN_OVER,
+    as_run, checked, in_background, max_threads_flag, out_or_free, out_or_free_by, rooted, spawn,
+    NOT_WRITTEN_OVER,
 };
 use super::script;
 use crate::lr_activity::args::LraMethod;
@@ -58,6 +59,8 @@ macro_rules! lra_tool_args {
             pub region: Option<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub region_jackknife: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub max_threads: Option<usize>,
             $($tail)*
             #[serde(default = "in_background", skip_serializing)]
             pub background: bool,
@@ -74,6 +77,7 @@ macro_rules! lra_tool_args {
                     cell_types: self.cell_types.as_deref(),
                     region: self.region.as_deref(),
                     region_jackknife: self.region_jackknife.as_deref(),
+                    max_threads: self.max_threads,
                 }
             }
         }
@@ -263,6 +267,7 @@ struct Input<'a> {
     cell_types: Option<&'a str>,
     region: Option<&'a str>,
     region_jackknife: Option<&'a str>,
+    max_threads: Option<usize>,
 }
 
 impl Input<'_> {
@@ -330,6 +335,7 @@ impl Input<'_> {
         if let Some(j) = self.region_jackknife {
             argv.push(flag_value("--region-jackknife", j));
         }
+        argv.extend(max_threads_flag(self.max_threads));
         argv
     }
 

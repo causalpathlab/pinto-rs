@@ -28,7 +28,7 @@ use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
-    KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
+    CollapseArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
@@ -191,11 +191,11 @@ pub struct SrtPreprocessed {
     pub ablation: Option<Ablation>,
 }
 
-/// The batch-effect estimate of inputs `c` over `batch_membership` (its
+/// The batch-effect estimate under collapse options `c` over `batch_membership` (its
 /// sorted labels `batch_labels`), written under `out` when given (a fit);
 /// the projection it collapsed on kept with `keep_projection`.
 pub(crate) fn estimate_batches(
-    c: &SrtInputArgs,
+    c: &CollapseArgs,
     out: Option<&str>,
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
@@ -446,7 +446,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let n_rows = data_vec.num_rows();
     let n_cells = data_vec.num_columns();
 
-    anyhow::ensure!(c.proj_dim > 0, "proj_dim must be > 0");
+    c.collapse.check()?;
     // Both k's resolve here, before either graph is built. The KNN builder
     // floors k at 1 and clamps it to n_cells-1 rather than rejecting either
     // extreme, so nothing downstream would catch a 0 or an over-large k.
@@ -490,7 +490,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // Where a fit writes its estimate; a query's is unwritten.
     let fit_out = (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref());
     // `--auto-batch` relabels the cells by the graph's components.
-    let auto_relabels = c.auto_batch && c.batch_files.is_none();
+    let auto_relabels = c.batch.auto_relabels();
     // Expression mode's projection, kept for the cells' projection below
     // while it is theirs (the same cells and labels).
     let mut base_proj: Option<BaseProjection> = None;
@@ -508,7 +508,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     } else {
         info!(
             "Building expression KNN graph (k={}, proj_dim={})...",
-            base_knn, c.proj_dim
+            base_knn, c.collapse.proj_dim
         );
         // On the batch-corrected projection when its counts are divided by
         // an estimated δ, or neighbours match batch rather than cell state:
@@ -520,7 +520,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         // its batches are this graph's components, and the labels it
         // starts from are not them.
         let labels = sorted_batch_labels(&batch_membership);
-        let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, labels.len());
+        let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, labels.len());
         let labelled = (estimate || known) && labels.len() > 1 && !auto_relabels;
         let model = match cfg.batch_effects {
             BatchEstimate::Query { base_corrected, .. } => Some(base_corrected),
@@ -529,8 +529,14 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         let mut correct = labelled && model == Some(true);
         let mut proj = None;
         if labelled && estimate && model != Some(false) {
-            let mut effects =
-                estimate_batches(c, fit_out, &mut data_vec, &batch_membership, &labels, true)?;
+            let mut effects = estimate_batches(
+                &c.collapse,
+                fit_out,
+                &mut data_vec,
+                &batch_membership,
+                &labels,
+                true,
+            )?;
             correct =
                 model.unwrap_or_else(|| effects.as_ref().is_some_and(|e| e.posterior.is_some()));
             if correct {
@@ -541,7 +547,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         let proj = match proj {
             Some(proj) => proj,
             None => data_vec.project_columns_with_batch_correction(
-                c.proj_dim,
+                c.collapse.proj_dim,
                 None,
                 correct.then_some(batch_membership.as_slice()),
             )?,
@@ -599,7 +605,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
     let batch_labels = sorted_batch_labels(&batch_membership);
-    let (estimate, known) = batch_plan(cfg.batch_effects, c.ignore_batch, batch_labels.len());
+    let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, batch_labels.len());
     // `ResolvedKnn::augment` is already 0 without coordinates, so these two
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
@@ -610,7 +616,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let mut batch_effects = match early_estimate {
         Some(effects) => effects,
         None if estimate => estimate_batches(
-            c,
+            &c.collapse,
             fit_out,
             &mut data_vec,
             &batch_membership,
@@ -649,7 +655,11 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         Some(proj) => Some(proj),
         None if take_projection => match base_proj {
             Some(b) if b.corrected == batch_arg.is_some() => Some(b.proj),
-            _ => Some(data_vec.project_columns_with_batch_correction(c.proj_dim, None, batch_arg)?),
+            _ => Some(data_vec.project_columns_with_batch_correction(
+                c.collapse.proj_dim,
+                None,
+                batch_arg,
+            )?),
         },
         None => None,
     };
@@ -659,7 +669,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     } else {
         info!(
             "Adding expression KNN edges (k={}, proj_dim={})...",
-            augment_knn, c.proj_dim
+            augment_knn, c.collapse.proj_dim
         );
         let proj = cell_proj
             .as_ref()

@@ -245,6 +245,13 @@ pub struct PintoMetadata {
     /// `spatialde2-pb`): its formulation and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<BaselineRun>,
+
+    /// The `--max-threads` an lc run had: its Gibbs split each component
+    /// into up to this many blocks, so with `--seed` and the data it fixes
+    /// the draws. Absent on other runs, and on manifests written before
+    /// this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_threads: Option<usize>,
 }
 
 /// A spatial baseline's formulation and what it was fitted on.
@@ -308,9 +315,9 @@ pub enum BatchLabels {
 }
 
 impl BatchLabels {
-    /// The labels a run with inputs `c` gives its cells (`--batch-files`
-    /// wins over `--auto-batch`, as preprocessing has it).
-    pub fn of(c: &crate::util::input::SrtInputArgs) -> Self {
+    /// The labels a run with batch options `c` gives its cells
+    /// (`--batch-files` wins over `--auto-batch`, as preprocessing has it).
+    pub fn of(c: &crate::util::input::BatchArgs) -> Self {
         if c.batch_files.is_some() {
             Self::BatchFiles
         } else if c.auto_batch {
@@ -1010,7 +1017,7 @@ impl DeltaWritten {
     /// A fit's δ, with its cells, for a run with inputs `c`.
     pub fn fit(c: &crate::util::input::SrtInputArgs) -> Self {
         Self {
-            labels: BatchLabels::of(c),
+            labels: BatchLabels::of(&c.batch),
             cells: true,
         }
     }
@@ -1117,6 +1124,7 @@ pub fn create_lc_metadata(
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         baseline: None,
+        max_threads: None,
     }
 }
 
@@ -1165,6 +1173,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         baseline: None,
+        max_threads: None,
     }
 }
 
@@ -1227,6 +1236,7 @@ pub fn create_cage_metadata(
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         baseline: None,
+        max_threads: None,
     }
 }
 
@@ -1273,5 +1283,6 @@ pub fn create_prop_metadata(
         holdout: None,
         batch_labels: None,
         baseline: None,
+        max_threads: None,
     }
 }

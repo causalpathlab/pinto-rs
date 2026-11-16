@@ -1014,7 +1014,12 @@ pub fn run(args: &Args) -> anyhow::Result<()> {
         &budget,
         lower_memory(&args.device),
     )?;
-    run_on(args, args.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.input
+            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The peak of a run on an input of stored shape `s`, checked before its
@@ -1139,6 +1144,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         nonzeros: counts.nnz(),
         section_sizes: section_sizes(&data.section),
         batches: data.n_batches(),
+        strata: 1,
     });
     shape.selected_nonzeros = selected_nonzeros(&counts, &genes);
     ensure_fits("stagate", stagate_peak_bytes(&shape), budget, change)?;

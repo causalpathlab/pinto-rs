@@ -1,4 +1,4 @@
-use crate::util::batch_effects::strata_of;
+use crate::util::batch_effects::{n_strata, strata_of};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 #[test]
@@ -17,6 +17,31 @@ fn clone_strata_align_to_cells_by_name() {
     // A cell the table does not list mixes freely.
     let cells: Vec<Box<str>> = ["c2@d1", "other", "c3@d2", "c1@d1"].map(Box::from).to_vec();
     assert_eq!(strata_of(path, &cells).unwrap(), [1, 0, 2, 0]);
+}
+
+/// The strata count reads the table as the strata do: a stratum that is
+/// not a count, or a table whose `cell` column is missing, is refused by
+/// both.
+#[test]
+fn the_strata_count_validates_the_table_as_the_strata_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let cell: Vec<Box<str>> = ["c1", "c2"].map(Box::from).to_vec();
+    let write = |name: &str, key: &str, stratum: &[f32]| {
+        let path = dir.path().join(name).to_str().unwrap().to_string();
+        let cols = [("stratum".into(), Column::F32(stratum))];
+        write_named_table(&path, key, &cell, &cols).unwrap();
+        path
+    };
+    let good = write("good.parquet", "cell", &[0.0, 3.0]);
+    assert_eq!(n_strata(&good).unwrap(), 2);
+    for path in [
+        write("half.parquet", "cell", &[0.0, 1.5]),
+        write("negative.parquet", "cell", &[0.0, -1.0]),
+        write("nameless.parquet", "barcode", &[0.0, 1.0]),
+    ] {
+        assert!(strata_of(&path, &cell).is_err(), "{path}");
+        assert!(n_strata(&path).is_err(), "{path}");
+    }
 }
 
 /// What the estimate writes is what the reader gives back: the posterior

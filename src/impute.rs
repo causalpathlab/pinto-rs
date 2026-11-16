@@ -153,7 +153,7 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
     let (query_prop, query_cells, ref_prop, ref_data, divide) = if is_cage {
         let (query_prop, query_cells, ref_prop, ref_data) =
             cage_propensities(args, run.as_ref(), &reference_files)?;
-        let divide = if c.ignore_batch {
+        let divide = if c.batch.ignore_batch {
             None
         } else {
             reference_divide(model, run.as_ref(), &ref_data.row_names()?, &ref_data)?
@@ -440,7 +440,7 @@ fn profile_propensities(
     let adjusted = crate::predict::delta::batch_adjusted(
         model,
         run,
-        c.ignore_batch,
+        c.batch.ignore_batch,
         crate::predict::delta::QueryReader::Impute,
     )?;
     if args.reference_propensity.is_some() {

@@ -139,10 +139,10 @@ pub fn load_cnv_cell_strata(
     Ok(cell_to_stratum)
 }
 
-/// Each of `cells`' stratum in the clone table at `path` (its `cell` and
-/// `stratum` columns; the file is the whole contract with mung). Cells it
-/// does not list go to stratum 0, with a warning.
-pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<usize>> {
+/// The clone table at `path`: each cell it lists and its stratum (its
+/// `cell` and `stratum` columns; the file is the whole contract with mung),
+/// refused when the columns differ in length or a stratum is not a count.
+fn read_clone_table(path: &str) -> anyhow::Result<Vec<(Box<str>, usize)>> {
     let (strs, nums) = read_table_columns(path, &["cell"], &["stratum"])?;
     let cell = strs.into_iter().next().unwrap_or_default();
     let stratum = nums.into_iter().next().unwrap_or_default();
@@ -150,14 +150,35 @@ pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<us
         cell.len() == stratum.len(),
         "{path}: columns of different lengths"
     );
-    let mut by_cell: FxHashMap<&str, usize> = FxHashMap::default();
-    for (i, (c, &s)) in cell.iter().zip(&stratum).enumerate() {
-        anyhow::ensure!(
-            s >= 0.0 && s.fract() == 0.0,
-            "{path}: row {i}: stratum {s} is not a count"
-        );
-        by_cell.insert(c, s as usize);
-    }
+    cell.into_iter()
+        .zip(stratum)
+        .enumerate()
+        .map(|(i, (c, s))| {
+            anyhow::ensure!(
+                s >= 0.0 && s.fract() == 0.0,
+                "{path}: row {i}: stratum {s} is not a count"
+            );
+            Ok((c, s as usize))
+        })
+        .collect()
+}
+
+/// The strata of the clone table at `path`: those it lists, and stratum 0
+/// (the mixable cells, and those it does not list).
+pub fn n_strata(path: &str) -> anyhow::Result<usize> {
+    let mut strata: std::collections::BTreeSet<usize> = read_clone_table(path)?
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    strata.insert(0);
+    Ok(strata.len())
+}
+
+/// Each of `cells`' stratum in the clone table at `path`
+/// ([`read_clone_table`]). Cells it does not list go to stratum 0, with a
+/// warning.
+pub(crate) fn strata_of(path: &str, cells: &[Box<str>]) -> anyhow::Result<Vec<usize>> {
+    let by_cell: FxHashMap<Box<str>, usize> = read_clone_table(path)?.into_iter().collect();
     let mut missing = 0usize;
     let out: Vec<usize> = cells
         .iter()

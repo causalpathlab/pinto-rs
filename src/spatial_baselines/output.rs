@@ -162,7 +162,7 @@ fn batch_correction(input: &SpatialInputArgs, data: &SpatialData) -> serde_json:
         Some(d) => serde_json::json!({"delta": true, "batches": d.batches}),
         None => serde_json::json!({
             "delta": false,
-            "why": if input.ignore_batch { "--ignore-batch" } else { "one batch" },
+            "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
         }),
     }
 }
@@ -203,7 +203,7 @@ pub fn write_run(
         &data.cells,
         &data.xy,
         &data.coord_names,
-        &data.batches,
+        &data.read_batches,
         &vec![true; n],
     )?;
     let settings = serde_json::json!({
@@ -211,7 +211,9 @@ pub fn write_run(
         "pinto_version": env!("CARGO_PKG_VERSION"),
         "data_files": input.data_files,
         "coord_files": input.coord_files,
-        "batch_files": input.batch_files,
+        "batch_files": input.batch.batch_files,
+        "auto_batch": input.batch.auto_batch,
+        "cnv_clones": input.collapse.cnv_clones,
         "seed": input.seed,
         "run": run,
         "batch_correction": batch_correction(input, data),
@@ -243,10 +245,7 @@ pub fn write_run(
             cell_pb: fit.pseudobulk.as_ref().map(|_| cell_pb_path(prefix)),
             ..Default::default()
         },
-        batch_labels: data.delta.as_ref().map(|_| match input.batch_files {
-            Some(_) => BatchLabels::BatchFiles,
-            None => BatchLabels::Files,
-        }),
+        batch_labels: data.delta.as_ref().map(|_| BatchLabels::of(&input.batch)),
         baseline: Some(run),
         ..Default::default()
     };

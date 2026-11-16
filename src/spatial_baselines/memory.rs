@@ -99,18 +99,21 @@ pub fn knn_edges(section_sizes: &[usize], k: usize) -> usize {
         .sum()
 }
 
+/// Bytes a neighbour of a kNN graph holds as lists, edges and adjacency.
+pub const GRAPH_NEIGHBOUR_BYTES: usize = 64;
+
 /// What `spatialde2-pb` holds above its cell-level fit: the cells'
-/// projection (cage's `-p` f32 a cell), which the coarsening takes and
-/// normalises in place, and the seeds' features (two), the coarsening
-/// graph (cage's `-k` neighbours a cell, as lists, edges and adjacency: 64
-/// bytes a neighbour), the
+/// projection (`proj_dim` f32 a cell, cage's `-p`), which the coarsening
+/// takes and normalises in place, and the seeds' features (two), the
+/// coarsening graph (cage's `-k` neighbours a cell,
+/// [`GRAPH_NEIGHBOUR_BYTES`] a neighbour), the
 /// super-cells' counts (at most every nonzero: 12 as built, 12 held), and
 /// the fold of the method's `edges` listed edges onto the super-cells (an
 /// undirected copy, 24 bytes a pair, and the fold's map and fine-to-super
 /// index, 48 a pair: 36 a listed edge, 40 with a margin).
-pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize) -> usize {
-    let proj = 2 * 4 * crate::util::input::DEFAULT_PROJ_DIM * cells;
-    let graph = 64 * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
+pub fn pseudobulk_bytes(cells: usize, nonzeros: usize, edges: usize, proj_dim: usize) -> usize {
+    let proj = 2 * 4 * proj_dim * cells;
+    let graph = GRAPH_NEIGHBOUR_BYTES * crate::spatial_baselines::pseudobulk::COARSEN_K * cells;
     proj + graph + 24 * nonzeros + 40 * edges
 }
 
@@ -298,6 +301,8 @@ pub struct FactorShape {
     /// A `-pb` run's target number of super-cells (0 on cells): the
     /// coarsening's memory too.
     pub super_cells: usize,
+    /// The projection a `-pb` run coarsens on (`-p`).
+    pub proj_dim: usize,
     /// Bytes of expression held dense (SpatialPCA's residuals).
     pub dense_bytes: usize,
     /// Bytes a stored nonzero takes over the run ([`FACTOR_NONZERO_BYTES`]
@@ -350,7 +355,7 @@ pub fn factor_peak_bytes(s: &FactorShape) -> usize {
     // coarsening's
     let pb = if s.super_cells > 0 {
         let super_nnz = nnz.min(s.super_cells * s.input.genes);
-        pseudobulk_bytes(n, nnz, edges) + 40 * super_nnz
+        pseudobulk_bytes(n, nnz, edges, s.proj_dim) + 40 * super_nnz
     } else {
         0
     };

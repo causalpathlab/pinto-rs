@@ -67,6 +67,18 @@ fn lc_builds_its_profiles_from_an_external_feature_network() {
 
 /// A short lc fit of `data` to `{dir}/{name}` with `extra` flags; its prefix.
 fn fit_lc(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[&str]) -> String {
+    fit_lc_with(dir, data, coords, name, extra, |_| {})
+}
+
+/// [`fit_lc`] with its arguments changed by `change` once parsed.
+fn fit_lc_with(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    name: &str,
+    extra: &[&str],
+    change: impl FnOnce(&mut SrtLinkCommunityArgs),
+) -> String {
     let out = dir.join(name).to_str().unwrap().to_string();
     let argv: Vec<&str> = [
         "lc",
@@ -89,12 +101,15 @@ fn fit_lc(dir: &std::path::Path, data: &str, coords: &str, name: &str, extra: &[
     .into_iter()
     .chain(extra.iter().copied())
     .collect();
-    fit_srt_link_community(&SrtLinkCommunityArgs::try_parse_from(argv).unwrap()).unwrap();
+    let mut args = SrtLinkCommunityArgs::try_parse_from(argv).unwrap();
+    change(&mut args);
+    fit_srt_link_community(&args).unwrap();
     out
 }
 
 /// lc estimates batch effects on a multi-batch run, as dsvd and cage do, and
-/// its manifest names the file; `--ignore-batch` writes and names none.
+/// its manifest names the file; `--ignore-batch` writes and names none. The
+/// manifest also records the `--max-threads` that set lc's Gibbs blocks.
 #[test]
 fn lc_records_its_batch_effects_in_the_manifest() {
     let dir = tempfile::tempdir().unwrap();
@@ -106,7 +121,16 @@ fn lc_records_its_batch_effects_in_the_manifest() {
             .outputs
             .batch_effects
     };
-    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
+    let lc = fit_lc_with(dir.path(), &data, &coords, "lc", &[], |a| a.max_threads = 3);
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(
+        &crate::util::metadata::manifest_path(&lc),
+    ))
+    .unwrap();
+    assert_eq!(
+        meta.max_threads,
+        Some(3),
+        "the manifest does not record --max-threads"
+    );
     let delta = recorded(&lc).expect("the manifest names no delta.parquet");
     assert_eq!(delta, "lc.delta.parquet", "recorded beside the manifest");
     let run = crate::util::metadata::Run::open(&lc).unwrap();

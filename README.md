@@ -45,20 +45,27 @@ counts. The manifest names `{out}.delta.parquet`, and
 `{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
 
-A fit is reproducible at a fixed `--seed` and thread count
-(`RAYON_NUM_THREADS`), but not across thread counts. The Gibbs step groups
-the edges by connected component, which does not depend on the thread count,
-then splits any component larger than the edge count over the thread count
-(at least 256 edges) into blocks of that size. Each block draws its own
-random stream and sees the other blocks' moves only at the end of a sweep,
-so a different thread count gives different blocks and different draws. Set
-`RAYON_NUM_THREADS` to the same value to repeat a run exactly.
+lc's fine Gibbs and greedy steps group the edges by connected component and
+split a component of at least 512 edges into near-equal blocks of at least
+256 edges, at most `--max-threads` blocks a component; the coarse cascade
+levels before them sweep their edges in one sequence. Each block is swept in
+order with its own random stream; the blocks, split or whole components
+alike, run in parallel against one snapshot of the others and see their moves
+only at the end of a sweep. The block layout and the Gibbs draws depend on
+`--seed`, the data and `--max-threads`, which the manifest records
+(`max_threads`), not on the machine: the same `--seed` and `--max-threads`
+give the same lc draws on any machine, whatever threads run them.
 
-By default pinto takes at most 16 worker threads, or the machine's core count
-when that is smaller; `RAYON_NUM_THREADS` sets the count instead. Because lc's
-draws depend on the thread count, on a machine with more than 16 cores a
-default lc run gives different results from a run on every core. To repeat a
-run there, set `RAYON_NUM_THREADS` to the count it ran with.
+`--max-threads N` (default 16), on every command that runs a fit, a
+simulation or a comparison, is the most worker threads a run uses: rayon's own count (`RAYON_NUM_THREADS` when set, else the core
+count), at most N. By default pinto takes at most 16 worker threads, so on a
+machine with more than 16 cores a default run leaves the other cores free.
+Raise `--max-threads` to use more cores, including for lc's fine Gibbs, which
+then splits a large component into up to that many blocks.
+`RAYON_NUM_THREADS` can lower the threads below `--max-threads` without
+changing lc's draws; it cannot raise them above it. The commands that
+`pinto run`, `pinto view` and `pinto mcp` start take their own
+`--max-threads` unless the job gives one.
 
 Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
 you supply, a two-column file of feature pairs named as the data's features
@@ -375,7 +382,7 @@ counts also decide which ranks take which label), and the same flags give the
 same table, byte for byte, on any number of threads. These streams are not the
 built-in grid's: a point of the grid and the same point run alone give
 different draws. Pairs run at once as memory allows within pinto's worker
-threads (`RAYON_NUM_THREADS`, at most 16 by default); a runner starting
+threads (at most `--max-threads`, 16 by default); a runner starting
 several calls side by side sets `PINTO_MEMORY_BUDGET` (bytes) per call, since
 each process otherwise takes half the free memory for itself.
 
@@ -642,11 +649,16 @@ noise, `tau` and `rho` refitted on the cells), MEFISTO's weights, ARD and
 sparsity (its noise, factors and each factor's `rho` refitted). Both were
 held to the same bar and met it.
 
-One deviation is shared: with two or more batches (data files, or `-b`
-labels) the counts are divided by the input's own batch effects (δ,
-estimated as `cage` estimates them and written to `{out}.delta.parquet`)
-before the method's own preprocessing. `--ignore-batch` runs the original
-method on the counts as stored.
+One deviation is shared: with two or more batches (data files, `-b`
+labels, or `--auto-batch` components) the counts are divided by the
+input's own batch effects (δ, estimated as `cage` estimates them and
+written to `{out}.delta.parquet`) before the method's own preprocessing.
+The baselines take cage's batch flags under the same names and defaults
+(`--batch-files`, `--auto-batch`, `--ignore-batch`, `--cnv-clones`). The
+baselines run no cell QC, so a baseline estimates the δ cage estimates
+under the same flags and `--no-qc`; under `--auto-batch` it finds the
+components on cage's spatial graph at cage's default `-k` and matching.
+`--ignore-batch` runs the original method on the counts as stored.
 
 All fit the whole tissue in memory, so each estimates its peak before its
 large allocations, logs it, and stops with an error when the estimate
@@ -655,7 +667,9 @@ half the memory available to the process at the start (cgroup limits
 included). The first check comes from the files' stored shape (cells,
 genes and nonzeros), with nothing preloaded: the counts are read after
 it, preloaded as the other commands read them, and a file that does not
-store its nonzero count leaves that read unchecked.
+store its nonzero count leaves that read unchecked. Under `--auto-batch`
+the batches are known only once the read has found the components, so the
+δ estimate over them is checked again then, before it is made.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for

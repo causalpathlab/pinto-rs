@@ -129,13 +129,13 @@ pub(crate) fn dsvd_cell_projection(
     batch_membership: &[Box<str>],
 ) -> anyhow::Result<RandColProjOut> {
     match shared {
-        Some(proj) if has_delta || c.ignore_batch => Ok(proj),
+        Some(proj) if has_delta || c.batch.ignore_batch => Ok(proj),
         _ => {
             info!("Per-cell random projection...");
             data_vec.project_columns_with_batch_correction(
-                c.proj_dim,
+                c.collapse.proj_dim,
                 None,
-                (!c.ignore_batch).then_some(batch_membership),
+                (!c.batch.ignore_batch).then_some(batch_membership),
             )
         }
     }
@@ -218,7 +218,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     // 5. Graph-constrained coarsening + multi-level assignment
     info!(
         "Graph coarsening + multi-level assignment ({} levels, n_clusters={})...",
-        c.num_levels, c.n_pseudobulk
+        c.collapse.num_levels, c.n_pseudobulk
     );
 
     let batch_ref = batch_db.as_ref();
@@ -231,7 +231,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         srt_cell_pairs.inner.pairs(),
         CoarsenConfig {
             n_clusters: c.n_pseudobulk,
-            num_levels: c.num_levels,
+            num_levels: c.collapse.num_levels,
             seeding: seeding.as_ref().map(Seeding::params),
             modularity_veto: None,
         },

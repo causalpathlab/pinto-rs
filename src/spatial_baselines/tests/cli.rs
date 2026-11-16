@@ -127,3 +127,26 @@ fn factor_baselines_show_few_flags_at_their_papers_defaults() {
         assert!(!visible(cmd).iter().any(|f| f == "reference"), "{cmd}");
     }
 }
+
+/// A baseline's `--ignore-batch` help says what it does there: no batch
+/// effect is estimated or removed and the counts are used as stored; it
+/// does not speak of predict or impute, which cage's does.
+#[test]
+fn a_baseline_s_ignore_batch_help_is_its_own() {
+    let cli = crate::built_cli();
+    let help = |cmd: &str| {
+        cli.find_subcommand(cmd)
+            .unwrap()
+            .get_arguments()
+            .find(|a| a.get_id() == "ignore_batch")
+            .and_then(|a| a.get_long_help())
+            .unwrap()
+            .to_string()
+    };
+    for cmd in BASELINES {
+        let h = help(cmd);
+        assert!(h.contains("used as stored"), "{cmd}: {h}");
+        assert!(!h.contains("predict"), "{cmd}: {h}");
+    }
+    assert!(help("cage").contains("predict"));
+}

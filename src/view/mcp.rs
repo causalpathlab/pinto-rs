@@ -788,7 +788,7 @@ impl Open {
         };
         let outputs: Vec<std::path::PathBuf> = wrote.iter().map(Into::into).collect();
         let args = still.args(png.as_deref(), pdf.as_deref());
-        cx.run_making(legume_mcp::own_command(&args)?, &outputs, &summary)?;
+        cx.run_making(crate::tui::own_command(&args)?, &outputs, &summary)?;
         Ok(vec![Content::Json(json!({
             "wrote": wrote,
             "image": [vp.w, vp.h],
