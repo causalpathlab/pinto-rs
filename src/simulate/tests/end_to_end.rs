@@ -332,3 +332,122 @@ fn a_donor_with_no_shift_is_not_confounded() {
         }
     }
 }
+
+/// FNV-1a over `bytes`, then a separator, so two texts never run together.
+fn fnv(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes.iter().chain(&[0xff]) {
+        *h = (*h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+}
+
+/// `v` as text a fingerprint can take: the keys in `drop` left out, the out
+/// folder `out` read as `OUT`, and every non-integer number at ten digits,
+/// so the last bits of a platform's `exp` and `ln` do not move it.
+fn stable_json(v: &serde_json::Value, out: &str, drop: &[&str]) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            let fields: Vec<String> = m
+                .iter()
+                .filter(|(k, _)| !drop.contains(&k.as_str()))
+                .map(|(k, x)| format!("{k:?}:{}", stable_json(x, out, drop)))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Value::Array(a) => {
+            let items: Vec<String> = a.iter().map(|x| stable_json(x, out, drop)).collect();
+            format!("[{}]", items.join(","))
+        }
+        Value::Number(n) if n.is_f64() => format!("{:.9e}", n.as_f64().unwrap()),
+        Value::String(s) => format!("{:?}", s.replace(out, "OUT")),
+        other => other.to_string(),
+    }
+}
+
+/// A fingerprint of everything a run into `out` wrote that a reader sees:
+/// each section's counts with their gene and spot names, every column of
+/// every table, and the two manifests but for the version and the time.
+fn run_fingerprint(out: &str) -> u64 {
+    use legume_numeric::matrix::parquet::{
+        peek_parquet_field_names, read_parquet_string_columns_by_name,
+    };
+    let mut h: u64 = 0xcbf29ce484222325;
+    let json = |path: String| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    let manifest = json(format!("{out}/manifest.json"));
+    fnv(&mut h, stable_json(&manifest, out, &["version"]).as_bytes());
+    let run = json(format!("{out}/truth/truth.pinto.json"));
+    let run = stable_json(&run, out, &["version", "timestamp"]);
+    fnv(&mut h, run.as_bytes());
+
+    let mut tables: Vec<String> = [
+        "spots",
+        "donors",
+        "domains",
+        "states",
+        "genes",
+        "truth.cells",
+        "truth.domain.propensity",
+        "truth.state.propensity",
+        "truth.donor.propensity",
+    ]
+    .iter()
+    .map(|t| format!("{out}/truth/{t}.parquet"))
+    .collect();
+    for sec in manifest["sections"].as_array().unwrap() {
+        let name = sec["section"].as_str().unwrap();
+        let m = open_sparse_matrix_by_path(&format!("{out}/sections/{name}.zarr")).unwrap();
+        for names in [m.row_names().unwrap(), m.column_names().unwrap()] {
+            names.iter().for_each(|n| fnv(&mut h, n.as_bytes()));
+        }
+        let n = m.num_columns().unwrap();
+        let csc = m.read_columns_csc((0..n).collect::<Vec<usize>>()).unwrap();
+        for (g, i, y) in csc.triplet_iter() {
+            fnv(&mut h, format!("{g} {i} {}", y.to_bits()).as_bytes());
+        }
+        tables.push(format!("{out}/sections/{name}.coords.parquet"));
+    }
+    for path in tables {
+        let fields = peek_parquet_field_names(&path).unwrap();
+        let wanted: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
+        let columns = read_parquet_string_columns_by_name(&path, &wanted).unwrap();
+        for (field, column) in fields.iter().zip(&columns) {
+            fnv(&mut h, field.as_bytes());
+            column.iter().for_each(|x| fnv(&mut h, x.as_bytes()));
+        }
+    }
+    h
+}
+
+/// A run with no reference writes what it wrote before a reference could be
+/// given: counts, truth tables and manifests, in every scenario and with a
+/// drawn unconfounded donor. Any stream, any order of a sum or any column
+/// that moves shows here.
+#[test]
+fn a_run_with_no_reference_writes_what_it_always_did() {
+    let want: [(&str, &[&str], u64); 6] = [
+        ("unconfounded", &[], 0x87732672f9cf39f8),
+        ("donor-confounded", &[], 0x6164c01332a86f4c),
+        (
+            "donor-confounded-donor-only-cell-type",
+            &[],
+            0xa8a8b8afcaf52915,
+        ),
+        ("donor-confounded-donor-only-mix", &[], 0xad26f8cf806d7737),
+        ("composition-shift", &[], 0xc4bca3f307d3a06d),
+        (
+            "donor-confounded",
+            &["n_unconfounded_donors=1"],
+            0x445acb3c18cc9a54,
+        ),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    for (k, (scenario, extra, fingerprint)) in want.into_iter().enumerate() {
+        let out = dir.path().join(format!("sim{k}"));
+        let out = out.to_string_lossy();
+        run_simulate(&args(&out, scenario, extra)).unwrap();
+        let h = run_fingerprint(&out);
+        assert_eq!(h, fingerprint, "{scenario} {extra:?}: {h:#018x}");
+    }
+}
