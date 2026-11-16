@@ -43,7 +43,7 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.12", default-features = false, features = ["aux", "alg", "tensor"] }
+data-beans = { version = "0.12.2", default-features = false, features = ["aux", "alg", "tensor"] }
 legume-numeric = { version = "0.10", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.12", package = "legume-graph-embedding" }
 parquet = "59"
@@ -100,9 +100,3 @@ libc = "0.2"
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
 legume-tui = { version = "0.3.15", default-features = false, features = ["testing"] }
-
-# data-beans main after 0.12.1 makes `alg::feature_coarsening::residual_profiles`
-# public, which cage reads for `--feature-modules auto`. Removed with the next
-# data-beans release.
-[patch.crates-io]
-data-beans = { git = "https://github.com/causalpathlab/data-beans", rev = "5cba4ef" }

@@ -159,7 +159,7 @@ fn built_with(plan: ModulePlan) -> BuiltModel {
 #[test]
 fn every_module_table_is_sized_by_the_resolved_count() {
     use crate::cell_activity_graph_embedding::fit::modules::PROFILE_SVD_RANK;
-    assert!(MODULE_PBS > PROFILE_SVD_RANK && 2 * MODULE_GROUP > PROFILE_SVD_RANK);
+    const { assert!(MODULE_PBS > PROFILE_SVD_RANK && 2 * MODULE_GROUP > PROFILE_SVD_RANK) };
     for plan in [ModulePlan::Auto, ModulePlan::Fixed(3)] {
         let built = built_with(plan);
         let (cfg, profiles) = built.modules.as_ref().expect("a module layer");
