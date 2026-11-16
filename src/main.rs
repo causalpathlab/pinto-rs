@@ -166,10 +166,11 @@ macro_rules! baseline_batch {
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
     () => {
-        "The output is a pinto run, which `pinto view`, compare and lra read\n\
-         as they read an lc run: the manifest {out}.pinto.json (rerunning into\n\
-         the same --out overwrites it), {out}.propensity.parquet (cells x K:\n\
-         the method's posteriors when it has them, else one-hot labels),\n\
+        "The output is a pinto run, which `pinto view`, compare, lra and\n\
+         residual read as they read an lc run: the manifest {out}.pinto.json\n\
+         (rerunning into the same --out overwrites it),\n\
+         {out}.propensity.parquet (cells x K: the method's posteriors when it\n\
+         has them, else one-hot labels),\n\
          {out}.cells.parquet (cells with coordinates), {out}.labels.tsv (for\n\
          srt-sim-score --labels), {out}.cell_embedding.parquet (the method's\n\
          per-cell vectors) and {out}.baseline.json (the settings as run)."
@@ -634,17 +635,20 @@ enum Commands {
 
     #[command(
         about = "Write the counts a fitted run leaves unexplained, as new data files.",
-        long_about = "Stage 2 of a residual fit. Conditioning on an lc, cage or dsvd run\n\
+        long_about = "Stage 2 of a residual fit. Conditioning on a fitted run\n\
                       (its per-cell propensities, from which raw-count community\n\
                       profiles p_k are refitted, and per-cell EM proportions θ_i),\n\
                       each cell's expectation is n_i Σ_k θ_ik p_k(g); no batch fold\n\
-                      from the run enters it. Per data file it writes\n  \
+                      from the run enters it. Any run is taken whose manifest records\n\
+                      its data files, a propensity table (soft or one-hot), a cells\n\
+                      table and its coordinate columns: a fit's or a spatial\n\
+                      baseline's. Per data file it writes\n  \
                       {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n  \
                       {out}/{stem}.coords.parquet  the run's coordinates of its cells\n\
                       and {out}/residual.json (the counts in and out, the stage-1 run\n\
                       and the raw data files, which pinto lra reads to take a fit on\n\
-                      the residual on its raw counts), so lc, cage and dsvd fit the\n\
-                      residual as they fit data.\n\n\
+                      the residual on its raw counts), so a second fit reads the\n\
+                      residual as it reads data.\n\n\
                       By default (--adapt batch, see its help) a shift of a whole\n\
                       community within a batch is absorbed; a local patch stays.\n\n\
                       It does not estimate or subtract a donor effect. With --adapt\n\

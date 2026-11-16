@@ -1004,6 +1004,7 @@ fn fitted_run(dir: &Path) -> PathBuf {
         ..Default::default()
     };
     meta.outputs.coord_columns = Some(vec!["cx".into(), "cy".into()]);
+    crate::test_support::record_tables(&mut meta, &prefix);
     meta.write(Path::new(&format!("{prefix}.pinto.json")))
         .unwrap();
     here
@@ -1573,6 +1574,7 @@ fn run_at(here: &Path, prefix: &str, files: &[&str]) {
         ..Default::default()
     };
     meta.outputs.coord_columns = Some(vec!["cx".into(), "cy".into()]);
+    crate::test_support::record_tables(&mut meta, &prefix);
     meta.write(Path::new(&format!("{prefix}.pinto.json")))
         .unwrap();
 }

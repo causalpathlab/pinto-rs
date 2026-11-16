@@ -998,9 +998,10 @@ fn an_agent_fits_the_residual_of_a_simulation() {
     );
     let stage1 = lc["written"][0].as_str().unwrap().to_string();
 
-    // A run that is not lc, cage or dsvd is refused before any job starts.
+    // A run that records no propensity output (the truth names its levels'
+    // only) is refused before any job starts.
     let msg = c.fails("run_residual", json!({"run": truth, "out": "bad"}));
-    assert!(msg.contains("lc, cage or dsvd"), "{msg}");
+    assert!(msg.contains("records no propensity output"), "{msg}");
     assert!(!dir.path().join("bad").exists(), "refused before it ran");
     let (jobs, _) = c.ok("job_status", json!({}));
     assert!(!jobs.to_string().contains("residual of"), "{jobs}");

@@ -1,9 +1,20 @@
 //! `pinto residual`: the counts a fitted run leaves unexplained, as new data
-//! files that `lc`, `cage` and `dsvd` read unchanged.
+//! files that a fit reads as it reads data.
 //!
-//! Stage 1 is any lc, cage or dsvd run; what is conditioned on is its
-//! communities, through the per-cell propensity `π_ik` each of them
-//! publishes (`{run}.propensity.parquet`). From it, raw-count community
+//! Stage 1 is any run that published what a residual reads, whatever
+//! command wrote it (a fit or a spatial baseline). Its manifest records
+//! ([`Plan::new`] checks each, and names the one that is missing):
+//!
+//! - `data_files`, the raw counts it was fitted on (or `--data-files`);
+//! - `outputs.propensity`, its cell × community table `π_ik`: a soft
+//!   posterior, or one-hot rows for a method that only labels its cells;
+//! - `outputs.cells`, its cells table: each cell's coordinates and, when
+//!   the run had more than one batch, its `batch`;
+//! - `outputs.coord_columns`, the names of those coordinates.
+//!
+//! Nothing else of the run is read: no profile, loading or batch effect of
+//! its own, so no command is a special case. What is conditioned on is its
+//! communities, through `π_ik`. From it, raw-count community
 //! profiles are refitted on the run's data, read as a fit reads it (the rows
 //! every file shares, cells named as the run named them),
 //!
@@ -115,10 +126,10 @@ pub struct ResidualArgs {
         alias = "feature-names",
         value_enum,
         default_value = "exact",
-        help = "How the run's fit read feature names (cage's --feature-name-mode)",
-        long_help = "How the run's fit read feature names: exact (lc and dsvd, which\n\
-                     read the rows every file shares), or the --feature-name-mode a\n\
-                     cage run was fitted with, so its rows are read as it read them."
+        help = "How the run read feature names (its own --feature-name-mode, if it took one)",
+        long_help = "How the run read feature names: exact (the rows every file\n\
+                     shares, by name), or the --feature-name-mode the run was fitted\n\
+                     with, so its rows are read as it read them."
     )]
     pub feature_names: FeatureNameMode,
 
@@ -153,9 +164,6 @@ pub enum Adapt {
     /// Each community re-estimated per batch of the run, shrunk toward the pool.
     Batch,
 }
-
-/// The commands whose runs a residual is taken from.
-const STAGE_ONE: [&str; 3] = ["lc", "cage", "dsvd"];
 
 /// How `y − μ` becomes a count.
 #[derive(clap::ValueEnum, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +221,6 @@ fn column_entries(csc: &nalgebra_sparse::CscMatrix<f32>, j: usize) -> Vec<(usize
 
 /// What the run's files hold, read as the run read them.
 struct Inputs {
-    files: Vec<Box<str>>,
     data: SparseIoVec,
     /// `data`'s cell names, as the run named them.
     names: Vec<Box<str>>,
@@ -221,16 +228,16 @@ struct Inputs {
     prop: Mat,
     /// Run cell name → coordinates, from its cells table.
     coords: HashMap<Box<str>, (f32, f32)>,
-    coord_names: [Box<str>; 2],
     /// Each cell's adaptation group (`--adapt`): 0 for all under `none`.
     group_of: Vec<usize>,
 }
 
 /// What `pinto residual` writes for a run, and what it reads to make it,
 /// checked as far as it can be before any count is read: `-o` is not a
-/// file, the run is an lc, cage or dsvd run on raw counts, its data files
-/// are found, all of them, with distinct names, it names its coordinate
-/// columns, and no output is an input.
+/// file, the run is on raw counts, its data files are found, all of them,
+/// with distinct names, its manifest records a propensity and a cells
+/// table, both found, and names its coordinate columns, and no output is
+/// an input.
 #[derive(Clone, Debug)]
 pub struct Plan {
     /// The run's data files, in its order.
@@ -244,6 +251,12 @@ pub struct Plan {
     /// The run's first two coordinate columns, which the coordinate files
     /// carry.
     pub coord_names: [Box<str>; 2],
+    /// The run's propensity (`outputs.propensity`): its cells' community
+    /// memberships.
+    pub propensity: String,
+    /// The run's cells table (`outputs.cells`): its cells' coordinates and
+    /// batches.
+    pub cells: String,
 }
 
 impl Plan {
@@ -258,15 +271,32 @@ impl Plan {
             anyhow::bail!("{} is a file; -o is a folder", file.display());
         }
         let files = stage_one_files(run, args)?;
+        let outputs = &run.meta.outputs;
+        let propensity = recorded(
+            run,
+            outputs.propensity.as_deref(),
+            "propensity.parquet",
+            "propensity output (outputs.propensity): a residual is taken from a run that \
+             wrote its cells' community memberships",
+        )?;
         let coord_names = coord_names(run)?;
+        let cells = recorded(
+            run,
+            outputs.cells.as_deref(),
+            "cells.parquet",
+            "cells table (outputs.cells): a residual takes each cell's coordinates and \
+             batch from it",
+        )?;
         let zarrs = output_paths(&files, &args.out)?;
         let coords = zarrs.iter().map(|z| coords_path(z)).collect();
         Ok(Self {
             files,
             zarrs,
             coords,
-            summary: summary_path(&args.out),
+            summary: in_dir(&args.out, MARKER),
             coord_names,
+            propensity,
+            cells,
         })
     }
 
@@ -297,16 +327,10 @@ impl Plan {
     }
 }
 
-/// The run's data files (its manifest's, or `--data-files`), checked: an
-/// lc, cage or dsvd run on raw counts (not a fit on a residual), every file
-/// found, as many as the run had, each with its own name.
+/// The run's data files (its manifest's, or `--data-files`), checked: a
+/// run on raw counts (not a fit on a residual), every file found, as many
+/// as the run had, each with its own name.
 fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str>>> {
-    anyhow::ensure!(
-        STAGE_ONE.contains(&run.meta.command.as_str()),
-        "{}: a {} run; a residual is taken from an lc, cage or dsvd run",
-        run.manifest.display(),
-        run.meta.command
-    );
     let files: Vec<Box<str>> = match &args.data_files {
         Some(f) => {
             for file in f {
@@ -325,7 +349,11 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
             .map(|f| resolve(run, f).map(Into::into))
             .collect::<anyhow::Result<_>>()?,
     };
-    anyhow::ensure!(!files.is_empty(), "{}: no data files", args.run);
+    anyhow::ensure!(
+        !files.is_empty(),
+        "{}: the manifest records no data files (data_files); pass the run's as --data-files",
+        run.manifest.display()
+    );
     // its residual.json would name the excess files as raw, and lra on a
     // fit of it would read excess counts as raw counts
     let on_residual = crate::lr_activity::input::residual_of(run)?.is_some()
@@ -347,9 +375,11 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
             "{f} and an earlier data file have the same name {name}"
         );
     }
-    let n_run = run.meta.data_files.as_ref().map_or(files.len(), Vec::len);
+    // a manifest that records none (no list, or an empty one) says nothing
+    // of how many the run had
+    let n_run = run.meta.data_files.as_ref().map_or(0, Vec::len);
     anyhow::ensure!(
-        files.len() == n_run,
+        n_run == 0 || files.len() == n_run,
         "{} data files given for a run fitted on {n_run}: pass all of the run's files",
         files.len()
     );
@@ -368,6 +398,20 @@ fn coord_names(run: &Run) -> anyhow::Result<[Box<str>; 2]> {
     }
 }
 
+/// An output of the run a residual reads, as its manifest records it
+/// ([`Run::recorded_output`]): refused when the manifest records none
+/// (`what` names the record and what is taken from it) or the file is gone.
+fn recorded(run: &Run, record: Option<&str>, suffix: &str, what: &str) -> anyhow::Result<String> {
+    let found = run.recorded_output(record, suffix)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: the manifest of this {} run records no {what}",
+            run.manifest.display(),
+            run.meta.command
+        )
+    })?;
+    Ok(found.to_string_lossy().into_owned())
+}
+
 /// A file the run names, beside its manifest.
 fn resolve(run: &Run, f: &str) -> anyhow::Result<String> {
     run.resolve(f)
@@ -376,50 +420,35 @@ fn resolve(run: &Run, f: &str) -> anyhow::Result<String> {
 }
 
 impl Inputs {
-    fn load(run: &Run, args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
-        let output = |f: Option<&str>, suffix: &str| match f {
-            Some(f) => resolve(run, f),
-            None => Ok(format!("{}.{suffix}", run.prefix)),
-        };
-        let files = plan.files.clone();
-        // read as the fit read them: lc and dsvd on the rows every file
-        // shares, cage by its feature-name mode
+    fn load(args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
+        // read as the run read them: the rows every file shares, by name
+        // or by its feature-name mode
         let kind = match args.feature_names {
             FeatureNameMode::Auto => {
-                let first = crate::util::input::open_sparse(&files[0])?;
+                let first = crate::util::input::open_sparse(&plan.files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
-        let data = crate::util::input::open_fit_data(&files, &kind)?;
+        let data = crate::util::input::open_fit_data(&plan.files, &kind)?;
+        let names = data.column_names()?;
 
-        let coord_names = plan.coord_names.clone();
         let cells = crate::util::parquet_io::read_cells_table(
-            Path::new(&output(run.meta.outputs.cells.as_deref(), "cells.parquet")?),
-            Some(
-                &coord_names
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>(),
-            ),
+            Path::new(&plan.cells),
+            Some(&plan.coord_names.each_ref().map(|c| c.to_string())),
         )?;
         let group_of = match args.adapt {
-            Adapt::None => vec![0; data.num_columns()],
-            Adapt::Batch => batch_groups(
-                &cells.names,
-                cells.batches.as_deref(),
-                &data.column_names()?,
-            ),
+            Adapt::None => vec![0; names.len()],
+            Adapt::Batch => batch_groups(&cells.names, cells.batches.as_deref(), &names),
         };
         let coords = cells.names.into_iter().zip(cells.coords).collect();
 
-        let prop_path = output(run.meta.outputs.propensity.as_deref(), "propensity.parquet")?;
-        let exclude: HashSet<Box<str>> = coord_names.iter().cloned().collect();
+        let prop_path = &plan.propensity;
+        let exclude: HashSet<Box<str>> = plan.coord_names.iter().cloned().collect();
         let (prop_run, _, _, prop_cells) =
-            crate::util::parquet_io::read_propensity(Path::new(&prop_path), &exclude)?;
+            crate::util::parquet_io::read_propensity(Path::new(prop_path), &exclude)?;
         // every run cell found in the data by a unique name, as impute pairs them
-        let names = data.column_names()?;
-        let prop = crate::impute::align_to_columns(&prop_path, prop_run, &prop_cells, &names)
+        let prop = crate::impute::align_to_columns(prop_path, prop_run, &prop_cells, &names)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "{e:#}; pass the run's own data files, in its order, as --data-files"
@@ -438,12 +467,10 @@ impl Inputs {
             );
         }
         Ok(Self {
-            files,
             data,
             names,
             prop,
             coords,
-            coord_names,
             group_of,
         })
     }
@@ -632,8 +659,8 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     let run = Run::open(&args.run)?;
     let plan = Plan::new(&run, args)?;
     plan.ensure_unwritten()?;
-    let inp = Inputs::load(&run, args, &plan)?;
-    let sections = file_sections(&inp)?;
+    let inp = Inputs::load(args, &plan)?;
+    let sections = file_sections(&plan.files, &inp)?;
     let profiles = group_profiles(&inp, args.adapt_cells, args.block_size)?;
     info!(
         "Refitted {} raw-count community profiles in {} group(s) ({:?})",
@@ -654,18 +681,18 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
 
     std::fs::create_dir_all(args.out.as_ref())?;
     let rows = inp.data.row_names()?;
-    let summary = inp
+    let summary = plan
         .files
         .iter()
         .zip(&plan.zarrs)
         .zip(sections)
         .map(|((f, out_file), section)| {
-            write_file(f, out_file, &rows, section, &cells, &inp.coord_names)
+            write_file(f, out_file, &rows, section, &cells, &plan.coord_names)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     std::fs::write(
         &plan.summary,
-        serde_json::to_string_pretty(&residual_marker(&run, &inp.files, args, summary)?)?,
+        serde_json::to_string_pretty(&residual_marker(&run, &plan.files, args, summary)?)?,
     )?;
     Ok(())
 }
@@ -705,10 +732,6 @@ fn residual_marker(
     Ok(marker)
 }
 
-fn summary_path(out: &str) -> String {
-    in_dir(out, MARKER)
-}
-
 /// The marker's file name: written last, it marks the residual whole.
 pub const MARKER: &str = "residual.json";
 
@@ -738,14 +761,16 @@ type Section = (std::ops::Range<usize>, Vec<Box<str>>, SectionCoords);
 
 /// Every file's section, found before anything is written, so a file with
 /// no placed cell stops the run before it writes.
-fn file_sections(inp: &Inputs) -> anyhow::Result<Vec<Section>> {
+fn file_sections(files: &[Box<str>], inp: &Inputs) -> anyhow::Result<Vec<Section>> {
     let mut lb = 0;
-    (0..inp.files.len())
-        .map(|j| {
+    files
+        .iter()
+        .enumerate()
+        .map(|(j, file)| {
             let barcodes = inp.data[j].column_names()?;
             let ub = lb + barcodes.len();
             let coords = section_coords(&inp.names[lb..ub], &barcodes, &inp.coords)
-                .map_err(|e| anyhow::anyhow!("{}: {e}", inp.files[j]))?;
+                .map_err(|e| anyhow::anyhow!("{file}: {e}"))?;
             let range = lb..ub;
             lb = ub;
             Ok((range, barcodes, coords))

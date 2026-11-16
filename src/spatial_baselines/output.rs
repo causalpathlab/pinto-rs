@@ -1,7 +1,7 @@
 //! The outputs every spatial baseline writes, named from its `--out`
 //! prefix, as a pinto run: `pinto view`, `srt-sim-score --labels`,
-//! `srt-sim-pairs --vectors`, `compare`, `lra` and `pinto run`/MCP read it
-//! as they read an `lc`, `dsvd` or `cage` run.
+//! `srt-sim-pairs --vectors`, `compare`, `lra`, `residual` and `pinto
+//! run`/MCP read it as they read an `lc`, `dsvd` or `cage` run.
 //!
 //! - `{out}.pinto.json`: the manifest;
 //! - `{out}.propensity.parquet`: cell × K membership (the method's soft
@@ -223,7 +223,7 @@ pub fn write_run(
         version: env!("CARGO_PKG_VERSION").into(),
         timestamp: now_secs(),
         prefix: prefix.into(),
-        data_files: Some(input.data_files.iter().map(|f| f.to_string()).collect()),
+        data_files: Some(crate::util::metadata::recorded_files(&input.data_files)),
         coord_file: Some(input.coord_files.join(",")),
         n_cells: n,
         n_features: data.genes.len(),

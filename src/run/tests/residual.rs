@@ -21,6 +21,7 @@ fn manifest(dir: &Path, command: &str, files: &[&str]) -> String {
         ..Default::default()
     };
     meta.outputs.coord_columns = Some(vec!["CT1_x".into(), "CT1_y".into()]);
+    crate::test_support::record_tables(&mut meta, &prefix);
     meta.write(Path::new(&format!("{prefix}.pinto.json")))
         .unwrap();
     prefix
@@ -138,21 +139,27 @@ fn the_run_is_named_by_the_commands_own_flag() {
     assert!(argv[1].starts_with("--from="), "{argv:?}");
 }
 
-/// Only an lc, cage or dsvd run is taken, refused while the call is set up.
+/// A run is taken by what its manifest records: one that records no
+/// propensity output is refused while the call is set up, whatever wrote it.
 #[test]
-fn a_run_that_is_not_lc_cage_or_dsvd_is_refused() {
+fn a_run_that_records_no_propensity_output_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("S1.zarr");
     std::fs::create_dir_all(&data).unwrap();
     let data = data.to_string_lossy().into_owned();
-    let prefix = manifest(dir.path(), "srt-simulate", &[&data]);
+    let prefix = manifest(dir.path(), "lc", &[&data]);
     let a = args(json!({"run": prefix}));
     let out = dir.path().join("res").to_string_lossy().into_owned();
+    residual_plan(&cli(), &a, &out).expect("a run with its tables is planned");
+    PintoMetadata::update(Path::new(&format!("{prefix}.pinto.json")), |m| {
+        m.outputs.propensity = None
+    })
+    .unwrap();
     let err = residual_plan(&cli(), &a, &out)
         .map(|_| ())
         .unwrap_err()
         .to_string();
-    assert!(err.contains("lc, cage or dsvd"), "{err}");
+    assert!(err.contains("records no propensity output"), "{err}");
 }
 
 /// The reply lists the files `pinto residual` writes, in the run's order,
