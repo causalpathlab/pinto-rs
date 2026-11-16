@@ -4,9 +4,9 @@
 //! each feature: every feature defines a per-cell activity vector that gates a
 //! shared multi-scale cell-cell hierarchy. Embedding-only — no count decoder.
 //!
-//! The cell axis is collapsed into super-cells per coarsening level and one
-//! shared SVD basis is fit over them ([`pb_basis`]); that basis warm-starts the
-//! trained PB table. Chain levels differ only in their negative pools.
+//! The cell axis is collapsed into super-cells per coarsening level; the
+//! finest level's are the trained units, their table started at random.
+//! Chain levels differ only in their negative pools.
 
 pub mod args;
 pub mod feature_chain_sampler;
@@ -15,7 +15,6 @@ pub mod feature_inclusion;
 pub mod fit;
 pub mod loss;
 pub mod pair_projection;
-pub mod pb_basis;
 pub mod pb_frame;
 pub mod pretrained;
 

@@ -11,7 +11,6 @@
 //! load -> spatial KNN -> batch effects                  util::srt_pipeline
 //! HVG-weighted projection -> graph_coarsen_multilevel   nested super-cell levels
 //! build_feature_active_fine_edges                          per-feature activity, active edges
-//! collapse + SVD                                        pb_basis -> warm start of e_pb
 //! training loop                                         the only SGD
 //! parquet outputs + .pinto.json
 //! ```
@@ -25,8 +24,7 @@
 //! in a different super-cell at `l` but the SAME parent at `l-1`, so the
 //! contrast sharpens with depth. The coarsening hierarchy is live in
 //! every step, one level up from where it used to be. There is one
-//! trained embedding, over finest-level PBs; the collapse SVD is its
-//! warm start.
+//! trained embedding, over finest-level PBs, started at random.
 //!
 //! ```text
 //! s(P,Q) = theta_g . (e_P (*) e_Q) + b_P + b_Q
@@ -108,7 +106,7 @@ pub fn fit_cell_activity_graph_embedding(
     // trained unit is the finest coarsening level, so chain entries must
     // be strictly coarser. Unset adapts to the hierarchy depth (up to
     // three coarser levels); explicit values are checked here, where a
-    // mistake costs milliseconds rather than a full collapse.
+    // mistake costs milliseconds rather than a load.
     let chain_levels: Vec<usize> = match &args.chain_levels {
         // the cells themselves (see `cell_level_hierarchy`)
         None if args.cell_level => vec![0],
@@ -414,9 +412,8 @@ pub fn fit_cell_activity_graph_embedding(
         (coarsened.expect("cage coarsens"), None)
     };
 
-    // Batch ids + the PB TRAINING FRAME, built BEFORE the pseudobulk basis:
-    // its nesting / density / batch checks are cheap, and failing them
-    // here costs milliseconds instead of a full collapse.
+    // Batch ids + the PB TRAINING FRAME: its nesting / density / batch checks
+    // are cheap, so they run before anything reads the counts again.
     let n_exp_batches = batch_labels.len().max(1);
     let batch_membership_u32 =
         crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
@@ -429,58 +426,9 @@ pub fn fit_cell_activity_graph_embedding(
     )?;
     let n_pb = pb_frame.n_pb;
 
-    // Collapse cells into super-cells per coarsening level and fit one shared
-    // SVD over them: the WARM START of the trained PB table, and the basis the
-    // `pseudobulk_cells.parquet` diagnostic exports.
-    // Cell level: no trained pseudobulks, so no basis and a random start.
-    let basis = if args.cell_level {
-        None
-    } else {
-        Some(
-            crate::cell_activity_graph_embedding::pb_basis::build_pseudobulks(
-                crate::cell_activity_graph_embedding::pb_basis::PseudobulkArgs {
-                    data: &data_vec,
-                    all_cell_labels: &ml.all_cell_labels,
-                    graph: &graph,
-                    embedding_dim,
-                    feature_axis: &feature_axis,
-                },
-            )?,
-        )
-    };
-    let mut e_pb_warm: Option<Mat> = None;
-    // Diagnostic export: per CELL, its spatial coords, its finest-level
-    // super-cell id, and that super-cell's embedding. Lets the basis be
-    // inspected as a UMAP and as a spatial map before anything is built on it.
-    if let Some(fine) = basis.as_ref().and_then(|b| b.levels.last()) {
-        e_pb_warm = Some(fine.e_pb_svd.clone());
-        let d = fine.e_pb_svd.ncols();
-        let mut out = Mat::zeros(n_cells, 3 + d);
-        for i in 0..n_cells {
-            let p = fine.cell_labels[i];
-            out[(i, 0)] = coordinates[(i, 0)];
-            out[(i, 1)] = coordinates[(i, 1)];
-            out[(i, 2)] = p as f32;
-            for h in 0..d {
-                out[(i, 3 + h)] = fine.e_pb_svd[(p, h)];
-            }
-        }
-        let mut cols: Vec<Box<str>> = vec![Box::from("x"), Box::from("y"), Box::from("pb")];
-        cols.extend(embedding_col_names(d));
-        out.to_parquet_with_names(
-            &(c.out.to_string() + ".pseudobulk_cells.parquet"),
-            (Some(&cell_names), Some("cell")),
-            Some(&cols),
-        )?;
-        info!(
-            "Wrote {}.pseudobulk_cells.parquet",
-            crate::util::staging::final_str(&c.out)
-        );
-    }
-
     // Each feature's probability of spatial signal, which each epoch
     // samples features by (`--feature-inclusion moran`): on the finest PB
-    // super-cells (the basis's pooled counts) and the spatial edges between
+    // super-cells (their summed counts) and the spatial edges between
     // them, coarse super-cells of the tree as jackknife blocks; on cells
     // under cage-cell (no trained pseudobulks), geometric tiles as blocks.
     let inclusion = match args.feature_inclusion {
@@ -490,8 +438,8 @@ pub fn fit_cell_activity_graph_embedding(
                 cell_inclusion, pb_inclusion, pb_spatial_edges, PbUnits, CELL_COLUMN_BLOCK,
             };
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
-            let inc = match basis.as_ref().and_then(|b| b.levels.last()) {
-                None => cell_inclusion(
+            let inc = if args.cell_level {
+                cell_inclusion(
                     &data_vec,
                     &feature_axis,
                     (&coordinates, &coordinate_names),
@@ -499,30 +447,26 @@ pub fn fit_cell_activity_graph_embedding(
                     spatial_edges,
                     args.inclusion_blocks,
                     CELL_COLUMN_BLOCK,
-                )?,
-                Some(fine) => {
-                    anyhow::ensure!(
-                        fine.cell_labels == pb_frame.cell_to_finest_pb,
-                        "feature inclusion: the basis's finest level is not the PB frame's"
-                    );
-                    // the frame folded `graph`'s edges, which are the
-                    // spatial ones when no separate spatial graph was built
-                    let edges = pb_spatial_edges(
-                        &pb_frame.cell_to_finest_pb,
-                        &section_ids,
-                        spatial_edges,
-                        spatial_graph
-                            .is_none()
-                            .then_some((&pb_frame.super_edges[..], &batch_membership_u32[..])),
-                    );
-                    let units = PbUnits {
-                        counts: &fine.counts,
-                        cell_to_pb: &pb_frame.cell_to_finest_pb,
-                        parents: &pb_frame.pb_parent_maps,
-                        edges: &edges,
-                    };
-                    pb_inclusion(&feature_axis, &units, &section_ids, args.inclusion_blocks)?
-                }
+                )?
+            } else {
+                // the frame folded `graph`'s edges, which are the
+                // spatial ones when no separate spatial graph was built
+                let edges = pb_spatial_edges(
+                    &pb_frame.cell_to_finest_pb,
+                    &section_ids,
+                    spatial_edges,
+                    spatial_graph
+                        .is_none()
+                        .then_some((&pb_frame.super_edges[..], &batch_membership_u32[..])),
+                );
+                let units = PbUnits {
+                    data: &data_vec,
+                    n_pb,
+                    cell_to_pb: &pb_frame.cell_to_finest_pb,
+                    parents: &pb_frame.pb_parent_maps,
+                    edges: &edges,
+                };
+                pb_inclusion(&feature_axis, &units, &section_ids, args.inclusion_blocks)?
             };
             write_feature_inclusion(&c.out, &feature_names, &inc)?;
             Some(inc)
@@ -733,7 +677,6 @@ pub fn fit_cell_activity_graph_embedding(
         lora_spec,
         n_pb,
         embedding_dim,
-        e_pb_warm: e_pb_warm.as_ref(),
         varmap: &varmap,
         dev: &dev,
     })?;

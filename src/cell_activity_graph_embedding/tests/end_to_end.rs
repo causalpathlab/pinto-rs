@@ -52,11 +52,6 @@ fn feature_modules_train_and_write_their_tables() {
         let units = Mat::from_parquet(&format!("{out}.pb_embedding.parquet")).unwrap();
         let cell_level = name == "cell_modules";
         assert_eq!(units.mat.nrows() == 2 * 8 * 8, cell_level, "{name}");
-        assert_eq!(
-            std::path::Path::new(&format!("{out}.pseudobulk_cells.parquet")).exists(),
-            !cell_level,
-            "{name}"
-        );
     }
 }
 
