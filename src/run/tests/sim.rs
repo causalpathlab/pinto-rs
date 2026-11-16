@@ -127,7 +127,7 @@ fn a_simulate_call_takes_an_earlier_scenario_name() {
     let new = "donor-confounded-donor-only-cell-type";
     let old = params(json!({"scenario": "L2", "set": TINY})).unwrap();
     assert_eq!(old, params(json!({"scenario": new, "set": TINY})).unwrap());
-    let schema = specs();
+    let schema = specs(&crate::built_cli());
     let simulate = schema.iter().find(|t| t.name == "run_simulate").unwrap();
     let listed = &simulate.input_schema["properties"]["scenario"];
     assert!(
