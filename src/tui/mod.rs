@@ -6,6 +6,55 @@ pub(crate) mod browse;
 pub(crate) mod style;
 
 use std::path::Path;
+use std::sync::OnceLock;
+
+/// The `--max-threads` this pinto was started with, for the pinto
+/// commands it starts.
+static MAX_THREADS: OnceLock<usize> = OnceLock::new();
+
+/// Keep this pinto's `--max-threads`, once, for the commands it starts.
+pub(crate) fn keep_max_threads(n: usize) {
+    let _ = MAX_THREADS.set(n);
+}
+
+/// This pinto's `--max-threads`, when it was given other than the default.
+pub(crate) fn parent_max_threads() -> Option<usize> {
+    MAX_THREADS
+        .get()
+        .copied()
+        .filter(|&n| n != crate::util::common::DEFAULT_MAX_THREADS)
+}
+
+/// `argv`, a pinto command line without the program, given this pinto's
+/// `--max-threads` (see [`with_max_threads`]).
+pub(crate) fn inherit_max_threads(argv: &mut Vec<String>) {
+    if let Some(parent) = parent_max_threads() {
+        with_max_threads(argv, parent);
+    }
+}
+
+/// `argv` given `--max-threads={parent}` ahead of its command, so a pinto
+/// started from this one uses no more threads (and lc no more Gibbs
+/// blocks) than this one was told: unless `argv` gives its own count, or
+/// `parent` is the default the child takes anyway.
+fn with_max_threads(argv: &mut Vec<String>, parent: usize) {
+    const FLAG: &str = "--max-threads";
+    let own = argv
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == FLAG || a.starts_with(&format!("{FLAG}=")));
+    if !own && parent != crate::util::common::DEFAULT_MAX_THREADS {
+        argv.insert(0, flag_value(FLAG, parent));
+    }
+}
+
+/// [`legume_mcp::own_command`] for `argv`, given this pinto's
+/// `--max-threads` as [`inherit_max_threads`] gives it.
+pub(crate) fn own_command(argv: &[String]) -> anyhow::Result<std::process::Command> {
+    let mut argv = argv.to_vec();
+    inherit_max_threads(&mut argv);
+    legume_mcp::own_command(&argv)
+}
 
 /// The tool `pinto run` and `pinto view` sessions belong to: they are
 /// named `pinto-run-1`, `pinto-view-2`, and `pinto attach` finds them.

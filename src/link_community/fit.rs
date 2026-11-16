@@ -28,7 +28,7 @@ use crate::link_community::dict_merge::{
     remove_group_means,
 };
 use crate::link_community::feature_modules::{kcore_trim, leiden_feature_modules};
-use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler};
+use crate::link_community::gibbs::{ComponentGibbsArgs, LinkGibbsSampler, GIBBS_MIN_BLOCK_EDGES};
 use crate::link_community::incidence::{
     cell_incidence_scores, fit_log_incidence, pack_propensity_row_major,
 };
@@ -320,7 +320,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // 7. V-cycle cascade through the pyramid //
     ////////////////////////////////////////////
     let cell_names = data_vec.column_names()?;
-    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(c.seed));
+    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(c.seed))
+        .with_blocks(args.max_threads, GIBBS_MIN_BLOCK_EDGES);
 
     info!("Dirichlet prior on community sizes: α = {DIRICHLET_ALPHA}");
     let cascade_cfg = CascadeConfig {
@@ -517,7 +518,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     {
         use crate::util::metadata::{create_lc_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let meta = create_lc_metadata(
+        let mut meta = create_lc_metadata(
             &RunInputs {
                 prefix: &c.out,
                 data_files: &c.data_files,
@@ -546,6 +547,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 }),
             &cascade_level_indices,
         );
+        meta.max_threads = Some(args.max_threads);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!("Wrote {}", meta_path.display());

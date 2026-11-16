@@ -28,30 +28,30 @@ pub(crate) fn visible_flags(cmd: &clap::Command) -> Vec<String> {
 #[test]
 fn each_command_s_help_shows_a_short_list_of_flags() {
     const BUDGET: &[(&str, usize)] = &[
-        ("delta-svd", 22),
-        ("propensity", 9),
-        ("link-community", 22),
-        ("cage", 33),
-        ("cage-cell", 24),
-        ("predict", 21),
-        ("impute", 19),
-        ("lra", 19),
-        ("lra-simulate", 18),
-        ("residual", 8),
-        ("srt-simulate", 6),
-        ("srt-sim-score", 6),
-        ("srt-sim-pairs", 8),
-        ("srt-sim-baseline", 6),
-        ("spatialde2", 14),
-        ("stagate", 19),
-        ("spatialpca", 13),
-        ("mefisto", 13),
-        ("spatialde2-pb", 14),
-        ("spatialpca-pb", 14),
-        ("mefisto-pb", 14),
-        ("compare", 7),
+        ("delta-svd", 23),
+        ("propensity", 10),
+        ("link-community", 23),
+        ("cage", 34),
+        ("cage-cell", 25),
+        ("predict", 22),
+        ("impute", 20),
+        ("lra", 20),
+        ("lra-simulate", 19),
+        ("residual", 9),
+        ("srt-simulate", 7),
+        ("srt-sim-score", 7),
+        ("srt-sim-pairs", 9),
+        ("srt-sim-baseline", 7),
+        ("spatialde2", 15),
+        ("stagate", 20),
+        ("spatialpca", 14),
+        ("mefisto", 14),
+        ("spatialde2-pb", 15),
+        ("spatialpca-pb", 15),
+        ("mefisto-pb", 15),
+        ("compare", 8),
         #[cfg(feature = "view")]
-        ("view", 27),
+        ("view", 28),
     ];
     let mut cli = Cli::command();
     cli.build();
@@ -158,6 +158,45 @@ fn renamed_flags_parse_by_their_new_and_old_names() {
     }
 }
 
+/// `--max-threads` parses on any command, before or after it, and reaches
+/// lc, whose Gibbs blocks it sets.
+#[test]
+fn max_threads_is_one_flag_on_every_command_and_reaches_lc() {
+    let lc = |argv: &[&str]| {
+        let mut cli = Cli::try_parse_from(argv).unwrap();
+        pass_max_threads(&mut cli);
+        match cli.commands {
+            Commands::LinkCommunity(a) => a.max_threads,
+            other => panic!("{other:?}"),
+        }
+    };
+    let base = ["pinto", "lc", "d.zarr", "-o", "o"];
+    let default = crate::util::common::DEFAULT_MAX_THREADS;
+    assert_eq!(lc(&base), default);
+    assert_eq!(lc(&[&base[..], &["--max-threads", "40"]].concat()), 40);
+    assert_eq!(
+        lc(&[&["pinto", "--max-threads", "3"], &base[1..]].concat()),
+        3
+    );
+    assert!(Cli::try_parse_from([&base[..], &["--max-threads", "0"]].concat()).is_err());
+
+    let mut cli = Cli::command();
+    cli.build();
+    for sub in cli.get_subcommands().filter(|s| s.get_name() != "help") {
+        let arg = sub
+            .get_arguments()
+            .find(|a| a.get_long() == Some("max-threads"))
+            .unwrap_or_else(|| panic!("{} has no --max-threads", sub.get_name()));
+        assert!(!arg.is_hide_set(), "{} hides --max-threads", sub.get_name());
+        let shown: Vec<String> = arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(shown, [default.to_string()], "{}", sub.get_name());
+    }
+}
+
 /// Every flag a help page shows says what it does.
 #[test]
 fn every_shown_flag_has_a_help_line() {
@@ -214,6 +253,7 @@ fn cage_s_help_keeps_its_flag_order() {
         "feature_init_mode",
         "feature_modules",
         "verbose",
+        "max_threads",
     ];
     const FIRST: &[&str] = &[
         "data_files",

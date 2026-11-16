@@ -37,3 +37,37 @@ fn a_program_started_from_a_plain_session_is_plain_too() {
     let no_detach = std::ffi::OsString::from(legume_tui::NO_DETACH_VAR);
     assert_eq!(env.vars(), [(no_detach, std::ffi::OsString::from("1"))]);
 }
+
+#[test]
+fn a_child_pinto_takes_its_parent_s_max_threads_unless_it_has_its_own() {
+    let line = |argv: &[&str], parent| {
+        let mut argv: Vec<String> = argv.iter().map(ToString::to_string).collect();
+        with_max_threads(&mut argv, parent);
+        argv
+    };
+    let default = crate::util::common::DEFAULT_MAX_THREADS;
+    assert_eq!(
+        line(&["lc", "x.zarr", "--out=o"], 4),
+        ["--max-threads=4", "lc", "x.zarr", "--out=o"]
+    );
+    // its own count stands, in either spelling
+    assert_eq!(
+        line(&["lc", "--max-threads=8", "x.zarr"], 4),
+        ["lc", "--max-threads=8", "x.zarr"]
+    );
+    assert_eq!(
+        line(&["lc", "--max-threads", "8"], 4),
+        ["lc", "--max-threads", "8"]
+    );
+    // the default needs no flag; after `--` a word is no flag
+    assert_eq!(line(&["lc", "x.zarr"], default), ["lc", "x.zarr"]);
+    assert_eq!(
+        line(&["lra", "--", "--max-threads=8"], 4),
+        ["--max-threads=4", "lra", "--", "--max-threads=8"]
+    );
+    // as the child parses it
+    use clap::Parser;
+    let argv = line(&["lc", "x.zarr", "--out=o"], 4);
+    let cli = crate::Cli::try_parse_from(std::iter::once("pinto".to_string()).chain(argv)).unwrap();
+    assert_eq!(cli.max_threads, 4);
+}
