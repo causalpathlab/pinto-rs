@@ -6,8 +6,8 @@
 //! `run_fit`, the second stage of the two-stage fit.
 
 use super::mcp::{
-    as_run, background, in_background, launch, max_threads_arg, max_threads_flag, out_arg,
-    out_or_free, parsed, rooted,
+    as_run, atomic_outputs_arg, background, in_background, launch, max_threads_arg, out_arg,
+    out_or_free, parsed, rooted, shared_flags,
 };
 use super::script;
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
@@ -37,6 +37,8 @@ pub(super) struct ResidualToolArgs {
     pub feature_name_mode: Option<String>,
     #[serde(default)]
     pub max_threads: Option<usize>,
+    #[serde(default)]
+    pub atomic_outputs: Option<bool>,
     #[serde(default = "in_background")]
     pub background: bool,
 }
@@ -61,7 +63,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
             argv.push(flag_value(flag, v));
         }
     }
-    argv.extend(max_threads_flag(a.max_threads));
+    argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
     argv.push(flag_value("--out", out));
     Ok(argv)
 }
@@ -155,6 +157,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "adapt_cells": flag("adapt_cells", json!({"type": "number", "minimum": 0})),
                 "feature_name_mode": flag("feature_names", json!({"type": "string", "enum": choices::<FeatureNameMode>()})),
                 "max_threads": max_threads_arg(cli),
+                "atomic_outputs": atomic_outputs_arg(cli),
                 "background": background(),
             },
             "required": ["run"],

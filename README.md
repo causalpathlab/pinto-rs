@@ -77,6 +77,59 @@ changing lc's draws; it cannot raise them above it. The commands that
 `pinto run`, `pinto view` and `pinto mcp` start take their own
 `--max-threads` unless the job gives one.
 
+`--atomic-outputs` (off by default) makes a run's outputs complete or absent.
+The run writes them in a hidden folder beside their final place,
+`.{name}.partial-{pid}-{random}`, and renames them into place only when it
+succeeds. The files that mark a run complete come last: the manifest
+`{out}.pinto.json`, srt-simulate's `manifest.json`, residual's `residual.json`
+and a single lra-simulate scenario's `{out}.lra-simulate.json`. An earlier
+run's are taken away before the first output moves and the new ones put there
+after the last, so a manifest on disk means the run completed.
+
+Every command takes the flag. These stage their outputs: the fits (lc,
+delta-svd, propensity, cage, cage-cell, predict, impute and the spatial
+baselines, spatialde2, stagate, spatialpca, mefisto and their `-pb` forms),
+lra, lra-simulate, residual, srt-simulate, srt-sim-baseline, compare, and
+srt-sim-score and srt-sim-pairs when given an `--out`. The rest have nothing
+to stage: `pinto view` writes the stills it draws (`--png`, `--pdf`) in place,
+as without the flag, and `pinto run`, `pinto mcp`, attach, sessions, kill and
+rename write no outputs of their own.
+
+A run that fails or panics removes the hidden folder, with any folder it had
+to make above it, and leaves nothing under the final names; one that is killed
+leaves the hidden folder behind. Should the final move itself fail part way,
+the folder is kept with the outputs not yet moved, the markers and stores the
+move had taken aside are put back (a file already renamed over is not), and
+the error names the folder. The paths a run records (the
+manifest's outputs among them) and the paths its messages name are the final
+ones, and what it prints on stdout at its end comes once the outputs are in
+place. An earlier run's file that this run does not write is left as it was.
+
+Some places take no rename, and a run that would write there is refused. An
+earlier manifest that could only be written in place (a link, read-only,
+another user's or hard-linked) cannot be taken away and put back whole: a fit
+is refused at its start, before it does any work, and any run before its
+first output moves; move the manifest away, or run without the flag. So is an
+output whose final name is taken by a link, by a folder where a file would
+land or by a file where a folder would. Two runs with the flag must not write
+the same `--out` at the same time: each one's outputs are whole, but nothing
+keeps one run's manifest from landing beside the other's files.
+
+lra changes the manifest it records into (its `--from` run's, or the one at
+its `--out`) only once its own outputs are in place, on the manifest as it is
+then, so what other runs recorded meanwhile is kept; as without the flag, a
+manifest already there that cannot be changed costs a warning, and one that
+has to be made and cannot be is an error. srt-simulate and residual stage
+their folder, moved there whole when it is missing or empty, else file by file
+into it. A link to a folder, and an `--out` of `.` or `..`, are staged beside
+the folder they lead to (the folder a run stands in is filled, never
+replaced); the root, and a folder on another file system than the one it is
+in, are refused before the run starts. A job of a `pinto run` session takes
+the flag from the session, which has no row for it in a method's form. The
+`pinto mcp` tools that start a fit, a prediction, a simulation, a baseline, a
+residual, an lra or a comparison take `atomic_outputs`, true or false; left
+out, it is as the server was started.
+
 Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
 you supply, a two-column file of feature pairs named as the data's features
 (tab-separated, or comma-separated for `.csv`; lines naming features the data

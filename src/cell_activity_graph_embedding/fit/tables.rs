@@ -85,7 +85,10 @@ pub(super) fn write_trained_tables(
             (Some(&src_names), Some("source_dim")),
             Some(&embedding_col_names(embedding_dim)),
         )?;
-        info!("Wrote {}.adapter.parquet", c.out);
+        info!(
+            "Wrote {}.adapter.parquet",
+            crate::util::staging::final_str(&c.out)
+        );
     }
 
     b_feature_out.to_parquet_with_names(

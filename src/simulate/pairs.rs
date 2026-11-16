@@ -590,12 +590,12 @@ pub fn run_pairs(args: &SimPairsArgs) -> anyhow::Result<()> {
     let t = TruthSpots::read(&args.truth)?;
     let layout = SpotLayout::read(&args.truth, &t)?;
     let mut all = Vec::new();
-    println!("{}", pairs_header());
+    crate::util::staging::say(pairs_header());
     let mut failed = 0;
     for input in &args.vectors {
         match score_input(&t, &layout, input, &args.level, &o) {
             Ok((rows, record)) => {
-                rows.iter().for_each(|r| println!("{r}"));
+                rows.iter().for_each(crate::util::staging::say);
                 all.push(record);
             }
             Err(e) => {
@@ -606,6 +606,10 @@ pub fn run_pairs(args: &SimPairsArgs) -> anyhow::Result<()> {
     }
     if let Some(out) = &args.out {
         std::fs::write(out.as_ref(), serde_json::to_string_pretty(&all)?)?;
+    }
+    if failed != 0 {
+        // the rows that were scored are shown, as without staging
+        crate::util::staging::say_held();
     }
     anyhow::ensure!(failed == 0, "{failed} input(s) could not be scored");
     Ok(())

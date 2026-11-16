@@ -284,7 +284,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         );
         let meta_path = crate::util::metadata::manifest_path(&args.out);
         meta.write(std::path::Path::new(&meta_path))?;
-        info!("Wrote {meta_path}");
+        info!("Wrote {}", crate::util::staging::final_str(&meta_path));
     }
 
     info!("Done");

@@ -454,7 +454,7 @@ pub fn project_pairs(
                 stats.steps, stats.nll_per_count
             );
             enc.save(save_to)?;
-            info!("Wrote {save_to}");
+            info!("Wrote {}", crate::util::staging::final_str(save_to));
             project_with_encoder(&enc, &dict, &corpus, edges, args)?
         }
         PairSolver::LoadEncoder { path, dev } => {

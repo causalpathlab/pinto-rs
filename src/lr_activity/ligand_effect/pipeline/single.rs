@@ -273,6 +273,11 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
     let mut text = serde_json::to_string_pretty(&record)?;
     text.push('\n');
     reference::write_atomic(Path::new(&sidecar), text.as_bytes())?;
-    println!("lra-simulate: wrote {n1} planted and {n0} null runs to {table}, then {sidecar}");
+    let shown = crate::util::staging::final_str;
+    crate::util::staging::say(format!(
+        "lra-simulate: wrote {n1} planted and {n0} null runs to {}, then {}",
+        shown(&table),
+        shown(&sidecar)
+    ));
     Ok(())
 }

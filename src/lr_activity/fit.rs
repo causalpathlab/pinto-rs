@@ -378,14 +378,15 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         info!(
             "Wrote {} score rows to {}",
             score_rows.len(),
-            out_path.display()
+            crate::util::staging::final_path(&out_path).display()
         );
 
         // Back-fill the upstream manifest, the way the test path does for
         // its JSON sidecar, so a downstream reader can find this table
         // from the prefix alone rather than guessing the name.
+        let table = recorded(&out_path);
         crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| {
-            o.lr_scores = Some(recorded(&out_path))
+            o.lr_scores = Some(table)
         });
         return Ok(());
     }
@@ -612,7 +613,11 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         out_path.to_string_lossy().into_owned(),
         json_path.to_string_lossy().into_owned(),
     );
-    info!("Writing {} rows to {}", rows.len(), out_path);
+    info!(
+        "Writing {} rows to {}",
+        rows.len(),
+        crate::util::staging::final_str(&out_path)
+    );
     write_lr_activity(&out_path, &rows)?;
 
     if args.emit_json {
@@ -626,10 +631,11 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             &strata,
             args.json_fwer_threshold,
         )?;
-        info!("Wrote {}", json_path);
+        info!("Wrote {}", crate::util::staging::final_str(&json_path));
 
+        let json = recorded(std::path::Path::new(&json_path));
         crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| {
-            o.lr_activity = Some(recorded(std::path::Path::new(&json_path)))
+            o.lr_activity = Some(json)
         });
     }
 
@@ -718,15 +724,19 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
     let out = input.out(args.out.as_deref())?;
     mkdir_parent(&out)?;
     if single.is_some() {
+        // the outputs' final names, which a staged `out` stands for
+        let at_final = crate::util::staging::final_str(&out);
         if let Some(run) = &input.run {
             anyhow::ensure!(
-                !same_prefix(&out, &run.prefix),
-                "--out {out} is the --from run's prefix, whose {{prefix}}.lra-simulate.parquet is \
+                !same_prefix(&at_final, &run.prefix),
+                "--out {at_final} is the --from run's prefix, whose {{prefix}}.lra-simulate.parquet is \
                  the built-in grid's; give a single scenario a prefix of its own"
             );
         }
         // Before any data is read, so a call that fails there leaves no
-        // earlier call's outputs to pass for its own.
+        // earlier call's outputs to pass for its own. A staged call clears
+        // nothing at the final names: its outputs replace the earlier
+        // call's when it is done, the sidecar taken away first.
         clear_single_outputs(&out)?;
     }
     let contacts = load_contacts(&input)?;

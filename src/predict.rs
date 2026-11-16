@@ -597,7 +597,7 @@ pub fn predict_cage(
             info!(
                 "{n_init} features the model never saw were initialized through its modules and \
                  join the partition axis (see {}.feature_embedding_init.parquet)",
-                c.out
+                crate::util::staging::final_str(&c.out)
             );
         } else {
             info!(
@@ -827,7 +827,7 @@ pub fn predict_cage(
     meta.outputs.pair_encoder = None;
     let meta_path = crate::util::metadata::manifest_path(&c.out);
     meta.write(Path::new(&meta_path))?;
-    info!("Wrote {meta_path}");
+    info!("Wrote {}", crate::util::staging::final_str(&meta_path));
     info!("Done");
     Ok((propensity, cell_names))
 }
@@ -915,7 +915,10 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
             count
         );
     }
-    info!("Wrote {out}.predictive.parquet");
+    info!(
+        "Wrote {}.predictive.parquet",
+        crate::util::staging::final_str(out)
+    );
     Ok(())
 }
 

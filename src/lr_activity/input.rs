@@ -255,11 +255,12 @@ fn missing(manifest: &Path, file: &str, what: &str) -> anyhow::Error {
 }
 
 impl LraInput {
-    /// The output prefix: `--out`, else the run's prefix.
+    /// The output prefix: `--out`, else the run's prefix (staged under
+    /// `--atomic-outputs`, as `--out` is before the command runs).
     pub fn out(&self, out: Option<&str>) -> anyhow::Result<String> {
         match (out, &self.run) {
             (Some(o), _) => Ok(o.to_string()),
-            (None, Some(r)) => Ok(r.prefix.clone()),
+            (None, Some(r)) => crate::util::staging::stage_later(&r.prefix),
             (None, None) => anyhow::bail!("--out is required without --from"),
         }
     }
@@ -693,12 +694,15 @@ pub fn record_manifest(
     if let Some(r) = &input.run {
         return Ok(r.manifest.clone());
     }
-    let path = PathBuf::from(crate::util::metadata::manifest_path(out));
+    // at its final name: under `--atomic-outputs` it is written, and what
+    // lra records in it, when the outputs are in place
+    let out = crate::util::staging::final_str(out);
+    let path = PathBuf::from(crate::util::metadata::manifest_path(&out));
     PintoMetadata {
         command: "lra".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         timestamp: crate::util::metadata::now_secs(),
-        prefix: out.into(),
+        prefix: out,
         data_files: Some(input.data_files.iter().map(|s| s.to_string()).collect()),
         coord_file: Some(input.coord_files.join(",")),
         n_cells: contacts.data.num_columns(),

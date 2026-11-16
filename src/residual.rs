@@ -250,7 +250,7 @@ impl Plan {
     pub fn new(run: &Run, args: &ResidualArgs) -> anyhow::Result<Self> {
         // a file at -o or above it would make every path under it read as
         // free, and the run would fail only when it writes
-        if let Some(file) = Path::new(args.out.as_ref())
+        if let Some(file) = crate::util::staging::final_path(Path::new(args.out.as_ref()))
             .ancestors()
             .find(|p| p.exists())
             .filter(|p| !p.is_dir())
@@ -282,9 +282,11 @@ impl Plan {
             .collect()
     }
 
-    /// Refused when anything it writes is there already.
+    /// Refused when anything it writes is there already (at its final
+    /// name, under `--atomic-outputs`).
     fn ensure_unwritten(&self) -> anyhow::Result<()> {
         for path in self.made() {
+            let path = crate::util::staging::final_path(&path);
             anyhow::ensure!(
                 !path.exists(),
                 "{} exists: nothing is written over; give another -o",
@@ -704,8 +706,11 @@ fn residual_marker(
 }
 
 fn summary_path(out: &str) -> String {
-    in_dir(out, "residual.json")
+    in_dir(out, MARKER)
 }
+
+/// The marker's file name: written last, it marks the residual whole.
+pub const MARKER: &str = "residual.json";
 
 /// Each data file's residual zarr under `out`, checked not to be its input.
 fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
@@ -717,8 +722,10 @@ fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
         })
         .collect::<anyhow::Result<_>>()?;
     for (o, f) in outputs.iter().zip(files) {
+        // its final name, under --atomic-outputs
+        let o = crate::util::staging::final_str(o);
         anyhow::ensure!(
-            !same_file(Path::new(o), Path::new(f.as_ref())),
+            !same_file(Path::new(&o), Path::new(f.as_ref())),
             "{o} is the input {f}; give -o a directory apart from the data"
         );
     }
@@ -767,9 +774,10 @@ fn write_file(
     crate::simulate::write::write_backend(out_file, rows, &barcodes, triplets)?;
     write_section_coords(&coords_path(out_file), &coords, coord_names)?;
     info!(
-        "{f}: {} cells, {counts_in:.0} counts, {excess_out:.0} ({:.1}%) left as excess in {out_file}",
+        "{f}: {} cells, {counts_in:.0} counts, {excess_out:.0} ({:.1}%) left as excess in {}",
         barcodes.len(),
-        100.0 * excess_out / counts_in.max(1.0)
+        100.0 * excess_out / counts_in.max(1.0),
+        crate::util::staging::final_str(out_file)
     );
     Ok(FileSummary {
         data_file: f.into(),

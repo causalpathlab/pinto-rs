@@ -228,7 +228,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
 /// path absolute ([`crate::lr_activity::recorded`]).
 pub(super) fn record(
     manifest: &Path,
-    set: impl FnOnce(&mut crate::util::metadata::LraFiles),
+    set: impl FnOnce(&mut crate::util::metadata::LraFiles) + Send + 'static,
 ) -> anyhow::Result<()> {
     crate::util::metadata::PintoMetadata::backfill(manifest, |m| {
         set(&mut m.outputs.lra);
@@ -418,25 +418,28 @@ fn record_tables(
         marginal_baselines: celltype.map(|(_, m)| m.labels.source.name().into()),
         ..a.options()
     };
+    let (table, curve) = (recorded(path), recorded(curve_path));
+    let celltype = celltype.map(|(p, _)| recorded(p));
     if a.only.is_empty() {
+        let reference = prep
+            .reference_record
+            .as_deref()
+            .map(crate::lr_activity::recorded);
         record(a.manifest, |o| {
-            o.table = Some(recorded(path));
-            o.curve = Some(recorded(curve_path));
-            o.celltype = celltype.map(|(p, _)| recorded(p));
+            o.table = Some(table);
+            o.curve = Some(curve);
+            o.celltype = celltype;
             o.record_options(options);
-            o.reference = prep
-                .reference_record
-                .as_deref()
-                .map(crate::lr_activity::recorded);
+            o.reference = reference;
         })
     } else {
         let entry = crate::util::metadata::LraSubset {
             only: only::canonical(a.only),
             pairs: prep.pairs.len(),
             of: prep.n_all,
-            table: recorded(path),
-            curve: recorded(curve_path),
-            celltype: celltype.map(|(p, _)| recorded(p)),
+            table,
+            curve,
+            celltype,
             options: Some(options),
         };
         record(a.manifest, |o| o.record_subset(entry))
@@ -475,8 +478,9 @@ fn write_tables(
         output::write_celltype(&celltype_path, &table)?;
         info!(
             target: LOG_TARGET,
-            "Wrote {} tested type pairs to {celltype_path}",
-            table.len()
+            "Wrote {} tested type pairs to {}",
+            table.len(),
+            crate::util::staging::final_str(&celltype_path)
         );
     }
     let celltype = marginal.map(|m| (celltype_path.as_str(), m));
@@ -489,12 +493,12 @@ fn print_run_summary(a: &Settings<'_>, rows: &[rows::EffectRow], path: &str, q_s
     let power_check = crate::util::metadata::PintoMetadata::read(a.manifest)
         .ok()
         .and_then(|m| m.outputs.lra.simulate);
-    println!(
-        "{}",
-        output::console_summary(rows, path, power_check.as_deref())
-    );
+    let path = crate::util::staging::final_str(path);
+    crate::util::staging::say(output::console_summary(rows, &path, power_check.as_deref()));
     if !a.only.is_empty() {
-        println!("  {q_scope}; the full table, when there is one, is unchanged");
+        crate::util::staging::say(format!(
+            "  {q_scope}; the full table, when there is one, is unchanged"
+        ));
     }
 }
 
@@ -800,10 +804,13 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
     pb.finish();
     let path = output::lra_simulate_path(a.out);
     output::write_sim(&path, &rows, a.plant_region)?;
-    record(a.manifest, |o| {
-        o.simulate = Some(crate::lr_activity::recorded(Path::new(&path)))
-    })?;
-    println!("{}", output::sim_summary(&rows, a.plant_region));
-    println!("lra-simulate: wrote {} runs to {path}", rows.len());
+    let table = crate::lr_activity::recorded(Path::new(&path));
+    record(a.manifest, |o| o.simulate = Some(table))?;
+    crate::util::staging::say(output::sim_summary(&rows, a.plant_region));
+    crate::util::staging::say(format!(
+        "lra-simulate: wrote {} runs to {}",
+        rows.len(),
+        crate::util::staging::final_str(&path)
+    ));
     Ok(())
 }

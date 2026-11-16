@@ -66,6 +66,26 @@ fn pinto(dir: &Path, args: &[&str]) {
         "pinto {args:?} failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // under --atomic-outputs no message names a staged path
+    for said in [&out.stdout, &out.stderr] {
+        let said = String::from_utf8_lossy(said);
+        assert!(!said.contains(".partial-"), "pinto {args:?} said:\n{said}");
+    }
+}
+
+/// Every name in `dir` that is a staging folder, and every JSON file there
+/// that names one.
+fn staged(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            let json = p.extension().is_some_and(|x| x == "json");
+            p.to_string_lossy().contains(".partial-")
+                || (json && std::fs::read_to_string(p).unwrap().contains(".partial-"))
+        })
+        .map(|p| p.display().to_string())
+        .collect()
 }
 
 fn manifest(prefix: &str) -> serde_json::Value {
@@ -73,20 +93,17 @@ fn manifest(prefix: &str) -> serde_json::Value {
     serde_json::from_str(&text).unwrap()
 }
 
-#[test]
-fn a_cage_model_predicts_and_imputes_a_new_sample() {
-    let dir = tempfile::tempdir().unwrap();
-    let d = dir.path();
+/// What every step reads the data with.
+const SMALL: [&str; 5] = ["--coord-column-names", "x,y", "-k", "4", "--no-qc"];
+
+/// A cage run trained in `d` at `{d}/model`, each command given `extra`.
+/// The query section's data and coordinates, and the model's prefix.
+fn train(d: &Path, extra: &[&str]) -> (String, String, String) {
     let (train, train_xy) = write_section(d, "train", 16, 1);
     let (query, query_xy) = write_section(d, "query", 10, 2);
     let model = d.join("model").to_string_lossy().into_owned();
-    let pred = d.join("pred").to_string_lossy().into_owned();
-    let imputed = d.join("imp").to_string_lossy().into_owned();
-    // What every step reads the data with.
-    let small = ["--coord-column-names", "x,y", "-k", "4", "--no-qc"];
-
     let mut fit = vec!["cage", &train, "-c", &train_xy, "-o", &model];
-    fit.extend(small);
+    fit.extend(SMALL);
     fit.extend([
         "--epochs",
         "1",
@@ -101,14 +118,31 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
         "--seed",
         "7",
     ]);
+    fit.extend(extra);
     pinto(d, &fit);
     assert_eq!(manifest(&model)["command"], "cage");
+    (query, query_xy, model)
+}
 
-    let mut predict = vec![
-        "predict", &query, "-c", &query_xy, "--model", &model, "-o", &pred,
-    ];
-    predict.extend(small);
-    pinto(d, &predict);
+/// `command` (predict or impute) on the query section with the model
+/// `named`, writing `out`, given `extra`.
+fn apply(d: &Path, command: &str, query: (&str, &str), named: &str, out: &str, extra: &[&str]) {
+    let mut argv = vec![command, query.0, "-c", query.1, "--model", named, "-o", out];
+    argv.extend(SMALL);
+    argv.extend(extra);
+    pinto(d, &argv);
+}
+
+#[test]
+fn a_cage_model_predicts_and_imputes_a_new_sample() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (query, query_xy, model) = train(d, &[]);
+    let query = (query.as_str(), query_xy.as_str());
+    let pred = d.join("pred").to_string_lossy().into_owned();
+    let imputed = d.join("imp").to_string_lossy().into_owned();
+
+    apply(d, "predict", query, &model, &pred, &[]);
     let made = manifest(&pred);
     assert_eq!(made["command"], "predict");
     for table in [
@@ -138,11 +172,7 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
 
     // Imputed by the model's prefix, and by its manifest: the same model.
     let impute = |named: &str, out: &str| {
-        let mut argv = vec![
-            "impute", &query, "-c", &query_xy, "--model", named, "-o", out,
-        ];
-        argv.extend(small);
-        pinto(d, &argv);
+        apply(d, "impute", query, named, out, &[]);
         read_rows(&format!("{out}.imputed.parquet"), |_| true)
     };
     let (cells, counts) = impute(&model, &imputed);
@@ -150,6 +180,31 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
     assert_eq!(counts[0].len(), FEATURES);
     let by_manifest = d.join("imp2").to_string_lossy().into_owned();
     assert!(impute(&format!("{model}.pinto.json"), &by_manifest) == (cells, counts));
+}
+
+/// The same three steps under `--atomic-outputs`: each lands its outputs
+/// whole, records their final paths and leaves no staging folder.
+#[test]
+fn cage_predict_and_impute_land_whole_under_atomic_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let atomic = ["--atomic-outputs", "--verbose"];
+    let (query, query_xy, model) = train(d, &atomic);
+    let query = (query.as_str(), query_xy.as_str());
+    let pred = d.join("pred").to_string_lossy().into_owned();
+    let imputed = d.join("imp").to_string_lossy().into_owned();
+    apply(d, "predict", query, &model, &pred, &atomic);
+    apply(d, "impute", query, &model, &imputed, &atomic);
+    for (prefix, table) in [
+        (&model, "propensity"),
+        (&pred, "propensity"),
+        (&imputed, "imputed"),
+    ] {
+        assert_eq!(manifest(prefix)["prefix"], prefix.as_str());
+        let path = format!("{prefix}.{table}.parquet");
+        assert!(Path::new(&path).is_file(), "{path} not written");
+    }
+    assert_eq!(staged(d), Vec::<String>::new());
 }
 
 /// A parquet table's row names and the columns `keep` picks by name, row

@@ -119,7 +119,10 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
                 );
             }
             pretrained::write_init_report(&c.out, &pre.records)?;
-            info!("Wrote {}.feature_embedding_init.parquet", c.out);
+            info!(
+                "Wrote {}.feature_embedding_init.parquet",
+                crate::util::staging::final_str(&c.out)
+            );
             Some(pre)
         }
     };

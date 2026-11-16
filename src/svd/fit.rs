@@ -383,7 +383,10 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         });
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
-        info!("Wrote {}", meta_path.display());
+        info!(
+            "Wrote {}",
+            crate::util::staging::final_path(&meta_path).display()
+        );
     }
 
     info!("Done");

@@ -478,7 +478,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
 pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
     let t = TruthSpots::read(&args.truth)?;
     let mut all = Vec::new();
-    println!("{}", table_header());
+    crate::util::staging::say(table_header());
     let mut failed = 0;
     for input in &args.labels {
         let s =
@@ -494,12 +494,16 @@ pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
             log::warn!("{input}: {w}");
         }
         for row in table_rows(input, &s) {
-            println!("{row}");
+            crate::util::staging::say(row);
         }
         all.push(serde_json::json!({ "labels": input.as_ref(), "level": args.level, "score": s }));
     }
     if let Some(out) = &args.out {
         std::fs::write(out.as_ref(), serde_json::to_string_pretty(&all)?)?;
+    }
+    if failed != 0 {
+        // the rows that were scored are shown, as without staging
+        crate::util::staging::say_held();
     }
     anyhow::ensure!(failed == 0, "{failed} labelling(s) could not be scored");
     Ok(())

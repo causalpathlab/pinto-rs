@@ -38,6 +38,7 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
         donor_map: None,
         bootstrap: None,
         max_threads: None,
+        atomic_outputs: None,
     };
     assert_eq!(default_name(&args), "run.draft_vs_other");
 }
@@ -345,8 +346,12 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
         for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
             let id = arg.get_id().as_str();
             // The run and where it is written are the tool's own to explain.
-            // max_threads defaults to the server's own, not clap's.
-            if matches!(id, "from" | "run" | "out" | "max_threads") {
+            // max_threads and atomic_outputs default to the server's own,
+            // not clap's.
+            if matches!(
+                id,
+                "from" | "run" | "out" | "max_threads" | "atomic_outputs"
+            ) {
                 continue;
             }
             let Some(p) = props.get(id) else { continue };
@@ -431,13 +436,13 @@ const MIRRORS: &[Mirror] = &[
         "run_sim_score",
         "srt-sim-score",
         &[],
-        &["out", "max_threads"],
+        &["out", "max_threads", "atomic_outputs"],
     ),
     (
         "run_sim_pairs",
         "srt-sim-pairs",
         &[],
-        &["out", "max_threads"],
+        &["out", "max_threads", "atomic_outputs"],
     ),
     (
         "run_sim_baseline",
@@ -479,6 +484,86 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
             .collect();
         visible.sort();
         assert_eq!(fields, visible, "{tool} against pinto {command}");
+    }
+}
+
+/// A tool's `atomic_outputs` reaches the child pinto as `--atomic-outputs`,
+/// which the command parses; left out, the child has none of its own. Every
+/// tool that starts a command builds its line through [`shared_flags`].
+#[test]
+fn atomic_outputs_reaches_the_child_s_command_line() {
+    use super::super::{lra, residual, sim};
+    let cli = crate::built_cli();
+    assert_eq!(
+        shared_flags(Some(3), Some(true)).collect::<Vec<_>>(),
+        ["--max-threads=3", "--atomic-outputs"]
+    );
+    assert_eq!(shared_flags(None, None).count(), 0);
+    assert_eq!(shared_flags(None, Some(false)).count(), 0);
+    // left out, it is the server's own; given, true or false, the tool's
+    crate::util::staging::ENABLED_HERE.set(true);
+    let under_the_flag = [None, Some(true), Some(false)].map(|on| shared_flags(None, on).count());
+    crate::util::staging::ENABLED_HERE.set(false);
+    assert_eq!(under_the_flag, [1, 1, 0]);
+    // each command line with the field given and left out
+    let lines = |on: bool| -> Vec<Vec<String>> {
+        let with = |mut v: Value| {
+            if on {
+                v["atomic_outputs"] = json!(true);
+            }
+            v
+        };
+        let baseline: sim::SimBaselineToolArgs =
+            serde_json::from_value(with(json!({"truth": "t"}))).unwrap();
+        let simulate: sim::SimulateToolArgs = serde_json::from_value(with(json!({}))).unwrap();
+        let res: residual::ResidualToolArgs =
+            serde_json::from_value(with(json!({"run": "r"}))).unwrap();
+        let lra_a: lra::LraToolArgs =
+            crate::mcp::parse(with(json!({"run": "r", "lr_pairs": "p.tsv"}))).unwrap();
+        let lra_sim: lra::LraSimulateToolArgs =
+            crate::mcp::parse(with(json!({"run": "r", "species": "human"}))).unwrap();
+        vec![
+            sim::baseline_argv(&baseline, "t", "o.tsv"),
+            sim::simulate_argv(&simulate, "o"),
+            residual::residual_argv(&res, "o").unwrap(),
+            lra::lra_argv(
+                &lra_a,
+                crate::lr_activity::args::LraMethod::CoexpressionScores,
+                Some("/p/r.pinto.json"),
+                "/p/o",
+            ),
+            lra::lra_simulate_argv(&lra_sim, Some("/p/r.pinto.json"), "/p/o"),
+        ]
+    };
+    for argv in lines(true) {
+        let n = argv.iter().filter(|a| *a == "--atomic-outputs").count();
+        assert_eq!(n, 1, "{argv:?}");
+        checked(&cli, &argv).unwrap();
+    }
+    for argv in lines(false) {
+        assert!(
+            !argv.iter().any(|a| a.contains("atomic-outputs")),
+            "{argv:?}"
+        );
+    }
+
+    for tool in [
+        "run_fit",
+        "run_predict",
+        "run_compare",
+        "run_lra",
+        "run_lra_simulate",
+        "run_residual",
+        "run_simulate",
+        "run_sim_baseline",
+    ] {
+        let spec = all_tools().into_iter().find(|t| t.name == tool).unwrap();
+        let said = spec.input_schema["properties"]["atomic_outputs"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tool} has no atomic_outputs"))
+            .to_string();
+        let tail = format!("(--atomic-outputs) {}", super::SERVER_ATOMIC_OUTPUTS);
+        assert!(said.ends_with(&tail), "{tool}: {said}");
     }
 }
 
@@ -559,6 +644,7 @@ fn run_methods_lists_exactly_each_method_s_visible_flags() {
                     "version",
                     "verbose",
                     "max-threads",
+                    "atomic-outputs",
                 ]
                 .contains(l)
             })

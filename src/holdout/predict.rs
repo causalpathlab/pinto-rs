@@ -514,7 +514,7 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
     };
     let meta_path = crate::util::metadata::manifest_path(&c.out);
     out_meta.write(Path::new(&meta_path))?;
-    info!("Wrote {meta_path}");
+    info!("Wrote {}", crate::util::staging::final_str(&meta_path));
     Ok((prop, cells))
 }
 
@@ -676,6 +676,6 @@ fn write_predictive(
             ("community".into(), Column::I64(&community)),
         ],
     )?;
-    info!("Wrote {path}");
+    info!("Wrote {}", crate::util::staging::final_str(&path));
     Ok(())
 }

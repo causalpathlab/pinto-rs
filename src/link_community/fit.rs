@@ -475,7 +475,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             } else {
                 "draft"
             },
-            prefix
+            crate::util::staging::final_str(prefix)
         );
         write_partition(prefix, &draft, &partition_inputs, &final_membership)
     };
@@ -499,7 +499,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             write_draft(&draft_prefix)?;
             info!(
                 "Writing final outputs (propensity, feature_community, link_community) → {}.*",
-                c.out
+                crate::util::staging::final_str(&c.out)
             );
             write_partition_outputs(
                 &c.out,
@@ -550,7 +550,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         meta.max_threads = Some(args.max_threads);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
-        info!("Wrote {}", meta_path.display());
+        info!(
+            "Wrote {}",
+            crate::util::staging::final_path(&meta_path).display()
+        );
     }
 
     info!("Done");

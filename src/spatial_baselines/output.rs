@@ -247,6 +247,9 @@ pub fn write_run(
         ..Default::default()
     };
     meta.write(std::path::Path::new(&manifest_path(prefix)))?;
-    log::info!("wrote {}", manifest_path(prefix));
+    log::info!(
+        "wrote {}",
+        crate::util::staging::final_str(&manifest_path(prefix))
+    );
     Ok(())
 }

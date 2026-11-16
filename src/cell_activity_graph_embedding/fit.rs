@@ -472,7 +472,10 @@ pub fn fit_cell_activity_graph_embedding(
             (Some(&cell_names), Some("cell")),
             Some(&cols),
         )?;
-        info!("Wrote {}.pseudobulk_cells.parquet", c.out);
+        info!(
+            "Wrote {}.pseudobulk_cells.parquet",
+            crate::util::staging::final_str(&c.out)
+        );
     }
 
     // Each feature's probability of spatial signal, which each epoch
@@ -972,7 +975,10 @@ pub fn fit_cell_activity_graph_embedding(
         (Some(&cell_names), Some("cell")),
         Some(&embedding_col_names(cell_latent.ncols())),
     )?;
-    info!("Wrote {}.cell_embedding.parquet", c.out);
+    info!(
+        "Wrote {}.cell_embedding.parquet",
+        crate::util::staging::final_str(&c.out)
+    );
 
     // Metadata
     {
@@ -998,7 +1004,10 @@ pub fn fit_cell_activity_graph_embedding(
         meta.cell_level = args.cell_level;
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
-        info!("Wrote {}", meta_path.display());
+        info!(
+            "Wrote {}",
+            crate::util::staging::final_path(&meta_path).display()
+        );
     }
 
     info!("Done");
@@ -1026,7 +1035,10 @@ fn write_feature_inclusion(
             ("pi".into(), Column::F32(&inc.pi)),
         ],
     )?;
-    info!("Wrote {out}.feature_inclusion.parquet");
+    info!(
+        "Wrote {}.feature_inclusion.parquet",
+        crate::util::staging::final_str(out)
+    );
     Ok(())
 }
 

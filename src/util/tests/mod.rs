@@ -12,4 +12,5 @@ mod knn_resolution;
 mod manifest_update;
 mod metadata;
 mod parquet_io;
+mod staging;
 mod threads;

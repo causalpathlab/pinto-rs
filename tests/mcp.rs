@@ -4,6 +4,7 @@
 #![cfg(feature = "view")]
 
 mod common;
+mod reference;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -24,7 +25,13 @@ impl Client {
 
     /// The server with `env` set, for it and the children it runs.
     fn start_with(dir: &std::path::Path, env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        Self::start_as(dir, &[], env)
+    }
+
+    /// The server started as `pinto {flags} mcp`, with `env` set.
+    fn start_as(dir: &std::path::Path, flags: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_pinto"))
+            .args(flags)
             .arg("mcp")
             .envs(env.iter().copied())
             .current_dir(dir)
@@ -474,8 +481,14 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
     // A fit that fails says so: at once, or through its job.
     let msg = c.fails("run_fit", fit(json!({"background": false})));
     assert!(msg.contains("nowhere.zarr.zip"), "{msg}");
+    // --atomic-outputs is the tool's own field, as --max-threads is.
+    let msg = c.fails("run_fit", fit(json!({"flags": {"atomic-outputs": true}})));
+    assert!(msg.contains("as atomic_outputs, not as a flag"), "{msg}");
     // In the background unless asked otherwise.
-    let (job, _) = c.ok("run_fit", fit(json!({"out": "fits/b"})));
+    let (job, _) = c.ok(
+        "run_fit",
+        fit(json!({"out": "fits/b", "atomic_outputs": true})),
+    );
     let id = job["job"].as_str().unwrap().to_string();
     // Paths go from the root, so the records replay it from the project.
     let command = job["command"].as_str().unwrap();
@@ -483,6 +496,7 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
         command.starts_with("pinto lc /") && command.contains("/nowhere.zarr.zip"),
         "{command}"
     );
+    assert!(command.ends_with(" --atomic-outputs"), "{command}");
     assert!(job["writes"][0]
         .as_str()
         .unwrap()
@@ -514,7 +528,14 @@ fn an_agent_compares_two_runs() {
     let out = dir.path().join("cmp").to_string_lossy().into_owned();
     let (same, _) = c.ok(
         "run_compare",
-        json!({"a": prefix, "b": format!("{prefix}.propensity.parquet"), "out": out}),
+        json!({"a": prefix, "b": format!("{prefix}.propensity.parquet"), "out": out,
+               "atomic_outputs": true}),
+    );
+    assert!(
+        same["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("--atomic-outputs")),
+        "{same}"
     );
     assert_eq!(same["ari"], 1.0);
     assert_eq!(same["n_shared"], 100);
@@ -530,6 +551,44 @@ fn an_agent_compares_two_runs() {
             json!({"a": prefix, "b": prefix, "level_b": "L9", "out": "x"})
         )
         .contains("L9"));
+}
+
+/// A server started with `--atomic-outputs` gives the flag to the runs its
+/// tools start, once; a tool's own `atomic_outputs` says otherwise, on or
+/// off.
+#[test]
+fn a_server_started_with_atomic_outputs_gives_it_to_its_tools_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = common::write_run(dir.path(), 100);
+    let mut c = Client::start_as(dir.path(), &["--atomic-outputs"], &[]);
+    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    for (name, own, flagged) in [
+        ("unsaid", None, 1),
+        ("on", Some(true), 1),
+        ("off", Some(false), 0),
+    ] {
+        let out = dir.path().join(name).to_string_lossy().into_owned();
+        let mut args = json!({"a": prefix, "b": prefix, "out": out});
+        if let Some(own) = own {
+            args["atomic_outputs"] = own.into();
+        }
+        let (reply, _) = c.ok("run_compare", args);
+        let command = reply["command"].as_str().unwrap();
+        assert_eq!(
+            command.matches("--atomic-outputs").count(),
+            flagged,
+            "{name}: {command}"
+        );
+        assert!(Path::new(&format!("{out}.compare.json")).is_file());
+        assert!(Path::new(&format!("{out}.contingency.parquet")).is_file());
+    }
+    // nothing is left staged beside the comparisons
+    let left: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".partial-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 #[test]
@@ -660,7 +719,7 @@ fn an_agent_sets_up_a_ligand_receptor_analysis() {
 #[test]
 fn a_single_scenario_takes_a_prefix_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
-    let reference = empty_reference(dir.path());
+    let reference = reference::empty_reference(dir.path());
     let mut c = Client::start_with(
         dir.path(),
         &[
@@ -868,29 +927,6 @@ fn an_agent_simulates_looks_and_scores() {
     assert!(!msg.contains("give another out"), "{msg}");
 }
 
-/// A ligand-effect reference cache with no pairs and no programmes, so
-/// lra runs offline on the pairs and programmes a test gives it.
-fn empty_reference(dir: &Path) -> std::path::PathBuf {
-    let root = dir.join("reference");
-    let built = root.join("built").join("r2-all");
-    std::fs::create_dir_all(&built).unwrap();
-    std::fs::create_dir_all(root.join("downloads")).unwrap();
-    for tag in ["human", "mouse"] {
-        std::fs::write(
-            built.join(format!("lr_pairs.{tag}.tsv")),
-            "ligand\treceptor\n",
-        )
-        .unwrap();
-        std::fs::write(
-            built.join(format!("receptor_targets.{tag}.tsv")),
-            "receptor\ttarget\tweight\n",
-        )
-        .unwrap();
-    }
-    std::fs::write(built.join("reference.json"), "{}").unwrap();
-    root
-}
-
 /// One ligand-receptor pair and its response programme, from a
 /// simulation's truth genes: the programme is the genes of the first
 /// planted cell state's programme, and the ligand and receptor two genes
@@ -930,7 +966,7 @@ fn pair_from_truth(sim: &Path, dir: &Path) -> (String, String) {
 #[test]
 fn an_agent_fits_the_residual_of_a_simulation() {
     let dir = tempfile::tempdir().unwrap();
-    let reference = empty_reference(dir.path());
+    let reference = reference::empty_reference(dir.path());
     let mut c = Client::start_with(
         dir.path(),
         &[

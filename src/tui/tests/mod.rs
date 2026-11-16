@@ -39,6 +39,50 @@ fn a_program_started_from_a_plain_session_is_plain_too() {
 }
 
 #[test]
+fn a_child_pinto_takes_its_parent_s_atomic_outputs_once() {
+    let line = |argv: &[&str]| {
+        let mut argv: Vec<String> = argv.iter().map(ToString::to_string).collect();
+        with_atomic_outputs(&mut argv);
+        argv
+    };
+    assert_eq!(
+        line(&["lc", "x.zarr", "--out=o"]),
+        ["--atomic-outputs", "lc", "x.zarr", "--out=o"]
+    );
+    assert_eq!(
+        line(&["lc", "--atomic-outputs", "x.zarr"]),
+        ["lc", "--atomic-outputs", "x.zarr"]
+    );
+    // after `--` a word is no flag
+    assert_eq!(
+        line(&["lra", "--", "--atomic-outputs"]),
+        ["--atomic-outputs", "lra", "--", "--atomic-outputs"]
+    );
+    use clap::Parser;
+    let argv = line(&["lc", "x.zarr", "--out=o"]);
+    let cli = crate::Cli::try_parse_from(std::iter::once("pinto".to_string()).chain(argv)).unwrap();
+    assert!(cli.atomic_outputs);
+}
+
+/// A job of a session started with `--atomic-outputs` takes the flag; a
+/// command a server's tool starts is given it by the tool, which may also
+/// leave it out, so none is added to it here.
+#[test]
+fn a_session_s_job_takes_its_atomic_outputs_and_a_tool_s_command_its_own() {
+    let line = || vec!["lc".to_string(), "x.zarr".to_string()];
+    let (mut plain, mut atomic) = (line(), line());
+    inherit_flags(&mut plain);
+    crate::util::staging::ENABLED_HERE.set(true);
+    inherit_flags(&mut atomic);
+    let started = own_command(&line()).unwrap();
+    crate::util::staging::ENABLED_HERE.set(false);
+    assert_eq!(plain, ["lc", "x.zarr"]);
+    assert_eq!(atomic, ["--atomic-outputs", "lc", "x.zarr"]);
+    let args: Vec<_> = started.get_args().collect();
+    assert_eq!(args, ["lc", "x.zarr"]);
+}
+
+#[test]
 fn a_child_pinto_takes_its_parent_s_max_threads_unless_it_has_its_own() {
     let line = |argv: &[&str], parent| {
         let mut argv: Vec<String> = argv.iter().map(ToString::to_string).collect();

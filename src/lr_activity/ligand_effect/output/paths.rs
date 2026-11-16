@@ -38,5 +38,8 @@ pub fn lra_simulate_path(out: &str) -> String {
 /// `{out}.lra-simulate.json`, a single-scenario call's sidecar: written last,
 /// so its presence marks the call complete.
 pub fn lra_simulate_sidecar_path(out: &str) -> String {
-    format!("{out}.lra-simulate.json")
+    format!("{out}{SIDECAR_SUFFIX}")
 }
+
+/// What a single-scenario call's sidecar is named by, after its prefix.
+pub const SIDECAR_SUFFIX: &str = ".lra-simulate.json";
