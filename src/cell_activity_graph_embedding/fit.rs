@@ -76,17 +76,20 @@ use graph_embedding_util::embedding_col_names;
 use graph_embedding_util::loss::{build_per_batch_unit_samplers, ChainGroupFilter};
 use graph_embedding_util::model::E_FEAT_VAR_NAME;
 // `Optimizer` is what puts `AdamW::new` in scope.
+use legume_numeric::candle::candle_core::Tensor;
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
 use legume_numeric::candle::frozen_features::trainable_vars;
 use legume_numeric::matrix::common_io::mkdir_parent;
 
 mod model;
+mod module_cells;
 mod tables;
 mod train;
 
 use model::{build_model, BuiltModel, ModelInputs};
+use module_cells::CellCounts;
 use tables::write_trained_tables;
-use train::{resolve_feature_batch_size, train, ProbeInputs, TrainInputs};
+use train::{resolve_feature_batch_size, train, ModuleUnits, ProbeInputs, TrainInputs};
 
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
@@ -180,6 +183,9 @@ pub fn fit_cell_activity_graph_embedding(
     // different object, so asking for one we cannot use would compute and
     // then hold a full `proj_dim x n_cells` matrix for the whole run.
     let hvg_enabled = args.hvg.n_hvg > 0 || args.hvg.feature_list_file.is_some();
+    // cage trains on the coarsening; cage-cell builds one only to seed its
+    // modules.
+    let coarsens = !args.cell_level || module_cfg.is_some();
 
     let SrtPreprocessed {
         data_vec,
@@ -207,7 +213,7 @@ pub fn fit_cell_activity_graph_embedding(
         // pseudobulk samples), not training; --ignore-batch turns it off
         batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Strict,
-        cell_projection: !hvg_enabled && !args.cell_level,
+        cell_projection: !hvg_enabled && coarsens,
         feature_kind: Some(feature_kind.clone()),
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
@@ -310,11 +316,13 @@ pub fn fit_cell_activity_graph_embedding(
     /////////////////////////////////////////
     // 4. HVG-weighted proj -> coarsening //
     /////////////////////////////////////////
-    let ml = if args.cell_level {
-        // taken only for the expression graph, if at all: nothing coarsens
-        drop(shared_cell_proj);
-        cell_level_hierarchy(n_cells, srt_cell_pairs.inner.pairs())
-    } else {
+    // The coarsening hierarchy: cage's trained units, and under cage-cell
+    // (which trains on cells) only the pseudobulks whose profiles seed
+    // `--feature-modules`.
+    let coarsen = |shared_cell_proj: Option<
+        data_beans::alg::random_projection::RandColProjOut,
+    >|
+     -> anyhow::Result<_> {
         let batch_arg: Option<&[Box<str>]> = if batch_db.is_some() {
             Some(&batch_membership)
         } else {
@@ -360,7 +368,7 @@ pub fn fit_cell_activity_graph_embedding(
             None
         };
 
-        let cell_proj = match hvg_weights.as_deref() {
+        let mut cell_proj = match hvg_weights.as_deref() {
             // HVG weighting makes this a genuinely different projection, so the
             // shared one cannot stand in for it. Preprocessing skips taking one in
             // this case, and with `--knn-expr` off there is nothing to drop. When
@@ -376,9 +384,9 @@ pub fn fit_cell_activity_graph_embedding(
             }
         };
         let topology = topology_graph(&graph, &spatial_graph);
-        graph_coarsen_multilevel(
+        Ok(graph_coarsen_multilevel(
             topology,
-            &mut cell_proj.proj.clone(),
+            &mut cell_proj.proj,
             srt_cell_pairs.inner.pairs(),
             CoarsenConfig {
                 n_clusters: c.n_pseudobulk,
@@ -386,7 +394,24 @@ pub fn fit_cell_activity_graph_embedding(
                 seeding: seeding.as_ref().map(Seeding::params),
                 modularity_veto: None,
             },
+        ))
+    };
+    let coarsened = if coarsens {
+        Some(coarsen(shared_cell_proj)?)
+    } else {
+        // taken only for the expression graph, if at all
+        drop(shared_cell_proj);
+        None
+    };
+    // Under cage-cell, each cell's finest pseudobulk when modules need
+    // seeding; the rest of that hierarchy is dropped here.
+    let (ml, module_seed_labels) = if args.cell_level {
+        (
+            cell_level_hierarchy(n_cells, srt_cell_pairs.inner.pairs()),
+            coarsened.and_then(|mut seed| seed.all_cell_labels.pop()),
         )
+    } else {
+        (coarsened.expect("cage coarsens"), None)
     };
 
     // Batch ids + the PB TRAINING FRAME, built BEFORE the pseudobulk basis:
@@ -407,7 +432,7 @@ pub fn fit_cell_activity_graph_embedding(
     // Collapse cells into super-cells per coarsening level and fit one shared
     // SVD over them: the WARM START of the trained PB table, and the basis the
     // `pseudobulk_cells.parquet` diagnostic exports.
-    // Cell level: no pseudobulks, so no basis and a random start.
+    // Cell level: no trained pseudobulks, so no basis and a random start.
     let basis = if args.cell_level {
         None
     } else {
@@ -457,7 +482,7 @@ pub fn fit_cell_activity_graph_embedding(
     // samples features by (`--feature-inclusion moran`): on the finest PB
     // super-cells (the basis's pooled counts) and the spatial edges between
     // them, coarse super-cells of the tree as jackknife blocks; on cells
-    // under cage-cell (no pseudobulks), geometric tiles as blocks.
+    // under cage-cell (no trained pseudobulks), geometric tiles as blocks.
     let inclusion = match args.feature_inclusion {
         FeatureInclusionMode::All => None,
         FeatureInclusionMode::Moran => {
@@ -696,7 +721,11 @@ pub fn fit_cell_activity_graph_embedding(
         module_profiles,
     } = build_model(ModelInputs {
         args,
-        ml: &ml,
+        profile_labels: module_seed_labels.as_deref().unwrap_or_else(|| {
+            ml.all_cell_labels
+                .last()
+                .expect("coarsening produced no levels")
+        }),
         data_vec: &data_vec,
         feature_axis: &feature_axis,
         feature_kind: &feature_kind,
@@ -708,6 +737,34 @@ pub fn fit_cell_activity_graph_embedding(
         varmap: &varmap,
         dev: &dev,
     })?;
+    // What the exact unit-module term pools each step: cage's pseudobulk
+    // profiles, on the device as `[n_pb × G]`, or under cage-cell the drawn
+    // cells' own sparse counts (the seeding pseudobulks have done their work
+    // once the model is built).
+    drop(module_seed_labels);
+    let module_units = match (&module_cfg, module_profiles) {
+        (None, _) => None,
+        (Some(_), _) if args.cell_level => Some(ModuleUnits::Cells(CellCounts {
+            data: &data_vec,
+            feature_axis: &feature_axis,
+        })),
+        (Some(_), profiles) => {
+            let p = profiles.expect("built with the config");
+            anyhow::ensure!(
+                p.ncols() == n_pb,
+                "module profiles over {} pseudobulks, {} trained",
+                p.ncols(),
+                n_pb
+            );
+            // column-major `[G × n_pb]` is row-major `[n_pb × G]`
+            let rows: Vec<f32> = p.as_slice().to_vec();
+            Some(ModuleUnits::Pseudobulks(Tensor::from_vec(
+                rows,
+                (p.ncols(), p.nrows()),
+                &dev,
+            )?))
+        }
+    };
     // One AdamW over the map, or two under LoRA: the shared factor `v` leaves
     // the main group for its own at the LoRA+ rate.
     let lora_v_name = legume_numeric::candle::lora::factor_names(E_FEAT_VAR_NAME).1;
@@ -770,7 +827,7 @@ pub fn fit_cell_activity_graph_embedding(
         feature_fisher_weights: &feature_fisher_weights,
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
         module_cfg: module_cfg.as_ref(),
-        module_profiles: module_profiles.as_ref(),
+        module_units,
         n_exp_batches,
         n_pb,
         n_features,
@@ -1009,22 +1066,22 @@ pub(crate) enum OnCells {
     Hide,
     /// Off its help, and warned of when given: it shapes only the HVG
     /// weighting of the projection that builds pseudobulks, or the
-    /// pseudobulks themselves. (`--num-levels` and the batch matching shape
-    /// the batch-effect estimate, which cage-cell makes.)
+    /// pseudobulks themselves, which cage-cell builds only to seed
+    /// `--feature-modules` (no warning then). (`--num-levels` and the batch
+    /// matching shape the batch-effect estimate, which cage-cell makes.)
     Warn,
-    /// Off its help, and refused when given: it picks from, or pools over, a
-    /// hierarchy of pseudobulks.
+    /// Off its help, and refused when given: it picks from a hierarchy of
+    /// pseudobulks.
     Refuse,
 }
 
 /// cage's flags that `cage-cell` hides, warns of or refuses, by argument id.
-pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 10] = [
+pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 9] = [
     ("n_hvg", OnCells::Warn),
     ("feature_list_file", OnCells::Warn),
     ("must_train_features", OnCells::Warn),
     ("n_pseudobulk", OnCells::Warn),
     ("chain_levels", OnCells::Refuse),
-    ("feature_modules", OnCells::Refuse),
     ("feature_embedding", OnCells::Refuse),
     ("feature_embedding_bias", OnCells::Hide),
     ("feature_embedding_mode", OnCells::Hide),
@@ -1062,19 +1119,30 @@ pub(crate) fn check_cell_level(cmd: &clap::Command, m: &clap::ArgMatches) -> any
     let refused = cell_level_given(cmd, m, OnCells::Refuse);
     anyhow::ensure!(
         refused.is_empty(),
-        "cage-cell: {} need a hierarchy of pseudobulks, to pick from or to pool \
-         counts per trained unit (a dense features × cells matrix on cells)",
+        "cage-cell: {} need a hierarchy of pseudobulks to pick from, which cage-cell \
+         does not train on",
         refused.join(", ")
     );
-    let no_ops = cell_level_given(cmd, m, OnCells::Warn);
+    let no_ops = cell_level_no_ops(cmd, m);
     if !no_ops.is_empty() {
         log::warn!(
-            "cage-cell: {} shape only the HVG projection or the pseudobulks that \
-             cage-cell skips; they do nothing here",
+            "cage-cell: {} shape only the HVG projection or the pseudobulks, which \
+             cage-cell builds only to seed --feature-modules; they do nothing here",
             no_ops.join(", ")
         );
     }
     Ok(())
+}
+
+/// The flags given to `cage-cell` (`cmd`, its matches `m`) that do nothing
+/// in this run: those marked [`OnCells::Warn`], unless `--feature-modules`
+/// is given, whose seeding pseudobulks they shape.
+pub(crate) fn cell_level_no_ops(cmd: &clap::Command, m: &clap::ArgMatches) -> Vec<String> {
+    if crate::util::cli::given_on_cli(cmd, m, ["feature_modules"]).is_empty() {
+        cell_level_given(cmd, m, OnCells::Warn)
+    } else {
+        Vec::new()
+    }
 }
 
 /// The "hierarchy" of a cell-level fit: every cell its own unit at both

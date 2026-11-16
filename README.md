@@ -170,6 +170,7 @@ pinto cage data.h5 -c coords.csv -o out
 pinto cage data.h5 -c coords.csv -o out --feature-inclusion moran
 pinto cage data.h5 -c coords.csv -o out --feature-modules 20
 pinto cage-cell data.h5 -c coords.csv -o out
+pinto cage-cell data.h5 -c coords.csv -o out --feature-modules 20
 ```
 
 cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
@@ -182,7 +183,9 @@ two-group local fdr of Efron et al. 2001), writing
 through M learned modules (sparsemax membership, Martins and Astudillo 2016),
 writing the module tables. `cage-cell` is cage trained on cells and cell
 pairs, for comparison with cell-level methods; it estimates and removes batch
-effects as cage does (`--ignore-batch` runs it without). `pinto predict`
+effects as cage does (`--ignore-batch` runs it without), and takes either
+remedy as cage does: its modules start from pseudobulks built for that alone,
+and training pools the sparse counts of the cells each step draws. `pinto predict`
 applies a cage or cage-cell run to new data; see each command's `--help`.
 A query batch the model trained on (the same `--batch-files` label, or a
 data file of the same name as one of the model's) is divided by the model's

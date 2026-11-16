@@ -9,9 +9,10 @@ use crate::cell_activity_graph_embedding::pretrained;
 use crate::util::common::*;
 use crate::util::score_trace::ScoreEntry;
 
+use super::module_cells::CellCounts;
 use graph_embedding_util::loss::{
     draw_gene_keep_mask, embedding_ridge, log_membership_diagnostics, masked_membership,
-    module_priors, module_step_loss,
+    module_priors, module_softmax_loss,
 };
 use graph_embedding_util::model::JointEmbedModel;
 use graph_embedding_util::stop::setup_stop_handler;
@@ -144,6 +145,16 @@ pub(super) struct ProbeInputs<'a> {
     pub dev: &'a Device,
 }
 
+/// The units whose counts the exact unit-module term pools.
+pub(super) enum ModuleUnits<'a> {
+    /// cage: the finest pseudobulks' profiles on the device as
+    /// `[n_pb × G]`, so a step is one row gather.
+    Pseudobulks(Tensor),
+    /// cage-cell: the cells, whose sparse columns a step reads as it draws
+    /// them (never a features × cells table).
+    Cells(CellCounts<'a>),
+}
+
 /// What the training loop runs on.
 pub(super) struct TrainInputs<'a> {
     pub args: &'a CellActivityGraphEmbeddingArgs,
@@ -162,7 +173,7 @@ pub(super) struct TrainInputs<'a> {
     /// (`--feature-inclusion`); `None` visits every one.
     pub inclusion: Option<&'a [f32]>,
     pub module_cfg: Option<&'a FeatureModuleConfig>,
-    pub module_profiles: Option<&'a Mat>,
+    pub module_units: Option<ModuleUnits<'a>>,
     pub n_exp_batches: usize,
     pub n_pb: usize,
     pub n_features: usize,
@@ -211,7 +222,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         feature_fisher_weights,
         inclusion,
         module_cfg,
-        module_profiles,
+        module_units,
         n_exp_batches,
         n_pb,
         n_features,
@@ -252,10 +263,9 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     let stop = setup_stop_handler();
 
     // Module warm-up: hold the k-means membership for the first epochs, release
-    // it afterwards (geu's schedule). The profile matrix the exact term pools sits
-    // on the device as `[n_pb × G]`, so a step is one row gather.
-    let module_run: Option<(usize, Tensor)> = match (module_cfg, module_profiles) {
-        (Some(gm), Some(p)) => {
+    // it afterwards (geu's schedule).
+    let module_run: Option<(usize, ModuleUnits)> = match (module_cfg, module_units) {
+        (Some(gm), Some(units)) => {
             let wu = gm.warmup_epochs_for(args.epochs);
             if let Some(m) = &model.modules {
                 m.set_frozen(wu > 0);
@@ -264,10 +274,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 "feature modules: membership held for {wu} of {} epochs, then trained",
                 args.epochs
             );
-            let rows: Vec<f32> = (0..p.ncols())
-                .flat_map(|j| p.column(j).iter().copied().collect::<Vec<f32>>())
-                .collect();
-            Some((wu, Tensor::from_vec(rows, (p.ncols(), p.nrows()), dev)?))
+            Some((wu, units))
         }
         _ => None,
     };
@@ -410,12 +417,14 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             if let Some(ridge) = model.feature_ridge(table_lam)? {
                 total = (total + ridge)?;
             }
-            // Exact pseudobulk–module term + membership priors, once per optimizer
-            // step, through the same functions geu's composite trainer uses: draw
-            // `units_per_step` pseudobulks uniformly, pool their count rows through
-            // the (dropout-masked) membership, and score every module against the
-            // trained PB table.
-            if let (Some(m), Some(gm), Some((_, profile_t))) =
+            // Exact unit–module term + membership priors, once per optimizer
+            // step, as geu's `module_step_loss` makes it: draw `units_per_step`
+            // trained units (pseudobulks, or cells under cage-cell) uniformly,
+            // pool their count rows through the (dropout-masked) membership,
+            // and score every module against the trained unit table. The
+            // pooling carries no gradient (geu detaches the masked membership
+            // and the pooled target), so cells pool their sparse counts.
+            if let (Some(m), Some(gm), Some((_, units))) =
                 (&model.modules, module_cfg, module_run.as_ref())
             {
                 let u = gm.units_per_step.min(n_pb);
@@ -423,8 +432,6 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     let picks: Vec<u32> = (0..u)
                         .map(|_| rng_master.random_range(0..n_pb) as u32)
                         .collect();
-                    let idx = Tensor::from_vec(picks, u, dev)?;
-                    let x = gather_rows(profile_t, &idx)?;
                     let pi = m.membership()?;
                     let pi_masked = if gm.feature_dropout > 0.0 {
                         let keep = draw_gene_keep_mask(
@@ -437,9 +444,17 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     } else {
                         pi.detach()
                     };
+                    let idx = Tensor::from_slice(&picks, u, dev)?;
                     let e_units = gather_rows(&model.e_cell, &idx)?;
-                    total =
-                        (total + module_step_loss(m, &pi_masked, &x, &e_units, gm.lambda_module)?)?;
+                    let x_cm = match units {
+                        ModuleUnits::Pseudobulks(profiles) => {
+                            gather_rows(profiles, &idx)?.matmul(&pi_masked)?
+                        }
+                        ModuleUnits::Cells(cells) => cells.pool(&picks, &pi_masked)?,
+                    };
+                    let module_loss = module_softmax_loss(&e_units, &m.mu, &m.b_module, &x_cm)?
+                        .affine(f64::from(gm.lambda_module), 0.0)?;
+                    total = (total + module_loss)?;
                     if let Some(prior) = module_priors(m, &pi, gm.lambda_balance)? {
                         total = (total + prior)?;
                     }
