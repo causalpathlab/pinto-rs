@@ -271,7 +271,9 @@ pub struct SrtInputArgs {
 }
 
 /// The batch options: which cells share batch effects (`--batch-files`,
-/// `--auto-batch`) and whether δ is estimated (`--ignore-batch`). How the
+/// `--auto-batch`) and whether δ is estimated (`--ignore-batch`). A fit on
+/// a residual's excess counts estimates none and refuses the first two
+/// ([`crate::util::residual_input::no_batch_effect_on`]). How the
 /// estimate collapses the cells is [`CollapseArgs`].
 ///
 /// Flatten this into an args struct with `#[command(flatten)]`.
@@ -305,7 +307,8 @@ pub struct BatchArgs {
                      predict and impute also leave a fitted run's batch effects\n\
                      unused. Data files (and --batch-files labels) still keep\n\
                      their cells apart, in the spatial graph and in the outputs;\n\
-                     only the correction goes."
+                     only the correction goes. A fit on the files `pinto residual`\n\
+                     wrote estimates none either way."
     )]
     pub ignore_batch: bool,
 }

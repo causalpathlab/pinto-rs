@@ -26,6 +26,8 @@ use crate::util::cell_pairs::{
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::{SeedingParams, SEEDING_THRESHOLD};
+use crate::util::metadata::NoBatchEffect;
+use crate::util::residual_input::{log_no_batch_effect, no_batch_effect_on};
 use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
     CollapseArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
@@ -160,6 +162,10 @@ pub struct SrtPreprocessed {
     /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
     /// single-batch or not estimated.
     pub batch_effects: Option<BatchPosterior>,
+    /// Why none was estimated, when the run was told or bound not to:
+    /// `--ignore-batch`, or data files that are a residual's excess counts
+    /// (those in a fit only; a query is corrected as its model was).
+    pub no_batch_effect: Option<NoBatchEffect>,
     /// Expression mode's base graph was built on the batch-corrected
     /// projection, for the manifest's
     /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
@@ -268,6 +274,18 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // the user wait through a load, a possible zarr conversion and a full QC
     // pass to hear about it is time spent on an answer already known.
     c.validate_flags()?;
+    // A fit on a residual's excess counts estimates no batch effect, as
+    // under `--ignore-batch`: the residual took each batch's shift out. A
+    // query is corrected as its model was, whatever its files are.
+    let residual = match cfg.batch_effects {
+        BatchEstimate::Fit => no_batch_effect_on(&c.data_files, &c.batch, &c.collapse)?,
+        _ => None,
+    };
+    if let Some(marker) = &residual {
+        log_no_batch_effect(marker);
+    }
+    let no_batch_effect = NoBatchEffect::of(&c.batch, residual.is_some());
+    let ignore_batch = no_batch_effect.is_some();
     let no_ablation = AblationArgs::default();
     let ab = cfg.ablation.unwrap_or(&no_ablation);
     ab.validate(c.has_coordinates())?;
@@ -520,7 +538,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         // its batches are this graph's components, and the labels it
         // starts from are not them.
         let labels = sorted_batch_labels(&batch_membership);
-        let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, labels.len());
+        let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, labels.len());
         let labelled = (estimate || known) && labels.len() > 1 && !auto_relabels;
         let model = match cfg.batch_effects {
             BatchEstimate::Query { base_corrected, .. } => Some(base_corrected),
@@ -600,12 +618,13 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
     }
 
-    // `--ignore-batch` drops the estimate, and with it every use of one
+    // `--ignore-batch` (or a residual's excess counts, which a fit reads
+    // the same way) drops the estimate, and with it every use of one
     // (the projection's correction below, a model's own divide). The labels
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
     let batch_labels = sorted_batch_labels(&batch_membership);
-    let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, batch_labels.len());
+    let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, batch_labels.len());
     // `ResolvedKnn::augment` is already 0 without coordinates, so these two
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
@@ -750,6 +769,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         seeding,
         batch_labels,
         batch_effects: batch_effects.and_then(|b| b.posterior),
+        no_batch_effect,
         base_batch_corrected,
         graph,
         knn,

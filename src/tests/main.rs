@@ -792,6 +792,7 @@ fn tiny_model(dir: &std::path::Path, command: &str) -> String {
         graph: GraphParams::default(),
         ablation: None,
         delta: None,
+        no_batch_effect: None,
     });
     meta.command = command.into();
     meta.write(&dir.join("run.pinto.json")).unwrap();

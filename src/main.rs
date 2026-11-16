@@ -658,7 +658,9 @@ enum Commands {
                       and {out}/residual.json (the counts in and out, the stage-1 run\n\
                       and the raw data files, which pinto lra reads to take a fit on\n\
                       the residual on its raw counts), so a second fit reads the\n\
-                      residual as it reads data.\n\n\
+                      residual as it reads data. A fit on these files estimates no\n\
+                      batch effect, as under --ignore-batch, and refuses the options\n\
+                      that set one up (--batch-files, --auto-batch, --cnv-clones).\n\n\
                       By default (--adapt batch, see its help) a shift of a whole\n\
                       community within a batch is absorbed; a local patch stays.\n\n\
                       It does not estimate or subtract a donor effect. With --adapt\n\

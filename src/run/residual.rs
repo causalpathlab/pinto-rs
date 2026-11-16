@@ -143,7 +143,9 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
          counts. Writes {out}/{stem}.zarr with {stem}.coords.parquet per data file (the \
          run's coordinates under its column names) and {out}/residual.json. The reply's \
          fit.data and fit.coords list them for run_fit, in order, and fit.flags the \
-         coordinate columns to read; run_lra on that fit reads the raw counts. It removes no \
+         coordinate columns to read; that fit estimates no batch effect, so give it no \
+         batches (they, --auto-batch and --cnv-clones are refused on these files), and \
+         run_lra on it reads the raw counts. It removes no \
          donor effect and cannot correct a stage-1 run already split by donor (as happens \
          once the donor effect is about as large as the cell-type effect): before reading a \
          residual community confined to one donor as biology, check the stage-1 \

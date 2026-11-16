@@ -877,6 +877,15 @@ column names (with a `spot` column first), so the second fit reads them by
 those names: `--coord-column-names` with the run's names, whatever columns
 the first fit picked them from.
 
+A fit on a residual's files (`lc`, `cage`, `cage-cell`, `dsvd` or a spatial
+baseline) estimates no batch effect, as under `--ignore-batch`: the residual
+already took out what shifts a whole community within a batch, and a second
+estimate would take out the local structure that is left. The files are
+known by the `residual.json` beside them that names them. Such a fit
+refuses `--batch-files`, `--auto-batch` and `--cnv-clones`, and a list that
+mixes a residual's files with others; its manifest records
+`no_batch_effect: residual-input`.
+
 Agents run it as the MCP tool `run_residual`, whose reply lists the files
 and flags for `run_fit` (see `mcp` below).
 
@@ -981,7 +990,7 @@ there already. Queuing it queues the `stage-2` row too: a fit on the
 residual's files, each data file's `{stem}.zarr` in the run's order with its
 `{stem}.coords.parquet`, and `--coord-column-names` set to the run's
 coordinate columns; the data picked on the Data screen are not passed to
-it. The stage-2 fit is dsvd unless `m` on its row switches it to lc or cage,
+it, and it estimates no batch effect. The stage-2 fit is dsvd unless `m` on its row switches it to lc or cage,
 each keeping its own flags on the Parameters screen; space takes it off.
 With lra queued on the same run, space on `stage-2 lra` queues lra on the
 stage-2 fit as well, starting from that lra's flags: it reads the raw counts

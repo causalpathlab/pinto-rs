@@ -117,27 +117,29 @@ pub(crate) struct PairDeltaParameters {
 }
 
 /// dsvd's per-cell projection: corrected by the cells' batches
-/// (`batch_membership`) unless `--ignore-batch`, at inputs `c`'s `-p` and
-/// block size. Preprocessing's (`shared`) is that projection with a δ
-/// (`has_delta`: the one its estimate collapsed on) and under
-/// `--ignore-batch` (uncorrected), and is taken as it is; otherwise (one
-/// batch, or an estimate without a δ) preprocessing's is uncorrected and
-/// dsvd's is taken here.
+/// (`batch_membership`) unless the fit estimates no batch effect
+/// (`no_batch_effect`: `--ignore-batch`, or a residual's excess counts),
+/// at inputs `c`'s `-p` and block size. Preprocessing's (`shared`) is that
+/// projection with a δ (`has_delta`: the one its estimate collapsed on)
+/// and without a batch effect (uncorrected), and is taken as it is;
+/// otherwise (one batch, or an estimate without a δ) preprocessing's is
+/// uncorrected and dsvd's is taken here.
 pub(crate) fn dsvd_cell_projection(
     shared: Option<RandColProjOut>,
     has_delta: bool,
+    no_batch_effect: bool,
     c: &crate::util::input::SrtInputArgs,
     data_vec: &SparseIoVec,
     batch_membership: &[Box<str>],
 ) -> anyhow::Result<RandColProjOut> {
     match shared {
-        Some(proj) if has_delta || c.batch.ignore_batch => Ok(proj),
+        Some(proj) if has_delta || no_batch_effect => Ok(proj),
         _ => {
             info!("Per-cell random projection...");
             data_vec.project_columns_with_batch_correction(
                 c.collapse.proj_dim,
                 None,
-                (!c.batch.ignore_batch).then_some(batch_membership),
+                Some(batch_membership),
             )
         }
     }
@@ -172,6 +174,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         seeding,
         batch_labels,
         batch_effects: batch_db,
+        no_batch_effect,
         graph,
         knn,
         base_batch_corrected,
@@ -213,6 +216,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     let mut cell_proj = dsvd_cell_projection(
         shared_cell_proj,
         batch_db.is_some(),
+        no_batch_effect.is_some(),
         c,
         &data_vec,
         &batch_membership,
@@ -383,6 +387,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             ablation,
             k: n_clusters,
             delta: has_batch_effects.then(|| crate::util::metadata::DeltaWritten::fit(c)),
+            no_batch_effect,
         });
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;

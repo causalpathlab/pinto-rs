@@ -16,6 +16,7 @@ use crate::util::input::{
     DEFAULT_SPATIAL_GRAPH,
 };
 use crate::util::memory::{ensure_fits, Budget};
+use crate::util::residual_input::{log_no_batch_effect, no_batch_effect_on};
 use crate::util::srt_pipeline::estimate_batches;
 use anyhow::Context;
 use data_beans::alg::random_projection::RandProjOps;
@@ -170,6 +171,20 @@ pub struct InputShape {
 pub(crate) type StoredFile = Box<dyn SparseIo<IndexIter = Vec<usize>>>;
 
 impl SpatialInputArgs {
+    /// The residual whose excess counts the data files are, its marker: a
+    /// baseline then estimates no batch effect, as cage's preprocessing
+    /// does not, and refuses the options that only set an estimate up
+    /// ([`no_batch_effect_on`]).
+    pub fn residual_input(&self) -> anyhow::Result<Option<std::path::PathBuf>> {
+        no_batch_effect_on(&self.data_files, &self.batch, &self.collapse)
+    }
+
+    /// Whether no δ is estimated whatever the batches are: under
+    /// `--ignore-batch`, and on a residual's excess counts.
+    fn no_delta(&self) -> bool {
+        self.batch.ignore_batch || matches!(self.residual_input(), Ok(Some(_)))
+    }
+
     /// The input's size from its files' stored shape, or no shape when
     /// there are no files or a file does not store its column or nonzero
     /// count. Each file is opened for its metadata alone
@@ -179,6 +194,7 @@ impl SpatialInputArgs {
     /// they split files into, and a clone table for its strata.
     pub fn stored(&self) -> anyhow::Result<Option<InputShape>> {
         self.collapse.check()?;
+        self.residual_input()?;
         if self.data_files.is_empty() {
             return Ok(None);
         }
@@ -238,16 +254,15 @@ impl SpatialInputArgs {
 
     /// What the δ estimate holds above the process's own on an input of
     /// stored shape `s` ([`Self::collapse_bytes`]), checked before the read;
-    /// 0 when none is made (`--ignore-batch`, or fewer than two batch
-    /// labels and no `--auto-batch`). Under `--auto-batch` the batches are
+    /// 0 when none is made (`--ignore-batch`, a residual's excess counts, or
+    /// fewer than two batch labels and no `--auto-batch`). Under `--auto-batch` the batches are
     /// the spatial graph's components, not known before the read: each
     /// section is charged as one batch here, and the graph they are found
     /// on is counted too; [`Self::read_within`] checks the components
     /// once the cheap relabel has found them ([`Self::relabelled_delta_bytes`]).
     pub fn delta_bytes(&self, s: &InputShape) -> usize {
-        let b = &self.batch;
-        let auto = b.auto_relabels();
-        if b.ignore_batch || (s.batches < 2 && !auto) {
+        let auto = self.batch.auto_relabels();
+        if self.no_delta() || (s.batches < 2 && !auto) {
             return 0;
         }
         let graph = if auto {
@@ -349,6 +364,10 @@ impl SpatialInputArgs {
         check: Option<(&Budget, usize)>,
     ) -> anyhow::Result<SpatialData> {
         self.collapse.check()?;
+        let residual = self.residual_input()?;
+        if let Some(marker) = &residual {
+            log_no_batch_effect(marker);
+        }
         let mut srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
@@ -378,7 +397,7 @@ impl SpatialInputArgs {
         }
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
-        let mut estimate = (!self.batch.ignore_batch)
+        let mut estimate = (!self.batch.ignore_batch && residual.is_none())
             .then(|| self.estimate_delta(&mut srt.data, &srt.batches, with_projection))
             .transpose()?
             .flatten()

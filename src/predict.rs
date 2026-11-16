@@ -817,6 +817,7 @@ pub fn predict_cage(
                 labels: BatchLabels::of(&c.batch),
                 cells: false,
             }),
+            no_batch_effect: None,
         },
         None,
     );

@@ -131,6 +131,66 @@ fn a_run_records_its_batch_correction() {
     }
 }
 
+/// A baseline goes by cage's rule on a residual's excess counts: the same
+/// sections, once a `residual.json` names them, are read with no δ, the
+/// run records why, and an option that sets an estimate up is refused.
+#[test]
+fn a_baseline_estimates_no_batch_effect_on_a_residual_s_files() {
+    use crate::util::metadata::NoBatchEffect;
+    let dir = tempfile::tempdir().unwrap();
+    let files = two_sections(dir.path(), 8, 60);
+    let run = |tag: &str, extra: &[&str]| {
+        let out = dir.path().join(tag).to_string_lossy().to_string();
+        let mut flags = vec!["--neighbors", "4", "--max-iter", "5"];
+        flags.extend(extra);
+        crate::spatial_baselines::spatialde2::run(&spatialde2_args(&files, &out, &flags)).unwrap();
+        let meta: PintoMetadata =
+            serde_json::from_str(&std::fs::read_to_string(format!("{out}.pinto.json")).unwrap())
+                .unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(format!("{out}.baseline.json")).unwrap())
+                .unwrap();
+        let delta = std::path::Path::new(&format!("{out}.delta.parquet")).exists();
+        (meta, settings, delta)
+    };
+    let (meta, settings, delta) = run("raw", &[]);
+    assert!(delta, "two sections, two batches");
+    assert_eq!(settings["batch_correction"]["delta"], true);
+    assert_eq!(meta.no_batch_effect, None);
+
+    crate::test_support::mark_residual(&files[0].split(',').collect::<Vec<_>>());
+    for (tag, extra) in [("res", &[][..]), ("resi", &["--ignore-batch"][..])] {
+        let (meta, settings, delta) = run(tag, extra);
+        assert!(!delta, "{tag}: a δ table was written");
+        assert!(meta.outputs.batch_effects.is_none(), "{tag}");
+        assert_eq!(
+            meta.no_batch_effect,
+            Some(NoBatchEffect::ResidualInput),
+            "{tag}"
+        );
+        assert_eq!(settings["batch_correction"]["delta"], false, "{tag}");
+        assert_eq!(
+            settings["batch_correction"]["why"], "a residual's excess counts",
+            "{tag}"
+        );
+    }
+
+    let out = dir.path().join("auto").to_string_lossy().to_string();
+    let args = spatialde2_args(&files, &out, &["--auto-batch"]);
+    for e in [
+        args.fit.input.stored().err().map(|e| e.to_string()),
+        args.fit.input.read(false).err().map(|e| e.to_string()),
+    ] {
+        let e = e.expect("--auto-batch should be refused");
+        assert!(e.contains("none is made on a residual's excess counts"), "{e}");
+    }
+    // and no estimate is budgeted for
+    let plain = spatialde2_args(&files, &out, &[]).fit.input;
+    let shape = plain.stored().unwrap().expect("a stored shape");
+    assert_eq!(shape.batches, 2);
+    assert_eq!(plain.delta_bytes(&shape), 0);
+}
+
 /// A run records what it was fitted on and no mode, there being one
 /// formulation; a manifest written with a mode (by an earlier pinto) still
 /// reads.

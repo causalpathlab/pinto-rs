@@ -250,6 +250,12 @@ pub struct PintoMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_batches: Option<Vec<FileBatch>>,
 
+    /// Why a fit estimated no batch effect, when it was told or bound not
+    /// to. Absent when it estimated one, had one batch, and on manifests
+    /// written before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_batch_effect: Option<NoBatchEffect>,
+
     /// Present on a spatial baseline's run (each baseline and its `-pb`
     /// form): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,6 +338,29 @@ impl BatchLabels {
             Self::AutoBatch
         } else {
             Self::Files
+        }
+    }
+}
+
+/// Why a fit estimated no batch effect.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoBatchEffect {
+    /// `--ignore-batch`.
+    IgnoreBatch,
+    /// The data files are a residual's excess counts
+    /// ([`crate::util::residual_input::no_batch_effect_on`]).
+    ResidualInput,
+}
+
+impl NoBatchEffect {
+    /// A fit under `batch` on data files that are a residual's excess
+    /// counts or not (`residual`), which is the reason when both hold.
+    pub fn of(batch: &crate::util::input::BatchArgs, residual: bool) -> Option<Self> {
+        if residual {
+            Some(Self::ResidualInput)
+        } else {
+            batch.ignore_batch.then_some(Self::IgnoreBatch)
         }
     }
 }
@@ -1094,6 +1123,8 @@ pub struct RunInputs<'a> {
     pub ablation: Option<crate::util::ablation::Ablation>,
     /// The δ the run wrote to `delta.parquet`; `None` when it wrote none.
     pub delta: Option<DeltaWritten>,
+    /// Why a fit estimated none, when it was told or bound not to.
+    pub no_batch_effect: Option<NoBatchEffect>,
 }
 
 /// A δ a run wrote: what named its batches, and whether each cell's batch
@@ -1215,6 +1246,7 @@ pub fn create_lc_metadata(
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
+        no_batch_effect: inputs.no_batch_effect,
         baseline: None,
         max_threads: None,
     }
@@ -1265,6 +1297,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
+        no_batch_effect: inputs.no_batch_effect,
         baseline: None,
         max_threads: None,
     }
@@ -1329,6 +1362,7 @@ pub fn create_cage_metadata(
         holdout: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
+        no_batch_effect: inputs.no_batch_effect,
         baseline: None,
         max_threads: None,
     }
@@ -1377,6 +1411,7 @@ pub fn create_prop_metadata(
         holdout: None,
         batch_labels: None,
         file_batches: None,
+        no_batch_effect: None,
         baseline: None,
         max_threads: None,
     }

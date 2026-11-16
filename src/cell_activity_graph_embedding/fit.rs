@@ -184,6 +184,7 @@ pub fn fit_cell_activity_graph_embedding(
         seeding,
         batch_labels,
         batch_effects: batch_db,
+        no_batch_effect,
         graph,
         knn,
         base_batch_corrected,
@@ -939,6 +940,7 @@ pub fn fit_cell_activity_graph_embedding(
                 delta: batch_db
                     .is_some()
                     .then(|| crate::util::metadata::DeltaWritten::fit(c)),
+                no_batch_effect,
             },
             splice_report,
         );
