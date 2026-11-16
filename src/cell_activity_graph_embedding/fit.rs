@@ -40,8 +40,8 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode,
-    ModulePlan, ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ModulePlan,
+    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
