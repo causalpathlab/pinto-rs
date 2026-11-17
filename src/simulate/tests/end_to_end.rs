@@ -58,7 +58,7 @@ fn a_run_is_reproducible() {
     let a = dir.path().join("a").to_string_lossy().to_string();
     let b = dir.path().join("b").to_string_lossy().to_string();
     run_simulate(&args(&a, "donor-confounded", &[])).unwrap();
-    run_simulate(&args(&b, "L1", &[])).unwrap();
+    run_simulate(&args(&b, "donor-confounded", &[])).unwrap();
     let read = |o: &str| {
         let m = open_sparse_matrix_by_path(&format!("{o}/sections/S3.zarr")).unwrap();
         m.read_columns_csc((0..144).collect::<Vec<usize>>())

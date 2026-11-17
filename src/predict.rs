@@ -103,7 +103,6 @@ pub struct PredictCoreArgs {
         help = "Feature-name canonicalization for matching the model's features to the new sample",
         hide = true
     )]
-    #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
 
     #[arg(

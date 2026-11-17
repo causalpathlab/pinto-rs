@@ -523,12 +523,8 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
         flag_value("--out", out),
     ];
     if a.level_a.is_some() || a.level_b.is_some() {
-        use crate::compare::level_or_final;
-        let levels = format!(
-            "{},{}",
-            level_or_final(&a.level_a),
-            level_or_final(&a.level_b)
-        );
+        let level = |l: &Option<String>| l.clone().unwrap_or(crate::compare::DEFAULT_LEVEL.into());
+        let levels = format!("{},{}", level(&a.level_a), level(&a.level_b));
         argv.push(flag_value("--level", levels));
     }
     if let Some(tau) = a.tau {

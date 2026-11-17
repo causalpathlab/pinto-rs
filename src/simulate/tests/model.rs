@@ -58,34 +58,6 @@ fn every_scenario_is_valid() {
     assert!(scenario("nope").is_err());
 }
 
-/// Each earlier scenario name is a hidden alias: it resolves to its new
-/// name's scenario and settings.
-#[test]
-fn old_scenario_names_resolve_to_their_new_ones() {
-    for (old, new) in [
-        ("L0", "unconfounded"),
-        ("L1", "donor-confounded"),
-        ("L2", "donor-confounded-donor-only-cell-type"),
-        ("L2-mix", "donor-confounded-donor-only-mix"),
-        ("null-shift", "composition-shift"),
-    ] {
-        assert_eq!(find_scenario(old).unwrap().name, new, "{old}");
-        assert_eq!(scenario(old).unwrap(), scenario(new).unwrap(), "{old}");
-    }
-    let err = scenario("nope").unwrap_err().to_string();
-    assert!(err.contains("unconfounded") && !err.contains("L0"), "{err}");
-}
-
-/// The scenario that left the first donor unconfounded is gone, under its
-/// name and its earlier one: `n_unconfounded_donors` replaces it.
-#[test]
-fn the_first_donor_unconfounded_scenario_is_unknown() {
-    for name in ["first-donor-unconfounded", "clean-one"] {
-        let err = scenario(name).unwrap_err().to_string();
-        assert!(err.contains("unknown scenario"), "{name}: {err}");
-    }
-}
-
 /// Each scenario's description states its own settings.
 #[test]
 fn every_scenario_says_its_numbers() {
@@ -139,24 +111,6 @@ fn every_scenario_says_its_numbers() {
             );
         }
     }
-}
-
-/// The earlier keys of the unconfounded donors and sections are read as the
-/// new ones, by --set and from a settings file; the new keys are written.
-#[test]
-fn old_unconfounded_keys_are_read_as_the_new_ones() {
-    let p = SimParams::default()
-        .with_overrides(&["clean_donors=[1]".into(), "clean_sections=[0,3]".into()])
-        .unwrap();
-    assert_eq!(p.unconfounded_donors, vec![1]);
-    assert_eq!(p.unconfounded_sections, vec![0, 3]);
-    let read: SimParams =
-        serde_json::from_str(r#"{"clean_donors": [2], "clean_sections": [1]}"#).unwrap();
-    assert_eq!(read.unconfounded_donors, vec![2]);
-    assert_eq!(read.unconfounded_sections, vec![1]);
-    let written = serde_json::to_value(&p).unwrap();
-    assert_eq!(written["unconfounded_donors"], serde_json::json!([1]));
-    assert!(written.get("clean_donors").is_none());
 }
 
 #[test]

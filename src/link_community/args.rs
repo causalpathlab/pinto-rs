@@ -83,7 +83,6 @@ pub struct SrtLinkCommunityArgs {
                      profile. A feature trimmed away joins no module.\n\
                      Writes {out}.feature_graph.parquet, the feature pairs kept."
     )]
-    #[arg(alias = "gene-network")]
     pub feature_network: Option<Box<str>>,
 
     #[arg(
@@ -92,7 +91,6 @@ pub struct SrtLinkCommunityArgs {
         help = "Allow prefix matching for feature names in external network",
         hide = true
     )]
-    #[arg(alias = "gene-network-allow-prefix")]
     pub feature_network_allow_prefix: bool,
 
     #[arg(
@@ -101,7 +99,6 @@ pub struct SrtLinkCommunityArgs {
         help = "Delimiter for splitting compound feature names",
         hide = true
     )]
-    #[arg(alias = "gene-network-delimiter")]
     pub feature_network_delimiter: Option<char>,
 
     #[arg(

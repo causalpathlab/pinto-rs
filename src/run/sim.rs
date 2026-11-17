@@ -18,7 +18,7 @@ use crate::sim_eval::pairs::{
 };
 use crate::sim_eval::score::{read_labels, score, table_header, table_rows, TruthSpots};
 use crate::simulate::panel::{read_coords, section_name};
-use crate::simulate::params::{find_scenario, SimParams, SCENARIOS, TERMS};
+use crate::simulate::params::{SimParams, SCENARIOS, TERMS};
 use crate::simulate::run::{
     backend_path, coords_path, manifest_path, resolve_params, truth_run_path, SimulateArgs,
 };
@@ -88,7 +88,7 @@ pub(super) struct SimBaselineToolArgs {
     pub truth: String,
     #[serde(default)]
     pub method: Option<String>,
-    #[serde(default, alias = "k")]
+    #[serde(default)]
     pub n_clusters: Option<usize>,
     #[serde(default)]
     pub seed: Option<u64>,
@@ -178,9 +178,7 @@ pub(super) fn fit_lists(out: &str, p: &SimParams) -> serde_json::Value {
 pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
     let mut argv: Vec<String> = vec!["sim".into(), "new".into()];
     if let Some(s) = &a.scenario {
-        // an earlier name as its name, so the command says what the reply does
-        let name = find_scenario(s).map_or(s.as_str(), |sc| sc.name);
-        argv.push(flag_value("--scenario", name));
+        argv.push(flag_value("--scenario", s));
     }
     for s in &a.set {
         argv.push(flag_value("--set", s));
@@ -435,7 +433,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "scenario": {"type": "string", "enum": SCENARIOS.iter().map(|s| s.name).collect::<Vec<_>>(), "description": format!("Named scenario to start from [default: {}]; a cell type is a cell state of the model; earlier names are still accepted but not listed. {}", SCENARIOS[0].name, scenarios.join(". "))},
+                    "scenario": {"type": "string", "enum": SCENARIOS.iter().map(|s| s.name).collect::<Vec<_>>(), "description": format!("Named scenario to start from [default: {}]; a cell type is a cell state of the model. {}", SCENARIOS[0].name, scenarios.join(". "))},
                     "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto sim new --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
