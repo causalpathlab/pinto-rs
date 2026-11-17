@@ -18,6 +18,15 @@
 //!   it, from any donor (negative), half and half. `closest_domain` is the
 //!   domain whose spots it is told apart from worst, with that AUROC (0.5:
 //!   the patch is folded into it).
+//! - `donor_specific`, one per donor-specific domain: the same positives
+//!   (pairs of its spots in its owner) against three kinds of negative,
+//!   scored apart and together: pairs of one shared domain's spots from
+//!   two sections of one donor (`same_donor`) and from two donors
+//!   (`cross_donor`), the hard negatives, which a mapping that only places
+//!   spots by cell type scores as high as the positives (AUROC 0.5); and
+//!   pairs of spots of two different domains, any donor (`other_domains`).
+//!   A mapping that keeps the donor-specific domain and leaves no shared
+//!   structure scores near 1 against all three.
 //! - `spatial`: every edge of the `knn` nearest neighbours of each spot in
 //!   its own section (Euclidean on `row_um`, `col_um`); positive when the
 //!   two share a domain.
@@ -119,6 +128,18 @@ pub struct PatchPairs {
     /// The domain it is told apart from worst, and that AUROC.
     pub closest_domain: String,
     pub closest_auroc: f64,
+    /// The same domain's pairs against the hard and easy negatives.
+    pub donor_specific: DonorSpecificPairs,
+}
+
+/// A donor-specific domain's positives against each kind of negative
+/// (module docs), and against all of them.
+#[derive(Serialize, Debug)]
+pub struct DonorSpecificPairs {
+    pub all: PairSet,
+    pub same_donor: PairSet,
+    pub cross_donor: PairSet,
+    pub other_domains: PairSet,
 }
 
 #[derive(Serialize, Debug)]
@@ -351,6 +372,23 @@ pub fn score_pairs(
     let cross_donor = j.score(&cross);
     let within_donor = j.score(&within);
 
+    // the hard negatives, one shared domain across two sections, and the
+    // easy ones, two domains: drawn once, for every donor-specific domain
+    let half = o.pairs / 2;
+    let same_domain = |a: usize, b: usize| t.domain[a] == t.domain[b];
+    let same_donor = draw(&mut stream(901), &shared, &shared, half, |a, b| {
+        same_domain(a, b) && t.donor[a] == t.donor[b] && layout.section[a] != layout.section[b]
+    });
+    let cross_donor_neg = draw(&mut stream(902), &shared, &shared, half, |a, b| {
+        same_domain(a, b) && t.donor[a] != t.donor[b]
+    });
+    let other = draw(&mut stream(903), &scored, &scored, half, |a, b| {
+        !same_domain(a, b)
+    });
+    let cos = |pairs: &[(usize, usize)]| -> Vec<f64> {
+        pairs.iter().map(|&(a, b)| j.cosine(a, b)).collect()
+    };
+    let (same_s, cross_s, other_s) = (cos(&same_donor), cos(&cross_donor_neg), cos(&other));
     let patches = (0..t.domain_labels.len())
         .filter_map(|k| t.domain_owner[k].map(|owner| (k, owner)))
         .map(|(k, owner)| {
@@ -371,6 +409,22 @@ pub fn score_pairs(
             // the first spot is the patch's: positive when the second is too
             let (scores, pos) = j.labelled(&pairs);
             let (closest_domain, closest_auroc) = closest(t, &pairs, &scores, &pos);
+            let positives = cos(&draw(
+                &mut stream(1000 + k as u64),
+                &patch,
+                &patch,
+                n_pos,
+                |_, _| true,
+            ));
+            let against = |negs: &[&[f64]]| {
+                let mut s = positives.clone();
+                let mut label = vec![true; positives.len()];
+                for n in negs {
+                    s.extend_from_slice(n);
+                    label.extend(std::iter::repeat_n(false, n.len()));
+                }
+                set_of(&s, &label)
+            };
             PatchPairs {
                 domain: t.domain_labels[k].to_string(),
                 owner: donor_label(owner).to_string(),
@@ -378,6 +432,12 @@ pub fn score_pairs(
                 pairs: set_of(&scores, &pos),
                 closest_domain,
                 closest_auroc,
+                donor_specific: DonorSpecificPairs {
+                    all: against(&[&same_s, &cross_s, &other_s]),
+                    same_donor: against(&[&same_s]),
+                    cross_donor: against(&[&cross_s]),
+                    other_domains: against(&[&other_s]),
+                },
             }
         })
         .collect();
@@ -520,10 +580,12 @@ pub struct SimPairsArgs {
 }
 
 /// The table's header line, as `srt-sim-pairs` prints it: AUROC of each
-/// set (AUPRC and prevalence are in the JSON).
+/// set (AUPRC and prevalence are in the JSON); `ds_*` the donor-specific
+/// domain's positives against the same-donor and cross-donor hard
+/// negatives and the other-domain pairs.
 pub fn pairs_header() -> String {
     format!(
-        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:<NAME_WIDTH$} {:>7} {:<NAME_WIDTH$} {:>7}",
+        "{:<40} {:>7} {:>7} {:>7} {:>7} {:>7} {:<NAME_WIDTH$} {:>7} {:<NAME_WIDTH$} {:>7} {:>7} {:>7} {:>7}",
         "vectors",
         "scored",
         "cross",
@@ -533,7 +595,10 @@ pub fn pairs_header() -> String {
         "patch",
         "auroc",
         "closest",
-        "c_auroc"
+        "c_auroc",
+        "ds_same",
+        "ds_xdon",
+        "ds_othr"
     )
 }
 
@@ -555,9 +620,16 @@ pub fn pairs_rows(input: &str, s: &PairScore) -> Vec<String> {
     s.patches
         .iter()
         .map(|p| {
+            let d = &p.donor_specific;
             format!(
-                "{head} {:<NAME_WIDTH$} {:>7.3} {:<NAME_WIDTH$} {:>7.3}",
-                p.domain, p.pairs.auroc, p.closest_domain, p.closest_auroc
+                "{head} {:<NAME_WIDTH$} {:>7.3} {:<NAME_WIDTH$} {:>7.3} {:>7.3} {:>7.3} {:>7.3}",
+                p.domain,
+                p.pairs.auroc,
+                p.closest_domain,
+                p.closest_auroc,
+                d.same_donor.auroc,
+                d.cross_donor.auroc,
+                d.other_domains.auroc
             )
         })
         .collect()

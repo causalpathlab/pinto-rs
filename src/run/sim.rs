@@ -438,7 +438,14 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              cross, what the donor costs the mapping. patches, one per donor-specific domain: \
              pairs of its spots (positive) against one of its spots with one outside it \
              (negative); closest_domain and closest_auroc: the domain it is told apart from \
-             worst (0.5: folded into it). spatial: each spot's knn nearest neighbours in its \
+             worst (0.5: folded into it). donor_specific, one per donor-specific domain: the \
+             same positives against hard negatives, pairs of one shared domain's spots from two \
+             sections of one donor (same_donor) or from two donors (cross_donor), and against \
+             pairs of two different domains (other_domains), each AUROC apart and all together: \
+             a mapping that places spots by cell type alone is at 0.5 against the hard \
+             negatives, one that keeps only the donor-specific domain near 1; a mapping set by \
+             the donor passes cross_donor but not same_donor. \
+             spatial: each spot's knn nearest neighbours in its \
              section, positive when they share a domain. Returns a table of the AUROCs, one row \
              per input and donor-specific domain, and every number as JSON. Runs in the call.",
             json!({

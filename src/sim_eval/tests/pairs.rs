@@ -307,7 +307,9 @@ fn a_simulations_truth_run_scores_one() {
 /// the header puts them.
 #[test]
 fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
-    use crate::sim_eval::pairs::{pairs_header, pairs_rows, PairSet, PatchPairs};
+    use crate::sim_eval::pairs::{
+        pairs_header, pairs_rows, DonorSpecificPairs, PairSet, PatchPairs,
+    };
     let set = PairSet {
         n_pairs: 1,
         n_positive: 1,
@@ -328,6 +330,12 @@ fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
             pairs: set.clone(),
             closest_domain: "D2_specific_domain_11".into(),
             closest_auroc: 1.0,
+            donor_specific: DonorSpecificPairs {
+                all: set.clone(),
+                same_donor: set.clone(),
+                cross_donor: set.clone(),
+                other_domains: set.clone(),
+            },
         }],
         spatial: set,
     };
@@ -340,7 +348,70 @@ fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
     for f in [6, 8] {
         assert_eq!(header[f].0, row[f].0, "field {f}\n{show}");
     }
-    for f in [7, 9] {
+    for f in [7, 9, 10, 11, 12] {
         assert_eq!(header[f].1, row[f].1, "field {f}\n{show}");
     }
+}
+
+// * donor-specific pairs
+
+/// [`toy`] with each donor's grid split into two sections by rows, so a
+/// shared domain has pairs across two sections of one donor.
+fn toy_two_sections() -> (TruthSpots, SpotLayout) {
+    let (t, mut l) = toy();
+    for (i, s) in l.section.iter_mut().enumerate() {
+        *s = 2 * t.donor[i] + usize::from(l.xy[i][0] >= 1200.0);
+    }
+    (t, l)
+}
+
+/// Vectors that place spots by domain alone (a stage-1 mapping) give the
+/// donor-specific domain's pairs no edge over a shared domain's: 0.5
+/// against the hard negatives, 1 against other domains.
+#[test]
+fn a_domain_mapping_is_at_chance_against_the_hard_negatives() {
+    let (t, l) = toy_two_sections();
+    let x = one_hot(t.cells.len(), 4, |i| t.domain[i]);
+    let d = &scored(&t, &l, &x).patches[0].donor_specific;
+    near(d.same_donor.auroc, 0.5, 1e-9, "same donor");
+    near(d.cross_donor.auroc, 0.5, 1e-9, "cross donor");
+    near(d.other_domains.auroc, 1.0, 1e-9, "other domains");
+}
+
+/// Vectors that keep only the donor-specific domain (shared spots
+/// scattered at random, as a residual that left no shared structure) tell
+/// its pairs from every negative.
+#[test]
+fn a_mapping_that_keeps_only_the_donor_specific_domain_scores_one() {
+    let (t, l) = toy_two_sections();
+    let mut rng = SmallRng::seed_from_u64(3);
+    let x = Mat::from_fn(t.cells.len(), 16, |i, c| {
+        if t.domain[i] == 3 {
+            (c == 0) as u8 as f32
+        } else {
+            let z: f64 = StandardNormal.sample(&mut rng);
+            z as f32
+        }
+    });
+    let d = &scored(&t, &l, &x).patches[0].donor_specific;
+    for (what, set) in [
+        ("same donor", &d.same_donor),
+        ("cross donor", &d.cross_donor),
+        ("other domains", &d.other_domains),
+        ("all", &d.all),
+    ] {
+        assert!(set.n_pairs > 0, "{what}: no pairs drawn");
+        assert!(set.auroc > 0.95, "{what}: {}", set.auroc);
+    }
+}
+
+/// Vectors set by the donor pass the cross-donor hard negatives but not the
+/// same-donor ones, which is why the two are kept apart.
+#[test]
+fn donor_vectors_pass_cross_donor_but_not_same_donor() {
+    let (t, l) = toy_two_sections();
+    let x = one_hot(t.cells.len(), 2, |i| t.donor[i]);
+    let d = &scored(&t, &l, &x).patches[0].donor_specific;
+    near(d.cross_donor.auroc, 1.0, 1e-9, "cross donor");
+    near(d.same_donor.auroc, 0.5, 1e-9, "same donor");
 }
