@@ -10,7 +10,7 @@ mod pick;
 mod plan;
 
 use super::{form, script};
-use crate::tui::browse::Browser;
+use legume_tui::browse::Browser;
 use crate::tui::shown;
 use data::{Pair, Pick};
 use form::{Kind, Method};
@@ -353,7 +353,8 @@ impl App {
             // Redraw often only while something changes on its own.
             // Within legume-tui's grace, so a bar its fit cleared leaves
             // the screen on time.
-            let wait = if self.running() || self.describing > 0 {
+            let listing = self.browser.as_ref().is_some_and(|b| b.listing().is_some());
+            let wait = if self.running() || self.describing > 0 || listing {
                 Duration::from_millis(200).min(legume_tui::child::GRACE)
             } else {
                 Duration::from_secs(60)
@@ -511,6 +512,9 @@ impl App {
     /// files not read yet.
     fn poll(&mut self) {
         self.settle();
+        if let Some(b) = &mut self.browser {
+            b.poll();
+        }
         while let Ok(found) = self.found.try_recv() {
             self.describing = self.describing.saturating_sub(1);
             match found {

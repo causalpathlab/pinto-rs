@@ -48,7 +48,11 @@ impl App {
         if let Some(b) = &self.browser {
             // Inside the popup's border.
             let width = usize::from(area.width.min(110)).saturating_sub(2);
-            let lines = b.lines(usize::from(area.height).saturating_sub(2), width);
+            let lines = b.lines(
+                usize::from(area.height).saturating_sub(2),
+                width,
+                &legume_tui::look::Look::terminal(),
+            );
             popup(f, area, lines, 110);
         } else if self.confirm.is_some() {
             let rows = usize::from(area.height).saturating_sub(4);

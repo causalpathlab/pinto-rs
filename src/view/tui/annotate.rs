@@ -8,7 +8,7 @@ use super::super::round::round_name;
 use super::browse::Panels;
 use super::relabel::Staging;
 use super::{App, Show};
-use crate::tui::browse::{Browser, Outcome};
+use legume_tui::browse::{Browser, Outcome};
 use crate::tui::style::{self, tail};
 use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -391,7 +391,11 @@ impl App<'_> {
         let mut out = vec![Line::raw("")];
         match modal {
             Modal::Browse(b) => {
-                out.extend(b.lines(room.saturating_sub(1), 45 + more));
+                out.extend(b.lines(
+                    room.saturating_sub(1),
+                    45 + more,
+                    &legume_tui::look::Look::terminal(),
+                ));
             }
             Modal::Prompt(p) => {
                 let title = match &p.what {

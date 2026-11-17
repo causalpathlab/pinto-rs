@@ -87,7 +87,7 @@ pdf-writer = { version = "0.15", optional = true }
 # characters, the structure plot and heatmap and their PDF figures, the
 # save field, the gallery of saved figures and the shell words of a
 # command line. The same floor as in [dev-dependencies].
-legume-tui = { version = "0.3.18", optional = true, features = ["form", "save", "gallery", "map-kitty", "chart", "export"] }
+legume-tui = { version = "0.4.0", optional = true, features = ["browse", "form", "save", "gallery", "map-kitty", "chart", "export"] }
 
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads.
@@ -99,7 +99,7 @@ libc = "0.2"
 [dev-dependencies]
 # The crate's harness, driving `pinto run` and `pinto view` through
 # pseudo-terminals in tests/detach_session.rs; the same floor as above.
-legume-tui = { version = "0.3.18", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.4.0", default-features = false, features = ["testing"] }
 
 # Tests run the crate a little optimised and its dependencies more, so the
 # suite's small fits stay quick without a release build.

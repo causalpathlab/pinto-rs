@@ -1,8 +1,7 @@
 //! What the terminal front ends, `pinto view` and `pinto run`, share: how
-//! text and popups look, a file browser, and how the programs they start
-//! run in their session.
+//! text and popups look, and how the programs they start run in their
+//! session. Their file browser is legume-tui's ([`legume_tui::browse`]).
 
-pub(crate) mod browse;
 pub(crate) mod style;
 
 use std::path::Path;

@@ -3,7 +3,8 @@
 //! [`crate::tui::browse`].
 
 use super::super::lupin::{self, Panel};
-use crate::tui::browse::{name_then, Browser, Header, Outcome, Wanted};
+use legume_tui::browse::{Browser, Header, Outcome, Wanted};
+use std::borrow::Cow;
 use crate::util::metadata::PintoMetadata;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Paragraph;
@@ -12,27 +13,22 @@ use std::path::{Path, PathBuf};
 
 /// Run manifests (`*.pinto.json`), each described in a line; the newest
 /// first chosen.
+#[derive(Clone)]
 pub struct Runs;
 
 impl Wanted for Runs {
     type About = String;
 
     fn header(&self) -> Header {
-        Header {
-            title: "pinto view: run to open".into(),
-            what: "runs (*.pinto.json)",
-            star: None,
-            verb: "open",
-            columns: None,
-        }
+        Header::new("pinto view: run to open", "runs (*.pinto.json)").verb("open")
     }
 
     fn file(&self, path: &Path, name: &str) -> Option<String> {
         name.ends_with(".pinto.json").then(|| describe_run(path))
     }
 
-    fn row(&self, name: &str, about: &String, name_w: usize) -> String {
-        name_then(name, about, name_w)
+    fn describe<'a>(&self, about: &'a String) -> Cow<'a, str> {
+        Cow::Borrowed(about)
     }
 
     fn best(&self, dir: &Path, files: &[(&str, &String)]) -> Option<String> {
@@ -50,6 +46,7 @@ impl Wanted for Runs {
 /// Marker panels for level `tag`, their genes counted against the run's
 /// (upper-case symbols; empty when the run's genes are unknown). The one
 /// covering the most of them is starred.
+#[derive(Clone)]
 pub struct Panels {
     pub known: HashSet<String>,
     pub tag: String,
@@ -62,17 +59,21 @@ impl Wanted for Panels {
     type About = Counts;
 
     fn header(&self) -> Header {
-        Header {
-            title: format!("marker panel for level {}", self.tag),
-            what: "marker panels (gene<TAB>type)",
-            star: Some("covers the most of this run's genes"),
-            verb: "annotate",
-            columns: Some("   types  genes  in run  name"),
-        }
+        Header::new(
+            format!("marker panel for level {}", self.tag),
+            "marker panels (gene<TAB>type)",
+        )
+        .star("covers the most of this run's genes")
+        .verb("annotate")
+        .columns("   types  genes  in run  name")
     }
 
     fn file(&self, path: &Path, _name: &str) -> Option<Counts> {
         read_panel(path, &self.known)
+    }
+
+    fn describe<'a>(&self, &(types, genes, found): &'a Counts) -> Cow<'a, str> {
+        Cow::Owned(format!("{types} cell types, {genes} genes, {found} in the run"))
     }
 
     fn row(&self, name: &str, &(types, genes, found): &Counts, _name_w: usize) -> String {
@@ -183,16 +184,25 @@ pub fn pick_run(
         if session.stop_requested() {
             break None;
         }
+        b.poll();
         session.draw(terminal, |f| {
             let area = f.area();
             let width = usize::from(area.width).min(110);
-            let lines = b.lines(usize::from(area.height), width);
+            let lines = b.lines(
+                usize::from(area.height),
+                width,
+                &legume_tui::look::Look::terminal(),
+            );
             f.render_widget(Paragraph::new(lines), area);
         })?;
         session.status("browsing for a run");
-        let Some(Event::Key(k)) = session
-            .poll(terminal, std::time::Duration::from_secs(60))?
-            .event()
+        // often while a folder is still being listed, so it fills in
+        let wait = if b.listing().is_some() {
+            std::time::Duration::from_millis(100)
+        } else {
+            std::time::Duration::from_secs(60)
+        };
+        let Some(Event::Key(k)) = session.poll(terminal, wait)?.event()
         else {
             continue;
         };
