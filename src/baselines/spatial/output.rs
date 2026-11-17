@@ -148,15 +148,18 @@ pub fn write_loadings(
 }
 
 /// What was done about batch effects: δ divided out (the one deviation
-/// from the original method), or nothing, under `--ignore-batch` or with a
-/// single batch.
+/// from the original method), the stage-1 divisor under `--offset`, or
+/// nothing, under `--ignore-batch` or with a single batch.
 fn batch_correction(input: &SpatialInputArgs, data: &SpatialData) -> serde_json::Value {
     match &data.delta {
         Some(d) => serde_json::json!({"delta": true, "batches": d.batches}),
-        None => serde_json::json!({
-            "delta": false,
-            "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
-        }),
+        None => match input.stage2.offset.as_deref() {
+            Some(dir) => serde_json::json!({"delta": false, "offset": dir}),
+            None => serde_json::json!({
+                "delta": false,
+                "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
+            }),
+        },
     }
 }
 

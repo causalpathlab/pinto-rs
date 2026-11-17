@@ -66,6 +66,12 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     mkdir_parent(&c.out)?;
 
     anyhow::ensure!(args.n_communities > 0, "n_communities must be > 0");
+    anyhow::ensure!(
+        args.stage2.offset.is_none() || args.feature_network.is_none(),
+        "--offset scores lc's projected edge profiles against the stage-1 expectation; \
+         with --feature-network the profiles are module pairs, which it does not cover \
+         yet. Drop --feature-network"
+    );
 
     ////////////////////////////////////////////////////
     // 1-3. Load + KNN + batch effects + feature weights //
@@ -79,6 +85,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         seeding,
         batch_labels,
         batch_effects,
+        stage1,
         graph,
         knn,
         base_batch_corrected,
@@ -90,6 +97,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         n_rows,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
+        offset: args.stage2.offset.as_deref(),
         common: c,
         ablation: Some(&args.ablation),
         batch_effects: BatchEstimate::Fit,
@@ -179,7 +187,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             basis.n_modules,
             Some(&row_weights),
             None,
-            batch_effects.as_ref(),
+            batch_effects
+                .as_ref()
+                .map(crate::util::batch_effects::Divisor::Registered),
         )?;
 
         module_ctx = Some(ModulePairContext {
@@ -276,6 +286,22 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         None
     };
 
+    // Under --offset the counts are read as they are and every profile store
+    // carries its edges' stage-1 expectation through the same basis: the
+    // exact offset, `λ̂ = D / M` (link_community::model).
+    let profile_offset = match (stage1.as_ref(), proj_basis.as_ref()) {
+        (Some(s1), Some(basis)) => {
+            let offset = ProfileOffset::new(s1, basis);
+            crate::util::memory::ensure_fits(
+                "lc's stage-1 offset rows",
+                offset.bytes(n_edges) + basis.ncols() * n_cells * 4,
+                &crate::util::memory::Budget::now()?,
+                "fit fewer cells or a smaller -p",
+            )?;
+            Some(offset)
+        }
+        _ => None,
+    };
     let profile_mode = if let Some(ctx) = module_ctx.as_ref() {
         ProfileMode::ModulePair {
             basis: &ctx.basis,
@@ -289,7 +315,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             // profiles at every level, the module expression), as dsvd and
             // cage divide theirs, and the written feature_community; the
             // feature filters stay on raw counts.
-            delta: batch_effects.as_ref(),
+            divisor: batch_effects
+                .as_ref()
+                .map(crate::util::batch_effects::Divisor::Registered),
+            offset: profile_offset.as_ref(),
         }
     };
 
@@ -343,7 +372,10 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         data_vec: &data_vec,
         feature_weights: &feature_weights,
         axis: &feature_axis,
-        divisor: crate::util::batch_effects::BatchDivisor::of(
+        // the written dictionary under the stage-1 divisor: mean counts over
+        // `d` (`fit_feature_community_param`)
+        divisor: crate::util::batch_effects::Divisor::of(
+            stage1.as_ref(),
             batch_effects.as_ref(),
             batch_of_cell.as_deref(),
         ),
@@ -548,6 +580,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             &cascade_level_indices,
         );
         meta.max_threads = Some(args.max_threads);
+        meta.offset = stage1
+            .as_ref()
+            .map(|s| s.dir.to_string_lossy().into_owned());
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!(
@@ -776,8 +811,23 @@ fn build_full_profiles(
             edge_indices,
             basis,
         )),
-        ProfileMode::Projection { basis, delta } => {
-            build_projection_profiles_for_edges(data, edge_indices, all_edges, basis, None, delta)
+        ProfileMode::Projection {
+            basis,
+            divisor,
+            offset,
+        } => {
+            let store = build_projection_profiles_for_edges(
+                data,
+                edge_indices,
+                all_edges,
+                basis,
+                None,
+                divisor,
+            )?;
+            Ok(match offset {
+                Some(o) => store.with_offset(o.edge_rows(None, all_edges, edge_indices)),
+                None => store,
+            })
         }
     }
 }

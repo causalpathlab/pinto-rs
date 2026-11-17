@@ -85,6 +85,7 @@ fn slots_named(
 /// profiles are on raw counts, and every batch is estimated from the
 /// fitting parts, as before.
 pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
+    crate::predict::refuse_offset_model(&args.core.model, Some(run))?;
     let meta = &run.meta;
     let c = &args.core.common;
     let h = &args.holdout;
@@ -128,6 +129,7 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
         batch_labels,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
+        offset: None,
         common: c,
         ablation: None,
         // The model's profiles are what is scored; δ is estimated below from

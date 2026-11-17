@@ -45,10 +45,13 @@ fn dividing_by_the_estimate_removes_the_per_batch_bias() {
             .clone()
     };
     let raw = fit(None);
-    let divided = fit(Some(BatchDivisor {
-        delta: &delta,
-        batch_of_cell: &batch_of_cell,
-    }));
+    let divided = fit(Some(
+        BatchDivisor {
+            delta: &delta,
+            batch_of_cell: &batch_of_cell,
+        }
+        .into(),
+    ));
     for g in 0..12 {
         let (r, d) = (raw[(g, 1)] / raw[(g, 0)], divided[(g, 1)] / divided[(g, 0)]);
         let planted = if g < 6 { 3.0 } else { 1.0 };
@@ -82,6 +85,7 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
     ];
     let args = SrtInputArgs::try_parse_from(argv).unwrap();
     let pre = preprocess_srt(SrtPreprocessConfig {
+        offset: None,
         common: &args,
         ablation: None,
         batch_effects: BatchEstimate::Skip,
@@ -117,10 +121,13 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
     let delta = read_delta(&delta_path).unwrap();
     assert_eq!(delta.rows, pre.data_vec.row_names().unwrap());
     let batch_of_cell = batch_ids(&membership, &delta.batches);
-    let divided = gap(&fit(Some(BatchDivisor {
-        delta: &delta.mean,
-        batch_of_cell: &batch_of_cell,
-    })));
+    let divided = gap(&fit(Some(
+        BatchDivisor {
+            delta: &delta.mean,
+            batch_of_cell: &batch_of_cell,
+        }
+        .into(),
+    )));
     (divided, raw)
 }
 

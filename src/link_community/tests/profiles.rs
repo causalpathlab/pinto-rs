@@ -1,4 +1,5 @@
 use crate::link_community::profiles::*;
+use crate::util::batch_effects::Divisor;
 use crate::util::common::*;
 use legume_numeric::matrix::pair_graph::test_graph_from_edges;
 
@@ -400,9 +401,15 @@ fn profiles_read_counts_divided_by_the_batch_effect() {
     let edges: Vec<(usize, usize)> = vec![(0, 1), (1, 2), (2, 5), (3, 4)];
     let idx: Vec<usize> = (0..edges.len()).collect();
     let basis = Mat::from_fn(n_features, m, |g, d| 1.0 + ((g + 2 * d) % 3) as f32);
-    let store =
-        build_projection_profiles_for_edges(&data, &idx, &edges, &basis, None, Some(&delta))
-            .unwrap();
+    let store = build_projection_profiles_for_edges(
+        &data,
+        &idx,
+        &edges,
+        &basis,
+        None,
+        Some(Divisor::Registered(&delta)),
+    )
+    .unwrap();
     let basis_t = basis.transpose();
     for (e, &(u, v)) in edges.iter().enumerate() {
         let expected = &basis_t * (divided.column(u) + divided.column(v));
@@ -413,7 +420,9 @@ fn profiles_read_counts_divided_by_the_batch_effect() {
     }
 
     let labels = vec![0, 1, 0, 1, 1, 0];
-    let pooled = coarsen_cell_expression_dense(&data, &labels, 2, Some(&delta)).unwrap();
+    let pooled =
+        coarsen_cell_expression_dense(&data, &labels, 2, Some(Divisor::Registered(&delta)))
+            .unwrap();
     for g in 0..n_features {
         for p in 0..2 {
             let expected: f32 = (0..n_cells)
@@ -428,8 +437,15 @@ fn profiles_read_counts_divided_by_the_batch_effect() {
     }
 
     let module_of = vec![Some(0), Some(1), Some(0), None];
-    let (module_expr, _) =
-        build_module_expression(&data, &module_of, 2, None, None, Some(&delta)).unwrap();
+    let (module_expr, _) = build_module_expression(
+        &data,
+        &module_of,
+        2,
+        None,
+        None,
+        Some(Divisor::Registered(&delta)),
+    )
+    .unwrap();
     for c in 0..n_cells {
         let expected = divided[(0, c)] + divided[(2, c)];
         assert!((module_expr[(0, c)] - expected).abs() < 1e-4, "cell {c}");

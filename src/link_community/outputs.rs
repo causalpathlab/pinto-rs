@@ -289,9 +289,10 @@ pub struct PartitionInputs<'a> {
     /// Precomputed feature weights, so no partition re-fits their trend.
     pub feature_weights: &'a [f32],
     pub axis: &'a FeatureAxis,
-    /// The run's batch effect, when it divides by one: every written
-    /// feature_community is then batch-adjusted.
-    pub divisor: Option<crate::util::batch_effects::BatchDivisor<'a>>,
+    /// What divides the run's counts (its batch effect, or a stage-2 fit's
+    /// stage-1 divisor): every written feature_community is then fitted on
+    /// the divided counts.
+    pub divisor: Option<crate::util::batch_effects::Divisor<'a>>,
 }
 
 /// Fit the propensity and feature-community stats of an edge partition.

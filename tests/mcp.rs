@@ -973,11 +973,14 @@ fn an_agent_takes_a_residual_under_a_free_name() {
     assert!(res.ends_with("residual-2"), "{job}");
     assert!(job["note"].as_str().unwrap().contains("run_fit"), "{job}");
     assert!(job["note"].as_str().unwrap().contains("run_lra"), "{job}");
+    // divide, the default: stage 2 reads the run's own files against the
+    // residual's folder
     assert_eq!(
         job["fit"]["flags"],
-        json!({"coord-column-names": "x,y"}),
+        json!({"coord-column-names": "x,y", "offset": res}),
         "{job}"
     );
+    assert_eq!(job["fit"]["data"], json!([data.to_string_lossy()]), "{job}");
     // The job reads an empty data file; let it end before the server does.
     let id = job["job"].as_str().unwrap().to_string();
     c.ok("job_wait", json!({"id": id, "seconds": 120}));

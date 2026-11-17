@@ -84,6 +84,12 @@ impl LraInputArgs {
                  or data files with --coord"
             ),
         };
+        let stage1 = match residual {
+            Some(r) => r.stage1,
+            // a stage-2 fit under --offset reads the raw counts itself;
+            // only its stage-1 run is taken, for the cell types
+            None => run.as_ref().map(stage1_of_divide).transpose()?.flatten(),
+        };
         Ok(LraInput {
             data_files,
             run,
@@ -93,7 +99,7 @@ impl LraInputArgs {
             knn_spatial: self.knn_spatial,
             cell_types: self.cell_types.clone(),
             region: self.region.clone(),
-            stage1: residual.and_then(|r| r.stage1),
+            stage1,
         })
     }
 }
@@ -106,7 +112,8 @@ impl LraInputArgs {
 /// input. Paths are absolute, or relative to the file holding the block.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub(crate) struct ResidualBlock {
-    /// `excess` for counts a fitted run left unexplained.
+    /// `excess` for the counts `--residual subtract` left unexplained; `raw`
+    /// under `--residual divide`, whose stage 2 reads the raw counts itself.
     pub counts: String,
     /// The stage-1 run's manifest.
     #[serde(default)]
@@ -195,6 +202,33 @@ pub fn residual_of(run: &Run) -> anyhow::Result<Option<ResidualInput>> {
         stage1,
         holder,
     }))
+}
+
+/// The stage-1 run of a stage-2 fit under `--offset`: the run the
+/// `residual.json` of its divisor's folder names. `None` for any other run.
+pub fn stage1_of_divide(run: &Run) -> anyhow::Result<Option<Run>> {
+    let Some(dir) = run.meta.offset.as_deref() else {
+        return Ok(None);
+    };
+    let marker = Path::new(dir).join(crate::residual::MARKER);
+    let value = read_json(&marker).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} records the stage-1 divisor {dir}, but {} cannot be read",
+            run.manifest.display(),
+            marker.display()
+        )
+    })?;
+    let block: ResidualBlock =
+        serde_json::from_value(value).map_err(|e| anyhow::anyhow!("{}: {e}", marker.display()))?;
+    block
+        .stage1
+        .as_deref()
+        .map(|s| {
+            let path =
+                resolve_beside(&marker, s).ok_or_else(|| missing(&marker, s, "stage-1 run"))?;
+            Run::open(&path.to_string_lossy())
+        })
+        .transpose()
 }
 
 /// The raw counts of residual fit `run`: the block's `raw_data_files`, else

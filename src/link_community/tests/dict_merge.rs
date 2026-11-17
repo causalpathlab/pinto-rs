@@ -442,10 +442,13 @@ fn centred_merges_agree(section_of: fn(usize) -> u32, by_batch: bool) -> bool {
             .clone()
     };
     let undivided = fit(None);
-    let divided = fit(Some(BatchDivisor {
-        delta: &delta,
-        batch_of_cell: &batch_of_cell,
-    }));
+    let divided = fit(Some(
+        BatchDivisor {
+            delta: &delta,
+            batch_of_cell: &batch_of_cell,
+        }
+        .into(),
+    ));
     let tree = |m: &Mat| -> Vec<(i32, i32, i32)> {
         cosine_merge(m, None, Some(&occupied))
             .iter()

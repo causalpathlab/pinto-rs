@@ -305,6 +305,10 @@ impl LinkGibbsSampler {
             .iter()
             .map(|indices| LinkCommunityStats::component_stats(profiles, k, indices, membership))
             .collect();
+        let mut memo_offset: Vec<Vec<f64>> = comp_edges
+            .iter()
+            .map(|indices| LinkCommunityStats::component_offset(profiles, k, indices, membership))
+            .collect();
 
         let mut total_moves = 0usize;
         let base_seed = self.rng.random::<u64>() | 1;
@@ -326,6 +330,9 @@ impl LinkGibbsSampler {
                         size_sum: global_stats.size_sum.clone(),
                         edge_count: global_stats.edge_count.clone(),
                         membership: indices.iter().map(|&e| membership[e]).collect(),
+                        offset_sum: global_stats.offset_sum.clone(),
+                        offset_inv: global_stats.offset_inv.clone(),
+                        offset_ln: global_stats.offset_ln.clone(),
                         feature_table: global_stats.feature_table.clone(),
                     };
 
@@ -350,12 +357,18 @@ impl LinkGibbsSampler {
 
                     let new_comp_stats =
                         LinkCommunityStats::local_stats(&sub_stores[c], k, &local_stats.membership);
+                    let new_offset = LinkCommunityStats::local_offset(
+                        &sub_stores[c],
+                        k,
+                        &local_stats.membership,
+                    );
 
                     prog_bar.inc(1);
 
                     ComponentResult {
                         membership: local_stats.membership,
                         new_stats: new_comp_stats,
+                        new_offset,
                         moves,
                     }
                 })
@@ -381,6 +394,8 @@ impl LinkGibbsSampler {
                 );
                 global_stats.apply_delta(old, new);
                 memo_stats[c] = result.new_stats;
+                global_stats.apply_offset_delta(&memo_offset[c], &result.new_offset);
+                memo_offset[c] = result.new_offset;
             }
 
             total_moves += sweep_moves;
@@ -466,6 +481,8 @@ fn sweep_edges(
 struct ComponentResult {
     membership: Vec<usize>,
     new_stats: (Vec<f64>, Vec<f64>, Vec<usize>),
+    /// The block's expected degree `M` under a stage-1 divisor; empty without.
+    new_offset: Vec<f64>,
     moves: usize,
 }
 

@@ -137,6 +137,7 @@ fn args(run: &str, out: &str, data_files: Option<Vec<Box<str>>>) -> ResidualArgs
         run: run.into(),
         out: out.into(),
         data_files,
+        operation: Operation::Subtract,
         excess: Excess::Floor,
         em_iters: 50,
         block_size: Some(1),
@@ -871,4 +872,249 @@ fn a_residual_of_a_fit_on_a_residual_is_refused() {
     std::fs::write(&manifest, m.to_string()).unwrap();
     let e = refused(Some(raw.iter().map(|f| f.as_str().into()).collect()));
     assert!(e.contains("a fit on a residual"), "{e}");
+}
+
+/// `--residual divide` writes the tables `μ` is rebuilt from, and the `μ`
+/// rebuilt from them is the one subtract takes its excess from, at every
+/// nonzero; `p̄`, `φ` and `σ²` are the dense sums over every cell and row
+/// (the zeros included) that the closed forms stand for. It writes no
+/// count files, and `residual.json` says divide.
+#[test]
+fn divide_writes_the_tables_mu_is_rebuilt_from() {
+    use crate::util::stage1_divisor::{Stage1Divisor, Stage1Tables};
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    // two communities over two batches of 20 cells
+    let prefix = shifted_fixture(d);
+    let prop = Mat::from_fn(40, 2, |i, k| {
+        let w = (i % 5) as f32 / 4.0;
+        if k == 0 {
+            w
+        } else {
+            1.0 - w
+        }
+    });
+    let names: Vec<String> = ["S1", "S2"]
+        .iter()
+        .flat_map(|s| (0..20).map(move |i| format!("{}@{s}", char::from(b'a' + i as u8))))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    rewrite_run(&prefix, &refs, prop, "lc");
+    let out = format!("{d}/divide");
+    let a = ResidualArgs {
+        operation: Operation::Divide,
+        adapt_cells: 5.0,
+        ..args(&prefix, &out, None)
+    };
+    run_residual(&a).unwrap();
+    let plan = Plan::new(&Run::open(&prefix).unwrap(), &a).unwrap();
+    assert!(plan.zarrs.is_empty());
+    let mut written: Vec<std::path::PathBuf> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    written.sort();
+    let mut made = plan.made();
+    made.sort();
+    assert_eq!(written, made);
+    let marker: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["operation"], "divide", "{marker}");
+    assert_eq!(marker["counts"], "raw", "{marker}");
+
+    // today's μ, as subtract computes it
+    let inp = Inputs::load(&a, &plan).unwrap();
+    let profiles = group_profiles(&inp, a.adapt_cells, a.block_size).unwrap();
+    let tables = Stage1Tables::read(&out, &crate::util::memory::Budget::new(None, None)).unwrap();
+    let rows = inp.data.row_names().unwrap();
+    let s1 = Stage1Divisor::align(&tables, &inp.names, &rows).unwrap();
+    let n = inp.data.num_columns();
+    let csc = inp.data.read_columns_csc(0..n).unwrap();
+    let g = rows.len();
+    let (mut mu_sum, mut mu2_sum, mut dev) = (vec![0f64; g], vec![0f64; g], vec![0f64; g]);
+    let mut n_total = 0.0;
+    for j in 0..n {
+        let p_t = &profiles[inp.group_of[j]];
+        let col = column_entries(&csc, j);
+        let pi = cell_theta(&col, p_t, a.em_iters);
+        let nn: f64 = col.iter().map(|e| e.1).sum();
+        n_total += nn;
+        for &(r, _) in &col {
+            let want = mu_at(nn, p_t, &pi, r);
+            let got = f64::from(s1.mu(j, r));
+            assert!(
+                (got - want).abs() <= 1e-4 * want.max(1.0),
+                "cell {j} row {r}: {got} vs {want}"
+            );
+        }
+        for r in 0..g {
+            let mu = mu_at(nn, p_t, &pi, r);
+            let y = col.iter().find(|e| e.0 == r).map_or(0.0, |e| e.1);
+            mu_sum[r] += mu;
+            mu2_sum[r] += mu * mu;
+            dev[r] += (y - mu).powi(2) - mu;
+        }
+    }
+    for r in 0..g {
+        let pbar = mu_sum[r] / n_total;
+        assert!((f64::from(tables.pbar[r]) - pbar).abs() <= 1e-5 * pbar.max(1e-6));
+        let phi = (dev[r] / mu2_sum[r]).max(0.0);
+        assert!(
+            (f64::from(tables.phi[r]) - phi).abs() <= 1e-4 * phi.max(1e-3),
+            "row {r}: φ {} vs {phi}",
+            tables.phi[r]
+        );
+    }
+}
+
+/// `--residual` takes divide and subtract and their aliases, divide by
+/// default.
+#[test]
+fn the_operation_defaults_to_divide_and_takes_its_aliases() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        r: ResidualArgs,
+    }
+    let parse = |extra: &[&str]| {
+        Cli::try_parse_from(["x", "--run", "r", "-o", "o"].iter().chain(extra))
+            .unwrap()
+            .r
+            .operation
+    };
+    assert_eq!(parse(&[]), Operation::Divide);
+    assert_eq!(parse(&["--residual", "multiplicative"]), Operation::Divide);
+    assert_eq!(parse(&["--residual", "subtract"]), Operation::Subtract);
+    assert_eq!(parse(&["--residual", "additive"]), Operation::Subtract);
+}
+
+/// The two-stage fit end to end under divide: an lc run, its residual, and
+/// lc, dsvd and cage on the run's own files with `--offset`, each of which
+/// runs, estimates no batch effect, and records the folder in its manifest.
+#[test]
+fn stage_two_fits_run_on_the_divisor() {
+    use crate::util::metadata::PintoMetadata;
+    use clap::Parser;
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = crate::test_support::two_sections(dir.path(), 8);
+    let d = dir.path().to_str().unwrap();
+    let stage1 = format!("{d}/lc1");
+    let common = |out: &str| -> Vec<String> {
+        [
+            &data,
+            "-c",
+            &coords,
+            "--coord-column-names",
+            "x,y",
+            "-o",
+            out,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    };
+    let lc = |out: &str, extra: &[&str]| {
+        let mut argv = vec!["lc".to_string()];
+        argv.extend(common(out));
+        argv.extend(
+            [
+                "--n-communities",
+                "2",
+                "--num-gibbs",
+                "2",
+                "--num-greedy",
+                "1",
+                "--num-levels",
+                "2",
+            ]
+            .iter()
+            .chain(extra)
+            .map(|s| s.to_string()),
+        );
+        crate::link_community::fit::fit_srt_link_community(
+            &crate::link_community::fit::SrtLinkCommunityArgs::try_parse_from(argv).unwrap(),
+        )
+        .unwrap();
+    };
+    lc(&stage1, &[]);
+    let out = format!("{d}/resid");
+    run_residual(&ResidualArgs {
+        operation: Operation::Divide,
+        block_size: None,
+        ..args(&stage1, &out, None)
+    })
+    .unwrap();
+    let offset = ["--offset", out.as_str()];
+
+    let lc2 = format!("{d}/lc2");
+    lc(&lc2, &offset);
+
+    let dsvd2 = format!("{d}/dsvd2");
+    let mut argv = vec!["dsvd".to_string()];
+    argv.extend(common(&dsvd2));
+    argv.extend(["-t", "3", "--num-levels", "2", "--offset", out.as_str()].map(String::from));
+    crate::svd::fit::fit_srt_delta_svd(
+        &crate::svd::fit::SrtDeltaSvdArgs::try_parse_from(argv).unwrap(),
+    )
+    .unwrap();
+
+    let cage2 = format!("{d}/cage2");
+    {
+        use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            cage: CellActivityGraphEmbeddingArgs,
+        }
+        let mut argv = vec!["x".to_string()];
+        argv.extend(common(&cage2));
+        argv.extend(
+            [
+                "--pair-encoder-steps",
+                "8",
+                "--epochs",
+                "2",
+                "--embedding-dim",
+                "4",
+                "-d",
+                "24",
+                "--num-levels",
+                "3",
+                "--n-edge-clusters",
+                "2",
+                "--edge-cluster-method",
+                "kmeans",
+                "--feature-inclusion",
+                "moran",
+                "--offset",
+                out.as_str(),
+            ]
+            .map(String::from),
+        );
+        crate::cell_activity_graph_embedding::fit::fit_cell_activity_graph_embedding(
+            &Cli::try_parse_from(argv).unwrap().cage,
+        )
+        .unwrap();
+    }
+
+    let canonical = std::fs::canonicalize(&out).unwrap();
+    for fit in [&lc2, &dsvd2, &cage2] {
+        let meta =
+            PintoMetadata::read(Path::new(&crate::util::metadata::manifest_path(fit))).unwrap();
+        assert_eq!(
+            meta.offset.as_deref(),
+            Some(canonical.to_string_lossy().as_ref()),
+            "{fit}"
+        );
+        assert!(
+            meta.outputs.batch_effects.is_none(),
+            "{fit}: a batch effect"
+        );
+        assert!(
+            !Path::new(&format!("{fit}.delta.parquet")).exists(),
+            "{fit}"
+        );
+    }
 }

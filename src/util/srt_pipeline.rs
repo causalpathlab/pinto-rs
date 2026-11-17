@@ -30,6 +30,7 @@ use crate::util::input::{
     auto_batch_from_components, read_data_with_coordinates, read_data_without_coordinates,
     CollapseArgs, KnnExprScope, ResolvedKnn, SRTData, SrtInputArgs,
 };
+use crate::util::stage1_divisor::Stage1Divisor;
 use data_beans::alg::gene_weighting::fisher_weights_from_stats;
 use data_beans::alg::random_projection::RandProjOps;
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -57,6 +58,9 @@ pub struct SrtPreprocessConfig<'a> {
     /// `FeatureNameKind::Gene` or an `auto_detect`'d kind so feature
     /// symbols register as aliases of `ENSG..._SYMBOL` row names.
     pub feature_kind: Option<FeatureNameKind>,
+    /// A stage-2 fit's stage-1 divisor folder (`--offset`); `None` for any
+    /// other fit and for a query.
+    pub offset: Option<&'a str>,
     /// Compute the shared post-batch-correction cell projection and hand it
     /// back on [`SrtPreprocessed::cell_proj`]. `lc` and `cage` both need one
     /// for coarsening, so taking it here spares them a second full pass.
@@ -160,6 +164,9 @@ pub struct SrtPreprocessed {
     /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
     /// single-batch or not estimated.
     pub batch_effects: Option<BatchPosterior>,
+    /// A stage-2 fit's stage-1 divisor (`--offset`), on the kept cells and
+    /// rows; such a fit estimates no batch effect.
+    pub stage1: Option<Stage1Divisor>,
     /// Expression mode's base graph was built on the batch-corrected
     /// projection, for the manifest's
     /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
@@ -268,6 +275,16 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // the user wait through a load, a possible zarr conversion and a full QC
     // pass to hear about it is time spent on an answer already known.
     c.validate_flags()?;
+    // A stage-2 fit reads its stage-1 run's expectation as a divisor and
+    // takes no batch effect: the stage-1 profiles were adapted per batch.
+    if let Some(dir) = cfg.offset {
+        anyhow::ensure!(
+            cfg.batch_effects == BatchEstimate::Fit,
+            "--offset {dir} is a fit's: only lc, dsvd, cage and cage-cell take it"
+        );
+        crate::util::stage1_divisor::refuse_batch_options(dir, &c.batch, &c.collapse)?;
+    }
+    let ignore_batch = c.batch.ignore_batch || cfg.offset.is_some();
     let no_ablation = AblationArgs::default();
     let ab = cfg.ablation.unwrap_or(&no_ablation);
     ab.validate(c.has_coordinates())?;
@@ -446,6 +463,16 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     let n_rows = data_vec.num_rows();
     let n_cells = data_vec.num_columns();
 
+    // On the cells kept so far; a cut after the graph cuts it too.
+    let mut stage1 = match cfg.offset {
+        Some(dir) => Some(Stage1Divisor::load(
+            dir,
+            &data_vec.column_names()?,
+            &data_vec.row_names()?,
+        )?),
+        None => None,
+    };
+
     c.collapse.check()?;
     // Both k's resolve here, before either graph is built. The KNN builder
     // floors k at 1 and clamps it to n_cells-1 rather than rejecting either
@@ -520,7 +547,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         // its batches are this graph's components, and the labels it
         // starts from are not them.
         let labels = sorted_batch_labels(&batch_membership);
-        let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, labels.len());
+        let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, labels.len());
         let labelled = (estimate || known) && labels.len() > 1 && !auto_relabels;
         let model = match cfg.batch_effects {
             BatchEstimate::Query { base_corrected, .. } => Some(base_corrected),
@@ -544,9 +571,12 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             }
             early_estimate = Some(effects);
         }
-        let proj = match proj {
-            Some(proj) => proj,
-            None => data_vec.project_columns_with_batch_correction(
+        let proj = match (proj, &stage1) {
+            (Some(proj), _) => proj,
+            // pinto divides, then projects: data-beans' projection takes
+            // no per-cell divisor
+            (None, Some(s)) => s.project_columns(&data_vec, c.collapse.proj_dim, None)?,
+            (None, None) => data_vec.project_columns_with_batch_correction(
                 c.collapse.proj_dim,
                 None,
                 correct.then_some(batch_membership.as_slice()),
@@ -573,6 +603,9 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         Some(keep) => {
             // the projection is of the cells before the cut
             base_proj = None;
+            if let Some(s) = stage1.as_mut() {
+                s.select_cells(&keep);
+            }
             let graph = induced_subgraph(&graph, &keep);
             mask_cells(
                 &keep,
@@ -605,7 +638,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
     let batch_labels = sorted_batch_labels(&batch_membership);
-    let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, batch_labels.len());
+    let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, batch_labels.len());
     // `ResolvedKnn::augment` is already 0 without coordinates, so these two
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
@@ -655,11 +688,14 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         Some(proj) => Some(proj),
         None if take_projection => match base_proj {
             Some(b) if b.corrected == batch_arg.is_some() => Some(b.proj),
-            _ => Some(data_vec.project_columns_with_batch_correction(
-                c.collapse.proj_dim,
-                None,
-                batch_arg,
-            )?),
+            _ => Some(match &stage1 {
+                Some(s) => s.project_columns(&data_vec, c.collapse.proj_dim, None)?,
+                None => data_vec.project_columns_with_batch_correction(
+                    c.collapse.proj_dim,
+                    None,
+                    batch_arg,
+                )?,
+            }),
         },
         None => None,
     };
@@ -750,6 +786,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         seeding,
         batch_labels,
         batch_effects: batch_effects.and_then(|b| b.posterior),
+        stage1,
         base_batch_corrected,
         graph,
         knn,

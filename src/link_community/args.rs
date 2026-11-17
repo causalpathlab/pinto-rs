@@ -10,6 +10,9 @@ pub struct SrtLinkCommunityArgs {
     pub common: crate::util::input::SrtInputArgs,
 
     #[command(flatten)]
+    pub stage2: crate::util::input::OffsetArgs,
+
+    #[command(flatten)]
     pub ablation: crate::util::ablation::AblationArgs,
 
     /// pinto's `--max-threads`, set from the command line: the most blocks

@@ -64,8 +64,7 @@ use crate::cell_activity_graph_embedding::feature_gating::{
     build_feature_active_fine_edges, ActivityNorm,
 };
 use crate::cell_activity_graph_embedding::pair_projection::{
-    project_pairs, CellLatent, PairBatchDivisor, PairEncoderSpec, PairLatent, PairProjectionArgs,
-    PairSolver, TrainOn,
+    project_pairs, CellLatent, PairEncoderSpec, PairLatent, PairProjectionArgs, PairSolver, TrainOn,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::{
@@ -201,6 +200,7 @@ pub fn fit_cell_activity_graph_embedding(
         seeding,
         batch_labels,
         batch_effects: batch_db,
+        stage1,
         graph,
         knn,
         base_batch_corrected,
@@ -212,6 +212,7 @@ pub fn fit_cell_activity_graph_embedding(
         n_rows,
         ablation,
     } = preprocess_srt(SrtPreprocessConfig {
+        offset: args.stage2.offset.as_deref(),
         common: c,
         ablation: Some(&args.ablation),
         // cage-cell too: the estimate is preprocessing (fitted on data-beans'
@@ -382,7 +383,13 @@ pub fn fit_cell_activity_graph_embedding(
             // matrix through training.
             Some(w) => {
                 drop(shared_cell_proj);
-                data_vec.project_columns_weighted(c.collapse.proj_dim, None, batch_arg, w)?
+                match stage1.as_ref() {
+                    // pinto divides, then projects
+                    Some(s1) => s1.project_columns(&data_vec, c.collapse.proj_dim, Some(w))?,
+                    None => {
+                        data_vec.project_columns_weighted(c.collapse.proj_dim, None, batch_arg, w)?
+                    }
+                }
             }
             None => {
                 shared_cell_proj.expect("preprocessing takes the projection whenever HVG is off")
@@ -441,13 +448,14 @@ pub fn fit_cell_activity_graph_embedding(
     let inclusion = match args.feature_inclusion {
         FeatureInclusionMode::All => None,
         FeatureInclusionMode::Moran => {
+            let started = std::time::Instant::now();
             use crate::cell_activity_graph_embedding::feature_inclusion::{
                 cell_inclusion, pb_inclusion, pb_spatial_edges, PbUnits, CELL_COLUMN_BLOCK,
             };
             let spatial_edges = &topology_graph(&graph, &spatial_graph).edges;
             let inc = if args.cell_level {
                 cell_inclusion(
-                    &data_vec,
+                    (&data_vec, stage1.as_ref()),
                     &feature_axis,
                     (&coordinates, &coordinate_names),
                     &section_ids,
@@ -473,8 +481,23 @@ pub fn fit_cell_activity_graph_embedding(
                     parents: &pb_frame.pb_parent_maps,
                     edges: &edges,
                 };
-                pb_inclusion(&feature_axis, &units, &section_ids, args.inclusion_blocks)?
+                pb_inclusion(
+                    &feature_axis,
+                    &units,
+                    &section_ids,
+                    args.inclusion_blocks,
+                    stage1.as_ref(),
+                )?
             };
+            info!(
+                "Feature inclusion{} in {:.2?}",
+                if stage1.is_some() {
+                    " (Pearson residuals under the stage-1 divisor)"
+                } else {
+                    ""
+                },
+                started.elapsed()
+            );
             write_feature_inclusion(&c.out, &feature_names, &inc)?;
             Some(inc)
         }
@@ -538,6 +561,7 @@ pub fn fit_cell_activity_graph_embedding(
         &fine_edges,
         ActivityNorm::Log1p,
         &feature_axis,
+        stage1.as_ref(),
     )?;
     // Fold per-feature fine-edge activity onto the PB super edges,
     // CONSUMING the fine-level lists (they are the largest resident
@@ -849,10 +873,12 @@ pub fn fit_cell_activity_graph_embedding(
     // built on the CELL PAIR, not the cell: a latent per pair, k-means over
     // those pairs for link communities, and a cell's propensity as the mix of
     // communities its incident edges carry.
-    let pair_batch = batch_db.as_ref().map(|delta| PairBatchDivisor {
-        delta,
-        batch_of_cell: &batch_membership_u32,
-    });
+    // Under --offset the stage-1 divisor divides each endpoint as δ would.
+    let pair_batch = crate::util::batch_effects::Divisor::of(
+        stage1.as_ref(),
+        batch_db.as_ref(),
+        Some(&batch_membership_u32),
+    );
     let (mut pair_latent, cell_latent) = match (pair_table, fine_to_super) {
         // cage-cell trained each pair's row itself; a cell is the mean of
         // its pairs'. Nothing is fitted again, so there is no pair encoder.
@@ -1017,6 +1043,9 @@ pub fn fit_cell_activity_graph_embedding(
             meta.outputs.pair_encoder = None;
             meta.outputs.pb_embedding = None;
         }
+        meta.offset = stage1
+            .as_ref()
+            .map(|s| s.dir.to_string_lossy().into_owned());
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!(
