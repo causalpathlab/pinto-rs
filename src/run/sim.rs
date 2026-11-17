@@ -204,6 +204,7 @@ pub(super) fn simulate(
     let (argv, _, scenario, p) = simulation(cli, &a, &out)?;
     let truth = truth_run_path(&out);
     let fit = fit_lists(&out, &p);
+    let (lr_pairs, targets) = crate::simulate::write::lr_pairs_paths(&out);
     let summary = format!(
         "sim new {scenario} into {out}: {} sections; truth run {truth}",
         p.n_sections()
@@ -213,13 +214,18 @@ pub(super) fn simulate(
         "out": out,
         "truth": truth,
         "fit": fit,
+        "lra": {
+            "lr_pairs": lr_pairs,
+            "targets": [targets],
+        },
         "shares": shares_json(&p),
         "shares_note": p.shares_summary(),
     });
     let open = format!(
         "view_open {truth} to see the planted domains; pass fit.data, fit.coords and fit.flags \
          to run_fit as its data, coords and flags; score the fits with \
-         run_sim_score, truth {truth}"
+         run_sim_score, truth {truth}; run_lra and run_lra_simulate on a fit take lra.lr_pairs \
+         and lra.targets as lr_pairs and targets (the simulation's genes are no reference's)"
     );
     Ok(vec![Content::Json(launch(
         cx,

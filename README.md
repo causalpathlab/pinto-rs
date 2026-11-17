@@ -507,6 +507,19 @@ state or a new mix of shared ones, which is biology to keep. Counts are
 negative binomial through a low-rank Gaussian copula. With one donor and no
 nuisance this reduces to SRTsim's reference-free domains (Zhu, Shang and
 Zhou 2023); the copula follows scDesign3 (Song et al. 2023) in form.
+
+**Ligand-receptor pairs.** The simulated genes (GENE1, GENE2, ...) are no
+reference's, so `sim new` also writes `truth/lr_pairs.tsv` and
+`truth/targets.tsv`: per state, a ligand of its programme alone and a
+receptor of the next state's alone, with the rest of the receiving state's
+programme as the receptor's response programme (no ligand or receptor is
+anyone's target). No ligand-receptor effect is planted, so on the
+simulation they are nulls; `lra simulate` plants its own:
+
+```sh
+pinto lra simulate --from res/lc.pinto.json \
+  --lr-pairs sim/truth/lr_pairs.tsv --targets sim/truth/targets.tsv
+```
 `--set nuisance_off=true` with the same seed draws the exact counterfactual
 without donor or section effects.
 

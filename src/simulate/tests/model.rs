@@ -953,3 +953,72 @@ fn no_drawn_donor_keeps_every_scenario_counts() {
         assert_eq!(h, fingerprint, "{name}: {h:#018x}");
     }
 }
+
+/// The pairs written for `pinto lra`: one per state, the ligand of its
+/// programme alone and the receptor of the next state's alone, no gene used
+/// twice, and targets from the receiving state's programme that are no
+/// pair's ligand or receptor, as many as lra keeps at least.
+#[test]
+fn the_lr_pairs_come_from_the_states_own_programmes() {
+    let sim = small(SimParams::default());
+    let pairs = crate::simulate::write::lr_pairs(&sim);
+    let progs = &sim.genes.programme;
+    let n = progs.len();
+    assert_eq!(pairs.len(), n, "one pair per state");
+    let index = |name: &str| {
+        sim.genes
+            .names
+            .iter()
+            .position(|g| g.as_ref() == name)
+            .unwrap()
+    };
+    let only_in = |g: usize, c: usize| (0..n).all(|o| (o == c) == (progs[o][g] > 0.0));
+    let named: std::collections::HashSet<&str> = pairs
+        .iter()
+        .flat_map(|p| [p.ligand.as_ref(), p.receptor.as_ref()])
+        .collect();
+    assert_eq!(named.len(), 2 * n, "no ligand or receptor used twice");
+    let min = crate::lr_activity::ligand_effect::INTERNALS.min_targets;
+    for (k, p) in pairs.iter().enumerate() {
+        let receiver = (k + 1) % n;
+        assert!(
+            only_in(index(&p.ligand), k),
+            "{} is state {k}'s alone",
+            p.ligand
+        );
+        assert!(
+            only_in(index(&p.receptor), receiver),
+            "{} is state {receiver}'s alone",
+            p.receptor
+        );
+        assert!(p.targets.len() >= min, "{} targets", p.targets.len());
+        for t in &p.targets {
+            assert!(!named.contains(t.as_ref()), "{t} is a ligand or receptor");
+            assert!(progs[receiver][index(t)] > 0.0, "{t} in state {receiver}");
+        }
+    }
+}
+
+/// Programmes too small to give lra its targets give no pair at all,
+/// rather than pairs lra would drop.
+#[test]
+fn thin_programmes_give_no_pairs() {
+    let sim = sim_of(SimParams {
+        grid_side: 24,
+        n_genes: 200,
+        programme_genes: 4,
+        ..SimParams::default()
+    });
+    let sizes: Vec<usize> = sim
+        .genes
+        .programme
+        .iter()
+        .map(|w| w.iter().filter(|&&x| x > 0.0).count())
+        .collect();
+    let pairs = crate::simulate::write::lr_pairs(&sim);
+    assert!(
+        pairs.is_empty(),
+        "programme sizes {sizes:?}; targets {:?}",
+        pairs.iter().map(|p| p.targets.len()).collect::<Vec<_>>()
+    );
+}
