@@ -81,6 +81,11 @@ pub const N_NEGATIVES: usize = 8;
 /// Exponent of the power-of-degree negative sampling.
 pub const ALPHA_NEG: f32 = 0.75;
 
+/// The NCE objective cage trains, and probes, with: InfoNCE, its negatives
+/// competing with the positive in one softmax.
+pub const NCE_OBJECTIVE: graph_embedding_util::loss::NceObjective =
+    graph_embedding_util::loss::NceObjective::Softmax;
+
 /// Gradient-norm clip of each optimizer step.
 pub const GRAD_CLIP: f32 = 1.0;
 
@@ -157,7 +162,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         default_value_t = 100,
         help = "Training epochs over the feature axis",
         long_help = "Passes over the feature axis.\n\
-                     \n\
                      \n\
                      Pair with --features-per-epoch to cap per-epoch cost."
     )]

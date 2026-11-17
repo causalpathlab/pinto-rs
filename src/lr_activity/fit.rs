@@ -31,7 +31,7 @@
 //!
 //! The null is sample-level permutation of L within propensity-stratified
 //! buckets — shuffles are restricted to samples sharing the top
-//! `shuffle_stratify_dim` bits of the propensity code, so the cell-type
+//! [`SHUFFLE_STRATIFY_DIM`] bits of the propensity code, so the cell-type
 //! marginal is preserved across permutations. Per shuffle, a *fresh*
 //! log-posterior sample (delta method: `Normal(ψ(a) − log(b), ψ'(a))`) is
 //! drawn and used as the per-permutation log expression for both genes.

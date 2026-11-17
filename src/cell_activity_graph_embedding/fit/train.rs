@@ -8,7 +8,7 @@
 //! piece.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, PER_FEATURE_BATCH,
+    CellActivityGraphEmbeddingArgs, NCE_OBJECTIVE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::FeatureGatedChainSampler;
 use crate::cell_activity_graph_embedding::pretrained;
@@ -120,7 +120,7 @@ fn probe_forward<U: Units>(
             feature_ids: &feature_ids,
             row_blocks: &row_blocks,
         },
-        graph_embedding_util::loss::NceObjective::Softmax,
+        NCE_OBJECTIVE,
         setup.dev,
     )?;
     out.per_feature_level.sum_all()
@@ -202,7 +202,8 @@ fn accumulate(acc: &mut Option<Tensor>, x: Tensor) -> anyhow::Result<()> {
 /// rows, so it averages per chunk too, except under `--feature-inclusion`
 /// (`full_chunk` the feature batch size), where an epoch's feature count
 /// is a random draw: there it is per feature, scaled to a full chunk, so
-/// the loss the convergence test reads does not move with the draw.
+/// the loss the score trace and the training bar show does not move with
+/// the draw.
 pub(super) fn epoch_means(
     loss_sum: f64,
     per_level_sum: &[f32],
@@ -427,7 +428,7 @@ pub(super) fn train<U: Units>(
                         feature_ids: &feature_ids_u32[start..end],
                         row_blocks: &row_blocks[start..end],
                     },
-                    graph_embedding_util::loss::NceObjective::Softmax,
+                    NCE_OBJECTIVE,
                     dev,
                 )?; // [G, L]
                 let w: Vec<f32> = feature_ids[start..end]
