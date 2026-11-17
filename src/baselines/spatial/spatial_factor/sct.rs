@@ -10,12 +10,12 @@
 //!    run on 2000 genes drawn with probability `1 / d(log10 gmean)`, `d`
 //!    the density of the genes' log10 geometric means (every gene when
 //!    there are at most 2000).
-//! 2. Each parameter (`beta0`, `beta1` and `log10 theta`) regularised
+//! 2. Each parameter (`beta0`, `beta1` and `log10 theta`) regularized
 //!    against the log10 geometric mean by kernel regression, a normal
 //!    kernel at three times `bw.SJ`'s bandwidth (R's `ksmooth`: the
 //!    kernel's quartiles at a quarter of the bandwidth either side).
 //! 3. Pearson residuals `(x - mu) / sqrt(mu + mu^2 / theta)` at the
-//!    regularised parameters, clipped at `+-sqrt(N)`, `N` the cells.
+//!    regularized parameters, clipped at `+-sqrt(N)`, `N` the cells.
 //!
 //! The geometric mean is the paper's, `exp(mean(log(x + 1))) - 1`. The
 //! density of step 1 is a Gaussian kernel density at Silverman's bandwidth
@@ -236,7 +236,7 @@ pub fn nb_loglik(x: GeneCounts, mu: &[f64], levels: &[(f64, f64)], theta: f64) -
     nz + all
 }
 
-/// `theta` maximising [`nb_loglik`] at means `mu` (`levels` as there), on
+/// `theta` maximizing [`nb_loglik`] at means `mu` (`levels` as there), on
 /// `log theta` by a grid of every decade then Brent.
 pub fn theta_ml(x: GeneCounts, mu: &[f64], levels: &[(f64, f64)]) -> f64 {
     let grid: Vec<f64> = (0..=13)
@@ -309,11 +309,11 @@ pub fn sample_genes(log_gmean: &[f64], seed: u64) -> Vec<usize> {
     out
 }
 
-/// The per-gene models regularised: each of `beta0`, `beta1` and `log10
+/// The per-gene models regularized: each of `beta0`, `beta1` and `log10
 /// theta` of the fitted genes (at log10 geometric means `fit_x`) smoothed
 /// by kernel regression at `at` (the log10 geometric means of the genes
 /// wanted), a normal kernel at [`BAF`] times `bw.SJ` of `fit_x`.
-pub fn regularise(fit_x: &[f64], fits: &[GeneModel], at: &[f64]) -> (Vec<GeneModel>, f64) {
+pub fn regularize(fit_x: &[f64], fits: &[GeneModel], at: &[f64]) -> (Vec<GeneModel>, f64) {
     let bw = BAF * sheather_jones(fit_x).max(1e-6);
     let sd = 0.25 * bw / Q75;
     let models = at
@@ -386,7 +386,7 @@ pub struct SctReport {
     pub bandwidth: f64,
 }
 
-/// SCTransform's regularised models for the genes `wanted` of `genes`
+/// SCTransform's regularized models for the genes `wanted` of `genes`
 /// (every gene's nonzero counts), cells' libraries `depths`: the models of
 /// `wanted` in order, and the report.
 pub fn sctransform(
@@ -415,7 +415,7 @@ pub fn sctransform(
         .iter()
         .map(|&g| gmean[g].max(1e-300).log10())
         .collect();
-    let (models, bandwidth) = regularise(&fit_x, &fits, &at);
+    let (models, bandwidth) = regularize(&fit_x, &fits, &at);
     (
         models,
         SctReport {

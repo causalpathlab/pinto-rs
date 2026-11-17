@@ -202,7 +202,7 @@ pub struct CellActivityGraphEmbeddingArgs {
         long_help = "cage-cell's training length, in updates per cell pair.\n\
                      \n\
                      Each pair has an embedding row of its own, moved only by the\n\
-                     optimiser steps whose draws name it (at most once a step).\n\
+                     optimizer steps whose draws name it (at most once a step).\n\
                      Training stops after the step at which the updates summed over\n\
                      all steps (the distinct pairs each step touched) reach this\n\
                      number times the pair count, so the budget means the same at\n\
@@ -388,7 +388,7 @@ pub struct CellActivityGraphEmbeddingArgs {
                      all: every trainable feature, every epoch.\n\
                      moran: feature g with probability π_g, its posterior\n\
                      probability of spatial signal. Each feature's Moran's I\n\
-                     (Moran 1950) over the spatial graph (log-normalised, centred\n\
+                     (Moran 1950) over the spatial graph (log-normalized, centred\n\
                      per section, pooled; on the PB tree's finest super-cells and\n\
                      super edges, or on cells for cage-cell) gets a\n\
                      delete-one-block jackknife standard error; a two-group\n\
@@ -413,7 +413,7 @@ pub struct CellActivityGraphEmbeddingArgs {
                      (merged to this many per section), or\n\
                      on cells (cage-cell) a grid of ceil(sqrt(N)) tiles per side.\n\
                      Blocks within sections, never whole sections, so a domain\n\
-                     that only one section holds is not penalised."
+                     that only one section holds is not penalized."
     )]
     pub inclusion_blocks: usize,
 

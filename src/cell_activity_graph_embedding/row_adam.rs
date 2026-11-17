@@ -15,7 +15,7 @@
 //! ```
 //!
 //! the expressions candle's `AdamW::step` evaluates, in the same order, so a
-//! row stepped every step ends where the dense optimiser puts it, bit for
+//! row stepped every step ends where the dense optimizer puts it, bit for
 //! bit, and a row no step drew keeps its value and its moments exactly.
 //! A row a step names twice is the caller's to merge first: its leaf holds
 //! each row once, so autograd has summed the gradient already. Each touched
@@ -74,7 +74,7 @@ impl RowAdam {
     /// A table of `rows × d` values `init` (row-major), kept on `store`
     /// (the compute device, or the CPU for a host-resident table), its
     /// moments zero; steps run on `compute` with `params`, the dense
-    /// optimiser's settings. The table owns its storage: a step writes it
+    /// optimizer's settings. The table owns its storage: a step writes it
     /// in place, so it must share it with no other tensor.
     pub fn new(
         init: Vec<f32>,

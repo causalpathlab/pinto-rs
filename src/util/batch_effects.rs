@@ -734,7 +734,7 @@ impl Divisor<'_> {
         }
     }
 
-    /// One cell's values over `rows` divided by the self-normalising
+    /// One cell's values over `rows` divided by the self-normalizing
     /// Poisson ratio. A registered δ names no cell's batch, so it has none.
     pub fn ratio_column(&self, rows: &[usize], vals: &mut [f32], cell: usize) {
         match self {
@@ -770,7 +770,7 @@ pub fn batch_ids(batch_membership: &[Box<str>], labels: &[Box<str>]) -> Vec<u32>
 ///
 /// lc's edge profiles and impute's reference cells divide this way; the
 /// cage pair divisor does not, since it also divides by the cell's own
-/// rate (a self-normalising Poisson ratio, see `PairBatchDivisor`).
+/// rate (a self-normalizing Poisson ratio, see `PairBatchDivisor`).
 pub fn divide_columns(
     x: &mut nalgebra_sparse::CscMatrix<f32>,
     delta: &Mat,

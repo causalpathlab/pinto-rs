@@ -1,7 +1,7 @@
 //! Networks, the signed search, targets, translation and number formats.
 
 use super::{ix_tsv, resources_json};
-use crate::lr_activity::ligand_effect::reference::programmes::*;
+use crate::lr_activity::ligand_effect::reference::programs::*;
 use crate::lr_activity::ligand_effect::reference::sources::{parse_interactions, Licences};
 use crate::lr_activity::ligand_effect::reference::LicenceMode;
 use rustc_hash::FxHashMap;

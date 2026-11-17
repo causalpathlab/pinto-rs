@@ -964,7 +964,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             "Ligand-receptor analysis on a run's spatial contacts (pinto lra --from run), or on \
              data files with coordinates: per \
              ligand-receptor pair, do receivers touching ligand-carrying neighbours change \
-             their response programme, compared with similar cells that do not (method \
+             their response program, compared with similar cells that do not (method \
              contact-effect, the default)? Writes {out}.lra.parquet and {out}.lra.curve.parquet \
              and records the table in the run's manifest (slot lra.table); with \
              marginal_baselines also {out}.lra.celltype.parquet (slot lra.celltype); with only, \
@@ -1021,6 +1021,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "lr_pairs": sim("lr_pairs", json!({"type": "string"})),
                     "targets": long_flag_arg(sim_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "plant_region": sim("plant_region", json!({"type": "string"})),
+                    "reference_data": long_flag_arg(sim_cmd, "reference_data", json!({"type": "string"})),
+                    "reference_data_labels": sim("reference_data_labels", json!({"type": "string"})),
                     "one": sim("one", json!({"type": "boolean"})),
                     "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),

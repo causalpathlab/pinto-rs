@@ -28,13 +28,13 @@
 //! upload.
 //!
 //! The encoder is a cell trunk applied twice and a [`SymmetricPairHead`]: the
-//! trunk reads `[S/N ‖ ln(N + 1)]`, standardised by population moments saved
+//! trunk reads `[S/N ‖ ln(N + 1)]`, standardized by population moments saved
 //! with the encoder, through two layer-normed ReLU layers into a cell code
 //! `h`; the head — a gated mixture of linear experts over
 //! `[(h_u + h_v)/2 ‖ h_u ⊙ h_v ‖ the pair's own statistic]` — turns two codes
 //! into the pair code `z_uv`. Symmetric by construction, and with no
 //! per-feature parameter, so the trained encoder transfers to any re-aligned
-//! axis. Normalisation is per row (layer norm), never per batch: a batch
+//! axis. Normalization is per row (layer norm), never per batch: a batch
 //! norm's running variance for a unit that rarely fires sits near zero, and
 //! the rare input that fires it is then blown up at inference — the wild
 //! placement a shared map must never produce. And the placement is kept
@@ -400,7 +400,7 @@ impl CellTrunk {
         })
     }
 
-    /// Standardised statistic `[n, D + 1]` → code `[n, L]`.
+    /// Standardized statistic `[n, D + 1]` → code `[n, L]`.
     fn forward(&self, stat: &Tensor) -> anyhow::Result<Tensor> {
         let mut h = stat.clone();
         for (lin, norm) in &self.layers {
@@ -480,7 +480,7 @@ struct PairForward {
 }
 
 impl PairEncoder {
-    /// An untrained encoder on `dict`, its statistic standardised by
+    /// An untrained encoder on `dict`, its statistic standardized by
     /// `(mean, std)` (the moments of the rows it will read in training,
     /// [`TrainingSet::moments`]), its vars seeded from `seed`.
     pub(crate) fn build(
@@ -497,7 +497,7 @@ impl PairEncoder {
             spec.ridge,
             dev,
         )?;
-        // candle's `VarBuilder` initialises from an unseeded stream; the
+        // candle's `VarBuilder` initializes from an unseeded stream; the
         // layer norms keep their defaults.
         seed_uniform_vars(&this.varmap, seed, |name| name.contains(".ln."))?;
         Ok(this)
@@ -625,7 +625,7 @@ impl PairEncoder {
         CorpusStats::new(corpus.iter(), self.dict.d, self.dict.device())
     }
 
-    /// `[S / max(N, 1) ‖ ln(N + 1)]` standardised by the population moments
+    /// `[S / max(N, 1) ‖ ln(N + 1)]` standardized by the population moments
     /// → `[n, D + 1]`.
     fn stat_of(&self, stats: &Stats) -> anyhow::Result<Tensor> {
         let n1 = stats.totals.unsqueeze(1)?;

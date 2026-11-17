@@ -18,7 +18,7 @@ fn params(v: Value) -> anyhow::Result<SimParams> {
     simulation(&cli(), &sim_args(v), "o").map(|(_, _, _, p)| p)
 }
 
-const TINY: [&str; 3] = ["grid_side=8", "n_genes=40", "programme_genes=5"];
+const TINY: [&str; 3] = ["grid_side=8", "n_genes=40", "program_genes=5"];
 
 #[test]
 fn the_sim_tools_are_listed_with_their_schemas() {
@@ -395,4 +395,28 @@ fn the_baseline_command_line_has_only_what_was_given() {
     let scvi = args::<SimBaselineToolArgs>(json!({"truth": "t", "method": "scvi"}));
     let e = checked(&cli(), &baseline_argv(&scvi, "t", "o.tsv")).unwrap_err();
     assert!(format!("{e}").contains("scvi"), "{e}");
+}
+
+#[test]
+fn a_reference_reaches_the_command_line_and_a_missing_one_is_refused() {
+    let a = sim_args(json!({
+        "reference_data": "ref.zarr.zip",
+        "reference_data_labels": "ref.labels.txt"
+    }));
+    let argv = simulate_argv(&a, "/p/sim");
+    let at = |p: &str| shown_path(Path::new(p));
+    assert!(
+        argv.contains(&format!("--reference-data={}", at("ref.zarr.zip"))),
+        "{argv:?}"
+    );
+    assert!(
+        argv.contains(&format!("--reference-data-labels={}", at("ref.labels.txt"))),
+        "{argv:?}"
+    );
+    checked(&cli(), &argv).unwrap();
+    let e = simulation(&cli(), &a, "/p/sim").unwrap_err().to_string();
+    assert!(
+        e.contains("reference_data") && e.contains("no such file"),
+        "{e}"
+    );
 }

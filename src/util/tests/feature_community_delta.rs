@@ -92,6 +92,7 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
         feature_axis: FeatureAxisMode::Rows,
         feature_kind: None,
         cell_projection: false,
+        auto_batch_memory_check: None,
     })
     .unwrap();
     let cells = pre.data_vec.column_names().unwrap();

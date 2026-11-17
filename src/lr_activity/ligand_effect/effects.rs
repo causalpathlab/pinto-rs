@@ -64,7 +64,7 @@ pub struct ScopeEffects {
 }
 
 impl ScopeEffects {
-    /// Several analyses of one scope combined estimand by estimand with
+    /// Several analyzes of one scope combined estimand by estimand with
     /// `f`; the near-determined share is their mean over the finite ones.
     pub fn zip_with(parts: &[ScopeEffects], f: impl Fn(&[Estimate]) -> Estimate) -> Self {
         let pick = |g: &dyn Fn(&ScopeEffects) -> Estimate| -> Estimate {

@@ -154,9 +154,9 @@ impl CurvePoint {
 }
 
 /// An estimate read two ways: on the log scale it is estimated on (the
-/// signed mean `log1p` programme), as a mean (θ) with SD = SE and a 95%
+/// signed mean `log1p` program), as a mean (θ) with SD = SE and a 95%
 /// interval from the t reference (the mean and SD are the estimate's own
-/// `theta` and `se`); and as a % change of the programme,
+/// `theta` and `se`); and as a % change of the program,
 /// `100 (e^θ − 1)`, with the delta-method SD `100 e^θ SE` and the log-scale
 /// interval's endpoints mapped through the same function (which keeps
 /// them above −100% and exact under the monotone map).

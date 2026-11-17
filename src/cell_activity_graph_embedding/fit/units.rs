@@ -1,7 +1,7 @@
 //! What a run trains besides the feature side, decided once per run:
 //! cage's pseudobulk table, a part of the model, or cage-cell's pair table,
 //! outside it. Each owns its draws, what a step reads, the rows its ridge
-//! and module term take, its optimiser step and its schedule.
+//! and module term take, its optimizer step and its schedule.
 
 use crate::cell_activity_graph_embedding::args::GRAD_CLIP;
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
@@ -58,7 +58,7 @@ pub(super) trait Units {
         dev: &Device,
     ) -> CResult<CageLossOut>;
 
-    /// The trained rows the embedding ridge penalises this step.
+    /// The trained rows the embedding ridge penalizes this step.
     fn ridge_rows<'r>(&'r self, model: &'r JointEmbedModel, read: &'r Self::Read) -> &'r Tensor;
 
     /// The module term's unit embeddings and their counts pooled through
@@ -323,8 +323,8 @@ impl Units for Pairs<'_> {
     }
 
     /// The global-norm clip (legume's `clip_grad_global_norm`) with the
-    /// pair rows' gradient inside the norm, then the dense optimisers and
-    /// the row optimiser.
+    /// pair rows' gradient inside the norm, then the dense optimizers and
+    /// the row optimizer.
     fn step(
         &mut self,
         adams: &mut [AdamW],

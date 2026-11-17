@@ -24,7 +24,7 @@
 //!
 //! - **Genes** (`tissue_segmentation(genes=None)`): every gene, the
 //!   reference's default; `--n-top-genes N` passes the `N` with the highest
-//!   total counts as its `genes` list. The paper's own analyses
+//!   total counts as its `genes` list. The paper's own analyzes
 //!   (`figure_2.ipynb`) pass the 2000 most expressed of the spatially
 //!   variable genes at FDR 0.001 (SpatialDE2's GP score test, not ported).
 //! - **Size factors** (`tissue_segmentation` → `calc_sizefactors`): each
@@ -34,7 +34,7 @@
 //!   `min d²` the smallest squared distance among the graph's pairs (here
 //!   within each section; see Sections below), and
 //!   `E(x_n = c) = Σ_m w_nm [x̂_m ≠ c]`; `smoothness_factor` defaults to 2.
-//!   The kNN graph is symmetrised (`tensor_scatter_nd_update` on the
+//!   The kNN graph is symmetrized (`tensor_scatter_nd_update` on the
 //!   transposed indices).
 //! - **Classes** (`tissue_segmentation`): at most `nclasses =
 //!   ceil(sqrt(N))`; labels start uniformly at random
@@ -61,7 +61,7 @@
 //!   whose posterior exceeds `class_prune_threshold = 1e-6` in no cell are
 //!   dropped and the labels renumbered; `α̂` keeps the retained indices but
 //!   the last (`idx[:-1]`). At the end the posteriors of the retained classes
-//!   are renormalised to sum to 1 per cell. (Two cases differ from
+//!   are renormalized to sum to 1 per cell. (Two cases differ from
 //!   `prune_labels`, where only leading classes die and where a label's own
 //!   class is pruned; see Deliberate deviations.)
 //!
@@ -82,7 +82,7 @@
 //!   real cell counts, so that formulation is not run. pinto runs the
 //!   reference's own `neighbors=k` option, the `--neighbors` nearest cells
 //!   within each section ([`super::graph::knn_within_sections`]),
-//!   symmetrised as the reference symmetrises them, `min d²` over the
+//!   symmetrized as the reference symmetrizes them, `min d²` over the
 //!   graph's pairs as there, so memory stays linear in cells.
 //!   `--neighbors 0` drops space, as `neighbors=0` does in the reference (a
 //!   Poisson mixture with a DP prior).
@@ -201,7 +201,7 @@ pub struct FitArgs {
     pub n_clusters: Option<usize>,
 
     /// Spatial neighbours per cell, within a section: the reference's own
-    /// `neighbors` (kNN, symmetrised). 100 is this port's sparse default;
+    /// `neighbors` (kNN, symmetrized). 100 is this port's sparse default;
     /// 0 ignores space (a Poisson DP mixture)
     #[arg(long, default_value_t = NEIGHBORS)]
     pub neighbors: usize,
@@ -503,7 +503,7 @@ fn no_spacing_as_one(min_d2: &mut [f64]) {
 
 /// `p_x_neighborhood` for one cell, written into `row` (one entry per
 /// class): `log p(x_n = c | x̂_N(n))` over the `k` classes, the
-/// log-normalised `-Σ_m w_nm [x̂_m ≠ c]`.
+/// log-normalized `-Σ_m w_nm [x̂_m ≠ c]`.
 pub fn neighbourhood_log_prior_into(
     graph: &WeightedGraph,
     labels: &[usize],
@@ -1128,17 +1128,17 @@ pub fn selected_counts(data: &SpatialData, genes: &[usize]) -> CellCounts {
 }
 
 /// The reference's `neighbors=k` graph: each cell's `k` nearest within its
-/// section, symmetrised; none at 0.
+/// section, symmetrized; none at 0.
 fn spatial_graph(data: &SpatialData, k: usize, smoothness: f64) -> Option<WeightedGraph> {
     (k > 0).then(|| knn_graph(data, knn_within_sections(data, k), k, smoothness))
 }
 
 /// The weighted graph of `nb`, each cell's `k` nearest within its section,
-/// symmetrised; `nb` is freed before the weights are taken.
+/// symmetrized; `nb` is freed before the weights are taken.
 fn knn_graph(data: &SpatialData, nb: Neighbours, k: usize, smoothness: f64) -> WeightedGraph {
-    let nb = nb.symmetrised();
+    let nb = nb.symmetrized();
     log::info!(
-        "spatialde2: {} spatial edges (k = {k}, symmetrised)",
+        "spatialde2: {} spatial edges (k = {k}, symmetrized)",
         nb.n_edges()
     );
     WeightedGraph::from_neighbours(&nb.index, &nb.dist, &data.section, smoothness)
@@ -1189,7 +1189,7 @@ impl FitArgs {
             "nclasses": seg.nclasses_trace.first(),
             "n_clusters": self.n_clusters,
             "neighbors": self.neighbors,
-            "graph": "kNN within a section, symmetrised",
+            "graph": "kNN within a section, symmetrized",
             "smoothness_factor": params.smoothness_factor,
             "n_top_genes": self.n_top_genes,
             "n_genes_used": genes.len(),
@@ -1214,13 +1214,25 @@ impl FitArgs {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(args, args.fit.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .input
+            .read_within(false, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// `spatialde2-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk)?;
-    run_pb_on(args, args.fit.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The arguments checked, and the peak of a `variant` run on the input's
@@ -1288,7 +1300,7 @@ impl Spatialde2Sizes {
             nonzeros: input.nonzeros,
             selected_nonzeros,
             genes: input.genes,
-            // symmetrising at most doubles the edges
+            // symmetrizing at most doubles the edges
             edges: 2 * knn_edges(sizes, self.neighbors),
             regions: initial_regions(n, self.n_clusters),
             gram: if self.neighbors > 0 {

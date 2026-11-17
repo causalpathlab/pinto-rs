@@ -1,4 +1,4 @@
-//! Response programmes: formats, precedence, merging, and the purge of
+//! Response programs: formats, precedence, merging, and the purge of
 //! signalling genes.
 
 use crate::lr_activity::ligand_effect::targets::TargetSets;

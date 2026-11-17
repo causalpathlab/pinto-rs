@@ -465,7 +465,7 @@ impl Stage1Divisor {
     }
 
     /// `μ_gi = n_i Σ_k θ_ik p_{k,b}(g)`: what the tests rebuild `μ` with
-    /// (a fit reads `d`, or `μ` through its factorised sums).
+    /// (a fit reads `d`, or `μ` through its factorized sums).
     #[cfg(test)]
     #[inline]
     pub fn mu(&self, cell: usize, row: usize) -> f32 {
@@ -475,7 +475,7 @@ impl Stage1Divisor {
     /// `Σ_i π_ic d_gi`, `[rows × communities]`: each row's expected mass
     /// in each community of `prop` (`[cells × communities]`) relative to the
     /// stage-1 expectation, the denominator of the rate `λ̂_gc = D_gc / M_gc`
-    /// with `D_gc = Σ_i π_ic y_gi`. It factorises through `θ`:
+    /// with `D_gc = Σ_i π_ic y_gi`. It factorizes through `θ`:
     /// `Σ_b Σ_t p_{t,b}(g) A_b[t, c] / p̄_g`, `A_b = Σ_{i∈b} θ_iᵀ π_i` (`K ×
     /// communities` per batch), so it costs one pass over the cells and no
     /// pass over the rows × cells.
@@ -521,7 +521,7 @@ impl Stage1Divisor {
 
     /// Each column of `x` (column `j` being cell `cell_of_column(j)`)
     /// divided by its `d_gi` as numeric's `AdjustByDivisionOp` divides by a
-    /// batch effect: the self-normalising Poisson ratio
+    /// batch effect: the self-normalizing Poisson ratio
     /// ([`Self::ratio_divide`]), each cell back at [`LIBRARY_SCALE`]: the one
     /// division every `--offset` read takes.
     pub fn divide_columns(
@@ -536,7 +536,7 @@ impl Stage1Divisor {
     }
 
     /// One cell's values (`rows`, `vals`) divided by `d` as numeric's
-    /// adjust-by-division divides (the self-normalising Poisson ratio
+    /// adjust-by-division divides (the self-normalizing Poisson ratio
     /// `y / (λ d)`, `λ = Σ y / Σ d`: the cell's scale is absorbed), then
     /// scaled back to a total of [`LIBRARY_SCALE`], the count scale every
     /// `--offset` read is on.
@@ -590,7 +590,7 @@ impl Stage1Divisor {
     /// in data-beans takes no per-cell divisor). The same transform and
     /// basis as data-beans' (`log1p`, unit columns, a seeded Gaussian
     /// basis with `row_weights` scaling or zeroing its rows, then each
-    /// coordinate standardised over the cells and clamped to ±4), with no
+    /// coordinate standardized over the cells and clamped to ±4), with no
     /// batch correction: a stage-2 fit takes no batch effect.
     pub fn project_columns(
         &self,

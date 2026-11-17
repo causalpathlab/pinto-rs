@@ -21,6 +21,7 @@ pub mod expression;
 pub mod field;
 pub mod panel;
 pub mod params;
+pub mod reference_data;
 pub mod rng;
 pub mod run;
 pub mod sim;

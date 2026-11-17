@@ -662,6 +662,8 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: None,
+            reference_data: None,
+            reference_data_labels: None,
             region_jackknife: args.input.region_jackknife,
             marginal: args
                 .marginal_baselines
@@ -758,6 +760,8 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: args.plant_region.as_deref(),
+            reference_data: args.reference_data.as_deref(),
+            reference_data_labels: args.reference_data_labels.as_deref(),
             region_jackknife: args.input.region_jackknife,
             marginal: None,
             memory_budget,

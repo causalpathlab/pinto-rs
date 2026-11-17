@@ -42,11 +42,11 @@
 //!
 //! - **Batch effects** (δ): with two or more batches the counts are divided
 //!   by the input's own δ before the libraries, the genes and the
-//!   normalisation; `--ignore-batch` runs the paper's model (the sections
+//!   normalization; `--ignore-batch` runs the paper's model (the sections
 //!   still its groups).
 //! - **The sparse prior** (cost, above): the graph prior in place of the kernel (one
 //!   `rho_k` for the lengthscale and smooth share; the group kernel the
-//!   identity, sections independent a priori), each `rho_k` maximising
+//!   identity, sections independent a priori), each `rho_k` maximizing
 //!   the ELBO jointly with `q(z_k)` (the factor's collapsed bound) where
 //!   the paper's step holds `q` fixed, spectral sums by
 //!   stochastic Lanczos quadrature on sections of more than 2000 cells,
@@ -73,7 +73,7 @@ pub mod sparse;
 pub mod vb;
 
 use super::input::{InputShape, SpatialData};
-use super::memory::{factor_peak_bytes, FactorShape};
+use super::memory::{factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, select_rows, SparseOp};
@@ -234,12 +234,26 @@ fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> 
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(args, args.fit.core.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(false, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk))?;
-    run_pb_on(args, args.fit.core.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(true, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The log expression of `genes`, centred per section, the counts freed.
@@ -338,7 +352,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             .collect();
         let mut extra = serde_json::json!({
             "prior": "sparse",
-            "graph": format!("kNN within a section, k = {}, symmetrised", fit.core.knn),
+            "graph": format!("kNN within a section, k = {}, symmetrized", fit.core.knn),
             "neighbour_correlation": smooth,
             "slq_probes": fit.core.slq_probes,
             "slq_steps": fit.core.slq_steps,
@@ -392,7 +406,7 @@ fn base_settings(
         "n_genes": fit.n_genes,
         "genes_used": names_of(names, genes),
         "gene_selection": "seurat_v3 highly variable genes",
-        "normalisation": "LogNormalize (1e4), centred per section",
+        "normalization": "LogNormalize (1e4), centred per section",
         "elbo_trace": trace.elbo,
         "iterations": trace.iterations,
         "converged": trace.converged,

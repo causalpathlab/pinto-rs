@@ -1,4 +1,4 @@
-//! Default ligand–receptor pairs and receptor → TF → target programmes,
+//! Default ligand–receptor pairs and receptor → TF → target programs,
 //! built from public resources on first use and cached.
 //!
 //! [`ensure`] returns the two tables for a species, building them when the
@@ -9,7 +9,7 @@
 //!   the OmniPath resources that support each;
 //! - `receptor_targets.<species>.tsv` (`receptor target weight n_tfs
 //!   min_path`): each receptor's top 100 targets by signed search through
-//!   OmniPath signalling to CollecTRI regulons (see [`programmes`]); mouse
+//!   OmniPath signalling to CollecTRI regulons (see [`programs`]); mouse
 //!   from the human networks through HCOP one-to-one orthologs.
 //!
 //! [`LicenceMode::Permissive`] keeps an interaction only when one of its
@@ -31,11 +31,11 @@
 //!
 //! Layout: [`download`] fetches and hashes the raw files, [`table`] reads
 //! and writes delimited text, [`sources`] reads LIANA+, OmniPath and HCOP
-//! and applies the licence filter, and [`programmes`] builds the networks,
+//! and applies the licence filter, and [`programs`] builds the networks,
 //! the per-receptor targets and their mouse translation.
 
 mod download;
-mod programmes;
+mod programs;
 
 pub use download::{sha256_file, write_atomic};
 pub mod sources;
@@ -191,7 +191,7 @@ pub fn with_test_root<T>(root: &Path, f: impl FnOnce() -> T) -> T {
 }
 
 /// An empty reference for `species` under the cache root `root`: its
-/// tables hold only their headers, so a test's own pair and programme
+/// tables hold only their headers, so a test's own pair and program
 /// files are all the pairs there are.
 #[cfg(test)]
 pub fn write_empty_reference(root: &Path, species: Species) -> Result<()> {
@@ -233,7 +233,7 @@ fn build(
     refresh: bool,
     offline: bool,
 ) -> Result<()> {
-    use programmes::*;
+    use programs::*;
     use sources::*;
 
     info!(

@@ -19,7 +19,7 @@ fn small(p: SimParams) -> Sim {
     sim_of(SimParams {
         grid_side: 24,
         n_genes: 200,
-        programme_genes: 20,
+        program_genes: 20,
         ..p
     })
 }
@@ -196,7 +196,7 @@ fn overrides_set_fields_and_reject_unknown_keys() {
 fn stream_keys_do_not_collide() {
     let mut seen = std::collections::HashSet::new();
     let streams = [
-        Stream::Programmes,
+        Stream::Programs,
         Stream::Noise,
         Stream::Depth,
         Stream::Factor,
@@ -343,17 +343,17 @@ fn rotation_gives_the_requested_cosine_at_the_same_norm() {
 
 /// For pure spots, each term's share of the drawn log rate's variance is
 /// its PVE. (Mixed spots shrink the type term inside the log; the manifest
-/// reports what a run realises.)
+/// reports what a run realizes.)
 #[test]
-fn realised_pve_matches_the_targets() {
-    // enough programme genes that the pooled nuisance shares sit near their
+fn realized_pve_matches_the_targets() {
+    // enough program genes that the pooled nuisance shares sit near their
     // expectation: with three donors each gene's donor variance has 2
     // degrees of freedom, so over 50 genes the donor share spreads by about
     // 0.028; the tolerance is about 3 times that
     let sim = sim_of(SimParams {
         grid_side: 24,
         n_genes: 200,
-        programme_genes: 50,
+        program_genes: 50,
         dominant: 1.0,
         pve_type: 0.3,
         pve_donor: 0.2,
@@ -361,23 +361,23 @@ fn realised_pve_matches_the_targets() {
         pve_section: 0.05,
         ..SimParams::default()
     });
-    let r = sim.realised_pve();
+    let r = sim.realized_pve();
     let want = [0.3, 0.2, 0.1, 0.05, sim.p.pve_noise()];
     for (k, (got, want)) in r.iter().zip(want).enumerate() {
         assert!((got - want).abs() < 0.08, "term {k}: {got} vs {want}");
     }
 }
 
-/// With nuisance off, the realised nuisance shares are 0.
+/// With nuisance off, the realized nuisance shares are 0.
 #[test]
-fn realised_pve_follows_nuisance_off() {
+fn realized_pve_follows_nuisance_off() {
     let sim = small(SimParams {
         pve_donor: 0.2,
         pve_section: 0.1,
         nuisance_off: true,
         ..SimParams::default()
     });
-    let r = sim.realised_pve();
+    let r = sim.realized_pve();
     assert!(r[1] < 1e-12 && r[2] < 1e-12 && r[3] < 1e-12, "{r:?}");
 }
 
@@ -451,7 +451,7 @@ fn adding_a_state_keeps_every_other_nuisance_draw() {
 }
 
 /// With one donor, no nuisance, no spot noise, no depth spread and pure
-/// domains of one state each, a programme gene's rate is one value inside
+/// domains of one state each, a program gene's rate is one value inside
 /// its domain and another outside: SRTsim's fold-change domains.
 #[test]
 fn one_donor_without_nuisance_reduces_to_fold_change_domains() {
@@ -465,10 +465,10 @@ fn one_donor_without_nuisance_reduces_to_fold_change_domains() {
     let genes = &sim.genes;
     let g = (0..sim.p.n_genes)
         .find(|&g| {
-            genes.programme_of[g] == Some(0)
-                && (1..sim.p.n_domains).all(|c| genes.programme[c][g] == 0.0)
+            genes.program_of[g] == Some(0)
+                && (1..sim.p.n_domains).all(|c| genes.program[c][g] == 0.0)
         })
-        .expect("a gene in the first state's programme alone");
+        .expect("a gene in the first state's program alone");
     for s in 0..sim.sections.len() {
         let mu = sim.mean(s, g, active(&sim.p));
         let part = |inside: bool| -> Vec<f64> {
@@ -719,7 +719,7 @@ fn the_note_and_the_simulator_agree_on_which_terms_are_off() {
     let base = SimParams {
         grid_side: 6,
         n_genes: 30,
-        programme_genes: 4,
+        program_genes: 4,
         ..shares_at(0.2, 0.1, 0.05)
     };
     let cases = [
@@ -780,7 +780,7 @@ fn a_donor_specific_state_is_named_with_its_owner() {
     let p = SimParams {
         grid_side: 6,
         n_genes: 30,
-        programme_genes: 4,
+        program_genes: 4,
         patch_kind: PatchKind::NewState,
         ..SimParams::default()
     };
@@ -938,7 +938,7 @@ fn no_drawn_donor_keeps_every_scenario_counts() {
         let sim = sim_of(SimParams {
             grid_side: 10,
             n_genes: 40,
-            programme_genes: 6,
+            program_genes: 6,
             ..scenario(name).unwrap()
         });
         // FNV-1a over every (gene, spot, count) in order
@@ -955,14 +955,14 @@ fn no_drawn_donor_keeps_every_scenario_counts() {
 }
 
 /// The pairs written for `pinto lra`: one per state, the ligand of its
-/// programme alone and the receptor of the next state's alone, no gene used
-/// twice, and targets from the receiving state's programme that are no
+/// program alone and the receptor of the next state's alone, no gene used
+/// twice, and targets from the receiving state's program that are no
 /// pair's ligand or receptor, as many as lra keeps at least.
 #[test]
-fn the_lr_pairs_come_from_the_states_own_programmes() {
+fn the_lr_pairs_come_from_the_states_own_programs() {
     let sim = small(SimParams::default());
     let pairs = crate::simulate::write::lr_pairs(&sim);
-    let progs = &sim.genes.programme;
+    let progs = &sim.genes.program;
     let n = progs.len();
     assert_eq!(pairs.len(), n, "one pair per state");
     let index = |name: &str| {
@@ -999,26 +999,26 @@ fn the_lr_pairs_come_from_the_states_own_programmes() {
     }
 }
 
-/// Programmes too small to give lra its targets give no pair at all,
+/// Programs too small to give lra its targets give no pair at all,
 /// rather than pairs lra would drop.
 #[test]
-fn thin_programmes_give_no_pairs() {
+fn thin_programs_give_no_pairs() {
     let sim = sim_of(SimParams {
         grid_side: 24,
         n_genes: 200,
-        programme_genes: 4,
+        program_genes: 4,
         ..SimParams::default()
     });
     let sizes: Vec<usize> = sim
         .genes
-        .programme
+        .program
         .iter()
         .map(|w| w.iter().filter(|&&x| x > 0.0).count())
         .collect();
     let pairs = crate::simulate::write::lr_pairs(&sim);
     assert!(
         pairs.is_empty(),
-        "programme sizes {sizes:?}; targets {:?}",
+        "program sizes {sizes:?}; targets {:?}",
         pairs.iter().map(|p| p.targets.len()).collect::<Vec<_>>()
     );
 }

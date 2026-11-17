@@ -65,7 +65,16 @@ pub struct SrtPreprocessConfig<'a> {
     /// back on [`SrtPreprocessed::cell_proj`]. `lc` and `cage` both need one
     /// for coarsening, so taking it here spares them a second full pass.
     pub cell_projection: bool,
+    /// Under `--auto-batch`, checked once the graph's components have
+    /// relabelled the batches and before δ is estimated over them: the
+    /// cells in each (section, batch) group and the number of batches. A
+    /// fit whose memory the batches decide refuses here ([`AutoBatchCheck`]).
+    pub auto_batch_memory_check: Option<&'a AutoBatchCheck<'a>>,
 }
+
+/// A check on the `--auto-batch` components before δ is estimated over
+/// them ([`SrtPreprocessConfig::auto_batch_memory_check`]).
+pub type AutoBatchCheck<'a> = dyn Fn(&[usize], usize) -> anyhow::Result<()> + 'a;
 
 /// What preprocessing does about batch effects (nothing under
 /// `--ignore-batch`, or with one batch).
@@ -637,6 +646,13 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
 
     if auto_relabels {
         auto_batch_from_components(&graph, &coordinates, &mut batch_membership, has_coords);
+        if let Some(check) = cfg.auto_batch_memory_check {
+            // each kept cell's (section, batch) pair, in step with the cells
+            let groups = crate::util::ablation::section_sizes(&crate::util::ablation::dense_ids(
+                section_ids.iter().zip(&batch_membership),
+            ));
+            check(&groups, sorted_batch_labels(&batch_membership).len())?;
+        }
     }
 
     // `--ignore-batch` drops the estimate, and with it every use of one

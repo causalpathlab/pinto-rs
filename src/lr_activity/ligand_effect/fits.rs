@@ -119,7 +119,7 @@ impl Reads {
 /// serve a subset ([`Reads`]), and the cross-fitted propensities
 /// ([`propensity`]) of the main fit and, with [`ThresholdFits::with_steps`],
 /// of each adjustment step. These read no response-side column, so one serves every
-/// programme weighting and the no-spill fit; a fit that adds
+/// program weighting and the no-spill fit; a fit that adds
 /// spillover and bleed borders it ([`fit_main`]).
 pub struct ThresholdFits<'a> {
     pub exposure: &'a Exposure,
@@ -385,7 +385,7 @@ impl<'a> ThresholdFits<'a> {
 /// models; and spillover and bleed (not under
 /// [`Fit::NoSpill`]), in both models too, so the estimator is doubly robust
 /// in them as well. Read off the response, they would tie the propensity to
-/// one programme, so it is not refitted: the threshold's shared
+/// one program, so it is not refitted: the threshold's shared
 /// exposure-side fit is bordered with these two columns
 /// ([`propensity_bordered`]).
 pub fn fit_main(

@@ -17,6 +17,9 @@ fn no_feature_qc(s: &str) -> Result<usize, String> {
     }
 }
 
+/// `-d`'s default: the pseudobulk samples the cell pairs are coarsened to.
+pub const DEFAULT_N_PSEUDOBULK: usize = 1024;
+
 /// The input every fit reads: data files, their coordinates and batches,
 /// cell QC, the output prefix and the seed. lc, dsvd and cage take it inside
 /// [`SrtInputArgs`], beside their cell-pair graph; the spatial baselines
@@ -158,7 +161,7 @@ pub struct SrtInputArgs {
     #[arg(
         long,
         short = 'd',
-        default_value_t = 1024,
+        default_value_t = DEFAULT_N_PSEUDOBULK,
         help = "Target number of pseudobulk samples at coarsest level",
         long_help = "Target number of pseudobulk cell groups at the coarsest level.\n\
                      Coarsening merges cells until roughly this many remain.\n\
@@ -311,7 +314,7 @@ pub struct OffsetArgs {
                      Each count is read against the stage-1 expectation\n\
                      mu = n_i sum_k theta_ik p_kb(g): dsvd, cage and cage-cell divide it\n\
                      by d = mu / (n_i pbar_g) where they would divide by a batch effect,\n\
-                     as a self-normalising Poisson ratio (each cell's scale absorbed)\n\
+                     as a self-normalizing Poisson ratio (each cell's scale absorbed)\n\
                      (the projections too), lc scores its edge profiles against mu\n\
                      (rates D/M in place of D/V), the written feature_community holds\n\
                      mean counts over d, sum_i pi_ik y_gi / sum_i pi_ik d_gi, and\n\
@@ -484,10 +487,14 @@ impl SrtInputArgs {
     /// `input` with the cell-pair graph at its defaults: the graph a fit
     /// that takes no graph flags (a spatial baseline) is read with.
     pub fn with_input(input: InputArgs) -> Self {
-        let mut a = <Self as clap::Parser>::try_parse_from(["pinto", "data", "--out", "out"])
-            .expect("the graph flags parse at their defaults");
-        a.input = input;
-        a
+        Self {
+            input,
+            n_pseudobulk: DEFAULT_N_PSEUDOBULK,
+            knn_spatial: None,
+            knn_expr: None,
+            knn_expr_scope: KnnExprScope::Global,
+            reciprocal: false,
+        }
     }
 
     /// Whether spatial coordinate files were provided.

@@ -38,7 +38,7 @@ fn a_panel_gene_with_an_underscore_is_one_gene() {
     assert_eq!(subunit_genes("FOO_BAR", &names, &index), Some(vec![0]));
 }
 
-fn programme() -> TargetSets {
+fn program() -> TargetSets {
     let mut s = TargetSets::default();
     s.add_table(
         "receptor\ttarget\nSUBA4_SUBB1\tT1\nSUBA4_SUBB1\tT2\nSUBA4_SUBB1\tT3\n\
@@ -61,7 +61,7 @@ fn pairs_resolve_complex_ligands_and_receptors_and_dedup_on_genes() {
         // A subunit absent from the data: dropped.
         ("SUBC1".into(), "SUBA4_SUBB7".into()),
     ];
-    let sets = programme();
+    let sets = program();
     let pairs = resolve_pairs(raw, &names, &index, &sets, &HashMap::default());
     assert_eq!(pairs.len(), 1);
     let p = &pairs[0];

@@ -44,11 +44,11 @@
 //!    written from that definition: no loess library's code is translated,
 //!    and scikit-misc's is only the behaviour compared against); each count
 //!    clipped at `mean + sqrt(N) * reg_sd`, `reg_sd = sqrt(10^fit)`; the
-//!    variance of the clipped counts standardised by `reg_sd²`; the
+//!    variance of the clipped counts standardized by `reg_sd²`; the
 //!    `n_top_genes` largest (all genes when there are fewer). Sections are
 //!    pooled (no `batch_key`), as in the tutorials.
 //! 2. `sc.pp.normalize_total(target_sum=1e4)` then `sc.pp.log1p` on every
-//!    gene ([`normalise_log`]), then the variable genes only
+//!    gene ([`normalize_log`]), then the variable genes only
 //!    (`Train_STAGATE.py:train_STAGATE`, `adata[:, highly_variable]`), dense.
 //! 3. The spatial network (`utils.py:Cal_Spatial_Net`): `model='KNN'` links
 //!    each cell to its `k_cutoff` nearest cells, `model='Radius'` to every
@@ -70,7 +70,7 @@
 //!    LeakyReLU, as in the TF code), then a softmax over the edges into
 //!    `i`. Aggregation ([`aggregate`]) gathers and scatter-adds over the
 //!    edge list: no dense adjacency is ever formed.
-//! 5. Initialisation (`GATConv.__init__`): every weight and attention vector
+//! 5. Initialization (`GATConv.__init__`): every weight and attention vector
 //!    Xavier normal with gain 1.414.
 //! 6. Training (`Train_STAGATE.py:train_STAGATE`): loss `F.mse_loss(x, h4)`
 //!    (the mean over every entry); full batch; `n_epochs = 1000`; Adam with
@@ -91,7 +91,7 @@
 //!    moves, at most 300; Euclidean; an emptied cluster re-seeded from the
 //!    cell worst served), the best of 10 starts by inertia. Tutorial T1 instead fits a K-component Gaussian
 //!    mixture with a shared full covariance through R (`utils.py`'s R
-//!    bridge); that package is GPL, so its model, initialisation and EM are
+//!    bridge); that package is GPL, so its model, initialization and EM are
 //!    not ported, and the domains can differ from the tutorial's. Without
 //!    `--n-clusters`, T7's `sc.pp.neighbors(use_rep='STAGATE')` (15
 //!    neighbours, the cell counted) and `sc.tl.louvain(resolution=0.5)`
@@ -118,7 +118,7 @@
 //!
 //! `stagate-pb` trains the same model on super-cells ([`super::pseudobulk`]):
 //! genes chosen on the cells as above, the super-cells' summed counts
-//! normalised and log-transformed as a cell's, on the cell graph folded
+//! normalized and log-transformed as a cell's, on the cell graph folded
 //! onto them, unweighted (STAGATE's attention takes no edge weights) and
 //! symmetric, with self loops ([`looped_edges`]). The trained encoder then
 //! embeds every cell from its own counts on the cell graph made symmetric
@@ -143,7 +143,7 @@
 //!   distinct weighted points); netlib loess keeps degree 2 there through a
 //!   pseudo-inverse. That case needs ties in log10 mean, so it is rare.
 //! - With `--n-clusters`, k-means replaces T1's Gaussian mixture (step 9).
-//! - Louvain is replaced by Leiden (the one pinto has); both maximise
+//! - Louvain is replaced by Leiden (the one pinto has); both maximize
 //!   modularity of the same unweighted graph at the same resolution.
 //! - The default spatial network is `KNN` with `k_cutoff = 6`, the
 //!   neighbourhood of the tutorials' spot data (Visium, `rad_cutoff = 150`,
@@ -165,7 +165,7 @@
 //!   the fixed-K and radius-150 pipeline) runs. The TF defaults not followed
 //!   (`Train_STAGATE.py:train_STAGATE`, `model.py:GATE.__call__`): loss
 //!   `sqrt(sum of squares)` plus `1e-4 * l2_loss` of the last weight only,
-//!   `lr = 1e-4`, 500 epochs, Glorot uniform initialisation, seed 2020, and
+//!   `lr = 1e-4`, 500 epochs, Glorot uniform initialization, seed 2020, and
 //!   the cell type-aware module (`alpha > 0`, a pruned second graph). The
 //!   tutorials' `alpha=0` disables that module, and the pyG build does not
 //!   have it.
@@ -179,7 +179,7 @@ use super::memory::{
 };
 use super::output::{write_run, Fitted, PbFit};
 use crate::util::ablation::section_sizes;
-use crate::util::common::{normalise_log, Mat};
+use crate::util::common::{normalize_log, Mat};
 use crate::util::device::ComputeDevice;
 use crate::util::memory::{ensure_fits, Budget};
 use crate::util::metadata::{InputLayout, PseudobulkInput};
@@ -391,9 +391,9 @@ fn solve_local(ata: &[[f64; 3]; 3], aty: &[f64; 3]) -> f64 {
 }
 
 /// scanpy's `highly_variable_genes(flavor="seurat_v3")` on raw counts
-/// (genes × cells), one batch: each gene's standardised variance, the
+/// (genes × cells), one batch: each gene's standardized variance, the
 /// `n_top` largest picked (ties by gene order), returned in gene order with
-/// every gene's standardised variance.
+/// every gene's standardized variance.
 pub fn seurat_v3_hvg(counts: &CscMatrix<f32>, n_top: usize) -> (Vec<usize>, Vec<f64>) {
     let (n_genes, n) = (counts.nrows(), counts.ncols());
     let nf = n as f64;
@@ -1004,13 +1004,24 @@ impl Stagate {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read("stagate", args, false)?;
-    run_on(args, args.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.input
+            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// `stagate-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read("stagate-pb", &args.fit, true)?;
-    run_pb_on(args, args.fit.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The arguments checked, and the peak of a run of command `what` (on
@@ -1202,7 +1213,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     // the input first, so the counts are freed before the graph
     let dev = args.device.to_device(args.device_no)?;
     let mut log = counts;
-    normalise_log(&mut log);
+    normalize_log(&mut log);
     let layout = args.input_layout();
     if layout == InputLayout::Dense {
         info!(
@@ -1425,7 +1436,7 @@ fn to_mat(z: &Tensor) -> anyhow::Result<Mat> {
 /// `stagate-pb` on `data` as read (with its projection): the cells
 /// coarsened to super-cells as cage coarsens them; genes filtered and
 /// chosen on the cells, as stagate chooses them; STAGATE trained on the
-/// super-cells (their summed counts, each normalised and log-transformed
+/// super-cells (their summed counts, each normalized and log-transformed
 /// as a cell is) and the cell graph folded onto them (unweighted, as
 /// STAGATE's attention takes it, and symmetric); then unravelled to cells:
 /// the trained encoder embeds each cell from its own counts on the cell
@@ -1473,11 +1484,11 @@ pub(crate) fn run_pb_on(
     );
     let dev = args.device.to_device(args.device_no)?;
     let mut log = counts;
-    normalise_log(&mut log);
+    normalize_log(&mut log);
     let cell_x = Input::Sparse(SparseInput::from_rows(&log, &genes));
     drop(log);
     let mut log = keep_rows(sc.data.counts, &kept);
-    normalise_log(&mut log);
+    normalize_log(&mut log);
     let pb_x = Input::Sparse(SparseInput::from_rows(&log, &genes));
     drop(log);
 

@@ -48,7 +48,7 @@ impl Neighbours {
 
     /// The same graph with every edge in both directions, each listed once
     /// per cell, neighbours re-sorted by distance (ties by index).
-    pub fn symmetrised(&self) -> Neighbours {
+    pub fn symmetrized(&self) -> Neighbours {
         let sorted: Vec<Vec<usize>> = self
             .index
             .par_iter()

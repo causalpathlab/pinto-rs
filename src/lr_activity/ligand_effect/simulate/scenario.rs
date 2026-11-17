@@ -99,7 +99,7 @@ impl From<ConfoundShape> for &'static str {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Scenario {
-    /// Share of each programme gene's log-rate variance (beyond the receiver's
+    /// Share of each program gene's log-rate variance (beyond the receiver's
     /// cell type) that the contact effect explains: the effect is
     /// `√pve / sd(x)` times the exposure term `x` (true exposure × the bin's
     /// share × the dose share), its variance taken over responding receivers
@@ -109,7 +109,7 @@ pub struct Scenario {
     /// Share of the producer log odds' variance (beyond the cell type) that
     /// the hidden field explains; the rest is noise.
     pub ligand_field_pve: f64,
-    /// Share of each programme gene's log-rate variance (beyond the cell
+    /// Share of each program gene's log-rate variance (beyond the cell
     /// type) that the hidden field explains, signed: negative pushes the
     /// response against the ligand. Effect, field and noise share the
     /// variance, so `effect_pve + |response_field_pve| ≤ 1`.
@@ -120,7 +120,7 @@ pub struct Scenario {
     pub shape: ConfoundShape,
     /// The effect varies by identity bin, scaled by `u_b ~ U[0.5, 1.5]`.
     pub heterogeneous: bool,
-    /// Ligand, response and programme baseline confined to a marker type.
+    /// Ligand, response and program baseline confined to a marker type.
     pub marker: bool,
     /// The planted effect grows with the true dose (a Hill curve) rather than
     /// being a step at any exposure.
@@ -316,7 +316,7 @@ impl Default for Scenario {
 /// replicates, and how many pairs it runs on.
 #[derive(Debug)]
 pub struct GridOpts {
-    /// Planted effects as PVE of the programme genes' log rates
+    /// Planted effects as PVE of the program genes' log rates
     /// ([`Scenario::effect_pve`]); each runs beside no effect.
     pub effect_pve: Vec<f64>,
     /// PVE of the hidden field on ligand production and on the response
@@ -331,7 +331,7 @@ pub struct GridOpts {
     /// the nonlinear shapes use.
     pub scales: Vec<f64>,
     pub shapes: Vec<ConfoundShape>,
-    /// Ligand, response and programme confined to one cell type.
+    /// Ligand, response and program confined to one cell type.
     pub marker: bool,
     /// An effect varying by identity bin (planted effects only).
     pub heterogeneous: bool,

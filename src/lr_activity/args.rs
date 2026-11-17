@@ -148,7 +148,7 @@ pub struct LraInputArgs {
 /// What `pinto lra` computes.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LraMethod {
-    /// Effect of neighbouring ligand on the receiver's response programme
+    /// Effect of neighbouring ligand on the receiver's response program
     #[default]
     ContactEffect,
     /// Permutation test of ligand-receptor co-expression per link community
@@ -214,8 +214,8 @@ pub struct SrtLrActivityArgs {
         long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
-        help = "Response programmes (TSV or GMT), added to the reference",
-        long_help = "Response programme files, comma separated, added to the reference.\n\
+        help = "Response programs (TSV or GMT), added to the reference",
+        long_help = "Response program files, comma separated, added to the reference.\n\
                      TSV/CSV: a header with `receptor` and/or `ligand`, `target`, optional\n\
                      `weight` (signed). GMT: set names are a receptor, a ligand, or\n\
                      `ligand_receptor`. A name with `_` that the pair list uses whole for\n\
@@ -401,9 +401,9 @@ pub struct LraSimulateArgs {
         long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
-        help = "Response programmes (TSV or GMT), added to the reference",
-        long_help = "Response programme files, as `pinto lra --targets` takes them: the\n\
-                     programmes the benchmark's responses are drawn on."
+        help = "Response programs (TSV or GMT), added to the reference",
+        long_help = "Response program files, as `pinto lra --targets` takes them: the\n\
+                     programs the benchmark's responses are drawn on."
     )]
     pub targets: Vec<Box<str>>,
 
@@ -417,6 +417,37 @@ pub struct LraSimulateArgs {
                      hidden confounders still act everywhere. Needs --region."
     )]
     pub plant_region: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath,
+        help = "Reference data (a real data set) to draw the program genes with",
+        long_help = "Reference data: a real data set, genes by cells (.zarr.zip, .zarr or\n\
+                     .h5, opened as the fits open data; convert an AnnData file first:\n\
+                     data-beans from-h5ad x.h5ad -o x), the kind `pinto sim new\n\
+                     --reference-data` takes; not the ligand-receptor reference. data-beans\n\
+                     fits each gene's count distribution in each of its cell groups and a\n\
+                     Gaussian copula of its highly variable genes; each identity bin takes\n\
+                     the cell group its program genes' mean counts correlate with best, and\n\
+                     a program gene the data set has is drawn from that group's count\n\
+                     distribution around the tissue's own mean count, correlated with the\n\
+                     other program genes as in the data set, in place of the Poisson\n\
+                     log-normal draw. The planted effect keeps its log fold change (θ, from\n\
+                     effect_pve over a unit log-rate variance, as without reference data);\n\
+                     the spread around it is the data set's own, so effect_pve is then a\n\
+                     size on the log scale rather than an exact share. The record names the\n\
+                     data set by size and a fingerprint of its content."
+    )]
+    pub reference_data: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "reference_data",
+        help = "Cell labels to group the reference data by (else k-means)"
+    )]
+    pub reference_data_labels: Option<Box<str>>,
 
     #[arg(
         long,

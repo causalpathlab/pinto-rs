@@ -221,6 +221,7 @@ pub fn fit_cell_activity_graph_embedding(
         batch_effects: BatchEstimate::Fit,
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && coarsens,
+        auto_batch_memory_check: None,
         feature_kind: Some(feature_kind.clone()),
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
@@ -996,7 +997,7 @@ pub fn fit_cell_activity_graph_embedding(
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
             // batch-adjusted, with the plain divide (the pairs' is the
-            // self-normalising Poisson ratio)
+            // self-normalizing Poisson ratio)
             divisor: pair_batch,
         },
         &c.out,

@@ -6,11 +6,11 @@ use crate::lr_activity::ligand_effect::averaging::combine;
 use crate::lr_activity::ligand_effect::contacts::Contacts;
 use crate::lr_activity::ligand_effect::dose::niche_ligand;
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::response::programme_columns;
+use crate::lr_activity::ligand_effect::response::program_columns;
 
 // * Bleed
 
-/// The bleed column of one weighted programme.
+/// The bleed column of one weighted program.
 fn neighbour_bleed(
     targets: &[(f64, &[(u32, f32)])],
     bins: &[usize],
@@ -19,7 +19,7 @@ fn neighbour_bleed(
 ) -> Vec<f64> {
     let genes: Vec<&[(u32, f32)]> = targets.iter().map(|(_, nz)| *nz).collect();
     let w: Vec<f64> = targets.iter().map(|(w, _)| *w).collect();
-    programme_columns(&genes, &[w], bins, contacts, sf)
+    program_columns(&genes, &[w], bins, contacts, sf)
         .1
         .remove(0)
 }

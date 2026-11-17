@@ -2,6 +2,7 @@
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
 use super::fields::{confounding, field_sha256, SimShared};
+use super::reference_data::ReferenceProgramGenes;
 use super::row::{RegionRead, SimRow};
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
@@ -276,7 +277,7 @@ fn who_responds(run: &Run<'_>, ligand: &TrueLigand, competent: &[bool]) -> Recei
     }
 }
 
-/// One programme gene's counts: observed, and potential in `T*`.
+/// One program gene's counts: observed, and potential in `T*`.
 struct GeneCounts {
     obs: Vec<f64>,
     c1: Vec<f64>,
@@ -293,52 +294,81 @@ impl GeneCounts {
     }
 }
 
+/// What every gene of a program is drawn on: the field's and markers'
+/// lifts by sign ([`sign_lifts`]), the true exposure, and each receiver's
+/// planted log-rate lift under `T*` before the gene's sign
+/// (`θ · u_bin · dose share`), zero for a receiver that does not respond.
+struct ProgramDraw<'a> {
+    lifts: &'a [Vec<f64>; 2],
+    latent: &'a LatentExposure,
+    planted: &'a [f64],
+}
+
 /// Draw gene `g`'s counts from one shared uniform per receiver, so that
-/// potential counts differ by the effect alone. `planted` is each receiver's
-/// log-rate lift under `T*` before the gene's sign (`θ · u_bin · dose share`),
-/// zero for a receiver that does not respond.
+/// potential counts differ by the effect alone; from the reference data when
+/// it has the gene (`reference_data`: it, the gene's position in it, and the
+/// receivers' copula factors).
 fn draw_gene(
     run: &Run<'_>,
     g: usize,
-    lifts: &[Vec<f64>; 2],
-    latent: &LatentExposure,
-    planted: &[f64],
+    d: &ProgramDraw<'_>,
+    reference_data: Option<(&ReferenceProgramGenes, usize, &[f64])>,
     c: &mut GeneCounts,
     rng: &mut SmallRng,
 ) {
+    let (lifts, latent, planted) = (d.lifts, d.latent, d.planted);
     let (tissue, base, scen) = (run.tissue, run.base, run.scen);
     let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
     let ng = base.target_weights.len();
-    let t_star = &latent.t;
     let w = base.target_weights[g];
     let s = if w < 0.0 { -1.0 } else { 1.0 };
     let lift = &lifts[(w < 0.0) as usize];
     let noise_var = log_rate_noise(scen.effect_pve, scen.response_field_pve);
+    let rank = reference_data.map_or(0, |(r, _, _)| r.copula_rank());
     for i in 0..tissue.n() {
         let b = bin[i];
-        let noise = noise_lift(rng, noise_var);
-        let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i] * noise;
-        let u: f64 = rng.random();
+        let tissue_mean = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
+        // the receiver's quantile and its mean before the effect: through the
+        // reference data's copula, its spread its own; or a uniform and the
+        // log-normal noise
+        let (u, mean) = match reference_data {
+            Some((r, j, factors)) => {
+                let own: f64 = StandardNormal.sample(rng);
+                let factors = factors.get(i * rank..(i + 1) * rank).unwrap_or(&[]);
+                (
+                    crate::simulate::draw::phi(r.copula_latent(j, factors, own)),
+                    tissue_mean,
+                )
+            }
+            None => {
+                let noise = noise_lift(rng, noise_var);
+                let u: f64 = rng.random();
+                (u, tissue_mean * noise)
+            }
+        };
         let th = s * planted[i];
-        let q = |l: f64| poisson_quantile(u, r0 * l.exp());
+        let q = |l: f64| match reference_data {
+            Some((r, j, _)) => r.count_at_quantile(b, j, u, mean * l.exp(), poisson_quantile),
+            None => poisson_quantile(u, mean * l.exp()),
+        };
         let hi = q(th);
         let lo = if th == 0.0 { hi } else { q(0.0) };
         c.c1[i] = hi;
         c.c0[i] = lo;
-        c.obs[i] = if t_star[i] { hi } else { lo };
+        c.obs[i] = if latent.t[i] { hi } else { lo };
     }
 }
 
-/// The programme's responses: as observed (`y_seen`), and potential in `T*`
+/// The program's responses: as observed (`y_seen`), and potential in `T*`
 /// (`y1`, `y0`), with the estimator's bleed covariate.
-struct ProgrammeResponses {
+struct ProgramResponses {
     y_seen: Vec<f64>,
     y1: Vec<f64>,
     y0: Vec<f64>,
     bleed: Vec<f64>,
 }
 
-impl ProgrammeResponses {
+impl ProgramResponses {
     fn new(n: usize) -> Self {
         Self {
             y_seen: vec![0.0; n],
@@ -353,7 +383,7 @@ impl ProgrammeResponses {
         let tissue = run.tissue;
         let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
         // The bleed covariate from the observed counts, as
-        // [`super::super::response::programme_columns`] reads them: bin means,
+        // [`super::super::response::program_columns`] reads them: bin means,
         // then expected neighbour counts.
         let mut m = vec![0.0; bin_cells.len()];
         for (i, s) in sf.iter().enumerate() {
@@ -389,14 +419,15 @@ impl ProgrammeResponses {
     }
 }
 
-/// The programme, gene by gene.
-fn draw_programme(
+/// The program, gene by gene.
+fn draw_program(
     run: &Run<'_>,
     lifts: &[Vec<f64>; 2],
     latent: &LatentExposure,
     receivers: &Receivers,
+    reference_data: Option<&ReferenceProgramGenes>,
     rng: &mut SmallRng,
-) -> ProgrammeResponses {
+) -> ProgramResponses {
     let (tissue, weights) = (run.tissue, run.base.target_weights);
     let n = tissue.n();
     let mut bin_cells = vec![0usize; n_bins(tissue)];
@@ -425,9 +456,27 @@ fn draw_programme(
         .map(|i| share(i, theta) * latent.dose_share[i])
         .collect();
     let mut counts = GeneCounts::new(n);
-    let mut out = ProgrammeResponses::new(n);
+    let mut out = ProgramResponses::new(n);
+    // under reference data, each receiver's copula factors, drawn first,
+    // when one of the program's genes is in the copula
+    let reference_data = reference_data.zip(run.base.reference_position_of_target);
+    let any_copula_gene = reference_data
+        .is_some_and(|(r, position)| position.iter().flatten().any(|&j| r.in_copula(j)));
+    let copula_factors: Vec<f64> = match reference_data {
+        Some((r, _)) if any_copula_gene => (0..n * r.copula_rank())
+            .map(|_| StandardNormal.sample(rng))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let d = ProgramDraw {
+        lifts,
+        latent,
+        planted: &planted,
+    };
     for (g, &w) in weights.iter().enumerate() {
-        draw_gene(run, g, lifts, latent, &planted, &mut counts, rng);
+        let gene_in_reference_data = reference_data
+            .and_then(|(r, position)| position[g].map(|j| (r, j, copula_factors.as_slice())));
+        draw_gene(run, g, &d, gene_in_reference_data, &mut counts, rng);
         out.add_gene(run, w, &bin_cells, &counts);
     }
     let total_w: f64 = weights.iter().map(|w| w.abs()).sum::<f64>().max(1e-12);
@@ -444,7 +493,7 @@ fn misclassified_share(comp: &[bool], seen: &[bool], truth: &[bool]) -> f64 {
     miss as f64 / k.max(1) as f64
 }
 
-/// Log-rate noise of a programme gene: what the effect's and the field's
+/// Log-rate noise of a program gene: what the effect's and the field's
 /// shares leave of its variance.
 fn log_rate_noise(effect_pve: f64, field_pve: f64) -> f64 {
     (1.0 - effect_pve - field_pve.abs()).max(0.0)
@@ -588,10 +637,10 @@ pub fn simulate(
     let nb = n_bins(tissue);
     let ng = base.target_weights.len();
     scen.validate()?;
-    anyhow::ensure!(ng > 0, "the programme has no genes");
+    anyhow::ensure!(ng > 0, "the program has no genes");
     anyhow::ensure!(
         base.target_bin_means.len() == nb * ng,
-        "programme bin means are {} long, expected {nb} bins × {ng} genes",
+        "program bin means are {} long, expected {nb} bins × {ng} genes",
         base.target_bin_means.len()
     );
     let seed = mix_seed(seed, scen.rep as u64);
@@ -620,7 +669,7 @@ pub fn simulate(
         planted: region_rows.map(|r| tissue.mask(r)),
     };
 
-    // The ligand and the programme draw from this one stream, ligand first.
+    // The ligand and the program draw from this one stream, ligand first.
     let mut rng = SmallRng::seed_from_u64(mix_seed(seed, 2));
     let ligand = draw_ligand(&run, shared, &mut rng);
     let latent = latent_exposure(&run, &ligand.rate);
@@ -631,12 +680,19 @@ pub fn simulate(
 
     let beta = log_rate_coef(scen.response_field_pve);
     let lifts = sign_lifts(&run.f, beta, &ligand.marker, bin);
-    let ProgrammeResponses {
+    let ProgramResponses {
         y_seen,
         y1,
         y0,
         bleed,
-    } = draw_programme(&run, &lifts, &latent, &receivers, &mut rng);
+    } = draw_program(
+        &run,
+        &lifts,
+        &latent,
+        &receivers,
+        shared.reference_data,
+        &mut rng,
+    );
     let misclassified = misclassified_share(comp, &exposure.t, &latent.t);
 
     let response = Response::new(tissue, y_seen, &bleed);

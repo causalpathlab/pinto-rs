@@ -17,7 +17,7 @@ fn fixture() -> PairDictionary {
 fn a_zero_latent_scores_exactly_the_abundance_null() {
     // At θ = 0 the log-rate IS b, and the partition is Σ exp(b_g), the
     // null's. The two columns must therefore agree — if they ever drift,
-    // the null and the model are normalising over different axes and the
+    // the null and the model are normalizing over different axes and the
     // reported gain is meaningless.
     let dict = fixture();
     let obs = [(0u32, 7.0f32), (2, 3.0)];
@@ -145,7 +145,7 @@ fn the_restricted_score_ignores_everything_off_its_axis() {
 }
 
 #[test]
-fn the_restricted_null_normalises_over_the_same_features_as_the_model() {
+fn the_restricted_null_normalizes_over_the_same_features_as_the_model() {
     // If model and null used different partitions their difference would be an
     // artifact of that mismatch rather than of the latent.
     let dict = fixture();

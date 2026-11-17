@@ -17,6 +17,7 @@ use crate::util::input::{
     read_batch_file, InputArgs, OffsetArgs, SrtInputArgs, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
     DEFAULT_SPATIAL_GRAPH,
 };
+use crate::util::memory::{ensure_fits, Budget};
 use crate::util::srt_pipeline::{
     preprocess_srt, BatchEstimate, FeatureAxisMode, SrtPreprocessConfig, SrtPreprocessed,
 };
@@ -277,17 +278,63 @@ impl SpatialInputArgs {
         self.data_files.iter().map(|file| try_open_or_convert(file))
     }
 
+    /// What the δ estimate holds once `--auto-batch` has relabelled the
+    /// cells, on an input of stored shape `s` whose (section, batch) groups
+    /// hold `groups` cells each, over `n_batches` batches; 0 when none is
+    /// made. An upper bound: a batch's samples are at most each of its
+    /// sections' ([`Self::collapse_bytes`]).
+    pub fn auto_batch_delta_bytes(
+        &self,
+        s: &InputShape,
+        groups: &[usize],
+        n_batches: usize,
+    ) -> usize {
+        if self.batch.ignore_batch || n_batches < 2 {
+            return 0;
+        }
+        self.collapse_bytes(&InputShape {
+            section_sizes: groups.to_vec(),
+            batches: n_batches,
+            ..s.clone()
+        })
+    }
+
     /// Read the counts and coordinates through pinto's preprocessing
     /// ([`preprocess_srt`]), with the cells' projection the super-cells are
     /// coarsened on when `with_projection` ([`SpatialData::projection`]).
     /// The counts of the cells QC kept are divided by the stage-1 divisor
-    /// under `--offset`, else by δ when one was estimated.
-    pub fn read(&self, with_projection: bool) -> anyhow::Result<SpatialData> {
+    /// under `--offset`, else by δ when one was estimated. Under
+    /// `--auto-batch`, once the components are found and before δ is
+    /// estimated over them, the estimate above the `process`'s own bytes is
+    /// checked against `budget` ([`Self::auto_batch_delta_bytes`]; unchecked
+    /// when the files do not store their shape).
+    pub fn read_within(
+        &self,
+        with_projection: bool,
+        budget: &Budget,
+        process: usize,
+    ) -> anyhow::Result<SpatialData> {
         anyhow::ensure!(
             !self.coord_files.is_empty(),
             "a spatial baseline needs coordinate files (-c), one per data file"
         );
         let srt = SrtInputArgs::with_input(self.input.clone());
+        let stored = if self.batch.auto_relabels() {
+            self.stored()?
+        } else {
+            None
+        };
+        let check = |groups: &[usize], n_batches: usize| -> anyhow::Result<()> {
+            let Some(s) = &stored else {
+                return Ok(());
+            };
+            ensure_fits(
+                "the δ estimate over the --auto-batch components",
+                process + self.auto_batch_delta_bytes(s, groups, n_batches),
+                budget,
+                "drop --auto-batch, or pass --batch-files with fewer labels",
+            )
+        };
         let SrtPreprocessed {
             data_vec,
             coordinates,
@@ -309,6 +356,7 @@ impl SpatialInputArgs {
             feature_kind: Some(FeatureNameKind::Exact),
             offset: self.stage2.offset.as_deref(),
             cell_projection: with_projection,
+            auto_batch_memory_check: Some(&check),
         })?;
         // the -pb commands coarsen along the graph; the rest drop it now
         let pair_graph = with_projection.then_some((graph.edges, graph.distances));

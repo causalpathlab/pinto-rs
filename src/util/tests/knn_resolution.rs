@@ -277,3 +277,16 @@ fn a_feature_qc_floor_is_refused_rather_than_ignored() {
     .to_string();
     assert!(err.contains("--qc-feature-min-cells"), "{err}");
 }
+
+/// The graph a fit that takes no graph flags (a spatial baseline) is read
+/// with is exactly the one the flags give at their defaults.
+#[test]
+fn the_graph_defaults_built_in_code_are_the_flags_defaults() {
+    let parsed = args(&[]);
+    let built = SrtInputArgs::with_input(parsed.input.clone());
+    assert_eq!(built.n_pseudobulk, parsed.n_pseudobulk);
+    assert_eq!(built.knn_spatial, parsed.knn_spatial);
+    assert_eq!(built.knn_expr, parsed.knn_expr);
+    assert_eq!(built.knn_expr_scope, parsed.knn_expr_scope);
+    assert_eq!(built.reciprocal, parsed.reciprocal);
+}

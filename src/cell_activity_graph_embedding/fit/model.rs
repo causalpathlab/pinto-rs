@@ -283,7 +283,7 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
     // cage-cell trains a row per cell pair (outside the model) and no cell
     // table. geu's constructors make `e_cell` and `b_cell` together, the
     // biases being the cells', so the table leaves the map here, before any
-    // optimiser is built over it, and the field holds an empty one.
+    // optimizer is built over it, and the field holds an empty one.
     let mut model = model;
     if args.cell_level {
         varmap.data().lock().expect("varmap lock").remove("e_cell");

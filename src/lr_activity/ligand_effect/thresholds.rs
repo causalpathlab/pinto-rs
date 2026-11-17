@@ -33,7 +33,7 @@ pub struct ThresholdAverage {
 }
 
 /// One pair as the fits read it: its exposure, its response under each
-/// weighting of its programme, its competence levels and the options.
+/// weighting of its program, its competence levels and the options.
 #[derive(Clone, Copy)]
 pub struct PairFit<'a> {
     pub ex: &'a Exposure,
@@ -56,11 +56,11 @@ pub fn thresholds(ex: &Exposure, levels: &[Vec<bool>], opts: &EffectOpts) -> Vec
 }
 
 /// Every estimand of a pair over the headline threshold and `taus`: the fits at
-/// each, the estimands combined over competence thresholds and programme
+/// each, the estimands combined over competence thresholds and program
 /// weightings by Rubin's rules, then averaged over the exposure thresholds by
 /// their posterior weights, estimand by estimand
 /// ([`super::averaging::abf_average`]), so the control is averaged by its own
-/// evidence and not by the programme's.
+/// evidence and not by the program's.
 ///
 /// A fixed [`super::options::EffectOpts::threshold`] is not averaged: its
 /// estimate is the headline, and `taus` only the curve. A headline threshold

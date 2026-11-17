@@ -274,7 +274,7 @@ pub(super) fn score_pairs_for_stratum(
     // every pair must see the same shuffle and the same posterior draw — and
     // says nothing about the order permutations are computed in. Successive
     // permutations carry no state either: the draw seed is a pure function of
-    // `k`, and the shuffles were all materialised up front.
+    // `k`, and the shuffles were all materialized up front.
     //
     // This is the better axis to parallelise on: far more permutations than
     // cores, so the granularity is coarse, where the old shape re-entered a

@@ -89,11 +89,11 @@ pub fn upper_median(v: &mut [f64]) -> Option<f64> {
     Some(*v.select_nth_unstable_by(mid, f64::total_cmp).1)
 }
 
-/// What log-normalisation scales each unit's counts to before `ln(1 + x)`
+/// What log-normalization scales each unit's counts to before `ln(1 + x)`
 /// (counts per ten thousand); a unit with no counts stays empty.
 pub const LIBRARY_SCALE: f32 = 1e4;
 
-/// The depth normalisation for a site that takes counts into a
+/// The depth normalization for a site that takes counts into a
 /// transformed space (a log, a projection, a similarity, an SVD):
 /// `ln(1 + s x / total)`, `s` the [`LIBRARY_SCALE`] and `total` the unit's
 /// (a cell's, a pseudobulk's) summed counts, so the value depends on the
@@ -115,7 +115,7 @@ pub const LIBRARY_SCALE: f32 = 1e4;
 /// and neither does a weight meant to keep a unit's depth (cage's
 /// activities, a sampling weight).
 ///
-/// [`log_normalise`] and [`normalise_log`] apply this with the unit's own
+/// [`log_normalize`] and [`normalize_log`] apply this with the unit's own
 /// total; call it directly where the total covers more rows than are at
 /// hand.
 pub fn log_cp10k<T: nalgebra::RealField + Copy>(x: T, total: T) -> T {
@@ -128,14 +128,14 @@ pub fn log_cp10k<T: nalgebra::RealField + Copy>(x: T, total: T) -> T {
 
 /// [`log_cp10k`] in place on one unit's sparse `(index, count)` list, the
 /// total taken over the list.
-pub fn log_normalise(p: &mut [(u32, f32)]) {
+pub fn log_normalize(p: &mut [(u32, f32)]) {
     let total: f32 = p.iter().map(|&(_, v)| v).sum();
     p.iter_mut().for_each(|(_, v)| *v = log_cp10k(*v, total));
 }
 
 /// [`log_cp10k`] in place on every column of `x` (features × units), the
 /// total taken over the column's stored values.
-pub fn normalise_log(x: &mut nalgebra_sparse::CscMatrix<f32>) {
+pub fn normalize_log(x: &mut nalgebra_sparse::CscMatrix<f32>) {
     for mut column in x.col_iter_mut() {
         let total: f32 = column.values().iter().sum();
         column

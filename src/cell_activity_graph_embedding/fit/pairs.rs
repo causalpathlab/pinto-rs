@@ -12,7 +12,7 @@ use legume_numeric::matrix::rand_util::{name_seed, normal_f32_seeded};
 const INIT_STDEV: f32 = 0.1;
 
 /// The pair table `[n_pairs × d]`, started at `N(0, INIT_STDEV)` from
-/// `seed`, trained on `dev` by a lazy Adam at `lr` (the dense optimiser's
+/// `seed`, trained on `dev` by a lazy Adam at `lr` (the dense optimizer's
 /// other settings): kept on `dev` when it and its two moments fit half of
 /// `gpu_mem_fraction` of the device memory free now, else on the host,
 /// within the host budget (`PINTO_MEMORY_BUDGET`, else half the memory
@@ -70,7 +70,7 @@ pub(super) fn table_to_host(z: RowAdam) -> anyhow::Result<Vec<f32>> {
 /// (row-major `[pairs.len() × d]`, row `e` the pair `pairs[e]`):
 ///
 /// * the latent of every listed pair, `[fine_edges.len() × d]` in
-///   `fine_edges` order, unnormalised: listed pair `k` takes row
+///   `fine_edges` order, unnormalized: listed pair `k` takes row
 ///   `fine_to_super[k]` (a pair listed in both orientations shares it);
 /// * each cell's embedding, `[n_cells × d]`: the mean of the rows of the
 ///   pairs it is in, each pair once (zero for a cell in none).

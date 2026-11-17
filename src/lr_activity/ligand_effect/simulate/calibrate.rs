@@ -6,7 +6,7 @@ use crate::lr_activity::ligand_effect::tissue::Tissue;
 /// Floor on a producer's true rate, in expected counts at median depth.
 const R_FLOOR: f64 = 0.5;
 
-/// Log-rate lift of the programme's baseline in the marker type (signed
+/// Log-rate lift of the program's baseline in the marker type (signed
 /// per gene, about a doubling).
 pub const MARKER_LIFT: f64 = 0.7;
 
@@ -17,9 +17,9 @@ pub struct SimBase<'a> {
     /// The real ligand's counts per row: only its per-bin mean and
     /// detection are used.
     pub ligand_counts: &'a [f64],
-    /// Signed weight of each programme gene.
+    /// Signed weight of each program gene.
     pub target_weights: &'a [f64],
-    /// Each programme gene's mean count / size factor per identity bin,
+    /// Each program gene's mean count / size factor per identity bin,
     /// bins × genes, row-major ([`target_bin_means`]).
     pub target_bin_means: &'a [f64],
     pub competent: &'a [bool],
@@ -30,9 +30,13 @@ pub struct SimBase<'a> {
     /// Counts per row of a real gene outside the benchmarked pairs, for
     /// [`super::ConfounderKind::RealGene`].
     pub confounder_gene: Option<&'a [f64]>,
+    /// Each program gene's position in the reference data, when there is
+    /// one and it has the gene
+    /// ([`super::reference_data::ReferenceProgramGenes::gene_position`]).
+    pub reference_position_of_target: Option<&'a [Option<usize>]>,
 }
 
-pub(super) fn n_bins(tissue: &Tissue) -> usize {
+pub fn n_bins(tissue: &Tissue) -> usize {
     tissue
         .identity_bin
         .iter()

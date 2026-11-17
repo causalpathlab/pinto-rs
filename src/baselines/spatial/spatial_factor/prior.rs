@@ -6,7 +6,7 @@
 //!
 //! The prior of a factor is `z ~ N(0, v R(rho))`, `R(rho) = (I + rho
 //! L)^{-1} / cbar(rho)`, `cbar(rho) = tr((I + rho L)^{-1}) / N`: the
-//! regularised-Laplacian kernel on a graph (Smola and Kondor 2003, COLT,
+//! regularized-Laplacian kernel on a graph (Smola and Kondor 2003, COLT,
 //! doi:10.1007/978-3-540-45167-9_12) as a proper Gaussian Markov random
 //! field (Rue and Held 2005, "Gaussian Markov Random Fields", Chapman and
 //! Hall/CRC, doi:10.1201/9780203492024), scaled so its mean marginal
@@ -252,7 +252,7 @@ impl Spectrum {
 
 /// Stochastic Lanczos quadrature nodes of section `s`: `o.probes`
 /// Rademacher probes, `o.steps` Lanczos steps each (no
-/// reorthogonalisation), each tridiagonal's eigenvalues the nodes and
+/// reorthogonalization), each tridiagonal's eigenvalues the nodes and
 /// `N_s / probes` times the squared first entries of its eigenvectors the
 /// weights.
 fn slq(lap: &Laplacian, s: usize, o: &SpectrumOpts) -> Vec<(f64, f64)> {

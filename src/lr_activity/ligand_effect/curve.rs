@@ -51,7 +51,7 @@ pub fn curve_taus(a: &[f64], headline: f64, eligible: &[bool], min_arm: usize) -
 /// by a Gaussian multiplier bootstrap over clusters.
 ///
 /// Each row of `stacked` is one cluster's sums of ψ for the `K` estimates
-/// (one row per cluster and analysis, analyses being the competence and weighting choices
+/// (one row per cluster and analysis, analyzes being the competence and weighting choices
 /// the estimates average over, so `ΣᵀΣ` is their summed covariance). A
 /// bootstrap draw multiplies each row by an independent standard normal,
 /// `T_k = Σ_r g_r S_rk / √V_kk` with `V_kk = Σ_r S_rk²`, and the critical

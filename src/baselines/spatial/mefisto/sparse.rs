@@ -9,7 +9,7 @@
 //! and log-determinant is a spectral sum over `L_g` and the mean a
 //! conjugate-gradient solve.
 //!
-//! `rho_k`'s step maximises the factor's part of the ELBO jointly with
+//! `rho_k`'s step maximizes the factor's part of the ELBO jointly with
 //! `q(z_k)`, which has its optimum `N(A_k b, A_k)` at each `rho`: the
 //! collapsed bound `b^T A_k b / 2 - [log det(S_k + Q_k) - log det Q_k] /
 //! 2`. The paper's step holds `q` fixed (SI (39)-(40)), an EM step whose

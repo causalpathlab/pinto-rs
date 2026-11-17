@@ -68,7 +68,7 @@ fn kernel(s: &DMatrix<f64>, section: &[usize], n_sections: usize) -> Kernel {
         g.clone().pseudo_inverse(1e-12).expect("a symmetric matrix")
     });
     let a = hs.transpose() * &hs;
-    // the eigenvalues of W A, symmetrised through W's square root
+    // the eigenvalues of W A, symmetrized through W's square root
     let e = w.clone().symmetric_eigen();
     let root = &e.eigenvectors
         * DMatrix::from_diagonal(&e.eigenvalues.map(|v| v.max(0.0).sqrt()))

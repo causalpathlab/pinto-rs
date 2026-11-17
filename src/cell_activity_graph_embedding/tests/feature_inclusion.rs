@@ -2,7 +2,7 @@
 //! features get high inclusion and noise none, and sampling respects π.
 
 use crate::cell_activity_graph_embedding::feature_inclusion::{
-    jackknife_moran, normalised_profiles, sample_included, score_sections, section_jack, tile_of,
+    jackknife_moran, normalized_profiles, sample_included, score_sections, section_jack, tile_of,
     tree_blocks, two_group_inclusion, FeatureInclusion,
 };
 use crate::test_support::rook_grid as grid;
@@ -279,12 +279,12 @@ fn the_jackknife_deletes_any_block_exactly() {
     );
 }
 
-/// A unit's profile is its pooled counts, log-normalised to 1e4.
+/// A unit's profile is its pooled counts, log-normalized to 1e4.
 #[test]
-fn units_are_log_normalised_pooled_counts() {
+fn units_are_log_normalized_pooled_counts() {
     // features × units: unit 0 pools (2, 2), unit 1 pools (0, 4)
     let pooled = crate::util::common::Mat::from_row_slice(2, 2, &[2.0, 0.0, 2.0, 4.0]);
-    let p = normalised_profiles(&pooled);
+    let p = normalized_profiles(&pooled);
     let half = (1.0f32 + 5e3).ln();
     assert_eq!(p[0], vec![(0, half), (1, half)]);
     assert_eq!(p[1], vec![(1, (1.0f32 + 1e4).ln())]);
@@ -472,7 +472,7 @@ fn one_extreme_t_does_not_inflate_the_density() {
 fn cells_stream_to_the_same_inclusion() {
     use crate::cell_activity_graph_embedding::feature_inclusion::cell_inclusion;
     use crate::test_support::{numbered, sparse_vec};
-    use crate::util::common::{log_normalise, Mat};
+    use crate::util::common::{log_normalize, Mat};
     use crate::util::feature_axis::FeatureAxis;
     let dir = tempfile::tempdir().unwrap();
     let (xy, edges) = grid(6);
@@ -516,7 +516,7 @@ fn cells_stream_to_the_same_inclusion() {
     for &(r, c, v) in &triplets {
         profiles[c as usize].push((r as u32, v));
     }
-    profiles.iter_mut().for_each(|p| log_normalise(p));
+    profiles.iter_mut().for_each(|p| log_normalize(p));
     let tile = tile_of(&xy, 2);
     let block: Vec<usize> = (0..2 * n).map(|c| tile[c % n] + 4 * (c / n)).collect();
     let held = score(3, &profiles, &section, &block, &all_edges);
@@ -758,7 +758,7 @@ fn pearson_moran_equals_the_dense_computation() {
 }
 
 /// Counts drawn from the stage-1 model itself, over many rows: on
-/// log-normalised counts the community rows carry the model's own spatial
+/// log-normalized counts the community rows carry the model's own spatial
 /// structure, and on Pearson residuals under the model every row reads as
 /// the null. The rows' mean Moran's I sits at its null expectation
 /// `−1/(N − 1)` within four standard errors of that mean, and the community
@@ -774,7 +774,7 @@ fn under_a_null_from_the_stage_1_model_no_row_passes() {
     let counts = draw_counts(&s1, 5);
     let (xy, edges) = grid(side);
     let tile = tile_of(&xy, 4);
-    let logged = normalised_profiles(&crate::util::common::Mat::from_fn(
+    let logged = normalized_profiles(&crate::util::common::Mat::from_fn(
         g,
         s1.n_cells(),
         |r, i| {
@@ -789,7 +789,7 @@ fn under_a_null_from_the_stage_1_model_no_row_passes() {
     let community = pi[..10].iter().sum::<f32>() / 10.0;
     assert!(
         community > 0.9,
-        "log-normalised: community rows' mean π {community}"
+        "log-normalized: community rows' mean π {community}"
     );
     let (w, batch) = mixtures(&s1);
     let units = PearsonUnits {

@@ -45,7 +45,7 @@ pub struct SuperCells {
 /// (see the module documentation), along pinto's cell-pair graph
 /// ([`SpatialData::pair_graph`], taken from `data`), on `proj`, the cells'
 /// projection ([`SpatialData::projection`], taken from `data`), which the
-/// coarsening normalises in place and drops.
+/// coarsening normalizes in place and drops.
 pub fn super_cells(
     data: &mut SpatialData,
     mut proj: Mat,

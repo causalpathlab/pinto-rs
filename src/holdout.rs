@@ -9,7 +9,7 @@
 //!
 //! Each unit's counts are split in two. One part fits the unit's community
 //! proportions `π` by EM; the other is scored as a multinomial over the scored
-//! features, `Σ_g x_g log p(g)` with `p(g) ∝ Σ_k w_k δ_g p̃_k(g)` renormalised
+//! features, `Σ_g x_g log p(g)` with `p(g) ∝ Σ_k w_k δ_g p̃_k(g)` renormalized
 //! over them. Two ways to split:
 //!
 //! - document completion (the default): binomial thinning,
@@ -383,14 +383,14 @@ pub enum Split {
 /// The model's profiles under one batch's `δ`, in the forms the fit and the
 /// score need.
 pub struct BatchProfiles {
-    /// `[K, G]` `δ_g p̃_k(g)`, each row renormalised over every matched feature.
+    /// `[K, G]` `δ_g p̃_k(g)`, each row renormalized over every matched feature.
     pub q: DMatrix<f64>,
-    /// `[K, G]` `q` renormalised over the FIT features (zero elsewhere): what EM
+    /// `[K, G]` `q` renormalized over the FIT features (zero elsewhere): what EM
     /// fits on.
     pub p_fit: DMatrix<f64>,
     /// `m_k = Σ_{g fit} q_k(g)`: converts fitted proportions back to weights on `q`.
     pub fit_mass: Vec<f64>,
-    /// `s_k = Σ_{g scored} q_k(g)`: the scored window's normaliser.
+    /// `s_k = Σ_{g scored} q_k(g)`: the scored window's normalizer.
     pub scored_mass: Vec<f64>,
 }
 
@@ -446,7 +446,7 @@ impl BatchProfiles {
     }
 
     /// `Σ x log p(g)` with `p(g) = Σ_k w_k q_k(g) / Σ_k w_k s_k`: the mixture
-    /// renormalised over the scored features.
+    /// renormalized over the scored features.
     pub fn loglik(&self, test: &[(usize, f64)], w: &[f64]) -> f64 {
         let z: f64 = w.iter().zip(&self.scored_mass).map(|(a, b)| a * b).sum();
         if z <= 0.0 {
@@ -460,7 +460,7 @@ impl BatchProfiles {
             .sum()
     }
 
-    /// The mixture's rate over `slots`, renormalised over them.
+    /// The mixture's rate over `slots`, renormalized over them.
     pub fn rate_over(&self, slots: &[usize], w: &[f64]) -> Vec<f32> {
         let r: Vec<f64> = slots
             .iter()

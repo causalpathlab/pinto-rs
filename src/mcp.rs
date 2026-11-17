@@ -61,7 +61,7 @@ its data, coords and flags; `run_lra` on that second fit reads the raw counts.";
 const LRA: &str = "\
 Ligand-receptor analysis: `run_lra` asks, per ligand-receptor pair, whether \
 receivers touching ligand-carrying neighbours change their response \
-programme; `run_lra_simulate` plants effects of known size on the same \
+program; `run_lra_simulate` plants effects of known size on the same \
 tissue and reports power and type I error. Run lra simulate to check power \
 and calibration before trusting lra on a new tissue. `view_lra` lists a \
 run's pairs with their verdicts and, given a pair, makes `view_map` draw it; \

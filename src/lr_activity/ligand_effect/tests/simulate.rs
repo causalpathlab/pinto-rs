@@ -16,7 +16,7 @@ const SIDE: usize = 60;
 pub(super) struct Fixture {
     pub(super) tissue: Tissue,
     pub(super) ligand: Vec<f64>,
-    /// Signed programme weights, and each gene's mean per identity bin
+    /// Signed program weights, and each gene's mean per identity bin
     /// (bins × genes).
     pub(super) weights: Vec<f64>,
     pub(super) bin_means: Vec<f64>,
@@ -72,7 +72,7 @@ pub(super) fn fixture() -> Fixture {
             _ => 0.0,
         })
         .collect();
-    // One programme gene, higher in type 0.
+    // One program gene, higher in type 0.
     let weights = vec![1.0];
     let bin_means = vec![3.0, 2.0];
     let gene: Vec<f64> = (0..n)
@@ -114,6 +114,7 @@ pub(super) fn base(f: &Fixture) -> SimBase<'_> {
         competent: &f.competent,
         receptor_counts: &f.receptor,
         confounder_gene: Some(&f.gene),
+        reference_position_of_target: None,
     }
 }
 
@@ -331,6 +332,7 @@ fn a_shared_field_is_the_run_s_field() {
             producers: calibrate_producers(&f.tissue, b.ligand_counts),
             gene_fields: &[],
             field: Some(&field),
+            reference_data: None,
         };
         simulate(&f.tissue, &b, &shared, &scen, &opts(), seed).unwrap()
     };

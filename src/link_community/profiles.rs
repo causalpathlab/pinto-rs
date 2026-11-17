@@ -95,7 +95,7 @@ pub fn filter_basis_by_feature_count(
 /// the run's batch effect), or the stage-1 divisor of a stage-2 fit
 /// ([`Divisor::divide`]).
 ///
-/// A plain `x / δ`, not the self-normalising Poisson-ratio divide dsvd and
+/// A plain `x / δ`, not the self-normalizing Poisson-ratio divide dsvd and
 /// cage apply: that one also divides by the cell's own rate, so a cell comes
 /// back as ratios near 1 rather than counts. lc scores count profiles, and
 /// δ has geometric mean 1 over the batches, so the plain divide keeps them

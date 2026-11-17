@@ -7,7 +7,7 @@ use super::options::EffectOpts;
 use super::tissue::Tissue;
 
 /// The exposure side of a pair's per-row quantities: the same under every
-/// weighting of its programme.
+/// weighting of its program.
 pub struct Exposure {
     /// The exposure threshold used.
     pub tau: f64,

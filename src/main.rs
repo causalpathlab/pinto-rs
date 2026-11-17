@@ -246,7 +246,7 @@ enum Commands {
         about = "Compare two runs' communities over the cells they share",
         long_about = "Compare two runs' hard community labels, joined on cell name.\n\n\
                       Over the cells both runs placed it reports the adjusted Rand\n\
-                      index, normalised mutual information, a one-to-one community\n\
+                      index, normalized mutual information, a one-to-one community\n\
                       matching (Hungarian, on Jaccard) and each community's fate.\n\
                       A community's partners are the other run's communities holding\n\
                       at least --tau of its cells: two or more is a split (from A) or\n\
@@ -551,7 +551,7 @@ enum Fit {
                       A feature whose activity sits entirely inside super-cells\n\
                       keeps its initialization; the log counts them.\n\
                       Use --features-per-epoch to cap per-epoch cost instead.\n\n\
-                      SPLICE CHANNELS are recognised on the feature axis.\n\
+                      SPLICE CHANNELS are recognized on the feature axis.\n\
                       Rows named {feature}/count/spliced pair with their\n\
                       {feature}/count/unspliced counterpart.\n\
                       A feature's two rows are ONE feature everywhere the model fits.\n\
@@ -642,7 +642,7 @@ enum Fit {
                       both logged. --epochs (default 1000 here) only caps it. An\n\
                       epoch draws about four positives per pair, so each update\n\
                       averages several draws at any size.\n\n\
-                      The pairs' trained rows are the latent (latent.parquet, L2-normalised,\n\
+                      The pairs' trained rows are the latent (latent.parquet, L2-normalized,\n\
                       one row per listed pair), and a cell's embedding is the mean of its\n\
                       pairs' rows. No pair encoder is fitted, so there is no\n\
                       pb_embedding.parquet or pair_encoder.safetensors, and `pinto apply predict`\n\
@@ -936,7 +936,7 @@ enum Apply {
                       \x20    Features without a model row are dropped, never seeded.\n\
                       \x20 3. Place every cell pair, and every cell, on the frozen dictionary\n\
                       \x20    by the model's pair encoder ({model}.pair_encoder.safetensors),\n\
-                      \x20    under the ridge it was fitted with. Nothing is optimised per pair.\n\
+                      \x20    under the ridge it was fitted with. Nothing is optimized per pair.\n\
                       \x20 4. Assign each pair to the nearest trained link community.\n\
                       \x20    The centroids are recomputed from {model}.latent\n\
                       \x20    and {model}.link_community; a pair that matches none abstains.\n\
@@ -1092,13 +1092,19 @@ enum Sim {
                       says what a setting implies). Counts are negative binomial through a\n\
                       low-rank Gaussian copula, from keyed random numbers: --set\n\
                       nuisance_off=true with the same seed draws the exact counterfactual.\n\n\
+                      --reference-data takes the expression from a real data set (.zarr.zip,\n\
+                      .zarr or .h5): each planted state takes one of its cell groups, its\n\
+                      counts are drawn from the group's own distributions through the\n\
+                      reference's copula, and the nuisance shares are of its variance between\n\
+                      states (the manifest's realized_pve_expressed_genes says how close).\n\
+                      Convert an AnnData file first: data-beans from-h5ad x.h5ad -o x.\n\n\
                       Writes:\n\
                       \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
                       \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\
                       \x20 {out}/truth/*.parquet            spots, domains, states, genes\n\
                       \x20 {out}/truth/lr_pairs.tsv         ligand-receptor pairs of its genes, and\n\
-                      \x20   targets.tsv their response programmes, for lra --lr-pairs --targets\n\
-                      \x20 {out}/manifest.json              every parameter and the realised read-outs"
+                      \x20   targets.tsv their response programs, for lra --lr-pairs --targets\n\
+                      \x20 {out}/manifest.json              every parameter and the realized read-outs"
     )]
     New(Box<simulate::SimulateArgs>),
 
@@ -1147,8 +1153,8 @@ enum Sim {
         alias = "srt-sim-baseline",
         about = "Label a simulation with a standard pipeline, as a baseline",
         long_about = "Label a `sim new` run's spots with the standard scanpy recipe, as a\n\
-                      baseline for sim score: total-count normalisation to 1e4, log1p,\n\
-                      highly variable genes by normalised dispersion, scaling, PCA, a kNN\n\
+                      baseline for sim score: total-count normalization to 1e4, log1p,\n\
+                      highly variable genes by normalized dispersion, scaling, PCA, a kNN\n\
                       graph and Leiden tuned toward --n-clusters clusters (default: the simulation's\n\
                       domains).\n\n\
                       --method pooled runs all sections together, with no batch handling;\n\

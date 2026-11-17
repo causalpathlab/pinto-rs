@@ -9,7 +9,7 @@
 //! répartition à n dimensions et leurs marges", Publ. Inst. Statist. Univ.
 //! Paris 8:229-231), as scDesign3 does for single-cell and spatial data
 //! (Song et al. 2023, doi:10.1038/s41587-023-01772-1). Each gene loads on
-//! one of `copula_rank` factors at `√ρ`, `ρ = copula_strength`, programme
+//! one of `copula_rank` factors at `√ρ`, `ρ = copula_strength`, program
 //! genes on their state's factor, so co-expression follows the planted
 //! modules; this is the low-rank-plus-ridge form of data-beans-sim's
 //! reference copula, with the loadings planted rather than fitted. `f` and
@@ -56,8 +56,8 @@ impl Marginal {
         }
     }
 
-    /// `P(Y ≤ k)`: the regularised incomplete beta `I_{r/(r+μ)}(r, k + 1)`,
-    /// or `1 − P(k + 1, μ)` with the regularised lower incomplete gamma.
+    /// `P(Y ≤ k)`: the regularized incomplete beta `I_{r/(r+μ)}(r, k + 1)`,
+    /// or `1 − P(k + 1, μ)` with the regularized lower incomplete gamma.
     fn cdf(&self, k: u32) -> f64 {
         let k1 = k as f64 + 1.0;
         if self.r.is_finite() {

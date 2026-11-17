@@ -20,7 +20,7 @@ pub enum Stream {
     /// Spot mixtures of (section).
     Mixture,
     GeneBaselines,
-    Programmes,
+    Programs,
     /// Donor-wide nuisance of (gene).
     Donor,
     /// Donor-by-cell-type nuisance of (gene, state).
@@ -35,7 +35,7 @@ pub enum Stream {
     Factor,
     /// Copula unique part of (section, gene).
     Unique,
-    /// Copula factor of each gene outside every programme.
+    /// Copula factor of each gene outside every program.
     Loading,
     /// The unconfounded donors drawn (`n_unconfounded_donors`). Last, so
     /// every other stream keeps its tag.

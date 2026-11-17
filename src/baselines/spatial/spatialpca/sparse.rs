@@ -18,7 +18,7 @@
 //!
 //! `C^{-1}` is applied by conjugate gradients, `G`'s top eigenpairs by
 //! subspace iteration on its products, the log-determinant by the prior's
-//! spectrum; `(tau, rho)` maximise `ell` by a projected L-BFGS with its
+//! spectrum; `(tau, rho)` maximize `ell` by a projected L-BFGS with its
 //! analytic gradient (the envelope theorem: `dS = sum_l z_l^T dC z_l`).
 
 use crate::baselines::spatial::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
@@ -185,7 +185,7 @@ impl<'a> Profile<'a> {
         }
     }
 
-    /// Maximise `ell` over the box [`LOG_TAU`] × [`LOG_RHO`]: the best of
+    /// Maximize `ell` over the box [`LOG_TAU`] × [`LOG_RHO`]: the best of
     /// the 3 × 3 grid `tau, rho in {0.1, 1, 10}`, then the projected
     /// L-BFGS from it, at most `max_evals` evaluations. The fit at the
     /// maximum (its loadings' signs fixed so each column's largest entry is

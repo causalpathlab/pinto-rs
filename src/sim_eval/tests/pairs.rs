@@ -280,12 +280,14 @@ fn a_simulations_truth_run_scores_one() {
     use crate::simulate::run::{run_simulate, truth_run_path, SimulateArgs};
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
-    let set = ["grid_side=12", "n_genes=40", "programme_genes=6", "seed=5"];
+    let set = ["grid_side=12", "n_genes=40", "program_genes=6", "seed=5"];
     run_simulate(&SimulateArgs {
         scenario: "donor-confounded-donor-only-cell-type".into(),
         set: set.iter().map(|s| s.to_string()).collect(),
         coords: Vec::new(),
         coord_column_names: vec!["row_um".into(), "col_um".into()],
+        reference_data: None,
+        reference_data_labels: None,
         out: out.as_str().into(),
     })
     .unwrap();

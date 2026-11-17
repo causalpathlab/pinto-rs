@@ -111,6 +111,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_axis: FeatureAxisMode::Lenient,
         feature_kind: None,
         cell_projection: true,
+        auto_batch_memory_check: None,
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_effects = batch_effects

@@ -1,6 +1,6 @@
 mod build;
 mod download;
-mod programmes;
+mod programs;
 mod sources;
 mod table;
 

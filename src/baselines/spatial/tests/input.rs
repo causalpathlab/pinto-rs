@@ -152,7 +152,7 @@ fn a_permutation_moves_the_positions_the_method_reads() {
             .unwrap()
             .fit
             .input
-            .read(false)
+            .read_within(false, &crate::util::memory::Budget::new(None, None), 0)
             .unwrap()
     };
     let own = read("own", &[]);

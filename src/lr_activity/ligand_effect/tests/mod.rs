@@ -64,6 +64,7 @@ pub(super) fn run_sim(
         producers: calibrate_producers(tissue, base.ligand_counts),
         gene_fields: &[],
         field: None,
+        reference_data: None,
     };
     super::simulate::simulate(tissue, base, &shared, scen, opts, seed)
 }

@@ -89,7 +89,7 @@ fn truth_is_free_of_the_estimator() {
     );
 }
 
-/// Ligand, response and a raised programme confined to one type: the unadjusted
+/// Ligand, response and a raised program confined to one type: the unadjusted
 /// difference reads cell type as an effect; the estimator, adjusting for
 /// identity, does not (or has no overlap to try).
 #[test]
@@ -155,6 +155,7 @@ fn a_real_gene_confounder_needs_a_gene() {
     };
     let none = SimBase {
         confounder_gene: None,
+        reference_position_of_target: None,
         ..base(&f)
     };
     assert!(run_sim(&f.tissue, &none, &scen, &opts(), 7).is_err());

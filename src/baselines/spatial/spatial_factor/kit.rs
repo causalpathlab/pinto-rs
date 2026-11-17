@@ -1,5 +1,5 @@
 //! The numerical kit both engines share, written from the cited
-//! algorithms: Brent's one-dimensional minimiser, a projected L-BFGS for
+//! algorithms: Brent's one-dimensional minimizer, a projected L-BFGS for
 //! box constraints, and subspace iteration for the top eigenpairs of a
 //! symmetric operator given only its products.
 
@@ -11,10 +11,10 @@ use rand_distr::{Distribution, StandardNormal};
 /// Dense f64 matrix, column-major.
 pub type Dense = DMatrix<f64>;
 
-/// Brent's minimiser on `[a, b]` (Brent 1973, "Algorithms for
+/// Brent's minimizer on `[a, b]` (Brent 1973, "Algorithms for
 /// Minimization without Derivatives", Prentice-Hall, chapter 5: golden
 /// section with parabolic interpolation), to absolute tolerance `tol` on
-/// `x`, at most `max_eval` evaluations. The minimiser, its value and the
+/// `x`, at most `max_eval` evaluations. The minimizer, its value and the
 /// evaluations used.
 pub fn brent_min(
     mut f: impl FnMut(f64) -> f64,
@@ -98,7 +98,7 @@ pub fn brent_min(
 
 /// A grid search then Brent: `f` at each of `grid` (sorted ascending), then
 /// [`brent_min`] on the bracket of the best grid point's neighbours. The
-/// minimiser, its value and the evaluations used.
+/// minimizer, its value and the evaluations used.
 pub fn grid_then_brent(
     mut f: impl FnMut(f64) -> f64,
     grid: &[f64],
@@ -129,13 +129,13 @@ pub struct BoxMin {
     pub evals: usize,
 }
 
-/// Minimise `fg` (value and gradient) over the box `[lo, hi]` from `x0`,
+/// Minimize `fg` (value and gradient) over the box `[lo, hi]` from `x0`,
 /// by a projected limited-memory BFGS: the L-BFGS two-loop direction
 /// (Nocedal 1980, Math. Comp. 35:773, doi:10.1090/S0025-5718-1980-0572855-7)
 /// on the variables off their bounds, projected back onto the box with a
 /// backtracking Armijo search, in the spirit of L-BFGS-B (Byrd, Lu,
 /// Nocedal and Zhu 1995, SIAM J. Sci. Comput. 16:1190,
-/// doi:10.1137/0916069) without its generalised Cauchy point. Stops at a
+/// doi:10.1137/0916069) without its generalized Cauchy point. Stops at a
 /// projected gradient below `pgtol`, a relative change of `f` below
 /// `ftol`, or `max_evals` evaluations. `fg` returns, beside the value and
 /// gradient, what its evaluation computed (`T`); the result carries that
@@ -292,7 +292,7 @@ const KRYLOV_DEPTH: usize = 3;
 /// The top `d` eigenpairs of the symmetric positive semi-definite operator
 /// `apply` on `dim`-vectors, given only its products with `dim × b`
 /// blocks: a restarted block Krylov method (block Lanczos with full
-/// reorthogonalisation, restarted from the best `block` Ritz vectors;
+/// reorthogonalization, restarted from the best `block` Ritz vectors;
 /// Saad 2011, "Numerical Methods for Large Eigenvalue Problems", SIAM,
 /// doi:10.1137/1.9781611970739, chapters 5 and 6): each round
 /// Rayleigh-Ritz on `[V, G V, G^2 V]`, from `start` (a warm block) or a
@@ -330,7 +330,7 @@ pub fn top_eigs(
     let mut prev: Option<Vec<f64>> = None;
     for it in 0..max_iter {
         // the block Krylov basis [V, G V, G^2 V, ...], each block
-        // orthogonalised against those before it (twice) and orthonormal
+        // orthogonalized against those before it (twice) and orthonormal
         let mut basis: Vec<Dense> = vec![v.clone()];
         let mut products: Vec<Dense> = Vec::with_capacity(depth);
         for j in 0..depth {

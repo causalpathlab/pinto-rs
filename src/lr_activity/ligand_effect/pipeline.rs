@@ -75,6 +75,8 @@ struct Prepared {
     identity_excluded: Vec<String>,
     /// [`Settings::memory_budget`].
     memory_budget: Option<usize>,
+    /// Every gene's name, by the index the pairs hold.
+    gene_names: Vec<Box<str>>,
 }
 
 impl Prepared {
@@ -221,6 +223,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         reference_record: Some(record),
         identity_excluded,
         memory_budget: a.memory_budget,
+        gene_names,
     })
 }
 
@@ -265,7 +268,7 @@ fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::Eff
     let (store, local) = (&prep.store, &prep.local);
     let lig = prep.ligand_counts(p);
     let rec = prep.receptor_counts(p);
-    // Two weightings of the programme, as given and with hub targets
+    // Two weightings of the program, as given and with hub targets
     // down-weighted by specificity, averaged by Rubin's rules: the
     // spread between them widens the interval instead of a switch
     // picking one.
@@ -579,7 +582,7 @@ fn benchmark_pairs(
 
 /// The real-gene confounder and its counts: the most abundant gene read for
 /// the run that no benchmarked pair uses. It is left out of the identity
-/// projection with the other signalling and programme genes, so it lies
+/// projection with the other signalling and program genes, so it lies
 /// outside the adjustment's basis.
 fn real_gene_confounder(prep: &Prepared, order: &[usize]) -> Option<(usize, Vec<f64>)> {
     let store = &prep.store;
@@ -643,10 +646,64 @@ struct Benchmark<'a> {
     gene_fields: &'a [(f64, Vec<f64>)],
     seed: u64,
     pb: &'a Progress,
+    /// `--reference-data`, fitted ([`fit_reference_program_genes`]).
+    reference_data: Option<&'a simulate::reference_data::ReferenceProgramGenes>,
+}
+
+/// `--reference-data` fitted over the program genes of the pairs `order`, each
+/// identity bin matched to a group by those genes' bin means; `None` without
+/// it.
+fn fit_reference_program_genes(
+    prep: &Prepared,
+    a: &Settings<'_>,
+    order: &[usize],
+) -> anyhow::Result<Option<simulate::reference_data::ReferenceProgramGenes>> {
+    let Some(path) = a.reference_data else {
+        return Ok(None);
+    };
+    let mut genes: Vec<usize> = order
+        .iter()
+        .flat_map(|&k| prep.pairs[k].targets.iter().map(|(g, _, _)| *g))
+        .collect();
+    genes.sort_unstable();
+    genes.dedup();
+    let names: Vec<Box<str>> = genes.iter().map(|&g| prep.gene_names[g].clone()).collect();
+    let nonzeros: Vec<&[(u32, f32)]> = genes
+        .iter()
+        .map(|g| prep.store.nonzeros(prep.local[g]))
+        .collect();
+    let bin_means = simulate::target_bin_means(&prep.tissue, &nonzeros);
+    info!(target: LOG_TARGET, "Fitting the reference data {path}...");
+    let r = simulate::reference_data::ReferenceProgramGenes::fit(
+        path,
+        a.reference_data_labels,
+        &names,
+        &bin_means,
+        simulate::n_bins(&prep.tissue),
+    )?;
+    let mut bins_of_group = vec![0usize; r.cell_groups.len()];
+    for &k in &r.cell_group_of_bin {
+        bins_of_group[k] += 1;
+    }
+    let per_group: Vec<String> = r
+        .cell_groups
+        .iter()
+        .zip(&bins_of_group)
+        .filter(|(_, &n)| n > 0)
+        .map(|((name, _), n)| format!("{name} {n}"))
+        .collect();
+    info!(
+        target: LOG_TARGET,
+        "Reference data: {} of {} program genes drawn with it; identity bins per cell group: {}",
+        names.iter().filter(|n| r.gene_position(n).is_some()).count(),
+        names.len(),
+        per_group.join(", ")
+    );
+    Ok(Some(r))
 }
 
 /// What a benchmarked pair's runs draw on, read once: its ligand and receptor
-/// counts, its competent receivers, and its programme's weights and bin
+/// counts, its competent receivers, and its program's weights and bin
 /// means.
 struct PairSim {
     ligand: Vec<f64>,
@@ -654,10 +711,17 @@ struct PairSim {
     competent: Vec<bool>,
     weights: Vec<f64>,
     bin_means: Vec<f64>,
+    /// Each program gene's position in the reference data, under it.
+    reference_position_of_target: Option<Vec<Option<usize>>>,
 }
 
 impl PairSim {
-    fn new(prep: &Prepared, eopts: &EffectOpts, p: &Pair) -> Self {
+    fn new(
+        prep: &Prepared,
+        eopts: &EffectOpts,
+        p: &Pair,
+        reference_data: Option<&simulate::reference_data::ReferenceProgramGenes>,
+    ) -> Self {
         let (tissue, store, local) = (&prep.tissue, &prep.store, &prep.local);
         let ligand = prep.ligand_counts(p);
         let receptor = prep.receptor_counts(p);
@@ -674,6 +738,12 @@ impl PairSim {
             competent,
             weights,
             bin_means: simulate::target_bin_means(tissue, &genes),
+            reference_position_of_target: reference_data.map(|r| {
+                p.targets
+                    .iter()
+                    .map(|(g, _, _)| r.gene_position(&prep.gene_names[*g]))
+                    .collect()
+            }),
         }
     }
 
@@ -687,6 +757,7 @@ impl PairSim {
             competent: &self.competent,
             receptor_counts: &self.receptor,
             confounder_gene,
+            reference_position_of_target: self.reference_position_of_target.as_deref(),
         }
     }
 }
@@ -698,16 +769,19 @@ impl Benchmark<'_> {
         let (prep, eopts, grid) = (self.prep, self.eopts, self.grid);
         let tissue = &prep.tissue;
         let p = &prep.pairs[k];
-        let pair = PairSim::new(prep, eopts, p);
+        let pair = PairSim::new(prep, eopts, p, self.reference_data);
         let base = pair.base(p, self.confounder_gene);
         let shared = SimShared {
             producers: simulate::calibrate_producers(tissue, base.ligand_counts),
             gene_fields: self.gene_fields,
             field: None,
+            reference_data: self.reference_data,
         };
         // Scenarios are independent: run as many at once as the memory
         // budget allows (each holds about a pair's worth of vectors).
-        let per_run = pair_memory(50, tissue, &eopts.nuisance);
+        // and the receivers' copula factors under reference data
+        let factors = self.reference_data.map_or(0, |r| r.copula_rank());
+        let per_run = pair_memory(50 + factors, tissue, &eopts.nuisance);
         let concurrent = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         run_bounded(&jobs, concurrent, |&(si, scen)| {
@@ -787,6 +861,7 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
     );
     let confounder_counts = confounder_gene.as_ref().map(|(_, v)| v.as_slice());
     let gene_fields = simulate::gene_fields(&prep.tissue, confounder_counts, &gopts.scales);
+    let reference_data = fit_reference_program_genes(&prep, a, &order)?;
     let pb = Progress::new(grid.len() * order.len(), "benchmark runs");
     let benchmark = Benchmark {
         prep: &prep,
@@ -796,6 +871,7 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
         gene_fields: &gene_fields,
         seed: a.seed,
         pb: &pb,
+        reference_data: reference_data.as_ref(),
     };
     let mut rows = Vec::new();
     for &k in &order {
@@ -804,6 +880,15 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
     pb.finish();
     let path = output::lra_simulate_path(a.out);
     output::write_sim(&path, &rows, a.plant_region)?;
+    // the reference data the program genes were drawn with, beside
+    // the table
+    // (an earlier run's is removed when this one used none)
+    let side = format!("{}.reference-data.json", path.trim_end_matches(".parquet"));
+    match &reference_data {
+        Some(r) => std::fs::write(&side, serde_json::to_string_pretty(&r.provenance())? + "\n")?,
+        None if Path::new(&side).exists() => std::fs::remove_file(&side)?,
+        None => {}
+    }
     let table = crate::lr_activity::recorded(Path::new(&path));
     record(a.manifest, |o| o.simulate = Some(table))?;
     crate::util::staging::say(output::sim_summary(&rows, a.plant_region));

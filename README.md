@@ -233,7 +233,7 @@ feature-community profiles are fitted on raw counts.
 ### `lra`: ligand-receptor analysis
 
 `pinto lra` asks, per ligand-receptor pair, whether cells touching
-ligand-carrying neighbours change their response programme compared with
+ligand-carrying neighbours change their response program compared with
 similar cells that do not. It reads any prior run's manifest (lc, cage,
 dsvd, ...) or data files with coordinates:
 
@@ -244,8 +244,8 @@ pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv
 pinto lra --from out/run1.pinto.json --only L1,L2:R1_R2
 ```
 
-Pairs and response programmes come from a reference (LIANA+ consensus
-pairs; receptor -> signalling -> TF -> target programmes from OmniPath and
+Pairs and response programs come from a reference (LIANA+ consensus
+pairs; receptor -> signalling -> TF -> target programs from OmniPath and
 CollecTRI), downloaded once into a cache. `--lr-pairs` and `--targets` add
 to it. A complex is named by its subunits joined with `_` (`R1_R2`);
 every subunit must be in the data, and the complex counts as its scarcest
@@ -344,7 +344,7 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
 pooled row). `effect_competent` is the headline, a log-rate change of the
-response programme (`exp(x) - 1` is the percent change); `verdict` sums up
+response program (`exp(x) - 1` is the percent change); `verdict` sums up
 the evidence and `verdict_note` says why in words. For comparison, and in no
 verdict: `marginal_cor` (the correlation of response and contact ligand),
 `unadjusted_diff` (the mean response of exposed competent receivers minus that
@@ -359,9 +359,9 @@ each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
 |---|---|
-| `supported` | receivers next to ligand-carrying cells change their response programme, ligand and receptor are co-expressed across contacts, and the effect exceeds every negative control |
+| `supported` | receivers next to ligand-carrying cells change their response program, ligand and receptor are co-expressed across contacts, and the effect exceeds every negative control |
 | `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
-| `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response programme |
+| `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response program |
 | `no_evidence` | neither a response nor co-expression at this false discovery rate |
 | `control_failed` | an effect appeared, but it does not exceed the negative control (receivers without the receptor), or that could not be checked: likely confounding |
 | `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
@@ -402,7 +402,7 @@ scenario. It writes `{out}.lra-simulate.parquet`, and `pinto lra` on the
 same run then points to it.
 
 The receptor stays the real one: the hidden field never touches it, so the
-receivers analysed are a fixed set of cell types. Every run also scores the
+receivers analyzed are a fixed set of cell types. Every run also scores the
 co-expression statistics that do not adjust for confounders, each tested at
 5%: cell-type label permutation (CellPhoneDB v2, Efremova 2020; CellChat's
 product score, Jin 2021; identity bins coarsened to ≤ 8 types, Bonferroni
@@ -417,7 +417,7 @@ pinto lra simulate --from out/run1.pinto.json
 pinto lra simulate --from out/run1.pinto.json --region region.tsv --plant-region D3_specific_domain_1
 ```
 
-`--lr-pairs` and `--targets` add pairs and programmes as for `pinto lra` (for
+`--lr-pairs` and `--targets` add pairs and programs as for `pinto lra` (for
 gene names no reference knows, such as a simulation's). `--plant-region`
 plants every effect in one `--region` label only, and reads the estimate, its
 truth and its verdict on that region's row beside the pooled one (`region_*`
@@ -435,7 +435,7 @@ pinto lra simulate --from out/run1.pinto.json -o sweep/p07-s3 --seed 3 \
 ```
 
 The keys are the table's own column names, so a sweep axis is a column:
-`effect_pve` (the planted effect's share of the programme genes' log-rate
+`effect_pve` (the planted effect's share of the program genes' log-rate
 variance), `ligand_field_pve` and `response_field_pve` (the hidden field's
 share of the producer log odds and, signed, of the response),
 `confound_scale` (the field's length scale, in contact lengths),
@@ -498,21 +498,52 @@ only one donor has, when donor effects are as large as cell-type effects?
 `pinto sim score` scores any labelling against it,
 `pinto sim pairs` scores a latent mapping on pairs of spots, and
 `pinto sim baseline` runs the two usual workflows (pool every donor, or
-analyse each donor alone) for comparison.
+analyze each donor alone) for comparison.
 
 **What is simulated.** Location sets a spot's domain (smooth random fields
 on real or grid coordinates), the domain sets its mix of cell states, and
 the states set expression. One donor can own an extra domain, a new cell
 state or a new mix of shared ones, which is biology to keep. Counts are
-negative binomial through a low-rank Gaussian copula. With one donor and no
+negative binomial through a low-rank Gaussian copula, or, with
+`--reference-data`, drawn from a real data set (see below). With one donor and no
 nuisance this reduces to SRTsim's reference-free domains (Zhu, Shang and
 Zhou 2023); the copula follows scDesign3 (Song et al. 2023) in form.
 
-**Ligand-receptor pairs.** The simulated genes (GENE1, GENE2, ...) are no
-reference's, so `sim new` also writes `truth/lr_pairs.tsv` and
-`truth/targets.tsv`: per state, a ligand of its programme alone and a
+**Reference data (`--reference-data`).** `pinto sim new --reference-data
+ref.zarr.zip` takes the sections' expression from a real data set (genes by
+cells; `.zarr.zip`, `.zarr` or `.h5`; convert an AnnData file with
+`data-beans from-h5ad ref.h5ad -o ref`). data-beans fits each gene's count
+distribution in each of the data set's cell groups (a Poisson mixture), its
+coupling to depth, and a Gaussian copula of the highly variable genes; the
+planted cell states take the cell groups largest first
+(`--reference-data-labels` names them, else k-means), so a spot of one state
+draws its group's counts, its depth and noise the data set's own. The
+donor, donor-by-cell-type and section shifts are shares of the data set's
+variance between states, and `realized_pve_expressed_genes` in the manifest
+says how close they came. The manifest records the data set's size and a
+fingerprint of its content, never its path; `--set` refuses what the
+reference data replaces (`n_genes`, `log_mean`, `dispersion`,
+`copula_rank`, ...).
+
+```sh
+pinto sim new --scenario donor-confounded --reference-data fan2019.zarr.zip -o sim
+```
+
+`pinto lra simulate --reference-data ref.zarr.zip` draws the program genes
+of its planted effects the same way: each identity bin takes the cell group
+whose mean counts over those genes correlate best with the bin's, and each
+program gene the data set has is drawn from that group's count distribution
+around the tissue's own mean, correlated with the other program genes as in
+the data set (the Poisson log-normal draw otherwise). Its record names the
+data set by size and fingerprint (`{out}.lra-simulate.reference-data.json`
+beside the grid's table, `reference_data` in a single scenario's JSON).
+
+**Ligand-receptor pairs.** The planted genes (GENE1, GENE2, ...) are named
+by no ligand-receptor reference (with `--reference-data` the genes are real, and
+lra's own reference applies too), so `sim new` also writes `truth/lr_pairs.tsv` and
+`truth/targets.tsv`: per state, a ligand of its program alone and a
 receptor of the next state's alone, with the rest of the receiving state's
-programme as the receptor's response programme (no ligand or receptor is
+program as the receptor's response program (no ligand or receptor is
 anyone's target). No ligand-receptor effect is planted, so on the
 simulation they are nulls; `lra simulate` plants its own:
 
@@ -560,7 +591,7 @@ section, or every one unconfounded), the term is dropped and its share does not
 pass to the noise. With nuisance on, the log gives the type-to-noise ratio
 here and with the nuisance shares at 0. The `nuisance_off` counterfactual
 keeps the noise share, so its ratio is the run's own. The manifest records
-the shares realised on the programme genes. Sections can be freed of the
+the shares realized on the program genes. Sections can be freed of the
 section shift (`unconfounded_sections`), and donors of every shift: an
 unconfounded donor has no donor-wide, donor-by-cell-type or section shift on
 any of its sections. `--set n_unconfounded_donors=1` gives any scenario one
@@ -582,7 +613,7 @@ cell type, with the cell type 30% of the log rate's variance:
 |---|---|---|
 | `unconfounded` (the default) | none | none |
 | `donor-confounded` | donor-wide 15%, donor-by-cell-type 15%, section 2% | none |
-| `donor-confounded-donor-only-cell-type` | donor-wide 15%, donor-by-cell-type 15%, section 2% | the third donor's, about 15% of its spots, a cell type no other donor has (its programme at cosine 0.3 to the first shared cell type's) |
+| `donor-confounded-donor-only-cell-type` | donor-wide 15%, donor-by-cell-type 15%, section 2% | the third donor's, about 15% of its spots, a cell type no other donor has (its program at cosine 0.3 to the first shared cell type's) |
 | `donor-confounded-donor-only-mix` | donor-wide 15%, donor-by-cell-type 15%, section 2% | the third donor's, about 15% of its spots, the first two shared cell types in equal parts, a mix no shared domain uses |
 | `composition-shift` | none, but donors differ in domain proportions (log-scale spread 0.5) | the third donor's, about 15% of its spots, a cell type no other donor has |
 
@@ -652,7 +683,7 @@ writes every number as JSON.
 writes such a table:
 
 - `pooled`: the scanpy recipe (Wolf, Angerer and Theis 2018) on all
-  sections together, no batch handling: normalisation, seurat-flavour HVGs
+  sections together, no batch handling: normalization, seurat-flavour HVGs
   (Satija et al. 2015), scaling, PCA, a kNN graph and Leiden (Traag,
   Waltman and van Eck 2019) toward the true number of domains;
 - `harmony`: the same with the PCs corrected for the donor by Harmony
@@ -735,7 +766,7 @@ own paper: the spatially variable genes by SPARK-X (Zhu, Sun and Zhou
 2021, Genome Biology 22:184, doi:10.1186/s13059-021-02404-0) at a
 Benjamini-Yekutieli FDR of 0.05, at most `--n-genes` (3000), then
 SCTransform's Pearson residuals (Hafemeister and Satija 2019, Genome
-Biology 20:296, doi:10.1186/s13059-019-1874-1), standardised per gene
+Biology 20:296, doi:10.1186/s13059-019-1874-1), standardized per gene
 (the paper takes SPARK, a GPL package, on small data sets; SPARK-X serves
 all here). MEFISTO models the most variable genes (`--n-genes`), as its
 paper does. Each module's documentation lists every

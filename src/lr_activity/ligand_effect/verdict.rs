@@ -113,7 +113,7 @@ impl Verdict {
     pub fn note(self) -> &'static str {
         match self {
             Verdict::Supported => {
-                "receivers next to ligand-carrying cells change their response programme, \
+                "receivers next to ligand-carrying cells change their response program, \
                  ligand and receptor are co-expressed across contacts, and the effect \
                  exceeds every negative control"
             }
@@ -123,7 +123,7 @@ impl Verdict {
             }
             Verdict::ColocationOnly => {
                 "ligand and receptor sit together across contacts, but receivers show no \
-                 change in their response programme"
+                 change in their response program"
             }
             Verdict::NoEvidence => {
                 "neither a response nor co-expression at this false discovery rate"
