@@ -112,6 +112,17 @@ pub struct AppliedDelta {
 }
 
 impl SpatialData {
+    /// The shape of the data as read, for the memory checks after the read.
+    pub fn shape(&self) -> InputShape {
+        InputShape {
+            genes: self.genes.len(),
+            nonzeros: self.counts.nnz(),
+            section_sizes: ablation::section_sizes(&self.section),
+            batches: self.n_batches(),
+            strata: 1,
+        }
+    }
+
     /// Distinct batch labels.
     pub fn n_batches(&self) -> usize {
         sorted_batch_labels(&self.batches).len()

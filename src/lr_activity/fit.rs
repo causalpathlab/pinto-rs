@@ -9,10 +9,8 @@
 //! the LR genes, giving one pseudobulk profile per sample per community.
 //! Strata ARE link communities: every within-community edge is enumerated
 //! in both orientations, so every statistic here is symmetric in the pair
-//! and no endpoint plays a privileged role. (An earlier directional design
-//! paired communities into a -> b strata; it was removed after its arm
-//! measured statistically inert and its roles proved to descend from the
-//! edge list's arbitrary serialization order — see `orientation`.)
+//! and no endpoint plays a privileged role ([`super::orientation`] says
+//! why).
 //!
 //! Per-(community, sample) gene rates are estimated as `Gamma(num + a0,
 //! denom + b0)` posteriors with a `Gamma(1, 1)` prior, calibrated via
@@ -237,7 +235,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     let n_communities = (anchor_edges.iter().map(|e| e.2).max().unwrap_or(0) as usize) + 1;
 
     // One stratum per link community; edges bridging two communities sit
-    // out. See `orientation` for why the directional design was removed.
+    // out (see `orientation`).
     let strata_map = CommunityStrata::from_edge_modes(&anchor_edges, &edges, n_cells);
     let n_strata_total = strata_map.n_strata();
     info!(

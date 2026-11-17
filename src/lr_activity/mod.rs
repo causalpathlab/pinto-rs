@@ -2,35 +2,14 @@
 //! ([`ligand_effect`], the default method) and, below, the co-expression
 //! test per link community (`--method coexpression-test`).
 //!
-//! Consumes the output of `pinto fit lc` (edge→community assignments) and a
-//! user-supplied directional ligand→receptor list, and tests whether each
-//! LR pair shows coherent activity within each community.
-//!
-//! ## Design
-//!
-//! 1. **Pseudobulk samples** = `(batch × propensity-bin)`. The propensity
-//!    bin is the sign-LSH binary code of an SVD'd random projection of the
-//!    full expression matrix (`data_beans::alg::binary_sort_columns`); cells
-//!    with similar broad expression land in the same bin.
-//! 2. **Soft community membership per role.** From `lc` edges, each cell
-//!    `i` gets `p_send[i, c]` (fraction of `i`'s incident edges in
-//!    community `c` on which `i` is sender) and `p_recv[i, c]` (receiver
-//!    analogue), row-normalized per cell.
-//! 3. **Role-weighted pseudobulk per (community, sample).** For each LR
-//!    gene we accumulate `Σ_i x[g, i] · p_role[i, c] · 1{sample(i)=s}`
-//!    plus the matching weight `w_role[c, s]`. Sender and receiver
-//!    pseudobulks are computed separately and matched by sample id.
-//! 4. **Statistic.** Per `(batch, community, LR pair)` a weighted Spearman
-//!    rank correlation between `L_send_s` and `R_recv_s` across the
-//!    stratum's samples, sample-weighted by `√(w_send · w_recv)`.
-//! 5. **Null.** Sample-level permutation of `L` within propensity-stratified
-//!    buckets (the top 4 bits of the propensity code).
-//!    Stratification preserves the cell-population marginal — without it,
-//!    free shuffles across populations pick up cell-type-marginal
-//!    correlations and become anti-conservative.
-//! 6. **p-values.** Both empirical (`1/(n+1)`-floored) and parametric
-//!    (one-sided Gaussian tail of `z`); BH within batch is applied to the
-//!    parametric p so q-values aren't pinned at the resolution floor.
+//! The co-expression test reads a `pinto fit lc` run's edge→community
+//! assignments and a directional ligand→receptor list, and tests whether
+//! each pair's ligand and receptor are active together along the contacts
+//! of each link community: pseudobulk samples of (batch × propensity bin),
+//! a weighted covariance per (batch, community, pair), and a null that
+//! permutes the ligand's samples within propensity-stratified buckets.
+//! [`fit`] has the design in full, [`orientation`] why the test is
+//! symmetric in the pair.
 //!
 //! ## Statistical justification
 //!

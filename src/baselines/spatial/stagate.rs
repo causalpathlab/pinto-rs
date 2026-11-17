@@ -285,21 +285,7 @@ pub struct Args {
 }
 
 /// `stagate-pb`'s arguments: stagate's, and the super-cells to train on.
-#[derive(clap::Args, Debug)]
-pub struct PbArgs {
-    #[command(flatten)]
-    pub fit: Args,
-
-    /// Target number of super-cells to train on (as cage's -d: the cells
-    /// are coarsened until about this many remain)
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = 1024,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    pub n_pseudobulk: usize,
-}
+pub type PbArgs = super::pseudobulk::PbArgs<Args>;
 
 // ---------------------------------------------------------------- genes
 
@@ -1455,10 +1441,7 @@ pub(crate) fn run_pb_on(
     let change = lower_memory(&args.device);
     let input = InputShape {
         genes: data.genes.len().min(args.n_top_genes),
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-        batches: data.n_batches(),
-        strata: 1,
+        ..data.shape()
     };
     ensure_fits("stagate-pb", pb_peak_bytes(args, &input), budget, change)?;
     let mut shape = pb_shape(args, &input);

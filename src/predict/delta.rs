@@ -364,12 +364,10 @@ pub(crate) fn adjusted_model_delta(
     model: &str,
     run: &crate::util::metadata::Run,
 ) -> anyhow::Result<(RunDelta, String)> {
-    use crate::util::batch_effects::{read_delta, run_delta_path};
-    let path = run_delta_path(run)?.ok_or_else(|| {
+    crate::util::batch_effects::read_run_delta(run)?.ok_or_else(|| {
         anyhow::anyhow!(
             "{model}: its manifest says it was fitted on counts divided by its batch \
              effect, but it records no delta.parquet to divide a query by"
         )
-    })?;
-    Ok((read_delta(&path)?, path))
+    })
 }

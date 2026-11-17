@@ -377,14 +377,11 @@ fn model_delta(
     run: &Run,
     ignore_batch: bool,
 ) -> anyhow::Result<Option<(crate::util::batch_effects::RunDelta, String)>> {
-    use crate::util::batch_effects::{read_delta, run_delta_path};
     delta::batch_adjusted(model, run, ignore_batch, delta::QueryReader::Cage)?;
     if ignore_batch {
         return Ok(None);
     }
-    run_delta_path(run)?
-        .map(|path| Ok((read_delta(&path)?, path)))
-        .transpose()
+    crate::util::batch_effects::read_run_delta(run)
 }
 
 /// A stage-2 `--offset` model was fitted on counts over the stage-1

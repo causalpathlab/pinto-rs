@@ -87,8 +87,8 @@ use super::spatial_factor::sct::SctReport;
 use super::spatial_factor::sparkx;
 pub use super::spatial_factor::Variant;
 use super::spatial_factor::{
-    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, read_shape,
-    refined_domains, spectrum, to_mat, CoreArgs,
+    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, refined_domains,
+    spectrum, to_mat, CoreArgs,
 };
 use crate::util::common::Mat;
 use crate::util::memory::{ensure_fits, Budget};
@@ -136,21 +136,7 @@ pub struct Args {
 }
 
 /// `spatialpca-pb`'s arguments: the sparse model's, and the super-cells.
-#[derive(clap::Args, Debug, Clone)]
-pub struct PbArgs {
-    #[command(flatten)]
-    pub fit: FitArgs,
-
-    /// Target number of super-cells to fit on (as cage's -d: the cells are
-    /// coarsened until about this many remain)
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = 1024,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    pub n_pseudobulk: usize,
-}
+pub type PbArgs = super::pseudobulk::PbArgs<FitArgs>;
 
 impl FitArgs {
     fn check(&self) -> anyhow::Result<()> {
@@ -310,7 +296,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     ensure_fits(
         "spatialpca",
         factor_peak_bytes(&fit.memory_shape(
-            &read_shape(&data),
+            &data.shape(),
             data.genes.len().min(fit.n_genes),
             Variant::Sparse,
         )),
@@ -398,7 +384,7 @@ pub(crate) fn run_pb_on(
     ensure_fits(
         "spatialpca-pb",
         factor_peak_bytes(&fit.memory_shape(
-            &read_shape(&data),
+            &data.shape(),
             data.genes.len().min(fit.n_genes),
             Variant::Pseudobulk(args.n_pseudobulk),
         )),

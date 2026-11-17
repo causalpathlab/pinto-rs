@@ -35,12 +35,13 @@ use crate::link_community::incidence::{
 use crate::link_community::model::{LinkCommunityStats, LinkProfileStore};
 use crate::link_community::outputs::{
     fit_partition, link_community_histogram, write_dict_cut, write_dict_merges, write_partition,
-    write_partition_outputs, write_score_trace, PartitionInputs, ScoreEntry,
+    write_partition_outputs, PartitionInputs,
 };
 use crate::link_community::profiles::*;
 use crate::util::cell_pairs::*;
 use crate::util::common::*;
 use crate::util::graph_coarsen::*;
+use crate::util::score_trace::{write_score_trace, ScoreEntry};
 use crate::util::srt_pipeline::{
     preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, FisherStats, Seeding,
     SrtPreprocessConfig, SrtPreprocessed,

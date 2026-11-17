@@ -1038,6 +1038,13 @@ fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
         .find_map(|w| w.strip_prefix(flag)?.strip_prefix('='))
 }
 
+/// The residual row `res` given what it needs to run: `--from res/fit
+/// --residual subtract`, the run [`residual_plan`] reads.
+fn ready_residual(a: &mut App, res: usize) {
+    set_flag(a, res, "from", "res/fit");
+    set_flag(a, res, "residual", "subtract");
+}
+
 /// What `pinto apply residual --from {here}/res/fit --residual subtract -o
 /// {here}/{out}` plans: the excess files these tests' stage 2 reads.
 fn residual_plan(here: &Path, out: &str) -> crate::residual::Plan {
@@ -1134,8 +1141,7 @@ fn a_residual_sets_up_a_stage_two_fit_on_its_files() {
         p[1].problem
     );
 
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let planned = a.plan();
     for p in &planned {
         assert!(p.problem.is_none(), "{}: {:?}", p.job.method, p.problem);
@@ -1210,8 +1216,7 @@ fn the_stage_two_method_is_chosen_on_the_methods_screen() {
     let two = row(&a, "stage-2 dsvd");
     a.rows[res].on = true;
     a.rows[two].on = true;
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     a.screen = Screen::Methods;
     a.method_row = two;
     let mut seen = Vec::new();
@@ -1267,8 +1272,7 @@ fn lra_on_the_stage_two_fit_reads_it() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     // Not offered without lra on the same run.
     a.method_row = lra2;
     key(&mut a, KeyCode::Char(' '));
@@ -1329,8 +1333,7 @@ fn the_copied_commands_replay_the_residual_then_stage_two() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     run_key(&mut a);
     let text = a.copy_text();
     let lines: Vec<&str> = text.lines().collect();
@@ -1380,8 +1383,7 @@ fn a_stage_two_fit_that_failed_runs_again_on_the_finished_residual() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     a.rows[lra].on = true;
     set_flag(&mut a, lra, "from", "res/fit");
     a.method_row = lra2;
@@ -1450,8 +1452,7 @@ fn two_stage_with_lra(here: &Path) -> (App, usize, usize, usize, usize) {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     a.rows[lra].on = true;
     set_flag(&mut a, lra, "from", "res/fit");
     a.method_row = lra2;
@@ -1607,8 +1608,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let out = a.rows[res].out.clone();
     run_plan(
         &mut a,
@@ -1640,8 +1640,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let out = a.rows[res].out.clone();
     run_plan(&mut a, here, "exit 1");
     run_at(here, "res2/fit", &["e1.zarr", "e2.zarr"]);
@@ -1668,8 +1667,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let out = a.rows[res].out.clone();
     let mut jobs: Vec<jobs::Job> = a.plan().into_iter().map(|p| p.job).collect();
     // made to wait on the job after it, so it is never started
@@ -1706,8 +1704,7 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let wrote = a.rows[res].out.clone();
     // The stage-2 fit fails the first time.
     run_plan(
@@ -1744,8 +1741,7 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let wrote = a.rows[res].out.clone();
     run_plan(
         &mut a,
@@ -1779,8 +1775,7 @@ fn a_finished_residual_is_read_as_it_ran() {
     a.screen = Screen::Methods;
     a.method_row = res;
     key(&mut a, KeyCode::Char(' '));
-    set_flag(&mut a, res, "from", "res/fit");
-    set_flag(&mut a, res, "residual", "subtract");
+    ready_residual(&mut a, res);
     let wrote = a.rows[res].out.clone();
     run_plan(
         &mut a,

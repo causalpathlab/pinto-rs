@@ -194,13 +194,10 @@ fn reference_divide(
     ref_rows: &[Box<str>],
     ref_data: &SparseIoVec,
 ) -> anyhow::Result<Option<RefDivide>> {
-    use crate::util::batch_effects::{
-        read_cell_batches, read_delta, run_delta_cells_path, run_delta_path,
-    };
-    let Some(path) = run_delta_path(run)? else {
+    use crate::util::batch_effects::{read_cell_batches, read_run_delta, run_delta_cells_path};
+    let Some((delta, path)) = read_run_delta(run)? else {
         return Ok(None);
     };
-    let delta = read_delta(&path)?;
     let cells = run_delta_cells_path(run)?.ok_or_else(|| {
         anyhow::anyhow!(
             "{model}: the manifest records a δ but not its cells' batches (delta_cells)"

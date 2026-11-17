@@ -149,7 +149,7 @@ use super::memory::{
     Spatialde2Shape, SPATIALDE2_PROCESS_BYTES,
 };
 use super::output::{write_run, Fitted, PbFit};
-use crate::util::ablation::{n_sections, section_sizes};
+use crate::util::ablation::n_sections;
 use crate::util::common::Mat;
 use crate::util::memory::{ensure_fits, Budget};
 use crate::util::metadata::PseudobulkInput;
@@ -236,21 +236,7 @@ pub struct FitArgs {
 
 /// `spatialde2-pb`'s arguments: the model's (the sparse formulation
 /// only), and the super-cells to fit on.
-#[derive(clap::Args, Debug)]
-pub struct PbArgs {
-    #[command(flatten)]
-    pub fit: FitArgs,
-
-    /// Target number of super-cells to fit on (as cage's -d: the cells are
-    /// coarsened until about this many remain)
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = 1024,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    pub n_pseudobulk: usize,
-}
+pub type PbArgs = super::pseudobulk::PbArgs<FitArgs>;
 
 /// `TissueSegmentationParameters`, as run.
 #[derive(Debug, Clone)]
@@ -1312,18 +1298,6 @@ impl Spatialde2Sizes {
     }
 }
 
-/// The shape of `data` as read, its counts on `genes` genes, for the
-/// checks after the read.
-fn read_shape(data: &SpatialData, genes: usize) -> InputShape {
-    InputShape {
-        genes,
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-        batches: data.n_batches(),
-        strata: 1,
-    }
-}
-
 /// [`run`] on `data` as read: its peak memory is checked against the
 /// budget (`budget`, taken before the read) before the counts are copied
 /// and the graph is built.
@@ -1336,9 +1310,13 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         nonzeros: selected,
     } = top_genes(&data, args_fit.n_top_genes);
     let n = data.cells.len();
-    let shape = args_fit
-        .sizes()
-        .memory_shape(&read_shape(&data, genes.len()), selected);
+    let shape = args_fit.sizes().memory_shape(
+        &InputShape {
+            genes: genes.len(),
+            ..data.shape()
+        },
+        selected,
+    );
     ensure_fits(
         "spatialde2",
         spatialde2_peak_bytes(&shape),
@@ -1438,7 +1416,7 @@ pub(crate) fn run_pb_on(
     let args = &pb_args.fit;
     let params = args.params();
     let n = data.cells.len();
-    let input = read_shape(&data, data.genes.len());
+    let input = data.shape();
     let shape = args.sizes().memory_shape(&input, input.nonzeros);
     ensure_fits(
         "spatialde2-pb",

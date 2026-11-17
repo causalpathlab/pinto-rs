@@ -2,6 +2,8 @@
 //! train a tiny cage run, predict on cells it never saw, and impute them
 //! with the model named by its manifest.
 
+mod staging;
+
 use data_beans::sparse_io::{create_sparse_from_triplets, SparseIoBackend};
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use std::path::Path;
@@ -72,21 +74,6 @@ fn pinto(dir: &Path, args: &[&str]) {
     for line in stdout.lines().chain(stderr.lines()) {
         assert!(!line.contains(".partial-"), "pinto {args:?} said:\n{line}");
     }
-}
-
-/// Every name in `dir` that is a staging folder, and every JSON file there
-/// that names one.
-fn staged(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| {
-            let json = p.extension().is_some_and(|x| x == "json");
-            p.to_string_lossy().contains(".partial-")
-                || (json && std::fs::read_to_string(p).unwrap().contains(".partial-"))
-        })
-        .map(|p| p.display().to_string())
-        .collect()
 }
 
 fn manifest(prefix: &str) -> serde_json::Value {
@@ -201,7 +188,7 @@ fn a_cage_model_predicts_and_imputes_a_new_sample() {
         let path = format!("{prefix}.{table}.parquet");
         assert!(Path::new(&path).is_file(), "{path} not written");
     }
-    assert_eq!(staged(d), Vec::<String>::new());
+    staging::assert_none_staged(d);
 }
 
 /// A parquet table's row names and the columns `keep` picks by name, row

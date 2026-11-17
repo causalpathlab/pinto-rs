@@ -91,11 +91,9 @@ pub(crate) fn restandardization_scale(stats: &[f32], null_sds: &[f32]) -> Option
 /// pair cannot reject at any threshold, so scoring it would pay multiplicity
 /// in the Westfall-Young family, drag the robust spread that scales every
 /// other pair's `z_re`, and ship a row that reads as a measured null rather
-/// than as an absent measurement.
-///
-/// An earlier guard keyed on the observed statistic AND the null spread both
-/// being zero, which never fired: the null is built from fresh posterior
-/// draws that fluctuate even where the observed posterior mean is flat.
+/// than as an absent measurement. The guard is on the observed statistic
+/// alone: the null is built from fresh posterior draws, which fluctuate even
+/// where the observed posterior mean is flat.
 ///
 /// A merely SMALL statistic stays in, deliberately — that is a magnitude
 /// question, and a threshold here would be a silent power cut rather than an
@@ -388,8 +386,7 @@ pub(super) fn score_pairs_for_stratum(
 
             let row = LrActivityRow {
                 batch: Box::from(batch_label),
-                // The REAL link community id — no longer a stratum index
-                // hiding under this name.
+                // the link community's own id, not the stratum's index
                 community: strata_map.community(c) as i32,
                 ligand: pc.lname.clone(),
                 receptor: pc.rname.clone(),

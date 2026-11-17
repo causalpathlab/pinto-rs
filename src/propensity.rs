@@ -158,68 +158,26 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
     // Propensity output (optionally with coordinates)
     let prop_nk = prop_kn.transpose();
 
-    // Dominant cluster per vertex (argmax of propensity)
-    let cluster_col = crate::link_community::profiles::dominant_cluster_rows(&prop_nk);
-    let cluster_mat = Mat::from_column_slice(nvertices, 1, &cluster_col);
-
-    // Per-vertex Shannon entropy of the propensity distribution.
-    let entropy_vec = crate::link_community::profiles::shannon_entropy_rows(&prop_nk);
-    let entropy_mat = Mat::from_column_slice(nvertices, 1, entropy_vec.as_slice());
-
-    // C0..C{K-1} + cluster + entropy — same schema as `pinto fit lc` so the
-    // plot reader handles either subcommand's output uniformly.
-    let mut col_names: Vec<Box<str>> = (0..num_clusters)
-        .map(|k| format!("C{}", k).into_boxed_str())
-        .collect();
-    col_names.push("cluster".into());
-    col_names.push("entropy".into());
-
-    if let Some(coord_column_names) = &args.coord_column_names {
-        info!("Extracting vertex coordinates from coord_pair_file");
-
-        let left_coord_names: Vec<Box<str>> = coord_column_names
-            .iter()
-            .map(|name| format!("left_{}", name).into_boxed_str())
-            .collect();
-
-        let MatWithNames {
-            rows: _,
-            cols: _,
-            mat: left_coords,
-        } = Mat::from_parquet_with_indices_names(
-            &args.coord_pair_file,
-            Some(0),
-            Some(&[]),
-            Some(&left_coord_names),
-        )?;
-
-        let n_coords = coord_column_names.len();
-        let mut vertex_coords = Mat::zeros(nvertices, n_coords);
-        for (pair_idx, pair) in pair_names.iter().enumerate() {
-            if let Some(&v_idx) = vertex_index.get(&pair[0]) {
-                vertex_coords
-                    .row_mut(v_idx)
-                    .copy_from(&left_coords.row(pair_idx));
-            }
+    // with each vertex's coordinates after the shared columns, when given
+    let coords = match &args.coord_column_names {
+        Some(coord_column_names) => {
+            info!("Extracting vertex coordinates from coord_pair_file");
+            Some(vertex_coords(
+                &args.coord_pair_file,
+                coord_column_names,
+                &pair_names,
+                &vertex_index,
+                nvertices,
+            )?)
         }
-
-        col_names.extend(coord_column_names.iter().cloned());
-        let combined = concatenate_horizontal(&[prop_nk, cluster_mat, entropy_mat, vertex_coords])?;
-
-        combined.to_parquet_with_names(
-            &(args.out.to_string() + ".propensity.parquet"),
-            (Some(&vertices), Some("cell")),
-            Some(&col_names),
-        )?;
-    } else {
-        let combined = concatenate_horizontal(&[prop_nk, cluster_mat, entropy_mat])?;
-
-        combined.to_parquet_with_names(
-            &(args.out.to_string() + ".propensity.parquet"),
-            (Some(&vertices), Some("cell")),
-            Some(&col_names),
-        )?;
-    }
+        None => None,
+    };
+    crate::link_community::outputs::write_propensity_with(
+        &args.out,
+        &prop_nk,
+        &vertices,
+        args.coord_column_names.as_deref().zip(coords.as_ref()),
+    )?;
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads
     // (`left_cell` / `right_cell` / `community`).
@@ -374,6 +332,35 @@ fn feature_stats(
     Ok((sum_dk, denom_dk))
 }
 
+/// Each of the `n` vertices' coordinates `names` from the pair table at
+/// `path` (`left_{name}` / `right_{name}`, one row per pair of `pairs`),
+/// from whichever side of a pair the cell is on.
+fn vertex_coords(
+    path: &str,
+    names: &[Box<str>],
+    pairs: &[[Box<str>; 2]],
+    vertex_index: &HashMap<Box<str>, usize>,
+    n: usize,
+) -> anyhow::Result<Mat> {
+    let side = |side: &str| -> anyhow::Result<Mat> {
+        let cols: Vec<Box<str>> = names
+            .iter()
+            .map(|name| format!("{side}_{name}").into_boxed_str())
+            .collect();
+        Ok(Mat::from_parquet_with_indices_names(path, Some(0), Some(&[]), Some(&cols))?.mat)
+    };
+    let (left, right) = (side("left")?, side("right")?);
+    let mut out = Mat::zeros(n, names.len());
+    for (k, pair) in pairs.iter().enumerate() {
+        for (cell, coords) in [(&pair[0], &left), (&pair[1], &right)] {
+            if let Some(&v) = vertex_index.get(cell) {
+                out.row_mut(v).copy_from(&coords.row(k));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Each pair's two cell names, `[left, right]`, from the columns named so.
 fn read_pair_names(path: &str, left: &str, right: &str) -> anyhow::Result<Vec<[Box<str>; 2]>> {
     let [lefts, rights]: [Vec<Box<str>>; 2] =
@@ -426,6 +413,34 @@ mod tests {
         )
         .unwrap();
         assert!(read_pair_names(&path, "left_cell", "right_cell").is_err());
+    }
+
+    /// A cell is placed from whichever side of a pair it is on: one only
+    /// ever on the right is not left at the origin.
+    #[test]
+    fn a_cell_only_on_the_right_of_its_pairs_is_placed() {
+        use legume_numeric::matrix::parquet::{write_table, Column};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.parquet").to_string_lossy().into_owned();
+        let s = |v: &[&str]| -> Vec<Box<str>> { v.iter().map(|&x| x.into()).collect() };
+        let (left, right) = (s(&["a", "a"]), s(&["b", "c"]));
+        write_table(
+            &path,
+            &[
+                ("left_cell".into(), Column::Str(&left)),
+                ("right_cell".into(), Column::Str(&right)),
+                ("left_x".into(), Column::F32(&[1.0, 1.0])),
+                ("left_y".into(), Column::F32(&[2.0, 2.0])),
+                ("right_x".into(), Column::F32(&[3.0, 5.0])),
+                ("right_y".into(), Column::F32(&[4.0, 6.0])),
+            ],
+        )
+        .unwrap();
+        let pairs = read_pair_names(&path, "left_cell", "right_cell").unwrap();
+        let index: HashMap<Box<str>, usize> = s(&["a", "b", "c"]).into_iter().zip(0..).collect();
+        let xy = vertex_coords(&path, &s(&["x", "y"]), &pairs, &index, 3).unwrap();
+        let at = |v: usize| (xy[(v, 0)], xy[(v, 1)]);
+        assert_eq!([at(0), at(1), at(2)], [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
     }
 
     #[test]

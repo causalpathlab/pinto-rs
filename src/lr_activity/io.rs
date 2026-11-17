@@ -1,4 +1,4 @@
-//! Parquet + TSV readers for `pinto lr-activity`.
+//! Parquet + TSV readers for `pinto lra`'s co-expression methods.
 //!
 //! Reads:
 //! - `{lc_prefix}.link_community.parquet` — per-edge (left_cell, right_cell, community).
@@ -122,9 +122,10 @@ pub fn read_pair_table(file_path: &str, community: bool) -> anyhow::Result<Vec<E
         .collect())
 }
 
-/// Attach per-edge batch labels from `{prefix}.coord_pairs.parquet` when the fit
-/// was multi-batch. Matches edges by position (row order). If either
-/// `left_batch` or `right_batch` is missing, leaves all `batch` as `None`.
+/// Attach per-edge batch labels from `{prefix}.coord_pairs.parquet` when the
+/// fit was multi-batch: an edge's batch when both sides share it. Matches
+/// edges by position (row order); only the batch columns are read. A table
+/// without them leaves the edges as they are.
 pub fn attach_batch_from_coord_pairs(
     edges: &mut [EdgeRecord],
     coord_pairs_path: &str,
