@@ -504,12 +504,43 @@ analyse each donor alone) for comparison.
 on real or grid coordinates), the domain sets its mix of cell states, and
 the states set expression. One donor can own an extra domain, a new cell
 state or a new mix of shared ones, which is biology to keep. Counts are
-negative binomial through a low-rank Gaussian copula. With one donor and no
+negative binomial through a low-rank Gaussian copula, or, with
+`--reference-data`, drawn from a real data set (see below). With one donor and no
 nuisance this reduces to SRTsim's reference-free domains (Zhu, Shang and
 Zhou 2023); the copula follows scDesign3 (Song et al. 2023) in form.
 
-**Ligand-receptor pairs.** The simulated genes (GENE1, GENE2, ...) are no
-reference's, so `sim new` also writes `truth/lr_pairs.tsv` and
+**Reference data (`--reference-data`).** `pinto sim new --reference-data
+ref.zarr.zip` takes the sections' expression from a real data set (genes by
+cells; `.zarr.zip`, `.zarr` or `.h5`; convert an AnnData file with
+`data-beans from-h5ad ref.h5ad -o ref`). data-beans fits each gene's count
+distribution in each of the data set's cell groups (a Poisson mixture), its
+coupling to depth, and a Gaussian copula of the highly variable genes; the
+planted cell states take the cell groups largest first
+(`--reference-data-labels` names them, else k-means), so a spot of one state
+draws its group's counts, its depth and noise the data set's own. The
+donor, donor-by-cell-type and section shifts are shares of the data set's
+variance between states, and `realized_pve_detected_genes` in the manifest
+says how close they came. The manifest records the data set's size and a
+fingerprint of its content, never its path; `--set` refuses what the
+reference data replaces (`n_genes`, `log_mean`, `dispersion`,
+`copula_rank`, ...).
+
+```sh
+pinto sim new --scenario donor-confounded --reference-data fan2019.zarr.zip -o sim
+```
+
+`pinto lra simulate --reference-data ref.zarr.zip` draws the program genes
+of its planted effects the same way: each identity bin takes the cell group
+whose mean counts over those genes correlate best with the bin's, and each
+program gene the data set has is drawn from that group's count distribution
+around the tissue's own mean, correlated with the other program genes as in
+the data set (the Poisson log-normal draw otherwise). Its record names the
+data set by size and fingerprint (`{out}.lra-simulate.reference-data.json`
+beside the grid's table, `reference_data` in a single scenario's JSON).
+
+**Ligand-receptor pairs.** The planted genes (GENE1, GENE2, ...) are named
+by no ligand-receptor reference (with `--reference-data` the genes are real, and
+lra's own reference applies too), so `sim new` also writes `truth/lr_pairs.tsv` and
 `truth/targets.tsv`: per state, a ligand of its programme alone and a
 receptor of the next state's alone, with the rest of the receiving state's
 programme as the receptor's response programme (no ligand or receptor is

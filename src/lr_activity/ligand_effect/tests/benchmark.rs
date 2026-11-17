@@ -155,6 +155,7 @@ fn a_real_gene_confounder_needs_a_gene() {
     };
     let none = SimBase {
         confounder_gene: None,
+        reference_position_of_target: None,
         ..base(&f)
     };
     assert!(run_sim(&f.tissue, &none, &scen, &opts(), 7).is_err());

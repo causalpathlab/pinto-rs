@@ -1021,6 +1021,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "lr_pairs": sim("lr_pairs", json!({"type": "string"})),
                     "targets": long_flag_arg(sim_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "plant_region": sim("plant_region", json!({"type": "string"})),
+                    "reference_data": long_flag_arg(sim_cmd, "reference_data", json!({"type": "string"})),
+                    "reference_data_labels": sim("reference_data_labels", json!({"type": "string"})),
                     "one": sim("one", json!({"type": "boolean"})),
                     "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),

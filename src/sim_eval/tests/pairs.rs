@@ -286,6 +286,8 @@ fn a_simulations_truth_run_scores_one() {
         set: set.iter().map(|s| s.to_string()).collect(),
         coords: Vec::new(),
         coord_column_names: vec!["row_um".into(), "col_um".into()],
+        reference_data: None,
+        reference_data_labels: None,
         out: out.as_str().into(),
     })
     .unwrap();

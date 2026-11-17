@@ -43,6 +43,10 @@ pub(super) struct SimulateToolArgs {
     #[serde(default)]
     pub coord_column_names: Vec<String>,
     #[serde(default)]
+    pub reference_data: Option<String>,
+    #[serde(default)]
+    pub reference_data_labels: Option<String>,
+    #[serde(default)]
     pub out: Option<String>,
     #[serde(default)]
     pub max_threads: Option<usize>,
@@ -132,6 +136,17 @@ pub(super) fn simulation(
         read_coords(f, &args.coord_column_names)
             .map_err(|e| anyhow::anyhow!("coords {f}: {e:#}"))?;
     }
+    for (what, f) in [
+        ("reference_data", args.reference_data.as_deref()),
+        (
+            "reference_data_labels",
+            args.reference_data_labels.as_deref(),
+        ),
+    ] {
+        if let Some(f) = f {
+            anyhow::ensure!(std::path::Path::new(f).exists(), "{what} {f}: no such file");
+        }
+    }
     Ok((argv, args, scenario, p))
 }
 
@@ -176,6 +191,18 @@ pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
             argv.push(flag_value(
                 "--coord-column-names",
                 a.coord_column_names.join(","),
+            ));
+        }
+    }
+    if let Some(r) = &a.reference_data {
+        argv.push(flag_value(
+            "--reference-data",
+            &rooted(std::slice::from_ref(r))[0],
+        ));
+        if let Some(l) = &a.reference_data_labels {
+            argv.push(flag_value(
+                "--reference-data-labels",
+                &rooted(std::slice::from_ref(l))[0],
             ));
         }
     }
@@ -392,7 +419,10 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              the states its expression; donor and section nuisance (to be removed) and a domain \
              one donor alone has (to be kept) are set as shares of the log rate's variance, and \
              spot noise is what the shares leave: raising one share with the others fixed \
-             shrinks the noise. The reply's shares and shares_note spell out what a setting \
+             shrinks the noise. With reference_data (a real data set, .zarr.zip, .zarr or .h5) \
+             the expression is its: each state takes one of its cell groups and draws its counts, \
+             and the nuisance shares are of its variance between states. \
+             The reply's shares and shares_note spell out what a setting \
              implies; relay shares_note to the user whenever a share is set. \
              Writes {out}/sections/S*.zarr with S*.coords.parquet (row_um, col_um), the truth \
              tables and run in {out}/truth (view_open {out}/truth/truth.pinto.json), and \
@@ -407,6 +437,8 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto sim new --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
+                    "reference_data": super::mcp::long_flag_arg(super::mcp::subcommand(cli, "srt-simulate"), "reference_data", json!({"type": "string"})),
+                    "reference_data_labels": super::mcp::flag_arg(super::mcp::subcommand(cli, "srt-simulate"), "reference_data_labels", json!({"type": "string"})),
                     "out": out_arg("folder", "sim"),
                     "max_threads": max_threads_arg(cli),
                     "atomic_outputs": atomic_outputs_arg(cli),

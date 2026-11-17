@@ -92,6 +92,7 @@
 mod calibrate;
 mod draw;
 mod fields;
+pub mod reference_data;
 mod row;
 mod scenario;
 

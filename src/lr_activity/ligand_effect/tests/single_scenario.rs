@@ -175,6 +175,8 @@ impl Fixture {
                 cell_types: None,
                 region: None,
                 plant_region: None,
+                reference_data: None,
+                reference_data_labels: None,
                 region_jackknife: RegionJackknife::NoRefit,
                 marginal: None,
                 memory_budget: None,

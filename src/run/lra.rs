@@ -181,6 +181,12 @@ lra_tool_args!(LraSimulateToolArgs {
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plant_region: Option<String>,
+    /// `--reference-data` and `--reference-data-labels`: the data set the
+    /// program genes are drawn with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_data_labels: Option<String>,
 } {
     /// `--one`: the single scenario at its defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -475,6 +481,15 @@ pub(super) fn lra_simulate_argv(
     }
     if let Some(r) = &a.plant_region {
         argv.push(flag_value("--plant-region", r));
+    }
+    if let Some(r) = &a.reference_data {
+        argv.push(flag_value("--reference-data", shown_path(Path::new(r))));
+        if let Some(l) = &a.reference_data_labels {
+            argv.push(flag_value(
+                "--reference-data-labels",
+                shown_path(Path::new(l)),
+            ));
+        }
     }
     if a.one {
         argv.push("--one".into());

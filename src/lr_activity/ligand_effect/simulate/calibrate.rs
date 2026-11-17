@@ -30,9 +30,13 @@ pub struct SimBase<'a> {
     /// Counts per row of a real gene outside the benchmarked pairs, for
     /// [`super::ConfounderKind::RealGene`].
     pub confounder_gene: Option<&'a [f64]>,
+    /// Each program gene's position in the reference data, when there is
+    /// one and it has the gene
+    /// ([`super::reference_data::ReferenceProgramGenes::gene_position`]).
+    pub reference_position_of_target: Option<&'a [Option<usize>]>,
 }
 
-pub(super) fn n_bins(tissue: &Tissue) -> usize {
+pub fn n_bins(tissue: &Tissue) -> usize {
     tissue
         .identity_bin
         .iter()

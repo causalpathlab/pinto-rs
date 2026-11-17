@@ -143,6 +143,9 @@ pub struct SimShared<'a> {
     /// face the same field; `None` draws it per run from the run's seed, as
     /// the built-in grid does.
     pub field: Option<&'a [f64]>,
+    /// The reference data the program genes are drawn with
+    /// ([`super::reference_data`]); `None` draws them Poisson log-normal.
+    pub reference_data: Option<&'a super::reference_data::ReferenceProgramGenes>,
 }
 
 /// The hex sha256 of a hidden field's values, little-endian f64 bytes: the

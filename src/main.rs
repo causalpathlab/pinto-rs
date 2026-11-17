@@ -1092,6 +1092,12 @@ enum Sim {
                       says what a setting implies). Counts are negative binomial through a\n\
                       low-rank Gaussian copula, from keyed random numbers: --set\n\
                       nuisance_off=true with the same seed draws the exact counterfactual.\n\n\
+                      --reference-data takes the expression from a real data set (.zarr.zip,\n\
+                      .zarr or .h5): each planted state takes one of its cell groups, its\n\
+                      counts are drawn from the group's own distributions through the\n\
+                      reference's copula, and the nuisance shares are of its variance between\n\
+                      states (the manifest's realized_pve_detected_genes says how close).\n\
+                      Convert an AnnData file first: data-beans from-h5ad x.h5ad -o x.\n\n\
                       Writes:\n\
                       \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
                       \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\

@@ -3,7 +3,10 @@
 //! one call that a sweep scores by AUROC and AUPRC (one call per point and
 //! seed, many calls at once).
 
-use super::{benchmark_pairs, planted_region, prepare, real_gene_confounder, PairSim, Progress};
+use super::{
+    benchmark_pairs, fit_reference_program_genes, planted_region, prepare, real_gene_confounder,
+    PairSim, Progress,
+};
 use crate::lr_activity::ligand_effect::memory::{pair_memory, pair_workers, run_bounded};
 use crate::lr_activity::ligand_effect::options::{self, EffectOpts};
 use crate::lr_activity::ligand_effect::simulate::{
@@ -170,18 +173,20 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         target: LOG_TARGET,
         "Simulating one scenario on {n1} planted and {n0} null pairs..."
     );
+    let reference_data = fit_reference_program_genes(&prep, a, &benchmarked)?;
     let pb = Progress::new(labelled.len(), "benchmark runs");
     // Each run holds about a pair's worth of vectors, and its pair's counts.
     let per_run = pair_memory(50 + 2, tissue, &eopts.nuisance);
     let workers = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
     let runs: Vec<anyhow::Result<SimRow>> = run_bounded(&labelled, workers, |l| {
         let p = &prep.pairs[l.pair];
-        let pair = PairSim::new(&prep, eopts, p);
+        let pair = PairSim::new(&prep, eopts, p, reference_data.as_ref());
         let base = pair.base(p, gene);
         let shared = SimShared {
             producers: simulate::calibrate_producers(tissue, base.ligand_counts),
             gene_fields: &[],
             field: Some(&field),
+            reference_data: reference_data.as_ref(),
         };
         let s = if l.planted {
             scen
@@ -247,6 +252,7 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         "rep": scen.rep,
         "scenario": ScenarioKeys::from(&scen),
         "plant_region": a.plant_region,
+        "reference_data": reference_data.as_ref().map(|r| r.provenance()),
         "planted": n1,
         "null": n0,
         "asked": {"planted": one.planted, "null": one.null},

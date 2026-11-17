@@ -31,6 +31,33 @@ pub struct SimulateArgs {
     #[arg(long, value_delimiter = ',', default_value = "row_um,col_um")]
     pub coord_column_names: Vec<Box<str>>,
 
+    /// Reference data: a real data set (.zarr.zip, .zarr or .h5) whose
+    /// expression the sections take
+    #[arg(
+        long,
+        value_name = "FILE",
+        long_help = "Reference data: a real data set, genes by cells, whose expression the\n\
+                     sections take in place of the planted genes: .zarr.zip, .zarr or .h5,\n\
+                     opened as the fits open data (convert an AnnData file first:\n\
+                     data-beans from-h5ad x.h5ad -o x). data-beans fits each gene's count\n\
+                     distribution in each of its cell groups (a Poisson mixture), each\n\
+                     gene's coupling to depth, and a Gaussian copula of the highly variable\n\
+                     genes. The planted cell states take its cell groups, largest first; a\n\
+                     spot of one state draws its group's counts, and the donor,\n\
+                     donor-by-cell-type and section shifts are shares of its variance\n\
+                     between states. Its genes are the sections' genes. The parameters it\n\
+                     replaces are refused with --set: n_genes, log_mean, log_mean_sd,\n\
+                     dispersion, dispersion_sd, depth_sd, patch_cosine, log_rate_var,\n\
+                     copula_rank, copula_strength. The manifest records its size and a\n\
+                     fingerprint of its content, never its path."
+    )]
+    pub reference_data: Option<Box<str>>,
+
+    /// Cell labels to group the reference data by (one per cell in its
+    /// order, or cell<TAB>label lines); without them, k-means groups
+    #[arg(long, value_name = "FILE", requires = "reference_data")]
+    pub reference_data_labels: Option<Box<str>>,
+
     /// Output directory
     #[arg(short, long)]
     pub out: Box<str>,
@@ -109,6 +136,15 @@ fn partial_path(out: &std::path::Path) -> std::path::PathBuf {
 /// The scenario's name, an earlier one read as its name, and the
 /// parameters it and the `--set`s give.
 pub fn resolve_params(args: &SimulateArgs) -> anyhow::Result<(&'static str, SimParams)> {
+    if args.reference_data.is_some() {
+        for set in &args.set {
+            let key = set.split('=').next().unwrap_or_default().trim();
+            anyhow::ensure!(
+                !super::reference_data::PARAMS_REFERENCE_DATA_REPLACES.contains(&key),
+                "--set {key}: --reference-data replaces it (its expression is the reference data's)"
+            );
+        }
+    }
     let sc = find_scenario(&args.scenario)?;
     let p = (sc.params)().with_overrides(&args.set)?;
     p.validate()?;
@@ -151,7 +187,13 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(in_dir(out, "truth"))?;
 
     info!("{}", p.shares_summary());
-    let sim = Sim::new(p, &geometries);
+    let sim = match &args.reference_data {
+        Some(path) => {
+            info!("Fitting the reference data {path}...");
+            Sim::from_reference_data(p, &geometries, path, args.reference_data_labels.as_deref())?
+        }
+        None => Sim::new(p, &geometries),
+    };
     let p = &sim.p;
     info!(
         "Simulating {} donors × {} sections, {} spots, {} genes",
@@ -197,6 +239,9 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         "scenario": scenario,
         "lr_pairs": n_lr_pairs,
         "params": p,
+        "reference_data": sim.reference_data.as_ref().map(|r| reference_data_manifest(r, &sim)),
+        "realized_pve_detected_genes": sim.realized_pve_detected_genes().map(|pve| names.iter().zip(pve)
+            .map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>()),
         "unconfounded_donors": {
             "donors": sim.unconfounded_donors.iter().map(|&d| donor_label(d)).collect::<Vec<_>>(),
             "drawn": p.n_unconfounded_donors > 0,
@@ -222,4 +267,33 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         truth_run_path(&at_final)
     );
     Ok(())
+}
+
+/// What the manifest says of the reference data: its size, a fingerprint
+/// of its content (never its path), its cell groups and which state took
+/// which, and the log-count variance the nuisance is a share of.
+fn reference_data_manifest(
+    r: &super::reference_data::ReferenceData,
+    sim: &Sim,
+) -> serde_json::Value {
+    json!({
+        "n_cells": r.n_cells,
+        "n_genes": r.n_genes(),
+        "n_detected_genes": r.detected.iter().filter(|&&d| d).count(),
+        "n_copula_genes": r.copula_loadings.nrows(),
+        "copula_rank": r.copula_loadings.ncols(),
+        "content_fingerprint": r.content_fingerprint,
+        "cell_groups": r.cell_groups.iter()
+            .map(|(name, share)| json!({"cell_group": name, "share": share}))
+            .collect::<Vec<_>>(),
+        "cell_group_of_state": sim.truth.states.iter().zip(&r.cell_group_of_state)
+            .map(|(st, &k)| json!({
+                "state": st.label.as_ref(),
+                "cell_group": r.cell_groups[k].0,
+                "share": r.cell_groups[k].1,
+            }))
+            .collect::<Vec<_>>(),
+        "log_count_variance": r.log_count_variance,
+        "params_it_replaces": super::reference_data::PARAMS_REFERENCE_DATA_REPLACES,
+    })
 }

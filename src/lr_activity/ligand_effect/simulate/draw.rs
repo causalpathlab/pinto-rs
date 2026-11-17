@@ -2,6 +2,7 @@
 
 use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
 use super::fields::{confounding, field_sha256, SimShared};
+use super::reference_data::ReferenceProgramGenes;
 use super::row::{RegionRead, SimRow};
 use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
@@ -297,15 +298,27 @@ impl GeneCounts {
 /// potential counts differ by the effect alone. `planted` is each receiver's
 /// log-rate lift under `T*` before the gene's sign (`θ · u_bin · dose share`),
 /// zero for a receiver that does not respond.
+/// What every gene of a programme is drawn on: the field's and markers'
+/// lifts by sign ([`sign_lifts`]), the true exposure, and each receiver's
+/// planted log-rate lift before the gene's sign.
+struct ProgrammeDraw<'a> {
+    lifts: &'a [Vec<f64>; 2],
+    latent: &'a LatentExposure,
+    planted: &'a [f64],
+}
+
 fn draw_gene(
     run: &Run<'_>,
     g: usize,
-    lifts: &[Vec<f64>; 2],
-    latent: &LatentExposure,
-    planted: &[f64],
+    d: &ProgrammeDraw<'_>,
+    reference_data: Option<(&ReferenceProgramGenes, usize, &[f64])>,
     c: &mut GeneCounts,
     rng: &mut SmallRng,
 ) {
+    if let Some(gene_in_reference_data) = reference_data {
+        return draw_gene_from_reference_data(run, g, d, gene_in_reference_data, c, rng);
+    }
+    let (lifts, latent, planted) = (d.lifts, d.latent, d.planted);
     let (tissue, base, scen) = (run.tissue, run.base, run.scen);
     let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
     let ng = base.target_weights.len();
@@ -326,6 +339,43 @@ fn draw_gene(
         c.c1[i] = hi;
         c.c0[i] = lo;
         c.obs[i] = if t_star[i] { hi } else { lo };
+    }
+}
+
+/// [`draw_gene`] for a gene the reference data `r` has, as its `j`-th, at the
+/// receivers' copula factors `eta` (`r.copula_rank()` each): its count distribution
+/// in each receiver's bin's group, its rates scaled to the tissue's mean
+/// ([`super::reference_data`]); no log-normal noise, the reference's own spread
+/// in its place.
+fn draw_gene_from_reference_data(
+    run: &Run<'_>,
+    g: usize,
+    d: &ProgrammeDraw<'_>,
+    (r, j, copula_factors): (&ReferenceProgramGenes, usize, &[f64]),
+    c: &mut GeneCounts,
+    rng: &mut SmallRng,
+) {
+    let (lifts, latent, planted) = (d.lifts, d.latent, d.planted);
+    let (tissue, base) = (run.tissue, run.base);
+    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
+    let ng = base.target_weights.len();
+    let w = base.target_weights[g];
+    let s = if w < 0.0 { -1.0 } else { 1.0 };
+    let lift = &lifts[(w < 0.0) as usize];
+    let rank = r.copula_rank();
+    for i in 0..tissue.n() {
+        let b = bin[i];
+        let m0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
+        let own: f64 = StandardNormal.sample(rng);
+        let z = r.copula_latent(j, &copula_factors[i * rank..(i + 1) * rank], own);
+        let u = 0.5 * (-z / std::f64::consts::SQRT_2).compl_error();
+        let th = s * planted[i];
+        let q = |l: f64| r.count_at_quantile(b, j, u, m0 * l.exp(), poisson_quantile);
+        let hi = q(th);
+        let lo = if th == 0.0 { hi } else { q(0.0) };
+        c.c1[i] = hi;
+        c.c0[i] = lo;
+        c.obs[i] = if latent.t[i] { hi } else { lo };
     }
 }
 
@@ -395,6 +445,7 @@ fn draw_programme(
     lifts: &[Vec<f64>; 2],
     latent: &LatentExposure,
     receivers: &Receivers,
+    reference_data: Option<&ReferenceProgramGenes>,
     rng: &mut SmallRng,
 ) -> ProgrammeResponses {
     let (tissue, weights) = (run.tissue, run.base.target_weights);
@@ -426,8 +477,23 @@ fn draw_programme(
         .collect();
     let mut counts = GeneCounts::new(n);
     let mut out = ProgrammeResponses::new(n);
+    // under reference data, each receiver's copula factors, drawn first
+    let reference_data = reference_data.zip(run.base.reference_position_of_target);
+    let copula_factors: Vec<f64> = match reference_data {
+        Some((r, _)) => (0..n * r.copula_rank())
+            .map(|_| StandardNormal.sample(rng))
+            .collect(),
+        None => Vec::new(),
+    };
+    let d = ProgrammeDraw {
+        lifts,
+        latent,
+        planted: &planted,
+    };
     for (g, &w) in weights.iter().enumerate() {
-        draw_gene(run, g, lifts, latent, &planted, &mut counts, rng);
+        let gene_in_reference_data = reference_data
+            .and_then(|(r, position)| position[g].map(|j| (r, j, copula_factors.as_slice())));
+        draw_gene(run, g, &d, gene_in_reference_data, &mut counts, rng);
         out.add_gene(run, w, &bin_cells, &counts);
     }
     let total_w: f64 = weights.iter().map(|w| w.abs()).sum::<f64>().max(1e-12);
@@ -636,7 +702,14 @@ pub fn simulate(
         y1,
         y0,
         bleed,
-    } = draw_programme(&run, &lifts, &latent, &receivers, &mut rng);
+    } = draw_programme(
+        &run,
+        &lifts,
+        &latent,
+        &receivers,
+        shared.reference_data,
+        &mut rng,
+    );
     let misclassified = misclassified_share(comp, &exposure.t, &latent.t);
 
     let response = Response::new(tissue, y_seen, &bleed);

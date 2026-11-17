@@ -17,6 +17,8 @@ fn args(out: &str, scenario: &str, extra: &[&str]) -> SimulateArgs {
         set,
         coords: Vec::new(),
         coord_column_names: vec!["row_um".into(), "col_um".into()],
+        reference_data: None,
+        reference_data_labels: None,
         out: out.into(),
     }
 }

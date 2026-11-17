@@ -196,6 +196,11 @@ pub struct Settings<'a> {
     /// `lra-simulate --plant-region`: the region label the benchmark plants
     /// its effects in; `None` for everywhere, and always for `lra`.
     pub plant_region: Option<&'a str>,
+    /// `lra simulate --reference-data` (and `--reference-data-labels`): the
+    /// data set the program genes are drawn with; `None` draws them Poisson
+    /// log-normal, and always for `lra`.
+    pub reference_data: Option<&'a str>,
+    pub reference_data_labels: Option<&'a str>,
     /// `--region-jackknife`.
     pub region_jackknife: RegionJackknife,
     /// `--marginal-baselines`: the permutations of each co-expression

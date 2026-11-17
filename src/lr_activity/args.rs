@@ -420,6 +420,34 @@ pub struct LraSimulateArgs {
 
     #[arg(
         long,
+        value_name = "FILE",
+        value_hint = ValueHint::FilePath,
+        help = "Reference data (a real data set) to draw the program genes with",
+        long_help = "Reference data: a real data set, genes by cells (.zarr.zip, .zarr or\n\
+                     .h5, opened as the fits open data; convert an AnnData file first:\n\
+                     data-beans from-h5ad x.h5ad -o x), the kind `pinto sim new\n\
+                     --reference-data` takes; not the ligand-receptor reference. data-beans\n\
+                     fits each gene's count distribution in each of its cell groups and a\n\
+                     Gaussian copula of its highly variable genes; each identity bin takes\n\
+                     the cell group its program genes' mean counts correlate with best, and\n\
+                     a program gene the data set has is drawn from that group's count\n\
+                     distribution around the tissue's own mean count, correlated with the\n\
+                     other program genes as in the data set, in place of the Poisson\n\
+                     log-normal draw. The record names it by size and a fingerprint of its\n\
+                     content."
+    )]
+    pub reference_data: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "reference_data",
+        help = "Cell labels to group the reference data by (else k-means)"
+    )]
+    pub reference_data_labels: Option<Box<str>>,
+
+    #[arg(
+        long,
         value_enum,
         default_value_t = ReferenceSpecies::Auto,
         help = "Species of the reference; auto reads it from the gene-name case"

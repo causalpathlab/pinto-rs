@@ -134,6 +134,8 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
                 cell_types: Some("ct.tsv"),
                 region: None,
                 plant_region: None,
+                reference_data: None,
+                reference_data_labels: None,
                 region_jackknife: RegionJackknife::NoRefit,
                 marginal: Some(PERMUTATIONS),
                 memory_budget: None,

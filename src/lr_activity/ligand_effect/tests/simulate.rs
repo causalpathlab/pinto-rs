@@ -114,6 +114,7 @@ pub(super) fn base(f: &Fixture) -> SimBase<'_> {
         competent: &f.competent,
         receptor_counts: &f.receptor,
         confounder_gene: Some(&f.gene),
+        reference_position_of_target: None,
     }
 }
 
@@ -331,6 +332,7 @@ fn a_shared_field_is_the_run_s_field() {
             producers: calibrate_producers(&f.tissue, b.ligand_counts),
             gene_fields: &[],
             field: Some(&field),
+            reference_data: None,
         };
         simulate(&f.tissue, &b, &shared, &scen, &opts(), seed).unwrap()
     };
