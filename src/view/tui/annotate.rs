@@ -226,7 +226,10 @@ impl App<'_> {
 
     fn open_browser(&mut self, dir: PathBuf, known: HashSet<String>) {
         let tag = self.base.run.levels[self.cur].tag.clone();
-        let want = Panels { known, tag };
+        let want = Panels {
+            known: std::sync::Arc::new(known),
+            tag,
+        };
         let dir = lupin::canonical(&dir);
         self.modal = Some(Modal::Browse(Box::new(Browser::open(dir, want, None))));
         self.need_map = true;

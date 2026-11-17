@@ -5,7 +5,7 @@
 //! subcommand's `Arg`s, so a flag added to a method shows up on its own.
 
 use crate::tui::flag_value;
-use clap::{Arg, Command};
+use clap::Command;
 
 /// Flags `pinto run` fills from its own screens or never passes, and the
 /// one it takes for the whole session (`--atomic-outputs`).
@@ -22,11 +22,6 @@ const OWN: &[&str] = &[
 use legume_tui::form::{emit, many_of, Many};
 pub use legume_tui::form::{Field, Kind};
 
-/// The row of `a`, unless `pinto run` fills the flag itself ([`OWN`]).
-fn field_of(a: &Arg) -> Option<Field> {
-    Field::from_arg(a).filter(|f| !OWN.contains(&f.long.as_str()))
-}
-
 /// `f`'s values rewritten by `rewrite`, as the command line splits them (a
 /// comma list in one value too), joined by commas. A row at its default is
 /// not passed, and stays as it is.
@@ -34,14 +29,13 @@ pub fn map_values(f: &mut Field, rewrite: impl Fn(&str) -> String) {
     if f.is_default() {
         return;
     }
-    let split: &[char] = match f.many {
-        Many::One => &[','],
-        _ => &[',', ' ', '\t', '\n'],
-    };
+    // split as legume-tui reads a row's values: on commas, and on any
+    // whitespace too when the flag takes several
+    let several = f.many != Many::One;
     let vs: Vec<String> = f
         .value
         .trim()
-        .split(split)
+        .split(|c: char| c == ',' || (several && c.is_whitespace()))
         .filter(|v| !v.is_empty())
         .map(rewrite)
         .collect();
@@ -86,7 +80,12 @@ impl Method {
             name: name.replace(' ', "-"),
             path: path.into_iter().map(String::from).collect(),
             about: cmd.get_about().map(ToString::to_string).unwrap_or_default(),
-            fields: cmd.get_arguments().filter_map(field_of).collect(),
+            // every flag but those `pinto run` fills itself, each heading's
+            // together
+            fields: legume_tui::form::Form::new(cmd, |a| {
+                !a.get_long().is_some_and(|l| OWN.contains(&l))
+            })
+            .fields,
             coord: slot("coord"),
             batch: slot("batch-files"),
             from_run: slot("from").is_some(),

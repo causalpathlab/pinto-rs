@@ -1,6 +1,6 @@
 //! What the viewer browses for: a run to open (`pinto view` with no run),
 //! or a marker panel for `lupin annotate`. The browser itself is
-//! [`crate::tui::browse`].
+//! [`legume_tui::browse`].
 
 use super::super::lupin::{self, Panel};
 use crate::util::metadata::PintoMetadata;
@@ -48,7 +48,8 @@ impl Wanted for Runs {
 /// covering the most of them is starred.
 #[derive(Clone)]
 pub struct Panels {
-    pub known: HashSet<String>,
+    /// Shared, as the browser copies its [`Wanted`] to each listing.
+    pub known: std::sync::Arc<HashSet<String>>,
     pub tag: String,
 }
 
