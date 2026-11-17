@@ -433,8 +433,11 @@ pub struct LraSimulateArgs {
                      a program gene the data set has is drawn from that group's count\n\
                      distribution around the tissue's own mean count, correlated with the\n\
                      other program genes as in the data set, in place of the Poisson\n\
-                     log-normal draw. The record names it by size and a fingerprint of its\n\
-                     content."
+                     log-normal draw. The planted effect keeps its log fold change (θ, from\n\
+                     effect_pve over a unit log-rate variance, as without reference data);\n\
+                     the spread around it is the data set's own, so effect_pve is then a\n\
+                     size on the log scale rather than an exact share. The record names the\n\
+                     data set by size and a fingerprint of its content."
     )]
     pub reference_data: Option<Box<str>>,
 

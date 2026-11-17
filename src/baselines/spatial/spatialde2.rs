@@ -1214,13 +1214,25 @@ impl FitArgs {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(args, args.fit.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .input
+            .read_within(false, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// `spatialde2-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk)?;
-    run_pb_on(args, args.fit.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, SPATIALDE2_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The arguments checked, and the peak of a `variant` run on the input's

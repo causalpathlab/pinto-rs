@@ -90,7 +90,7 @@ impl Sim {
         let scaling = scaling(&p, &sections, &truth, &genes);
         // the depth coordinate: one standard normal per spot
         let depth = (0..sections.len())
-            .map(|s| normals(Stream::Depth, &p, &[s], sections[s].n()))
+            .map(|s| super::expression::normals(rng(p.seed, Stream::Depth, &[s]), sections[s].n()))
             .collect();
         let unconfounded_donors = p.unconfounded_donor_set();
         Ok(Self {
@@ -129,11 +129,7 @@ impl Sim {
         if let Some(r) = &self.reference_data {
             return Components {
                 a: 0.0,
-                ty: r
-                    .mean_count_by_state
-                    .iter()
-                    .map(|m| m[g].max(1e-300).ln())
-                    .collect(),
+                ty: r.log_mean_count_by_state.iter().map(|m| m[g]).collect(),
                 inter: nu.inter[g].iter().map(|x| sc.inter * x[d]).collect(),
                 donor: sc.donor * nu.donor[g][d],
                 section: sc.section * nu.section[g][s],
@@ -206,25 +202,16 @@ impl Sim {
         self.realized_pve_over(&prog, &ones)
     }
 
-    /// Under a reference, [`Self::realized_pve`] over every active gene,
-    /// each weighted by its mean rate over the states at their shares: the
-    /// genes and weights the nuisance was scaled on ([`super::reference_data`]).
-    pub fn realized_pve_detected_genes(&self) -> Option<[f64; 5]> {
+    /// Under reference data, [`Self::realized_pve`] over the genes and
+    /// weights the nuisance was scaled on
+    /// ([`super::reference_data::pve_genes`]).
+    pub fn realized_pve_expressed_genes(&self) -> Option<[f64; 5]> {
         let r = self.reference_data.as_ref()?;
         let share = spot_share_by_state(&self.truth);
-        let (genes, weight): (Vec<usize>, Vec<f64>) = (0..self.p.n_genes)
-            .filter(|&g| r.detected[g])
-            .map(|g| {
-                let mean_count: f64 = r
-                    .mean_count_by_state
-                    .iter()
-                    .zip(&share)
-                    .map(|(m, w)| w * m[g])
-                    .sum();
-                (g, mean_count)
-            })
-            .filter(|&(_, w): &(usize, f64)| w > 0.0)
-            .unzip();
+        let (genes, weight): (Vec<usize>, Vec<f64>) =
+            super::reference_data::pve_genes(&r.log_mean_count_by_state, &share, &r.detected)
+                .into_iter()
+                .unzip();
         Some(self.realized_pve_over(&genes, &weight))
     }
 
@@ -272,7 +259,8 @@ impl Sim {
         let n = self.sections[s].n();
         let rank = r.copula_loadings.ncols();
         // the copula's factors, rank per spot
-        let copula_factors = normals(Stream::Factor, &self.p, &[s], n * rank);
+        let copula_factors =
+            super::expression::normals(rng(self.p.seed, Stream::Factor, &[s]), n * rank);
         let (zd, dominant) = (&self.depth[s], &self.truth.dominant[s]);
         let on = active(&self.p);
         (0..self.p.n_genes)
@@ -323,12 +311,4 @@ pub fn spot_share_by_state(truth: &Truth) -> Vec<f64> {
         share[c] += 1.0 / n.max(1) as f64;
     }
     share
-}
-
-/// `n` standard normals of stream `stream` at `idx`.
-fn normals(stream: Stream, p: &SimParams, idx: &[usize], n: usize) -> Vec<f64> {
-    let mut r = rng(p.seed, stream, idx);
-    (0..n)
-        .map(|_| rand_distr::Distribution::sample(&rand_distr::StandardNormal, &mut r))
-        .collect()
 }

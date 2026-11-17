@@ -5,7 +5,8 @@
 //! {out}/sections/S1.zarr            counts, genes × spots
 //! {out}/sections/S1.coords.parquet  spot, row_um, col_um
 //! {out}/truth/spots.parquet         per spot: section, donor and whether it is confounded,
-//!                                   domain and its owner, state, depth, mixture;
+//!                                   domain and its owner, state, depth (depth_coordinate,
+//!                                   standard normal, under reference data), mixture;
 //!                                   `cell` as pinto names it (`barcode@section`, or the
 //!                                   bare barcode with one section), to join onto fits
 //! {out}/truth/donors.parquet        confounded (`false`: no donor-wide, donor-by-cell-type
@@ -138,7 +139,17 @@ pub fn write_spots(path: &str, sim: &Sim) -> anyhow::Result<()> {
         ("domain".into(), Column::Str(&domain)),
         ("domain_owner".into(), Column::Str(&domain_owner)),
         ("state".into(), Column::Str(&state)),
-        ("depth".into(), Column::F32(&depth)),
+        // a depth multiplier, or under reference data the standard-normal
+        // depth coordinate the genes follow
+        (
+            if sim.reference_data.is_some() {
+                "depth_coordinate"
+            } else {
+                "depth"
+            }
+            .into(),
+            Column::F32(&depth),
+        ),
         (COORD_COLUMNS[0].into(), Column::F32(&x)),
         (COORD_COLUMNS[1].into(), Column::F32(&y)),
     ];

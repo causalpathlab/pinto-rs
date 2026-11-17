@@ -24,15 +24,12 @@
 
 use crate::simulate::reference_data::{
     content_fingerprint, COPULA_GENE_VARIANCE_FLOOR, COPULA_MIN_DETECTION, COPULA_RANK,
-    HIGHLY_VARIABLE_GENES,
+    HIGHLY_VARIABLE_GENES, MIN_CELL_GROUPS,
 };
 use crate::util::common::HashMap;
 use data_beans::sim::copula::groups::SMALL_LABELS;
 use data_beans::sim::copula::mixture::Prepared as CountDistribution;
 use data_beans::sim::copula::{fit_global_copula, GlobalCopulaArgs, GroupSpec};
-
-/// Cell groups the reference data is fitted in without labels.
-pub const CELL_GROUPS: usize = 8;
 
 /// The reference data, fitted, kept for the program genes alone.
 pub struct ReferenceProgramGenes {
@@ -58,7 +55,7 @@ pub struct ReferenceProgramGenes {
 
 impl ReferenceProgramGenes {
     /// Fit the reference data at `path` (opened as pinto opens data) in the
-    /// cell groups `labels` names, else [`CELL_GROUPS`] k-means groups,
+    /// cell groups `labels` names, else [`MIN_CELL_GROUPS`] k-means groups,
     /// keeping the tissue's program genes `genes` it has, and match each of
     /// the tissue's `n_bins` identity bins to a cell group by
     /// `bin_mean_counts` (bins × `genes`, row-major).
@@ -70,7 +67,9 @@ impl ReferenceProgramGenes {
         n_bins: usize,
     ) -> anyhow::Result<Self> {
         let data = data_beans::convert::try_open_or_convert(path)?;
-        let n_cells = data.num_columns().unwrap_or(0);
+        let n_cells = data.num_columns().ok_or_else(|| {
+            anyhow::anyhow!("--reference-data {path}: its cell count is not stored")
+        })?;
         let fit = fit_global_copula(&GlobalCopulaArgs {
             sc: &data,
             n_hvg: HIGHLY_VARIABLE_GENES,
@@ -79,7 +78,7 @@ impl ReferenceProgramGenes {
             hvg_min_detection: COPULA_MIN_DETECTION,
             groups: match labels {
                 Some(l) => GroupSpec::Labels(l.into()),
-                None => GroupSpec::Cluster(CELL_GROUPS),
+                None => GroupSpec::Cluster(MIN_CELL_GROUPS),
             },
         })?;
         // the tissue's program genes the reference data has, by exact name:
@@ -149,6 +148,13 @@ impl ReferenceProgramGenes {
             .iter()
             .map(|m| m.iter().map(|x| x.ln_1p()).collect())
             .collect();
+        if kept.len() < 2 {
+            log::warn!(
+                "--reference-data {path}: {} program gene(s) to match the identity bins by; \
+                 each takes the nearest cell group",
+                kept.len()
+            );
+        }
         let cell_group_of_bin = bin_profiles
             .iter()
             .map(|profile| most_correlated_profile(profile, &cell_group_profiles))
@@ -197,6 +203,11 @@ impl ReferenceProgramGenes {
         self.position_of_gene.get(name).copied()
     }
 
+    /// Whether kept gene `j` is in the copula.
+    pub fn in_copula(&self, j: usize) -> bool {
+        self.copula_loadings[j].is_some()
+    }
+
     /// The copula's rank: how many factors a receiver draws.
     pub fn copula_rank(&self) -> usize {
         self.copula_rank
@@ -233,7 +244,9 @@ impl ReferenceProgramGenes {
 }
 
 /// The position of the profile in `candidates` most correlated with
-/// `profile` (Pearson; the first on ties, and the first when none varies).
+/// `profile` (Pearson; the first on ties); where no correlation is defined
+/// (fewer than two genes, or a profile that does not vary), the nearest
+/// (Euclidean).
 pub fn most_correlated_profile(profile: &[f64], candidates: &[Vec<f64>]) -> usize {
     let correlation = |other: &[f64]| {
         let n = profile.len() as f64;
@@ -258,7 +271,24 @@ pub fn most_correlated_profile(profile: &[f64], candidates: &[Vec<f64>]) -> usiz
             best = (k, r);
         }
     }
-    best.0
+    if best.1 > f64::NEG_INFINITY {
+        return best.0;
+    }
+    let distance = |other: &[f64]| -> f64 {
+        profile
+            .iter()
+            .zip(other)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum()
+    };
+    let mut nearest = (0, f64::INFINITY);
+    for (k, other) in candidates.iter().enumerate() {
+        let d = distance(other);
+        if d < nearest.1 {
+            nearest = (k, d);
+        }
+    }
+    nearest.0
 }
 
 #[cfg(test)]

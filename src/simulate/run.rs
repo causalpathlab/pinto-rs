@@ -240,7 +240,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         "lr_pairs": n_lr_pairs,
         "params": p,
         "reference_data": sim.reference_data.as_ref().map(|r| reference_data_manifest(r, &sim)),
-        "realized_pve_detected_genes": sim.realized_pve_detected_genes().map(|pve| names.iter().zip(pve)
+        "realized_pve_expressed_genes": sim.realized_pve_expressed_genes().map(|pve| names.iter().zip(pve)
             .map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>()),
         "unconfounded_donors": {
             "donors": sim.unconfounded_donors.iter().map(|&d| donor_label(d)).collect::<Vec<_>>(),

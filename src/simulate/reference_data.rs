@@ -33,9 +33,9 @@
 //! data's own log-count variance between states: `V = T / pve_type`, `T`
 //! the variance over the spots of a gene's log mixture mean, averaged over
 //! detected genes weighted by their mean count
-//! ([`cell_type_log_count_variance`]), so the realized PVE over detected
-//! genes (the manifest's `realized_pve_detected_genes`) meets the targets in
-//! expectation.
+//! ([`cell_type_log_count_variance`] over [`pve_genes`]), so the realized PVE
+//! over those genes (the manifest's `realized_pve_expressed_genes`) meets the
+//! targets in expectation.
 
 use super::params::SimParams;
 use data_beans::sim::copula::groups::{MIN_GROUP_CELLS, SMALL_LABELS};
@@ -79,6 +79,11 @@ pub struct ReferenceData {
     pub cell_group_of_state: Vec<usize>,
     /// `mean_count_by_state[c][g]`: state `c`'s mean count of gene `g`.
     pub mean_count_by_state: Vec<Vec<f64>>,
+    /// `log_mean_count_by_state[c][g]`: its log, the mean floored at the
+    /// detection limit of state `c`'s cell group (half a count over its
+    /// cells, [`detection_limit`]): a gene its cells never show is below
+    /// that, not at `−∞`. The cell-type term of the log mean.
+    pub log_mean_count_by_state: Vec<Vec<f64>>,
     /// `count_distribution_by_state[c][g]`: its count distribution.
     pub count_distribution_by_state: Vec<Vec<CountDistribution>>,
     /// `depth_coupling_by_state[c][g]`: gene `g`'s latent correlation with
@@ -124,7 +129,9 @@ impl ReferenceData {
              data's variance between cell states"
         );
         let data = data_beans::convert::try_open_or_convert(path)?;
-        let n_cells = data.num_columns().unwrap_or(0);
+        let n_cells = data.num_columns().ok_or_else(|| {
+            anyhow::anyhow!("--reference-data {path}: its cell count is not stored")
+        })?;
         let grouping = match labels {
             Some(l) => GroupSpec::Labels(l.into()),
             None => GroupSpec::Cluster(MIN_CELL_GROUPS.max(n_states)),
@@ -156,10 +163,19 @@ impl ReferenceData {
             largest_first.len()
         );
         let cell_group_of_state: Vec<usize> = largest_first[..n_states].to_vec();
+        let floor_by_state: Vec<f64> = cell_group_of_state
+            .iter()
+            .map(|&k| detection_limit(fit.groups[k].share, n_cells))
+            .collect();
         let n_genes = fit.n_genes;
         let mean_count_by_state: Vec<Vec<f64>> = cell_group_of_state
             .iter()
             .map(|&k| fit.groups[k].marginals.iter().map(|m| m.mean()).collect())
+            .collect();
+        let log_mean_count_by_state: Vec<Vec<f64>> = mean_count_by_state
+            .iter()
+            .zip(&floor_by_state)
+            .map(|(means, &floor)| means.iter().map(|m| m.max(floor).ln()).collect())
             .collect();
         let count_distribution_by_state = cell_group_of_state
             .iter()
@@ -187,12 +203,10 @@ impl ReferenceData {
         }
         let pooled_mean_count: Vec<f64> = fit.marginals.iter().map(|m| m.mean()).collect();
         let pooled_extra_poisson_variance = fit.marginals.iter().map(|m| m.rate_cv2()).collect();
-        let log_count_variance = cell_type_log_count_variance(
-            &mean_count_by_state,
-            spot_share_by_state,
-            spot_mixtures,
-            &detected,
-        ) / p.pve_type;
+        let genes = pve_genes(&log_mean_count_by_state, spot_share_by_state, &detected);
+        let log_count_variance =
+            cell_type_log_count_variance(&log_mean_count_by_state, spot_mixtures, &genes)
+                / p.pve_type;
         let content_fingerprint = content_fingerprint(&fit.gene_names, n_cells, &fit.mu_hat);
         Ok(Self {
             gene_names: fit.gene_names,
@@ -204,6 +218,7 @@ impl ReferenceData {
                 .collect(),
             cell_group_of_state,
             mean_count_by_state,
+            log_mean_count_by_state,
             count_distribution_by_state,
             depth_coupling_by_state,
             copula_row_of_gene: fit.hvg_pos,
@@ -263,40 +278,63 @@ impl ReferenceData {
     }
 }
 
-/// `T`: the variance over spots of a gene's log mixture mean count,
-/// `ln Σ_c w[i,c] m[c,g]`, averaged over the detected genes weighted by
-/// their mean count at the states' shares of the spots: what the realized
-/// PVE over detected genes measures the cell-type term by, so the
-/// nuisance's shares of it are its targets in expectation.
-pub fn cell_type_log_count_variance(
-    mean_count_by_state: &[Vec<f64>],
+/// The least mean count a cell group of `share` of `n_cells` cells can
+/// tell from zero: half a count over its cells.
+pub fn detection_limit(share: f64, n_cells: usize) -> f64 {
+    0.5 / (share * n_cells as f64).max(1.0)
+}
+
+/// Genes the nuisance is scaled on and its realized PVE read over: the
+/// [`PVE_GENES`] detected genes of the largest mean count at the states'
+/// shares of the spots, each with that mean count as its weight.
+pub const PVE_GENES: usize = 2000;
+
+/// The [`PVE_GENES`] genes and their weights, by decreasing weight.
+pub fn pve_genes(
+    log_mean_count_by_state: &[Vec<f64>],
     spot_share_by_state: &[f64],
-    spot_mixtures: &[Vec<Vec<f64>>],
     detected: &[bool],
+) -> Vec<(usize, f64)> {
+    let mut genes: Vec<(usize, f64)> = (0..detected.len())
+        .filter(|&g| detected[g])
+        .map(|g| {
+            let weight: f64 = log_mean_count_by_state
+                .iter()
+                .zip(spot_share_by_state)
+                .map(|(m, share)| share * m[g].exp())
+                .sum();
+            (g, weight)
+        })
+        .collect();
+    genes.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    genes.truncate(PVE_GENES);
+    genes
+}
+
+/// `T`: the variance over spots of a gene's log mixture mean count,
+/// `ln Σ_c w[i,c] m[c,g]` with each state's mean floored at its detection
+/// limit (`log_mean_count_by_state`), averaged over `genes` at their
+/// weights ([`pve_genes`]): what the realized PVE measures the cell-type
+/// term by, so the nuisance's shares of it are its targets in expectation.
+pub fn cell_type_log_count_variance(
+    log_mean_count_by_state: &[Vec<f64>],
+    spot_mixtures: &[Vec<Vec<f64>>],
+    genes: &[(usize, f64)],
 ) -> f64 {
     use rayon::prelude::*;
     let spots: Vec<&Vec<f64>> = spot_mixtures.iter().flatten().collect();
-    let (weighted_variance, total_weight) = (0..detected.len())
-        .into_par_iter()
-        .filter(|&g| detected[g])
-        .map(|g| {
-            let weight: f64 = mean_count_by_state
-                .iter()
-                .zip(spot_share_by_state)
-                .map(|(m, share)| share * m[g])
-                .sum();
-            if weight <= 0.0 {
-                return (0.0, 0.0);
-            }
+    let (weighted_variance, total_weight) = genes
+        .par_iter()
+        .map(|&(g, weight)| {
             let log_means: Vec<f64> = spots
                 .iter()
                 .map(|mixture| {
-                    let mean: f64 = mixture
+                    mixture
                         .iter()
-                        .zip(mean_count_by_state)
-                        .map(|(w, m)| w * m[g])
-                        .sum();
-                    mean.max(1e-300).ln()
+                        .zip(log_mean_count_by_state)
+                        .map(|(w, m)| w * m[g].exp())
+                        .sum::<f64>()
+                        .ln()
                 })
                 .collect();
             (weight * super::field::mean_sd(&log_means).1.powi(2), weight)

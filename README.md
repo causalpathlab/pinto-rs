@@ -519,7 +519,7 @@ planted cell states take the cell groups largest first
 (`--reference-data-labels` names them, else k-means), so a spot of one state
 draws its group's counts, its depth and noise the data set's own. The
 donor, donor-by-cell-type and section shifts are shares of the data set's
-variance between states, and `realized_pve_detected_genes` in the manifest
+variance between states, and `realized_pve_expressed_genes` in the manifest
 says how close they came. The manifest records the data set's size and a
 fingerprint of its content, never its path; `--set` refuses what the
 reference data replaces (`n_genes`, `log_mean`, `dispersion`,

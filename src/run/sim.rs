@@ -194,17 +194,19 @@ pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
             ));
         }
     }
+    // the labels go in whether or not the data does, so the command's own
+    // check refuses labels with no data
     if let Some(r) = &a.reference_data {
         argv.push(flag_value(
             "--reference-data",
             &rooted(std::slice::from_ref(r))[0],
         ));
-        if let Some(l) = &a.reference_data_labels {
-            argv.push(flag_value(
-                "--reference-data-labels",
-                &rooted(std::slice::from_ref(l))[0],
-            ));
-        }
+    }
+    if let Some(l) = &a.reference_data_labels {
+        argv.push(flag_value(
+            "--reference-data-labels",
+            &rooted(std::slice::from_ref(l))[0],
+        ));
     }
     argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
     argv.push(flag_value("--out", out));

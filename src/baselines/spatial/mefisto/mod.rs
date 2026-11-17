@@ -73,7 +73,7 @@ pub mod sparse;
 pub mod vb;
 
 use super::input::{InputShape, SpatialData};
-use super::memory::{factor_peak_bytes, FactorShape};
+use super::memory::{factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::output::{write_loadings, write_run, Fitted, PbFit};
 use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, select_rows, SparseOp};
@@ -234,12 +234,26 @@ fn check_before_read(fit: &FitArgs, variant: Variant) -> anyhow::Result<Budget> 
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(args, args.fit.core.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(false, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk(args.n_pseudobulk))?;
-    run_pb_on(args, args.fit.core.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .core
+            .input
+            .read_within(true, &budget, FACTOR_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The log expression of `genes`, centred per section, the counts freed.

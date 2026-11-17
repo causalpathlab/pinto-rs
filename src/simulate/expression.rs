@@ -33,7 +33,7 @@ fn normal(r: &mut SmallRng) -> f64 {
     StandardNormal.sample(r)
 }
 
-fn normals(mut r: SmallRng, n: usize) -> Vec<f64> {
+pub(crate) fn normals(mut r: SmallRng, n: usize) -> Vec<f64> {
     (0..n).map(|_| normal(&mut r)).collect()
 }
 

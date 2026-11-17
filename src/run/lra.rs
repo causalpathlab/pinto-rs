@@ -482,14 +482,16 @@ pub(super) fn lra_simulate_argv(
     if let Some(r) = &a.plant_region {
         argv.push(flag_value("--plant-region", r));
     }
+    // the labels go in whether or not the data does, so the command's own
+    // check refuses labels with no data
     if let Some(r) = &a.reference_data {
         argv.push(flag_value("--reference-data", shown_path(Path::new(r))));
-        if let Some(l) = &a.reference_data_labels {
-            argv.push(flag_value(
-                "--reference-data-labels",
-                shown_path(Path::new(l)),
-            ));
-        }
+    }
+    if let Some(l) = &a.reference_data_labels {
+        argv.push(flag_value(
+            "--reference-data-labels",
+            shown_path(Path::new(l)),
+        ));
     }
     if a.one {
         argv.push("--one".into());

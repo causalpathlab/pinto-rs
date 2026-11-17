@@ -273,6 +273,7 @@ fn the_batch_options_are_refused_beside_an_offset() {
             feature_axis: FeatureAxisMode::Rows,
             feature_kind: None,
             cell_projection: false,
+            auto_batch_memory_check: None,
         })
         .err()
         .expect("refused")

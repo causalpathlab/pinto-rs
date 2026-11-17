@@ -779,7 +779,9 @@ impl Benchmark<'_> {
         };
         // Scenarios are independent: run as many at once as the memory
         // budget allows (each holds about a pair's worth of vectors).
-        let per_run = pair_memory(50, tissue, &eopts.nuisance);
+        // and the receivers' copula factors under reference data
+        let factors = self.reference_data.map_or(0, |r| r.copula_rank());
+        let per_run = pair_memory(50 + factors, tissue, &eopts.nuisance);
         let concurrent = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
         let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
         run_bounded(&jobs, concurrent, |&(si, scen)| {
@@ -880,9 +882,12 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
     output::write_sim(&path, &rows, a.plant_region)?;
     // the reference data the program genes were drawn with, beside
     // the table
-    if let Some(r) = &reference_data {
-        let side = format!("{}.reference-data.json", path.trim_end_matches(".parquet"));
-        std::fs::write(&side, serde_json::to_string_pretty(&r.provenance())? + "\n")?;
+    // (an earlier run's is removed when this one used none)
+    let side = format!("{}.reference-data.json", path.trim_end_matches(".parquet"));
+    match &reference_data {
+        Some(r) => std::fs::write(&side, serde_json::to_string_pretty(&r.provenance())? + "\n")?,
+        None if Path::new(&side).exists() => std::fs::remove_file(&side)?,
+        None => {}
     }
     let table = crate::lr_activity::recorded(Path::new(&path));
     record(a.manifest, |o| o.simulate = Some(table))?;

@@ -1096,7 +1096,7 @@ enum Sim {
                       .zarr or .h5): each planted state takes one of its cell groups, its\n\
                       counts are drawn from the group's own distributions through the\n\
                       reference's copula, and the nuisance shares are of its variance between\n\
-                      states (the manifest's realized_pve_detected_genes says how close).\n\
+                      states (the manifest's realized_pve_expressed_genes says how close).\n\
                       Convert an AnnData file first: data-beans from-h5ad x.h5ad -o x.\n\n\
                       Writes:\n\
                       \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\

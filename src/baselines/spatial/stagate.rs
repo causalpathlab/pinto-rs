@@ -1004,13 +1004,24 @@ impl Stagate {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read("stagate", args, false)?;
-    run_on(args, args.input.read(false)?, &budget)
+    run_on(
+        args,
+        args.input
+            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// `stagate-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read("stagate-pb", &args.fit, true)?;
-    run_pb_on(args, args.fit.input.read(true)?, &budget)
+    run_pb_on(
+        args,
+        args.fit
+            .input
+            .read_within(true, &budget, STAGATE_PROCESS_BYTES)?,
+        &budget,
+    )
 }
 
 /// The arguments checked, and the peak of a run of command `what` (on

@@ -204,6 +204,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         // the per-cell projection below, when it is preprocessing's
         // ([`dsvd_cell_projection`])
         cell_projection: true,
+        auto_batch_memory_check: None,
         feature_kind: None,
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.

@@ -176,7 +176,9 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
     let reference_data = fit_reference_program_genes(&prep, a, &benchmarked)?;
     let pb = Progress::new(labelled.len(), "benchmark runs");
     // Each run holds about a pair's worth of vectors, and its pair's counts.
-    let per_run = pair_memory(50 + 2, tissue, &eopts.nuisance);
+    // and the receivers' copula factors under reference data
+    let factors = reference_data.as_ref().map_or(0, |r| r.copula_rank());
+    let per_run = pair_memory(50 + 2 + factors, tissue, &eopts.nuisance);
     let workers = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
     let runs: Vec<anyhow::Result<SimRow>> = run_bounded(&labelled, workers, |l| {
         let p = &prep.pairs[l.pair];

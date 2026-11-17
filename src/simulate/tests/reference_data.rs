@@ -162,12 +162,8 @@ fn the_nuisance_is_a_share_of_the_reference_variance_between_states() {
     let sim = simulation(dir.path(), p.clone());
     let r = sim.reference_data.as_ref().unwrap();
     let share = crate::simulate::sim::spot_share_by_state(&sim.truth);
-    let t = cell_type_log_count_variance(
-        &r.mean_count_by_state,
-        &share,
-        &sim.truth.mixture,
-        &r.detected,
-    );
+    let genes = pve_genes(&r.log_mean_count_by_state, &share, &r.detected);
+    let t = cell_type_log_count_variance(&r.log_mean_count_by_state, &sim.truth.mixture, &genes);
     assert!(t > 0.0);
     assert!((r.log_count_variance - t / p.pve_type).abs() < 1e-12);
     assert_eq!(sim.p.log_rate_var, r.log_count_variance);
@@ -179,7 +175,7 @@ fn the_nuisance_is_a_share_of_the_reference_variance_between_states() {
             ..params()
         },
     );
-    let pve = flat.realized_pve_detected_genes().unwrap();
+    let pve = flat.realized_pve_expressed_genes().unwrap();
     assert!((pve[0] - 1.0).abs() < 1e-9, "{pve:?}");
 }
 
@@ -187,9 +183,19 @@ fn the_nuisance_is_a_share_of_the_reference_variance_between_states() {
 /// high in the second, and a flat gene, weighted by their mean rates.
 #[test]
 fn the_cell_type_variance_is_the_count_weighted_log_mean_variance_over_spots() {
-    let mean_count = vec![vec![1.0, 2.0], vec![1.0, 4.0]];
+    let mean_count = [vec![1.0, 2.0], vec![1.0, 4.0]];
     let mixture = vec![vec![vec![1.0, 0.0], vec![0.0, 1.0]]];
-    let t = cell_type_log_count_variance(&mean_count, &[0.5, 0.5], &mixture, &[true, true]);
+    let log_mean: Vec<Vec<f64>> = mean_count
+        .iter()
+        .map(|m| m.iter().map(|x: &f64| x.ln()).collect())
+        .collect();
+    let genes = pve_genes(&log_mean, &[0.5, 0.5], &[true, true]);
+    assert_eq!(
+        genes,
+        vec![(1, 3.0), (0, 1.0)],
+        "by mean count, largest first"
+    );
+    let t = cell_type_log_count_variance(&log_mean, &mixture, &genes);
     // gene 1: logs ln 2 and ln 4, population variance (ln 2)² / 4, weight 3 of 4
     let want = 3.0 * std::f64::consts::LN_2.powi(2) / 4.0 / 4.0;
     assert!((t - want).abs() < 1e-12, "{t} vs {want}");
@@ -217,4 +223,20 @@ fn the_parameters_a_reference_replaces_are_refused() {
         "{e}"
     );
     assert!(resolve_params(&parse(&["--set", "pve_donor=0.2"])).is_ok());
+}
+
+/// A cell group that never shows a gene puts it at the group's detection
+/// limit, not at zero: the between-state variance stays that of counts.
+#[test]
+fn a_gene_a_group_never_shows_sits_at_its_detection_limit() {
+    let floor = detection_limit(0.25, 400);
+    assert!((floor - 0.005).abs() < 1e-15, "{floor}");
+    // one state shows the gene at 2, the other never: the log means are
+    // ln 2 and ln 0.005, not ln 2 and −690
+    let log_mean = vec![vec![2f64.ln()], vec![floor.ln()]];
+    let mixture = vec![vec![vec![1.0, 0.0], vec![0.0, 1.0]]];
+    let genes = pve_genes(&log_mean, &[0.5, 0.5], &[true]);
+    let t = cell_type_log_count_variance(&log_mean, &mixture, &genes);
+    let want = ((2.0f64.ln() - floor.ln()) / 2.0).powi(2);
+    assert!((t - want).abs() < 1e-12, "{t} vs {want}");
 }

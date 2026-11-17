@@ -294,19 +294,20 @@ impl GeneCounts {
     }
 }
 
-/// Draw gene `g`'s counts from one shared uniform per receiver, so that
-/// potential counts differ by the effect alone. `planted` is each receiver's
-/// log-rate lift under `T*` before the gene's sign (`θ · u_bin · dose share`),
-/// zero for a receiver that does not respond.
 /// What every gene of a program is drawn on: the field's and markers'
 /// lifts by sign ([`sign_lifts`]), the true exposure, and each receiver's
-/// planted log-rate lift before the gene's sign.
+/// planted log-rate lift under `T*` before the gene's sign
+/// (`θ · u_bin · dose share`), zero for a receiver that does not respond.
 struct ProgramDraw<'a> {
     lifts: &'a [Vec<f64>; 2],
     latent: &'a LatentExposure,
     planted: &'a [f64],
 }
 
+/// Draw gene `g`'s counts from one shared uniform per receiver, so that
+/// potential counts differ by the effect alone; from the reference data when
+/// it has the gene (`reference_data`: it, the gene's position in it, and the
+/// receivers' copula factors).
 fn draw_gene(
     run: &Run<'_>,
     g: usize,
@@ -367,8 +368,9 @@ fn draw_gene_from_reference_data(
         let b = bin[i];
         let m0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
         let own: f64 = StandardNormal.sample(rng);
-        let z = r.copula_latent(j, &copula_factors[i * rank..(i + 1) * rank], own);
-        let u = 0.5 * (-z / std::f64::consts::SQRT_2).compl_error();
+        let factors = copula_factors.get(i * rank..(i + 1) * rank).unwrap_or(&[]);
+        let z = r.copula_latent(j, factors, own);
+        let u = crate::simulate::draw::phi(z);
         let th = s * planted[i];
         let q = |l: f64| r.count_at_quantile(b, j, u, m0 * l.exp(), poisson_quantile);
         let hi = q(th);
@@ -477,13 +479,16 @@ fn draw_program(
         .collect();
     let mut counts = GeneCounts::new(n);
     let mut out = ProgramResponses::new(n);
-    // under reference data, each receiver's copula factors, drawn first
+    // under reference data, each receiver's copula factors, drawn first,
+    // when one of the program's genes is in the copula
     let reference_data = reference_data.zip(run.base.reference_position_of_target);
+    let any_copula_gene = reference_data
+        .is_some_and(|(r, position)| position.iter().flatten().any(|&j| r.in_copula(j)));
     let copula_factors: Vec<f64> = match reference_data {
-        Some((r, _)) => (0..n * r.copula_rank())
+        Some((r, _)) if any_copula_gene => (0..n * r.copula_rank())
             .map(|_| StandardNormal.sample(rng))
             .collect(),
-        None => Vec::new(),
+        _ => Vec::new(),
     };
     let d = ProgramDraw {
         lifts,
