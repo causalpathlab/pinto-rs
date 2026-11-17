@@ -60,7 +60,6 @@ pub struct FeatureExpBatchCache {
 pub fn build_feature_exp_batch_cache(
     activities: &FeatureActiveEdges,
     samplers_per_exp_batch: &[Option<PerBatchUnitSampler>],
-    activity_alpha: f32,
 ) -> FeatureExpBatchCache {
     let n_features = activities.feature_active_edges.len();
     let n_batches = samplers_per_exp_batch.len();
@@ -75,7 +74,6 @@ pub fn build_feature_exp_batch_cache(
                         feature_edges,
                         feature_weights,
                         samplers_per_exp_batch[b].as_ref(),
-                        activity_alpha,
                     )
                 })
                 .collect()
@@ -88,7 +86,6 @@ fn build_entry(
     feature_edges: &[u32],
     feature_weights: &[f32],
     batch_sampler: Option<&PerBatchUnitSampler>,
-    activity_alpha: f32,
 ) -> Option<FeatureExpBatchEntry> {
     let bs = batch_sampler?;
     if feature_edges.is_empty() {
@@ -105,16 +102,8 @@ fn build_entry(
         match a.cmp(&b) {
             std::cmp::Ordering::Equal => {
                 local_edges.push(a);
-                // Stage-2 coverage exponent (bge alpha_pb analog). α=1 keeps
-                // the activity-proportional draw exactly; α<1 flattens toward
-                // uniform over the feature's active edges. Identity fast-path so
-                // the default is bit-for-bit the old behaviour.
-                let w = if activity_alpha == 1.0 {
-                    feature_weights[i]
-                } else {
-                    feature_weights[i].powf(activity_alpha)
-                };
-                local_weights.push(w);
+                // drawn in proportion to the edge's activity
+                local_weights.push(feature_weights[i]);
                 i += 1;
                 j += 1;
             }

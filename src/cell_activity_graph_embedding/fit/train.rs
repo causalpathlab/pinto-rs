@@ -8,7 +8,7 @@
 //! piece.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, CONVERGENCE_TOL, PER_FEATURE_BATCH,
+    CellActivityGraphEmbeddingArgs, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::FeatureGatedChainSampler;
 use crate::cell_activity_graph_embedding::pretrained;
@@ -120,7 +120,7 @@ fn probe_forward<U: Units>(
             feature_ids: &feature_ids,
             row_blocks: &row_blocks,
         },
-        setup.args.nce_objective.to_ge(),
+        graph_embedding_util::loss::NceObjective::Softmax,
         setup.dev,
     )?;
     out.per_feature_level.sum_all()
@@ -427,7 +427,7 @@ pub(super) fn train<U: Units>(
                         feature_ids: &feature_ids_u32[start..end],
                         row_blocks: &row_blocks[start..end],
                     },
-                    args.nce_objective.to_ge(),
+                    graph_embedding_util::loss::NceObjective::Softmax,
                     dev,
                 )?; // [G, L]
                 let w: Vec<f32> = feature_ids[start..end]
@@ -617,32 +617,6 @@ pub(super) fn train<U: Units>(
             total_mass: sample_count as f64,
             mutual_information: mi,
         });
-
-        // Convergence check: if the last `convergence_window` epochs'
-        // mean losses are within [`CONVERGENCE_TOL`] relative range,
-        // exit. `convergence_window == 0` disables.
-        if args.convergence_window > 0 && score_trace.len() >= args.convergence_window {
-            let window = &score_trace[score_trace.len() - args.convergence_window..];
-            let losses: Vec<f64> = window.iter().map(|e| e.score).collect();
-            let mean = losses.iter().sum::<f64>() / (losses.len() as f64);
-            let (lo, hi) = losses
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
-                    (lo.min(v), hi.max(v))
-                });
-            let rel = if mean.abs() > 1e-30 {
-                (hi - lo) / mean.abs()
-            } else {
-                f64::INFINITY
-            };
-            if rel.is_finite() && rel < f64::from(CONVERGENCE_TOL) {
-                info!(
-                    "converged at epoch {}: last {} losses within rel-range {:.4} < tol {:.4}",
-                    epoch, args.convergence_window, rel, CONVERGENCE_TOL
-                );
-                break;
-            }
-        }
 
         if units.done() {
             break 'epochs;

@@ -19,8 +19,8 @@
 //! along `θ_g`, adjacent or not.
 //!
 //! cage's own loss: geu's chain module scores a rank-1 quadratic form and
-//! has no feature-modulated variant left. The per-edge NCE itself is geu's, and
-//! selectable, see [`NceObjective`] and `--nce-objective`.
+//! has no feature-modulated variant left. The per-edge NCE itself is geu's;
+//! cage trains with its softmax objective ([`NceObjective`]).
 //!
 //! cage-cell trains a row per cell pair instead ([`cage_cell_edge_nce_loss`]):
 //! `s(e) = θ_g · z_e + b_u + b_v`, its negatives other pairs of the batch,
