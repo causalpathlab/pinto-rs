@@ -265,7 +265,6 @@ enum Commands {
             "View a pinto run's cells and communities on the tissue.\n\n\
              Reads {{prefix}}.pinto.json and the parquet files it lists:\n\
              \x20 cells            every cell's coordinates and batch label\n\
-             \x20                  (older runs: from coord_pairs)\n\
              \x20 propensity       per-cell community mixture, per level\n\
              \x20 link_community   per-edge community labels\n\n\
              Batches share one coordinate frame, so they are tiled\n\

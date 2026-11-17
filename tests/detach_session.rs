@@ -2,7 +2,7 @@
 //! pseudo-terminals standing in for the user's: each starts hosted, a
 //! detach leaves it running and asks for a name, an attach from another
 //! terminal repaints it, a TUI started under a session's marker runs
-//! plain, and `pinto kill` stops it through its own quit path, leaving no
+//! plain, and `pinto session kill` stops it through its own quit path, leaving no
 //! process, socket or label behind. `--no-detach` runs plain, as before.
 
 #![cfg(all(unix, feature = "view"))]
@@ -25,10 +25,16 @@ const SIZE: Size = Size {
     height: 800,
 };
 
+/// The tool pinto's sessions belong to, as `src/tui` names it: listed
+/// and killed under `pinto session`.
+const TOOL: legume_tui::Tool = legume_tui::Tool::new("pinto").with_session_verb("session");
+
 /// A private directory for pinto's sessions; a session a failed test left
 /// running is killed with it.
 fn private() -> Private {
-    Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(30))
+    Private::new(env!("CARGO_BIN_EXE_pinto"))
+        .tool(TOOL)
+        .patience(Duration::from_secs(30))
 }
 
 fn term(dir: &Private, args: &[&str], env: &[(&str, &str)]) -> Term {
@@ -91,7 +97,7 @@ fn run_detaches_attaches_and_is_killed_through_its_quit_path() {
     // enter there, and the help says so.
     let replies = Replies::plain().keyboard(0);
     let setup = Setup::new().size(size).replies(replies);
-    let mut second = dir.term_with(&["attach"], &[], setup);
+    let mut second = dir.term_with(&["session", "attach"], &[], setup);
     for tab in ["1 Data", "2 Methods", PAINTED] {
         second.wait_screen(tab);
     }
@@ -118,17 +124,19 @@ fn run_detaches_attaches_and_is_killed_through_its_quit_path() {
     second.wait_for("Detached pinto-run-1.");
 
     // Renamed from a shell: listed and found by its label.
-    let said = dir.run(&["rename", "run-1", "fits"]);
+    let said = dir.run(&["session", "rename", "run-1", "fits"]);
     assert!(said.contains("pinto-run-1 is now fits"), "{said:?}");
     dir.wait_listed("fits (pinto-run-1)\tdetached");
 
     // Killed: it quits as ctrl+c does, and leaves nothing behind.
-    let said = dir.run(&["kill", "fits"]);
+    let said = dir.run(&["session", "kill", "fits"]);
     assert!(said.contains("pinto-run-1 stopped"), "{said:?}");
     assert!(dir.sockets().is_empty());
     assert!(dir.is_empty(), "no label or status left");
     dir.gone(pid);
-    assert!(dir.run(&["sessions"]).contains("no live pinto sessions"));
+    assert!(dir
+        .run(&["session", "list"])
+        .contains("no live pinto sessions"));
 }
 
 #[test]
@@ -157,7 +165,9 @@ fn run_and_view_opted_out_run_plain() {
         }
         assert!(!plain.cooked());
         assert!(dir.sockets().is_empty(), "{args:?} {env:?}");
-        assert!(dir.run(&["sessions"]).contains("no live pinto sessions"));
+        assert!(dir
+            .run(&["session", "list"])
+            .contains("no live pinto sessions"));
         assert!(!plain.text().contains("\x1b_Ga=d,d=A"), "no client's reset");
         // No session, no session keys on the screen.
         assert!(!plain.text().contains("ctrl+alt+d"), "{args:?}");
@@ -253,7 +263,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     // Back by its label on another terminal: the screen repainted whole
     // after the client's reset, the terminal asked again and the mouse on
     // once more. This one says it is light: the map is drawn light.
-    let mut second = term_answering(&dir, &["attach", "tissue"], &[], light());
+    let mut second = term_answering(&dir, &["session", "attach", "tissue"], &[], light());
     second.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
     let reset = second.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();
     let asked = query_at(&second, reset);
@@ -266,7 +276,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     dir.wait_listed("tissue (pinto-view-1)\tdetached");
 
     // On one that shows kitty's images, the map is sent as one.
-    let mut third = term_answering(&dir, &["attach", "tissue"], &[], kitty_light());
+    let mut third = term_answering(&dir, &["session", "attach", "tissue"], &[], kitty_light());
     third.wait_for("\x1b[?1049h\x1b[H\x1b[2J");
     let reset = third.text().find("\x1b[?1049h\x1b[H\x1b[2J").unwrap();
     let asked = query_at(&third, reset);
@@ -279,7 +289,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
 
     // Killed while attached: it quits as ctrl+c does, the client ends with
     // it, and nothing is left, kitty's files among it.
-    let said = dir.run(&["kill", "tissue"]);
+    let said = dir.run(&["session", "kill", "tissue"]);
     assert!(said.contains("pinto-view-1 stopped"), "{said:?}");
     assert_eq!(third.exit_code(), 0);
     assert!(third.cooked(), "terminal restored after the program ended");
@@ -353,7 +363,7 @@ fn a_kill_while_detached_stops_lupin_and_removes_kittys_files() {
 
     // Killed with no terminal there: lupin is stopped before it writes,
     // and the files kitty never read are gone with the view.
-    let said = dir.run(&["kill", "view-1"]);
+    let said = dir.run(&["session", "kill", "view-1"]);
     assert!(said.contains("pinto-view-1 stopped"), "{said:?}");
     dir.gone(pid);
     assert!(kitty_files(tmp.path()).is_empty());
@@ -383,7 +393,7 @@ fn the_run_browser_comes_back_on_attach_and_stops_on_kill() {
     detach(&dir, &mut second, "pinto-view-1");
 
     // Killed while detached: the browser gives up as on ctrl+c.
-    let said = dir.run(&["kill", "view-1"]);
+    let said = dir.run(&["session", "kill", "view-1"]);
     assert!(said.contains("pinto-view-1 stopped"), "{said:?}");
     assert!(dir.sockets().is_empty());
     dir.gone(pid);

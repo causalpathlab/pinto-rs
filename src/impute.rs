@@ -148,7 +148,7 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
     let reference_files = resolve_reference_data(args, run.as_ref())?;
     // A cage model's reference cells are divided by the run's δ, as predict
     // divides the query. So are an lc / dsvd model's, when its manifest says
-    // its profiles are batch-adjusted, its query divided alike; an older one
+    // its profiles are batch-adjusted, its query divided alike; any other
     // matches raw counts to raw profiles.
     let (query_prop, query_cells, ref_prop, ref_data, divide) = if is_cage {
         let (query_prop, query_cells, ref_prop, ref_data) =

@@ -125,8 +125,7 @@ impl Run {
     /// An output the manifest records as `recorded`, found without the
     /// working directory: the recorded path when absolute, beside the
     /// manifest when relative. A record that names the run's own
-    /// `{prefix}.{suffix}` as the fit's prefix had it (an older manifest,
-    /// relative to the directory it was fitted from, or a run moved since)
+    /// `{prefix}.{suffix}` as the fit's prefix had it (a run moved since)
     /// is also found at the run's own file under its prefix now; any other
     /// record is not, so a stale file under the prefix is never taken for
     /// a recorded one that is gone. `None` when the manifest records none;
@@ -492,11 +491,9 @@ pub struct OutputFiles {
     pub coord_pairs: Option<String>,
 
     /// Bare coordinate column basenames (without the `left_`/`right_`
-    /// prefix) that the writer emitted alongside `coord_pairs`. The
-    /// reader uses these in fixed order — `[x, y]` — instead of the
-    /// fragile auto-discovery over `left_*` schema fields.
-    /// `None` for older runs that pre-date this field; readers fall
-    /// back to auto-discovery in that case.
+    /// prefix) that the writer emitted alongside `coord_pairs`, in the
+    /// order readers take them: `[x, y]`.
+    /// `None` for a run without coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coord_columns: Option<Vec<String>>,
 
@@ -518,7 +515,7 @@ pub struct OutputFiles {
 
     /// Every feature_community the run wrote (its levels' too) was fitted
     /// on counts divided by its batch effect, `batch_effects`. Absent: on
-    /// the counts as read (one batch, `--ignore-batch`, or an older run).
+    /// the counts as read (one batch or `--ignore-batch`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub feature_community_batch_adjusted: bool,
 

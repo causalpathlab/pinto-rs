@@ -294,7 +294,7 @@ impl QueryReader {
 /// estimate. `--ignore-batch` (no δ) is refused for it, since an undivided
 /// query is not on the scale of its dictionary or its encoder, with what
 /// `reader` does without it; a model without the flag (one batch,
-/// `--ignore-batch`, an older fit) takes it.
+/// `--ignore-batch`) takes it.
 pub(crate) fn batch_adjusted(
     model: &str,
     run: Option<&crate::util::metadata::Run>,

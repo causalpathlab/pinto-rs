@@ -407,9 +407,6 @@ fn lra_identity_genes_are_one_line_and_read_back() {
     let odd = options(&["A,B", "C"]);
     let json = serde_json::to_string(&odd).unwrap();
     assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), odd);
-    let old: LraOptions = serde_json::from_str(r#"{"seed": 42}"#).unwrap();
-    assert!(old.identity_excluded.is_empty());
-    assert!(!serde_json::to_string(&old).unwrap().contains("identity"));
 }
 
 /// `--marginal-baselines` is recorded with where its cell types came from

@@ -214,16 +214,4 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
     assert_eq!(lra.subsets.len(), 2);
     assert_eq!(lra.subsets[0].pairs, 3);
     assert_eq!(lra.subsets[1].table, "/r/run.lra.only-reca44.parquet");
-    // A manifest from before subsets reads, and writes none.
-    let old: PintoMetadata = serde_json::from_str(
-        r#"{"command":"lc","version":"0.16.3","timestamp":"0","prefix":"run","n_cells":1,
-            "n_features":1,"outputs":{"lra":{"table":"t"}}}"#,
-    )
-    .unwrap();
-    assert!(old.outputs.lra.subsets.is_empty() && old.outputs.lra.options.is_none());
-    let text = serde_json::to_string(&old).unwrap();
-    assert!(
-        !text.contains("subsets") && !text.contains("options"),
-        "{text}"
-    );
 }

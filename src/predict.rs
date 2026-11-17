@@ -391,7 +391,7 @@ pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
 
 /// The δ of the model at prefix `model` (its manifest `run`) and its path,
 /// when it has one and `--ignore-batch` is not given. A model without one
-/// (one batch, `--ignore-batch`, or an older cage-cell fit) trained its
+/// (one batch or `--ignore-batch`) trained its
 /// encoder on undivided counts, so its query is not divided either. A
 /// model whose manifest says its dictionary is batch-adjusted refuses
 /// `--ignore-batch` ([`delta::batch_adjusted`]).
@@ -470,7 +470,7 @@ pub fn predict_cage(
         None => BatchEstimate::Skip,
     };
     // A model whose dictionary is batch-adjusted has its query's written
-    // alike; an older one's stays on the counts as read.
+    // alike; any other's stays on the counts as read.
     let model_adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
@@ -857,9 +857,9 @@ pub fn predict_cage(
 }
 
 /// The data files a model's manifest `run` records (none without one).
-/// Fits record them canonical; an older manifest's relative entry is
-/// resolved beside the manifest, else from here, and kept as written when
-/// it resolves in neither.
+/// Fits record them canonical; a relative entry is resolved beside the
+/// manifest, else from here, and kept as written when it resolves in
+/// neither.
 pub(crate) fn model_data_files(run: Option<&Run>) -> Vec<String> {
     let Some(run) = run else {
         return Vec::new();
