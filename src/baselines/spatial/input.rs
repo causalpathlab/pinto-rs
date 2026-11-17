@@ -69,6 +69,11 @@ pub struct SpatialInputArgs {
     #[command(flatten)]
     pub collapse: CollapseArgs,
 
+    /// A stage-2 fit's `--offset`, as lc, dsvd and cage take it: the counts
+    /// are divided by the stage-1 divisor in place of a δ.
+    #[command(flatten)]
+    pub stage2: crate::util::input::OffsetArgs,
+
     /// Header row index in coordinate files (default: detected)
     #[arg(long, hide = true)]
     pub coord_header_row: Option<usize>,
@@ -343,6 +348,10 @@ impl SpatialInputArgs {
         check: Option<(&Budget, usize)>,
     ) -> anyhow::Result<SpatialData> {
         self.collapse.check()?;
+        let offset = self.stage2.offset.as_deref();
+        if let Some(dir) = offset {
+            crate::util::stage1_divisor::refuse_batch_options(dir, &self.batch, &self.collapse)?;
+        }
         let mut srt = read_data_with_coordinates(SRTReadArgs {
             data_files: self.data_files.clone(),
             coord_files: self.coord_files.clone(),
@@ -372,7 +381,11 @@ impl SpatialInputArgs {
         }
         let cells = srt.data.column_names()?;
         let genes = srt.data.row_names()?;
-        let mut estimate = (!self.batch.ignore_batch)
+        // a stage-2 fit divides by the stage-1 divisor and takes no δ
+        let stage1 = offset
+            .map(|dir| crate::util::stage1_divisor::Stage1Divisor::load(dir, &cells, &genes))
+            .transpose()?;
+        let mut estimate = (!self.batch.ignore_batch && stage1.is_none())
             .then(|| self.estimate_delta(&mut srt.data, &srt.batches, with_projection))
             .transpose()?
             .flatten()
@@ -382,6 +395,14 @@ impl SpatialInputArgs {
         // δ, the batch-corrected one its estimate collapsed on
         let projection = match estimate.as_mut().and_then(|e| e.projection.take()) {
             Some(proj) => Some(proj.proj),
+            // pinto divides, then projects
+            None if with_projection && stage1.is_some() => Some(
+                stage1
+                    .as_ref()
+                    .expect("a stage-1 divisor")
+                    .project_columns(&srt.data, self.collapse.proj_dim, None)?
+                    .proj,
+            ),
             None if with_projection => Some(
                 srt.data
                     .project_columns_with_batch_correction::<Box<str>>(
@@ -405,8 +426,12 @@ impl SpatialInputArgs {
         let counts = read_columns_divided(
             &srt.data,
             0..cells.len(),
-            mean.as_ref()
-                .map(crate::util::batch_effects::Divisor::Registered),
+            match stage1.as_ref() {
+                Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
+                None => mean
+                    .as_ref()
+                    .map(crate::util::batch_effects::Divisor::Registered),
+            },
         )?;
         drop(srt.data);
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
