@@ -113,7 +113,6 @@ fn predict_and_impute_on_one_model() {
     file_batches_are_named_by_their_stems(&t);
     predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones(&t);
     impute_divides_the_reference_by_the_runs_delta(&t);
-    an_older_models_positional_batches_match_by_its_files(&t);
     a_model_without_a_delta_divides_nothing(&t);
 }
 
@@ -431,39 +430,4 @@ fn data_files_of_one_stem_are_refused() {
     .unwrap_err();
     let e = format!("{e:#}");
     assert!(e.contains("same name s1"), "{e}");
-}
-
-/// A model an older pinto fitted named its file batches by position
-/// (`0`, `1`): a query file of one of its data files' stems still takes
-/// that file's δ, whether the manifest says `files` or records nothing.
-///
-/// It renames the model's δ batches, so it runs after the steps that read
-/// them by name.
-fn an_older_models_positional_batches_match_by_its_files(t: &Trained) {
-    use crate::util::metadata::{BatchLabels, PintoMetadata};
-    let Trained {
-        dir,
-        s2,
-        training,
-        model,
-        ..
-    } = t;
-    let path = format!("{model}.delta.parquet");
-    let mut delta = read_delta(&path).unwrap();
-    delta.batches = vec!["0".into(), "1".into()];
-    delta.write(&path).unwrap();
-    let manifest = std::path::PathBuf::from(crate::util::metadata::manifest_path(model));
-    for (i, labels) in [Some(BatchLabels::FilePositions), None]
-        .into_iter()
-        .enumerate()
-    {
-        let mut meta = PintoMetadata::read(&manifest).unwrap();
-        meta.batch_labels = labels;
-        meta.write(&manifest).unwrap();
-        let query = predict(dir, (&s2.0, &s2.1), model, training, &format!("query{i}"));
-        assert!(
-            takes_models_column(&query, &delta, "1"),
-            "{labels:?}: s2 did not take the older model's batch 1"
-        );
-    }
 }

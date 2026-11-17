@@ -610,23 +610,11 @@ pub fn read_propensity(
     Ok((prop, cluster, entropy, rows))
 }
 
-/// Parse a community-column / community-label string into its integer ID.
-///
-/// Accepts the current `C{c}` schema and two legacy forms — bare integer
-/// (`"5"`, older `pinto fit lc`) and `propensity_{c}` (older `pinto apply propensity`)
-/// — so existing parquets on disk still load. Returns `None` for anything
-/// else (e.g. `"entropy"`, coord names, malformed labels).
+/// Parse a community-column / community-label string into its integer ID:
+/// `C{c}`, or a bare integer (as the viewer names layers). Returns `None`
+/// for anything else (e.g. `"entropy"`, coord names, malformed labels).
 pub(crate) fn parse_community_col_name(name: &str) -> Option<i64> {
-    if let Some(rest) = name.strip_prefix('C') {
-        return rest.parse::<i64>().ok();
-    }
-    if let Some(rest) = name.strip_prefix("propensity_") {
-        return rest.parse::<i64>().ok();
-    }
-    if let Some(rest) = name.strip_prefix("cluster_") {
-        return rest.parse::<i64>().ok();
-    }
-    name.parse::<i64>().ok()
+    name.strip_prefix('C').unwrap_or(name).parse::<i64>().ok()
 }
 
 fn argmax_row(mat: &Mat, row: usize, cols: &[usize]) -> i64 {

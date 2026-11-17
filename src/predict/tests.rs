@@ -143,60 +143,6 @@ mod batch_effects {
         );
     }
 
-    /// An older model named its file batches by position (its manifest
-    /// says `files`, or records nothing and the labels are exactly its
-    /// files' positions): a query file is the batch of the model's data
-    /// file it is, through links, whatever either is called. A file that
-    /// only shares a name with one is not it.
-    #[test]
-    fn an_older_models_positions_match_the_query_file_that_is_its_file() {
-        use BatchLabels::{FilePositions, Files};
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        let (a, b) = (touch(d, "real/a.zarr"), touch(d, "real/b.zarr"));
-        let files = vec![canonical(&a), canonical(&b)];
-        let model = boxed(&["1", "0"]);
-        // s1 is b under another name; the other a is another file
-        let s1 = link(d, "links/s1.zarr", &b);
-        let other_a = touch(d, "other/a.zarr");
-        let q = boxed(&["s1", "a"]);
-        for source in [Some(FilePositions), None] {
-            let m = naming(source, &files);
-            assert_eq!(
-                match_batches(&q, &query(&[&s1, &a]), &model, &m),
-                [Some(0), Some(1)],
-                "{source:?}"
-            );
-            assert_eq!(
-                match_batches(&q, &query(&[&s1, &other_a]), &model, &m),
-                [Some(0), None],
-                "{source:?}: a file named as the model's a but not it"
-            );
-        }
-        // a model of this pinto whose files are named 0 and 1 is matched
-        // by name
-        let named = query(&[&touch(d, "q/1.zarr")]);
-        assert_eq!(
-            match_batches(&boxed(&["1"]), &named, &model, &naming(Some(Files), &files)),
-            [Some(0)]
-        );
-    }
-
-    /// An older model whose manifest records no data files names no file
-    /// batch: a query file named like one of its positions is new.
-    #[test]
-    fn an_older_model_without_its_files_shares_no_file_batch() {
-        let model = boxed(&["0", "1"]);
-        let q = query(&["d/0.zarr", "d/1.zarr"]);
-        for source in [Some(BatchLabels::FilePositions), None] {
-            assert_eq!(
-                match_batches(&boxed(&["0", "1"]), &q, &model, &naming(source, &[])),
-                [None, None],
-                "{source:?}"
-            );
-        }
-    }
-
     /// A model that records nothing of how it labelled its batches matches
     /// `--batch-files` labels by name, even labels that read as its files'
     /// positions; a file's batch only through its files.

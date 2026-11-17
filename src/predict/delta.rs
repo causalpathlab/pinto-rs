@@ -21,8 +21,7 @@ use std::path::Path;
 /// query's batches to them.
 #[derive(Debug, Default)]
 pub(crate) struct ModelNaming {
-    /// What named them; `None` on a manifest that does not record it (an
-    /// older fit).
+    /// What named them; `None` on a manifest that does not record it.
     pub source: Option<BatchLabels>,
     /// Its data files as its manifest records them (canonical), found from
     /// here.
@@ -46,20 +45,6 @@ impl ModelNaming {
         }
     }
 
-    /// Whether the model named its batches `model` by file position (`0`,
-    /// `1`, …), as an older pinto did: as its manifest records, else when
-    /// the labels are exactly the positions of its data files.
-    fn by_position(&self, model: &[Box<str>]) -> bool {
-        match self.source {
-            Some(source) => source == BatchLabels::FilePositions,
-            None => {
-                model.len() == self.files.len()
-                    && (0..self.files.len())
-                        .all(|i| model.iter().any(|m| m.as_ref() == i.to_string()))
-            }
-        }
-    }
-
     /// Whether a query labelled by `source` can share a batch with the
     /// model at all: decided without reading the query's labels.
     fn may_share(&self, source: BatchLabels) -> bool {
@@ -67,7 +52,7 @@ impl ModelNaming {
         match source {
             AutoBatch => false,
             BatchFiles => matches!(self.source, Some(BatchFiles) | None),
-            Files | FilePositions => matches!(self.source, Some(Files | FilePositions) | None),
+            Files => self.source == Some(Files),
         }
     }
 }
@@ -75,11 +60,9 @@ impl ModelNaming {
 /// For each query batch label, the model's batch it is, if any, for a
 /// query with inputs `c` and a model with batches `model`, named as
 /// `naming` says. `--batch-files` labels are the model batch of that name
-/// when the model is labelled so too, or records nothing (an older fit).
-/// A file's batch is the model's of the same name when the model named its
-/// batches by file too; an older pinto's, named by position, is the batch
-/// of the model's data file that is the query's file, through links.
-/// `--auto-batch` components are never the model's.
+/// when the model is labelled so too, or records nothing. A file's batch
+/// is the model's of the same name when the model named its batches by
+/// file too. `--auto-batch` components are never the model's.
 pub(crate) fn match_batches(
     query: &[Box<str>],
     c: &SrtInputArgs,
@@ -91,18 +74,6 @@ pub(crate) fn match_batches(
     match BatchLabels::of(&c.batch) {
         BatchLabels::BatchFiles if naming.may_share(BatchLabels::BatchFiles) => by_name(),
         BatchLabels::Files if naming.source == Some(BatchLabels::Files) => by_name(),
-        BatchLabels::Files if naming.by_position(model) => {
-            let names = data_file_names(&c.data_files).unwrap_or_default();
-            query
-                .iter()
-                .map(|q| {
-                    let file = c.data_files.get(names.iter().position(|n| n == q)?)?;
-                    let i = (naming.files.iter())
-                        .position(|m| same_file(Path::new(m), Path::new(file.as_ref())))?;
-                    col_of(&i.to_string())
-                })
-                .collect()
-        }
         _ => vec![None; query.len()],
     }
 }
@@ -162,7 +133,7 @@ pub(crate) fn every_batch_known(
             }
             labels.into_iter().collect()
         }
-        BatchLabels::Files | BatchLabels::FilePositions => {
+        BatchLabels::Files => {
             let names = data_file_names(&c.data_files)?;
             if naming.source == Some(BatchLabels::Files) {
                 for (file, model_file) in renamed_files(&c.data_files, &names, naming) {

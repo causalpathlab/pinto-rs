@@ -100,19 +100,6 @@ pub(crate) fn visit_link_community(
     Ok(total_counts)
 }
 
-/// Feature-community column names, current first, then the names older runs
-/// wrote (`{prefix}.gene_topic.parquet` had `gene` and `topic`).
-const FEATURE_NAME_COLS: [&str; 2] = ["feature", "gene"];
-const COMMUNITY_COLS: [&str; 2] = ["community", "topic"];
-
-/// The first of `names` the schema has.
-fn first_present(
-    names: &[&'static str],
-    schema: &HashMap<Box<str>, usize>,
-) -> Option<&'static str> {
-    names.iter().copied().find(|c| schema.contains_key(*c))
-}
-
 /// Read a feature_community parquet: G × K. Returns (mat, feature_names).
 ///
 /// `pinto fit lc` writes this file in *melted* form (one row per
@@ -135,19 +122,15 @@ pub fn read_feature_community(path: &Path) -> anyhow::Result<(Mat, Vec<Box<str>>
         .map(|(i, f)| (f.name().to_string().into_boxed_str(), i))
         .collect();
 
-    // lc writes long format: (feature, community, mean) triples. cage /
-    // cage-mcmc write `feature_dictionary.parquet` in wide format:
-    // one row per feature, one column per cluster. Dispatch on schema.
-    let name_col = first_present(&FEATURE_NAME_COLS, &name_to_idx);
-    let community_col = first_present(&COMMUNITY_COLS, &name_to_idx);
-    let (Some(name_col), Some(community_col), true) =
-        (name_col, community_col, name_to_idx.contains_key("mean"))
-    else {
-        return read_feature_community_wide(path, &reader, &name_to_idx);
+    let column = |name: &str| {
+        name_to_idx
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("{path_str}: feature_community has no `{name}` column"))
     };
-    let feature_idx = name_to_idx[&Box::<str>::from(name_col)];
-    let community_idx = name_to_idx[&Box::<str>::from(community_col)];
-    let mean_idx = name_to_idx[&Box::<str>::from("mean")];
+    let feature_idx = column("feature")?;
+    let community_idx = column("community")?;
+    let mean_idx = column("mean")?;
 
     let mut feature_pos: HashMap<Box<str>, usize> = HashMap::default();
     let mut feature_names: Vec<Box<str>> = Vec::new();
@@ -223,75 +206,6 @@ pub fn read_feature_community(path: &Path) -> anyhow::Result<(Mat, Vec<Box<str>>
     for (g, c_old, v) in triples {
         let c_new = new_index[&c_old];
         mat[(g, c_new)] = v;
-    }
-    Ok((mat, feature_names))
-}
-
-/// Wide-format `feature_dictionary.parquet` (cage / cage-mcmc):
-/// one row per feature, row-name column `feature`/`feature`, plus
-/// per-cluster columns (`cluster_<k>` / `C<k>` / bare ints). Returns
-/// `[G × K]` matrix and feature names; matrix column j corresponds to
-/// the cluster ID parsed from the column name (zero-filled gaps).
-fn read_feature_community_wide(
-    path: &Path,
-    reader: &SerializedFileReader<File>,
-    name_to_idx: &HashMap<Box<str>, usize>,
-) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
-    let path_str = path.to_str().unwrap_or("<non-utf8>");
-
-    let Some(name_col) = first_present(&FEATURE_NAME_COLS, name_to_idx) else {
-        anyhow::bail!(
-            "{path_str}: feature dictionary is missing the row-name column \
-             (expected `feature` or `gene`)"
-        );
-    };
-    let name_col_label: Box<str> = name_col.into();
-    let name_idx = name_to_idx[&name_col_label];
-
-    let mut col_to_community: Vec<(usize, i64)> = Vec::new();
-    for (name, &idx) in name_to_idx {
-        if name.as_ref() == name_col_label.as_ref() {
-            continue;
-        }
-        if let Some(c) = parse_community_col_name(name) {
-            col_to_community.push((idx, c));
-        }
-    }
-    anyhow::ensure!(
-        !col_to_community.is_empty(),
-        "{path_str}: feature dictionary has no community-named columns \
-         (expected `cluster_<k>` / `C<k>` / `propensity_<k>`)"
-    );
-    let max_c = col_to_community.iter().map(|&(_, c)| c).max().unwrap();
-    anyhow::ensure!(
-        max_c >= 0,
-        "{path_str}: feature dictionary has negative community ID {max_c}"
-    );
-    let n_communities = (max_c + 1) as usize;
-
-    let mut feature_names: Vec<Box<str>> = Vec::new();
-    let mut rows: Vec<Vec<f32>> = Vec::new();
-    for record in reader.get_row_iter(None)? {
-        let row = record?;
-        let g = row.get_string(name_idx)?.clone().into_boxed_str();
-        let mut r = vec![0.0f32; n_communities];
-        for &(idx, c) in &col_to_community {
-            let v = row
-                .get_float(idx)
-                .or_else(|_| row.get_double(idx).map(|v| v as f32))
-                .unwrap_or(0.0);
-            r[c as usize] = v;
-        }
-        feature_names.push(g);
-        rows.push(r);
-    }
-
-    let n_features = feature_names.len();
-    let mut mat = Mat::zeros(n_features, n_communities);
-    for (i, r) in rows.into_iter().enumerate() {
-        for (j, v) in r.into_iter().enumerate() {
-            mat[(i, j)] = v;
-        }
     }
     Ok((mat, feature_names))
 }
