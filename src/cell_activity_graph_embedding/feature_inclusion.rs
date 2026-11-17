@@ -100,19 +100,9 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
 /// Each column of `pooled` (features × units, raw counts) as a sparse,
 /// log-normalised profile (see [`log_normalise`]).
 pub fn normalised_profiles(pooled: &Mat) -> Vec<Vec<(u32, f32)>> {
-    pooled
-        .column_iter()
-        .map(|col| {
-            let mut p: Vec<(u32, f32)> = col
-                .iter()
-                .enumerate()
-                .filter(|&(_, &v)| v > 0.0)
-                .map(|(f, &v)| (f as u32, v))
-                .collect();
-            log_normalise(&mut p);
-            p
-        })
-        .collect()
+    let mut profiles = raw_profiles(pooled);
+    profiles.iter_mut().for_each(|p| log_normalise(p));
+    profiles
 }
 
 /// Each cell's tile in a `tiles × tiles` grid over the bounding box of
@@ -525,8 +515,9 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
 /// (`[units × K]` row-major) and its stage-1 batch `b(u)`, so
 /// `μ_ug = w_uᵀ p_{b(u)}(g)` (exact for a unit within one stage-1 batch, the
 /// unit's majority batch otherwise).
-pub struct PearsonUnits<'a, P> {
-    pub counts: &'a [P],
+pub struct PearsonUnits<'a> {
+    /// Each unit's raw counts, scaled by `1/σ` in place when scored.
+    pub counts: Vec<Vec<(u32, f32)>>,
     pub w: &'a [f32],
     pub batch: &'a [usize],
     pub stage1: &'a Stage1Divisor,
@@ -694,9 +685,9 @@ impl NeighbourScratch {
 /// per block and per row of edges as [`section_jack`] keeps them. Nothing
 /// is dense over units × features: a unit costs its nonzeros times its few
 /// neighbour sums, `K` each, and `K²` per neighbour sum.
-pub fn section_jack_pearson<P: AsRef<[(u32, f32)]> + Sync>(
+pub fn section_jack_pearson(
     n_features: usize,
-    units: &PearsonUnits<'_, P>,
+    units: PearsonUnits<'_>,
     block: &[usize],
     edges: &[(usize, usize)],
 ) -> SectionJack {
@@ -719,18 +710,13 @@ pub fn section_jack_pearson<P: AsRef<[(u32, f32)]> + Sync>(
         .map(|b| batches.binary_search(b).expect("a unit's batch"))
         .collect();
 
-    // a = y / σ, the nonzero part of r
-    let a: Vec<Vec<(u32, f32)>> = (0..n_units)
-        .into_par_iter()
-        .map(|u| {
-            let b = units.batch[u];
-            units.counts[u]
-                .as_ref()
-                .iter()
-                .map(|&(f, y)| (f, (f64::from(y) * inv_sigma(s1, f as usize, b)) as f32))
-                .collect()
-        })
-        .collect();
+    // a = y / σ, the nonzero part of r, in place of the counts
+    let mut a = units.counts;
+    a.par_iter_mut().zip(units.batch).for_each(|(row, &b)| {
+        for (f, y) in row.iter_mut() {
+            *y = (f64::from(*y) * inv_sigma(s1, *f as usize, b)) as f32;
+        }
+    });
     let mut raw = raw_sums(g, &a, &block, edges);
 
     // each unit's neighbours
@@ -1080,17 +1066,8 @@ pub fn pb_inclusion(
         drop(counts);
         let k = s1.k();
         let mut w = vec![0f32; n_pb * k];
-        let mut scratch = vec![0f32; k];
         for (cell, &u) in pb.cell_to_pb.iter().enumerate() {
-            let n = s1.total(cell);
-            scratch
-                .iter_mut()
-                .zip(s1.theta(cell))
-                .for_each(|(s, &t)| *s = n * t);
-            w[u * k..(u + 1) * k]
-                .iter_mut()
-                .zip(&scratch)
-                .for_each(|(x, y)| *x += y);
+            s1.add_mixture(cell, &mut w[u * k..(u + 1) * k]);
         }
         let cell_batch: Vec<u32> = (0..s1.n_cells()).map(|i| s1.batch_of(i) as u32).collect();
         let (pb_batch, _) = majority_label(pb.cell_to_pb, n_pb, &cell_batch, s1.n_batches());
@@ -1101,7 +1078,7 @@ pub fn pb_inclusion(
             pb.edges,
             "units",
             |units, es| {
-                let counts: Vec<&[(u32, f32)]> = units.iter().map(|&u| raw[u].as_slice()).collect();
+                let counts: Vec<Vec<(u32, f32)>> = units.iter().map(|&u| raw[u].clone()).collect();
                 let wl: Vec<f32> = units
                     .iter()
                     .flat_map(|&u| w[u * k..(u + 1) * k].iter().copied())
@@ -1109,12 +1086,12 @@ pub fn pb_inclusion(
                 let batch: Vec<usize> = units.iter().map(|&u| pb_batch[u]).collect();
                 let bl: Vec<usize> = units.iter().map(|&u| block[u]).collect();
                 let pu = PearsonUnits {
-                    counts: &counts,
+                    counts,
                     w: &wl,
                     batch: &batch,
                     stage1: s1,
                 };
-                Ok(section_jack_pearson(axis.n_features(), &pu, &bl, es))
+                Ok(section_jack_pearson(axis.n_features(), pu, &bl, es))
             },
         );
     }
@@ -1143,7 +1120,7 @@ fn raw_profiles(counts: &Mat) -> Vec<Vec<(u32, f32)>> {
         .map(|col| {
             col.iter()
                 .enumerate()
-                .filter(|&(_, &v)| v != 0.0)
+                .filter(|&(_, &v)| v > 0.0)
                 .map(|(f, &v)| (f as u32, v))
                 .collect()
         })
@@ -1245,18 +1222,17 @@ pub fn cell_inclusion(
     let k = s1.k();
     score_sections_with(axis.n_features(), section, edges, "cells", |cells, es| {
         let (counts, tiles) = inputs(cells)?;
-        let mut w = Vec::with_capacity(cells.len() * k);
-        for &i in cells {
-            let n = s1.total(i);
-            w.extend(s1.theta(i).iter().map(|&t| n * t));
+        let mut w = vec![0f32; cells.len() * k];
+        for (j, &i) in cells.iter().enumerate() {
+            s1.add_mixture(i, &mut w[j * k..(j + 1) * k]);
         }
         let batch: Vec<usize> = cells.iter().map(|&i| s1.batch_of(i)).collect();
         let pu = PearsonUnits {
-            counts: &counts,
+            counts,
             w: &w,
             batch: &batch,
             stage1: s1,
         };
-        Ok(section_jack_pearson(axis.n_features(), &pu, &tiles, es))
+        Ok(section_jack_pearson(axis.n_features(), pu, &tiles, es))
     })
 }

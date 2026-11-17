@@ -246,6 +246,11 @@ pub struct LinkCommunityStats {
     /// `M_{kg} = Σ_{e: z_e=k} μ_eg`, laid out as `feature_sum`; empty
     /// without one.
     pub offset_sum: Vec<f64>,
+    /// `1 / (M_kg + b)` and `ln(M_kg + b)`, laid out as `offset_sum` and
+    /// kept with it: what the offset score reads for every community but
+    /// the edge's own, so an edge costs no `ln` per community and feature.
+    pub(crate) offset_inv: Vec<f32>,
+    pub(crate) offset_ln: Vec<f32>,
     /// `feature_sum` plus the prior count, feature-major (`g*k + k'`): what scoring
     /// reads, one short run per feature.
     pub(crate) feature_table: LnTable,
@@ -266,6 +271,8 @@ impl LinkCommunityStats {
             edge_count,
             membership: labels.to_vec(),
             offset_sum,
+            offset_inv: Vec::new(),
+            offset_ln: Vec::new(),
             feature_table: LnTable::new(k * m),
         };
         for t in 0..k {
@@ -273,7 +280,26 @@ impl LinkCommunityStats {
                 stats.refresh_cell(t, g);
             }
         }
+        stats.rebuild_offset_cache();
         stats
+    }
+
+    /// `offset_inv` and `offset_ln` from `offset_sum`, every cell.
+    pub(crate) fn rebuild_offset_cache(&mut self) {
+        let n = self.offset_sum.len();
+        self.offset_inv.resize(n, 0.0);
+        self.offset_ln.resize(n, 0.0);
+        for i in 0..n {
+            self.refresh_offset(i);
+        }
+    }
+
+    /// One cell of the offset cache brought up to `offset_sum`.
+    #[inline]
+    fn refresh_offset(&mut self, i: usize) {
+        let x = self.offset_sum[i] + PRIOR_RATE;
+        self.offset_inv[i] = (1.0 / x) as f32;
+        self.offset_ln[i] = x.ln() as f32;
     }
 
     /// Bring one cell of the feature table up to `feature_sum`.
@@ -310,6 +336,8 @@ impl LinkCommunityStats {
             for (g, &x) in mu.iter().enumerate() {
                 self.offset_sum[old_k * m + g] -= f64::from(x);
                 self.offset_sum[new_k * m + g] += f64::from(x);
+                self.refresh_offset(old_k * m + g);
+                self.refresh_offset(new_k * m + g);
             }
         }
 
@@ -417,6 +445,7 @@ impl LinkCommunityStats {
         for ((acc, n), o) in self.offset_sum.iter_mut().zip(new).zip(old) {
             *acc += n - o;
         }
+        self.rebuild_offset_cache();
     }
 
     /// Apply a delta to the sufficient statistics: self += (new - old).
@@ -606,36 +635,42 @@ pub(crate) fn compute_log_probs_for_edge(
         score
     };
 
-    // Under a stage-1 divisor the size term is the offset's (module docs),
-    // community `t`'s given its sums without the edge, `rest` of each.
+    // Under a stage-1 divisor the size term is the offset's (module docs):
+    // community `t` without the edge scores
+    // `Σ_g (D+ε)(ln M − ln(M+μ)) − Σ_g y ln(M+μ)` with `M` its offset sum
+    // plus the prior rate. The first sum is dense, so it reads the cached
+    // `1/M` as `−(D+ε) ln1p(μ/M)`; the second runs over the edge's nonzeros,
+    // `ln(M+μ) = ln M + ln1p(μ/M)`.
     let offset = profiles.offset_row(e);
-    let offset_tail = |mu: &[f32], rest: &[f64], rest_offset: &[f64], count: f64| {
-        let mut score = 0.0;
-        let mut y_at = cols.iter().zip(vals.iter()).peekable();
-        for (g, &x) in mu.iter().enumerate() {
-            let (d, big_m) = (rest[g] + PRIOR_COUNT, rest_offset[g] + PRIOR_RATE);
-            let after = (big_m + f64::from(x)).ln();
-            score += d * (big_m.ln() - after);
-            if let Some((_, &y)) = y_at.next_if(|&(&c, _)| c as usize == g) {
-                score -= f64::from(y) * after;
-            }
-        }
+    let prior = |count: f64| {
         if alpha > 0.0 {
-            score += f64::from(fast_ln((count + prior_a) as f32));
+            f64::from(fast_ln((count + prior_a) as f32))
+        } else {
+            0.0
         }
-        score
+    };
+    let offset_tail = |mu: &[f32], t: usize| {
+        let at = t * m;
+        let (inv, lnm) = (&stats.offset_inv[at..at + m], &stats.offset_ln[at..at + m]);
+        let feat = &stats.feature_sum[at..at + m];
+        let mut dense = 0.0f64;
+        for ((&x, &i), &d) in mu.iter().zip(inv).zip(feat) {
+            dense += (d + PRIOR_COUNT) * f64::from(ln1p_small(x * i));
+        }
+        let mut score = -dense;
+        for (&col, &y) in cols.iter().zip(vals.iter()) {
+            let g = col as usize;
+            score -= f64::from(y) * f64::from(lnm[g] + ln1p_small(mu[g] * inv[g]));
+        }
+        score + prior(stats.edge_count[t] as f64)
     };
 
     // Every community as if it did not hold the edge, one feature at a time.
     for (t, lp) in log_probs.iter_mut().enumerate() {
         *lp = match offset {
             None => tail(stats.size_sum[t], stats.edge_count[t] as f64),
-            Some(mu) => offset_tail(
-                mu,
-                &stats.feature_sum[t * m..(t + 1) * m],
-                &stats.offset_sum[t * m..(t + 1) * m],
-                stats.edge_count[t] as f64,
-            ),
+            Some(_) if t == current_c => 0.0,
+            Some(mu) => offset_tail(mu, t),
         };
     }
     for (&col, &y) in cols.iter().zip(vals.iter()) {
@@ -654,22 +689,21 @@ pub(crate) fn compute_log_probs_for_edge(
             stats.edge_count[current_c] as f64 - 1.0,
         ),
         Some(mu) => {
-            // the current community's sums with the edge taken out
-            let mut rest = features.to_vec();
-            for (&col, &y) in cols.iter().zip(vals.iter()) {
-                rest[col as usize] -= f64::from(y);
+            // the current community with the edge taken out: its rest plus
+            // the edge's `μ` is its whole sum, so `ln(M+μ)` is exact here
+            let at = current_c * m;
+            let off = &stats.offset_sum[at..at + m];
+            let mut score = 0.0;
+            let mut y_at = cols.iter().zip(vals.iter()).peekable();
+            for (g, (&x, &whole)) in mu.iter().zip(off).enumerate() {
+                let y = y_at
+                    .next_if(|&(&c, _)| c as usize == g)
+                    .map_or(0.0, |(_, &y)| f64::from(y));
+                let d = features[g] - y + PRIOR_COUNT;
+                let after = (whole + PRIOR_RATE).ln();
+                score += d * ((whole - f64::from(x) + PRIOR_RATE).ln() - after) - y * after;
             }
-            let rest_offset: Vec<f64> = stats.offset_sum[current_c * m..(current_c + 1) * m]
-                .iter()
-                .zip(mu)
-                .map(|(&s, &x)| s - f64::from(x))
-                .collect();
-            offset_tail(
-                mu,
-                &rest,
-                &rest_offset,
-                stats.edge_count[current_c] as f64 - 1.0,
-            )
+            score + prior(stats.edge_count[current_c] as f64 - 1.0)
         }
     };
     for (&col, &y) in cols.iter().zip(vals.iter()) {
@@ -690,5 +724,17 @@ pub(crate) fn compute_log_probs_for_edge(
             current_c,
             log_probs,
         );
+    }
+}
+
+/// `ln(1 + x)` for `x ≥ 0`, by its series where `x` is small (an edge's
+/// share of a community's expected mass, nearly always), its error there
+/// under `x⁴/4`.
+#[inline]
+fn ln1p_small(x: f32) -> f32 {
+    if x < 0.01 {
+        x * (1.0 - x * (0.5 - x * (1.0 / 3.0)))
+    } else {
+        x.ln_1p()
     }
 }

@@ -64,8 +64,7 @@ use crate::cell_activity_graph_embedding::feature_gating::{
     build_feature_active_fine_edges, ActivityNorm,
 };
 use crate::cell_activity_graph_embedding::pair_projection::{
-    project_pairs, CellLatent, PairBatchDivisor, PairEncoderSpec, PairLatent, PairProjectionArgs,
-    PairSolver, TrainOn,
+    project_pairs, CellLatent, PairEncoderSpec, PairLatent, PairProjectionArgs, PairSolver, TrainOn,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::{
@@ -875,16 +874,11 @@ pub fn fit_cell_activity_graph_embedding(
     // those pairs for link communities, and a cell's propensity as the mix of
     // communities its incident edges carry.
     // Under --offset the stage-1 divisor divides each endpoint as δ would.
-    let pair_batch: Option<crate::util::batch_effects::Divisor<'_>> = match stage1.as_ref() {
-        Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
-        None => batch_db.as_ref().map(|delta| {
-            PairBatchDivisor {
-                delta,
-                batch_of_cell: &batch_membership_u32,
-            }
-            .into()
-        }),
-    };
+    let pair_batch = crate::util::batch_effects::Divisor::of(
+        stage1.as_ref(),
+        batch_db.as_ref(),
+        Some(&batch_membership_u32),
+    );
     let (mut pair_latent, cell_latent) = match (pair_table, fine_to_super) {
         // cage-cell trained each pair's row itself; a cell is the mean of
         // its pairs'. Nothing is fitted again, so there is no pair encoder.

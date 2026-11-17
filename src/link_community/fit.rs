@@ -374,14 +374,11 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         axis: &feature_axis,
         // the written dictionary under the stage-1 divisor: mean counts over
         // `d` (`fit_feature_community_param`)
-        divisor: match stage1.as_ref() {
-            Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
-            None => crate::util::batch_effects::BatchDivisor::of(
-                batch_effects.as_ref(),
-                batch_of_cell.as_deref(),
-            )
-            .map(Into::into),
-        },
+        divisor: crate::util::batch_effects::Divisor::of(
+            stage1.as_ref(),
+            batch_effects.as_ref(),
+            batch_of_cell.as_deref(),
+        ),
     };
     let cascade_result = run_cascade(
         &c.out,

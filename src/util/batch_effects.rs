@@ -680,6 +680,21 @@ impl<'a> From<BatchDivisor<'a>> for Divisor<'a> {
     }
 }
 
+impl<'a> Divisor<'a> {
+    /// What a fit divides by: a stage-2 fit's stage-1 divisor, otherwise
+    /// the batch effect `delta` with each cell's batch, `None` with neither.
+    pub fn of(
+        stage1: Option<&'a crate::util::stage1_divisor::Stage1Divisor>,
+        delta: Option<&'a Mat>,
+        batch_of_cell: Option<&'a [u32]>,
+    ) -> Option<Self> {
+        match stage1 {
+            Some(s1) => Some(Divisor::Stage1(s1)),
+            None => BatchDivisor::of(delta, batch_of_cell).map(Into::into),
+        }
+    }
+}
+
 impl Divisor<'_> {
     /// The rows it divides, to check against the data's.
     pub fn n_rows(&self) -> usize {
@@ -720,19 +735,11 @@ impl Divisor<'_> {
     }
 
     /// One cell's values over `rows` divided by the self-normalising
-    /// Poisson ratio; `registered` is the cell's batch under
-    /// [`Divisor::Registered`].
-    pub fn ratio_column(
-        &self,
-        rows: &[usize],
-        vals: &mut [f32],
-        cell: usize,
-        registered: Option<usize>,
-    ) {
+    /// Poisson ratio. A registered δ names no cell's batch, so it has none.
+    pub fn ratio_column(&self, rows: &[usize], vals: &mut [f32], cell: usize) {
         match self {
-            Divisor::Registered(delta) => {
-                let b = registered.expect("a registered batch for the cell");
-                adjust_by_poisson_ratio(vals, |k| delta[(rows[k], b)]);
+            Divisor::Registered(_) => {
+                unreachable!("a registered δ names no cell's batch; pairs take a per-cell divisor")
             }
             Divisor::Batch(bd) => {
                 let b = bd.batch_of_cell[cell] as usize;

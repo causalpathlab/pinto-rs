@@ -722,13 +722,13 @@ fn pearson_moran_equals_the_dense_computation() {
     let tile = tile_of(&xy, 2);
     let (w, batch) = mixtures(&s1);
     let units = PearsonUnits {
-        counts: &counts,
+        counts: counts.clone(),
         w: &w,
         batch: &batch,
         stage1: &s1,
     };
     let g = s1.n_rows();
-    let closed = jackknife_moran(&[section_jack_pearson(g, &units, &tile, &edges)]);
+    let closed = jackknife_moran(&[section_jack_pearson(g, units, &tile, &edges)]);
     let dense: Vec<Vec<(u32, f32)>> = (0..s1.n_cells())
         .map(|i| {
             (0..g)
@@ -793,12 +793,12 @@ fn under_a_null_from_the_stage_1_model_no_row_passes() {
     );
     let (w, batch) = mixtures(&s1);
     let units = PearsonUnits {
-        counts: &counts,
+        counts: counts.clone(),
         w: &w,
         batch: &batch,
         stage1: &s1,
     };
-    let (moran, _, _) = jackknife_moran(&[section_jack_pearson(g, &units, &tile, &edges)]);
+    let (moran, _, _) = jackknife_moran(&[section_jack_pearson(g, units, &tile, &edges)]);
     let mean = moran.iter().sum::<f64>() / g as f64;
     let sd = (moran.iter().map(|i| (i - mean).powi(2)).sum::<f64>() / (g - 1) as f64).sqrt();
     let e0 = -1.0 / (s1.n_cells() - 1) as f64;

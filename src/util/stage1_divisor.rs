@@ -429,6 +429,16 @@ impl Stage1Divisor {
         &self.p[at..at + self.k]
     }
 
+    /// Adds cell `cell`'s stage-1 mixture `n_i θ_i` to `out` (`K` long):
+    /// a unit's expectation is its summed mixture through `p_b`.
+    #[inline]
+    pub fn add_mixture(&self, cell: usize, out: &mut [f32]) {
+        let n = self.total(cell);
+        out.iter_mut()
+            .zip(self.theta(cell))
+            .for_each(|(x, &t)| *x += n * t);
+    }
+
     /// `p̄_g`, row `g`'s pooled share.
     #[inline]
     pub fn pbar(&self, row: usize) -> f32 {
@@ -471,17 +481,30 @@ impl Stage1Divisor {
     pub fn expected_mass(&self, prop: &Mat) -> Mat {
         let (k, kk) = (self.k, prop.ncols());
         assert_eq!(prop.nrows(), self.n_cells(), "one propensity row per cell");
-        let mut a = vec![nalgebra::DMatrix::<f64>::zeros(k, kk); self.n_batches];
-        for i in 0..self.n_cells() {
-            let ab = &mut a[self.batch_of(i)];
-            for (t, &th) in self.theta(i).iter().enumerate() {
-                if th != 0.0 {
-                    for c in 0..kk {
-                        ab[(t, c)] += f64::from(th) * f64::from(prop[(i, c)]);
+        // per-batch `K × communities` sums, folded over cell chunks; the
+        // propensities read by row once, not strided per entry
+        let prop_t = prop.transpose();
+        let zero = || vec![nalgebra::DMatrix::<f64>::zeros(k, kk); self.n_batches];
+        let a = (0..self.n_cells())
+            .into_par_iter()
+            .fold(zero, |mut a, i| {
+                let ab = &mut a[self.batch_of(i)];
+                let pi = prop_t.column(i);
+                for (t, &th) in self.theta(i).iter().enumerate() {
+                    if th != 0.0 {
+                        for c in 0..kk {
+                            ab[(t, c)] += f64::from(th) * f64::from(pi[c]);
+                        }
                     }
                 }
-            }
-        }
+                a
+            })
+            .reduce(zero, |mut x, y| {
+                for (xb, yb) in x.iter_mut().zip(y) {
+                    *xb += yb;
+                }
+                x
+            });
         let mut out = Mat::zeros(self.n_rows, kk);
         for (b, ab) in a.iter().enumerate() {
             let at = b * self.n_rows * k;
@@ -519,7 +542,9 @@ impl Stage1Divisor {
     /// endpoint by `δ`: the self-normalising Poisson ratio
     /// (`legume_numeric::matrix::dmatrix_util::adjust_by_poisson_ratio`).
     pub fn ratio_divide(&self, rows: &[usize], vals: &mut [f32], cell: usize) {
-        adjust_by_poisson_ratio(vals, |k| self.at(cell, rows[k]));
+        // the ratio reads each divisor twice: take it once
+        let d: Vec<f32> = rows.iter().map(|&g| self.at(cell, g)).collect();
+        adjust_by_poisson_ratio(vals, |k| d[k]);
     }
 
     /// Each batch's profiles through `basis` (`[rows × m]`): `[K × m]` per
@@ -591,16 +616,25 @@ impl Stage1Divisor {
         let basis_kd = basis_dk.transpose();
         info!("Per-cell random projection of the counts divided by the stage-1 divisor...");
         let jobs = generate_minibatch_intervals(ncols, nrows, None);
-        let chunks: Vec<(usize, Mat)> = jobs
-            .par_iter()
-            .map(|&(lb, ub)| -> anyhow::Result<(usize, Mat)> {
+        // each job fills its own columns of `proj`, held once
+        let mut proj = Mat::zeros(target_dim, ncols);
+        let mut slots: Vec<(usize, &mut [f32])> = Vec::with_capacity(jobs.len());
+        let mut rest = proj.as_mut_slice();
+        for &(lb, ub) in &jobs {
+            let (mine, tail) = rest.split_at_mut((ub - lb) * target_dim);
+            slots.push((lb, mine));
+            rest = tail;
+        }
+        slots
+            .into_par_iter()
+            .try_for_each(|(lb, out)| -> anyhow::Result<()> {
+                let ub = lb + out.len() / target_dim.max(1);
                 let mut x = data.read_columns_csc(lb..ub)?;
                 self.divide_columns(&mut x, |j| lb + j);
                 for v in x.values_mut() {
                     *v = v.ln_1p();
                 }
-                let mut chunk = Mat::zeros(target_dim, ub - lb);
-                for (j, col) in x.col_iter().enumerate() {
+                for (col, out) in x.col_iter().zip(out.chunks_mut(target_dim.max(1))) {
                     let norm = col
                         .values()
                         .iter()
@@ -609,17 +643,13 @@ impl Stage1Divisor {
                         .sqrt()
                         .max(1e-8);
                     for (&i, &v) in col.row_indices().iter().zip(col.values()) {
-                        chunk.column_mut(j).axpy(v / norm, &basis_kd.column(i), 1.0);
+                        for (o, &b) in out.iter_mut().zip(basis_kd.column(i).iter()) {
+                            *o += v / norm * b;
+                        }
                     }
                 }
-                Ok((lb, chunk))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        let mut proj = Mat::zeros(target_dim, ncols);
-        for (lb, chunk) in chunks {
-            proj.columns_range_mut(lb..lb + chunk.ncols())
-                .copy_from(&chunk);
-        }
+                Ok(())
+            })?;
         proj.scale_columns_inplace();
         if proj.max() > 4.0 || proj.min() < -4.0 {
             proj.iter_mut().for_each(|x| *x = x.clamp(-4.0, 4.0));

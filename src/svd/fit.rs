@@ -376,14 +376,11 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
             // batch-adjusted as the pairs are, or under the stage-1 divisor
             // mean counts over `d`
-            divisor: match stage1.as_ref() {
-                Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
-                None => crate::util::batch_effects::BatchDivisor::of(
-                    nystrom_input.batch_effect.as_ref(),
-                    batch_of_cell.as_deref(),
-                )
-                .map(Into::into),
-            },
+            divisor: crate::util::batch_effects::Divisor::of(
+                stage1.as_ref(),
+                nystrom_input.batch_effect.as_ref(),
+                batch_of_cell.as_deref(),
+            ),
         },
         &c.out,
     )?

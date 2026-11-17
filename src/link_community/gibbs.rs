@@ -331,6 +331,8 @@ impl LinkGibbsSampler {
                         edge_count: global_stats.edge_count.clone(),
                         membership: indices.iter().map(|&e| membership[e]).collect(),
                         offset_sum: global_stats.offset_sum.clone(),
+                        offset_inv: global_stats.offset_inv.clone(),
+                        offset_ln: global_stats.offset_ln.clone(),
                         feature_table: global_stats.feature_table.clone(),
                     };
 

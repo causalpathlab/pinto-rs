@@ -484,10 +484,7 @@ fn endpoint_counts(
 ) -> Vec<(u32, f32)> {
     let mut vals = vals.to_vec();
     if let Some(d) = batch {
-        // a δ registered on the data has no per-cell batch here: cage and
-        // predict pass theirs with each cell's batch
-        debug_assert!(!matches!(d, Divisor::Registered(_)));
-        d.ratio_column(rows, &mut vals, cell as usize, None);
+        d.ratio_column(rows, &mut vals, cell as usize);
     }
     rows.iter()
         .zip(vals)
