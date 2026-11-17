@@ -489,14 +489,6 @@ impl WeightedGraph {
             each(j, w);
         }
     }
-
-    /// Cell `i`'s neighbours and their weights, in order.
-    #[cfg(test)]
-    pub fn neighbours(&self, i: usize) -> std::vec::IntoIter<(usize, f64)> {
-        let mut out = Vec::new();
-        self.for_each_neighbour(i, |j, w| out.push((j, w)));
-        out.into_iter()
-    }
 }
 
 /// A section's `min d²` when it has no positive distance, every cell at

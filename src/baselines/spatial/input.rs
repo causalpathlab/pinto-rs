@@ -3,8 +3,8 @@
 //! named, ordered and split into sections exactly as `lc`, `dsvd` and `cage`
 //! name, order and split them.
 
+use crate::baselines::spatial::memory::GRAPH_NEIGHBOUR_BYTES;
 use crate::link_community::profiles::read_columns_divided;
-use crate::spatial_baselines::memory::GRAPH_NEIGHBOUR_BYTES;
 use crate::util::ablation;
 use crate::util::batch_effects::{
     delta_estimate_bytes, n_strata, sorted_batch_labels, BatchEffects, DELTA_SAMPLES_PER_BATCH,
@@ -317,12 +317,6 @@ impl SpatialInputArgs {
     /// preloaded.
     pub(crate) fn metadata(&self) -> impl Iterator<Item = anyhow::Result<StoredFile>> + '_ {
         self.data_files.iter().map(|file| try_open_or_convert(file))
-    }
-
-    /// [`Self::read_within`] with no memory check after the relabel.
-    #[cfg(test)]
-    pub fn read(&self, with_projection: bool) -> anyhow::Result<SpatialData> {
-        self.read_checked(with_projection, None)
     }
 
     /// Read the counts and coordinates, with the cells' projection the

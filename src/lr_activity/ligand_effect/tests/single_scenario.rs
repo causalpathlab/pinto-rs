@@ -245,6 +245,7 @@ const GRID_PIN: Option<[f64; 3]> = if cfg!(all(target_os = "macos", target_arch 
 /// SE and its truth (`GRID_PIN`). A change to the grid, to its seeds or to
 /// what one run draws moves them.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn the_built_in_grid_is_pinned() {
     let dir = tempfile::tempdir().unwrap();
     let f = fixture(dir.path());
@@ -291,6 +292,46 @@ fn the_built_in_grid_is_pinned() {
         })
         .collect();
     assert!(off.is_empty(), "{}", off.join("; "));
+}
+
+/// The smallest grid (no effect and one planted, unconfounded, on one
+/// pair) gives the same scores, bit for bit, on one thread or two.
+#[test]
+fn the_smallest_grid_reproduces_bit_for_bit() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(dir.path());
+    let m = manifest(dir.path());
+    // The grid's table has no `p` column; the single-scenario one adds it.
+    let cols: Vec<&str> = SCORED.iter().copied().filter(|&c| c != "p").collect();
+    let run = |name: &str, threads: usize| {
+        let out = dir.path().join(name).to_string_lossy().into_owned();
+        let grid = GridOpts {
+            reps: 1,
+            pairs: 1,
+            confounders: vec![],
+            marker: false,
+            heterogeneous: false,
+            ..GridOpts::default()
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| with_test_root(&f.reference, || run_grid(&f.inputs(&out, &m, 42), grid)))
+            .unwrap();
+        read_table_columns(&lra_simulate_path(&out), &["ligand"], &cols).unwrap()
+    };
+    let (ligands, one) = run("one", 1);
+    assert_eq!(ligands[0].len(), 2, "no effect and one planted");
+    assert!(
+        ligands[0].iter().all(|l| &**l == "GENE6"),
+        "the most abundant ligand"
+    );
+    let (_, two) = run("two", 2);
+    for ((col, a), b) in cols.iter().zip(&one).zip(&two) {
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(a), bits(b), "{col}: one thread or two");
+    }
 }
 
 // * The single-scenario mode

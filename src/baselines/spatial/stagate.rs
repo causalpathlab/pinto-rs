@@ -788,13 +788,6 @@ fn xavier_normal(
     Ok(Var::from_tensor(&Tensor::from_vec(v, (rows, cols), dev)?)?)
 }
 
-/// The forward pass's outputs.
-#[cfg(test)]
-pub struct Forward {
-    pub z: Tensor,
-    pub recon: Tensor,
-}
-
 impl Stagate {
     pub fn new(
         n_in: usize,
@@ -843,29 +836,6 @@ impl Stagate {
         let z = h1.matmul(self.w2.as_tensor())?;
         let h3 = aggregate(&alpha, &z.matmul(w3)?, g)?.elu(1.0)?;
         Ok((z, h3))
-    }
-
-    /// STAGATE.forward with the decoder weights `w3` (latent × hidden) and
-    /// `w4` (hidden × in) given.
-    #[cfg(test)]
-    pub fn forward_with(
-        &self,
-        x: &Tensor,
-        g: &EdgeIndex,
-        w3: &Tensor,
-        w4: &Tensor,
-    ) -> anyhow::Result<Forward> {
-        let (z, h3) = self.forward_from(&x.matmul(self.w1.as_tensor())?, g, w3)?;
-        let recon = h3.matmul(w4)?;
-        Ok(Forward { z, recon })
-    }
-
-    /// The forward pass with the decoder tied to the encoder.
-    #[cfg(test)]
-    pub fn forward(&self, x: &Tensor, g: &EdgeIndex) -> anyhow::Result<Forward> {
-        let w3 = self.w2.as_tensor().t()?.contiguous()?;
-        let w4 = self.w1.as_tensor().t()?.contiguous()?;
-        self.forward_with(x, g, &w3, &w4)
     }
 
     /// The embedding `h2` of input `x` on graph `g`.

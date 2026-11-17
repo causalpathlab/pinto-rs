@@ -107,23 +107,50 @@ fn fit_lc_with(
     out
 }
 
+/// Fits lc once on two sections and runs, in order, the checks that read
+/// it; the last ones rewrite and rename its manifest.
+#[test]
+fn one_lc_model_records_scores_and_predicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, coords) = two_sections(dir.path(), 8);
+    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
+    lc_records_its_batch_effects_in_the_manifest(dir.path(), (&data, &coords), &lc);
+    a_known_batch_is_scored_under_the_models_delta(dir.path(), (&data, &coords), &lc);
+    an_lc_model_named_by_a_renamed_manifest_predicts(dir.path(), (&data, &coords), &lc);
+}
+
+/// The batch effects a run's manifest names.
+fn recorded_delta(prefix: &str) -> Option<String> {
+    let path = crate::util::metadata::manifest_path(prefix);
+    crate::util::metadata::PintoMetadata::read(std::path::Path::new(&path))
+        .unwrap()
+        .outputs
+        .batch_effects
+}
+
 /// lc estimates batch effects on a multi-batch run, as dsvd and cage do, and
 /// its manifest names the file; `--ignore-batch` writes and names none. The
 /// manifest also records the `--max-threads` that set lc's Gibbs blocks.
-#[test]
-fn lc_records_its_batch_effects_in_the_manifest() {
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 8);
-    let recorded = |prefix: &str| {
-        let path = crate::util::metadata::manifest_path(prefix);
-        crate::util::metadata::PintoMetadata::read(std::path::Path::new(&path))
-            .unwrap()
-            .outputs
-            .batch_effects
-    };
-    let lc = fit_lc_with(dir.path(), &data, &coords, "lc", &[], |a| a.max_threads = 3);
+fn lc_records_its_batch_effects_in_the_manifest(
+    dir: &std::path::Path,
+    (data, coords): (&str, &str),
+    lc: &str,
+) {
+    let delta = recorded_delta(lc).expect("the manifest names no delta.parquet");
+    assert_eq!(delta, "lc.delta.parquet", "recorded beside the manifest");
+    let run = crate::util::metadata::Run::open(lc).unwrap();
+    assert_eq!(
+        crate::util::batch_effects::run_delta_path(lc, Some(&run)).unwrap(),
+        Some(format!("{lc}.delta.parquet"))
+    );
+
+    let raw = fit_lc_with(dir, data, coords, "raw", &["--ignore-batch"], |a| {
+        a.max_threads = 3
+    });
+    assert!(recorded_delta(&raw).is_none());
+    assert!(!std::path::Path::new(&format!("{raw}.delta.parquet")).exists());
     let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(
-        &crate::util::metadata::manifest_path(&lc),
+        &crate::util::metadata::manifest_path(&raw),
     ))
     .unwrap();
     assert_eq!(
@@ -131,17 +158,6 @@ fn lc_records_its_batch_effects_in_the_manifest() {
         Some(3),
         "the manifest does not record --max-threads"
     );
-    let delta = recorded(&lc).expect("the manifest names no delta.parquet");
-    assert_eq!(delta, "lc.delta.parquet", "recorded beside the manifest");
-    let run = crate::util::metadata::Run::open(&lc).unwrap();
-    assert_eq!(
-        crate::util::batch_effects::run_delta_path(&lc, Some(&run)).unwrap(),
-        Some(format!("{lc}.delta.parquet"))
-    );
-
-    let raw = fit_lc(dir.path(), &data, &coords, "raw", &["--ignore-batch"]);
-    assert!(recorded(&raw).is_none());
-    assert!(!std::path::Path::new(&format!("{raw}.delta.parquet")).exists());
 }
 
 /// Two sections of the same tissue, a left half and a right half that
@@ -157,6 +173,7 @@ fn lc_records_its_batch_effects_in_the_manifest() {
 /// overdispersion), so the halves are too faint to find and only the
 /// section split is checked.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn lc_divides_its_profiles_by_the_batch_effect() {
     let dir = tempfile::tempdir().unwrap();
     let (by_half, by_section) = halves_and_sections(dir.path(), "proj", &|g| g % 2 == 0, &[]);
@@ -246,26 +263,27 @@ fn halves_and_sections(
 
 /// An lc model named by its manifest under another file name is predicted
 /// from (held-out scoring), as one named by its prefix: the manifest is
-/// the model's, though no `{prefix}.pinto.json` is there.
-#[test]
-fn an_lc_model_named_by_a_renamed_manifest_predicts() {
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 8);
-    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
-    let renamed = dir.path().join("first.json");
-    std::fs::rename(crate::util::metadata::manifest_path(&lc), &renamed).unwrap();
+/// the model's, though no `{prefix}.pinto.json` is there. It moves the
+/// manifest, so it runs last.
+fn an_lc_model_named_by_a_renamed_manifest_predicts(
+    dir: &std::path::Path,
+    (data, coords): (&str, &str),
+    lc: &str,
+) {
+    let renamed = dir.join("first.json");
+    std::fs::rename(crate::util::metadata::manifest_path(lc), &renamed).unwrap();
 
     #[derive(Parser)]
     struct Cli {
         #[command(flatten)]
         predict: crate::predict::PredictArgs,
     }
-    let out = dir.path().join("pred").to_str().unwrap().to_string();
+    let out = dir.join("pred").to_str().unwrap().to_string();
     let argv = [
         "x",
-        data.as_str(),
+        data,
         "-c",
-        coords.as_str(),
+        coords,
         "--coord-column-names",
         "x,y",
         "--model",
@@ -323,16 +341,18 @@ fn set_adjusted(prefix: &str, adjusted: bool) {
 /// training sections score better than through the same profiles read as
 /// an older model's (every batch at δ = 1). `--ignore-batch` is refused
 /// for it, and taken for the older one.
-#[test]
-fn a_known_batch_is_scored_under_the_models_delta() {
-    let dir = tempfile::tempdir().unwrap();
-    let (data, coords) = two_sections(dir.path(), 8);
-    let lc = fit_lc(dir.path(), &data, &coords, "lc", &[]);
-    let input = (data.as_str(), Some(coords.as_str()));
+///
+/// It sets the model's batch-adjusted flag and restores it.
+fn a_known_batch_is_scored_under_the_models_delta(
+    dir: &std::path::Path,
+    (data, coords): (&str, &str),
+    lc: &str,
+) {
+    let input = (data, Some(coords));
     let no_rounds = ["--holdout-delta-iters", "0"];
     let llik =
         |m: &crate::util::metadata::PintoMetadata| m.holdout.as_ref().unwrap().eval_llik_per_count;
-    let adjusted = score(dir.path(), &lc, input, "adjusted", &no_rounds).unwrap();
+    let adjusted = score(dir, lc, input, "adjusted", &no_rounds).unwrap();
     // with no δ rounds the known batches still take the model's δ, and the
     // manifest says so
     let info = adjusted.holdout.as_ref().unwrap();
@@ -345,12 +365,12 @@ fn a_known_batch_is_scored_under_the_models_delta() {
         "{:?}",
         info.notes
     );
-    let err = score(dir.path(), &lc, input, "ignored", &["--ignore-batch"]).unwrap_err();
+    let err = score(dir, lc, input, "ignored", &["--ignore-batch"]).unwrap_err();
     assert!(err.to_string().contains("--ignore-batch"), "{err}");
     assert!(err.to_string().contains("--holdout-delta-iters 0"), "{err}");
 
-    set_adjusted(&lc, false);
-    let older = score(dir.path(), &lc, input, "older", &no_rounds).unwrap();
+    set_adjusted(lc, false);
+    let older = score(dir, lc, input, "older", &no_rounds).unwrap();
     let info = older.holdout.as_ref().unwrap();
     assert_eq!(info.model_delta_batches, None);
     assert!(
@@ -366,7 +386,8 @@ fn a_known_batch_is_scored_under_the_models_delta() {
         llik(&adjusted),
         llik(&older)
     );
-    score(dir.path(), &lc, input, "ignored", &["--ignore-batch"]).unwrap();
+    score(dir, lc, input, "ignored", &["--ignore-batch"]).unwrap();
+    set_adjusted(lc, true);
 }
 
 /// Without coordinates an adjusted model's graph is built on the

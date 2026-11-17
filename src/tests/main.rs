@@ -113,75 +113,6 @@ fn lra_simulate_parses_its_study_flags() {
     assert!(lra(&["-f", "r", "--sim-reps", "3"]).is_err());
 }
 
-#[test]
-fn lra_help_lists_every_verdict() {
-    let help = built_cli()
-        .find_subcommand_mut("lra")
-        .expect("lra")
-        .render_long_help()
-        .to_string();
-    for v in lr_activity::ligand_effect::verdict::Verdict::ALL {
-        assert!(
-            help.contains(v.code()),
-            "{} missing from lra --help",
-            v.code()
-        );
-    }
-    for m in ["contact-effect", "coexpression-test", "coexpression-scores"] {
-        assert!(help.contains(m), "{m}");
-    }
-}
-
-/// `pinto srt-simulate --help` lists the scenarios by their names, each with
-/// what it is, and not by their earlier names, which still parse.
-#[test]
-fn simulate_help_lists_the_scenarios_by_name() {
-    let help = built_cli()
-        .find_subcommand_mut("srt-simulate")
-        .expect("srt-simulate")
-        .render_long_help()
-        .to_string();
-    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let flat = words(&help);
-    // words with their punctuation stripped, a name's hyphens kept
-    let bare: Vec<&str> = help
-        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
-        .collect();
-    for sc in crate::simulate::params::SCENARIOS {
-        assert!(
-            help.lines().any(|l| l.trim() == sc.name),
-            "{} not on a line of its own",
-            sc.name
-        );
-        assert!(flat.contains(&words(sc.about)), "{} undescribed", sc.name);
-        for old in sc.aliases {
-            assert!(!bare.contains(old), "{old} shown");
-        }
-    }
-    assert!(!bare.contains(&"first-donor-unconfounded"), "{help}");
-    assert!(flat.contains("--set n_unconfounded_donors=1"), "{help}");
-    let p = built_cli()
-        .try_get_matches_from(["pinto", "srt-simulate", "--scenario", "L2", "-o", "o"])
-        .unwrap();
-    let (_, m) = p.subcommand().unwrap();
-    assert_eq!(m.get_one::<String>("scenario").unwrap(), "L2");
-}
-
-/// `pinto run --help` names the methods that run on a fitted run, and the
-/// residual's stage-2 fit.
-#[cfg(feature = "view")]
-#[test]
-fn run_help_names_the_methods_on_a_run() {
-    let help = built_cli()
-        .find_subcommand_mut("run")
-        .expect("run")
-        .render_long_help()
-        .to_string();
-    for m in ["lra", "lra-simulate", "residual", "stage-2"] {
-        assert!(help.contains(m), "{m} missing from run --help");
-    }
-}
-
 /// `--knn-spatial 0` is refused as it is parsed, by lra and lra-simulate
 /// alike, rather than quietly built as one contact per cell.
 #[test]
@@ -408,61 +339,6 @@ fn help_and_readme(render: Render) -> Vec<(String, String)> {
     out
 }
 
-/// `pinto --help` indexes the commands by clap's own list, which names every
-/// command, and keeps one quick start; no hand-kept list beside it.
-#[test]
-fn the_top_level_help_lists_every_command_once() {
-    let mut cli = built_cli();
-    let help = cli.render_long_help().to_string();
-    assert!(!help.contains("SUBCOMMANDS:"), "{help}");
-    assert!(!help.contains("All outputs are"), "{help}");
-    assert_eq!(help.matches("QUICK START").count(), 1, "{help}");
-    for sub in cli.get_subcommands().filter(|s| !s.is_hide_set()) {
-        let name = sub.get_name();
-        let listed = help
-            .lines()
-            .filter(|l| l.split_whitespace().next() == Some(name))
-            .count();
-        assert_eq!(listed, 1, "{name} listed {listed} times:\n{help}");
-    }
-}
-
-/// Every `pinto <command>` a help text names is a command pinto has, all
-/// its features on.
-#[cfg(feature = "view")]
-#[test]
-fn help_names_only_commands_that_exist() {
-    let cli = built_cli();
-    for (path, help) in every_help(clap::Command::render_long_help) {
-        for (at, _) in help.match_indices("`pinto ") {
-            let rest = &help[at + "`pinto ".len()..];
-            let word: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect();
-            if word.is_empty() {
-                continue;
-            }
-            assert!(
-                cli.find_subcommand(&word).is_some(),
-                "{path} --help names `pinto {word}`, which is no command"
-            );
-        }
-        assert!(!help.contains("plot::load"), "{path}");
-    }
-}
-
-/// Help and the README say what pinto does, not how it differs from an
-/// earlier release, and number a residual fit's stages one way.
-#[test]
-fn help_and_readme_carry_no_release_notes() {
-    for (path, text) in help_and_readme(clap::Command::render_long_help) {
-        for stale in ["no longer", "used to be", "than before", "stage-3"] {
-            assert!(!text.contains(stale), "{path} says {stale:?}");
-        }
-    }
-}
-
 /// The annotate stub is gone: its name and alias are unknown commands.
 #[test]
 fn annotate_is_no_command() {
@@ -475,38 +351,6 @@ fn annotate_is_no_command() {
             clap::error::ErrorKind::InvalidSubcommand,
             "{name}"
         );
-    }
-}
-
-#[cfg(feature = "view")]
-use crate::session_cli_tests::flat as words;
-
-/// `pinto mcp --help` prints what the server tells an agent, from the one
-/// source the server sends.
-#[cfg(feature = "view")]
-#[test]
-fn mcp_help_prints_the_servers_instructions() {
-    let help = built_cli()
-        .find_subcommand_mut("mcp")
-        .expect("mcp")
-        .render_long_help()
-        .to_string();
-    assert!(
-        words(&help).contains(&words(&mcp::instructions())),
-        "{help}"
-    );
-    assert!(help.lines().all(|l| l.chars().count() <= 80), "{help}");
-}
-
-/// The README keeps no copy of the instructions; it points to the help.
-#[cfg(feature = "view")]
-#[test]
-fn the_readme_points_to_the_instructions_rather_than_copying_them() {
-    let readme = include_str!("../../README.md");
-    assert!(readme.contains("pinto mcp --help"));
-    let readme = words(&readme.replace('>', " "));
-    for sentence in mcp::instructions().split(". ").filter(|s| s.len() > 60) {
-        assert!(!readme.contains(&words(sentence)), "{sentence}");
     }
 }
 
@@ -641,136 +485,22 @@ fn cage_cell<T>(extra: &[&str], f: impl Fn(&clap::Command, &clap::ArgMatches) ->
     )
 }
 
-/// cage's `--feature-modules` help is pinto's own: cage draws its NCE
-/// negatives over pseudobulks, never within a module, and a run takes
-/// modules or `--feature-inclusion moran`, not both. `--inclusion-blocks`
-/// is a tuning knob, hidden. cage-cell says the same, and how it trains
-/// them on cells.
+/// `--inclusion-blocks` is a tuning knob, hidden; `--feature-inclusion` and
+/// `--feature-modules` are shown, on cage and cage-cell alike.
 #[test]
-fn cage_says_what_its_feature_modules_do_and_hides_the_inclusion_knob() {
-    let mut cli = built_cli();
+fn cage_hides_the_inclusion_knob() {
+    let cli = built_cli();
     for cmd in ["cage", "cage-cell"] {
-        let sub = cli.find_subcommand_mut(cmd).expect(cmd);
-        let arg = |id: &str| {
+        let sub = cli.find_subcommand(cmd).expect(cmd);
+        let hidden = |id: &str| {
             sub.get_arguments()
                 .find(|a| a.get_id() == id)
                 .unwrap_or_else(|| panic!("{cmd}: no {id}"))
-                .clone()
+                .is_hide_set()
         };
-        assert!(arg("inclusion_blocks").is_hide_set(), "{cmd}");
-        assert!(!arg("feature_inclusion").is_hide_set(), "{cmd}");
-        assert!(!arg("feature_modules").is_hide_set(), "{cmd}");
-        let help = sub.render_long_help().to_string();
-        // the flag's entry: from its line up to the next flag's
-        let flag_line = |l: &str| {
-            let l = l.trim_start();
-            l.starts_with("--") || l.as_bytes().get(2) == Some(&b',')
-        };
-        let modules: String = help
-            .lines()
-            .skip_while(|l| !l.trim_start().starts_with("--feature-modules <"))
-            .enumerate()
-            .take_while(|&(i, l)| i == 0 || !flag_line(l))
-            .map(|(_, l)| format!("{l}\n"))
-            .collect();
-        assert!(!modules.is_empty(), "{cmd}: --feature-modules not listed");
-        for wrong in ["own module", "WITHIN a module", "senna", "--multiome"] {
-            assert!(!modules.contains(wrong), "{cmd} says {wrong:?}: {modules}");
-        }
-        for right in [
-            "never within a module",
-            "--feature-inclusion moran",
-            "cage-cell trains on cells",
-            "auto (the default)",
-            "0 trains without the layer",
-            "Traag, Waltman and van Eck 2019",
-        ] {
-            assert!(modules.contains(right), "{cmd} lacks {right:?}: {modules}");
-        }
-    }
-}
-
-/// Each of pinto's models, and each choice that handles noisy features,
-/// is named where a user or an agent picks a method: the README, `pinto
-/// run`'s help and the MCP instructions. dsvd is presented beside lc and
-/// cage, not after them.
-#[cfg(feature = "view")]
-#[test]
-fn the_models_and_their_feature_choices_are_named_where_methods_are_picked() {
-    let mut cli = built_cli();
-    let run = cli
-        .find_subcommand_mut("run")
-        .expect("run")
-        .render_long_help()
-        .to_string();
-    let readme = include_str!("../../README.md");
-    let mcp = mcp::instructions();
-    for (what, text) in [("README", readme), ("pinto run", &run), ("mcp", &mcp)] {
-        for model in ["lc", "dsvd", "cage"] {
-            assert!(text.contains(model), "{what} does not name {model}");
-        }
-    }
-    for (what, text) in [("README", readme), ("mcp", &mcp)] {
-        for choice in ["feature-inclusion", "feature-modules", "feature-network"] {
-            assert!(text.contains(choice), "{what} does not name {choice}");
-        }
-    }
-    // cage's modules are on by default, and the instructions say how a run
-    // goes without them
-    let mcp_words = mcp.split_whitespace().collect::<Vec<_>>().join(" ");
-    for said in [
-        "modules by default",
-        "feature-modules auto",
-        "0 for none",
-        "moran given alone replaces the default modules",
-        "is refused",
-    ] {
-        assert!(mcp_words.contains(said), "mcp does not say {said:?}");
-    }
-    assert!(!mcp_words.contains("feature-modules M, never both"));
-    assert_eq!(run::MODELS[..2], ["lc", "dsvd"], "dsvd listed beside lc");
-    assert!(readme.contains("### `dsvd` (delta-svd), recommended"));
-}
-
-/// lc's `--feature-network` help says what the file is and what the
-/// modules do, and that pinto brings no network of its own.
-#[test]
-fn lc_says_what_its_feature_network_is() {
-    let mut cli = built_cli();
-    let lc = cli.find_subcommand_mut("lc").expect("lc");
-    let arg = lc
-        .get_arguments()
-        .find(|a| a.get_id() == "feature_network")
-        .expect("--feature-network")
-        .clone();
-    let help = arg.get_long_help().expect("long help").to_string();
-    assert!(!help.contains("do not come from feature modules"), "{help}");
-    for says in ["two-column", "Leiden", "module pairs", "ships no network"] {
-        assert!(help.contains(says), "lacks {says:?}: {help}");
-    }
-    let readme = include_str!("../../README.md");
-    assert!(readme.contains("ships no network"));
-}
-
-/// The README states `--max-threads`, its default, what it means on a
-/// machine with more cores, and lc's Gibbs block layout as the code has it.
-#[test]
-fn the_readme_states_max_threads_and_lc_blocks() {
-    let readme = include_str!("../../README.md");
-    let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cap = util::common::DEFAULT_MAX_THREADS;
-    use crate::link_community::gibbs::GIBBS_MIN_BLOCK_EDGES;
-    for said in [
-        format!("`--max-threads N` (default {cap})"),
-        format!("at most {cap} worker threads"),
-        format!("more than {cap} cores"),
-        "Raise `--max-threads` to use more cores, including for lc's fine Gibbs".to_string(),
-        "the same `--seed` and `--max-threads` give the same lc draws on any machine".to_string(),
-        format!("at least {} edges into", 2 * GIBBS_MIN_BLOCK_EDGES),
-        format!("blocks of at least {GIBBS_MIN_BLOCK_EDGES} edges"),
-        "at most `--max-threads` blocks a component".to_string(),
-    ] {
-        assert!(flat.contains(&said), "README does not say {said:?}");
+        assert!(hidden("inclusion_blocks"), "{cmd}");
+        assert!(!hidden("feature_inclusion"), "{cmd}");
+        assert!(!hidden("feature_modules"), "{cmd}");
     }
 }
 

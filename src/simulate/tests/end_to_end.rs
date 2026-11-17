@@ -171,8 +171,8 @@ fn the_viewer_opens_the_truth() {
 /// the first.
 #[test]
 fn scoring_the_truth_and_the_donors() {
+    use crate::sim_eval::score::{read_labels, score, TruthSpots};
     use crate::simulate::panel::donor_label;
-    use crate::simulate::score::{read_labels, score, TruthSpots};
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("sim").to_string_lossy().to_string();
     run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();

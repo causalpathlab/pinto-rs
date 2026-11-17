@@ -817,6 +817,7 @@ pub fn fit_cell_activity_graph_embedding(
     });
     let encoder_spec = PairEncoderSpec {
         ridge: PAIR_RIDGE,
+        steps: args.pair_encoder_steps,
         ..PairEncoderSpec::default()
     };
     let pair_encoder_path = format!("{}.pair_encoder.safetensors", c.out);

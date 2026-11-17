@@ -900,28 +900,10 @@ pub fn say_held() {
 /// Put the run's staged outputs in place, if it staged any.
 pub fn commit() -> anyhow::Result<()> {
     let mut a = active();
-    // the tests' stand-in for a run that fails, or panics, once all its
-    // outputs are written; not in a release build
-    #[cfg(debug_assertions)]
-    if a.is_some() {
-        match std::env::var(FAIL_BEFORE_COMMIT).as_deref() {
-            Ok("1") => anyhow::bail!(
-                "{FAIL_BEFORE_COMMIT}=1, a debug build's test switch: the run fails before its \
-                 outputs land"
-            ),
-            Ok("panic") => panic!("{FAIL_BEFORE_COMMIT}=panic, a debug build's test switch"),
-            _ => {}
-        }
-    }
     let staged = a.take();
     drop(a);
     staged.map_or(Ok(()), Staging::commit)
 }
-
-/// Set to 1 in a debug build's environment, a staged run fails at its end;
-/// set to `panic`, it panics there.
-#[cfg(debug_assertions)]
-pub const FAIL_BEFORE_COMMIT: &str = "PINTO_TEST_FAIL_BEFORE_COMMIT";
 
 /// Removes the run's staged outputs when dropped before [`commit`]: on an
 /// error return, and on a panic.

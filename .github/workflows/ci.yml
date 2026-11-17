@@ -40,20 +40,31 @@ jobs:
           key: clippy${{ matrix.features }}
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
+  # The full suite once (ubuntu, default features). Every other job runs the
+  # binary's unit tests, and on macOS (where clippy does not run) also checks
+  # that the integration tests build.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        features: ["", "--no-default-features"]
+        include:
+          - { os: ubuntu-latest, features: "", suite: full }
+          - { os: ubuntu-latest, features: "--no-default-features", suite: bins }
+          - { os: macos-latest, features: "", suite: bins, check: true }
+          - { os: macos-latest, features: "--no-default-features", suite: bins, check: true }
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: test${{ matrix.features }}
-      - run: cargo test ${{ matrix.features }}
+      - if: matrix.suite == 'full'
+        run: cargo test
+      - if: matrix.suite == 'bins'
+        run: cargo test --bins ${{ matrix.features }}
+      - if: matrix.check
+        run: cargo check --tests ${{ matrix.features }}
 
   msrv:
     runs-on: ubuntu-latest

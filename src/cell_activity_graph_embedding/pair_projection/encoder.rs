@@ -1,13 +1,12 @@
 //! Amortized phase 2: one encoder places every pair, and every cell, on the
 //! frozen dictionary.
 //!
-//! The exact solver ([`super::newton_polish`]) settles the same strictly
-//! convex problem once per node — the multinomial MAP of the pooled counts
-//! against `e_feat` — and pairs outnumber cells by an order of magnitude.
-//! The map from counts to that optimum is smooth, so a small encoder trained
-//! on the same objective places every pair in one forward pass, on the
-//! device, and the per-pair solver becomes the check on it (and the finisher
-//! of its rare misses) rather than the workhorse.
+//! An exact solver would settle the same strictly convex problem once per
+//! node — the multinomial MAP of the pooled counts against `e_feat` — and
+//! pairs outnumber cells by an order of magnitude. The map from counts to
+//! that optimum is smooth, so a small encoder trained on the same objective
+//! places every pair in one forward pass, on the device, and its placement
+//! is used as it is.
 //!
 //! The MAP is a function of one statistic. Write `S = Σ_g n_g e_g` for the
 //! count-weighted sum of dictionary rows, `N = Σ_g n_g` for the depth and
@@ -22,8 +21,8 @@
 //! sums over a cell's nonzeros, and pool additively over a pair. Nothing here
 //! is ever dense over the features on the count side: the corpus carries each
 //! cell's `(S, N, c)`, a step's input is `[2B, D + 1]`, and the one `G`-wide
-//! tensor is the partition `lse_g` — a GEMM output on the device, the same
-//! sum the exact solver forms, never an upload.
+//! tensor is the partition `lse_g` — a GEMM output on the device, never an
+//! upload.
 //!
 //! The encoder is a cell trunk applied twice and a [`SymmetricPairHead`]: the
 //! trunk reads `[S/N ‖ ln(N + 1)]`, standardised by population moments saved
@@ -41,20 +40,12 @@
 //! `‖z‖ ≤ 2N·max_g‖e_g‖/λ` — binding only for a row with a handful of
 //! counts, exactly where a shared map would otherwise extrapolate.
 //!
-//! Every placement also leaves with a certificate: the Newton decrement
-//! `½ ∇ᵀH⁻¹∇` at the placement, with `∇ = N p̄ − S + λz` and
-//! `H = N·Cov_p(e) + λI` — the excess likelihood the local quadratic model
-//! puts on it, in nats, exact for a quadratic and the standard Newton
-//! stopping statistic. A row it puts far out is a row the map extrapolated
-//! on — a rare composition, a near-empty profile — and the caller finishes
-//! those few exactly.
-//!
 //! `β_uv` is never learned: given `z` the intercept is `ln N − lse(s)` in
 //! closed form. The self-pair term is what makes the cell's own placement a
 //! trained quantity: `z_uu` is the MAP of the doubled profile `2x_u`, whose
 //! composition is `x_u`'s, so `.cell_embedding.parquet` comes from the same
 //! map as every pair. A row with no counts is put at the origin afterwards,
-//! where the solver puts it.
+//! where the ridge puts it.
 
 use super::PairDictionary;
 use crate::util::common::*;
@@ -67,7 +58,6 @@ use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::nn::seed_uniform_vars;
 
 mod train;
-pub(crate) use train::ExactCheck;
 
 ///////////////
 // Constants //
@@ -88,15 +78,12 @@ pub(crate) const CELL_BLOCK: usize = 4096;
 /// axis takes fewer rows per pass and a panel takes the caps, and the device
 /// holds a fixed amount of dense work either way.
 const BLOCK_ELEMENTS: usize = 1 << 25;
-/// Elements of one chunk of feature outer products `[rows × D(D+1)/2]` in the
-/// certificate's second moment: 64 MB of f32 whatever G and D are.
-const EE_CHUNK_ELEMENTS: usize = 1 << 24;
-/// The chunks are kept for a whole placement pass while all of them fit this
-/// (about 280 MB of f32); beyond it they are built per block instead.
-const EE_CACHE_ELEMENTS: usize = 70 << 20;
+/// [`PairEncoderSpec::steps`] by default, and `--pair-encoder-steps`'s.
+pub const DEFAULT_PAIR_ENCODER_STEPS: usize = 512;
+/// [`PairEncoderSpec::batch`] by default.
+pub const DEFAULT_PAIR_ENCODER_BATCH: usize = 4096;
 
-/// The encoder's shape and training budget. `cage` runs [`Default`]; the
-/// closing check against the exact solver says how well it did, and a tiny
+/// The encoder's shape and training budget. `cage` runs [`Default`]; a tiny
 /// fixture shrinks it.
 #[derive(Debug, Clone)]
 pub struct PairEncoderSpec {
@@ -104,15 +91,16 @@ pub struct PairEncoderSpec {
     pub trunk_width: usize,
     /// Experts `K` in the pair head; `1` is a plain linear head.
     pub n_experts: usize,
-    /// Passes over the pairs, at least: a run makes `MIN_STEPS` optimizer
-    /// steps whatever its pair count. `0` does not train.
-    pub epochs: usize,
+    /// Optimizer steps, at least: rounded up to whole passes over the pairs,
+    /// since a pass is always made whole, so many pairs take more. `0` does
+    /// not train.
+    pub steps: usize,
     /// Pairs per optimizer step, at most: a step is also held to
     /// [`BLOCK_ELEMENTS`] on the feature axis.
     pub batch: usize,
     /// Ridge `λ` on the pair latent (never on the intercept, which must stay
     /// free to absorb depth): the objective's one parameter, saved with the
-    /// encoder so a loaded one is checked and finished under its own.
+    /// encoder so a loaded one runs under its own.
     pub ridge: f32,
 }
 
@@ -121,8 +109,8 @@ impl Default for PairEncoderSpec {
         Self {
             trunk_width: 64,
             n_experts: 4,
-            epochs: 3,
-            batch: 4096,
+            steps: DEFAULT_PAIR_ENCODER_STEPS,
+            batch: DEFAULT_PAIR_ENCODER_BATCH,
             ridge: 1.0,
         }
     }
@@ -207,20 +195,11 @@ impl CellRow {
         );
         out
     }
-
-    /// The self-pair: the row pooled with itself.
-    pub(crate) fn doubled(&self) -> Vec<(u32, f32)> {
-        self.features
-            .iter()
-            .zip(&self.counts)
-            .map(|(&g, &n)| (g, 2.0 * n))
-            .collect()
-    }
 }
 
 /// Every cell's `(S, N, c)` on the device, row `i` for cell `i`: the whole
 /// corpus's, uploaded once, gathered per block by endpoint id.
-struct CorpusStats {
+pub(crate) struct CorpusStats {
     /// `[n × D]`.
     sums: Tensor,
     /// `[n]` each.
@@ -239,11 +218,18 @@ impl CorpusStats {
         })
     }
 
-    /// The rows of `ids`.
+    /// The `(S, N)` of `ids`: what the encoder reads.
     fn gather(&self, ids: &Tensor) -> anyhow::Result<Stats> {
         Ok(Stats {
             sums: gather_rows(&self.sums, ids)?,
             totals: gather_rows(&self.totals, ids)?,
+        })
+    }
+
+    /// The `(S, N, c)` of `ids`: what the objective reads.
+    fn gather_full(&self, ids: &Tensor) -> anyhow::Result<FullStats> {
+        Ok(FullStats {
+            stats: self.gather(ids)?,
             offsets: gather_rows(&self.offsets, ids)?,
         })
     }
@@ -288,52 +274,13 @@ fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
     (mean, std)
 }
 
-////////////////
-// Placements //
-////////////////
-
-/// Where a set of nodes (pairs, or cells) landed: latent, intercept, and the
-/// certificate — the Newton decrement at the placement, the excess in nats
-/// the local quadratic model puts on it over the optimum, zero there.
-pub(crate) struct Placement {
-    /// `[n × D]`.
-    pub latent: Mat,
-    pub bias: Vec<f32>,
-    pub gap: Vec<f32>,
-}
-
-impl Placement {
-    pub(crate) fn len(&self) -> usize {
-        self.bias.len()
-    }
-
-    pub(crate) fn set(&mut self, i: usize, theta: &[f32], beta: f32, gap: f32) {
-        for (j, &t) in theta.iter().enumerate().take(self.latent.ncols()) {
-            self.latent[(i, j)] = t;
-        }
-        self.bias[i] = beta;
-        self.gap[i] = gap;
-    }
-}
-
-/// Every pair's and every cell's placement, in the callers' orders.
-pub(crate) struct Encoded {
-    pub pairs: Placement,
-    pub cells: Placement,
-}
-
 ////////////
 // Device //
 ////////////
 
-/// The frozen side on the device: the dictionary for the composition mean,
-/// its transpose for the partition, the index of the upper triangle the
-/// curvature's outer products are taken on (the products themselves are built
-/// on demand, never kept as a `[G × D²]` table), the log-rate offset and the
-/// statistic's population moments.
+/// The frozen side on the device: the dictionary's transpose for the
+/// partition, the log-rate offset and the statistic's population moments.
 struct DeviceDict {
-    /// `[G × D]`.
-    e_gd: Tensor,
     /// `[D × G]`.
     e_hd: Tensor,
     /// `[1 × G]`.
@@ -343,9 +290,6 @@ struct DeviceDict {
     stat_std: Tensor,
     /// `max_g ‖e_g‖`.
     max_row_norm: f32,
-    /// The upper triangle of `D × D`, (row, column) index tensors, row-major.
-    tri_rows: Tensor,
-    tri_cols: Tensor,
     g: usize,
     d: usize,
 }
@@ -366,15 +310,8 @@ impl DeviceDict {
             d + 1
         );
         let e_gd = Tensor::from_slice(&dict.feat, (g, d), dev)?;
-        let (r, c): (Vec<u32>, Vec<u32>) = (0..d as u32)
-            .flat_map(|r| (r..d as u32).map(move |c| (r, c)))
-            .unzip();
-        let tri = r.len();
         Ok(Self {
-            tri_rows: Tensor::from_vec(r, tri, dev)?,
-            tri_cols: Tensor::from_vec(c, tri, dev)?,
             e_hd: e_gd.t()?.contiguous()?,
-            e_gd,
             b_1d: Tensor::from_slice(&dict.b, (1, g), dev)?,
             stat_mean: Tensor::from_slice(stat_mean, (1, d + 1), dev)?,
             stat_std: Tensor::from_slice(stat_std, (1, d + 1), dev)?,
@@ -386,66 +323,6 @@ impl DeviceDict {
             g,
             d,
         })
-    }
-
-    /// The outer products `e_g e_gᵀ`, upper triangle, of features
-    /// `start..start + len`: `[len × D(D+1)/2]`. A symmetric second moment
-    /// needs `D(D+1)/2` of its `D²` entries.
-    fn outer_chunk(&self, start: usize, len: usize) -> anyhow::Result<Tensor> {
-        // Gathered as rows of the transpose: `[D × len]` → `[T × len]`.
-        let e = self.e_hd.narrow(1, start, len)?.contiguous()?;
-        Ok(
-            (gather_rows(&e, &self.tri_rows)? * gather_rows(&e, &self.tri_cols)?)?
-                .t()?
-                .contiguous()?,
-        )
-    }
-
-    /// Features per outer-product chunk, each within [`EE_CHUNK_ELEMENTS`].
-    fn chunk_rows(&self) -> usize {
-        (EE_CHUNK_ELEMENTS / (self.d * (self.d + 1) / 2)).max(1)
-    }
-
-    /// Every chunk, once for a whole placement pass, when together they fit
-    /// [`EE_CACHE_ELEMENTS`] (about 280 MB at G = 33k, D = 64); `None` beyond,
-    /// and [`Self::second_moment`] then builds and drops them one at a time.
-    fn outer_chunks_cached(&self) -> anyhow::Result<Option<Vec<Tensor>>> {
-        let tri = self.d * (self.d + 1) / 2;
-        if self.g.saturating_mul(tri) > EE_CACHE_ELEMENTS {
-            return Ok(None);
-        }
-        let rows = self.chunk_rows();
-        (0..self.g)
-            .step_by(rows)
-            .map(|start| self.outer_chunk(start, rows.min(self.g - start)))
-            .collect::<anyhow::Result<_>>()
-            .map(Some)
-    }
-
-    /// `Σ_g p_bg e_g e_gᵀ`, upper triangle, for each row of `p` `[B × G]` →
-    /// `[B × D(D+1)/2]`, accumulated over chunks of features: the cached ones,
-    /// or each built, used and dropped in turn, so at most one chunk is held.
-    /// A resident `[G × D²]` table would be 0.5 GB at G = 33k, D = 64, and
-    /// several GB on a channelized axis or at D = 128.
-    fn second_moment(&self, p: &Tensor, cached: Option<&[Tensor]>) -> anyhow::Result<Tensor> {
-        let tri = self.d * (self.d + 1) / 2;
-        let rows = self.chunk_rows();
-        let mut acc = Tensor::zeros((p.dim(0)?, tri), p.dtype(), p.device())?;
-        for (k, start) in (0..self.g).step_by(rows).enumerate() {
-            let len = rows.min(self.g - start);
-            let built;
-            let ee = match cached {
-                Some(c) => &c[k],
-                None => {
-                    built = self.outer_chunk(start, len)?;
-                    &built
-                }
-            };
-            // Contiguous: some backends' matmul refuse a strided left side.
-            let block = p.narrow(1, start, len)?.contiguous()?;
-            acc = (acc + block.matmul(ee)?)?;
-        }
-        Ok(acc)
     }
 
     fn device(&self) -> &Device {
@@ -497,18 +374,18 @@ pub(crate) struct PairEncoder {
     head: SymmetricPairHead,
     varmap: VarMap,
     dict: DeviceDict,
-    /// The ridge `λ` the encoder was fitted under: the objective's, the
-    /// certificate's, and the norm ball's.
+    /// The ridge `λ` the encoder was fitted under: the objective's and the
+    /// norm ball's.
     ridge: f32,
     /// `2·max_g‖e_g‖ / λ`: the optimum's norm bound per pooled count.
     cap_per_count: f64,
 }
 
-/// One node's `(S, N, c)` on the device, `[n × D]`, `[n]`, `[n]`.
+/// Nodes' `(S, N)` on the device, `[n × D]` and `[n]`: what the encoder
+/// reads.
 struct Stats {
     sums: Tensor,
     totals: Tensor,
-    offsets: Tensor,
 }
 
 impl Stats {
@@ -517,7 +394,6 @@ impl Stats {
         Ok(Stats {
             sums: (&self.sums + &other.sums)?,
             totals: (&self.totals + &other.totals)?,
-            offsets: (&self.offsets + &other.offsets)?,
         })
     }
 
@@ -527,15 +403,38 @@ impl Stats {
     }
 }
 
-/// A block of pairs through the trunk and the head: what training,
-/// evaluation and inference all read.
+/// Nodes' `(S, N, c)` on the device: [`Stats`] and the data term's constant
+/// `c`, `[n]`, which only the objective reads.
+struct FullStats {
+    stats: Stats,
+    offsets: Tensor,
+}
+
+impl FullStats {
+    /// Two endpoints pooled: every sum adds.
+    fn pooled(&self, other: &FullStats) -> anyhow::Result<FullStats> {
+        Ok(FullStats {
+            stats: self.stats.pooled(&other.stats)?,
+            offsets: (&self.offsets + &other.offsets)?,
+        })
+    }
+
+    /// The self-pair: doubled.
+    fn doubled(&self) -> anyhow::Result<FullStats> {
+        self.pooled(self)
+    }
+}
+
+/// A block of pairs through the trunk and the head: what training and
+/// evaluation read.
 struct PairForward {
-    /// `[B, 2L + D + 1]` pair features.
-    features: Tensor,
+    /// `[B, L]` endpoint codes, for the gate readout.
+    h_u: Tensor,
+    h_v: Tensor,
     /// `[B, D]` pair codes.
     z_uv: Tensor,
     /// The pairs' pooled statistics.
-    pairs: Stats,
+    pairs: FullStats,
 }
 
 impl PairEncoder {
@@ -678,6 +577,12 @@ impl PairEncoder {
         self.ridge
     }
 
+    /// Every cell of `corpus`'s `(S, N, c)`, uploaded to this encoder's
+    /// device: built once per run, read by training and by inference.
+    pub(crate) fn corpus_stats(&self, corpus: &[CellRow]) -> anyhow::Result<CorpusStats> {
+        CorpusStats::new(corpus, self.dict.d, self.dict.device())
+    }
+
     /// `[S / max(N, 1) ‖ ln(N + 1)]` standardised by the population moments
     /// → `[n, D + 1]`.
     fn stat_of(&self, stats: &Stats) -> anyhow::Result<Tensor> {
@@ -697,16 +602,9 @@ impl PairEncoder {
 
     /// The pair code of two endpoints from their codes and pooled statistic:
     /// the head's output kept inside the optimum's ball for the pooled
-    /// depth. Also returns the pair features, for the gate readout.
-    fn pair_code(
-        &self,
-        h_u: &Tensor,
-        h_v: &Tensor,
-        pooled: &Stats,
-    ) -> anyhow::Result<(Tensor, Tensor)> {
-        let stat = self.stat_of(pooled)?;
-        let features = self.head.features(h_u, h_v, Some(&stat))?;
-        let z = self.head.forward(h_u, h_v, Some(&stat))?;
+    /// depth.
+    fn pair_code(&self, h_u: &Tensor, h_v: &Tensor, pooled: &Stats) -> anyhow::Result<Tensor> {
+        let z = self.head.forward(h_u, h_v, Some(&self.stat_of(pooled)?))?;
         let cap = pooled
             .totals
             .unsqueeze(1)?
@@ -714,34 +612,44 @@ impl PairEncoder {
         let norm = z.sqr()?.sum_keepdim(1)?.sqrt()?; // [B, 1]
                                                      // min(1, cap / ‖z‖), with ‖z‖ = 0 left alone.
         let scale = (cap / (norm + 1e-12)?)?.clamp(0.0, 1.0)?;
-        Ok((z.broadcast_mul(&scale)?, features))
+        Ok(z.broadcast_mul(&scale)?)
+    }
+
+    /// The expert weights of a block of pairs → `[B, K]`.
+    fn gate_weights(&self, fwd: &PairForward) -> anyhow::Result<Tensor> {
+        let stat = self.stat_of(&fwd.pairs.stats)?;
+        let features = self.head.features(&fwd.h_u, &fwd.h_v, Some(&stat))?;
+        Ok(self.head.gate(&features)?)
     }
 
     /// The self-pair of every row of a block: its code with itself, at the
     /// doubled depth (`doubled` is the rows' statistics doubled, which the
     /// caller also scores against).
     fn self_pair_code(&self, h: &Tensor, doubled: &Stats) -> anyhow::Result<Tensor> {
-        Ok(self.pair_code(h, h, doubled)?.0)
+        self.pair_code(h, h, doubled)
     }
 
     /// A block of pairs, from their endpoints' statistics (the `u`s then the
     /// `v`s), through the trunk and the head.
-    fn pair_forward(&self, endpoints: Stats) -> anyhow::Result<PairForward> {
-        let b = endpoints.totals.dim(0)? / 2;
-        let h = self.cell_codes(&endpoints)?;
+    fn pair_forward(&self, endpoints: FullStats) -> anyhow::Result<PairForward> {
+        let b = endpoints.stats.totals.dim(0)? / 2;
+        let h = self.cell_codes(&endpoints.stats)?;
         let half = |t: &Tensor, k: usize| t.narrow(0, k * b, b);
         let (h_u, h_v) = (half(&h, 0)?, half(&h, 1)?);
-        let side = |k: usize| -> anyhow::Result<Stats> {
-            Ok(Stats {
-                sums: half(&endpoints.sums, k)?,
-                totals: half(&endpoints.totals, k)?,
+        let side = |k: usize| -> anyhow::Result<FullStats> {
+            Ok(FullStats {
+                stats: Stats {
+                    sums: half(&endpoints.stats.sums, k)?,
+                    totals: half(&endpoints.stats.totals, k)?,
+                },
                 offsets: half(&endpoints.offsets, k)?,
             })
         };
         let pairs = side(0)?.pooled(&side(1)?)?;
-        let (z_uv, features) = self.pair_code(&h_u, &h_v, &pairs)?;
+        let z_uv = self.pair_code(&h_u, &h_v, &pairs.stats)?;
         Ok(PairForward {
-            features,
+            h_u,
+            h_v,
             z_uv,
             pairs,
         })
@@ -754,65 +662,10 @@ impl PairEncoder {
 
     /// The profiled multinomial NLL of placements `z` for the nodes `stats`,
     /// per row: `N·lse(s) − ⟨S, z⟩ − c`.
-    fn nll(&self, z: &Tensor, scores: &Tensor, stats: &Stats) -> anyhow::Result<Tensor> {
+    fn nll(&self, z: &Tensor, scores: &Tensor, full: &FullStats) -> anyhow::Result<Tensor> {
         let lse = scores.log_sum_exp(1)?;
-        let data = (z * &stats.sums)?.sum(1)?;
-        Ok((((&stats.totals * lse)? - data)? - &stats.offsets)?)
-    }
-
-    /// The Newton decrement `½ ∇ᵀH⁻¹∇` per row for placements `z` of the
-    /// nodes `stats`, with `∇ = N p̄ − S + λz` and `H = N·Cov_p(e) + λI`
-    /// under the composition `p` the scores fit: the composition's mean and
-    /// second moment come off the device, the `D × D` solves run here.
-    fn decrement(
-        &self,
-        z: &Tensor,
-        scores: &Tensor,
-        stats: &Stats,
-        outer: Option<&[Tensor]>,
-    ) -> anyhow::Result<Vec<f32>> {
-        let d = self.dict.d;
-        let tri = d * (d + 1) / 2;
-        let p = legume_numeric::candle::candle_nn::ops::softmax(scores, 1)?; // [B, G]
-        let pbar: Vec<f32> = p.matmul(&self.dict.e_gd)?.flatten_all()?.to_vec1()?; // [B, D]
-        let m2: Vec<f32> = self
-            .dict
-            .second_moment(&p, outer)?
-            .flatten_all()?
-            .to_vec1()?;
-        // m2 is [B, D(D+1)/2], the upper triangle row-major: (r, c) → its
-        // place in it, either way round.
-        let at = |r: usize, c: usize| {
-            let (r, c) = if r <= c { (r, c) } else { (c, r) };
-            r * d - r * (r + 1) / 2 + c
-        };
-        let z: Vec<f32> = z.flatten_all()?.to_vec1()?;
-        let sums: Vec<f32> = stats.sums.flatten_all()?.to_vec1()?;
-        let totals: Vec<f32> = stats.totals.to_vec1()?;
-        let ridge = self.ridge;
-        Ok(totals
-            .par_iter()
-            .enumerate()
-            .map(|(i, &n)| {
-                let (pb, zi, si) = (
-                    &pbar[i * d..(i + 1) * d],
-                    &z[i * d..(i + 1) * d],
-                    &sums[i * d..(i + 1) * d],
-                );
-                let grad = nalgebra::DVector::<f32>::from_iterator(
-                    d,
-                    (0..d).map(|j| n * pb[j] - si[j] + ridge * zi[j]),
-                );
-                let hess = nalgebra::DMatrix::<f32>::from_fn(d, d, |r, c| {
-                    let cov = m2[i * tri + at(r, c)] - pb[r] * pb[c];
-                    n * cov + if r == c { ridge } else { 0.0 }
-                });
-                match hess.cholesky() {
-                    Some(chol) => 0.5 * grad.dot(&chol.solve(&grad)),
-                    None => f32::INFINITY,
-                }
-            })
-            .collect())
+        let data = (z * &full.stats.sums)?.sum(1)?;
+        Ok((((&full.stats.totals * lse)? - data)? - &full.offsets)?)
     }
 
     /// One step's loss: a block of pairs' objective, plus the self-pair
@@ -823,8 +676,8 @@ impl PairEncoder {
     /// of the rows: a cell is an endpoint of about `2E/n` pairs.
     fn step_loss(
         &self,
-        endpoints: Stats,
-        selves: Option<(Stats, Tensor)>,
+        endpoints: FullStats,
+        selves: Option<(FullStats, Tensor)>,
         batch: usize,
     ) -> anyhow::Result<Tensor> {
         let half_ridge = f64::from(self.ridge) / 2.0;
@@ -835,9 +688,9 @@ impl PairEncoder {
         let Some((cells, weight)) = selves else {
             return Ok(pairs);
         };
-        let h = self.cell_codes(&cells)?;
+        let h = self.cell_codes(&cells.stats)?;
         let doubled = cells.doubled()?;
-        let z_uu = self.self_pair_code(&h, &doubled)?;
+        let z_uu = self.self_pair_code(&h, &doubled.stats)?;
         let nll_uu = self.nll(&z_uu, &self.scores(&z_uu)?, &doubled)?;
         let ridge_uu = z_uu.sqr()?.sum(1)?.affine(half_ridge, 0.0)?;
         // Over the endpoint rows a step of `batch` pairs has.

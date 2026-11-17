@@ -4,6 +4,7 @@ use clap::{Parser, ValueEnum};
 use data_beans::alg::hvg::HvgCliArgs;
 use data_beans::aux::feature_names::FeatureNameKind;
 
+use super::pair_projection::encoder::{DEFAULT_PAIR_ENCODER_BATCH, DEFAULT_PAIR_ENCODER_STEPS};
 use crate::util::device::ComputeDevice;
 
 /// Which features each epoch trains (`--feature-inclusion`).
@@ -178,6 +179,21 @@ pub struct CellActivityGraphEmbeddingArgs {
                      Pair with --features-per-epoch to cap per-epoch cost."
     )]
     pub epochs: usize,
+
+    #[arg(
+        long,
+        default_value_t = DEFAULT_PAIR_ENCODER_STEPS,
+        help = "Optimizer steps for the pair encoder, at least",
+        long_help = format!(
+            "Optimizer steps the pair encoder trains for, at least: rounded up to\n\
+             whole passes over the pairs, since a pass is always made whole, so\n\
+             many pairs take more.\n\
+             A pass is the pairs split into steps of up to {DEFAULT_PAIR_ENCODER_BATCH}.\n\
+             Fewer is faster; too few leaves the encoder near its random start.\n\
+             0 skips training."
+        )
+    )]
+    pub pair_encoder_steps: usize,
 
     #[arg(
         long,

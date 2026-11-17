@@ -21,9 +21,9 @@
 //! spectrum; `(tau, rho)` maximise `ell` by a projected L-BFGS with its
 //! analytic gradient (the envelope theorem: `dS = sum_l z_l^T dC z_l`).
 
-use crate::spatial_baselines::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
-use crate::spatial_baselines::spatial_factor::prep::DenseRows;
-use crate::spatial_baselines::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
+use crate::baselines::spatial::spatial_factor::kit::{lbfgs_box, top_eigs, Dense, EigOpts};
+use crate::baselines::spatial::spatial_factor::prep::DenseRows;
+use crate::baselines::spatial::spatial_factor::prior::{cg_solve, Laplacian, Spectrum};
 use std::cell::RefCell;
 
 /// The box on `(log tau, log rho)`.

@@ -27,9 +27,9 @@
 //! run's `cell_embedding` table, or any table (TSV or parquet) with a
 //! `cell` column and numeric columns.
 
-use super::panel::donor_label;
 use super::score::{sim_folder, TruthSpots, NAME_WIDTH};
 use crate::compare::propensity_path;
+use crate::simulate::panel::donor_label;
 use crate::util::common::{in_dir, HashMap, HashSet, Mat};
 use crate::util::parquet_io::{read_keyed_columns, read_propensity};
 use legume_numeric::matrix::knn_graph::{KnnGraph, KnnGraphArgs};

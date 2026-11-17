@@ -137,6 +137,7 @@ fn contacts_and_competence() {
 /// Random Gaussian bumps at the regional scale, outside the adjustment
 /// smooth's own Fourier basis: the smooth still has to absorb them.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn no_effect_under_regional_confounding() {
     let f = fixture();
     let scen = Scenario {
@@ -175,6 +176,7 @@ fn no_effect_under_regional_confounding() {
 }
 
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn a_planted_effect_is_recovered_on_the_tissue() {
     let f = fixture();
     let scen = Scenario {
@@ -231,6 +233,7 @@ fn the_truth_contrasts_the_realized_effect_between_seen_arms() {
 }
 
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn a_dose_response_truth_tracks_the_estimate_and_keeps_the_exposed_effect_apart() {
     let f = fixture();
     let scen = Scenario {

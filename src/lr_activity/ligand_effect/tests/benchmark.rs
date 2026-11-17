@@ -52,6 +52,7 @@ fn grid_and_calibration() {
 /// ligand that dropout misclassifies) leaves it bit for bit, while the
 /// estimator-weighted truth moves.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn truth_is_free_of_the_estimator() {
     let f = fixture();
     let n = f.tissue.n();
@@ -92,6 +93,7 @@ fn truth_is_free_of_the_estimator() {
 /// difference reads cell type as an effect; the estimator, adjusting for
 /// identity, does not (or has no overlap to try).
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn a_marker_type_fools_the_unadjusted_difference() {
     let f = fixture();
     for rep in 0..2 {
@@ -121,6 +123,7 @@ fn a_marker_type_fools_the_unadjusted_difference() {
 
 /// A real gene's smoothed expression as the hidden field, quadratic.
 #[test]
+#[ignore = "benchmark: cargo test -- --ignored"]
 fn a_real_gene_confounder_is_adjusted() {
     let f = fixture();
     let scen = Scenario {
@@ -138,6 +141,18 @@ fn a_real_gene_confounder_is_adjusted() {
         "estimate z {:.2}",
         r.estimate.z()
     );
+}
+
+/// A real-gene confounder without a gene is refused.
+#[test]
+fn a_real_gene_confounder_needs_a_gene() {
+    let f = fixture();
+    let scen = Scenario {
+        ligand_field_pve: 0.5,
+        response_field_pve: 0.5,
+        confounder: ConfounderKind::RealGene,
+        ..Scenario::default()
+    };
     let none = SimBase {
         confounder_gene: None,
         ..base(&f)

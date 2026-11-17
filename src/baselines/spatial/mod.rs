@@ -60,6 +60,3 @@ pub mod spatial_factor;
 pub mod spatialde2;
 pub mod spatialpca;
 pub mod stagate;
-
-#[cfg(test)]
-mod tests;

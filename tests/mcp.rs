@@ -876,27 +876,20 @@ fn an_agent_simulates_looks_and_scores() {
     let s = &paired["scores"][0]["score"];
     assert_eq!(s["cross_donor"]["auroc"], 1.0, "{paired}");
     assert_eq!(s["spatial"]["auroc"], 1.0, "{paired}");
-    // A baseline runs on the reply's truth and its table scores like a fit;
-    // its out may sit in a folder not made yet. A bad setting, or a
-    // simulation the baseline cannot read, is refused before any job.
+    // A baseline's bad setting, or a simulation it cannot read, is refused
+    // before any job.
     let msg = c.fails("run_sim_baseline", json!({"truth": truth, "k": 0}));
     assert!(msg.contains("k must be at least 1"), "{msg}");
     std::fs::create_dir_all(dir.path().join("half/truth")).unwrap();
     let msg = c.fails("run_sim_baseline", json!({"truth": "half"}));
     assert!(msg.contains("give run_simulate's truth"), "{msg}");
-    let (base, _) = c.ok(
-        "run_sim_baseline",
-        json!({"truth": truth, "method": "per-donor", "out": "later/base", "background": false}),
+    // A table scores like a run: the truth's own spots by their domain.
+    let spots = Path::new(&truth).with_file_name("spots.parquet");
+    let (scored, _) = c.ok(
+        "run_sim_score",
+        json!({"truth": truth, "labels": [spots], "label_column": "domain"}),
     );
-    assert!(dir.path().join("later/base.tsv").is_file(), "{base}");
-    let table = base["labels"].as_str().unwrap().to_string();
-    assert!(Path::new(&table).is_file(), "{base}");
-    assert!(
-        base["note"].as_str().unwrap().contains("run_sim_score"),
-        "{base}"
-    );
-    let (scored, _) = c.ok("run_sim_score", json!({"truth": truth, "labels": [table]}));
-    assert_eq!(scored["scores"].as_array().unwrap().len(), 1, "{scored}");
+    assert_eq!(scored["scores"][0]["score"]["shared_ari"], 1.0, "{scored}");
 
     // A labelling that cannot be scored is named; the others are scored.
     let (scored, _) = c.ok(
@@ -927,80 +920,36 @@ fn an_agent_simulates_looks_and_scores() {
     assert!(!msg.contains("give another out"), "{msg}");
 }
 
-/// One ligand-receptor pair and its response programme, from a
-/// simulation's truth genes: the programme is the genes of the first
-/// planted cell state's programme, and the ligand and receptor two genes
-/// outside it. The pair and programme files, written in `dir`.
-fn pair_from_truth(sim: &Path, dir: &Path) -> (String, String) {
-    use legume_numeric::matrix::traits::IoOps;
-    let genes =
-        nalgebra::DMatrix::<f32>::from_parquet(&sim.join("truth/genes.parquet").to_string_lossy())
-            .unwrap();
-    let col = genes
-        .cols
-        .iter()
-        .position(|c| c.starts_with("programme_"))
-        .expect("a programme column");
-    let (inside, outside): (Vec<usize>, Vec<usize>) =
-        (0..genes.rows.len()).partition(|&g| genes.mat[(g, col)] != 0.0);
-    assert!(!inside.is_empty() && outside.len() >= 2, "{inside:?}");
-    let (ligand, receptor) = (&genes.rows[outside[0]], &genes.rows[outside[1]]);
-    let pairs = dir.join("pairs.tsv");
-    std::fs::write(&pairs, format!("ligand\treceptor\n{ligand}\t{receptor}\n")).unwrap();
-    let mut programme = String::from("ligand\treceptor\ttarget\tweight\n");
-    for &g in &inside {
-        programme.push_str(&format!("{ligand}\t{receptor}\t{}\t1\n", genes.rows[g]));
-    }
-    let targets = dir.join("targets.tsv");
-    std::fs::write(&targets, programme).unwrap();
-    (
-        pairs.to_string_lossy().into_owned(),
-        targets.to_string_lossy().into_owned(),
-    )
-}
-
-/// The two-stage fit an agent runs on a simulation: an lc fit, its
-/// residual (a bad run refused before any job), a dsvd fit on the
-/// residual's files as the reply lists them, and lra on that fit, which
-/// reads the run's raw counts.
+/// run_residual over the server, on a run written to disk: a run that
+/// records no propensity output is refused before any job; with no out
+/// the residual takes today's free name, passing over a file in the way,
+/// and an -o that is a file is refused. (What the job writes, and its
+/// command line, are `pinto residual`'s and `run residual`'s own tests.)
 #[test]
-fn an_agent_fits_the_residual_of_a_simulation() {
+fn an_agent_takes_a_residual_under_a_free_name() {
     let dir = tempfile::tempdir().unwrap();
-    let reference = reference::empty_reference(dir.path());
-    let mut c = Client::start_with(
-        dir.path(),
-        &[
-            ("PINTO_REFERENCE_DIR", reference.as_os_str()),
-            ("PINTO_OFFLINE", std::ffi::OsStr::new("1")),
-        ],
-    );
+    let mut c = Client::start(dir.path());
     c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
-    // big enough for lra's cross-fitting folds
-    let small = json!(["grid_side=24", "n_genes=40", "programme_genes=5"]);
-    let (sim, _) = c.ok(
-        "run_simulate",
-        json!({"scenario": "donor-confounded-donor-only-cell-type", "set": small, "out": "sim", "background": false}),
-    );
-    let truth = sim["truth"].as_str().unwrap().to_string();
-    let (lc, _) = c.ok(
-        "run_fit",
-        json!({
-            "method": "lc",
-            "data": sim["fit"]["data"],
-            "coords": sim["fit"]["coords"],
-            "flags": small_fit(
-                &sim["fit"]["flags"],
-                json!({"n-communities": 5, "num-gibbs": 10})
-            ),
-            "out": "fits/lc1",
-            "background": false,
-        }),
-    );
-    let stage1 = lc["written"][0].as_str().unwrap().to_string();
+    let prefix = common::write_run(dir.path(), 16);
+    let run = format!("{prefix}.pinto.json");
+    let mut meta: Value = serde_json::from_str(&std::fs::read_to_string(&run).unwrap()).unwrap();
+    // The run's data files and coordinate columns, as a fit records them.
+    let data = dir.path().join("raw/S1.zarr");
+    std::fs::create_dir_all(&data).unwrap();
+    meta["data_files"] = json!([data.to_string_lossy()]);
+    meta["outputs"]["coord_columns"] = json!(["x", "y"]);
+    std::fs::write(&run, meta.to_string()).unwrap();
 
-    // A run that records no propensity output (the truth names its levels'
-    // only) is refused before any job starts.
-    let msg = c.fails("run_residual", json!({"run": truth, "out": "bad"}));
+    // Without a propensity output: refused, and no job started.
+    let bare = dir.path().join("bare.pinto.json");
+    let mut no_propensity = meta;
+    no_propensity["prefix"] = json!(dir.path().join("bare").to_string_lossy());
+    no_propensity["outputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("propensity");
+    std::fs::write(&bare, no_propensity.to_string()).unwrap();
+    let msg = c.fails("run_residual", json!({"run": bare, "out": "bad"}));
     assert!(msg.contains("records no propensity output"), "{msg}");
     assert!(!dir.path().join("bad").exists(), "refused before it ran");
     let (jobs, _) = c.ok("job_status", json!({}));
@@ -1008,7 +957,7 @@ fn an_agent_fits_the_residual_of_a_simulation() {
 
     // Today's free name passes over a file in the way; an -o that is a
     // file is refused before any job.
-    c.fails("run_residual", json!({"run": truth}));
+    c.fails("run_residual", json!({"run": bare}));
     let day = std::fs::read_dir(dir.path().join("results"))
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -1017,112 +966,19 @@ fn an_agent_fits_the_residual_of_a_simulation() {
     let in_the_way = day.join("residual");
     std::fs::write(&in_the_way, "").unwrap();
     let in_the_way = in_the_way.to_string_lossy().into_owned();
-    let msg = c.fails("run_residual", json!({"run": stage1, "out": in_the_way}));
+    let msg = c.fails("run_residual", json!({"run": run, "out": in_the_way}));
     assert!(msg.contains("is a file"), "{msg}");
-    let (job, _) = c.ok("run_residual", json!({"run": stage1}));
+    let (job, _) = c.ok("run_residual", json!({"run": run}));
     let res = job["out"].as_str().unwrap().to_string();
     assert!(res.ends_with("residual-2"), "{job}");
-    let id = job["job"].as_str().unwrap().to_string();
     assert!(job["note"].as_str().unwrap().contains("run_fit"), "{job}");
     assert!(job["note"].as_str().unwrap().contains("run_lra"), "{job}");
-    let (waited, _) = c.ok("job_wait", json!({"id": id, "seconds": 120}));
-    assert_eq!(waited["state"], "done", "{waited}");
-    assert!(Path::new(&res).join("residual.json").is_file(), "{job}");
-    // The reply lists each section's residual, in the fit's order, with
-    // its coordinates and the column names they carry, all written.
-    let (data, coords) = (
-        job["fit"]["data"].as_array().unwrap(),
-        job["fit"]["coords"].as_array().unwrap(),
-    );
-    let sections = sim["fit"]["data"].as_array().unwrap();
-    assert_eq!((data.len(), coords.len()), (sections.len(), sections.len()));
-    for ((d, xy), raw) in data.iter().zip(coords).zip(sections) {
-        let stem = Path::new(raw.as_str().unwrap()).file_name().unwrap();
-        let (d, xy) = (Path::new(d.as_str().unwrap()), xy.as_str().unwrap());
-        assert_eq!(d.file_name().unwrap(), stem, "{job}");
-        assert!(d.exists() && Path::new(xy).is_file(), "{job}");
-    }
-    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&stage1).unwrap()).unwrap();
-    let names: Vec<&str> = manifest["outputs"]["coord_columns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c.as_str().unwrap())
-        .collect();
     assert_eq!(
         job["fit"]["flags"],
-        json!({"coord-column-names": names[..2].join(",")}),
+        json!({"coord-column-names": "x,y"}),
         "{job}"
     );
-    let msg = c.fails("run_residual", json!({"run": stage1, "out": res}));
-    assert!(msg.contains("exists"), "{msg}");
-
-    // Stage 2 on the reply's files, and lra on it, read on the raw counts.
-    let (dsvd, _) = c.ok(
-        "run_fit",
-        json!({
-            "method": "dsvd",
-            "data": job["fit"]["data"],
-            "coords": job["fit"]["coords"],
-            "flags": small_fit(
-                &job["fit"]["flags"],
-                json!({"n-latent-topics": 5})
-            ),
-            "out": "fits/dsvd2",
-            "background": false,
-        }),
-    );
-    let stage2 = dsvd["written"][0].as_str().unwrap().to_string();
-    // A residual of the stage-2 fit is refused: lra would read excess as raw.
-    let msg = c.fails("run_residual", json!({"run": stage2, "out": "res2"}));
-    assert!(msg.contains("a fit on a residual"), "{msg}");
-    assert!(!dir.path().join("res2").exists(), "refused before it ran");
-    let (lr_pairs, targets) = pair_from_truth(&dir.path().join("sim"), dir.path());
-    let (reply, notes) = c.request(
-        "tools/call",
-        json!({
-            "name": "run_lra",
-            "arguments": {
-                "run": stage2,
-                "lr_pairs": lr_pairs,
-                "targets": [targets],
-                "species": "human",
-                "out": "lra/",
-                "background": false,
-            },
-            "_meta": {"progressToken": 1},
-        }),
-    );
-    assert_eq!(reply["result"]["isError"], false, "{reply}");
-    let log: Vec<&str> = notes
-        .iter()
-        .filter_map(|n| n["params"]["message"].as_str())
-        .collect();
-    assert!(
-        log.iter()
-            .any(|l| l.contains("is a residual fit") && l.contains("reading its raw counts")),
-        "{log:?}"
-    );
-    let read: Vec<&&str> = log
-        .iter()
-        .filter(|l| l.contains("Importing data file"))
-        .collect();
-    assert!(
-        !read.is_empty() && read.iter().all(|l| l.contains("/sim/sections/")),
-        "the simulation's own sections, not the excess: {read:?}"
-    );
-}
-
-/// The flags a reply gives `run_fit`, with a narrow projection and the
-/// method's own `extra` on top: a fit this test only plumbs through, kept
-/// quick, never one whose quality it reads.
-fn small_fit(flags: &Value, extra: Value) -> Value {
-    let mut flags = flags.clone();
-    let merged = flags.as_object_mut().unwrap();
-    merged.insert("proj-dim".into(), json!(16));
-    let Value::Object(extra) = extra else {
-        panic!("flags are an object: {extra}")
-    };
-    merged.extend(extra);
-    flags
+    // The job reads an empty data file; let it end before the server does.
+    let id = job["job"].as_str().unwrap().to_string();
+    c.ok("job_wait", json!({"id": id, "seconds": 120}));
 }

@@ -15,8 +15,8 @@ fn fixture() -> PairDictionary {
 
 #[test]
 fn a_zero_latent_scores_exactly_the_abundance_null() {
-    // At θ = 0 the log-rate IS b, and the partition is Σ exp(b_g), which is what
-    // `log_z` holds. The two columns must therefore agree — if they ever drift,
+    // At θ = 0 the log-rate IS b, and the partition is Σ exp(b_g), the
+    // null's. The two columns must therefore agree — if they ever drift,
     // the null and the model are normalising over different axes and the
     // reported gain is meaningless.
     let dict = fixture();
