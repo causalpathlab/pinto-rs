@@ -79,8 +79,8 @@ use super::spatial_factor::kit::Dense;
 use super::spatial_factor::prep::{library, select_rows, SparseOp};
 pub use super::spatial_factor::Variant;
 use super::spatial_factor::{
-    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, read_shape,
-    refined_domains, select_genes, spectrum, to_mat, CoreArgs,
+    cell_graph, check_stored, coarsen, domains, merge, names_of, pseudobulk_input, refined_domains,
+    select_genes, spectrum, to_mat, CoreArgs,
 };
 use crate::util::memory::{ensure_fits, Budget};
 use sparse::GraphPrior;
@@ -155,25 +155,7 @@ pub struct Args {
 }
 
 /// `mefisto-pb`'s arguments: the sparse model's, and the super-cells.
-#[derive(clap::Args, Debug, Clone)]
-pub struct PbArgs {
-    #[command(flatten)]
-    pub fit: FitArgs,
-
-    /// Target number of super-cells to fit on (as cage's -d: the cells are
-    /// coarsened until about this many remain)
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = 1024,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    pub n_pseudobulk: usize,
-
-    /// Iterations of the unravelling at most
-    #[arg(long, default_value_t = UNRAVEL_MAX_ITER, hide = true)]
-    pub unravel_max_iter: usize,
-}
+pub type PbArgs = super::pseudobulk::PbArgs<FitArgs>;
 
 impl FitArgs {
     fn check(&self) -> anyhow::Result<()> {
@@ -328,7 +310,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
     let genes = select_genes(&data, fit.n_genes)?;
     ensure_fits(
         "mefisto",
-        factor_peak_bytes(&fit.memory_shape(&read_shape(&data), genes.len(), Variant::Sparse)),
+        factor_peak_bytes(&fit.memory_shape(&data.shape(), genes.len(), Variant::Sparse)),
         budget,
         LOWER_MEMORY,
     )?;
@@ -442,7 +424,7 @@ pub(crate) fn run_pb_on(
     ensure_fits(
         "mefisto-pb",
         factor_peak_bytes(&fit.memory_shape(
-            &read_shape(&data),
+            &data.shape(),
             genes.len(),
             Variant::Pseudobulk(args.n_pseudobulk),
         )),
@@ -486,7 +468,7 @@ pub(crate) fn run_pb_on(
     );
     let mut st = unravel_start(&vd, &pb_st, &coarse.cells.of_cell);
     let opts = VbOpts {
-        max_iter: args.unravel_max_iter,
+        max_iter: UNRAVEL_MAX_ITER,
         gp_start: 1,
         frozen_weights: true,
         ..fit.opts()
@@ -512,7 +494,7 @@ pub(crate) fn run_pb_on(
     });
     s["unravel"] = serde_json::json!({
         "method": "weights, ARD and sparsity fixed from the super-cell fit; noise, factors and rho refitted on the cells and their graph, from the super-cells' factors broadcast",
-        "max_iter": args.unravel_max_iter,
+        "max_iter": UNRAVEL_MAX_ITER,
         "broadcast": "the super-cells' own labels, clustered apart, in cell_pb.parquet (a diagnostic)",
     });
     weights_out(fit, &data, &genes, &pb_st)?;

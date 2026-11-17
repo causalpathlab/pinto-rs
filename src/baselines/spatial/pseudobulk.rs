@@ -28,6 +28,24 @@ use crate::util::graph_coarsen::{
 use legume_numeric::matrix::knn_graph::{symmetric_adjacency, KnnGraph};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
+/// A `-pb` command's arguments: its method's, `fit`, and the super-cells
+/// to fit on.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PbArgs<F: clap::Args> {
+    #[command(flatten)]
+    pub fit: F,
+
+    /// Target number of super-cells to fit on (as cage's -d: the cells are
+    /// coarsened until about this many remain)
+    #[arg(
+        long,
+        short = 'd',
+        default_value_t = 1024,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
+    pub n_pseudobulk: usize,
+}
+
 /// Neighbours per cell of the graph the cells are coarsened along, pinto's
 /// cell-pair graph at its `-k` default: what its memory is charged at.
 pub const COARSEN_K: usize = crate::util::input::DEFAULT_KNN;

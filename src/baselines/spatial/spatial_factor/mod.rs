@@ -27,7 +27,6 @@ use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
 use super::pseudobulk::{fold_weighted, super_cells, SuperCells};
 use super::stagate::seurat_v3_hvg;
-use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
 use crate::util::memory::Budget;
 use kit::Dense;
@@ -138,17 +137,6 @@ pub fn check_stored(
         change,
     )?;
     Ok(budget)
-}
-
-/// The shape of `data` as read.
-pub fn read_shape(data: &SpatialData) -> InputShape {
-    InputShape {
-        genes: data.genes.len(),
-        nonzeros: data.counts.nnz(),
-        section_sizes: section_sizes(&data.section),
-        batches: data.n_batches(),
-        strata: 1,
-    }
 }
 
 /// The names of `genes` (indices into `names`).

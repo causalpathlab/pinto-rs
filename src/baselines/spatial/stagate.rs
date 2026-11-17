@@ -285,21 +285,7 @@ pub struct Args {
 }
 
 /// `stagate-pb`'s arguments: stagate's, and the super-cells to train on.
-#[derive(clap::Args, Debug)]
-pub struct PbArgs {
-    #[command(flatten)]
-    pub fit: Args,
-
-    /// Target number of super-cells to train on (as cage's -d: the cells
-    /// are coarsened until about this many remain)
-    #[arg(
-        long,
-        short = 'd',
-        default_value_t = 1024,
-        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    pub n_pseudobulk: usize,
-}
+pub type PbArgs = super::pseudobulk::PbArgs<Args>;
 
 // ---------------------------------------------------------------- genes
 
