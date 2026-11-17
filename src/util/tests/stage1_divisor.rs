@@ -16,7 +16,7 @@ use data_beans::aux::feature_names::FeatureNameKind;
 /// Tables over `cells` and `rows` with `k` communities in batches
 /// `batches` (cell `i` in `batch_of(i)`): `θ` and the profiles as given,
 /// `p̄` the `n`-weighted mean share, unit totals.
-fn tables(
+pub(crate) fn tables(
     cells: &[Box<str>],
     rows: &[Box<str>],
     k: usize,

@@ -32,8 +32,8 @@ modules by default (feature-modules auto takes their number from the data, \
 a count fixes it, 0 for none); feature-inclusion moran given alone replaces \
 the default modules, and given beside an explicit feature-modules value is \
 refused; lc takes feature modules from a feature network file the user \
-supplies (feature-network), as pinto has none. Ablations are lc, cage or \
-dsvd fits with run_fit's ablation flags (permute-coords, drop-features, \
+supplies (feature-network), as pinto has none. Ablations are fits (lc, dsvd, cage \
+or a baseline) with run_fit's ablation flags (permute-coords, drop-features, \
 mask-cells with ablation-parent); `run_region` turns a polygon into the cell \
 list mask-cells takes; `run_compare` sets two runs' communities against each \
 other; `run_predict` scores held-out cells on a fitted model.";

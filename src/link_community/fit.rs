@@ -96,6 +96,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         n_cells,
         n_rows,
         ablation,
+        permuted_coordinates: _,
     } = preprocess_srt(SrtPreprocessConfig {
         offset: args.stage2.offset.as_deref(),
         common: c,

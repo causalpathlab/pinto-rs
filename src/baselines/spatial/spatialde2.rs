@@ -1214,25 +1214,13 @@ impl FitArgs {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Sparse)?;
-    run_on(
-        args,
-        args.fit
-            .input
-            .read_within(false, &budget, SPATIALDE2_PROCESS_BYTES)?,
-        &budget,
-    )
+    run_on(args, args.fit.input.read(false)?, &budget)
 }
 
 /// `spatialde2-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read(&args.fit, Variant::Pseudobulk)?;
-    run_pb_on(
-        args,
-        args.fit
-            .input
-            .read_within(true, &budget, SPATIALDE2_PROCESS_BYTES)?,
-        &budget,
-    )
+    run_pb_on(args, args.fit.input.read(true)?, &budget)
 }
 
 /// The arguments checked, and the peak of a `variant` run on the input's
@@ -1274,7 +1262,7 @@ pub(crate) fn input_peak_bytes(fit: &FitArgs, variant: Variant, s: &InputShape) 
         Variant::Sparse => 0,
     };
     fit.input
-        .peak_with_delta(peak + pb, SPATIALDE2_PROCESS_BYTES, s)
+        .peak_with_read(peak + pb, SPATIALDE2_PROCESS_BYTES, s)
 }
 
 /// What a run's peak memory depends on beside its input: its graph each
@@ -1434,7 +1422,7 @@ pub(crate) fn run_pb_on(
     mut data: SpatialData,
     budget: &Budget,
 ) -> anyhow::Result<()> {
-    use super::pseudobulk::{broadcast_agreement, fold_weighted, super_cells, COARSEN_K};
+    use super::pseudobulk::{broadcast_agreement, fold_weighted, super_cells};
     let args = &pb_args.fit;
     let params = args.params();
     let n = data.cells.len();
@@ -1452,16 +1440,7 @@ pub(crate) fn run_pb_on(
         .projection
         .take()
         .ok_or_else(|| anyhow::anyhow!("spatialde2-pb reads the cells' projection"))?;
-    // one search serves both graphs when the cell graph is the wider: its
-    // lists are sorted by distance, so their first COARSEN_K are the
-    // coarsening's
-    let mut cell_knn =
-        (args.neighbors >= COARSEN_K).then(|| knn_within_sections(&data, args.neighbors));
-    let coarsen_knn = match &cell_knn {
-        Some(nb) => nb.truncated(COARSEN_K),
-        None => knn_within_sections(&data, COARSEN_K),
-    };
-    let sc = super_cells(&data, proj, pb_args.n_pseudobulk, coarsen_knn)?;
+    let sc = super_cells(&mut data, proj, pb_args.n_pseudobulk)?;
     let m = sc.data.cells.len();
     let TopGenes {
         genes,
@@ -1480,15 +1459,7 @@ pub(crate) fn run_pb_on(
         genes.len()
     );
 
-    let cell_graph = match cell_knn.take() {
-        Some(nb) => Some(knn_graph(
-            &data,
-            nb,
-            args.neighbors,
-            params.smoothness_factor,
-        )),
-        None => spatial_graph(&data, args.neighbors, params.smoothness_factor),
-    };
+    let cell_graph = spatial_graph(&data, args.neighbors, params.smoothness_factor);
     let (pb_graph, n_super_edges) = match &cell_graph {
         Some(g) => {
             let (edges, w) = g.undirected();

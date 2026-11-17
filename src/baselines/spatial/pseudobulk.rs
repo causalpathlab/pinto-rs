@@ -19,7 +19,6 @@
 //! (each method's module says how); the super-cell's label broadcast to
 //! its cells is kept only as a diagnostic.
 
-use super::graph::Neighbours;
 use super::input::SpatialData;
 use crate::util::ablation::seeding_inputs;
 use crate::util::common::Mat;
@@ -29,8 +28,8 @@ use crate::util::graph_coarsen::{
 use legume_numeric::matrix::knn_graph::{symmetric_adjacency, KnnGraph};
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 
-/// Neighbours per cell of the graph the cells are coarsened along: cage's
-/// `-k` default.
+/// Neighbours per cell of the graph the cells are coarsened along, pinto's
+/// cell-pair graph at its `-k` default: what its memory is charged at.
 pub const COARSEN_K: usize = crate::util::input::DEFAULT_KNN;
 
 /// The super-cells of an input.
@@ -43,29 +42,31 @@ pub struct SuperCells {
 }
 
 /// Coarsen `data`'s cells to about `target` super-cells, as cage does
-/// (see the module documentation), along `nb`, each cell's [`COARSEN_K`]
-/// nearest within its section (freed once its edges are listed), on
-/// `proj`, the cells' projection ([`SpatialData::projection`], taken from
-/// `data`), which the coarsening normalises in place and drops.
+/// (see the module documentation), along pinto's cell-pair graph
+/// ([`SpatialData::pair_graph`], taken from `data`), on `proj`, the cells'
+/// projection ([`SpatialData::projection`], taken from `data`), which the
+/// coarsening normalises in place and drops.
 pub fn super_cells(
-    data: &SpatialData,
+    data: &mut SpatialData,
     mut proj: Mat,
     target: usize,
-    nb: Neighbours,
 ) -> anyhow::Result<SuperCells> {
     let n = data.cells.len();
     anyhow::ensure!(target >= 1, "--n-pseudobulk must be positive");
-    // an edge between two batches is dropped: under `--auto-batch` a
-    // section may hold several, and a super-cell spans none of them
-    let (edges, distances): (Vec<_>, Vec<_>) = {
-        let (edges, distances) = nb.undirected();
-        edges
-            .into_iter()
-            .zip(distances)
-            .filter(|&((i, j), _)| data.batches[i] == data.batches[j])
-            .unzip()
-    };
-    drop(nb);
+    // an edge between two sections or two batches is dropped: pinto's
+    // graph is built over all sections at once, and under `--auto-batch` a
+    // section may hold several batches; a super-cell spans none of them
+    let (edges, distances) = data
+        .pair_graph
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("a -pb command reads the cell-pair graph"))?;
+    let (edges, distances): (Vec<_>, Vec<_>) = edges
+        .into_iter()
+        .zip(distances)
+        .filter(|&((i, j), _)| {
+            data.section[i] == data.section[j] && data.batches[i] == data.batches[j]
+        })
+        .unzip();
     let graph = KnnGraph {
         adjacency: symmetric_adjacency(n, &edges, &distances),
         edges,
@@ -116,7 +117,6 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
     let mut size = vec![0f32; m];
     let mut section = vec![0usize; m];
     let mut batches: Vec<Box<str>> = vec![Box::from(""); m];
-    let mut read_batches: Vec<Box<str>> = vec![Box::from(""); m];
     for (c, &s) in of_cell.iter().enumerate() {
         size[s] += 1.0;
         for j in 0..dims {
@@ -124,7 +124,6 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
         }
         section[s] = data.section[c];
         batches[s] = data.batches[c].clone();
-        read_batches[s] = data.read_batches[c].clone();
     }
     debug_assert!(size.iter().all(|&k| k > 0.0), "a super-cell with no cell");
     for (s, &k) in size.iter().enumerate() {
@@ -140,11 +139,12 @@ pub fn collapse(data: &SpatialData, of_cell: Vec<usize>) -> SuperCells {
         xy,
         coord_names: data.coord_names.clone(),
         batches,
-        read_batches,
         section,
         n_sections: data.n_sections,
         delta: data.delta.clone(),
         projection: None,
+        pair_graph: None,
+        ablation: data.ablation.clone(),
     };
     SuperCells { of_cell, data }
 }

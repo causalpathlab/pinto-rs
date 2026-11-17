@@ -25,7 +25,7 @@ use super::cluster::{cluster_embedding, refine_by_neighbours};
 use super::graph::{knn_within_sections, Neighbours};
 use super::input::{InputShape, SpatialData, SpatialInputArgs};
 use super::memory::{check_stored_shape, factor_peak_bytes, FactorShape, FACTOR_PROCESS_BYTES};
-use super::pseudobulk::{fold_weighted, super_cells, SuperCells, COARSEN_K};
+use super::pseudobulk::{fold_weighted, super_cells, SuperCells};
 use super::stagate::seurat_v3_hvg;
 use crate::util::ablation::section_sizes;
 use crate::util::common::Mat;
@@ -133,7 +133,7 @@ pub fn check_stored(
         what,
         stored
             .as_ref()
-            .map(|s| input.peak_with_delta(factor_peak_bytes(&shape(s)), FACTOR_PROCESS_BYTES, s)),
+            .map(|s| input.peak_with_read(factor_peak_bytes(&shape(s)), FACTOR_PROCESS_BYTES, s)),
         &budget,
         change,
     )?;
@@ -238,14 +238,14 @@ pub struct Coarse {
 }
 
 /// Coarsen `data` (read with its projection) to about `target`
-/// super-cells along each cell's [`COARSEN_K`] nearest, and fold the
+/// super-cells along pinto's cell-pair graph, and fold the
 /// symmetric cell graph `nb` onto them.
 pub fn coarsen(data: &mut SpatialData, target: usize, nb: &Neighbours) -> anyhow::Result<Coarse> {
     let proj = data
         .projection
         .take()
         .ok_or_else(|| anyhow::anyhow!("a -pb command reads the cells' projection"))?;
-    let sc = super_cells(data, proj, target, knn_within_sections(data, COARSEN_K))?;
+    let sc = super_cells(data, proj, target)?;
     let (edges, _) = nb.undirected();
     let ones = vec![1.0; edges.len()];
     let (super_edges, w) = fold_weighted(&sc.of_cell, &edges, &ones);

@@ -156,7 +156,9 @@ macro_rules! baseline_memory {
 /// `long_about`.
 macro_rules! baseline_batch {
     () => {
-        "With two or more batches (data files, or -b labels) the counts are\n\
+        "The input is read as lc, dsvd and cage read it: cells QC'd alike\n\
+         (--no-qc keeps every cell), --offset and the ablations taken alike.\n\
+         With two or more batches (data files, or -b labels) the counts are\n\
          divided by the input's own batch effects (δ, estimated as cage does\n\
          and written to {out}.delta.parquet) before the method's own\n\
          preprocessing. That is a deviation from the original method;\n\

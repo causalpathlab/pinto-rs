@@ -1004,24 +1004,13 @@ impl Stagate {
 
 pub fn run(args: &Args) -> anyhow::Result<()> {
     let budget = check_before_read("stagate", args, false)?;
-    run_on(
-        args,
-        args.input
-            .read_within(false, &budget, STAGATE_PROCESS_BYTES)?,
-        &budget,
-    )
+    run_on(args, args.input.read(false)?, &budget)
 }
 
 /// `stagate-pb`: [`run_pb_on`] on the input read with its projection.
 pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
     let budget = check_before_read("stagate-pb", &args.fit, true)?;
-    run_pb_on(
-        args,
-        args.fit
-            .input
-            .read_within(true, &budget, STAGATE_PROCESS_BYTES)?,
-        &budget,
-    )
+    run_pb_on(args, args.fit.input.read(true)?, &budget)
 }
 
 /// The arguments checked, and the peak of a run of command `what` (on
@@ -1062,7 +1051,7 @@ pub(crate) fn input_peak_bytes(args: &Args, pseudobulk: bool, s: &InputShape) ->
         true => pb_peak_bytes(args, &input),
         false => stagate_peak_bytes(&args.sizes().memory_shape(&input)),
     };
-    args.input.peak_with_delta(peak, STAGATE_PROCESS_BYTES, s)
+    args.input.peak_with_read(peak, STAGATE_PROCESS_BYTES, s)
 }
 
 /// `stagate-pb`'s peak on `input` (its genes those trained on), bounded
@@ -1448,7 +1437,7 @@ pub(crate) fn run_pb_on(
     mut data: SpatialData,
     budget: &Budget,
 ) -> anyhow::Result<()> {
-    use super::pseudobulk::{broadcast_agreement, super_cells, COARSEN_K};
+    use super::pseudobulk::{broadcast_agreement, super_cells};
     use crate::util::graph_coarsen::fold_edges_to_super;
     let args = &pb_args.fit;
     let n = data.cells.len();
@@ -1468,12 +1457,7 @@ pub(crate) fn run_pb_on(
         .projection
         .take()
         .ok_or_else(|| anyhow::anyhow!("stagate-pb reads the cells' projection"))?;
-    let sc = super_cells(
-        &data,
-        proj,
-        pb_args.n_pseudobulk,
-        knn_within_sections(&data, COARSEN_K),
-    )?;
+    let sc = super_cells(&mut data, proj, pb_args.n_pseudobulk)?;
     let m = sc.data.cells.len();
     let of_cell = sc.of_cell;
 
