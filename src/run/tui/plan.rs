@@ -723,13 +723,13 @@ fn residual_plan(dir: &Path, a: &ResidualArgs) -> anyhow::Result<Plan> {
     Plan::new(&run, &a)
 }
 
-/// Values of `form`'s flags that name files ([`form::Field::path`]), as
+/// Values of `form`'s flags that name files ([`form::Field::takes_path`]), as
 /// typed in `here`, rewritten for a run started in `dir`; `--from` names
 /// the run's manifest, given its prefix.
 fn relative_values(form: &mut Method, here: &Path, dir: &Path) {
-    for f in form.fields.iter_mut().filter(|f| f.path) {
+    for f in form.fields.iter_mut().filter(|f| f.takes_path()) {
         let from = f.long == "from";
-        f.map_values(|v| {
+        form::map_values(f, |v| {
             let mut p = here.join(v);
             if from {
                 p = PathBuf::from(crate::util::metadata::run_manifest(&p.to_string_lossy()));

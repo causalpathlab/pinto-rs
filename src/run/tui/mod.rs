@@ -10,11 +10,11 @@ mod pick;
 mod plan;
 
 use super::{form, script};
-use legume_tui::browse::Browser;
 use crate::tui::shown;
 use data::{Pair, Pick};
 use form::{Kind, Method};
 use jobs::{Job, Queue};
+use legume_tui::browse::Browser;
 use legume_tui::save::Field as TextField;
 use legume_tui::Round;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};

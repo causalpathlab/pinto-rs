@@ -3,11 +3,11 @@
 //! [`crate::tui::browse`].
 
 use super::super::lupin::{self, Panel};
-use legume_tui::browse::{Browser, Header, Outcome, Wanted};
-use std::borrow::Cow;
 use crate::util::metadata::PintoMetadata;
+use legume_tui::browse::{Browser, Header, Outcome, Wanted};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Paragraph;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -73,7 +73,9 @@ impl Wanted for Panels {
     }
 
     fn describe<'a>(&self, &(types, genes, found): &'a Counts) -> Cow<'a, str> {
-        Cow::Owned(format!("{types} cell types, {genes} genes, {found} in the run"))
+        Cow::Owned(format!(
+            "{types} cell types, {genes} genes, {found} in the run"
+        ))
     }
 
     fn row(&self, name: &str, &(types, genes, found): &Counts, _name_w: usize) -> String {
@@ -202,8 +204,7 @@ pub fn pick_run(
         } else {
             std::time::Duration::from_secs(60)
         };
-        let Some(Event::Key(k)) = session.poll(terminal, wait)?.event()
-        else {
+        let Some(Event::Key(k)) = session.poll(terminal, wait)?.event() else {
             continue;
         };
         if k.kind == KeyEventKind::Release {

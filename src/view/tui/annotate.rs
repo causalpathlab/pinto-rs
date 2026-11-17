@@ -8,8 +8,8 @@ use super::super::round::round_name;
 use super::browse::Panels;
 use super::relabel::Staging;
 use super::{App, Show};
-use legume_tui::browse::{Browser, Outcome};
 use crate::tui::style::{self, tail};
+use legume_tui::browse::{Browser, Outcome};
 use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style as TStyle;
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// A dialog that takes the keys.
 pub enum Modal {
     /// Choosing a marker panel for `lupin annotate`.
-    Browse(Browser<Panels>),
+    Browse(Box<Browser<Panels>>),
     Prompt(Prompt),
     /// The staged decisions, before they are sent.
     Confirm(Vec<String>),
@@ -228,7 +228,7 @@ impl App<'_> {
         let tag = self.base.run.levels[self.cur].tag.clone();
         let want = Panels { known, tag };
         let dir = lupin::canonical(&dir);
-        self.modal = Some(Modal::Browse(Browser::open(dir, want, None)));
+        self.modal = Some(Modal::Browse(Box::new(Browser::open(dir, want, None))));
         self.need_map = true;
     }
 
