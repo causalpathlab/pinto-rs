@@ -22,6 +22,10 @@
 //! has no feature-modulated variant left. The per-edge NCE itself is geu's, and
 //! selectable, see [`NceObjective`] and `--nce-objective`.
 //!
+//! cage-cell trains a row per cell pair instead ([`cage_cell_edge_nce_loss`]):
+//! `s(e) = θ_g · z_e + b_u + b_v`, its negatives other pairs of the batch,
+//! through the same NCE and the same negative scoring.
+//!
 //! Every row's negatives are drawn inside one block of units (the super-cells
 //! of the batch the row was sampled in). When blocks are small, the negative
 //! scores come from a table of every anchor against every unit of its block,
@@ -30,6 +34,8 @@
 //! unchanged, while the `K · L` scattered `D`-wide row gathers per anchor
 //! (and their scattered backward) become dense products. See [`BlockScoring`].
 
+use crate::cell_activity_graph_embedding::feature_chain_sampler::EdgeChainBatch;
+use crate::util::rows::uniq_with_inverse;
 use graph_embedding_util::loss::{
     gather_feature_rows, logistic_nce, softmax_nce, NceObjective, UnitChainBatch,
 };
@@ -171,16 +177,7 @@ pub(crate) fn cage_nce_loss_scored(
 
     // Choose the scoring, and with it the order anchors are scored in: tile
     // order for the block table, caller order for the per-draw gather.
-    let max_width = match scoring {
-        BlockScoring::Auto => Some(max_table_width(l, k)),
-        #[cfg(test)]
-        BlockScoring::Table => Some(usize::MAX),
-        #[cfg(test)]
-        BlockScoring::Gathered => None,
-    };
-    let n_units = model.e_cell.dim(0)?;
-    let layout = max_width
-        .and_then(|cap| BlockLayout::new(row_blocks, b, k, n_units, &all_neg_per_level, cap));
+    let layout = block_layout(scoring, row_blocks, b, l, k, &all_neg_per_level);
     let lay_out = |v: Vec<u32>| match &layout {
         Some(layout) => layout.lay_out(&v, 1),
         None => v,
@@ -234,10 +231,91 @@ pub(crate) fn cage_nce_loss_scored(
     let pair_pos = (&theta_left * &e_right)?.sum(1)?; // [n]
     let pos_score = ((&pair_pos + &b_left)? + &b_right)?;
 
+    score_slots(
+        Slots {
+            layout: layout.as_ref(),
+            anchor: &theta_left,
+            anchor_bias: &b_left,
+            pos_score: &pos_score,
+            pair_pos: &pair_pos,
+            unit_e: &model.e_cell,
+            unit_b: &model.b_cell,
+            negs: &all_neg_per_level,
+            g,
+            b,
+            k,
+        },
+        objective,
+        dev,
+    )
+}
+
+/// The block layout `scoring` asks for over `negs_per_level` (`l` levels of
+/// `k` draws per anchor, `b` anchors per row), or `None` for the per-draw
+/// gather.
+fn block_layout(
+    scoring: BlockScoring,
+    row_blocks: &[u32],
+    b: usize,
+    l: usize,
+    k: usize,
+    negs_per_level: &[Vec<u32>],
+) -> Option<BlockLayout> {
+    let max_width = match scoring {
+        BlockScoring::Auto => Some(max_table_width(l, k)),
+        #[cfg(test)]
+        BlockScoring::Table => Some(usize::MAX),
+        #[cfg(test)]
+        BlockScoring::Gathered => None,
+    };
+    max_width.and_then(|cap| BlockLayout::new(row_blocks, b, k, negs_per_level, cap))
+}
+
+/// A chunk's scored slots, in the layout's order (caller order without
+/// one): what the unit front end hands the NCE.
+struct Slots<'a> {
+    layout: Option<&'a BlockLayout>,
+    /// `[n, D]`, the factor every negative's unit row is scored against.
+    anchor: &'a Tensor,
+    /// `[n]`, the anchor's part of every negative's score.
+    anchor_bias: &'a Tensor,
+    /// `[n]`, each positive's score.
+    pos_score: &'a Tensor,
+    /// `[n]`, each positive's bias-free pair term.
+    pair_pos: &'a Tensor,
+    /// The unit table the negatives are rows of, `[units, D]`, and its
+    /// per-unit bias `[units]`.
+    unit_e: &'a Tensor,
+    unit_b: &'a Tensor,
+    /// Per level, `k` negative units per anchor, in caller order.
+    negs: &'a [Vec<u32>],
+    g: usize,
+    b: usize,
+    k: usize,
+}
+
+/// Each negative's score `anchor · e_w + b_w + anchor_bias`, from the block
+/// table or the per-draw gather, then the NCE per level, back in caller
+/// order, averaged per feature.
+fn score_slots(s: Slots<'_>, objective: NceObjective, dev: &Device) -> CResult<CageLossOut> {
+    let Slots {
+        layout,
+        anchor,
+        anchor_bias,
+        pos_score,
+        pair_pos,
+        unit_e,
+        unit_b,
+        negs,
+        g,
+        b,
+        k,
+    } = s;
+    let total_b = g * b;
+    let n = anchor.dim(0)?;
     // Back to caller order, `[G*B]`; `None` when already in it. Padding
     // slots are never read, so they carry no gradient.
     let back = layout
-        .as_ref()
         .map(|t| Tensor::from_slice(&t.slot_of_anchor, total_b, dev))
         .transpose()?;
     let to_anchors = |x: Tensor| match &back {
@@ -250,22 +328,22 @@ pub(crate) fn cage_nce_loss_scored(
     // objective if the gate were collapsing.
     let mean_abs_pair = to_anchors(pair_pos.detach())?.abs()?.mean_all()?;
 
-    let table = match &layout {
-        Some(t) => Some((t, t.score_table(model, &theta_left, &b_left, dev)?)),
+    let table = match layout {
+        Some(t) => Some((t, t.score_table(unit_e, unit_b, anchor, anchor_bias, dev)?)),
         None => None,
     };
 
-    let mut per_feature_per_level: Vec<Tensor> = Vec::with_capacity(l);
-    for (level, lvl_neg) in all_neg_per_level.iter().enumerate() {
+    let mut per_feature_per_level: Vec<Tensor> = Vec::with_capacity(negs.len());
+    for (level, lvl_neg) in negs.iter().enumerate() {
         let neg_score = match &table {
             Some((layout, table)) => {
                 let ranks = Tensor::from_slice(&layout.ranks[level], (n, k), dev)?;
                 table.gather(&ranks, 1)?
             }
             None => {
-                let neg_idx = Tensor::from_slice(lvl_neg, total_neg, dev)?;
-                let e_neg_flat = gather_rows(&model.e_cell, &neg_idx)?;
-                let b_neg_flat = gather_rows(&model.b_cell, &neg_idx)?;
+                let neg_idx = Tensor::from_slice(lvl_neg, total_b * k, dev)?;
+                let e_neg_flat = gather_rows(unit_e, &neg_idx)?;
+                let b_neg_flat = gather_rows(unit_b, &neg_idx)?;
                 let e_neg = e_neg_flat.reshape((total_b, k, e_neg_flat.dim(1)?))?;
                 let b_neg = b_neg_flat.reshape((total_b, k))?;
                 // Negatives replace the RIGHT endpoint: the edge embedding becomes
@@ -277,13 +355,13 @@ pub(crate) fn cage_nce_loss_scored(
                 // that recurring. (The bias terms associate in the other order
                 // here; same value, and float associativity is well inside the
                 // run-to-run spread.)
-                JointEmbedModel::score_negatives(&e_neg, &theta_left, &b_neg, &b_left)?
+                JointEmbedModel::score_negatives(&e_neg, anchor, &b_neg, anchor_bias)?
             }
         };
         let negs = std::slice::from_ref(&neg_score);
         let per_edge = match objective {
-            NceObjective::Logistic => logistic_nce(&pos_score, negs)?,
-            NceObjective::Softmax => softmax_nce(&pos_score, negs)?,
+            NceObjective::Logistic => logistic_nce(pos_score, negs)?,
+            NceObjective::Softmax => softmax_nce(pos_score, negs)?,
         };
         let per_edge_gb = to_anchors(per_edge)?.reshape((g, b))?;
         per_feature_per_level.push(per_edge_gb.mean(1)?); // [G]
@@ -292,6 +370,259 @@ pub(crate) fn cage_nce_loss_scored(
         per_feature_level: Tensor::stack(&per_feature_per_level, 1)?,
         mean_abs_pair,
     })
+}
+
+/// The rows of a cage-cell step: each distinct cell pair the step names,
+/// its embedding row `z` (`[U, D]`, the step's leaf) and its two cells.
+pub struct EdgeRows<'a> {
+    pub z: &'a Tensor,
+    pub left: &'a [u32],
+    pub right: &'a [u32],
+}
+
+/// One cage-cell chunk: its pair rows, one draw per `(feature, batch)`
+/// naming pairs by their row in `rows` (see [`localize_edges`]), each
+/// draw's feature and the block (batch) its negatives came from.
+pub struct EdgeChunk<'a> {
+    pub rows: EdgeRows<'a>,
+    pub batches: Vec<EdgeChainBatch>,
+    pub feature_ids: &'a [u32],
+    pub row_blocks: &'a [u32],
+}
+
+/// cage-cell's per-(feature, level) NCE over cell pairs, `[G, 1]`: the
+/// trained unit is the pair itself, `z_e` a row of its own.
+///
+/// ```text
+/// s(e) = θ_g · z_e + b_u + b_v        e = (u, v)
+/// ```
+///
+/// A positive is a feature-active pair, as in cage; its negatives are
+/// other pairs of its batch (a cell pair that is not an edge has no row
+/// to score), each scored by its own `z` and its own two cells' biases.
+/// The same NCE and weights as [`cage_nce_loss_per_feature_level`]. A
+/// draw's positives and negatives share its feature row, so each is one
+/// batched product against it; the negatives come from a per-block table
+/// of draws against pairs when that is smaller than their gathered rows.
+pub fn cage_cell_edge_nce_loss(
+    model: &JointEmbedModel,
+    chunk: EdgeChunk<'_>,
+    objective: NceObjective,
+    dev: &Device,
+) -> CResult<CageLossOut> {
+    cage_cell_edge_nce_loss_scored(model, chunk, objective, BlockScoring::Auto, dev)
+}
+
+/// [`cage_cell_edge_nce_loss`] with the negative scoring chosen.
+pub(crate) fn cage_cell_edge_nce_loss_scored(
+    model: &JointEmbedModel,
+    chunk: EdgeChunk<'_>,
+    objective: NceObjective,
+    scoring: BlockScoring,
+    dev: &Device,
+) -> CResult<CageLossOut> {
+    let EdgeChunk {
+        rows,
+        batches,
+        feature_ids,
+        row_blocks,
+    } = chunk;
+    let g = batches.len();
+    assert!(g > 0, "non-empty batches required");
+    assert_eq!(
+        feature_ids.len(),
+        g,
+        "feature_ids and batches length mismatch"
+    );
+    assert_eq!(
+        row_blocks.len(),
+        g,
+        "row_blocks and batches length mismatch"
+    );
+    let b = batches[0].pos_edges.len();
+    let k = batches[0].n_negatives;
+    for eb in &batches {
+        assert_eq!(eb.pos_edges.len(), b, "cage-cell loss: B mismatch");
+        assert_eq!(eb.n_negatives, k, "cage-cell loss: K mismatch");
+    }
+    if b == 0 {
+        return Ok(CageLossOut {
+            per_feature_level: Tensor::zeros((g, 1), DType::F32, dev)?,
+            mean_abs_pair: Tensor::zeros((), DType::F32, dev)?,
+        });
+    }
+    let d = rows.z.dim(1)?;
+    let mut pos: Vec<u32> = Vec::with_capacity(g * b);
+    let mut negs: Vec<u32> = Vec::with_capacity(g * b * k);
+    for eb in &batches {
+        pos.extend(&eb.pos_edges);
+        negs.extend(&eb.neg_edges);
+    }
+    // each pair row's bias, `b_u + b_v`
+    let ends = |cells: &[u32]| Tensor::from_slice(cells, cells.len(), dev);
+    let b_rows = (gather_rows(&model.b_cell, &ends(rows.left)?)?
+        + gather_rows(&model.b_cell, &ends(rows.right)?)?)?;
+    // one feature row per draw: its B positives and B·K negatives share it
+    let theta = gather_feature_rows(model, &Tensor::from_slice(feature_ids, g, dev)?)?; // [G, D]
+    let theta_col = theta.unsqueeze(2)?.contiguous()?; // [G, D, 1]
+    let pos_idx = Tensor::from_vec(pos, g * b, dev)?;
+    let pair_pos = gather_rows(rows.z, &pos_idx)?
+        .reshape((g, b, d))?
+        .matmul(&theta_col)?
+        .reshape(g * b)?;
+    let pos_score = (&pair_pos + gather_rows(&b_rows, &pos_idx)?)?;
+    let mean_abs_pair = pair_pos.detach().abs()?.mean_all()?;
+
+    let table = PairTable::new(row_blocks, &negs, b * k);
+    let use_table = match scoring {
+        BlockScoring::Auto => table.cost(d) <= g * b * k * d,
+        #[cfg(test)]
+        BlockScoring::Table => true,
+        #[cfg(test)]
+        BlockScoring::Gathered => false,
+    };
+    let neg_score = (if use_table {
+        table.scores(&theta, rows.z, &b_rows, dev)?
+    } else {
+        // each negative's row, scored against its draw's feature row
+        let neg_idx = Tensor::from_slice(&negs, g * b * k, dev)?;
+        let pair_neg = gather_rows(rows.z, &neg_idx)?
+            .reshape((g, b * k, d))?
+            .matmul(&theta_col)?
+            .reshape(g * b * k)?;
+        (pair_neg + gather_rows(&b_rows, &neg_idx)?)?
+    })
+    .reshape((g * b, k))?;
+    let negs = std::slice::from_ref(&neg_score);
+    let per_edge = match objective {
+        NceObjective::Logistic => logistic_nce(&pos_score, negs)?,
+        NceObjective::Softmax => softmax_nce(&pos_score, negs)?,
+    };
+    Ok(CageLossOut {
+        per_feature_level: per_edge.reshape((g, b))?.mean(1)?.unsqueeze(1)?,
+        mean_abs_pair,
+    })
+}
+
+/// The negative scores of a cage-cell chunk as a table per block (batch):
+/// every draw of the block against every distinct pair its negatives name
+/// there, `θ_g · z_w + b_w`, one batched product, each negative then read
+/// from it. A pair's negative score depends only on the draw's feature and
+/// the pair, so the table holds each once.
+struct PairTable {
+    /// Per block, its draws, in caller order.
+    draws: Vec<Vec<u32>>,
+    /// Per block, the distinct pair rows its negatives name.
+    units: Vec<Vec<u32>>,
+    /// Per negative, in caller order: its entry in the flattened table.
+    entry: Vec<u32>,
+    /// The most draws, and the most pairs, of any block.
+    width_draws: usize,
+    width_units: usize,
+}
+
+impl PairTable {
+    /// `negs` holds `per_draw` negatives (pair rows) per draw, the draws
+    /// in `row_blocks`' order.
+    fn new(row_blocks: &[u32], negs: &[u32], per_draw: usize) -> Self {
+        let (labels, block_of_draw) = uniq_with_inverse(row_blocks);
+        let n_blocks = labels.len();
+        let mut draws: Vec<Vec<u32>> = vec![Vec::new(); n_blocks];
+        for (i, &blk) in block_of_draw.iter().enumerate() {
+            draws[blk as usize].push(i as u32);
+        }
+        // each block's negatives, its draws in order, deduplicated
+        let mut units = Vec::with_capacity(n_blocks);
+        let mut rank_of = vec![(0u32, 0u32); negs.len()]; // (block, rank) per negative
+        for (blk, mine) in draws.iter().enumerate() {
+            let listed: Vec<u32> = mine
+                .iter()
+                .flat_map(|&i| &negs[i as usize * per_draw..(i as usize + 1) * per_draw])
+                .copied()
+                .collect();
+            let (uniq, inverse) = uniq_with_inverse(&listed);
+            for (slot, &i) in mine.iter().enumerate() {
+                for j in 0..per_draw {
+                    rank_of[i as usize * per_draw + j] = (blk as u32, inverse[slot * per_draw + j]);
+                }
+            }
+            units.push(uniq);
+        }
+        let width_draws = draws.iter().map(Vec::len).max().unwrap_or(0);
+        let width_units = units.iter().map(Vec::len).max().unwrap_or(0);
+        let mut position = vec![0u32; row_blocks.len()];
+        for mine in &draws {
+            for (p, &i) in mine.iter().enumerate() {
+                position[i as usize] = p as u32;
+            }
+        }
+        let entry = rank_of
+            .iter()
+            .enumerate()
+            .map(|(n, &(blk, rank))| {
+                let p = position[n / per_draw.max(1)] as usize;
+                ((blk as usize * width_draws + p) * width_units + rank as usize) as u32
+            })
+            .collect();
+        Self {
+            draws,
+            units,
+            entry,
+            width_draws,
+            width_units,
+        }
+    }
+
+    /// Floats the table holds, with the pair rows it reads at width `d`.
+    fn cost(&self, d: usize) -> usize {
+        let n_blocks = self.draws.len();
+        n_blocks * self.width_units * (self.width_draws + d)
+    }
+
+    /// Every negative's score, in caller order, from feature rows `theta`
+    /// `[G, D]`, pair rows `z` and their biases `b_rows`.
+    fn scores(&self, theta: &Tensor, z: &Tensor, b_rows: &Tensor, dev: &Device) -> CResult<Tensor> {
+        let (n_blocks, wd, wu) = (self.draws.len(), self.width_draws, self.width_units);
+        let d = theta.dim(1)?;
+        // padding repeats a block's first draw or pair, and is never read
+        let padded = |lists: &[Vec<u32>], w: usize| -> Vec<u32> {
+            lists
+                .iter()
+                .flat_map(|l| (0..w).map(move |j| l.get(j).copied().unwrap_or(l[0])))
+                .collect()
+        };
+        let draw_idx = Tensor::from_vec(padded(&self.draws, wd), n_blocks * wd, dev)?;
+        let unit_idx = Tensor::from_vec(padded(&self.units, wu), n_blocks * wu, dev)?;
+        let th = gather_rows(theta, &draw_idx)?.reshape((n_blocks, wd, d))?;
+        let zz = gather_rows(z, &unit_idx)?.reshape((n_blocks, wu, d))?;
+        let bb = gather_rows(b_rows, &unit_idx)?.reshape((n_blocks, 1, wu))?;
+        let table = th
+            .matmul(&zz.transpose(1, 2)?.contiguous()?)?
+            .broadcast_add(&bb)?
+            .reshape((n_blocks * wd * wu, 1))?;
+        let entry = Tensor::from_slice(&self.entry, self.entry.len(), dev)?;
+        gather_rows(&table, &entry)?.reshape(self.entry.len())
+    }
+}
+
+/// The distinct cell pairs `batches` and `extra` name, ascending (global
+/// pair ids), with every pair id in `batches` rewritten as its index in
+/// that list, the step's row. `extra`'s rows are returned beside it.
+pub fn localize_edges(batches: &mut [EdgeChainBatch], extra: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let listed: Vec<u32> = batches
+        .iter()
+        .flat_map(|eb| eb.pos_edges.iter().chain(&eb.neg_edges))
+        .chain(extra)
+        .copied()
+        .collect();
+    let (uniq, inverse) = uniq_with_inverse(&listed);
+    let mut local = inverse.into_iter();
+    for eb in batches.iter_mut() {
+        for e in eb.pos_edges.iter_mut().chain(eb.neg_edges.iter_mut()) {
+            *e = local.next().expect("listed");
+        }
+    }
+    (uniq, local.collect())
 }
 
 /// A slot that holds no anchor: the padding at the end of a block's last
@@ -320,28 +651,22 @@ struct BlockLayout {
 
 impl BlockLayout {
     /// `negs_per_level[ℓ]` holds `k` draws per anchor, `b` anchors per row,
-    /// each a unit id below `n_units`. `None` when no draws are made or a
+    /// each a unit id. `None` when no draws are made or a
     /// block holds more than `max_width` distinct units, which is as soon
     /// as the table stops paying.
     fn new(
         row_blocks: &[u32],
         b: usize,
         k: usize,
-        n_units: usize,
         negs_per_level: &[Vec<u32>],
         max_width: usize,
     ) -> Option<Self> {
         if k == 0 {
             return None;
         }
-        let mut labels: Vec<u32> = row_blocks.to_vec();
-        labels.sort_unstable();
-        labels.dedup();
+        let (labels, block_of_row) = uniq_with_inverse(row_blocks);
         let n_blocks = labels.len();
-        let block_of_row: Vec<usize> = row_blocks
-            .iter()
-            .map(|r| labels.binary_search(r).expect("label is listed"))
-            .collect();
+        let block_of_row: Vec<usize> = block_of_row.into_iter().map(|b| b as usize).collect();
 
         // Tiles block by block, each block's anchors in caller order.
         let mut per_block = vec![0usize; n_blocks];
@@ -373,10 +698,11 @@ impl BlockLayout {
         }
 
         // Rank each unit within its block as it is first drawn. Slots visit
-        // one block at a time, so a unit's rank is current exactly when it
-        // was stamped by the block being visited.
-        let mut stamp = vec![u32::MAX; n_units];
-        let mut rank_of = vec![0u32; n_units];
+        // one block at a time, so the ranks are kept for the block being
+        // visited only: a map of at most `max_width` units, never a table
+        // over every unit (on cell pairs, millions).
+        let mut rank_of: rustc_hash::FxHashMap<u32, u32> = Default::default();
+        let mut visiting = u32::MAX;
         let mut units: Vec<Vec<u32>> = vec![Vec::new(); n_blocks];
         let mut ranks: Vec<Vec<u32>> = negs_per_level
             .iter()
@@ -384,6 +710,11 @@ impl BlockLayout {
             .collect();
         for (s, &a) in anchor_of_slot.iter().enumerate() {
             let blk = block_of_tile[s / tile];
+            if blk != visiting {
+                rank_of.clear();
+                visiting = blk;
+            }
+            let block_units = &mut units[blk as usize];
             for (lvl_ranks, negs) in ranks.iter_mut().zip(negs_per_level) {
                 if a == PAD {
                     lvl_ranks.extend(std::iter::repeat_n(0, k));
@@ -391,16 +722,14 @@ impl BlockLayout {
                 }
                 let a = a as usize;
                 for &u in &negs[a * k..(a + 1) * k] {
-                    let u = u as usize;
-                    if stamp[u] != blk {
-                        stamp[u] = blk;
-                        rank_of[u] = units[blk as usize].len() as u32;
-                        units[blk as usize].push(u as u32);
-                        if units[blk as usize].len() > max_width {
-                            return None;
-                        }
+                    let rank = *rank_of.entry(u).or_insert_with(|| {
+                        block_units.push(u);
+                        block_units.len() as u32 - 1
+                    });
+                    if block_units.len() > max_width {
+                        return None;
                     }
-                    lvl_ranks.push(rank_of[u]);
+                    lvl_ranks.push(rank);
                 }
             }
         }
@@ -430,14 +759,17 @@ impl BlockLayout {
     }
 
     /// Every slot's score against every unit of its tile's block,
-    /// `[tiles * tile, width]`: `θ_g · (e_u ⊙ e_w) + b_u + b_w`, the same
-    /// expression the gathered path forms per draw. Both biases ride in the
-    /// product as two extra columns, `[θ, 1, b_u] · [e_w, b_w, 1]`, so the
-    /// table is written once. Padding columns score a block's first unit and
-    /// are never read.
+    /// `[tiles * tile, width]`: `a · e_w + b_w + b_a` for the slot's anchor
+    /// factor `a` (`θ_g ⊙ e_u` on cells and pseudobulks, `θ_g` on cell
+    /// pairs) and bias `b_a`, unit rows `e_w` of `unit_e` and biases of
+    /// `unit_b`: the same expression the gathered path forms per draw. Both
+    /// biases ride in the product as two extra columns, `[a, 1, b_a] ·
+    /// [e_w, b_w, 1]`, so the table is written once. Padding columns score a
+    /// block's first unit and are never read.
     fn score_table(
         &self,
-        model: &JointEmbedModel,
+        unit_e: &Tensor,
+        unit_b: &Tensor,
         theta: &Tensor,
         b_anchor: &Tensor,
         dev: &Device,
@@ -453,8 +785,8 @@ impl BlockLayout {
         let block_units = Tensor::from_vec(block_units, n_blocks * w, dev)?;
         let unit_side = Tensor::cat(
             &[
-                &gather_rows(&model.e_cell, &block_units)?,
-                &gather_rows(&model.b_cell, &block_units)?.unsqueeze(1)?,
+                &gather_rows(unit_e, &block_units)?,
+                &gather_rows(unit_b, &block_units)?.unsqueeze(1)?,
                 &Tensor::ones((n_blocks * w, 1), DType::F32, dev)?,
             ],
             1,

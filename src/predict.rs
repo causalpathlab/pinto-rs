@@ -187,8 +187,9 @@ fn pair_encoder_path(model: &str) -> anyhow::Result<String> {
     let path = format!("{model}.pair_encoder.safetensors");
     anyhow::ensure!(
         Path::new(&path).is_file(),
-        "{path} does not exist: the model was fitted before `pinto cage` saved its pair encoder; \
-         refit it"
+        "{path} does not exist: the model was fitted before `pinto cage` saved its pair encoder, \
+         or it is a cage-cell model, which has none (placing new pairs on one comes in a later \
+         version); refit it with `pinto cage`"
     );
     Ok(path)
 }
@@ -418,6 +419,11 @@ pub fn predict_cage(
     run: Option<&Run>,
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
+    anyhow::ensure!(
+        !run.is_some_and(|r| r.meta.cell_level),
+        "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
+        args.model
+    );
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 

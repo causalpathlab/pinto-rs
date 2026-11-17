@@ -35,13 +35,27 @@
 //! participation in each latent community, high only when both endpoint
 //! PBs load on it.
 //!
+//! # cage-cell
+//!
+//! `cage-cell` trains on cells, and its trained unit is the CELL PAIR: a
+//! row `z_e [E_s x D]` per deduplicated within-batch pair, scored
+//!
+//! ```text
+//! s(u,v) = theta_g . z_uv + b_u + b_v
+//! ```
+//!
+//! against negatives that are other pairs of the batch. `z` lives outside
+//! the VarMap and is stepped row by row by a lazy Adam (`row_adam`), on the
+//! device or, when too big for it, on the host. Its rows are the latent; a
+//! cell's embedding is the mean of its pairs' rows. No encoder is fitted.
+//!
 //! A per-(feature, dim) feature gate on `theta_g` — first a learned
 //! spike-and-slab, then a Gibbs-sampled per-epoch mask — was carried here and
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
     CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ModulePlan,
-    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
+    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_DRAWS_PER_EPOCH, PAIR_RIDGE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -82,13 +96,16 @@ use legume_numeric::matrix::common_io::mkdir_parent;
 mod model;
 mod module_cells;
 mod modules;
+pub(crate) mod pairs;
 mod tables;
 mod train;
+mod units;
 
 use model::{build_model, BuiltModel, ModelInputs};
 use module_cells::CellCounts;
 use tables::write_trained_tables;
-use train::{resolve_feature_batch_size, train, ModuleUnits, ProbeInputs, TrainInputs};
+use train::{train, TrainSetup};
+use units::{Pairs, Pseudobulks};
 
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
@@ -542,7 +559,8 @@ pub fn fit_cell_activity_graph_embedding(
             fine_edge_activities,
             &fine_to_super,
         );
-    drop(fine_to_super);
+    // cage-cell keeps the map: its latent is written in `fine_edges` order
+    let fine_to_super = args.cell_level.then_some(fine_to_super);
     let nonzero_features = super_edge_activities
         .feature_active_edges
         .iter()
@@ -601,8 +619,34 @@ pub fn fit_cell_activity_graph_embedding(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
+    // The epoch's total draws, and what set it: the flag; under cage-cell,
+    // unset, PAIR_DRAWS_PER_EPOCH per pair (never below the per-feature
+    // default); or nothing, for the per-feature default.
+    let (total_draws, floor, budget_note) = match (args.positives_per_epoch, args.cell_level) {
+        (Some(total), _) => (
+            Some(total),
+            1,
+            format!(
+                " (--positives-per-epoch {total} split over {expected_visits} expected visits x \
+                 {n_exp_batches} batch(es))"
+            ),
+        ),
+        (None, true) => {
+            let total = PAIR_DRAWS_PER_EPOCH * pb_frame.super_edges.len();
+            (
+                Some(total),
+                PER_FEATURE_BATCH,
+                format!(
+                    " (cage-cell: {PAIR_DRAWS_PER_EPOCH} per cell pair, {total} split over \
+                     {expected_visits} expected visits x {n_exp_batches} batch(es), at least \
+                     {PER_FEATURE_BATCH})"
+                ),
+            )
+        }
+        (None, false) => (None, 1, String::new()),
+    };
     let positives_per_feature_exp_batch =
-        positives_per_feature_batch(args.positives_per_epoch, expected_visits, n_exp_batches);
+        positives_per_feature_batch(total_draws, expected_visits, n_exp_batches).max(floor);
     // --features-per-epoch caps the visits, not the split: each visited
     // feature keeps its draws and the epoch draws fewer in all.
     let features_visited = match args.features_per_epoch {
@@ -612,12 +656,7 @@ pub fn fit_cell_activity_graph_embedding(
     info!(
         "Positive budget: {} super-edge draws per (feature, batch){}; {} features visited{} x {} batch(es) = {} per epoch",
         positives_per_feature_exp_batch,
-        match args.positives_per_epoch {
-            Some(total) => format!(
-                " (--positives-per-epoch {total} split over {expected_visits} expected visits x {n_exp_batches} batch(es))"
-            ),
-            None => String::new(),
-        },
+        budget_note,
         features_visited,
         match (inclusion.is_some(), args.features_per_epoch > 0) {
             (true, true) => " (Σπ under --feature-inclusion, capped by --features-per-epoch)",
@@ -670,6 +709,21 @@ pub fn fit_cell_activity_graph_embedding(
         varmap: &varmap,
         dev: &dev,
     })?;
+    // cage-cell trains a row per cell pair instead of one per cell (the
+    // model has no cell table; see `build_model`), in a table outside the
+    // map, stepped row by row.
+    let mut pair_table = if args.cell_level {
+        Some(pairs::start_pair_table(
+            pb_frame.super_edges.len(),
+            embedding_dim,
+            c.seed,
+            args.lr as f64,
+            args.gpu_mem_fraction,
+            &dev,
+        )?)
+    } else {
+        None
+    };
     // What the exact unit-module term pools each step: cage's pseudobulk
     // profiles, on the device as `[n_pb × G]`, or under cage-cell the drawn
     // cells' own sparse counts (the seeding pseudobulks have done their work
@@ -683,14 +737,9 @@ pub fn fit_cell_activity_graph_embedding(
         );
     }
     let (module_cfg, module_profiles) = modules.unzip();
-    // (matched by value, so cage-cell's unread profiles are freed here)
-    let module_units = match (module_profiles, args.cell_level) {
-        (None, _) => None,
-        (Some(_), true) => Some(ModuleUnits::Cells(CellCounts {
-            data: &data_vec,
-            feature_axis: &feature_axis,
-        })),
-        (Some(p), false) => {
+    // (cage-cell's profiles, only the modules' seed, are freed here)
+    let profiles = match module_profiles {
+        Some(p) if !args.cell_level => {
             anyhow::ensure!(
                 p.ncols() == n_pb,
                 "module profiles over {} pseudobulks, {} trained",
@@ -699,13 +748,14 @@ pub fn fit_cell_activity_graph_embedding(
             );
             // column-major `[G × n_pb]` is row-major `[n_pb × G]`
             let rows: Vec<f32> = p.as_slice().to_vec();
-            Some(ModuleUnits::Pseudobulks(Tensor::from_vec(
-                rows,
-                (p.ncols(), p.nrows()),
-                &dev,
-            )?))
+            Some(Tensor::from_vec(rows, (p.ncols(), p.nrows()), &dev)?)
         }
+        _ => None,
     };
+    let cell_counts = (args.cell_level && module_cfg.is_some()).then_some(CellCounts {
+        data: &data_vec,
+        feature_axis: &feature_axis,
+    });
     // One AdamW over the map, or two under LoRA: the shared factor `v` leaves
     // the main group for its own at the LoRA+ rate.
     let lora_v_name = legume_numeric::candle::lora::factor_names(E_FEAT_VAR_NAME).1;
@@ -743,38 +793,34 @@ pub fn fit_cell_activity_graph_embedding(
         unit_to_group_per_level: &pb_to_parent_per_level,
         positives_per_draw: positives_per_feature_exp_batch,
         n_negatives: N_NEGATIVES,
-        exclude_partner: args.cell_level,
     };
 
-    let feature_batch_size = resolve_feature_batch_size(ProbeInputs {
-        args,
-        active_features: &active_features,
-        n_exp_batches,
-        sampler: &sampler,
-        model: &model,
-        dev: &dev,
-    });
-
-    let score_trace = train(TrainInputs {
+    let setup = TrainSetup {
         args,
         model: &mut model,
         frozen_feature: frozen_feature.as_ref(),
         adams: &mut adams,
         lora_plus: lora_plus.as_ref(),
         sampler: &sampler,
+        active_features: &active_features,
         trainable_features: &trainable_features,
         features_visited,
-        feature_batch_size,
         feature_fisher_weights: &feature_fisher_weights,
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
         module_cfg: module_cfg.as_ref(),
-        module_units,
+        positives_per_draw: positives_per_feature_exp_batch,
         n_exp_batches,
-        n_pb,
         n_features,
         n_chain_levels,
         dev: &dev,
-    })?;
+    };
+    let score_trace = match pair_table.as_mut() {
+        Some(z) => train(
+            setup,
+            Pairs::new(z, &pb_frame.super_edges, cell_counts, args.pair_updates),
+        )?,
+        None => train(setup, Pseudobulks { n_pb, profiles })?,
+    };
 
     ////////////////
     // 9. Outputs //
@@ -788,6 +834,7 @@ pub fn fit_cell_activity_graph_embedding(
         &cell_names,
         &feature_names,
         embedding_dim,
+        !args.cell_level,
     )?;
     // Phase 1's tables are on disk; the encoder below trains on the same
     // device, so release them first.
@@ -796,93 +843,102 @@ pub fn fit_cell_activity_graph_embedding(
     write_score_trace(&(c.out.to_string() + ".scores.parquet"), &score_trace)?;
 
     /////////////////////////////////////////////////////////
-    // 10. Pair projection -> link communities -> propensity  //
+    // 10. Pair latents -> link communities -> propensity    //
     /////////////////////////////////////////////////////////
     // cage's downstream contract is the one `lc` and `dsvd` publish, and it is
     // built on the CELL PAIR, not the cell: a latent per pair, k-means over
     // those pairs for link communities, and a cell's propensity as the mix of
     // communities its incident edges carry.
-    //
-    // The pair latent comes from projecting each pair's POOLED counts onto the
-    // frozen feature embedding (`pair_projection`) — the same phase-2 move `senna
-    // bge` makes for cells, with the pair as the node. cage's own score
-    // decomposes an edge as `⟨θ_g, e_u ⊙ e_v⟩`, so a Hadamard product is the
-    // closed form this generalizes: the projection lets the pair's own expression
-    // move it off that point, which is what puts a boundary pair between the
-    // two programs it pools instead of on either endpoint. The same pass
-    // places every cell (its self-pair), which is the cell embedding below.
     let pair_batch = batch_db.as_ref().map(|delta| PairBatchDivisor {
         delta,
         batch_of_cell: &batch_membership_u32,
     });
-    let encoder_spec = PairEncoderSpec {
-        ridge: PAIR_RIDGE,
-        steps: args.pair_encoder_steps,
-        ..PairEncoderSpec::default()
-    };
-    let pair_encoder_path = format!("{}.pair_encoder.safetensors", c.out);
-    let PairLatent {
-        latent: pair_latent,
-        bias: pair_bias,
-        scores: _,
-        cells: CellLatent {
-            latent: cell_latent,
-            bias: cell_bias,
-        },
-    } = project_pairs(
-        &data_vec,
-        &fine_edges,
-        &e_feature_out,
-        pair_batch,
-        &PairProjectionArgs {
-            solver: PairSolver::TrainEncoder {
-                spec: &encoder_spec,
-                // cage trains the encoder on its pseudobulks' pairs and only
-                // encodes the cell pairs; cage-cell has no pseudobulks.
-                on: if args.cell_level {
-                    TrainOn::CellPairs
-                } else {
-                    TrainOn::Pseudobulks {
-                        cell_to_pb: &pb_frame.cell_to_finest_pb,
-                        n_pb,
-                        edges: &pb_frame.super_edges,
-                    }
+    let (mut pair_latent, cell_latent) = match (pair_table, fine_to_super) {
+        // cage-cell trained each pair's row itself; a cell is the mean of
+        // its pairs'. Nothing is fitted again, so there is no pair encoder.
+        (Some(z), Some(fine_to_super)) => {
+            let z_host = pairs::table_to_host(z)?;
+            pairs::pair_outputs(
+                &z_host,
+                embedding_dim,
+                &pb_frame.super_edges,
+                &fine_to_super,
+                &fine_edges,
+                n_cells,
+            )
+        }
+        _ => {
+            // The pair latent comes from projecting each pair's POOLED counts onto
+            // the frozen feature embedding (`pair_projection`) — the same phase-2
+            // move `senna bge` makes for cells, with the pair as the node. cage's
+            // own score decomposes an edge as `⟨θ_g, e_u ⊙ e_v⟩`, so a Hadamard
+            // product is the closed form this generalizes: the projection lets
+            // the pair's own expression move it off that point, which is what puts
+            // a boundary pair between the two programs it pools instead of on
+            // either endpoint. The same pass places every cell (its self-pair),
+            // which is the cell embedding below.
+            let encoder_spec = PairEncoderSpec {
+                ridge: PAIR_RIDGE,
+                steps: args.pair_encoder_steps,
+                ..PairEncoderSpec::default()
+            };
+            let pair_encoder_path = format!("{}.pair_encoder.safetensors", c.out);
+            let PairLatent {
+                latent: pair_latent,
+                bias: pair_bias,
+                scores: _,
+                cells:
+                    CellLatent {
+                        latent: cell_latent,
+                        bias: cell_bias,
+                    },
+            } = project_pairs(
+                &data_vec,
+                &fine_edges,
+                &e_feature_out,
+                pair_batch,
+                &PairProjectionArgs {
+                    solver: PairSolver::TrainEncoder {
+                        spec: &encoder_spec,
+                        // cage trains the encoder on its pseudobulks' pairs
+                        // and only encodes the cell pairs.
+                        on: TrainOn {
+                            cell_to_pb: &pb_frame.cell_to_finest_pb,
+                            n_pb,
+                            edges: &pb_frame.super_edges,
+                        },
+                        dev: &dev,
+                        save_to: &pair_encoder_path,
+                    },
+                    seed: c.seed,
+                    pair_block: PAIR_BLOCK,
+                    eval_features: None,
+                    score_pairs: false,
                 },
-                dev: &dev,
-                save_to: &pair_encoder_path,
-            },
-            seed: c.seed,
-            pair_block: PAIR_BLOCK,
-            eval_features: None,
-            score_pairs: false,
-        },
-        &feature_axis,
-        &feature_totals,
-    )?;
-    // Held-out feature evaluation, against the SAME frozen dictionary the projection above
-    // just used. Placed here rather than after clustering because it tests the projection,
-    // not the cut: a link community is a downstream choice, and folding it in would confuse
-    // "does the embedding predict expression" with "did k-means pick a good k".
-    // `β_uv` is the pair's log pooled depth and `β_c` the cell's; neither
-    // leaves this function, but their spread is the cheapest check that the
-    // projection saw real data.
-    log_intercept_spread("Pair intercept β", pair_bias);
-    log_intercept_spread("Cell intercept β", cell_bias);
+                &feature_axis,
+                &feature_totals,
+            )?;
+            // `β_uv` is the pair's log pooled depth and `β_c` the cell's;
+            // neither leaves this function, but their spread is the cheapest
+            // check that the projection saw real data.
+            log_intercept_spread("Pair intercept β", pair_bias);
+            log_intercept_spread("Cell intercept β", cell_bias);
+            (pair_latent, cell_latent)
+        }
+    };
+    drop(e_feature_out);
 
     let fine_edges_usize: Vec<(usize, usize)> = fine_edges
         .iter()
         .map(|&(u, v)| (u as usize, v as usize))
         .collect();
 
-    // `[D × E]` with every pair L2-normalized — the exact shape and
-    // normalization `pinto dsvd` hands the shared routine, so edge k-means
-    // clusters on composition and not on pooled depth.
-    let mut pair_latent_kn = pair_latent.transpose();
-    pair_latent_kn.normalize_columns_inplace();
-
-    // One `[E × D]` copy, written out and then clustered — the shared routine
-    // takes pairs as rows, so this is the same buffer both times.
-    let pair_latent_nk = pair_latent_kn.transpose();
+    // `[E × D]` with every pair L2-normalized, in place — the normalization
+    // `pinto dsvd` hands the shared routine, so edge k-means clusters on
+    // composition and not on pooled depth — written out and then clustered:
+    // the same buffer both times.
+    crate::util::rows::normalize_rows(&mut pair_latent);
+    let pair_latent_nk = pair_latent;
     pair_latent_nk.to_parquet_with_names(
         &(c.out.to_string() + ".latent.parquet"),
         (None, Some("cell_pair")),
@@ -920,9 +976,10 @@ pub fn fit_cell_activity_graph_embedding(
     )?;
     let n_edge_clusters = prop_out.n_clusters;
 
-    // Cell embedding: every cell's own placement on the feature embedding by the
-    // same map that placed its pairs — the annotate-consumable table (same D
-    // as the feature embedding, since the latents are projections against it).
+    // Cell embedding, the annotate-consumable table (same D as the feature
+    // embedding): under cage every cell's own placement on the feature
+    // embedding by the same map that placed its pairs; under cage-cell the
+    // mean of its pairs' trained rows.
     cell_latent.to_parquet_with_names(
         &(c.out.to_string() + ".cell_embedding.parquet"),
         (Some(&cell_names), Some("cell")),
@@ -955,6 +1012,11 @@ pub fn fit_cell_activity_graph_embedding(
             splice_report,
         );
         meta.cell_level = args.cell_level;
+        if args.cell_level {
+            // no encoder is fitted, and the trained rows are the pairs'
+            meta.outputs.pair_encoder = None;
+            meta.outputs.pb_embedding = None;
+        }
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!(
@@ -1015,7 +1077,8 @@ pub(crate) fn positives_per_feature_batch(
 /// What `cage-cell` does with a flag of cage's that has no meaning on cells.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OnCells {
-    /// Off its help: a qualifier of a refused flag, refused with it.
+    /// Off its help: a qualifier of a refused flag, refused with it, or a
+    /// setting of cage's pair encoder, which cage-cell does not fit.
     Hide,
     /// Off its help, and warned of when given: it shapes only the HVG
     /// weighting of the projection that builds pseudobulks, or the
@@ -1030,7 +1093,7 @@ pub(crate) enum OnCells {
 }
 
 /// cage's flags that `cage-cell` hides, warns of or refuses, by argument id.
-pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 9] = [
+pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 10] = [
     ("n_hvg", OnCells::Warn),
     ("feature_list_file", OnCells::Warn),
     ("must_train_features", OnCells::Warn),
@@ -1040,6 +1103,7 @@ pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 9] = [
     ("feature_embedding_bias", OnCells::Hide),
     ("feature_embedding_mode", OnCells::Hide),
     ("feature_init_mode", OnCells::Hide),
+    ("pair_encoder_steps", OnCells::Hide),
 ];
 
 /// `arg`, hidden when `cage-cell` has no use for it (every flag of
@@ -1116,12 +1180,9 @@ pub(crate) fn cell_level_no_ops(cmd: &clap::Command, m: &clap::ArgMatches) -> Ve
 }
 
 /// The "hierarchy" of a cell-level fit: every cell its own unit at both
-/// levels. The trained unit is the cell; the one chain level is the cell
-/// too, so the negative sampler's rejection (a candidate in the anchor's
-/// group is redrawn) excludes exactly the anchor; the sampler's
-/// `exclude_partner` redraws the positive partner too, so a negative is
-/// any other cell of the anchor's batch (the samplers are per batch).
-/// Nothing is coarsened.
+/// levels, so the pair frame's super edges are the deduplicated cell pairs
+/// (within batch), the rows cage-cell trains; the one chain level is the
+/// cell too, so no pair straddles a group. Nothing is coarsened.
 pub(crate) fn cell_level_hierarchy(
     n_cells: usize,
     pairs: &[(usize, usize)],

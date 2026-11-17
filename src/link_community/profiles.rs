@@ -763,10 +763,7 @@ pub fn consensus_leiden(
     anyhow::ensure!(n >= 2, "Leiden needs at least 2 pairs");
     let (graph, weights) = {
         let mut unit = pair_latent_nk.clone();
-        for mut row in unit.row_iter_mut() {
-            let norm = row.norm().max(1e-8);
-            row /= norm;
-        }
+        crate::util::rows::normalize_rows(&mut unit);
         KnnGraph::from_rows_fuzzy(
             &unit,
             KnnGraphArgs {

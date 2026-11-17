@@ -841,6 +841,28 @@ fn drawn_unconfounded_donors_follow_the_seed_and_skip_the_owner() {
     assert!(two[0] < two[1], "{two:?}");
 }
 
+/// A donor-only domain owned by a donor the panel does not have is refused
+/// at validation, naming the valid owners: the scenario's default owner
+/// (donor 2) with two donors, and accepted once moved to one that exists.
+#[test]
+fn a_patch_owner_outside_the_panel_is_refused() {
+    let two = SimParams {
+        n_donors: 2,
+        ..scenario("donor-confounded-donor-only-cell-type").unwrap()
+    };
+    let err = two.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("patch_owner=2") && err.contains("0..=1"),
+        "{err}"
+    );
+    SimParams {
+        patch_owner: 1,
+        ..two
+    }
+    .validate()
+    .unwrap();
+}
+
 /// More drawn donors than are eligible, or both ways of choosing them at
 /// once, are refused.
 #[test]

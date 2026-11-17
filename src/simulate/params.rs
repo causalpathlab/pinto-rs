@@ -467,7 +467,11 @@ impl SimParams {
         if self.patch_kind != PatchKind::None {
             anyhow::ensure!(
                 self.patch_owner < self.n_donors,
-                "patch_owner is not a donor"
+                "patch_owner={} is not a donor: with n_donors={} it must be in 0..={} \
+                 (--set patch_owner=N picks the donor that owns the donor-only domain)",
+                self.patch_owner,
+                self.n_donors,
+                self.n_donors - 1
             );
             anyhow::ensure!(
                 self.patch_share > 0.0 && self.patch_share < 1.0,

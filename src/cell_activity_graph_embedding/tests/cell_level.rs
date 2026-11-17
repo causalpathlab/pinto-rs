@@ -108,9 +108,14 @@ fn cell_level_of(prefix: &str) -> bool {
         .cell_level
 }
 
-/// `pinto predict` of `model` on the files it was fitted on; returns the
-/// output prefix.
-fn predict(dir: &std::path::Path, data: &str, coords: &str, model: &str) -> String {
+/// `pinto predict` of `model` on the files it was fitted on; the output
+/// prefix, or why it failed.
+fn try_predict(
+    dir: &std::path::Path,
+    data: &str,
+    coords: &str,
+    model: &str,
+) -> anyhow::Result<String> {
     #[derive(Parser)]
     struct Cli {
         #[command(flatten)]
@@ -132,9 +137,41 @@ fn predict(dir: &std::path::Path, data: &str, coords: &str, model: &str) -> Stri
     crate::predict::predict(
         &Cli::try_parse_from(argv).unwrap().predict,
         &Default::default(),
-    )
+    )?;
+    Ok(out)
+}
+
+/// A cage-cell run at `prefix` over `n_cells` cells writes its pairs'
+/// rows as the latent, one L2-normalised row per listed pair (as many as
+/// the manifest's edges), and a cell embedding of one row per cell; no
+/// unit table and no pair encoder, and its manifest lists neither.
+fn assert_writes_the_pairs_rows(prefix: &str, n_cells: usize) {
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(
+        &crate::util::metadata::manifest_path(prefix),
+    ))
     .unwrap();
-    out
+    let latent = Mat::from_parquet(&format!("{prefix}.latent.parquet"))
+        .unwrap()
+        .mat;
+    assert_eq!(Some(latent.nrows()), meta.n_edges, "a latent row per pair");
+    assert_eq!(latent.ncols(), 4, "the embedding width");
+    for (k, row) in latent.row_iter().enumerate() {
+        let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-4, "pair {k}: norm {norm}");
+    }
+    let cells = cell_embedding(prefix);
+    assert_eq!((cells.nrows(), cells.ncols()), (n_cells, 4));
+    assert!(
+        cells.iter().all(|x| x.is_finite()) && cells.iter().any(|&x| x != 0.0),
+        "the cell embedding is empty"
+    );
+    for file in ["pb_embedding.parquet", "pair_encoder.safetensors"] {
+        assert!(
+            !std::path::Path::new(&format!("{prefix}.{file}")).exists(),
+            "cage-cell wrote {file}"
+        );
+    }
+    assert!(meta.outputs.pair_encoder.is_none() && meta.outputs.pb_embedding.is_none());
 }
 
 fn cell_embedding(prefix: &str) -> Mat {
@@ -175,11 +212,7 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     let n_cells = 2 * 8 * 8;
 
     let cell = fit(dir.path(), &data, &coords, "cell", &["cell"]);
-    assert_eq!(
-        pb_embedding(&cell).nrows(),
-        n_cells,
-        "one trained row per cell"
-    );
+    assert_writes_the_pairs_rows(&cell, n_cells);
     // batch effects are estimated and removed, as in cage, unless asked not to
     assert!(
         std::path::Path::new(&format!("{cell}.delta.parquet")).exists(),
@@ -191,13 +224,37 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         "the manifest says the run is cell-level"
     );
 
-    // Predicted on its own training files, a cell-level model places the
-    // cells where it trained them: the query is batch-corrected, as the
-    // training was.
-    let predicted = predict(dir.path(), &data, &coords, &cell);
-    let (fitted, placed) = (cell_embedding(&cell), cell_embedding(&predicted));
-    let diff = (&fitted - &placed).abs().max();
-    assert!(diff < 1e-4, "predict moved the cells by up to {diff}");
+    // A cell-level model has no pair encoder to place a new sample with,
+    // so predict (and impute, which predicts) refuses it, naming why.
+    let e = try_predict(dir.path(), &data, &coords, &cell).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("cage-cell models have no pair encoder"),
+        "{e:#}"
+    );
+    #[derive(Parser)]
+    struct ImputeCli {
+        #[command(flatten)]
+        impute: crate::impute::ImputeArgs,
+    }
+    let imputed = dir.path().join("imputed");
+    let argv = [
+        "x",
+        &data,
+        "-c",
+        &coords,
+        "--coord-column-names",
+        "x,y",
+        "--model",
+        &cell,
+        "-o",
+        imputed.to_str().unwrap(),
+    ];
+    let e = crate::impute::run_impute(&ImputeCli::try_parse_from(argv).unwrap().impute, &[])
+        .unwrap_err();
+    assert!(
+        format!("{e:#}").contains("cage-cell models have no pair encoder"),
+        "impute: {e:#}"
+    );
 
     // `--positives-per-epoch` (hidden) replaces the per-feature budget
     let one = fit(
@@ -208,7 +265,7 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         &["cell", "--positives-per-epoch", "1"],
     );
     assert!(
-        pb_embedding(&cell) != pb_embedding(&one),
+        cell_embedding(&cell) != cell_embedding(&one),
         "the budget left the fit unchanged"
     );
 
@@ -261,11 +318,11 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
     assert_scores_every_feature(&cnv);
 }
 
-/// On cells the chain group is the cell, so the upstream rejection
-/// excludes only the anchor; the sampler also redraws a negative that is
-/// the anchor's positive partner, so no pair is scored as both.
+/// cage-cell's draw names pairs: every positive is a pair active for the
+/// feature in the draw's batch (both its cells in that batch), and every
+/// negative another pair of the same batch, never the positive.
 #[test]
-fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
+fn a_cell_level_draw_names_pairs_of_its_batch() {
     use crate::cell_activity_graph_embedding::feature_chain_sampler::{
         build_feature_exp_batch_cache, FeatureGatedChainSampler,
     };
@@ -273,23 +330,23 @@ fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
-    let n = 6;
-    let pairs: Vec<(usize, usize)> = (0..n - 1).map(|i| (i, i + 1)).collect();
-    let ml = cell_level_hierarchy(n, &pairs);
+    // two batches of six cells, each a path; one pair crosses them
+    let n = 12;
+    let mut pairs: Vec<(usize, usize)> =
+        (0..5).flat_map(|i| [(i, i + 1), (i + 6, i + 7)]).collect();
+    pairs.push((5, 6));
+    let batch: Vec<u32> = (0..n).map(|c| (c / 6) as u32).collect();
     let edges: Vec<(u32, u32)> = pairs.iter().map(|&(i, j)| (i as u32, j as u32)).collect();
-    let (samplers, _) = graph_embedding_util::loss::build_per_batch_unit_samplers(
-        &edges,
-        &vec![0; n],
-        1,
-        n,
-        1.0,
-        None,
-    );
+    let (samplers, _) =
+        graph_embedding_util::loss::build_per_batch_unit_samplers(&edges, &batch, 2, n, 1.0, None);
+    // the feature is active on every pair but the first of each batch
+    let active: Vec<u32> = (2..edges.len() as u32).collect();
     let activities = FeatureActiveEdges {
-        feature_active_edges: vec![(0..edges.len() as u32).collect()],
-        feature_active_edge_weights: vec![vec![1.0; edges.len()]],
+        feature_active_edge_weights: vec![vec![1.0; active.len()]],
+        feature_active_edges: vec![active.clone()],
     };
     let cache = build_feature_exp_batch_cache(&activities, &samplers, 1.0);
+    let ml = cell_level_hierarchy(n, &pairs);
     let groups: Vec<&[usize]> = vec![&ml.all_cell_labels[0]];
     let sampler = FeatureGatedChainSampler {
         super_edges: &edges,
@@ -297,19 +354,27 @@ fn a_cell_level_negative_is_never_the_anchor_or_its_partner() {
         cache: &cache,
         unit_to_group_per_level: &groups,
         positives_per_draw: 8,
-        n_negatives: 8,
-        exclude_partner: true,
+        n_negatives: 6,
     };
     let mut rng = SmallRng::seed_from_u64(0);
-    for _ in 0..200 {
-        let (batch, _) = sampler.sample(0, 0, &mut rng).unwrap();
-        for neg in &batch.per_level_neg {
-            for (b, row) in neg.chunks(batch.n_negatives).enumerate() {
-                let pair = [batch.left_units[b], batch.right_units[b]];
+    for b in 0..2u32 {
+        let in_batch = |e: u32| {
+            let (u, v) = edges[e as usize];
+            batch[u as usize] == b && batch[v as usize] == b
+        };
+        for _ in 0..100 {
+            let draw = sampler.sample_edges(0, b as usize, &mut rng).unwrap();
+            assert_eq!(draw.pos_edges.len(), 8);
+            assert_eq!(draw.neg_edges.len(), 8 * 6);
+            for (i, &e) in draw.pos_edges.iter().enumerate() {
                 assert!(
-                    row.iter().all(|c| !pair.contains(c)),
-                    "negatives {row:?} for the pair {pair:?}"
+                    active.contains(&e) && in_batch(e),
+                    "positive {e} in batch {b}"
                 );
+                for &w in &draw.neg_edges[i * 6..(i + 1) * 6] {
+                    assert!((w as usize) < edges.len() && in_batch(w), "negative {w}");
+                    assert_ne!(w, e, "a negative is its own positive");
+                }
             }
         }
     }

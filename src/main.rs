@@ -480,12 +480,11 @@ enum Commands {
         long_about = "cage trained on cells instead of super-cells, as cell-level\n\
                       methods such as STAGATE are, for a like-for-like comparison: the\n\
                       same model and outputs.\n\n\
-                      Cells and cell pairs are the training units: each cell is its own\n\
-                      unit and each within-batch spatial cell pair a positive; negatives\n\
-                      are other cells of the same batch, never the pair's own two. No\n\
-                      coarsening hierarchy is trained on.\n\n\
-                      Batch effects (δ) are estimated and removed as in cage, and\n\
-                      `pinto predict` corrects a query as it does for cage. The δ\n\
+                      The cell pair is the training unit: each within-batch spatial\n\
+                      cell pair has an embedding row of its own, and a feature-active\n\
+                      pair is a positive against other pairs of the same batch. Each\n\
+                      cell keeps a bias. No coarsening hierarchy is trained on.\n\n\
+                      Batch effects (δ) are estimated and removed as in cage. The δ\n\
                       estimate pools cells internally, only to estimate δ (so\n\
                       --num-levels and --cnv-clones shape it); training\n\
                       never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
@@ -494,15 +493,44 @@ enum Commands {
                       --feature-modules auto, a count M, or 0 for none) or\n\
                       --feature-inclusion moran apply as in cage, never both. The\n\
                       modules start from pseudobulks built for that alone; training\n\
-                      pools the sparse counts of the cells each step draws.\n\n\
+                      pools the sparse counts of the pairs' cells each step draws.\n\n\
                       --n-pseudobulk and the HVG flags shape only those starting\n\
                       pseudobulks, and do nothing in a run without modules\n\
                       (--feature-modules 0, or --feature-inclusion moran; a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
-                      --embedding-l2 defaults to 0 here.\n\n\
-                      The pair encoder trains on the cell pairs themselves.\n\n\
-                      Writes what cage writes; its manifest says `cell_level`.",
+                      --embedding-l2 defaults to 0 here, and the learning rate (--lr)\n\
+                      to 0.02 (cage's is 0.005).\n\n\
+                      Training runs until each pair's row has been updated\n\
+                      --pair-updates times on average (default 200): the steps are\n\
+                      that many times the pair count over the pairs a step touches,\n\
+                      both logged. --epochs (default 1000 here) only caps it. An\n\
+                      epoch draws about four positives per pair, so each update\n\
+                      averages several draws at any size.\n\n\
+                      The pairs' trained rows are the latent (latent.parquet, L2-normalised,\n\
+                      one row per listed pair), and a cell's embedding is the mean of its\n\
+                      pairs' rows. No pair encoder is fitted, so there is no\n\
+                      pb_embedding.parquet or pair_encoder.safetensors, and `pinto predict`\n\
+                      and `pinto impute` refuse a cage-cell model for now.\n\
+                      A pair table too big for the device is kept on the host.\n\n\
+                      Writes what cage writes otherwise; its manifest says `cell_level`.",
+        // cage-cell's own defaults, all here; the per-pair positive draws,
+        // set by the data, are `args::PAIR_DRAWS_PER_EPOCH`.
         mut_arg("embedding_l2", |a| a.default_value("0")),
+        mut_arg("lr", |a| a
+            .default_value("0.02")
+            .long_help("AdamW learning rate. cage-cell's default is 0.02 (cage's 0.005): \
+                        a pair's row moves only on the steps that draw it.")),
+        mut_arg("epochs", |a| a
+            .default_value("1000")
+            .help("Upper bound on training epochs (training ends at --pair-updates)")
+            .long_help("An upper bound on the passes over the feature axis: cage-cell \
+                        trains until --pair-updates is reached, and stops here first \
+                        only if this is too few (a warning says so).")),
+        mut_arg("positives_per_epoch", |a| a.long_help(
+            "The epoch's total positive draws, split over the features and batches \
+             as in cage. Unset, 4 per cell pair (and at least 12 per feature and \
+             batch), so each update of a pair's row averages several draws.")),
+        mut_arg("pair_updates", |a| a.hide(false)),
         // What cage-cell refuses, or warns does nothing on cells, is off its
         // help.
         mut_args(cell_activity_graph_embedding::fit::hide_on_cells)

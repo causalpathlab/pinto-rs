@@ -8,8 +8,8 @@
 //! places every pair in one forward pass, on the device, and its placement
 //! is used as it is. What it trains on is a [`TrainingSet`]: under `cage`
 //! the finest pseudobulks and their edges, thinned to cell-pair depth, so
-//! the cell pairs are only encoded; under `cage-cell` the cell pairs
-//! themselves.
+//! the cell pairs are only encoded. (`cage-cell` has no encoder: it
+//! trains each pair's row itself.)
 //!
 //! The MAP is a function of one statistic. Write `S = Σ_g n_g e_g` for the
 //! count-weighted sum of dictionary rows, `N = Σ_g n_g` for the depth and
