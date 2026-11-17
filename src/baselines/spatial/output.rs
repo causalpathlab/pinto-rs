@@ -19,7 +19,7 @@ use crate::util::metadata::{
     delta_files, manifest_path, now_secs, BaselineInput, BaselineRun, BatchLabels, InputLayout,
     OutputFiles, PintoMetadata, PseudobulkInput,
 };
-use crate::util::parquet_io::{cell_pb_path, cells_table_path, write_cell_pb, write_cells_table};
+use crate::util::parquet_io::{cell_pb_path, cells_table_path, write_cell_pb};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::parquet::Column;
 use legume_numeric::matrix::traits::IoOps;
@@ -193,15 +193,8 @@ pub fn write_run(
         write_pb_labels(prefix, &data.cells, pb)?;
     }
     write_embedding(prefix, &data.cells, fit.embedding, fit.embedding_name)?;
+    // the cells table is the read's (every cell, those QC dropped too)
     write_propensity_matrix(prefix, membership, &data.cells)?;
-    write_cells_table(
-        prefix,
-        &data.cells,
-        &data.xy,
-        &data.coord_names,
-        &data.read_batches,
-        &vec![true; n],
-    )?;
     let settings = serde_json::json!({
         "method": fit.method,
         "pinto_version": env!("CARGO_PKG_VERSION"),
@@ -247,6 +240,8 @@ pub fn write_run(
             &input.data_files,
         ),
         baseline: Some(run),
+        offset: input.stage2.offset.as_deref().map(String::from),
+        ablation: data.ablation.clone(),
         ..Default::default()
     };
     meta.write(std::path::Path::new(&manifest_path(prefix)))?;

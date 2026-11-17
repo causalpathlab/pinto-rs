@@ -194,6 +194,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         n_cells,
         n_rows: n_features,
         ablation,
+        permuted_coordinates: _,
     } = preprocess_srt(SrtPreprocessConfig {
         offset: args.stage2.offset.as_deref(),
         common: c,

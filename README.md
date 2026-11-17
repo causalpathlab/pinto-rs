@@ -769,10 +769,13 @@ labels, or `--auto-batch` components) the counts are divided by the
 input's own batch effects (δ, estimated as `cage` estimates them and
 written to `{out}.delta.parquet`) before the method's own preprocessing.
 The baselines take cage's batch flags under the same names and defaults
-(`--batch-files`, `--auto-batch`, `--ignore-batch`, `--cnv-clones`). The
-baselines run no cell QC, so a baseline estimates the δ cage estimates
-under the same flags and `--no-qc`; under `--auto-batch` it finds the
-components on cage's spatial graph at cage's default `-k` and matching.
+(`--batch-files`, `--auto-batch`, `--ignore-batch`, `--cnv-clones`). A
+baseline reads its input through the same preprocessing as lc, dsvd and
+cage: the same cell QC (on by default; `--no-qc` keeps every cell), the
+same `--auto-batch` components on pinto's spatial graph, the same δ, the
+same `--offset` (a stage-2 fit, on the cells QC kept), the same ablations
+(`--permute-coords`, `--drop-features`, `--mask-cells`) and the same cells
+table; the `-pb` forms coarsen along pinto's cell-pair graph.
 `--ignore-batch` runs the original method on the counts as stored.
 
 All fit the whole tissue in memory, so each estimates its peak before its
@@ -783,8 +786,8 @@ included). The first check comes from the files' stored shape (cells,
 genes and nonzeros), with nothing preloaded: the counts are read after
 it, preloaded as the other commands read them, and a file that does not
 store its nonzero count leaves that read unchecked. Under `--auto-batch`
-the batches are known only once the read has found the components, so the
-δ estimate over them is checked again then, before it is made.
+the batches are known only once the read has found the components; the
+check charges each section as one batch.
 `stagate` grows with the cells, the edges and the genes, and far faster
 with a `--rad-cutoff` that takes many neighbours. Lower `--n-top-genes`,
 `--k-cutoff` or `--rad-cutoff` (`--neighbors` or `--n-clusters` for

@@ -23,4 +23,4 @@ pub mod stage1_divisor;
 pub mod staging;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

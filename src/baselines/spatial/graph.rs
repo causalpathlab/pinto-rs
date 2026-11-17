@@ -46,23 +46,6 @@ impl Neighbours {
         pairs.into_iter().unzip()
     }
 
-    /// Each cell's `k` nearest of its listed neighbours (lists sorted by
-    /// distance, as [`knn_within_sections`] gives them): the kNN at `k`.
-    pub fn truncated(&self, k: usize) -> Neighbours {
-        Neighbours {
-            index: self
-                .index
-                .iter()
-                .map(|js| js[..k.min(js.len())].to_vec())
-                .collect(),
-            dist: self
-                .dist
-                .iter()
-                .map(|ds| ds[..k.min(ds.len())].to_vec())
-                .collect(),
-        }
-    }
-
     /// The same graph with every edge in both directions, each listed once
     /// per cell, neighbours re-sorted by distance (ties by index).
     pub fn symmetrised(&self) -> Neighbours {

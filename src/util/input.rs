@@ -1,4 +1,4 @@
-use crate::util::cell_pairs::{build_spatial_graph, connected_components, SrtCellPairsArgs};
+use crate::util::cell_pairs::{connected_components, SrtCellPairsArgs};
 use crate::util::common::*;
 use anyhow::Context;
 use data_beans::aux::feature_names::FeatureNameKind;
@@ -8,8 +8,8 @@ use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
 pub use args::{
-    BatchArgs, CollapseArgs, OffsetArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN,
-    DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+    BatchArgs, CollapseArgs, InputArgs, OffsetArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN,
+    DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
 };
 
 pub struct SRTReadArgs {
@@ -382,24 +382,6 @@ pub const DEFAULT_SPATIAL_GRAPH: SrtCellPairsArgs = SrtCellPairsArgs {
     knn: DEFAULT_KNN,
     reciprocal: false,
 };
-
-/// Relabel `batch_membership` by the components of the spatial graph
-/// `pairs` builds on `coordinates`, fragments folded, as cage's
-/// preprocessing relabels a spatial run's cells under `--auto-batch`
-/// ([`auto_batch_from_components`]); the graph is freed on return.
-pub fn auto_batch_from_coordinates(
-    coordinates: &Mat,
-    pairs: SrtCellPairsArgs,
-    batch_membership: &mut Vec<Box<str>>,
-) -> anyhow::Result<usize> {
-    let graph = build_spatial_graph(coordinates, pairs)?;
-    Ok(auto_batch_from_components(
-        &graph,
-        coordinates,
-        batch_membership,
-        true,
-    ))
-}
 
 /// Label each disconnected piece of the spatial graph as its own batch.
 ///

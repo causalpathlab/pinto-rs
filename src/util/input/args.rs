@@ -17,9 +17,12 @@ fn no_feature_qc(s: &str) -> Result<usize, String> {
     }
 }
 
-/// Shared CLI arguments for spatial data input across all pinto subcommands.
+/// The input every fit reads: data files, their coordinates and batches,
+/// cell QC, the output prefix and the seed. lc, dsvd and cage take it inside
+/// [`SrtInputArgs`], beside their cell-pair graph; the spatial baselines
+/// take it as it is.
 ///
-/// Flatten this into each subcommand's args struct with `#[command(flatten)]`.
+/// Flatten this into a fit's args struct with `#[command(flatten)]`.
 #[derive(Parser, Debug, Clone)]
 // data-beans' QC tuning flags, hidden here until its next minor drops the
 // ones pinto never changes (--qc-min-cell-nnz, --qc-mad-on-*, --qc-histogram).
@@ -31,7 +34,7 @@ fn no_feature_qc(s: &str) -> Result<usize, String> {
     // feature verdict, and pinto reads only the cell one.
     mut_arg("qc_feature_min_cells", |a| a.hide(true).value_parser(no_feature_qc))
 )]
-pub struct SrtInputArgs {
+pub struct InputArgs {
     #[arg(
         required = true,
         value_delimiter(','),
@@ -139,6 +142,18 @@ pub struct SrtInputArgs {
 
     #[command(flatten)]
     pub collapse: CollapseArgs,
+
+    #[command(flatten)]
+    pub qc: data_beans::qc_lib::QcArgs,
+}
+
+/// Shared CLI arguments for spatial data input across all pinto subcommands.
+///
+/// Flatten this into each subcommand's args struct with `#[command(flatten)]`.
+#[derive(Parser, Debug, Clone)]
+pub struct SrtInputArgs {
+    #[command(flatten)]
+    pub input: InputArgs,
 
     #[arg(
         long,
@@ -265,9 +280,20 @@ pub struct SrtInputArgs {
         hide = true
     )]
     pub reciprocal: bool,
+}
 
-    #[command(flatten)]
-    pub qc: data_beans::qc_lib::QcArgs,
+impl std::ops::Deref for SrtInputArgs {
+    type Target = InputArgs;
+
+    fn deref(&self) -> &InputArgs {
+        &self.input
+    }
+}
+
+impl std::ops::DerefMut for SrtInputArgs {
+    fn deref_mut(&mut self) -> &mut InputArgs {
+        &mut self.input
+    }
 }
 
 /// A stage-2 fit's stage-1 divisor (`--offset`), the fits' own (lc, dsvd,
@@ -455,6 +481,15 @@ pub struct ResolvedKnn {
 }
 
 impl SrtInputArgs {
+    /// `input` with the cell-pair graph at its defaults: the graph a fit
+    /// that takes no graph flags (a spatial baseline) is read with.
+    pub fn with_input(input: InputArgs) -> Self {
+        let mut a = <Self as clap::Parser>::try_parse_from(["pinto", "data", "--out", "out"])
+            .expect("the graph flags parse at their defaults");
+        a.input = input;
+        a
+    }
+
     /// Whether spatial coordinate files were provided.
     pub fn has_coordinates(&self) -> bool {
         !self.coord_files.is_empty()

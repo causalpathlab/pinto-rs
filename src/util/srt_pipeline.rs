@@ -193,6 +193,10 @@ pub struct SrtPreprocessed {
     pub n_cells: usize,
     /// Matrix rows. Equal to the feature count only on a non-channelized axis.
     pub n_rows: usize,
+    /// Under `--permute-coords`, the scrambled positions the graph was
+    /// built on (`coordinates` stays the cells' own, for output): what a
+    /// fit that reads positions itself (a spatial baseline) fits on.
+    pub permuted_coordinates: Option<Mat>,
     /// What `--permute-coords`, `--drop-features` or `--mask-cells` did, for
     /// the manifest's `ablation` block. `None` on an ordinary fit.
     pub ablation: Option<Ablation>,
@@ -516,6 +520,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
 
     // Where a fit writes its estimate; a query's is unwritten.
     let fit_out = (cfg.batch_effects == BatchEstimate::Fit).then_some(c.out.as_ref());
+    // what the read writes under --out (δ, the cells table) needs its folder
+    legume_numeric::matrix::common_io::mkdir_parent(&c.out)?;
     // `--auto-batch` relabels the cells by the graph's components.
     let auto_relabels = c.batch.auto_relabels();
     // Expression mode's projection, kept for the cells' projection below
@@ -796,6 +802,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         feature_axis,
         n_cells,
         n_rows,
+        permuted_coordinates: permuted,
         ablation,
     })
 }
