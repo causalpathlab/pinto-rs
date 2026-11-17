@@ -191,11 +191,7 @@ pub fn pick_run(
         session.draw(terminal, |f| {
             let area = f.area();
             let width = usize::from(area.width).min(110);
-            let lines = b.lines(
-                usize::from(area.height),
-                width,
-                &legume_tui::Look::terminal(),
-            );
+            let lines = b.lines(usize::from(area.height), width, &crate::tui::style::LOOK);
             f.render_widget(Paragraph::new(lines), area);
         })?;
         session.status("browsing for a run");

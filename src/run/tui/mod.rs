@@ -11,10 +11,11 @@ mod plan;
 
 use super::{form, script};
 use data::{Pair, Pick};
-use form::{Kind, Method};
+use form::Method;
 use jobs::{Job, Queue};
 use legume_tui::browse::shown;
 use legume_tui::browse::Browser;
+use legume_tui::form::Kind;
 use legume_tui::save::Field as TextField;
 use legume_tui::Round;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -610,9 +611,10 @@ impl App {
 
     fn data_key(&mut self, k: KeyEvent) {
         let last = self.pairs.len().saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.pair_row, self.pairs.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.pair_row = self.pair_row.saturating_sub(1),
-            KeyCode::Down => self.pair_row = (self.pair_row + 1).min(last),
             KeyCode::Char('a') => self.browse(Pick::Data),
             KeyCode::Char('c' | 'b' | 'n' | 'e' | 'x' | 'X' | 'd') if self.pairs.is_empty() => {
                 self.message = Some("no data files yet: a adds some".into());
@@ -687,9 +689,10 @@ impl App {
     fn run_key(&mut self, k: KeyEvent) {
         let Some(q) = &self.queue else { return };
         let last = q.jobs.len().saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.job_row, q.jobs.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.job_row = self.job_row.saturating_sub(1),
-            KeyCode::Down => self.job_row = (self.job_row + 1).min(last),
             KeyCode::Char('s') => {
                 q.stop();
                 self.message = Some("stopping".into());

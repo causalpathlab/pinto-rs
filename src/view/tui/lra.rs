@@ -173,10 +173,7 @@ impl App<'_> {
         if chord {
             return Ok(false);
         }
-        if let (Some(by), true) = (
-            legume_tui::keys::list_delta(&key, false),
-            self.lra.is_some(),
-        ) {
+        if let Some(by) = legume_tui::keys::list_delta(&key, false).filter(|_| self.lra.is_some()) {
             self.move_cursor(by);
             return Ok(true);
         }

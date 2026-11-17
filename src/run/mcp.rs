@@ -4,7 +4,7 @@
 //! project's records, as a background job unless asked otherwise (a fit
 //! takes minutes to hours, and a call that waited would hold the server).
 
-use super::form::{blamed, check, Kind, Method};
+use super::form::{check, Method};
 use super::script::{self, is_header, outputs, under};
 use super::{BASELINES, METHODS, MODELS};
 use crate::lr_activity::args::{LraMethod, ReferenceSpecies, RegionJackknife};
@@ -13,6 +13,7 @@ use crate::tui::flag_value;
 use crate::util::cli::choices;
 use anyhow::Context as _;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
+use legume_tui::form::{blamed, Kind};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::Path;

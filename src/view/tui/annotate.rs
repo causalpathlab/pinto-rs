@@ -394,11 +394,7 @@ impl App<'_> {
         let mut out = vec![Line::raw("")];
         match modal {
             Modal::Browse(b) => {
-                out.extend(b.lines(
-                    room.saturating_sub(1),
-                    45 + more,
-                    &legume_tui::Look::terminal(),
-                ));
+                out.extend(b.lines(room.saturating_sub(1), 45 + more, &crate::tui::style::LOOK));
             }
             Modal::Prompt(p) => {
                 let title = match &p.what {

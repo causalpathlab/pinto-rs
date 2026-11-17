@@ -51,7 +51,7 @@ impl App {
             let lines = b.lines(
                 usize::from(area.height).saturating_sub(2),
                 width,
-                &legume_tui::Look::terminal(),
+                &crate::tui::style::LOOK,
             );
             popup(f, area, lines, 110);
         } else if self.confirm.is_some() {
@@ -545,7 +545,7 @@ impl App {
         }
         let blamed = super::form::check(&self.cli, &argv)
             .err()
-            .and_then(|why| super::form::blamed(&why, &form.fields).map(str::to_string));
+            .and_then(|why| legume_tui::form::blamed(&why, &form.fields).map(str::to_string));
         *self.blame.borrow_mut() = Some((m, argv, blamed.clone()));
         blamed
     }

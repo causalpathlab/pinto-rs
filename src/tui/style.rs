@@ -9,6 +9,9 @@ use ratatui::text::Line;
 
 const CHROME: Chrome = Chrome::TERMINAL;
 
+/// The look legume-tui's widgets draw pinto's screens in.
+pub(crate) const LOOK: legume_tui::Look = legume_tui::Look::terminal();
+
 /// Bold text.
 #[must_use]
 pub fn bold() -> Style {

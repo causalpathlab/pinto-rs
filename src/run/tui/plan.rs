@@ -6,18 +6,19 @@ use super::{
     batch, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
 };
 use crate::residual::{Plan, ResidualArgs};
-use form::{Field, Kind, Method};
+use form::Method;
 use legume_tui::browse::shown;
+use legume_tui::form::{Field, Kind};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use script::under;
 use std::path::{Path, PathBuf};
 
 impl App {
     pub(super) fn methods_key(&mut self, k: KeyEvent) {
-        let last = self.rows.len() - 1;
+        if legume_tui::keys::list_step(&mut self.method_row, self.rows.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.method_row = self.method_row.saturating_sub(1),
-            KeyCode::Down => self.method_row = (self.method_row + 1).min(last),
             KeyCode::Char(' ') => self.queue_row(self.method_row, !self.rows[self.method_row].on),
             KeyCode::Char('m') => self.next_stage_two(self.method_row),
             KeyCode::Char('o') => {
@@ -375,7 +376,7 @@ impl App {
             // even tell which manifest it reads.
             let refused = || {
                 form::check(&self.cli, &job.argv).err().map(|why| {
-                    let who = form::blamed(&why, &form.fields).map(str::to_string);
+                    let who = legume_tui::form::blamed(&why, &form.fields).map(str::to_string);
                     (why, who)
                 })
             };
@@ -523,12 +524,12 @@ impl App {
     }
 
     pub(super) fn confirm_key(&mut self, k: KeyEvent) {
+        let rows = self.confirm_max.get() + 1;
+        if legume_tui::keys::list_step(&mut self.confirm_scroll, rows, &k, false) {
+            return;
+        }
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => self.confirm = None,
-            KeyCode::Up => self.confirm_scroll = self.confirm_scroll.saturating_sub(1),
-            KeyCode::Down => {
-                self.confirm_scroll = (self.confirm_scroll + 1).min(self.confirm_max.get());
-            }
             KeyCode::Char('c') => {
                 let text = self.copy_text();
                 self.message = Some(match legume_tui::keys::copy(&text, self.attached) {
@@ -719,7 +720,7 @@ fn residual_plan(dir: &Path, a: &ResidualArgs) -> anyhow::Result<Plan> {
     Plan::new(&run, &a)
 }
 
-/// Values of `form`'s flags that name files ([`form::Field::takes_path`]), as
+/// Values of `form`'s flags that name files ([`Field::takes_path`]), as
 /// typed in `here`, rewritten for a run started in `dir`; `--from` names
 /// the run's manifest, given its prefix.
 fn relative_values(form: &mut Method, here: &Path, dir: &Path) {

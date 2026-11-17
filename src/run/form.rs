@@ -19,8 +19,7 @@ const OWN: &[&str] = &[
     "atomic-outputs",
 ];
 
-use legume_tui::form::{emit, many_of, Many};
-pub use legume_tui::form::{Field, Kind};
+use legume_tui::form::{emit, many_of, Field, Many};
 
 /// `f`'s values rewritten by `rewrite`, as the command line splits them (a
 /// comma list in one value too), joined by commas. A row at its default is
@@ -196,8 +195,6 @@ pub fn matches(cli: &Command, argv: &[String]) -> Result<clap::ArgMatches, Strin
     })?;
     legume_tui::form::parse(method, &argv[n - 1..])
 }
-
-pub use legume_tui::form::blamed;
 
 #[cfg(test)]
 #[path = "tests/form.rs"]
