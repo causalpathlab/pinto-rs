@@ -219,12 +219,29 @@ pub(crate) struct CorpusStats {
 
 impl CorpusStats {
     fn new(corpus: &[CellRow], d: usize, dev: &Device) -> anyhow::Result<Self> {
-        let n = corpus.len();
         let sums: Vec<f32> = corpus.iter().flat_map(|r| r.sums.iter().copied()).collect();
+        Self::from_flat(
+            sums,
+            corpus.iter().map(|r| r.total).collect(),
+            corpus.iter().map(|r| r.offset).collect(),
+            d,
+            dev,
+        )
+    }
+
+    /// From row-major `[n × D]` sums and `[n]` totals and offsets.
+    fn from_flat(
+        sums: Vec<f32>,
+        totals: Vec<f32>,
+        offsets: Vec<f32>,
+        d: usize,
+        dev: &Device,
+    ) -> anyhow::Result<Self> {
+        let n = totals.len();
         Ok(Self {
             sums: Tensor::from_vec(sums, (n, d), dev)?,
-            totals: Tensor::from_vec(corpus.iter().map(|r| r.total).collect(), n, dev)?,
-            offsets: Tensor::from_vec(corpus.iter().map(|r| r.offset).collect(), n, dev)?,
+            totals: Tensor::from_vec(totals, n, dev)?,
+            offsets: Tensor::from_vec(offsets, n, dev)?,
         })
     }
 
@@ -245,22 +262,28 @@ impl CorpusStats {
     }
 }
 
-/// Population mean and standard deviation of every cell's statistic
-/// `[S/N ‖ ln(N + 1)]` over the corpus — `(mean, std)`, `[D + 1]` each, the
-/// std floored so a constant coordinate is left alone.
-fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
-    let (sum, sq) = corpus
-        .par_iter()
+/// Population mean and standard deviation of the statistic
+/// `[S/N ‖ ln(N + 1)]` over `n` rows, row `i`'s `(S, N)` from `row(i)` —
+/// `(mean, std)`, `[D + 1]` each, the std floored so a constant coordinate
+/// is left alone.
+fn stat_moments<'r>(
+    d: usize,
+    n: usize,
+    row: impl Fn(usize) -> (&'r [f32], f32) + Sync,
+) -> (Vec<f32>, Vec<f32>) {
+    let (sum, sq) = (0..n)
+        .into_par_iter()
         .fold(
             || (vec![0f64; d + 1], vec![0f64; d + 1]),
-            |(mut sum, mut sq), row| {
-                let n = row.total.max(1.0);
-                for (j, &v) in row.sums.iter().enumerate() {
+            |(mut sum, mut sq), i| {
+                let (sums, total) = row(i);
+                let n = total.max(1.0);
+                for (j, &v) in sums.iter().enumerate() {
                     let v = f64::from(v / n);
                     sum[j] += v;
                     sq[j] += v * v;
                 }
-                let ln_n = f64::from((row.total + 1.0).ln());
+                let ln_n = f64::from((total + 1.0).ln());
                 sum[d] += ln_n;
                 sq[d] += ln_n * ln_n;
                 (sum, sq)
@@ -274,7 +297,7 @@ fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
                 (a, b)
             },
         );
-    let n = corpus.len().max(1) as f64;
+    let n = n.max(1) as f64;
     let mean: Vec<f32> = sum.iter().map(|&v| (v / n) as f32).collect();
     let std: Vec<f32> = sum
         .iter()
@@ -448,17 +471,17 @@ struct PairForward {
 }
 
 impl PairEncoder {
-    /// An untrained encoder on `dict`, its statistic standardised by the
-    /// moments of `moment_rows` ([`TrainingSet::moment_rows`]: the rows it
-    /// will read in training), its vars seeded from `seed`.
+    /// An untrained encoder on `dict` for training on `set`, its statistic
+    /// standardised by the moments of the rows it will read in training
+    /// ([`TrainingSet::moments`]), its vars seeded from `seed`.
     pub(crate) fn build(
         dict: &PairDictionary,
-        moment_rows: &[CellRow],
+        set: &TrainingSet<'_>,
         spec: &PairEncoderSpec,
         seed: u64,
         dev: &Device,
     ) -> anyhow::Result<Self> {
-        let (mean, std) = stat_moments(dict.d, moment_rows);
+        let (mean, std) = set.moments(dict.d, seed);
         let this = Self::construct(
             DeviceDict::new(dict, &mean, &std, dev)?,
             spec.trunk_width,

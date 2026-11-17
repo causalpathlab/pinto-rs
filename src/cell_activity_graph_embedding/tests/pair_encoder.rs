@@ -4,7 +4,9 @@
 //! are their cells' sums, and the thinning keeps that many counts.
 
 use super::fixture::*;
-use crate::cell_activity_graph_embedding::pair_projection::encoder::training_set::thin_to;
+use crate::cell_activity_graph_embedding::pair_projection::encoder::training_set::{
+    thin_stats, thin_to, Scratch,
+};
 use crate::cell_activity_graph_embedding::pair_projection::encoder::{
     CellRow, CorpusStats, PairEncoder, PairEncoderSpec, TrainingSet,
 };
@@ -106,9 +108,9 @@ fn trained() -> &'static Trained {
         let corpus = corpus_of(&dict, &cells);
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
         let train_spec = spec(1);
-        let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
-        enc.train(&TrainingSet::cells(&corpus, &edges), &train_spec, 7)
-            .unwrap();
+        let set = TrainingSet::cells(&corpus, &edges);
+        let enc = PairEncoder::build(&dict, &set, &train_spec, 7, &Device::Cpu).unwrap();
+        enc.train(&set, &train_spec, 7).unwrap();
         let stats = enc.corpus_stats(&corpus).unwrap();
         Trained {
             dict,
@@ -356,9 +358,7 @@ fn cage_trains_on_pseudobulk_rows_summed_from_their_cells() {
     // Training reads the pseudobulk rows; a cell pair names a row they do
     // not have.
     let spec = spec(1);
-    let moments = set.moment_rows(3);
-    assert_eq!(moments.len(), 2 * PB_EDGES.len());
-    let enc = PairEncoder::build(&dict, &moments, &spec, 3, &Device::Cpu).unwrap();
+    let enc = PairEncoder::build(&dict, &set, &spec, 3, &Device::Cpu).unwrap();
     enc.train(&set, &spec, 3).unwrap();
     let wrong = TrainingSet {
         edges: &cell_edges,
@@ -384,16 +384,16 @@ fn a_thinned_epoch_is_at_cell_pair_depth() {
     let t = set.thinned(th, &all, true, 17);
     assert_eq!(t.pairs.len(), PB_EDGES.len());
     for &(a, b) in &t.pairs {
-        let pooled = t.rows[a as usize].total + t.rows[b as usize].total;
+        let pooled = t.totals[a as usize] + t.totals[b as usize];
         assert_eq!(pooled, 10.0);
     }
     for c in 0..N_PB {
-        assert_eq!(t.rows[t.self_base as usize + c].total, 5.0);
+        assert_eq!(t.totals[t.self_base as usize + c], 5.0);
     }
     let again = set.thinned(th, &all, true, 17);
-    for (x, y) in t.rows.iter().zip(&again.rows) {
-        assert_eq!((&x.features, &x.counts), (&y.features, &y.counts));
-    }
+    assert_eq!((&t.sums, &t.totals), (&again.sums, &again.totals));
+    assert_eq!(t.offsets, again.offsets);
+    assert_eq!(t.sums.len(), t.totals.len() * DIM);
 }
 
 #[test]
@@ -426,6 +426,33 @@ fn thinning_keeps_the_drawn_depth_sparse_and_within_the_counts() {
     let whole = thin(u.total as u64 + v.total as u64 + 5, 5);
     assert_eq!(whole[0], (u.features.clone(), u.counts.clone()));
     assert_eq!(whole[1], (v.features.clone(), v.counts.clone()));
+
+    // The statistic written straight from the kept units is the thinned
+    // rows' own.
+    for target in [17u64, 232] {
+        let parts = thin(target, 9);
+        let mut out = vec![0f32; 2 * (DIM + 2)];
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(9);
+        let mut want_rng = rand::rngs::SmallRng::seed_from_u64(9);
+        let parts_small = thin_to(&[&u, &v], target, &mut want_rng);
+        thin_stats(
+            &dict,
+            &[&u, &v],
+            target,
+            &mut rng,
+            &mut Scratch::default(),
+            &mut out,
+        );
+        assert_eq!(parts_small.len(), parts.len());
+        for ((f, n), o) in parts_small
+            .into_iter()
+            .zip(out.as_chunks::<{ DIM + 2 }>().0)
+        {
+            let row = CellRow::from_local(&dict, f, n);
+            assert_eq!(&o[..DIM], &row.sums[..]);
+            assert_eq!((o[DIM], o[DIM + 1]), (row.total, row.offset));
+        }
+    }
 
     // Fractional counts: never above the count rounded up.
     let f = CellRow::from_profile(&dict, &[(2, 0.4), (3, 5.5), (4, 12.25)]);

@@ -1,6 +1,7 @@
 //! Training the pair encoder, and encoding every pair with it.
 
 use super::super::{CellLatent, PairLatent, SCORE_CLAMP};
+use super::training_set::ThinnedTable;
 use super::{
     rows_within_budget, CellRow, CorpusStats, FullStats, PairEncoder, PairEncoderSpec, TrainingSet,
 };
@@ -14,6 +15,7 @@ use legume_numeric::matrix::utils::generate_minibatch_intervals;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{RngExt, SeedableRng};
+use std::time::Duration;
 
 const LEARNING_RATE: f64 = 1e-3;
 const WEIGHT_DECAY: f64 = 1e-4;
@@ -36,6 +38,11 @@ pub(crate) struct TrainStats {
 }
 
 impl PairEncoder {
+    /// A thinned table's statistics on this encoder's device.
+    fn upload(&self, t: ThinnedTable) -> anyhow::Result<CorpusStats> {
+        CorpusStats::from_flat(t.sums, t.totals, t.offsets, self.dict.d, self.dict.device())
+    }
+
     /// The statistics of cells `ids`, gathered on the device.
     fn cell_stats(&self, corpus: &CorpusStats, ids: &[u32]) -> anyhow::Result<FullStats> {
         corpus.gather_full(&Tensor::from_slice(ids, ids.len(), self.dict.device())?)
@@ -151,7 +158,8 @@ impl PairEncoder {
                     false,
                     mix_seed(seed, CHECK_SALT ^ THIN_SALT),
                 );
-                (Some(self.corpus_stats(&t.rows)?), t.pairs)
+                let pairs = t.pairs.clone();
+                (Some(self.upload(t)?), pairs)
             }
         };
         let check_stats = check_thinned
@@ -176,87 +184,113 @@ impl PairEncoder {
         let bar = new_progress_bar((epochs * steps_per_epoch) as u64).with_message("pair encoder");
         // The mean step loss since the last evaluation line.
         let (mut loss_sum, mut n_steps) = (0f64, 0usize);
-        for epoch in 0..epochs {
-            // This epoch's rows: the fixed ones, or a fresh thinned draw of
-            // every pair and every unit's own row.
-            let t = std::time::Instant::now();
-            let thinned = match &set.thinning {
-                None => None,
-                Some(th) => {
-                    let t = set.thinned(
-                        th,
-                        &all_pairs,
-                        true,
-                        mix_seed(mix_seed(seed, THIN_SALT), epoch as u64),
-                    );
-                    Some((self.corpus_stats(&t.rows)?, t.pairs, t.self_base))
-                }
-            };
-            let (stats, pair_rows, self_base): (&CorpusStats, &[(u32, u32)], u32) = match &thinned {
-                Some((s, p, b)) => (s, p, *b),
-                None => (fixed.as_ref().expect("unthinned rows"), edges, 0),
-            };
-            timers.precompute += t.elapsed();
-            let mut rng = StdRng::seed_from_u64(mix_seed(seed, epoch as u64));
-            order.shuffle(&mut rng);
-            cell_order.shuffle(&mut rng);
-            // The steps that train (a last chunk under MIN_STEP_PAIRS is
-            // skipped), and the endpoint cells shared out over exactly those.
-            let chunks: Vec<&[usize]> = order
-                .chunks(batch)
-                .filter(|c| c.len() >= MIN_STEP_PAIRS)
-                .collect();
-            bar.inc((steps_per_epoch - chunks.len()) as u64);
-            let n_chunks = chunks.len().max(1);
-            let cell_share = |k: usize| {
-                &cell_order[k * cell_order.len() / n_chunks..(k + 1) * cell_order.len() / n_chunks]
-            };
-            for (k, chunk) in chunks.iter().enumerate() {
-                let t = std::time::Instant::now();
-                let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| pair_rows[i]).collect();
-                let endpoints = self.endpoint_stats(stats, &pairs)?;
-                let cells = cell_share(k);
-                let selves = if cells.is_empty() {
-                    None
-                } else {
-                    let dev = self.dict.device();
-                    let ids = Tensor::from_slice(cells, cells.len(), dev)?;
-                    let rows: Vec<u32> = cells.iter().map(|&c| self_base + c).collect();
-                    let rows = Tensor::from_vec(rows, cells.len(), dev)?;
-                    Some((stats.gather_full(&rows)?, gather_rows(&degree, &ids)?))
+        // Time spent drawing the thinned rows (off the training thread),
+        // waiting for them, and uploading them.
+        let (mut thin_time, mut wait_time, mut upload_time) =
+            (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        std::thread::scope(|scope| -> anyhow::Result<()> {
+            // A thinned set's epochs are drawn on the CPU one epoch ahead of
+            // the device's steps, each from its own seed.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(ThinnedTable, Duration)>(1);
+            if let Some(th) = &set.thinning {
+                let all_pairs = &all_pairs;
+                scope.spawn(move || {
+                    for epoch in 0..epochs {
+                        let t0 = std::time::Instant::now();
+                        let seed = mix_seed(mix_seed(seed, THIN_SALT), epoch as u64);
+                        let t = set.thinned(th, all_pairs, true, seed);
+                        // The trainer stopped early: nothing left to draw for.
+                        if tx.send((t, t0.elapsed())).is_err() {
+                            break;
+                        }
+                    }
+                });
+            } else {
+                drop(tx);
+            }
+            for epoch in 0..epochs {
+                // This epoch's rows: the fixed ones, or the epoch's fresh thinned
+                // draw of every pair and every unit's own row.
+                let thinned = match &set.thinning {
+                    None => None,
+                    Some(_) => {
+                        let t0 = std::time::Instant::now();
+                        let (t, drawn) = rx.recv()?;
+                        wait_time += t0.elapsed();
+                        thin_time += drawn;
+                        let t0 = std::time::Instant::now();
+                        let (pairs, base) = (t.pairs.clone(), t.self_base);
+                        let stats = self.upload(t)?;
+                        upload_time += t0.elapsed();
+                        Some((stats, pairs, base))
+                    }
                 };
-                timers.precompute += t.elapsed();
+                let (stats, pair_rows, self_base): (&CorpusStats, &[(u32, u32)], u32) =
+                    match &thinned {
+                        Some((s, p, b)) => (s, p, *b),
+                        None => (fixed.as_ref().expect("unthinned rows"), edges, 0),
+                    };
+                let mut rng = StdRng::seed_from_u64(mix_seed(seed, epoch as u64));
+                order.shuffle(&mut rng);
+                cell_order.shuffle(&mut rng);
+                // The steps that train (a last chunk under MIN_STEP_PAIRS is
+                // skipped), and the endpoint cells shared out over exactly those.
+                let chunks: Vec<&[usize]> = order
+                    .chunks(batch)
+                    .filter(|c| c.len() >= MIN_STEP_PAIRS)
+                    .collect();
+                bar.inc((steps_per_epoch - chunks.len()) as u64);
+                let n_chunks = chunks.len().max(1);
+                let cell_share = |k: usize| {
+                    &cell_order
+                        [k * cell_order.len() / n_chunks..(k + 1) * cell_order.len() / n_chunks]
+                };
+                for (k, chunk) in chunks.iter().enumerate() {
+                    let t = std::time::Instant::now();
+                    let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| pair_rows[i]).collect();
+                    let endpoints = self.endpoint_stats(stats, &pairs)?;
+                    let cells = cell_share(k);
+                    let selves = if cells.is_empty() {
+                        None
+                    } else {
+                        let dev = self.dict.device();
+                        let ids = Tensor::from_slice(cells, cells.len(), dev)?;
+                        let rows: Vec<u32> = cells.iter().map(|&c| self_base + c).collect();
+                        let rows = Tensor::from_vec(rows, cells.len(), dev)?;
+                        Some((stats.gather_full(&rows)?, gather_rows(&degree, &ids)?))
+                    };
+                    timers.precompute += t.elapsed();
 
-                let t = std::time::Instant::now();
-                let loss = self.step_loss(endpoints, selves, batch)?;
-                timers.encoder_fwd += t.elapsed();
+                    let t = std::time::Instant::now();
+                    let loss = self.step_loss(endpoints, selves, batch)?;
+                    timers.encoder_fwd += t.elapsed();
 
-                let t = std::time::Instant::now();
-                let grads = loss.backward()?;
-                timers.backward += t.elapsed();
+                    let t = std::time::Instant::now();
+                    let grads = loss.backward()?;
+                    timers.backward += t.elapsed();
 
-                let t = std::time::Instant::now();
-                if !clip_and_step_dense(&mut adam, grads, GRAD_CLIP)? {
-                    skipped += 1;
+                    let t = std::time::Instant::now();
+                    if !clip_and_step_dense(&mut adam, grads, GRAD_CLIP)? {
+                        skipped += 1;
+                    }
+                    timers.optimize += t.elapsed();
+
+                    loss_sum += f64::from(loss.to_scalar::<f32>()?);
+                    n_steps += 1;
+                    steps += 1;
+                    bar.inc(1);
                 }
-                timers.optimize += t.elapsed();
-
-                loss_sum += f64::from(loss.to_scalar::<f32>()?);
-                n_steps += 1;
-                steps += 1;
-                bar.inc(1);
-            }
-            if (epoch + 1) % check_every != 0 && epoch + 1 != epochs {
-                continue;
-            }
-            let (nll, pi) = self.evaluate(check_stats, &check, batch)?;
-            nll_per_count = nll;
-            // The held-out NLL first: it is the score `pinto run` draws.
-            bar.set_message(format!(
-                "pair encoder epoch {}/{epochs} nll={nll:.4}",
-                epoch + 1
-            ));
-            info!(
+                if (epoch + 1) % check_every != 0 && epoch + 1 != epochs {
+                    continue;
+                }
+                let (nll, pi) = self.evaluate(check_stats, &check, batch)?;
+                nll_per_count = nll;
+                // The held-out NLL first: it is the score `pinto run` draws.
+                bar.set_message(format!(
+                    "pair encoder epoch {}/{epochs} nll={nll:.4}",
+                    epoch + 1
+                ));
+                info!(
                 "Pair encoder epoch {}/{epochs}: mean step loss {:.2}, held-out NLL/count {:.4}, expert usage {}",
                 epoch + 1,
                 loss_sum / n_steps.max(1) as f64,
@@ -266,10 +300,21 @@ impl PairEncoder {
                     .collect::<Vec<_>>()
                     .join(" ")
             );
-            (loss_sum, n_steps) = (0.0, 0);
-        }
+                (loss_sum, n_steps) = (0.0, 0);
+            }
+            Ok(())
+        })?;
         bar.finish_and_clear();
         timers.log_summary();
+        if set.thinning.is_some() {
+            info!(
+                "Pair encoder: thinning {:.2}s beside training, {:.2}s waited for; uploading \
+                 {:.2}s, over {epochs} epochs",
+                thin_time.as_secs_f64(),
+                wait_time.as_secs_f64(),
+                upload_time.as_secs_f64()
+            );
+        }
         if skipped > 0 {
             warn!("Pair encoder: {skipped}/{steps} steps were skipped for non-finite gradients");
         }

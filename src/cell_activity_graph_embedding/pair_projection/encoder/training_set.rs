@@ -19,8 +19,8 @@ use super::super::PairDictionary;
 use super::CellRow;
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;
-use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
+use rand::rngs::SmallRng;
+use rand::{Rng, RngExt, SeedableRng};
 use std::borrow::Cow;
 
 /// Salt of the stream the moments' thinned draw comes from.
@@ -44,7 +44,7 @@ pub(crate) struct Thinning<'a> {
 }
 
 impl Thinning<'_> {
-    fn draw(&self, rng: &mut StdRng) -> f32 {
+    fn draw(&self, rng: &mut SmallRng) -> f32 {
         self.depths[rng.random_range(0..self.depths.len())]
     }
 
@@ -57,12 +57,18 @@ impl Thinning<'_> {
 }
 
 /// One thinned draw of some training pairs (and, optionally, of every
-/// unit's own row): what one epoch, the evaluation or the moments read.
+/// unit's own row) as the statistics the encoder reads: what one epoch,
+/// the evaluation or the moments read. The thinned counts themselves are
+/// never kept.
 pub(crate) struct ThinnedTable {
-    pub(crate) rows: Vec<CellRow>,
-    /// Per drawn pair, in the order asked for, its two rows in `rows`.
+    /// Row-major `[rows × D]` `S`.
+    pub(crate) sums: Vec<f32>,
+    /// `[rows]` `N` and `c`.
+    pub(crate) totals: Vec<f32>,
+    pub(crate) offsets: Vec<f32>,
+    /// Per drawn pair, in the order asked for, its two rows.
     pub(crate) pairs: Vec<(u32, u32)>,
-    /// Unit `c`'s own thinned row is `rows[self_base + c]`, when drawn.
+    /// Unit `c`'s own thinned row is row `self_base + c`, when drawn.
     pub(crate) self_base: u32,
 }
 
@@ -142,17 +148,20 @@ impl<'a> TrainingSet<'a> {
         }
     }
 
-    /// The rows the trunk's standardisation moments are taken over: the
-    /// corpus, or the endpoint rows of one thinned draw of every pair.
-    pub(crate) fn moment_rows(&self, seed: u64) -> Cow<'_, [CellRow]> {
+    /// The trunk's standardisation moments (`(mean, std)`, `[D + 1]`
+    /// each): over the corpus, or over the endpoint rows of one thinned
+    /// draw of every pair.
+    pub(crate) fn moments(&self, d: usize, seed: u64) -> (Vec<f32>, Vec<f32>) {
         match &self.thinning {
-            None => Cow::Borrowed(&self.corpus[..]),
+            None => super::stat_moments(d, self.corpus.len(), |i| {
+                (&self.corpus[i].sums[..], self.corpus[i].total)
+            }),
             Some(th) => {
                 let all: Vec<usize> = (0..self.edges.len()).collect();
-                Cow::Owned(
-                    self.thinned(th, &all, false, mix_seed(seed, MOMENTS_SALT))
-                        .rows,
-                )
+                let t = self.thinned(th, &all, false, mix_seed(seed, MOMENTS_SALT));
+                super::stat_moments(d, t.totals.len(), |i| {
+                    (&t.sums[i * d..(i + 1) * d], t.totals[i])
+                })
             }
         }
     }
@@ -169,43 +178,54 @@ impl<'a> TrainingSet<'a> {
         selves: bool,
         seed: u64,
     ) -> ThinnedTable {
+        let d = th.dict.d;
+        // Per row `[S ‖ N ‖ c]`.
+        let w = d + 2;
         let n_pick = pick.len();
-        let (us, vs): (Vec<CellRow>, Vec<CellRow>) = pick
-            .par_iter()
-            .map(|&i| {
-                let mut rng = StdRng::seed_from_u64(mix_seed(seed, i as u64));
+        let n_self = if selves { self.corpus.len() } else { 0 };
+        let mut pair_buf = vec![0f32; n_pick * 2 * w];
+        pair_buf
+            .par_chunks_mut(2 * w)
+            .zip(pick.par_iter())
+            .for_each_init(Scratch::default, |scratch, (out, &i)| {
+                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, i as u64));
                 let (u, v) = self.edges[i];
                 let target = th.draw(&mut rng).round() as u64;
                 let rows = [&self.corpus[u as usize], &self.corpus[v as usize]];
-                let mut parts = thin_to(&rows, target, &mut rng).into_iter();
-                let mut row = || {
-                    let (f, c) = parts.next().expect("one part per row");
-                    CellRow::from_local(th.dict, f, c)
-                };
-                (row(), row())
-            })
-            .unzip();
-        let mut rows = us;
-        rows.extend(vs);
-        if selves {
-            let base = self.edges.len() as u64;
-            let own: Vec<CellRow> = self
-                .corpus
-                .par_iter()
-                .enumerate()
-                .map(|(c, r)| {
-                    let mut rng = StdRng::seed_from_u64(mix_seed(seed, base + c as u64));
-                    let target = (th.draw(&mut rng) / 2.0).round() as u64;
-                    let (f, n) = thin_to(&[r], target, &mut rng)
-                        .pop()
-                        .expect("one part per row");
-                    CellRow::from_local(th.dict, f, n)
-                })
-                .collect();
-            rows.extend(own);
+                thin_stats(th.dict, &rows, target, &mut rng, scratch, out);
+            });
+        let mut self_buf = vec![0f32; n_self * w];
+        let base = self.edges.len() as u64;
+        self_buf.par_chunks_mut(w).enumerate().for_each_init(
+            Scratch::default,
+            |scratch, (c, out)| {
+                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, base + c as u64));
+                let target = (th.draw(&mut rng) / 2.0).round() as u64;
+                thin_stats(th.dict, &[&self.corpus[c]], target, &mut rng, scratch, out);
+            },
+        );
+
+        // Rows: the `u`s, the `v`s, then the units' own.
+        let n_rows = 2 * n_pick + n_self;
+        let mut sums = Vec::with_capacity(n_rows * d);
+        let (mut totals, mut offsets) = (Vec::with_capacity(n_rows), Vec::with_capacity(n_rows));
+        let mut push = |row: &[f32]| {
+            sums.extend_from_slice(&row[..d]);
+            totals.push(row[d]);
+            offsets.push(row[d + 1]);
+        };
+        for side in 0..2 {
+            for pair in pair_buf.chunks_exact(2 * w) {
+                push(&pair[side * w..(side + 1) * w]);
+            }
+        }
+        for row in self_buf.chunks_exact(w) {
+            push(row);
         }
         ThinnedTable {
-            rows,
+            sums,
+            totals,
+            offsets,
             pairs: (0..n_pick as u32).map(|k| (k, n_pick as u32 + k)).collect(),
             self_base: 2 * n_pick as u32,
         }
@@ -249,80 +269,142 @@ pub(crate) fn pseudobulk_corpus(
         .collect()
 }
 
-/// `rows` thinned together to `target` counts, as `(positions, counts)`
-/// per row: `target` of their pooled units kept, sampled without
+/// Per-thread buffers for [`kept_units`].
+#[derive(Default)]
+pub(crate) struct Scratch {
+    /// Per nonzero of the rows, in order: whole units, then units kept.
+    units: Vec<u64>,
+    picks: Vec<u64>,
+}
+
+/// Thin `rows` together to `target` units, leaving each nonzero's kept
+/// units in `scratch.units`; `false`, touching nothing, when the rows are
+/// already within `target` (they are then used as they are).
+///
+/// `target` of the rows' pooled units are kept, sampled without
 /// replacement, so a pair is thinned as its pooled profile and each
-/// endpoint keeps its share. Rows already within `target` come back as they
-/// are. A fractional (batch-divided) count is first rounded to whole units
-/// at random, up with probability its fraction, so the kept total is
-/// `target` unless those units fall short of it, and a kept count never
-/// exceeds its original rounded up. Only the nonzeros are walked.
-pub(crate) fn thin_to(
-    rows: &[&CellRow],
-    target: u64,
-    rng: &mut StdRng,
-) -> Vec<(Vec<u32>, Vec<f32>)> {
+/// endpoint keeps its share. A fractional (batch-divided) count is first
+/// rounded to whole units at random, up with probability its fraction, so
+/// the kept total is `target` unless those units fall short of it, and a
+/// kept count never exceeds its original rounded up. Only the nonzeros are
+/// walked.
+fn kept_units<R: Rng>(rows: &[&CellRow], target: u64, rng: &mut R, scratch: &mut Scratch) -> bool {
     let total: f64 = rows.iter().map(|r| f64::from(r.total)).sum();
     if target as f64 >= total {
+        return false;
+    }
+    let units = &mut scratch.units;
+    units.clear();
+    for r in rows {
+        units.extend(r.counts.iter().map(|&x| {
+            let whole = x.floor();
+            let frac = x - whole;
+            whole as u64 + u64::from(frac > 0.0 && rng.random::<f32>() < frac)
+        }));
+    }
+    let m: u64 = units.iter().sum();
+    let keep = target.min(m);
+    // Draw whichever of the kept and the dropped units is fewer.
+    let draw_kept = keep <= m - keep;
+    distinct_sorted(
+        rng,
+        m,
+        if draw_kept { keep } else { m - keep },
+        &mut scratch.picks,
+    );
+    let picks = &scratch.picks;
+    let (mut p, mut end) = (0usize, 0u64);
+    for n in units.iter_mut() {
+        end += *n;
+        let start = p;
+        while p < picks.len() && picks[p] < end {
+            p += 1;
+        }
+        let hit = (p - start) as u64;
+        *n = if draw_kept { hit } else { *n - hit };
+    }
+    true
+}
+
+/// `rows` thinned by [`kept_units`], as sparse `(positions, counts)` per
+/// row: what [`thin_stats`] reads the statistic of, for the tests.
+#[cfg(test)]
+pub(crate) fn thin_to<R: Rng>(
+    rows: &[&CellRow],
+    target: u64,
+    rng: &mut R,
+) -> Vec<(Vec<u32>, Vec<f32>)> {
+    let mut scratch = Scratch::default();
+    if !kept_units(rows, target, rng, &mut scratch) {
         return rows
             .iter()
             .map(|r| (r.features.clone(), r.counts.clone()))
             .collect();
     }
-    let units: Vec<Vec<u64>> = rows
-        .iter()
-        .map(|r| {
-            r.counts
-                .iter()
-                .map(|&x| {
-                    let whole = x.floor();
-                    let frac = x - whole;
-                    whole as u64 + u64::from(frac > 0.0 && rng.random::<f32>() < frac)
-                })
-                .collect()
-        })
-        .collect();
-    let m: u64 = units.iter().flatten().sum();
-    let keep = target.min(m);
-    // Draw whichever of the kept and the dropped units is fewer.
-    let draw_kept = keep <= m - keep;
-    let picks = distinct_sorted(rng, m, if draw_kept { keep } else { m - keep });
-    let (mut p, mut base) = (0usize, 0u64);
+    let mut kept = scratch.units.iter();
     rows.iter()
-        .zip(&units)
-        .map(|(r, u)| {
-            let (mut features, mut counts) = (Vec::new(), Vec::new());
-            for (&g, &n) in r.features.iter().zip(u) {
-                let end = base + n;
-                let start = p;
-                while p < picks.len() && picks[p] < end {
-                    p += 1;
-                }
-                let hit = (p - start) as u64;
-                let kept = if draw_kept { hit } else { n - hit };
-                if kept > 0 {
-                    features.push(g);
-                    counts.push(kept as f32);
-                }
-                base = end;
-            }
-            (features, counts)
+        .map(|r| {
+            r.features
+                .iter()
+                .zip(kept.by_ref())
+                .filter(|&(_, &k)| k > 0)
+                .map(|(&g, &k)| (g, k as f32))
+                .unzip()
         })
         .collect()
 }
 
+/// `rows` thinned by [`kept_units`], written as each row's statistic `[S ‖ N ‖ c]` into `out`,
+/// `rows.len() · (D + 2)` long: what the encoder reads, accumulated straight
+/// from the kept units over the nonzeros that keep any.
+pub(crate) fn thin_stats(
+    dict: &PairDictionary,
+    rows: &[&CellRow],
+    target: u64,
+    rng: &mut SmallRng,
+    scratch: &mut Scratch,
+    out: &mut [f32],
+) {
+    let d = dict.d;
+    let w = d + 2;
+    if !kept_units(rows, target, rng, scratch) {
+        for (r, o) in rows.iter().zip(out.chunks_exact_mut(w)) {
+            o[..d].copy_from_slice(&r.sums);
+            o[d] = r.total;
+            o[d + 1] = r.offset;
+        }
+        return;
+    }
+    let mut kept = scratch.units.iter();
+    for (r, o) in rows.iter().zip(out.chunks_exact_mut(w)) {
+        o.fill(0.0);
+        let (sums, rest) = o.split_at_mut(d);
+        for (&g, &k) in r.features.iter().zip(kept.by_ref()) {
+            if k == 0 {
+                continue;
+            }
+            let n = k as f32;
+            let g = g as usize;
+            for (s, &e) in sums.iter_mut().zip(&dict.feat[g * d..(g + 1) * d]) {
+                *s += n * e;
+            }
+            rest[0] += n;
+            rest[1] += n * dict.b[g];
+        }
+    }
+}
+
 /// `k` distinct values of `0..m`, uniformly at random among such sets,
-/// sorted. Draws with replacement and redraws the repeats, which is quick
-/// when `k ≤ m / 2`, as [`thin_to`] asks.
-fn distinct_sorted(rng: &mut StdRng, m: u64, k: u64) -> Vec<u64> {
+/// sorted, into `out`. Draws with replacement and redraws the repeats,
+/// which is quick when `k ≤ m / 2`, as [`kept_units`] asks.
+fn distinct_sorted<R: Rng>(rng: &mut R, m: u64, k: u64, out: &mut Vec<u64>) {
     debug_assert!(k <= m);
     let k = k as usize;
-    let mut out: Vec<u64> = Vec::with_capacity(k);
+    out.clear();
     while out.len() < k {
         let need = k - out.len();
         out.extend((0..need).map(|_| rng.random_range(0..m)));
         out.sort_unstable();
         out.dedup();
     }
-    out
 }

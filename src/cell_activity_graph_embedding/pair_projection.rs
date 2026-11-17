@@ -365,13 +365,7 @@ pub fn project_pairs(
                     &dict, &corpus, cell_to_pb, n_pb, pb_edges, edges,
                 )?,
             };
-            let enc = encoder::PairEncoder::build(
-                &dict,
-                &set.moment_rows(args.seed),
-                spec,
-                args.seed,
-                dev,
-            )?;
+            let enc = encoder::PairEncoder::build(&dict, &set, spec, args.seed, dev)?;
             let trained = enc.train(&set, spec, args.seed)?;
             info!(
                 "Pair encoder: {} steps; held-out NLL/count after {:.4}",
