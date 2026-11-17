@@ -81,7 +81,7 @@ fn the_session_help_is_the_shared_text_said_as_pinto_says_it() {
     for said in [
         "the fits go on when the connection drops",
         "`pinto run` with no folder offers the live sessions",
-        "`pinto attach`, `sessions`, `kill` and `rename`",
+        "`pinto session attach`, `session list`, `session kill` and `session rename`",
         "listed at the foot of the screen.",
         "--no-detach",
         // The braces of the text before it kept as they were.
@@ -98,7 +98,7 @@ fn the_session_help_is_the_shared_text_said_as_pinto_says_it() {
         assert!(view.contains(said), "{said:?} in {view}");
     }
     let attach = flat(&long_help("attach"));
-    assert!(attach.contains("`pinto sessions` lists them"), "{attach}");
+    assert!(attach.contains("`pinto session list` lists them"), "{attach}");
     let kill = flat(&long_help("kill"));
     assert!(
         kill.contains("stops the fits it is running first"),
