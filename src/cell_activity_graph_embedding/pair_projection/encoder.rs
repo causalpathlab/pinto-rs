@@ -62,6 +62,7 @@ use legume_numeric::candle::nn::seed_uniform_vars;
 
 mod train;
 pub(crate) mod training_set;
+pub(crate) use train::Placed;
 pub(crate) use training_set::TrainingSet;
 
 ///////////////
@@ -220,30 +221,31 @@ pub(crate) struct CorpusStats {
 }
 
 impl CorpusStats {
-    fn new(corpus: &[CellRow], d: usize, dev: &Device) -> anyhow::Result<Self> {
-        let sums: Vec<f32> = corpus.iter().flat_map(|r| r.sums.iter().copied()).collect();
-        Self::from_flat(
-            sums,
-            corpus.iter().map(|r| r.total).collect(),
-            corpus.iter().map(|r| r.offset).collect(),
-            d,
-            dev,
-        )
-    }
-
-    /// From row-major `[n × D]` sums and `[n]` totals and offsets.
-    fn from_flat(
-        sums: Vec<f32>,
-        totals: Vec<f32>,
-        offsets: Vec<f32>,
+    /// The statistics of `rows`, in order.
+    fn new<'r>(
+        rows: impl ExactSizeIterator<Item = &'r CellRow> + Clone,
         d: usize,
         dev: &Device,
     ) -> anyhow::Result<Self> {
-        let n = totals.len();
+        let n = rows.len();
+        let sums: Vec<f32> = rows.clone().flat_map(|r| r.sums.iter().copied()).collect();
         Ok(Self {
             sums: Tensor::from_vec(sums, (n, d), dev)?,
-            totals: Tensor::from_vec(totals, n, dev)?,
-            offsets: Tensor::from_vec(offsets, n, dev)?,
+            totals: Tensor::from_vec(rows.clone().map(|r| r.total).collect(), n, dev)?,
+            offsets: Tensor::from_vec(rows.map(|r| r.offset).collect(), n, dev)?,
+        })
+    }
+
+    /// From row-major `[n × (D + 2)]` rows `[S ‖ N ‖ c]`: one upload, its
+    /// columns taken apart on the device.
+    fn from_packed(rows: Vec<f32>, d: usize, dev: &Device) -> anyhow::Result<Self> {
+        let w = d + 2;
+        let n = rows.len() / w;
+        let packed = Tensor::from_vec(rows, (n, w), dev)?;
+        Ok(Self {
+            sums: packed.narrow(1, 0, d)?.contiguous()?,
+            totals: packed.narrow(1, d, 1)?.squeeze(1)?.contiguous()?,
+            offsets: packed.narrow(1, d + 1, 1)?.squeeze(1)?.contiguous()?,
         })
     }
 
@@ -478,17 +480,16 @@ struct PairForward {
 }
 
 impl PairEncoder {
-    /// An untrained encoder on `dict` for training on `set`, its statistic
-    /// standardised by the moments of the rows it will read in training
-    /// ([`TrainingSet::moments`]), its vars seeded from `seed`.
+    /// An untrained encoder on `dict`, its statistic standardised by
+    /// `(mean, std)` (the moments of the rows it will read in training,
+    /// [`TrainingSet::moments`]), its vars seeded from `seed`.
     pub(crate) fn build(
         dict: &PairDictionary,
-        set: &TrainingSet<'_>,
+        (mean, std): (Vec<f32>, Vec<f32>),
         spec: &PairEncoderSpec,
         seed: u64,
         dev: &Device,
     ) -> anyhow::Result<Self> {
-        let (mean, std) = set.moments(dict.d, seed);
         let this = Self::construct(
             DeviceDict::new(dict, &mean, &std, dev)?,
             spec.trunk_width,
@@ -621,7 +622,7 @@ impl PairEncoder {
     /// Every cell of `corpus`'s `(S, N, c)`, uploaded to this encoder's
     /// device: built once per run, read by training and by inference.
     pub(crate) fn corpus_stats(&self, corpus: &[CellRow]) -> anyhow::Result<CorpusStats> {
-        CorpusStats::new(corpus, self.dict.d, self.dict.device())
+        CorpusStats::new(corpus.iter(), self.dict.d, self.dict.device())
     }
 
     /// `[S / max(N, 1) ‖ ln(N + 1)]` standardised by the population moments

@@ -362,7 +362,7 @@ pub fn project_pairs(
     }
     let corpus = build_corpus(data, &dict, batch, axis, args.pair_block)?;
 
-    let (enc, training) = match args.solver {
+    let (enc, shared) = match args.solver {
         PairSolver::TrainEncoder {
             spec,
             on,
@@ -370,7 +370,7 @@ pub fn project_pairs(
             save_to,
         } => {
             let set = match on {
-                TrainOn::CellPairs => encoder::TrainingSet::cells(&corpus, edges),
+                TrainOn::CellPairs => encoder::TrainingSet::cells(corpus.len(), edges),
                 TrainOn::Pseudobulks {
                     cell_to_pb,
                     n_pb,
@@ -379,8 +379,29 @@ pub fn project_pairs(
                     &dict, &corpus, cell_to_pb, n_pb, pb_edges, edges,
                 )?,
             };
-            let enc = encoder::PairEncoder::build(&dict, &set, spec, args.seed, dev)?;
-            (enc, Some((set, spec, save_to)))
+            // The moments come from the rows epoch 0 trains on.
+            let first = set.draw(args.seed, 0);
+            let moments = set.moments(d, first.as_ref(), &corpus);
+            let enc = encoder::PairEncoder::build(&dict, moments, spec, args.seed, dev)?;
+            // Training on the cells themselves shares their one upload with
+            // the encoding; a thinned set needs only its evaluation pairs'.
+            let shared = match set.thinning {
+                None => Some(enc.corpus_stats(&corpus)?),
+                Some(_) => None,
+            };
+            let placed = encoder::Placed {
+                corpus: &corpus,
+                edges,
+                stats: shared.as_ref(),
+            };
+            let trained = enc.train(&set, placed, first, spec, args.seed)?;
+            info!(
+                "Pair encoder: {} steps; held-out NLL/count after {:.4}",
+                trained.steps, trained.nll_per_count
+            );
+            enc.save(save_to)?;
+            info!("Wrote {}", crate::util::staging::final_str(save_to));
+            (enc, shared)
         }
         PairSolver::LoadEncoder { path, dev } => {
             let enc = encoder::PairEncoder::load(&dict, path, dev)?;
@@ -393,18 +414,10 @@ pub fn project_pairs(
             (enc, None)
         }
     };
-    // The cells on the device once: training's evaluation (and, on cells,
-    // its rows) and the encoding read the same upload.
-    let stats = enc.corpus_stats(&corpus)?;
-    if let Some((set, spec, save_to)) = training {
-        let trained = enc.train(&set, &stats, edges, spec, args.seed)?;
-        info!(
-            "Pair encoder: {} steps; held-out NLL/count after {:.4}",
-            trained.steps, trained.nll_per_count
-        );
-        enc.save(save_to)?;
-        info!("Wrote {}", crate::util::staging::final_str(save_to));
-    }
+    let stats = match shared {
+        Some(stats) => stats,
+        None => enc.corpus_stats(&corpus)?,
+    };
     let mut placed =
         enc.encode_all(&corpus, &stats, edges, args.pair_block, encoder::CELL_BLOCK)?;
     // The device copy is not needed by the scoring pass.
