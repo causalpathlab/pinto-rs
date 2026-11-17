@@ -1,4 +1,4 @@
-//! Receiver-side response programmes: the target genes whose expression
+//! Receiver-side response programs: the target genes whose expression
 //! measures a receiver's response to one ligand-receptor pair.
 //!
 //! Sets are keyed by receptor (the default reference: receptor → directed
@@ -9,7 +9,7 @@
 //!
 //! Weights are signed: a target the pathway represses counts against the
 //! response. Every set is purged of the ligand, of every receptor listed for
-//! that ligand and of the pair's own receptor. A programme containing the
+//! that ligand and of the pair's own receptor. A program containing the
 //! signalling genes themselves would measure co-expression again, not
 //! response. No published resource applies that rule, so it is applied here
 //! and the number removed is reported.
@@ -166,7 +166,7 @@ impl TargetSets {
     /// Each target's specificity, `ln((N + 1) / (n_g + 1))` over the `N`
     /// sets, `n_g` of which contain gene `g` (an inverse document
     /// frequency). Literature networks route most receptors to the same
-    /// immediate-early and hub genes; a programme dominated
+    /// immediate-early and hub genes; a program dominated
     /// by them responds to any stimulus. A gene in every set scores 0.
     pub fn specificity(&self) -> HashMap<Box<str>, f32> {
         debug_assert!(self.unsettled.is_empty(), "settle the GMT names first");
@@ -183,7 +183,7 @@ impl TargetSets {
             .collect()
     }
 
-    /// The pair's programme with the signalling genes removed, and how many
+    /// The pair's program with the signalling genes removed, and how many
     /// entries were removed. `receptors_of_ligand` is every receptor the
     /// pair list names for this ligand. A target listed twice keeps the sum
     /// of its weights.

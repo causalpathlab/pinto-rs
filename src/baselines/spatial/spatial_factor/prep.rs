@@ -9,7 +9,7 @@
 //! f32, as SCTransform's residuals are dense:
 //!
 //! - [`DenseRows::sct`] (SpatialPCA): SCTransform's Pearson residuals
-//!   ([`super::sct`]), clipped at `+-sqrt(N)`, then each gene standardised
+//!   ([`super::sct`]), clipped at `+-sqrt(N)`, then each gene standardized
 //!   (mean 0, sample SD 1), the paper's input;
 //! - [`SparseOp::pearson`]: analytic Pearson residuals of a Poisson model
 //!   (Lause, Berens and Kobak 2021, Genome Biology 22:258,
@@ -419,7 +419,7 @@ impl DenseRows {
     }
 
     /// SCTransform's residuals of `counts` (all genes × cells, libraries
-    /// `lib` over them) on the genes `genes`, each gene standardised to
+    /// `lib` over them) on the genes `genes`, each gene standardized to
     /// mean 0 and sample SD 1 (a gene with no variance a row of zeros);
     /// the models' report.
     pub fn sct(
@@ -437,7 +437,7 @@ impl DenseRows {
             .zip(genes.par_iter().zip(&models))
             .for_each(|(row, (&g, model))| {
                 let mut z = super::sct::residuals(by_gene.gene(g), &depths.t, model);
-                standardise(&mut z);
+                standardize(&mut z);
                 row.iter_mut().zip(z).for_each(|(r, v)| *r = v as f32);
             });
         (Self::from_rows(genes.len(), n, flat), report)
@@ -513,7 +513,7 @@ impl DenseRows {
 }
 
 /// `z` to mean 0 and sample SD 1 (all zeros when it has no variance).
-pub fn standardise(z: &mut [f64]) {
+pub fn standardize(z: &mut [f64]) {
     let n = z.len() as f64;
     let mean = z.iter().sum::<f64>() / n;
     let var = z.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);

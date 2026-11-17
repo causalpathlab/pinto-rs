@@ -1,5 +1,5 @@
 //! One simulation: the panel, the truth and the expression, drawn once,
-//! with the expected and drawn counts and the realised read-outs.
+//! with the expected and drawn counts and the realized read-outs.
 
 use super::draw::{nb_quantile, phi, Latent};
 use super::expression::{
@@ -56,7 +56,7 @@ impl Sim {
     /// (grouped by `labels` when given; [`super::reference_data`]): the panel and
     /// the truth as without one, the genes the reference's, each state's
     /// rates its group's, the nuisance a share of the reference's variance
-    /// between states, each state's markers its programme.
+    /// between states, each state's markers its program.
     pub fn from_reference_data(
         mut p: SimParams,
         geometries: &[Coords],
@@ -70,7 +70,7 @@ impl Sim {
             ReferenceData::fit(path, labels, &spot_share_by_state, &truth.mixture, &p)?;
         p.n_genes = reference_data.n_genes();
         p.log_rate_var = reference_data.log_count_variance;
-        let markers = reference_data.marker_genes_by_state(p.programme_genes);
+        let markers = reference_data.marker_genes_by_state(p.program_genes);
         let first_state_of_marker: Vec<Option<usize>> = (0..p.n_genes)
             .map(|g| (0..markers.len()).find(|&c| markers[c][g] > 0.0))
             .collect();
@@ -82,8 +82,8 @@ impl Sim {
                 .map(|m| m.max(1e-12).ln())
                 .collect(),
             dispersion: reference_data.pooled_extra_poisson_variance.clone(),
-            programme: markers,
-            programme_of: first_state_of_marker,
+            program: markers,
+            program_of: first_state_of_marker,
             factor: vec![0; p.n_genes],
         };
         let nuisance = draw_nuisance(&p, truth.n_states());
@@ -144,7 +144,7 @@ impl Sim {
         Components {
             a: genes.a[g],
             ty: genes
-                .programme
+                .program
                 .iter()
                 .map(|prog| scale * (prog[g] - shift))
                 .collect(),
@@ -192,21 +192,21 @@ impl Sim {
             .collect()
     }
 
-    /// Realised PVE of each term over programme genes, from the drawn log
+    /// Realized PVE of each term over program genes, from the drawn log
     /// rates (depth out): the variance over spots with that term alone,
     /// summed over genes, over the variance with every term the run keeps,
     /// summed over genes. Pooled, since a nuisance term's share varies from
     /// gene to gene and matches its target in expectation.
     /// Terms the run drops read 0.
-    pub fn realised_pve(&self) -> [f64; 5] {
+    pub fn realized_pve(&self) -> [f64; 5] {
         let prog: Vec<usize> = (0..self.p.n_genes)
-            .filter(|&g| self.genes.programme_of[g].is_some())
+            .filter(|&g| self.genes.program_of[g].is_some())
             .collect();
         let ones = vec![1.0; prog.len()];
-        self.realised_pve_over(&prog, &ones)
+        self.realized_pve_over(&prog, &ones)
     }
 
-    /// Under a reference, [`Self::realised_pve`] over every active gene,
+    /// Under a reference, [`Self::realized_pve`] over every active gene,
     /// each weighted by its mean rate over the states at their shares: the
     /// genes and weights the nuisance was scaled on ([`super::reference_data`]).
     pub fn realized_pve_detected_genes(&self) -> Option<[f64; 5]> {
@@ -225,12 +225,12 @@ impl Sim {
             })
             .filter(|&(_, w): &(usize, f64)| w > 0.0)
             .unzip();
-        Some(self.realised_pve_over(&genes, &weight))
+        Some(self.realized_pve_over(&genes, &weight))
     }
 
     /// Each term's variance alone, summed over `genes` at `weight`, over the
     /// total's.
-    fn realised_pve_over(&self, genes: &[usize], weight: &[f64]) -> [f64; 5] {
+    fn realized_pve_over(&self, genes: &[usize], weight: &[f64]) -> [f64; 5] {
         let run = active(&self.p);
         // per gene: each term's variance alone, and the total's
         let per_gene: Vec<([f64; 5], f64)> = genes

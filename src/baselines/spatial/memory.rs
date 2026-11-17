@@ -104,7 +104,7 @@ pub const GRAPH_NEIGHBOUR_BYTES: usize = 64;
 
 /// What `spatialde2-pb` holds above its cell-level fit: the cells'
 /// projection (`proj_dim` f32 a cell, cage's `-p`), which the coarsening
-/// takes and normalises in place, and the seeds' features (two), the
+/// takes and normalizes in place, and the seeds' features (two), the
 /// coarsening graph (cage's `-k` neighbours a cell,
 /// [`GRAPH_NEIGHBOUR_BYTES`] a neighbour), the
 /// super-cells' counts (at most every nonzero: 12 as built, 12 held), and
@@ -229,7 +229,7 @@ pub struct Spatialde2Shape {
     pub selected_nonzeros: usize,
     /// Genes segmented on.
     pub genes: usize,
-    /// Edges of the symmetrised spatial graph, at most (twice the kNN's).
+    /// Edges of the symmetrized spatial graph, at most (twice the kNN's).
     pub edges: usize,
     /// Regions at the start (`--n-clusters`, else ceil(sqrt(cells))).
     pub regions: usize,
@@ -244,8 +244,8 @@ pub struct Spatialde2Shape {
 /// that every measured peak is covered at the counts' real nonzeros.
 const SELECTED_NONZERO_BYTES: usize = 16 + 24 + 16;
 
-/// Bytes an edge of the symmetrised graph holds while it is built
-/// (`Neighbours::symmetrised`), at its bound of twice the kNN's `E` edges:
+/// Bytes an edge of the symmetrized graph holds while it is built
+/// (`Neighbours::symmetrized`), at its bound of twice the kNN's `E` edges:
 /// the kNN's lists (12 `E`), their sorted copy (8 `E`), the reverse edges
 /// missing from them (24 each, `E` at most) and the merged lists (16 each,
 /// `2E` at most), live at once, 76 `E`. The weighted graph built after it,
@@ -321,7 +321,7 @@ pub const SCT_NONZERO_BYTES: usize = 32 + 8;
 /// A factor baseline's peak: the process, every nonzero's
 /// `nonzero_bytes`, the graph as built (the kNN's Gram blocks, less what
 /// `freed_before_graph` left them,
-/// [`GRAPH_EDGE_BYTES`] an edge of the symmetrised kNN, then its lists and
+/// [`GRAPH_EDGE_BYTES`] an edge of the symmetrized kNN, then its lists and
 /// its Laplacian, 12 bytes an entry each), the dense blocks of the exactly
 /// decomposed sections (three `n_s^2` copies, a thread each), the fit's
 /// vectors, the expression held dense, and with `-pb` the coarsening and

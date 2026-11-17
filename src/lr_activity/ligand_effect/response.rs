@@ -1,20 +1,20 @@
-//! The response programme and the response-side covariates read from it.
+//! The response program and the response-side covariates read from it.
 
 use super::regression::standardize;
 use super::tissue::Tissue;
 use rayon::prelude::*;
 
-/// A programme: `(weight, non-zero counts by row)` for each gene.
+/// A program: `(weight, non-zero counts by row)` for each gene.
 pub type Targets<'a> = [(f64, &'a [(u32, f32)])];
 
 /// The response side of a pair's per-row quantities: rebuilt for each
-/// programme weighting.
+/// program weighting.
 pub struct Response {
     pub y: Vec<f64>,
     /// The contact-neighbour mean response, standardized.
     pub spill: Vec<f64>,
-    /// The neighbours' expected programme counts on the receiver's scale
-    /// ([`programme_columns`]), standardized.
+    /// The neighbours' expected program counts on the receiver's scale
+    /// ([`program_columns`]), standardized.
     pub bleed: Vec<f64>,
 }
 
@@ -44,7 +44,7 @@ impl Response {
         weightings: &[Vec<f64>],
     ) -> Vec<Self> {
         let sf = &tissue.size_factor;
-        let (ys, bleeds) = programme_columns(
+        let (ys, bleeds) = program_columns(
             genes,
             weightings,
             &tissue.identity_bin,
@@ -61,7 +61,7 @@ impl Response {
 /// One gene's non-zero counts by row.
 type Gene<'t> = &'t [(u32, f32)];
 
-/// A programme's genes and weights, apart.
+/// A program's genes and weights, apart.
 pub(super) fn genes_and_weights<'t>(targets: &Targets<'t>) -> (Vec<Gene<'t>>, Vec<f64>) {
     targets.iter().map(|&(w, nz)| (nz, w)).unzip()
 }
@@ -72,21 +72,21 @@ pub(super) fn genes_and_weights<'t>(targets: &Targets<'t>) -> (Vec<Gene<'t>>, Ve
 /// weight.
 ///
 /// The response is the signed weighted mean of `log1p(x / size factor)`
-/// over the programme, accumulated over non-zeros only (a zero count
+/// over the program, accumulated over non-zeros only (a zero count
 /// contributes `log1p(0) = 0`).
 ///
-/// The bleed is what contact neighbours' programme transcripts are expected to add to
+/// The bleed is what contact neighbours' program transcripts are expected to add to
 /// each receiver's response if segmentation handed it all of them: per
 /// gene, the neighbours' expected counts (their size factor times their
 /// identity bin's mean count / size factor) summed and normalized by the
-/// receiver's size factor, through the programme's signed `log1p` mean.
+/// receiver's size factor, through the program's signed `log1p` mean.
 ///
-/// Expected rather than observed counts: a neighbour's observed programme
+/// Expected rather than observed counts: a neighbour's observed program
 /// is partly its own response to senders it shares with the receiver, so
 /// adjusting for it would absorb a real effect. The expectation keeps what
 /// drives bleed and is not downstream of exposure: how many contacts,
 /// their depth and identity, and the receiver's depth.
-pub fn programme_columns(
+pub fn program_columns(
     genes: &[&[(u32, f32)]],
     weightings: &[Vec<f64>],
     identity_bin: &[usize],

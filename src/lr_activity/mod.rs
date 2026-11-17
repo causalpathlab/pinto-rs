@@ -15,7 +15,7 @@
 //! 2. **Soft community membership per role.** From `lc` edges, each cell
 //!    `i` gets `p_send[i, c]` (fraction of `i`'s incident edges in
 //!    community `c` on which `i` is sender) and `p_recv[i, c]` (receiver
-//!    analogue), row-normalised per cell.
+//!    analogue), row-normalized per cell.
 //! 3. **Role-weighted pseudobulk per (community, sample).** For each LR
 //!    gene we accumulate `Σ_i x[g, i] · p_role[i, c] · 1{sample(i)=s}`
 //!    plus the matching weight `w_role[c, s]`. Sender and receiver
@@ -175,7 +175,7 @@ pub fn lra_long_about() -> String {
          \n\
          \x20 --method contact-effect (default)\n\
          \x20   Do cells touching ligand-carrying neighbours change their response\n\
-         \x20   programme, compared with similar cells that do not? Adjusted for\n\
+         \x20   program, compared with similar cells that do not? Adjusted for\n\
          \x20   region, section, cell identity, neighbour make-up, depth and\n\
          \x20   segmentation bleed, with a negative control. Writes {{out}}.lra.parquet.\n\
          \x20 --method coexpression-test\n\
@@ -187,7 +187,7 @@ pub fn lra_long_about() -> String {
          \x20   test (needs an lc run and --lr-pairs). Writes {{out}}.lr_scores.parquet.\n\
          \n\
          Reference: contact-effect uses LIANA+ consensus pairs and receptor ->\n\
-         signalling -> TF -> target programmes (OmniPath, CollecTRI), downloaded\n\
+         signalling -> TF -> target programs (OmniPath, CollecTRI), downloaded\n\
          once into a cache and reused. --lr-pairs and --targets add to it.\n\
          PINTO_REFERENCE_DIR=<dir> moves the cache, PINTO_OFFLINE=1 never\n\
          downloads, PINTO_REFERENCE_REFRESH=1 rebuilds it.\n\

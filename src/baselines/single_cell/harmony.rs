@@ -7,16 +7,16 @@
 //! iteration counts and tolerances are those of its reference
 //! implementations (R `harmony`, `harmonypy`).
 //!
-//! - Clustering runs on the cells L2-normalised, where the squared distance
+//! - Clustering runs on the cells L2-normalized, where the squared distance
 //!   to a unit centroid is `2 (1 - cosine)` (section 2.2, eq. 4).
-//! - Centroids start from k-means on the normalised cells, the best of 10
-//!   k-means++ starts, then L2-normalised (section 2.6.2); the starting `R`
+//! - Centroids start from k-means on the normalized cells, the best of 10
+//!   k-means++ starts, then L2-normalized (section 2.6.2); the starting `R`
 //!   is the soft assignment `exp(-d / sigma)`, each cell's column summed to 1.
-//! - Maximum diversity clustering (section 2) minimises eq. 3: the soft
+//! - Maximum diversity clustering (section 2) minimizes eq. 3: the soft
 //!   k-means distance, `sigma` times the entropy term `sum R ln R`, and the
 //!   diversity penalty `sigma theta sum R ln((O + 1) / (E + 1))` over each
 //!   cell's batch, with 1 added to `O` and `E` (section 2.6.3). Each round
-//!   sets the centroids to the normalised `R`-weighted sum of the cells
+//!   sets the centroids to the normalized `R`-weighted sum of the cells
 //!   (Dhillon's spherical update, section 2.4.2), then `R` by eq. 8,
 //!   `R_ki ∝ exp(-d_ki / sigma) ((E_kb + 1) / (O_kb + 1))^theta`, in blocks of
 //!   5% of the cells in random order, `O` and `E` counted without the block
@@ -27,7 +27,7 @@
 //!   `Φ*` the batch one-hot design with an intercept row and `Λ =
 //!   diag(0, lambda, ...)`, and subtracts the batch rows only:
 //!   `Ẑ = Z - Σ_k W_k[1..]ᵀ Φ diag(R_k)`, always from the original `Z`
-//!   (section 1.1). Clustering then resumes on `Ẑ` normalised.
+//!   (section 1.1). Clustering then resumes on `Ẑ` normalized.
 //! - Harmony rounds stop when the objective falls by less than 1e-4 of its
 //!   value, or after `max_rounds` rounds.
 //!

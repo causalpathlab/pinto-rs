@@ -6,7 +6,7 @@
 //! tasks swamp the signal (a hard HVG cut helps, but needs a threshold and
 //! drops features by rank). Here each feature instead gets
 //!
-//! 1. **Moran's I** of its log-normalised expression over the spatial graph,
+//! 1. **Moran's I** of its log-normalized expression over the spatial graph,
 //!    centred within each section and pooled over sections. The units are
 //!    cage's finest PB super-cells (their pooled counts, and the spatial
 //!    edges between them), or the cells themselves under cage-cell, which
@@ -20,7 +20,7 @@
 //!    are correlated, so the textbook variance is too small; the jackknife's
 //!    is not, and a feature whose structure sits in one patch gets a wide
 //!    one. Blocks lie within sections, never whole sections, so a domain only
-//!    one section holds is not penalised;
+//!    one section holds is not penalized;
 //! 3. a **two-group empirical-Bayes** model on `t = (I − E₀[I]) / se`: the null
 //!    component is a normal fitted to the bulk (median, MAD), its share `π₀`
 //!    is estimated from the bulk too, the mixture density by a binned Gaussian
@@ -48,7 +48,7 @@
 use crate::cell_activity_graph_embedding::pb_frame::majority_label;
 use crate::link_community::profiles::coarsen_cell_expression_dense;
 use crate::util::ablation::{dense_ids, group};
-use crate::util::common::{jackknife_se, log_normalise, quantile_sorted, upper_median, Mat};
+use crate::util::common::{jackknife_se, log_normalize, quantile_sorted, upper_median, Mat};
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::fold_edges_to_super;
 use crate::util::stage1_divisor::Stage1Divisor;
@@ -98,10 +98,10 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
 }
 
 /// Each column of `pooled` (features × units, raw counts) as a sparse,
-/// log-normalised profile (see [`log_normalise`]).
-pub fn normalised_profiles(pooled: &Mat) -> Vec<Vec<(u32, f32)>> {
+/// log-normalized profile (see [`log_normalize`]).
+pub fn normalized_profiles(pooled: &Mat) -> Vec<Vec<(u32, f32)>> {
     let mut profiles = raw_profiles(pooled);
-    profiles.iter_mut().for_each(|p| log_normalise(p));
+    profiles.iter_mut().for_each(|p| log_normalize(p));
     profiles
 }
 
@@ -125,7 +125,7 @@ pub fn tile_of(xy: &[(f32, f32)], tiles: usize) -> Vec<usize> {
         .collect()
 }
 
-/// One section's [`SectionJack`] from its units' log-normalised profiles
+/// One section's [`SectionJack`] from its units' log-normalized profiles
 /// (`(feature, value)` lists sorted by feature), each unit's block (any
 /// labels; made dense here, so a label with no unit is no block), and the
 /// section's edges as local unit pairs. Memory is `blocks × features` per
@@ -459,7 +459,7 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
     // centre, where the null density has vanished (a t beyond it is
     // signal whatever the mixture density, and is binned at the edge); its
     // step is at most h/4 unless that takes more than GRID_MAX points, and
-    // the kernel is normalised on the grid, so the estimate stays a density
+    // the kernel is normalized on the grid, so the estimate stays a density
     // however coarse the step.
     const GRID_MAX: usize = 1 << 16;
     let lo = s[0].max(med - 40.0 * mad) - 4.0 * h;
@@ -679,7 +679,7 @@ impl NeighbourScratch {
 /// One section's [`SectionJack`] of Pearson residuals under the stage-1
 /// divisor (see [`PearsonUnits`]): the same sums as [`section_jack`], each
 /// split into its nonzero terms (streamed over the counts `a = y / σ`) and
-/// the expectation's, which factorise through the mixtures:
+/// the expectation's, which factorize through the mixtures:
 /// `Σ_u c_ug = p_b(g)ᵀ Σ_u w_u / σ`, `Σ_u c_ug² = p_b(g)ᵀ (Σ_u w_u w_uᵀ) p_b(g) / σ²`,
 /// and `Σ_e c_ig c_jg = p_{b_i}(g)ᵀ (Σ_e w_i w_jᵀ) p_{b_j}(g) / (σ_i σ_j)`,
 /// per block and per row of edges as [`section_jack`] keeps them. Nothing
@@ -1098,7 +1098,7 @@ pub fn pb_inclusion(
     let profiles = {
         let counts = coarsen_cell_expression_dense(pb.data, pb.cell_to_pb, n_pb, None)?;
         let pooled = axis.pool_rows_opt(&counts);
-        normalised_profiles(pooled.as_ref().unwrap_or(&counts))
+        normalized_profiles(pooled.as_ref().unwrap_or(&counts))
     };
     let inputs = |units: &[usize]| {
         Ok((
@@ -1143,7 +1143,7 @@ fn pearson_ready(axis: &FeatureAxis) -> anyhow::Result<()> {
 pub const CELL_COLUMN_BLOCK: usize = 4096;
 
 /// [`FeatureInclusion`] over cells (cage-cell, which builds no pseudobulks):
-/// each cell's log-normalised counts, the spatial graph `edges` (global cell
+/// each cell's log-normalized counts, the spatial graph `edges` (global cell
 /// pairs; pairs across sections are left out), and a grid of geometric
 /// tiles over each section's plane (the first two non-batch columns of
 /// `coordinates`, named) as jackknife blocks, about `per_section` per
@@ -1201,7 +1201,7 @@ pub fn cell_inclusion(
                             return obs;
                         }
                         let mut p = axis.pool_profile(obs);
-                        log_normalise(&mut p);
+                        log_normalize(&mut p);
                         p
                     })
                     .collect::<Vec<_>>())

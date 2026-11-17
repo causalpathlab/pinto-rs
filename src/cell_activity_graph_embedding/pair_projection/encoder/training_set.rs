@@ -15,7 +15,7 @@
 //! even); each pseudobulk's own row is kept at half a drawn depth too. The
 //! counts kept are sampled without replacement over the row's nonzeros (a
 //! binomial thinning conditioned on its total). The trunk's
-//! standardisation moments come from the first epoch's draw.
+//! standardization moments come from the first epoch's draw.
 
 use super::super::PairDictionary;
 use super::{CellRow, MIN_STEP_PAIRS};
@@ -229,7 +229,7 @@ impl<'a> TrainingSet<'a> {
         }
     }
 
-    /// The trunk's standardisation moments (`(mean, std)`, `[D + 1]`
+    /// The trunk's standardization moments (`(mean, std)`, `[D + 1]`
     /// each), over the rows a training step reads: the placed `cells`
     /// (each both an endpoint and its own self row), or every row of the
     /// first epoch's draw `first`, the pairs' endpoints and the units' own.

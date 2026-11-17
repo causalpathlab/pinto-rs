@@ -24,7 +24,7 @@ pub struct LraFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulate: Option<String>,
     /// The reference record (`reference.json`: sources, download
-    /// checksums, build date) behind the table's pairs and programmes.
+    /// checksums, build date) behind the table's pairs and programs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
     /// The fixed settings of the last analysis or check recorded here

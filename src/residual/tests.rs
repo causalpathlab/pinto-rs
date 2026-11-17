@@ -282,7 +282,7 @@ fn an_output_over_the_input_is_refused() {
 fn profiles_cover_every_data_row_and_sum_to_one() {
     // [G, K]: three rows, two communities
     let gamma = Mat::from_row_slice(3, 2, &[1.0, 0.0, 1.0, 2.0, 2.0, 2.0]).map(f64::from);
-    let p_t = normalised_profiles(&gamma);
+    let p_t = normalized_profiles(&gamma);
     assert_eq!(p_t.shape(), (2, 3));
     for k in 0..2 {
         assert!((p_t.row(k).sum() - 1.0).abs() < 1e-12, "{p_t}");

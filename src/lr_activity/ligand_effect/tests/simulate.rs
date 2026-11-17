@@ -16,7 +16,7 @@ const SIDE: usize = 60;
 pub(super) struct Fixture {
     pub(super) tissue: Tissue,
     pub(super) ligand: Vec<f64>,
-    /// Signed programme weights, and each gene's mean per identity bin
+    /// Signed program weights, and each gene's mean per identity bin
     /// (bins × genes).
     pub(super) weights: Vec<f64>,
     pub(super) bin_means: Vec<f64>,
@@ -72,7 +72,7 @@ pub(super) fn fixture() -> Fixture {
             _ => 0.0,
         })
         .collect();
-    // One programme gene, higher in type 0.
+    // One program gene, higher in type 0.
     let weights = vec![1.0];
     let bin_means = vec![3.0, 2.0];
     let gene: Vec<f64> = (0..n)

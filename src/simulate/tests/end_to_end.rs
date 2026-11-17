@@ -7,7 +7,7 @@ fn truth_meta(out: &str) -> crate::util::metadata::PintoMetadata {
 }
 
 fn args(out: &str, scenario: &str, extra: &[&str]) -> SimulateArgs {
-    let mut set: Vec<String> = ["grid_side=12", "n_genes=60", "programme_genes=8", "seed=3"]
+    let mut set: Vec<String> = ["grid_side=12", "n_genes=60", "program_genes=8", "seed=3"]
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -47,7 +47,7 @@ fn a_run_writes_backends_truth_and_manifest() {
     assert_eq!(m["params"]["n_genes"], 60);
     assert_eq!(m["params"]["patch_kind"], "new-state");
     assert_eq!(m["sections"].as_array().unwrap().len(), 6);
-    assert!(m["realised_pve_programme_genes"]["type"].as_f64().unwrap() > 0.0);
+    assert!(m["realized_pve_program_genes"]["type"].as_f64().unwrap() > 0.0);
 }
 
 /// The same seed gives the same counts, the scenario named by its earlier

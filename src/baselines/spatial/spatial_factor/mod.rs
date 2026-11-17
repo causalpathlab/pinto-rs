@@ -76,7 +76,7 @@ pub struct CoreArgs {
     pub resolution: f64,
 
     /// Spatial neighbours per cell of the sparse prior's graph, within a
-    /// section, symmetrised
+    /// section, symmetrized
     #[arg(long, default_value_t = KNN, hide = true)]
     pub knn: usize,
 
@@ -164,10 +164,10 @@ pub fn merge(into: &mut serde_json::Value, from: serde_json::Value) {
 }
 
 /// The sparse prior's graph on cells: each cell's `knn` nearest within its
-/// section, symmetrised, every edge of weight one; the neighbour lists and
+/// section, symmetrized, every edge of weight one; the neighbour lists and
 /// the Laplacian.
 pub fn cell_graph(data: &SpatialData, knn: usize) -> (Neighbours, Laplacian) {
-    let nb = knn_within_sections(data, knn).symmetrised();
+    let nb = knn_within_sections(data, knn).symmetrized();
     let lap = Laplacian::from_neighbours(&nb, &data.section, data.n_sections);
     (nb, lap)
 }

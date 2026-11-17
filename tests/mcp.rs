@@ -776,7 +776,7 @@ fn an_agent_simulates_looks_and_scores() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = Client::start(dir.path());
     c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
-    let tiny = json!(["grid_side=8", "n_genes=40", "programme_genes=5"]);
+    let tiny = json!(["grid_side=8", "n_genes=40", "program_genes=5"]);
 
     let msg = c.fails("run_simulate", json!({"set": ["pve_type=0"], "out": "bad"}));
     assert!(msg.contains("pve_type must be positive"), "{msg}");

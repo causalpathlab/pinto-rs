@@ -12,15 +12,15 @@
 //!                                   or section shift), sections
 //! {out}/truth/domains.parquet       owner (empty: shared), composition
 //! {out}/truth/states.parquet        owner (empty: shared)
-//! {out}/truth/genes.parquet         baseline, dispersion, programmes
+//! {out}/truth/genes.parquet         baseline, dispersion, programs
 //! {out}/truth/lr_pairs.tsv          ligand-receptor pairs of the simulation's own genes,
-//!                                   and their response programmes in targets.tsv, for
+//!                                   and their response programs in targets.tsv, for
 //!                                   `pinto lra --lr-pairs … --targets …` ([`lr_pairs`])
 //! {out}/truth/truth.pinto.json      the truth as a run `pinto view` opens:
 //!                                   truth.cells.parquet and the domain, state
 //!                                   and donor levels (truth.*.propensity.parquet)
 //! {out}/manifest.json               every parameter, the unconfounded donors and whether
-//!                                   they were drawn, and the realised PVE
+//!                                   they were drawn, and the realized PVE
 //! ```
 
 use super::panel::{donor_label, Section};
@@ -206,55 +206,51 @@ pub fn write_genes(path: &str, sim: &Sim) -> anyhow::Result<()> {
     let g = &sim.genes;
     let a = f32s(g.a.iter().copied());
     let disp = f32s(g.dispersion.iter().copied());
-    let progs: Vec<Vec<f32>> = g
-        .programme
-        .iter()
-        .map(|v| f32s(v.iter().copied()))
-        .collect();
+    let progs: Vec<Vec<f32>> = g.program.iter().map(|v| f32s(v.iter().copied())).collect();
     let mut cols: Vec<(Box<str>, Column)> = vec![
         ("log_baseline".into(), Column::F32(&a)),
         ("dispersion".into(), Column::F32(&disp)),
     ];
     for (st, v) in sim.truth.states.iter().zip(&progs) {
-        cols.push((format!("programme_{}", st.label).into(), Column::F32(v)));
+        cols.push((format!("program_{}", st.label).into(), Column::F32(v)));
     }
     write_named_table(path, "gene", &g.names, &cols)
 }
 
-/// Response-programme genes a receptor is given in [`lr_pairs`], at most.
+/// Response-program genes a receptor is given in [`lr_pairs`], at most.
 pub const TARGETS_PER_RECEPTOR: usize = 20;
 
 /// One pair of [`lr_pairs`], by gene name.
 pub struct LrPair {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
-    /// The receptor's response programme.
+    /// The receptor's response program.
     pub targets: Vec<Box<str>>,
 }
 
 /// Ligand-receptor pairs of the simulation's own genes, so `pinto lra` and
 /// `pinto lra simulate` run on it with no hand-made files. For each state
-/// `k`, the ligand is a gene of its programme alone and the receptor a gene
+/// `k`, the ligand is a gene of its program alone and the receptor a gene
 /// of state `k + 1`'s alone (cyclic), the lowest-numbered not yet taken
-/// (the programmes are sets: no gene is stronger than another), and the
-/// receptor's response programme is the rest of the receiving state's
-/// programme, at most [`TARGETS_PER_RECEPTOR`], never a ligand or receptor
+/// (the programs are sets: no gene is stronger than another), and the
+/// receptor's response program is the rest of the receiving state's
+/// program, at most [`TARGETS_PER_RECEPTOR`], never a ligand or receptor
 /// of any pair, so an effect planted on one pair moves no other pair's
-/// genes. A pair with fewer programme genes as targets than lra keeps
+/// genes. A pair with fewer program genes as targets than lra keeps
 /// (`INTERNALS.min_targets`) is not written; lra counts the targets its
 /// own read keeps, so it may still drop one, and says so. No ligand-receptor effect is
 /// planted: on the simulation the pairs are nulls (receivers differ only
 /// as their states do), and `lra simulate` plants its own. None with fewer
 /// than two states.
 pub fn lr_pairs(sim: &Sim) -> Vec<LrPair> {
-    let progs = &sim.genes.programme;
+    let progs = &sim.genes.program;
     let names = &sim.genes.names;
     let n = progs.len();
     if n < 2 {
         return Vec::new();
     }
     let members = |c: usize| (0..names.len()).filter(move |&g| progs[c][g] > 0.0);
-    // genes of one programme alone, per state, in gene order
+    // genes of one program alone, per state, in gene order
     let own: Vec<Vec<usize>> = (0..n)
         .map(|c| {
             members(c)
@@ -293,7 +289,7 @@ pub fn lr_pairs(sim: &Sim) -> Vec<LrPair> {
         .collect()
 }
 
-/// Where [`write_lr_pairs`] writes the pairs and their programmes under a
+/// Where [`write_lr_pairs`] writes the pairs and their programs under a
 /// simulation's `out`.
 pub fn lr_pairs_paths(out: &str) -> (String, String) {
     (

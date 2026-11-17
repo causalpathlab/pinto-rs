@@ -416,7 +416,7 @@ pub fn auto_batch_from_components(
     // arrives as one large component plus a scatter of small ones. Treating each
     // as a batch estimates an effect per fragment, on far too few cells.
     //
-    // A fragment is recognised by WHERE it is, not by how small it is: it lies
+    // A fragment is recognized by WHERE it is, not by how small it is: it lies
     // inside the piece it broke off from, while two genuinely different pieces
     // sit far apart. So a component is folded into another when its centre falls
     // within that component's extent, widened by a few cell diameters to cover

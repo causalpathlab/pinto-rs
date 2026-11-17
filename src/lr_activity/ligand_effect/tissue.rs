@@ -513,7 +513,7 @@ pub fn identity_bins(
         warn!(
             target: LOG_TARGET,
             "Receiver identity leaves out {n_excluded} of {} rows (signalling and \
-             programme genes); on a small panel it rests on few genes",
+             program genes); on a small panel it rests on few genes",
             row_weights.len()
         );
     }

@@ -129,13 +129,13 @@ fn feature_ablation_fits_on_the_rest_and_scores_the_hidden() {
 }
 
 #[test]
-fn the_score_is_the_mixture_renormalised_over_the_scored_features() {
+fn the_score_is_the_mixture_renormalized_over_the_scored_features() {
     let p_t = profiles(&[&[0.5, 0.5, 0.0], &[0.0, 0.5, 0.5]]);
     let all = vec![true; 3];
     let prof = BatchProfiles::new(&p_t, &[1.0; 3], &all, &all);
     let ll = prof.loglik(&[(0, 2.0), (1, 1.0)], &[1.0, 0.0]);
     assert!((ll - 3.0 * 0.5f64.ln()).abs() < 1e-12);
-    // Scoring only feature 1 renormalises onto it: probability 1.
+    // Scoring only feature 1 renormalizes onto it: probability 1.
     let only1 = vec![false, true, false];
     let prof = BatchProfiles::new(&p_t, &[1.0; 3], &all, &only1);
     assert!(prof.loglik(&[(1, 4.0)], &[0.5, 0.5]).abs() < 1e-12);
@@ -174,7 +174,7 @@ fn a_unit_with_nothing_to_score_keeps_weights_on_the_full_profiles() {
 }
 
 #[test]
-fn delta_shifts_a_feature_and_keeps_rows_normalised() {
+fn delta_shifts_a_feature_and_keeps_rows_normalized() {
     let p_t = profiles(&[&[0.5, 0.5]]);
     let all = vec![true; 2];
     let prof = BatchProfiles::new(&p_t, &[3.0, 1.0], &all, &all);
@@ -257,7 +257,7 @@ fn a_unit_without_counts_is_not_scored() {
 }
 
 #[test]
-fn a_composition_is_normalised_over_the_scored_features() {
+fn a_composition_is_normalized_over_the_scored_features() {
     let lc = log_composition(&[2.0, 2.0, 4.0], &[true, true, false]);
     assert!((lc[0] - 0.5f64.ln()).abs() < 1e-12);
     assert!(lc[2].is_nan());

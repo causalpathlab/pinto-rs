@@ -148,7 +148,7 @@ pub struct LraInputArgs {
 /// What `pinto lra` computes.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LraMethod {
-    /// Effect of neighbouring ligand on the receiver's response programme
+    /// Effect of neighbouring ligand on the receiver's response program
     #[default]
     ContactEffect,
     /// Permutation test of ligand-receptor co-expression per link community
@@ -214,8 +214,8 @@ pub struct SrtLrActivityArgs {
         long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
-        help = "Response programmes (TSV or GMT), added to the reference",
-        long_help = "Response programme files, comma separated, added to the reference.\n\
+        help = "Response programs (TSV or GMT), added to the reference",
+        long_help = "Response program files, comma separated, added to the reference.\n\
                      TSV/CSV: a header with `receptor` and/or `ligand`, `target`, optional\n\
                      `weight` (signed). GMT: set names are a receptor, a ligand, or\n\
                      `ligand_receptor`. A name with `_` that the pair list uses whole for\n\
@@ -401,9 +401,9 @@ pub struct LraSimulateArgs {
         long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
-        help = "Response programmes (TSV or GMT), added to the reference",
-        long_help = "Response programme files, as `pinto lra --targets` takes them: the\n\
-                     programmes the benchmark's responses are drawn on."
+        help = "Response programs (TSV or GMT), added to the reference",
+        long_help = "Response program files, as `pinto lra --targets` takes them: the\n\
+                     programs the benchmark's responses are drawn on."
     )]
     pub targets: Vec<Box<str>>,
 

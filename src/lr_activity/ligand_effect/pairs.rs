@@ -10,7 +10,7 @@ use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
 
 /// A resolved pair: names, gene-axis indices (every subunit of a complex
-/// ligand or receptor required), and its programme as `(gene index, weight)`.
+/// ligand or receptor required), and its program as `(gene index, weight)`.
 pub(super) struct Pair {
     pub(super) ligand: Box<str>,
     pub(super) receptor: Box<str>,
@@ -29,7 +29,7 @@ pub(super) fn scarcest_subunit(cols: &[Vec<f64>]) -> Vec<f64> {
         .collect()
 }
 
-/// The reference's pair and programme files for this data, built into the
+/// The reference's pair and program files for this data, built into the
 /// cache on first use. The first build prints where it came from, how big
 /// it is, where it lives and how to move it or stay offline.
 fn reference(
@@ -128,10 +128,10 @@ pub(super) fn reference_pairs(
     let pairs = resolve_pairs(raw, gene_names, index, &sets, &specificity);
     anyhow::ensure!(
         !pairs.is_empty(),
-        "no ligand-receptor pair has a usable response programme: of the {n_raw} pairs \
+        "no ligand-receptor pair has a usable response program: of the {n_raw} pairs \
          read, the warning above says why each was dropped. Data whose genes no reference \
          names (a simulation's GENE1, GENE2, ...) needs its own pairs (--lr-pairs: ligand, \
-         receptor) and response programmes (--targets: a header with receptor or ligand, and \
+         receptor) and response programs (--targets: a header with receptor or ligand, and \
          target), at least {} measured targets a pair; `pinto sim new` writes both under its \
          truth folder",
         INTERNALS.min_targets
@@ -199,9 +199,9 @@ fn is_panel_gene(name: &str, gene_names: &[Box<str>], index: &GeneIndex) -> bool
     core == q || core.ends_with(&format!("_{q}"))
 }
 
-/// Resolve each listed pair's genes and programme. Pairs whose ligand or
+/// Resolve each listed pair's genes and program. Pairs whose ligand or
 /// receptor, or any subunit of a complex one, is missing, or whose
-/// programme keeps fewer than `INTERNALS.min_targets` measured genes, are
+/// program keeps fewer than `INTERNALS.min_targets` measured genes, are
 /// dropped with a count. Pairs that resolve to the same genes as an earlier
 /// one (spelling or case aside) are kept once.
 pub(super) fn resolve_pairs(
@@ -236,7 +236,7 @@ pub(super) fn resolve_pairs(
             .get(&*l.to_ascii_uppercase())
             .map(|v| v.iter().map(|s| s.as_ref()).collect())
             .unwrap_or_default();
-        // The programme is purged of every receptor of the ligand and of
+        // The program is purged of every receptor of the ligand and of
         // every subunit of the ligand and those receptors.
         let subunits: Vec<&str> = std::iter::once(l.as_ref())
             .chain(others.iter().copied())
@@ -277,8 +277,8 @@ pub(super) fn resolve_pairs(
         warn!(
             target: LOG_TARGET,
             "Contact effect: kept {} pairs; dropped {no_gene} with a ligand or receptor (or a \
-             subunit of one) not in the data, {no_set} with no response programme, {thin} \
-             whose programme has fewer than {} measured genes",
+             subunit of one) not in the data, {no_set} with no response program, {thin} \
+             whose program has fewer than {} measured genes",
             out.len(),
             INTERNALS.min_targets
         );
@@ -287,7 +287,7 @@ pub(super) fn resolve_pairs(
 }
 
 /// Human or mouse from the gene names' case: human symbols are upper case
-/// (`GENE1`), mouse symbols capitalised (`Gene1`). Ensembl ids and names
+/// (`GENE1`), mouse symbols capitalized (`Gene1`). Ensembl ids and names
 /// without letters vote for neither.
 fn species_of(gene_names: &[Box<str>]) -> reference::Species {
     let (mut upper, mut title) = (0usize, 0usize);
@@ -315,7 +315,7 @@ fn species_of(gene_names: &[Box<str>]) -> reference::Species {
     };
     info!(
         target: LOG_TARGET,
-        "Species from gene names: {species:?} ({upper} upper-case, {title} capitalised symbols)"
+        "Species from gene names: {species:?} ({upper} upper-case, {title} capitalized symbols)"
     );
     species
 }

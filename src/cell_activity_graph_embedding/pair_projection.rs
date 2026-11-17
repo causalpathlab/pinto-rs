@@ -122,7 +122,7 @@ pub struct PairProjectionArgs<'a> {
 /// cells of any batches (an expression graph, built on the batch-corrected
 /// projection).
 /// A stage-2 fit's stage-1 divisor (`--offset`) divides the endpoints the
-/// same way, by the same self-normalising ratio
+/// same way, by the same self-normalizing ratio
 /// ([`crate::util::batch_effects::Divisor::ratio_column`]).
 pub use crate::util::batch_effects::BatchDivisor as PairBatchDivisor;
 use crate::util::batch_effects::Divisor;

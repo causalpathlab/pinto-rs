@@ -53,8 +53,8 @@ pub(super) struct FusedDeltaInput<'a> {
 /// Accumulated shared/difference statistics per feature per sample.
 ///
 /// For each cell pair (left, right) and each feature g, with
-/// `y = ln(1 + 1e4 x / Σ x)` each cell's log-normalised counts
-/// ([`read_log_normalised`]):
+/// `y = ln(1 + 1e4 x / Σ x)` each cell's log-normalized counts
+/// ([`read_log_normalized`]):
 ///   shared_g = y_left_g + y_right_g
 ///   diff_g   = |y_left_g - y_right_g|
 pub(crate) struct PairDeltaCollapsedStat {
@@ -420,7 +420,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
 /// Each cell (column) of `y` scaled to [`LIBRARY_SCALE`] and logged, in
 /// place on its stored entries: the crate's one transform on sparse columns
-/// ([`normalise_log`], scanpy's `normalize_total(target_sum=1e4)` then
+/// ([`normalize_log`], scanpy's `normalize_total(target_sum=1e4)` then
 /// `log1p`; Wolf, Angerer and Theis 2018, Genome Biology 19:15). The total
 /// is the cell's own, over every row it has.
 ///
@@ -428,7 +428,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 /// so it reads as an empty cell and not as NaN. That is a cell of stored
 /// zeros after a batch divide (`0 / 0`, the reader keeps stored zeros), and
 /// also any cell holding a count that is not finite.
-pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
+pub(super) fn log_normalize_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
     for mut cell in y.col_iter_mut() {
         let values = cell.values_mut();
         let total: f32 = values.iter().sum();
@@ -436,13 +436,13 @@ pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
             values.fill(0.0);
         }
     }
-    normalise_log(y);
+    normalize_log(y);
 }
 
 /// The columns of `cells` as both pair visitors take them: divided by the
 /// batch effects of each cell's batch when there are any (or by the
 /// stage-1 divisor `d`, by the same Poisson ratio, under `--offset`), then
-/// log-normalised ([`log_normalise_cells`]) on the total after the divide.
+/// log-normalized ([`log_normalize_cells`]) on the total after the divide.
 /// Sparse throughout.
 ///
 /// The divide scales a cell by a rate of its own as it divides. Where every
@@ -451,7 +451,7 @@ pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
 /// rescaling, and a cell reads the same with a unit batch effect as with
 /// none. A count whose effect is not positive is left as it is, by the rate
 /// too, so for such a cell the rate does not cancel.
-fn read_log_normalised(
+fn read_log_normalized(
     data: &CellPairs,
     cells: impl Iterator<Item = usize> + Clone,
     batch_effect: Option<&Mat>,
@@ -465,7 +465,7 @@ fn read_log_normalised(
         let cells: Vec<usize> = cells.collect();
         s1.divide_columns(&mut y, |j| cells[j]);
     }
-    log_normalise_cells(&mut y);
+    log_normalize_cells(&mut y);
     Ok(y)
 }
 
@@ -488,8 +488,8 @@ pub(super) fn fused_pair_delta_visitor(
     // order and zipping them.
     let left = pairs.iter().map(|x| x.0);
     let right = pairs.iter().map(|x| x.1);
-    let y_left = read_log_normalised(data, left, input.batch_effect, input.stage1)?;
-    let y_right = read_log_normalised(data, right, input.batch_effect, input.stage1)?;
+    let y_left = read_log_normalized(data, left, input.batch_effect, input.stage1)?;
+    let y_right = read_log_normalized(data, right, input.batch_effect, input.stage1)?;
 
     // Per-pair SPARSE contributions: a pair touches its nonzero features, not
     // all of them, and the lock below only pays for what it touches.
@@ -568,7 +568,7 @@ pub(super) struct NystromPairInput<'a> {
 /// Nystrom projection visitor: project each pair onto the split basis.
 ///
 /// For each pair and each feature present in either cell, with `y` the
-/// cells' log-normalised counts ([`read_log_normalised`]), as collapsed:
+/// cells' log-normalized counts ([`read_log_normalized`]), as collapsed:
 ///
 /// ```text
 /// shared = y_left + y_right
@@ -586,13 +586,13 @@ pub(super) fn nystrom_pair_delta_visitor(
     let left = pairs.iter().map(|pp| pp.0);
     let right = pairs.iter().map(|pp| pp.1);
 
-    let y_left = read_log_normalised(
+    let y_left = read_log_normalized(
         data,
         left,
         shared_in.batch_effect.as_ref(),
         shared_in.stage1,
     )?;
-    let y_right = read_log_normalised(
+    let y_right = read_log_normalized(
         data,
         right,
         shared_in.batch_effect.as_ref(),

@@ -418,7 +418,7 @@ fn a_table_with_the_baselines_answers_a_call_for_them() {
     }
 }
 
-/// The power check a reply suggests reads the pairs and programmes the
+/// The power check a reply suggests reads the pairs and programs the
 /// analysis read: its lr_pairs, targets and species go with it.
 #[test]
 fn the_suggested_power_check_reads_the_same_pairs() {

@@ -17,7 +17,7 @@
 //! shares of the spots): `pve · V` in expectation over genes, with a
 //! gene's terms depending on its own draws alone. Nuisance terms are not
 //! centred, so an unconfounded donor or section keeps exactly 0. Genes
-//! outside every programme have no `T` and carry the other terms at the
+//! outside every program have no `T` and carry the other terms at the
 //! same variance, so nuisance is genome-wide.
 
 use super::panel::Section;
@@ -62,16 +62,16 @@ pub struct Genes {
     pub a: Vec<f64>,
     /// NB dispersion: variance = μ + dispersion · μ².
     pub dispersion: Vec<f64>,
-    /// `programme[c][g]`: state `c`'s programme, before scaling.
-    pub programme: Vec<Vec<f64>>,
-    /// The first state whose programme holds gene `g`, if any.
-    pub programme_of: Vec<Option<usize>>,
+    /// `program[c][g]`: state `c`'s program, before scaling.
+    pub program: Vec<Vec<f64>>,
+    /// The first state whose program holds gene `g`, if any.
+    pub program_of: Vec<Option<usize>>,
     /// The copula factor gene `g` loads on.
     pub factor: Vec<usize>,
 }
 
 /// `b` rotated toward a random direction so its cosine with `b` is `cosine`,
-/// at `b`'s norm. The direction is a random programme of `k` genes, made
+/// at `b`'s norm. The direction is a random program of `k` genes, made
 /// orthogonal to `b`.
 pub fn rotate_to_cosine(b: &[f64], cosine: f64, k: usize, r: &mut SmallRng) -> Vec<f64> {
     let n = b.len();
@@ -104,26 +104,26 @@ pub fn draw_genes(p: &SimParams, truth: &Truth) -> Genes {
     let dispersion = (0..p.n_genes)
         .map(|_| p.dispersion * (p.dispersion_sd * normal(&mut r)).exp())
         .collect();
-    let mut r = rng(p.seed, Stream::Programmes, &[]);
-    let mut programme: Vec<Vec<f64>> = Vec::with_capacity(truth.n_states());
+    let mut r = rng(p.seed, Stream::Programs, &[]);
+    let mut program: Vec<Vec<f64>> = Vec::with_capacity(truth.n_states());
     for st in &truth.states {
         let prog = if st.owner.is_none() {
             let mut v = vec![0.0; p.n_genes];
-            for g in sample(&mut r, p.n_genes, p.programme_genes) {
+            for g in sample(&mut r, p.n_genes, p.program_genes) {
                 v[g] = 1.0;
             }
             v
         } else {
-            // a donor-only state: the first shared state's programme, rotated
-            rotate_to_cosine(&programme[0], p.patch_cosine, p.programme_genes, &mut r)
+            // a donor-only state: the first shared state's program, rotated
+            rotate_to_cosine(&program[0], p.patch_cosine, p.program_genes, &mut r)
         };
-        programme.push(prog);
+        program.push(prog);
     }
-    let programme_of: Vec<Option<usize>> = (0..p.n_genes)
-        .map(|g| (0..programme.len()).find(|&c| programme[c][g] > 0.0))
+    let program_of: Vec<Option<usize>> = (0..p.n_genes)
+        .map(|g| (0..program.len()).find(|&c| program[c][g] > 0.0))
         .collect();
     let mut r = rng(p.seed, Stream::Loading, &[]);
-    let factor = programme_of
+    let factor = program_of
         .iter()
         .map(|c| c.map_or_else(|| r.random_range(0..p.copula_rank), |c| c % p.copula_rank))
         .collect();
@@ -133,8 +133,8 @@ pub fn draw_genes(p: &SimParams, truth: &Truth) -> Genes {
             .collect(),
         a,
         dispersion,
-        programme,
-        programme_of,
+        program,
+        program_of,
         factor,
     }
 }
@@ -266,10 +266,10 @@ pub fn scaling(p: &SimParams, sections: &[Section], truth: &Truth, genes: &Genes
     let ty = (0..p.n_genes)
         .map(|g| {
             let mean: f64 = (0..n_states)
-                .map(|c| by_state[c] * genes.programme[c][g])
+                .map(|c| by_state[c] * genes.program[c][g])
                 .sum();
             let var: f64 = (0..n_states)
-                .map(|c| by_state[c] * (genes.programme[c][g] - mean).powi(2))
+                .map(|c| by_state[c] * (genes.program[c][g] - mean).powi(2))
                 .sum();
             (mean, scale(p.pve_type, var))
         })

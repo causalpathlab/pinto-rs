@@ -18,7 +18,7 @@ fn params(v: Value) -> anyhow::Result<SimParams> {
     simulation(&cli(), &sim_args(v), "o").map(|(_, _, _, p)| p)
 }
 
-const TINY: [&str; 3] = ["grid_side=8", "n_genes=40", "programme_genes=5"];
+const TINY: [&str; 3] = ["grid_side=8", "n_genes=40", "program_genes=5"];
 
 #[test]
 fn the_sim_tools_are_listed_with_their_schemas() {

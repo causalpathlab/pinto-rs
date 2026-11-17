@@ -52,7 +52,7 @@ fn params() -> SimParams {
     SimParams {
         grid_side: 16,
         n_domains: 4,
-        programme_genes: 3,
+        program_genes: 3,
         ..SimParams::default()
     }
 }
@@ -93,7 +93,7 @@ fn the_states_take_the_largest_groups_and_their_rates() {
     // each state's markers are its group's own genes
     for (c, &k) in r.cell_group_of_state.iter().enumerate() {
         let markers: Vec<usize> = (0..N_GENES)
-            .filter(|&g| sim.genes.programme[c][g] > 0.0)
+            .filter(|&g| sim.genes.program[c][g] > 0.0)
             .collect();
         assert_eq!(markers.len(), 3);
         assert!(
@@ -171,7 +171,7 @@ fn the_nuisance_is_a_share_of_the_reference_variance_between_states() {
     assert!(t > 0.0);
     assert!((r.log_count_variance - t / p.pve_type).abs() < 1e-12);
     assert_eq!(sim.p.log_rate_var, r.log_count_variance);
-    // with no nuisance the type term is the whole of the realised variance
+    // with no nuisance the type term is the whole of the realized variance
     let flat = simulation(
         dir.path(),
         SimParams {

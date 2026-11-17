@@ -89,7 +89,7 @@ fn truth_is_free_of_the_estimator() {
     );
 }
 
-/// Ligand, response and a raised programme confined to one type: the unadjusted
+/// Ligand, response and a raised program confined to one type: the unadjusted
 /// difference reads cell type as an effect; the estimator, adjusting for
 /// identity, does not (or has no overlap to try).
 #[test]

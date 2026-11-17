@@ -142,7 +142,7 @@ fn try_predict(
 }
 
 /// A cage-cell run at `prefix` over `n_cells` cells writes its pairs'
-/// rows as the latent, one L2-normalised row per listed pair (as many as
+/// rows as the latent, one L2-normalized row per listed pair (as many as
 /// the manifest's edges), and a cell embedding of one row per cell; no
 /// unit table and no pair encoder, and its manifest lists neither.
 fn assert_writes_the_pairs_rows(prefix: &str, n_cells: usize) {

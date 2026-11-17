@@ -1,4 +1,4 @@
-//! Receptor → TF → target programmes.
+//! Receptor → TF → target programs.
 //!
 //! From each receptor (every subunit of a complex) a breadth-first search
 //! over directed protein signalling, up to `max_steps` edges, reaches
@@ -10,7 +10,7 @@
 //! exactly rounded as Python's `math.fsum` does, and the top `top` targets
 //! by |weight| are kept, ties by name.
 //!
-//! Mouse programmes run the same search on the human networks translated
+//! Mouse programs run the same search on the human networks translated
 //! through one-to-one orthologs.
 
 use super::sources::{Interaction, Licences, LrPair};
@@ -175,7 +175,7 @@ pub fn tf_parts(regulons: &Regulons) -> Vec<(&str, Vec<&str>)> {
     out
 }
 
-/// One target of a receptor's programme.
+/// One target of a receptor's program.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetRow {
     pub target: Box<str>,

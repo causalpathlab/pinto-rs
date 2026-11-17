@@ -9,7 +9,7 @@
 //!
 //! The shared pipeline is the scanpy recipe (Wolf, Angerer and Theis 2018,
 //! "SCANPY: large-scale single-cell gene expression data analysis", Genome
-//! Biology 19:15, doi:10.1186/s13059-017-1382-0): [`normalise_log`], [`hvg`],
+//! Biology 19:15, doi:10.1186/s13059-017-1382-0): [`normalize_log`], [`hvg`],
 //! [`scale`], [`pca`] and [`cluster`]. `pooled` runs it on all sections
 //! together, with no batch handling; `harmony` corrects the PCs for the
 //! donor with [`harmonize`] before clustering them the same way;
@@ -20,7 +20,7 @@ pub mod harmony;
 
 use crate::sim_eval::score::{sim_folder, TruthSpots};
 use crate::simulate::run::{domains_path, truth_run_path};
-use crate::util::common::{normalise_log, HashMap};
+use crate::util::common::{normalize_log, HashMap};
 use crate::util::metadata::Run;
 use harmony::{harmonize, HarmonyParams};
 use legume_numeric::matrix::pca::pc_scores;
@@ -70,7 +70,7 @@ pub fn gene_mean_dispersion(x: &CscMatrix<f32>) -> (Vec<f64>, Vec<f64>) {
 /// expression data", Nature Biotechnology 33:495, doi:10.1038/nbt.3192)
 /// and scanpy's "seurat" flavour. NaN dispersions stay NaN and count for
 /// no bin.
-pub fn normalised_dispersion(mean: &[f64], disp: &[f64], n_bins: usize) -> Vec<f64> {
+pub fn normalized_dispersion(mean: &[f64], disp: &[f64], n_bins: usize) -> Vec<f64> {
     let (lo, hi) = mean
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &m| {
@@ -116,11 +116,11 @@ pub fn normalised_dispersion(mean: &[f64], disp: &[f64], n_bins: usize) -> Vec<f
 }
 
 /// The `n_top` most variable genes of log data (genes × spots) by
-/// normalised dispersion over 20 mean bins (scanpy's default), in gene
+/// normalized dispersion over 20 mean bins (scanpy's default), in gene
 /// order. Genes with no dispersion are never picked.
 pub fn hvg(x: &CscMatrix<f32>, n_top: usize) -> Vec<usize> {
     let (mean, disp) = gene_mean_dispersion(x);
-    let z = normalised_dispersion(&mean, &disp, 20);
+    let z = normalized_dispersion(&mean, &disp, 20);
     let mut order: Vec<usize> = (0..z.len()).filter(|&g| !z[g].is_nan()).collect();
     order.sort_by(|&a, &b| z[b].total_cmp(&z[a]).then(a.cmp(&b)));
     order.truncate(n_top);
@@ -200,7 +200,7 @@ pub fn cluster(pcs: &DMatrix<f32>, knn: usize, k: usize, seed: u64) -> anyhow::R
     Ok(labels)
 }
 
-/// The shared pipeline on log data (genes × spots, from [`normalise_log`]),
+/// The shared pipeline on log data (genes × spots, from [`normalize_log`]),
 /// up to the PC scores (spots × PCs); also the HVGs it used.
 pub fn scanpy_pcs(
     log: &CscMatrix<f32>,
@@ -514,7 +514,7 @@ pub fn run_baseline(args: &BaselineArgs) -> anyhow::Result<()> {
     check_inputs(&args.truth)?;
     let truth = TruthSpots::read(&args.truth)?;
     let (mut log, cells) = read_counts(&args.truth)?;
-    normalise_log(&mut log);
+    normalize_log(&mut log);
     let rows = truth_rows(&truth, &cells)?;
     let donors: Vec<usize> = rows.iter().map(|&i| truth.donor[i]).collect();
     let domains: Vec<usize> = rows.iter().map(|&i| truth.domain[i]).collect();

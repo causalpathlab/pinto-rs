@@ -132,7 +132,7 @@ impl LraToolArgs {
     }
 
     /// The `run_lra_simulate` call checking this analysis's power: the same
-    /// input, pairs, programmes and species.
+    /// input, pairs, programs and species.
     fn simulate_args(&self, run: Option<&str>) -> Value {
         let mut args = self.input().args(run);
         if let Some(p) = &self.lr_pairs {

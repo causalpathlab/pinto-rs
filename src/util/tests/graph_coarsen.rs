@@ -288,7 +288,7 @@ fn test_modularity_veto_rejects_bridge() {
     let graph = make_test_graph(6, edges.clone());
 
     let dim = 2;
-    // Clique A lives on axis 0, clique B on axis 1; both L2-normalised.
+    // Clique A lives on axis 0, clique B on axis 1; both L2-normalized.
     let mut features = Mat::zeros(dim, 6);
     for i in 0..3 {
         features[(0, i)] = 1.0;

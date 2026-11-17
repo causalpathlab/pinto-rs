@@ -235,7 +235,7 @@ fn a_single_count_shows_its_share_of_the_cells_total() {
 }
 
 #[test]
-fn group_means_are_of_the_same_depth_normalised_level() {
+fn group_means_are_of_the_same_depth_normalized_level() {
     let dir = tempfile::tempdir().unwrap();
     let files = one_composition(&dir);
     let geom = geom_of(&files, &[]);

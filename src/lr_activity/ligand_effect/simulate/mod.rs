@@ -3,8 +3,8 @@
 //!
 //! The tissue stays real: coordinates, contacts, the confounder matrix,
 //! identity bins, depth, receptor competence, and the per-bin levels of the
-//! real ligand and of every real programme gene. What the truth needs is
-//! simulated: who truly makes ligand, and how each programme gene responds.
+//! real ligand and of every real program gene. What the truth needs is
+//! simulated: who truly makes ligand, and how each program gene responds.
 //!
 //! 1. **True and detected ligand.** Each cell has a latent producing state
 //!    `P_i ~ Bernoulli(p_i)` and a true rate `λ_i = P_i r_b`; its detected
@@ -28,7 +28,7 @@
 //!    produces", unless that leaves an arm thin). Receivers respond to `T*`;
 //!    the estimator only sees detected counts, so dropout misclassifies its
 //!    exposure and attenuates its estimate (column `misclassified`).
-//! 2. **Response from the real programme.** Each programme gene `g`, with
+//! 2. **Response from the real program.** Each program gene `g`, with
 //!    signed weight `w_g` (sign `s_g`), is drawn per receiver as
 //!    `Poisson(sf · μ_{b,g} · e^{s_g (b f(Z) + θ_b C T* + θ_ring,b C T*_ring) + √v ε − v/2})`,
 //!    with `μ_{b,g}` the real gene's mean count / size factor in the bin,
@@ -37,7 +37,7 @@
 //!    (a generalized linear model): `b = ±√response_field_pve`,
 //!    `θ = √effect_pve / sd(T*)` over responding receivers within bins, and
 //!    noise `v = 1 − effect_pve − |response_field_pve|`. The response is the signed
-//!    weighted programme the estimator uses,
+//!    weighted program the estimator uses,
 //!    `Σ_g w_g log1p(x_g / sf) / Σ_g |w_g|`. Potential outcomes are drawn
 //!    from one shared uniform per receiver and gene, so their difference is
 //!    the effect alone.
@@ -62,7 +62,7 @@
 //!    per identity bin.
 //! 6. **Marker**: the ligand is made only by a "marker type", the top
 //!    quarter of identity bins by real ligand, which alone responds and
-//!    carries a programme baseline raised by [`MARKER_LIFT`]; contacts stay
+//!    carries a program baseline raised by [`MARKER_LIFT`]; contacts stay
 //!    real, so the type's homotypic contacts make its cells the exposed
 //!    ones. The receptor call the estimator uses is the real one plus the
 //!    marker type. Exposure then tracks cell type: the unadjusted difference should
@@ -77,7 +77,7 @@
 //! The causal graph under the null: senders' identity and the field set who
 //! produces ligand, hence the seen exposure `T` (contacts' detected ligand);
 //! the receiver's identity and the field set its response `Y` (the receptor's
-//! programme); sender and receiver identities, which may differ, are tied by
+//! program); sender and receiver identities, which may differ, are tied by
 //! the tissue's layout. The estimator adjusts for both identities, depth and
 //! a spatial smooth of the field. What it assumes, and this benchmark does not
 //! test: no hidden field at or below contact scale (indistinguishable from a

@@ -51,7 +51,7 @@ fn poisson(rng: &mut SmallRng, rate: f64) -> f32 {
 /// A grid whose cells touch their four neighbours, one section, three
 /// identity bins: bin 0 detects the receptor in every cell, bin 1 in about
 /// 15% (competent at the grid's 0.05 and 0.1, not at 0.2), bin 2 never.
-/// A random 30% of cells carry ligand. Competent receivers' programme rate
+/// A random 30% of cells carry ligand. Competent receivers' program rate
 /// rises with dose, `2 exp(dose · a)`, `a` the number of ligand-carrying
 /// contacts. Two cell types in 8×8 patches, named when `named`.
 fn world(seed: u64, dose: f64, named: bool) -> World {

@@ -30,8 +30,8 @@ pub struct SimParams {
 
     // genes
     pub n_genes: usize,
-    /// Genes in each cell type's programme.
-    pub programme_genes: usize,
+    /// Genes in each cell type's program.
+    pub program_genes: usize,
     /// Mean and SD over genes of the baseline log rate per unit depth.
     pub log_mean: f64,
     pub log_mean_sd: f64,
@@ -58,7 +58,7 @@ pub struct SimParams {
     /// Share of the owner's spots in the donor-specific domain.
     pub patch_share: f64,
     pub patch_length_um: f64,
-    /// For a new cell type: cosine of its programme to the first shared
+    /// For a new cell type: cosine of its program to the first shared
     /// cell type's.
     pub patch_cosine: f64,
 
@@ -133,7 +133,7 @@ impl Default for SimParams {
             grid_side: 40,
             grid_spacing_um: 100.0,
             n_genes: 1000,
-            programme_genes: 50,
+            program_genes: 50,
             log_mean: -1.0,
             log_mean_sd: 1.5,
             dispersion: 0.3,
@@ -231,7 +231,7 @@ pub const SCENARIOS: &[Scenario] = &[
                 cell type 30% of the log rate's variance, a donor-wide shift (15%), \
                 a donor-by-cell-type shift (15%) and a section shift (2%); and a domain \
                 only the third donor has, about 15% of its spots, made of a cell type \
-                no other donor has (its programme at cosine 0.3 to the first shared cell type's)",
+                no other donor has (its program at cosine 0.3 to the first shared cell type's)",
         params: donor_only_cell_type,
     },
     Scenario {
@@ -252,7 +252,7 @@ pub const SCENARIOS: &[Scenario] = &[
                 donor-by-cell-type or section shift, but donors differ in domain \
                 proportions (log-scale spread 0.5), and the third donor has a domain \
                 of its own, about 15% of its spots, made of a cell type no other donor \
-                has (its programme at cosine 0.3 to the first shared cell type's)",
+                has (its program at cosine 0.3 to the first shared cell type's)",
         params: composition_shift,
     },
 ];
@@ -359,7 +359,7 @@ impl SimParams {
     /// The shares of the log rate's variance the run is set to have, in
     /// [`TERMS`] order and summing to 1: a nuisance term that is off carries
     /// none, and its share does not pass to the noise. A target, before
-    /// drawing; `Sim::realised_pve` measures what the draws hold.
+    /// drawing; `Sim::realized_pve` measures what the draws hold.
     pub fn effective_shares(&self) -> [f64; 5] {
         let mut s = [self.pve_type, 0.0, 0.0, 0.0, self.pve_noise()];
         for (k, (_, set, off)) in self.nuisance_terms().into_iter().enumerate() {
@@ -432,8 +432,8 @@ impl SimParams {
         anyhow::ensure!(self.n_domains >= 2, "need at least two domains");
         anyhow::ensure!(self.n_genes >= 1, "n_genes must be at least 1");
         anyhow::ensure!(
-            self.programme_genes >= 1 && self.programme_genes <= self.n_genes,
-            "programme_genes must be in 1..=n_genes"
+            self.program_genes >= 1 && self.program_genes <= self.n_genes,
+            "program_genes must be in 1..=n_genes"
         );
         anyhow::ensure!(
             self.grid_side >= 1 && self.grid_spacing_um > 0.0,

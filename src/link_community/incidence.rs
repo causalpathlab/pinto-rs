@@ -183,9 +183,9 @@ mod tests {
     }
 
     /// Moving a within-block edge to the wrong community should be
-    /// penalised by the incidence term.
+    /// penalized by the incidence term.
     #[test]
-    fn add_to_log_probs_penalises_wrong_block() {
+    fn add_to_log_probs_penalizes_wrong_block() {
         let k = 2usize;
         let n_cells = 6usize;
         let mut prop = vec![0.0f64; n_cells * k];
@@ -204,7 +204,7 @@ mod tests {
         add_incidence_to_log_probs(0, &edges, &table, k, 0, &mut log_probs);
         assert!(
             log_probs[1] < 0.0,
-            "moving block-0 edge to community 1 should be penalised; got {:?}",
+            "moving block-0 edge to community 1 should be penalized; got {:?}",
             log_probs
         );
     }

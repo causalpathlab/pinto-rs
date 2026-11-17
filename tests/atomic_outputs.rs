@@ -105,7 +105,7 @@ fn sim_args<'a>(seed: &'a str, out: &'a str) -> Vec<&'a str> {
         "--set",
         "n_genes=40",
         "--set",
-        "programme_genes=5",
+        "program_genes=5",
         "--set",
         seed,
         "-o",

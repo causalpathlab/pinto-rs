@@ -403,7 +403,7 @@ impl Staging {
     /// staged path made the final path, and all else as it was; `None`
     /// when it names none. `marker` is the staging folder's name as JSON
     /// writes it: a string without it is copied as it is.
-    fn finalise_text(&self, text: &str, marker: &str) -> Option<String> {
+    fn finalize_text(&self, text: &str, marker: &str) -> Option<String> {
         let (mut out, mut changed) = (String::with_capacity(text.len()), false);
         let mut rest = text;
         while let Some(open) = rest.find('"') {
@@ -437,14 +437,14 @@ impl Staging {
     /// The recorded paths in every staged JSON file under `dir` made
     /// final. `marker` is the staging folder's name as JSON writes it: a
     /// file without it names no staged path and is not read further.
-    fn finalise_files(&self, dir: &Path, marker: &str) -> anyhow::Result<()> {
+    fn finalize_files(&self, dir: &Path, marker: &str) -> anyhow::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
                 // a store records no path
                 if !is_store(&path) {
-                    self.finalise_files(&path, marker)?;
+                    self.finalize_files(&path, marker)?;
                 }
             } else if path.extension().is_some_and(|e| e == "json") {
                 let text = std::fs::read_to_string(&path)?;
@@ -453,7 +453,7 @@ impl Staging {
                 {
                     continue;
                 }
-                if let Some(text) = self.finalise_text(&text, marker) {
+                if let Some(text) = self.finalize_text(&text, marker) {
                     std::fs::write(&path, text)?;
                 }
             }
@@ -520,7 +520,7 @@ impl Staging {
     /// changed, and this run's markers put in place, the outermost last.
     fn land(&self, pending: Vec<Pending>, moved: &mut dyn FnMut(&Path)) -> anyhow::Result<()> {
         let marker = serde_json::to_string(&self.marker)?;
-        self.finalise_files(&self.dir, marker.trim_matches('"'))?;
+        self.finalize_files(&self.dir, marker.trim_matches('"'))?;
         let mut all = Vec::new();
         Self::moves(&self.dir, &self.into, &mut all)?;
         all.sort();

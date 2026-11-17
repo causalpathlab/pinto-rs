@@ -996,7 +996,7 @@ pub fn fit_cell_activity_graph_embedding(
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
             // batch-adjusted, with the plain divide (the pairs' is the
-            // self-normalising Poisson ratio)
+            // self-normalizing Poisson ratio)
             divisor: pair_batch,
         },
         &c.out,

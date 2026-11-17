@@ -3,7 +3,7 @@
 //!
 //! Each run's hard community labels (the `cluster` column of a propensity
 //! table, or its argmax) are joined on the cell name. Over the cells both
-//! runs placed it reports the adjusted Rand index, normalised mutual
+//! runs placed it reports the adjusted Rand index, normalized mutual
 //! information, a one-to-one community matching (Hungarian, on Jaccard),
 //! and each community's fate: kept, split, merged, vanished or new. A
 //! community's *partners* are the communities of the other run holding at
@@ -399,7 +399,7 @@ pub fn ari(t: &Table) -> f64 {
     (sum_ij - expected) / (max - expected)
 }
 
-/// Normalised mutual information, I / mean(H_A, H_B) (the arithmetic mean,
+/// Normalized mutual information, I / mean(H_A, H_B) (the arithmetic mean,
 /// scikit-learn's default). 1 when both entropies are 0.
 pub fn nmi(t: &Table) -> f64 {
     let n = t.total() as f64;

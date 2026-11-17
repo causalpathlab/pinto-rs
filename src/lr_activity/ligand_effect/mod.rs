@@ -3,7 +3,7 @@
 //!
 //! Co-expression scores ask whether a ligand and its receptor are detected
 //! together across contacts. This asks what happens to a receiver's
-//! response programme when its contact neighbours carry the ligand, among
+//! response program when its contact neighbours carry the ligand, among
 //! receivers comparable in everything else that could drive both: region,
 //! section, cell identity, neighbour composition, depth and segmentation
 //! bleed. The two answers disagree when co-location is confounded, and the
@@ -11,7 +11,7 @@
 //!
 //! **Estimands** (per pair; pooled and per section). With `T` = contact
 //! neighbours carry ligand above a threshold, `Y` = the receiver's signed
-//! target programme, `C` = the receiver's identity expresses the receptor:
+//! target program, `C` = the receiver's identity expresses the receptor:
 //!
 //! - `effect_competent`, the competent effect, **the headline**:
 //!   overlap-weighted effect of `T` on `Y` in receptor-competent receivers;
@@ -54,7 +54,7 @@
 //!
 //! - the commands: [`pipeline`] runs them from input to tables, [`pairs`]
 //!   and [`only`] pick the pairs from the [`mod@reference`] and [`targets`] reads
-//!   the programmes, [`genes`] reads the needed genes sparsely, [`memory`]
+//!   the programs, [`genes`] reads the needed genes sparsely, [`memory`]
 //!   says how many pairs run at once;
 //! - the tissue: [`contacts`], [`folds`], [`confounders`] and [`receivers`]
 //!   build [`tissue::Tissue`];
@@ -153,7 +153,7 @@ pub struct Internals {
     /// Dimension of the receiver identity projection, and its bins (2^bits).
     pub identity_dim: usize,
     pub identity_bits: usize,
-    /// Fewest measured genes in a pair's response programme.
+    /// Fewest measured genes in a pair's response program.
     pub min_targets: usize,
     /// Length scales of the regional confounder smooth, in contact lengths.
     pub scales: [f64; 2],
@@ -242,7 +242,7 @@ impl Settings<'_> {
 }
 
 /// What decides which pairs there are: the reference's species and the
-/// user's pair and programme files on top of it.
+/// user's pair and program files on top of it.
 pub struct PairChoices<'a> {
     pub species: ReferenceSpecies,
     pub lr_pairs: Option<&'a str>,

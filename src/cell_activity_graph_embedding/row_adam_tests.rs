@@ -52,7 +52,7 @@ fn lazy_adam_matches_dense_adamw_on_the_rows_it_steps_and_leaves_the_rest() {
     for step in 0..7 {
         let g =
             Tensor::from_vec(values(every.len() * D, 10 + step), (every.len(), D), &dev).unwrap();
-        // the dense optimiser sees exactly `g` as its gradient
+        // the dense optimizer sees exactly `g` as its gradient
         let grads = (dense.as_tensor() * &g)
             .unwrap()
             .sum_all()

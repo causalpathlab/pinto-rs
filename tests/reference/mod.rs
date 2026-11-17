@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 const BUILT: &str = "r2-all";
 
 /// A ligand-effect reference cache at `{dir}/reference` with no pairs and
-/// no programmes, so lra runs offline on the pairs and programmes a test
+/// no programs, so lra runs offline on the pairs and programs a test
 /// gives it. The cache's folder, for `PINTO_REFERENCE_DIR`.
 pub fn empty_reference(dir: &Path) -> PathBuf {
     let root = dir.join("reference");

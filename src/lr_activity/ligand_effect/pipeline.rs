@@ -268,7 +268,7 @@ fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::Eff
     let (store, local) = (&prep.store, &prep.local);
     let lig = prep.ligand_counts(p);
     let rec = prep.receptor_counts(p);
-    // Two weightings of the programme, as given and with hub targets
+    // Two weightings of the program, as given and with hub targets
     // down-weighted by specificity, averaged by Rubin's rules: the
     // spread between them widens the interval instead of a switch
     // picking one.
@@ -582,7 +582,7 @@ fn benchmark_pairs(
 
 /// The real-gene confounder and its counts: the most abundant gene read for
 /// the run that no benchmarked pair uses. It is left out of the identity
-/// projection with the other signalling and programme genes, so it lies
+/// projection with the other signalling and program genes, so it lies
 /// outside the adjustment's basis.
 fn real_gene_confounder(prep: &Prepared, order: &[usize]) -> Option<(usize, Vec<f64>)> {
     let store = &prep.store;
@@ -703,7 +703,7 @@ fn fit_reference_program_genes(
 }
 
 /// What a benchmarked pair's runs draw on, read once: its ligand and receptor
-/// counts, its competent receivers, and its programme's weights and bin
+/// counts, its competent receivers, and its program's weights and bin
 /// means.
 struct PairSim {
     ligand: Vec<f64>,

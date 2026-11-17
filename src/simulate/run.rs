@@ -231,7 +231,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         &data_files,
     )?;
 
-    let pve = sim.realised_pve();
+    let pve = sim.realized_pve();
     let names = super::params::TERMS;
     let manifest = json!({
         "command": "srt-simulate",
@@ -246,7 +246,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
             "donors": sim.unconfounded_donors.iter().map(|&d| donor_label(d)).collect::<Vec<_>>(),
             "drawn": p.n_unconfounded_donors > 0,
         },
-        "realised_pve_programme_genes": names.iter().zip(pve)
+        "realized_pve_program_genes": names.iter().zip(pve)
             .map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
         "sections": sim.sections.iter().map(|sec| json!({
             "section": sec.name.as_ref(),

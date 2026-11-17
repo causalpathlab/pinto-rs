@@ -311,7 +311,7 @@ pub struct OffsetArgs {
                      Each count is read against the stage-1 expectation\n\
                      mu = n_i sum_k theta_ik p_kb(g): dsvd, cage and cage-cell divide it\n\
                      by d = mu / (n_i pbar_g) where they would divide by a batch effect,\n\
-                     as a self-normalising Poisson ratio (each cell's scale absorbed)\n\
+                     as a self-normalizing Poisson ratio (each cell's scale absorbed)\n\
                      (the projections too), lc scores its edge profiles against mu\n\
                      (rates D/M in place of D/V), the written feature_community holds\n\
                      mean counts over d, sum_i pi_ik y_gi / sum_i pi_ik d_gi, and\n\

@@ -4,12 +4,12 @@
 use super::inference::{usable, Estimate};
 use crate::util::common::upper_median;
 
-/// Rubin's rules over analyses: mean estimate, variance = mean within-analysis
-/// variance + `(1 + 1/R)` × between-analysis variance. Analyses that were not
+/// Rubin's rules over analyzes: mean estimate, variance = mean within-analysis
+/// variance + `(1 + 1/R)` × between-analysis variance. Analyzes that were not
 /// estimable (see [`super::inference::usable`]) are left out; none left gives
 /// NaN. Degrees of freedom by Barnard & Rubin (1999, Biometrika 86:948), with
-/// the analyses' smallest df as the complete-data df: the between-analysis
-/// spread, estimated from `R` analyses, costs degrees of freedom in proportion
+/// the analyzes' smallest df as the complete-data df: the between-analysis
+/// spread, estimated from `R` analyzes, costs degrees of freedom in proportion
 /// to its share of the variance.
 pub fn combine(parts: &[Estimate]) -> Estimate {
     let ok: Vec<&Estimate> = parts.iter().filter(|e| usable(e)).collect();

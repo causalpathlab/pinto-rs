@@ -2,7 +2,7 @@
 //! for spatial transcriptomics", Nature Communications 13:7203,
 //! doi:10.1038/s41467-022-34879-1): probabilistic PCA (Tipping and Bishop
 //! 1999, JRSS B 61:611, doi:10.1111/1467-9868.00196) whose factors, the
-//! spatial PCs, carry a spatial kernel prior (the generalised probabilistic
+//! spatial PCs, carry a spatial kernel prior (the generalized probabilistic
 //! PCA of Gu and Shen 2020, JMLR 21:1), clustered into domains.
 //!
 //! Written from the paper's Methods and Supplementary Note 1 alone; the
@@ -16,7 +16,7 @@
 //! I_d`, noise `sigma0^2`, and each spatial PC `Z_l ~ N(0, sigma0^2 tau K)`
 //! (Eq. 2), `tau` shared by the PCs. `B` is integrated out; `sigma0^2`
 //! (SN(6)) and `W` (SN(8), the top `d` eigenvectors of `G(tau)`) are
-//! profiled; `tau` maximises the profile SN(7); the PCs are the posterior
+//! profiled; `tau` maximizes the profile SN(7); the PCs are the posterior
 //! means SN(10).
 //!
 //! The paper's dense Gaussian kernel `K(s, s') = exp(-||s - s'||^2 /
@@ -43,14 +43,14 @@
 //! cap) by p-value. Expression: SCTransform's Pearson residuals
 //! (Hafemeister and Satija 2019, Genome Biology 20:296,
 //! doi:10.1186/s13059-019-1874-1; [`super::spatial_factor::sct`], written
-//! from its paper) on those genes, each gene standardised to mean 0 and
+//! from its paper) on those genes, each gene standardized to mean 0 and
 //! SD 1. The residuals are dense, held as f32 rows (genes × cells).
 //!
 //! # Deviations
 //!
 //! - **Batch effects** (δ): with two or more batches the counts are divided
 //!   by the input's own δ before the library sizes, the genes and the
-//!   normalisation, in place of the paper's multi-sample Seurat
+//!   normalization, in place of the paper's multi-sample Seurat
 //!   integration; `--ignore-batch` runs the paper's model on the pooled
 //!   sections.
 //! - **Clustering** (licence): the paper's Walktrap and Louvain (GPL
@@ -123,7 +123,7 @@ pub struct FitArgs {
     #[arg(long, default_value_t = CG_TOL, hide = true)]
     pub cg_tol: f64,
 
-    /// Evaluations of the sparse profile's optimiser at most
+    /// Evaluations of the sparse profile's optimizer at most
     #[arg(long, default_value_t = MAX_EVALS, hide = true)]
     pub max_evals: usize,
 }
@@ -242,7 +242,7 @@ fn spatial_genes(data: &SpatialData, n_genes: usize) -> anyhow::Result<(Vec<usiz
     Ok((genes, significant))
 }
 
-/// SCTransform's standardised residuals on `genes`, the counts freed.
+/// SCTransform's standardized residuals on `genes`, the counts freed.
 fn expression(data: &mut SpatialData, genes: &[usize], seed: u64) -> (DenseRows, SctReport) {
     let lib = library(&data.counts);
     let out = DenseRows::sct(&data.counts, &lib, genes, seed);
@@ -280,7 +280,7 @@ fn base_settings(
         "genes_used": names_of(names, genes),
         "gene_selection": "SPARK-X, Benjamini-Yekutieli FDR 0.05, at most n_genes by p",
         "n_significant": pre.significant,
-        "normalisation": "SCTransform v1 Pearson residuals, clipped at sqrt(N), standardised per gene",
+        "normalization": "SCTransform v1 Pearson residuals, clipped at sqrt(N), standardized per gene",
         "sctransform": pre.sct,
         "clustering": clustering,
         "n_clusters": fit.core.n_clusters,
@@ -358,7 +358,7 @@ fn sparse_settings(
 ) -> serde_json::Value {
     serde_json::json!({
         "prior": "sparse",
-        "graph": format!("kNN within a section, k = {}, symmetrised", fit.core.knn),
+        "graph": format!("kNN within a section, k = {}, symmetrized", fit.core.knn),
         "tau_hat": best.tau,
         "rho_hat": best.rho,
         "t": best.t,

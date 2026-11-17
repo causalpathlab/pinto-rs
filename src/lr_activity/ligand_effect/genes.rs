@@ -1,6 +1,6 @@
 //! The genes a run needs, read once and kept sparse.
 //!
-//! Ligands, receptors and every programme's targets are read in one pass
+//! Ligands, receptors and every program's targets are read in one pass
 //! over the matrix, keeping only their non-zero counts on receiver rows,
 //! and every cell's total count is taken in the same pass. A dense
 //! genes × cells block would be the run's largest allocation by far

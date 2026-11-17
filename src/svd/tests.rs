@@ -169,7 +169,7 @@ fn a_cell_without_counts_stays_empty() {
         vec![0.0, 0.0, f32::NAN, f32::NAN, 1.0, 3.0, 2.0, f32::INFINITY],
     )
     .unwrap();
-    log_normalise_cells(&mut y);
+    log_normalize_cells(&mut y);
     assert_eq!(y.values()[..4], [0.0; 4]);
     assert_eq!(y.values()[6..], [0.0; 2]);
     let want = [
@@ -238,7 +238,7 @@ fn one_batch_and_several_batches_of_unit_effect_agree() {
 }
 
 /// `ln(1 + 1e4 x / Σ x)` of each cell of `x`, features x cells.
-fn log_normalised(x: &Mat) -> Mat {
+fn log_normalized(x: &Mat) -> Mat {
     let mut out = x.clone();
     for mut col in out.column_iter_mut() {
         let total = col.sum();
@@ -249,9 +249,9 @@ fn log_normalised(x: &Mat) -> Mat {
 }
 
 /// Each count of `x` divided by the effect of its feature in its cell's
-/// batch and nothing else, then each cell log-normalised.
+/// batch and nothing else, then each cell log-normalized.
 fn plainly_divided(x: &Mat, delta: &Mat, batch_of_cell: &[usize]) -> Mat {
-    log_normalised(&Mat::from_fn(x.nrows(), x.ncols(), |i, j| {
+    log_normalized(&Mat::from_fn(x.nrows(), x.ncols(), |i, j| {
         x[(i, j)] / delta[(i, batch_of_cell[j])]
     }))
 }
@@ -272,7 +272,7 @@ fn pair_channels(y: &Mat, pairs: &[(usize, usize)]) -> (Mat, Mat) {
 /// per-cell constant is gone once the cell is rescaled, so the channels are
 /// those of a plain division of each count by its batch effect.
 #[test]
-fn the_self_normalising_divide_reads_as_a_plain_divide_once_rescaled() {
+fn the_self_normalizing_divide_reads_as_a_plain_divide_once_rescaled() {
     let x = counts();
     let g = x.nrows();
     let batch_of_cell = [0, 0, 1, 1];
@@ -318,7 +318,7 @@ fn a_count_without_a_positive_effect_keeps_the_cell_rate() {
             cell[i] /= d[i] * rate;
         }
     }
-    let (want_shared, want_diff) = pair_channels(&log_normalised(&divided), &pairs);
+    let (want_shared, want_diff) = pair_channels(&log_normalized(&divided), &pairs);
     let want_proj =
         basis.rows(0, g).transpose() * &want_shared + basis.rows(g, g).transpose() * &want_diff;
 

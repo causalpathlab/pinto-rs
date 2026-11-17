@@ -1,4 +1,4 @@
-//! Combining analyses: Rubin's rules over fixed choices, and the Bayesian
+//! Combining analyzes: Rubin's rules over fixed choices, and the Bayesian
 //! average over exposure thresholds.
 
 use crate::lr_activity::ligand_effect::averaging::{abf_average, abf_summary, combine};
@@ -108,15 +108,15 @@ fn the_weights_follow_the_evidence() {
 }
 
 /// Each estimand gets its own weights: a control's largest threshold need not
-/// be the programme's.
+/// be the program's.
 #[test]
 fn a_control_is_averaged_by_its_own_evidence() {
-    let programme = [est(0.5, 0.1), est(0.0, 0.1)];
+    let program = [est(0.5, 0.1), est(0.0, 0.1)];
     let control = [est(0.0, 0.1), est(0.5, 0.1)];
-    let a = abf_summary(&programme, &[0.0, 1.0], PRIOR);
+    let a = abf_summary(&program, &[0.0, 1.0], PRIOR);
     let b = abf_summary(&control, &[0.0, 1.0], PRIOR);
     assert_eq!((a.top_tau, b.top_tau), (0.0, 1.0));
     assert!(
-        (abf_average(&programme, PRIOR).theta - abf_average(&control, PRIOR).theta).abs() < 1e-12
+        (abf_average(&program, PRIOR).theta - abf_average(&control, PRIOR).theta).abs() < 1e-12
     );
 }

@@ -40,12 +40,12 @@
 //!
 //! Exposure `T = 1{Σ_contacts ligand / size factor > τ}`. Response
 //! `Y = Σ_g w_g log1p(x_g / size factor) / Σ_g |w_g|` over the pair's
-//! programme. Extra confounders for the pair:
+//! program. Extra confounders for the pair:
 //!
 //! - the receiver's own ligand (bleed on the exposure side);
 //! - the contact-neighbour mean response, and the neighbours' expected
-//!   programme counts on the receiver's own scale
-//!   ([`super::response::programme_columns`]): bleed on the response side, what
+//!   program counts on the receiver's own scale
+//!   ([`super::response::program_columns`]): bleed on the response side, what
 //!   a neighbour's transcripts add to the receiver's measurement. Bleed is a
 //!   sum over contacts divided by the receiver's size factor, so it grows with
 //!   the contact count, which also drives exposure, and shrinks with the
@@ -84,7 +84,7 @@
 //!   effect compares exposed with unexposed receivers among the cell types that
 //!   carry the receptor; the grid moves the line between "carries" and "does
 //!   not";
-//! - the programme's weighting ([`PairData::reweighted`]).
+//! - the program's weighting ([`PairData::reweighted`]).
 //!
 //! **The exposure threshold** is averaged too, differently. Each threshold is a
 //! model of how exposure acts, with its own fits, and the estimates are averaged
@@ -103,7 +103,7 @@
 //! whether the headline rests on one threshold.
 //!
 //! **Reading an effect** ([`super::rows::Moments`]): θ is a difference in the signed
-//! mean `log1p` programme, read as a mean with SD (= SE) and 95% interval,
+//! mean `log1p` program, read as a mean with SD (= SE) and 95% interval,
 //! and as a % change `100 (e^θ − 1)` with the delta-method SD
 //! `100 e^θ SE` and the interval's endpoints mapped the same way.
 //!
@@ -135,9 +135,9 @@ pub struct PairData<'a> {
     pub receptor: &'a str,
     pub ligand_counts: &'a [f64],
     pub receptor_counts: &'a [f64],
-    /// `(weight, non-zero counts by row)` for each programme gene.
+    /// `(weight, non-zero counts by row)` for each program gene.
     pub targets: &'a [(f64, &'a [(u32, f32)])],
-    /// The programme reweighted (hub targets down-weighted by
+    /// The program reweighted (hub targets down-weighted by
     /// specificity), averaged with `targets`; `None` for `targets` alone.
     pub reweighted: Option<&'a Targets<'a>>,
     pub n_removed: usize,
@@ -147,7 +147,7 @@ pub struct PairData<'a> {
 /// type. Verdicts and q-values
 /// are left empty for [`super::report::report`], which needs every pair.
 ///
-/// With [`PairData::reweighted`], the two weightings of the programme are
+/// With [`PairData::reweighted`], the two weightings of the program are
 /// combined ([`super::thresholds::over_thresholds`]); the curve
 /// describes the pair, not the weighting, and is read under `targets`.
 /// Counts, co-expression, the marginal correlation and the diagnostics read
@@ -240,8 +240,8 @@ fn estimate_on(
     Ok(rows)
 }
 
-/// The pair's response per weighting of its programme: one joint build when the
-/// reweighted programme lies on the same genes, else one build each.
+/// The pair's response per weighting of its program: one joint build when the
+/// reweighted program lies on the same genes, else one build each.
 fn pair_responses(tissue: &Tissue, pair: &PairData<'_>) -> Vec<Response> {
     match pair.reweighted.and_then(|b| aligned(pair.targets, b)) {
         Some(wb) => {

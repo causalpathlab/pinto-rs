@@ -84,7 +84,7 @@ fn data(dir: &Path, n: usize) -> SparseIoVec {
     sparse_vec(dir, "d", &rows, &numbered("c", n), &triplets(n))
 }
 
-/// The pair file and the receptor's programme, beside an empty reference.
+/// The pair file and the receptor's program, beside an empty reference.
 fn reference_and_files(dir: &Path) -> (String, String) {
     write_empty_reference(&dir.join("reference"), Species::Human).unwrap();
     let pairs = dir.join("pairs.tsv");

@@ -159,7 +159,7 @@ fn explain(w: &Wanted, ligand_known: bool, receptor_known: bool, pairs: &[Pair])
             w.receptor.as_deref().unwrap_or_default()
         )
     } else {
-        "no such pair with a usable response programme".into()
+        "no such pair with a usable response program".into()
     };
     let near = near_pairs(w, pairs);
     if near.is_empty() {

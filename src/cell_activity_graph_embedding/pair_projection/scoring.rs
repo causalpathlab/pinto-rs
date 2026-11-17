@@ -16,9 +16,9 @@ pub struct EvalAxis {
     /// is scored by the likelihood but nothing is correlated, because a sort per
     /// pair is not a cost to pay by default.
     correlated: Option<Vec<u32>>,
-    /// Positions the likelihood normalises over — every active feature when the
+    /// Positions the likelihood normalizes over — every active feature when the
     /// user did not restrict the axis.
-    normalised_over: Vec<u32>,
+    normalized_over: Vec<u32>,
     /// Membership by active-list position — a bitmap, not a hash set.
     is_scored: Vec<bool>,
     /// `ln Σ exp(b_g)` over `over`; constant for the run.
@@ -33,7 +33,7 @@ impl EvalAxis {
 
     /// Streaming log-sum-exp of `f` over the scored positions.
     fn log_partition(&self, f: impl Fn(usize) -> f32) -> f32 {
-        log_sum_exp(self.normalised_over.iter().map(|&g| f(g as usize)))
+        log_sum_exp(self.normalized_over.iter().map(|&g| f(g as usize)))
     }
 }
 
@@ -85,7 +85,7 @@ impl PairDictionary {
     ///
     /// `eval` restricts the whole score — likelihood, null and correlations — to a
     /// fixed set of active-list positions. Restricting the likelihood too is what
-    /// makes it comparable with `senna predict`: renormalising over the scored
+    /// makes it comparable with `senna predict`: renormalizing over the scored
     /// features turns it into the conditional multinomial "given a count landed in
     /// this feature set, which feature is it", which is exactly what senna reports. Two
     /// commands answering the same question is worth more here than each
@@ -121,7 +121,7 @@ impl PairDictionary {
             }
             total += x;
             // Floored at the SHARED constant, not left to the logit clamp: the
-            // clamp bounds the un-normalised score, so after subtracting the
+            // clamp bounds the un-normalized score, so after subtracting the
             // partition a starved feature could be charged roughly twice senna's
             // floor, and the cross-engine ranking column would punish the same
             // event differently per binary.
@@ -148,7 +148,7 @@ impl PairDictionary {
     /// those zeros are data — a model that puts mass on an unobserved feature has to
     /// be charged for it.
     ///
-    /// The log-rate is handed over as-is; `agreement_from_log_rate` renormalises
+    /// The log-rate is handed over as-is; `agreement_from_log_rate` renormalizes
     /// it and puts it on the count scale, the same rule senna's cells go through.
     fn agreement(&self, local: &[(u32, f32)], log_rate: &[f32], axis: &EvalAxis) -> CellAgreement {
         let Some(axis) = axis.correlated.as_deref() else {
@@ -184,14 +184,14 @@ impl PairDictionary {
                 }
             }
         }
-        let normalised_over: Vec<u32> = match positions.as_deref() {
+        let normalized_over: Vec<u32> = match positions.as_deref() {
             Some(p) => p.to_vec(),
             None => (0..n_active as u32).collect(),
         };
-        let z_null = log_sum_exp(normalised_over.iter().map(|&g| self.b[g as usize]));
+        let z_null = log_sum_exp(normalized_over.iter().map(|&g| self.b[g as usize]));
         EvalAxis {
             correlated: positions,
-            normalised_over,
+            normalized_over,
             is_scored,
             z_null,
         }

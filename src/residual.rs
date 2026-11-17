@@ -18,11 +18,11 @@
 //! profiles are refitted on the run's data, read as a fit reads it (the rows
 //! every file shares, cells named as the run named them),
 //!
-//! `p_k(g) ∝ (1 + Σ_i π_ik y_gi) / (1 + Σ_i π_ik)`, normalised over `g`,
+//! `p_k(g) ∝ (1 + Σ_i π_ik y_gi) / (1 + Σ_i π_ik)`, normalized over `g`,
 //!
 //! lc's own feature-community statistic and Gamma(1, 1) posterior mean
 //! (`link_community::profiles::fit_feature_community_param`) with unit
-//! feature weights, the `1 + Σ_i π_ik` cancelling in the normalisation: the NB
+//! feature weights, the `1 + Σ_i π_ik` cancelling in the normalization: the NB
 //! Fisher-information weights `{run}.feature_community` carries shrink
 //! high-mean features, so that table is not a composition. Each cell then
 //! gets its proportions `θ_i` by the per-cell EM of `pinto apply impute` and
@@ -72,7 +72,7 @@
 //!
 //! `d` is the divisor dsvd, cage and cage-cell divide a count by where they
 //! would divide by a batch effect, as numeric's adjust-by-division does: the
-//! self-normalising Poisson ratio `y / (λ_i d)`, `λ_i = Σ y / Σ d` over the
+//! self-normalizing Poisson ratio `y / (λ_i d)`, `λ_i = Σ y / Σ d` over the
 //! cell's nonzeros, so each cell's overall scale is absorbed and `d` sets
 //! only the shape; lc scores its edge profiles against `μ` itself
 //! (rates `D_kg / M_kg`, about 1 where stage 1 explains the counts), and
@@ -657,16 +657,16 @@ fn weighted_communities(prop: Mat) -> Mat {
 }
 
 /// The pooled profiles `[K, G]` from the community sums over every cell
-/// (`[G, K]`): lc's Gamma(1, 1) posterior mean, `1 + S_gk` normalised over
+/// (`[G, K]`): lc's Gamma(1, 1) posterior mean, `1 + S_gk` normalized over
 /// the data's rows.
 fn pooled_profiles(total: &nalgebra::DMatrix<f64>) -> nalgebra::DMatrix<f64> {
-    normalised_profiles(&total.add_scalar(1.0))
+    normalized_profiles(&total.add_scalar(1.0))
 }
 
 /// Each community's share of every data row, `[K, G]`, from rates `[G, K]`
 /// on the data's own rows, so a feature reads its own entry whatever its
 /// name.
-fn normalised_profiles(rates: &nalgebra::DMatrix<f64>) -> nalgebra::DMatrix<f64> {
+fn normalized_profiles(rates: &nalgebra::DMatrix<f64>) -> nalgebra::DMatrix<f64> {
     let mut p_t = rates.transpose();
     for mut row in p_t.row_iter_mut() {
         let total = row.sum();

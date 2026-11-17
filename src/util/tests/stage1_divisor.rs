@@ -124,7 +124,7 @@ fn assert_columns(x: &nalgebra_sparse::CscMatrix<f32>, want: &[Vec<(usize, f32)>
 
 /// One community in one batch, every share its pooled share: `d = 1`, so
 /// the division only puts each cell at 1e4, as no divisor and a
-/// normalisation to 1e4 would.
+/// normalization to 1e4 would.
 #[test]
 fn a_constant_divisor_equals_none() {
     let dir = tempfile::tempdir().unwrap();
