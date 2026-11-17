@@ -4,8 +4,8 @@ use super::panel::{donor_label, grid, read_coords};
 use super::params::{find_scenario, SimParams, SCENARIOS};
 use super::sim::Sim;
 use super::write::{
-    write_backend, write_coords, write_domains, write_donors, write_genes, write_spots,
-    write_states, write_truth_run,
+    write_backend, write_coords, write_domains, write_donors, write_genes, write_lr_pairs,
+    write_spots, write_states, write_truth_run,
 };
 use crate::util::common::in_dir;
 use log::info;
@@ -174,6 +174,8 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
     write_domains(&domains_path(out), &sim)?;
     write_states(&in_dir(out, "truth/states.parquet"), &sim)?;
     write_genes(&in_dir(out, "truth/genes.parquet"), &sim)?;
+    let n_lr_pairs = write_lr_pairs(out, &sim)?;
+    info!("{n_lr_pairs} ligand-receptor pairs of its genes, for lra, in truth/lr_pairs.tsv");
     // relative to the truth run's manifest, so the outputs can be moved whole
     let data_files: Vec<String> = sim
         .sections
@@ -193,6 +195,7 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         "command": "srt-simulate",
         "version": env!("CARGO_PKG_VERSION"),
         "scenario": scenario,
+        "lr_pairs": n_lr_pairs,
         "params": p,
         "unconfounded_donors": {
             "donors": sim.unconfounded_donors.iter().map(|&d| donor_label(d)).collect::<Vec<_>>(),

@@ -13,6 +13,9 @@
 //! {out}/truth/domains.parquet       owner (empty: shared), composition
 //! {out}/truth/states.parquet        owner (empty: shared)
 //! {out}/truth/genes.parquet         baseline, dispersion, programmes
+//! {out}/truth/lr_pairs.tsv          ligand-receptor pairs of the simulation's own genes,
+//!                                   and their response programmes in targets.tsv, for
+//!                                   `pinto lra --lr-pairs … --targets …` ([`lr_pairs`])
 //! {out}/truth/truth.pinto.json      the truth as a run `pinto view` opens:
 //!                                   truth.cells.parquet and the domain, state
 //!                                   and donor levels (truth.*.propensity.parquet)
@@ -216,6 +219,108 @@ pub fn write_genes(path: &str, sim: &Sim) -> anyhow::Result<()> {
         cols.push((format!("programme_{}", st.label).into(), Column::F32(v)));
     }
     write_named_table(path, "gene", &g.names, &cols)
+}
+
+/// Response-programme genes a receptor is given in [`lr_pairs`], at most.
+pub const TARGETS_PER_RECEPTOR: usize = 20;
+
+/// One pair of [`lr_pairs`], by gene name.
+pub struct LrPair {
+    pub ligand: Box<str>,
+    pub receptor: Box<str>,
+    /// The receptor's response programme.
+    pub targets: Vec<Box<str>>,
+}
+
+/// Ligand-receptor pairs of the simulation's own genes, so `pinto lra` and
+/// `pinto lra simulate` run on it with no hand-made files. For each state
+/// `k`, the ligand is a gene of its programme alone and the receptor a gene
+/// of state `k + 1`'s alone (cyclic), the lowest-numbered not yet taken
+/// (the programmes are sets: no gene is stronger than another), and the
+/// receptor's response programme is the rest of the receiving state's
+/// programme, at most [`TARGETS_PER_RECEPTOR`], never a ligand or receptor
+/// of any pair, so an effect planted on one pair moves no other pair's
+/// genes. A pair with fewer programme genes as targets than lra keeps
+/// (`INTERNALS.min_targets`) is not written; lra counts the targets its
+/// own read keeps, so it may still drop one, and says so. No ligand-receptor effect is
+/// planted: on the simulation the pairs are nulls (receivers differ only
+/// as their states do), and `lra simulate` plants its own. None with fewer
+/// than two states.
+pub fn lr_pairs(sim: &Sim) -> Vec<LrPair> {
+    let progs = &sim.genes.programme;
+    let names = &sim.genes.names;
+    let n = progs.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let members = |c: usize| (0..names.len()).filter(move |&g| progs[c][g] > 0.0);
+    // genes of one programme alone, per state, in gene order
+    let own: Vec<Vec<usize>> = (0..n)
+        .map(|c| {
+            members(c)
+                .filter(|&g| (0..n).all(|o| o == c || progs[o][g] <= 0.0))
+                .collect()
+        })
+        .collect();
+    // every ligand and receptor first, so no target is one of them
+    let mut taken = vec![false; names.len()];
+    let pick = |c: usize, taken: &mut [bool]| {
+        let g = own[c].iter().copied().find(|&g| !taken[g])?;
+        taken[g] = true;
+        Some(g)
+    };
+    let chosen: Vec<(usize, usize, usize)> = (0..n)
+        .filter_map(|k| {
+            let receiver = (k + 1) % n;
+            Some((pick(k, &mut taken)?, pick(receiver, &mut taken)?, receiver))
+        })
+        .collect();
+    let min = crate::lr_activity::ligand_effect::INTERNALS.min_targets;
+    chosen
+        .into_iter()
+        .filter_map(|(l, r, receiver)| {
+            let targets: Vec<Box<str>> = members(receiver)
+                .filter(|&g| !taken[g])
+                .take(TARGETS_PER_RECEPTOR)
+                .map(|g| names[g].clone())
+                .collect();
+            (targets.len() >= min).then(|| LrPair {
+                ligand: names[l].clone(),
+                receptor: names[r].clone(),
+                targets,
+            })
+        })
+        .collect()
+}
+
+/// Where [`write_lr_pairs`] writes the pairs and their programmes under a
+/// simulation's `out`.
+pub fn lr_pairs_paths(out: &str) -> (String, String) {
+    (
+        in_dir(out, "truth/lr_pairs.tsv"),
+        in_dir(out, "truth/targets.tsv"),
+    )
+}
+
+/// [`lr_pairs`] written under the simulation's `out` ([`lr_pairs_paths`]):
+/// `lr_pairs.tsv` (ligand, receptor) and `targets.tsv` (receptor, target),
+/// the files `pinto lra` takes as `--lr-pairs` and `--targets`; how many
+/// pairs.
+pub fn write_lr_pairs(out: &str, sim: &Sim) -> anyhow::Result<usize> {
+    use std::fmt::Write;
+    let pairs = lr_pairs(sim);
+    let mut lr = String::from("ligand\treceptor\n");
+    let mut targets = String::from("receptor\ttarget\n");
+    for p in &pairs {
+        writeln!(lr, "{}\t{}", p.ligand, p.receptor)?;
+        for t in &p.targets {
+            writeln!(targets, "{}\t{t}", p.receptor)?;
+        }
+    }
+    let (lr_path, targets_path) = lr_pairs_paths(out);
+    std::fs::write(lr_path, lr)?;
+    std::fs::write(targets_path, targets)?;
+    Ok(pairs.len())
 }
 
 /// The truth as a run `pinto view` opens like a fit: `{dir}/truth.pinto.json`

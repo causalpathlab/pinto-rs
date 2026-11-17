@@ -1096,6 +1096,8 @@ enum Sim {
                       \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
                       \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\
                       \x20 {out}/truth/*.parquet            spots, domains, states, genes\n\
+                      \x20 {out}/truth/lr_pairs.tsv         ligand-receptor pairs of its genes, and\n\
+                      \x20   targets.tsv their response programmes, for lra --lr-pairs --targets\n\
                       \x20 {out}/manifest.json              every parameter and the realised read-outs"
     )]
     New(Box<simulate::SimulateArgs>),

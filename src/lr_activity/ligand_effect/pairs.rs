@@ -123,11 +123,18 @@ pub(super) fn reference_pairs(
         raw.extend(crate::lr_activity::io::read_lr_pairs(&f.to_string_lossy())?);
     }
     sets.settle_gmt_names(&raw);
+    let n_raw = raw.len();
     let specificity = sets.specificity();
     let pairs = resolve_pairs(raw, gene_names, index, &sets, &specificity);
     anyhow::ensure!(
         !pairs.is_empty(),
-        "no ligand-receptor pair has a usable response programme"
+        "no ligand-receptor pair has a usable response programme: of the {n_raw} pairs \
+         read, the warning above says why each was dropped. Data whose genes no reference \
+         names (a simulation's GENE1, GENE2, ...) needs its own pairs (--lr-pairs: ligand, \
+         receptor) and response programmes (--targets: a header with receptor or ligand, and \
+         target), at least {} measured targets a pair; `pinto sim new` writes both under its \
+         truth folder",
+        INTERNALS.min_targets
     );
     Ok((pairs, files.record))
 }
