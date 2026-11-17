@@ -498,7 +498,14 @@ enum Commands {
                       pseudobulks, and do nothing in a run without modules\n\
                       (--feature-modules 0, or --feature-inclusion moran; a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
-                      --embedding-l2 defaults to 0 here.\n\n\
+                      --embedding-l2 defaults to 0 here, and the learning rate (--lr)\n\
+                      to 0.02 (cage's is 0.005).\n\n\
+                      Training runs until each pair's row has been updated\n\
+                      --pair-updates times on average (default 200): the steps are\n\
+                      that many times the pair count over the pairs a step touches,\n\
+                      both logged. --epochs (default 1000 here) only caps it. An\n\
+                      epoch draws about four positives per pair, so each update\n\
+                      averages several draws at any size.\n\n\
                       The pairs' trained rows are the latent (latent.parquet, L2-normalised,\n\
                       one row per listed pair), and a cell's embedding is the mean of its\n\
                       pairs' rows. No pair encoder is fitted, so there is no\n\
@@ -507,6 +514,9 @@ enum Commands {
                       A pair table too big for the device is kept on the host.\n\n\
                       Writes what cage writes otherwise; its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0")),
+        mut_arg("lr", |a| a.default_value("0.02")),
+        mut_arg("epochs", |a| a.default_value("1000")),
+        mut_arg("pair_updates", |a| a.hide(false)),
         // What cage-cell refuses, or warns does nothing on cells, is off its
         // help.
         mut_args(cell_activity_graph_embedding::fit::hide_on_cells)

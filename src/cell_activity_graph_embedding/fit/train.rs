@@ -370,6 +370,51 @@ pub(super) struct TrainInputs<'a> {
     pub dev: &'a Device,
 }
 
+/// cage-cell's training length: `per_pair` updates of each of `pairs`
+/// rows on average, the updates of a step being the distinct pairs it
+/// touched (a row moves at most once a step).
+#[derive(Debug)]
+pub(super) struct PairBudget {
+    target: u64,
+    pairs: usize,
+    touched: u64,
+    steps: usize,
+}
+
+impl PairBudget {
+    pub(super) fn new(per_pair: usize, pairs: usize) -> Self {
+        Self {
+            target: per_pair as u64 * pairs as u64,
+            pairs,
+            touched: 0,
+            steps: 0,
+        }
+    }
+
+    /// One step that moved `touched` distinct pairs.
+    pub(super) fn record(&mut self, touched: usize) {
+        self.touched += touched as u64;
+        self.steps += 1;
+    }
+
+    pub(super) fn reached(&self) -> bool {
+        self.touched >= self.target
+    }
+
+    pub(super) fn mean_touched(&self) -> f64 {
+        self.touched as f64 / self.steps.max(1) as f64
+    }
+
+    pub(super) fn mean_updates(&self) -> f64 {
+        self.touched as f64 / self.pairs.max(1) as f64
+    }
+
+    /// The steps the budget takes at the pairs a step has touched so far.
+    pub(super) fn steps_needed(&self) -> usize {
+        (self.target as f64 / self.mean_touched().max(1.0)).ceil() as usize
+    }
+}
+
 /// An epoch's mean loss and per-level losses from its sums over the
 /// `chunks` that stepped, `features` features in all. The per-level sum is
 /// of chunk means, so it averages per chunk. The loss sums every feature's
@@ -448,6 +493,11 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         l.ridge_step = f64::from(lp.ridge) / steps_per_epoch.max(1) as f64;
     }
     let total_steps = args.epochs * steps_per_epoch.max(1);
+    // cage-cell's length: updates per pair, counted as the steps go.
+    let mut budget = pairs
+        .as_ref()
+        .map(|p| PairBudget::new(args.pair_updates, p.z.n_rows()));
+    let mut steps_taken = 0usize;
     let model = &*model;
     let train_bar = new_progress_bar(total_steps as u64).with_message("training steps");
 
@@ -724,6 +774,10 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             if !stepped {
                 skipped_steps += 1;
             }
+            steps_taken += 1;
+            if let (Some(b), Some(step), true) = (budget.as_mut(), &pair_step, stepped) {
+                b.record(step.ids.len());
+            }
             // Freezing is a post-step restore, not a gradient mask: AdamW's
             // moment state moves a row even at zero gradient, so the frozen
             // rows are put back from the fixed copy after every step.
@@ -753,6 +807,26 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             });
             chunk_count += 1;
             processed += chunk.len();
+            if budget.as_ref().is_some_and(PairBudget::reached) {
+                break;
+            }
+        }
+        if epoch == 0 {
+            if let Some(b) = &budget {
+                let steps = b.steps_needed();
+                info!(
+                    "cage-cell: a step touches {:.0} of {} pairs on average, so {} pair \
+                     updates each take about {} steps ({} epochs of {}; --epochs caps at {})",
+                    b.mean_touched(),
+                    b.pairs,
+                    args.pair_updates,
+                    steps,
+                    steps.div_ceil(steps_per_epoch.max(1)),
+                    steps_per_epoch.max(1),
+                    args.epochs
+                );
+                train_bar.set_length(steps.min(total_steps) as u64);
+            }
         }
 
         // ONE host sync per epoch — pull accumulated tensors only now.
@@ -846,6 +920,15 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             }
         }
 
+        if let Some(b) = budget.as_ref().filter(|b| b.reached()) {
+            info!(
+                "cage-cell: {:.1} updates per pair reached at epoch {epoch} ({} steps)",
+                b.mean_updates(),
+                b.steps
+            );
+            break 'epochs;
+        }
+
         if stop.load(Ordering::SeqCst) {
             info!(
                 "Stopping early at epoch {}/{} — finalizing outputs",
@@ -857,6 +940,16 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
     }
 
     train_bar.finish_and_clear();
+    match &budget {
+        Some(b) if !b.reached() => warn!(
+            "cage-cell: stopped at {:.1} of {} updates per pair after {} steps \
+             (--epochs or --convergence-window ended it first)",
+            b.mean_updates(),
+            args.pair_updates,
+            steps_taken
+        ),
+        _ => info!("training: {steps_taken} optimizer steps"),
+    }
     if skipped_steps > 0 {
         warn!(
             "{}/{} optimizer steps were SKIPPED for non-finite gradients — those \
@@ -881,7 +974,23 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
 
 #[cfg(test)]
 mod tests {
-    use super::epoch_means;
+    use super::{epoch_means, PairBudget};
+
+    /// The budget is updates per pair: steps touching 30 of 100 pairs reach
+    /// 3 updates per pair after 10 of them, and say so after the first.
+    #[test]
+    fn the_pair_budget_counts_updates_per_pair() {
+        let mut b = PairBudget::new(3, 100);
+        b.record(30);
+        assert_eq!(b.steps_needed(), 10);
+        for _ in 1..9 {
+            b.record(30);
+        }
+        assert!(!b.reached());
+        b.record(30);
+        assert!(b.reached());
+        assert_eq!(b.mean_updates(), 3.0);
+    }
 
     /// The per-level losses average per chunk that stepped, with or
     /// without inclusion; under inclusion the loss is per feature processed,

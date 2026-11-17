@@ -55,7 +55,7 @@
 
 use crate::cell_activity_graph_embedding::args::{
     CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ModulePlan,
-    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_RIDGE, PER_FEATURE_BATCH,
+    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_DRAWS_PER_EPOCH, PAIR_RIDGE, PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -619,8 +619,17 @@ pub fn fit_cell_activity_graph_embedding(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
-    let positives_per_feature_exp_batch =
-        positives_per_feature_batch(args.positives_per_epoch, expected_visits, n_exp_batches);
+    // cage-cell, unset: PAIR_DRAWS_PER_EPOCH draws per pair, at least the
+    // per-feature default
+    let pair_draws = (args.cell_level && args.positives_per_epoch.is_none())
+        .then(|| PAIR_DRAWS_PER_EPOCH * pb_frame.super_edges.len());
+    let positives_per_feature_exp_batch = match pair_draws {
+        Some(total) => positives_per_feature_batch(Some(total), expected_visits, n_exp_batches)
+            .max(PER_FEATURE_BATCH),
+        None => {
+            positives_per_feature_batch(args.positives_per_epoch, expected_visits, n_exp_batches)
+        }
+    };
     // --features-per-epoch caps the visits, not the split: each visited
     // feature keeps its draws and the epoch draws fewer in all.
     let features_visited = match args.features_per_epoch {
@@ -634,7 +643,14 @@ pub fn fit_cell_activity_graph_embedding(
             Some(total) => format!(
                 " (--positives-per-epoch {total} split over {expected_visits} expected visits x {n_exp_batches} batch(es))"
             ),
-            None => String::new(),
+            None => match pair_draws {
+                Some(total) => format!(
+                    " (cage-cell: {PAIR_DRAWS_PER_EPOCH} per cell pair, {total} split over \
+                     {expected_visits} expected visits x {n_exp_batches} batch(es), at least \
+                     {PER_FEATURE_BATCH})"
+                ),
+                None => String::new(),
+            },
         },
         features_visited,
         match (inclusion.is_some(), args.features_per_epoch > 0) {

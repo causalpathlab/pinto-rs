@@ -87,6 +87,17 @@ impl FeatureNameMode {
 /// over-sampling can degrade the fit, so `--epochs` carries the budget.
 pub const PER_FEATURE_BATCH: usize = 12;
 
+/// cage-cell's positive draws per cell pair per epoch, unless
+/// `--positives-per-epoch` sets the total: an epoch draws this many times
+/// the pair count, split over the features and batches as that flag's total
+/// is (never below [`PER_FEATURE_BATCH`] per feature and batch), so each
+/// update of a pair's row averages several draws at any data size. Measured
+/// on 9,216 cells at 200 updates per pair: about 1 draw per pair per epoch
+/// gave ARI 0.37, 3.5 gave 0.90; more steps of the smaller draw (400 updates)
+/// gave 0.72 in about the same time, and splitting an epoch into more steps
+/// (a smaller --feature-batch-size) 0.20.
+pub const PAIR_DRAWS_PER_EPOCH: usize = 4;
+
 /// Sibling-pseudobulk negatives drawn per positive super edge per chain level.
 pub const N_NEGATIVES: usize = 8;
 
@@ -169,16 +180,39 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(
         long,
         default_value_t = 100,
-        help = "Training epochs over the feature axis",
+        help = "Training epochs over the feature axis (cage-cell: an upper bound)",
         long_help = "Passes over the feature axis.\n\
                      \n\
                      With a --convergence-window, the run early-stops once the\n\
                      loss flattens over that many epochs.\n\
                      A high value here is a ceiling, not a fixed cost.\n\
                      \n\
-                     Pair with --features-per-epoch to cap per-epoch cost."
+                     Pair with --features-per-epoch to cap per-epoch cost.\n\
+                     \n\
+                     cage-cell trains until --pair-updates is reached, and this\n\
+                     is only an upper bound there (default 1000 for cage-cell)."
     )]
     pub epochs: usize,
+
+    #[arg(
+        long,
+        default_value_t = 200,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
+        help = "cage-cell: train until each pair's embedding is updated this many times, on average",
+        long_help = "cage-cell's training length, in updates per cell pair.\n\
+                     \n\
+                     Each pair has an embedding row of its own, moved only by the\n\
+                     optimiser steps whose draws name it (at most once a step).\n\
+                     Training stops after the step at which the updates summed over\n\
+                     all steps (the distinct pairs each step touched) reach this\n\
+                     number times the pair count, so the budget means the same at\n\
+                     any data size: steps = N x pairs / pairs touched per step.\n\
+                     The log reports the pairs a step touches, the steps this\n\
+                     implies and the steps taken. --epochs caps it;\n\
+                     --convergence-window can end it earlier. cage ignores it.",
+        hide = true
+    )]
+    pub pair_updates: usize,
 
     #[arg(
         long,
@@ -262,7 +296,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      --features-per-epoch does not enter the split: it caps\n\
                      the features visited, each keeps its draws, and the\n\
                      epoch draws fewer than N in all.\n\
-                     --epochs is the usual way to train longer.",
+                     --epochs is the usual way to train longer.\n\
+                     cage-cell, unset: 4 x the number of cell pairs.",
         hide = true
     )]
     pub positives_per_epoch: Option<usize>,
@@ -271,6 +306,8 @@ pub struct CellActivityGraphEmbeddingArgs {
         long,
         default_value_t = 5e-3,
         help = "AdamW learning rate",
+        long_help = "The optimisers' learning rate: 0.005 for cage, 0.02 for cage-cell,\n\
+                     whose pair rows each move only on the steps that draw them.",
         hide = true
     )]
     pub lr: f32,

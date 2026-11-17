@@ -180,7 +180,7 @@ cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
 the coarsened spatial graph, one feature at a time, and places every cell and
 cell pair on it with a small encoder. The encoder trains on the super-cells'
 pairs, each thinned at random to a cell pair's depth, and then only encodes
-the cell pairs; under `cage-cell` it trains on the cell pairs. Where most features are noise, a run takes one of two
+the cell pairs. Where most features are noise, a run takes one of two
 remedies, never both. By default the features are embedded through M learned
 modules (sparsemax membership, Martins and Astudillo 2016), writing the module
 tables. `--feature-modules auto`, the default, takes M from the data: features
@@ -194,12 +194,19 @@ its probability of spatial signal (a jackknifed Moran's I, Moran 1950, through
 the two-group local fdr of Efron et al. 2001), writing
 `{out}.feature_inclusion.parquet`; given alone it turns the default modules
 off, and given beside an explicit `--feature-modules` it is refused.
-`cage-cell` is cage trained on cells and cell
-pairs, for comparison with cell-level methods; it estimates and removes batch
-effects as cage does (`--ignore-batch` runs it without), and takes either
+`cage-cell` is cage trained on cell pairs, for comparison with cell-level
+methods: every within-batch cell pair has an embedding row of its own (the
+latent), scored against other pairs of its batch, and a cell's embedding is
+the mean of its pairs' rows; no encoder is fitted. It trains until each pair's
+row has been updated `--pair-updates` times on average (default 200; the step
+count is that times the pair count over the pairs a step touches, logged), with
+`--epochs` (default 1000 here) a cap, a learning rate of 0.02 (cage's 0.005),
+and an epoch drawing about four positives per pair. It estimates and removes
+batch effects as cage does (`--ignore-batch` runs it without), and takes either
 remedy as cage does: its modules start from pseudobulks built for that alone,
-and training pools the sparse counts of the cells each step draws. `pinto predict`
-applies a cage or cage-cell run to new data; see each command's `--help`.
+and training pools the sparse counts of the cells of the pairs each step draws.
+`pinto predict` applies a cage run to new data (a cage-cell model is refused
+for now); see each command's `--help`.
 A query batch the model trained on (the same `--batch-files` label, or a
 data file of the same name as one of the model's) is divided by the model's
 own batch effects; only a new batch is estimated on the query. `pinto impute` divides the
