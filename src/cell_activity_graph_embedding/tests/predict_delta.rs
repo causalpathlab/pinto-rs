@@ -254,8 +254,7 @@ fn impute_divides_the_reference_by_the_runs_delta(t: &Trained) {
         )
     };
     let manifest = crate::util::metadata::manifest_path(model);
-    let mut meta =
-        crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
     assert!(
         meta.outputs.delta_cells.is_some(),
         "the fit records each cell's batch"
@@ -291,20 +290,11 @@ fn impute_divides_the_reference_by_the_runs_delta(t: &Trained) {
     }
     assert!(n_divided > 0, "nothing was imputed");
 
-    // the table recorded but gone: an error, not the coord_pairs labels
+    // the table recorded but gone: an error
     std::fs::remove_file(crate::util::batch_effects::delta_cells_path(model)).unwrap();
     assert!(
         impute("gone").is_err(),
-        "a recorded cells table that is gone fell back to coord_pairs"
-    );
-
-    // an older model: no table of the cells' batches, so its coord_pairs
-    meta.outputs.delta_cells = None;
-    meta.write(std::path::Path::new(&manifest)).unwrap();
-    let older = impute("older").unwrap();
-    assert!(
-        (&older - &imputed).abs().max() < 1e-6,
-        "the coord_pairs labels divide as the fit's table does"
+        "a recorded cells table that is gone was not an error"
     );
 }
 

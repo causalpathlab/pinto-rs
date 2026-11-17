@@ -507,23 +507,14 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
     })
 }
 
-/// Coordinates per data column from the `lc` run: `{prefix}.cells.parquet`
-/// when the run wrote one, else the endpoints in `{prefix}.coord_pairs.parquet`.
+/// Coordinates per data column from the `lc` run's `{prefix}.cells.parquet`.
 fn read_coords(
     lc_prefix: &str,
     cell_to_col: &HashMap<Box<str>, usize>,
     n_cells: usize,
 ) -> anyhow::Result<Vec<Option<(f32, f32)>>> {
-    use crate::util::parquet_io::{read_cells_from_coord_pairs, read_cells_table};
     let cells = std::path::PathBuf::from(format!("{lc_prefix}.cells.parquet"));
-    let table = if cells.exists() {
-        read_cells_table(&cells, None)?
-    } else {
-        read_cells_from_coord_pairs(
-            std::path::Path::new(&format!("{lc_prefix}.coord_pairs.parquet")),
-            None,
-        )?
-    };
+    let table = crate::util::parquet_io::read_cells_table(&cells, None)?;
     let mut out = vec![None; n_cells];
     let mut found = 0usize;
     for (name, &xy) in table.names.iter().zip(&table.coords) {
@@ -535,11 +526,7 @@ fn read_coords(
     anyhow::ensure!(
         found > 0,
         "no cell of the data has coordinates in {}",
-        if cells.exists() {
-            cells.display().to_string()
-        } else {
-            format!("{lc_prefix}.coord_pairs.parquet")
-        }
+        cells.display()
     );
     Ok(out)
 }

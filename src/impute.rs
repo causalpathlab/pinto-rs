@@ -234,18 +234,14 @@ fn reference_divide(
     ref_data: &SparseIoVec,
 ) -> anyhow::Result<Option<RefDivide>> {
     use crate::util::batch_effects::{
-        cell_batches_from_coord_pairs, read_cell_batches, read_delta, run_delta_cells_path,
-        run_delta_path,
+        delta_cells_path, read_cell_batches, read_delta, run_delta_cells_path, run_delta_path,
     };
     let Some(path) = run_delta_path(model, run)? else {
         return Ok(None);
     };
     let delta = read_delta(&path)?;
     let recorded = run.map(run_delta_cells_path).transpose()?.flatten();
-    let batch_of = match recorded {
-        Some(cells) => read_cell_batches(&cells)?,
-        None => cell_batches_from_coord_pairs(&format!("{model}.coord_pairs.parquet"))?,
-    };
+    let batch_of = read_cell_batches(&recorded.unwrap_or_else(|| delta_cells_path(model)))?;
     let col_of: HashMap<&str, usize> = delta
         .batches
         .iter()

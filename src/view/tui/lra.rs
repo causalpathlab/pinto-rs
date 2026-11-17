@@ -742,10 +742,7 @@ impl App<'_> {
             self.status = "pinto lra is still running".into();
             return;
         }
-        let Some(manifest) = self.base.run.manifest.clone() else {
-            self.status = "pinto lra needs the run's .pinto.json".into();
-            return;
-        };
+        let manifest = self.base.run.manifest.clone();
         let only = self.pairs_to_run();
         if self.lra.is_some() && only.is_empty() {
             self.status = "choose or mark a pair first (space or m), then L runs it".into();

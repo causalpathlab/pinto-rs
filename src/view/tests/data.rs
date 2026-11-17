@@ -124,45 +124,13 @@ fn edges_map_names_to_rows() {
     );
 }
 
+/// A prefix without a manifest is not a run: the error names the file.
 #[test]
-fn a_run_without_a_manifest_is_found_by_file_name() {
-    let dir = tempfile::tempdir().unwrap();
-    let prefix = dir.path().join("run").to_string_lossy().to_string();
-    for name in [
-        "coord_pairs",
-        "L2.propensity",
-        "L2.link_community",
-        "L2.gene_topic",
-        "L10.propensity",
-        "propensity",
-        "link_community",
-        "feature_community",
-        // Neither a level nor the tail: ignored.
-        "draft.propensity",
-    ] {
-        std::fs::write(format!("{prefix}.{name}.parquet"), b"").unwrap();
-    }
-
-    let run = Run::open(&prefix).unwrap();
-    assert!(run.manifest.is_none());
-    let tags: Vec<&str> = run.levels.iter().map(|l| l.tag.as_str()).collect();
-    assert_eq!(tags, ["L2", "L10", "final"]);
-    let l2 = &run.levels[0];
-    assert!(l2
-        .feature_community
-        .as_deref()
-        .unwrap()
-        .ends_with("run.L2.gene_topic.parquet"));
-    assert!(run.levels[1].link_community.is_none());
-    assert!(run.meta.outputs.coord_pairs.is_some());
-}
-
-#[test]
-fn a_prefix_with_neither_manifest_nor_coord_pairs_is_an_error() {
+fn a_prefix_without_a_manifest_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("missing").to_string_lossy().to_string();
     let err = Run::open(&prefix).err().unwrap().to_string();
-    assert!(err.contains("coord_pairs"), "{err}");
+    assert!(err.contains("missing.pinto.json"), "{err}");
 }
 
 /// `view_open` on a relative prefix answers with paths from the root, the

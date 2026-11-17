@@ -188,10 +188,7 @@ impl App<'_> {
             self.status = "lupin is still running".into();
             return;
         }
-        let Some(manifest) = self.base.run.manifest.clone() else {
-            self.status = "lupin needs the run's .pinto.json".into();
-            return;
-        };
+        let manifest = self.base.run.manifest.clone();
         if let Err(e) = lupin::check() {
             self.fail(e);
             return;
@@ -236,9 +233,7 @@ impl App<'_> {
     }
 
     fn start_annotate(&mut self, panel: &Path) {
-        let Some(manifest) = self.base.run.manifest.clone() else {
-            return;
-        };
+        let manifest = self.base.run.manifest.clone();
         let tag = self.base.run.levels[self.cur].tag.clone();
         let out = lupin::annotate_out(&self.base.run.prefix, &tag);
         self.job = Some(lupin::annotate(&manifest, &tag, panel, &out));

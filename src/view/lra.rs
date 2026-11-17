@@ -350,12 +350,11 @@ impl Receivers {
 
     /// Read the receivers of the run `base` shows, made with `options`.
     pub fn open(base: &Base, options: &LraOptions) -> anyhow::Result<Self> {
-        let manifest = base
-            .run
-            .manifest
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("the lra layer needs the run's .pinto.json"))?;
-        Ok(Self::new(RunFrame::open(manifest, options)?, base, options))
+        Ok(Self::new(
+            RunFrame::open(&base.run.manifest, options)?,
+            base,
+            options,
+        ))
     }
 }
 

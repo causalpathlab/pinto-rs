@@ -53,9 +53,7 @@ impl Open {
                     anyhow::anyhow!(
                         "{} has no lra table: run_lra on {} first",
                         run.name(),
-                        run.manifest
-                            .as_deref()
-                            .map_or_else(|| run.prefix.clone(), shown_path)
+                        shown_path(&run.manifest)
                     )
                 })?;
                 self.lra = Some(view);
