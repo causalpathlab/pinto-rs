@@ -40,17 +40,103 @@
 use super::params::SimParams;
 use data_beans::sim::copula::groups::{MIN_GROUP_CELLS, SMALL_LABELS};
 use data_beans::sim::copula::mixture::Prepared as CountDistribution;
-use data_beans::sim::copula::{fit_global_copula, GlobalCopulaArgs, GroupSpec};
+use data_beans::sim::copula::{fit_global_copula, GlobalCopulaArgs, GlobalCopulaFit, GroupSpec};
 use nalgebra::{DMatrix, DVector};
 
 /// The fit's settings: data-beans' defaults for its own reference-data
 /// simulators (`ReferenceFitArgs`).
-pub const HIGHLY_VARIABLE_GENES: usize = 2000;
-pub const COPULA_RANK: usize = 100;
+const HIGHLY_VARIABLE_GENES: usize = 2000;
+const COPULA_RANK: usize = 100;
 /// The least share of each copula gene's latent variance kept as its own.
-pub const COPULA_GENE_VARIANCE_FLOOR: f32 = 1e-3;
+const COPULA_GENE_VARIANCE_FLOOR: f32 = 1e-3;
 /// The least share of cells a gene must be detected in to join the copula.
-pub const COPULA_MIN_DETECTION: f32 = 0.005;
+const COPULA_MIN_DETECTION: f32 = 0.005;
+
+/// Reference data as both simulators fit it: data-beans' fit, the data
+/// set's cell count and content fingerprint, and the cell groups a cell
+/// state or identity bin may take (all but the pool of small labels).
+pub struct FittedReferenceData {
+    pub fit: GlobalCopulaFit,
+    pub n_cells: usize,
+    pub content_fingerprint: String,
+    pub usable_cell_groups: Vec<usize>,
+}
+
+/// Open the reference data at `path` as pinto opens data files and fit it
+/// in the cell groups `labels` names (one per cell, or `cell<TAB>label`
+/// lines), else in `n_cell_groups` k-means groups.
+pub fn fit_reference_data(
+    path: &str,
+    labels: Option<&str>,
+    n_cell_groups: usize,
+) -> anyhow::Result<FittedReferenceData> {
+    let data = data_beans::convert::try_open_or_convert(path)?;
+    let n_cells = data
+        .num_columns()
+        .ok_or_else(|| anyhow::anyhow!("--reference-data {path}: its cell count is not stored"))?;
+    let fit = fit_global_copula(&GlobalCopulaArgs {
+        sc: &data,
+        n_hvg: HIGHLY_VARIABLE_GENES,
+        copula_rank: COPULA_RANK,
+        regularization: COPULA_GENE_VARIANCE_FLOOR,
+        hvg_min_detection: COPULA_MIN_DETECTION,
+        groups: match labels {
+            Some(l) => GroupSpec::Labels(l.into()),
+            None => GroupSpec::Cluster(n_cell_groups),
+        },
+    })?;
+    // the pooled small labels are no one cell type
+    let usable_cell_groups = (0..fit.groups.len())
+        .filter(|&k| fit.groups[k].name != SMALL_LABELS)
+        .collect();
+    let content_fingerprint = content_fingerprint(&fit.gene_names, n_cells, &fit.mu_hat);
+    Ok(FittedReferenceData {
+        fit,
+        n_cells,
+        content_fingerprint,
+        usable_cell_groups,
+    })
+}
+
+/// A gene's copula latent at a cell or spot of copula factors `factors`
+/// and own draw `own`: `L[h] · η + σ[h] · ε` for the gene's copula row `h`
+/// of `loadings` and `gene_sd`, `ε` for a gene outside the copula.
+pub fn copula_latent(
+    loadings: &DMatrix<f32>,
+    gene_sd: &DVector<f32>,
+    row: Option<usize>,
+    factors: &[f64],
+    own: f64,
+) -> f64 {
+    match row {
+        Some(h) => {
+            let from_factors: f64 = factors
+                .iter()
+                .enumerate()
+                .map(|(k, f)| f64::from(loadings[(h, k)]) * f)
+                .sum();
+            from_factors + f64::from(gene_sd[h]) * own
+        }
+        None => own,
+    }
+}
+
+/// A count at quantile `u` of a cell group's count distribution of a gene
+/// of mean count `group_mean`, its counts scaled to mean `mean`;
+/// `poisson(u, mean)` where the group never shows the gene.
+pub fn count_at_quantile(
+    distribution: &CountDistribution,
+    group_mean: f64,
+    u: f64,
+    mean: f64,
+    poisson: impl Fn(f64, f64) -> f64,
+) -> f64 {
+    if group_mean > 0.0 {
+        f64::from(distribution.inverse_cdf(u, mean / group_mean))
+    } else {
+        poisson(u, mean)
+    }
+}
 
 /// Cell groups the reference data is fitted in without labels, at least.
 pub const MIN_CELL_GROUPS: usize = 8;
@@ -79,11 +165,11 @@ pub struct ReferenceData {
     pub cell_group_of_state: Vec<usize>,
     /// `mean_count_by_state[c][g]`: state `c`'s mean count of gene `g`.
     pub mean_count_by_state: Vec<Vec<f64>>,
-    /// `log_mean_count_by_state[c][g]`: its log, the mean floored at the
+    /// `floored_mean_count_by_state[c][g]`: that mean floored at the
     /// detection limit of state `c`'s cell group (half a count over its
     /// cells, [`detection_limit`]): a gene its cells never show is below
-    /// that, not at `−∞`. The cell-type term of the log mean.
-    pub log_mean_count_by_state: Vec<Vec<f64>>,
+    /// that, not at 0. Its log is the cell-type term of the log mean.
+    pub floored_mean_count_by_state: Vec<Vec<f64>>,
     /// `count_distribution_by_state[c][g]`: its count distribution.
     pub count_distribution_by_state: Vec<Vec<CountDistribution>>,
     /// `depth_coupling_by_state[c][g]`: gene `g`'s latent correlation with
@@ -102,8 +188,11 @@ pub struct ReferenceData {
     /// dispersion of the same variance).
     pub pooled_mean_count: Vec<f64>,
     pub pooled_extra_poisson_variance: Vec<f64>,
-    /// The derived log-count variance the nuisance is a share of.
+    /// The derived log-count variance the nuisance is a share of, and the
+    /// genes and weights it and the realized PVE are read over
+    /// ([`pve_genes`]).
     pub log_count_variance: f64,
+    pub pve_genes: Vec<(usize, f64)>,
     /// A hash of the reference data's content (genes, cells, every gene's
     /// mean count).
     pub content_fingerprint: String,
@@ -128,26 +217,12 @@ impl ReferenceData {
             "--reference-data needs pve_type > 0: the nuisance is a share of the reference \
              data's variance between cell states"
         );
-        let data = data_beans::convert::try_open_or_convert(path)?;
-        let n_cells = data.num_columns().ok_or_else(|| {
-            anyhow::anyhow!("--reference-data {path}: its cell count is not stored")
-        })?;
-        let grouping = match labels {
-            Some(l) => GroupSpec::Labels(l.into()),
-            None => GroupSpec::Cluster(MIN_CELL_GROUPS.max(n_states)),
-        };
-        let fit = fit_global_copula(&GlobalCopulaArgs {
-            sc: &data,
-            n_hvg: HIGHLY_VARIABLE_GENES,
-            copula_rank: COPULA_RANK,
-            regularization: COPULA_GENE_VARIANCE_FLOOR,
-            hvg_min_detection: COPULA_MIN_DETECTION,
-            groups: grouping,
-        })?;
-        // the pooled small labels are no one cell type: never a state's
-        let mut largest_first: Vec<usize> = (0..fit.groups.len())
-            .filter(|&k| fit.groups[k].name != SMALL_LABELS)
-            .collect();
+        let FittedReferenceData {
+            fit,
+            n_cells,
+            content_fingerprint,
+            usable_cell_groups: mut largest_first,
+        } = fit_reference_data(path, labels, MIN_CELL_GROUPS.max(n_states))?;
         largest_first.sort_by(|&a, &b| {
             fit.groups[b]
                 .share
@@ -172,10 +247,10 @@ impl ReferenceData {
             .iter()
             .map(|&k| fit.groups[k].marginals.iter().map(|m| m.mean()).collect())
             .collect();
-        let log_mean_count_by_state: Vec<Vec<f64>> = mean_count_by_state
+        let floored_mean_count_by_state: Vec<Vec<f64>> = mean_count_by_state
             .iter()
             .zip(&floor_by_state)
-            .map(|(means, &floor)| means.iter().map(|m| m.max(floor).ln()).collect())
+            .map(|(means, &floor)| means.iter().map(|m| m.max(floor)).collect())
             .collect();
         let count_distribution_by_state = cell_group_of_state
             .iter()
@@ -203,11 +278,10 @@ impl ReferenceData {
         }
         let pooled_mean_count: Vec<f64> = fit.marginals.iter().map(|m| m.mean()).collect();
         let pooled_extra_poisson_variance = fit.marginals.iter().map(|m| m.rate_cv2()).collect();
-        let genes = pve_genes(&log_mean_count_by_state, spot_share_by_state, &detected);
+        let pve_genes = pve_genes(&floored_mean_count_by_state, spot_share_by_state, &detected);
         let log_count_variance =
-            cell_type_log_count_variance(&log_mean_count_by_state, spot_mixtures, &genes)
+            cell_type_log_count_variance(&floored_mean_count_by_state, spot_mixtures, &pve_genes)
                 / p.pve_type;
-        let content_fingerprint = content_fingerprint(&fit.gene_names, n_cells, &fit.mu_hat);
         Ok(Self {
             gene_names: fit.gene_names,
             n_cells,
@@ -218,7 +292,7 @@ impl ReferenceData {
                 .collect(),
             cell_group_of_state,
             mean_count_by_state,
-            log_mean_count_by_state,
+            floored_mean_count_by_state,
             count_distribution_by_state,
             depth_coupling_by_state,
             copula_row_of_gene: fit.hvg_pos,
@@ -228,6 +302,7 @@ impl ReferenceData {
             pooled_mean_count,
             pooled_extra_poisson_variance,
             log_count_variance,
+            pve_genes,
             content_fingerprint,
         })
     }
@@ -291,17 +366,17 @@ pub const PVE_GENES: usize = 2000;
 
 /// The [`PVE_GENES`] genes and their weights, by decreasing weight.
 pub fn pve_genes(
-    log_mean_count_by_state: &[Vec<f64>],
+    floored_mean_count_by_state: &[Vec<f64>],
     spot_share_by_state: &[f64],
     detected: &[bool],
 ) -> Vec<(usize, f64)> {
     let mut genes: Vec<(usize, f64)> = (0..detected.len())
         .filter(|&g| detected[g])
         .map(|g| {
-            let weight: f64 = log_mean_count_by_state
+            let weight: f64 = floored_mean_count_by_state
                 .iter()
                 .zip(spot_share_by_state)
-                .map(|(m, share)| share * m[g].exp())
+                .map(|(m, share)| share * m[g])
                 .sum();
             (g, weight)
         })
@@ -313,11 +388,11 @@ pub fn pve_genes(
 
 /// `T`: the variance over spots of a gene's log mixture mean count,
 /// `ln Σ_c w[i,c] m[c,g]` with each state's mean floored at its detection
-/// limit (`log_mean_count_by_state`), averaged over `genes` at their
+/// limit (`floored_mean_count_by_state`), averaged over `genes` at their
 /// weights ([`pve_genes`]): what the realized PVE measures the cell-type
 /// term by, so the nuisance's shares of it are its targets in expectation.
 pub fn cell_type_log_count_variance(
-    log_mean_count_by_state: &[Vec<f64>],
+    floored_mean_count_by_state: &[Vec<f64>],
     spot_mixtures: &[Vec<Vec<f64>>],
     genes: &[(usize, f64)],
 ) -> f64 {
@@ -331,8 +406,8 @@ pub fn cell_type_log_count_variance(
                 .map(|mixture| {
                     mixture
                         .iter()
-                        .zip(log_mean_count_by_state)
-                        .map(|(w, m)| w * m[g].exp())
+                        .zip(floored_mean_count_by_state)
+                        .map(|(w, m)| w * m[g])
                         .sum::<f64>()
                         .ln()
                 })

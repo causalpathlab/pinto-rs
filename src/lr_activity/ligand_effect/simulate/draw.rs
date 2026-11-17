@@ -316,63 +316,41 @@ fn draw_gene(
     c: &mut GeneCounts,
     rng: &mut SmallRng,
 ) {
-    if let Some(gene_in_reference_data) = reference_data {
-        return draw_gene_from_reference_data(run, g, d, gene_in_reference_data, c, rng);
-    }
     let (lifts, latent, planted) = (d.lifts, d.latent, d.planted);
     let (tissue, base, scen) = (run.tissue, run.base, run.scen);
     let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
     let ng = base.target_weights.len();
-    let t_star = &latent.t;
     let w = base.target_weights[g];
     let s = if w < 0.0 { -1.0 } else { 1.0 };
     let lift = &lifts[(w < 0.0) as usize];
     let noise_var = log_rate_noise(scen.effect_pve, scen.response_field_pve);
+    let rank = reference_data.map_or(0, |(r, _, _)| r.copula_rank());
     for i in 0..tissue.n() {
         let b = bin[i];
-        let noise = noise_lift(rng, noise_var);
-        let r0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i] * noise;
-        let u: f64 = rng.random();
+        let tissue_mean = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
+        // the receiver's quantile and its mean before the effect: through the
+        // reference data's copula, its spread its own; or a uniform and the
+        // log-normal noise
+        let (u, mean) = match reference_data {
+            Some((r, j, factors)) => {
+                let own: f64 = StandardNormal.sample(rng);
+                let factors = factors.get(i * rank..(i + 1) * rank).unwrap_or(&[]);
+                (
+                    crate::simulate::draw::phi(r.copula_latent(j, factors, own)),
+                    tissue_mean,
+                )
+            }
+            None => {
+                let noise = noise_lift(rng, noise_var);
+                let u: f64 = rng.random();
+                (u, tissue_mean * noise)
+            }
+        };
         let th = s * planted[i];
-        let q = |l: f64| poisson_quantile(u, r0 * l.exp());
-        let hi = q(th);
-        let lo = if th == 0.0 { hi } else { q(0.0) };
-        c.c1[i] = hi;
-        c.c0[i] = lo;
-        c.obs[i] = if t_star[i] { hi } else { lo };
-    }
-}
-
-/// [`draw_gene`] for a gene the reference data `r` has, as its `j`-th, at the
-/// receivers' copula factors `eta` (`r.copula_rank()` each): its count distribution
-/// in each receiver's bin's group, its rates scaled to the tissue's mean
-/// ([`super::reference_data`]); no log-normal noise, the reference's own spread
-/// in its place.
-fn draw_gene_from_reference_data(
-    run: &Run<'_>,
-    g: usize,
-    d: &ProgramDraw<'_>,
-    (r, j, copula_factors): (&ReferenceProgramGenes, usize, &[f64]),
-    c: &mut GeneCounts,
-    rng: &mut SmallRng,
-) {
-    let (lifts, latent, planted) = (d.lifts, d.latent, d.planted);
-    let (tissue, base) = (run.tissue, run.base);
-    let (sf, bin) = (&tissue.size_factor, &tissue.identity_bin);
-    let ng = base.target_weights.len();
-    let w = base.target_weights[g];
-    let s = if w < 0.0 { -1.0 } else { 1.0 };
-    let lift = &lifts[(w < 0.0) as usize];
-    let rank = r.copula_rank();
-    for i in 0..tissue.n() {
-        let b = bin[i];
-        let m0 = sf[i] * base.target_bin_means[b * ng + g] * lift[i];
-        let own: f64 = StandardNormal.sample(rng);
-        let factors = copula_factors.get(i * rank..(i + 1) * rank).unwrap_or(&[]);
-        let z = r.copula_latent(j, factors, own);
-        let u = crate::simulate::draw::phi(z);
-        let th = s * planted[i];
-        let q = |l: f64| r.count_at_quantile(b, j, u, m0 * l.exp(), poisson_quantile);
+        let q = |l: f64| match reference_data {
+            Some((r, j, _)) => r.count_at_quantile(b, j, u, mean * l.exp(), poisson_quantile),
+            None => poisson_quantile(u, mean * l.exp()),
+        };
         let hi = q(th);
         let lo = if th == 0.0 { hi } else { q(0.0) };
         c.c1[i] = hi;

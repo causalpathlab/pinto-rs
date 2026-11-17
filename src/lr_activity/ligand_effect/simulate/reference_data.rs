@@ -23,13 +23,11 @@
 //! does not have keeps the Poisson log-normal draw.
 
 use crate::simulate::reference_data::{
-    content_fingerprint, COPULA_GENE_VARIANCE_FLOOR, COPULA_MIN_DETECTION, COPULA_RANK,
-    HIGHLY_VARIABLE_GENES, MIN_CELL_GROUPS,
+    copula_latent, count_at_quantile, fit_reference_data, FittedReferenceData, MIN_CELL_GROUPS,
 };
 use crate::util::common::HashMap;
-use data_beans::sim::copula::groups::SMALL_LABELS;
 use data_beans::sim::copula::mixture::Prepared as CountDistribution;
-use data_beans::sim::copula::{fit_global_copula, GlobalCopulaArgs, GroupSpec};
+use nalgebra::{DMatrix, DVector};
 
 /// The reference data, fitted, kept for the program genes alone.
 pub struct ReferenceProgramGenes {
@@ -47,10 +45,12 @@ pub struct ReferenceProgramGenes {
     /// count and count distribution in cell group `k`.
     mean_count: Vec<Vec<f64>>,
     count_distribution: Vec<Vec<CountDistribution>>,
-    /// Kept gene `j`'s copula loadings and own standard deviation, when it
-    /// is in the copula.
-    copula_loadings: Vec<Option<(Vec<f64>, f64)>>,
-    copula_rank: usize,
+    /// Kept gene `j`'s row of the copula, when it is in it, and the copula's
+    /// loadings (copula genes × rank) and each copula gene's own standard
+    /// deviation.
+    copula_row: Vec<Option<usize>>,
+    copula_loadings: DMatrix<f32>,
+    copula_gene_sd: DVector<f32>,
 }
 
 impl ReferenceProgramGenes {
@@ -66,21 +66,12 @@ impl ReferenceProgramGenes {
         bin_mean_counts: &[f64],
         n_bins: usize,
     ) -> anyhow::Result<Self> {
-        let data = data_beans::convert::try_open_or_convert(path)?;
-        let n_cells = data.num_columns().ok_or_else(|| {
-            anyhow::anyhow!("--reference-data {path}: its cell count is not stored")
-        })?;
-        let fit = fit_global_copula(&GlobalCopulaArgs {
-            sc: &data,
-            n_hvg: HIGHLY_VARIABLE_GENES,
-            copula_rank: COPULA_RANK,
-            regularization: COPULA_GENE_VARIANCE_FLOOR,
-            hvg_min_detection: COPULA_MIN_DETECTION,
-            groups: match labels {
-                Some(l) => GroupSpec::Labels(l.into()),
-                None => GroupSpec::Cluster(MIN_CELL_GROUPS),
-            },
-        })?;
+        let FittedReferenceData {
+            fit,
+            n_cells,
+            content_fingerprint,
+            usable_cell_groups: cell_groups_used,
+        } = fit_reference_data(path, labels, MIN_CELL_GROUPS)?;
         // the tissue's program genes the reference data has, by exact name:
         // (the tissue's position, the reference data's)
         let reference_gene_by_name: HashMap<&str, usize> = fit
@@ -101,9 +92,6 @@ impl ReferenceProgramGenes {
             genes.len(),
             fit.n_genes
         );
-        let cell_groups_used: Vec<usize> = (0..fit.groups.len())
-            .filter(|&k| fit.groups[k].name != SMALL_LABELS)
-            .collect();
         anyhow::ensure!(
             !cell_groups_used.is_empty(),
             "--reference-data {path}: no cell group to use"
@@ -124,18 +112,9 @@ impl ReferenceProgramGenes {
                     .collect()
             })
             .collect();
-        let loadings = &fit.copula.factor;
-        let copula_loadings = kept
+        let copula_row = kept
             .iter()
-            .map(|&(_, r)| {
-                fit.hvg_pos[r].map(|h| {
-                    let h = h as usize;
-                    let row = (0..loadings.ncols())
-                        .map(|k| f64::from(loadings[(h, k)]))
-                        .collect();
-                    (row, f64::from(fit.copula.ridge_sd[h]))
-                })
-            })
+            .map(|&(_, r)| fit.hvg_pos[r].map(|h| h as usize))
             .collect();
         let bin_profiles: Vec<Vec<f64>> = (0..n_bins)
             .map(|b| {
@@ -171,12 +150,13 @@ impl ReferenceProgramGenes {
                 .map(|&k| (fit.groups[k].name.clone(), fit.groups[k].share))
                 .collect(),
             n_cells,
-            content_fingerprint: content_fingerprint(&fit.gene_names, n_cells, &fit.mu_hat),
+            content_fingerprint,
             position_of_gene,
             mean_count,
             count_distribution,
-            copula_loadings,
-            copula_rank: loadings.ncols(),
+            copula_row,
+            copula_loadings: fit.copula.factor,
+            copula_gene_sd: fit.copula.ridge_sd,
         })
     }
 
@@ -205,21 +185,24 @@ impl ReferenceProgramGenes {
 
     /// Whether kept gene `j` is in the copula.
     pub fn in_copula(&self, j: usize) -> bool {
-        self.copula_loadings[j].is_some()
+        self.copula_row[j].is_some()
     }
 
     /// The copula's rank: how many factors a receiver draws.
     pub fn copula_rank(&self) -> usize {
-        self.copula_rank
+        self.copula_loadings.ncols()
     }
 
     /// Gene `j`'s copula latent at a receiver of copula factors `factors`
-    /// and own draw `own`.
+    /// and own draw `own` ([`copula_latent`]).
     pub fn copula_latent(&self, j: usize, factors: &[f64], own: f64) -> f64 {
-        match &self.copula_loadings[j] {
-            Some((row, sd)) => row.iter().zip(factors).map(|(a, b)| a * b).sum::<f64>() + sd * own,
-            None => own,
-        }
+        copula_latent(
+            &self.copula_loadings,
+            &self.copula_gene_sd,
+            self.copula_row[j],
+            factors,
+            own,
+        )
     }
 
     /// Gene `j`'s count at quantile `u` in bin `b`'s cell group, its counts
@@ -234,12 +217,13 @@ impl ReferenceProgramGenes {
         poisson: impl Fn(f64, f64) -> f64,
     ) -> f64 {
         let k = self.cell_group_of_bin[b];
-        let group_mean = self.mean_count[k][j];
-        if group_mean > 0.0 {
-            f64::from(self.count_distribution[k][j].inverse_cdf(u, mean / group_mean))
-        } else {
-            poisson(u, mean)
-        }
+        count_at_quantile(
+            &self.count_distribution[k][j],
+            self.mean_count[k][j],
+            u,
+            mean,
+            poisson,
+        )
     }
 }
 

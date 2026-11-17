@@ -307,10 +307,12 @@ impl Components {
             .map(|(t, x)| (w(Term::Type) * t + w(Term::Inter) * x).exp())
             .collect();
         let outside = self.a + w(Term::Donor) * self.donor + w(Term::Section) * self.section;
+        // no noise term (an empty `noise`) is noise 0 at every spot
         mixture
             .iter()
-            .zip(&self.noise)
-            .map(|(wi, &z)| {
+            .enumerate()
+            .map(|(i, wi)| {
+                let z = self.noise.get(i).copied().unwrap_or(0.0);
                 let inside: f64 = wi.iter().zip(&e).map(|(a, b)| a * b).sum();
                 outside + w(Term::Noise) * z + inside.ln()
             })

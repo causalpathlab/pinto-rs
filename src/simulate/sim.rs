@@ -9,7 +9,7 @@ use super::expression::{
 use super::field::mean_sd;
 use super::panel::{build_panel, Coords, Section};
 use super::params::SimParams;
-use super::reference_data::ReferenceData;
+use super::reference_data::{copula_latent, count_at_quantile, ReferenceData};
 use super::rng::{rng, Stream};
 use super::truth::{plant, Truth};
 use rayon::prelude::*;
@@ -129,11 +129,16 @@ impl Sim {
         if let Some(r) = &self.reference_data {
             return Components {
                 a: 0.0,
-                ty: r.log_mean_count_by_state.iter().map(|m| m[g]).collect(),
+                ty: r
+                    .floored_mean_count_by_state
+                    .iter()
+                    .map(|m| m[g].ln())
+                    .collect(),
                 inter: nu.inter[g].iter().map(|x| sc.inter * x[d]).collect(),
                 donor: sc.donor * nu.donor[g][d],
                 section: sc.section * nu.section[g][s],
-                noise: vec![0.0; self.sections[s].n()],
+                // the reference data's spread is its own: no noise term
+                noise: Vec::new(),
             };
         }
         let (shift, scale) = sc.ty[g];
@@ -207,11 +212,7 @@ impl Sim {
     /// ([`super::reference_data::pve_genes`]).
     pub fn realized_pve_expressed_genes(&self) -> Option<[f64; 5]> {
         let r = self.reference_data.as_ref()?;
-        let share = spot_share_by_state(&self.truth);
-        let (genes, weight): (Vec<usize>, Vec<f64>) =
-            super::reference_data::pve_genes(&r.log_mean_count_by_state, &share, &r.detected)
-                .into_iter()
-                .unzip();
+        let (genes, weight): (Vec<usize>, Vec<f64>) = r.pve_genes.iter().copied().unzip();
         Some(self.realized_pve_over(&genes, &weight))
     }
 
@@ -274,29 +275,24 @@ impl Sim {
                 (0..n).filter_map(move |i| {
                     let own: f64 =
                         rand_distr::Distribution::sample(&rand_distr::StandardNormal, &mut unique);
-                    let latent = match row {
-                        Some(h) => {
-                            let from_factors: f64 = (0..rank)
-                                .map(|k| {
-                                    f64::from(r.copula_loadings[(h, k)])
-                                        * copula_factors[i * rank + k]
-                                })
-                                .sum();
-                            from_factors + f64::from(r.copula_gene_sd[h]) * own
-                        }
-                        None => own,
-                    };
+                    let latent = copula_latent(
+                        &r.copula_loadings,
+                        &r.copula_gene_sd,
+                        row,
+                        &copula_factors[i * rank..(i + 1) * rank],
+                        own,
+                    );
                     let c = dominant[i];
                     let rho = r.depth_coupling_by_state[c][g].clamp(-1.0, 1.0);
                     let u = phi(rho * zd[i] + (1.0 - rho * rho).sqrt() * latent);
-                    let state_mean = r.mean_count_by_state[c][g];
-                    let y = if state_mean > 0.0 {
-                        r.count_distribution_by_state[c][g].inverse_cdf(u, mu[i] / state_mean)
-                    } else {
-                        // a gene the group never shows: Poisson at its mean
-                        nb_quantile(u, mu[i], 0.0)
-                    };
-                    (y > 0).then_some((g as u64, i as u64, y as f32))
+                    let y = count_at_quantile(
+                        &r.count_distribution_by_state[c][g],
+                        r.mean_count_by_state[c][g],
+                        u,
+                        mu[i],
+                        |u, mean| f64::from(nb_quantile(u, mean, 0.0)),
+                    );
+                    (y > 0.0).then_some((g as u64, i as u64, y as f32))
                 })
             })
             .collect()
