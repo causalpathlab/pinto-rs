@@ -5,6 +5,9 @@
 //! manifest is refused at once. The staging itself (every kind of output,
 //! failures part way, other runs' manifests) is `util::staging`'s tests.
 
+mod staging;
+
+use staging::assert_none_staged;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::OnceLock;
@@ -68,30 +71,6 @@ fn names(dir: &Path) -> Vec<String> {
         .unwrap_or_default();
     n.sort();
     n
-}
-
-/// Every name in `dir` and below that is a staging folder or names one.
-fn staged_anywhere(dir: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.to_string_lossy().contains(".partial-") {
-            found.push(p.display().to_string());
-        }
-        if p.is_dir() {
-            found.extend(staged_anywhere(&p));
-        } else if p.extension().is_some_and(|x| x == "json")
-            && std::fs::read_to_string(&p).unwrap().contains(".partial-")
-        {
-            found.push(format!("{} names a staged path", p.display()));
-        }
-    }
-    found
-}
-
-fn assert_none_staged(dir: &Path) {
-    let found = staged_anywhere(dir);
-    assert!(found.is_empty(), "{found:?}");
 }
 
 /// A small simulation into `out`, its seed `seed`.

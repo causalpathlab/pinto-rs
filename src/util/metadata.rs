@@ -698,7 +698,7 @@ impl PintoMetadata {
 
     /// Read a run's manifest, set one output slot, write it back.
     ///
-    /// Both `lr-activity` modes back-fill the upstream manifest this way;
+    /// Both `pinto lra` modes back-fill the upstream manifest this way;
     /// keeping it in one place stops the two call sites from drifting on
     /// error handling (one used to swallow write failures silently).
     pub fn backfill_output(path: &Path, set: impl FnOnce(&mut OutputFiles) + Send + 'static) {

@@ -1,4 +1,4 @@
-//! Parquet writer for `pinto lr-activity` results.
+//! Parquet writer for `pinto lra`'s co-expression results.
 
 use crate::util::common::{HashMap, HashSet};
 use legume_numeric::matrix::parquet::*;

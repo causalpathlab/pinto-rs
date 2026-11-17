@@ -1,4 +1,4 @@
-//! Parquet + TSV readers for `pinto lr-activity`.
+//! Parquet + TSV readers for `pinto lra`'s co-expression methods.
 //!
 //! Reads:
 //! - `{lc_prefix}.link_community.parquet` — per-edge (left_cell, right_cell, community).
