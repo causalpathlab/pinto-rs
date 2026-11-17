@@ -123,10 +123,9 @@ pub fn read_pair_table(file_path: &str, community: bool) -> anyhow::Result<Vec<E
 }
 
 /// Attach per-edge batch labels from `{prefix}.coord_pairs.parquet` when the
-/// fit was multi-batch: each edge's two sides' batches, and its own batch
-/// when both sides share it. Matches edges by position (row order); only
-/// the batch columns are read. A table without them leaves the edges as
-/// they are.
+/// fit was multi-batch: an edge's batch when both sides share it. Matches
+/// edges by position (row order); only the batch columns are read. A table
+/// without them leaves the edges as they are.
 pub fn attach_batch_from_coord_pairs(
     edges: &mut [EdgeRecord],
     coord_pairs_path: &str,
@@ -149,8 +148,7 @@ pub fn attach_batch_from_coord_pairs(
     // within-batch activity; cross-batch edges are dropped downstream by
     // assigning the joint label `None`.
     for (edge, (l, r)) in edges.iter_mut().zip(left.into_iter().zip(right)) {
-        edge.batch = (l == r).then(|| l.clone());
-        edge.side_batches = Some((l, r));
+        edge.batch = (l == r).then_some(l);
     }
     Ok(())
 }

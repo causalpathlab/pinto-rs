@@ -238,31 +238,30 @@ pub fn write_propensity_matrix(
     propensity: &Mat,
     cell_names: &[Box<str>],
 ) -> anyhow::Result<()> {
-    write_propensity_with(prefix, propensity, cell_names, &[], None)
+    write_propensity_with(prefix, propensity, cell_names, None)
 }
 
-/// [`write_propensity_matrix`] with the columns `extra` (named
-/// `extra_names`, one row per cell) after `entropy`: the coordinates
-/// `pinto apply propensity` appends.
+/// [`write_propensity_matrix`] with the columns `extra` (their names, and
+/// one row per cell) after `entropy`: the coordinates `pinto apply
+/// propensity` appends.
 pub fn write_propensity_with(
     prefix: &str,
     propensity: &Mat,
     cell_names: &[Box<str>],
-    extra_names: &[Box<str>],
-    extra: Option<&Mat>,
+    extra: Option<(&[Box<str>], &Mat)>,
 ) -> anyhow::Result<()> {
     let n_cells = propensity.nrows();
     let k = propensity.ncols();
-    let n_extra = extra.map_or(0, |m| m.ncols());
-    anyhow::ensure!(
-        n_extra == extra_names.len(),
-        "{prefix}: {n_extra} extra columns, {} names",
-        extra_names.len()
-    );
-    anyhow::ensure!(
-        extra.is_none_or(|m| m.nrows() == n_cells),
-        "{prefix}: extra columns of another row count than the {n_cells} cells"
-    );
+    if let Some((names, m)) = extra {
+        anyhow::ensure!(
+            m.ncols() == names.len() && m.nrows() == n_cells,
+            "{prefix}: extra columns {} x {} for {} names and {n_cells} cells",
+            m.nrows(),
+            m.ncols(),
+            names.len()
+        );
+    }
+    let n_extra = extra.map_or(0, |(_, m)| m.ncols());
     let cluster_col = dominant_cluster_rows(propensity);
     let entropy_vec = shannon_entropy_rows(propensity);
 
@@ -274,7 +273,11 @@ pub fn write_propensity_with(
     let mut col_names: Vec<Box<str>> = (0..k).map(|i| format!("C{i}").into_boxed_str()).collect();
     col_names.push("cluster".into());
     col_names.push("entropy".into());
-    col_names.extend(extra_names.iter().cloned());
+    col_names.extend(
+        extra
+            .into_iter()
+            .flat_map(|(names, _)| names.iter().cloned()),
+    );
 
     let mut combined = Mat::zeros(n_cells, k + 2 + n_extra);
     combined.columns_range_mut(0..k).copy_from(propensity);
@@ -282,8 +285,8 @@ pub fn write_propensity_with(
     combined
         .column_mut(k + 1)
         .copy_from_slice(entropy_vec.as_slice());
-    if let Some(extra) = extra {
-        combined.columns_range_mut(k + 2..).copy_from(extra);
+    if let Some((_, m)) = extra {
+        combined.columns_range_mut(k + 2..).copy_from(m);
     }
     combined.to_parquet_with_names(
         &format!("{}.propensity.parquet", prefix),

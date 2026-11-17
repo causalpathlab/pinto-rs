@@ -184,7 +184,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
                         .copy_from(&left_coords.row(pair_idx));
                 }
             }
-            Some((coord_column_names.clone(), vertex_coords))
+            Some(vertex_coords)
         }
         None => None,
     };
@@ -192,8 +192,7 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
         &args.out,
         &prop_nk,
         &vertices,
-        coords.as_ref().map_or(&[][..], |(names, _)| names),
-        coords.as_ref().map(|(_, m)| m),
+        args.coord_column_names.as_deref().zip(coords.as_ref()),
     )?;
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads

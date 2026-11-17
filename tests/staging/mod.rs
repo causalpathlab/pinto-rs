@@ -4,7 +4,7 @@
 use std::path::Path;
 
 /// Every name in `dir` and below that is a staging folder or names one.
-pub fn staged_anywhere(dir: &Path) -> Vec<String> {
+fn staged_anywhere(dir: &Path) -> Vec<String> {
     let mut found = Vec::new();
     for e in std::fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
