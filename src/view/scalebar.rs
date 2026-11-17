@@ -7,6 +7,7 @@
 
 use super::color::Theme;
 use super::render::{Frame, Viewport};
+use legume_tui::map::text::{tiny_glyph, TINY_H, TINY_W};
 use std::path::{Path, PathBuf};
 
 /// What one world unit is.
@@ -194,7 +195,7 @@ pub fn draw(frame: &mut Frame, vp: &Viewport, units: Units, label: bool) {
     let margin = 6 * s;
     let thick = 2 * s;
     let y_bar = frame.h as i64 - margin - thick;
-    let y_text = y_bar - 3 * s - GLYPH_H * s;
+    let y_text = y_bar - 3 * s - TINY_H * s;
     if len_px < 2 || y_text < 0 {
         return;
     }
@@ -229,7 +230,7 @@ pub fn label(frame: &mut Frame, (x, y): (i64, i64), s: i64, text: &str) {
 fn write(frame: &mut Frame, (x0, y): (i64, i64), s: i64, pad: i64, colour: [u8; 3], text: &str) {
     let mut x = x0;
     for ch in text.chars() {
-        if let Some(rows) = glyph(ch) {
+        if let Some(rows) = tiny_glyph(ch) {
             for (gy, row) in rows.iter().enumerate() {
                 for (gx, bit) in row.bytes().enumerate() {
                     if bit == b'#' {
@@ -239,7 +240,7 @@ fn write(frame: &mut Frame, (x0, y): (i64, i64), s: i64, pad: i64, colour: [u8; 
                 }
             }
         }
-        x += (GLYPH_W + 1) * s;
+        x += (TINY_W + 1) * s;
     }
 }
 
@@ -252,60 +253,4 @@ fn fill(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, c: [u8; 3]) {
             frame.rgba[o..o + 3].copy_from_slice(&c);
         }
     }
-}
-
-const GLYPH_W: i64 = 5;
-const GLYPH_H: i64 = 7;
-
-/// 5×7 glyphs for the characters a label can hold.
-pub(super) fn glyph(c: char) -> Option<[&'static str; 7]> {
-    Some(match c {
-        '0' => [
-            " ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### ",
-        ],
-        '1' => [
-            "  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### ",
-        ],
-        '2' => [
-            " ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####",
-        ],
-        '3' => [
-            "#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### ",
-        ],
-        '4' => [
-            "   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # ",
-        ],
-        '5' => [
-            "#####", "#    ", "#### ", "    #", "    #", "#   #", " ### ",
-        ],
-        '6' => [
-            "  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### ",
-        ],
-        '7' => [
-            "#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   ",
-        ],
-        '8' => [
-            " ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### ",
-        ],
-        '9' => [
-            " ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  ",
-        ],
-        '.' => [
-            "     ", "     ", "     ", "     ", "     ", " ##  ", " ##  ",
-        ],
-        'µ' => [
-            "     ", "     ", "#   #", "#   #", "#   #", "#### ", "#    ",
-        ],
-        'm' => [
-            "     ", "     ", "## # ", "# # #", "# # #", "# # #", "# # #",
-        ],
-        'p' => [
-            "     ", "     ", "#### ", "#   #", "#### ", "#    ", "#    ",
-        ],
-        'x' => [
-            "     ", "     ", "#   #", " # # ", "  #  ", " # # ", "#   #",
-        ],
-        ' ' => ["     "; 7],
-        _ => return None,
-    })
 }
