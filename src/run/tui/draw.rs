@@ -51,7 +51,7 @@ impl App {
             let lines = b.lines(
                 usize::from(area.height).saturating_sub(2),
                 width,
-                &legume_tui::look::Look::terminal(),
+                &legume_tui::Look::terminal(),
             );
             popup(f, area, lines, 110);
         } else if self.confirm.is_some() {

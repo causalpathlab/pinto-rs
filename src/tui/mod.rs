@@ -92,12 +92,7 @@ pub(crate) const TOOL: legume_tui::Tool =
 /// ([`legume_tui::Session::keyboard_enhanced`]), and the mouse as asked.
 /// The session turns them on again after every attach.
 pub(crate) fn modes(mouse: legume_tui::Mouse) -> legume_tui::Modes {
-    use ratatui::crossterm::event::KeyboardEnhancementFlags;
-    legume_tui::Modes::new()
-        .mouse(mouse)
-        .keyboard_enhancement(legume_tui::Keyboard::IfSupported(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))
+    legume_tui::Modes::disambiguated().mouse(mouse)
 }
 
 /// The detach and switch keys as the help lists them, the key in lower

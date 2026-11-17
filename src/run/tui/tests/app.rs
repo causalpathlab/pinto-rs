@@ -769,21 +769,6 @@ fn v_opens_the_run_as_this_session_was_asked_to() {
 }
 
 #[test]
-fn nothing_is_written_to_a_terminal_that_is_not_there() {
-    // Without pbcopy, the copy goes through the terminal: refused while
-    // detached rather than written into nothing.
-    if std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
-    {
-        return;
-    }
-    let e = copy("text", false).unwrap_err();
-    assert!(e.to_string().contains("no terminal"), "{e}");
-}
-
-#[test]
 fn a_double_tap_of_the_run_key_stops_at_the_review() {
     // ctrl+r opens the review and runs from it, as in senna; pressed twice
     // at once, or held, it must not skip the review it opened.

@@ -193,7 +193,7 @@ pub fn pick_run(
             let lines = b.lines(
                 usize::from(area.height),
                 width,
-                &legume_tui::look::Look::terminal(),
+                &legume_tui::Look::terminal(),
             );
             f.render_widget(Paragraph::new(lines), area);
         })?;

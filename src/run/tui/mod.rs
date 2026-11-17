@@ -779,31 +779,6 @@ pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| base.to_string())
 }
 
-/// Put `text` on the clipboard: `pbcopy` where there is one, else the
-/// terminal's OSC 52, when one is `attached`. Says which.
-fn copy(text: &str, attached: bool) -> anyhow::Result<&'static str> {
-    use std::io::Write;
-    if let Ok(mut c) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = c.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
-        }
-        if c.wait()?.success() {
-            return Ok("pbcopy");
-        }
-    }
-    anyhow::ensure!(attached, "no terminal attached");
-    let mut out = std::io::stdout();
-    write!(out, "\x1b]52;c;{}\x07", {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(text)
-    })?;
-    out.flush()?;
-    Ok("terminal clipboard")
-}
-
 #[cfg(test)]
 #[path = "tests/app.rs"]
 mod tests;

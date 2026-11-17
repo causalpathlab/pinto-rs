@@ -394,7 +394,7 @@ impl App<'_> {
                 out.extend(b.lines(
                     room.saturating_sub(1),
                     45 + more,
-                    &legume_tui::look::Look::terminal(),
+                    &legume_tui::Look::terminal(),
                 ));
             }
             Modal::Prompt(p) => {

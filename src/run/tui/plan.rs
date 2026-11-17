@@ -3,7 +3,7 @@
 use super::super::{form, script};
 use super::jobs::{Job, Queue};
 use super::{
-    batch, copy, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
+    batch, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
 };
 use crate::residual::{Plan, ResidualArgs};
 use form::{Field, Kind, Method};
@@ -535,7 +535,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 let text = self.copy_text();
-                self.message = Some(match copy(&text, self.attached) {
+                self.message = Some(match legume_tui::keys::copy(&text, self.attached) {
                     Ok(how) => format!("commands copied ({how})"),
                     Err(e) => format!("cannot copy: {e}"),
                 });
