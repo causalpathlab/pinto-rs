@@ -98,7 +98,10 @@ fn the_session_help_is_the_shared_text_said_as_pinto_says_it() {
         assert!(view.contains(said), "{said:?} in {view}");
     }
     let attach = flat(&long_help("attach"));
-    assert!(attach.contains("`pinto session list` lists them"), "{attach}");
+    assert!(
+        attach.contains("`pinto session list` lists them"),
+        "{attach}"
+    );
     let kill = flat(&long_help("kill"));
     assert!(
         kill.contains("stops the fits it is running first"),
