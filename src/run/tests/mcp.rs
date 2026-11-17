@@ -342,7 +342,7 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
     tools.extend(super::super::residual::specs(&cli));
     for (tool, command) in [
         ("run_lra", "lra"),
-        ("run_lra_simulate", "lra-simulate"),
+        ("run_lra_simulate", "lra simulate"),
         ("run_residual", "residual"),
     ] {
         let spec = tools.iter().find(|t| t.name == tool).unwrap();
@@ -423,7 +423,7 @@ type Mirror = (
 /// The tools whose fields pass a command's flags.
 const MIRRORS: &[Mirror] = &[
     ("run_lra", "lra", &[("run", "from")], &[]),
-    ("run_lra_simulate", "lra-simulate", &[("run", "from")], &[]),
+    ("run_lra_simulate", "lra simulate", &[("run", "from")], &[]),
     (
         "run_residual",
         "residual",
@@ -436,23 +436,23 @@ const MIRRORS: &[Mirror] = &[
         &[("level_a", "level"), ("level_b", "level")],
         &[],
     ),
-    ("run_simulate", "srt-simulate", &[], &[]),
+    ("run_simulate", "sim new", &[], &[]),
     // These two run in the call, in the server's own threads.
     (
         "run_sim_score",
-        "srt-sim-score",
+        "sim score",
         &[],
         &["out", "max_threads", "atomic_outputs"],
     ),
     (
         "run_sim_pairs",
-        "srt-sim-pairs",
+        "sim pairs",
         &[],
         &["out", "max_threads", "atomic_outputs"],
     ),
     (
         "run_sim_baseline",
-        "srt-sim-baseline",
+        "sim baseline",
         &[("n_clusters", "k")],
         &[],
     ),

@@ -537,31 +537,3 @@ impl LraSimulateArgs {
         .map(Some)
     }
 }
-
-// * Removed flags
-
-/// Flags of the released `pinto lr-activity` that `pinto lra` no longer
-/// takes, with what replaced each.
-pub const REMOVED_LRA_FLAGS: &[(&str, &str)] = &[
-    ("--edge-scores-only", "use `--method coexpression-scores`"),
-    (
-        "--fdr",
-        "the level is fixed (outputs.lra.settings in the manifest); the table has every q",
-    ),
-    (
-        "--lc-prefix",
-        "pass the run's manifest: `--from {prefix}.pinto.json`",
-    ),
-];
-
-/// The first removed flag in `tail` (the arguments after `lra`), with its
-/// replacement, as an error message.
-pub fn removed_lra_flag(tail: &[String]) -> Option<String> {
-    tail.iter().find_map(|a| {
-        let name = a.split('=').next().unwrap_or(a);
-        REMOVED_LRA_FLAGS
-            .iter()
-            .find(|&&(flag, _)| name == flag)
-            .map(|(_, hint)| format!("`{name}` was removed from `pinto lra`: {hint}"))
-    })
-}

@@ -34,10 +34,7 @@ The commands sit under a few verbs:
 | `pinto compare`, `pinto view`, `pinto run`, `pinto mcp` | as before |
 | `pinto session <op>` | the detachable sessions: `list`, `attach`, `kill`, `rename` |
 
-The names from before 0.17 (`pinto lc`, `pinto residual`, `pinto
-lra-simulate`, `pinto srt-simulate`, `pinto sessions`, ...) still run, with
-a note naming the new form, so older `{out}.cmd.sh` scripts replay; they go
-after 0.17. The sections below are headed by the method's own name.
+The sections below are headed by the method's own name.
 
 Every run writes `{out}.pinto.json`, the manifest the other commands find
 its files by. Commands that record into a run's manifest (lra and its power

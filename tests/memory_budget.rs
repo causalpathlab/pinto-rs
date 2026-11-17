@@ -10,7 +10,8 @@ fn a_memory_budget_that_does_not_parse_stops_lra_simulate_at_the_start() {
     let run = |budget: &str| {
         Command::new(env!("CARGO_BIN_EXE_pinto"))
             .args([
-                "lra-simulate",
+                "lra",
+                "simulate",
                 "missing.zarr",
                 "--coord",
                 "missing.csv",
@@ -45,7 +46,8 @@ fn a_memory_budget_that_is_not_utf8_stops_the_command_at_the_start() {
     let dir = tempfile::tempdir().unwrap();
     {
         let argv = [
-            "lra-simulate",
+            "lra",
+            "simulate",
             "missing.zarr",
             "--coord",
             "missing.csv",

@@ -293,7 +293,8 @@ impl Method {
                 .map(many_of)
         };
         Ok(Method {
-            name: name.to_string(),
+            // a path's words joined, as rows and their folders are named
+            name: name.replace(' ', "-"),
             path: path.into_iter().map(String::from).collect(),
             about: cmd.get_about().map(ToString::to_string).unwrap_or_default(),
             fields: cmd.get_arguments().filter_map(Field::from_arg).collect(),

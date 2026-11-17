@@ -103,7 +103,7 @@ fn train(d: &Path, extra: &[&str]) -> (String, String, String) {
     let (train, train_xy) = write_section(d, "train", 16, 1);
     let (query, query_xy) = write_section(d, "query", 10, 2);
     let model = d.join("model").to_string_lossy().into_owned();
-    let mut fit = vec!["cage", &train, "-c", &train_xy, "-o", &model];
+    let mut fit = vec!["fit", "cage", &train, "-c", &train_xy, "-o", &model];
     fit.extend(SMALL);
     fit.extend([
         "--pair-encoder-steps",
@@ -130,7 +130,9 @@ fn train(d: &Path, extra: &[&str]) -> (String, String, String) {
 /// `command` (predict or impute) on the query section with the model
 /// `named`, writing `out`, given `extra`.
 fn apply(d: &Path, command: &str, query: (&str, &str), named: &str, out: &str, extra: &[&str]) {
-    let mut argv = vec![command, query.0, "-c", query.1, "--model", named, "-o", out];
+    let mut argv = vec![
+        "apply", command, query.0, "-c", query.1, "--model", named, "-o", out,
+    ];
     argv.extend(SMALL);
     argv.extend(extra);
     pinto(d, &argv);

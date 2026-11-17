@@ -825,7 +825,7 @@ fn text(v: &Value) -> String {
 }
 
 fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
-    let (lra_cmd, sim_cmd) = (subcommand(cli, "lra"), subcommand(cli, "lra-simulate"));
+    let (lra_cmd, sim_cmd) = (subcommand(cli, "lra"), subcommand(cli, "lra simulate"));
     let lra = |id: &str, schema: Value| flag_arg(lra_cmd, id, schema);
     let sim = |id: &str, schema: Value| flag_arg(sim_cmd, id, schema);
     let methods = json!({
@@ -1012,7 +1012,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \
              as a background job unless asked; called again with the same run and out once \
              done, it reads the table instead of running.",
-            with_lra_input(cli, "lra-simulate", json!({
+            with_lra_input(cli, "lra simulate", json!({
                 "type": "object",
                 "properties": {
                     "run": {"type": "string", "description": "The run to check on: its .pinto.json (--from); or give data_files and coord_files"},

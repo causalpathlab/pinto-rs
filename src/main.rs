@@ -227,7 +227,6 @@ enum Commands {
 
     #[command(
         name = "lra",
-        aliases = ["lr-activity", "test-lr"],
         about = "Ligand-receptor analysis: does neighbouring ligand change the receiving cells?",
         long_about = lr_activity::lra_long_about(),
         args_conflicts_with_subcommands = true,
@@ -360,7 +359,6 @@ enum Commands {
 enum Fit {
     #[command(
         name = "lc",
-        alias = "link-community",
         about = "Link community model via collapsed Gibbs sampling",
         long_about = "Link community detection for spatial transcriptomics.\n\n\
                       Each cell-cell edge is assigned to one of K communities.\n\
@@ -458,7 +456,6 @@ enum Fit {
 
     #[command(
         name = "dsvd",
-        alias = "delta-svd",
         about = "Feature-level shared/difference analysis by SVD",
         long_about = "Feature-level cell-cell interaction analysis by SVD.\n\
                       It uses shared and difference channels.\n\n\
@@ -524,7 +521,6 @@ enum Fit {
     DeltaSvd(Box<SrtDeltaSvdArgs>),
 
     #[command(
-        alias = "cge",
         about = "Activity-gated cell-graph embedding (cage)",
         long_about = "Learn per-SUPER-CELL embeddings on the coarsened spatial graph.\n\
                       The trained unit is a finest-level super-cell (PB).\n\
@@ -1011,7 +1007,6 @@ enum Apply {
 
     #[command(
         name = "propensity",
-        alias = "prop",
         about = "Estimate vertex propensity from edge clusters (standalone)",
         long_about = "Estimate vertex (cell) propensity scores from edge\n\
                       (cell-pair) cluster assignments.\n\n\
@@ -1069,7 +1064,6 @@ struct Lra {
 enum LraSub {
     #[command(
         name = "simulate",
-        alias = "lra-simulate",
         about = "Power and calibration check for lra on this tissue",
         long_about = lr_activity::lra_simulate_long_about()
     )]
@@ -1081,7 +1075,6 @@ enum LraSub {
 enum Sim {
     #[command(
         name = "new",
-        alias = "srt-simulate",
         about = "Simulate multi-donor spatial data with a planted truth",
         long_about = "Simulate several donors' sections with a planted truth.\n\n\
                       Location sets a spot's domain, the domain its likely cell states, and\n\
@@ -1110,7 +1103,6 @@ enum Sim {
 
     #[command(
         name = "score",
-        alias = "srt-sim-score",
         about = "Score labellings against a simulation's planted truth",
         long_about = "Score how well labellings recover a `sim new` run's planted truth,\n\
                       as two tests.\n\n\
@@ -1128,7 +1120,6 @@ enum Sim {
 
     #[command(
         name = "pairs",
-        alias = "srt-sim-pairs",
         about = "Score per-cell vectors against a simulation's planted truth, on pairs",
         long_about = "Score how well per-cell vectors (a latent mapping) recover an\n\
                       `sim new` run's planted truth, on pairs of spots and with no\n\
@@ -1150,7 +1141,6 @@ enum Sim {
 
     #[command(
         name = "baseline",
-        alias = "srt-sim-baseline",
         about = "Label a simulation with a standard pipeline, as a baseline",
         long_about = "Label a `sim new` run's spots with the standard scanpy recipe, as a\n\
                       baseline for sim score: total-count normalization to 1e4, log1p,\n\
@@ -1180,7 +1170,6 @@ enum Session {
 
     #[command(
         name = "list",
-        alias = "sessions",
         about = "List the live `pinto run` and `pinto view` sessions",
         long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").sessions
     )]
@@ -1204,26 +1193,6 @@ enum Session {
         long_about = legume_tui::cli::about(&tui::TOOL, "ctrl+c in it").rename
     )]
     Rename(legume_tui::cli::RenameArgs),
-}
-
-/// A helpful error for a flag `pinto lra` no longer takes, before clap's
-/// plain "unexpected argument". `pinto lra simulate` has its own flags.
-fn check_removed_lra_flags(args: &[String]) -> anyhow::Result<()> {
-    const LRA_NAMES: &[&str] = &["lra", "lr-activity", "test-lr"];
-    let Some(pos) = args.iter().position(|a| LRA_NAMES.contains(&a.as_str())) else {
-        return Ok(());
-    };
-    let rest = &args[pos + 1..];
-    if rest
-        .first()
-        .is_some_and(|w| w == "simulate" || w == "lra-simulate")
-    {
-        return Ok(());
-    }
-    match lr_activity::args::removed_lra_flag(rest) {
-        Some(msg) => anyhow::bail!(msg),
-        None => Ok(()),
-    }
 }
 
 impl Commands {
@@ -1341,11 +1310,7 @@ fn run_command() -> anyhow::Result<()> {
     }
 
     let mut cmd = <Cli as clap::CommandFactory>::command();
-    let (argv, moved) = cli_path::with_verb(&cmd, std::env::args().collect());
-    if let Some(note) = moved {
-        eprintln!("{note}");
-    }
-    check_removed_lra_flags(&argv)?;
+    let argv: Vec<String> = std::env::args().collect();
     // `Cli::parse_from`, keeping the command and its matches: cage-cell,
     // predict and impute ask which flags were given rather than left at
     // their defaults.

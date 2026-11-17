@@ -46,7 +46,7 @@ const N_MODELS: usize = 4;
 /// What `pinto run` also sets up on a fitted run (`--from` its
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power
 /// check.
-pub const ON_RUNS: [&str; 2] = ["lra", "lra-simulate"];
+pub const ON_RUNS: [&str; 2] = ["lra", "lra simulate"];
 
 /// What `pinto run` also sets up on a fitted run, after those: its
 /// residual, with a second fit on the residual's files.

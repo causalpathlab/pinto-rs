@@ -97,7 +97,8 @@ fn assert_none_staged(dir: &Path) {
 /// A small simulation into `out`, its seed `seed`.
 fn sim_args<'a>(seed: &'a str, out: &'a str) -> Vec<&'a str> {
     vec![
-        "srt-simulate",
+        "sim",
+        "new",
         "--scenario",
         "donor-confounded",
         "--set",
@@ -125,7 +126,7 @@ const DATA: &[&str] = &[
 
 /// lc on the simulation, writing `out`, with `extra`.
 fn lc_args<'a>(out: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
-    let mut a = vec!["lc"];
+    let mut a = vec!["fit", "lc"];
     a.extend(DATA);
     a.extend([
         "--no-qc",

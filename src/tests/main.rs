@@ -28,10 +28,6 @@ fn an_out_ending_in_a_slash_is_a_folder_named_for_the_method() {
     );
 }
 
-fn strings(v: &[&str]) -> Vec<String> {
-    v.iter().map(|s| s.to_string()).collect()
-}
-
 fn lra(extra: &[&str]) -> Result<SrtLrActivityArgs, clap::Error> {
     let mut argv = vec!["pinto", "lra"];
     argv.extend_from_slice(extra);
@@ -64,26 +60,6 @@ fn lra_methods_parse_and_default_to_contact_effect() {
     let a = lra(&["d.zarr", "--coord", "c.csv", "-o", "o"]).unwrap();
     assert_eq!(a.input.data_files, vec!["d.zarr".into()]);
     assert_eq!(a.input.coord_files, vec!["c.csv".into()]);
-    // The old names still reach the command.
-    assert!(Cli::try_parse_from(["pinto", "lr-activity", "-f", "r.pinto.json"]).is_ok());
-}
-
-#[test]
-fn removed_lra_flags_are_refused_with_their_replacement() {
-    for flag in ["--edge-scores-only", "--lc-prefix"] {
-        assert!(lra(&["-f", "r.pinto.json", flag, "1"]).is_err(), "{flag}");
-        let msg = check_removed_lra_flags(&strings(&["pinto", "lra", "-f", "r", flag]))
-            .unwrap_err()
-            .to_string();
-        assert!(msg.contains(flag) && msg.contains("removed"), "{msg}");
-    }
-    let msg = check_removed_lra_flags(&strings(&["pinto", "lr-activity", "--edge-scores-only"]))
-        .unwrap_err()
-        .to_string();
-    assert!(msg.contains("--method coexpression-scores"), "{msg}");
-    assert!(check_removed_lra_flags(&strings(&["pinto", "lra", "-f", "r", "--seed", "1"])).is_ok());
-    // Other commands are not checked.
-    assert!(check_removed_lra_flags(&strings(&["pinto", "fit", "lc", "--lc-prefix", "3"])).is_ok());
 }
 
 #[test]
