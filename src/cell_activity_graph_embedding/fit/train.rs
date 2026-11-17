@@ -3,9 +3,15 @@
 use crate::cell_activity_graph_embedding::args::{
     CellActivityGraphEmbeddingArgs, CONVERGENCE_TOL, GRAD_CLIP,
 };
-use crate::cell_activity_graph_embedding::feature_chain_sampler::FeatureGatedChainSampler;
-use crate::cell_activity_graph_embedding::loss::{cage_nce_loss_per_feature_level, CageLossOut};
+use crate::cell_activity_graph_embedding::feature_chain_sampler::{
+    EdgeChainBatch, FeatureGatedChainSampler,
+};
+use crate::cell_activity_graph_embedding::loss::{
+    cage_cell_edge_nce_loss, cage_nce_loss_per_feature_level, localize_edges, CageLossOut,
+    EdgeChunk, EdgeRows,
+};
 use crate::cell_activity_graph_embedding::pretrained;
+use crate::cell_activity_graph_embedding::row_adam::RowAdam;
 use crate::util::common::*;
 use crate::util::score_trace::ScoreEntry;
 
@@ -14,11 +20,12 @@ use graph_embedding_util::loss::{
     draw_gene_keep_mask, embedding_ridge, log_membership_diagnostics, masked_membership,
     module_priors, module_softmax_loss,
 };
+use graph_embedding_util::loss::{NceObjective, UnitChainBatch};
 use graph_embedding_util::model::JointEmbedModel;
 use graph_embedding_util::stop::setup_stop_handler;
 use graph_embedding_util::FeatureModuleConfig;
-use legume_numeric::candle::candle_core::Device;
-use legume_numeric::candle::candle_core::Tensor;
+use legume_numeric::candle::candle_core::backprop::GradStore;
+use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::AdamW;
 use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::lora::LoraPlus;
@@ -59,10 +66,10 @@ fn probe_forward(
         n_exp_batches,
         sampler,
         model,
+        pairs,
         dev,
     } = *inputs;
-    let mut mini: Vec<(usize, u32, graph_embedding_util::loss::UnitChainBatch)> =
-        Vec::with_capacity(n_probe_features);
+    let mut mini: Vec<(u32, u32, Draw)> = Vec::with_capacity(n_probe_features);
     let mut features_sampled = 0usize;
     'fill: for &g in active_features
         .iter()
@@ -71,8 +78,8 @@ fn probe_forward(
     {
         let before = mini.len();
         for b in 0..n_exp_batches {
-            if let Some((cb, _)) = sampler.sample(g, b, probe_rng) {
-                mini.push((g, b as u32, cb));
+            if let Some(d) = Draw::sample(sampler, pairs.is_some(), g, b, probe_rng) {
+                mini.push((g as u32, b as u32, d));
             }
         }
         if mini.len() > before {
@@ -87,19 +94,183 @@ fn probe_forward(
             "probe sampled nothing".into(),
         ));
     }
-    let (feature_ids_u32, (row_blocks, cbs)): (Vec<u32>, (Vec<u32>, Vec<_>)) = mini
-        .into_iter()
-        .map(|(g, b, cb)| (g as u32, (b, cb)))
-        .unzip();
-    let out = cage_nce_loss_per_feature_level(
+    let (feature_ids_u32, (row_blocks, draws)): (Vec<u32>, (Vec<u32>, Vec<Draw>)) =
+        mini.into_iter().map(|(g, b, d)| (g, (b, d))).unzip();
+    let out = chunk_loss(
         model,
-        cbs,
-        &feature_ids_u32,
-        &row_blocks,
+        pairs.map(|p| (p.z, p.edges)),
+        Chunk {
+            draws,
+            feature_ids: &feature_ids_u32,
+            row_blocks: &row_blocks,
+        },
+        &[],
         args.nce_objective.to_ge(),
         dev,
     )?;
-    out.per_feature_level.sum_all()
+    out.loss.per_feature_level.sum_all()
+}
+
+/// One `(feature, batch)` draw: on units (pseudobulks), or on cell pairs
+/// under cage-cell.
+enum Draw {
+    Units(UnitChainBatch),
+    Pairs(EdgeChainBatch),
+}
+
+impl Draw {
+    fn sample<R: rand::Rng>(
+        sampler: &FeatureGatedChainSampler<'_>,
+        on_pairs: bool,
+        g: usize,
+        b: usize,
+        rng: &mut R,
+    ) -> Option<Self> {
+        if on_pairs {
+            sampler.sample_edges(g, b, rng).map(Draw::Pairs)
+        } else {
+            sampler.sample(g, b, rng).map(|(cb, _)| Draw::Units(cb))
+        }
+    }
+}
+
+/// A chunk's loss, and under cage-cell the pair rows it read.
+struct ChunkLoss {
+    loss: CageLossOut,
+    pairs: Option<PairStep>,
+}
+
+/// The cell pairs one cage-cell step reads: their ids (ascending), the
+/// leaf their rows were copied into, and the rows of the module term's
+/// draws.
+struct PairStep {
+    ids: Vec<u32>,
+    leaf: Var,
+    module_rows: Vec<u32>,
+}
+
+/// A chunk's draws (all of one kind), each one's feature, and the block
+/// (batch) its negatives came from.
+struct Chunk<'a> {
+    draws: Vec<Draw>,
+    feature_ids: &'a [u32],
+    row_blocks: &'a [u32],
+}
+
+/// The NCE of one chunk; `module_picks` are the pairs the module term will
+/// read, gathered into the same leaf.
+fn chunk_loss(
+    model: &JointEmbedModel,
+    pairs: Option<(&RowAdam, &[(u32, u32)])>,
+    chunk: Chunk<'_>,
+    module_picks: &[u32],
+    objective: NceObjective,
+    dev: &Device,
+) -> legume_numeric::candle::candle_core::Result<ChunkLoss> {
+    let Chunk {
+        draws,
+        feature_ids,
+        row_blocks,
+    } = chunk;
+    let Some((table, edges)) = pairs else {
+        let cbs = draws
+            .into_iter()
+            .map(|d| match d {
+                Draw::Units(cb) => cb,
+                Draw::Pairs(_) => unreachable!("a pseudobulk fit draws units"),
+            })
+            .collect();
+        return Ok(ChunkLoss {
+            loss: cage_nce_loss_per_feature_level(
+                model,
+                cbs,
+                feature_ids,
+                row_blocks,
+                objective,
+                dev,
+            )?,
+            pairs: None,
+        });
+    };
+    let mut ebs: Vec<EdgeChainBatch> = draws
+        .into_iter()
+        .map(|d| match d {
+            Draw::Pairs(eb) => eb,
+            Draw::Units(_) => unreachable!("cage-cell draws pairs"),
+        })
+        .collect();
+    let (ids, module_rows) = localize_edges(&mut ebs, module_picks);
+    let leaf = Var::from_tensor(&table.rows(&ids)?)?;
+    let (left, right): (Vec<u32>, Vec<u32>) = ids.iter().map(|&e| edges[e as usize]).unzip();
+    let rows = EdgeRows {
+        z: leaf.as_tensor(),
+        left: &left,
+        right: &right,
+    };
+    let loss = cage_cell_edge_nce_loss(
+        model,
+        EdgeChunk {
+            rows,
+            batches: ebs,
+            feature_ids,
+            row_blocks,
+        },
+        objective,
+        dev,
+    )?;
+    Ok(ChunkLoss {
+        loss,
+        pairs: Some(PairStep {
+            ids,
+            leaf,
+            module_rows,
+        }),
+    })
+}
+
+/// [`clip_and_step_dense_all`] with the step's pair rows inside the global
+/// norm: `leaf` is outside every optimiser, so its gradient is clipped
+/// with the rest (the same sorted sum and scale), taken out of the store
+/// and returned for the row optimiser. `None`: the norm was not finite and
+/// nothing stepped.
+fn clip_and_step_with_rows(
+    adams: &mut [AdamW],
+    mut grads: GradStore,
+    max_norm: f64,
+    leaf: &Var,
+) -> anyhow::Result<Option<Tensor>> {
+    if max_norm > 0.0 {
+        let ids: Vec<_> = grads.get_ids().copied().collect();
+        let parts: Vec<Tensor> = ids
+            .iter()
+            .filter_map(|id| grads.get_id(*id))
+            .map(|g| g.sqr()?.sum_all()?.to_dtype(DType::F32))
+            .collect::<legume_numeric::candle::candle_core::Result<_>>()?;
+        let sumsq: f64 = if parts.is_empty() {
+            0.0
+        } else {
+            let mut sums: Vec<f32> = Tensor::stack(&parts, 0)?.to_vec1()?;
+            sums.sort_by(f32::total_cmp);
+            sums.iter().map(|&x| f64::from(x)).sum()
+        };
+        if !sumsq.is_finite() {
+            return Ok(None);
+        }
+        let scale = (max_norm / (sumsq.sqrt() + 1e-6)).clamp(0.0, 1.0);
+        for id in &ids {
+            if let Some(g) = grads.get_id(*id) {
+                let scaled = g.affine(scale, 0.0)?;
+                grads.insert_id(*id, scaled);
+            }
+        }
+    }
+    let row_grad = match grads.remove(leaf.as_tensor()) {
+        Some(g) => g,
+        None => leaf.as_tensor().zeros_like()?,
+    };
+    // clipped above; this only steps
+    clip_and_step_dense_all(adams, grads, 0.0)?;
+    Ok(Some(row_grad))
 }
 
 pub(super) fn resolve_feature_batch_size(inputs: ProbeInputs<'_>) -> usize {
@@ -142,7 +313,23 @@ pub(super) struct ProbeInputs<'a> {
     pub n_exp_batches: usize,
     pub sampler: &'a FeatureGatedChainSampler<'a>,
     pub model: &'a JointEmbedModel,
+    pub pairs: Option<PairRows<'a>>,
     pub dev: &'a Device,
+}
+
+/// cage-cell's pair table, read by the probe.
+#[derive(Clone, Copy)]
+pub(super) struct PairRows<'a> {
+    pub z: &'a RowAdam,
+    /// Each row's two cells.
+    pub edges: &'a [(u32, u32)],
+}
+
+/// cage-cell's pair table, trained by the loop.
+pub(super) struct PairTable<'a> {
+    pub z: &'a mut RowAdam,
+    /// Each row's two cells.
+    pub edges: &'a [(u32, u32)],
 }
 
 /// The units whose counts the exact unit-module term pools.
@@ -151,7 +338,7 @@ pub(super) enum ModuleUnits<'a> {
     /// `[n_pb × G]`, so a step is one row gather.
     Pseudobulks(Tensor),
     /// cage-cell: the cells, whose sparse columns a step reads as it draws
-    /// them (never a features × cells table).
+    /// them (never a features × cells table); a drawn pair pools its two.
     Cells(CellCounts<'a>),
 }
 
@@ -174,6 +361,8 @@ pub(super) struct TrainInputs<'a> {
     pub inclusion: Option<&'a [f32]>,
     pub module_cfg: Option<&'a FeatureModuleConfig>,
     pub module_units: Option<ModuleUnits<'a>>,
+    /// cage-cell: the pair table the loop trains in place of the unit table.
+    pub pairs: Option<PairTable<'a>>,
     pub n_exp_batches: usize,
     pub n_pb: usize,
     pub n_features: usize,
@@ -223,12 +412,16 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         inclusion,
         module_cfg,
         module_units,
+        mut pairs,
         n_exp_batches,
         n_pb,
         n_features,
         n_chain_levels,
         dev,
     } = inputs;
+    // The units the module term draws: the pseudobulks, or the pairs.
+    let n_units = pairs.as_ref().map_or(n_pb, |p| p.z.n_rows());
+    let on_pairs = pairs.is_some();
     let c = &args.common;
     let mut score_trace: Vec<ScoreEntry> = Vec::new();
     let mut rng_master = SmallRng::seed_from_u64(c.seed);
@@ -330,7 +523,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             }
             // (a) Parallel sampling — pure CPU, no candle.
             let t_sample = std::time::Instant::now();
-            let mini: Vec<(usize, u32, _)> = chunk
+            let mini: Vec<(usize, u32, Draw)> = chunk
                 .par_iter()
                 .flat_map_iter(|&g| {
                     let seed = c
@@ -341,9 +534,8 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     let mut rng = SmallRng::seed_from_u64(seed);
                     (0..n_exp_batches)
                         .filter_map(move |b| {
-                            sampler
-                                .sample(g, b, &mut rng)
-                                .map(|(cb, _st)| (g, b as u32, cb))
+                            Draw::sample(sampler, on_pairs, g, b, &mut rng)
+                                .map(|d| (g, b as u32, d))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -371,15 +563,37 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             // with the [G*B] cell-side gathers.
             let feature_ids_u32: Vec<u32> = feature_ids.iter().map(|&g| g as u32).collect();
 
+            // The module term's draws come first: under cage-cell its pairs
+            // are read through the same leaf as the chunk's.
+            let module_picks: Option<Vec<u32>> = match (&model.modules, module_cfg, &module_run) {
+                (Some(_), Some(gm), Some(_)) => {
+                    let u = gm.units_per_step.min(n_units);
+                    (u > 0 && gm.lambda_module > 0.0).then(|| {
+                        (0..u)
+                            .map(|_| rng_master.random_range(0..n_units) as u32)
+                            .collect()
+                    })
+                }
+                _ => None,
+            };
+
             // (b) ONE forward / backward over the whole chunk.
-            let CageLossOut {
-                per_feature_level: per_level_gl,
-                mean_abs_pair,
-            } = cage_nce_loss_per_feature_level(
+            let ChunkLoss {
+                loss:
+                    CageLossOut {
+                        per_feature_level: per_level_gl,
+                        mean_abs_pair,
+                    },
+                pairs: pair_step,
+            } = chunk_loss(
                 model,
-                cb_batches,
-                &feature_ids_u32,
-                &row_blocks,
+                pairs.as_ref().map(|p| (&*p.z, p.edges)),
+                Chunk {
+                    draws: cb_batches,
+                    feature_ids: &feature_ids_u32,
+                    row_blocks: &row_blocks,
+                },
+                module_picks.as_deref().unwrap_or(&[]),
                 args.nce_objective.to_ge(),
                 dev,
             )?; // [G, L]
@@ -401,7 +615,13 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             if args.embedding_l2 > 0.0 {
                 // geu's ridge, not a local copy: the reduction is the whole
                 // content of this penalty and it was wrong here in the same way.
-                total = (total + embedding_ridge(&model.e_cell, args.embedding_l2 as f64)?)?;
+                // On pairs, over the step's rows: the mean over a uniform
+                // share of the table has the whole table's expected gradient.
+                let table = match &pair_step {
+                    Some(step) => step.leaf.as_tensor(),
+                    None => &model.e_cell,
+                };
+                total = (total + embedding_ridge(table, args.embedding_l2 as f64)?)?;
             }
             // Which feature-side shrinkage applies is a model property
             // (`feature_ridge`: the free table or the adapter's residual at
@@ -424,40 +644,52 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             // and score every module against the trained unit table. The
             // pooling carries no gradient (geu detaches the masked membership
             // and the pooled target), so cells pool their sparse counts.
-            if let (Some(m), Some(gm), Some((_, units))) =
-                (&model.modules, module_cfg, module_run.as_ref())
-            {
-                let u = gm.units_per_step.min(n_pb);
-                if u > 0 && gm.lambda_module > 0.0 {
-                    let picks: Vec<u32> = (0..u)
-                        .map(|_| rng_master.random_range(0..n_pb) as u32)
-                        .collect();
-                    let pi = m.membership()?;
-                    let pi_masked = if gm.feature_dropout > 0.0 {
-                        let keep = draw_gene_keep_mask(
-                            n_features,
-                            gm.feature_dropout,
-                            &mut rng_master,
-                            dev,
-                        )?;
-                        masked_membership(&pi, &keep)?
-                    } else {
-                        pi.detach()
-                    };
-                    let idx = Tensor::from_slice(&picks, u, dev)?;
-                    let e_units = gather_rows(&model.e_cell, &idx)?;
-                    let x_cm = match units {
-                        ModuleUnits::Pseudobulks(profiles) => {
-                            gather_rows(profiles, &idx)?.matmul(&pi_masked)?
-                        }
-                        ModuleUnits::Cells(cells) => cells.pool(&picks, &pi_masked)?,
-                    };
-                    let module_loss = module_softmax_loss(&e_units, &m.mu, &m.b_module, &x_cm)?
-                        .affine(f64::from(gm.lambda_module), 0.0)?;
-                    total = (total + module_loss)?;
-                    if let Some(prior) = module_priors(m, &pi, gm.lambda_balance)? {
-                        total = (total + prior)?;
+            if let (Some(m), Some(gm), Some((_, units)), Some(picks)) = (
+                &model.modules,
+                module_cfg,
+                module_run.as_ref(),
+                &module_picks,
+            ) {
+                let pi = m.membership()?;
+                let pi_masked = if gm.feature_dropout > 0.0 {
+                    let keep =
+                        draw_gene_keep_mask(n_features, gm.feature_dropout, &mut rng_master, dev)?;
+                    masked_membership(&pi, &keep)?
+                } else {
+                    pi.detach()
+                };
+                let u = picks.len();
+                let e_units = match &pair_step {
+                    Some(step) => gather_rows(
+                        step.leaf.as_tensor(),
+                        &Tensor::from_slice(&step.module_rows, u, dev)?,
+                    )?,
+                    None => gather_rows(&model.e_cell, &Tensor::from_slice(picks, u, dev)?)?,
+                };
+                let x_cm = match (units, &pairs) {
+                    (ModuleUnits::Pseudobulks(profiles), _) => {
+                        gather_rows(profiles, &Tensor::from_slice(picks, u, dev)?)?
+                            .matmul(&pi_masked)?
                     }
+                    // a pair pools its two cells' counts
+                    (ModuleUnits::Cells(cells), Some(p)) => {
+                        let ends: Vec<u32> = picks
+                            .iter()
+                            .flat_map(|&e| {
+                                let (a, b) = p.edges[e as usize];
+                                [a, b]
+                            })
+                            .collect();
+                        let pooled = cells.pool(&ends, &pi_masked)?;
+                        pooled.reshape((u, 2, pooled.dim(1)?))?.sum(1)?
+                    }
+                    (ModuleUnits::Cells(cells), None) => cells.pool(picks, &pi_masked)?,
+                };
+                let module_loss = module_softmax_loss(&e_units, &m.mu, &m.b_module, &x_cm)?
+                    .affine(f64::from(gm.lambda_module), 0.0)?;
+                total = (total + module_loss)?;
+                if let Some(prior) = module_priors(m, &pi, gm.lambda_balance)? {
+                    total = (total + prior)?;
                 }
             }
             // Global-norm clip before the step. The NCE loss spikes when a
@@ -477,7 +709,18 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             // at all, and without this the bar would still reach 100% and the
             // phase timings would still look normal — the instrumentation would
             // make the failure less visible rather than more.
-            let stepped = clip_and_step_dense_all(adams, grads, f64::from(GRAD_CLIP))?;
+            let stepped = match (&pair_step, pairs.as_mut()) {
+                (Some(step), Some(table)) => {
+                    match clip_and_step_with_rows(adams, grads, f64::from(GRAD_CLIP), &step.leaf)? {
+                        Some(row_grad) => {
+                            table.z.step(&step.ids, &row_grad)?;
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                _ => clip_and_step_dense_all(adams, grads, f64::from(GRAD_CLIP))?,
+            };
             if !stepped {
                 skipped_steps += 1;
             }

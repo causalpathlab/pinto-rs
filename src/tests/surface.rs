@@ -32,7 +32,7 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("propensity", 11),
         ("link-community", 24),
         ("cage", 36),
-        ("cage-cell", 28),
+        ("cage-cell", 27),
         ("predict", 23),
         ("impute", 21),
         ("lra", 21),

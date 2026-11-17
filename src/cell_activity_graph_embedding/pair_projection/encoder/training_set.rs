@@ -1,7 +1,6 @@
 //! What the pair encoder trains on.
 //!
-//! `cage-cell` trains on the pairs it places, read from their cells' own
-//! rows. `cage` trains on its finest pseudobulks instead: one row per
+//! `cage` trains on its finest pseudobulks: one row per
 //! pseudobulk, the sum of its cells' batch-divided rows, and the
 //! pseudobulk-pseudobulk edges phase 1 trained on. The cell pairs are then
 //! only encoded, a forward pass, so the cost of training follows the
@@ -103,8 +102,8 @@ fn visited_units(n_units: usize, edges: &[(u32, u32)]) -> Vec<u32> {
 }
 
 impl<'a> TrainingSet<'a> {
-    /// The `n_cells` cells and the pairs being placed, as they are
-    /// (`cage-cell`).
+    /// The `n_cells` cells and the pairs being placed, as they are (the
+    /// fallback when there are too few pseudobulk pairs).
     pub(crate) fn cells(n_cells: usize, edges: &'a [(u32, u32)]) -> Self {
         Self {
             n_units: n_cells,

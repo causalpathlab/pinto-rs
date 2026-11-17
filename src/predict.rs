@@ -418,6 +418,11 @@ pub fn predict_cage(
     run: Option<&Run>,
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
+    anyhow::ensure!(
+        !run.is_some_and(|r| r.meta.cell_level),
+        "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
+        args.model
+    );
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 

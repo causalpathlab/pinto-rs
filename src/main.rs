@@ -480,12 +480,11 @@ enum Commands {
         long_about = "cage trained on cells instead of super-cells, as cell-level\n\
                       methods such as STAGATE are, for a like-for-like comparison: the\n\
                       same model and outputs.\n\n\
-                      Cells and cell pairs are the training units: each cell is its own\n\
-                      unit and each within-batch spatial cell pair a positive; negatives\n\
-                      are other cells of the same batch, never the pair's own two. No\n\
-                      coarsening hierarchy is trained on.\n\n\
-                      Batch effects (δ) are estimated and removed as in cage, and\n\
-                      `pinto predict` corrects a query as it does for cage. The δ\n\
+                      The cell pair is the training unit: each within-batch spatial\n\
+                      cell pair has an embedding row of its own, and a feature-active\n\
+                      pair is a positive against other pairs of the same batch. Each\n\
+                      cell keeps a bias. No coarsening hierarchy is trained on.\n\n\
+                      Batch effects (δ) are estimated and removed as in cage. The δ\n\
                       estimate pools cells internally, only to estimate δ (so\n\
                       --num-levels and --cnv-clones shape it); training\n\
                       never sees those pools. --ignore-batch runs without δ, as STAGATE\n\
@@ -494,14 +493,19 @@ enum Commands {
                       --feature-modules auto, a count M, or 0 for none) or\n\
                       --feature-inclusion moran apply as in cage, never both. The\n\
                       modules start from pseudobulks built for that alone; training\n\
-                      pools the sparse counts of the cells each step draws.\n\n\
+                      pools the sparse counts of the pairs' cells each step draws.\n\n\
                       --n-pseudobulk and the HVG flags shape only those starting\n\
                       pseudobulks, and do nothing in a run without modules\n\
                       (--feature-modules 0, or --feature-inclusion moran; a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
                       --embedding-l2 defaults to 0 here.\n\n\
-                      The pair encoder trains on the cell pairs themselves.\n\n\
-                      Writes what cage writes; its manifest says `cell_level`.",
+                      The pairs' trained rows are the latent (latent.parquet, L2-normalised,\n\
+                      one row per listed pair), and a cell's embedding is the mean of its\n\
+                      pairs' rows. No pair encoder is fitted, so there is no\n\
+                      pb_embedding.parquet or pair_encoder.safetensors, and `pinto predict`\n\
+                      and `pinto impute` refuse a cage-cell model for now.\n\
+                      A pair table too big for the device is kept on the host.\n\n\
+                      Writes what cage writes otherwise; its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0")),
         // What cage-cell refuses, or warns does nothing on cells, is off its
         // help.

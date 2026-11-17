@@ -95,10 +95,6 @@ impl RowAdam {
         self.steps.len()
     }
 
-    pub fn dim(&self) -> usize {
-        self.table.dims2().map_or(0, |(_, d)| d)
-    }
-
     /// Where the table is kept.
     pub fn residency(&self) -> Residency {
         if self.table.device().same_device(&self.compute) {
@@ -114,6 +110,7 @@ impl RowAdam {
     }
 
     /// The moments `(m, v)` as they stand.
+    #[cfg(test)]
     pub fn moments(&self) -> (&Tensor, &Tensor) {
         (&self.m, &self.v)
     }

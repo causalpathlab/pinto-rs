@@ -1,6 +1,7 @@
 use super::{residency, set_rows, Residency, RowAdam};
 use legume_numeric::candle::candle_core::{Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW};
+use legume_numeric::candle::fast_index::gather_rows;
 
 const D: usize = 3;
 
@@ -23,7 +24,7 @@ fn bits(t: &Tensor) -> Vec<u32> {
 
 fn rows_of(t: &Tensor, rows: &[u32]) -> Tensor {
     let idx = Tensor::from_slice(rows, rows.len(), t.device()).unwrap();
-    t.index_select(&idx, 0).unwrap()
+    gather_rows(t, &idx).unwrap()
 }
 
 fn params() -> ParamsAdamW {

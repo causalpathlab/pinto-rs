@@ -18,7 +18,7 @@ use graph_embedding_util::loss::{
     sample_unit_chain_batch_with_pos, PerBatchUnitSampler, UnitChainBatch, UnitChainBatchArgs,
     UnitChainBatchStats,
 };
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rand_distr::weighted::WeightedIndex;
 use rand_distr::Distribution;
 use rayon::prelude::*;
@@ -174,12 +174,6 @@ pub struct FeatureGatedChainSampler<'a> {
     /// Not an SGD minibatch size: see `UnitChainBatchArgs::n_positives`.
     pub positives_per_draw: usize,
     pub n_negatives: usize,
-    /// Redraw a negative that is its positive's anchor or partner. Needed at
-    /// cell level only: there the chain group is the unit itself, so the
-    /// upstream rejection excludes just the anchor. On pseudobulks the
-    /// partner shares the anchor's group at every chain level and is
-    /// rejected already.
-    pub exclude_partner: bool,
 }
 
 impl<'a> FeatureGatedChainSampler<'a> {
@@ -203,43 +197,76 @@ impl<'a> FeatureGatedChainSampler<'a> {
             n_negatives: self.n_negatives,
             unit_to_group_per_level: self.unit_to_group_per_level,
         };
-        let (mut batch, stats) =
-            sample_unit_chain_batch_with_pos(args, &entry.pos, &entry.local_to_global, rng);
-        if self.exclude_partner {
-            redraw_pair_negatives(&mut batch, batch_sampler, rng);
-        }
-        Some((batch, stats))
+        Some(sample_unit_chain_batch_with_pos(
+            args,
+            &entry.pos,
+            &entry.local_to_global,
+            rng,
+        ))
     }
 }
 
-/// Redraw, from the batch's weighted negative pool, every negative that is
-/// its positive's anchor or partner. Bounded as the upstream draw is: a
-/// batch of two cells keeps its last draw.
-fn redraw_pair_negatives<R: Rng>(batch: &mut UnitChainBatch, s: &PerBatchUnitSampler, rng: &mut R) {
-    const MAX_TRIES: u32 = 16;
-    let UnitChainBatch {
-        left_units,
-        right_units,
-        per_level_neg,
-        n_negatives,
-    } = batch;
-    if *n_negatives == 0 {
-        return;
-    }
-    for neg in per_level_neg.iter_mut() {
-        for (row, pair) in neg
-            .chunks_mut(*n_negatives)
-            .zip(left_units.iter().zip(right_units.iter()))
-        {
-            let pair = [*pair.0, *pair.1];
-            for c in row.iter_mut().filter(|c| pair.contains(c)) {
+/// One `(feature, batch)` draw on cell pairs (cage-cell): positive pairs,
+/// and per positive `n_negatives` other pairs of the batch.
+#[derive(Clone, Debug)]
+pub struct EdgeChainBatch {
+    /// `[B]` positive pair ids (rows of `super_edges`).
+    pub pos_edges: Vec<u32>,
+    /// `[B]` each positive's two cells, `super_edges[pos_edges[i]]`.
+    pub left_units: Vec<u32>,
+    pub right_units: Vec<u32>,
+    /// `[B * K]` row-major: the negatives of positive `i` at `[i*K..(i+1)*K]`,
+    /// pair ids of the same batch, never the positive itself.
+    pub neg_edges: Vec<u32>,
+    pub n_negatives: usize,
+}
+
+impl FeatureGatedChainSampler<'_> {
+    /// cage-cell's draw: positives as [`Self::sample`] draws them (by the
+    /// feature's activity over the batch's pairs), and each one's negatives
+    /// drawn uniformly from the batch's other pairs, since a negative must
+    /// be a pair with a row of its own. `None` when the feature × batch has
+    /// no active pairs.
+    pub fn sample_edges<R: Rng>(
+        &self,
+        feature: usize,
+        batch_idx: usize,
+        rng: &mut R,
+    ) -> Option<EdgeChainBatch> {
+        const MAX_TRIES: u32 = 16;
+        let entry = self.cache.entries.get(feature)?.get(batch_idx)?.as_ref()?;
+        let pool = &self
+            .samplers_per_exp_batch
+            .get(batch_idx)?
+            .as_ref()?
+            .edge_indices;
+        let b = self.positives_per_draw;
+        let k = self.n_negatives;
+        let mut out = EdgeChainBatch {
+            pos_edges: Vec::with_capacity(b),
+            left_units: Vec::with_capacity(b),
+            right_units: Vec::with_capacity(b),
+            neg_edges: Vec::with_capacity(b * k),
+            n_negatives: k,
+        };
+        for _ in 0..b {
+            let e = entry.local_to_global[entry.pos.sample(rng)];
+            let (u, v) = self.super_edges[e as usize];
+            out.pos_edges.push(e);
+            out.left_units.push(u);
+            out.right_units.push(v);
+            for _ in 0..k {
+                // a batch of one pair keeps its last draw
+                let mut w = pool[rng.random_range(0..pool.len())];
                 for _ in 0..MAX_TRIES {
-                    *c = s.unit_pool[s.neg.sample(rng)];
-                    if !pair.contains(c) {
+                    if w != e {
                         break;
                     }
+                    w = pool[rng.random_range(0..pool.len())];
                 }
+                out.neg_edges.push(w);
             }
         }
+        Some(out)
     }
 }

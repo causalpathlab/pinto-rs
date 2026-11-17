@@ -250,6 +250,8 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
     let saved = dir.path().join("run.pair_encoder.safetensors");
     let saved = saved.to_str().unwrap();
     let spec = spec(1);
+    let cell_to_pb: Vec<usize> = (0..60).map(|c| c % N_PB).collect();
+    let pb = pb_edges();
     let fitted = project_pairs(
         &data,
         &edges,
@@ -258,7 +260,11 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
         &PairProjectionArgs {
             solver: PairSolver::TrainEncoder {
                 spec: &spec,
-                on: TrainOn::CellPairs,
+                on: TrainOn::Pseudobulks {
+                    cell_to_pb: &cell_to_pb,
+                    n_pb: N_PB,
+                    edges: &pb,
+                },
                 dev: &Device::Cpu,
                 save_to: saved,
             },

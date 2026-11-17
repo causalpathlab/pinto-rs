@@ -67,8 +67,6 @@ pub use scoring::PairScore;
 /// What a trained encoder trains on.
 #[derive(Debug, Clone, Copy)]
 pub enum TrainOn<'a> {
-    /// The pairs being placed, on their cells' own rows (`cage-cell`).
-    CellPairs,
     /// The finest pseudobulks (`cage`): each the sum of its cells' rows by
     /// `cell_to_pb`, and the pseudobulk edges `edges` between them, each
     /// pair thinned to a depth drawn from the pairs being placed. The cell
@@ -300,8 +298,8 @@ impl PairDictionary {
 /// pull on `e_uv` — no special-casing needed.
 ///
 /// Every cell is read once, in contiguous column blocks, into the corpus the
-/// pairs are encoded from (and, under [`TrainOn::CellPairs`], trained on;
-/// under [`TrainOn::Pseudobulks`] the pseudobulk rows are summed from it);
+/// pairs are encoded from (under [`TrainOn::Pseudobulks`] the pseudobulk
+/// rows are summed from it);
 /// every pair is then the merge of two rows and every cell its own doubled
 /// row.
 pub fn project_pairs(
@@ -370,7 +368,6 @@ pub fn project_pairs(
             save_to,
         } => {
             let set = match on {
-                TrainOn::CellPairs => encoder::TrainingSet::cells(corpus.len(), edges),
                 TrainOn::Pseudobulks {
                     cell_to_pb,
                     n_pb,

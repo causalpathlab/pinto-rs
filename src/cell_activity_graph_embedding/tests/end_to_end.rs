@@ -48,10 +48,10 @@ fn feature_modules_train_and_write_their_tables() {
             "{name}: the exact module term left the module bias at {:?}",
             bias.mat.as_slice()
         );
-        // cage-cell's units are the cells, whatever seeded its modules
-        let units = Mat::from_parquet(&format!("{out}.pb_embedding.parquet")).unwrap();
-        let cell_level = name == "cell_modules";
-        assert_eq!(units.mat.nrows() == 2 * 8 * 8, cell_level, "{name}");
+        // cage-cell trains its pairs' rows, whatever seeded its modules, and
+        // writes no unit table; cage's units are pseudobulks
+        let units = std::path::Path::new(&format!("{out}.pb_embedding.parquet")).exists();
+        assert_eq!(units, name == "modules", "{name}");
     }
 }
 
