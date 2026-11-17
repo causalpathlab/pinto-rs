@@ -1,9 +1,9 @@
 //! `run_simulate`, `run_sim_score`, `run_sim_pairs` and `run_sim_baseline`
 //! for `pinto mcp`:
-//! `pinto srt-simulate` and `pinto srt-sim-baseline` set up as the command
+//! `pinto sim new` and `pinto sim baseline` set up as the command
 //! line takes them, checked before anything runs, and run as a child pinto
 //! in the project's records (a background job unless asked otherwise); and
-//! `pinto srt-sim-score`'s two tests and `pinto srt-sim-pairs`'s pair sets,
+//! `pinto sim score`'s two tests and `pinto sim pairs`'s pair sets,
 //! computed in the call, as they take a moment.
 
 use super::mcp::{
@@ -108,7 +108,7 @@ fn label_column() -> String {
 
 // * run_simulate
 
-/// `a` as `pinto srt-simulate` will run it into `out`: its command line,
+/// `a` as `pinto sim new` will run it into `out`: its command line,
 /// parsed as the child parses it, and its parameters and coordinate files
 /// checked as it checks them. An entry with a comma is refused: the command
 /// line would split it.
@@ -158,10 +158,10 @@ pub(super) fn fit_lists(out: &str, p: &SimParams) -> serde_json::Value {
     json!({"data": sections(backend_path), "coords": sections(coords_path), "flags": flags})
 }
 
-/// `pinto srt-simulate` for `a` writing to `out`: only what was given, and
+/// `pinto sim new` for `a` writing to `out`: only what was given, and
 /// column names only with the coordinate files they name.
 pub(super) fn simulate_argv(a: &SimulateToolArgs, out: &str) -> Vec<String> {
-    let mut argv: Vec<String> = vec!["srt-simulate".into()];
+    let mut argv: Vec<String> = vec!["sim".into(), "new".into()];
     if let Some(s) = &a.scenario {
         // an earlier name as its name, so the command says what the reply does
         let name = find_scenario(s).map_or(s.as_str(), |sc| sc.name);
@@ -205,7 +205,7 @@ pub(super) fn simulate(
     let truth = truth_run_path(&out);
     let fit = fit_lists(&out, &p);
     let summary = format!(
-        "srt-simulate {scenario} into {out}: {} sections; truth run {truth}",
+        "sim new {scenario} into {out}: {} sections; truth run {truth}",
         p.n_sections()
     );
     let reply = json!({
@@ -242,7 +242,7 @@ fn bad_truth(truth: &str, e: anyhow::Error) -> anyhow::Error {
 /// `run_sim_score`: each labelling scored against the truth, as a table
 /// (one row per labelling and donor-specific domain) and as JSON. One that
 /// cannot be scored is listed with its error and the rest are scored, as
-/// `pinto srt-sim-score` does; the call fails only when none can be.
+/// `pinto sim score` does; the call fails only when none can be.
 pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     anyhow::ensure!(!a.labels.is_empty(), "give labels: runs or label tables");
     let t = TruthSpots::read(&a.truth).map_err(|e| bad_truth(&a.truth, e))?;
@@ -278,7 +278,7 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
 
 /// `run_sim_pairs`: each input's vectors scored on the pair sets, as a
 /// table (one row per input and donor-specific domain) and as JSON, with
-/// `pinto srt-sim-pairs`'s defaults for what is not given. One that cannot
+/// `pinto sim pairs`'s defaults for what is not given. One that cannot
 /// be scored is listed with its error and the rest are scored; the call
 /// fails only when none can be.
 pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
@@ -311,10 +311,14 @@ pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
 
 // * run_sim_baseline
 
-/// `pinto srt-sim-baseline` for `a` on the simulation `truth`, writing the
+/// `pinto sim baseline` for `a` on the simulation `truth`, writing the
 /// table `table`: only what was given.
 pub(super) fn baseline_argv(a: &SimBaselineToolArgs, truth: &str, table: &str) -> Vec<String> {
-    let mut argv: Vec<String> = vec!["srt-sim-baseline".into(), flag_value("--truth", truth)];
+    let mut argv: Vec<String> = vec![
+        "sim".into(),
+        "baseline".into(),
+        flag_value("--truth", truth),
+    ];
     if let Some(m) = &a.method {
         argv.push(flag_value("--method", m));
     }
@@ -350,7 +354,7 @@ pub(super) fn baseline(
     let args: BaselineArgs = parsed(cli, &argv)?;
     args.validate()?;
     check_inputs(&truth).map_err(|e| bad_truth(&a.truth, e))?;
-    let summary = format!("srt-sim-baseline into {labels}");
+    let summary = format!("sim baseline into {labels}");
     let reply = json!({
         "command": script::pinto_line(&argv),
         "labels": labels,
@@ -378,7 +382,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ToolSpec::new(
             "run_simulate",
             "Simulate several donors' spatial sections with a planted truth (pinto \
-             srt-simulate): location sets a spot's domain, the domain its likely cell states, \
+             sim new): location sets a spot's domain, the domain its likely cell states, \
              the states its expression; donor and section nuisance (to be removed) and a domain \
              one donor alone has (to be kept) are set as shares of the log rate's variance, and \
              spot noise is what the shares leave: raising one share with the others fixed \
@@ -394,7 +398,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "scenario": {"type": "string", "enum": SCENARIOS.iter().map(|s| s.name).collect::<Vec<_>>(), "description": format!("Named scenario to start from [default: {}]; a cell type is a cell state of the model; earlier names are still accepted but not listed. {}", SCENARIOS[0].name, scenarios.join(". "))},
-                    "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto srt-simulate --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
+                    "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto sim new --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
                     "out": out_arg("folder", "sim"),
@@ -407,7 +411,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_sim_score",
-            "Score labellings against a run_simulate truth (pinto srt-sim-score), as two tests. \
+            "Score labellings against a run_simulate truth (pinto sim score), as two tests. \
              1, donor-invariant domains, on spots of shared domains: shared_ari (labels against \
              domains), donor_dependence (how much the labels depend on the donor within a \
              domain, 0 to 1, pooled and for each shared domain as donor_dependence_by_domain). 2, each donor-specific domain against its \
@@ -431,7 +435,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ToolSpec::new(
             "run_sim_pairs",
             "Score per-cell vectors (a latent mapping) against a run_simulate truth on pairs of \
-             spots, with no clustering (pinto srt-sim-pairs): the cosine of two spots' vectors, \
+             spots, with no clustering (pinto sim pairs): the cosine of two spots' vectors, \
              by AUROC and AUPRC, each set with its prevalence (the AUPRC of chance). \
              cross_donor: shared-domain spots of two donors, positive when they share a domain; \
              within_donor: the same within one donor, the reference; donor_gap: within less \
@@ -465,7 +469,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ToolSpec::new(
             "run_sim_baseline",
             "Label a run_simulate simulation with a standard single-cell pipeline (pinto \
-             srt-sim-baseline), for run_sim_score to score next to the fits: pooled (the scanpy \
+             sim baseline), for run_sim_score to score next to the fits: pooled (the scanpy \
              recipe on all sections, no batch handling), harmony (the same with Harmony on the \
              PCs, batch = donor) or per-donor (each donor alone, its clusters matched to the \
              largest donor's by marker correlation). Leiden is tuned toward the true number of \

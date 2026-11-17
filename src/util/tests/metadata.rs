@@ -1,6 +1,6 @@
 //! Round-trip tests for the run manifest.
 //!
-//! The manifest is a published contract: `pinto view`, `pinto prop` and
+//! The manifest is a published contract: `pinto view`, `pinto apply propensity` and
 //! `pinto lra` all locate their inputs through it, so a field that fails to
 //! serialize is a broken pipeline rather than a cosmetic defect.
 

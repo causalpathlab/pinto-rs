@@ -1,4 +1,4 @@
-//! `pinto lra-simulate` from data to tables on a small tissue: the built-in
+//! `pinto lra simulate` from data to tables on a small tissue: the built-in
 //! grid, pinned, and the single-scenario mode a sweep runs one call per
 //! point of.
 

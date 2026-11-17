@@ -361,7 +361,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     // Leiden by default, same as `cage`: the SVD width is chosen for how much
     // variance to keep, which is no reason for the pairs to fall into exactly
-    // that many interaction regimes. `pinto prop` still re-cuts the same latent
+    // that many interaction regimes. `pinto apply propensity` still re-cuts the same latent
     // at a fixed K when you want one.
     let n_clusters = compute_propensity_and_feature_community_stat(
         &pair_latent_nk,

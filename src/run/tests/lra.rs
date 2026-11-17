@@ -113,7 +113,8 @@ fn a_simulate_call_becomes_its_command_line() {
     assert_eq!(
         argv,
         [
-            "lra-simulate",
+            "lra",
+            "simulate",
             "--from=/p/r.pinto.json",
             "--out=/p/out",
             "--species=human"
@@ -138,7 +139,7 @@ fn a_simulate_call_becomes_its_command_line() {
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
-    let tail: Vec<&str> = argv[3..].iter().map(String::as_str).collect();
+    let tail: Vec<&str> = argv[4..].iter().map(String::as_str).collect();
     assert_eq!(
         tail,
         [
@@ -685,7 +686,7 @@ fn simulate_runs_read_back_as_written() {
     assert!(v.get("command").is_none(), "read back unchecked: {v}");
 }
 
-/// A single-scenario call's settings reach `pinto lra-simulate` one token
+/// A single-scenario call's settings reach `pinto lra simulate` one token
 /// each, which it takes, and the sidecar marking the call complete is among
 /// what it writes; without them, the grid's table alone.
 #[test]
@@ -698,7 +699,7 @@ fn a_single_scenario_call_passes_its_settings() {
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
-    let tail: Vec<&str> = argv[3..].iter().map(String::as_str).collect();
+    let tail: Vec<&str> = argv[4..].iter().map(String::as_str).collect();
     assert_eq!(
         tail,
         [

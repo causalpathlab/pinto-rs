@@ -10,20 +10,20 @@ fn out_of(argv: &[&str]) -> String {
 #[test]
 fn an_out_ending_in_a_slash_is_a_folder_named_for_the_method() {
     assert_eq!(
-        out_of(&["pinto", "lc", "d.zarr", "--out", "res/"]),
+        out_of(&["pinto", "fit", "lc", "d.zarr", "--out", "res/"]),
         "res/lc"
     );
     assert_eq!(
-        out_of(&["pinto", "dsvd", "d.zarr", "--out", "a/b/"]),
+        out_of(&["pinto", "fit", "dsvd", "d.zarr", "--out", "a/b/"]),
         "a/b/dsvd"
     );
     assert_eq!(
-        out_of(&["pinto", "lc", "d.zarr", "--out", "res/r"]),
+        out_of(&["pinto", "fit", "lc", "d.zarr", "--out", "res/r"]),
         "res/r"
     );
     // as `pinto run` names it
     assert_eq!(
-        out_of(&["pinto", "cage-cell", "d.zarr", "--out", "res/"]),
+        out_of(&["pinto", "fit", "cage-cell", "d.zarr", "--out", "res/"]),
         "res/cage-cell"
     );
 }
@@ -36,7 +36,7 @@ fn lra(extra: &[&str]) -> Result<SrtLrActivityArgs, clap::Error> {
     let mut argv = vec!["pinto", "lra"];
     argv.extend_from_slice(extra);
     match Cli::try_parse_from(argv)?.commands {
-        Commands::LrActivity(a) => Ok(*a),
+        Commands::Lra(a) => Ok(a.args),
         _ => panic!("not lra"),
     }
 }
@@ -83,19 +83,22 @@ fn removed_lra_flags_are_refused_with_their_replacement() {
     assert!(msg.contains("--method coexpression-scores"), "{msg}");
     assert!(check_removed_lra_flags(&strings(&["pinto", "lra", "-f", "r", "--seed", "1"])).is_ok());
     // Other commands are not checked.
-    assert!(check_removed_lra_flags(&strings(&["pinto", "lc", "--lc-prefix", "3"])).is_ok());
+    assert!(check_removed_lra_flags(&strings(&["pinto", "fit", "lc", "--lc-prefix", "3"])).is_ok());
 }
 
 #[test]
 fn lra_simulate_parses_its_study_flags() {
     let parse = |extra: &[&str]| {
-        let mut argv = vec!["pinto", "lra-simulate"];
+        let mut argv = vec!["pinto", "lra", "simulate"];
         argv.extend_from_slice(extra);
         match Cli::try_parse_from(argv)
             .unwrap_or_else(|e| panic!("{e}"))
             .commands
         {
-            Commands::LraSimulate(a) => a,
+            Commands::Lra(a) => match a.simulate {
+                Some(LraSub::Simulate(s)) => s,
+                None => panic!("not lra simulate"),
+            },
             _ => panic!("not lra-simulate"),
         }
     };
@@ -103,10 +106,11 @@ fn lra_simulate_parses_its_study_flags() {
     assert_eq!(a.out.as_deref(), Some("x"));
     // The study file and its example are gone.
     for flag in [&["--study", "s.json"][..], &["--example-study"][..]] {
-        let argv = [&["pinto", "lra-simulate", "--from", "r"][..], flag].concat();
+        let argv = [&["pinto", "lra", "simulate", "--from", "r"][..], flag].concat();
         assert!(Cli::try_parse_from(argv).is_err(), "{flag:?} still parses");
     }
-    let mut cli = Cli::try_parse_from(["pinto", "lra-simulate", "-f", "r", "-o", "res/"]).unwrap();
+    let mut cli =
+        Cli::try_parse_from(["pinto", "lra", "simulate", "-f", "r", "-o", "res/"]).unwrap();
     name_folder_out(&mut cli.commands);
     assert_eq!(cli.commands.out_mut().unwrap().0.as_ref(), "res/lra");
     // The benchmark flags are gone from lra.
@@ -117,31 +121,33 @@ fn lra_simulate_parses_its_study_flags() {
 /// alike, rather than quietly built as one contact per cell.
 #[test]
 fn lra_needs_a_contact_per_cell_at_least() {
-    for cmd in ["lra", "lra-simulate"] {
+    for cmd in [&["lra"][..], &["lra", "simulate"]] {
         let parse = |k: &str| {
-            Cli::try_parse_from([
-                "pinto",
-                cmd,
-                "d.zarr",
-                "--coord",
-                "c.csv",
-                "--knn-spatial",
-                k,
-            ])
+            Cli::try_parse_from(
+                [
+                    &["pinto"][..],
+                    cmd,
+                    &["d.zarr", "--coord", "c.csv", "--knn-spatial", k][..],
+                ]
+                .concat(),
+            )
         };
-        assert!(parse("0").is_err(), "{cmd}");
-        assert!(parse("1").is_ok(), "{cmd}");
+        assert!(parse("0").is_err(), "{cmd:?}");
+        assert!(parse("1").is_ok(), "{cmd:?}");
     }
 }
 
 fn lra_simulate(extra: &[&str]) -> LraSimulateArgs {
-    let mut argv = vec!["pinto", "lra-simulate"];
+    let mut argv = vec!["pinto", "lra", "simulate"];
     argv.extend_from_slice(extra);
     match Cli::try_parse_from(argv)
         .unwrap_or_else(|e| panic!("{e}"))
         .commands
     {
-        Commands::LraSimulate(a) => *a,
+        Commands::Lra(a) => match a.simulate {
+            Some(LraSub::Simulate(s)) => *s,
+            None => panic!("not lra simulate"),
+        },
         _ => panic!("not lra-simulate"),
     }
 }
@@ -170,7 +176,7 @@ fn lra_simulate_selects_one_scenario_by_its_flags() {
     assert_eq!((one.planted, one.null), (4, 10));
     assert_eq!((one.scenario.effect_pve, one.scenario.rep), (0.05, 2));
     assert!(Cli::try_parse_from(
-        [&["pinto", "lra-simulate"][..], &base, &["--pairs", "0"]].concat()
+        [&["pinto", "lra", "simulate"][..], &base, &["--pairs", "0"]].concat()
     )
     .is_err());
 }
@@ -207,7 +213,7 @@ fn lra_simulate_refuses_a_bad_point_before_reading_data() {
 
 #[test]
 fn lra_simulate_has_a_version() {
-    let e = Cli::try_parse_from(["pinto", "lra-simulate", "--version"]).unwrap_err();
+    let e = Cli::try_parse_from(["pinto", "lra", "simulate", "--version"]).unwrap_err();
     assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
 }
 
@@ -384,14 +390,23 @@ fn cage_cell_defaults_to_no_embedding_l2_and_cage_keeps_its_own() {
         .unwrap_or_else(|e| panic!("{e}"))
         .commands
     {
-        Commands::Cage(a) | Commands::CageCell(a) => a.embedding_l2,
+        Commands::Fit(Fit::Cage(a) | Fit::CageCell(a)) => a.embedding_l2,
         _ => panic!("not cage"),
     };
-    assert_eq!(l2(&["pinto", "cage", "d.zarr", "-o", "o"]), 0.0625);
-    assert_eq!(l2(&["pinto", "cage-cell", "d.zarr", "-o", "o"]), 0.0);
+    assert_eq!(l2(&["pinto", "fit", "cage", "d.zarr", "-o", "o"]), 0.0625);
+    assert_eq!(l2(&["pinto", "fit", "cage-cell", "d.zarr", "-o", "o"]), 0.0);
     for cmd in ["cage", "cage-cell"] {
         assert_eq!(
-            l2(&["pinto", cmd, "d.zarr", "-o", "o", "--embedding-l2", "0.25"]),
+            l2(&[
+                "pinto",
+                "fit",
+                cmd,
+                "d.zarr",
+                "-o",
+                "o",
+                "--embedding-l2",
+                "0.25"
+            ]),
             0.25
         );
     }
@@ -473,15 +488,23 @@ fn cage_cell_refuses_hierarchy_flags() {
     assert!(cage_cell(&[], check_cell_level).is_ok());
 }
 
-/// `f` of `pinto cage-cell` with `extra`, as built, and its matches.
+/// `f` of `pinto fit cage-cell` with `extra`, as built, and its matches.
 fn cage_cell<T>(extra: &[&str], f: impl Fn(&clap::Command, &clap::ArgMatches) -> T) -> T {
     use clap::CommandFactory;
-    let argv = [&["pinto", "cage-cell", "d.zarr", "-o", "o"][..], extra].concat();
+    let argv = [
+        &["pinto", "fit", "cage-cell", "d.zarr", "-o", "o"][..],
+        extra,
+    ]
+    .concat();
     let mut cmd = Cli::command();
     let m = cmd.try_get_matches_from_mut(argv).unwrap();
     f(
-        cmd.find_subcommand("cage-cell").unwrap(),
-        m.subcommand_matches("cage-cell").unwrap(),
+        cmd.find_subcommand("fit")
+            .and_then(|f| f.find_subcommand("cage-cell"))
+            .unwrap(),
+        m.subcommand_matches("fit")
+            .and_then(|f| f.subcommand_matches("cage-cell"))
+            .unwrap(),
     )
 }
 
@@ -491,7 +514,7 @@ fn cage_cell<T>(extra: &[&str], f: impl Fn(&clap::Command, &clap::ArgMatches) ->
 fn cage_hides_the_inclusion_knob() {
     let cli = built_cli();
     for cmd in ["cage", "cage-cell"] {
-        let sub = cli.find_subcommand(cmd).expect(cmd);
+        let sub = crate::cli_path::find(&cli, cmd).expect(cmd).1;
         let hidden = |id: &str| {
             sub.get_arguments()
                 .find(|a| a.get_id() == id)
@@ -528,19 +551,25 @@ fn tiny_model(dir: &std::path::Path, command: &str) -> String {
     prefix
 }
 
-/// `pinto impute` of the model at `model` with the extra flags `extra`: its
+/// `pinto apply impute` of the model at `model` with the extra flags `extra`: its
 /// error message.
 fn impute_error(model: &str, extra: &[&str]) -> String {
     use clap::CommandFactory;
-    let mut argv = vec!["pinto", "impute", "q.zarr", "--model", model, "-o", "o"];
+    let mut argv = vec![
+        "pinto", "apply", "impute", "q.zarr", "--model", model, "-o", "o",
+    ];
     argv.extend_from_slice(extra);
     let mut cmd = Cli::command();
     let m = cmd.try_get_matches_from_mut(&argv).unwrap();
     let qc_given = util::input::SrtInputArgs::qc_flags_given(
-        cmd.find_subcommand("impute").unwrap(),
-        m.subcommand_matches("impute").unwrap(),
+        cmd.find_subcommand("apply")
+            .and_then(|f| f.find_subcommand("impute"))
+            .unwrap(),
+        m.subcommand_matches("apply")
+            .and_then(|f| f.subcommand_matches("impute"))
+            .unwrap(),
     );
-    let Commands::Impute(a) = Cli::try_parse_from(argv).unwrap().commands else {
+    let Commands::Apply(Apply::Impute(a)) = Cli::try_parse_from(argv).unwrap().commands else {
         panic!("not impute")
     };
     crate::impute::run_impute(&a, &qc_given)
@@ -551,7 +580,7 @@ fn impute_error(model: &str, extra: &[&str]) -> String {
 /// impute of an lc / dsvd model runs no cell QC, so it refuses every QC
 /// flag given on the command line, by name, even at its default value,
 /// before it reads a file. `--no-qc` asks for what that path does and is
-/// not refused; a cage model's impute runs QC through `pinto predict` and is
+/// not refused; a cage model's impute runs QC through `pinto apply predict` and is
 /// not refused.
 #[test]
 fn impute_refuses_qc_flags_on_the_profile_path_only() {
@@ -582,7 +611,9 @@ fn impute_refuses_qc_flags_on_the_profile_path_only() {
 /// flag does, as it parses its command line.
 #[test]
 fn impute_refuses_a_feature_qc_floor() {
-    let argv = ["pinto", "impute", "q.zarr", "--model", "m", "-o", "o"];
+    let argv = [
+        "pinto", "apply", "impute", "q.zarr", "--model", "m", "-o", "o",
+    ];
     let parse =
         |floor: &str| Cli::try_parse_from([&argv[..], &["--qc-feature-min-cells", floor]].concat());
     assert!(parse("0").is_ok());

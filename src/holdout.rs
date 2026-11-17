@@ -1,4 +1,4 @@
-//! `pinto predict` on an `lc` (or `dsvd`) model: held-out scoring.
+//! `pinto apply predict` on an `lc` (or `dsvd`) model: held-out scoring.
 //!
 //! A model fitted without some cells (a donor's files left out, or a region
 //! split off with `data-beans split`) is asked how well its community profiles

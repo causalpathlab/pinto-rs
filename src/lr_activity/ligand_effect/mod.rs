@@ -1,5 +1,5 @@
 //! Effect of neighbour ligand on receivers (`pinto lra`, the default
-//! `--method contact-effect`; `pinto lra-simulate` benchmarks it).
+//! `--method contact-effect`; `pinto lra simulate` benchmarks it).
 //!
 //! Co-expression scores ask whether a ligand and its receptor are detected
 //! together across contacts. This asks what happens to a receiver's

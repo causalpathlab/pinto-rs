@@ -90,7 +90,8 @@ fn a_simulate_call_becomes_its_command_line() {
         shown_path(Path::new("b.parquet"))
     );
     let want: Vec<String> = [
-        "srt-simulate",
+        "sim",
+        "new",
         "--scenario=donor-confounded-donor-only-cell-type",
         "--set=grid_side=8",
         "--set=seed=2",
@@ -104,7 +105,7 @@ fn a_simulate_call_becomes_its_command_line() {
     checked(&cli(), &argv).unwrap();
     // Only what was given: no scenario (the command's default), no other flag.
     let bare = simulate_argv(&sim_args(json!({})), "o");
-    assert_eq!(bare, ["srt-simulate", "--out=o"]);
+    assert_eq!(bare, ["sim", "new", "--out=o"]);
     // column names name the columns of given coordinate files only
     let names_alone = sim_args(json!({"coord_column_names": ["-x", "y"]}));
     assert_eq!(simulate_argv(&names_alone, "o"), bare);
@@ -360,7 +361,7 @@ fn pair_scoring_the_truth_itself_is_perfect() {
     assert!(sim_pairs(few).is_err());
 }
 
-/// A baseline is `pinto srt-sim-baseline` with only what was given; an
+/// A baseline is `pinto sim baseline` with only what was given; an
 /// unknown method is refused as the command line refuses it.
 #[test]
 fn the_baseline_command_line_has_only_what_was_given() {
@@ -371,7 +372,8 @@ fn the_baseline_command_line_has_only_what_was_given() {
     assert_eq!(
         argv,
         [
-            "srt-sim-baseline",
+            "sim",
+            "baseline",
             "--truth=/p/sim",
             "--method=per-donor",
             "--n-clusters=5",
@@ -387,7 +389,7 @@ fn the_baseline_command_line_has_only_what_was_given() {
     );
     assert_eq!(
         bare,
-        ["srt-sim-baseline", "--truth=/p/sim", "--out=/p/out.tsv"]
+        ["sim", "baseline", "--truth=/p/sim", "--out=/p/out.tsv"]
     );
     checked(&cli(), &bare).unwrap();
     let scvi = args::<SimBaselineToolArgs>(json!({"truth": "t", "method": "scvi"}));

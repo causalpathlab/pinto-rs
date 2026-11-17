@@ -1,4 +1,4 @@
-//! CLI arguments for `pinto cage`.
+//! CLI arguments for `pinto fit cage`.
 
 use clap::{Parser, ValueEnum};
 use data_beans::alg::hvg::HvgCliArgs;
@@ -154,7 +154,7 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Feature-name canonicalization for matching external resources",
         long_help = "Row-name canonicalization strategy:\n\
                      auto:  peek row names and auto-detect (default)\n\
-                     exact: strict string equality (pinto lc / svd default)\n\
+                     exact: strict string equality (pinto fit lc / svd default)\n\
                      gene:  gene symbols; split on '_' so 'ENSG…_SYMBOL' and 'SYMBOL' alias\n\
                      locus: normalize chrom-coord names; collapse overlaps\n\
                      mixed: per-row dispatch (RNA+ATAC paired axes)",
@@ -418,7 +418,7 @@ pub struct CellActivityGraphEmbeddingArgs {
     pub inclusion_blocks: usize,
 
     /// Cells and cell pairs are the trained unit, with no pseudobulks:
-    /// set by `pinto cage-cell`, not a flag.
+    /// set by `pinto fit cage-cell`, not a flag.
     #[arg(skip)]
     pub cell_level: bool,
 
@@ -715,7 +715,7 @@ Given beside either (auto or a count), it is refused.
 OUTPUTS. {out}.module_membership.parquet (feature x M),
 {out}.module_dictionary.parquet (M x H), {out}.module_residual.parquet and
 {out}.module_bias.parquet. {out}.feature_embedding.parquet holds the composed
-row, so nothing that reads it has to know modules exist; `pinto predict` places
+row, so nothing that reads it has to know modules exist; `pinto apply predict` places
 features the model never saw through these tables.";
 
 /// The width when neither the flag nor a pinned dictionary decides it.

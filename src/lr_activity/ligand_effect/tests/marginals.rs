@@ -467,7 +467,7 @@ fn the_baselines_are_refused_with_a_coexpression_method() {
             .unwrap()
             .commands
         {
-            crate::Commands::LrActivity(a) => *a,
+            crate::Commands::Lra(a) => a.args,
             _ => unreachable!("an lra command line"),
         }
     };

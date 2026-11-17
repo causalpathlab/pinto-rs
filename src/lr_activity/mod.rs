@@ -2,7 +2,7 @@
 //! ([`ligand_effect`], the default method) and, below, the co-expression
 //! test per link community (`--method coexpression-test`).
 //!
-//! Consumes the output of `pinto lc` (edge→community assignments) and a
+//! Consumes the output of `pinto fit lc` (edge→community assignments) and a
 //! user-supplied directional ligand→receptor list, and tests whether each
 //! LR pair shows coherent activity within each community.
 //!
@@ -194,7 +194,7 @@ pub fn lra_long_about() -> String {
          \n\
          Verdicts (column `verdict`, explained in `verdict_note`):\n\
          {}\n\
-         Check what this tissue can detect with `pinto lra-simulate`.\n\
+         Check what this tissue can detect with `pinto lra simulate`.\n\
          \n\
          Example:\n\
          \x20 pinto lra --from out/run1.pinto.json\n\
@@ -203,7 +203,7 @@ pub fn lra_long_about() -> String {
     )
 }
 
-/// `pinto lra-simulate --help`.
+/// `pinto lra simulate --help`.
 pub fn lra_simulate_long_about() -> String {
     "Power and calibration check: can this tissue detect ligand effects of a\n\
      given size, and does the analysis stay honest under confounding?\n\
@@ -223,7 +223,7 @@ pub fn lra_simulate_long_about() -> String {
      by AUROC and AUPRC, and a sidecar {out}.lra-simulate.json written last.\n\
      \n\
      Examples:\n\
-     \x20 pinto lra-simulate --from out/run1.pinto.json\n\
-     \x20 pinto lra-simulate --from out/run1.pinto.json -o sweep/p1 --set effect_pve=0.02"
+     \x20 pinto lra simulate --from out/run1.pinto.json\n\
+     \x20 pinto lra simulate --from out/run1.pinto.json -o sweep/p1 --set effect_pve=0.02"
         .to_string()
 }

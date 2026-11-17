@@ -139,3 +139,22 @@ fn dotdots_fold_by_their_words() {
     assert_eq!(lexical(Path::new("/a/../../b")), PathBuf::from("/b"));
     assert_eq!(lexical(Path::new("./a/./b")), PathBuf::from("a/b"));
 }
+
+#[test]
+fn the_words_naming_the_method_stay_on_the_first_line() {
+    let lines = command_lines(&argv(&[
+        "fit", "lc", "d1.zarr", "d2.zarr", "--out=r", "--fast",
+    ]));
+    assert_eq!(
+        lines,
+        [
+            "\"${PINTO:-pinto}\" fit lc",
+            "d1.zarr",
+            "d2.zarr",
+            "--out=\"$out\"",
+            "--fast"
+        ]
+    );
+    let lines = command_lines(&argv(&["lra", "--from=r.pinto.json"]));
+    assert_eq!(lines, ["\"${PINTO:-pinto}\" lra", "--from=r.pinto.json"]);
+}

@@ -3,7 +3,7 @@
 use crate::util::cli::value_name;
 use serde::{Deserialize, Serialize};
 
-/// What `pinto lra` (contact effect) and `pinto lra-simulate` recorded:
+/// What `pinto lra` (contact effect) and `pinto lra simulate` recorded:
 /// their tables, the reference behind them, and the fixed settings they
 /// were made with (none of them is a flag). Paths are absolute.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]

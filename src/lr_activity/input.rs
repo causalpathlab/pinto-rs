@@ -1,4 +1,4 @@
-//! What `pinto lra` and `pinto lra-simulate` read: a prior run named by its
+//! What `pinto lra` and `pinto lra simulate` read: a prior run named by its
 //! manifest (`--from`), or data files with coordinates, resolved into
 //! expression, coordinates and spatial contacts.
 
@@ -319,7 +319,7 @@ impl LraInput {
     pub fn lc_prefix(&self) -> anyhow::Result<String> {
         self.run_file(
             "link_community.parquet",
-            "the co-expression methods' link communities (a `pinto lc` run)",
+            "the co-expression methods' link communities (a `pinto fit lc` run)",
         )?;
         Ok(self.run.as_ref().expect("run_file checked").prefix.clone())
     }

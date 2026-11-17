@@ -570,7 +570,7 @@ impl PairEncoder {
         this.varmap.load(path).map_err(|e| {
             anyhow::anyhow!(
                 "{path}: the saved pair encoder does not fit this pinto's network ({e}); the model \
-                 was fitted by an earlier version — rerun `pinto cage`"
+                 was fitted by an earlier version — rerun `pinto fit cage`"
             )
         })?;
         Ok(this)

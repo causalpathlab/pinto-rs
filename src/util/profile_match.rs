@@ -1,8 +1,8 @@
 //! A fitted model's community profiles on another dataset's rows: matching
 //! the feature axes by canonical name, fitting a unit's community proportions
 //! by EM over the profiles, and the training data's per-feature totals. Shared
-//! by `pinto impute` and held-out scoring (`pinto predict` on lc / dsvd), and
-//! the totals by cage's `pinto predict` too.
+//! by `pinto apply impute` and held-out scoring (`pinto apply predict` on lc / dsvd), and
+//! the totals by cage's `pinto apply predict` too.
 
 use crate::util::common::*;
 

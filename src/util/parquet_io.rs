@@ -309,7 +309,7 @@ pub fn read_cells_table(
     };
     let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
     let mut wanted = vec![fields[0].as_ref(), x.as_str(), y.as_str()];
-    // The batch labels are read by the viewer and by `pinto residual`;
+    // The batch labels are read by the viewer and by `pinto apply residual`;
     // only the viewer reads `in_graph`.
     if has("batch") {
         wanted.push("batch");
@@ -368,7 +368,7 @@ pub struct CellTable {
     /// Bare coordinate column names (without `left_`/`right_` prefix).
     /// Pass-through from `coord_pairs.parquet` so downstream readers
     /// (e.g. `read_propensity`) can exclude coord trailers that
-    /// `pinto prop` may append to `.propensity.parquet`.
+    /// `pinto apply propensity` may append to `.propensity.parquet`.
     #[cfg(feature = "view")]
     pub coord_col_names: Vec<Box<str>>,
 }
@@ -496,12 +496,12 @@ fn strip_left(col: &str) -> &str {
 
 /// Read a propensity parquet. Schemas differ across pinto variants:
 ///
-/// - `pinto lc`: columns named `"0"`, `"1"`, …, `"{K-1}"` plus optional
+/// - `pinto fit lc`: columns named `"0"`, `"1"`, …, `"{K-1}"` plus optional
 ///   `entropy`. No `cluster`, no coord trailer.
-/// - `pinto prop`: columns `propensity_0 … propensity_{K-1}, cluster,
+/// - `pinto apply propensity`: columns `propensity_0 … propensity_{K-1}, cluster,
 ///   entropy`, plus an optional coord trailer (e.g. `pxl_row_in_fullres`,
 ///   `pxl_col_in_fullres`).
-/// - `pinto dsvd`: columns `0 … K-1, cluster, entropy`.
+/// - `pinto fit dsvd`: columns `0 … K-1, cluster, entropy`.
 ///
 /// This reader keeps every float column as a propensity slot *except*
 /// names that appear in `exclude_cols`, the explicit `cluster` column,
@@ -613,7 +613,7 @@ pub fn read_propensity(
 /// Parse a community-column / community-label string into its integer ID.
 ///
 /// Accepts the current `C{c}` schema and two legacy forms — bare integer
-/// (`"5"`, older `pinto lc`) and `propensity_{c}` (older `pinto propensity`)
+/// (`"5"`, older `pinto fit lc`) and `propensity_{c}` (older `pinto apply propensity`)
 /// — so existing parquets on disk still load. Returns `None` for anything
 /// else (e.g. `"entropy"`, coord names, malformed labels).
 pub(crate) fn parse_community_col_name(name: &str) -> Option<i64> {

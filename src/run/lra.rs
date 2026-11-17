@@ -1,5 +1,5 @@
 //! `run_lra` and `run_lra_simulate` for `pinto mcp`: `pinto lra` and
-//! `pinto lra-simulate` on a run or on data files, set up flag for flag as the command line
+//! `pinto lra simulate` on a run or on data files, set up flag for flag as the command line
 //! takes them, checked as pinto parses them, and run as a child pinto in
 //! the project's records (a background job unless asked otherwise). The
 //! reply is read from the tables the child wrote.
@@ -447,14 +447,14 @@ pub(super) fn lra_argv(
     argv
 }
 
-/// `pinto lra-simulate` reading `run` (or its data files), writing under
+/// `pinto lra simulate` reading `run` (or its data files), writing under
 /// `out`.
 pub(super) fn lra_simulate_argv(
     a: &LraSimulateToolArgs,
     run: Option<&str>,
     out: &str,
 ) -> Vec<String> {
-    let mut argv: Vec<String> = vec!["lra-simulate".into()];
+    let mut argv: Vec<String> = vec!["lra".into(), "simulate".into()];
     if let Some(run) = run {
         argv.push(flag_value("--from", run));
     }
@@ -591,7 +591,7 @@ fn made_as_asked(
 fn checked_lra(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
     let args: crate::lr_activity::SrtLrActivityArgs = super::mcp::parsed(cli, argv)?;
     crate::lr_activity::fit::check_method_flags(&args)
-        .map_err(|e| anyhow::anyhow!("pinto {}: {e}", argv[0]))
+        .map_err(|e| anyhow::anyhow!("pinto {}: {e}", super::mcp::named(argv)))
 }
 
 /// Run `argv` making `made`: in the background (the reply is the job), or
@@ -820,7 +820,7 @@ pub(super) fn lra_simulate(
     simulate_reply(Some(&argv), &made)
 }
 
-/// The reply to a finished `pinto lra-simulate`: the comparison table, and
+/// The reply to a finished `pinto lra simulate`: the comparison table, and
 /// the command that made it when known.
 fn simulate_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Result<Vec<Content>> {
     let table = made[0].to_string_lossy();

@@ -335,7 +335,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
             warn!(
                 "batch labels {:?} are all numeric; this looks like a run from \
                  before batch labels were exported. The scores will be keyed by \
-                 a meaningless offset; re-run `pinto lc` to get identifiable \
+                 a meaningless offset; re-run `pinto fit lc` to get identifiable \
                  batch labels.",
                 distinct
             );
@@ -704,7 +704,7 @@ fn same_prefix(a: &str, b: &str) -> bool {
             .any(|s| file(a, s).is_some_and(|f| file(b, s) == Some(f)))
 }
 
-/// `pinto lra-simulate`: the contact-effect analysis's power and
+/// `pinto lra simulate`: the contact-effect analysis's power and
 /// calibration check on this tissue.
 pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
     use crate::lr_activity::ligand_effect::pipeline::{

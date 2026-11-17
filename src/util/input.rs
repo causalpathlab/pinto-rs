@@ -20,7 +20,7 @@ pub struct SRTReadArgs {
     pub batch_files: Option<Vec<Box<str>>>,
     pub header_in_coord: Option<usize>,
     /// Optional row-name canonicalizer for fuzzy cross-file feature/locus
-    /// alignment. `Exact` (used by `pinto lc` and friends) keeps the rows
+    /// alignment. `Exact` (used by `pinto fit lc` and friends) keeps the rows
     /// every file shares; other kinds canonicalize through
     /// [`SparseIoVec::with_row_canonicalizer`] and keep the union.
     pub feature_kind: FeatureNameKind,
@@ -138,7 +138,7 @@ fn open_data_files(args: &SRTReadArgs, names: &[Box<str>]) -> anyhow::Result<Spa
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
 /// rows and their cell names (`{barcode}@{base}` with several files) are a
-/// fit's. `pinto residual` reads a run's data back this way.
+/// fit's. `pinto apply residual` reads a run's data back this way.
 pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,

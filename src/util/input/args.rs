@@ -279,9 +279,9 @@ pub struct OffsetArgs {
     #[arg(
         long,
         value_hint = clap::ValueHint::DirPath,
-        help = "Stage 2: the divisor from `pinto residual --residual divide` (its -o folder)",
+        help = "Stage 2: the divisor from `pinto apply residual --residual divide` (its -o folder)",
         long_help = "A stage-2 fit on the stage-1 run's own data files: the folder\n\
-                     `pinto residual --residual divide` wrote, the divisor from it.\n\
+                     `pinto apply residual --residual divide` wrote, the divisor from it.\n\
                      Each count is read against the stage-1 expectation\n\
                      mu = n_i sum_k theta_ik p_kb(g): dsvd, cage and cage-cell divide it\n\
                      by d = mu / (n_i pbar_g) where they would divide by a batch effect,\n\
@@ -662,7 +662,7 @@ impl SrtInputArgs {
 
     /// Convert to the internal read args for data loading. The
     /// `feature_kind` selects how row names get canonicalized for
-    /// cross-file / cross-resource matching. `pinto cage` uses
+    /// cross-file / cross-resource matching. `pinto fit cage` uses
     /// `FeatureNameKind::Gene { delim: '_' }` (or `auto_detect`'d) so
     /// feature names like `ENSG…_SYMBOL` register both the full name and
     /// the `SYMBOL` suffix as aliases, which matching against external

@@ -1,4 +1,4 @@
-//! `pinto impute` — impute full-feature expression for a new sample by
+//! `pinto apply impute` — impute full-feature expression for a new sample by
 //! kNN over community propensities against a trained run's cells.
 //!
 //! The matching space is the per-cell community propensity — the one
@@ -6,7 +6,7 @@
 //! `dsvd`) publishes — so the retrieval step is uniform while the
 //! query-side projection dispatches on the manifest's `command`:
 //!
-//! - **cage**: the full `pinto predict` pipeline runs first, writing its
+//! - **cage**: the full `pinto apply predict` pipeline runs first, writing its
 //!   usual outputs under `{out}`; the query propensity is its result, and
 //!   the reference propensity is the training run's own
 //!   `{model}.propensity.parquet`. Both sides are incident-edge fractions
@@ -102,7 +102,7 @@ pub struct ImputeArgs {
 /// [`SrtInputArgs::qc_flags_given`](crate::util::input::SrtInputArgs::qc_flags_given)),
 /// which an lc / dsvd model refuses.
 pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> {
-    // A model named by its manifest is the same model, as `pinto predict`
+    // A model named by its manifest is the same model, as `pinto apply predict`
     // takes it.
     let mut args = args.clone();
     let run = open_impute_model(&mut args.predict.model)?;
@@ -113,7 +113,7 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
 
     // The manifest is the authority on what the model IS; artifact probing
     // (e.g. for feature_embedding.parquet) would silently reroute a cage
-    // model with a misplaced file — or a `pinto predict` output prefix —
+    // model with a misplaced file — or a `pinto apply predict` output prefix —
     // onto the profile path with different semantics. The probe survives
     // only as a fallback for pre-manifest runs.
     let meta = run.as_ref().map(|r| &r.meta);
@@ -198,7 +198,7 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// The model `model` names, opened as `pinto predict` opens it
+/// The model `model` names, opened as `pinto apply predict` opens it
 /// ([`crate::predict::open_model`]), with `model` set to its prefix; else,
 /// for a pre-unification lc / dsvd run, its `{prefix}.metadata.json` (the
 /// same schema). `None` when neither manifest is there; one that is there
@@ -330,7 +330,7 @@ fn open_backends(what: &str, files: &[Box<str>]) -> anyhow::Result<SparseIoVec> 
 // cage: predict-backed side    //
 //////////////////////////////////
 
-/// Run `pinto predict` for the query propensity; read the training run's
+/// Run `pinto apply predict` for the query propensity; read the training run's
 /// propensity for the reference side. The reference opens only after
 /// predict has succeeded, so a preloaded atlas is not held in memory
 /// through the whole predict pass.
@@ -341,7 +341,7 @@ fn cage_propensities(
 ) -> anyhow::Result<(Mat, Vec<Box<str>>, Mat, SparseIoVec)> {
     let model = args.predict.model.as_ref();
 
-    info!("cage model: projecting the query sample through `pinto predict`");
+    info!("cage model: projecting the query sample through `pinto apply predict`");
     let (query_prop, query_cells) = predict_cage(&args.predict, &ScoringArgs::default(), run)?;
 
     let ref_data = open_backends("reference", reference_files)?;

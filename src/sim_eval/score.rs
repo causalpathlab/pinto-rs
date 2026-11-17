@@ -1,4 +1,4 @@
-//! `pinto srt-sim-score`: how well a labelling recovers a simulation's
+//! `pinto sim score`: how well a labelling recovers a simulation's
 //! planted truth, as two tests.
 //!
 //! **Test 1, donor-invariant domains** (on spots of shared domains):

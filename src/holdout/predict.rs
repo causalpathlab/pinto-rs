@@ -72,7 +72,7 @@ fn slots_named(
     Ok(on)
 }
 
-/// `pinto predict` for an lc / dsvd model (its manifest `run`). Returns the
+/// `pinto apply predict` for an lc / dsvd model (its manifest `run`). Returns the
 /// per-cell propensity and cell names it writes.
 ///
 /// A model whose manifest says its profiles are batch-adjusted
@@ -564,7 +564,7 @@ pub(crate) fn delta_note(
 }
 
 /// Each of the sample's batches (`labels`, sorted) the model `run` (prefix
-/// `model`) knows, as `pinto predict` matches them for inputs `c`: its
+/// `model`) knows, as `pinto apply predict` matches them for inputs `c`: its
 /// `delta` set to the model's δ on the matched slots (`rows` and their
 /// `row_to_matched` slot; a row the model's δ lacks keeps 1) and marked
 /// `fixed`. Returns how many.
@@ -601,7 +601,7 @@ fn models_delta(
 }
 
 /// `{out}.predictive.parquet`, one row per unit, under the column names
-/// cage's `pinto predict` and `senna predict` use for the same quantities:
+/// cage's `pinto apply predict` and `senna predict` use for the same quantities:
 /// `eval_llik` and `eval_count` over the scored part, `eval_llik_per_count`,
 /// `eval_null_llik_per_count` under the training composition, `spearman` and
 /// `pearson_log1p`; then `eval_pooled_k1_llik_per_count` under the pooled

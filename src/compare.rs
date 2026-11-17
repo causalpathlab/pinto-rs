@@ -103,9 +103,9 @@ pub struct CompareArgs {
 
     #[arg(
         long,
-        help = "Compare held-out scores instead: A and B are `pinto predict` runs (comma lists)",
+        help = "Compare held-out scores instead: A and B are `pinto apply predict` runs (comma lists)",
         long_help = "Compare two models' held-out scores on the same cells. A and B are\n\
-                     `pinto predict` runs (prefix, .pinto.json or predictive.parquet),\n\
+                     `pinto apply predict` runs (prefix, .pinto.json or predictive.parquet),\n\
                      each a comma list for several folds (leave-one-donor-out). Units\n\
                      are joined on their cell pair; both sides must have split them\n\
                      alike (same data, -k, --seed and split flags). The donor is the\n\

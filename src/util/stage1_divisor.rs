@@ -1,5 +1,5 @@
 //! The stage-1 divisor a stage-2 fit reads (`--offset <dir>`): the tables
-//! `pinto residual --residual divide` writes ([`Stage1Tables`]), and those
+//! `pinto apply residual --residual divide` writes ([`Stage1Tables`]), and those
 //! tables aligned to a fit's own cells and rows ([`Stage1Divisor`]).
 //!
 //! The stage-1 expectation of row `g` in cell `i` of batch `b` is
@@ -42,7 +42,7 @@ fn sigma2_column(batch: &str) -> String {
     format!("sigma2@{batch}")
 }
 
-/// What `pinto residual --residual divide` writes: the stage-1 model's
+/// What `pinto apply residual --residual divide` writes: the stage-1 model's
 /// low-rank pieces, from which `μ` is rebuilt wherever it is needed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stage1Tables {
@@ -149,7 +149,7 @@ impl Stage1Tables {
         for p in [&cells_path, &profiles_path, &features_path] {
             anyhow::ensure!(
                 Path::new(p).exists(),
-                "--offset {dir}: {p} not found; give the folder `pinto residual --residual \
+                "--offset {dir}: {p} not found; give the folder `pinto apply residual --residual \
                  divide` wrote"
             );
         }

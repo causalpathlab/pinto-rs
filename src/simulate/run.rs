@@ -1,4 +1,4 @@
-//! `pinto srt-simulate`: resolve the parameters, simulate, write.
+//! `pinto sim new`: resolve the parameters, simulate, write.
 
 use super::panel::{donor_label, grid, read_coords};
 use super::params::{find_scenario, SimParams, SCENARIOS};

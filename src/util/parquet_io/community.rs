@@ -115,7 +115,7 @@ fn first_present(
 
 /// Read a feature_community parquet: G × K. Returns (mat, feature_names).
 ///
-/// `pinto lc` writes this file in *melted* form (one row per
+/// `pinto fit lc` writes this file in *melted* form (one row per
 /// feature-community pair, with columns `feature`, `community`, `mean`, `sd`,
 /// `log_mean`, `log_sd`). We pivot the `mean` column back to a wide
 /// G × K matrix here so downstream code can index `gt[(g, k)]` as

@@ -667,13 +667,15 @@ fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>
         std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
     );
     let (done, from) = match cli.map(|c| c.commands) {
-        Ok(crate::Commands::LrActivity(a)) => (
-            lra_outputs(a.method, out, &a.only).swap_remove(0),
-            a.input.from,
-        ),
-        Ok(crate::Commands::LraSimulate(a)) => (lra_simulate_path(out).into(), a.input.from),
+        Ok(crate::Commands::Lra(a)) => match a.simulate {
+            Some(crate::LraSub::Simulate(s)) => (lra_simulate_path(out).into(), s.input.from),
+            None => (
+                lra_outputs(a.args.method, out, &a.args.only).swap_remove(0),
+                a.args.input.from,
+            ),
+        },
         // What the residual's plan says marks it done.
-        Ok(crate::Commands::Residual(a)) => (
+        Ok(crate::Commands::Apply(crate::Apply::Residual(a))) => (
             residual_plan(dir, &a).map_or_else(|_| PathBuf::from(out), |p| p.summary.into()),
             Some(a.run),
         ),
@@ -693,13 +695,13 @@ fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>
 const NO_LRA: &str =
     "lra on the stage-2 fit comes with lra queued on the residual's run: the same --from";
 
-/// `argv` as `pinto residual` parses it.
+/// `argv` as `pinto apply residual` parses it.
 fn residual_args(argv: &[String]) -> anyhow::Result<ResidualArgs> {
     let cli = <crate::Cli as clap::Parser>::try_parse_from(
         std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
     )?;
     match cli.commands {
-        crate::Commands::Residual(a) => Ok(*a),
+        crate::Commands::Apply(crate::Apply::Residual(a)) => Ok(*a),
         _ => anyhow::bail!("not a residual"),
     }
 }

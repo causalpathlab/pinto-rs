@@ -172,7 +172,7 @@ fn read_panel(path: &Path, known: &HashSet<String>) -> Option<(usize, usize, usi
 
 /// Browse for a run before the viewer opens, full screen on `session`'s
 /// `terminal`: the path picked (relative to the working directory when
-/// under it), `None` when cancelled or stopped by `pinto kill`. It waits
+/// under it), `None` when cancelled or stopped by `pinto session kill`. It waits
 /// a round at a time, so an attach repaints it and a kill is seen.
 pub fn pick_run(
     session: &legume_tui::Session,

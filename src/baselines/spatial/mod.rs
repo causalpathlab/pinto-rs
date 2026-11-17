@@ -35,9 +35,9 @@
 //! the cells, one section at a time where the method builds a spatial
 //! graph, and writes the same outputs ([`output`]):
 //!
-//! - `{out}.labels.tsv`: `cell<TAB>label`, for `pinto srt-sim-score --labels`;
+//! - `{out}.labels.tsv`: `cell<TAB>label`, for `pinto sim score --labels`;
 //! - `{out}.cell_embedding.parquet`: a `cell` column and the method's
-//!   per-cell vectors, for `pinto srt-sim-pairs --vectors`;
+//!   per-cell vectors, for `pinto sim pairs --vectors`;
 //! - `{out}.baseline.json`: the method, its settings and its inputs.
 //!
 //! Batch effects are the one deviation every baseline shares: with two or

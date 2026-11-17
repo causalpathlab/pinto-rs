@@ -10,7 +10,7 @@
 //! `S` per section, `E` spot noise; `i` spot, `c` state, `d` donor, `s`
 //! section, `w` the spot's mixture. Each term has variance `pve · V` over
 //! spots (at each spot's dominant state), `V` being `log_rate_var`, and `E`
-//! takes `1 − Σ pve`, the convention `pinto lra-simulate` uses. The type
+//! takes `1 − Σ pve`, the convention `pinto lra simulate` uses. The type
 //! term is scaled per gene, exactly, and centred (its level belongs to `a`).
 //! A nuisance term is a few draws per gene, so it gets one scale from its
 //! expected variance `Σ w (1 − w)` over the confounded groups (`w` their

@@ -298,7 +298,7 @@ fn an_lc_model_named_by_a_renamed_manifest_predicts(
     .expect("a model opened by its manifest was refused");
 }
 
-/// `pinto predict` (held-out scoring) of the lc model at `model` on `data`
+/// `pinto apply predict` (held-out scoring) of the lc model at `model` on `data`
 /// (with `coords` when given), with `extra` flags, to `{dir}/{name}`: its
 /// output's manifest, or the error.
 fn score(
