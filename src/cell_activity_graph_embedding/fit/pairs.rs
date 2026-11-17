@@ -4,17 +4,12 @@
 use crate::cell_activity_graph_embedding::row_adam::{residency, Residency, RowAdam};
 use crate::util::common::*;
 use crate::util::memory::{ensure_fits, human_bytes, Budget};
-use legume_numeric::candle::candle_core::{Device, Tensor};
+use legume_numeric::candle::candle_core::Device;
 use legume_numeric::candle::candle_nn::ParamsAdamW;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
-use rand_distr::{Distribution, StandardNormal};
+use legume_numeric::matrix::rand_util::{name_seed, normal_f32_seeded};
 
 /// The spread of a pair row's start, that of every table geu starts.
 const INIT_STDEV: f32 = 0.1;
-
-/// Rows drawn per seeded stream when starting the table.
-const INIT_BLOCK: usize = 4096;
 
 /// The pair table `[n_pairs × d]`, started at `N(0, INIT_STDEV)` from
 /// `seed`, trained on `dev` by a lazy Adam at `lr` (the dense optimiser's
@@ -44,19 +39,8 @@ pub(super) fn start_pair_table(
             Device::Cpu
         }
     };
-    let mut init = vec![0f32; n_pairs * d];
-    let base = legume_numeric::matrix::rand_util::name_seed(seed, "z_pair");
-    init.par_chunks_mut(INIT_BLOCK * d.max(1))
-        .enumerate()
-        .for_each(|(block, rows)| {
-            let mut rng = SmallRng::seed_from_u64(base.wrapping_add(block as u64));
-            for x in rows {
-                let draw: f32 = StandardNormal.sample(&mut rng);
-                *x = draw * INIT_STDEV;
-            }
-        });
     let z = RowAdam::new(
-        init,
+        normal_f32_seeded(n_pairs * d, INIT_STDEV, name_seed(seed, "z_pair")),
         (n_pairs, d),
         &store,
         ParamsAdamW {
@@ -77,10 +61,9 @@ pub(super) fn start_pair_table(
 }
 
 /// The trained table `z` as a host row-major `[rows × d]` vector, its
-/// moments freed before the copy.
+/// moments freed before the one copy.
 pub(super) fn table_to_host(z: RowAdam) -> anyhow::Result<Vec<f32>> {
-    let t: Tensor = z.into_table();
-    Ok(t.to_device(&Device::Cpu)?.flatten_all()?.to_vec1::<f32>()?)
+    Ok(z.into_table().flatten_all()?.to_vec1::<f32>()?)
 }
 
 /// cage-cell's latent and cell embedding from its trained pair rows `z`
@@ -158,28 +141,11 @@ pub(crate) fn pair_outputs(
     (latent, Mat::from_row_slice(n_cells, d, &cells))
 }
 
-/// Every row of `m` scaled to unit L2 norm (a norm below 1e-8 divides by
-/// 1e-8), in place: what the shared clustering and propensity routine
-/// takes, so edge k-means clusters on composition and not on scale.
-pub(crate) fn normalize_rows(m: &mut Mat) {
-    let mut sq = vec![0f32; m.nrows()];
-    for col in m.column_iter() {
-        for (s, &x) in sq.iter_mut().zip(col.iter()) {
-            *s += x * x;
-        }
-    }
-    let inv: Vec<f32> = sq.iter().map(|&s| 1.0 / s.sqrt().max(1e-8)).collect();
-    for mut col in m.column_iter_mut() {
-        for (x, &w) in col.iter_mut().zip(&inv) {
-            *x *= w;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{normalize_rows, pair_outputs};
+    use super::pair_outputs;
     use crate::util::common::Mat;
+    use crate::util::rows::normalize_rows;
 
     /// Three cells, two pairs, listed as four (one pair in both orientations,
     /// one crossing batches with no row): every listed pair takes its pair's

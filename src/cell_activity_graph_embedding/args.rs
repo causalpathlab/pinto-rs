@@ -180,17 +180,14 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(
         long,
         default_value_t = 100,
-        help = "Training epochs over the feature axis (cage-cell: an upper bound)",
+        help = "Training epochs over the feature axis",
         long_help = "Passes over the feature axis.\n\
                      \n\
                      With a --convergence-window, the run early-stops once the\n\
                      loss flattens over that many epochs.\n\
                      A high value here is a ceiling, not a fixed cost.\n\
                      \n\
-                     Pair with --features-per-epoch to cap per-epoch cost.\n\
-                     \n\
-                     cage-cell trains until --pair-updates is reached, and this\n\
-                     is only an upper bound there (default 1000 for cage-cell)."
+                     Pair with --features-per-epoch to cap per-epoch cost."
     )]
     pub epochs: usize,
 
@@ -296,8 +293,7 @@ pub struct CellActivityGraphEmbeddingArgs {
                      --features-per-epoch does not enter the split: it caps\n\
                      the features visited, each keeps its draws, and the\n\
                      epoch draws fewer than N in all.\n\
-                     --epochs is the usual way to train longer.\n\
-                     cage-cell, unset: 4 x the number of cell pairs.",
+                     --epochs is the usual way to train longer.",
         hide = true
     )]
     pub positives_per_epoch: Option<usize>,
@@ -306,8 +302,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         long,
         default_value_t = 5e-3,
         help = "AdamW learning rate",
-        long_help = "The optimisers' learning rate: 0.005 for cage, 0.02 for cage-cell,\n\
-                     whose pair rows each move only on the steps that draw them.",
         hide = true
     )]
     pub lr: f32,

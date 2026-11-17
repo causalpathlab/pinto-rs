@@ -212,9 +212,6 @@ impl<'a> FeatureGatedChainSampler<'a> {
 pub struct EdgeChainBatch {
     /// `[B]` positive pair ids (rows of `super_edges`).
     pub pos_edges: Vec<u32>,
-    /// `[B]` each positive's two cells, `super_edges[pos_edges[i]]`.
-    pub left_units: Vec<u32>,
-    pub right_units: Vec<u32>,
     /// `[B * K]` row-major: the negatives of positive `i` at `[i*K..(i+1)*K]`,
     /// pair ids of the same batch, never the positive itself.
     pub neg_edges: Vec<u32>,
@@ -244,17 +241,12 @@ impl FeatureGatedChainSampler<'_> {
         let k = self.n_negatives;
         let mut out = EdgeChainBatch {
             pos_edges: Vec::with_capacity(b),
-            left_units: Vec::with_capacity(b),
-            right_units: Vec::with_capacity(b),
             neg_edges: Vec::with_capacity(b * k),
             n_negatives: k,
         };
         for _ in 0..b {
             let e = entry.local_to_global[entry.pos.sample(rng)];
-            let (u, v) = self.super_edges[e as usize];
             out.pos_edges.push(e);
-            out.left_units.push(u);
-            out.right_units.push(v);
             for _ in 0..k {
                 // a batch of one pair keeps its last draw
                 let mut w = pool[rng.random_range(0..pool.len())];

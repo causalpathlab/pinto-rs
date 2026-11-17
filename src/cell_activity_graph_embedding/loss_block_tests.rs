@@ -294,8 +294,6 @@ fn pair_loss_and_grads(
             neg_edges.extend((2..K).map(|_| pair(&mut r)));
         }
         batches.push(EdgeChainBatch {
-            left_units: pos_edges.iter().map(|&e| left[e as usize]).collect(),
-            right_units: pos_edges.iter().map(|&e| right[e as usize]).collect(),
             pos_edges,
             neg_edges,
             n_negatives: K,

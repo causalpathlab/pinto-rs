@@ -16,6 +16,7 @@ pub mod metadata;
 pub mod parquet_io;
 pub mod paths;
 pub mod profile_match;
+pub mod rows;
 pub mod score_trace;
 pub mod srt_pipeline;
 pub mod staging;

@@ -319,8 +319,8 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
 }
 
 /// cage-cell's draw names pairs: every positive is a pair active for the
-/// feature in the draw's batch, its two cells as the draw lists them, and
-/// every negative another pair of the same batch, never the positive.
+/// feature in the draw's batch (both its cells in that batch), and every
+/// negative another pair of the same batch, never the positive.
 #[test]
 fn a_cell_level_draw_names_pairs_of_its_batch() {
     use crate::cell_activity_graph_embedding::feature_chain_sampler::{
@@ -370,11 +370,6 @@ fn a_cell_level_draw_names_pairs_of_its_batch() {
                 assert!(
                     active.contains(&e) && in_batch(e),
                     "positive {e} in batch {b}"
-                );
-                assert_eq!(
-                    edges[e as usize],
-                    (draw.left_units[i], draw.right_units[i]),
-                    "positive {e}'s cells"
                 );
                 for &w in &draw.neg_edges[i * 6..(i + 1) * 6] {
                     assert!((w as usize) < edges.len() && in_batch(w), "negative {w}");

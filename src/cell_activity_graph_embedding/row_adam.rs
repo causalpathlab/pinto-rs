@@ -8,8 +8,8 @@
 //!
 //! ```text
 //! rows(ids)  -> [U × D] copy on the compute device (the step's leaf)
-//! step(ids, g)  coalesce duplicate ids (their gradients summed), then on
-//!               those rows only, with the row's own step count t_r:
+//! step(ids, z, g)  on those distinct rows only, with each row's own step
+//!                  count t_r:
 //!   m_r ← β1 m_r + (1-β1) g_r          v_r ← β2 v_r + (1-β2) g_r²
 //!   z_r ← z_r (1 - lr λ) - lr · (m_r / (1-β1^t_r)) / (sqrt(v_r / (1-β2^t_r)) + ε)
 //! ```
@@ -17,7 +17,10 @@
 //! the expressions candle's `AdamW::step` evaluates, in the same order, so a
 //! row stepped every step ends where the dense optimiser puts it, bit for
 //! bit, and a row no step drew keeps its value and its moments exactly.
-//! Each touched row is written back in place ([`set_rows`]); nothing
+//! A row a step names twice is the caller's to merge first: its leaf holds
+//! each row once, so autograd has summed the gradient already. Each touched
+//! row is written back in place ([`set_rows`]), the moments `[m | v]` side
+//! by side in one table so they move in one read and one write; nothing
 //! table-sized is copied in a step.
 //!
 //! The table may live on the host while the step computes on the device
@@ -27,7 +30,7 @@ use legume_numeric::candle::candle_core::{
     CpuStorage, DType, Device, InplaceOp3, Layout, Result, Tensor,
 };
 use legume_numeric::candle::candle_nn::ParamsAdamW;
-use legume_numeric::candle::fast_index::{gather_rows, index_add_rows};
+use legume_numeric::candle::fast_index::gather_rows;
 
 /// Where a row table and its moments are kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +60,11 @@ pub fn residency(bytes: usize, free: Option<usize>, fraction: f32) -> Residency 
     }
 }
 
-/// A `[R × D]` table, its Adam moments, and each row's step count.
+/// A `[R × D]` table, its Adam moments `[R × 2D]` (`m` then `v`), and each
+/// row's step count.
 pub struct RowAdam {
     table: Tensor,
-    m: Tensor,
-    v: Tensor,
+    moments: Tensor,
     steps: Vec<u32>,
     params: ParamsAdamW,
     compute: Device,
@@ -80,11 +83,9 @@ impl RowAdam {
         params: ParamsAdamW,
         compute: &Device,
     ) -> Result<Self> {
-        let table = Tensor::from_vec(init, (rows, d), store)?;
         Ok(Self {
-            m: table.zeros_like()?,
-            v: table.zeros_like()?,
-            table,
+            table: Tensor::from_vec(init, (rows, d), store)?,
+            moments: Tensor::zeros((rows, 2 * d), DType::F32, store)?,
             steps: vec![0; rows],
             params,
             compute: compute.clone(),
@@ -112,96 +113,80 @@ impl RowAdam {
 
     /// The table, the moments freed first.
     pub fn into_table(self) -> Tensor {
-        let Self { table, m, v, .. } = self;
-        drop((m, v));
+        let Self { table, moments, .. } = self;
+        drop(moments);
         table
     }
 
     /// The moments `(m, v)` as they stand.
     #[cfg(test)]
-    pub fn moments(&self) -> (&Tensor, &Tensor) {
-        (&self.m, &self.v)
-    }
-
-    /// Rows `ids` of `t` (kept wherever the table is), on the compute device.
-    fn gather(&self, t: &Tensor, ids: &[u32]) -> Result<Tensor> {
-        let idx = Tensor::from_slice(ids, ids.len(), t.device())?;
-        gather_rows(t, &idx)?.to_device(&self.compute)
+    pub fn moments(&self) -> (Tensor, Tensor) {
+        let d = self.table.dim(1).expect("a 2-d table");
+        (
+            self.moments
+                .narrow(1, 0, d)
+                .and_then(|t| t.contiguous())
+                .expect("m"),
+            self.moments
+                .narrow(1, d, d)
+                .and_then(|t| t.contiguous())
+                .expect("v"),
+        )
     }
 
     /// Rows `ids` of the table, `[ids.len() × D]` on the compute device,
     /// detached: the leaf a step differentiates.
     pub fn rows(&self, ids: &[u32]) -> Result<Tensor> {
-        Ok(self.gather(&self.table, ids)?.detach())
+        let idx = Tensor::from_slice(ids, ids.len(), self.table.device())?;
+        Ok(gather_rows(&self.table, &idx)?
+            .to_device(&self.compute)?
+            .detach())
     }
 
-    /// One lazy Adam step of rows `ids` from their gradient `grad`
-    /// (`[ids.len() × D]`, on the compute device). A row named twice is
-    /// stepped once, by the sum of its gradients. `current`: the rows'
-    /// values as [`Self::rows`] gave them (the step's leaf), so they are not
-    /// read again; `None`, or ids that repeat, reads them from the table.
-    pub fn step(&mut self, ids: &[u32], current: Option<&Tensor>, grad: &Tensor) -> Result<()> {
+    /// One lazy Adam step of the distinct rows `ids` (ascending, as a
+    /// step's leaf lists them), whose current values `current` and
+    /// gradient `grad` (`[ids.len() × D]` each) are on the compute device.
+    pub fn step(&mut self, ids: &[u32], current: &Tensor, grad: &Tensor) -> Result<()> {
+        if !ids.windows(2).all(|w| w[0] < w[1]) {
+            return Err(legume_numeric::candle::candle_core::Error::Msg(
+                "row Adam: a step's rows must be distinct and ascending".into(),
+            ));
+        }
         if ids.is_empty() {
             return Ok(());
         }
-        let (rows, grad, repeated) = coalesce(ids, grad)?;
-        let theta = match current {
-            Some(t) if !repeated => t.detach(),
-            _ => self.gather(&self.table, &rows)?,
-        };
-        let rows = &rows[..];
+        let n = ids.len();
+        let d = current.dim(1)?;
         let p = &self.params;
         let (beta1, beta2) = (p.beta1, p.beta2);
         let lr_lambda = p.lr * p.weight_decay;
-        let (mut scale_m, mut scale_v) = (Vec::with_capacity(rows.len()), Vec::new());
-        for &r in rows {
+        let (mut scale_m, mut scale_v) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for &r in ids {
             let t = &mut self.steps[r as usize];
             *t += 1;
             scale_m.push((1f64 / (1f64 - beta1.powi(*t as i32))) as f32);
             scale_v.push((1f64 / (1f64 - beta2.powi(*t as i32))) as f32);
         }
-        let n = rows.len();
         let scale_m = Tensor::from_vec(scale_m, (n, 1), &self.compute)?;
         let scale_v = Tensor::from_vec(scale_v, (n, 1), &self.compute)?;
-        let m = self.gather(&self.m, rows)?;
-        let v = self.gather(&self.v, rows)?;
+        let store = self.table.device().clone();
+        let idx = Tensor::from_slice(ids, n, &store)?;
+        let mv = gather_rows(&self.moments, &idx)?.to_device(&self.compute)?;
+        let (m, v) = (mv.narrow(1, 0, d)?, mv.narrow(1, d, d)?);
+        let theta = current.detach();
         // candle's `AdamW::step`, row-wise
-        let next_m = ((m * beta1)? + (&grad * (1.0 - beta1))?)?;
+        let next_m = ((m * beta1)? + (grad * (1.0 - beta1))?)?;
         let next_v = ((v * beta2)? + (grad.sqr()? * (1.0 - beta2))?)?;
         let m_hat = next_m.broadcast_mul(&scale_m)?;
         let v_hat = next_v.broadcast_mul(&scale_v)?;
         let next_theta = (theta * (1f64 - lr_lambda))?;
         let adjusted_grad = (m_hat / (v_hat.sqrt()? + p.eps)?)?;
         let next_theta = (next_theta - (adjusted_grad * p.lr)?)?;
-        let store = self.table.device().clone();
-        let idx = Tensor::from_slice(rows, n, &store)?;
         set_rows(&self.table, &idx, &next_theta.to_device(&store)?)?;
-        set_rows(&self.m, &idx, &next_m.to_device(&store)?)?;
-        set_rows(&self.v, &idx, &next_v.to_device(&store)?)?;
+        let next_mv = Tensor::cat(&[&next_m, &next_v], 1)?;
+        set_rows(&self.moments, &idx, &next_mv.to_device(&store)?)?;
         Ok(())
     }
-}
-
-/// `ids` deduplicated (ascending) and `grad`'s rows summed onto them, and
-/// whether any repeated; the input as it is when none does.
-fn coalesce(ids: &[u32], grad: &Tensor) -> Result<(Vec<u32>, Tensor, bool)> {
-    let mut uniq = ids.to_vec();
-    uniq.sort_unstable();
-    uniq.dedup();
-    if uniq.len() == ids.len() {
-        return Ok((ids.to_vec(), grad.clone(), false));
-    }
-    let inv: Vec<u32> = ids
-        .iter()
-        .map(|id| uniq.binary_search(id).expect("listed") as u32)
-        .collect();
-    let dev = grad.device();
-    let summed = index_add_rows(
-        &Tensor::zeros((uniq.len(), grad.dim(1)?), grad.dtype(), dev)?,
-        &Tensor::from_vec(inv, ids.len(), dev)?,
-        grad,
-    )?;
-    Ok((uniq, summed, true))
 }
 
 /// `table[ids[i]] = src[i]`, in place, for a contiguous f32 `table`

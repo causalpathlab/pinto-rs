@@ -64,18 +64,15 @@ mod scoring;
 pub use encoder::PairEncoderSpec;
 pub use scoring::PairScore;
 
-/// What a trained encoder trains on.
+/// What a trained encoder trains on: the finest pseudobulks (`cage`), each
+/// the sum of its cells' rows by `cell_to_pb`, and the pseudobulk edges
+/// `edges` between them, each pair thinned to a depth drawn from the pairs
+/// being placed. The cell pairs are then only encoded.
 #[derive(Debug, Clone, Copy)]
-pub enum TrainOn<'a> {
-    /// The finest pseudobulks (`cage`): each the sum of its cells' rows by
-    /// `cell_to_pb`, and the pseudobulk edges `edges` between them, each
-    /// pair thinned to a depth drawn from the pairs being placed. The cell
-    /// pairs are then only encoded.
-    Pseudobulks {
-        cell_to_pb: &'a [usize],
-        n_pb: usize,
-        edges: &'a [(u32, u32)],
-    },
+pub struct TrainOn<'a> {
+    pub cell_to_pb: &'a [usize],
+    pub n_pb: usize,
+    pub edges: &'a [(u32, u32)],
 }
 
 /// Where the encoder that places the pairs comes from.
@@ -298,8 +295,8 @@ impl PairDictionary {
 /// pull on `e_uv` — no special-casing needed.
 ///
 /// Every cell is read once, in contiguous column blocks, into the corpus the
-/// pairs are encoded from (under [`TrainOn::Pseudobulks`] the pseudobulk
-/// rows are summed from it);
+/// pairs are encoded from (the training pseudobulks' rows, [`TrainOn`], are
+/// summed from it);
 /// every pair is then the merge of two rows and every cell its own doubled
 /// row.
 pub fn project_pairs(
@@ -367,15 +364,14 @@ pub fn project_pairs(
             dev,
             save_to,
         } => {
-            let set = match on {
-                TrainOn::Pseudobulks {
-                    cell_to_pb,
-                    n_pb,
-                    edges: pb_edges,
-                } => encoder::TrainingSet::pseudobulks(
-                    &dict, &corpus, cell_to_pb, n_pb, pb_edges, edges,
-                )?,
-            };
+            let set = encoder::TrainingSet::pseudobulks(
+                &dict,
+                &corpus,
+                on.cell_to_pb,
+                on.n_pb,
+                on.edges,
+                edges,
+            )?;
             // The moments come from the rows epoch 0 trains on.
             let first = set.draw(args.seed, 0);
             let moments = set.moments(d, first.as_ref(), &corpus);

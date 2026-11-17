@@ -99,13 +99,13 @@ mod modules;
 pub(crate) mod pairs;
 mod tables;
 mod train;
+mod units;
 
 use model::{build_model, BuiltModel, ModelInputs};
 use module_cells::CellCounts;
 use tables::write_trained_tables;
-use train::{
-    resolve_feature_batch_size, train, ModuleUnits, PairRows, PairTable, ProbeInputs, TrainInputs,
-};
+use train::{train, TrainSetup};
+use units::{Pairs, Pseudobulks};
 
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
@@ -619,17 +619,34 @@ pub fn fit_cell_activity_graph_embedding(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
-    // cage-cell, unset: PAIR_DRAWS_PER_EPOCH draws per pair, at least the
-    // per-feature default
-    let pair_draws = (args.cell_level && args.positives_per_epoch.is_none())
-        .then(|| PAIR_DRAWS_PER_EPOCH * pb_frame.super_edges.len());
-    let positives_per_feature_exp_batch = match pair_draws {
-        Some(total) => positives_per_feature_batch(Some(total), expected_visits, n_exp_batches)
-            .max(PER_FEATURE_BATCH),
-        None => {
-            positives_per_feature_batch(args.positives_per_epoch, expected_visits, n_exp_batches)
+    // The epoch's total draws, and what set it: the flag; under cage-cell,
+    // unset, PAIR_DRAWS_PER_EPOCH per pair (never below the per-feature
+    // default); or nothing, for the per-feature default.
+    let (total_draws, floor, budget_note) = match (args.positives_per_epoch, args.cell_level) {
+        (Some(total), _) => (
+            Some(total),
+            1,
+            format!(
+                " (--positives-per-epoch {total} split over {expected_visits} expected visits x \
+                 {n_exp_batches} batch(es))"
+            ),
+        ),
+        (None, true) => {
+            let total = PAIR_DRAWS_PER_EPOCH * pb_frame.super_edges.len();
+            (
+                Some(total),
+                PER_FEATURE_BATCH,
+                format!(
+                    " (cage-cell: {PAIR_DRAWS_PER_EPOCH} per cell pair, {total} split over \
+                     {expected_visits} expected visits x {n_exp_batches} batch(es), at least \
+                     {PER_FEATURE_BATCH})"
+                ),
+            )
         }
+        (None, false) => (None, 1, String::new()),
     };
+    let positives_per_feature_exp_batch =
+        positives_per_feature_batch(total_draws, expected_visits, n_exp_batches).max(floor);
     // --features-per-epoch caps the visits, not the split: each visited
     // feature keeps its draws and the epoch draws fewer in all.
     let features_visited = match args.features_per_epoch {
@@ -639,19 +656,7 @@ pub fn fit_cell_activity_graph_embedding(
     info!(
         "Positive budget: {} super-edge draws per (feature, batch){}; {} features visited{} x {} batch(es) = {} per epoch",
         positives_per_feature_exp_batch,
-        match args.positives_per_epoch {
-            Some(total) => format!(
-                " (--positives-per-epoch {total} split over {expected_visits} expected visits x {n_exp_batches} batch(es))"
-            ),
-            None => match pair_draws {
-                Some(total) => format!(
-                    " (cage-cell: {PAIR_DRAWS_PER_EPOCH} per cell pair, {total} split over \
-                     {expected_visits} expected visits x {n_exp_batches} batch(es), at least \
-                     {PER_FEATURE_BATCH})"
-                ),
-                None => String::new(),
-            },
-        },
+        budget_note,
         features_visited,
         match (inclusion.is_some(), args.features_per_epoch > 0) {
             (true, true) => " (Σπ under --feature-inclusion, capped by --features-per-epoch)",
@@ -704,16 +709,10 @@ pub fn fit_cell_activity_graph_embedding(
         varmap: &varmap,
         dev: &dev,
     })?;
-    // cage-cell trains a row per cell pair instead of one per cell: the
-    // cell table leaves the map (so the dense AdamW never steps it) and the
-    // pair table lives outside it, stepped row by row.
+    // cage-cell trains a row per cell pair instead of one per cell (the
+    // model has no cell table; see `build_model`), in a table outside the
+    // map, stepped row by row.
     let mut pair_table = if args.cell_level {
-        varmap.data().lock().expect("varmap lock").remove("e_cell");
-        model.e_cell = Tensor::zeros(
-            (0, embedding_dim),
-            legume_numeric::candle::candle_core::DType::F32,
-            &dev,
-        )?;
         Some(pairs::start_pair_table(
             pb_frame.super_edges.len(),
             embedding_dim,
@@ -738,14 +737,9 @@ pub fn fit_cell_activity_graph_embedding(
         );
     }
     let (module_cfg, module_profiles) = modules.unzip();
-    // (matched by value, so cage-cell's unread profiles are freed here)
-    let module_units = match (module_profiles, args.cell_level) {
-        (None, _) => None,
-        (Some(_), true) => Some(ModuleUnits::Cells(CellCounts {
-            data: &data_vec,
-            feature_axis: &feature_axis,
-        })),
-        (Some(p), false) => {
+    // (cage-cell's profiles, only the modules' seed, are freed here)
+    let profiles = match module_profiles {
+        Some(p) if !args.cell_level => {
             anyhow::ensure!(
                 p.ncols() == n_pb,
                 "module profiles over {} pseudobulks, {} trained",
@@ -754,13 +748,14 @@ pub fn fit_cell_activity_graph_embedding(
             );
             // column-major `[G × n_pb]` is row-major `[n_pb × G]`
             let rows: Vec<f32> = p.as_slice().to_vec();
-            Some(ModuleUnits::Pseudobulks(Tensor::from_vec(
-                rows,
-                (p.ncols(), p.nrows()),
-                &dev,
-            )?))
+            Some(Tensor::from_vec(rows, (p.ncols(), p.nrows()), &dev)?)
         }
+        _ => None,
     };
+    let cell_counts = (args.cell_level && module_cfg.is_some()).then_some(CellCounts {
+        data: &data_vec,
+        feature_axis: &feature_axis,
+    });
     // One AdamW over the map, or two under LoRA: the shared factor `v` leaves
     // the main group for its own at the LoRA+ rate.
     let lora_v_name = legume_numeric::candle::lora::factor_names(E_FEAT_VAR_NAME).1;
@@ -800,43 +795,32 @@ pub fn fit_cell_activity_graph_embedding(
         n_negatives: N_NEGATIVES,
     };
 
-    let feature_batch_size = resolve_feature_batch_size(ProbeInputs {
-        args,
-        active_features: &active_features,
-        n_exp_batches,
-        sampler: &sampler,
-        model: &model,
-        pairs: pair_table.as_ref().map(|z| PairRows {
-            z,
-            edges: &pb_frame.super_edges,
-        }),
-        dev: &dev,
-    });
-
-    let score_trace = train(TrainInputs {
+    let setup = TrainSetup {
         args,
         model: &mut model,
         frozen_feature: frozen_feature.as_ref(),
         adams: &mut adams,
         lora_plus: lora_plus.as_ref(),
         sampler: &sampler,
+        active_features: &active_features,
         trainable_features: &trainable_features,
         features_visited,
-        feature_batch_size,
         feature_fisher_weights: &feature_fisher_weights,
         inclusion: inclusion.as_ref().map(|f| f.pi.as_slice()),
         module_cfg: module_cfg.as_ref(),
-        module_units,
-        pairs: pair_table.as_mut().map(|z| PairTable {
-            z,
-            edges: &pb_frame.super_edges,
-        }),
+        positives_per_draw: positives_per_feature_exp_batch,
         n_exp_batches,
-        n_pb,
         n_features,
         n_chain_levels,
         dev: &dev,
-    })?;
+    };
+    let score_trace = match pair_table.as_mut() {
+        Some(z) => train(
+            setup,
+            Pairs::new(z, &pb_frame.super_edges, cell_counts, args.pair_updates),
+        )?,
+        None => train(setup, Pseudobulks { n_pb, profiles })?,
+    };
 
     ////////////////
     // 9. Outputs //
@@ -918,7 +902,7 @@ pub fn fit_cell_activity_graph_embedding(
                         spec: &encoder_spec,
                         // cage trains the encoder on its pseudobulks' pairs
                         // and only encodes the cell pairs.
-                        on: TrainOn::Pseudobulks {
+                        on: TrainOn {
                             cell_to_pb: &pb_frame.cell_to_finest_pb,
                             n_pb,
                             edges: &pb_frame.super_edges,
@@ -953,7 +937,7 @@ pub fn fit_cell_activity_graph_embedding(
     // `pinto dsvd` hands the shared routine, so edge k-means clusters on
     // composition and not on pooled depth — written out and then clustered:
     // the same buffer both times.
-    pairs::normalize_rows(&mut pair_latent);
+    crate::util::rows::normalize_rows(&mut pair_latent);
     let pair_latent_nk = pair_latent;
     pair_latent_nk.to_parquet_with_names(
         &(c.out.to_string() + ".latent.parquet"),

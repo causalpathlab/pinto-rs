@@ -260,7 +260,7 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
         &PairProjectionArgs {
             solver: PairSolver::TrainEncoder {
                 spec: &spec,
-                on: TrainOn::Pseudobulks {
+                on: TrainOn {
                     cell_to_pb: &cell_to_pb,
                     n_pb: N_PB,
                     edges: &pb,
@@ -526,7 +526,7 @@ fn cage_projection_trains_on_pseudobulks_and_places_every_cell_pair() {
         &PairProjectionArgs {
             solver: PairSolver::TrainEncoder {
                 spec: &spec,
-                on: TrainOn::Pseudobulks {
+                on: TrainOn {
                     cell_to_pb: &cell_to_pb,
                     n_pb: N_PB,
                     edges: &pb,

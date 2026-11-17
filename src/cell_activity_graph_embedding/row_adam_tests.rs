@@ -60,15 +60,25 @@ fn lazy_adam_matches_dense_adamw_on_the_rows_it_steps_and_leaves_the_rest() {
             .backward()
             .unwrap();
         adam.step(&grads).unwrap();
+        // the leaf's values passed in, as training passes them
         if step % 3 == 0 {
-            // row 2 joins this step, listed first
+            // row 2 joins this step
+            let ids = [1u32, 2, 4];
             let extra = Tensor::from_vec(values(D, 50 + step), (1, D), &dev).unwrap();
-            let both = Tensor::cat(&[&extra, &g], 0).unwrap();
-            lazy.step(&[2, 1, 4], None, &both).unwrap();
+            let rows = Tensor::cat(
+                &[
+                    &g.narrow(0, 0, 1).unwrap(),
+                    &extra,
+                    &g.narrow(0, 1, 1).unwrap(),
+                ],
+                0,
+            )
+            .unwrap();
+            let current = lazy.rows(&ids).unwrap();
+            lazy.step(&ids, &current, &rows).unwrap();
         } else {
-            // the leaf's values passed in, as training passes them
             let current = lazy.rows(&every).unwrap();
-            lazy.step(&every, Some(&current), &g).unwrap();
+            lazy.step(&every, &current, &g).unwrap();
         }
     }
     assert_eq!(
@@ -85,7 +95,7 @@ fn lazy_adam_matches_dense_adamw_on_the_rows_it_steps_and_leaves_the_rest() {
     let (m, v) = lazy.moments();
     for state in [m, v] {
         assert!(
-            bits(&rows_of(state, &untouched)).iter().all(|&b| b == 0),
+            bits(&rows_of(&state, &untouched)).iter().all(|&b| b == 0),
             "an untouched row's moments moved"
         );
     }
@@ -96,33 +106,20 @@ fn lazy_adam_matches_dense_adamw_on_the_rows_it_steps_and_leaves_the_rest() {
     );
 }
 
-/// A row named twice in one step is stepped once, by the sum of its
-/// gradients, and counts one step: two runs, one with the duplicate and
-/// one with the summed gradient, stay identical over the next step too.
+/// A step's rows must be distinct and ascending, as a leaf lists them: a
+/// repeated or unordered id is refused, and nothing moves.
 #[test]
-fn duplicate_ids_in_a_step_coalesce() {
+fn a_step_refuses_repeated_or_unordered_rows() {
     let dev = Device::Cpu;
     let n_rows = 4;
-    let new = || RowAdam::new(values(n_rows * D, 2), (n_rows, D), &dev, params(), &dev).unwrap();
-    let (mut dup, mut summed) = (new(), new());
-    let (a, b, c) = (values(D, 3), values(D, 4), values(D, 5));
-    let ac: Vec<f32> = a.iter().zip(&c).map(|(x, y)| x + y).collect();
-    let g = |rows: Vec<f32>, n: usize| Tensor::from_vec(rows, (n, D), &dev).unwrap();
-    dup.step(&[3, 1, 3], None, &g([a, b.clone(), c].concat(), 3))
-        .unwrap();
-    summed.step(&[1, 3], None, &g([b, ac].concat(), 2)).unwrap();
-    assert_eq!(bits(dup.table()), bits(summed.table()));
-    let next = g(values(2 * D, 6), 2);
-    dup.step(&[1, 3], None, &next).unwrap();
-    summed.step(&[1, 3], None, &next).unwrap();
-    assert_eq!(
-        bits(dup.table()),
-        bits(summed.table()),
-        "the duplicate counted as two steps"
-    );
-    let (dm, dv) = dup.moments();
-    let (sm, sv) = summed.moments();
-    assert_eq!((bits(dm), bits(dv)), (bits(sm), bits(sv)));
+    let mut z = RowAdam::new(values(n_rows * D, 2), (n_rows, D), &dev, params(), &dev).unwrap();
+    let before = bits(z.table());
+    let g = Tensor::from_vec(values(2 * D, 3), (2, D), &dev).unwrap();
+    for ids in [[3u32, 3], [3, 1]] {
+        let current = z.rows(&ids).unwrap();
+        assert!(z.step(&ids, &current, &g).is_err(), "{ids:?}");
+    }
+    assert_eq!(bits(z.table()), before);
 }
 
 /// `set_rows` writes the named rows in place and nothing else; a row past

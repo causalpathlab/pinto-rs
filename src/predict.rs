@@ -180,22 +180,6 @@ pub struct ScoringArgs {
     pub null_from: Option<Vec<Box<str>>>,
 }
 
-/// Whether the cage model at prefix `model` (its manifest `run`) is a
-/// cage-cell one: its manifest says so, or, without a manifest, its files
-/// do: a pair latent with neither the pair encoder nor the pseudobulk
-/// table every cage run writes.
-fn is_cage_cell(model: &str, run: Option<&Run>) -> bool {
-    match run {
-        Some(r) => r.meta.cell_level,
-        None => {
-            let has = |suffix: &str| Path::new(&format!("{model}.{suffix}")).is_file();
-            has("latent.parquet")
-                && !has("pair_encoder.safetensors")
-                && !has("pb_embedding.parquet")
-        }
-    }
-}
-
 /// The model's pair encoder, `{model}.pair_encoder.safetensors`: the one map
 /// that places a sample's pairs and cells, so a model saved without it cannot
 /// be predicted from.
@@ -203,8 +187,9 @@ fn pair_encoder_path(model: &str) -> anyhow::Result<String> {
     let path = format!("{model}.pair_encoder.safetensors");
     anyhow::ensure!(
         Path::new(&path).is_file(),
-        "{path} does not exist: the model was fitted before `pinto cage` saved its pair encoder; \
-         refit it"
+        "{path} does not exist: the model was fitted before `pinto cage` saved its pair encoder, \
+         or it is a cage-cell model, which has none (placing new pairs on one comes in a later \
+         version); refit it with `pinto cage`"
     );
     Ok(path)
 }
@@ -435,7 +420,7 @@ pub fn predict_cage(
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     anyhow::ensure!(
-        !is_cage_cell(&args.model, run),
+        !run.is_some_and(|r| r.meta.cell_level),
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );

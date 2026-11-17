@@ -513,9 +513,23 @@ enum Commands {
                       and `pinto impute` refuse a cage-cell model for now.\n\
                       A pair table too big for the device is kept on the host.\n\n\
                       Writes what cage writes otherwise; its manifest says `cell_level`.",
+        // cage-cell's own defaults, all here; the per-pair positive draws,
+        // set by the data, are `args::PAIR_DRAWS_PER_EPOCH`.
         mut_arg("embedding_l2", |a| a.default_value("0")),
-        mut_arg("lr", |a| a.default_value("0.02")),
-        mut_arg("epochs", |a| a.default_value("1000")),
+        mut_arg("lr", |a| a
+            .default_value("0.02")
+            .long_help("AdamW learning rate. cage-cell's default is 0.02 (cage's 0.005): \
+                        a pair's row moves only on the steps that draw it.")),
+        mut_arg("epochs", |a| a
+            .default_value("1000")
+            .help("Upper bound on training epochs (training ends at --pair-updates)")
+            .long_help("An upper bound on the passes over the feature axis: cage-cell \
+                        trains until --pair-updates is reached, and stops here first \
+                        only if this is too few (a warning says so).")),
+        mut_arg("positives_per_epoch", |a| a.long_help(
+            "The epoch's total positive draws, split over the features and batches \
+             as in cage. Unset, 4 per cell pair (and at least 12 per feature and \
+             batch), so each update of a pair's row averages several draws.")),
         mut_arg("pair_updates", |a| a.hide(false)),
         // What cage-cell refuses, or warns does nothing on cells, is off its
         // help.

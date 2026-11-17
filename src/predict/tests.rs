@@ -1,7 +1,7 @@
 //! The model's pair encoder is found from the model prefix alone, so the
 //! resolution is checked without a model.
 
-use super::{is_cage_cell, pair_encoder_path, ModelOnlyFlags, PredictArgs};
+use super::{pair_encoder_path, ModelOnlyFlags, PredictArgs};
 use clap::{CommandFactory, FromArgMatches, Parser};
 
 #[derive(Parser)]
@@ -485,21 +485,4 @@ fn null_from_takes_a_comma_list() {
     let two: Vec<Box<str>> = vec!["a.zarr".into(), "b.zarr".into()];
     assert_eq!(null_from(&["--null-from", "a.zarr,b.zarr"]), two);
     assert_eq!(null_from(&["--null-from", "a.zarr", "b.zarr"]), two);
-}
-
-/// Without a manifest, a cage-cell model is known by its files: a pair
-/// latent with neither a pair encoder nor a pseudobulk table. A cage
-/// model's files are not mistaken for one.
-#[test]
-fn a_cage_cell_model_is_known_by_its_files_without_a_manifest() {
-    let dir = tempfile::tempdir().unwrap();
-    let model = dir.path().join("m").to_str().unwrap().to_string();
-    let touch = |suffix: &str| std::fs::write(format!("{model}.{suffix}"), b"").unwrap();
-    touch("latent.parquet");
-    assert!(is_cage_cell(&model, None));
-    touch("pb_embedding.parquet");
-    assert!(!is_cage_cell(&model, None), "a cage model's files");
-    std::fs::remove_file(format!("{model}.pb_embedding.parquet")).unwrap();
-    touch("pair_encoder.safetensors");
-    assert!(!is_cage_cell(&model, None), "a model with an encoder");
 }
