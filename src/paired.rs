@@ -1,6 +1,6 @@
 //! `pinto compare --paired`: two models' held-out scores on the same cells.
 //!
-//! Each side is one or more `pinto predict` runs on held-out data (one per
+//! Each side is one or more `pinto apply predict` runs on held-out data (one per
 //! fold of a leave-one-donor-out design, say). Their `predictive.parquet`
 //! units are joined on the unit key: both models scored the same cell pairs
 //! with the same split (same data, graph and seed), so a unit's difference
@@ -42,7 +42,7 @@ pub fn predictive_path(run: &str) -> anyhow::Result<String> {
     };
     anyhow::ensure!(
         Path::new(&path).is_file(),
-        "{run}: no {path}; a paired comparison takes `pinto predict` runs"
+        "{run}: no {path}; a paired comparison takes `pinto apply predict` runs"
     );
     Ok(path)
 }

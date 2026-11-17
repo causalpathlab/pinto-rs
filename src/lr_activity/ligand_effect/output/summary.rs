@@ -56,7 +56,7 @@ pub fn percent_short(pct: f64, lo: f64, hi: f64) -> String {
 
 /// The few lines a run ends with: verdict counts over the pooled pairs,
 /// the pairs whose effect survived the controls, the table's path, and a
-/// pointer to `pinto lra-simulate` when this run has no power check.
+/// pointer to `pinto lra simulate` when this run has no power check.
 pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>) -> String {
     let pooled: Vec<PooledEffect> = rows
         .iter()
@@ -103,7 +103,7 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
     match power_check {
         Some(p) => out += &format!("\n  power check: {p}"),
         None => {
-            out += "\n  no power check for this tissue yet: run `pinto lra-simulate` with the \
+            out += "\n  no power check for this tissue yet: run `pinto lra simulate` with the \
                     same input to see which effect sizes it can detect"
         }
     }

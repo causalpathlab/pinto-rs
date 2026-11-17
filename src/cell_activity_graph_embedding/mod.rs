@@ -1,4 +1,4 @@
-//! `pinto cage` — activity-gated cell-graph embedding.
+//! `pinto fit cage` — activity-gated cell-graph embedding.
 //!
 //! Learns per-cell embeddings on the spatial cell-cell graph by visiting
 //! each feature: every feature defines a per-cell activity vector that gates a

@@ -84,7 +84,7 @@ pub(crate) fn own_command(argv: &[String]) -> anyhow::Result<std::process::Comma
 }
 
 /// The tool `pinto run` and `pinto view` sessions belong to: they are
-/// named `pinto-run-1`, `pinto-view-2`, and `pinto attach` finds them.
+/// named `pinto-run-1`, `pinto-view-2`, and `pinto session attach` finds them.
 pub(crate) const TOOL: legume_tui::Tool = legume_tui::Tool::new("pinto");
 
 /// The modes of a screen: modifiers reported on enter where the terminal

@@ -86,11 +86,13 @@ pub fn relative(path: &Path, base: &Path) -> PathBuf {
 pub const LOG_LEVEL: &str = "info";
 
 /// The command as the script and the confirm popup write it: the program
-/// and method, each data file on its own line, then one flag and its
-/// values per line. The value of `--out=` is the script's `$out`.
+/// and the words naming the method (`fit lc`), each data file on its own
+/// line, then one flag and its values per line. The value of `--out=` is
+/// the script's `$out`.
 #[must_use]
 pub fn command_lines(argv: &[String]) -> Vec<String> {
     let mut lines: Vec<String> = vec!["\"${PINTO:-pinto}\"".to_string()];
+    let named = crate::cli_path::path_len(argv).max(1);
     let mut in_flags = false;
     for (k, w) in argv.iter().enumerate() {
         let word = if w.starts_with("--out=") {
@@ -99,7 +101,7 @@ pub fn command_lines(argv: &[String]) -> Vec<String> {
             quote(w)
         };
         in_flags |= w.starts_with("--");
-        let new_line = k > 0 && (!in_flags || w.starts_with("--"));
+        let new_line = k >= named && (!in_flags || w.starts_with("--"));
         match lines.last_mut() {
             Some(last) if !new_line => {
                 last.push(' ');

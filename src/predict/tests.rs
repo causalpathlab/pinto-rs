@@ -10,7 +10,7 @@ struct Probe {
     args: PredictArgs,
 }
 
-/// `pinto predict` of `extra` beside a query and a model: its args and the
+/// `pinto apply predict` of `extra` beside a query and a model: its args and the
 /// model-only flags it was given.
 fn parse(extra: &[&str]) -> (PredictArgs, ModelOnlyFlags) {
     let argv = [&["predict", "data", "--model", "m", "-o", "o"][..], extra].concat();

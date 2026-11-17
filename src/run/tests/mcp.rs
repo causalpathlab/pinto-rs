@@ -347,7 +347,7 @@ fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
     ] {
         let spec = tools.iter().find(|t| t.name == tool).unwrap();
         let props = spec.input_schema["properties"].as_object().unwrap();
-        let sub = cli.find_subcommand(command).unwrap();
+        let sub = crate::cli_path::find(&cli, command).unwrap().1;
         let mut described = 0;
         for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
             let id = arg.get_id().as_str();
@@ -480,7 +480,7 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
             .collect();
         fields.sort();
         fields.dedup();
-        let sub = cli.find_subcommand(command).unwrap();
+        let sub = crate::cli_path::find(&cli, command).unwrap().1;
         let mut visible: Vec<String> = sub
             .get_arguments()
             .filter(|a| !a.is_hide_set())
@@ -635,9 +635,9 @@ fn run_methods_lists_exactly_each_method_s_visible_flags() {
                     .to_string()
             })
             .collect();
-        let shown: Vec<String> = cli
-            .find_subcommand(name)
+        let shown: Vec<String> = crate::cli_path::find(&cli, name)
             .unwrap()
+            .1
             .get_arguments()
             .filter(|a| !a.is_hide_set())
             .filter_map(|a| a.get_long())
@@ -668,7 +668,7 @@ fn no_tool_names_a_hidden_flag() {
     let cli = crate::built_cli();
     let mut hidden: Vec<&str> = Vec::new();
     let mut shown: Vec<&str> = Vec::new();
-    for sub in cli.get_subcommands() {
+    for (_, sub) in crate::cli_path::tests::commands(&cli) {
         for a in sub.get_arguments() {
             if let Some(long) = a.get_long() {
                 if a.is_hide_set() {

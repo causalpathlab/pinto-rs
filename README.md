@@ -23,6 +23,22 @@ cargo install pinto-rs
 
 ## Subcommands
 
+The commands sit under a few verbs:
+
+| command | what it does |
+|---|---|
+| `pinto fit <method>` | a fit: `lc`, `dsvd`, `cage`, `cage-cell`, and the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto` (and each as `-pb`) |
+| `pinto apply <op>` | on a fitted run: `residual`, `predict`, `impute`, `propensity` |
+| `pinto lra`, `pinto lra simulate` | ligand-receptor analysis, and its power and calibration check |
+| `pinto sim <op>` | simulation with a planted truth: `new`, `score`, `pairs`, `baseline` |
+| `pinto compare`, `pinto view`, `pinto run`, `pinto mcp` | as before |
+| `pinto session <op>` | the detachable sessions: `list`, `attach`, `kill`, `rename` |
+
+The names from before 0.17 (`pinto lc`, `pinto residual`, `pinto
+lra-simulate`, `pinto srt-simulate`, `pinto sessions`, ...) still run, with
+a note naming the new form, so older `{out}.cmd.sh` scripts replay; they go
+after 0.17. The sections below are headed by the method's own name.
+
 Every run writes `{out}.pinto.json`, the manifest the other commands find
 its files by. Commands that record into a run's manifest (lra and its power
 check, several at once on one fit among them) take turns on it through a
@@ -33,16 +49,16 @@ packaged without it loses nothing.
 ### `lc` (link-community), recommended
 
 ```sh
-pinto lc data.h5 -c tissue_positions.csv -o out
-pinto lc data.h5 -c coords.csv -o out --n-communities 25
-pinto lc data.h5 -o out   # expression-only
+pinto fit lc data.h5 -c tissue_positions.csv -o out
+pinto fit lc data.h5 -c coords.csv -o out --n-communities 25
+pinto fit lc data.h5 -o out   # expression-only
 ```
 
 Without `--batch-files` or `--auto-batch`, each data file is its own batch,
 named by the file less its data extension (`sampleA.zarr` and
 `sampleA.zarr.zip` are batch `sampleA`), so the names do not depend on the
 order the files are given in. Two data files of the same name in one run
-are refused. `pinto predict` and `pinto impute` give a query file the
+are refused. `pinto apply predict` and `pinto apply impute` give a query file the
 model's batch of the same name, warning when it is not the model's own
 file. An older pinto named them by position (`0`, `1`, …; its manifest has
 `"batch_labels": "files"`, this one `"file-names"`): a query file takes
@@ -140,13 +156,13 @@ of the random projection of all features. It writes
 `{out}.feature_graph.parquet`, the pairs it kept.
 
 ```sh
-pinto lc data.h5 -c coords.csv -o out --feature-network pairs.tsv
+pinto fit lc data.h5 -c coords.csv -o out --feature-network pairs.tsv
 ```
 
 ### `dsvd` (delta-svd), recommended
 
 ```sh
-pinto dsvd data.h5 -c coords.csv -o out
+pinto fit dsvd data.h5 -c coords.csv -o out
 ```
 
 dsvd scales each cell's counts to a total of 1e4 and takes their log
@@ -162,18 +178,18 @@ propensity, link-community and feature-community tables, so `pinto view`,
 ### `prop` (propensity)
 
 ```sh
-pinto prop -z out.latent.parquet -e out.coord_pairs.parquet -o prop
+pinto apply propensity -z out.latent.parquet -e out.coord_pairs.parquet -o prop
 ```
 
 ### `cage`, `cage-cell` / `predict` / `impute`
 
 ```sh
-pinto cage data.h5 -c coords.csv -o out
-pinto cage data.h5 -c coords.csv -o out --feature-inclusion moran
-pinto cage data.h5 -c coords.csv -o out --feature-modules 20
-pinto cage data.h5 -c coords.csv -o out --feature-modules 0
-pinto cage-cell data.h5 -c coords.csv -o out
-pinto cage-cell data.h5 -c coords.csv -o out --feature-modules 20
+pinto fit cage data.h5 -c coords.csv -o out
+pinto fit cage data.h5 -c coords.csv -o out --feature-inclusion moran
+pinto fit cage data.h5 -c coords.csv -o out --feature-modules 20
+pinto fit cage data.h5 -c coords.csv -o out --feature-modules 0
+pinto fit cage-cell data.h5 -c coords.csv -o out
+pinto fit cage-cell data.h5 -c coords.csv -o out --feature-modules 20
 ```
 
 cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
@@ -205,11 +221,11 @@ and an epoch drawing about four positives per pair. It estimates and removes
 batch effects as cage does (`--ignore-batch` runs it without), and takes either
 remedy as cage does: its modules start from pseudobulks built for that alone,
 and training pools the sparse counts of the cells of the pairs each step draws.
-`pinto predict` applies a cage run to new data (a cage-cell model is refused
+`pinto apply predict` applies a cage run to new data (a cage-cell model is refused
 for now); see each command's `--help`.
 A query batch the model trained on (the same `--batch-files` label, or a
 data file of the same name as one of the model's) is divided by the model's
-own batch effects; only a new batch is estimated on the query. `pinto impute` divides the
+own batch effects; only a new batch is estimated on the query. `pinto apply impute` divides the
 reference cells of a cage run by the run's batch effects before pooling
 them; for lc and dsvd runs it stays on raw counts, since their
 feature-community profiles are fitted on raw counts.
@@ -379,7 +395,7 @@ that is itself significant does not rule out a larger effect; it is named in
 ### `lra-simulate`: power and calibration check
 
 Can this tissue detect ligand effects of a given size, and does the
-analysis stay honest under confounding? `pinto lra-simulate` keeps the real
+analysis stay honest under confounding? `pinto lra simulate` keeps the real
 tissue, plants effects of known size with and without hidden spatial
 confounders, and reports power, type I error, bias and coverage per
 scenario. It writes `{out}.lra-simulate.parquet`, and `pinto lra` on the
@@ -397,8 +413,8 @@ of each method's type I error and power per scenario, their means over the
 confounded nulls and the planted effects, and the baselines' run time.
 
 ```sh
-pinto lra-simulate --from out/run1.pinto.json
-pinto lra-simulate --from out/run1.pinto.json --region region.tsv --plant-region D3_specific_domain_1
+pinto lra simulate --from out/run1.pinto.json
+pinto lra simulate --from out/run1.pinto.json --region region.tsv --plant-region D3_specific_domain_1
 ```
 
 `--lr-pairs` and `--targets` add pairs and programmes as for `pinto lra` (for
@@ -413,7 +429,7 @@ KEY=VALUE` (repeatable), `--pairs N`, `--null-pairs N` or `--one` selects
 this mode in place of the built-in grid:
 
 ```sh
-pinto lra-simulate --from out/run1.pinto.json -o sweep/p07-s3 --seed 3 \
+pinto lra simulate --from out/run1.pinto.json -o sweep/p07-s3 --seed 3 \
   --set effect_pve=0.02 --set ligand_field_pve=0.25 --set response_field_pve=-0.25 \
   --set confounder=bumps --set confound_scale=32 --pairs 10 --null-pairs 10
 ```
@@ -478,10 +494,10 @@ each process otherwise takes half the free memory for itself.
 
 Do methods find the same domains in every donor, and keep a domain that
 only one donor has, when donor effects are as large as cell-type effects?
-`pinto srt-simulate` makes several donors' sections with a known answer,
-`pinto srt-sim-score` scores any labelling against it,
-`pinto srt-sim-pairs` scores a latent mapping on pairs of spots, and
-`pinto srt-sim-baseline` runs the two usual workflows (pool every donor, or
+`pinto sim new` makes several donors' sections with a known answer,
+`pinto sim score` scores any labelling against it,
+`pinto sim pairs` scores a latent mapping on pairs of spots, and
+`pinto sim baseline` runs the two usual workflows (pool every donor, or
 analyse each donor alone) for comparison.
 
 **What is simulated.** Location sets a spot's domain (smooth random fields
@@ -545,7 +561,7 @@ and each spot in `truth/spots.parquet` say whether the donor is
 they were drawn.
 
 **Named scenarios** set the rest; `--set key=value` changes any parameter,
-and `pinto srt-simulate --help` lists them. Each has 3 donors with 2
+and `pinto sim new --help` lists them. Each has 3 donors with 2
 sections each, and 4 spatial domains shared by every donor, each 95% one
 cell type, with the cell type 30% of the log rate's variance:
 
@@ -558,11 +574,11 @@ cell type, with the cell type 30% of the log rate's variance:
 | `composition-shift` | none, but donors differ in domain proportions (log-scale spread 0.5) | the third donor's, about 15% of its spots, a cell type no other donor has |
 
 ```sh
-pinto srt-simulate --scenario donor-confounded-donor-only-cell-type \
+pinto sim new --scenario donor-confounded-donor-only-cell-type \
   --set pve_donor=0.2 --set seed=2 -o sim
 pinto view sim/truth/truth.pinto.json          # the planted domains, states and donors
 # one shift-free donor, drawn from the seed
-pinto srt-simulate --scenario donor-confounded-donor-only-cell-type \
+pinto sim new --scenario donor-confounded-donor-only-cell-type \
   --set n_unconfounded_donors=1 -o sim-one-free
 ```
 
@@ -576,7 +592,7 @@ empty `sim` is written as `sim.partial` and moved into place once whole, so
 a stopped run leaves no `sim`; a `sim` that already holds files is written
 in place.
 
-**Scoring.** `pinto srt-sim-score --truth sim --labels <runs or tables>`
+**Scoring.** `pinto sim score --truth sim --labels <runs or tables>`
 runs two tests:
 
 1. *Donor-invariant domains*, on spots of shared domains: `shared_ari`
@@ -590,7 +606,7 @@ runs two tests:
    to the owning donor).
 
 **Scoring on pairs.** A clustering has its own preferences (how many
-groups, how big), so `pinto srt-sim-pairs --truth sim --vectors <inputs>`
+groups, how big), so `pinto sim pairs --truth sim --vectors <inputs>`
 scores the per-cell vectors themselves: a run's propensity at `--level`, a
 cage run's `{prefix}.cell_embedding.parquet`, or any table with a `cell`
 column and numeric columns. Two spots' similarity is the cosine of their
@@ -616,10 +632,10 @@ writes every number as JSON.
    default `label`). With several sections a cell is named
    `barcode@section` (e.g. `S1_00001@S1`), as pinto names them; with one,
    the bare barcode. `sim/truth/spots.parquet` lists every name.
-3. `pinto srt-sim-score --truth sim --labels that.tsv`. Unlabelled cells
+3. `pinto sim score --truth sim --labels that.tsv`. Unlabelled cells
    (empty, `NA`, `-1`, `unassigned`) are left out and counted.
 
-**Baselines.** `pinto srt-sim-baseline --truth sim --method <m> -o m.tsv`
+**Baselines.** `pinto sim baseline --truth sim --method <m> -o m.tsv`
 writes such a table:
 
 - `pooled`: the scanpy recipe (Wolf, Angerer and Theis 2018) on all
@@ -780,9 +796,9 @@ super-cells), or raise
 each its share.
 
 ```sh
-pinto stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
-pinto srt-sim-score --truth sim --labels res/stagate
-pinto srt-sim-pairs --truth sim --vectors res/stagate.cell_embedding.parquet
+pinto fit stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
+pinto sim score --truth sim --labels res/stagate
+pinto sim pairs --truth sim --vectors res/stagate.cell_embedding.parquet
 ```
 
 Each writes a pinto run, so `pinto view`, `compare`, `srt-sim-score` and
@@ -792,19 +808,19 @@ method's posterior where it has one, else one-hot), `{out}.cells.parquet`,
 `{out}.cell_embedding.parquet` (the method's per-cell vectors),
 `{out}.labels.tsv` (`cell<TAB>label`) and `{out}.baseline.json` (the
 settings, as run). `pinto run` lists them after the fits, and over MCP
-`run_methods` and `run_fit` take them as they take `lc`. `pinto residual`
+`run_methods` and `run_fit` take them as they take `lc`. `pinto apply residual`
 takes one as its stage-1 run, as it takes a fit.
 
 ### `residual`: what a fitted run leaves unexplained
 
-`pinto residual --from FIT -o OUT` (or `--run FIT`) takes a fitted run and
+`pinto apply residual --from FIT -o OUT` (or `--run FIT`) takes a fitted run and
 what its communities do not explain into a second stage of a two-stage
 fit, meant to pick up structure the first stage absorbed, such as a domain
 only one donor has.
 
 From the run's per-cell propensities it refits raw-count community profiles
 `p_k` (lc's feature-community statistic with unit weights) and each cell's
-proportions `θ_i` (the per-cell EM of `pinto impute`), so a cell's
+proportions `θ_i` (the per-cell EM of `pinto apply impute`), so a cell's
 expectation is `μ_gi = n_i Σ_k θ_ik p_{k,b}(g)`. What is left is taken one
 of two ways, `--residual`:
 
@@ -896,13 +912,13 @@ donor, the residual's one-donor communities are nuisance. On a simulation,
 split by donor.
 
 ```sh
-pinto residual --from out/lc1 -o out/resid          # --residual divide
-pinto lc S1.zarr,S2.zarr \
+pinto apply residual --from out/lc1 -o out/resid          # --residual divide
+pinto fit lc S1.zarr,S2.zarr \
   -c out/resid/S1.coords.parquet,out/resid/S2.coords.parquet \
   --coord-column-names x,y --offset out/resid -o out/lc2
 
-pinto residual --from out/lc1 --residual subtract -o out/sub
-pinto lc out/sub/S1.zarr,out/sub/S2.zarr \
+pinto apply residual --from out/lc1 --residual subtract -o out/sub
+pinto fit lc out/sub/S1.zarr,out/sub/S2.zarr \
   -c out/sub/S1.coords.parquet,out/sub/S2.coords.parquet \
   --coord-column-names x,y -o out/lc2s   # the first run's coordinate names
 ```
@@ -922,8 +938,8 @@ its parent with `pinto compare`. lc, cage and dsvd all take the flags; only
 one ablation is allowed per run.
 
 ```sh
-pinto lc data*.zarr.zip -c coords... --seed 42 -o base
-pinto lc data*.zarr.zip -c coords... --seed 42 -o perm \
+pinto fit lc data*.zarr.zip -c coords... --seed 42 -o base
+pinto fit lc data*.zarr.zip -c coords... --seed 42 -o perm \
     --permute-coords within-batch --ablation-parent base.pinto.json
 pinto compare base.pinto.json perm.pinto.json -o base_vs_perm
 ```
@@ -946,7 +962,7 @@ or merge in B. A community's partners are the communities holding at least
 `{out}.contingency.parquet`.
 
 Held-out scoring: fit lc without a donor, then
-`pinto predict donor.zarr.zip -c donor.cells.parquet --model fit -o held_out`.
+`pinto apply predict donor.zarr.zip -c donor.cells.parquet --model fit -o held_out`.
 Each cell pair is split in two: its counts are thinned, or with
 `--ablate-features` the listed features are hidden from the fit, as
 `senna predict` does it. The pair's community mix is fitted on one part and
@@ -957,7 +973,7 @@ profile. The manifest's `holdout` block has the totals, the ceiling and a
 per-section breakdown.
 
 `pinto compare --paired A B` sets two models' held-out scores against each
-other. A and B are `pinto predict` runs on the same held-out cells, each side a
+other. A and B are `pinto apply predict` runs on the same held-out cells, each side a
 comma list for leave-one-donor-out folds. Units are joined on their cell pair.
 The donor is the replicate: `--donor-map` groups sections into donors. Writes
 `{out}.paired.json` with each donor's difference in nats per count, exact sign
@@ -990,7 +1006,7 @@ after: `exp1` gives `exp1_lc`, `exp1_cage`, …, and `results/` gives
 `results/lc`, … (the folder is made when the fit starts). Esc leaves each
 `--out` as the method's name. `O` on the Methods screen changes the header
 later, and `o` names one `--out` by hand. Anywhere in pinto, an `--out`
-ending in `/` is a folder: `pinto lc … --out res/` writes `res/lc.*`, and the
+ending in `/` is a folder: `pinto fit lc … --out res/` writes `res/lc.*`, and the
 folder is made as needed.
 
 Each data file is its own batch unless you say otherwise: `n` puts all its
@@ -1202,15 +1218,15 @@ name), and the fits or lupin run on. Started again with nothing named, each
 offers the live sessions to return to; ctrl+alt+s switches to another one.
 On return the screen is drawn again for the terminal it is on now, its
 image protocol asked anew. What a session ends with while nobody is
-attached (the fits' summary, an error) is said by the next `pinto sessions`,
+attached (the fits' summary, an error) is said by the next `pinto session list`,
 `attach`, `kill` or start. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs
 in this terminal only.
 
 ```sh
-pinto sessions         # the live ones, with what each is doing
-pinto attach fits      # back to one, by its name or id
-pinto rename run-1 fits
-pinto kill fits        # stops it as ctrl+c does: the fits running are stopped
+pinto session list             # the live ones, with what each is doing
+pinto session attach fits      # back to one, by its name or id
+pinto session rename run-1 fits
+pinto session kill fits        # stops it as ctrl+c does: the fits running are stopped
 ```
 
 ### `mcp`: agents (MCP)
@@ -1288,16 +1304,16 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 |---|---|
 | `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto`, `spatialde2-pb`, `stagate-pb`, `spatialpca-pb`, `mefisto-pb`); with a method, the flags its `--help` shows: name, short help, default, choices (hidden flags are in no tool schema) |
 | `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run; `flags` takes the flags `run_methods` lists by name (a flag renamed keeps its old name as an alias) |
-| `run_predict` | `pinto predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
+| `run_predict` | `pinto apply predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
-| `run_lra_simulate` | `pinto lra-simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
-| `run_residual` | `pinto residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
-| `run_simulate` | `pinto srt-simulate` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
-| `run_sim_score` | `pinto srt-sim-score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
-| `run_sim_pairs` | `pinto srt-sim-pairs` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
-| `run_sim_baseline` | `pinto srt-sim-baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `n_clusters`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score` |
+| `run_lra_simulate` | `pinto lra simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
+| `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
+| `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
+| `run_sim_score` | `pinto sim score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_pairs` | `pinto sim pairs` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_baseline` | `pinto sim baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `n_clusters`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score` |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
@@ -1317,7 +1333,7 @@ organizing computational biology projects [1] (see
 [legume-mcp](https://crates.io/crates/legume-mcp)):
 
 - `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
-  with paths relative to the project. Each `run_fit` is its `pinto lc` (or
+  with paths relative to the project. Each `run_fit` is its `pinto fit lc` (or
   `cage`, `dsvd`, a baseline's) command, each `run_lra` its `pinto lra` command, and each `view_export`
   its `pinto view --png/--pdf` command, so `bash results/<day>/runall.sh`
   makes the fits and figures again without the agent.

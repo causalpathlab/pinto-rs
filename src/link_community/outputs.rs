@@ -237,7 +237,7 @@ pub use crate::util::score_trace::{write_score_trace, ScoreEntry};
 ///
 /// Used for an edge partition's propensity ([`write_partition`]) and for
 /// one that does not come from a partition (e.g. the profile-projected
-/// propensity `pinto impute` computes for a new sample).
+/// propensity `pinto apply impute` computes for a new sample).
 pub fn write_propensity_matrix(
     prefix: &str,
     propensity: &Mat,

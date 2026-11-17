@@ -191,11 +191,12 @@ fn batch_paths_pass_whole_even_with_spaces() {
 }
 
 #[test]
-fn a_method_found_by_its_alias_is_typed_as_the_alias() {
+fn a_method_found_by_its_alias_keeps_it_and_runs_by_its_name() {
     let cli = cli();
     let m = Method::new(&cli, "f").unwrap();
+    assert_eq!(m.name, "f");
     let argv = m.argv(&["d.zarr".into()], &["c.csv".into()], &[], "o");
-    assert_eq!(argv[..3], ["f", "d.zarr", "--coord=c.csv"]);
+    assert_eq!(argv[..3], ["fit", "d.zarr", "--coord=c.csv"]);
     assert_eq!(check(&cli, &argv), Ok(()));
     assert!(Method::new(&cli, "nope").is_err());
 }

@@ -207,7 +207,7 @@ fn dsvd_writes_a_batch_adjusted_dictionary() {
     });
 }
 
-/// `pinto cage` on `input` (its data, output and extra flags), small.
+/// `pinto fit cage` on `input` (its data, output and extra flags), small.
 fn fit_cage(input: &[&str]) {
     use crate::cell_activity_graph_embedding::args::CellActivityGraphEmbeddingArgs;
     #[derive(Parser)]
@@ -243,7 +243,7 @@ fn cage_writes_a_batch_adjusted_dictionary() {
     check(&fit_cage);
 }
 
-/// `pinto predict` of the model at `model` on `input` (its data and extra
+/// `pinto apply predict` of the model at `model` on `input` (its data and extra
 /// flags) to `{dir}/{name}`: its prefix.
 fn predict(dir: &std::path::Path, model: &str, input: &[&str], name: &str) -> String {
     #[derive(Parser)]

@@ -1,6 +1,6 @@
 //! The outputs every spatial baseline writes, named from its `--out`
-//! prefix, as a pinto run: `pinto view`, `srt-sim-score --labels`,
-//! `srt-sim-pairs --vectors`, `compare`, `lra`, `residual` and `pinto
+//! prefix, as a pinto run: `pinto view`, `sim score --labels`,
+//! `sim pairs --vectors`, `compare`, `lra`, `residual` and `pinto
 //! run`/MCP read it as they read an `lc`, `dsvd` or `cage` run.
 //!
 //! - `{out}.pinto.json`: the manifest;

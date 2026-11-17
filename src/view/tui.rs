@@ -66,7 +66,7 @@ const ZOOM: f32 = 1.25;
 const POINT_STEP: f32 = 1.25;
 
 /// Load the run and show it on `session`'s `terminal` until the user
-/// quits, or until `pinto kill` asks the view to stop.
+/// quits, or until `pinto session kill` asks the view to stop.
 pub fn run(
     session: &legume_tui::Session,
     terminal: &mut DefaultTerminal,
@@ -418,7 +418,7 @@ impl<'a> App<'a> {
                     }
                     self.shift_enter = session.keyboard_enhanced();
                 }
-                // `pinto kill` stops the view as q does.
+                // `pinto session kill` stops the view as q does.
                 legume_tui::Round::Stopped => self.quit = true,
                 _ => {}
             }
@@ -438,7 +438,7 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    /// On the way out, by `q`, ctrl+c or `pinto kill`: a `relabel --next`
+    /// On the way out, by `q`, ctrl+c or `pinto session kill`: a `relabel --next`
     /// writing the next round is let finish, so the decisions sent are
     /// saved whole; an annotation or a preview is stopped (lupin writes a
     /// round aside and moves it in place last, so none is left half made).
@@ -494,7 +494,7 @@ impl<'a> App<'a> {
         self.need_panel = true;
     }
 
-    /// What `pinto sessions` says the view is showing: the run and its
+    /// What `pinto session list` says the view is showing: the run and its
     /// level.
     fn session_status(&self) -> String {
         format!(

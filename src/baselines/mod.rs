@@ -1,6 +1,6 @@
 //! Published methods pinto is compared against, in one place.
 //!
-//! - [`single_cell`]: `pinto srt-sim-baseline`, the scanpy recipe (pooled,
+//! - [`single_cell`]: `pinto sim baseline`, the scanpy recipe (pooled,
 //!   Harmony-corrected, per donor) run on a simulation.
 //! - [`spatial`]: the spatial embedding baselines (SpatialDE2, STAGATE,
 //!   SpatialPCA, MEFISTO and their `-pb` forms).

@@ -1,4 +1,4 @@
-//! The batch effect `pinto predict` divides a query by.
+//! The batch effect `pinto apply predict` divides a query by.
 //!
 //! A cage encoder was trained on counts divided by the run's δ, pinned to
 //! geometric mean 1 over the training batches. A query cell from one of
@@ -288,11 +288,11 @@ pub(crate) fn query_delta(
 /// refused with ([`batch_adjusted`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueryReader {
-    /// `pinto predict` of a cage model, also under `pinto impute`.
+    /// `pinto apply predict` of a cage model, also under `pinto apply impute`.
     Cage,
-    /// `pinto predict` of an lc / dsvd model: held-out scoring.
+    /// `pinto apply predict` of an lc / dsvd model: held-out scoring.
     Holdout,
-    /// `pinto impute` of an lc / dsvd model.
+    /// `pinto apply impute` of an lc / dsvd model.
     Impute,
 }
 
@@ -346,11 +346,11 @@ pub(crate) fn batch_adjusted(
 /// labels, and each cell's column of it. Each batch the model knows takes
 /// the model's δ; when one is new and there are two or more, the query's
 /// own estimate, moved into the model's frame ([`query_delta`]), as
-/// `pinto predict` divides a cage query. `None`: nothing to divide by.
+/// `pinto apply predict` divides a cage query. `None`: nothing to divide by.
 /// `--auto-batch` labels are a graph's components, never the model's
 /// batches; no graph is built here, so the query is one component, one
 /// batch new to the model, which nothing estimates: undivided, as
-/// `pinto predict` leaves a cage query whose graph is one component.
+/// `pinto apply predict` leaves a cage query whose graph is one component.
 pub(crate) fn adjusted_query_delta(
     model: &str,
     run: &crate::util::metadata::Run,

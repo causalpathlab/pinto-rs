@@ -1,5 +1,5 @@
 //! Scoring labellings and per-cell vectors against an `srt-simulate` run's
-//! planted truth: `pinto srt-sim-score` ([`score`]) and `pinto srt-sim-pairs`
+//! planted truth: `pinto sim score` ([`score`]) and `pinto sim pairs`
 //! ([`pairs`]). The simulator itself is in [`crate::simulate`]; the baseline
 //! methods scored here are in [`crate::baselines`].
 

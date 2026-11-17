@@ -460,7 +460,7 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
     );
     let msg = c.fails("run_fit", fit(json!({"flags": {"n-communities": "many"}})));
     assert!(
-        msg.contains("pinto lc --n-communities"),
+        msg.contains("pinto fit lc --n-communities"),
         "clap's complaint, its flag named: {msg}"
     );
     // `pinto run`'s other outputs count as a run there too, not only its
@@ -493,7 +493,7 @@ fn an_agent_sets_up_fits_as_pinto_run_does() {
     // Paths go from the root, so the records replay it from the project.
     let command = job["command"].as_str().unwrap();
     assert!(
-        command.starts_with("pinto lc /") && command.contains("/nowhere.zarr.zip"),
+        command.starts_with("pinto fit lc /") && command.contains("/nowhere.zarr.zip"),
         "{command}"
     );
     assert!(command.ends_with(" --atomic-outputs"), "{command}");

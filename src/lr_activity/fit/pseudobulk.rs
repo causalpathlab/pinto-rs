@@ -18,7 +18,7 @@ const GAMMA_A0: f32 = 1.0;
 /// One edge as lra uses it: endpoints as data columns, link community, batch.
 pub(super) type LraEdge = (usize, usize, u32, Option<Box<str>>);
 
-/// Read a prior `pinto lc` run's pairs: every pair (`anchor`), and the
+/// Read a prior `pinto fit lc` run's pairs: every pair (`anchor`), and the
 /// physically adjacent subset that is tested (`edges`).
 pub(super) fn load_edges(
     lc_prefix: &str,

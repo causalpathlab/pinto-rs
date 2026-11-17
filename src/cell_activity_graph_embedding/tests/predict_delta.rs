@@ -1,4 +1,4 @@
-//! `pinto predict` divides a query by the model's own batch effect for the
+//! `pinto apply predict` divides a query by the model's own batch effect for the
 //! batches the model trained on, and estimates only the new ones.
 
 use super::cell_level::fit;
@@ -8,7 +8,7 @@ use crate::util::common::Mat;
 use clap::Parser;
 use legume_numeric::matrix::traits::IoOps;
 
-/// `pinto predict` of `model` on `data` to `{dir}/{name}`, the per-feature
+/// `pinto apply predict` of `model` on `data` to `{dir}/{name}`, the per-feature
 /// totals from the training files; its prefix.
 fn predict(
     dir: &std::path::Path,
@@ -117,7 +117,7 @@ fn predict_and_impute_on_one_model() {
     a_model_without_a_delta_divides_nothing(&t);
 }
 
-/// `pinto predict` divides a query by the model's δ for the batches it
+/// `pinto apply predict` divides a query by the model's δ for the batches it
 /// trained on and estimates only the new ones.
 fn predict_divides_known_batches_by_the_models_delta_and_estimates_new_ones(t: &Trained) {
     let Trained {
@@ -212,7 +212,7 @@ fn a_model_without_a_delta_divides_nothing(t: &Trained) {
     );
 }
 
-/// `pinto impute` with a cage model divides each reference cell's counts by
+/// `pinto apply impute` with a cage model divides each reference cell's counts by
 /// the run's δ for its batch before pooling: with one neighbour per query
 /// cell, every imputed row is one training cell's counts so divided. The
 /// cells' batches come from the table the fit wrote beside its δ, or, for

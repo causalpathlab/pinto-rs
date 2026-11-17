@@ -8,30 +8,33 @@ fn parse(argv: &[&str]) -> Commands {
 
 #[test]
 fn attach_sessions_kill_and_rename_parse() {
-    match parse(&["pinto", "attach"]) {
-        Commands::Attach(a) => assert_eq!(a.name, None),
+    match parse(&["pinto", "session", "attach"]) {
+        Commands::Session(Session::Attach(a)) => assert_eq!(a.name, None),
         other => panic!("{other:?}"),
     }
-    match parse(&["pinto", "attach", "run-1"]) {
-        Commands::Attach(a) => assert_eq!(a.name.as_deref(), Some("run-1")),
+    match parse(&["pinto", "session", "attach", "run-1"]) {
+        Commands::Session(Session::Attach(a)) => assert_eq!(a.name.as_deref(), Some("run-1")),
         other => panic!("{other:?}"),
     }
-    assert!(matches!(parse(&["pinto", "sessions"]), Commands::Sessions));
-    match parse(&["pinto", "kill", "--force", "view-2"]) {
-        Commands::Kill(k) => {
+    assert!(matches!(
+        parse(&["pinto", "session", "list"]),
+        Commands::Session(Session::List)
+    ));
+    match parse(&["pinto", "session", "kill", "--force", "view-2"]) {
+        Commands::Session(Session::Kill(k)) => {
             assert!(k.force);
             assert_eq!(k.name.as_deref(), Some("view-2"));
         }
         other => panic!("{other:?}"),
     }
-    match parse(&["pinto", "rename", "run-1", "work"]) {
-        Commands::Rename(r) => {
+    match parse(&["pinto", "session", "rename", "run-1", "work"]) {
+        Commands::Session(Session::Rename(r)) => {
             assert_eq!(r.session, "run-1");
             assert_eq!(r.label, "work");
         }
         other => panic!("{other:?}"),
     }
-    assert!(Cli::try_parse_from(["pinto", "rename", "run-1"]).is_err());
+    assert!(Cli::try_parse_from(["pinto", "session", "rename", "run-1"]).is_err());
 }
 
 #[test]
@@ -63,7 +66,7 @@ fn a_target_named_skips_the_resume_picker() {
 /// The long help of `name`, as `pinto <name> --help` prints it.
 fn long_help(name: &str) -> String {
     let cli = built_cli();
-    let sub = cli.find_subcommand(name).unwrap();
+    let sub = crate::cli_path::find(&cli, name).unwrap().1;
     sub.get_long_about().unwrap().to_string()
 }
 

@@ -108,7 +108,7 @@ fn cell_level_of(prefix: &str) -> bool {
         .cell_level
 }
 
-/// `pinto predict` of `model` on the files it was fitted on; the output
+/// `pinto apply predict` of `model` on the files it was fitted on; the output
 /// prefix, or why it failed.
 fn try_predict(
     dir: &std::path::Path,

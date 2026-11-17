@@ -262,8 +262,12 @@ fn emit(flag: &str, many: Many, vs: Vec<String>) -> Vec<String> {
 /// One method as a form.
 #[derive(Clone, Debug)]
 pub struct Method {
-    /// As typed on the command line: the subcommand or its alias.
+    /// As `pinto run` and the tools name it: the subcommand or its alias
+    /// (`lc`, `residual`, `lra-simulate`).
     pub name: String,
+    /// The words that run it, from the top: `fit lc`, `apply residual`,
+    /// `lra simulate`.
+    pub path: Vec<String>,
     pub about: String,
     pub fields: Vec<Field>,
     /// How the coordinate files are passed, when the method takes them.
@@ -276,12 +280,13 @@ pub struct Method {
 }
 
 impl Method {
-    /// The form for subcommand `name` (or an alias of it) of `cli`, which
-    /// must be built.
+    /// The form for command `name` (or an alias of it) of `cli`, at the
+    /// top or under its verb ([`crate::cli_path::find`]); `cli` must be
+    /// built.
     pub fn new(cli: &Command, name: &str) -> anyhow::Result<Self> {
-        let cmd = cli
-            .find_subcommand(name)
+        let found = crate::cli_path::find(cli, name)
             .ok_or_else(|| anyhow::anyhow!("pinto has no `{name}` command"))?;
+        let (path, cmd) = (crate::cli_path::path(found), found.1);
         let slot = |long: &str| {
             cmd.get_arguments()
                 .find(|a| a.get_long() == Some(long))
@@ -289,6 +294,7 @@ impl Method {
         };
         Ok(Method {
             name: name.to_string(),
+            path: path.into_iter().map(String::from).collect(),
             about: cmd.get_about().map(ToString::to_string).unwrap_or_default(),
             fields: cmd.get_arguments().filter_map(Field::from_arg).collect(),
             coord: slot("coord"),
@@ -352,7 +358,7 @@ impl Method {
         self.fields.iter().filter(|f| !f.is_default()).count()
     }
 
-    /// The command line, without the program: method, data files,
+    /// The command line, without the program: the method's path, data files,
     /// coordinate and batch files, `--out`, then every changed flag.
     #[must_use]
     pub fn argv(
@@ -362,7 +368,7 @@ impl Method {
         batches: &[String],
         out: &str,
     ) -> Vec<String> {
-        let mut argv = vec![self.name.clone()];
+        let mut argv = self.path.clone();
         // A method reading a prior run takes its data from it.
         let (data, coords, batches) = if self.from_run {
             (&[][..], &[][..], &[][..])
@@ -388,20 +394,23 @@ impl Method {
 
 /// Whether clap takes `argv` (without the program); its complaint if not.
 pub fn check(cli: &Command, argv: &[String]) -> Result<(), String> {
-    // The method's own command parses its line: no need to copy all of pinto.
-    let method = argv
-        .first()
-        .and_then(|m| cli.find_subcommand(m))
-        .ok_or_else(|| {
-            format!(
-                "pinto has no `{}` command",
-                argv.first().map_or("", |m| m.as_str())
-            )
-        })?;
-    match method.clone().try_get_matches_from(argv) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(complaint(&e.render().to_string())),
-    }
+    matches(cli, argv).map(|_| ())
+}
+
+/// `argv` (without the program) as clap parses it; its complaint if not.
+pub fn matches(cli: &Command, argv: &[String]) -> Result<clap::ArgMatches, String> {
+    // The method's own command parses its line, from the word naming it:
+    // no need to copy all of pinto.
+    let (method, n) = crate::cli_path::leaf(cli, argv).ok_or_else(|| {
+        format!(
+            "pinto has no `{}` command",
+            argv.first().map_or("", |m| m.as_str())
+        )
+    })?;
+    method
+        .clone()
+        .try_get_matches_from(&argv[n - 1..])
+        .map_err(|e| complaint(&e.render().to_string()))
 }
 
 /// The first line of a clap error, without its `error: ` lead.

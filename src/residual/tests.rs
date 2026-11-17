@@ -507,6 +507,7 @@ fn residual_from_baseline(command: &str) {
         .collect();
     let argv = [
         "pinto",
+        "fit",
         command,
         &typed.join(","),
         "-c",
@@ -522,7 +523,9 @@ fn residual_from_baseline(command: &str) {
         .unwrap_or_else(|e| panic!("{e}"))
         .commands
     {
-        crate::Commands::Spatialde2(base) => crate::baselines::spatial::spatialde2::run(&base),
+        crate::Commands::Fit(crate::Fit::Spatialde2(base)) => {
+            crate::baselines::spatial::spatialde2::run(&base)
+        }
         _ => unreachable!(),
     }
     .unwrap();

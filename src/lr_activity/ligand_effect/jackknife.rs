@@ -4,7 +4,7 @@
 //! the influence function, with the cross-fitted nuisances (propensity and
 //! outcome models) taken as known. On a scope inside a few tiles, a region
 //! of one donor say, those models' own error is not small, and it is shared
-//! by every receiver of a held-out fold: on `pinto srt-simulate`
+//! by every receiver of a held-out fold: on `pinto sim new`
 //! donor-confounded-donor-only-cell-type a region's null z had an SD near
 //! 1.4. Deleting each tile in turn and refitting everything on the rest
 //! counts that error (Efron & Stein 1981, Ann Stat 9:586; a

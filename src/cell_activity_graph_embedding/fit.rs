@@ -1,4 +1,4 @@
-//! `pinto cage` entrypoint: activity-gated cell-graph embedding.
+//! `pinto fit cage` entrypoint: activity-gated cell-graph embedding.
 //!
 //! Learns a per-SUPER-CELL (pseudobulk, PB) embedding `e_pb [P x D]` by
 //! contrastive (NCE) prediction of PB-PB adjacency, one feature at a time. No
@@ -960,7 +960,7 @@ pub fn fit_cell_activity_graph_embedding(
         .collect();
 
     // `[E × D]` with every pair L2-normalized, in place — the normalization
-    // `pinto dsvd` hands the shared routine, so edge k-means clusters on
+    // `pinto fit dsvd` hands the shared routine, so edge k-means clusters on
     // composition and not on pooled depth — written out and then clustered:
     // the same buffer both times.
     crate::util::rows::normalize_rows(&mut pair_latent);
@@ -987,7 +987,7 @@ pub fn fit_cell_activity_graph_embedding(
         n_cells,
         &PropensityReportConfig {
             clustering,
-            // Deliberately row-keyed, and documented as such in `pinto cage
+            // Deliberately row-keyed, and documented as such in `pinto fit cage
             // --help`: a channelized run lists a feature's two tracks as two rows,
             // which is the one place the nascent/mature contrast is reportable.
             // `lc` folds instead, because its dictionary merge has to index the

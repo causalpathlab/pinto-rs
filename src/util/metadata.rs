@@ -202,7 +202,7 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n_communities: Option<usize>,
 
-    /// A cage fit on cells (`pinto cage-cell`): cells and cell pairs are
+    /// A cage fit on cells (`pinto fit cage-cell`): cells and cell pairs are
     /// its trained units, with no pseudobulk table. Batch effects are
     /// estimated and removed as in cage (unless `--ignore-batch`), so a
     /// reader corrects a query as it would for cage. Absent (false) on
@@ -233,7 +233,7 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ablation: Option<crate::util::ablation::Ablation>,
 
-    /// Present on `pinto predict` of an lc / dsvd model: the held-out
+    /// Present on `pinto apply predict` of an lc / dsvd model: the held-out
     /// scoring, what the model left out, and its log-likelihoods.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<crate::holdout::HoldoutInfo>,
@@ -570,21 +570,21 @@ pub struct OutputFiles {
     /// test, so it is a separate slot from `lr_activity`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lr_scores: Option<String>,
-    /// `pinto lra` contact-effect outputs and `pinto lra-simulate`'s check
+    /// `pinto lra` contact-effect outputs and `pinto lra simulate`'s check
     /// ([`LraFiles`]).
     #[serde(default, skip_serializing_if = "LraFiles::is_empty")]
     pub lra: LraFiles,
 
-    /// `pinto cage` cell embedding `[N × D]`: every cell's own placement on
+    /// `pinto fit cage` cell embedding `[N × D]`: every cell's own placement on
     /// the feature embedding by the same map that places its pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_embedding: Option<String>,
 
-    /// `pinto cage` per-cell bias `[N]`.
+    /// `pinto fit cage` per-cell bias `[N]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_bias: Option<String>,
 
-    /// The pair encoder `pinto cage` fitted (safetensors), which `pinto
+    /// The pair encoder `pinto fit cage` fitted (safetensors), which `pinto
     /// predict` reloads so a new sample is placed by the run's own map.
     /// Absent on a run that solved every pair exactly.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -603,7 +603,7 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_pb: Option<String>,
 
-    /// `pinto cage` feature (feature) embedding `[G × D]` — same shared
+    /// `pinto fit cage` feature (feature) embedding `[G × D]` — same shared
     /// D-dim space as `cell_embedding`. Cosine similarity between
     /// feature rows is directly interpretable. The trained effects as-is:
     /// the selection gated the gradient, so it is already expressed here
@@ -611,11 +611,11 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_embedding: Option<String>,
 
-    /// `pinto cage` per-feature bias `[G]`.
+    /// `pinto fit cage` per-feature bias `[G]`.
     #[serde(alias = "gene_bias", skip_serializing_if = "Option::is_none")]
     pub feature_bias: Option<String>,
 
-    /// `pinto predict` of an lc / dsvd model: one row per held-out unit, its
+    /// `pinto apply predict` of an lc / dsvd model: one row per held-out unit, its
     /// held-out log-likelihood beside the pooled K = 1 profile's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predictive: Option<String>,
@@ -1093,7 +1093,7 @@ pub struct RunInputs<'a> {
     /// Number of communities (lc) / clusters (dsvd) — same K dim either way.
     pub k: usize,
     /// Which graph produced `n_edges`. Not optional: every builder taking
-    /// `RunInputs` builds a graph. `pinto prop` re-cuts an existing pair table
+    /// `RunInputs` builds a graph. `pinto apply propensity` re-cuts an existing pair table
     /// and has none, but it does not go through here.
     pub graph: GraphParams,
     /// The ablation this run is, if any.
@@ -1150,7 +1150,7 @@ pub(crate) fn delta_files(prefix: &str) -> (String, String) {
     )
 }
 
-/// Helper to create metadata for `pinto lc` runs.
+/// Helper to create metadata for `pinto fit lc` runs.
 ///
 /// `cascade_level_indices` is the list of `l` values for which
 /// `{prefix}.L{l}.*` files were actually written by the cascade
@@ -1235,7 +1235,7 @@ fn coord_columns_field(cols: &[Box<str>]) -> Option<Vec<String>> {
     }
 }
 
-/// Helper for `pinto dsvd` runs. Only one "final" level is produced;
+/// Helper for `pinto fit dsvd` runs. Only one "final" level is produced;
 /// the cascade does not run.
 pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
     let prefix = inputs.prefix;
@@ -1278,7 +1278,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
     }
 }
 
-/// Helper for `pinto cage` runs. One `final` level, in the same shape
+/// Helper for `pinto fit cage` runs. One `final` level, in the same shape
 /// `lc` / `dsvd` publish: cage projects every cell pair onto its frozen feature
 /// embedding, clusters those pairs into link communities, and derives cell
 /// propensity from incident-edge fractions — so the level's slots point at
@@ -1343,7 +1343,7 @@ pub fn create_cage_metadata(
     }
 }
 
-/// Helper for the standalone `pinto prop` command. Inputs are precomputed
+/// Helper for the standalone `pinto apply propensity` command. Inputs are precomputed
 /// latent + coord-pair files, not raw expression, so `data_files` is
 /// optional.
 pub fn create_prop_metadata(

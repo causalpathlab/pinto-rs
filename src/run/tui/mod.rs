@@ -107,7 +107,7 @@ impl Screen {
 enum Role {
     /// A fit on the picked data, or a method reading a run (`--from`).
     Plain,
-    /// `pinto residual` on a run.
+    /// `pinto apply residual` on a run.
     Residual,
     /// A fit on the residual's files.
     Stage2,
@@ -313,7 +313,7 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
     })?;
-    // Said after the screen, or, ended detached (a `pinto kill` with no
+    // Said after the screen, or, ended detached (a `pinto session kill` with no
     // terminal attached), by whoever looks next; each fit's script stays
     // to run it again.
     // Plain, on stdout as before.
@@ -327,17 +327,17 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
             }
         }
     }
-    // Not after a `pinto kill`: it asked for the session to end.
+    // Not after a `pinto session kill`: it asked for the session to end.
     if let (Some(manifest), false) = (&app.view, session.stop_requested()) {
         let mut view = view_command(std::env::current_exe()?, manifest);
-        // In the same session: a `pinto kill` reaches it through us.
+        // In the same session: a `pinto session kill` reaches it through us.
         session.run_child(&mut view)?;
     }
     Ok(())
 }
 
 impl App {
-    /// Draw and take keys until the user quits, or `pinto kill` asks the
+    /// Draw and take keys until the user quits, or `pinto session kill` asks the
     /// screens to stop. Detached, the fits are followed and nothing is
     /// drawn.
     fn screens_loop(
@@ -363,7 +363,7 @@ impl App {
                 // The terminal was asked as the screen came up, and again
                 // after every attach.
                 Round::Repainted => self.shift_enter = session.keyboard_enhanced(),
-                // `pinto kill` quits as ctrl+c does: the fits running are
+                // `pinto session kill` quits as ctrl+c does: the fits running are
                 // stopped as the screens are left.
                 Round::Stopped => self.quit = true,
                 _ => {}
@@ -372,7 +372,7 @@ impl App {
         Ok(())
     }
 
-    /// One line for `pinto sessions` and the resume picker.
+    /// One line for `pinto session list` and the resume picker.
     fn session_status(&self) -> String {
         match &self.queue {
             None => "setting up fits".into(),
@@ -390,7 +390,7 @@ impl App {
         // The methods on a fitted run follow the fits, where pinto has them.
         let on_runs = super::ON_RUNS
             .iter()
-            .filter(|m| cli.find_subcommand(m).is_some());
+            .filter(|m| crate::cli_path::find(&cli, m).is_some());
         let mut rows = METHODS
             .iter()
             .chain(on_runs)
@@ -713,7 +713,7 @@ impl App {
 /// has `residual`: the residual row, the stage-2 fit (dsvd first, `m`
 /// switches it), and lra on that fit where pinto has lra.
 fn two_stage_rows(cli: &clap::Command, here: &Path) -> anyhow::Result<Vec<Row>> {
-    if cli.find_subcommand(super::RESIDUAL).is_none() {
+    if crate::cli_path::find(cli, super::RESIDUAL).is_none() {
         return Ok(Vec::new());
     }
     let mut rows = vec![Row::new(
@@ -730,7 +730,7 @@ fn two_stage_rows(cli: &clap::Command, here: &Path) -> anyhow::Result<Vec<Row>> 
         alts: forms,
         ..Row::new(first, Role::Stage2, here)
     });
-    if cli.find_subcommand("lra").is_some() {
+    if crate::cli_path::find(cli, "lra").is_some() {
         rows.push(Row::new(Method::new(cli, "lra")?, Role::Stage2Lra, here));
     }
     Ok(rows)

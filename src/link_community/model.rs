@@ -17,7 +17,7 @@
 //!   ℓ = Σ_kg f(D_{kg}) − Σ_k f(V_k),   f(x) = x · ln x
 //! (equivalently −Σ_k V_k · H(p_k), where p_k = D_{k·}/V_k) is kept as a report.
 //!
-//! With a stage-1 divisor (`--offset`, from `pinto residual --residual
+//! With a stage-1 divisor (`--offset`, from `pinto apply residual --residual
 //! divide`) each edge also carries its expected profile `μ_e` under the
 //! stage-1 model, dense over the `M` dimensions
 //! ([`LinkProfileStore::offset`]), and the profile reads as

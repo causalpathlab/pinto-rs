@@ -537,7 +537,7 @@ fn ignore_batch_is_refused_for_an_adjusted_model() {
 /// The fit's own arguments run impute, `--auto-batch` among them: its
 /// components are never the model's batches, and impute builds no graph
 /// to find them, so the query is one batch, new to the model, which
-/// nothing estimates: undivided, as `pinto predict` leaves a cage query
+/// nothing estimates: undivided, as `pinto apply predict` leaves a cage query
 /// of one component. The reference is divided by the run's δ.
 #[test]
 fn impute_takes_the_fits_auto_batch() {

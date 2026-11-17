@@ -1,4 +1,4 @@
-//! `pinto srt-sim-pairs`: how well per-cell vectors (a latent mapping)
+//! `pinto sim pairs`: how well per-cell vectors (a latent mapping)
 //! recover a simulation's planted truth, scored on pairs of spots, with no
 //! clustering step.
 //!

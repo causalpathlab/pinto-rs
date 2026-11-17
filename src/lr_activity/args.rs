@@ -1,4 +1,4 @@
-//! CLI arguments for `pinto lra` and `pinto lra-simulate`.
+//! CLI arguments for `pinto lra` and `pinto lra simulate`.
 
 use clap::{Args, Parser, ValueEnum, ValueHint};
 
@@ -38,7 +38,7 @@ pub struct LraInputArgs {
                      dsvd or any run that wrote cell pairs. Its data files, coordinates\n\
                      and spatial contacts are reused; relative paths in it are read\n\
                      against the manifest's own directory. The co-expression methods\n\
-                     also need its link communities (a `pinto lc` run).\n\
+                     also need its link communities (a `pinto fit lc` run).\n\
                      Without --out the results go next to the run: {prefix}.lra.*."
     )]
     pub from: Option<Box<str>>,
@@ -238,7 +238,7 @@ pub struct SrtLrActivityArgs {
         default_value_t = false,
         help = "Also report the unadjusted co-expression baselines per pair (permutations: slow)",
         long_help = "Also report, per pair (contact-effect), the co-expression statistics\n\
-                     lra-simulate benchmarks the estimate against, none of which adjusts for\n\
+                     lra simulate benchmarks the estimate against, none of which adjusts for\n\
                      confounding: the cell-type label permutation test (CellPhoneDB v2,\n\
                      CellChat's product score) on the run's cell types (--cell-types or its\n\
                      lupin round; the identity bins, coarsened to at most 8, when it has\n\

@@ -58,7 +58,7 @@ use crate::link_community::args::{
     INCIDENCE_A, INCIDENCE_B, MODULARITY_GAMMA, SNN_MIN_SHARED,
 };
 
-/// Main entry point for `pinto lc`.
+/// Main entry point for `pinto fit lc`.
 pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()> {
     let c = &args.common;
     let k = args.n_communities;

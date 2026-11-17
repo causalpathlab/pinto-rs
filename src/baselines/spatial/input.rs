@@ -41,7 +41,7 @@ pub struct SpatialInputArgs {
     #[arg(required = true, value_delimiter(','))]
     pub data_files: Vec<Box<str>>,
 
-    /// Coordinate files, one per data file, comma separated (as `pinto lc -c`)
+    /// Coordinate files, one per data file, comma separated (as `pinto fit lc -c`)
     #[arg(long = "coord", short = 'c', value_delimiter(','), required = true)]
     pub coord_files: Vec<Box<str>>,
 
@@ -49,7 +49,7 @@ pub struct SpatialInputArgs {
     #[arg(long = "coord-column-indices", value_delimiter(','))]
     pub coord_columns: Option<Vec<usize>>,
 
-    /// Coordinate column names (as `pinto lc`)
+    /// Coordinate column names (as `pinto fit lc`)
     #[arg(
         long = "coord-column-names",
         value_delimiter(','),

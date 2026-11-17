@@ -1,4 +1,4 @@
-//! `pinto residual`: the counts a fitted run leaves unexplained, as new data
+//! `pinto apply residual`: the counts a fitted run leaves unexplained, as new data
 //! files that a fit reads as it reads data.
 //!
 //! Stage 1 is any run that published what a residual reads, whatever
@@ -25,7 +25,7 @@
 //! feature weights, the `1 + Σ_i π_ik` cancelling in the normalisation: the NB
 //! Fisher-information weights `{run}.feature_community` carries shrink
 //! high-mean features, so that table is not a composition. Each cell then
-//! gets its proportions `θ_i` by the per-cell EM of `pinto impute` and
+//! gets its proportions `θ_i` by the per-cell EM of `pinto apply impute` and
 //! held-out scoring ([`em_proportions`]) and the expectation
 //! `μ_gi = n_i Σ_k θ_ik p_k(g)`, `n_i` the cell's total, the mean of that
 //! multinomial mixture. No batch fold `δ` from the stage-1 run enters
@@ -313,7 +313,7 @@ struct Inputs {
     group_names: Vec<Box<str>>,
 }
 
-/// What `pinto residual` writes for a run, and what it reads to make it,
+/// What `pinto apply residual` writes for a run, and what it reads to make it,
 /// checked as far as it can be before any count is read: `-o` is not a
 /// file, the run is on raw counts, its data files are found, all of them,
 /// with distinct names, its manifest records a propensity and a cells
@@ -913,7 +913,7 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
         let bytes =
             n_cells * k * 4 + profiles.len() * (k * k + inp.data.num_rows()) * 8 * 2 + n_cells * 8;
         crate::util::memory::ensure_fits(
-            "pinto residual --residual divide",
+            "pinto apply residual --residual divide",
             bytes,
             &crate::util::memory::Budget::now()?,
             "take fewer cells",

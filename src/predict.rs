@@ -1,4 +1,4 @@
-//! `pinto predict` — apply a trained `cage` run to a new sample.
+//! `pinto apply predict` — apply a trained `cage` run to a new sample.
 //!
 //! What crosses samples is the feature side and the community dictionary; the
 //! geometry is local and is rebuilt from the new sample's own coordinates:
@@ -64,7 +64,7 @@ pub struct PredictArgs {
     pub scoring: ScoringArgs,
 }
 
-/// The flags `pinto predict` and `pinto impute` share: the query, the
+/// The flags `pinto apply predict` and `pinto apply impute` share: the query, the
 /// model, and how the model is applied to the query.
 #[derive(Args, Debug, Clone)]
 pub struct PredictCoreArgs {
@@ -77,7 +77,7 @@ pub struct PredictCoreArgs {
         help = "Trained run prefix: cage, or lc / dsvd for held-out scoring",
         long_help = "Trained run prefix. An lc or dsvd run (by its .pinto.json) is\n\
                      scored on held-out cells against {model}.feature_community.parquet.\n\
-                     A `pinto cage` run is applied to the new sample. Reads:\n  \
+                     A `pinto fit cage` run is applied to the new sample. Reads:\n  \
                      {model}.feature_embedding.parquet  feature × D frozen dictionary\n  \
                      {model}.latent.parquet             training pair latent (E × D)\n  \
                      {model}.link_community.parquet     training pair → community\n\
@@ -138,7 +138,7 @@ pub struct PredictCoreArgs {
     pub no_init_features: bool,
 }
 
-/// How `pinto predict` scores its prediction, which `pinto impute` does
+/// How `pinto apply predict` scores its prediction, which `pinto apply impute` does
 /// not.
 #[derive(Args, Debug, Clone, Default)]
 pub struct ScoringArgs {
@@ -187,9 +187,9 @@ fn pair_encoder_path(model: &str) -> anyhow::Result<String> {
     let path = format!("{model}.pair_encoder.safetensors");
     anyhow::ensure!(
         Path::new(&path).is_file(),
-        "{path} does not exist: the model was fitted before `pinto cage` saved its pair encoder, \
+        "{path} does not exist: the model was fitted before `pinto fit cage` saved its pair encoder, \
          or it is a cage-cell model, which has none (placing new pairs on one comes in a later \
-         version); refit it with `pinto cage`"
+         version); refit it with `pinto fit cage`"
     );
     Ok(path)
 }
@@ -317,7 +317,7 @@ pub fn check_model(model: &str) -> anyhow::Result<()> {
 
 /// Returns the per-cell propensity and the cell names — the same table
 /// written to `{out}.propensity.parquet` — so a caller that consumes the
-/// prediction (`pinto impute`) need not round-trip it through parquet.
+/// prediction (`pinto apply impute`) need not round-trip it through parquet.
 pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     // A model named by its manifest is the same model: records name runs that
     // way, so a held-out scoring links to the fit it scores.
@@ -355,7 +355,7 @@ pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Ma
     }
 }
 
-/// The flags given on `pinto predict`'s command line that apply to one kind
+/// The flags given on `pinto apply predict`'s command line that apply to one kind
 /// of model only, by name.
 #[derive(Debug, Default)]
 pub struct ModelOnlyFlags {
@@ -366,7 +366,7 @@ pub struct ModelOnlyFlags {
 }
 
 impl ModelOnlyFlags {
-    /// Those of `cmd` (`pinto predict`, its matches `m`).
+    /// Those of `cmd` (`pinto apply predict`, its matches `m`).
     pub fn given(cmd: &clap::Command, m: &clap::ArgMatches) -> Self {
         use crate::util::cli::{given_on_cli, group_ids};
         ModelOnlyFlags {
@@ -425,7 +425,7 @@ pub(crate) fn refuse_offset_model(model: &str, run: Option<&Run>) -> anyhow::Res
     }
 }
 
-/// `pinto predict` of the cage model at prefix `args.model`, its manifest
+/// `pinto apply predict` of the cage model at prefix `args.model`, its manifest
 /// `run` (`None` for a model without one).
 pub fn predict_cage(
     args: &PredictCoreArgs,

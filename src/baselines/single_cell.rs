@@ -4,7 +4,7 @@
 // Lab. Its license and the commit followed are in THIRD_PARTY_NOTICES.md at
 // the crate root.
 
-//! `pinto srt-sim-baseline`: standard single-cell pipelines run on a
+//! `pinto sim baseline`: standard single-cell pipelines run on a
 //! simulation, as baselines for `srt-sim-score`.
 //!
 //! The shared pipeline is the scanpy recipe (Wolf, Angerer and Theis 2018,

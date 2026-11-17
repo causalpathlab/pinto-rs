@@ -1,4 +1,4 @@
-//! Co-expression baselines for the `pinto lra-simulate` benchmark, of which
+//! Co-expression baselines for the `pinto lra simulate` benchmark, of which
 //! [`coexpression`] is also the column `pinto lra` reports, and all of which
 //! `pinto lra --marginal-baselines` reports beside it ([`marginals`]): the ligand–receptor
 //! statistics in common use, none of which adjusts for a confounder, each

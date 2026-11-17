@@ -1,4 +1,4 @@
-//! `run_residual` for `pinto mcp`: `pinto residual` set up as the command
+//! `run_residual` for `pinto mcp`: `pinto apply residual` set up as the command
 //! line takes it, its run checked as the command checks it before anything
 //! runs (a run on raw counts whose manifest records its propensity and
 //! cells table, its data files found, `-o` a folder, nothing written
@@ -48,13 +48,17 @@ pub(super) struct ResidualToolArgs {
     pub background: bool,
 }
 
-/// `pinto residual` for `a` writing to `out`: only what was given. A data
+/// `pinto apply residual` for `a` writing to `out`: only what was given. A data
 /// file with a comma is refused: the command line would split it.
 pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<Vec<String>> {
     if let Some(f) = a.data_files.iter().find(|f| f.contains(',')) {
         anyhow::bail!("{f:?} has a comma: give each data file as its own entry");
     }
-    let mut argv: Vec<String> = vec!["residual".into(), flag_value("--from", as_run(&a.run))];
+    let mut argv: Vec<String> = vec![
+        "apply".into(),
+        "residual".into(),
+        flag_value("--from", as_run(&a.run)),
+    ];
     if !a.data_files.is_empty() {
         argv.push(flag_value("--data-files", rooted(&a.data_files).join(",")));
     }
@@ -74,7 +78,7 @@ pub(super) fn residual_argv(a: &ResidualToolArgs, out: &str) -> anyhow::Result<V
     Ok(argv)
 }
 
-/// `a` as `pinto residual` will run it into `out`: its command line,
+/// `a` as `pinto apply residual` will run it into `out`: its command line,
 /// parsed as the child parses it, and what it writes, checked as the
 /// command checks its run before reading any count.
 pub(super) fn residual_plan(
@@ -159,7 +163,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
     let flag = |id: &str, schema: Value| super::mcp::flag_arg(sub, id, schema);
     vec![ToolSpec::new(
         "run_residual",
-        "What a fitted run leaves unexplained (pinto residual), for a second fit to pick \
+        "What a fitted run leaves unexplained (pinto apply residual), for a second fit to pick \
          up what the first absorbed, such as a domain only one donor has. Two operations \
          (residual): divide (default; stage 2 fits the raw counts with the stage-1 \
          expectation mu as a multiplicative offset, i.e. models y/mu: writes the tables mu \

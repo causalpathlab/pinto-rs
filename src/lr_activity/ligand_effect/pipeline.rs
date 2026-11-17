@@ -1,4 +1,4 @@
-//! The commands from input to tables: `pinto lra` and `pinto lra-simulate`.
+//! The commands from input to tables: `pinto lra` and `pinto lra simulate`.
 
 use super::baselines::{marginals, Baselines, CellTypeTest, TypeLabels};
 use super::estimate::{estimate_pair_shared, PairData};

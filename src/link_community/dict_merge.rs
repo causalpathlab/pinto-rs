@@ -1,7 +1,7 @@
 //! Cosine-similarity agglomerative merging over the feature × community
 //! dictionary.
 //!
-//! In `pinto lc`, each fitted link community has a posterior feature-expression
+//! In `pinto fit lc`, each fitted link community has a posterior feature-expression
 //! profile (the "dictionary atom") produced by `compute_feature_community_stat`.
 //! Many fine link communities share a near-identical profile — they encode
 //! the same cell type or program sitting at different spatial locations or

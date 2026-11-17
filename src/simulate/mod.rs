@@ -1,4 +1,4 @@
-//! `pinto srt-simulate`: a multi-donor spatial transcriptomics simulator
+//! `pinto sim new`: a multi-donor spatial transcriptomics simulator
 //! with a planted truth.
 //!
 //! Location sets a spot's domain, the domain sets its likely cell states,

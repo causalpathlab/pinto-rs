@@ -61,6 +61,7 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     assert_eq!(
         bare,
         [
+            "apply".to_string(),
             "residual".to_string(),
             format!("--from={}", shown_path(Path::new("r"))),
             "--out=/p/res".into()
@@ -83,6 +84,7 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
     );
     let argv = residual_argv(&full, "o").unwrap();
     let want: Vec<String> = [
+        "apply",
         "residual",
         &format!("--from={}", shown_path(Path::new("r"))),
         &format!("--data-files={files}"),
@@ -136,7 +138,7 @@ fn the_run_is_named_by_the_commands_own_flag() {
         .unwrap();
     assert!(run.ends_with("(--from; --run also works)"), "{run}");
     let argv = residual_argv(&args(json!({"run": "r"})), "o").unwrap();
-    assert!(argv[1].starts_with("--from="), "{argv:?}");
+    assert!(argv[2].starts_with("--from="), "{argv:?}");
 }
 
 /// A run is taken by what its manifest records: one that records no
@@ -182,7 +184,7 @@ fn the_reply_lists_the_residual_files_to_fit_in_order() {
     let out = dir.path().join("res").to_string_lossy().into_owned();
     let sub = args(json!({"run": prefix, "residual": "subtract"}));
     let (argv, plan) = residual_plan(&cli(), &sub, &out).unwrap();
-    assert_eq!(argv[0], "residual");
+    assert_eq!(argv[..2], ["apply", "residual"]);
     assert!(
         argv.contains(&"--residual=subtract".to_string()),
         "{argv:?}"

@@ -64,7 +64,10 @@ fn job(dir: &Path, m: &str) -> jobs::Job {
 fn fake_pinto(dir: &Path, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let fake = dir.join("fake-pinto");
-    std::fs::write(&fake, format!("#!/bin/sh\n{body}\n")).unwrap();
+    // the method's own word first, as before the verbs: `apply residual …`
+    // read as `residual …`
+    let verb = "case \"$1\" in fit|apply|sim|session) shift ;; esac";
+    std::fs::write(&fake, format!("#!/bin/sh\n{verb}\n{body}\n")).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     fake
 }
@@ -949,7 +952,7 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     assert!(p.problem.is_none(), "{:?}", p.problem);
     assert_eq!(
         p.job.argv,
-        ["lra-simulate", "--out=sim", "--from=res/run.pinto.json"]
+        ["lra", "simulate", "--out=sim", "--from=res/run.pinto.json"]
     );
     assert_eq!(p.job.manifest(), here.join("sim.lra-simulate.parquet"));
     // A table there already is in the way.
@@ -1035,13 +1038,14 @@ fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
         .find_map(|w| w.strip_prefix(flag)?.strip_prefix('='))
 }
 
-/// What `pinto residual --from {here}/res/fit --residual subtract -o
+/// What `pinto apply residual --from {here}/res/fit --residual subtract -o
 /// {here}/{out}` plans: the excess files these tests' stage 2 reads.
 fn residual_plan(here: &Path, out: &str) -> crate::residual::Plan {
     use clap::Parser;
     let run = crate::util::metadata::Run::open(&here.join("res/fit").to_string_lossy()).unwrap();
     let cli = crate::Cli::try_parse_from([
         "pinto",
+        "apply",
         "residual",
         "--from",
         "res/fit",
@@ -1051,7 +1055,7 @@ fn residual_plan(here: &Path, out: &str) -> crate::residual::Plan {
         &here.join(out).to_string_lossy(),
     ])
     .unwrap();
-    let crate::Commands::Residual(args) = cli.commands else {
+    let crate::Commands::Apply(crate::Apply::Residual(args)) = cli.commands else {
         panic!("not residual")
     };
     crate::residual::Plan::new(&run, &args).unwrap()
@@ -1142,6 +1146,7 @@ fn a_residual_sets_up_a_stage_two_fit_on_its_files() {
     assert_eq!(
         r.argv,
         [
+            "apply".to_string(),
             "residual".to_string(),
             format!("--out={}", a.rows[res].out),
             "--from=res/fit.pinto.json".into(),
@@ -1162,8 +1167,8 @@ fn a_residual_sets_up_a_stage_two_fit_on_its_files() {
     let zarrs: Vec<String> = plan.zarrs.iter().map(rel).collect();
     let coords: Vec<String> = plan.coords.iter().map(rel).collect();
     assert_eq!(zarrs.len(), 2);
-    assert_eq!(s.argv[0], "dsvd");
-    assert_eq!(s.argv[1..3], zarrs[..]);
+    assert_eq!(s.argv[..2], ["fit", "dsvd"]);
+    assert_eq!(s.argv[2..4], zarrs[..]);
     assert_eq!(after(&s.argv, "--coord"), Some(coords.join(",").as_str()));
     assert_eq!(
         after(&s.argv, "--coord-column-names"),
@@ -1214,11 +1219,11 @@ fn the_stage_two_method_is_chosen_on_the_methods_screen() {
         key(&mut a, KeyCode::Char('m'));
         let p = &a.plan()[1];
         assert!(p.problem.is_none(), "{:?}", p.problem);
-        seen.push(p.job.argv[0].clone());
-        assert_eq!(p.job.method, format!("stage-2 {}", p.job.argv[0]));
+        seen.push(p.job.argv[1].clone());
+        assert_eq!(p.job.method, format!("stage-2 {}", p.job.argv[1]));
         assert_eq!(
             a.rows[two].out,
-            under("", &format!("residual-{}", p.job.argv[0]))
+            under("", &format!("residual-{}", p.job.argv[1]))
         );
         // Every one of them reads the residual's coordinate columns.
         assert_eq!(after(&p.job.argv, "--coord-column-names"), Some("cx,cy"));
@@ -1330,11 +1335,11 @@ fn the_copied_commands_replay_the_residual_then_stage_two() {
     let text = a.copy_text();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 2, "{text}");
-    assert!(lines[0].starts_with("pinto residual "), "{text}");
+    assert!(lines[0].starts_with("pinto apply residual "), "{text}");
     // a pasted replay waits as the queue does: the stage-2 fit runs only
     // once the residual's summary is there
     let done = &a.confirm.as_ref().unwrap().planned[0].job.done_name();
-    let guard = format!("[ -f {} ] && pinto dsvd ", script::quote(done));
+    let guard = format!("[ -f {} ] && pinto fit dsvd ", script::quote(done));
     assert!(
         lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names=cx,cy"),
         "{text}"
@@ -1421,7 +1426,7 @@ fn a_stage_two_fit_that_failed_runs_again_on_the_finished_residual() {
                 .into_owned()
         })
         .collect();
-    assert_eq!(p[0].job.argv[1..3], zarrs[..]);
+    assert_eq!(p[0].job.argv[2..4], zarrs[..]);
     // A residual no longer there is not read: stage 2 asks for one.
     std::fs::remove_file(&plan.summary).unwrap();
     let p = a.plan();
@@ -1716,7 +1721,7 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
     let p = a.plan();
     assert_eq!(p.len(), 1);
     assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
-    let first = script::normalize(&p[0].job.dir.join(&p[0].job.argv[1]));
+    let first = script::normalize(&p[0].job.dir.join(&p[0].job.argv[2]));
     assert_eq!(first, script::normalize(Path::new(&plan.zarrs[0])));
     // It finishes in a second queue; the residual queued again is free to
     // run where its row now says.
@@ -1758,7 +1763,7 @@ fn a_finished_residual_moves_on_and_is_read_where_it_wrote() {
     assert_eq!(p.len(), 1);
     assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
     let plan = residual_plan(here, &wrote);
-    let first = script::normalize(&p[0].job.dir.join(&p[0].job.argv[1]));
+    let first = script::normalize(&p[0].job.dir.join(&p[0].job.argv[2]));
     assert_eq!(first, script::normalize(Path::new(&plan.zarrs[0])));
 }
 
@@ -1788,7 +1793,7 @@ fn a_finished_residual_is_read_as_it_ran() {
     let p = a.plan();
     assert!(p[0].problem.is_none(), "{:?}", p[0].problem);
     let plan = residual_plan(here, &wrote);
-    let read: Vec<PathBuf> = p[0].job.argv[1..3]
+    let read: Vec<PathBuf> = p[0].job.argv[2..4]
         .iter()
         .map(|z| script::normalize(&p[0].job.dir.join(z)))
         .collect();

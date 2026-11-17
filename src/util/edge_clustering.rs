@@ -79,7 +79,7 @@ pub struct EdgeClusterArgs {
                      Under kmeans it is the exact count, defaulting to the latent width.\n\
                      \n\
                      A cell's propensity is its incident-edge fraction, taken per community.\n\
-                     This is the definition `pinto lc` and `pinto dsvd` use.\n\
+                     This is the definition `pinto fit lc` and `pinto fit dsvd` use.\n\
                      See this subcommand's own --help for the files it writes."
     )]
     pub n_edge_clusters: Option<usize>,

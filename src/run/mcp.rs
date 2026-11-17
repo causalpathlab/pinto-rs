@@ -124,7 +124,7 @@ impl Tools {
         Ok(vec![Content::Json(reply)])
     }
 
-    /// `run_predict`: `pinto predict` set up as a fit is, with the model given
+    /// `run_predict`: `pinto apply predict` set up as a fit is, with the model given
     /// by its manifest so the records link the scoring to the fit it scores.
     fn predict(&self, a: PredictToolArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         let method = Method::new(&self.cli, "predict")?;
@@ -150,7 +150,7 @@ impl Tools {
             background: a.background,
         };
         let (mut reply, manifest) =
-            self.launch(method, &fit, "pinto predict --help", &summary, cx)?;
+            self.launch(method, &fit, "pinto apply predict --help", &summary, cx)?;
         // Run to its end: the scoring's totals, so the agent need not open the
         // manifest.
         if !fit.background {
@@ -237,8 +237,8 @@ impl Tools {
         let mut argv = method.argv(&data, &coords, &batches, &out);
         argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
         check(&self.cli, &argv).map_err(|e| match blamed(&e, &method.fields) {
-            Some(flag) => anyhow::anyhow!("pinto {} --{flag}: {e}", a.method),
-            None => anyhow::anyhow!("pinto {}: {e}", a.method),
+            Some(flag) => anyhow::anyhow!("pinto {} --{flag}: {e}", named(&argv)),
+            None => anyhow::anyhow!("pinto {}: {e}", named(&argv)),
         })?;
 
         let manifest = made[0].clone();
@@ -264,7 +264,12 @@ impl Tools {
 
 /// The command line checked as pinto parses it.
 pub(super) fn checked(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
-    check(cli, argv).map_err(|e| anyhow::anyhow!("pinto {}: {e}", argv[0]))
+    check(cli, argv).map_err(|e| anyhow::anyhow!("pinto {}: {e}", named(argv)))
+}
+
+/// The words of `argv` naming its command: `fit lc`, `lra simulate`.
+pub(super) fn named(argv: &[String]) -> String {
+    argv[..crate::cli_path::path_len(argv)].join(" ")
 }
 
 /// The command line checked, then parsed into its command's arguments, as
@@ -273,11 +278,8 @@ pub(super) fn parsed<T: clap::FromArgMatches>(
     cli: &clap::Command,
     argv: &[String],
 ) -> anyhow::Result<T> {
-    checked(cli, argv)?;
-    let command = cli
-        .find_subcommand(&argv[0])
-        .ok_or_else(|| anyhow::anyhow!("pinto has no `{}` command", argv[0]))?;
-    let matches = command.clone().try_get_matches_from(argv)?;
+    let matches = super::form::matches(cli, argv)
+        .map_err(|e| anyhow::anyhow!("pinto {}: {e}", named(argv)))?;
     Ok(T::from_arg_matches(&matches)?)
 }
 
@@ -432,7 +434,7 @@ fn default_name(a: &CompareArgs) -> String {
 }
 
 /// `run_compare` with `paired`: two models' held-out scores, each side one or
-/// more `pinto predict` runs (folds), tested over donors.
+/// more `pinto apply predict` runs (folds), tested over donors.
 fn compare_paired(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
     use crate::compare::paired_path;
     anyhow::ensure!(
@@ -878,7 +880,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_predict",
-            "Score held-out cells on a fitted run (pinto predict). On an lc or dsvd model: each \
+            "Score held-out cells on a fitted run (pinto apply predict). On an lc or dsvd model: each \
              cell pair of the held-out sample is split (count thinning, or flags.ablate-features \
              to hide a feature list from the fit and score exactly it, as senna does), its \
              community mix is fitted on one part and the other part is scored, beside the \
@@ -896,7 +898,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Its coordinate files, one per data file (pairs from its spatial graph)"},
                     "batches": {"type": "array", "items": {"type": "string"}, "description": "Batch label files, one per data file (one δ per batch)"},
                     "out": {"type": "string", "description": "Output prefix (-o)"},
-                    "flags": {"type": "object", "description": "pinto predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), ablate-features, eval-features, null-from, seed (pinto predict --help lists them)"},
+                    "flags": {"type": "object", "description": "pinto apply predict's flags by name: held-out (whole-donor|cells), holdout-unit (pair|cell), ablate-features, eval-features, null-from, seed (pinto apply predict --help lists them)"},
                     "max_threads": max_threads_arg(cli),
                     "atomic_outputs": atomic_outputs_arg(cli),
                     "background": background(),
@@ -941,7 +943,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "a": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Reference run: its prefix or .pinto.json (or a propensity .parquet); with paired, pinto predict runs, a list for several folds"},
+                    "a": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Reference run: its prefix or .pinto.json (or a propensity .parquet); with paired, pinto apply predict runs, a list for several folds"},
                     "b": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Run(s) to set against it, named the same ways"},
                     "out": out_arg("prefix", "compare"),
                     "level_a": {"type": "string", "description": "Level of A: final, draft, or L1, L2, … [default: final]"},
@@ -995,7 +997,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_lra_simulate",
-            "Power and calibration check for run_lra on this tissue (pinto lra-simulate --from \
+            "Power and calibration check for run_lra on this tissue (pinto lra simulate --from \
              run): plants ligand effects of known size on the real tissue, with and without \
              hidden spatial confounders, and reports per scenario each method's share of runs \
              rejecting at 5% (type I error where nothing is planted, power elsewhere) beside \
@@ -1055,10 +1057,11 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
     schema
 }
 
-/// `pinto {name}`.
+/// The command `name`, at the top or under its verb.
 pub(super) fn subcommand<'c>(cli: &'c clap::Command, name: &str) -> &'c clap::Command {
-    cli.find_subcommand(name)
+    crate::cli_path::find(cli, name)
         .unwrap_or_else(|| panic!("pinto has no command {name}"))
+        .1
 }
 
 /// A tool argument that passes the argument `id` of `sub` (a pinto

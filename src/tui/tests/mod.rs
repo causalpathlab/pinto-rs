@@ -59,7 +59,7 @@ fn a_child_pinto_takes_its_parent_s_atomic_outputs_once() {
         ["--atomic-outputs", "lra", "--", "--atomic-outputs"]
     );
     use clap::Parser;
-    let argv = line(&["lc", "x.zarr", "--out=o"]);
+    let argv = line(&["fit", "lc", "x.zarr", "--out=o"]);
     let cli = crate::Cli::try_parse_from(std::iter::once("pinto".to_string()).chain(argv)).unwrap();
     assert!(cli.atomic_outputs);
 }
@@ -111,7 +111,7 @@ fn a_child_pinto_takes_its_parent_s_max_threads_unless_it_has_its_own() {
     );
     // as the child parses it
     use clap::Parser;
-    let argv = line(&["lc", "x.zarr", "--out=o"], 4);
+    let argv = line(&["fit", "lc", "x.zarr", "--out=o"], 4);
     let cli = crate::Cli::try_parse_from(std::iter::once("pinto".to_string()).chain(argv)).unwrap();
     assert_eq!(cli.max_threads, 4);
 }
