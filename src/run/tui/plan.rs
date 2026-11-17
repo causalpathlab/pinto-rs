@@ -185,14 +185,10 @@ impl App {
 
     pub(super) fn params_key(&mut self, k: KeyEvent) {
         let n = self.visible().len();
-        let last = n.saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.field_row, n, &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.field_row = self.field_row.saturating_sub(1),
-            KeyCode::Down => self.field_row = (self.field_row + 1).min(last),
-            KeyCode::PageUp => self.field_row = self.field_row.saturating_sub(10),
-            KeyCode::PageDown => self.field_row = (self.field_row + 10).min(last),
-            KeyCode::Home => self.field_row = 0,
-            KeyCode::End => self.field_row = last,
             KeyCode::Char('[' | ']') => {
                 let ms = self.param_methods();
                 let at = ms.iter().position(|&m| m == self.param_method).unwrap_or(0);

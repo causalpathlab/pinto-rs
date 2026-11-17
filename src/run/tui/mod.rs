@@ -565,12 +565,11 @@ impl App {
         let n = self.pairs[l.row]
             .label_counts()
             .map_or(0, std::collections::BTreeMap::len);
+        if legume_tui::keys::list_step(&mut l.cursor, n, &k, false) {
+            return;
+        }
         match k.code {
             KeyCode::Esc | KeyCode::Char('q' | 'e') => self.labels = None,
-            KeyCode::Up => l.cursor = l.cursor.saturating_sub(1),
-            KeyCode::Down => l.cursor = (l.cursor + 1).min(n.saturating_sub(1)),
-            KeyCode::PageUp => l.cursor = l.cursor.saturating_sub(10),
-            KeyCode::PageDown => l.cursor = (l.cursor + 10).min(n.saturating_sub(1)),
             KeyCode::Enter => {
                 let (row, cursor) = (l.row, l.cursor);
                 if let Some(label) = label_at(&self.pairs[row], cursor) {
