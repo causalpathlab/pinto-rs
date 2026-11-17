@@ -17,6 +17,7 @@ pub mod loss;
 pub mod pair_projection;
 pub mod pb_frame;
 pub mod pretrained;
+pub mod row_adam;
 
 #[cfg(test)]
 mod feature_gating_tests;
