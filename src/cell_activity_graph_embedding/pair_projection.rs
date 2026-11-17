@@ -242,10 +242,24 @@ impl PairDictionary {
     /// The statistic a local profile enters the objective through:
     /// `(Σ_g n_g e_g, Σ_g n_g, Σ_g n_g b_g)`.
     pub(crate) fn statistic(&self, features: &[u32], counts: &[f32]) -> (Vec<f32>, f32, f32) {
+        let mut sums = vec![0f32; self.d];
+        let (total, offset) = self.accumulate(
+            features.iter().copied().zip(counts.iter().copied()),
+            &mut sums,
+        );
+        (sums, total, offset)
+    }
+
+    /// [`Self::statistic`] of a `(position, count)` profile, its `S` added
+    /// into `sums` (`[D]`), returning `(N, c)`.
+    pub(crate) fn accumulate(
+        &self,
+        obs: impl Iterator<Item = (u32, f32)>,
+        sums: &mut [f32],
+    ) -> (f32, f32) {
         let d = self.d;
-        let mut sums = vec![0f32; d];
         let (mut total, mut offset) = (0f32, 0f32);
-        for (&g, &n) in features.iter().zip(counts) {
+        for (g, n) in obs {
             let row = &self.feat[g as usize * d..(g as usize + 1) * d];
             for (s, &e) in sums.iter_mut().zip(row) {
                 *s += n * e;
@@ -253,7 +267,7 @@ impl PairDictionary {
             total += n;
             offset += n * self.b[g as usize];
         }
-        (sums, total, offset)
+        (total, offset)
     }
 
     /// The clamped log-rates `⟨e_g, θ⟩ + b_g` over the active axis.
@@ -348,7 +362,7 @@ pub fn project_pairs(
     }
     let corpus = build_corpus(data, &dict, batch, axis, args.pair_block)?;
 
-    let enc = match args.solver {
+    let (enc, training) = match args.solver {
         PairSolver::TrainEncoder {
             spec,
             on,
@@ -366,14 +380,7 @@ pub fn project_pairs(
                 )?,
             };
             let enc = encoder::PairEncoder::build(&dict, &set, spec, args.seed, dev)?;
-            let trained = enc.train(&set, spec, args.seed)?;
-            info!(
-                "Pair encoder: {} steps; held-out NLL/count after {:.4}",
-                trained.steps, trained.nll_per_count
-            );
-            enc.save(save_to)?;
-            info!("Wrote {}", crate::util::staging::final_str(save_to));
-            enc
+            (enc, Some((set, spec, save_to)))
         }
         PairSolver::LoadEncoder { path, dev } => {
             let enc = encoder::PairEncoder::load(&dict, path, dev)?;
@@ -383,10 +390,21 @@ pub fn project_pairs(
                 enc.n_experts(),
                 enc.ridge()
             );
-            enc
+            (enc, None)
         }
     };
+    // The cells on the device once: training's evaluation (and, on cells,
+    // its rows) and the encoding read the same upload.
     let stats = enc.corpus_stats(&corpus)?;
+    if let Some((set, spec, save_to)) = training {
+        let trained = enc.train(&set, &stats, edges, spec, args.seed)?;
+        info!(
+            "Pair encoder: {} steps; held-out NLL/count after {:.4}",
+            trained.steps, trained.nll_per_count
+        );
+        enc.save(save_to)?;
+        info!("Wrote {}", crate::util::staging::final_str(save_to));
+    }
     let mut placed =
         enc.encode_all(&corpus, &stats, edges, args.pair_block, encoder::CELL_BLOCK)?;
     // The device copy is not needed by the scoring pass.

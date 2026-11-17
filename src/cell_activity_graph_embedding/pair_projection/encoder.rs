@@ -83,6 +83,8 @@ pub(crate) const CELL_BLOCK: usize = 4096;
 /// axis takes fewer rows per pass and a panel takes the caps, and the device
 /// holds a fixed amount of dense work either way.
 const BLOCK_ELEMENTS: usize = 1 << 25;
+/// A training step with fewer pairs than this is skipped.
+pub(crate) const MIN_STEP_PAIRS: usize = 16;
 /// [`PairEncoderSpec::steps`] by default, and `--pair-encoder-steps`'s.
 pub const DEFAULT_PAIR_ENCODER_STEPS: usize = 512;
 /// [`PairEncoderSpec::batch`] by default.
@@ -243,6 +245,11 @@ impl CorpusStats {
             totals: Tensor::from_vec(totals, n, dev)?,
             offsets: Tensor::from_vec(offsets, n, dev)?,
         })
+    }
+
+    /// Rows held.
+    pub(crate) fn len(&self) -> usize {
+        self.totals.dims1().unwrap_or(0)
     }
 
     /// The `(S, N)` of `ids`: what the encoder reads.

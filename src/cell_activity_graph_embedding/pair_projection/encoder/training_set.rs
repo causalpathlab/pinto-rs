@@ -7,16 +7,19 @@
 //! only encoded, a forward pass, so the cost of training follows the
 //! pseudobulk count and not the cell count.
 //!
-//! A pseudobulk pair pools many cells' counts, and the encoder reads depth
+//! A pseudobulk pools many cells' counts, and the encoder reads depth
 //! (`ln(N + 1)` and the mean `S/N`, whose noise shrinks with `N`). So each
-//! training pair is thinned to a cell pair's depth: every epoch draws a
-//! depth from the pooled totals of the pairs being placed and keeps that
-//! many of the pair's counts, sampled without replacement over its nonzeros
-//! (a binomial thinning conditioned on its total). The trunk's
-//! standardisation moments come from such a thinned draw too.
+//! training row is thinned to a cell's depth: every epoch draws, per
+//! pseudobulk pair, a depth from the pooled totals of the cell pairs being
+//! placed, and keeps half of it from each endpoint (so a large pseudobulk
+//! does not crowd out a small one, as a cell pair's two cells are about
+//! even); each pseudobulk's own row is kept at half a drawn depth too. The
+//! counts kept are sampled without replacement over the row's nonzeros (a
+//! binomial thinning conditioned on its total). The trunk's
+//! standardisation moments come from such a thinned draw.
 
 use super::super::PairDictionary;
-use super::CellRow;
+use super::{CellRow, MIN_STEP_PAIRS};
 use crate::util::common::*;
 use legume_numeric::matrix::rand_util::mix_seed;
 use rand::rngs::SmallRng;
@@ -32,15 +35,23 @@ pub(crate) struct TrainingSet<'a> {
     pub(crate) corpus: Cow<'a, [CellRow]>,
     /// The training pairs, indexing `corpus`.
     pub(crate) edges: &'a [(u32, u32)],
-    /// Set when the pairs are thinned to the placed pairs' depth.
+    /// Set when the rows are thinned to the placed pairs' depth.
     pub(crate) thinning: Option<Thinning<'a>>,
 }
 
-/// The depth a training pair is thinned to, drawn from the placed pairs'.
+/// The depth a training row is thinned to, drawn from the placed pairs',
+/// and where a [`ThinnedTable`] keeps each row.
 pub(crate) struct Thinning<'a> {
     dict: &'a PairDictionary,
     /// The pooled total of every pair to be placed.
     depths: Vec<f32>,
+    /// Their median, for the log.
+    median_depth: f32,
+    /// The units some training pair names, ascending: the only ones whose
+    /// own row a training step reads.
+    visited: Vec<u32>,
+    /// Unit → its position in `visited` (`u32::MAX` when unvisited).
+    rank: Vec<u32>,
 }
 
 impl Thinning<'_> {
@@ -48,28 +59,31 @@ impl Thinning<'_> {
         self.depths[rng.random_range(0..self.depths.len())]
     }
 
-    /// The median pooled depth, for the log.
-    fn median(&self) -> f32 {
-        let mut d = self.depths.clone();
-        let mid = d.len() / 2;
-        *d.select_nth_unstable_by(mid, f32::total_cmp).1
+    /// Row of a thinned table holding endpoint `side` (0 for `u`, 1 for
+    /// `v`) of pair `i`, of `n_pairs`.
+    pub(crate) fn endpoint_row(n_pairs: usize, i: usize, side: usize) -> u32 {
+        (side * n_pairs + i) as u32
+    }
+
+    /// Row of a thinned table holding visited unit `c`'s own row.
+    pub(crate) fn self_row(&self, n_pairs: usize, c: u32) -> u32 {
+        let r = self.rank[c as usize];
+        debug_assert!(r != u32::MAX, "unit {c} is in no training pair");
+        2 * n_pairs as u32 + r
     }
 }
 
-/// One thinned draw of some training pairs (and, optionally, of every
-/// unit's own row) as the statistics the encoder reads: what one epoch,
-/// the evaluation or the moments read. The thinned counts themselves are
-/// never kept.
+/// One thinned draw of every training pair's endpoints and every visited
+/// unit's own row, as the statistics the encoder reads: rows `[0, E)` the
+/// `u`s, `[E, 2E)` the `v`s, then the visited units' own (see
+/// [`Thinning::endpoint_row`] and [`Thinning::self_row`]). The thinned
+/// counts themselves are never kept.
 pub(crate) struct ThinnedTable {
     /// Row-major `[rows × D]` `S`.
     pub(crate) sums: Vec<f32>,
     /// `[rows]` `N` and `c`.
     pub(crate) totals: Vec<f32>,
     pub(crate) offsets: Vec<f32>,
-    /// Per drawn pair, in the order asked for, its two rows.
-    pub(crate) pairs: Vec<(u32, u32)>,
-    /// Unit `c`'s own thinned row is row `self_base + c`, when drawn.
-    pub(crate) self_base: u32,
 }
 
 impl<'a> TrainingSet<'a> {
@@ -85,13 +99,15 @@ impl<'a> TrainingSet<'a> {
     /// The finest pseudobulks (`cage`): each the sum of its cells' rows by
     /// `cell_to_pb`, the pseudobulk edges `pb_edges` between them, thinned
     /// to the pooled depth of the cell pairs `cell_edges` over `cells`.
+    /// With too few pseudobulk pairs for one training step, the cells and
+    /// their pairs instead, with a warning.
     pub(crate) fn pseudobulks(
         dict: &'a PairDictionary,
-        cells: &[CellRow],
+        cells: &'a [CellRow],
         cell_to_pb: &[usize],
         n_pb: usize,
         pb_edges: &'a [(u32, u32)],
-        cell_edges: &[(u32, u32)],
+        cell_edges: &'a [(u32, u32)],
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             cell_to_pb.len() == cells.len(),
@@ -118,14 +134,44 @@ impl<'a> TrainingSet<'a> {
             !cell_edges.is_empty(),
             "pair encoder: no cell pairs to take the training depth from"
         );
-        let depths = cell_edges
+        if pb_edges.len() < MIN_STEP_PAIRS {
+            warn!(
+                "Pair encoder: {} pseudobulk pairs over {n_pb} pseudobulks are fewer than one \
+                 training step's {MIN_STEP_PAIRS}; training on the {} cell pairs instead",
+                pb_edges.len(),
+                cell_edges.len()
+            );
+            return Ok(Self::cells(cells, cell_edges));
+        }
+        let mut depths: Vec<f32> = cell_edges
             .par_iter()
             .map(|&(u, v)| cells[u as usize].total + cells[v as usize].total)
             .collect();
+        let median_depth = {
+            let mid = depths.len() / 2;
+            *depths.select_nth_unstable_by(mid, f32::total_cmp).1
+        };
+        let mut rank = vec![u32::MAX; n_pb];
+        for &(u, v) in pb_edges {
+            rank[u as usize] = 0;
+            rank[v as usize] = 0;
+        }
+        let visited: Vec<u32> = (0..n_pb as u32)
+            .filter(|&c| rank[c as usize] == 0)
+            .collect();
+        for (k, &c) in visited.iter().enumerate() {
+            rank[c as usize] = k as u32;
+        }
         Ok(Self {
             corpus: Cow::Owned(pseudobulk_corpus(dict, cells, cell_to_pb, n_pb)),
             edges: pb_edges,
-            thinning: Some(Thinning { dict, depths }),
+            thinning: Some(Thinning {
+                dict,
+                depths,
+                median_depth,
+                visited,
+                rank,
+            }),
         })
     }
 
@@ -138,27 +184,27 @@ impl<'a> TrainingSet<'a> {
                 self.corpus.len()
             ),
             Some(th) => format!(
-                "{} pseudobulk pairs over {} pseudobulks, thinned each epoch to the pooled depth \
-                 of the {} cell pairs (median {:.0})",
+                "{} pseudobulk pairs over {} pseudobulks, each endpoint thinned each epoch to \
+                 half the pooled depth of the {} cell pairs (median {:.0})",
                 self.edges.len(),
                 self.corpus.len(),
                 th.depths.len(),
-                th.median()
+                th.median_depth
             ),
         }
     }
 
     /// The trunk's standardisation moments (`(mean, std)`, `[D + 1]`
-    /// each): over the corpus, or over the endpoint rows of one thinned
-    /// draw of every pair.
+    /// each), over the rows a training step reads: the cells (each both an
+    /// endpoint and its own self row), or every row of one thinned draw,
+    /// the pairs' endpoints and the units' own.
     pub(crate) fn moments(&self, d: usize, seed: u64) -> (Vec<f32>, Vec<f32>) {
         match &self.thinning {
             None => super::stat_moments(d, self.corpus.len(), |i| {
                 (&self.corpus[i].sums[..], self.corpus[i].total)
             }),
             Some(th) => {
-                let all: Vec<usize> = (0..self.edges.len()).collect();
-                let t = self.thinned(th, &all, false, mix_seed(seed, MOMENTS_SALT));
+                let t = self.thinned(th, mix_seed(seed, MOMENTS_SALT));
                 super::stat_moments(d, t.totals.len(), |i| {
                     (&t.sums[i * d..(i + 1) * d], t.totals[i])
                 })
@@ -166,47 +212,43 @@ impl<'a> TrainingSet<'a> {
         }
     }
 
-    /// The pairs `pick` (indices into `edges`) thinned, each to a depth
-    /// drawn afresh, and with `selves` every unit's own row thinned to half
-    /// a drawn depth (its self-pair, the row doubled, is then at one).
+    /// Every training pair's endpoints, each thinned to half a depth drawn
+    /// afresh per pair, and every visited unit's own row, thinned to half a
+    /// depth of its own (its self-pair, the row doubled, is then at one).
     /// Deterministic in `seed`: pair `i` and unit `c` each draw from their
     /// own stream.
-    pub(crate) fn thinned(
-        &self,
-        th: &Thinning<'_>,
-        pick: &[usize],
-        selves: bool,
-        seed: u64,
-    ) -> ThinnedTable {
+    pub(crate) fn thinned(&self, th: &Thinning<'_>, seed: u64) -> ThinnedTable {
         let d = th.dict.d;
         // Per row `[S ‖ N ‖ c]`.
         let w = d + 2;
-        let n_pick = pick.len();
-        let n_self = if selves { self.corpus.len() } else { 0 };
-        let mut pair_buf = vec![0f32; n_pick * 2 * w];
-        pair_buf
-            .par_chunks_mut(2 * w)
-            .zip(pick.par_iter())
-            .for_each_init(Scratch::default, |scratch, (out, &i)| {
-                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, i as u64));
-                let (u, v) = self.edges[i];
-                let target = th.draw(&mut rng).round() as u64;
-                let rows = [&self.corpus[u as usize], &self.corpus[v as usize]];
-                thin_stats(th.dict, &rows, target, &mut rng, scratch, out);
-            });
-        let mut self_buf = vec![0f32; n_self * w];
-        let base = self.edges.len() as u64;
-        self_buf.par_chunks_mut(w).enumerate().for_each_init(
+        let n_pairs = self.edges.len();
+        let mut pair_buf = vec![0f32; n_pairs * 2 * w];
+        pair_buf.par_chunks_mut(2 * w).enumerate().for_each_init(
             Scratch::default,
-            |scratch, (c, out)| {
-                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, base + c as u64));
-                let target = (th.draw(&mut rng) / 2.0).round() as u64;
-                thin_stats(th.dict, &[&self.corpus[c]], target, &mut rng, scratch, out);
+            |scratch, (i, out)| {
+                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, i as u64));
+                let half = (th.draw(&mut rng) / 2.0).round() as u64;
+                let (u, v) = self.edges[i];
+                let (out_u, out_v) = out.split_at_mut(w);
+                for (unit, o) in [(u, out_u), (v, out_v)] {
+                    let row = &self.corpus[unit as usize];
+                    thin_stats(th.dict, row, half, &mut rng, scratch, o);
+                }
             },
         );
+        let mut self_buf = vec![0f32; th.visited.len() * w];
+        self_buf
+            .par_chunks_mut(w)
+            .zip(th.visited.par_iter())
+            .for_each_init(Scratch::default, |scratch, (out, &c)| {
+                let salt = (n_pairs + c as usize) as u64;
+                let mut rng = SmallRng::seed_from_u64(mix_seed(seed, salt));
+                let half = (th.draw(&mut rng) / 2.0).round() as u64;
+                let row = &self.corpus[c as usize];
+                thin_stats(th.dict, row, half, &mut rng, scratch, out);
+            });
 
-        // Rows: the `u`s, the `v`s, then the units' own.
-        let n_rows = 2 * n_pick + n_self;
+        let n_rows = 2 * n_pairs + th.visited.len();
         let mut sums = Vec::with_capacity(n_rows * d);
         let (mut totals, mut offsets) = (Vec::with_capacity(n_rows), Vec::with_capacity(n_rows));
         let mut push = |row: &[f32]| {
@@ -226,8 +268,6 @@ impl<'a> TrainingSet<'a> {
             sums,
             totals,
             offsets,
-            pairs: (0..n_pick as u32).map(|k| (k, n_pick as u32 + k)).collect(),
-            self_base: 2 * n_pick as u32,
         }
     }
 }
@@ -272,46 +312,37 @@ pub(crate) fn pseudobulk_corpus(
 /// Per-thread buffers for [`kept_units`].
 #[derive(Default)]
 pub(crate) struct Scratch {
-    /// Per nonzero of the rows, in order: whole units, then units kept.
+    /// Per nonzero of the row: whole units, then units kept.
     units: Vec<u64>,
     picks: Vec<u64>,
 }
 
-/// Thin `rows` together to `target` units, leaving each nonzero's kept
-/// units in `scratch.units`; `false`, touching nothing, when the rows are
-/// already within `target` (they are then used as they are).
+/// `row` thinned to `target` units, leaving each nonzero's kept units in
+/// `scratch.units`.
 ///
-/// `target` of the rows' pooled units are kept, sampled without
-/// replacement, so a pair is thinned as its pooled profile and each
-/// endpoint keeps its share. A fractional (batch-divided) count is first
-/// rounded to whole units at random, up with probability its fraction, so
-/// the kept total is `target` unless those units fall short of it, and a
-/// kept count never exceeds its original rounded up. Only the nonzeros are
-/// walked.
-fn kept_units<R: Rng>(rows: &[&CellRow], target: u64, rng: &mut R, scratch: &mut Scratch) -> bool {
-    let total: f64 = rows.iter().map(|r| f64::from(r.total)).sum();
-    if target as f64 >= total {
-        return false;
-    }
+/// Every count is first rounded to whole units at random, up with
+/// probability its fraction (a batch-divided count is fractional), whether
+/// or not the row is then thinned, so every row of every epoch is whole
+/// units. `target` of those units are then kept, sampled without
+/// replacement, or all of them when they are fewer: the kept total is
+/// `min(target, units)` and a kept count never exceeds its original
+/// rounded up. Only the nonzeros are walked.
+fn kept_units<R: Rng>(row: &CellRow, target: u64, rng: &mut R, scratch: &mut Scratch) {
     let units = &mut scratch.units;
     units.clear();
-    for r in rows {
-        units.extend(r.counts.iter().map(|&x| {
-            let whole = x.floor();
-            let frac = x - whole;
-            whole as u64 + u64::from(frac > 0.0 && rng.random::<f32>() < frac)
-        }));
-    }
+    units.extend(row.counts.iter().map(|&x| {
+        let whole = x.floor();
+        let frac = x - whole;
+        whole as u64 + u64::from(frac > 0.0 && rng.random::<f32>() < frac)
+    }));
     let m: u64 = units.iter().sum();
-    let keep = target.min(m);
+    if target >= m {
+        return;
+    }
     // Draw whichever of the kept and the dropped units is fewer.
-    let draw_kept = keep <= m - keep;
-    distinct_sorted(
-        rng,
-        m,
-        if draw_kept { keep } else { m - keep },
-        &mut scratch.picks,
-    );
+    let draw_kept = target <= m - target;
+    let k = if draw_kept { target } else { m - target };
+    distinct_sorted(rng, m, k, &mut scratch.picks);
     let picks = &scratch.picks;
     let (mut p, mut end) = (0usize, 0u64);
     for n in units.iter_mut() {
@@ -323,75 +354,46 @@ fn kept_units<R: Rng>(rows: &[&CellRow], target: u64, rng: &mut R, scratch: &mut
         let hit = (p - start) as u64;
         *n = if draw_kept { hit } else { *n - hit };
     }
-    true
 }
 
-/// `rows` thinned by [`kept_units`], as sparse `(positions, counts)` per
-/// row: what [`thin_stats`] reads the statistic of, for the tests.
+/// `row` thinned by [`kept_units`], as a sparse `(positions, counts)`:
+/// what [`thin_stats`] reads the statistic of, for the tests.
 #[cfg(test)]
-pub(crate) fn thin_to<R: Rng>(
-    rows: &[&CellRow],
-    target: u64,
-    rng: &mut R,
-) -> Vec<(Vec<u32>, Vec<f32>)> {
+pub(crate) fn thin_to<R: Rng>(row: &CellRow, target: u64, rng: &mut R) -> (Vec<u32>, Vec<f32>) {
     let mut scratch = Scratch::default();
-    if !kept_units(rows, target, rng, &mut scratch) {
-        return rows
-            .iter()
-            .map(|r| (r.features.clone(), r.counts.clone()))
-            .collect();
-    }
-    let mut kept = scratch.units.iter();
-    rows.iter()
-        .map(|r| {
-            r.features
-                .iter()
-                .zip(kept.by_ref())
-                .filter(|&(_, &k)| k > 0)
-                .map(|(&g, &k)| (g, k as f32))
-                .unzip()
-        })
-        .collect()
+    kept_units(row, target, rng, &mut scratch);
+    row.features
+        .iter()
+        .zip(&scratch.units)
+        .filter(|&(_, &k)| k > 0)
+        .map(|(&g, &k)| (g, k as f32))
+        .unzip()
 }
 
-/// `rows` thinned by [`kept_units`], written as each row's statistic `[S ‖ N ‖ c]` into `out`,
-/// `rows.len() · (D + 2)` long: what the encoder reads, accumulated straight
+/// `row` thinned by [`kept_units`], written as its statistic `[S ‖ N ‖ c]`
+/// into `out` (`D + 2` long): what the encoder reads, accumulated straight
 /// from the kept units over the nonzeros that keep any.
 pub(crate) fn thin_stats(
     dict: &PairDictionary,
-    rows: &[&CellRow],
+    row: &CellRow,
     target: u64,
     rng: &mut SmallRng,
     scratch: &mut Scratch,
     out: &mut [f32],
 ) {
     let d = dict.d;
-    let w = d + 2;
-    if !kept_units(rows, target, rng, scratch) {
-        for (r, o) in rows.iter().zip(out.chunks_exact_mut(w)) {
-            o[..d].copy_from_slice(&r.sums);
-            o[d] = r.total;
-            o[d + 1] = r.offset;
-        }
-        return;
-    }
-    let mut kept = scratch.units.iter();
-    for (r, o) in rows.iter().zip(out.chunks_exact_mut(w)) {
-        o.fill(0.0);
-        let (sums, rest) = o.split_at_mut(d);
-        for (&g, &k) in r.features.iter().zip(kept.by_ref()) {
-            if k == 0 {
-                continue;
-            }
-            let n = k as f32;
-            let g = g as usize;
-            for (s, &e) in sums.iter_mut().zip(&dict.feat[g * d..(g + 1) * d]) {
-                *s += n * e;
-            }
-            rest[0] += n;
-            rest[1] += n * dict.b[g];
-        }
-    }
+    kept_units(row, target, rng, scratch);
+    out.fill(0.0);
+    let (sums, rest) = out.split_at_mut(d);
+    let kept = row
+        .features
+        .iter()
+        .zip(&scratch.units)
+        .filter(|&(_, &k)| k > 0)
+        .map(|(&g, &k)| (g, k as f32));
+    let (total, offset) = dict.accumulate(kept, sums);
+    rest[0] = total;
+    rest[1] = offset;
 }
 
 /// `k` distinct values of `0..m`, uniformly at random among such sets,
