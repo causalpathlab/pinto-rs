@@ -118,8 +118,8 @@ pub struct Table {
     pub r: TableRef,
     pub rows: Vec<PairRow>,
     /// Which pairs its q-values were corrected over (its `q_scope`
-    /// column); `None` for a table from before the column.
-    pub q_scope: Option<Box<str>>,
+    /// column).
+    pub q_scope: Box<str>,
     curves: Curves,
 }
 
@@ -142,7 +142,7 @@ impl Table {
 
     /// Whether its q-values were corrected within a `--only` subset.
     pub fn subset_corrected(&self) -> bool {
-        self.r.subset.is_some() || self.q_scope.as_deref().is_some_and(|s| s != Q_SCOPE_ALL)
+        self.r.subset.is_some() || &*self.q_scope != Q_SCOPE_ALL
     }
 
     /// Row `i`'s threshold–response curve; empty without one.

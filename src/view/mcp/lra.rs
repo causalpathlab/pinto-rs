@@ -150,10 +150,10 @@ impl Open {
                 })
             })
             .collect();
-        let q_scope: String = match &table.q_scope {
+        let q_scope: String = match &*table.q_scope {
             _ if !table.subset_corrected() => Q_SCOPE_ALL.into(),
-            Some(scope) => scope.to_string(),
-            None => "q corrected within the --only subset".into(),
+            Q_SCOPE_ALL => "q corrected within the --only subset".into(),
+            scope => scope.into(),
         };
         let selected = v.selected_row().map(|r| {
             let mut out = json!({
