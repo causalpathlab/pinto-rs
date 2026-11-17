@@ -76,9 +76,10 @@ pub(super) fn start_pair_table(
     Ok(z)
 }
 
-/// The trained table `z` as a host row-major `[rows × d]` vector.
-pub(super) fn table_to_host(z: &RowAdam) -> anyhow::Result<Vec<f32>> {
-    let t: &Tensor = z.table();
+/// The trained table `z` as a host row-major `[rows × d]` vector, its
+/// moments freed before the copy.
+pub(super) fn table_to_host(z: RowAdam) -> anyhow::Result<Vec<f32>> {
+    let t: Tensor = z.into_table();
     Ok(t.to_device(&Device::Cpu)?.flatten_all()?.to_vec1::<f32>()?)
 }
 
@@ -92,7 +93,8 @@ pub(super) fn table_to_host(z: &RowAdam) -> anyhow::Result<Vec<f32>> {
 ///   pairs it is in, each pair once (zero for a cell in none).
 ///
 /// A listed pair with no row (`None`: it crosses batches, so no step drew
-/// it) takes the mean of its two cells' embeddings.
+/// it) takes the mean of its two cells' embeddings. The cells are filled a
+/// row per task, the latent a column per task, in parallel.
 pub(crate) fn pair_outputs(
     z: &[f32],
     d: usize,
@@ -103,37 +105,57 @@ pub(crate) fn pair_outputs(
 ) -> (Mat, Mat) {
     debug_assert_eq!(z.len(), pairs.len() * d);
     let row = |e: usize| &z[e * d..(e + 1) * d];
-    let mut cells = Mat::zeros(n_cells, d);
-    let mut degree = vec![0u32; n_cells];
+    // each cell's pairs, as a CSR over the cells
+    let mut start = vec![0usize; n_cells + 1];
+    for &(u, v) in pairs {
+        start[u as usize + 1] += 1;
+        start[v as usize + 1] += 1;
+    }
+    for c in 0..n_cells {
+        start[c + 1] += start[c];
+    }
+    let mut fill = start.clone();
+    let mut incident = vec![0u32; start[n_cells]];
     for (e, &(u, v)) in pairs.iter().enumerate() {
         for c in [u as usize, v as usize] {
-            degree[c] += 1;
-            for (j, &x) in row(e).iter().enumerate() {
-                cells[(c, j)] += x;
-            }
+            incident[fill[c]] = e as u32;
+            fill[c] += 1;
         }
     }
-    for (c, &n) in degree.iter().enumerate() {
-        if n > 0 {
-            cells.row_mut(c).scale_mut(1.0 / n as f32);
-        }
-    }
-    let mut latent = Mat::zeros(fine_edges.len(), d);
-    for (k, (&(u, v), e)) in fine_edges.iter().zip(fine_to_super).enumerate() {
-        match *e {
-            Some(e) => {
-                for (j, &x) in row(e).iter().enumerate() {
-                    latent[(k, j)] = x;
+    let mut cells = vec![0f32; n_cells * d];
+    if d > 0 {
+        cells.par_chunks_mut(d).enumerate().for_each(|(c, out)| {
+            let mine = &incident[start[c]..start[c + 1]];
+            for &e in mine {
+                for (o, &x) in out.iter_mut().zip(row(e as usize)) {
+                    *o += x;
                 }
             }
-            None => {
-                for j in 0..d {
-                    latent[(k, j)] = 0.5 * (cells[(u as usize, j)] + cells[(v as usize, j)]);
-                }
+            if !mine.is_empty() {
+                let w = 1.0 / mine.len() as f32;
+                out.iter_mut().for_each(|o| *o *= w);
             }
-        }
+        });
     }
-    (latent, cells)
+    // the latent, the large one, straight into its column-major storage, a
+    // column per task: no second E × D buffer
+    let n_listed = fine_edges.len();
+    let mut latent = Mat::zeros(n_listed, d);
+    if n_listed > 0 {
+        latent
+            .as_mut_slice()
+            .par_chunks_mut(n_listed)
+            .enumerate()
+            .for_each(|(j, col)| {
+                for (o, (&(u, v), e)) in col.iter_mut().zip(fine_edges.iter().zip(fine_to_super)) {
+                    *o = match *e {
+                        Some(e) => z[e * d + j],
+                        None => 0.5 * (cells[u as usize * d + j] + cells[v as usize * d + j]),
+                    };
+                }
+            });
+    }
+    (latent, Mat::from_row_slice(n_cells, d, &cells))
 }
 
 /// Every row of `m` scaled to unit L2 norm (a norm below 1e-8 divides by

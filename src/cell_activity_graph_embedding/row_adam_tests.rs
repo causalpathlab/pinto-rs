@@ -64,9 +64,11 @@ fn lazy_adam_matches_dense_adamw_on_the_rows_it_steps_and_leaves_the_rest() {
             // row 2 joins this step, listed first
             let extra = Tensor::from_vec(values(D, 50 + step), (1, D), &dev).unwrap();
             let both = Tensor::cat(&[&extra, &g], 0).unwrap();
-            lazy.step(&[2, 1, 4], &both).unwrap();
+            lazy.step(&[2, 1, 4], None, &both).unwrap();
         } else {
-            lazy.step(&every, &g).unwrap();
+            // the leaf's values passed in, as training passes them
+            let current = lazy.rows(&every).unwrap();
+            lazy.step(&every, Some(&current), &g).unwrap();
         }
     }
     assert_eq!(
@@ -106,13 +108,13 @@ fn duplicate_ids_in_a_step_coalesce() {
     let (a, b, c) = (values(D, 3), values(D, 4), values(D, 5));
     let ac: Vec<f32> = a.iter().zip(&c).map(|(x, y)| x + y).collect();
     let g = |rows: Vec<f32>, n: usize| Tensor::from_vec(rows, (n, D), &dev).unwrap();
-    dup.step(&[3, 1, 3], &g([a, b.clone(), c].concat(), 3))
+    dup.step(&[3, 1, 3], None, &g([a, b.clone(), c].concat(), 3))
         .unwrap();
-    summed.step(&[1, 3], &g([b, ac].concat(), 2)).unwrap();
+    summed.step(&[1, 3], None, &g([b, ac].concat(), 2)).unwrap();
     assert_eq!(bits(dup.table()), bits(summed.table()));
     let next = g(values(2 * D, 6), 2);
-    dup.step(&[1, 3], &next).unwrap();
-    summed.step(&[1, 3], &next).unwrap();
+    dup.step(&[1, 3], None, &next).unwrap();
+    summed.step(&[1, 3], None, &next).unwrap();
     assert_eq!(
         bits(dup.table()),
         bits(summed.table()),

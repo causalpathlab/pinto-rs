@@ -105,8 +105,16 @@ impl RowAdam {
     }
 
     /// The table as it stands.
+    #[cfg(test)]
     pub fn table(&self) -> &Tensor {
         &self.table
+    }
+
+    /// The table, the moments freed first.
+    pub fn into_table(self) -> Tensor {
+        let Self { table, m, v, .. } = self;
+        drop((m, v));
+        table
     }
 
     /// The moments `(m, v)` as they stand.
@@ -129,17 +137,24 @@ impl RowAdam {
 
     /// One lazy Adam step of rows `ids` from their gradient `grad`
     /// (`[ids.len() × D]`, on the compute device). A row named twice is
-    /// stepped once, by the sum of its gradients.
-    pub fn step(&mut self, ids: &[u32], grad: &Tensor) -> Result<()> {
+    /// stepped once, by the sum of its gradients. `current`: the rows'
+    /// values as [`Self::rows`] gave them (the step's leaf), so they are not
+    /// read again; `None`, or ids that repeat, reads them from the table.
+    pub fn step(&mut self, ids: &[u32], current: Option<&Tensor>, grad: &Tensor) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
-        let (rows, grad) = coalesce(ids, grad)?;
+        let (rows, grad, repeated) = coalesce(ids, grad)?;
+        let theta = match current {
+            Some(t) if !repeated => t.detach(),
+            _ => self.gather(&self.table, &rows)?,
+        };
+        let rows = &rows[..];
         let p = &self.params;
         let (beta1, beta2) = (p.beta1, p.beta2);
         let lr_lambda = p.lr * p.weight_decay;
         let (mut scale_m, mut scale_v) = (Vec::with_capacity(rows.len()), Vec::new());
-        for &r in &rows {
+        for &r in rows {
             let t = &mut self.steps[r as usize];
             *t += 1;
             scale_m.push((1f64 / (1f64 - beta1.powi(*t as i32))) as f32);
@@ -148,9 +163,8 @@ impl RowAdam {
         let n = rows.len();
         let scale_m = Tensor::from_vec(scale_m, (n, 1), &self.compute)?;
         let scale_v = Tensor::from_vec(scale_v, (n, 1), &self.compute)?;
-        let theta = self.gather(&self.table, &rows)?;
-        let m = self.gather(&self.m, &rows)?;
-        let v = self.gather(&self.v, &rows)?;
+        let m = self.gather(&self.m, rows)?;
+        let v = self.gather(&self.v, rows)?;
         // candle's `AdamW::step`, row-wise
         let next_m = ((m * beta1)? + (&grad * (1.0 - beta1))?)?;
         let next_v = ((v * beta2)? + (grad.sqr()? * (1.0 - beta2))?)?;
@@ -160,7 +174,7 @@ impl RowAdam {
         let adjusted_grad = (m_hat / (v_hat.sqrt()? + p.eps)?)?;
         let next_theta = (next_theta - (adjusted_grad * p.lr)?)?;
         let store = self.table.device().clone();
-        let idx = Tensor::from_slice(&rows, n, &store)?;
+        let idx = Tensor::from_slice(rows, n, &store)?;
         set_rows(&self.table, &idx, &next_theta.to_device(&store)?)?;
         set_rows(&self.m, &idx, &next_m.to_device(&store)?)?;
         set_rows(&self.v, &idx, &next_v.to_device(&store)?)?;
@@ -168,14 +182,14 @@ impl RowAdam {
     }
 }
 
-/// `ids` deduplicated (ascending) and `grad`'s rows summed onto them; the
-/// input as it is when no id repeats.
-fn coalesce(ids: &[u32], grad: &Tensor) -> Result<(Vec<u32>, Tensor)> {
+/// `ids` deduplicated (ascending) and `grad`'s rows summed onto them, and
+/// whether any repeated; the input as it is when none does.
+fn coalesce(ids: &[u32], grad: &Tensor) -> Result<(Vec<u32>, Tensor, bool)> {
     let mut uniq = ids.to_vec();
     uniq.sort_unstable();
     uniq.dedup();
     if uniq.len() == ids.len() {
-        return Ok((ids.to_vec(), grad.clone()));
+        return Ok((ids.to_vec(), grad.clone(), false));
     }
     let inv: Vec<u32> = ids
         .iter()
@@ -187,7 +201,7 @@ fn coalesce(ids: &[u32], grad: &Tensor) -> Result<(Vec<u32>, Tensor)> {
         &Tensor::from_vec(inv, ids.len(), dev)?,
         grad,
     )?;
-    Ok((uniq, summed))
+    Ok((uniq, summed, true))
 }
 
 /// `table[ids[i]] = src[i]`, in place, for a contiguous f32 `table`
@@ -290,8 +304,14 @@ impl InplaceOp3 for SetRows {
         if total == 0 {
             return Ok(());
         }
-        let dev = table.device().clone();
+        // one thread per element written: a step's rows, never the table
         let n_rows = (t1 - t0) / d.max(1);
+        if total > u32::MAX as usize || n_rows > u32::MAX as usize {
+            return Err(legume_numeric::candle::candle_core::Error::Msg(format!(
+                "set_rows: {total} elements in one write, or {n_rows} rows"
+            )));
+        }
+        let dev = table.device().clone();
         let ids_slice = ids.as_cuda_slice::<u32>()?.slice(i0..i1);
         let src_slice = src.as_cuda_slice::<f32>()?.slice(s0..s1);
         let mut out = table.as_cuda_slice_mut::<f32>()?.slice_mut(t0..t1);
@@ -317,12 +337,14 @@ extern "C" __global__ void set_rows_f32(
     const unsigned int *ids, const float *src, float *out,
     const unsigned int total, const unsigned int d, const unsigned int n_rows)
 {
+    // the write is a step's rows (32-bit), the table offset 64-bit, so a
+    // table past 2^32 elements is addressed whole
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= total) return;
     unsigned int r = i / d;
     unsigned int row = ids[r];
     if (row >= n_rows) return;
-    out[row * d + (i - r * d)] = src[i];
+    out[(unsigned long long)row * d + (i - r * d)] = src[i];
 }
 "#;
 

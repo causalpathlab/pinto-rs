@@ -180,6 +180,22 @@ pub struct ScoringArgs {
     pub null_from: Option<Vec<Box<str>>>,
 }
 
+/// Whether the cage model at prefix `model` (its manifest `run`) is a
+/// cage-cell one: its manifest says so, or, without a manifest, its files
+/// do: a pair latent with neither the pair encoder nor the pseudobulk
+/// table every cage run writes.
+fn is_cage_cell(model: &str, run: Option<&Run>) -> bool {
+    match run {
+        Some(r) => r.meta.cell_level,
+        None => {
+            let has = |suffix: &str| Path::new(&format!("{model}.{suffix}")).is_file();
+            has("latent.parquet")
+                && !has("pair_encoder.safetensors")
+                && !has("pb_embedding.parquet")
+        }
+    }
+}
+
 /// The model's pair encoder, `{model}.pair_encoder.safetensors`: the one map
 /// that places a sample's pairs and cells, so a model saved without it cannot
 /// be predicted from.
@@ -419,7 +435,7 @@ pub fn predict_cage(
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     anyhow::ensure!(
-        !run.is_some_and(|r| r.meta.cell_level),
+        !is_cage_cell(&args.model, run),
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );

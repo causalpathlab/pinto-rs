@@ -873,8 +873,7 @@ pub fn fit_cell_activity_graph_embedding(
         // cage-cell trained each pair's row itself; a cell is the mean of
         // its pairs'. Nothing is fitted again, so there is no pair encoder.
         (Some(z), Some(fine_to_super)) => {
-            let z_host = pairs::table_to_host(&z)?;
-            drop(z);
+            let z_host = pairs::table_to_host(z)?;
             pairs::pair_outputs(
                 &z_host,
                 embedding_dim,

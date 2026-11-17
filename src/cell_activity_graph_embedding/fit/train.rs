@@ -25,9 +25,10 @@ use graph_embedding_util::model::JointEmbedModel;
 use graph_embedding_util::stop::setup_stop_handler;
 use graph_embedding_util::FeatureModuleConfig;
 use legume_numeric::candle::candle_core::backprop::GradStore;
-use legume_numeric::candle::candle_core::{DType, Device, Tensor, Var};
+use legume_numeric::candle::candle_core::{Device, Tensor, Var};
 use legume_numeric::candle::candle_nn::AdamW;
 use legume_numeric::candle::fast_index::gather_rows;
+use legume_numeric::candle::grad_clip::clip_grad_global_norm;
 use legume_numeric::candle::lora::LoraPlus;
 use legume_numeric::candle::vae::{clip_and_step_dense_all, PhaseTimers};
 use rand::rngs::SmallRng;
@@ -228,10 +229,10 @@ fn chunk_loss(
     })
 }
 
-/// [`clip_and_step_dense_all`] with the step's pair rows inside the global
-/// norm: `leaf` is outside every optimiser, so its gradient is clipped
-/// with the rest (the same sorted sum and scale), taken out of the store
-/// and returned for the row optimiser. `None`: the norm was not finite and
+/// The global-norm clip and step with the step's pair rows inside the
+/// norm: `leaf` is outside every optimiser, so its gradient is clipped with
+/// the rest (legume's `clip_grad_global_norm`), taken out of the store and
+/// returned for the row optimiser. `None`: the norm was not finite and
 /// nothing stepped.
 fn clip_and_step_with_rows(
     adams: &mut [AdamW],
@@ -239,30 +240,9 @@ fn clip_and_step_with_rows(
     max_norm: f64,
     leaf: &Var,
 ) -> anyhow::Result<Option<Tensor>> {
-    if max_norm > 0.0 {
-        let ids: Vec<_> = grads.get_ids().copied().collect();
-        let parts: Vec<Tensor> = ids
-            .iter()
-            .filter_map(|id| grads.get_id(*id))
-            .map(|g| g.sqr()?.sum_all()?.to_dtype(DType::F32))
-            .collect::<legume_numeric::candle::candle_core::Result<_>>()?;
-        let sumsq: f64 = if parts.is_empty() {
-            0.0
-        } else {
-            let mut sums: Vec<f32> = Tensor::stack(&parts, 0)?.to_vec1()?;
-            sums.sort_by(f32::total_cmp);
-            sums.iter().map(|&x| f64::from(x)).sum()
-        };
-        if !sumsq.is_finite() {
-            return Ok(None);
-        }
-        let scale = (max_norm / (sumsq.sqrt() + 1e-6)).clamp(0.0, 1.0);
-        for id in &ids {
-            if let Some(g) = grads.get_id(*id) {
-                let scaled = g.affine(scale, 0.0)?;
-                grads.insert_id(*id, scaled);
-            }
-        }
+    let norm = clip_grad_global_norm(&mut grads, max_norm)?;
+    if !norm.is_finite() {
+        return Ok(None);
     }
     let row_grad = match grads.remove(leaf.as_tensor()) {
         Some(g) => g,
@@ -498,6 +478,9 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
         .as_ref()
         .map(|p| PairBudget::new(args.pair_updates, p.z.n_rows()));
     let mut steps_taken = 0usize;
+    // The epochs the run expects to take: --epochs, or under cage-cell the
+    // pair budget's, known after the first epoch (and capped by --epochs).
+    let mut planned_epochs = args.epochs;
     let model = &*model;
     let train_bar = new_progress_bar(total_steps as u64).with_message("training steps");
 
@@ -507,16 +490,20 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
 
     // Module warm-up: hold the starting membership for the first epochs, release
     // it afterwards (geu's schedule).
-    let module_run: Option<(usize, ModuleUnits)> = match (module_cfg, module_units) {
+    // Under cage-cell the schedule is set again after the first epoch,
+    // against the epochs the pair budget takes.
+    let mut module_run: Option<(usize, ModuleUnits)> = match (module_cfg, module_units) {
         (Some(gm), Some(units)) => {
             let wu = gm.warmup_epochs_for(args.epochs);
             if let Some(m) = &model.modules {
                 m.set_frozen(wu > 0);
             }
-            info!(
-                "feature modules: membership held for {wu} of {} epochs, then trained",
-                args.epochs
-            );
+            if budget.is_none() {
+                info!(
+                    "feature modules: membership held for {wu} of {} epochs, then trained",
+                    args.epochs
+                );
+            }
             Some((wu, units))
         }
         _ => None,
@@ -723,15 +710,26 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     }
                     // a pair pools its two cells' counts
                     (ModuleUnits::Cells(cells), Some(p)) => {
-                        let ends: Vec<u32> = picks
+                        // each distinct cell read once, then summed per pair
+                        let mut ends: Vec<u32> = picks
                             .iter()
                             .flat_map(|&e| {
                                 let (a, b) = p.edges[e as usize];
                                 [a, b]
                             })
                             .collect();
+                        let slot =
+                            |c: &u32, ends: &[u32]| ends.binary_search(c).expect("listed") as u32;
+                        let pairs_ends: Vec<u32> = ends.clone();
+                        ends.sort_unstable();
+                        ends.dedup();
+                        let (left, right): (Vec<u32>, Vec<u32>) = pairs_ends
+                            .chunks(2)
+                            .map(|ab| (slot(&ab[0], &ends), slot(&ab[1], &ends)))
+                            .unzip();
                         let pooled = cells.pool(&ends, &pi_masked)?;
-                        pooled.reshape((u, 2, pooled.dim(1)?))?.sum(1)?
+                        let at = |i: Vec<u32>| Tensor::from_vec(i, u, dev);
+                        (gather_rows(&pooled, &at(left)?)? + gather_rows(&pooled, &at(right)?)?)?
                     }
                     (ModuleUnits::Cells(cells), None) => cells.pool(picks, &pi_masked)?,
                 };
@@ -763,7 +761,9 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                 (Some(step), Some(table)) => {
                     match clip_and_step_with_rows(adams, grads, f64::from(GRAD_CLIP), &step.leaf)? {
                         Some(row_grad) => {
-                            table.z.step(&step.ids, &row_grad)?;
+                            table
+                                .z
+                                .step(&step.ids, Some(step.leaf.as_tensor()), &row_grad)?;
                             true
                         }
                         None => false,
@@ -826,6 +826,15 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
                     args.epochs
                 );
                 train_bar.set_length(steps.min(total_steps) as u64);
+                planned_epochs = steps.div_ceil(steps_per_epoch.max(1)).min(args.epochs);
+                if let (Some(gm), Some((wu, _))) = (module_cfg, module_run.as_mut()) {
+                    *wu = gm.warmup_epochs_for(planned_epochs);
+                    info!(
+                        "feature modules: membership held for {wu} of {planned_epochs} \
+                         expected epochs, then trained",
+                        wu = *wu
+                    );
+                }
             }
         }
 
@@ -852,13 +861,22 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             (f64::NAN, vec![0.0; n_chain_levels])
         };
         info!(
-            "epoch {}: mean loss = {:.4e} (per-level: {:?}), samples = {}, skipped pairs = {}",
-            epoch, mean_loss, mean_per_level, sample_count, skip_count
+            "epoch {} of {planned_epochs}{}: mean loss = {:.4e} (per-level: {:?}), samples = {}, skipped pairs = {}",
+            epoch,
+            budget.as_ref().map_or(String::new(), |b| format!(
+                " ({:.1} of {} updates per pair)",
+                b.mean_updates(),
+                args.pair_updates
+            )),
+            mean_loss,
+            mean_per_level,
+            sample_count,
+            skip_count
         );
         if let Some(m) = &model.modules {
             let pi_host: Vec<f32> = m.membership()?.detach().flatten_all()?.to_vec1()?;
             // cage draws its negatives over pseudobulks, so no within-module fallback.
-            log_membership_diagnostics(m, &pi_host, epoch, args.epochs, 0)?;
+            log_membership_diagnostics(m, &pi_host, epoch, planned_epochs, 0)?;
         }
 
         // Pair-term magnitude: the collapse detector. If this decays toward
@@ -872,10 +890,16 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             info!("epoch {}: mean |pair| = {:.4e}", epoch, pair_mean);
             // The loss is the bar's one `key=value`: the score `pinto run`
             // draws, a NaN loss included.
+            let updates = budget.as_ref().map_or(String::new(), |b| {
+                format!(
+                    " updates/pair {:.0}/{}",
+                    b.mean_updates(),
+                    args.pair_updates
+                )
+            });
             train_bar.set_message(format!(
-                "training epoch {}/{} loss={:.4e} |pair| {:.2e}",
+                "training epoch {}/{planned_epochs}{updates} loss={:.4e} |pair| {:.2e}",
                 epoch + 1,
-                args.epochs,
                 mean_loss,
                 pair_mean
             ));
@@ -955,7 +979,7 @@ pub(super) fn train(inputs: TrainInputs<'_>) -> anyhow::Result<Vec<ScoreEntry>> 
             "{}/{} optimizer steps were SKIPPED for non-finite gradients — those \
              steps moved no parameters. Lower --lr if this is a \
              large fraction.",
-            skipped_steps, total_steps
+            skipped_steps, steps_taken
         );
     }
 
