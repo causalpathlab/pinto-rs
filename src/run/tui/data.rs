@@ -1,7 +1,8 @@
 //! The data files a session fits, with the coordinate and batch files of
 //! each.
 
-use crate::tui::browse::{is_data, name_then, size_of, Header, Wanted};
+use legume_tui::browse::{Header, Wanted};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -49,13 +50,7 @@ impl Wanted for Pick {
                 "label files (.txt, .tsv, .csv, gzipped too)",
             ),
         };
-        Header {
-            title: title.into(),
-            what,
-            star: None,
-            verb: "take",
-            columns: None,
-        }
+        Header::new(title, what)
     }
 
     fn file(&self, path: &Path, name: &str) -> Option<String> {
@@ -64,20 +59,25 @@ impl Wanted for Pick {
             Pick::Coord => is_coord(name),
             Pick::Batch => is_batch(name),
         };
-        wanted.then(|| size_of(path))
+        wanted.then(|| legume_tui::browse::size(path).unwrap_or_default())
     }
 
     fn store(&self, _path: &Path, _name: &str) -> Option<String> {
         (*self != Pick::Batch).then(String::new)
     }
 
-    fn row(&self, name: &str, size: &String, name_w: usize) -> String {
-        name_then(name, size, name_w)
+    fn describe<'a>(&self, size: &'a String) -> Cow<'a, str> {
+        Cow::Borrowed(size)
     }
 
     fn many(&self) -> bool {
         true
     }
+}
+
+/// Whether `name` is a backend pinto reads (`.zarr`, `.zarr.zip`, `.h5`).
+pub(crate) fn is_data(name: &str) -> bool {
+    data_beans::hdf5_io::strip_backend_suffix(name) != name
 }
 
 /// Endings of batch label files: plain or gzipped text.

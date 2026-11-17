@@ -8,8 +8,8 @@ use super::super::round::round_name;
 use super::browse::Panels;
 use super::relabel::Staging;
 use super::{App, Show};
-use crate::tui::browse::{Browser, Outcome};
 use crate::tui::style::{self, tail};
+use legume_tui::browse::{Browser, Outcome};
 use legume_tui::save::Field;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style as TStyle;
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// A dialog that takes the keys.
 pub enum Modal {
     /// Choosing a marker panel for `lupin annotate`.
-    Browse(Browser<Panels>),
+    Browse(Box<Browser<Panels>>),
     Prompt(Prompt),
     /// The staged decisions, before they are sent.
     Confirm(Vec<String>),
@@ -226,9 +226,12 @@ impl App<'_> {
 
     fn open_browser(&mut self, dir: PathBuf, known: HashSet<String>) {
         let tag = self.base.run.levels[self.cur].tag.clone();
-        let want = Panels { known, tag };
+        let want = Panels {
+            known: std::sync::Arc::new(known),
+            tag,
+        };
         let dir = lupin::canonical(&dir);
-        self.modal = Some(Modal::Browse(Browser::open(dir, want, None)));
+        self.modal = Some(Modal::Browse(Box::new(Browser::open(dir, want, None))));
         self.need_map = true;
     }
 
@@ -391,7 +394,7 @@ impl App<'_> {
         let mut out = vec![Line::raw("")];
         match modal {
             Modal::Browse(b) => {
-                out.extend(b.lines(room.saturating_sub(1), 45 + more));
+                out.extend(b.lines(room.saturating_sub(1), 45 + more, &crate::tui::style::LOOK));
             }
             Modal::Prompt(p) => {
                 let title = match &p.what {

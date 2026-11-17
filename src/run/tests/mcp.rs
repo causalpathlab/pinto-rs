@@ -650,7 +650,12 @@ fn run_methods_lists_exactly_each_method_s_visible_flags() {
             })
             .map(str::to_string)
             .collect();
-        assert_eq!(listed, shown, "run_methods {name}");
+        // the same flags; the listing groups them by help heading
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        assert_eq!(sorted(listed), sorted(shown), "run_methods {name}");
     }
 }
 

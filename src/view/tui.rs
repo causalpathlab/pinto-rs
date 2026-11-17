@@ -396,6 +396,10 @@ impl<'a> App<'a> {
             }
             self.poll_job(terminal)?;
             self.poll_lra();
+            // a panel browser fills in as its folder is listed
+            if let Some(annotate::Modal::Browse(b)) = &mut self.modal {
+                self.need_panel |= b.poll();
+            }
             self.follow_tick(Some(terminal))?;
             session.status(&self.session_status());
             // After an attach the terminal is asked again, before the

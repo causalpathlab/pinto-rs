@@ -3,21 +3,22 @@
 use super::super::{form, script};
 use super::jobs::{Job, Queue};
 use super::{
-    batch, copy, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
+    batch, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
 };
 use crate::residual::{Plan, ResidualArgs};
-use crate::tui::shown;
-use form::{Field, Kind, Method};
+use form::Method;
+use legume_tui::browse::shown;
+use legume_tui::form::{Field, Kind};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use script::under;
 use std::path::{Path, PathBuf};
 
 impl App {
     pub(super) fn methods_key(&mut self, k: KeyEvent) {
-        let last = self.rows.len() - 1;
+        if legume_tui::keys::list_step(&mut self.method_row, self.rows.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.method_row = self.method_row.saturating_sub(1),
-            KeyCode::Down => self.method_row = (self.method_row + 1).min(last),
             KeyCode::Char(' ') => self.queue_row(self.method_row, !self.rows[self.method_row].on),
             KeyCode::Char('m') => self.next_stage_two(self.method_row),
             KeyCode::Char('o') => {
@@ -185,14 +186,10 @@ impl App {
 
     pub(super) fn params_key(&mut self, k: KeyEvent) {
         let n = self.visible().len();
-        let last = n.saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.field_row, n, &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.field_row = self.field_row.saturating_sub(1),
-            KeyCode::Down => self.field_row = (self.field_row + 1).min(last),
-            KeyCode::PageUp => self.field_row = self.field_row.saturating_sub(10),
-            KeyCode::PageDown => self.field_row = (self.field_row + 10).min(last),
-            KeyCode::Home => self.field_row = 0,
-            KeyCode::End => self.field_row = last,
             KeyCode::Char('[' | ']') => {
                 let ms = self.param_methods();
                 let at = ms.iter().position(|&m| m == self.param_method).unwrap_or(0);
@@ -379,7 +376,7 @@ impl App {
             // even tell which manifest it reads.
             let refused = || {
                 form::check(&self.cli, &job.argv).err().map(|why| {
-                    let who = form::blamed(&why, &form.fields).map(str::to_string);
+                    let who = legume_tui::form::blamed(&why, &form.fields).map(str::to_string);
                     (why, who)
                 })
             };
@@ -527,15 +524,15 @@ impl App {
     }
 
     pub(super) fn confirm_key(&mut self, k: KeyEvent) {
+        let rows = self.confirm_max.get() + 1;
+        if legume_tui::keys::list_step(&mut self.confirm_scroll, rows, &k, false) {
+            return;
+        }
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => self.confirm = None,
-            KeyCode::Up => self.confirm_scroll = self.confirm_scroll.saturating_sub(1),
-            KeyCode::Down => {
-                self.confirm_scroll = (self.confirm_scroll + 1).min(self.confirm_max.get());
-            }
             KeyCode::Char('c') => {
                 let text = self.copy_text();
-                self.message = Some(match copy(&text, self.attached) {
+                self.message = Some(match legume_tui::keys::copy(&text, self.attached) {
                     Ok(how) => format!("commands copied ({how})"),
                     Err(e) => format!("cannot copy: {e}"),
                 });
@@ -543,7 +540,7 @@ impl App {
             // The run key pressed twice at once, or held, stops here: the
             // review it opened is read before it runs. Each repeat starts
             // the wait again, so a held key runs nothing until let go.
-            _ if crate::tui::is_run_key(&k)
+            _ if legume_tui::is_run_key(&k)
                 && self
                     .confirm
                     .as_ref()
@@ -553,7 +550,7 @@ impl App {
                     r.at = std::time::Instant::now();
                 }
             }
-            _ if k.code == KeyCode::Enter || crate::tui::is_run_key(&k) => {
+            _ if k.code == KeyCode::Enter || legume_tui::is_run_key(&k) => {
                 let Some(Review { planned, .. }) = self.confirm.take() else {
                     return;
                 };
@@ -609,7 +606,7 @@ impl App {
             self.message = Some(format!(
                 "{} done and unqueued: {} runs the rest (space queues one again)",
                 done.join(", "),
-                crate::tui::RUN_KEY
+                legume_tui::RUN_KEY
             ));
         }
     }
@@ -723,13 +720,13 @@ fn residual_plan(dir: &Path, a: &ResidualArgs) -> anyhow::Result<Plan> {
     Plan::new(&run, &a)
 }
 
-/// Values of `form`'s flags that name files ([`form::Field::path`]), as
+/// Values of `form`'s flags that name files ([`Field::takes_path`]), as
 /// typed in `here`, rewritten for a run started in `dir`; `--from` names
 /// the run's manifest, given its prefix.
 fn relative_values(form: &mut Method, here: &Path, dir: &Path) {
-    for f in form.fields.iter_mut().filter(|f| f.path) {
+    for f in form.fields.iter_mut().filter(|f| f.takes_path()) {
         let from = f.long == "from";
-        f.map_values(|v| {
+        form::map_values(f, |v| {
             let mut p = here.join(v);
             if from {
                 p = PathBuf::from(crate::util::metadata::run_manifest(&p.to_string_lossy()));

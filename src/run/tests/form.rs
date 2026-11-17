@@ -1,5 +1,6 @@
 use super::*;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use legume_tui::form::{blamed, Kind};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Shape {
@@ -137,15 +138,22 @@ fn changed_rows_reach_the_command_line_as_clap_takes_them() {
         [
             "fit",
             "d.zarr",
-            "--coord=c1.csv",
-            "--batch-files=b1.tsv",
+            "--coord",
+            "c1.csv",
+            "--batch-files",
+            "b1.tsv",
             "--out=o",
-            "--steps=20",
-            "--shape=flat",
+            "--steps",
+            "20",
+            "--shape",
+            "flat",
             "--fast",
-            "--levels=3,4",
-            "--names=a",
-            "--names=b"
+            "--levels",
+            "3,4",
+            "--names",
+            "a",
+            "--names",
+            "b"
         ]
     );
     assert_eq!(check(&cli, &argv), Ok(()));
@@ -187,7 +195,7 @@ fn batch_paths_pass_whole_even_with_spaces() {
         &["my labels/b 1.tsv".into(), "b2.tsv".into()],
         "o",
     );
-    assert_eq!(argv[2], "--batch-files=my labels/b 1.tsv,b2.tsv");
+    assert_eq!(argv[2..4], ["--batch-files", "my labels/b 1.tsv,b2.tsv"]);
 }
 
 #[test]
@@ -196,7 +204,7 @@ fn a_method_found_by_its_alias_keeps_it_and_runs_by_its_name() {
     let m = Method::new(&cli, "f").unwrap();
     assert_eq!(m.name, "f");
     let argv = m.argv(&["d.zarr".into()], &["c.csv".into()], &[], "o");
-    assert_eq!(argv[..3], ["fit", "d.zarr", "--coord=c.csv"]);
+    assert_eq!(argv[..4], ["fit", "d.zarr", "--coord", "c.csv"]);
     assert_eq!(check(&cli, &argv), Ok(()));
     assert!(Method::new(&cli, "nope").is_err());
 }

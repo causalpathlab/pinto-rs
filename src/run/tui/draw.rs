@@ -4,8 +4,8 @@
 use super::batch;
 use super::jobs::State;
 use super::{App, Kind, Review, Screen, Target};
-use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
+use legume_tui::browse::shown;
 use legume_tui::child::{gauge, Bar};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -48,7 +48,11 @@ impl App {
         if let Some(b) = &self.browser {
             // Inside the popup's border.
             let width = usize::from(area.width.min(110)).saturating_sub(2);
-            let lines = b.lines(usize::from(area.height).saturating_sub(2), width);
+            let lines = b.lines(
+                usize::from(area.height).saturating_sub(2),
+                width,
+                &crate::tui::style::LOOK,
+            );
             popup(f, area, lines, 110);
         } else if self.confirm.is_some() {
             let rows = usize::from(area.height).saturating_sub(4);
@@ -184,7 +188,7 @@ impl App {
                 "tab / shift-tab / 1-4 screens"
             }
             .to_string(),
-            format!("{} review and run", crate::tui::RUN_KEY),
+            format!("{} review and run", legume_tui::RUN_KEY),
             "q quit".to_string(),
         ];
         // The detach and switch keys, in a session.
@@ -541,7 +545,7 @@ impl App {
         }
         let blamed = super::form::check(&self.cli, &argv)
             .err()
-            .and_then(|why| super::form::blamed(&why, &form.fields).map(str::to_string));
+            .and_then(|why| legume_tui::form::blamed(&why, &form.fields).map(str::to_string));
         *self.blame.borrow_mut() = Some((m, argv, blamed.clone()));
         blamed
     }
@@ -665,7 +669,7 @@ impl App {
             } else {
                 format!(
                     " enter or {} run   c copy the commands   ↑ ↓ scroll   esc back",
-                    crate::tui::RUN_KEY
+                    legume_tui::RUN_KEY
                 )
             },
             dim(),

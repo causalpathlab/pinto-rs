@@ -365,7 +365,7 @@ fn run_job(
         Said::Line(format!(
             "── {} · {}",
             job.method,
-            crate::tui::shown(&job.script)
+            legume_tui::browse::shown(&job.script)
         )),
     );
     command.args(&job.argv).current_dir(&job.dir);

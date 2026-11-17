@@ -3,7 +3,7 @@
 use super::super::script::under;
 use super::data::{Pair, Pick, Side};
 use super::{data, free_out, App, Editor, Target, Task};
-use crate::tui::browse::{Browser, Outcome};
+use legume_tui::browse::{Browser, Outcome};
 use legume_tui::save::Field as TextField;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::path::{Path, PathBuf};

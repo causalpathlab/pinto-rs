@@ -173,17 +173,15 @@ impl App<'_> {
         if chord {
             return Ok(false);
         }
+        if let Some(by) = legume_tui::keys::list_delta(&key, false).filter(|_| self.lra.is_some()) {
+            self.move_cursor(by);
+            return Ok(true);
+        }
         match key.code {
             KeyCode::Char('I') | KeyCode::Esc => self.leave_lra(),
             KeyCode::Char('L') => self.start_lra(),
             KeyCode::Char('X') if self.lra_job.is_some() => self.stop_lra(),
             _ if self.lra.is_none() => return Ok(false),
-            KeyCode::Up => self.move_cursor(-1),
-            KeyCode::Down => self.move_cursor(1),
-            KeyCode::PageUp => self.move_cursor(-10),
-            KeyCode::PageDown => self.move_cursor(10),
-            KeyCode::Home => self.move_cursor(isize::MIN / 2),
-            KeyCode::End => self.move_cursor(isize::MAX / 2),
             KeyCode::Char(' ' | 'm') => self.mark_pair(),
             KeyCode::Char('M') => self.mark_shown(),
             KeyCode::Char('v') => self.step_verdict(1),

@@ -116,8 +116,10 @@ fn queued_methods_share_the_data_and_write_their_own_out() {
                 p.job.method.clone(),
                 "d1.zarr.zip".into(),
                 "d2.zarr.zip".into(),
-                "--coord=c1.csv,c2.csv".into(),
-                "--batch-files=b1.tsv,b2.tsv".into(),
+                "--coord".into(),
+                "c1.csv,c2.csv".into(),
+                "--batch-files".into(),
+                "b1.tsv,b2.tsv".into(),
                 format!("--out={}", p.job.method)
             ]
         );
@@ -767,21 +769,6 @@ fn v_opens_the_run_as_this_session_was_asked_to() {
 }
 
 #[test]
-fn nothing_is_written_to_a_terminal_that_is_not_there() {
-    // Without pbcopy, the copy goes through the terminal: refused while
-    // detached rather than written into nothing.
-    if std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
-    {
-        return;
-    }
-    let e = copy("text", false).unwrap_err();
-    assert!(e.to_string().contains("no terminal"), "{e}");
-}
-
-#[test]
 fn a_double_tap_of_the_run_key_stops_at_the_review() {
     // ctrl+r opens the review and runs from it, as in senna; pressed twice
     // at once, or held, it must not skip the review it opened.
@@ -913,10 +900,14 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
         [
             "lra",
             "--out=lra",
-            "--from=../res/run.pinto.json",
-            "--seed=7",
-            "--lr-pairs=../pairs.tsv",
-            "--only=L1:R1,L2"
+            "--from",
+            "../res/run.pinto.json",
+            "--seed",
+            "7",
+            "--lr-pairs",
+            "../pairs.tsv",
+            "--only",
+            "L1:R1,L2"
         ]
     );
     assert_eq!(j.manifest(), j.dir.join("lra.lra.only-l1-r1+l2.parquet"));
@@ -952,7 +943,13 @@ fn lra_on_a_run_is_set_up_with_its_flags() {
     assert!(p.problem.is_none(), "{:?}", p.problem);
     assert_eq!(
         p.job.argv,
-        ["lra", "simulate", "--out=sim", "--from=res/run.pinto.json"]
+        [
+            "lra",
+            "simulate",
+            "--out=sim",
+            "--from",
+            "res/run.pinto.json"
+        ]
     );
     assert_eq!(p.job.manifest(), here.join("sim.lra-simulate.parquet"));
     // A table there already is in the way.
@@ -1032,10 +1029,14 @@ fn set_flag(a: &mut App, m: usize, long: &str, v: &str) {
     f.value = v.into();
 }
 
-/// The value `flag` is given in `argv`, as `--flag=value`.
+/// The value `flag` is given in `argv`, as `--flag value` or `--flag=value`.
 fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
     argv.iter()
-        .find_map(|w| w.strip_prefix(flag)?.strip_prefix('='))
+        .enumerate()
+        .find_map(|(i, w)| match w.strip_prefix(flag)? {
+            "" => argv.get(i + 1).map(String::as_str),
+            rest => rest.strip_prefix('='),
+        })
 }
 
 /// The residual row `res` given what it needs to run: `--from res/fit
@@ -1155,8 +1156,10 @@ fn a_residual_sets_up_a_stage_two_fit_on_its_files() {
             "apply".to_string(),
             "residual".to_string(),
             format!("--out={}", a.rows[res].out),
-            "--from=res/fit.pinto.json".into(),
-            "--residual=subtract".into()
+            "--from".into(),
+            "res/fit.pinto.json".into(),
+            "--residual".into(),
+            "subtract".into()
         ]
     );
     // Done when its residual.json is there.
@@ -1344,7 +1347,7 @@ fn the_copied_commands_replay_the_residual_then_stage_two() {
     let done = &a.confirm.as_ref().unwrap().planned[0].job.done_name();
     let guard = format!("[ -f {} ] && pinto fit dsvd ", script::quote(done));
     assert!(
-        lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names=cx,cy"),
+        lines[1].starts_with(&guard) && lines[1].contains("--coord-column-names cx,cy"),
         "{text}"
     );
     let planned = &a.confirm.as_ref().unwrap().planned;

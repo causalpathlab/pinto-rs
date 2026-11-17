@@ -1,8 +1,7 @@
 //! What the terminal front ends, `pinto view` and `pinto run`, share: how
-//! text and popups look, a file browser, and how the programs they start
-//! run in their session.
+//! text and popups look, and how the programs they start run in their
+//! session. Their file browser is legume-tui's ([`legume_tui::browse`]).
 
-pub(crate) mod browse;
 pub(crate) mod style;
 
 use std::path::Path;
@@ -93,12 +92,7 @@ pub(crate) const TOOL: legume_tui::Tool =
 /// ([`legume_tui::Session::keyboard_enhanced`]), and the mouse as asked.
 /// The session turns them on again after every attach.
 pub(crate) fn modes(mouse: legume_tui::Mouse) -> legume_tui::Modes {
-    use ratatui::crossterm::event::KeyboardEnhancementFlags;
-    legume_tui::Modes::new()
-        .mouse(mouse)
-        .keyboard_enhancement(legume_tui::Keyboard::IfSupported(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))
+    legume_tui::Modes::disambiguated().mouse(mouse)
 }
 
 /// The detach and switch keys as the help lists them, the key in lower
@@ -135,58 +129,11 @@ pub fn shift_enter(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT)
 }
 
-/// The key that runs what a screen set up, as in senna: ctrl+r, which
-/// every terminal passes on as it is.
-pub(crate) const RUN_KEY: &str = "ctrl+r";
-
-/// Whether `k` is [`RUN_KEY`].
-#[must_use]
-pub(crate) fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-    k.code == KeyCode::Char('r') && k.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-/// Run `f` on the whole terminal of `session`, its `modes` on, and give
-/// the terminal back however it ends. Logging is off meanwhile: log lines
-/// would land over the screen. An error it ends with is held where it is
-/// seen ([`legume_tui::Session::hold_error`]): drawn until a terminal
-/// attaches, or left for whoever looks next.
-pub fn with_terminal<T>(
-    session: &legume_tui::Session,
-    modes: legume_tui::Modes,
-    f: impl FnOnce(&mut ratatui::DefaultTerminal) -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    let _quiet = legume_tui::logs::quiet();
-    let mut terminal = session.terminal_with(modes)?;
-    let out = f(&mut terminal);
-    if let Err(e) = &out {
-        let _ = session.hold_error(&mut terminal, e);
-    }
-    session.restore();
-    out
-}
-
 /// The last component of `path`, or an empty string.
 #[must_use]
 pub fn name(path: &Path) -> String {
     path.file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-}
-
-/// `p` relative to the working directory when it is under it.
-#[must_use]
-pub fn relative(p: &Path) -> std::path::PathBuf {
-    std::env::current_dir()
-        .ok()
-        .and_then(|cwd| p.strip_prefix(cwd).ok().map(Path::to_path_buf))
-        .filter(|r| !r.as_os_str().is_empty())
-        .unwrap_or_else(|| p.to_path_buf())
-}
-
-/// A path as shown: relative to the working directory when it is under it.
-#[must_use]
-pub fn shown(p: &Path) -> String {
-    relative(p).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]

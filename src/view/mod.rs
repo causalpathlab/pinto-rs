@@ -117,7 +117,7 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     let session = crate::tui::TOOL.session("view", &args.session.options(args.prefix.is_some()))?;
     // One screen for the run browser and the view after it.
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
-    crate::tui::with_terminal(&session, modes, |terminal| {
+    session.with_terminal(modes, |terminal| {
         let picked;
         let args = match &args.prefix {
             Some(_) => args,

@@ -10,11 +10,12 @@ mod pick;
 mod plan;
 
 use super::{form, script};
-use crate::tui::browse::Browser;
-use crate::tui::shown;
 use data::{Pair, Pick};
-use form::{Kind, Method};
+use form::Method;
 use jobs::{Job, Queue};
+use legume_tui::browse::shown;
+use legume_tui::browse::Browser;
+use legume_tui::form::Kind;
 use legume_tui::save::Field as TextField;
 use legume_tui::Round;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -307,7 +308,7 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
     let session = crate::tui::TOOL.session("run", &args.session())?;
     let mut app = App::new(cli, args.start())?;
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
-    let ended = crate::tui::with_terminal(&session, modes, |terminal| {
+    let ended = session.with_terminal(modes, |terminal| {
         let result = app.screens_loop(&session, terminal);
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
@@ -353,7 +354,8 @@ impl App {
             // Redraw often only while something changes on its own.
             // Within legume-tui's grace, so a bar its fit cleared leaves
             // the screen on time.
-            let wait = if self.running() || self.describing > 0 {
+            let listing = self.browser.as_ref().is_some_and(|b| b.listing().is_some());
+            let wait = if self.running() || self.describing > 0 || listing {
                 Duration::from_millis(200).min(legume_tui::child::GRACE)
             } else {
                 Duration::from_secs(60)
@@ -491,7 +493,7 @@ impl App {
                     self.screen = *s;
                 }
             }
-            _ if crate::tui::is_run_key(&k) => self.open_confirm(),
+            _ if legume_tui::is_run_key(&k) => self.open_confirm(),
             KeyCode::Char('q') => {
                 if self.running() {
                     self.message =
@@ -511,6 +513,9 @@ impl App {
     /// files not read yet.
     fn poll(&mut self) {
         self.settle();
+        if let Some(b) = &mut self.browser {
+            b.poll();
+        }
         while let Ok(found) = self.found.try_recv() {
             self.describing = self.describing.saturating_sub(1);
             match found {
@@ -561,12 +566,11 @@ impl App {
         let n = self.pairs[l.row]
             .label_counts()
             .map_or(0, std::collections::BTreeMap::len);
+        if legume_tui::keys::list_step(&mut l.cursor, n, &k, false) {
+            return;
+        }
         match k.code {
             KeyCode::Esc | KeyCode::Char('q' | 'e') => self.labels = None,
-            KeyCode::Up => l.cursor = l.cursor.saturating_sub(1),
-            KeyCode::Down => l.cursor = (l.cursor + 1).min(n.saturating_sub(1)),
-            KeyCode::PageUp => l.cursor = l.cursor.saturating_sub(10),
-            KeyCode::PageDown => l.cursor = (l.cursor + 10).min(n.saturating_sub(1)),
             KeyCode::Enter => {
                 let (row, cursor) = (l.row, l.cursor);
                 if let Some(label) = label_at(&self.pairs[row], cursor) {
@@ -607,9 +611,10 @@ impl App {
 
     fn data_key(&mut self, k: KeyEvent) {
         let last = self.pairs.len().saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.pair_row, self.pairs.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.pair_row = self.pair_row.saturating_sub(1),
-            KeyCode::Down => self.pair_row = (self.pair_row + 1).min(last),
             KeyCode::Char('a') => self.browse(Pick::Data),
             KeyCode::Char('c' | 'b' | 'n' | 'e' | 'x' | 'X' | 'd') if self.pairs.is_empty() => {
                 self.message = Some("no data files yet: a adds some".into());
@@ -684,9 +689,10 @@ impl App {
     fn run_key(&mut self, k: KeyEvent) {
         let Some(q) = &self.queue else { return };
         let last = q.jobs.len().saturating_sub(1);
+        if legume_tui::keys::list_step(&mut self.job_row, q.jobs.len(), &k, false) {
+            return;
+        }
         match k.code {
-            KeyCode::Up => self.job_row = self.job_row.saturating_sub(1),
-            KeyCode::Down => self.job_row = (self.job_row + 1).min(last),
             KeyCode::Char('s') => {
                 q.stop();
                 self.message = Some("stopping".into());
@@ -773,31 +779,6 @@ pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .chain((2..).map(|k| format!("{base}-{k}")))
         .find(|p| !taken(p))
         .unwrap_or_else(|| base.to_string())
-}
-
-/// Put `text` on the clipboard: `pbcopy` where there is one, else the
-/// terminal's OSC 52, when one is `attached`. Says which.
-fn copy(text: &str, attached: bool) -> anyhow::Result<&'static str> {
-    use std::io::Write;
-    if let Ok(mut c) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = c.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
-        }
-        if c.wait()?.success() {
-            return Ok("pbcopy");
-        }
-    }
-    anyhow::ensure!(attached, "no terminal attached");
-    let mut out = std::io::stdout();
-    write!(out, "\x1b]52;c;{}\x07", {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(text)
-    })?;
-    out.flush()?;
-    Ok("terminal clipboard")
 }
 
 #[cfg(test)]
