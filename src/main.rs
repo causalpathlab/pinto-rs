@@ -434,8 +434,11 @@ enum Commands {
                       After training, cells return in EVALUATION only.\n\
                       Every CELL PAIR is placed on the frozen feature embedding.\n\
                       Its pooled counts x_gu + x_gv enter through one statistic,\n\
-                      and a small encoder trained on this run's pairs\n\
-                      maps that statistic to the per-pair latent e_uv in one pass.\n\n\
+                      and a small encoder maps that statistic to the per-pair\n\
+                      latent e_uv in one pass.\n\
+                      The encoder trains on the finest super-cells' pairs, each\n\
+                      thinned at random to a cell pair's depth every epoch,\n\
+                      and then only encodes the cell pairs.\n\n\
                       Clustering those pairs gives link communities.\n\
                       A cell's propensity is its incident-edge fraction.\n\
                       That is the same definition `lc` and `dsvd` use.\n\
@@ -497,6 +500,7 @@ enum Commands {
                       (--feature-modules 0, or --feature-inclusion moran; a warning\n\
                       says so); --chain-levels and --feature-embedding are refused.\n\
                       --embedding-l2 defaults to 0 here.\n\n\
+                      The pair encoder trains on the cell pairs themselves.\n\n\
                       Writes what cage writes; its manifest says `cell_level`.",
         mut_arg("embedding_l2", |a| a.default_value("0")),
         // What cage-cell refuses, or warns does nothing on cells, is off its

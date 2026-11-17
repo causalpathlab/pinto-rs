@@ -45,7 +45,9 @@
 //! through `Σ_g n_g e_g`, `N` and `Σ_g n_g b_g`, three sparse sums — into a
 //! cell code and a small gated mixture turns two codes into the pair code,
 //! trained on this same likelihood and run once over every pair on the
-//! device; its placement is used as it is. Given `e_uv`, the intercept is
+//! device; its placement is used as it is. Under `cage` it trains on the
+//! finest pseudobulks' pairs, thinned to cell-pair depth, and only encodes
+//! the cell pairs ([`TrainOn`]). Given `e_uv`, the intercept is
 //! closed-form (`Σ_g μ_g = N_uv`), so it is never learned.
 
 use crate::util::common::*;
@@ -62,13 +64,30 @@ mod scoring;
 pub use encoder::PairEncoderSpec;
 pub use scoring::PairScore;
 
+/// What a trained encoder trains on.
+#[derive(Debug, Clone, Copy)]
+pub enum TrainOn<'a> {
+    /// The pairs being placed, on their cells' own rows (`cage-cell`).
+    CellPairs,
+    /// The finest pseudobulks (`cage`): each the sum of its cells' rows by
+    /// `cell_to_pb`, and the pseudobulk edges `edges` between them, each
+    /// pair thinned to a depth drawn from the pairs being placed. The cell
+    /// pairs are then only encoded.
+    Pseudobulks {
+        cell_to_pb: &'a [usize],
+        n_pb: usize,
+        edges: &'a [(u32, u32)],
+    },
+}
+
 /// Where the encoder that places the pairs comes from.
 #[derive(Debug, Clone, Copy)]
 pub enum PairSolver<'a> {
-    /// Fit the encoder on this run's pairs, place everything with it, and
-    /// save it to `save_to`.
+    /// Fit the encoder on `on`, place everything with it, and save it to
+    /// `save_to`.
     TrainEncoder {
         spec: &'a PairEncoderSpec,
+        on: TrainOn<'a>,
         dev: &'a Device,
         save_to: &'a str,
     },
@@ -267,8 +286,10 @@ impl PairDictionary {
 /// pull on `e_uv` — no special-casing needed.
 ///
 /// Every cell is read once, in contiguous column blocks, into the corpus the
-/// encoder trains on; every pair is then the merge of two rows and every cell
-/// its own doubled row.
+/// pairs are encoded from (and, under [`TrainOn::CellPairs`], trained on;
+/// under [`TrainOn::Pseudobulks`] the pseudobulk rows are summed from it);
+/// every pair is then the merge of two rows and every cell its own doubled
+/// row.
 pub fn project_pairs(
     data: &SparseIoVec,
     edges: &[(u32, u32)],
@@ -327,11 +348,39 @@ pub fn project_pairs(
     }
     let corpus = build_corpus(data, &dict, batch, axis, args.pair_block)?;
 
-    let (enc, training) = match args.solver {
-        PairSolver::TrainEncoder { spec, dev, save_to } => (
-            encoder::PairEncoder::build(&dict, &corpus, spec, args.seed, dev)?,
-            Some((spec, save_to)),
-        ),
+    let enc = match args.solver {
+        PairSolver::TrainEncoder {
+            spec,
+            on,
+            dev,
+            save_to,
+        } => {
+            let set = match on {
+                TrainOn::CellPairs => encoder::TrainingSet::cells(&corpus, edges),
+                TrainOn::Pseudobulks {
+                    cell_to_pb,
+                    n_pb,
+                    edges: pb_edges,
+                } => encoder::TrainingSet::pseudobulks(
+                    &dict, &corpus, cell_to_pb, n_pb, pb_edges, edges,
+                )?,
+            };
+            let enc = encoder::PairEncoder::build(
+                &dict,
+                &set.moment_rows(args.seed),
+                spec,
+                args.seed,
+                dev,
+            )?;
+            let trained = enc.train(&set, spec, args.seed)?;
+            info!(
+                "Pair encoder: {} steps; held-out NLL/count after {:.4}",
+                trained.steps, trained.nll_per_count
+            );
+            enc.save(save_to)?;
+            info!("Wrote {}", crate::util::staging::final_str(save_to));
+            enc
+        }
         PairSolver::LoadEncoder { path, dev } => {
             let enc = encoder::PairEncoder::load(&dict, path, dev)?;
             info!(
@@ -340,19 +389,10 @@ pub fn project_pairs(
                 enc.n_experts(),
                 enc.ridge()
             );
-            (enc, None)
+            enc
         }
     };
     let stats = enc.corpus_stats(&corpus)?;
-    if let Some((spec, save_to)) = training {
-        let trained = enc.train(&corpus, &stats, edges, spec, args.seed)?;
-        info!(
-            "Pair encoder: {} steps; held-out NLL/count after {:.4}",
-            trained.steps, trained.nll_per_count
-        );
-        enc.save(save_to)?;
-        info!("Wrote {}", crate::util::staging::final_str(save_to));
-    }
     let mut placed =
         enc.encode_all(&corpus, &stats, edges, args.pair_block, encoder::CELL_BLOCK)?;
     // The device copy is not needed by the scoring pass.

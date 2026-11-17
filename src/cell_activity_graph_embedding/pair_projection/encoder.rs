@@ -6,7 +6,10 @@
 //! pairs outnumber cells by an order of magnitude. The map from counts to
 //! that optimum is smooth, so a small encoder trained on the same objective
 //! places every pair in one forward pass, on the device, and its placement
-//! is used as it is.
+//! is used as it is. What it trains on is a [`TrainingSet`]: under `cage`
+//! the finest pseudobulks and their edges, thinned to cell-pair depth, so
+//! the cell pairs are only encoded; under `cage-cell` the cell pairs
+//! themselves.
 //!
 //! The MAP is a function of one statistic. Write `S = Σ_g n_g e_g` for the
 //! count-weighted sum of dictionary rows, `N = Σ_g n_g` for the depth and
@@ -58,6 +61,8 @@ use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::nn::seed_uniform_vars;
 
 mod train;
+pub(crate) mod training_set;
+pub(crate) use training_set::TrainingSet;
 
 ///////////////
 // Constants //
@@ -150,6 +155,11 @@ impl CellRow {
             "a cell profile must be sorted by feature with no duplicates"
         );
         let (features, counts): (Vec<u32>, Vec<f32>) = dict.to_local(profile).into_iter().unzip();
+        Self::from_local(dict, features, counts)
+    }
+
+    /// From counts already on the active axis, sorted by position.
+    pub(crate) fn from_local(dict: &PairDictionary, features: Vec<u32>, counts: Vec<f32>) -> Self {
         let (sums, total, offset) = dict.statistic(&features, &counts);
         Self {
             features,
@@ -439,15 +449,16 @@ struct PairForward {
 
 impl PairEncoder {
     /// An untrained encoder on `dict`, its statistic standardised by the
-    /// corpus, its vars seeded from `seed`.
+    /// moments of `moment_rows` ([`TrainingSet::moment_rows`]: the rows it
+    /// will read in training), its vars seeded from `seed`.
     pub(crate) fn build(
         dict: &PairDictionary,
-        corpus: &[CellRow],
+        moment_rows: &[CellRow],
         spec: &PairEncoderSpec,
         seed: u64,
         dev: &Device,
     ) -> anyhow::Result<Self> {
-        let (mean, std) = stat_moments(dict.d, corpus);
+        let (mean, std) = stat_moments(dict.d, moment_rows);
         let this = Self::construct(
             DeviceDict::new(dict, &mean, &std, dev)?,
             spec.trunk_width,

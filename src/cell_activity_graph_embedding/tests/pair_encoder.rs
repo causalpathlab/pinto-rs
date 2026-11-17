@@ -1,13 +1,15 @@
 //! The encoder on planted data: it is symmetric end to end, a cell does not
 //! move with the block size, a saved encoder reproduces itself, and empty
-//! rows stay at the origin.
+//! rows stay at the origin. And what it trains on: cage's pseudobulk rows
+//! are their cells' sums, and the thinning keeps that many counts.
 
 use super::fixture::*;
+use crate::cell_activity_graph_embedding::pair_projection::encoder::training_set::thin_to;
 use crate::cell_activity_graph_embedding::pair_projection::encoder::{
-    CellRow, CorpusStats, PairEncoder, PairEncoderSpec,
+    CellRow, CorpusStats, PairEncoder, PairEncoderSpec, TrainingSet,
 };
 use crate::cell_activity_graph_embedding::pair_projection::{
-    project_pairs, PairDictionary, PairProjectionArgs, PairSolver,
+    project_pairs, PairDictionary, PairProjectionArgs, PairSolver, TrainOn,
 };
 use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
@@ -105,8 +107,9 @@ fn trained() -> &'static Trained {
         let edges = random_pairs(N_TRAIN_CELLS, 1500, 2);
         let train_spec = spec(1);
         let enc = PairEncoder::build(&dict, &corpus, &train_spec, 7, &Device::Cpu).unwrap();
+        enc.train(&TrainingSet::cells(&corpus, &edges), &train_spec, 7)
+            .unwrap();
         let stats = enc.corpus_stats(&corpus).unwrap();
-        enc.train(&corpus, &stats, &edges, &train_spec, 7).unwrap();
         Trained {
             dict,
             corpus,
@@ -247,6 +250,7 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
         &PairProjectionArgs {
             solver: PairSolver::TrainEncoder {
                 spec: &spec,
+                on: TrainOn::CellPairs,
                 dev: &Device::Cpu,
                 save_to: saved,
             },
@@ -288,4 +292,189 @@ fn the_saved_encoder_reproduces_the_runs_pairs_and_cells() {
         loaded.cells.latent.as_slice()
     );
     assert!(loaded.scores.is_empty());
+}
+
+/////////////////////////////////////////
+// What the encoder trains on under cage //
+/////////////////////////////////////////
+
+/// Pseudobulk `c % N_PB` for cell `c`, and pseudobulk pairs over them.
+const N_PB: usize = 5;
+const PB_EDGES: [(u32, u32); 4] = [(0, 1), (1, 2), (2, 3), (3, 4)];
+
+/// Planted cells, their counts scaled as a batch divisor would, so they are
+/// fractional.
+fn divided_cells(dict: &PairDictionary, n: usize) -> Vec<CellRow> {
+    planted_cells(n, 9)
+        .iter()
+        .map(|(profile, _)| {
+            let divided: Vec<(u32, f32)> = profile.iter().map(|&(g, x)| (g, x / 1.3)).collect();
+            CellRow::from_profile(dict, &divided)
+        })
+        .collect()
+}
+
+#[test]
+fn cage_trains_on_pseudobulk_rows_summed_from_their_cells() {
+    let dict = dictionary();
+    let cells = divided_cells(&dict, 40);
+    let cell_to_pb: Vec<usize> = (0..cells.len()).map(|c| c % N_PB).collect();
+    let cell_edges = random_pairs(cells.len(), 120, 4);
+    let set =
+        TrainingSet::pseudobulks(&dict, &cells, &cell_to_pb, N_PB, &PB_EDGES, &cell_edges).unwrap();
+    // The training rows are the pseudobulks and the pairs theirs, not the cells'.
+    assert_eq!(set.corpus.len(), N_PB);
+    assert_eq!(set.edges, &PB_EDGES[..]);
+    assert!(set.thinning.is_some());
+    for (p, row) in set.corpus.iter().enumerate() {
+        let mut want: std::collections::BTreeMap<u32, f32> = Default::default();
+        let mut want_sums = vec![0f32; DIM];
+        for c in (0..cells.len()).filter(|&c| cell_to_pb[c] == p) {
+            for (&g, &n) in cells[c].features.iter().zip(&cells[c].counts) {
+                *want.entry(g).or_default() += n;
+            }
+            want_sums
+                .iter_mut()
+                .zip(&cells[c].sums)
+                .for_each(|(a, b)| *a += b);
+        }
+        let got: Vec<u32> = row.features.clone();
+        assert_eq!(got, want.keys().copied().collect::<Vec<_>>());
+        for (&n, (_, &w)) in row.counts.iter().zip(&want) {
+            assert!(
+                (n - w).abs() <= 1e-4 * w.max(1.0),
+                "pseudobulk {p}: {n} vs {w}"
+            );
+        }
+        let total: f32 = want.values().sum();
+        assert!((row.total - total).abs() <= 1e-4 * total);
+        for (a, b) in row.sums.iter().zip(&want_sums) {
+            assert!((a - b).abs() <= 1e-3 * b.abs().max(1.0));
+        }
+    }
+
+    // Training reads the pseudobulk rows; a cell pair names a row they do
+    // not have.
+    let spec = spec(1);
+    let moments = set.moment_rows(3);
+    assert_eq!(moments.len(), 2 * PB_EDGES.len());
+    let enc = PairEncoder::build(&dict, &moments, &spec, 3, &Device::Cpu).unwrap();
+    enc.train(&set, &spec, 3).unwrap();
+    let wrong = TrainingSet {
+        edges: &cell_edges,
+        thinning: None,
+        corpus: set.corpus.clone(),
+    };
+    assert!(enc.train(&wrong, &spec, 3).is_err());
+}
+
+#[test]
+fn a_thinned_epoch_is_at_cell_pair_depth() {
+    let dict = dictionary();
+    // Whole counts, so every cell pair's pooled depth is a whole number.
+    let cells: Vec<CellRow> = (0..10u32)
+        .map(|c| CellRow::from_profile(&dict, &[(c, 3.0), (c + 20, 2.0)]))
+        .collect();
+    let cell_to_pb: Vec<usize> = (0..cells.len()).map(|c| c % N_PB).collect();
+    let cell_edges = vec![(0, 1), (2, 3), (4, 5)]; // each pools 10 counts
+    let set =
+        TrainingSet::pseudobulks(&dict, &cells, &cell_to_pb, N_PB, &PB_EDGES, &cell_edges).unwrap();
+    let th = set.thinning.as_ref().unwrap();
+    let all: Vec<usize> = (0..PB_EDGES.len()).collect();
+    let t = set.thinned(th, &all, true, 17);
+    assert_eq!(t.pairs.len(), PB_EDGES.len());
+    for &(a, b) in &t.pairs {
+        let pooled = t.rows[a as usize].total + t.rows[b as usize].total;
+        assert_eq!(pooled, 10.0);
+    }
+    for c in 0..N_PB {
+        assert_eq!(t.rows[t.self_base as usize + c].total, 5.0);
+    }
+    let again = set.thinned(th, &all, true, 17);
+    for (x, y) in t.rows.iter().zip(&again.rows) {
+        assert_eq!((&x.features, &x.counts), (&y.features, &y.counts));
+    }
+}
+
+#[test]
+fn thinning_keeps_the_drawn_depth_sparse_and_within_the_counts() {
+    let dict = dictionary();
+    let u = CellRow::from_profile(&dict, &[(1, 40.0), (5, 7.0), (9, 1.0), (30, 120.0)]);
+    let v = CellRow::from_profile(&dict, &[(5, 3.0), (11, 60.0), (200, 2.0)]);
+    let thin = |target: u64, seed: u64| {
+        let mut rng = StdRng::seed_from_u64(seed);
+        thin_to(&[&u, &v], target, &mut rng)
+    };
+    for target in [0u64, 1, 17, 100, 232] {
+        let parts = thin(target, 5);
+        let kept: f32 = parts.iter().flat_map(|(_, n)| n.iter()).sum();
+        assert_eq!(kept, target as f32);
+        for ((f, n), row) in parts.iter().zip([&u, &v]) {
+            assert!(n.iter().all(|&x| x > 0.0), "a zero is stored");
+            for (g, x) in f.iter().zip(n) {
+                let at = row
+                    .features
+                    .iter()
+                    .position(|h| h == g)
+                    .expect("a kept feature");
+                assert!(*x <= row.counts[at]);
+            }
+        }
+        assert_eq!(parts, thin(target, 5));
+    }
+    // At or beyond the rows' own depth they come back as they are.
+    let whole = thin(u.total as u64 + v.total as u64 + 5, 5);
+    assert_eq!(whole[0], (u.features.clone(), u.counts.clone()));
+    assert_eq!(whole[1], (v.features.clone(), v.counts.clone()));
+
+    // Fractional counts: never above the count rounded up.
+    let f = CellRow::from_profile(&dict, &[(2, 0.4), (3, 5.5), (4, 12.25)]);
+    let mut rng = StdRng::seed_from_u64(1);
+    let parts = thin_to(&[&f], 6, &mut rng);
+    for (g, x) in parts[0].0.iter().zip(&parts[0].1) {
+        let at = f.features.iter().position(|h| h == g).unwrap();
+        assert!(*x <= f.counts[at].ceil());
+    }
+}
+
+#[test]
+fn cage_projection_trains_on_pseudobulks_and_places_every_cell_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let cells = planted_cells(30, 6);
+    let data = planted_data(&dir, &cells).unwrap();
+    let e = dictionary_matrix();
+    let (_, totals) = abundances();
+    let rows: Vec<Box<str>> = (0..N_FEATURES).map(|g| format!("G{g}").into()).collect();
+    let axis = FeatureAxis::resolve_or_identity(&rows).unwrap();
+    let edges = random_pairs(30, 90, 8);
+    let cell_to_pb: Vec<usize> = (0..30).map(|c| c % N_PB).collect();
+    let saved = dir.path().join("pb.pair_encoder.safetensors");
+    let spec = spec(1);
+    let out = project_pairs(
+        &data,
+        &edges,
+        &e,
+        None,
+        &PairProjectionArgs {
+            solver: PairSolver::TrainEncoder {
+                spec: &spec,
+                on: TrainOn::Pseudobulks {
+                    cell_to_pb: &cell_to_pb,
+                    n_pb: N_PB,
+                    edges: &PB_EDGES,
+                },
+                dev: &Device::Cpu,
+                save_to: saved.to_str().unwrap(),
+            },
+            seed: 2,
+            pair_block: 64,
+            eval_features: None,
+            score_pairs: false,
+        },
+        &axis,
+        &totals,
+    )
+    .unwrap();
+    assert_eq!(out.latent.nrows(), edges.len());
+    assert_eq!(out.cells.latent.nrows(), 30);
 }

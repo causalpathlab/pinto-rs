@@ -51,7 +51,7 @@ use crate::cell_activity_graph_embedding::feature_gating::{
 };
 use crate::cell_activity_graph_embedding::pair_projection::{
     project_pairs, CellLatent, PairBatchDivisor, PairEncoderSpec, PairLatent, PairProjectionArgs,
-    PairSolver,
+    PairSolver, TrainOn,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::{
@@ -837,6 +837,17 @@ pub fn fit_cell_activity_graph_embedding(
         &PairProjectionArgs {
             solver: PairSolver::TrainEncoder {
                 spec: &encoder_spec,
+                // cage trains the encoder on its pseudobulks' pairs and only
+                // encodes the cell pairs; cage-cell has no pseudobulks.
+                on: if args.cell_level {
+                    TrainOn::CellPairs
+                } else {
+                    TrainOn::Pseudobulks {
+                        cell_to_pb: &pb_frame.cell_to_finest_pb,
+                        n_pb,
+                        edges: &pb_frame.super_edges,
+                    }
+                },
                 dev: &dev,
                 save_to: &pair_encoder_path,
             },

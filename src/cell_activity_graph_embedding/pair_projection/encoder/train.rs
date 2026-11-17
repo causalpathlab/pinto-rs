@@ -1,7 +1,9 @@
 //! Training the pair encoder, and encoding every pair with it.
 
 use super::super::{CellLatent, PairLatent, SCORE_CLAMP};
-use super::{rows_within_budget, CellRow, CorpusStats, FullStats, PairEncoder, PairEncoderSpec};
+use super::{
+    rows_within_budget, CellRow, CorpusStats, FullStats, PairEncoder, PairEncoderSpec, TrainingSet,
+};
 use crate::util::common::*;
 use legume_numeric::candle::candle_core::Tensor;
 use legume_numeric::candle::candle_nn::{AdamW, Optimizer, ParamsAdamW};
@@ -20,6 +22,9 @@ const GRAD_CLIP: f64 = 5.0;
 const MIN_STEP_PAIRS: usize = 16;
 /// Pairs held out for the evaluation line.
 const CHECK_PAIRS: usize = 2048;
+/// Salt of the evaluation pairs' stream, and of the epochs' thinning.
+const CHECK_SALT: u64 = 0x0043_4845_434b;
+const THIN_SALT: u64 = 0x0054_4849_004e;
 /// Evaluations over a run, about, besides the one before training and the
 /// one after the last epoch.
 const CHECKS_PER_RUN: usize = 8;
@@ -79,16 +84,16 @@ impl PairEncoder {
         Ok(((nll / count.max(1.0)) as f32, pi_mean))
     }
 
-    /// Train on the pairs' likelihood (and the endpoints' own), from the
-    /// current vars; `stats` is [`Self::corpus_stats`] of `corpus`.
+    /// Train on the set's pairs' likelihood (and the endpoints' own), from
+    /// the current vars. A thinned set is drawn afresh each epoch, and its
+    /// evaluation pairs once.
     pub(crate) fn train(
         &self,
-        corpus: &[CellRow],
-        stats: &CorpusStats,
-        edges: &[(u32, u32)],
+        set: &TrainingSet<'_>,
         spec: &PairEncoderSpec,
         seed: u64,
     ) -> anyhow::Result<TrainStats> {
+        let (corpus, edges): (&[CellRow], &[(u32, u32)]) = (&set.corpus, set.edges);
         let n_pairs = edges.len();
         // How many pair endpoints each cell is: its weight in the self-pair
         // term, which visits each endpoint cell once per epoch.
@@ -123,24 +128,48 @@ impl PairEncoder {
             },
         )?;
 
+        // Unthinned rows are uploaded once.
+        let fixed = match set.thinning {
+            None => Some(self.corpus_stats(corpus)?),
+            Some(_) => None,
+        };
         // A fixed, seeded subset scored in evaluation mode every
-        // `check_every` epochs and after the last.
-        let check: Vec<(u32, u32)> = {
-            let mut rng = StdRng::seed_from_u64(mix_seed(seed, 0x0043_4845_434b));
+        // `check_every` epochs and after the last; thinned once when the
+        // set is.
+        let check_idx: Vec<usize> = {
+            let mut rng = StdRng::seed_from_u64(mix_seed(seed, CHECK_SALT));
             (0..CHECK_PAIRS.min(n_pairs))
-                .map(|_| edges[rng.random_range(0..n_pairs)])
+                .map(|_| rng.random_range(0..n_pairs))
                 .collect()
         };
-        let (nll0, _) = self.evaluate(stats, &check, batch)?;
+        let (check_thinned, check) = match &set.thinning {
+            None => (None, check_idx.iter().map(|&i| edges[i]).collect()),
+            Some(th) => {
+                let t = set.thinned(
+                    th,
+                    &check_idx,
+                    false,
+                    mix_seed(seed, CHECK_SALT ^ THIN_SALT),
+                );
+                (Some(self.corpus_stats(&t.rows)?), t.pairs)
+            }
+        };
+        let check_stats = check_thinned
+            .as_ref()
+            .or(fixed.as_ref())
+            .expect("either the fixed rows or the thinned check rows");
+        let (nll0, _) = self.evaluate(check_stats, &check, batch)?;
         info!(
-            "Pair encoder: {n_pairs} pairs, L={}, K={}, {epochs} epochs of {batch}-pair steps, \
+            "Pair encoder: training on {}; L={}, K={}, {epochs} epochs of {batch}-pair steps, \
              ridge λ={}; NLL/count before {nll0:.4}",
+            set.describe(),
             self.trunk_width(),
             self.n_experts(),
             self.ridge
         );
 
         let mut order: Vec<usize> = (0..n_pairs).collect();
+        let all_pairs = order.clone();
         let mut timers = PhaseTimers::default();
         let (mut steps, mut skipped) = (0usize, 0usize);
         let mut nll_per_count = nll0;
@@ -148,6 +177,26 @@ impl PairEncoder {
         // The mean step loss since the last evaluation line.
         let (mut loss_sum, mut n_steps) = (0f64, 0usize);
         for epoch in 0..epochs {
+            // This epoch's rows: the fixed ones, or a fresh thinned draw of
+            // every pair and every unit's own row.
+            let t = std::time::Instant::now();
+            let thinned = match &set.thinning {
+                None => None,
+                Some(th) => {
+                    let t = set.thinned(
+                        th,
+                        &all_pairs,
+                        true,
+                        mix_seed(mix_seed(seed, THIN_SALT), epoch as u64),
+                    );
+                    Some((self.corpus_stats(&t.rows)?, t.pairs, t.self_base))
+                }
+            };
+            let (stats, pair_rows, self_base): (&CorpusStats, &[(u32, u32)], u32) = match &thinned {
+                Some((s, p, b)) => (s, p, *b),
+                None => (fixed.as_ref().expect("unthinned rows"), edges, 0),
+            };
+            timers.precompute += t.elapsed();
             let mut rng = StdRng::seed_from_u64(mix_seed(seed, epoch as u64));
             order.shuffle(&mut rng);
             cell_order.shuffle(&mut rng);
@@ -164,14 +213,17 @@ impl PairEncoder {
             };
             for (k, chunk) in chunks.iter().enumerate() {
                 let t = std::time::Instant::now();
-                let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| edges[i]).collect();
+                let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| pair_rows[i]).collect();
                 let endpoints = self.endpoint_stats(stats, &pairs)?;
                 let cells = cell_share(k);
                 let selves = if cells.is_empty() {
                     None
                 } else {
-                    let ids = Tensor::from_slice(cells, cells.len(), self.dict.device())?;
-                    Some((stats.gather_full(&ids)?, gather_rows(&degree, &ids)?))
+                    let dev = self.dict.device();
+                    let ids = Tensor::from_slice(cells, cells.len(), dev)?;
+                    let rows: Vec<u32> = cells.iter().map(|&c| self_base + c).collect();
+                    let rows = Tensor::from_vec(rows, cells.len(), dev)?;
+                    Some((stats.gather_full(&rows)?, gather_rows(&degree, &ids)?))
                 };
                 timers.precompute += t.elapsed();
 
@@ -197,7 +249,7 @@ impl PairEncoder {
             if (epoch + 1) % check_every != 0 && epoch + 1 != epochs {
                 continue;
             }
-            let (nll, pi) = self.evaluate(stats, &check, batch)?;
+            let (nll, pi) = self.evaluate(check_stats, &check, batch)?;
             nll_per_count = nll;
             // The held-out NLL first: it is the score `pinto run` draws.
             bar.set_message(format!(
