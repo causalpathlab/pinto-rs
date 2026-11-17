@@ -175,7 +175,7 @@ fn delta_rows_are_matched_by_name() {
 /// the working directory (a decoy there is another run's). A
 /// `delta.parquet` left from an earlier fit under the same prefix is not
 /// read when the manifest names none, nor for a recorded file that is gone,
-/// which is an error. Without a manifest the file is taken as it is.
+/// which is an error.
 #[test]
 fn a_runs_delta_is_the_one_its_manifest_names() {
     use crate::util::batch_effects::run_delta_path;
@@ -183,10 +183,8 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("run").to_str().unwrap().to_string();
     let file = format!("{prefix}.delta.parquet");
-    let found = |run: Option<&Run>| run_delta_path(&prefix, run).unwrap();
-    assert_eq!(found(None), None);
+    let found = |run: &Run| run_delta_path(run).unwrap();
     std::fs::write(&file, b"").unwrap();
-    assert_eq!(found(None).as_deref(), Some(file.as_str()));
 
     let manifest = manifest_path(&prefix);
     let open = |meta: &PintoMetadata| {
@@ -194,10 +192,10 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
         Run::open(&prefix).unwrap()
     };
     let mut meta = PintoMetadata::default();
-    assert_eq!(found(Some(&open(&meta))), None, "a stale file was read");
+    assert_eq!(found(&open(&meta)), None, "a stale file was read");
     meta.outputs.batch_effects = Some(file.clone());
     assert_eq!(
-        found(Some(&open(&meta))).as_deref(),
+        found(&open(&meta)).as_deref(),
         Some(file.as_str()),
         "an absolute path as recorded"
     );
@@ -207,7 +205,7 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
     std::fs::write(&elsewhere, b"").unwrap();
     meta.outputs.batch_effects = Some("other.delta.parquet".into());
     assert_eq!(
-        found(Some(&open(&meta))).map(std::path::PathBuf::from),
+        found(&open(&meta)).map(std::path::PathBuf::from),
         Some(elsewhere),
         "the recorded file, beside the manifest"
     );
@@ -216,7 +214,7 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
     // the prefix
     meta.outputs.batch_effects = Some("kept/run.delta.parquet".into());
     assert!(
-        run_delta_path(&prefix, Some(&open(&meta))).is_err(),
+        run_delta_path(&open(&meta)).is_err(),
         "a stale file under the prefix was taken for a recorded one that is gone"
     );
 
@@ -228,19 +226,19 @@ fn a_runs_delta_is_the_one_its_manifest_names() {
     meta.outputs.batch_effects = Some(decoy.name.clone());
     let run = open(&meta);
     assert_eq!(
-        found(Some(&run)).as_deref(),
+        found(&run).as_deref(),
         Some(file.as_str()),
         "the working directory's file was read, not the run's own"
     );
     std::fs::remove_file(&file).unwrap();
     assert!(
-        run_delta_path(&prefix, Some(&run)).is_err(),
+        run_delta_path(&run).is_err(),
         "with the run's own file gone, the working directory's was read"
     );
 
     // recorded but nowhere: an error, not a run without a δ
     meta.outputs.batch_effects = Some("moved/away.delta.parquet".into());
-    let err = run_delta_path(&prefix, Some(&open(&meta))).unwrap_err();
+    let err = run_delta_path(&open(&meta)).unwrap_err();
     assert!(err.to_string().contains("moved/away"), "{err}");
 }
 

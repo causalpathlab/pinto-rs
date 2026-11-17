@@ -130,7 +130,7 @@ impl Tools {
         let method = Method::new(&self.cli, "predict")?;
         anyhow::ensure!(!a.model.trim().is_empty(), "give model, the fitted run");
         let model = as_run(&a.model);
-        crate::predict::check_model(crate::util::metadata::run_prefix(&model))?;
+        crate::util::metadata::Run::open(&model)?;
         let mut flags = a.flags;
         anyhow::ensure!(
             !flags.keys().any(|k| k.trim_start_matches('-') == "model"),

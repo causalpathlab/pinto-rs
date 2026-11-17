@@ -213,16 +213,13 @@ fn explicit_reference_data_bypasses_the_manifest() -> anyhow::Result<()> {
         "--reference-data",
         "ref.zarr",
     ])?;
-    let files = resolve_reference_data(&args, None)?;
+    let run = crate::util::metadata::Run {
+        manifest: "no/such/model.pinto.json".into(),
+        prefix: "no/such/model".into(),
+        meta: Default::default(),
+    };
+    let files = resolve_reference_data(&args, &run)?;
     assert_eq!(files, vec![Box::<str>::from("ref.zarr")]);
-    Ok(())
-}
-
-#[test]
-fn a_missing_manifest_names_the_flag_as_the_way_out() -> anyhow::Result<()> {
-    let args = parse_impute(&["impute", "q.zarr", "--model", "no/such/model", "-o", "out"])?;
-    let err = resolve_reference_data(&args, None).unwrap_err();
-    assert!(err.to_string().contains("--reference-data"), "{err}");
     Ok(())
 }
 
@@ -241,7 +238,7 @@ fn recorded_reference_files_resolve_beside_the_manifest() -> anyhow::Result<()> 
     };
     meta.write(std::path::Path::new(&manifest_path(&model)))?;
     let args = parse_impute(&["impute", "q.zarr", "--model", &model, "-o", "out"])?;
-    let files = resolve_reference_data(&args, Some(&Run::open(&model)?))?;
+    let files = resolve_reference_data(&args, &Run::open(&model)?)?;
     assert_eq!(
         std::path::Path::new(files[0].as_ref()),
         dir.path().join("a.zarr")
@@ -249,7 +246,7 @@ fn recorded_reference_files_resolve_beside_the_manifest() -> anyhow::Result<()> 
 
     meta.data_files = Some(vec!["gone.zarr".into()]);
     meta.write(std::path::Path::new(&manifest_path(&model)))?;
-    let err = resolve_reference_data(&args, Some(&Run::open(&model)?)).unwrap_err();
+    let err = resolve_reference_data(&args, &Run::open(&model)?).unwrap_err();
     assert!(err.to_string().contains("--reference-data"), "{err}");
     Ok(())
 }
@@ -474,9 +471,9 @@ fn sides(prefix: &str, data: &str, extra: &[&str]) -> anyhow::Result<ProfileSide
     argv.extend_from_slice(extra);
     let args = parse_impute(&argv)?;
     let run = crate::util::metadata::Run::open(prefix)?;
-    let files = resolve_reference_data(&args, Some(&run))?;
+    let files = resolve_reference_data(&args, &run)?;
     mkdir_parent(&out)?;
-    profile_propensities(&args, Some(&run), &files)
+    profile_propensities(&args, &run, &files)
 }
 
 /// A multi-batch lc model's profiles are batch-adjusted, so impute divides

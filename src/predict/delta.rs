@@ -31,14 +31,11 @@ pub(crate) struct ModelNaming {
 }
 
 impl ModelNaming {
-    /// The naming of the model whose run is `run`; none without a run.
-    pub(crate) fn of(run: Option<&crate::util::metadata::Run>) -> Self {
-        let Some(run) = run else {
-            return Self::default();
-        };
+    /// The naming of the model whose run is `run`.
+    pub(crate) fn of(run: &crate::util::metadata::Run) -> Self {
         Self {
             source: run.meta.batch_labels,
-            files: crate::predict::model_data_files(Some(run)),
+            files: crate::predict::model_data_files(run),
             names: (run.meta.file_batches.iter().flatten())
                 .map(|b| b.name.as_str().into())
                 .collect(),
@@ -51,7 +48,7 @@ impl ModelNaming {
         use BatchLabels::*;
         match source {
             AutoBatch => false,
-            BatchFiles => matches!(self.source, Some(BatchFiles) | None),
+            BatchFiles => self.source == Some(BatchFiles),
             Files => self.source == Some(Files),
         }
     }
@@ -60,7 +57,7 @@ impl ModelNaming {
 /// For each query batch label, the model's batch it is, if any, for a
 /// query with inputs `c` and a model with batches `model`, named as
 /// `naming` says. `--batch-files` labels are the model batch of that name
-/// when the model is labelled so too, or records nothing. A file's batch
+/// when the model is labelled so too. A file's batch
 /// is the model's of the same name when the model named its batches by
 /// file too. `--auto-batch` components are never the model's.
 pub(crate) fn match_batches(
@@ -297,11 +294,11 @@ impl QueryReader {
 /// `--ignore-batch`) takes it.
 pub(crate) fn batch_adjusted(
     model: &str,
-    run: Option<&crate::util::metadata::Run>,
+    run: &crate::util::metadata::Run,
     ignore_batch: bool,
     reader: QueryReader,
 ) -> anyhow::Result<bool> {
-    let adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
+    let adjusted = run.meta.outputs.feature_community_batch_adjusted;
     anyhow::ensure!(
         !(adjusted && ignore_batch),
         "{model} was fitted on counts divided by its batch effect, so an undivided query \
@@ -338,7 +335,7 @@ pub(crate) fn adjusted_query_delta(
         return Ok(None);
     }
     let (model_delta, path) = adjusted_model_delta(model, run)?;
-    let naming = ModelNaming::of(Some(run));
+    let naming = ModelNaming::of(run);
     let labels = sorted_batch_labels(membership);
     let all_known = every_batch_known(c, &model_delta.batches, &naming)?;
     let estimate = if all_known {
@@ -375,7 +372,7 @@ pub(crate) fn adjusted_model_delta(
     run: &crate::util::metadata::Run,
 ) -> anyhow::Result<(RunDelta, String)> {
     use crate::util::batch_effects::{read_delta, run_delta_path};
-    let path = run_delta_path(model, Some(run))?.ok_or_else(|| {
+    let path = run_delta_path(run)?.ok_or_else(|| {
         anyhow::anyhow!(
             "{model}: its manifest says it was fitted on counts divided by its batch \
              effect, but it records no delta.parquet to divide a query by"

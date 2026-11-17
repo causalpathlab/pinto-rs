@@ -61,7 +61,7 @@ fn a_model_that_is_not_there_is_refused_by_its_path() {
     args.core.common.data_files = vec![dir.path().join("d.zarr").to_string_lossy().into()];
     let e = format!("{:#}", super::predict(&args, &given).unwrap_err());
     assert!(e.contains(&format!("{model}.pinto.json")), "{e}");
-    assert!(e.contains("not there"), "{e}");
+    assert!(e.contains("no such manifest"), "{e}");
 }
 
 mod batch_effects {
@@ -143,25 +143,6 @@ mod batch_effects {
         );
     }
 
-    /// A model that records nothing of how it labelled its batches matches
-    /// `--batch-files` labels by name, even labels that read as its files'
-    /// positions; a file's batch only through its files.
-    #[test]
-    fn unrecorded_labels_are_names_to_batch_files_labels() {
-        let files = vec!["d/a.zarr".to_string(), "d/b.zarr".to_string()];
-        let model = boxed(&["0", "1"]);
-        let q = query(&["d/a.zarr", "d/b.zarr", "--batch-files", "a.txt,b.txt"]);
-        assert_eq!(
-            match_batches(&boxed(&["1", "0"]), &q, &model, &naming(None, &files)),
-            [Some(1), Some(0)]
-        );
-        let named = boxed(&["s1", "s2"]);
-        assert_eq!(
-            match_batches(&boxed(&["s2"]), &q, &named, &naming(None, &files)),
-            [Some(1)]
-        );
-    }
-
     /// A query file of a model file batch's name that is another file is
     /// named, with the model's file (for a warning); one that is the
     /// model's file, through a link, is not.
@@ -224,7 +205,7 @@ mod batch_effects {
 }
 
 /// The query is divided only by a model's δ: a model without one (one
-/// batch, `--ignore-batch`, or an older cage-cell fit) trained its encoder
+/// batch or `--ignore-batch`) trained its encoder
 /// on undivided counts; `--ignore-batch` on predict leaves it unused, and
 /// is refused for a model fitted on δ-divided counts.
 #[test]
@@ -234,7 +215,6 @@ fn the_query_is_divided_only_when_the_model_has_a_delta() {
     use crate::util::metadata::{manifest_path, PintoMetadata, Run};
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("run").to_string_lossy().to_string();
-    assert!(super::model_delta(&model, None, false).unwrap().is_none());
 
     let file = format!("{model}.delta.parquet");
     RunDelta {
@@ -252,40 +232,32 @@ fn the_query_is_divided_only_when_the_model_has_a_delta() {
         .unwrap();
     let run = Run::open(&model).unwrap();
     assert!(
-        super::model_delta(&model, Some(&run), false)
-            .unwrap()
-            .is_none(),
+        super::model_delta(&model, &run, false).unwrap().is_none(),
         "a delta the manifest does not name"
     );
     meta.outputs.batch_effects = Some(file);
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
     let run = Run::open(&model).unwrap();
-    let (d, _) = super::model_delta(&model, Some(&run), false)
-        .unwrap()
-        .unwrap();
+    let (d, _) = super::model_delta(&model, &run, false).unwrap().unwrap();
     assert_eq!(d.mean[(0, 1)], 2.0);
-    assert!(super::model_delta(&model, Some(&run), true)
-        .unwrap()
-        .is_none());
+    assert!(super::model_delta(&model, &run, true).unwrap().is_none());
     // fitted on δ-divided counts: an undivided query is refused
     meta.outputs.feature_community_batch_adjusted = true;
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
     let run = Run::open(&model).unwrap();
-    let err = super::model_delta(&model, Some(&run), true)
+    let err = super::model_delta(&model, &run, true)
         .err()
         .expect("refused");
     assert!(err.to_string().contains("--ignore-batch"), "{err}");
     // a cage query reads no held-out flag, so none is offered
     assert!(!err.to_string().contains("--holdout"), "{err}");
-    assert!(super::model_delta(&model, Some(&run), false)
-        .unwrap()
-        .is_some());
+    assert!(super::model_delta(&model, &run, false).unwrap().is_some());
 }
 
-/// A manifest's data files: canonical ones as recorded; an older relative
-/// entry beside the manifest, whatever the working directory.
+/// A manifest's data files: canonical ones as recorded; a relative entry
+/// beside the manifest, whatever the working directory.
 #[test]
 fn model_data_files_resolve_beside_the_manifest() {
     use crate::util::metadata::{manifest_path, PintoMetadata, Run};
@@ -298,20 +270,19 @@ fn model_data_files_resolve_beside_the_manifest() {
     };
     meta.write(std::path::Path::new(&manifest_path(&model)))
         .unwrap();
-    let files = super::model_data_files(Some(&Run::open(&model).unwrap()));
+    let files = super::model_data_files(&Run::open(&model).unwrap());
     assert_eq!(
         std::path::Path::new(&files[0]),
         dir.path().join("a.zarr"),
         "a relative entry beside the manifest"
     );
     assert_eq!(files[1], "gone.zarr", "kept as written");
-    assert!(super::model_data_files(None).is_empty());
 }
 
 /// A model named by its manifest's own path, whatever that file is called,
 /// opens as the run its manifest records: the prefix beside the manifest,
 /// so its δ (recorded elsewhere) and its files are found. A model named
-/// by prefix opens the same run; one without a manifest keeps its prefix.
+/// by prefix opens the same run; a model without a manifest is an error.
 #[test]
 fn a_model_named_by_its_manifest_opens_once_with_its_prefix() {
     use crate::util::metadata::PintoMetadata;
@@ -334,13 +305,11 @@ fn a_model_named_by_its_manifest_opens_once_with_its_prefix() {
     meta.write(&manifest).unwrap();
 
     let mut model: Box<str> = manifest.to_string_lossy().into();
-    let run = super::open_model(&mut model)
-        .unwrap()
-        .expect("the manifest opens");
+    let run = super::open_model(&mut model).expect("the manifest opens");
     assert_eq!(model.as_ref(), prefix);
     assert_eq!(run.meta.command, "cage");
     assert_eq!(
-        crate::util::batch_effects::run_delta_path(&model, Some(&run))
+        crate::util::batch_effects::run_delta_path(&run)
             .unwrap()
             .map(std::path::PathBuf::from),
         Some(delta),
@@ -348,12 +317,11 @@ fn a_model_named_by_its_manifest_opens_once_with_its_prefix() {
     );
 
     let mut bare: Box<str> = format!("{prefix}.pinto.json").into();
-    assert!(super::open_model(&mut bare).unwrap().is_none());
-    assert_eq!(bare.as_ref(), prefix, "no manifest: the prefix as named");
+    let err = super::open_model(&mut bare).unwrap_err().to_string();
+    assert!(err.contains("no such manifest"), "{err}");
 }
 
-/// Only a manifest that is not there means a model without one: one that
-/// is there but cannot be read is an error, not a model found by its files.
+/// A manifest that is there but cannot be read is an error.
 #[test]
 fn an_unreadable_manifest_is_an_error() {
     let dir = tempfile::tempdir().unwrap();

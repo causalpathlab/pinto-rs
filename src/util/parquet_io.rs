@@ -480,11 +480,11 @@ pub fn read_propensity(
     Ok((prop, cluster, entropy, rows))
 }
 
-/// Parse a community-column / community-label string into its integer ID:
-/// `C{c}`, or a bare integer (as the viewer names layers). Returns `None`
-/// for anything else (e.g. `"entropy"`, coord names, malformed labels).
+/// Parse a community-column / community-label string, `C{c}`, into its
+/// integer ID. Returns `None` for anything else (e.g. `"entropy"`, coord
+/// names, malformed labels).
 pub(crate) fn parse_community_col_name(name: &str) -> Option<i64> {
-    name.strip_prefix('C').unwrap_or(name).parse::<i64>().ok()
+    name.strip_prefix('C')?.parse::<i64>().ok()
 }
 
 fn argmax_row(mat: &Mat, row: usize, cols: &[usize]) -> i64 {

@@ -85,14 +85,14 @@ fn slots_named(
 /// profiles are on raw counts, and every batch is estimated from the
 /// fitting parts, as before.
 pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
-    crate::predict::refuse_offset_model(&args.core.model, Some(run))?;
+    crate::predict::refuse_offset_model(&args.core.model, run)?;
     let meta = &run.meta;
     let c = &args.core.common;
     let h = &args.holdout;
     let model = args.core.model.as_ref();
     let adjusted = crate::predict::delta::batch_adjusted(
         model,
-        Some(run),
+        run,
         c.batch.ignore_batch,
         crate::predict::delta::QueryReader::Holdout,
     )?;
@@ -578,7 +578,7 @@ fn models_delta(
 ) -> anyhow::Result<usize> {
     use crate::predict::delta::{adjusted_model_delta, match_batches, ModelNaming};
     let (model_delta, path) = adjusted_model_delta(model, run)?;
-    let matched = match_batches(labels, c, &model_delta.batches, &ModelNaming::of(Some(run)));
+    let matched = match_batches(labels, c, &model_delta.batches, &ModelNaming::of(run));
     let (on_rows, has_row) = model_delta.on_rows(rows);
     for (b, m) in matched.iter().enumerate() {
         let Some(m) = *m else { continue };

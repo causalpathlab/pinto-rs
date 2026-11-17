@@ -3,7 +3,7 @@
 
 use super::super::lra::{self as lra_layer, LraView, PairShow, Sort};
 use super::{value_enum, Open};
-use crate::lr_activity::ligand_effect::output::{CONTROLS, Q_SCOPE_ALL};
+use crate::lr_activity::ligand_effect::output::CONTROLS;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::shown_path;
@@ -150,11 +150,7 @@ impl Open {
                 })
             })
             .collect();
-        let q_scope: String = match &*table.q_scope {
-            _ if !table.subset_corrected() => Q_SCOPE_ALL.into(),
-            Q_SCOPE_ALL => "q corrected within the --only subset".into(),
-            scope => scope.into(),
-        };
+        let q_scope = table.q_scope.to_string();
         let selected = v.selected_row().map(|r| {
             let mut out = json!({
                 "pair": r.name(),

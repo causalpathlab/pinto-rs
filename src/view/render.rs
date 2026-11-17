@@ -68,8 +68,12 @@ impl std::str::FromStr for Layer {
 
 /// `C7`, `c7` or `7` → 7, by the same rule that names propensity columns.
 pub fn community_id(s: &str) -> Option<usize> {
-    let upper = s.strip_prefix('c').map(|rest| format!("C{rest}"));
-    parse_community_col_name(upper.as_deref().unwrap_or(s)).and_then(|c| usize::try_from(c).ok())
+    let named = match s.strip_prefix('c') {
+        Some(rest) => format!("C{rest}"),
+        None if s.starts_with('C') => s.to_string(),
+        None => format!("C{s}"),
+    };
+    parse_community_col_name(&named).and_then(|c| usize::try_from(c).ok())
 }
 
 impl Layer {

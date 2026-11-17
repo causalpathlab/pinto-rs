@@ -1,8 +1,8 @@
 //! Load a pinto run for viewing: manifest → cell geometry ⋈ propensity.
 //!
 //! Everything comes from files a pinto run already writes, through the same
-//! readers the rest of the crate uses: `coord_pairs` for positions and batch
-//! labels, `propensity` for the per-cell community mixture (one per level),
+//! readers the rest of the crate uses: the cells table for positions and
+//! batch labels, `propensity` for the per-cell community mixture (one per level),
 //! and `link_community` for the per-edge labels.
 
 use super::markers::FeatureRates;

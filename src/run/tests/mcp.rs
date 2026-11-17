@@ -202,7 +202,7 @@ fn run_predict_refuses_a_model_that_is_not_there() {
         said.contains(&format!("{}.pinto.json", model.display())),
         "{said}"
     );
-    assert!(said.contains("not there"), "{said}");
+    assert!(said.contains("no such manifest"), "{said}");
 }
 
 /// `run_methods` lists every method `pinto run` offers, the spatial

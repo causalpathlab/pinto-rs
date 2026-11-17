@@ -96,17 +96,6 @@ impl Run {
         })
     }
 
-    /// The run `run` names, as [`Self::open`] has it, or `None` when no
-    /// manifest file is there. A manifest that is there but cannot be read
-    /// is an error, not a run without one.
-    pub fn open_if_exists(run: &str) -> anyhow::Result<Option<Self>> {
-        if Self::manifest_of(run).is_file() {
-            Self::open(run).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
     /// The manifest file `run` names: itself when it is a file, else the
     /// manifest of the prefix it is.
     fn manifest_of(run: &str) -> PathBuf {

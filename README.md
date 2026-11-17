@@ -57,9 +57,7 @@ named by the file less its data extension (`sampleA.zarr` and
 order the files are given in. Two data files of the same name in one run
 are refused. `pinto apply predict` and `pinto apply impute` give a query file the
 model's batch of the same name, warning when it is not the model's own
-file. An older pinto named them by position (`0`, `1`, …; its manifest has
-`"batch_labels": "files"`, this one `"file-names"`): a query file takes
-such a model's batch only when it is that model's data file.
+file.
 
 With several batches (data files, or `--batch-files` labels), lc estimates
 batch effects δ, as dsvd and cage do, and divides every count of its edge

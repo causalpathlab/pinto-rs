@@ -549,18 +549,10 @@ impl RunDelta {
 /// manifest (`run`), the file it records ([`Run::recorded_output`]: never
 /// from the working directory, and an error when it is nowhere); a stale
 /// file from an earlier fit under the same prefix is not read when it
-/// records none. A run without a manifest is taken at its
-/// `{prefix}.delta.parquet`.
+/// records none.
 ///
 /// [`Run::recorded_output`]: crate::util::metadata::Run::recorded_output
-pub fn run_delta_path(
-    prefix: &str,
-    run: Option<&crate::util::metadata::Run>,
-) -> anyhow::Result<Option<String>> {
-    let Some(run) = run else {
-        let path = format!("{prefix}.delta.parquet");
-        return Ok(std::path::Path::new(&path).is_file().then_some(path));
-    };
+pub fn run_delta_path(run: &crate::util::metadata::Run) -> anyhow::Result<Option<String>> {
     let found = run.recorded_output(run.meta.outputs.batch_effects.as_deref(), "delta.parquet")?;
     Ok(found.map(|p| p.to_string_lossy().into_owned()))
 }

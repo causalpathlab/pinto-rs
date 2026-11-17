@@ -37,7 +37,7 @@
 use crate::link_community::outputs::write_propensity_matrix;
 use crate::predict::{predict_cage, PredictCoreArgs, ScoringArgs};
 use crate::util::common::*;
-use crate::util::metadata::{PintoMetadata, Run};
+use crate::util::metadata::Run;
 use crate::util::profile_match::{em_proportions, match_profiles, MatchedProfiles, EM_ITERS};
 use clap::Args;
 use data_beans::alg::retrieval_impute::RetrievalImputeConfig;
@@ -105,33 +105,18 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
     // A model named by its manifest is the same model, as `pinto apply predict`
     // takes it.
     let mut args = args.clone();
-    let run = open_impute_model(&mut args.predict.model)?;
+    let run = crate::predict::open_model(&mut args.predict.model)?;
     let args = &args;
     let c = &args.predict.common;
     let model = args.predict.model.as_ref();
     mkdir_parent(&c.out)?;
 
-    // The manifest is the authority on what the model IS; artifact probing
-    // (e.g. for feature_embedding.parquet) would silently reroute a cage
-    // model with a misplaced file — or a `pinto apply predict` output prefix —
-    // onto the profile path with different semantics. The probe survives
-    // only as a fallback for pre-manifest runs.
-    let meta = run.as_ref().map(|r| &r.meta);
-    let is_cage = match meta.map(|m| m.command.as_str()) {
-        Some("cage") => true,
-        Some("lc" | "dsvd") => false,
-        Some(other) => anyhow::bail!(
+    let is_cage = match run.meta.command.as_str() {
+        "cage" => true,
+        "lc" | "dsvd" => false,
+        other => anyhow::bail!(
             "{model} is a `{other}` run; impute needs a trained cage, lc, or dsvd model"
         ),
-        None => {
-            let probe = Path::new(&format!("{model}.feature_embedding.parquet")).is_file();
-            log::warn!(
-                "{model}.pinto.json not found; dispatching by artifact probe \
-                 ({} path)",
-                if probe { "cage" } else { "lc/dsvd profile" }
-            );
-            probe
-        }
     };
 
     // The lc / dsvd projection reads every cell as given: no QC runs there,
@@ -145,22 +130,22 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
         );
     }
 
-    let reference_files = resolve_reference_data(args, run.as_ref())?;
+    let reference_files = resolve_reference_data(args, &run)?;
     // A cage model's reference cells are divided by the run's δ, as predict
     // divides the query. So are an lc / dsvd model's, when its manifest says
     // its profiles are batch-adjusted, its query divided alike; any other
     // matches raw counts to raw profiles.
     let (query_prop, query_cells, ref_prop, ref_data, divide) = if is_cage {
         let (query_prop, query_cells, ref_prop, ref_data) =
-            cage_propensities(args, run.as_ref(), &reference_files)?;
+            cage_propensities(args, &run, &reference_files)?;
         let divide = if c.batch.ignore_batch {
             None
         } else {
-            reference_divide(model, run.as_ref(), &ref_data.row_names()?, &ref_data)?
+            reference_divide(model, &run, &ref_data.row_names()?, &ref_data)?
         };
         (query_prop, query_cells, ref_prop, ref_data, divide)
     } else {
-        profile_propensities(args, run.as_ref(), &reference_files)?
+        profile_propensities(args, &run, &reference_files)?
     };
     anyhow::ensure!(
         query_prop.ncols() == ref_prop.ncols(),
@@ -198,28 +183,6 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// The model `model` names, opened as `pinto apply predict` opens it
-/// ([`crate::predict::open_model`]), with `model` set to its prefix; else,
-/// for a pre-unification lc / dsvd run, its `{prefix}.metadata.json` (the
-/// same schema). `None` when neither manifest is there; one that is there
-/// but cannot be read is an error.
-fn open_impute_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
-    if let Some(run) = crate::predict::open_model(model)? {
-        return Ok(Some(run));
-    }
-    let older = format!("{model}.metadata.json");
-    if !Path::new(&older).is_file() {
-        return Ok(None);
-    }
-    let meta = PintoMetadata::read(Path::new(&older))
-        .map_err(|e| anyhow::anyhow!("{older}: not a pinto manifest: {e}"))?;
-    Ok(Some(Run {
-        manifest: older.into(),
-        prefix: model.to_string(),
-        meta,
-    }))
-}
-
 /// The run's δ on the reference cells, when the run (manifest `run`) has
 /// one: its mean on the reference's rows (`ref_rows`), matched by name, and
 /// each cell's batch as the run estimated it, from the table the manifest
@@ -229,19 +192,23 @@ fn open_impute_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
 /// coord_pairs fallback, one the run placed in no pair) is left as is.
 fn reference_divide(
     model: &str,
-    run: Option<&Run>,
+    run: &Run,
     ref_rows: &[Box<str>],
     ref_data: &SparseIoVec,
 ) -> anyhow::Result<Option<RefDivide>> {
     use crate::util::batch_effects::{
-        delta_cells_path, read_cell_batches, read_delta, run_delta_cells_path, run_delta_path,
+        read_cell_batches, read_delta, run_delta_cells_path, run_delta_path,
     };
-    let Some(path) = run_delta_path(model, run)? else {
+    let Some(path) = run_delta_path(run)? else {
         return Ok(None);
     };
     let delta = read_delta(&path)?;
-    let recorded = run.map(run_delta_cells_path).transpose()?.flatten();
-    let batch_of = read_cell_batches(&recorded.unwrap_or_else(|| delta_cells_path(model)))?;
+    let cells = run_delta_cells_path(run)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{model}: the manifest records a δ but not its cells' batches (delta_cells)"
+        )
+    })?;
+    let batch_of = read_cell_batches(&cells)?;
     let col_of: HashMap<&str, usize> = delta
         .batches
         .iter()
@@ -270,14 +237,11 @@ fn reference_divide(
 
 /// Reference data files: the explicit flag, else the model's manifest, each
 /// recorded file resolved beside it as predict resolves the model's files.
-fn resolve_reference_data(args: &ImputeArgs, run: Option<&Run>) -> anyhow::Result<Vec<Box<str>>> {
+fn resolve_reference_data(args: &ImputeArgs, run: &Run) -> anyhow::Result<Vec<Box<str>>> {
     if let Some(files) = args.reference_data.clone() {
         return Ok(files);
     }
     let model = args.predict.model.as_ref();
-    let run = run.ok_or_else(|| {
-        anyhow::anyhow!("cannot read {model}.pinto.json. Pass --reference-data explicitly.")
-    })?;
     let meta = &run.meta;
     let files: Vec<Box<str>> = meta
         .data_files
@@ -332,7 +296,7 @@ fn open_backends(what: &str, files: &[Box<str>]) -> anyhow::Result<SparseIoVec> 
 /// through the whole predict pass.
 fn cage_propensities(
     args: &ImputeArgs,
-    run: Option<&Run>,
+    run: &Run,
     reference_files: &[Box<str>],
 ) -> anyhow::Result<(Mat, Vec<Box<str>>, Mat, SparseIoVec)> {
     let model = args.predict.model.as_ref();
@@ -429,7 +393,7 @@ type ProfileSides = (Mat, Vec<Box<str>>, Mat, SparseIoVec, Option<RefDivide>);
 /// ([`crate::predict::delta::adjusted_query_delta`]).
 fn profile_propensities(
     args: &ImputeArgs,
-    run: Option<&Run>,
+    run: &Run,
     reference_files: &[Box<str>],
 ) -> anyhow::Result<ProfileSides> {
     let c = &args.predict.common;
@@ -474,25 +438,18 @@ fn profile_propensities(
         feature_kind: &feature_kind,
         iters: EM_ITERS,
     };
-    let query_divide = match run.filter(|_| adjusted) {
-        Some(run) => {
-            let membership = crate::util::input::read_batch_labels(
-                &c.to_read_args_with_kind(feature_kind.clone()),
-                &query_data,
-            )?;
-            crate::predict::delta::adjusted_query_delta(
-                model,
-                run,
-                c,
-                &mut query_data,
-                &membership,
-            )?
+    let query_divide = if adjusted {
+        let membership = crate::util::input::read_batch_labels(
+            &c.to_read_args_with_kind(feature_kind.clone()),
+            &query_data,
+        )?;
+        crate::predict::delta::adjusted_query_delta(model, run, c, &mut query_data, &membership)?
             .map(|(delta, batch)| RefDivide {
                 delta,
                 batch_of_cell: batch.into_iter().map(|b| Some(b as usize)).collect(),
             })
-        }
-        None => None,
+    } else {
+        None
     };
     let query_prop =
         project_profile_propensity(&query_data, &projection, query_divide.as_ref(), "query")?;
