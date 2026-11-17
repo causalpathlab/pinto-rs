@@ -37,7 +37,7 @@ fn units_are_guessed_from_coordinate_columns() {
 fn every_label_character_has_a_glyph() {
     for label in ["0123456789", "µm mm px", "0.5"] {
         for c in label.chars() {
-            assert!(glyph(c).is_some(), "{c:?}");
+            assert!(legume_tui::map::text::tiny_glyph(c).is_some(), "{c:?}");
         }
     }
 }
