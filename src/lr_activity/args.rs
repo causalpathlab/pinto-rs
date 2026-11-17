@@ -279,79 +279,11 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
-        default_value_t = 0.05,
-        help_heading = "Co-expression methods",
-        help = "FWER cutoff for the JSON sidecar of significant pairs (coexpression-test)",
-        long_help = "Westfall-Young FWER cutoff for the JSON sidecar (coexpression-test).\n\
-                     A row enters the sidecar when its FWER is below this AND its\n\
-                     restandardized z is positive. The parquet always carries the\n\
-                     full table.",
-        hide = true
-    )]
-    pub json_fwer_threshold: f32,
-
-    #[arg(
-        long,
         default_value_t = 50.0,
         help_heading = "Co-expression methods",
         help = "Minimum total count of a ligand or receptor gene for its pair to be scored"
     )]
     pub min_gene_count: f32,
-
-    #[arg(
-        long,
-        default_value_t = 10,
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Random-projection axes for binning cells by propensity"
-    )]
-    pub propensity_dim: usize,
-
-    #[arg(
-        long,
-        default_value_t = 4,
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Top propensity bits the shuffle is stratified by (0 = unstratified)"
-    )]
-    pub shuffle_stratify_dim: usize,
-
-    #[arg(
-        long,
-        default_value_t = 100,
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Skip communities with fewer than this many edges"
-    )]
-    pub min_edges_per_community: usize,
-
-    #[arg(
-        long,
-        default_value = "_",
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Delimiter used to alias compound gene row names (ENSG..._SYMBOL)"
-    )]
-    pub gene_delimiter: Option<char>,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Allow prefix matching of gene names as a fallback"
-    )]
-    pub gene_allow_prefix: bool,
-
-    #[arg(
-        long,
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        help_heading = "Co-expression methods",
-        hide = true,
-        help = "Also write the JSON sidecar of significant pairs (true/false)"
-    )]
-    pub emit_json: bool,
 }
 
 /// The delete-one-tile jackknife of region rows ([`SrtLrActivityArgs`]'s

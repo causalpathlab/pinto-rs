@@ -381,7 +381,7 @@ impl Units for Pairs<'_> {
             (
                 format!(
                     "cage-cell: stopped at {:.1} of {} updates per pair after {steps} steps \
-                     (--epochs or --convergence-window ended it first)",
+                     (--epochs ended it first)",
                     b.mean_updates(),
                     b.per_pair
                 ),

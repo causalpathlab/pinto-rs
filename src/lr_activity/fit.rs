@@ -31,7 +31,7 @@
 //!
 //! The null is sample-level permutation of L within propensity-stratified
 //! buckets — shuffles are restricted to samples sharing the top
-//! `shuffle_stratify_dim` bits of the propensity code, so the cell-type
+//! [`SHUFFLE_STRATIFY_DIM`] bits of the propensity code, so the cell-type
 //! marginal is preserved across permutations. Per shuffle, a *fresh*
 //! log-posterior sample (delta method: `Normal(ψ(a) − log(b), ψ'(a))`) is
 //! drawn and used as the per-permutation log expression for both genes.
@@ -97,6 +97,19 @@ pub fn refuse_reserved_batches<'a>(
 /// samples — correlation + permutation are too noisy below this.
 const MIN_SAMPLES_PER_STRATUM: usize = 4;
 
+/// Random-projection axes for binning cells by propensity.
+const PROPENSITY_DIM: usize = 10;
+
+/// Top propensity bits the shuffle is stratified by.
+pub(super) const SHUFFLE_STRATIFY_DIM: usize = 4;
+
+/// Communities with fewer edges than this are skipped: too sparse to
+/// calibrate.
+const MIN_EDGES_PER_COMMUNITY: usize = 100;
+
+/// The delimiter of compound gene row names (`ENSG..._SYMBOL`).
+const GENE_DELIMITER: char = '_';
+
 /// The flags only `--method contact-effect` takes, refused with a
 /// co-expression method before any data is read.
 pub(crate) fn check_method_flags(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
@@ -152,8 +165,8 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
 
     // Ligand and receptor names name GENES, so they are resolved against the
     // gene axis. Against raw row names they cannot resolve at all on a
-    // splice-channelized matrix: the resolver aliases on `--gene-delimiter`
-    // (default `_`) and never on `/`, so `GENE1` does not reach
+    // splice-channelized matrix: the resolver aliases on [`GENE_DELIMITER`]
+    // (`_`) and never on `/`, so `GENE1` does not reach
     // `GENE1/count/spliced` and every pair is dropped.
     let feature_axis = FeatureAxis::resolve_or_identity(&row_names)?;
     let gene_names: Vec<Box<str>> = feature_axis.feature_names().to_vec();
@@ -167,8 +180,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         );
     }
 
-    let gene_resolver =
-        GeneIndexResolver::build(&gene_names, args.gene_delimiter, args.gene_allow_prefix);
+    let gene_resolver = GeneIndexResolver::build(&gene_names, Some(GENE_DELIMITER), false);
     if gene_resolver.alias_collisions() > 0 {
         warn!(
             "{} gene-name aliases are shared by more than one row (duplicated \
@@ -207,7 +219,7 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         warn!(
             "Skipped {} of {} LR pairs with unresolved gene names; \
              check the pair file's naming against the matrix row names \
-             (--gene-delimiter aliases compound names)",
+             (compound names like ENSG..._SYMBOL are matched by their parts)",
             missing,
             missing + resolved_pairs.len()
         );
@@ -240,13 +252,12 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     // pseudobulk samples will be empty / have constant L or R, collapsing
     // stat_obs to 0 and breaking restandardization).
     let active_strata: HashSet<u32> = (0..n_strata_total as u32)
-        .filter(|&s| strata_map.edges_in(s as usize) >= args.min_edges_per_community)
+        .filter(|&s| strata_map.edges_in(s as usize) >= MIN_EDGES_PER_COMMUNITY)
         .collect();
     let n_skipped = n_strata_total - active_strata.len();
     if n_skipped > 0 {
         info!(
-            "Skipping {} sparse strata (< {} edge instances each)",
-            n_skipped, args.min_edges_per_community
+            "Skipping {n_skipped} sparse strata (< {MIN_EDGES_PER_COMMUNITY} edge instances each)"
         );
     }
 
@@ -405,16 +416,10 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     ///////////////////////////////////////////////////
     // 7. Random projection + propensity binary-sort //
     ///////////////////////////////////////////////////
-    info!(
-        "Random projection (dim {}) + propensity binary-sort...",
-        args.propensity_dim
-    );
-    let proj = data_vec.project_columns_with_batch_correction(
-        args.propensity_dim,
-        None,
-        Some(&cell_batch),
-    )?;
-    let propbin = binary_sort_columns(&proj.proj, args.propensity_dim)?;
+    info!("Random projection (dim {PROPENSITY_DIM}) + propensity binary-sort...");
+    let proj =
+        data_vec.project_columns_with_batch_correction(PROPENSITY_DIM, None, Some(&cell_batch))?;
+    let propbin = binary_sort_columns(&proj.proj, PROPENSITY_DIM)?;
     let (sample_id_per_cell, sample_batch_label, sample_propbin) =
         assign_samples(&cell_batch, &propbin);
     let n_samples = sample_batch_label.len();
@@ -553,7 +558,6 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         strata_map: &strata_map,
         sample_batch_label: &sample_batch_label,
         sample_propbin: &sample_propbin,
-        shuffle_stratify_dim: args.shuffle_stratify_dim,
         n_perm: args.n_permutations,
     };
     let pb = new_progress_bar(n_strata as u64).with_message("strata");
@@ -620,24 +624,19 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
     );
     write_lr_activity(&out_path, &rows)?;
 
-    if args.emit_json {
-        let upstream_meta_path = manifest.to_string_lossy().into_owned();
-        let upstream_meta = crate::util::metadata::PintoMetadata::read(manifest).ok();
-        write_lr_activity_json(
-            &json_path,
-            lc_prefix,
-            upstream_meta.as_ref().map(|_| upstream_meta_path.as_str()),
-            &rows,
-            &strata,
-            args.json_fwer_threshold,
-        )?;
-        info!("Wrote {}", crate::util::staging::final_str(&json_path));
+    let upstream_meta_path = manifest.to_string_lossy().into_owned();
+    let upstream_meta = crate::util::metadata::PintoMetadata::read(manifest).ok();
+    write_lr_activity_json(
+        &json_path,
+        lc_prefix,
+        upstream_meta.as_ref().map(|_| upstream_meta_path.as_str()),
+        &rows,
+        &strata,
+    )?;
+    info!("Wrote {}", crate::util::staging::final_str(&json_path));
 
-        let json = recorded(std::path::Path::new(&json_path));
-        crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| {
-            o.lr_activity = Some(json)
-        });
-    }
+    let json = recorded(std::path::Path::new(&json_path));
+    crate::util::metadata::PintoMetadata::backfill_output(manifest, |o| o.lr_activity = Some(json));
 
     Ok(())
 }

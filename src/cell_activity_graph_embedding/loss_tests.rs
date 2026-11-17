@@ -191,11 +191,11 @@ fn backward_reaches_the_feature_embedding() {
     assert!(mag > 0.0, "gradient reached e_feat but is all zero");
 }
 
-/// `--nce-objective` must actually reach the loss. The two objectives differ in
+/// The objective passed must actually reach the loss. The two objectives differ in
 /// how they normalize (`softmax` puts the positive and its negatives in one
 /// distribution; `logistic` decides each pair alone), so on identical batches
 /// they cannot agree — if they do, the argument is being dropped somewhere
-/// between the flag and `loss.rs`.
+/// on the way into `loss.rs`.
 #[test]
 fn objective_selects_a_different_loss() {
     let dev = Device::Cpu;

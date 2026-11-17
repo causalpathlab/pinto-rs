@@ -345,7 +345,7 @@ fn a_cell_level_draw_names_pairs_of_its_batch() {
         feature_active_edge_weights: vec![vec![1.0; active.len()]],
         feature_active_edges: vec![active.clone()],
     };
-    let cache = build_feature_exp_batch_cache(&activities, &samplers, 1.0);
+    let cache = build_feature_exp_batch_cache(&activities, &samplers);
     let ml = cell_level_hierarchy(n, &pairs);
     let groups: Vec<&[usize]> = vec![&ml.all_cell_labels[0]];
     let sampler = FeatureGatedChainSampler {

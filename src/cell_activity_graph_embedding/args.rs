@@ -18,29 +18,6 @@ pub enum FeatureInclusionMode {
     Moran,
 }
 
-/// CLI mirror of [`graph_embedding_util::loss::NceObjective`] (that crate keeps
-/// its model enums clap-free, so every consumer carries its own wrapper — see
-/// `senna/src/bge/mod.rs` and `faba/src/gem/common.rs`).
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
-#[clap(rename_all = "lowercase")]
-pub enum NceObjectiveArg {
-    /// Per-pair logistic (SGNS): each (positive, negative) pair decided
-    /// independently — cage's historical loss.
-    Logistic,
-    /// Sampled-softmax / InfoNCE: the negatives compete with the positive in one
-    /// softmax. The default here and in `senna bge` / `senna gem`.
-    Softmax,
-}
-
-impl NceObjectiveArg {
-    pub fn to_ge(self) -> graph_embedding_util::loss::NceObjective {
-        match self {
-            Self::Logistic => graph_embedding_util::loss::NceObjective::Logistic,
-            Self::Softmax => graph_embedding_util::loss::NceObjective::Softmax,
-        }
-    }
-}
-
 /// Row-name canonicalization strategy for matching the data's feature
 /// names against external resources (PPI networks, marker lists,
 /// pretrained feature embeddings). `Auto` sniffs the first data file's
@@ -104,9 +81,10 @@ pub const N_NEGATIVES: usize = 8;
 /// Exponent of the power-of-degree negative sampling.
 pub const ALPHA_NEG: f32 = 0.75;
 
-/// Relative loss range over `--convergence-window` epochs below which
-/// training stops.
-pub const CONVERGENCE_TOL: f32 = 0.01;
+/// The NCE objective cage trains, and probes, with: InfoNCE, its negatives
+/// competing with the positive in one softmax.
+pub const NCE_OBJECTIVE: graph_embedding_util::loss::NceObjective =
+    graph_embedding_util::loss::NceObjective::Softmax;
 
 /// Gradient-norm clip of each optimizer step.
 pub const GRAD_CLIP: f32 = 1.0;
@@ -185,10 +163,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Training epochs over the feature axis",
         long_help = "Passes over the feature axis.\n\
                      \n\
-                     With a --convergence-window, the run early-stops once the\n\
-                     loss flattens over that many epochs.\n\
-                     A high value here is a ceiling, not a fixed cost.\n\
-                     \n\
                      Pair with --features-per-epoch to cap per-epoch cost."
     )]
     pub epochs: usize,
@@ -207,8 +181,8 @@ pub struct CellActivityGraphEmbeddingArgs {
                      number times the pair count, so the budget means the same at\n\
                      any data size: steps = N x pairs / pairs touched per step.\n\
                      The log reports the pairs a step touches, the steps this\n\
-                     implies and the steps taken. --epochs caps it;\n\
-                     --convergence-window can end it earlier. cage ignores it.",
+                     implies and the steps taken. --epochs caps it.\n\
+                     cage ignores it.",
         hide = true
     )]
     pub pair_updates: usize,
@@ -306,19 +280,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         hide = true
     )]
     pub lr: f32,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "Exponent on within-feature positive-edge weights a_g[u]·a_g[v]",
-        long_help = "Stage-2 coverage exponent, one axis down from bge's alpha_pb.\n\
-                     Positive edges within a feature are drawn with probability ∝ (a_g[u]·a_g[v])^activity-alpha.\n\
-                     The default of 1.0 keeps the activity-proportional draw.\n\
-                     0.0 makes every active edge of a feature equally likely,\n\
-                     so no high-activity hub pair dominates that feature.",
-        hide = true
-    )]
-    pub activity_alpha: f32,
 
     #[arg(
         long,
@@ -436,35 +397,10 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[command(flatten)]
     pub hvg: HvgCliArgs,
 
-    #[arg(
-        long,
-        default_value_t = 0,
-        help = "Window (epochs) for convergence check; 0 disables",
-        long_help = "After each epoch, look at the recent mean losses.\n\
-                     The window is `convergence-window` epochs wide.\n\
-                     Stop training when their (max − min) / |mean| falls below\n\
-                     a fixed tolerance.\n\
-                     Pass 0 to run all --epochs unconditionally.",
-        hide = true
-    )]
-    pub convergence_window: usize,
-
     /// How the pair latent becomes link communities. Shared verbatim with
     /// `dsvd` — the k-means fallback width is `--embedding-dim` here.
     #[command(flatten)]
     pub edge_clustering: crate::util::edge_clustering::EdgeClusterArgs,
-
-    #[arg(
-        long = "nce-objective",
-        default_value_t = NceObjectiveArg::Softmax,
-        value_enum,
-        help = "NCE objective: softmax or logistic",
-        long_help = "NCE objective. softmax is InfoNCE, where negatives compete.\n\
-                     It is sharper on dense data, and is the default.\n\
-                     logistic is per-pair SGNS, cage's historical loss.",
-        hide = true
-    )]
-    pub nce_objective: NceObjectiveArg,
 
     #[arg(
         long,

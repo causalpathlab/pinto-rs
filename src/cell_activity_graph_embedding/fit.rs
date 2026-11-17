@@ -598,11 +598,7 @@ pub fn fit_cell_activity_graph_embedding(
     );
 
     info!("Precomputing per-(feature, batch) positive distributions...");
-    let cache = build_feature_exp_batch_cache(
-        &super_edge_activities,
-        &samplers_per_exp_batch,
-        args.activity_alpha,
-    );
+    let cache = build_feature_exp_batch_cache(&super_edge_activities, &samplers_per_exp_batch);
     info!(
         "Feature-batch cache: {} active (feature, batch) pairs",
         cache.n_active_pairs()

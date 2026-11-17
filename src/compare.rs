@@ -115,14 +115,6 @@ pub struct CompareArgs {
         help = "--paired: donor bootstrap replicates"
     )]
     pub bootstrap: usize,
-
-    #[arg(
-        long,
-        default_value_t = crate::util::common::DEFAULT_SEED,
-        help = "--paired: bootstrap seed",
-        hide = true
-    )]
-    pub bootstrap_seed: u64,
 }
 
 fn fraction(s: &str) -> Result<f64, String> {
@@ -713,7 +705,7 @@ fn run_paired(args: &CompareArgs) -> anyhow::Result<()> {
         &b,
         &map,
         args.bootstrap,
-        args.bootstrap_seed,
+        crate::util::common::DEFAULT_SEED,
     )?;
     mkdir_parent(&args.out)?;
     std::fs::write(&json, serde_json::to_string_pretty(&report)?)?;
