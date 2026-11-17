@@ -1,7 +1,7 @@
 //! Scoring LR pairs in one stratum against their sample permutations.
 
 use super::pseudobulk::CollapseOut;
-use super::MIN_SAMPLES_PER_STRATUM;
+use super::{MIN_SAMPLES_PER_STRATUM, SHUFFLE_STRATIFY_DIM};
 use crate::lr_activity::orientation::CommunityStrata;
 use crate::lr_activity::outputs::LrActivityRow;
 use crate::util::common::*;
@@ -120,7 +120,6 @@ pub(super) struct ScoreInputs<'a> {
     pub strata_map: &'a CommunityStrata,
     pub sample_batch_label: &'a [Box<str>],
     pub sample_propbin: &'a [usize],
-    pub shuffle_stratify_dim: usize,
     pub n_perm: usize,
 }
 
@@ -151,7 +150,6 @@ pub(super) fn score_pairs_for_stratum(
         strata_map,
         sample_batch_label,
         sample_propbin,
-        shuffle_stratify_dim,
         n_perm,
     } = *inp;
     let c = stratum as usize;
@@ -169,14 +167,10 @@ pub(super) fn score_pairs_for_stratum(
     // (into the stratum's sample list) that may be shuffled together.
     // Pooled strata always shuffle within batch (to preserve batch-level
     // confounders); per-batch strata are unconstrained on the batch axis.
-    // When `shuffle_stratify_dim > 0`, we additionally subgroup by the top
-    // bits of the propensity binary code so the cell-population marginal
-    // is preserved across permutations.
-    let strat_mask: usize = if shuffle_stratify_dim == 0 {
-        0
-    } else {
-        (1usize << shuffle_stratify_dim) - 1
-    };
+    // They are also subgrouped by the top [`SHUFFLE_STRATIFY_DIM`] bits of
+    // the propensity binary code, so the cell-population marginal is
+    // preserved across permutations.
+    let strat_mask: usize = (1usize << SHUFFLE_STRATIFY_DIM) - 1;
     let bucket_idx: Vec<Vec<usize>> = {
         let mut buckets: HashMap<(Box<str>, usize), Vec<usize>> = HashMap::default();
         for (k, &s) in samples_in_stratum.iter().enumerate() {

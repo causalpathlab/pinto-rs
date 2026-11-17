@@ -24,7 +24,7 @@
 //!    rank correlation between `L_send_s` and `R_recv_s` across the
 //!    stratum's samples, sample-weighted by `√(w_send · w_recv)`.
 //! 5. **Null.** Sample-level permutation of `L` within propensity-stratified
-//!    buckets (top `SHUFFLE_STRATIFY_DIM` bits of the propensity code).
+//!    buckets (the top 4 bits of the propensity code).
 //!    Stratification preserves the cell-population marginal — without it,
 //!    free shuffles across populations pick up cell-type-marginal
 //!    correlations and become anti-conservative.

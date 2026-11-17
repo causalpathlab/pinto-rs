@@ -97,16 +97,11 @@ pub fn refuse_reserved_batches<'a>(
 /// samples — correlation + permutation are too noisy below this.
 const MIN_SAMPLES_PER_STRATUM: usize = 4;
 
-/// Westfall-Young FWER cutoff for the JSON sidecar of significant pairs: a
-/// row enters it when its FWER is below this and its restandardized z is
-/// positive. The parquet carries the full table.
-const JSON_FWER_THRESHOLD: f32 = 0.05;
-
 /// Random-projection axes for binning cells by propensity.
 const PROPENSITY_DIM: usize = 10;
 
 /// Top propensity bits the shuffle is stratified by.
-const SHUFFLE_STRATIFY_DIM: usize = 4;
+pub(super) const SHUFFLE_STRATIFY_DIM: usize = 4;
 
 /// Communities with fewer edges than this are skipped: too sparse to
 /// calibrate.
@@ -563,7 +558,6 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         strata_map: &strata_map,
         sample_batch_label: &sample_batch_label,
         sample_propbin: &sample_propbin,
-        shuffle_stratify_dim: SHUFFLE_STRATIFY_DIM,
         n_perm: args.n_permutations,
     };
     let pb = new_progress_bar(n_strata as u64).with_message("strata");
@@ -638,7 +632,6 @@ pub fn fit_srt_lr_activity(args: &SrtLrActivityArgs) -> anyhow::Result<()> {
         upstream_meta.as_ref().map(|_| upstream_meta_path.as_str()),
         &rows,
         &strata,
-        JSON_FWER_THRESHOLD,
     )?;
     info!("Wrote {}", crate::util::staging::final_str(&json_path));
 

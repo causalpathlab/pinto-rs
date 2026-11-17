@@ -145,20 +145,28 @@ pub struct StratumEntry {
     pub edges: Vec<(Box<str>, Box<str>)>,
 }
 
+/// Westfall-Young FWER cutoff for the JSON sidecar of significant pairs: a
+/// row enters it when its FWER is below this and its restandardized z is
+/// positive. The parquet carries the full table.
+const JSON_FWER_THRESHOLD: f32 = 0.05;
+
 /// Write the `{out}.lr_activity.json` sidecar. Strata are emitted only
-/// when at least one row in that stratum has `fwer_wy < fwer_threshold`
-/// (Westfall-Young single-step minP, family-wise error rate).
+/// when at least one row in that stratum has `fwer_wy` below
+/// [`JSON_FWER_THRESHOLD`] (Westfall-Young single-step minP, family-wise
+/// error rate).
 pub fn write_lr_activity_json(
     out_path: &str,
     lc_prefix: &str,
     upstream_metadata: Option<&str>,
     rows: &[LrActivityRow],
     strata: &[StratumEntry],
-    fwer_threshold: f32,
 ) -> anyhow::Result<()> {
     use serde_json::{json, Value};
     let is_sig = |r: &LrActivityRow| {
-        r.fwer_wy.is_finite() && r.fwer_wy < fwer_threshold && r.z_re.is_finite() && r.z_re > 0.0
+        r.fwer_wy.is_finite()
+            && r.fwer_wy < JSON_FWER_THRESHOLD
+            && r.z_re.is_finite()
+            && r.z_re > 0.0
     };
     let n_total = rows.len();
     let n_sig = rows.iter().filter(|r| is_sig(r)).count();
@@ -229,7 +237,7 @@ pub fn write_lr_activity_json(
         "input_metadata": upstream_metadata,
         "n_total_pairs": n_total,
         "n_significant": n_sig,
-        "fwer_threshold": fwer_threshold,
+        "fwer_threshold": JSON_FWER_THRESHOLD,
         "strata": strata_json,
         "results": results_json,
     });
