@@ -178,7 +178,9 @@ pinto cage-cell data.h5 -c coords.csv -o out --feature-modules 20
 
 cage learns an embedding of super-cells (pseudobulks of neighbouring cells) on
 the coarsened spatial graph, one feature at a time, and places every cell and
-cell pair on it. Where most features are noise, a run takes one of two
+cell pair on it with a small encoder. The encoder trains on the super-cells'
+pairs, each thinned at random to a cell pair's depth, and then only encodes
+the cell pairs; under `cage-cell` it trains on the cell pairs. Where most features are noise, a run takes one of two
 remedies, never both. By default the features are embedded through M learned
 modules (sparsemax membership, Martins and Astudillo 2016), writing the module
 tables. `--feature-modules auto`, the default, takes M from the data: features

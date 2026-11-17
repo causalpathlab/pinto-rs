@@ -6,7 +6,10 @@
 //! pairs outnumber cells by an order of magnitude. The map from counts to
 //! that optimum is smooth, so a small encoder trained on the same objective
 //! places every pair in one forward pass, on the device, and its placement
-//! is used as it is.
+//! is used as it is. What it trains on is a [`TrainingSet`]: under `cage`
+//! the finest pseudobulks and their edges, thinned to cell-pair depth, so
+//! the cell pairs are only encoded; under `cage-cell` the cell pairs
+//! themselves.
 //!
 //! The MAP is a function of one statistic. Write `S = Σ_g n_g e_g` for the
 //! count-weighted sum of dictionary rows, `N = Σ_g n_g` for the depth and
@@ -58,6 +61,9 @@ use legume_numeric::candle::fast_index::gather_rows;
 use legume_numeric::candle::nn::seed_uniform_vars;
 
 mod train;
+pub(crate) mod training_set;
+pub(crate) use train::Placed;
+pub(crate) use training_set::TrainingSet;
 
 ///////////////
 // Constants //
@@ -78,6 +84,8 @@ pub(crate) const CELL_BLOCK: usize = 4096;
 /// axis takes fewer rows per pass and a panel takes the caps, and the device
 /// holds a fixed amount of dense work either way.
 const BLOCK_ELEMENTS: usize = 1 << 25;
+/// A training step with fewer pairs than this is skipped.
+pub(crate) const MIN_STEP_PAIRS: usize = 16;
 /// [`PairEncoderSpec::steps`] by default, and `--pair-encoder-steps`'s.
 pub const DEFAULT_PAIR_ENCODER_STEPS: usize = 512;
 /// [`PairEncoderSpec::batch`] by default.
@@ -150,6 +158,11 @@ impl CellRow {
             "a cell profile must be sorted by feature with no duplicates"
         );
         let (features, counts): (Vec<u32>, Vec<f32>) = dict.to_local(profile).into_iter().unzip();
+        Self::from_local(dict, features, counts)
+    }
+
+    /// From counts already on the active axis, sorted by position.
+    pub(crate) fn from_local(dict: &PairDictionary, features: Vec<u32>, counts: Vec<f32>) -> Self {
         let (sums, total, offset) = dict.statistic(&features, &counts);
         Self {
             features,
@@ -208,14 +221,37 @@ pub(crate) struct CorpusStats {
 }
 
 impl CorpusStats {
-    fn new(corpus: &[CellRow], d: usize, dev: &Device) -> anyhow::Result<Self> {
-        let n = corpus.len();
-        let sums: Vec<f32> = corpus.iter().flat_map(|r| r.sums.iter().copied()).collect();
+    /// The statistics of `rows`, in order.
+    fn new<'r>(
+        rows: impl ExactSizeIterator<Item = &'r CellRow> + Clone,
+        d: usize,
+        dev: &Device,
+    ) -> anyhow::Result<Self> {
+        let n = rows.len();
+        let sums: Vec<f32> = rows.clone().flat_map(|r| r.sums.iter().copied()).collect();
         Ok(Self {
             sums: Tensor::from_vec(sums, (n, d), dev)?,
-            totals: Tensor::from_vec(corpus.iter().map(|r| r.total).collect(), n, dev)?,
-            offsets: Tensor::from_vec(corpus.iter().map(|r| r.offset).collect(), n, dev)?,
+            totals: Tensor::from_vec(rows.clone().map(|r| r.total).collect(), n, dev)?,
+            offsets: Tensor::from_vec(rows.map(|r| r.offset).collect(), n, dev)?,
         })
+    }
+
+    /// From row-major `[n × (D + 2)]` rows `[S ‖ N ‖ c]`: one upload, its
+    /// columns taken apart on the device.
+    fn from_packed(rows: Vec<f32>, d: usize, dev: &Device) -> anyhow::Result<Self> {
+        let w = d + 2;
+        let n = rows.len() / w;
+        let packed = Tensor::from_vec(rows, (n, w), dev)?;
+        Ok(Self {
+            sums: packed.narrow(1, 0, d)?.contiguous()?,
+            totals: packed.narrow(1, d, 1)?.squeeze(1)?.contiguous()?,
+            offsets: packed.narrow(1, d + 1, 1)?.squeeze(1)?.contiguous()?,
+        })
+    }
+
+    /// Rows held.
+    pub(crate) fn len(&self) -> usize {
+        self.totals.dims1().unwrap_or(0)
     }
 
     /// The `(S, N)` of `ids`: what the encoder reads.
@@ -235,22 +271,28 @@ impl CorpusStats {
     }
 }
 
-/// Population mean and standard deviation of every cell's statistic
-/// `[S/N ‖ ln(N + 1)]` over the corpus — `(mean, std)`, `[D + 1]` each, the
-/// std floored so a constant coordinate is left alone.
-fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
-    let (sum, sq) = corpus
-        .par_iter()
+/// Population mean and standard deviation of the statistic
+/// `[S/N ‖ ln(N + 1)]` over `n` rows, row `i`'s `(S, N)` from `row(i)` —
+/// `(mean, std)`, `[D + 1]` each, the std floored so a constant coordinate
+/// is left alone.
+fn stat_moments<'r>(
+    d: usize,
+    n: usize,
+    row: impl Fn(usize) -> (&'r [f32], f32) + Sync,
+) -> (Vec<f32>, Vec<f32>) {
+    let (sum, sq) = (0..n)
+        .into_par_iter()
         .fold(
             || (vec![0f64; d + 1], vec![0f64; d + 1]),
-            |(mut sum, mut sq), row| {
-                let n = row.total.max(1.0);
-                for (j, &v) in row.sums.iter().enumerate() {
+            |(mut sum, mut sq), i| {
+                let (sums, total) = row(i);
+                let n = total.max(1.0);
+                for (j, &v) in sums.iter().enumerate() {
                     let v = f64::from(v / n);
                     sum[j] += v;
                     sq[j] += v * v;
                 }
-                let ln_n = f64::from((row.total + 1.0).ln());
+                let ln_n = f64::from((total + 1.0).ln());
                 sum[d] += ln_n;
                 sq[d] += ln_n * ln_n;
                 (sum, sq)
@@ -264,7 +306,7 @@ fn stat_moments(d: usize, corpus: &[CellRow]) -> (Vec<f32>, Vec<f32>) {
                 (a, b)
             },
         );
-    let n = corpus.len().max(1) as f64;
+    let n = n.max(1) as f64;
     let mean: Vec<f32> = sum.iter().map(|&v| (v / n) as f32).collect();
     let std: Vec<f32> = sum
         .iter()
@@ -438,16 +480,16 @@ struct PairForward {
 }
 
 impl PairEncoder {
-    /// An untrained encoder on `dict`, its statistic standardised by the
-    /// corpus, its vars seeded from `seed`.
+    /// An untrained encoder on `dict`, its statistic standardised by
+    /// `(mean, std)` (the moments of the rows it will read in training,
+    /// [`TrainingSet::moments`]), its vars seeded from `seed`.
     pub(crate) fn build(
         dict: &PairDictionary,
-        corpus: &[CellRow],
+        (mean, std): (Vec<f32>, Vec<f32>),
         spec: &PairEncoderSpec,
         seed: u64,
         dev: &Device,
     ) -> anyhow::Result<Self> {
-        let (mean, std) = stat_moments(dict.d, corpus);
         let this = Self::construct(
             DeviceDict::new(dict, &mean, &std, dev)?,
             spec.trunk_width,
@@ -580,7 +622,7 @@ impl PairEncoder {
     /// Every cell of `corpus`'s `(S, N, c)`, uploaded to this encoder's
     /// device: built once per run, read by training and by inference.
     pub(crate) fn corpus_stats(&self, corpus: &[CellRow]) -> anyhow::Result<CorpusStats> {
-        CorpusStats::new(corpus, self.dict.d, self.dict.device())
+        CorpusStats::new(corpus.iter(), self.dict.d, self.dict.device())
     }
 
     /// `[S / max(N, 1) ‖ ln(N + 1)]` standardised by the population moments

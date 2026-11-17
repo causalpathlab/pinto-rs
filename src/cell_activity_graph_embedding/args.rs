@@ -186,8 +186,9 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Optimizer steps for the pair encoder, at least",
         long_help = format!(
             "Optimizer steps the pair encoder trains for, at least: rounded up to\n\
-             whole passes over the pairs, since a pass is always made whole, so\n\
-             many pairs take more.\n\
+             whole passes over the training pairs, since a pass is always made\n\
+             whole, so many pairs take more. The training pairs are the finest\n\
+             super-cells' pairs under cage, and the cell pairs under cage-cell.\n\
              A pass is the pairs split into steps of up to {DEFAULT_PAIR_ENCODER_BATCH}.\n\
              Fewer is faster; too few leaves the encoder near its random start.\n\
              0 skips training."
