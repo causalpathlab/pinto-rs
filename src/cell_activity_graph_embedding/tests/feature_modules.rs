@@ -23,19 +23,18 @@ fn plan(extra: &[&str]) -> anyhow::Result<ModulePlan> {
     parse(extra).unwrap().module_plan()
 }
 
-/// The flag takes `auto`, a count and 0, under its name and its alias;
+/// The flag takes `auto`, a count and 0;
 /// unset it is not given (the default is decided against the other flags).
 /// One module, or a word that is neither, is refused as it is parsed.
 #[test]
 fn the_flag_parses_auto_a_count_and_zero() {
     let given = |extra: &[&str]| parse(extra).unwrap().feature_modules;
     assert_eq!(given(&[]), None);
-    for flag in ["--feature-modules", "--gene-modules"] {
-        assert_eq!(given(&[flag, "auto"]), Some(ModulePlan::Auto));
-        assert_eq!(given(&[flag, "AUTO"]), Some(ModulePlan::Auto));
-        assert_eq!(given(&[flag, "20"]), Some(ModulePlan::Fixed(20)));
-        assert_eq!(given(&[flag, "0"]), Some(ModulePlan::Off));
-    }
+    let flag = "--feature-modules";
+    assert_eq!(given(&[flag, "auto"]), Some(ModulePlan::Auto));
+    assert_eq!(given(&[flag, "AUTO"]), Some(ModulePlan::Auto));
+    assert_eq!(given(&[flag, "20"]), Some(ModulePlan::Fixed(20)));
+    assert_eq!(given(&[flag, "0"]), Some(ModulePlan::Off));
     for bad in ["1", "many", "-3", "2.5"] {
         assert!(
             parse(&["--feature-modules", bad]).is_err(),

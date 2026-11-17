@@ -480,6 +480,7 @@ fn write_effects(path: &str) {
     let hi = [51.0f32, 7.0, f32::NAN, 90.0];
     let names = s(&["0", "1", "2", "3"]);
     let blank = s(&["", "", "", ""]);
+    let all = s(&["all pairs"; 4]);
     let zero = [0f32; 4];
     write_named_table(
         path,
@@ -504,6 +505,11 @@ fn write_effects(path: &str) {
             ("effect_pct".into(), Column::F32(&pct)),
             ("effect_pct_lo".into(), Column::F32(&lo)),
             ("effect_pct_hi".into(), Column::F32(&hi)),
+            ("tau_top".into(), Column::F32(&zero)),
+            ("tau_top_weight".into(), Column::F32(&zero)),
+            ("effect_contrast".into(), Column::F32(&zero)),
+            ("effect_contrast_q".into(), Column::F32(&zero)),
+            ("q_scope".into(), Column::Str(&all)),
         ],
     )
     .unwrap();
@@ -587,6 +593,7 @@ fn simulate_runs_read_back_as_written() {
     let (confounder, shape) = (s("realgene"), s("quadratic"));
     let f = |x: f32| vec![x; n];
     let (code, planted) = (vec![1f32; n], s("R2"));
+    let (no_code, not_planted) = (vec![f32::NAN; n], s(""));
     // The table, with the unadjusted difference's rejections under its old
     // name when `old_name`, without the columns `without`, and with the
     // effect planted in region R2 when `in_region`.
@@ -631,10 +638,13 @@ fn simulate_runs_read_back_as_written() {
             ints.iter()
                 .map(|(k, v)| (k.as_str().into(), Column::I32(v))),
         );
-        if in_region {
-            table.push(("region".into(), Column::F32(&code)));
-            table.push(("planted_region".into(), Column::Str(&planted)));
-        }
+        let (code, planted) = if in_region {
+            (&code, &planted)
+        } else {
+            (&no_code, &not_planted)
+        };
+        table.push(("region".into(), Column::F32(code)));
+        table.push(("planted_region".into(), Column::Str(planted)));
         table.retain(|(k, _)| !without.contains(&k.as_ref()));
         write_named_table(path.to_str().unwrap(), "row", &names, &table).unwrap();
     };

@@ -297,11 +297,7 @@ impl Base {
 
     /// Every chain's newest lupin round made from this run, newest first.
     fn rounds(&self) -> Vec<std::path::PathBuf> {
-        self.run
-            .manifest
-            .as_deref()
-            .map(lupin::latest_rounds)
-            .unwrap_or_default()
+        lupin::latest_rounds(&self.run.manifest)
     }
 
     /// The lupin round at `path`, on the level it annotated.
@@ -494,16 +490,14 @@ fn summarize(args: &ViewArgs) -> anyhow::Result<()> {
     let run = Run::open(args.prefix())?;
     let meta = &run.meta;
     println!("run      {}", run.source());
-    if run.manifest.is_some() {
-        println!(
-            "manifest {} v{}: {} cells, {} features, {} edges",
-            meta.method(),
-            meta.version,
-            meta.n_cells,
-            meta.n_features,
-            meta.n_edges.map_or("?".to_string(), |e| e.to_string())
-        );
-    }
+    println!(
+        "manifest {} v{}: {} cells, {} features, {} edges",
+        meta.method(),
+        meta.version,
+        meta.n_cells,
+        meta.n_features,
+        meta.n_edges.map_or("?".to_string(), |e| e.to_string())
+    );
     let tags: Vec<&str> = run.levels.iter().map(|l| l.tag.as_str()).collect();
     println!("levels   {}", tags.join(" "));
 

@@ -138,9 +138,7 @@ fn pair_layer(run: &data::Run, table: Option<&str>, pair: &str) -> anyhow::Resul
         anyhow::anyhow!(
             "--pair: the run has no lra table; run `pinto lra --from {}` first, or give \
              --lra-table",
-            run.manifest
-                .as_deref()
-                .map_or_else(|| run.prefix.clone(), |m| m.display().to_string())
+            run.manifest.display()
         )
     })?;
     view.select(pair)?;

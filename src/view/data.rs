@@ -1,18 +1,17 @@
 //! Load a pinto run for viewing: manifest → cell geometry ⋈ propensity.
 //!
 //! Everything comes from files a pinto run already writes, through the same
-//! readers the rest of the crate uses: `coord_pairs` for positions and batch
-//! labels, `propensity` for the per-cell community mixture (one per level),
+//! readers the rest of the crate uses: the cells table for positions and
+//! batch labels, `propensity` for the per-cell community mixture (one per level),
 //! and `link_community` for the per-edge labels.
 
 use super::markers::FeatureRates;
 use crate::util::ablation::section_of;
 use crate::util::common::*;
-use crate::util::input::read_one_coord_file;
 use crate::util::metadata::{LevelInfo, PintoMetadata};
 use crate::util::parquet_io::{
-    read_cells_from_coord_pairs, read_cells_table, read_feature_community, read_propensity,
-    visit_link_community, CellTable, PropensityRead,
+    read_cells_table, read_feature_community, read_propensity, visit_link_community, CellTable,
+    PropensityRead,
 };
 use std::path::{Path, PathBuf};
 
@@ -85,37 +84,27 @@ impl Rect {
     }
 }
 
-/// A pinto run on disk: its `.pinto.json`, or, for a run without one, what
-/// [`PintoMetadata::discover`] finds from its file names.
+/// A pinto run on disk, read from its `.pinto.json`.
 pub struct Run {
     /// Output prefix: every output is `{prefix}.…`.
     pub prefix: String,
-    /// The manifest read, if the run has one.
-    pub manifest: Option<PathBuf>,
+    /// The manifest read.
+    pub manifest: PathBuf,
     pub meta: PintoMetadata,
     /// Community levels, coarse cascade levels first and `final` last.
     pub levels: Vec<LevelInfo>,
 }
 
 impl Run {
-    /// Open `{prefix}.pinto.json`, or the manifest itself when given one; a
-    /// prefix without a manifest is discovered from its file names.
+    /// Open `{prefix}.pinto.json`, or the manifest itself when given one,
+    /// as every command opens a prior run
+    /// ([`crate::util::metadata::Run::open`]).
     pub fn open(prefix_or_manifest: &str) -> anyhow::Result<Self> {
-        let (prefix, manifest) = match prefix_or_manifest.strip_suffix(".pinto.json") {
-            Some(prefix) => (prefix.to_string(), Some(PathBuf::from(prefix_or_manifest))),
-            None => {
-                let path = PathBuf::from(crate::util::metadata::manifest_path(prefix_or_manifest));
-                (
-                    prefix_or_manifest.to_string(),
-                    path.exists().then_some(path),
-                )
-            }
-        };
-        let meta = match &manifest {
-            Some(path) => PintoMetadata::read(path)
-                .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?,
-            None => PintoMetadata::discover(&prefix)?,
-        };
+        let crate::util::metadata::Run {
+            prefix,
+            manifest,
+            meta,
+        } = crate::util::metadata::Run::open(prefix_or_manifest)?;
         let levels = meta.level_list();
         anyhow::ensure!(!levels.is_empty(), "{prefix}: no propensity output listed");
         Ok(Run {
@@ -145,13 +134,7 @@ impl Run {
 
     /// Where the run was read from, for messages.
     pub fn source(&self) -> String {
-        match &self.manifest {
-            Some(path) => path.display().to_string(),
-            None => format!(
-                "{} (no .pinto.json; outputs found by file name)",
-                self.prefix
-            ),
-        }
+        self.manifest.display().to_string()
     }
 
     /// Output paths are `{prefix}.…` as typed at fit time, so they are
@@ -195,33 +178,19 @@ impl Run {
         }
     }
 
-    /// Every cell's position: from the run's cells table when it wrote one;
-    /// for older runs, from the cells `coord_pairs` names plus the rest from
-    /// the coordinate file the run was fit with.
+    /// Every cell's position, from the run's cells table.
     pub fn load_geometry(&self) -> anyhow::Result<Geometry> {
         let coord_columns = self.meta.outputs.coord_columns.as_deref();
-        if let Some(table) = self.meta.outputs.cells.as_deref() {
-            let path = self.resolve(table);
-            if path.exists() {
-                match read_cells_table(&path, coord_columns) {
-                    Ok(mut cells) => {
-                        if self.meta.data_files.as_ref().is_some_and(|f| f.len() > 1) {
-                            tile_by_section(&mut cells);
-                        }
-                        return Ok(Geometry::from_cells(cells));
-                    }
-                    Err(e) => log::warn!("{}: {e}; reading coord_pairs instead", path.display()),
-                }
-            }
-        }
-        let pairs = self.meta.outputs.coord_pairs.as_deref().ok_or_else(|| {
+        let table = self.meta.outputs.cells.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "{}: no coord_pairs output listed; was the run fit with --coord?",
+                "{}: no cells table listed; was the run fit with --coord?",
                 self.source()
             )
         })?;
-        let mut cells = read_cells_from_coord_pairs(&self.resolve(pairs), coord_columns)?;
-        self.add_cells_without_edges(&mut cells);
+        let mut cells = read_cells_table(&self.resolve(table), coord_columns)?;
+        if self.meta.data_files.as_ref().is_some_and(|f| f.len() > 1) {
+            tile_by_section(&mut cells);
+        }
         Ok(Geometry::from_cells(cells))
     }
 
@@ -229,47 +198,7 @@ impl Run {
     /// when it had none, several (kept comma-joined, one image each), or
     /// the file is not found beside the manifest or from here.
     pub fn single_coord_file(&self) -> Option<PathBuf> {
-        single_coord_file(self.meta.coord_file.as_deref(), self.manifest.as_deref())
-    }
-
-    /// For runs written before the cells table: `coord_pairs` only names
-    /// cells with an edge, and the coordinate file the run was fit with has
-    /// every cell; add the rest from it. Only for a
-    /// single batch: the file does not say which batch a lone cell is in.
-    fn add_cells_without_edges(&self, cells: &mut CellTable) {
-        let Some(file) = self.meta.coord_file.as_deref() else {
-            return;
-        };
-        if cells.batches.is_some() || file.contains(',') {
-            return;
-        }
-        let path = self.resolve(file);
-        let read = read_one_coord_file(&path.to_string_lossy(), &[], &cells.coord_col_names, None);
-        let coords = match read {
-            Ok(coords) if coords.mat.ncols() >= 2 => coords,
-            Ok(_) => return,
-            Err(e) => {
-                log::warn!("{}: {e}; cells without edges are left out", path.display());
-                return;
-            }
-        };
-        let before = cells.names.len();
-        let mut in_graph = cells.in_graph.take().unwrap_or_else(|| vec![true; before]);
-        for (r, name) in coords.rows.iter().enumerate() {
-            if !cells.index.contains_key(name) {
-                cells.index.insert(name.clone(), cells.names.len());
-                cells.names.push(name.clone());
-                cells.coords.push((coords.mat[(r, 0)], coords.mat[(r, 1)]));
-                in_graph.push(false);
-            }
-        }
-        cells.in_graph = Some(in_graph);
-        log::info!(
-            "{} cells outside the graph (dropped by QC, or without neighbours) \
-             added from {}",
-            cells.names.len() - before,
-            path.display()
-        );
+        single_coord_file(self.meta.coord_file.as_deref(), &self.manifest)
     }
 
     pub fn load_communities(
@@ -726,10 +655,6 @@ impl Edges {
 
 /// [`Run::single_coord_file`] of a manifest's `coord_file`.
 /// Several files are kept comma-joined, which names no file, so none.
-pub fn single_coord_file(coord_file: Option<&str>, manifest: Option<&Path>) -> Option<PathBuf> {
-    let file = coord_file?;
-    match manifest {
-        Some(m) => crate::util::metadata::resolve_beside(m, file),
-        None => Some(PathBuf::from(file)).filter(|p| p.is_file()),
-    }
+pub fn single_coord_file(coord_file: Option<&str>, manifest: &Path) -> Option<PathBuf> {
+    crate::util::metadata::resolve_beside(manifest, coord_file?)
 }

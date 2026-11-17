@@ -11,8 +11,8 @@ use crate::lr_activity::ligand_effect::verdict::Verdict;
 /// The effect against one negative control: the effect minus the
 /// control's (log rate ratio), and the two-sided q of that difference, so a
 /// small q can also mean the effect falls short of the control. Tested
-/// among the pairs with an effect, so NaN for the rest, for a control that
-/// could not be checked, and in a table from before these columns.
+/// among the pairs with an effect, so NaN for the rest and for a control
+/// that could not be checked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Control {
     pub over: f64,
@@ -64,7 +64,7 @@ pub struct PairRow {
     /// sensitivity fits read.
     pub threshold: f64,
     /// The threshold the average over thresholds leans on most, and its
-    /// weight; NaN in a table from before the average.
+    /// weight.
     pub tau_top: f64,
     pub tau_top_weight: f64,
     /// The effect against each negative control, in [`CONTROLS`] order.
@@ -99,9 +99,8 @@ impl From<&PairRow> for PooledEffect {
 
 /// The pooled rows of a contact-effect table, in table order, and which
 /// pairs its q-values were corrected over (its `q_scope`: [`super::Q_SCOPE_ALL`],
-/// or a `--only` subset's words); a table from before the column says
-/// nothing.
-pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<str>>)> {
+/// or a `--only` subset's words).
+pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     use legume_numeric::matrix::parquet::read_table_columns;
     let strings = [
         "section",
@@ -125,25 +124,24 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Option<Box<st
         "n_receivers",
         "n_competent",
         "n_exposed",
+        "tau_top",
+        "tau_top_weight",
     ];
-    // Tables from before `q_scope` have none.
-    let (s, x) = read_table_columns(path, &strings, &numbers)
-        .or_else(|_| read_table_columns(path, &strings[..strings.len() - 1], &numbers))?;
-    let q_scope = s.get(6).and_then(|v| v.first().cloned());
-    // Tables from before the average over thresholds and the controls'
-    // columns have none.
-    let rows = s[0].len();
-    let [tau_top, tau_top_weight] = &later_columns(path, &["tau_top", "tau_top_weight"], rows)[..]
-    else {
-        unreachable!("two columns asked, two read")
-    };
-    let control_columns: Vec<&str> = CONTROLS
-        .iter()
-        .flat_map(|c| [c.column, c.column_q])
+    // the controls' columns follow the named ones, tau_top's two last
+    let n = numbers.len();
+    let numbers: Vec<&str> = numbers
+        .into_iter()
+        .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_q]))
         .collect();
-    let controls = later_columns(path, &control_columns, rows);
-    // Each control's difference and its q.
+    let (s, mut x) = read_table_columns(path, &strings, &numbers)?;
+    let q_scope = s[6]
+        .first()
+        .cloned()
+        .unwrap_or_else(|| super::Q_SCOPE_ALL.into());
+    // Each control's difference and its q, after tau_top and its weight.
+    let controls = x.split_off(n);
     let controls: Vec<&[Vec<f64>]> = controls.chunks(2).collect();
+    let (tau_top, tau_top_weight) = (&x[n - 2], &x[n - 1]);
     let count = |v: f64| {
         if v.is_finite() && v > 0. {
             v as usize
@@ -266,26 +264,6 @@ fn as_written(v: f64) -> f64 {
     v.to_string().parse().unwrap_or(f64::from(v))
 }
 
-/// The columns `names` a table from an earlier version may lack, in one
-/// read when it has them all, else one by one, each missing one NaN.
-fn later_columns(path: &str, names: &[&str], rows: usize) -> Vec<Vec<f64>> {
-    legume_numeric::matrix::parquet::read_table_columns(path, &[], names)
-        .map(|(_, x)| x)
-        .unwrap_or_else(|_| {
-            names
-                .iter()
-                .map(|n| later_column(path, n).unwrap_or_else(|| vec![f64::NAN; rows]))
-                .collect()
-        })
-}
-
-/// Column `name` of the table, or None where it has none.
-fn later_column(path: &str, name: &str) -> Option<Vec<f64>> {
-    legume_numeric::matrix::parquet::read_table_columns(path, &[], &[name])
-        .ok()
-        .and_then(|(_, mut c)| c.pop())
-}
-
 /// `{out}.lra-simulate.parquet` as read: confounder and shape,
 /// [`SIM_NUMBERS`] and each compared method's rejections.
 struct SimTable<'p> {
@@ -293,8 +271,8 @@ struct SimTable<'p> {
     strings: Vec<Vec<Box<str>>>,
     numbers: Vec<Vec<f64>>,
     rejects: Vec<Vec<f64>>,
-    /// The `region` column, when the table has one.
-    region: Option<Vec<f64>>,
+    /// The `region` column.
+    region: Vec<f64>,
 }
 
 impl<'p> SimTable<'p> {
@@ -307,17 +285,15 @@ impl<'p> SimTable<'p> {
         let names: Vec<&str> = SIM_NUMBERS
             .into_iter()
             .chain(reject_names.iter().map(String::as_str))
+            .chain([REGION])
             .collect();
         let (strings, mut numbers) =
             legume_numeric::matrix::parquet::read_table_columns(path, &[CONFOUNDER, SHAPE], &names)
                 .with_context(|| {
                     format!("{path} is not a table this version of lra-simulate wrote")
                 })?;
+        let region = numbers.pop().expect("the region column read last");
         let rejects = numbers.split_off(SIM_NUMBERS.len());
-        // A table from before regions were planted has no region column.
-        let region = legume_numeric::matrix::parquet::read_table_columns(path, &[], &[REGION])
-            .ok()
-            .and_then(|(_, mut n)| n.pop());
         Ok(Self {
             path,
             strings,
@@ -365,12 +341,7 @@ impl<'p> SimTable<'p> {
             dose_response: self.flag(DOSE_RESPONSE, i),
             dose_midpoint: self.num(DOSE_MIDPOINT, i),
             dose_order: self.col(DOSE_ORDER)[i] as i32,
-            region: self
-                .region
-                .as_ref()
-                .map(|r| r[i])
-                .filter(|v| v.is_finite())
-                .map(|v| v as u32),
+            region: self.region[i].is_finite().then(|| self.region[i] as u32),
         })
     }
 
@@ -386,8 +357,7 @@ impl<'p> SimTable<'p> {
 }
 
 /// The region the runs of `{out}.lra-simulate.parquet` were planted in, by
-/// name; `None` where they were planted everywhere, or the table is from
-/// before regions were named.
+/// name; `None` where they were planted everywhere.
 pub fn read_planted_region(path: &str) -> Option<Box<str>> {
     let (mut s, _) =
         legume_numeric::matrix::parquet::read_table_columns(path, &[sim_cols::PLANTED_REGION], &[])

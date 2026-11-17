@@ -73,10 +73,10 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
     assert!(wrong.is_empty(), "{}\nall: {counts:?}", wrong.join("\n"));
 }
 
-/// A renamed flag takes its new name and keeps its old one as a hidden
-/// alias, so command lines written before the rename still parse.
+/// Flags parse by their names: cage's community count by either of its
+/// two, compare's levels as one or A,B.
 #[test]
-fn renamed_flags_parse_by_their_new_and_old_names() {
+fn flags_parse_by_their_names() {
     let parses = |argv: &[&str]| Cli::try_parse_from(argv).map(|c| c.commands);
     let cage = |flag: &str| match parses(&["pinto", "fit", "cage", "d.zarr", "-o", "o", flag, "7"])
     {
@@ -96,64 +96,7 @@ fn renamed_flags_parse_by_their_new_and_old_names() {
     assert_eq!(levels(&[]), both("final", "final"));
     assert_eq!(levels(&["--level", "draft"]), both("draft", "draft"));
     assert_eq!(levels(&["--level", "L1,L2"]), both("L1", "L2"));
-    assert_eq!(levels(&["--level-a", "draft"]), both("draft", "final"));
     assert!(parses(&["pinto", "compare", "a", "b", "-o", "o", "--level", "L1,L2,L3"]).is_err());
-    assert!(parses(&[
-        "pinto",
-        "compare",
-        "a",
-        "b",
-        "-o",
-        "o",
-        "--level",
-        "L1",
-        "--level-b",
-        "L2"
-    ])
-    .is_err());
-
-    for flag in ["-c", "--coord", "--coords"] {
-        match parses(&["pinto", "sim", "new", "-o", "o", flag, "x.csv"]) {
-            Ok(Commands::Sim(Sim::New(a))) => assert_eq!(a.coords.len(), 1, "{flag}"),
-            other => panic!("{flag}: {other:?}"),
-        }
-    }
-    for flag in ["--n-clusters", "--k"] {
-        match parses(&[
-            "pinto", "sim", "baseline", "--truth", "t", "-o", "o", flag, "4",
-        ]) {
-            Ok(Commands::Sim(Sim::Baseline(a))) => assert_eq!(a.k, Some(4), "{flag}"),
-            other => panic!("{flag}: {other:?}"),
-        }
-    }
-    for flag in ["--data-files", "--expr-data-files", "-d"] {
-        let argv = [
-            "pinto",
-            "apply",
-            "propensity",
-            "-z",
-            "l.parquet",
-            "-e",
-            "p.parquet",
-            "-o",
-            "o",
-            flag,
-            "x.zarr",
-        ];
-        assert!(parses(&argv).is_ok(), "{flag}");
-    }
-    for flag in ["--feature-name-mode", "--feature-names"] {
-        match parses(&[
-            "pinto", "apply", "residual", "--from", "r", "-o", "o", flag, "gene",
-        ]) {
-            Ok(Commands::Apply(Apply::Residual(a))) => assert_ne!(
-                a.feature_names,
-                crate::cell_activity_graph_embedding::args::FeatureNameMode::Exact,
-                "{flag}"
-            ),
-            other => panic!("{flag}: {other:?}"),
-        }
-    }
 }
 
 /// `--max-threads` parses on any command, before or after it, and reaches

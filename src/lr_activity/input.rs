@@ -468,8 +468,11 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .into_iter()
         .map(|b| b.unwrap_or_else(|| crate::lr_activity::fit::BATCH_LABEL_ALL.into()))
         .collect();
-    let prefix = &input.run.as_ref().expect("from a run").prefix;
-    let coords = read_coords(prefix, &cell_to_col, n_cells)?;
+    let run = input.run.as_ref().expect("from a run");
+    let cells = run
+        .recorded_output(run.meta.outputs.cells.as_deref(), "cells.parquet")?
+        .ok_or_else(|| anyhow::anyhow!("{}: records no cells table", run.manifest.display()))?;
+    let coords = read_coords(&cells, &cell_to_col, n_cells)?;
     // A residual fit's cell types are its stage-1 run's: donor-invariant.
     let manifest = match &input.stage1 {
         Some(s1) => &s1.manifest,
@@ -507,23 +510,13 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
     })
 }
 
-/// Coordinates per data column from the `lc` run: `{prefix}.cells.parquet`
-/// when the run wrote one, else the endpoints in `{prefix}.coord_pairs.parquet`.
+/// Coordinates per data column from the run's cells table `cells`.
 fn read_coords(
-    lc_prefix: &str,
+    cells: &Path,
     cell_to_col: &HashMap<Box<str>, usize>,
     n_cells: usize,
 ) -> anyhow::Result<Vec<Option<(f32, f32)>>> {
-    use crate::util::parquet_io::{read_cells_from_coord_pairs, read_cells_table};
-    let cells = std::path::PathBuf::from(format!("{lc_prefix}.cells.parquet"));
-    let table = if cells.exists() {
-        read_cells_table(&cells, None)?
-    } else {
-        read_cells_from_coord_pairs(
-            std::path::Path::new(&format!("{lc_prefix}.coord_pairs.parquet")),
-            None,
-        )?
-    };
+    let table = crate::util::parquet_io::read_cells_table(cells, None)?;
     let mut out = vec![None; n_cells];
     let mut found = 0usize;
     for (name, &xy) in table.names.iter().zip(&table.coords) {
@@ -535,11 +528,7 @@ fn read_coords(
     anyhow::ensure!(
         found > 0,
         "no cell of the data has coordinates in {}",
-        if cells.exists() {
-            cells.display().to_string()
-        } else {
-            format!("{lc_prefix}.coord_pairs.parquet")
-        }
+        cells.display()
     );
     Ok(out)
 }

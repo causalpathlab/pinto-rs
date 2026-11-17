@@ -86,10 +86,8 @@ pub struct SimParams {
     pub pve_section: f64,
     /// Donors (0-based, in panel order) with no shift: no donor-wide,
     /// donor-by-cell-type or section shift, on any of their sections.
-    #[serde(alias = "clean_donors")]
     pub unconfounded_donors: Vec<usize>,
     /// Sections (0-based, in panel order) with no section shift.
-    #[serde(alias = "clean_sections")]
     pub unconfounded_sections: Vec<usize>,
     /// Unconfounded donors drawn at random from the seed instead of listed:
     /// among the donors other than the donor-only domain's owner when there
@@ -198,8 +196,6 @@ fn composition_shift() -> SimParams {
 /// A named scenario: what it is, and its settings.
 pub struct Scenario {
     pub name: &'static str,
-    /// Earlier names, still accepted and never listed.
-    pub aliases: &'static [&'static str],
     pub about: &'static str,
     pub params: fn() -> SimParams,
 }
@@ -209,7 +205,6 @@ pub struct Scenario {
 pub const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "unconfounded",
-        aliases: &["L0"],
         about: "3 donors, 2 sections each; 4 spatial domains shared by every donor, \
                 each 95% one cell type; cell type 30% of the log rate's variance; \
                 no donor-wide, donor-by-cell-type or section shift",
@@ -217,7 +212,6 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "donor-confounded",
-        aliases: &["L1"],
         about: "3 donors, 2 sections each; 4 spatial domains shared by every donor, \
                 each 95% one cell type; cell type 30% of the log rate's variance, \
                 plus a donor-wide shift (15%), a donor-by-cell-type shift (15%) and a \
@@ -226,7 +220,6 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "donor-confounded-donor-only-cell-type",
-        aliases: &["L2"],
         about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
                 cell type 30% of the log rate's variance, a donor-wide shift (15%), \
                 a donor-by-cell-type shift (15%) and a section shift (2%); and a domain \
@@ -236,7 +229,6 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "donor-confounded-donor-only-mix",
-        aliases: &["L2-mix"],
         about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
                 cell type 30% of the log rate's variance, a donor-wide shift (15%), \
                 a donor-by-cell-type shift (15%) and a section shift (2%); and a domain \
@@ -246,7 +238,6 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "composition-shift",
-        aliases: &["null-shift"],
         about: "3 donors, 2 sections each; 4 spatial domains shared by every donor; \
                 cell type 30% of the log rate's variance; no donor-wide, \
                 donor-by-cell-type or section shift, but donors differ in domain \
@@ -257,15 +248,12 @@ pub const SCENARIOS: &[Scenario] = &[
     },
 ];
 
-/// The scenario named `name`, by its name or an earlier one.
+/// The scenario named `name`.
 pub fn find_scenario(name: &str) -> anyhow::Result<&'static Scenario> {
-    SCENARIOS
-        .iter()
-        .find(|s| s.name == name || s.aliases.contains(&name))
-        .ok_or_else(|| {
-            let names: Vec<&str> = SCENARIOS.iter().map(|s| s.name).collect();
-            anyhow::anyhow!("unknown scenario {name:?}; one of {}", names.join(", "))
-        })
+    SCENARIOS.iter().find(|s| s.name == name).ok_or_else(|| {
+        let names: Vec<&str> = SCENARIOS.iter().map(|s| s.name).collect();
+        anyhow::anyhow!("unknown scenario {name:?}; one of {}", names.join(", "))
+    })
 }
 
 impl SimParams {
@@ -509,9 +497,7 @@ impl SimParams {
 
 /// `value` with fields set by `key=value` (`--set`), the value read as JSON
 /// when it parses (numbers, booleans, lists) and as a string otherwise. A key
-/// may be a field's earlier name, a serde alias, so `T` must deny unknown
-/// fields; a key that is neither is an error naming the fields, each one a
-/// `noun`.
+/// that names no field is an error naming the fields, each one a `noun`.
 pub fn set_fields<T: Serialize + serde::de::DeserializeOwned>(
     value: &T,
     sets: &[String],
@@ -525,26 +511,12 @@ pub fn set_fields<T: Serialize + serde::de::DeserializeOwned>(
         let (k, raw) = s
             .split_once('=')
             .ok_or_else(|| anyhow::anyhow!("--set {s:?}: expected key=value"))?;
-        let field = if obj.contains_key(k) {
-            k.to_string()
-        } else {
-            // an alias of the one field whose value it can stand in for
-            let alias_of = |f: &String| {
-                let mut o = obj.clone();
-                let v = o.remove(f);
-                o.insert(k.to_string(), v.unwrap_or_default());
-                serde_json::from_value::<T>(serde_json::Value::Object(o)).is_ok()
-            };
-            match obj.keys().find(|f| alias_of(f)) {
-                Some(f) => f.clone(),
-                None => {
-                    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
-                    anyhow::bail!("--set {k}: no such {noun} (one of {})", keys.join(", "));
-                }
-            }
-        };
+        if !obj.contains_key(k) {
+            let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+            anyhow::bail!("--set {k}: no such {noun} (one of {})", keys.join(", "));
+        }
         let val = serde_json::from_str(raw).unwrap_or(serde_json::Value::String(raw.into()));
-        obj.insert(field, val);
+        obj.insert(k.to_string(), val);
     }
     serde_json::from_value(v).map_err(|e| anyhow::anyhow!("--set: {e}"))
 }

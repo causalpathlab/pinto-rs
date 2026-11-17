@@ -1,11 +1,5 @@
 //! Where a command sits in pinto's verbs: `pinto fit lc`, `pinto apply
 //! residual`, `pinto lra simulate`, `pinto sim new`, `pinto session list`.
-//!
-//! Before 0.17 every command sat at the top (`pinto lc`, `pinto residual`,
-//! `pinto lra-simulate`, `pinto srt-simulate`, `pinto sessions`). Those
-//! names still run, moved under their verb as the line is read
-//! ([`with_verb`]); the leaves keep them as aliases, so [`find`] takes them
-//! too.
 
 use clap::Command;
 
@@ -14,9 +8,15 @@ use clap::Command;
 #[cfg(any(feature = "view", test))]
 pub(crate) const VERBS: [&str; 4] = ["fit", "apply", "sim", "session"];
 
-/// The command named `word` (its name or an alias) at the top of `cli` or
-/// one command down: the command it is under, if any, and the command.
+/// The command named `word` at the top of `cli` or
+/// one command down, or by its path (`lra simulate`, `sim new`): the
+/// command it is under, if any, and the command.
+#[cfg(any(feature = "view", test))]
 pub(crate) fn find<'c>(cli: &'c Command, word: &str) -> Option<(Option<&'c Command>, &'c Command)> {
+    if let Some((verb, leaf)) = word.split_once(' ') {
+        let verb = cli.find_subcommand(verb)?;
+        return verb.find_subcommand(leaf).map(|c| (Some(verb), c));
+    }
     if let Some(c) = cli.find_subcommand(word) {
         return Some((None, c));
     }
@@ -25,6 +25,7 @@ pub(crate) fn find<'c>(cli: &'c Command, word: &str) -> Option<(Option<&'c Comma
 }
 
 /// The names from the top of a command [`find`] found: `fit lc`.
+#[cfg(any(feature = "view", test))]
 pub(crate) fn path<'c>((under, cmd): (Option<&'c Command>, &'c Command)) -> Vec<&'c str> {
     under
         .into_iter()
@@ -73,82 +74,6 @@ pub(crate) fn path_len(argv: &[String]) -> usize {
         Some("lra") if argv.get(1).is_some_and(|w| w == "simulate") => 2,
         Some(_) => 1,
     }
-}
-
-/// The top-level names before 0.17 of what now sits under a verb, with
-/// their aliases: only these are moved ([`with_verb`]), so `pinto
-/// simulate` or `pinto list` is no shortcut.
-const OLD_NAMES: [&str; 29] = [
-    "lc",
-    "link-community",
-    "dsvd",
-    "delta-svd",
-    "cage",
-    "cge",
-    "cage-cell",
-    "spatialde2",
-    "stagate",
-    "spatialpca",
-    "mefisto",
-    "spatialde2-pb",
-    "stagate-pb",
-    "spatialpca-pb",
-    "mefisto-pb",
-    "residual",
-    "predict",
-    "impute",
-    "propensity",
-    "prop",
-    "lra-simulate",
-    "srt-simulate",
-    "srt-sim-score",
-    "srt-sim-pairs",
-    "srt-sim-baseline",
-    "attach",
-    "sessions",
-    "kill",
-    "rename",
-];
-
-/// `argv` (with the program) with a command named as before 0.17 moved
-/// under its verb (`pinto lc …` read as `pinto fit lc …`, `pinto help lc`
-/// as `pinto help fit lc`), and a note saying so; unchanged otherwise.
-/// Global flags ahead of the command are skipped.
-pub(crate) fn with_verb(cli: &Command, mut argv: Vec<String>) -> (Vec<String>, Option<String>) {
-    let mut at = 1;
-    while let Some(w) = argv.get(at) {
-        if w == "--" || !w.starts_with('-') {
-            break;
-        }
-        // a global flag's value may follow as its own word
-        at += if takes_value(cli, w) { 2 } else { 1 };
-    }
-    if argv.get(at).is_some_and(|w| w == "help") {
-        at += 1;
-    }
-    let Some(word) = argv.get(at).filter(|w| OLD_NAMES.contains(&w.as_str())) else {
-        return (argv, None);
-    };
-    let Some(found @ (Some(verb), _)) = find(cli, word) else {
-        return (argv, None);
-    };
-    let note = format!(
-        "pinto: `pinto {word}` is now `pinto {}`; the old name goes after 0.17",
-        path(found).join(" ")
-    );
-    argv.insert(at, verb.get_name().to_string());
-    (argv, Some(note))
-}
-
-/// Whether `word` is a global flag of `cli` given without its value
-/// (`--max-threads`, not `--max-threads=4`), so the value is the next word.
-fn takes_value(cli: &Command, word: &str) -> bool {
-    let long = word.strip_prefix("--");
-    cli.get_arguments().any(|a| {
-        a.is_global_set()
-            && a.get_action().takes_values()
-            && long.is_some_and(|l| a.get_long() == Some(l))
-    })
 }
 
 #[cfg(test)]

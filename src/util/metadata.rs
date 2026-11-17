@@ -96,17 +96,6 @@ impl Run {
         })
     }
 
-    /// The run `run` names, as [`Self::open`] has it, or `None` when no
-    /// manifest file is there. A manifest that is there but cannot be read
-    /// is an error, not a run without one.
-    pub fn open_if_exists(run: &str) -> anyhow::Result<Option<Self>> {
-        if Self::manifest_of(run).is_file() {
-            Self::open(run).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
     /// The manifest file `run` names: itself when it is a file, else the
     /// manifest of the prefix it is.
     fn manifest_of(run: &str) -> PathBuf {
@@ -125,8 +114,7 @@ impl Run {
     /// An output the manifest records as `recorded`, found without the
     /// working directory: the recorded path when absolute, beside the
     /// manifest when relative. A record that names the run's own
-    /// `{prefix}.{suffix}` as the fit's prefix had it (an older manifest,
-    /// relative to the directory it was fitted from, or a run moved since)
+    /// `{prefix}.{suffix}` as the fit's prefix had it (a run moved since)
     /// is also found at the run's own file under its prefix now; any other
     /// record is not, so a stale file under the prefix is never taken for
     /// a recorded one that is gone. `None` when the manifest records none;
@@ -192,8 +180,7 @@ pub struct PintoMetadata {
     pub coord_file: Option<String>,
 
     pub n_cells: usize,
-    /// One per feature-axis entry. Older files wrote it as `n_genes`.
-    #[serde(alias = "n_genes")]
+    /// One per feature-axis entry.
     pub n_features: usize,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,10 +307,6 @@ pub enum BatchLabels {
     /// ([`crate::util::input::data_file_name`]).
     #[serde(rename = "file-names")]
     Files,
-    /// One batch per data file, named by its position (`0`, `1`, …): how
-    /// an older pinto named them, read to match a query to its batches.
-    #[serde(rename = "files")]
-    FilePositions,
     BatchFiles,
     AutoBatch,
 }
@@ -396,25 +379,16 @@ pub fn recorded_files(files: &[Box<str>]) -> Vec<String> {
 /// `--knn-expr` when it did not — those are the same graph either way, since
 /// without coordinates the expression graph IS the base graph. `knn_expr` is
 /// the augmentation, and is meaningful only alongside a `coord_file`.
-///
-/// Every field is `#[serde(default)]`: this block gains fields over time, and
-/// a manifest written by an older build must stay readable rather than
-/// failing the WHOLE file: `PintoMetadata::backfill_output` leaves a manifest
-/// it cannot read as it was, so a hard failure here loses every later record.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(default)]
 pub struct GraphParams {
     /// Neighbours per cell in the base graph: spatial under `--coord`,
     /// expression without it.
-    ///
-    /// `0` only ever means "an older writer omitted this" — no run builds a
-    /// 0-NN graph, and `resolve_knn` refuses one.
     pub knn_base: usize,
     /// Neighbours per cell in the expression graph unioned in. `0` means none,
     /// which is the default under `--coord` and always the case without it.
     /// So `knn_expr > 0` is the test for "this run was augmented" — there is
     /// no second field saying so, because a stored copy could contradict this
-    /// one under `#[serde(default)]`.
+    /// one.
     ///
     /// This is what was ASKED FOR, not what the union yielded: a scoped search
     /// whose every component is smaller than k contributes no edges and still
@@ -424,7 +398,7 @@ pub struct GraphParams {
     /// `--knn-expr-scope`, as its CLI spelling. Absent when no expression
     /// search ran — recording it there would assert a scoping decision the run
     /// never made.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knn_expr_scope: Option<String>,
     /// `--reciprocal`: mutual-KNN instead of union-KNN. Applies to every graph
     /// the run builds and changes the edge set, so two runs differing only in
@@ -434,8 +408,8 @@ pub struct GraphParams {
     /// batch-corrected projection: by a fit only when it estimated a δ, so
     /// its counts are divided too. A query of the model builds its graph
     /// alike. Absent: on the projection as read (spatial, one batch, no
-    /// δ, `--ignore-batch`, `--auto-batch`, or an older run).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    /// δ, `--ignore-batch` or `--auto-batch`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub base_batch_corrected: bool,
 }
 
@@ -506,11 +480,9 @@ pub struct OutputFiles {
     pub coord_pairs: Option<String>,
 
     /// Bare coordinate column basenames (without the `left_`/`right_`
-    /// prefix) that the writer emitted alongside `coord_pairs`. The
-    /// reader uses these in fixed order — `[x, y]` — instead of the
-    /// fragile auto-discovery over `left_*` schema fields.
-    /// `None` for older runs that pre-date this field; readers fall
-    /// back to auto-discovery in that case.
+    /// prefix) that the writer emitted alongside `coord_pairs`, in the
+    /// order readers take them: `[x, y]`.
+    /// `None` for a run without coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coord_columns: Option<Vec<String>>,
 
@@ -527,12 +499,12 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_community: Option<String>,
 
-    #[serde(alias = "gene_community", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_community: Option<String>,
 
     /// Every feature_community the run wrote (its levels' too) was fitted
     /// on counts divided by its batch effect, `batch_effects`. Absent: on
-    /// the counts as read (one batch, `--ignore-batch`, or an older run).
+    /// the counts as read (one batch or `--ignore-batch`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub feature_community_batch_adjusted: bool,
 
@@ -612,7 +584,7 @@ pub struct OutputFiles {
     pub feature_embedding: Option<String>,
 
     /// `pinto fit cage` per-feature bias `[G]`.
-    #[serde(alias = "gene_bias", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_bias: Option<String>,
 
     /// `pinto apply predict` of an lc / dsvd model: one row per held-out unit, its
@@ -652,7 +624,7 @@ pub struct DictMergeFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_nnz: Option<usize>,
     /// How many features cleared that cutoff.
-    #[serde(alias = "genes_scored", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub features_scored: Option<usize>,
     /// The cosine the tree was cut at (`--merge-cut`); absent when it was
     /// not cut.
@@ -676,7 +648,7 @@ pub struct LevelInfo {
     /// truth run, whose levels the viewer draws without edges.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_community: Option<String>,
-    #[serde(alias = "gene_community", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_community: Option<String>,
     /// A name per community, `C{k}` → `community_names[k]`, for levels
     /// whose communities have names of their own (a simulation's planted
@@ -699,7 +671,7 @@ impl PintoMetadata {
 
     /// Whether the run's expression-mode base graph was built on the
     /// batch-corrected projection, as its manifest records
-    /// ([`GraphParams::base_batch_corrected`]); false for an older run.
+    /// ([`GraphParams::base_batch_corrected`]).
     pub fn base_graph_batch_corrected(&self) -> bool {
         self.graph.as_ref().is_some_and(|g| g.base_batch_corrected)
     }
@@ -797,74 +769,6 @@ impl PintoMetadata {
                 })
                 .collect(),
         }
-    }
-
-    #[cfg(feature = "view")]
-    /// Rebuild what the manifest of a run without one would list, from the
-    /// `{prefix}.…` files that exist: `coord_pairs`, a level per
-    /// `L{n}.propensity` and `final` for the bare `propensity`, named by the
-    /// same rules the writers use ([`lc_level_info`], [`final_level_info`]).
-    /// Older runs wrote `gene_topic` for `feature_community`.
-    pub fn discover(prefix: &str) -> anyhow::Result<Self> {
-        let exists = |p: &str| Path::new(p).exists();
-        let coord_pairs = format!("{prefix}.coord_pairs.parquet");
-        anyhow::ensure!(
-            exists(&coord_pairs),
-            "neither {prefix}.pinto.json nor {coord_pairs} exists"
-        );
-
-        let path = Path::new(prefix);
-        let dir = path
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let cascade_head = format!(
-            "{}.L",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        );
-        let mut cascade: Vec<usize> = std::fs::read_dir(dir)?
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                let rest = name.strip_prefix(&cascade_head)?;
-                rest.strip_suffix(".propensity.parquet")?.parse().ok()
-            })
-            .collect();
-        cascade.sort_unstable();
-        let tail = cascade.last().map_or(0, |l| l + 1);
-
-        let keep = |p: Option<String>| p.filter(|p| exists(p));
-        let levels: Vec<LevelInfo> = cascade
-            .iter()
-            .map(|&l| lc_level_info(prefix, l))
-            .chain(std::iter::once(final_level_info(prefix, tail)))
-            .filter(|l| exists(&l.propensity))
-            .map(|l| LevelInfo {
-                link_community: keep(l.link_community),
-                feature_community: keep(l.feature_community).or_else(|| {
-                    let stem = l.propensity.strip_suffix(".propensity.parquet")?;
-                    keep(Some(format!("{stem}.gene_topic.parquet")))
-                }),
-                community_names: None,
-                ..l
-            })
-            .collect();
-        anyhow::ensure!(
-            !levels.is_empty(),
-            "{prefix}: no .pinto.json, and no propensity levels"
-        );
-
-        Ok(PintoMetadata {
-            prefix: prefix.to_string(),
-            // No cells table: runs without a manifest predate it, and a
-            // leftover file under the same prefix could be another run's.
-            outputs: OutputFiles {
-                coord_pairs: Some(coord_pairs),
-                ..Default::default()
-            },
-            levels: Some(levels),
-            ..Default::default()
-        })
     }
 }
 

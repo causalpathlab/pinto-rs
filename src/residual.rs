@@ -183,7 +183,6 @@ pub struct ResidualArgs {
 
     #[arg(
         long = "feature-name-mode",
-        alias = "feature-names",
         value_enum,
         default_value = "exact",
         help = "How the run read feature names (its own --feature-name-mode, if it took one)",

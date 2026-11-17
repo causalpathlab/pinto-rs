@@ -103,7 +103,6 @@ pub struct PredictCoreArgs {
         help = "Feature-name canonicalization for matching the model's features to the new sample",
         hide = true
     )]
-    #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
 
     #[arg(
@@ -303,18 +302,6 @@ fn assign_to_centroids(latent_nk: &Mat, centroids_kd: &Mat, counts: &[f32]) -> V
         .collect()
 }
 
-/// That a model prefix names a fitted run: its manifest, or a cage model's
-/// feature embedding, is there.
-pub fn check_model(model: &str) -> anyhow::Result<()> {
-    let manifest = crate::util::metadata::manifest_path(model);
-    let embedding = format!("{model}.feature_embedding.parquet");
-    anyhow::ensure!(
-        Path::new(&manifest).is_file() || Path::new(&embedding).is_file(),
-        "model {model} is not there: neither {manifest} nor {embedding} exists"
-    );
-    Ok(())
-}
-
 /// Returns the per-cell propensity and the cell names — the same table
 /// written to `{out}.propensity.parquet` — so a caller that consumes the
 /// prediction (`pinto apply impute`) need not round-trip it through parquet.
@@ -329,29 +316,22 @@ pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Ma
         "predict: no data files given"
     );
     let model = args.core.model.as_ref();
-    // a model opened by its manifest is there, whatever the manifest's name
-    if run.is_none() {
-        check_model(model)?;
-    }
-    match run.as_ref() {
-        Some(run) if matches!(run.meta.command.as_str(), "lc" | "dsvd") => {
-            anyhow::ensure!(
-                given.cage.is_empty(),
-                "{model} is an {} model: {} apply to cage models only",
-                run.meta.command,
-                given.cage.join(", ")
-            );
-            crate::holdout::predict_profiles(args, run)
-        }
-        _ => {
-            anyhow::ensure!(
-                given.holdout.is_empty(),
-                "{model} is not an lc / dsvd model: the held-out scoring flags \
-                 ({}) apply to those only",
-                given.holdout.join(", ")
-            );
-            predict_cage(&args.core, &args.scoring, run.as_ref())
-        }
+    if matches!(run.meta.command.as_str(), "lc" | "dsvd") {
+        anyhow::ensure!(
+            given.cage.is_empty(),
+            "{model} is an {} model: {} apply to cage models only",
+            run.meta.command,
+            given.cage.join(", ")
+        );
+        crate::holdout::predict_profiles(args, &run)
+    } else {
+        anyhow::ensure!(
+            given.holdout.is_empty(),
+            "{model} is not an lc / dsvd model: the held-out scoring flags \
+             ({}) apply to those only",
+            given.holdout.join(", ")
+        );
+        predict_cage(&args.core, &args.scoring, &run)
     }
 }
 
@@ -378,27 +358,23 @@ impl ModelOnlyFlags {
 
 /// The model `model` names, opened once: its manifest (by prefix, or by the
 /// manifest's own path, whatever its file name), with `model` set to the
-/// run's prefix. `None` only when no manifest file is there (a cage model
-/// is then found by its files), `model` its prefix as named; a manifest
-/// that is there but cannot be read is an error.
-pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Option<Run>> {
-    let run = Run::open_if_exists(model)?;
-    *model = match &run {
-        Some(run) => run.prefix.as_str().into(),
-        None => crate::util::metadata::run_prefix(model).into(),
-    };
+/// run's prefix. A model without a manifest, or one that cannot be read, is
+/// an error.
+pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Run> {
+    let run = Run::open(model)?;
+    *model = run.prefix.as_str().into();
     Ok(run)
 }
 
 /// The δ of the model at prefix `model` (its manifest `run`) and its path,
 /// when it has one and `--ignore-batch` is not given. A model without one
-/// (one batch, `--ignore-batch`, or an older cage-cell fit) trained its
+/// (one batch or `--ignore-batch`) trained its
 /// encoder on undivided counts, so its query is not divided either. A
 /// model whose manifest says its dictionary is batch-adjusted refuses
 /// `--ignore-batch` ([`delta::batch_adjusted`]).
 fn model_delta(
     model: &str,
-    run: Option<&Run>,
+    run: &Run,
     ignore_batch: bool,
 ) -> anyhow::Result<Option<(crate::util::batch_effects::RunDelta, String)>> {
     use crate::util::batch_effects::{read_delta, run_delta_path};
@@ -406,7 +382,7 @@ fn model_delta(
     if ignore_batch {
         return Ok(None);
     }
-    run_delta_path(model, run)?
+    run_delta_path(run)?
         .map(|path| Ok((read_delta(&path)?, path)))
         .transpose()
 }
@@ -415,8 +391,8 @@ fn model_delta(
 /// expectation, which a query does not carry: scoring it on raw counts would
 /// be silently wrong, so it is refused until the query gets its own
 /// stage-1 placement.
-pub(crate) fn refuse_offset_model(model: &str, run: Option<&Run>) -> anyhow::Result<()> {
-    match run.and_then(|r| r.meta.offset.as_deref()) {
+pub(crate) fn refuse_offset_model(model: &str, run: &Run) -> anyhow::Result<()> {
+    match run.meta.offset.as_deref() {
         Some(dir) => anyhow::bail!(
             "{model}: a stage-2 model fitted with --offset {dir}; predicting on it comes \
              in a later version"
@@ -426,15 +402,15 @@ pub(crate) fn refuse_offset_model(model: &str, run: Option<&Run>) -> anyhow::Res
 }
 
 /// `pinto apply predict` of the cage model at prefix `args.model`, its manifest
-/// `run` (`None` for a model without one).
+/// `run`.
 pub fn predict_cage(
     args: &PredictCoreArgs,
     scoring: &ScoringArgs,
-    run: Option<&Run>,
+    run: &Run,
 ) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
     let c = &args.common;
     anyhow::ensure!(
-        !run.is_some_and(|r| r.meta.cell_level),
+        !run.meta.cell_level,
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );
@@ -466,13 +442,13 @@ pub fn predict_cage(
     let batch_plan = match model_delta {
         Some(_) => BatchEstimate::Query {
             all_known,
-            base_corrected: run.is_some_and(|r| r.meta.base_graph_batch_corrected()),
+            base_corrected: run.meta.base_graph_batch_corrected(),
         },
         None => BatchEstimate::Skip,
     };
     // A model whose dictionary is batch-adjusted has its query's written
-    // alike; an older one's stays on the counts as read.
-    let model_adjusted = run.is_some_and(|r| r.meta.outputs.feature_community_batch_adjusted);
+    // alike; any other's stays on the counts as read.
+    let model_adjusted = run.meta.outputs.feature_community_batch_adjusted;
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
@@ -857,14 +833,10 @@ pub fn predict_cage(
     Ok((propensity, cell_names))
 }
 
-/// The data files a model's manifest `run` records (none without one).
-/// Fits record them canonical; an older manifest's relative entry is
-/// resolved beside the manifest, else from here, and kept as written when
-/// it resolves in neither.
-pub(crate) fn model_data_files(run: Option<&Run>) -> Vec<String> {
-    let Some(run) = run else {
-        return Vec::new();
-    };
+/// The data files a model's manifest `run` records. Fits record them
+/// canonical; a relative entry is resolved beside the manifest, else from
+/// here, and kept as written when it resolves in neither.
+pub(crate) fn model_data_files(run: &Run) -> Vec<String> {
     run.meta
         .data_files
         .iter()

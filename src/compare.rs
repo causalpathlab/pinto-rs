@@ -26,18 +26,12 @@ use std::path::{Path, PathBuf};
 /// The level a run is compared at when none is named.
 pub const DEFAULT_LEVEL: &str = "final";
 
-/// `level`, else [`DEFAULT_LEVEL`].
-pub fn level_or_final(level: &Option<String>) -> String {
-    level.clone().unwrap_or_else(|| DEFAULT_LEVEL.into())
-}
-
 impl CompareArgs {
-    /// The levels of A and B: `--level`, else `--level-a` / `--level-b`,
-    /// else final.
+    /// The levels of A and B: `--level`, else final.
     pub fn levels(&self) -> (String, String) {
         self.level
             .clone()
-            .unwrap_or_else(|| (level_or_final(&self.level_a), level_or_final(&self.level_b)))
+            .unwrap_or_else(|| (DEFAULT_LEVEL.into(), DEFAULT_LEVEL.into()))
     }
 }
 
@@ -75,18 +69,10 @@ pub struct CompareArgs {
         long,
         value_name = "A[,B]",
         value_parser = level_pair,
-        conflicts_with_all = ["paired", "level_a", "level_b"],
+        conflicts_with = "paired",
         help = "Levels to read: final, draft or a level tag (L1, L2, …); one for both, or A,B [default: final]"
     )]
     pub level: Option<(String, String)>,
-
-    /// The level of A alone, as `--level` said it before taking both.
-    #[arg(long, conflicts_with = "paired", hide = true)]
-    pub level_a: Option<String>,
-
-    /// The level of B alone.
-    #[arg(long, conflicts_with = "paired", hide = true)]
-    pub level_b: Option<String>,
 
     #[arg(
         long,

@@ -30,17 +30,11 @@ pub(crate) const WARNING: &str =
 
 /// `{out}.lra.parquet` of `rows` (ligand, receptor, verdict, q, pct,
 /// threshold), each pooled, with a section row that is not; `scope` its
-/// `q_scope`. With `averaged`, as lra writes it now: the threshold the
-/// average leans on most (2, at weight 0.8), the effect minus the control
-/// with its q (-0.05 at 0.01 over receptor-negative receivers, significantly
-/// short of them) and
-/// [`WARNING`]; without, a table from before those columns.
-fn write_table(
-    path: &Path,
-    rows: &[(&str, &str, &str, f32, f32, f32)],
-    scope: &str,
-    averaged: bool,
-) {
+/// `q_scope`; the threshold the average leans on most (2, at weight 0.8),
+/// the effect minus the control with its q (-0.05 at 0.01 over
+/// receptor-negative receivers, significantly short of them) and
+/// [`WARNING`].
+fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &str) {
     let n = rows.len() + 1;
     fn col(n: usize, f: impl Fn(usize) -> String) -> Vec<Box<str>> {
         (0..n).map(|i| f(i).into()).collect()
@@ -53,13 +47,7 @@ fn write_table(
     let receptor = col(n, |i| at(i).1.into());
     let verdict = col(n, |i| at(i).2.into());
     let note = col(n, |i| at(i).2.parse::<Verdict>().unwrap().note().into());
-    let warnings = col(n, |_| {
-        if averaged {
-            WARNING.into()
-        } else {
-            String::new()
-        }
-    });
+    let warnings = col(n, |_| WARNING.into());
     let scope = col(n, |_| scope.into());
     let num = |f: &dyn Fn(usize) -> f32| -> Vec<f32> { (0..n).map(f).collect() };
     let q = num(&|i| at(i).3);
@@ -81,7 +69,6 @@ fn write_table(
     ];
     let later = later
         .iter()
-        .filter(|_| averaged)
         .map(|(name, v)| ((*name).into(), Column::F32(v)));
     write_named_table(
         &path.to_string_lossy(),
@@ -219,7 +206,6 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
             ),
         ],
         Q_SCOPE_ALL,
-        true,
     );
     write_curve(Path::new(&curve), ("L1", "R1"));
     let only = format!("{prefix}.lra.only-l1-r1.parquet");
@@ -227,7 +213,6 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
         Path::new(&only),
         &[("L1", "R1", "supported", 0.01, 25.0, 0.0)],
         "q corrected within the --only subset (1 of 3 pairs)",
-        false,
     );
     let subset = LraSubset {
         only: vec!["L1:R1".into()],
@@ -636,18 +621,13 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     v.load(1).unwrap();
     assert_eq!(v.selected_row().unwrap().name(), "L1:R1");
     assert!(v.table().subset_corrected());
-    assert!(v.table().q_scope.as_deref() != Some(Q_SCOPE_ALL));
+    assert!(&*v.table().q_scope != Q_SCOPE_ALL);
     assert!(v.curve().unwrap().points.is_empty());
     assert!(v.curve().unwrap().title.contains("subset"));
-    // It is from before the averaging columns: read, with none.
-    assert!(v.selected_row().unwrap().tau_top.is_nan());
-    assert!(v.selected_row().unwrap().controls[0].q.is_nan());
-    assert_eq!(v.curve().unwrap().top, None);
-    assert_eq!(
-        v.curve().unwrap().average,
-        None,
-        "its effect is a point, not an average"
-    );
+    // with no curve of its own, its average and top threshold still read
+    let row = v.selected_row().unwrap().clone();
+    assert_eq!(v.curve().unwrap().top, Some(2.0));
+    assert_eq!(v.curve().unwrap().average, Some(row.effect));
     // A run without a table has no layer.
     assert!(LraView::new(Vec::new()).unwrap().is_none());
 }
@@ -921,7 +901,6 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
         &other,
         &[("L1", "R1", "supported", 0.01, 25.0, 0.5)],
         "q corrected within the --only subset (1 of 3 pairs)",
-        false,
     );
     let r = call(&mut open, json!({"table": other.to_string_lossy()})).unwrap();
     assert_eq!(r["selected"]["pair"], "L1:R1");

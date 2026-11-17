@@ -549,26 +549,17 @@ impl RunDelta {
 /// manifest (`run`), the file it records ([`Run::recorded_output`]: never
 /// from the working directory, and an error when it is nowhere); a stale
 /// file from an earlier fit under the same prefix is not read when it
-/// records none. A run without a manifest is taken at its
-/// `{prefix}.delta.parquet`.
+/// records none.
 ///
 /// [`Run::recorded_output`]: crate::util::metadata::Run::recorded_output
-pub fn run_delta_path(
-    prefix: &str,
-    run: Option<&crate::util::metadata::Run>,
-) -> anyhow::Result<Option<String>> {
-    let Some(run) = run else {
-        let path = format!("{prefix}.delta.parquet");
-        return Ok(std::path::Path::new(&path).is_file().then_some(path));
-    };
+pub fn run_delta_path(run: &crate::util::metadata::Run) -> anyhow::Result<Option<String>> {
     let found = run.recorded_output(run.meta.outputs.batch_effects.as_deref(), "delta.parquet")?;
     Ok(found.map(|p| p.to_string_lossy().into_owned()))
 }
 
 /// Where a run records each cell's batch, when it does: the table its
 /// manifest records, found as its δ is ([`run_delta_path`]). `None` for a
-/// run that records none (fitted before it was written); an error when
-/// one is recorded but nowhere.
+/// run that records none; an error when one is recorded but nowhere.
 pub fn run_delta_cells_path(run: &crate::util::metadata::Run) -> anyhow::Result<Option<String>> {
     let found = run.recorded_output(
         run.meta.outputs.delta_cells.as_deref(),
@@ -616,24 +607,6 @@ pub fn read_cell_batches(path: &str) -> anyhow::Result<HashMap<Box<str>, Box<str
         "{path}: columns of different lengths"
     );
     Ok(cell.into_iter().zip(batch).collect())
-}
-
-/// Each cell's batch label as the run estimated it, from its
-/// `coord_pairs.parquet` (`left_batch` / `right_batch`), for a run fitted
-/// before it wrote [`delta_cells_path`]. These are the labels δ's columns
-/// are named by; the cells table keeps the labels as read, before
-/// `--auto-batch`. Empty when the table has no batch columns (a
-/// single-batch run).
-pub fn cell_batches_from_coord_pairs(path: &str) -> anyhow::Result<HashMap<Box<str>, Box<str>>> {
-    let pairs = crate::lr_activity::io::read_pair_table(path, false)?;
-    let mut out: HashMap<Box<str>, Box<str>> = HashMap::default();
-    for e in pairs {
-        if let Some((l, r)) = e.side_batches {
-            out.insert(e.left_cell, l);
-            out.insert(e.right_cell, r);
-        }
-    }
-    Ok(out)
 }
 
 /// A run's batch effect with each cell's batch: what divides the counts a

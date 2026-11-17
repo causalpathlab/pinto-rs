@@ -34,10 +34,7 @@ The commands sit under a few verbs:
 | `pinto compare`, `pinto view`, `pinto run`, `pinto mcp` | as before |
 | `pinto session <op>` | the detachable sessions: `list`, `attach`, `kill`, `rename` |
 
-The names from before 0.17 (`pinto lc`, `pinto residual`, `pinto
-lra-simulate`, `pinto srt-simulate`, `pinto sessions`, ...) still run, with
-a note naming the new form, so older `{out}.cmd.sh` scripts replay; they go
-after 0.17. The sections below are headed by the method's own name.
+The sections below are headed by the method's own name.
 
 Every run writes `{out}.pinto.json`, the manifest the other commands find
 its files by. Commands that record into a run's manifest (lra and its power
@@ -60,9 +57,7 @@ named by the file less its data extension (`sampleA.zarr` and
 order the files are given in. Two data files of the same name in one run
 are refused. `pinto apply predict` and `pinto apply impute` give a query file the
 model's batch of the same name, warning when it is not the model's own
-file. An older pinto named them by position (`0`, `1`, …; its manifest has
-`"batch_labels": "files"`, this one `"file-names"`): a query file takes
-such a model's batch only when it is that model's data file.
+file.
 
 With several batches (data files, or `--batch-files` labels), lc estimates
 batch effects δ, as dsvd and cage do, and divides every count of its edge
@@ -1350,7 +1345,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | Tool | Does |
 |---|---|
 | `run_methods` | pinto's fitting methods (what `pinto run` sets up: `lc`, `dsvd`, `cage`, `cage-cell`, then the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto`, `spatialde2-pb`, `stagate-pb`, `spatialpca-pb`, `mefisto-pb`); with a method, the flags its `--help` shows: name, short help, default, choices (hidden flags are in no tool schema) |
-| `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run; `flags` takes the flags `run_methods` lists by name (a flag renamed keeps its old name as an alias) |
+| `run_fit` | fits one method on data files with their coordinates (and batches), with the command `pinto run` would build, checked as pinto parses it and run as a child `pinto`: a background job by default (`background: false` waits), never over an existing run; `flags` takes the flags `run_methods` lists by name |
 | `run_predict` | `pinto apply predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |

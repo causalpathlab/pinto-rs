@@ -1,9 +1,8 @@
 //! Parquet readers shared across pinto subcommands.
 //!
-//! Thin wrappers over `legume_numeric::matrix` primitives. The
-//! pinto-specific piece is [`read_cells_from_coord_pairs`], which
-//! dedupes `coord_pairs.parquet` into a per-cell table `(name, x, y)`,
-//! with the batch and the rest of what the viewer draws in its build.
+//! Thin wrappers over `legume_numeric::matrix` primitives, and the
+//! per-cell table `(name, x, y)` with the batch and the rest of what the
+//! viewer draws in its build.
 
 use crate::util::common::*;
 use arrow_array::cast::AsArray;
@@ -348,8 +347,8 @@ pub fn read_cells_table(
     })
 }
 
-/// One row per cell. `batch` is `None` if the fit was single-batch
-/// (i.e. `coord_pairs.parquet` lacks a `left_batch` column). Everything past
+/// One row per cell, from the run's cells table. `batch` is `None` when the
+/// table has no `batch` column. Everything past
 /// the names and coordinates is for the viewer, and read only in its build.
 pub struct CellTable {
     /// Cell barcode, unique and stable-ordered.
@@ -365,143 +364,18 @@ pub struct CellTable {
     /// has no neighbours); `None` when every cell did.
     #[cfg(feature = "view")]
     pub in_graph: Option<Vec<bool>>,
-    /// Bare coordinate column names (without `left_`/`right_` prefix).
-    /// Pass-through from `coord_pairs.parquet` so downstream readers
+    /// The cells table's coordinate column names, `[x, y]`, so downstream
+    /// readers
     /// (e.g. `read_propensity`) can exclude coord trailers that
     /// `pinto apply propensity` may append to `.propensity.parquet`.
     #[cfg(feature = "view")]
     pub coord_col_names: Vec<Box<str>>,
 }
 
-/// Read `{prefix}.coord_pairs.parquet`, union left+right, dedupe.
-///
-/// `coord_columns`, when supplied (typically from `.pinto.json`'s
-/// `outputs.coord_columns`), names the bare coord basenames in `(x, y)`
-/// order — e.g. `["pxl_row_in_fullres", "pxl_col_in_fullres"]`. Pass
-/// `None` to fall back to the legacy auto-discovery (first two paired
-/// `left_*` / `right_*` columns by schema order), which is correct for
-/// pinto-written files but brittle when users splice extra columns in.
-pub fn read_cells_from_coord_pairs(
-    path: &Path,
-    coord_columns: Option<&[String]>,
-) -> anyhow::Result<CellTable> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {path:?}"))?;
-    let fields = peek_parquet_field_names(path_str)?;
-
-    let (x_bare, y_bare) = match coord_columns {
-        Some(cols) if cols.len() >= 2 => (cols[0].clone(), cols[1].clone()),
-        Some(_) | None => {
-            // Legacy fallback: scan for paired left_* columns and pick
-            // the first two as (x, y). Excludes the `left_cell` /
-            // `left_batch` non-coord columns.
-            let left_coords: Vec<Box<str>> = fields
-                .iter()
-                .filter(|f| {
-                    f.starts_with("left_")
-                        && f.as_ref() != "left_cell"
-                        && f.as_ref() != "left_batch"
-                })
-                .cloned()
-                .collect();
-            if left_coords.len() < 2 {
-                anyhow::bail!(
-                    "coord_pairs.parquet {path:?} has fewer than 2 coordinate columns \
-                     (needs left_x + left_y pair) and .pinto.json carried no \
-                     coord_columns hint. Was this run fit without --coord?"
-                );
-            }
-            (
-                strip_left(&left_coords[0]).to_string(),
-                strip_left(&left_coords[1]).to_string(),
-            )
-        }
-    };
-
-    let x_col_left: Box<str> = format!("left_{x_bare}").into_boxed_str();
-    let y_col_left: Box<str> = format!("left_{y_bare}").into_boxed_str();
-    let x_col_right: Box<str> = format!("right_{x_bare}").into_boxed_str();
-    let y_col_right: Box<str> = format!("right_{y_bare}").into_boxed_str();
-
-    let has_batch = fields.iter().any(|f| f.as_ref() == "left_batch")
-        && fields.iter().any(|f| f.as_ref() == "right_batch");
-
-    // Column-wise: millions of pairs read in a fraction of the time the
-    // row iterator takes.
-    let mut wanted = vec![
-        "left_cell",
-        "right_cell",
-        &*x_col_left,
-        &*y_col_left,
-        &*x_col_right,
-        &*y_col_right,
-    ];
-    if has_batch {
-        wanted.extend(["left_batch", "right_batch"]);
-    }
-    let cols = read_named_columns(path, &wanted)?;
-    // Borrowed from the Arrow arrays: a string is made only per new cell,
-    // not per edge endpoint.
-    let (left, right) = (label_column(&cols[0])?, label_column(&cols[1])?);
-    let (lx, ly, rx, ry) = (
-        floats(&cols[2])?,
-        floats(&cols[3])?,
-        floats(&cols[4])?,
-        floats(&cols[5])?,
-    );
-    let (lb, rb) = if has_batch {
-        (Some(label_column(&cols[6])?), Some(label_column(&cols[7])?))
-    } else {
-        (None, None)
-    };
-
-    let mut index: HashMap<Box<str>, usize> = HashMap::default();
-    let mut names: Vec<Box<str>> = Vec::new();
-    let mut coords: Vec<(f32, f32)> = Vec::new();
-    let mut batches: Vec<Box<str>> = Vec::new();
-
-    for e in 0..left.len() {
-        for (col, x, y, b) in [(&left, lx[e], ly[e], &lb), (&right, rx[e], ry[e], &rb)] {
-            let name = col.get(e);
-            if index.contains_key(name) {
-                continue;
-            }
-            let name: Box<str> = name.into();
-            index.insert(name.clone(), names.len());
-            names.push(name);
-            coords.push((x, y));
-            if let Some(b) = b {
-                batches.push(b.get(e).into());
-            }
-        }
-    }
-
-    Ok(CellTable {
-        names,
-        coords,
-        batches: has_batch.then_some(batches),
-        #[cfg(feature = "view")]
-        index,
-        #[cfg(feature = "view")]
-        in_graph: None,
-        #[cfg(feature = "view")]
-        coord_col_names: vec![x_bare.into_boxed_str(), y_bare.into_boxed_str()],
-    })
-}
-
-fn strip_left(col: &str) -> &str {
-    col.strip_prefix("left_").unwrap_or(col)
-}
-
-/// Read a propensity parquet. Schemas differ across pinto variants:
-///
-/// - `pinto fit lc`: columns named `"0"`, `"1"`, …, `"{K-1}"` plus optional
-///   `entropy`. No `cluster`, no coord trailer.
-/// - `pinto apply propensity`: columns `propensity_0 … propensity_{K-1}, cluster,
-///   entropy`, plus an optional coord trailer (e.g. `pxl_row_in_fullres`,
-///   `pxl_col_in_fullres`).
-/// - `pinto fit dsvd`: columns `0 … K-1, cluster, entropy`.
+/// Read a propensity parquet: columns `C0 … C{K-1}`, an optional
+/// `cluster` and `entropy`, and an optional coord trailer (e.g.
+/// `pxl_row_in_fullres`, `pxl_col_in_fullres`) that `pinto apply
+/// propensity` appends.
 ///
 /// This reader keeps every float column as a propensity slot *except*
 /// names that appear in `exclude_cols`, the explicit `cluster` column,
@@ -515,11 +389,8 @@ pub fn read_propensity(
 ) -> anyhow::Result<PropensityRead> {
     let MatWithNames { rows, cols, mat } = read_labelled_matrix(path)?;
 
-    // Pull propensity columns by NAME. The current writer emits
-    // `C{c}` (e.g. "C0","C1",…,"C{K-1}") so the column name itself
-    // declares "this is community c". Older parquets that wrote bare
-    // integer names ("0","1",…) are still accepted for backwards-compat.
-    // This makes "column j ↔ community j" an explicit, checked invariant
+    // Pull propensity columns by NAME: `C{c}` declares "this is
+    // community c". This makes "column j ↔ community j" an explicit, checked invariant
     // rather than a positional convention.
     let mut cluster_idx: Option<usize> = None;
     let mut entropy_idx: Option<usize> = None;
@@ -533,8 +404,7 @@ pub fn read_propensity(
                 Some(c) => prop_named.push((c, j)),
                 None => anyhow::bail!(
                     "{path:?}: propensity column {n:?} is not a community ID. \
-                     Expected names \"C0\",\"C1\",…,\"C{{K-1}}\" (or `cluster_<k>` / \
-                     `propensity_<k>` / bare ints) plus optional \"entropy\"/coord cols."
+                     Expected names \"C0\",\"C1\",…,\"C{{K-1}}\" plus optional \"entropy\"/coord cols."
                 ),
             },
         }
@@ -610,23 +480,11 @@ pub fn read_propensity(
     Ok((prop, cluster, entropy, rows))
 }
 
-/// Parse a community-column / community-label string into its integer ID.
-///
-/// Accepts the current `C{c}` schema and two legacy forms — bare integer
-/// (`"5"`, older `pinto fit lc`) and `propensity_{c}` (older `pinto apply propensity`)
-/// — so existing parquets on disk still load. Returns `None` for anything
-/// else (e.g. `"entropy"`, coord names, malformed labels).
+/// Parse a community-column / community-label string, `C{c}`, into its
+/// integer ID. Returns `None` for anything else (e.g. `"entropy"`, coord
+/// names, malformed labels).
 pub(crate) fn parse_community_col_name(name: &str) -> Option<i64> {
-    if let Some(rest) = name.strip_prefix('C') {
-        return rest.parse::<i64>().ok();
-    }
-    if let Some(rest) = name.strip_prefix("propensity_") {
-        return rest.parse::<i64>().ok();
-    }
-    if let Some(rest) = name.strip_prefix("cluster_") {
-        return rest.parse::<i64>().ok();
-    }
-    name.parse::<i64>().ok()
+    name.strip_prefix('C')?.parse::<i64>().ok()
 }
 
 fn argmax_row(mat: &Mat, row: usize, cols: &[usize]) -> i64 {

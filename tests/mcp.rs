@@ -548,7 +548,7 @@ fn an_agent_compares_two_runs() {
     assert!(c
         .fails(
             "run_compare",
-            json!({"a": prefix, "b": prefix, "level_b": "L9", "out": "x"})
+            json!({"a": prefix, "b": prefix, "level": "final,L9", "out": "x"})
         )
         .contains("L9"));
 }
@@ -878,7 +878,7 @@ fn an_agent_simulates_looks_and_scores() {
     assert_eq!(s["spatial"]["auroc"], 1.0, "{paired}");
     // A baseline's bad setting, or a simulation it cannot read, is refused
     // before any job.
-    let msg = c.fails("run_sim_baseline", json!({"truth": truth, "k": 0}));
+    let msg = c.fails("run_sim_baseline", json!({"truth": truth, "n_clusters": 0}));
     assert!(msg.contains("k must be at least 1"), "{msg}");
     std::fs::create_dir_all(dir.path().join("half/truth")).unwrap();
     let msg = c.fails("run_sim_baseline", json!({"truth": "half"}));

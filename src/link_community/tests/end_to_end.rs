@@ -140,7 +140,7 @@ fn lc_records_its_batch_effects_in_the_manifest(
     assert_eq!(delta, "lc.delta.parquet", "recorded beside the manifest");
     let run = crate::util::metadata::Run::open(lc).unwrap();
     assert_eq!(
-        crate::util::batch_effects::run_delta_path(lc, Some(&run)).unwrap(),
+        crate::util::batch_effects::run_delta_path(&run).unwrap(),
         Some(format!("{lc}.delta.parquet"))
     );
 

@@ -131,8 +131,7 @@ pub struct LraOptions {
     /// The genes the receivers' identity left out (every pair's genes),
     /// by name: the viewer reads the receivers with these
     /// rather than the files above, which may have moved. Thousands of
-    /// names, kept on one line ([`comma_list`]). Empty in a manifest from
-    /// before 0.16.4.
+    /// names, kept on one line ([`comma_list`]).
     #[serde(skip_serializing_if = "Vec::is_empty", with = "comma_list")]
     pub identity_excluded: Vec<String>,
     /// `--cell-types`: the cell-label file that stood in for the run's

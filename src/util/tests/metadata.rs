@@ -351,34 +351,6 @@ fn metadata_records_an_unaugmented_run_as_such() {
     );
 }
 
-/// A `graph` block written by an older build must not sink the whole manifest.
-///
-/// This block gains fields over time, and `PintoMetadata::backfill_output`
-/// swallows a read error at debug level — so a missing-field failure here is
-/// silent, and `pinto view` / `pinto lra --from` abort outright on a
-/// manifest they should have read.
-#[test]
-fn an_older_graph_block_still_deserializes() {
-    let json = r#"{
-        "command": "lc",
-        "version": "0.6.9",
-        "timestamp": "0",
-        "prefix": "run",
-        "n_cells": 10,
-        "n_features": 10,
-        "graph": {"knn_base": 5, "knn_expr": 0, "augmented": false},
-        "outputs": {}
-    }"#;
-    let back: PintoMetadata = serde_json::from_str(json).expect("must stay readable");
-    let g = back.graph.expect("the block that was present must survive");
-    assert_eq!(g.knn_base, 5);
-    assert!(
-        !g.reciprocal,
-        "a field the writer never knew about defaults"
-    );
-    assert_eq!(g.knn_expr, 0, "no union, however the block was written");
-}
-
 /// The lra settings block is a record, not a schema: a block from another
 /// version (a field renamed, a type changed) never fails the manifest.
 #[test]
@@ -435,9 +407,6 @@ fn lra_identity_genes_are_one_line_and_read_back() {
     let odd = options(&["A,B", "C"]);
     let json = serde_json::to_string(&odd).unwrap();
     assert_eq!(serde_json::from_str::<LraOptions>(&json).unwrap(), odd);
-    let old: LraOptions = serde_json::from_str(r#"{"seed": 42}"#).unwrap();
-    assert!(old.identity_excluded.is_empty());
-    assert!(!serde_json::to_string(&old).unwrap().contains("identity"));
 }
 
 /// `--marginal-baselines` is recorded with where its cell types came from
@@ -535,9 +504,9 @@ fn lra_subset_identity_genes_are_stored_once() {
 
 /// The manifest names no slot nothing reads: no `outputs.clusters` and no
 /// per-level `entropy_present` (readers find the entropy column in the
-/// propensity table). A manifest an older build wrote with them still reads.
+/// propensity table).
 #[test]
-fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
+fn the_manifest_writes_no_unread_slots() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("run").to_string_lossy().to_string();
     let data_files: Vec<Box<str>> = vec!["a.h5".into()];
@@ -566,21 +535,6 @@ fn the_manifest_writes_no_unread_slots_and_reads_old_ones() {
     assert!(written["levels"].as_array().is_some_and(|l| !l.is_empty()));
     assert!(!text.contains("entropy_present"), "{text}");
     assert!(written["outputs"].get("clusters").is_none(), "{text}");
-
-    let old = r#"{
-        "command": "lc",
-        "version": "0.6.9",
-        "timestamp": "0",
-        "prefix": "run",
-        "n_cells": 10,
-        "n_features": 10,
-        "outputs": {"clusters": "run.clusters.parquet"},
-        "levels": [{"tag": "final", "level_index": 0,
-                    "propensity": "run.propensity.parquet",
-                    "entropy_present": true}]
-    }"#;
-    let back: PintoMetadata = serde_json::from_str(old).expect("an old manifest reads");
-    assert_eq!(back.levels.expect("levels")[0].tag, "final");
 }
 
 /// A cell-level cage run says so in its manifest, and is named `cage-cell`
@@ -664,10 +618,6 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
             .file_batches
             .is_none()
     );
-    // an older pinto's `files` named file batches by position
-    let older = json.replace("\"file-names\"", "\"files\"");
-    let older: PintoMetadata = serde_json::from_str(&older).unwrap();
-    assert_eq!(older.batch_labels, Some(BatchLabels::FilePositions));
     // recorded beside the manifest, so a run is found from any directory
     assert_eq!(
         back.outputs.batch_effects.as_deref(),

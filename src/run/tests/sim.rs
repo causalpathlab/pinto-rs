@@ -122,38 +122,6 @@ fn a_simulate_call_becomes_its_command_line() {
     );
 }
 
-/// A call naming a scenario by its earlier name sets what its name sets.
-#[test]
-fn a_simulate_call_takes_an_earlier_scenario_name() {
-    let new = "donor-confounded-donor-only-cell-type";
-    let old = params(json!({"scenario": "L2", "set": TINY})).unwrap();
-    assert_eq!(old, params(json!({"scenario": new, "set": TINY})).unwrap());
-    let schema = specs(&crate::built_cli());
-    let simulate = schema.iter().find(|t| t.name == "run_simulate").unwrap();
-    let listed = &simulate.input_schema["properties"]["scenario"];
-    assert!(
-        listed.to_string().contains(new) && !listed.to_string().contains("\"L2\""),
-        "{listed}"
-    );
-    let about = listed["description"].as_str().unwrap();
-    assert!(about.contains("still accepted but not listed"), "{about}");
-    assert!(!about.contains("first-donor-unconfounded"), "{about}");
-    let set = simulate.input_schema["properties"]["set"]["description"]
-        .as_str()
-        .unwrap();
-    assert!(set.contains("n_unconfounded_donors"), "{set}");
-    // the command it runs names the scenario as the summary does
-    let argv = simulate_argv(&sim_args(json!({"scenario": "L2"})), "o");
-    assert!(argv.contains(&format!("--scenario={new}")), "{argv:?}");
-    let (_, _, name, _) = simulation(
-        &cli(),
-        &sim_args(json!({"scenario": "L2", "set": TINY})),
-        "o",
-    )
-    .unwrap();
-    assert_eq!(name, new);
-}
-
 #[test]
 fn the_reply_lists_the_sections_to_fit_in_order() {
     let p =
@@ -366,7 +334,7 @@ fn pair_scoring_the_truth_itself_is_perfect() {
 #[test]
 fn the_baseline_command_line_has_only_what_was_given() {
     let a = args::<SimBaselineToolArgs>(
-        json!({"truth": "/p/sim", "method": "per-donor", "k": 5, "seed": 2}),
+        json!({"truth": "/p/sim", "method": "per-donor", "n_clusters": 5, "seed": 2}),
     );
     let argv = baseline_argv(&a, "/p/sim", "/p/out.tsv");
     assert_eq!(

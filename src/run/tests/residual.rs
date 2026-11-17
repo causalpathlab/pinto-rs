@@ -75,7 +75,7 @@ fn a_residual_call_becomes_its_command_line_with_only_what_was_given() {
         "excess": "floor",
         "adapt": "none",
         "adapt_cells": 20.0,
-        "feature_names": "gene",
+        "feature_name_mode": "gene",
     }));
     let files = format!(
         "{},{}",

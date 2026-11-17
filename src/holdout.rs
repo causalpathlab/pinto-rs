@@ -190,8 +190,7 @@ pub struct HoldoutInfo {
     pub delta_iters: usize,
     /// For a batch-adjusted model: how many of the sample's batches are
     /// the model's and were scored under its own δ, whatever
-    /// `delta_iters`. Absent for an older model (every batch's δ starts
-    /// at 1).
+    /// `delta_iters`. Absent for a model without a δ.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_delta_batches: Option<usize>,
     /// Counts in the scored parts.

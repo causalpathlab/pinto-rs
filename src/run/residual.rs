@@ -38,7 +38,7 @@ pub(super) struct ResidualToolArgs {
     pub adapt: Option<String>,
     #[serde(default)]
     pub adapt_cells: Option<f64>,
-    #[serde(default, alias = "feature_names")]
+    #[serde(default)]
     pub feature_name_mode: Option<String>,
     #[serde(default)]
     pub max_threads: Option<usize>,

@@ -160,7 +160,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      mixed: per-row dispatch (RNA+ATAC paired axes)",
         hide = true
     )]
-    #[arg(alias = "gene-name-mode")]
     pub feature_name_mode: FeatureNameMode,
 
     #[arg(
@@ -262,7 +261,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      Passing a value disables the probe and always wins.",
         hide = true
     )]
-    #[arg(alias = "gene-batch-size")]
     pub feature_batch_size: Option<usize>,
 
     #[arg(
@@ -338,7 +336,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      which weights the projection. That likewise drops nobody.",
         hide = true
     )]
-    #[arg(alias = "genes-per-epoch")]
     pub features_per_epoch: usize,
 
     #[arg(
@@ -485,7 +482,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      the shared map until --feature-adapter-residual gives it its own\n\
                      correction."
     )]
-    #[arg(alias = "gene-embedding")]
     pub feature_embedding: Option<Box<str>>,
 
     #[arg(
@@ -494,7 +490,6 @@ pub struct CellActivityGraphEmbeddingArgs {
         help = "Optional per-feature bias parquet ([D, 1]) paired with --feature-embedding;\n\
                 features without a row get bias 0"
     )]
-    #[arg(alias = "gene-embedding-bias")]
     pub feature_embedding_bias: Option<Box<str>>,
 
     #[arg(
@@ -529,7 +524,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      Neighbor-seeded rows still train. Requires the widths to match.\n\
                      The written feature embedding carries the residual folded in."
     )]
-    #[arg(alias = "gene-embedding-mode")]
     pub feature_embedding_mode: FeatureEmbeddingMode,
 
     /// `--lora-rank`, `--lora-lr-ratio`, `--lora-ridge`; read under
@@ -544,7 +538,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                 on top of the shared map",
         hide = true
     )]
-    #[arg(alias = "gene-adapter-residual")]
     pub feature_adapter_residual: bool,
 
     #[arg(
@@ -566,7 +559,6 @@ pub struct CellActivityGraphEmbeddingArgs {
                      \n\
                      neighbor copies the row of the single closest matched feature."
     )]
-    #[arg(alias = "gene-init-mode")]
     pub feature_init_mode: FeatureInitMode,
 
     /// `--feature-modules`: unset is `auto` that yields to an explicit
@@ -581,7 +573,6 @@ pub struct CellActivityGraphEmbeddingArgs {
     /// feature-side table in cage.
     #[arg(
         long,
-        alias = "gene-modules",
         value_name = "M|auto",
         help = "Embed features through M learned modules: auto (default) takes M from the data, 0 turns them off",
         long_help = FEATURE_MODULES_LONG_HELP
