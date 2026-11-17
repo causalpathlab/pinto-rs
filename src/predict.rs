@@ -480,6 +480,7 @@ pub fn predict_cage(
         base_batch_corrected,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
+        offset: None,
         common: c,
         ablation: None,
         batch_effects: batch_plan,
@@ -700,9 +701,11 @@ pub fn predict_cage(
     if let Some(d) = &batch_effects {
         d.write(&format!("{}.delta.parquet", c.out))?;
     }
-    let pair_batch = batch_effects.as_ref().map(|delta| PairBatchDivisor {
-        delta: &delta.mean,
-        batch_of_cell: &batch_of_cell,
+    let pair_batch = batch_effects.as_ref().map(|delta| {
+        crate::util::batch_effects::Divisor::Batch(PairBatchDivisor {
+            delta: &delta.mean,
+            batch_of_cell: &batch_of_cell,
+        })
     });
 
     let dev = args.device.to_device(args.device_no)?;

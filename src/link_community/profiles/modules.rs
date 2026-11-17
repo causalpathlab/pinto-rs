@@ -123,7 +123,7 @@ impl ModulePairBasis {
 ///     scale in the residual.
 ///
 /// One streaming pass over the sparse expression matrix, each cell's counts
-/// divided by its batch's fold first when `delta` is given
+/// divided first when `divisor` is given
 /// ([`super::read_columns_divided`]).
 pub fn build_module_expression(
     data: &SparseIoVec,
@@ -131,7 +131,7 @@ pub fn build_module_expression(
     n_modules: usize,
     feature_weights: Option<&[f32]>,
     block_size: Option<usize>,
-    delta: Option<&Mat>,
+    divisor: Option<crate::util::batch_effects::Divisor<'_>>,
 ) -> anyhow::Result<(Mat, Vec<f32>)> {
     let n_cells = data.num_columns();
     let n_features = data.num_rows();
@@ -149,7 +149,7 @@ pub fn build_module_expression(
         .par_iter()
         .progress_with(prog_bar.clone())
         .map(|&(lb, ub)| -> anyhow::Result<(usize, Mat, Vec<f32>)> {
-            let x = super::read_columns_divided(data, lb..ub, delta)?;
+            let x = super::read_columns_divided(data, lb..ub, divisor)?;
             let block_len = ub - lb;
             let mut block_expr = Mat::zeros(n_modules, block_len);
             let mut block_totals = vec![0.0f32; block_len];

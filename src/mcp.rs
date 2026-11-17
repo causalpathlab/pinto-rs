@@ -50,12 +50,13 @@ a spatial baseline's run is scored as a fit is, its labels by `run_sim_score` an
 its `{out}.cell_embedding.parquet` by `run_sim_pairs`.";
 
 const RESIDUAL: &str = "\
-Two-stage fit: `run_residual` writes the counts a fitted run (a fit's or a \
-spatial baseline's: any run that recorded its propensity) \
-leaves unexplained as new data files (a background job); fit them with \
-`run_fit`, passing the reply's `fit.data`, `fit.coords` and `fit.flags` as \
-its data, coords and flags, and `run_lra` on that second fit reads the raw \
-counts, not the excess.";
+Two-stage fit: `run_residual` takes what a fitted run (a fit's or a spatial \
+baseline's: any run that recorded its propensity) leaves unexplained (a \
+background job), by one of two operations: `divide` (default; stage 2 fits the \
+raw counts with the stage-1 expectation as a multiplicative offset, flag \
+`offset`) or `subtract` (the counts above it as new data files). Fit stage 2 \
+with `run_fit`, passing the reply's `fit.data`, `fit.coords` and `fit.flags` as \
+its data, coords and flags; `run_lra` on that second fit reads the raw counts.";
 
 const LRA: &str = "\
 Ligand-receptor analysis: `run_lra` asks, per ligand-receptor pair, whether \

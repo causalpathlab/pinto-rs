@@ -128,6 +128,7 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
         batch_labels,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
+        offset: None,
         common: c,
         ablation: None,
         // The model's profiles are what is scored; δ is estimated below from

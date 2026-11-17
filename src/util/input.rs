@@ -8,8 +8,8 @@ use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
 pub use args::{
-    BatchArgs, CollapseArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN, DEFAULT_NUM_LEVELS,
-    DEFAULT_PROJ_DIM,
+    BatchArgs, CollapseArgs, OffsetArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN,
+    DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
 };
 
 pub struct SRTReadArgs {

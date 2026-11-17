@@ -289,7 +289,15 @@ impl App {
             let picked = r.role == Role::Plain && !form.from_run;
             let (data, coords): (Vec<String>, Vec<String>) = match (r.role, &residual) {
                 (Role::Stage2, Some((_, Ok(p)))) => (
-                    p.zarrs.iter().map(|z| rel(Path::new(z))).collect(),
+                    match p.operation {
+                        crate::residual::Operation::Subtract => {
+                            p.zarrs.iter().map(|z| rel(Path::new(z))).collect()
+                        }
+                        // the run's own data files, read against --offset
+                        crate::residual::Operation::Divide => {
+                            p.files.iter().map(|f| rel(Path::new(f.as_ref()))).collect()
+                        }
+                    },
                     p.coords.iter().map(|c| rel(Path::new(c))).collect(),
                 ),
                 (Role::Plain, _) => (
@@ -459,6 +467,13 @@ impl App {
             ),
             (Role::Stage2, Some((at, Ok(p)))) => {
                 form.set("coord-column-names", &p.coord_names.join(","));
+                // under divide stage 2 reads the run's own files against the
+                // folder's stage-1 divisor
+                if p.operation == crate::residual::Operation::Divide {
+                    if let Some(dir) = Path::new(&p.summary).parent() {
+                        form.set("offset", &dir.to_string_lossy());
+                    }
+                }
                 (None, *at)
             }
             (Role::Stage2Lra, _) => match stage2 {

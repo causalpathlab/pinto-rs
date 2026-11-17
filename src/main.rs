@@ -673,21 +673,32 @@ enum Commands {
     Impute(Box<ImputeArgs>),
 
     #[command(
-        about = "Write the counts a fitted run leaves unexplained, as new data files.",
+        about = "What a fitted run leaves unexplained: its expectation to divide by, or the counts above it.",
         long_about = "Stage 2 of a residual fit. Conditioning on a fitted run\n\
                       (its per-cell propensities, from which raw-count community\n\
                       profiles p_k are refitted, and per-cell EM proportions θ_i),\n\
-                      each cell's expectation is n_i Σ_k θ_ik p_k(g); no batch fold\n\
+                      each cell's expectation is μ = n_i Σ_k θ_ik p_k(g); no batch fold\n\
                       from the run enters it. Any run is taken whose manifest records\n\
                       its data files, a propensity table (soft or one-hot), a cells\n\
                       table and its coordinate columns: a fit's or a spatial\n\
-                      baseline's. Per data file it writes\n  \
-                      {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n  \
-                      {out}/{stem}.coords.parquet  the run's coordinates of its cells\n\
-                      and {out}/residual.json (the counts in and out, the stage-1 run\n\
-                      and the raw data files, which pinto lra reads to take a fit on\n\
-                      the residual on its raw counts), so a second fit reads the\n\
-                      residual as it reads data.\n\n\
+                      baseline's. What is left is taken one of two ways (--residual):\n\n\
+                      divide (alias multiplicative, the default): stage 2 fits the\n\
+                      raw counts with μ as a multiplicative offset, i.e. models y/μ.\n\
+                      It writes the low-rank pieces μ is rebuilt from, no new data\n\
+                      files:\n  \
+                      {out}/stage1.cells.parquet     n_i, batch and θ_i per cell\n  \
+                      {out}/stage1.profiles.parquet  p_kb(g) per row\n  \
+                      {out}/stage1.features.parquet  pooled share, dispersion φ_g and\n  \
+                      \x20                             Pearson scale σ²_gb per row\n\
+                      Fit the run's own data files with --offset {out} (lc, dsvd,\n\
+                      cage, cage-cell); such a fit takes no batch effect.\n\n\
+                      subtract (alias additive): per data file\n  \
+                      {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n\
+                      which a second fit reads as it reads data; pinto lra takes a fit\n\
+                      on them back to the raw counts.\n\n\
+                      Either way {out}/{stem}.coords.parquet holds the run's coordinates\n\
+                      of each file's cells, and {out}/residual.json the operation, the\n\
+                      counts in, the stage-1 run and the raw data files.\n\n\
                       By default (--adapt batch, see its help) a shift of a whole\n\
                       community within a batch is absorbed; a local patch stays.\n\n\
                       It does not estimate or subtract a donor effect. With --adapt\n\
@@ -698,7 +709,7 @@ enum Commands {
                       the donor effect is about as large as the cell-type effect): check\n\
                       the stage-1 communities' donor make-up first. A patch stage 1 gave\n\
                       its own community, and a donor-specific mix of shared cell states,\n\
-                      leave no excess; look for them among the stage-1 communities."
+                      leave nothing above μ; look for them among the stage-1 communities."
     )]
     Residual(Box<residual::ResidualArgs>),
 

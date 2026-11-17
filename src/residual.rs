@@ -53,16 +53,55 @@
 //! a whole community shifted in one donor is read as nuisance.
 //! `--adapt none` keeps the pooled profiles.
 //!
-//! Per data file it writes `{out}/{stem}.zarr`, the excess counts
-//! `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`) on the rows every
-//! file shares (as an exact-name fit reads them; with `--feature-name-mode` as
-//! the fit's) and the file's own cells, and `{out}/{stem}.coords.parquet`,
-//! the run's first two coordinates for those cells. The excess keeps counts,
-//! so the count models fit it as they fit data. `{out}/residual.json`
-//! records, per file, the counts in and the excess out, how `μ` was made
-//! (`excess`, `adapt`, `adapt_cells`, `formula`), and carries the block
-//! `pinto lra` reads to take a fit on these files on its raw counts: the
-//! stage-1 run and the raw data files.
+//! What is left of the counts once `μ` is accounted for is taken one of two
+//! ways (`--residual`), both from the one `μ` above ([`mu_at`]):
+//!
+//! **divide** (alias multiplicative; the default): stage 2 fits the raw
+//! counts `y` with `μ` as a multiplicative offset, so it models `y / μ`.
+//! Nothing per entry is written, only the low-rank pieces `μ` is rebuilt
+//! from wherever a fit reads a count:
+//!
+//! ```text
+//! μ_gi   = n_i Σ_k θ_ik p_{k,b(i)}(g)
+//! p̄_g    = Σ_i μ_gi / Σ_i n_i
+//! d_gi   = μ_gi / (n_i p̄_g) = Σ_k θ_ik p_{k,b(i)}(g) / p̄_g
+//! φ_g    = max(0, Σ_i [(y_gi − μ_gi)² − μ_gi]) / Σ_i μ_gi²
+//! σ²_gb  = (1 / N_b) Σ_{i∈b} (μ_gi + φ_g μ_gi²)
+//! r_gi   = (y_gi − μ_gi) / σ_{g,b(i)}
+//! ```
+//!
+//! `d` is the divisor dsvd, cage and cage-cell divide a count by where they
+//! would divide by a batch effect (on the count scale, its `n`-weighted
+//! mean 1 over the cells); lc scores its edge profiles against `μ` itself
+//! (rates `D_kg / M_kg`), and every stage-2 fit writes its feature × community
+//! dictionary as the same kind of rate, `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`;
+//! `r` is the Pearson residual `--feature-inclusion moran` reads, with one
+//! scale per row and batch, so its zeros have closed forms. `φ` is the
+//! negative-binomial dispersion by the method of moments,
+//! `E[(y − μ)²] = μ + φ μ²` pooled over the cells: the sums over every cell
+//! split into the nonzeros' `Σ (y² − 2yμ)` and the zeros' closed forms,
+//! `Σ_{i∈b} μ_gi = p_b(g)ᵀ Σ_{i∈b} n_i θ_i` and
+//! `Σ_{i∈b} μ_gi² = p_b(g)ᵀ (Σ_{i∈b} n_i² θ_i θ_iᵀ) p_b(g)`, `K × K` per
+//! batch, so nothing dense over cells × rows is formed. The tables
+//! (`crate::util::stage1_divisor`): `{out}/stage1.cells.parquet` (per cell
+//! `n_i`, its batch and `θ_i`), `{out}/stage1.profiles.parquet` (per row
+//! `p_{k,b}`) and `{out}/stage1.features.parquet` (per row `p̄`, `φ` and
+//! `σ²_b`). A stage-2 fit reads the stage-1 run's own data files and takes
+//! the folder as `--offset {out}`.
+//!
+//! **subtract** (alias additive): per data file `{out}/{stem}.zarr`, the
+//! excess counts `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`),
+//! which the count models fit as they fit data.
+//!
+//! Either way the excess files, if any, are on the rows every file shares
+//! (as an exact-name fit reads them; with `--feature-name-mode` as the
+//! fit's) and each file's own cells, and `{out}/{stem}.coords.parquet`
+//! holds the run's first two coordinates for those cells. `{out}/residual.json`
+//! records the operation (`divide` or `subtract`), per file the counts in
+//! (and under subtract the excess out), how `μ` was made (`adapt`,
+//! `adapt_cells`, `formula`), and the stage-1 run and raw data files: under
+//! subtract the block `pinto lra` reads to take a fit on the excess files on
+//! the raw counts; under divide the stage-1 run lra takes cell types from.
 
 use crate::cell_activity_graph_embedding::args::FeatureNameMode;
 use crate::util::common::*;
@@ -103,10 +142,27 @@ pub struct ResidualArgs {
     pub data_files: Option<Vec<Box<str>>>,
 
     #[arg(
+        id = "residual",
+        long = "residual",
+        value_enum,
+        default_value_t = Operation::Divide,
+        help = "What is left once μ is accounted for: divide (stage 2 models y/μ) or subtract (max(y - μ, 0) as counts)",
+        long_help = "How stage 2 sees the counts once the stage-1 expectation μ is\n\
+                     accounted for.\n\
+                     divide (alias multiplicative): stage 2 fits the raw counts with μ\n\
+                     as a multiplicative offset, i.e. models y/μ. Writes the tables μ\n\
+                     is rebuilt from (stage1.*.parquet) and no new data files; fit the\n\
+                     run's own data files with --offset <this -o>.\n\
+                     subtract (alias additive): round(max(y - μ, 0)) written as new\n\
+                     count files, which stage 2 fits as data."
+    )]
+    pub operation: Operation,
+
+    #[arg(
         long,
         value_enum,
         default_value_t = Excess::Round,
-        help = "How y - μ becomes a count: round, or floor (a count of 1 over a mean below 1 is dropped)"
+        help = "Under --residual subtract, how y - μ becomes a count: round, or floor (a count of 1 over a mean below 1 is dropped)"
     )]
     pub excess: Excess,
 
@@ -165,6 +221,18 @@ pub enum Adapt {
     Batch,
 }
 
+/// How what is left of the counts is taken (`--residual`).
+#[derive(clap::ValueEnum, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Operation {
+    /// Stage 2 fits the raw counts with μ as a multiplicative offset.
+    #[value(alias = "multiplicative")]
+    Divide,
+    /// `round(max(y − μ, 0))` as new count files.
+    #[value(alias = "additive")]
+    Subtract,
+}
+
 /// How `y − μ` becomes a count.
 #[derive(clap::ValueEnum, serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -186,12 +254,7 @@ fn excess_counts(
 ) -> Vec<(usize, f32)> {
     col.iter()
         .filter_map(|&(r, y)| {
-            let mu = n * pi
-                .iter()
-                .zip(p_t.column(r).iter())
-                .map(|(a, b)| a * b)
-                .sum::<f64>();
-            let d = (y - mu).max(0.0);
+            let d = (y - mu_at(n, p_t, pi, r)).max(0.0);
             let e = match how {
                 Excess::Round => d.round(),
                 Excess::Floor => d.floor(),
@@ -199,6 +262,17 @@ fn excess_counts(
             (e > 0.0).then_some((r, e as f32))
         })
         .collect()
+}
+
+/// `μ_gi = n_i Σ_k θ_ik p_k(g)` of row `r`, from the cell's total `n`, its
+/// `θ` (`pi`) and its batch's profiles `p_t` (`[K, G]`): the one expectation
+/// both operations take their residual from.
+fn mu_at(n: f64, p_t: &nalgebra::DMatrix<f64>, pi: &[f64], r: usize) -> f64 {
+    n * pi
+        .iter()
+        .zip(p_t.column(r).iter())
+        .map(|(a, b)| a * b)
+        .sum::<f64>()
 }
 
 /// `θ` for one cell by EM over the profiles `p_t`; zero when the cell has no
@@ -230,6 +304,9 @@ struct Inputs {
     coords: HashMap<Box<str>, (f32, f32)>,
     /// Each cell's adaptation group (`--adapt`): 0 for all under `none`.
     group_of: Vec<usize>,
+    /// Each group's name: the run's batch, `unplaced` for cells its table
+    /// lacks, `all` under `--adapt none`.
+    group_names: Vec<Box<str>>,
 }
 
 /// What `pinto residual` writes for a run, and what it reads to make it,
@@ -242,8 +319,15 @@ struct Inputs {
 pub struct Plan {
     /// The run's data files, in its order.
     pub files: Vec<Box<str>>,
-    /// Per data file, its residual zarr (`{out}/{stem}.zarr`).
+    /// How what is left is taken (`--residual`).
+    pub operation: Operation,
+    /// Per data file, its residual zarr (`{out}/{stem}.zarr`), under
+    /// `--residual subtract`; none under divide.
     pub zarrs: Vec<String>,
+    /// The stage-1 tables under `--residual divide`
+    /// ([`crate::util::stage1_divisor::Stage1Tables::paths`]); none under
+    /// subtract.
+    pub tables: Vec<String>,
     /// Per data file, its residual's coordinates, beside the zarr.
     pub coords: Vec<String>,
     /// `{out}/residual.json`.
@@ -287,11 +371,20 @@ impl Plan {
             "cells table (outputs.cells): a residual takes each cell's coordinates and \
              batch from it",
         )?;
-        let zarrs = output_paths(&files, &args.out)?;
-        let coords = zarrs.iter().map(|z| coords_path(z)).collect();
+        let named = output_paths(&files, &args.out)?;
+        let coords = named.iter().map(|z| coords_path(z)).collect();
+        let (zarrs, tables) = match args.operation {
+            Operation::Subtract => (named, Vec::new()),
+            Operation::Divide => (
+                Vec::new(),
+                crate::util::stage1_divisor::Stage1Tables::paths(&args.out).to_vec(),
+            ),
+        };
         Ok(Self {
             files,
+            operation: args.operation,
             zarrs,
+            tables,
             coords,
             summary: in_dir(&args.out, MARKER),
             coord_names,
@@ -300,13 +393,21 @@ impl Plan {
         })
     }
 
-    /// Every path it writes: each file's zarr and coordinates, then
-    /// `residual.json`.
+    /// Every path it writes: under subtract each file's zarr and
+    /// coordinates, under divide each file's coordinates and the stage-1
+    /// tables; then `residual.json`.
     pub fn made(&self) -> Vec<std::path::PathBuf> {
-        self.zarrs
-            .iter()
-            .zip(&self.coords)
-            .flat_map(|(z, c)| [z, c])
+        let files: Vec<&String> = match self.operation {
+            Operation::Subtract => self
+                .zarrs
+                .iter()
+                .zip(&self.coords)
+                .flat_map(|(z, c)| [z, c])
+                .collect(),
+            Operation::Divide => self.coords.iter().chain(&self.tables).collect(),
+        };
+        files
+            .into_iter()
             .chain([&self.summary])
             .map(std::path::PathBuf::from)
             .collect()
@@ -357,6 +458,7 @@ fn stage_one_files(run: &Run, args: &ResidualArgs) -> anyhow::Result<Vec<Box<str
     // its residual.json would name the excess files as raw, and lra on a
     // fit of it would read excess counts as raw counts
     let on_residual = crate::lr_activity::input::residual_of(run)?.is_some()
+        || run.meta.offset.is_some()
         || files
             .iter()
             .any(|f| crate::lr_activity::input::is_excess(Path::new(f.as_ref())));
@@ -441,6 +543,10 @@ impl Inputs {
             Adapt::None => vec![0; names.len()],
             Adapt::Batch => batch_groups(&cells.names, cells.batches.as_deref(), &names),
         };
+        let group_names = match args.adapt {
+            Adapt::None => vec!["all".into()],
+            Adapt::Batch => group_names(&cells.names, cells.batches.as_deref(), &names, &group_of),
+        };
         let coords = cells.names.into_iter().zip(cells.coords).collect();
 
         let prop_path = &plan.propensity;
@@ -472,8 +578,41 @@ impl Inputs {
             prop,
             coords,
             group_of,
+            group_names,
         })
     }
+}
+
+/// Each group of [`batch_groups`]'s name: its cells' batch in the run's
+/// cells table, `unplaced` for cells the table lacks, `all` with no batches.
+fn group_names(
+    table_names: &[Box<str>],
+    batches: Option<&[Box<str>]>,
+    names: &[Box<str>],
+    group_of: &[usize],
+) -> Vec<Box<str>> {
+    let n_groups = group_of.iter().max().map_or(1, |&g| g + 1);
+    let Some(batches) = batches else {
+        return vec!["all".into(); n_groups];
+    };
+    let batch_of: HashMap<&str, &str> = table_names
+        .iter()
+        .zip(batches)
+        .map(|(c, b)| (c.as_ref(), b.as_ref()))
+        .collect();
+    let mut out: Vec<Option<Box<str>>> = vec![None; n_groups];
+    for (c, &g) in names.iter().zip(group_of) {
+        if out[g].is_none() {
+            out[g] = Some(
+                batch_of
+                    .get(c.as_ref())
+                    .map_or("unplaced".into(), |&b| b.into()),
+            );
+        }
+    }
+    out.into_iter()
+        .map(|n| n.unwrap_or_else(|| "unplaced".into()))
+        .collect()
 }
 
 /// Group ids over the data's columns `names`: each cell's batch in the
@@ -618,30 +757,115 @@ struct ExcessParam<'a> {
     group_of: &'a [usize],
     iters: usize,
     how: Excess,
+    operation: Operation,
 }
 
 /// Per cell (on `data`'s columns): its total and its excess entries.
 type CellExcess = Vec<(f64, Vec<(usize, f32)>)>;
 
+/// What `--residual divide` sums over the cells, per group `b` (rows `g`):
+/// `Σ_{i∈b} n_i θ_i` (`K`), `Σ_{i∈b} n_i² θ_i θ_iᵀ` (`K × K` row-major), the
+/// cells, and over the nonzeros `Σ (y² − 2yμ)` (`[G × groups]` row-major);
+/// with every cell's `θ` (`[cells × K]`).
+struct Moments {
+    k: usize,
+    n_groups: usize,
+    a: Vec<f64>,
+    c: Vec<f64>,
+    cells: Vec<f64>,
+    nz: Vec<f64>,
+    theta: Vec<f32>,
+}
+
+impl Moments {
+    fn new(k: usize, n_groups: usize, n_rows: usize, n_cells: usize) -> Self {
+        Self {
+            k,
+            n_groups,
+            a: vec![0.0; n_groups * k],
+            c: vec![0.0; n_groups * k * k],
+            cells: vec![0.0; n_groups],
+            nz: vec![0.0; n_rows * n_groups],
+            theta: vec![0.0; n_cells * k],
+        }
+    }
+
+    /// One cell `i` of group `b`: total `n`, nonzeros `col`, `θ` and its
+    /// group's profiles.
+    fn add(
+        &mut self,
+        b: usize,
+        n: f64,
+        col: &[(usize, f64)],
+        pi: &[f64],
+        p_t: &nalgebra::DMatrix<f64>,
+    ) {
+        let k = self.k;
+        self.cells[b] += 1.0;
+        for (t, &x) in pi.iter().enumerate() {
+            self.a[b * k + t] += n * x;
+            for (u, &z) in pi.iter().enumerate() {
+                self.c[(b * k + t) * k + u] += n * n * x * z;
+            }
+        }
+        for &(r, y) in col {
+            let mu = mu_at(n, p_t, pi, r);
+            self.nz[r * self.n_groups + b] += y * y - 2.0 * y * mu;
+        }
+    }
+
+    fn merge(&mut self, other: &Moments) {
+        let add = |x: &mut [f64], y: &[f64]| x.iter_mut().zip(y).for_each(|(a, b)| *a += b);
+        add(&mut self.a, &other.a);
+        add(&mut self.c, &other.c);
+        add(&mut self.cells, &other.cells);
+        add(&mut self.nz, &other.nz);
+    }
+}
+
+/// One pass over the cells: each cell's `θ` and total, and under subtract
+/// its excess entries, under divide the [`Moments`].
+struct CellPass {
+    cells: CellExcess,
+    moments: Option<Moments>,
+}
+
 fn excess_visitor(
     (lb, ub): (usize, usize),
     data: &SparseIoVec,
     param: &ExcessParam,
-    out: Arc<Mutex<&mut CellExcess>>,
+    out: Arc<Mutex<&mut CellPass>>,
 ) -> anyhow::Result<()> {
     let csc = data.read_columns_csc(lb..ub)?;
+    let k = param.profiles[0].nrows();
+    let n_groups = param.profiles.len();
+    let mut moments =
+        (param.operation == Operation::Divide).then(|| Moments::new(k, n_groups, csc.nrows(), 0));
+    let mut thetas: Vec<f32> = Vec::new();
     let block: CellExcess = (0..csc.ncols())
         .map(|j| {
-            let p_t = &param.profiles[param.group_of[lb + j]];
+            let b = param.group_of[lb + j];
+            let p_t = &param.profiles[b];
             let col = column_entries(&csc, j);
             let pi = cell_theta(&col, p_t, param.iters);
             let n = col.iter().map(|&(_, y)| y).sum();
-            (n, excess_counts(&col, n, p_t, &pi, param.how))
+            match moments.as_mut() {
+                Some(m) => {
+                    m.add(b, n, &col, &pi, p_t);
+                    thetas.extend(pi.iter().map(|&x| x as f32));
+                    (n, Vec::new())
+                }
+                None => (n, excess_counts(&col, n, p_t, &pi, param.how)),
+            }
         })
         .collect();
-    let mut out = out.lock().expect("lock residual excess");
+    let mut out = out.lock().expect("lock residual pass");
     for (j, e) in block.into_iter().enumerate() {
-        out[lb + j] = e;
+        out.cells[lb + j] = e;
+    }
+    if let (Some(all), Some(m)) = (out.moments.as_mut(), moments) {
+        all.merge(&m);
+        all.theta[lb * k..ub * k].copy_from_slice(&thetas);
     }
     Ok(())
 }
@@ -649,10 +873,14 @@ fn excess_visitor(
 #[derive(serde::Serialize)]
 struct FileSummary {
     data_file: Box<str>,
-    residual_file: String,
+    /// The excess file, under subtract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    residual_file: Option<String>,
+    coords_file: String,
     n_cells: usize,
     counts_in: f64,
-    excess_out: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excess_out: Option<f64>,
 }
 
 pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
@@ -669,27 +897,82 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
         args.adapt
     );
 
-    let mut cells: CellExcess = vec![(0.0, Vec::new()); inp.data.num_columns()];
+    let n_cells = inp.data.num_columns();
+    let k = profiles[0].nrows();
+    if args.operation == Operation::Divide {
+        // θ, then the per-batch K × K sums and the nonzeros' per-row sums
+        let bytes =
+            n_cells * k * 4 + profiles.len() * (k * k + inp.data.num_rows()) * 8 * 2 + n_cells * 8;
+        crate::util::memory::ensure_fits(
+            "pinto residual --residual divide",
+            bytes,
+            &crate::util::memory::Budget::now()?,
+            "take fewer cells",
+        )?;
+    }
+    let mut pass = CellPass {
+        cells: vec![(0.0, Vec::new()); n_cells],
+        moments: (args.operation == Operation::Divide)
+            .then(|| Moments::new(k, profiles.len(), inp.data.num_rows(), n_cells)),
+    };
     let param = ExcessParam {
         profiles: &profiles,
         group_of: &inp.group_of,
         iters: args.em_iters,
         how: args.excess,
+        operation: args.operation,
     };
     inp.data
-        .visit_columns_by_block(&excess_visitor, &param, &mut cells, args.block_size)?;
+        .visit_columns_by_block(&excess_visitor, &param, &mut pass, args.block_size)?;
 
     std::fs::create_dir_all(args.out.as_ref())?;
     let rows = inp.data.row_names()?;
-    let summary = plan
-        .files
-        .iter()
-        .zip(&plan.zarrs)
-        .zip(sections)
-        .map(|((f, out_file), section)| {
-            write_file(f, out_file, &rows, section, &cells, &plan.coord_names)
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let cells = &pass.cells;
+    let summary = match args.operation {
+        Operation::Subtract => plan
+            .files
+            .iter()
+            .zip(&plan.zarrs)
+            .zip(sections)
+            .map(|((f, out_file), section)| {
+                write_file(f, out_file, &rows, section, cells, &plan.coord_names)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        Operation::Divide => {
+            let moments = pass.moments.as_ref().expect("divide sums its moments");
+            let tables = stage1_tables(&inp, &profiles, moments, cells, &rows);
+            tables.write(&args.out)?;
+            let phi_mean = tables.phi.iter().map(|&x| f64::from(x)).sum::<f64>()
+                / tables.phi.len().max(1) as f64;
+            info!(
+                "Divide: wrote the stage-1 tables ({} cells, {} rows, {} communities, {} \
+                 batch(es); mean φ {phi_mean:.3}) under {}; fit the run's own data files \
+                 with --offset {}",
+                tables.cells.len(),
+                tables.features.len(),
+                tables.k,
+                tables.batches.len(),
+                crate::util::staging::final_str(&args.out),
+                crate::util::staging::final_str(&args.out),
+            );
+            plan.files
+                .iter()
+                .zip(&plan.coords)
+                .zip(sections)
+                .map(|((f, coords_file), (range, barcodes, coords))| {
+                    write_section_coords(coords_file, &coords, &plan.coord_names)?;
+                    Ok(FileSummary {
+                        data_file: f.clone(),
+                        residual_file: None,
+                        coords_file: coords_file.clone(),
+                        n_cells: barcodes.len(),
+                        counts_in: cells[range].iter().map(|c| c.0).sum(),
+                        excess_out: None,
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        }
+    };
     std::fs::write(
         &plan.summary,
         serde_json::to_string_pretty(&residual_marker(&run, &plan.files, args, summary)?)?,
@@ -714,7 +997,11 @@ fn residual_marker(
             .into_owned())
     };
     let block = crate::lr_activity::input::ResidualBlock {
-        counts: "excess".into(),
+        // under divide stage 2 reads the raw counts themselves
+        counts: match args.operation {
+            Operation::Subtract => "excess".into(),
+            Operation::Divide => "raw".into(),
+        },
         stage1: Some(canonical(&run.manifest)?),
         raw_data_files: files
             .iter()
@@ -722,12 +1009,31 @@ fn residual_marker(
             .collect::<anyhow::Result<_>>()?,
     };
     let mut marker = serde_json::to_value(block)?;
-    marker["excess"] = serde_json::to_value(args.excess)?;
+    marker["operation"] = serde_json::to_value(args.operation)?;
     marker["adapt"] = serde_json::to_value(args.adapt)?;
     marker["adapt_cells"] = serde_json::to_value(args.adapt_cells)?;
-    marker["formula"] =
-        "max(y - mu, 0) as a count; mu = n_i sum_k theta_ik p_k(g); no batch delta from stage 1"
-            .into();
+    match args.operation {
+        Operation::Subtract => {
+            marker["excess"] = serde_json::to_value(args.excess)?;
+            marker["formula"] = "max(y - mu, 0) as a count; mu = n_i sum_k theta_ik p_kb(g); \
+                                 no batch delta from stage 1"
+                .into();
+        }
+        Operation::Divide => {
+            marker["formula"] = "stage 2 fits y with mu as a multiplicative offset; \
+                                 mu = n_i sum_k theta_ik p_kb(g); d = mu / (n_i pbar_g), \
+                                 pbar_g = sum_i mu_gi / sum_i n_i; \
+                                 phi_g = max(0, sum_i [(y - mu)^2 - mu]) / sum_i mu^2; \
+                                 sigma2_gb = mean over b's cells of mu + phi_g mu^2; \
+                                 r = (y - mu) / sigma_gb; no batch delta from stage 1"
+                .into();
+            marker["tables"] =
+                serde_json::json!(crate::util::stage1_divisor::Stage1Tables::paths(".")
+                    .iter()
+                    .map(|p| p.trim_start_matches("./").to_string())
+                    .collect::<Vec<_>>());
+        }
+    }
     marker["files"] = serde_json::to_value(summary)?;
     Ok(marker)
 }
@@ -806,11 +1112,93 @@ fn write_file(
     );
     Ok(FileSummary {
         data_file: f.into(),
-        residual_file: out_file.into(),
+        residual_file: Some(out_file.into()),
+        coords_file: coords_path(out_file),
         n_cells: barcodes.len(),
         counts_in,
-        excess_out,
+        excess_out: Some(excess_out),
     })
+}
+
+/// The stage-1 tables from one pass's [`Moments`] (see the module doc):
+/// `θ`, `n` and each cell's group, each group's profiles, and per row the
+/// pooled share, the dispersion and each group's Pearson scale, the zeros'
+/// sums in closed form through the `K × K` accumulators.
+fn stage1_tables(
+    inp: &Inputs,
+    profiles: &[nalgebra::DMatrix<f64>],
+    m: &Moments,
+    cells: &CellExcess,
+    rows: &[Box<str>],
+) -> crate::util::stage1_divisor::Stage1Tables {
+    let (k, nb, g) = (m.k, m.n_groups, rows.len());
+    // Σ_{i∈b} μ_gb and Σ_{i∈b} μ²_gb
+    let mut s1 = vec![0f64; g * nb];
+    let mut s2 = vec![0f64; g * nb];
+    for (b, p_t) in profiles.iter().enumerate() {
+        let a = &m.a[b * k..(b + 1) * k];
+        let c = &m.c[b * k * k..(b + 1) * k * k];
+        for r in 0..g {
+            let p = p_t.column(r);
+            s1[r * nb + b] = (0..k).map(|t| p[t] * a[t]).sum();
+            s2[r * nb + b] = (0..k)
+                .map(|t| p[t] * (0..k).map(|u| c[t * k + u] * p[u]).sum::<f64>())
+                .sum();
+        }
+    }
+    let total_n: f64 = cells.iter().map(|c| c.0).sum();
+    let mut pbar = Vec::with_capacity(g);
+    let mut phi = Vec::with_capacity(g);
+    let mut sigma2 = Vec::with_capacity(g * nb);
+    for r in 0..g {
+        let (mu, mu2, nz): (f64, f64, f64) = (0..nb).fold((0.0, 0.0, 0.0), |acc, b| {
+            (
+                acc.0 + s1[r * nb + b],
+                acc.1 + s2[r * nb + b],
+                acc.2 + m.nz[r * nb + b],
+            )
+        });
+        pbar.push(if total_n > 0.0 {
+            (mu / total_n) as f32
+        } else {
+            0.0
+        });
+        let f = if mu2 > 0.0 {
+            ((nz + mu2 - mu) / mu2).max(0.0)
+        } else {
+            0.0
+        };
+        phi.push(f as f32);
+        for b in 0..nb {
+            let n_b = m.cells[b];
+            sigma2.push(if n_b > 0.0 {
+                ((s1[r * nb + b] + f * s2[r * nb + b]) / n_b) as f32
+            } else {
+                0.0
+            });
+        }
+    }
+    let mut flat = vec![0f32; nb * g * k];
+    for (b, p_t) in profiles.iter().enumerate() {
+        for r in 0..g {
+            for t in 0..k {
+                flat[(b * g + r) * k + t] = p_t[(t, r)] as f32;
+            }
+        }
+    }
+    crate::util::stage1_divisor::Stage1Tables {
+        cells: inp.names.clone(),
+        n: cells.iter().map(|c| c.0 as f32).collect(),
+        batch: inp.group_of.iter().map(|&b| b as u32).collect(),
+        theta: m.theta.clone(),
+        k,
+        batches: inp.group_names.clone(),
+        features: rows.to_vec(),
+        profiles: flat,
+        pbar,
+        phi,
+        sigma2,
+    }
 }
 
 /// A residual zarr's coordinate file, beside it.

@@ -121,7 +121,11 @@ pub struct PairProjectionArgs<'a> {
 /// shifts, whether it joins two cells of one section (a spatial graph) or
 /// cells of any batches (an expression graph, built on the batch-corrected
 /// projection).
+/// A stage-2 fit's stage-1 divisor (`--offset`) divides the endpoints the
+/// same way, by the same self-normalising ratio
+/// ([`crate::util::batch_effects::Divisor::ratio_column`]).
 pub use crate::util::batch_effects::BatchDivisor as PairBatchDivisor;
+use crate::util::batch_effects::Divisor;
 
 /// Every cell's own placement, in column order: the MAP of its doubled
 /// profile `2x_c`, whose composition is `x_c`'s — the self-pair, so a cell
@@ -303,7 +307,7 @@ pub fn project_pairs(
     data: &SparseIoVec,
     edges: &[(u32, u32)],
     e_feat: &Mat,
-    batch: Option<PairBatchDivisor<'_>>,
+    batch: Option<Divisor<'_>>,
     args: &PairProjectionArgs<'_>,
     axis: &FeatureAxis,
     feature_totals: &[f64],
@@ -438,7 +442,7 @@ pub fn project_pairs(
 fn build_corpus(
     data: &SparseIoVec,
     dict: &PairDictionary,
-    batch: Option<PairBatchDivisor<'_>>,
+    batch: Option<Divisor<'_>>,
     axis: &FeatureAxis,
     block: usize,
 ) -> anyhow::Result<Vec<encoder::CellRow>> {
@@ -476,12 +480,14 @@ fn endpoint_counts(
     rows: &[usize],
     vals: &[f32],
     cell: u32,
-    batch: Option<PairBatchDivisor<'_>>,
+    batch: Option<Divisor<'_>>,
 ) -> Vec<(u32, f32)> {
     let mut vals = vals.to_vec();
-    if let Some(bd) = batch {
-        let b = bd.batch_of_cell[cell as usize] as usize;
-        adjust_by_poisson_ratio(&mut vals, |k| bd.delta[(rows[k], b)]);
+    if let Some(d) = batch {
+        // a δ registered on the data has no per-cell batch here: cage and
+        // predict pass theirs with each cell's batch
+        debug_assert!(!matches!(d, Divisor::Registered(_)));
+        d.ratio_column(rows, &mut vals, cell as usize, None);
     }
     rows.iter()
         .zip(vals)

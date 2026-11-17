@@ -162,9 +162,10 @@ fn a_run_that_records_no_propensity_output_is_refused() {
     assert!(err.contains("records no propensity output"), "{err}");
 }
 
-/// The reply lists the files `pinto residual` writes, in the run's order,
-/// with the coordinate columns they carry, and the call makes exactly them
-/// with residual.json.
+/// The reply lists what stage 2 fits, in the run's order, with the
+/// coordinate columns: under subtract the residual's files, under divide
+/// (the default) the run's own data files and the folder as `offset`; and
+/// the call makes exactly what the plan names, with residual.json.
 #[test]
 fn the_reply_lists_the_residual_files_to_fit_in_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -179,9 +180,14 @@ fn the_reply_lists_the_residual_files_to_fit_in_order() {
     let refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let prefix = manifest(dir.path(), "lc", &refs);
     let out = dir.path().join("res").to_string_lossy().into_owned();
-    let (argv, plan) = residual_plan(&cli(), &args(json!({"run": prefix})), &out).unwrap();
+    let sub = args(json!({"run": prefix, "residual": "subtract"}));
+    let (argv, plan) = residual_plan(&cli(), &sub, &out).unwrap();
     assert_eq!(argv[0], "residual");
-    let fit = fit_lists(&plan);
+    assert!(
+        argv.contains(&"--residual=subtract".to_string()),
+        "{argv:?}"
+    );
+    let fit = fit_lists(&plan, &out);
     assert_eq!(
         fit,
         json!({
@@ -202,6 +208,27 @@ fn the_reply_lists_the_residual_files_to_fit_in_order() {
             format!("{out}/S2.coords.parquet"),
             format!("{out}/S1.zarr"),
             format!("{out}/S1.coords.parquet"),
+            format!("{out}/residual.json"),
+        ]
+    );
+
+    let (_, plan) = residual_plan(&cli(), &args(json!({"run": prefix})), &out).unwrap();
+    let fit = fit_lists(&plan, &out);
+    assert_eq!(fit["data"], json!(plan.files), "{fit}");
+    assert_eq!(fit["flags"]["offset"], json!(out), "{fit}");
+    let made: Vec<String> = plan
+        .made()
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        made,
+        [
+            format!("{out}/S2.coords.parquet"),
+            format!("{out}/S1.coords.parquet"),
+            format!("{out}/stage1.cells.parquet"),
+            format!("{out}/stage1.profiles.parquet"),
+            format!("{out}/stage1.features.parquet"),
             format!("{out}/residual.json"),
         ]
     );

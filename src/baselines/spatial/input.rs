@@ -402,7 +402,12 @@ impl SpatialInputArgs {
         };
         // each count divided by its gene's δ in its cell's batch, as lc
         // divides
-        let counts = read_columns_divided(&srt.data, 0..cells.len(), mean.as_ref())?;
+        let counts = read_columns_divided(
+            &srt.data,
+            0..cells.len(),
+            mean.as_ref()
+                .map(crate::util::batch_effects::Divisor::Registered),
+        )?;
         drop(srt.data);
         let plane = ablation::non_batch_columns(&srt.coordinate_names);
         let d = plane.len();

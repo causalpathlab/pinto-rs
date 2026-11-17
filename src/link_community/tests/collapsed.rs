@@ -137,6 +137,43 @@ fn conditional_is_the_joint_ratio() {
     assert_conditional_is_the_joint_ratio(&fixture(), 0.04);
 }
 
+/// [`fixture`] with an expected profile per edge, unlike the counts and
+/// unlike each other: lc's exact stage-1 offset.
+fn offset_fixture() -> LinkProfileStore {
+    let mu: Vec<f32> = (0..6 * M)
+        .map(|x| 0.4 + ((x * 5) % 7) as f32 / 4.0)
+        .collect();
+    fixture().with_offset(mu)
+}
+
+/// Under an offset the conditional is still the ratio of joints: `M`
+/// moves with the edge as `D` does, and the score reads `D / M`.
+#[test]
+fn an_offset_conditional_is_the_joint_ratio() {
+    assert_conditional_is_the_joint_ratio(&offset_fixture(), 0.0);
+    assert_conditional_is_the_joint_ratio(&offset_fixture(), 1.5);
+}
+
+/// `M` kept by moves is `M` recomputed, and the sampler reaches the
+/// enumerated posterior under an offset too.
+#[test]
+fn the_sampler_reaches_the_offset_posterior() {
+    let store = offset_fixture();
+    let mut stats = LinkCommunityStats::from_profiles(&store, K, &labeling(0b011010, 6));
+    stats.delta_move(1, 1, 0, &store);
+    let fresh = LinkCommunityStats::from_profiles(&store, K, &stats.membership);
+    for (a, b) in stats.offset_sum.iter().zip(&fresh.offset_sum) {
+        assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+    }
+    let target = enumerated_posterior(&store, 1.5);
+    let mut sampler = LinkGibbsSampler::new(SmallRng::seed_from_u64(7));
+    let visits = occupancy(&store, |stats, store| {
+        sampler.gibbs_sweep(stats, store, 1.5);
+    });
+    let tv = total_variation(&visits, &target);
+    assert!(tv < 0.05, "total variation {tv}");
+}
+
 /// A count near zero says next to nothing, so it may not decide a move. A tiny
 /// prior count fails this: `ln Γ(y + ε) − ln Γ(ε)` jumps by `−ln ε` at `y > 0`.
 #[test]

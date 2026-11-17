@@ -270,6 +270,32 @@ pub struct SrtInputArgs {
     pub qc: data_beans::qc_lib::QcArgs,
 }
 
+/// A stage-2 fit's stage-1 divisor (`--offset`), the fits' own (lc, dsvd,
+/// cage, cage-cell): a query of a model takes none.
+///
+/// Flatten this into a fit's args struct with `#[command(flatten)]`.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct OffsetArgs {
+    #[arg(
+        long,
+        value_hint = clap::ValueHint::DirPath,
+        help = "Stage 2: the divisor from `pinto residual --residual divide` (its -o folder)",
+        long_help = "A stage-2 fit on the stage-1 run's own data files: the folder\n\
+                     `pinto residual --residual divide` wrote, the divisor from it.\n\
+                     Each count is read against the stage-1 expectation\n\
+                     mu = n_i sum_k theta_ik p_kb(g): dsvd, cage and cage-cell divide it\n\
+                     by d = mu / (n_i pbar_g) where they would divide by a batch effect\n\
+                     (the projections too), lc scores its edge profiles against mu\n\
+                     (rates D/M in place of D/V), the written feature_community holds\n\
+                     the rates sum_i pi_ik y_gi / sum_i pi_ik d_gi, and\n\
+                     --feature-inclusion moran reads\n\
+                     Pearson residuals (y - mu) / sigma_gb. Such a fit takes no batch\n\
+                     effect: --batch-files, --auto-batch and --cnv-clones are refused.\n\
+                     Its manifest records the folder (offset)."
+    )]
+    pub offset: Option<Box<str>>,
+}
+
 /// The batch options: which cells share batch effects (`--batch-files`,
 /// `--auto-batch`) and whether δ is estimated (`--ignore-batch`). How the
 /// estimate collapses the cells is [`CollapseArgs`].

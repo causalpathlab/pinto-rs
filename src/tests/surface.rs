@@ -28,16 +28,16 @@ pub(crate) fn visible_flags(cmd: &clap::Command) -> Vec<String> {
 #[test]
 fn each_command_s_help_shows_a_short_list_of_flags() {
     const BUDGET: &[(&str, usize)] = &[
-        ("delta-svd", 24),
+        ("delta-svd", 25),
         ("propensity", 11),
-        ("link-community", 24),
-        ("cage", 36),
-        ("cage-cell", 28),
+        ("link-community", 25),
+        ("cage", 37),
+        ("cage-cell", 29),
         ("predict", 23),
         ("impute", 21),
         ("lra", 21),
         ("lra-simulate", 20),
-        ("residual", 10),
+        ("residual", 11),
         ("srt-simulate", 8),
         ("srt-sim-score", 8),
         ("srt-sim-pairs", 10),

@@ -49,7 +49,11 @@ pub enum ProfileMode<'a> {
         basis: &'a Mat,
         /// The run's batch effect `[rows × batches]`, divided out of every
         /// count before it is pooled or projected; `None` without one.
-        delta: Option<&'a Mat>,
+        divisor: Option<crate::util::batch_effects::Divisor<'a>>,
+        /// A stage-2 fit's stage-1 expectation (`--offset`), carried by every
+        /// profile store as its edges' offset rows: the counts are then
+        /// read as they are and scored against it, `λ̂ = D / M`.
+        offset: Option<&'a ProfileOffset<'a>>,
     },
 }
 
@@ -266,19 +270,32 @@ fn build_level_profiles(
                 basis,
             ))
         }
-        ProfileMode::Projection { basis, delta } => {
+        ProfileMode::Projection {
+            basis,
+            divisor,
+            offset,
+        } => {
             // Coarsen fine-cell expression to pb-samples, then project
             // pb-sample aggregates through the basis. Previously this path
             // passed fine-cell data with cluster-label indices, which read
             // arbitrary fine cells as if they were pb-samples — a bug that
             // made super-edge profiles decoupled from pb-sample biology.
-            let super_expr = coarsen_cell_expression_dense(data, cell_labels, n_pb_samples, delta)?;
-            Ok(build_super_edge_projection_profiles(
+            let super_expr =
+                coarsen_cell_expression_dense(data, cell_labels, n_pb_samples, divisor)?;
+            let store = build_super_edge_projection_profiles(
                 &super_expr,
                 super_edges,
                 super_edge_indices,
                 basis,
-            ))
+            );
+            Ok(match offset {
+                Some(o) => store.with_offset(o.edge_rows(
+                    Some((cell_labels, n_pb_samples)),
+                    super_edges,
+                    super_edge_indices,
+                )),
+                None => store,
+            })
         }
     }
 }
