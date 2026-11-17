@@ -122,25 +122,35 @@ pub fn read_pair_table(file_path: &str, community: bool) -> anyhow::Result<Vec<E
         .collect())
 }
 
-/// Attach per-edge batch labels from `{prefix}.coord_pairs.parquet`, read
-/// as [`read_pair_table`] reads it: each edge's two sides' batches, and its
-/// own batch when both sides share it. Matches edges by position (row
-/// order). A table without batch columns leaves every `batch` `None`.
+/// Attach per-edge batch labels from `{prefix}.coord_pairs.parquet` when the
+/// fit was multi-batch: each edge's two sides' batches, and its own batch
+/// when both sides share it. Matches edges by position (row order); only
+/// the batch columns are read. A table without them leaves the edges as
+/// they are.
 pub fn attach_batch_from_coord_pairs(
     edges: &mut [EdgeRecord],
     coord_pairs_path: &str,
 ) -> anyhow::Result<()> {
-    let pairs = read_pair_table(coord_pairs_path, false)?;
+    let path = Path::new(coord_pairs_path);
+    let fields = field_names(path)?;
+    let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
+    if !(has("left_batch") && has("right_batch")) {
+        return Ok(());
+    }
+    let cols = read_named_columns(path, &["left_batch", "right_batch"])?;
+    let (left, right) = (labels(&cols[0])?, labels(&cols[1])?);
+    let all = left.iter().chain(&right).map(AsRef::as_ref);
+    crate::lr_activity::fit::refuse_reserved_batches(all, coord_pairs_path)?;
     anyhow::ensure!(
-        pairs.len() <= edges.len(),
+        left.len() <= edges.len(),
         "coord_pairs.parquet has more rows than link_community.parquet"
     );
     // Edge is single-batch iff both endpoints share a label. We only test
     // within-batch activity; cross-batch edges are dropped downstream by
     // assigning the joint label `None`.
-    for (edge, pair) in edges.iter_mut().zip(pairs) {
-        edge.batch = pair.batch;
-        edge.side_batches = pair.side_batches;
+    for (edge, (l, r)) in edges.iter_mut().zip(left.into_iter().zip(right)) {
+        edge.batch = (l == r).then(|| l.clone());
+        edge.side_batches = Some((l, r));
     }
     Ok(())
 }

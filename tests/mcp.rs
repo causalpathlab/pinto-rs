@@ -5,6 +5,7 @@
 
 mod common;
 mod reference;
+mod staging;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -583,12 +584,7 @@ fn a_server_started_with_atomic_outputs_gives_it_to_its_tools_runs() {
         assert!(Path::new(&format!("{out}.contingency.parquet")).is_file());
     }
     // nothing is left staged beside the comparisons
-    let left: Vec<String> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.contains(".partial-"))
-        .collect();
-    assert!(left.is_empty(), "{left:?}");
+    staging::assert_none_staged(dir.path());
 }
 
 #[test]

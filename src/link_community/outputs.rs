@@ -259,6 +259,10 @@ pub fn write_propensity_with(
         "{prefix}: {n_extra} extra columns, {} names",
         extra_names.len()
     );
+    anyhow::ensure!(
+        extra.is_none_or(|m| m.nrows() == n_cells),
+        "{prefix}: extra columns of another row count than the {n_cells} cells"
+    );
     let cluster_col = dominant_cluster_rows(propensity);
     let entropy_vec = shannon_entropy_rows(propensity);
 

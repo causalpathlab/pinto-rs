@@ -9,7 +9,8 @@
 //! the LR genes, giving one pseudobulk profile per sample per community.
 //! Strata ARE link communities: every within-community edge is enumerated
 //! in both orientations, so every statistic here is symmetric in the pair
-//! and no endpoint plays a privileged role ([`orientation`] says why).
+//! and no endpoint plays a privileged role ([`super::orientation`] says
+//! why).
 //!
 //! Per-(community, sample) gene rates are estimated as `Gamma(num + a0,
 //! denom + b0)` posteriors with a `Gamma(1, 1)` prior, calibrated via
