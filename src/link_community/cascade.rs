@@ -13,9 +13,10 @@
 
 use crate::link_community::gibbs::LinkGibbsSampler;
 use crate::link_community::model::*;
-use crate::link_community::outputs::{write_partition_outputs, PartitionInputs, ScoreEntry};
+use crate::link_community::outputs::{write_partition_outputs, PartitionInputs};
 use crate::link_community::profiles::*;
 use crate::util::common::*;
+use crate::util::score_trace::ScoreEntry;
 
 /// Per-cell module-pair state carried across cascade levels.
 ///

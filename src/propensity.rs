@@ -158,68 +158,43 @@ pub fn fit_srt_propensity(args: &SrtPropensityArgs) -> anyhow::Result<()> {
     // Propensity output (optionally with coordinates)
     let prop_nk = prop_kn.transpose();
 
-    // Dominant cluster per vertex (argmax of propensity)
-    let cluster_col = crate::link_community::profiles::dominant_cluster_rows(&prop_nk);
-    let cluster_mat = Mat::from_column_slice(nvertices, 1, &cluster_col);
-
-    // Per-vertex Shannon entropy of the propensity distribution.
-    let entropy_vec = crate::link_community::profiles::shannon_entropy_rows(&prop_nk);
-    let entropy_mat = Mat::from_column_slice(nvertices, 1, entropy_vec.as_slice());
-
-    // C0..C{K-1} + cluster + entropy — same schema as `pinto fit lc` so the
-    // plot reader handles either subcommand's output uniformly.
-    let mut col_names: Vec<Box<str>> = (0..num_clusters)
-        .map(|k| format!("C{}", k).into_boxed_str())
-        .collect();
-    col_names.push("cluster".into());
-    col_names.push("entropy".into());
-
-    if let Some(coord_column_names) = &args.coord_column_names {
-        info!("Extracting vertex coordinates from coord_pair_file");
-
-        let left_coord_names: Vec<Box<str>> = coord_column_names
-            .iter()
-            .map(|name| format!("left_{}", name).into_boxed_str())
-            .collect();
-
-        let MatWithNames {
-            rows: _,
-            cols: _,
-            mat: left_coords,
-        } = Mat::from_parquet_with_indices_names(
-            &args.coord_pair_file,
-            Some(0),
-            Some(&[]),
-            Some(&left_coord_names),
-        )?;
-
-        let n_coords = coord_column_names.len();
-        let mut vertex_coords = Mat::zeros(nvertices, n_coords);
-        for (pair_idx, pair) in pair_names.iter().enumerate() {
-            if let Some(&v_idx) = vertex_index.get(&pair[0]) {
-                vertex_coords
-                    .row_mut(v_idx)
-                    .copy_from(&left_coords.row(pair_idx));
+    // with each vertex's coordinates after the shared columns, when given
+    let coords = match &args.coord_column_names {
+        Some(coord_column_names) => {
+            info!("Extracting vertex coordinates from coord_pair_file");
+            let left_coord_names: Vec<Box<str>> = coord_column_names
+                .iter()
+                .map(|name| format!("left_{}", name).into_boxed_str())
+                .collect();
+            let MatWithNames {
+                rows: _,
+                cols: _,
+                mat: left_coords,
+            } = Mat::from_parquet_with_indices_names(
+                &args.coord_pair_file,
+                Some(0),
+                Some(&[]),
+                Some(&left_coord_names),
+            )?;
+            let mut vertex_coords = Mat::zeros(nvertices, coord_column_names.len());
+            for (pair_idx, pair) in pair_names.iter().enumerate() {
+                if let Some(&v_idx) = vertex_index.get(&pair[0]) {
+                    vertex_coords
+                        .row_mut(v_idx)
+                        .copy_from(&left_coords.row(pair_idx));
+                }
             }
+            Some((coord_column_names.clone(), vertex_coords))
         }
-
-        col_names.extend(coord_column_names.iter().cloned());
-        let combined = concatenate_horizontal(&[prop_nk, cluster_mat, entropy_mat, vertex_coords])?;
-
-        combined.to_parquet_with_names(
-            &(args.out.to_string() + ".propensity.parquet"),
-            (Some(&vertices), Some("cell")),
-            Some(&col_names),
-        )?;
-    } else {
-        let combined = concatenate_horizontal(&[prop_nk, cluster_mat, entropy_mat])?;
-
-        combined.to_parquet_with_names(
-            &(args.out.to_string() + ".propensity.parquet"),
-            (Some(&vertices), Some("cell")),
-            Some(&col_names),
-        )?;
-    }
+        None => None,
+    };
+    crate::link_community::outputs::write_propensity_with(
+        &args.out,
+        &prop_nk,
+        &vertices,
+        coords.as_ref().map_or(&[][..], |(names, _)| names),
+        coords.as_ref().map(|(_, m)| m),
+    )?;
 
     // Per-edge community labels, in the ONE edge-table schema pinto reads
     // (`left_cell` / `right_cell` / `community`).

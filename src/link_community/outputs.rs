@@ -228,11 +228,6 @@ pub fn link_community_histogram(membership: &[usize], k: usize, max_width: usize
     lines.join("\n")
 }
 
-// Score-trace records and writer moved to `crate::util::score_trace`.
-// Re-exported here so existing call sites in this module / downstream
-// imports keep working.
-pub use crate::util::score_trace::{write_score_trace, ScoreEntry};
-
 /// Write an already-computed `[N × K]` propensity under the shared schema.
 ///
 /// Used for an edge partition's propensity ([`write_partition`]) and for
@@ -243,26 +238,49 @@ pub fn write_propensity_matrix(
     propensity: &Mat,
     cell_names: &[Box<str>],
 ) -> anyhow::Result<()> {
+    write_propensity_with(prefix, propensity, cell_names, &[], None)
+}
+
+/// [`write_propensity_matrix`] with the columns `extra` (named
+/// `extra_names`, one row per cell) after `entropy`: the coordinates
+/// `pinto apply propensity` appends.
+pub fn write_propensity_with(
+    prefix: &str,
+    propensity: &Mat,
+    cell_names: &[Box<str>],
+    extra_names: &[Box<str>],
+    extra: Option<&Mat>,
+) -> anyhow::Result<()> {
     let n_cells = propensity.nrows();
     let k = propensity.ncols();
+    let n_extra = extra.map_or(0, |m| m.ncols());
+    anyhow::ensure!(
+        n_extra == extra_names.len(),
+        "{prefix}: {n_extra} extra columns, {} names",
+        extra_names.len()
+    );
     let cluster_col = dominant_cluster_rows(propensity);
     let entropy_vec = shannon_entropy_rows(propensity);
 
     // `C{c}` prefix names the community axis explicitly, so the reader
     // can identify community columns by name pattern instead of by
     // exclusion (a coord column named "0" would otherwise be misread).
-    // `cell, C0.., cluster, entropy` is the one propensity schema all
-    // three writers (lc, cage, prop) share.
+    // `cell, C0.., cluster, entropy` is the one propensity schema every
+    // writer shares.
     let mut col_names: Vec<Box<str>> = (0..k).map(|i| format!("C{i}").into_boxed_str()).collect();
     col_names.push("cluster".into());
     col_names.push("entropy".into());
+    col_names.extend(extra_names.iter().cloned());
 
-    let mut combined = Mat::zeros(n_cells, k + 2);
+    let mut combined = Mat::zeros(n_cells, k + 2 + n_extra);
     combined.columns_range_mut(0..k).copy_from(propensity);
     combined.column_mut(k).copy_from_slice(&cluster_col);
     combined
         .column_mut(k + 1)
         .copy_from_slice(entropy_vec.as_slice());
+    if let Some(extra) = extra {
+        combined.columns_range_mut(k + 2..).copy_from(extra);
+    }
     combined.to_parquet_with_names(
         &format!("{}.propensity.parquet", prefix),
         (Some(cell_names), Some("cell")),

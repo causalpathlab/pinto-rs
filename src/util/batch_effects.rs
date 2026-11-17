@@ -557,6 +557,16 @@ pub fn run_delta_path(run: &crate::util::metadata::Run) -> anyhow::Result<Option
     Ok(found.map(|p| p.to_string_lossy().into_owned()))
 }
 
+/// The run's δ and the path it was read from, found as
+/// [`run_delta_path`] finds it; `None` when the manifest records none.
+pub fn read_run_delta(
+    run: &crate::util::metadata::Run,
+) -> anyhow::Result<Option<(RunDelta, String)>> {
+    run_delta_path(run)?
+        .map(|path| Ok((read_delta(&path)?, path)))
+        .transpose()
+}
+
 /// Where a run records each cell's batch, when it does: the table its
 /// manifest records, found as its δ is ([`run_delta_path`]). `None` for a
 /// run that records none; an error when one is recorded but nowhere.
