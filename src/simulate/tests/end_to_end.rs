@@ -426,8 +426,15 @@ fn run_fingerprint(out: &str) -> u64 {
 /// tables and manifests, in every scenario and with a drawn unconfounded
 /// donor (the counts checked identical to those from before reference data
 /// could be given). Any stream, any order of a sum or any column that moves
-/// shows here.
+/// shows here. The fingerprints are Linux x86-64's: a count is drawn through
+/// `exp`, `ln` and the incomplete beta, whose last bits differ between
+/// platforms' maths libraries, so a rare count lands one step over
+/// elsewhere (macOS ARM); there the test is not run.
 #[test]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    ignore = "the fingerprints are Linux x86-64's"
+)]
 fn a_run_without_reference_data_writes_what_it_always_did() {
     let want: [(&str, &[&str], u64); 6] = [
         ("unconfounded", &[], 0x26bf9812b0027960),
