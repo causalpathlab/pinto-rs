@@ -66,6 +66,12 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     mkdir_parent(&c.out)?;
 
     anyhow::ensure!(args.n_communities > 0, "n_communities must be > 0");
+    anyhow::ensure!(
+        args.stage2.offset.is_none() || args.feature_network.is_none(),
+        "--offset scores lc's projected edge profiles against the stage-1 expectation; \
+         with --feature-network the profiles are module pairs, which it does not cover \
+         yet. Drop --feature-network"
+    );
 
     ////////////////////////////////////////////////////
     // 1-3. Load + KNN + batch effects + feature weights //
@@ -110,12 +116,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
         .transpose()?;
     let feature_axis = feature_axis.expect("a feature-axis mode other than Rows must yield Some");
-    anyhow::ensure!(
-        stage1.is_none() || args.feature_network.is_none(),
-        "--offset scores lc's projected edge profiles against the stage-1 expectation; \
-         with --feature-network the profiles are module pairs, which it does not cover \
-         yet. Drop --feature-network"
-    );
     let FisherStats {
         row_weights: _,
         row_stats,
@@ -372,8 +372,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         data_vec: &data_vec,
         feature_weights: &feature_weights,
         axis: &feature_axis,
-        // the written dictionary under the stage-1 divisor: rates D / M, as the
-        // offset score reads them
+        // the written dictionary under the stage-1 divisor: mean counts over
+        // `d` (`fit_feature_community_param`)
         divisor: match stage1.as_ref() {
             Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
             None => crate::util::batch_effects::BatchDivisor::of(

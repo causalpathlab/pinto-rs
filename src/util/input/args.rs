@@ -287,7 +287,7 @@ pub struct OffsetArgs {
                      by d = mu / (n_i pbar_g) where they would divide by a batch effect\n\
                      (the projections too), lc scores its edge profiles against mu\n\
                      (rates D/M in place of D/V), the written feature_community holds\n\
-                     the rates sum_i pi_ik y_gi / sum_i pi_ik d_gi, and\n\
+                     mean counts over d, sum_i pi_ik y_gi / sum_i pi_ik d_gi, and\n\
                      --feature-inclusion moran reads\n\
                      Pearson residuals (y - mu) / sigma_gb. Such a fit takes no batch\n\
                      effect: --batch-files, --auto-batch and --cnv-clones are refused.\n\

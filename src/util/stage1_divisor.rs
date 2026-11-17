@@ -241,6 +241,12 @@ impl Stage1Tables {
     }
 }
 
+/// The smallest divisor `d` is allowed (its mean is about 1): a count
+/// stage 1 expected a tenth as often as average is amplified at most
+/// tenfold, a shrinkage of the rate toward the stage-1 expectation where
+/// that expectation is near zero.
+pub const D_FLOOR: f32 = 0.1;
+
 /// The stage-1 divisor on a fit's own cells and rows: what `--offset`
 /// divides the counts by ([`Self::at`]), and the pieces of `μ` the fit's
 /// other uses of it read ([`Self::mu`], [`Self::profile`]).
@@ -257,8 +263,8 @@ pub struct Stage1Divisor {
     batch: Vec<u32>,
     /// `p_{k,b}(g)`, `[batches × fit rows × K]`.
     p: Vec<f32>,
-    /// `p_{k,b}(g) / p̄_g`, laid out as `p`.
-    q: Vec<f32>,
+    /// `p̄_g` per fit row (`d` divides by it).
+    pbar: Vec<f32>,
     /// `σ_{gb}`, `[fit rows × batches]`.
     sigma: Vec<f32>,
 }
@@ -272,7 +278,7 @@ impl Stage1Divisor {
         let canonical =
             std::fs::canonicalize(dir).map_err(|e| anyhow::anyhow!("--offset {dir}: {e}"))?;
         let held =
-            cells.len() * (tables.k + 2) * 4 + 3 * tables.batches.len() * rows.len() * tables.k * 4;
+            cells.len() * (tables.k + 2) * 4 + 2 * tables.batches.len() * rows.len() * tables.k * 4;
         ensure_fits(
             "the stage-1 divisor",
             held,
@@ -341,17 +347,12 @@ impl Stage1Divisor {
             })
             .collect::<anyhow::Result<_>>()?;
         let (g0, nb) = (tables.features.len(), tables.batches.len());
-        let (mut p, mut q) = (
-            Vec::with_capacity(nb * rows.len() * k),
-            Vec::with_capacity(nb * rows.len() * k),
-        );
+        let mut p = Vec::with_capacity(nb * rows.len() * k);
+        let pbar: Vec<f32> = of_row.iter().map(|&r| tables.pbar[r]).collect();
         let mut sigma = Vec::with_capacity(rows.len() * nb);
         for b in 0..nb {
             for &r in &of_row {
-                let row = &tables.profiles[(b * g0 + r) * k..(b * g0 + r + 1) * k];
-                let pbar = tables.pbar[r];
-                p.extend_from_slice(row);
-                q.extend(row.iter().map(|&x| if pbar > 0.0 { x / pbar } else { 0.0 }));
+                p.extend_from_slice(&tables.profiles[(b * g0 + r) * k..(b * g0 + r + 1) * k]);
             }
         }
         for &r in &of_row {
@@ -370,7 +371,7 @@ impl Stage1Divisor {
             n,
             batch,
             p,
-            q,
+            pbar,
             sigma,
         })
     }
@@ -428,17 +429,28 @@ impl Stage1Divisor {
         &self.p[at..at + self.k]
     }
 
+    /// `p̄_g`, row `g`'s pooled share.
+    #[inline]
+    pub fn pbar(&self, row: usize) -> f32 {
+        self.pbar[row]
+    }
+
     /// `σ_{gb}`, the Pearson scale of row `g` in batch `b`.
     #[inline]
     pub fn sigma(&self, row: usize, batch: usize) -> f32 {
         self.sigma[row * self.n_batches + batch]
     }
 
-    /// `d_gi = Σ_k θ_ik p_{k,b}(g) / p̄_g`.
+    /// `d_gi = Σ_k θ_ik p_{k,b}(g) / p̄_g`, floored at [`D_FLOOR`]: where
+    /// stage 1 expects almost nothing, one stray count would otherwise be
+    /// blown up by `1/d` and dominate the cell.
     #[inline]
     pub fn at(&self, cell: usize, row: usize) -> f32 {
-        let at = (self.batch_of(cell) * self.n_rows + row) * self.k;
-        dot(self.theta(cell), &self.q[at..at + self.k])
+        let pbar = self.pbar[row];
+        if pbar <= 0.0 {
+            return D_FLOOR;
+        }
+        (dot(self.theta(cell), self.profile(self.batch_of(cell), row)) / pbar).max(D_FLOOR)
     }
 
     /// `μ_gi = n_i Σ_k θ_ik p_{k,b}(g)`: what the tests rebuild `μ` with
@@ -453,7 +465,7 @@ impl Stage1Divisor {
     /// in each community of `prop` (`[cells × communities]`) relative to the
     /// stage-1 expectation, the denominator of the rate `λ̂_gc = D_gc / M_gc`
     /// with `D_gc = Σ_i π_ic y_gi`. It factorises through `θ`:
-    /// `Σ_b Σ_t q_{t,b}(g) A_b[t, c]`, `A_b = Σ_{i∈b} θ_iᵀ π_i` (`K ×
+    /// `Σ_b Σ_t p_{t,b}(g) A_b[t, c] / p̄_g`, `A_b = Σ_{i∈b} θ_iᵀ π_i` (`K ×
     /// communities` per batch), so it costs one pass over the cells and no
     /// pass over the rows × cells.
     pub fn expected_mass(&self, prop: &Mat) -> Mat {
@@ -473,8 +485,12 @@ impl Stage1Divisor {
         let mut out = Mat::zeros(self.n_rows, kk);
         for (b, ab) in a.iter().enumerate() {
             let at = b * self.n_rows * k;
-            let q_kg = Mat::from_column_slice(k, self.n_rows, &self.q[at..at + self.n_rows * k]);
-            out += q_kg.transpose() * ab.map(|x| x as f32);
+            let p_kg = Mat::from_column_slice(k, self.n_rows, &self.p[at..at + self.n_rows * k]);
+            out += p_kg.transpose() * ab.map(|x| x as f32);
+        }
+        for (g, mut row) in out.row_iter_mut().enumerate() {
+            let pbar = self.pbar[g];
+            row *= if pbar > 0.0 { 1.0 / pbar } else { 0.0 };
         }
         out
     }

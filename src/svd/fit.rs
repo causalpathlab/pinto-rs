@@ -375,7 +375,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
             // batch-adjusted as the pairs are, or under the stage-1 divisor
-            // the rates D / M relative to the stage-1 expectation
+            // mean counts over `d`
             divisor: match stage1.as_ref() {
                 Some(s1) => Some(crate::util::batch_effects::Divisor::Stage1(s1)),
                 None => crate::util::batch_effects::BatchDivisor::of(

@@ -644,8 +644,9 @@ pub fn compute_feature_community_stat(
 /// stay raw and the rates are taken relative to the stage-1 expectation,
 /// `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`
 /// ([`crate::util::stage1_divisor::Stage1Divisor::expected_mass`]): the
-/// Gamma–Poisson posterior of `y_gi ~ Poisson(λ_gk d_gi)`, `D / M` as lc's
-/// offset score reads its communities. The weights stay what the caller took them on.
+/// Gamma–Poisson posterior of `y_gi ~ Poisson(λ_gk d_gi)`: a mean count per
+/// cell, as without an offset, each count over its `d` (lc's offset score
+/// reads `D / M` on the count scale, a different quantity). The weights stay what the caller took them on.
 pub fn fit_feature_community_param(
     cell_propensity: &Mat,
     data_vec: &SparseIoVec,
@@ -743,14 +744,24 @@ pub fn fit_feature_community_param(
         Some(Divisor::Stage1(s1)) => {
             let mass = s1.expected_mass(cell_propensity);
             match axis {
-                // a feature's rows pooled: their mean mass, as the counts sum
-                Some(a) => match (
-                    a.pool_rows_opt(&mass),
-                    a.pool_rows_opt(&Mat::from_element(n_rows, k, 1.0)),
-                ) {
-                    (Some(sum), Some(n)) => sum.component_div(&n),
-                    _ => mass,
-                },
+                // a feature's rows pooled: `d` of the pooled counts, its
+                // rows' expected mass over their summed share p̄ (each row's
+                // mass is relative to its own p̄, so weight by it)
+                Some(a) => {
+                    let mut weighted = mass.clone();
+                    let mut share = Mat::zeros(n_rows, k);
+                    for g in 0..n_rows {
+                        let pbar = s1.pbar(g);
+                        weighted.row_mut(g).scale_mut(pbar);
+                        share.row_mut(g).fill(pbar);
+                    }
+                    match (a.pool_rows_opt(&weighted), a.pool_rows_opt(&share)) {
+                        (Some(sum), Some(share)) => {
+                            sum.zip_map(&share, |m, s| if s > 0.0 { m / s } else { 0.0 })
+                        }
+                        _ => mass,
+                    }
+                }
                 None => mass,
             }
         }

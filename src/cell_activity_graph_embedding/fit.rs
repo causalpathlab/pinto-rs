@@ -562,6 +562,7 @@ pub fn fit_cell_activity_graph_embedding(
         &fine_edges,
         ActivityNorm::Log1p,
         &feature_axis,
+        stage1.as_ref(),
     )?;
     // Fold per-feature fine-edge activity onto the PB super edges,
     // CONSUMING the fine-level lists (they are the largest resident

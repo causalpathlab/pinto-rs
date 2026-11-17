@@ -73,8 +73,10 @@
 //! `d` is the divisor dsvd, cage and cage-cell divide a count by where they
 //! would divide by a batch effect (on the count scale, its `n`-weighted
 //! mean 1 over the cells); lc scores its edge profiles against `μ` itself
-//! (rates `D_kg / M_kg`), and every stage-2 fit writes its feature × community
-//! dictionary as the same kind of rate, `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`;
+//! (rates `D_kg / M_kg`, about 1 where stage 1 explains the counts), and
+//! every stage-2 fit writes its feature × community dictionary as
+//! `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`: a mean count per cell, as
+//! without an offset, with each count over its `d` (so not on lc's scale);
 //! `r` is the Pearson residual `--feature-inclusion moran` reads, with one
 //! scale per row and batch, so its zeros have closed forms. `φ` is the
 //! negative-binomial dispersion by the method of moments,
@@ -600,18 +602,23 @@ fn group_names(
         .zip(batches)
         .map(|(c, b)| (c.as_ref(), b.as_ref()))
         .collect();
+    // cells the table lacks group apart, under a name no batch has
+    let mut unplaced = String::from("unplaced");
+    while batches.iter().any(|b| b.as_ref() == unplaced) {
+        unplaced.push('_');
+    }
     let mut out: Vec<Option<Box<str>>> = vec![None; n_groups];
     for (c, &g) in names.iter().zip(group_of) {
         if out[g].is_none() {
             out[g] = Some(
                 batch_of
                     .get(c.as_ref())
-                    .map_or("unplaced".into(), |&b| b.into()),
+                    .map_or(unplaced.as_str().into(), |&b| b.into()),
             );
         }
     }
     out.into_iter()
-        .map(|n| n.unwrap_or_else(|| "unplaced".into()))
+        .map(|n| n.unwrap_or_else(|| unplaced.as_str().into()))
         .collect()
 }
 
