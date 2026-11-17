@@ -347,8 +347,8 @@ pub fn read_cells_table(
     })
 }
 
-/// One row per cell. `batch` is `None` if the fit was single-batch
-/// (i.e. `coord_pairs.parquet` lacks a `left_batch` column). Everything past
+/// One row per cell, from the run's cells table. `batch` is `None` when the
+/// table has no `batch` column. Everything past
 /// the names and coordinates is for the viewer, and read only in its build.
 pub struct CellTable {
     /// Cell barcode, unique and stable-ordered.
@@ -364,8 +364,8 @@ pub struct CellTable {
     /// has no neighbours); `None` when every cell did.
     #[cfg(feature = "view")]
     pub in_graph: Option<Vec<bool>>,
-    /// Bare coordinate column names (without `left_`/`right_` prefix).
-    /// Pass-through from `coord_pairs.parquet` so downstream readers
+    /// The cells table's coordinate column names, `[x, y]`, so downstream
+    /// readers
     /// (e.g. `read_propensity`) can exclude coord trailers that
     /// `pinto apply propensity` may append to `.propensity.parquet`.
     #[cfg(feature = "view")]

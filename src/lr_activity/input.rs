@@ -468,7 +468,10 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .into_iter()
         .map(|b| b.unwrap_or_else(|| crate::lr_activity::fit::BATCH_LABEL_ALL.into()))
         .collect();
-    let cells = input.run_file("cells.parquet", "the run's cells table")?;
+    let run = input.run.as_ref().expect("from a run");
+    let cells = run
+        .recorded_output(run.meta.outputs.cells.as_deref(), "cells.parquet")?
+        .ok_or_else(|| anyhow::anyhow!("{}: records no cells table", run.manifest.display()))?;
     let coords = read_coords(&cells, &cell_to_col, n_cells)?;
     // A residual fit's cell types are its stage-1 run's: donor-invariant.
     let manifest = match &input.stage1 {

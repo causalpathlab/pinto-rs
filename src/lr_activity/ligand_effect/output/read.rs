@@ -127,6 +127,8 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         "tau_top",
         "tau_top_weight",
     ];
+    // the controls' columns follow the named ones, tau_top's two last
+    let n = numbers.len();
     let numbers: Vec<&str> = numbers
         .into_iter()
         .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_q]))
@@ -137,9 +139,9 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         .cloned()
         .unwrap_or_else(|| super::Q_SCOPE_ALL.into());
     // Each control's difference and its q, after tau_top and its weight.
-    let controls = x.split_off(14);
+    let controls = x.split_off(n);
     let controls: Vec<&[Vec<f64>]> = controls.chunks(2).collect();
-    let (tau_top, tau_top_weight) = (&x[12], &x[13]);
+    let (tau_top, tau_top_weight) = (&x[n - 2], &x[n - 1]);
     let count = |v: f64| {
         if v.is_finite() && v > 0. {
             v as usize
@@ -339,9 +341,7 @@ impl<'p> SimTable<'p> {
             dose_response: self.flag(DOSE_RESPONSE, i),
             dose_midpoint: self.num(DOSE_MIDPOINT, i),
             dose_order: self.col(DOSE_ORDER)[i] as i32,
-            region: Some(self.region[i])
-                .filter(|v| v.is_finite())
-                .map(|v| v as u32),
+            region: self.region[i].is_finite().then(|| self.region[i] as u32),
         })
     }
 

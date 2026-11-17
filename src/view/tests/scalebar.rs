@@ -214,9 +214,9 @@ fn a_run_has_one_coordinate_file_or_none() {
     let manifest = dir.path().join("run.pinto.json");
     std::fs::write(dir.path().join("a.csv"), "").unwrap();
     std::fs::write(dir.path().join("b.csv"), "").unwrap();
-    let one = |f: &str| single_coord_file(Some(f), Some(&manifest));
+    let one = |f: &str| single_coord_file(Some(f), &manifest);
     assert_eq!(one("a.csv"), Some(dir.path().join("a.csv")));
     assert_eq!(one("a.csv,b.csv"), None);
     assert_eq!(one("gone.csv"), None);
-    assert_eq!(single_coord_file(None, Some(&manifest)), None);
+    assert_eq!(single_coord_file(None, &manifest), None);
 }

@@ -316,25 +316,22 @@ pub fn predict(args: &PredictArgs, given: &ModelOnlyFlags) -> anyhow::Result<(Ma
         "predict: no data files given"
     );
     let model = args.core.model.as_ref();
-    match &run {
-        run if matches!(run.meta.command.as_str(), "lc" | "dsvd") => {
-            anyhow::ensure!(
-                given.cage.is_empty(),
-                "{model} is an {} model: {} apply to cage models only",
-                run.meta.command,
-                given.cage.join(", ")
-            );
-            crate::holdout::predict_profiles(args, run)
-        }
-        _ => {
-            anyhow::ensure!(
-                given.holdout.is_empty(),
-                "{model} is not an lc / dsvd model: the held-out scoring flags \
-                 ({}) apply to those only",
-                given.holdout.join(", ")
-            );
-            predict_cage(&args.core, &args.scoring, &run)
-        }
+    if matches!(run.meta.command.as_str(), "lc" | "dsvd") {
+        anyhow::ensure!(
+            given.cage.is_empty(),
+            "{model} is an {} model: {} apply to cage models only",
+            run.meta.command,
+            given.cage.join(", ")
+        );
+        crate::holdout::predict_profiles(args, &run)
+    } else {
+        anyhow::ensure!(
+            given.holdout.is_empty(),
+            "{model} is not an lc / dsvd model: the held-out scoring flags \
+             ({}) apply to those only",
+            given.holdout.join(", ")
+        );
+        predict_cage(&args.core, &args.scoring, &run)
     }
 }
 

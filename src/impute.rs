@@ -186,10 +186,8 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
 /// The run's δ on the reference cells, when the run (manifest `run`) has
 /// one: its mean on the reference's rows (`ref_rows`), matched by name, and
 /// each cell's batch as the run estimated it, from the table the manifest
-/// records beside its δ (an error when it records one that is nowhere),
-/// else (a run fitted before it wrote one) from
-/// `{model}.coord_pairs.parquet`. A cell without a batch there (with the
-/// coord_pairs fallback, one the run placed in no pair) is left as is.
+/// records beside its δ (an error when it records none, or one that is
+/// nowhere). A cell without a batch there is left as is.
 fn reference_divide(
     model: &str,
     run: &Run,

@@ -19,7 +19,6 @@ use super::color::{self, Ramp, Rgb, Theme};
 use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
 use crate::util::common::*;
-use crate::util::parquet_io::parse_community_col_name;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
 use legume_tui::map::kitty::cellart::{Cells, Glyphs};
@@ -66,14 +65,9 @@ impl std::str::FromStr for Layer {
     }
 }
 
-/// `C7`, `c7` or `7` → 7, by the same rule that names propensity columns.
+/// `C7`, `c7` or `7` → 7.
 pub fn community_id(s: &str) -> Option<usize> {
-    let named = match s.strip_prefix('c') {
-        Some(rest) => format!("C{rest}"),
-        None if s.starts_with('C') => s.to_string(),
-        None => format!("C{s}"),
-    };
-    parse_community_col_name(&named).and_then(|c| usize::try_from(c).ok())
+    s.strip_prefix(['c', 'C']).unwrap_or(s).parse().ok()
 }
 
 impl Layer {

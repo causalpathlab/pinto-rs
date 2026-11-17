@@ -96,17 +96,15 @@ pub struct Run {
 }
 
 impl Run {
-    /// Open `{prefix}.pinto.json`, or the manifest itself when given one.
+    /// Open `{prefix}.pinto.json`, or the manifest itself when given one,
+    /// as every command opens a prior run
+    /// ([`crate::util::metadata::Run::open`]).
     pub fn open(prefix_or_manifest: &str) -> anyhow::Result<Self> {
-        let (prefix, manifest) = match prefix_or_manifest.strip_suffix(".pinto.json") {
-            Some(prefix) => (prefix.to_string(), PathBuf::from(prefix_or_manifest)),
-            None => (
-                prefix_or_manifest.to_string(),
-                PathBuf::from(crate::util::metadata::manifest_path(prefix_or_manifest)),
-            ),
-        };
-        let meta = PintoMetadata::read(&manifest)
-            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", manifest.display()))?;
+        let crate::util::metadata::Run {
+            prefix,
+            manifest,
+            meta,
+        } = crate::util::metadata::Run::open(prefix_or_manifest)?;
         let levels = meta.level_list();
         anyhow::ensure!(!levels.is_empty(), "{prefix}: no propensity output listed");
         Ok(Run {
@@ -200,7 +198,7 @@ impl Run {
     /// when it had none, several (kept comma-joined, one image each), or
     /// the file is not found beside the manifest or from here.
     pub fn single_coord_file(&self) -> Option<PathBuf> {
-        single_coord_file(self.meta.coord_file.as_deref(), Some(&self.manifest))
+        single_coord_file(self.meta.coord_file.as_deref(), &self.manifest)
     }
 
     pub fn load_communities(
@@ -657,10 +655,6 @@ impl Edges {
 
 /// [`Run::single_coord_file`] of a manifest's `coord_file`.
 /// Several files are kept comma-joined, which names no file, so none.
-pub fn single_coord_file(coord_file: Option<&str>, manifest: Option<&Path>) -> Option<PathBuf> {
-    let file = coord_file?;
-    match manifest {
-        Some(m) => crate::util::metadata::resolve_beside(m, file),
-        None => Some(PathBuf::from(file)).filter(|p| p.is_file()),
-    }
+pub fn single_coord_file(coord_file: Option<&str>, manifest: &Path) -> Option<PathBuf> {
+    crate::util::metadata::resolve_beside(manifest, coord_file?)
 }

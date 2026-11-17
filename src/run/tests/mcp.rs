@@ -31,8 +31,7 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
         a: Runs(vec![format!("{prefix}.pinto.json")]),
         b: Runs(vec!["x/other".into()]),
         out: None,
-        level_a: Some("draft".into()),
-        level_b: Some("final".into()),
+        level: Some("draft,final".into()),
         tau: None,
         paired: false,
         donor_map: None,
@@ -430,12 +429,7 @@ const MIRRORS: &[Mirror] = &[
         &[("feature_name_mode", "feature_names")],
         &[],
     ),
-    (
-        "run_compare",
-        "compare",
-        &[("level_a", "level"), ("level_b", "level")],
-        &[],
-    ),
+    ("run_compare", "compare", &[], &[]),
     ("run_simulate", "sim new", &[], &[]),
     // These two run in the call, in the server's own threads.
     (

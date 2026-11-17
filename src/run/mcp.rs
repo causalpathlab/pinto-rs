@@ -419,18 +419,20 @@ fn reply_from(path: &Path, drop: &[&str], argv: &[String]) -> anyhow::Result<Map
 /// A comparison's name when the agent gives none: `{A}_vs_{B}` from the
 /// runs' file names, with the levels when they are not the final ones.
 fn default_name(a: &CompareArgs) -> String {
-    let stem = |input: &str, level: &Option<String>| {
+    let stem = |input: &str, level: Option<&str>| {
         let name = crate::util::metadata::run_stem(input);
-        match level.as_deref() {
+        match level.map(str::trim) {
             Some(l) if l != crate::compare::DEFAULT_LEVEL => format!("{name}.{l}"),
             _ => name,
         }
     };
-    format!(
-        "{}_vs_{}",
-        stem(&a.a.0[0], &a.level_a),
-        stem(&a.b.0[0], &a.level_b)
-    )
+    // one level for both, or A,B, as `--level` reads it
+    let level = a.level.as_deref();
+    let (la, lb) = level.map_or((None, None), |l| match l.split_once(',') {
+        Some((x, y)) => (Some(x), Some(y)),
+        None => (Some(l), Some(l)),
+    });
+    format!("{}_vs_{}", stem(&a.a.0[0], la), stem(&a.b.0[0], lb))
 }
 
 /// `run_compare` with `paired`: two models' held-out scores, each side one or
@@ -438,8 +440,8 @@ fn default_name(a: &CompareArgs) -> String {
 fn compare_paired(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
     use crate::compare::paired_path;
     anyhow::ensure!(
-        a.level_a.is_none() && a.level_b.is_none() && a.tau.is_none(),
-        "level_a, level_b and tau are for a community comparison, not paired"
+        a.level.is_none() && a.tau.is_none(),
+        "level and tau are for a community comparison, not paired"
     );
     let (out, made) = out_or_free(
         cx,
@@ -522,10 +524,8 @@ fn compare(cli: &clap::Command, a: CompareArgs, cx: &Call) -> anyhow::Result<Vec
         run_b.clone(),
         flag_value("--out", out),
     ];
-    if a.level_a.is_some() || a.level_b.is_some() {
-        let level = |l: &Option<String>| l.clone().unwrap_or(crate::compare::DEFAULT_LEVEL.into());
-        let levels = format!("{},{}", level(&a.level_a), level(&a.level_b));
-        argv.push(flag_value("--level", levels));
+    if let Some(level) = &a.level {
+        argv.push(flag_value("--level", level));
     }
     if let Some(tau) = a.tau {
         argv.push(flag_value("--tau", tau));
@@ -685,9 +685,7 @@ struct CompareArgs {
     #[serde(default)]
     out: Option<String>,
     #[serde(default)]
-    level_a: Option<String>,
-    #[serde(default)]
-    level_b: Option<String>,
+    level: Option<String>,
     #[serde(default)]
     tau: Option<f64>,
     #[serde(default)]
@@ -942,8 +940,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "a": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Reference run: its prefix or .pinto.json (or a propensity .parquet); with paired, pinto apply predict runs, a list for several folds"},
                     "b": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Run(s) to set against it, named the same ways"},
                     "out": out_arg("prefix", "compare"),
-                    "level_a": {"type": "string", "description": "Level of A: final, draft, or L1, L2, … [default: final]"},
-                    "level_b": {"type": "string", "description": "Level of B, the same way [default: final]"},
+                    "level": {"type": "string", "description": "Levels to read: final, draft or a level tag (L1, L2, …); one for both, or A,B [default: final]"},
                     "tau": {"type": "number", "description": "Share of a community's cells that makes another its partner [default: 0.2]"},
                     "paired": {"type": "boolean", "description": "Compare held-out scores instead: a and b are run_predict outputs of two models on the same held-out cells (same seed and split flags); the donor is the replicate"},
                     "donor_map": {"type": "string", "description": "paired: file of section → donor (two columns); an unlisted section is its own donor"},

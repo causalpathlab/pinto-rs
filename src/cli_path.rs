@@ -8,7 +8,7 @@ use clap::Command;
 #[cfg(any(feature = "view", test))]
 pub(crate) const VERBS: [&str; 4] = ["fit", "apply", "sim", "session"];
 
-/// The command named `word` (its name or an alias) at the top of `cli` or
+/// The command named `word` at the top of `cli` or
 /// one command down, or by its path (`lra simulate`, `sim new`): the
 /// command it is under, if any, and the command.
 #[cfg(any(feature = "view", test))]

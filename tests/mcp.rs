@@ -548,7 +548,7 @@ fn an_agent_compares_two_runs() {
     assert!(c
         .fails(
             "run_compare",
-            json!({"a": prefix, "b": prefix, "level_b": "L9", "out": "x"})
+            json!({"a": prefix, "b": prefix, "level": "final,L9", "out": "x"})
         )
         .contains("L9"));
 }

@@ -45,12 +45,7 @@ impl ModelNaming {
     /// Whether a query labelled by `source` can share a batch with the
     /// model at all: decided without reading the query's labels.
     fn may_share(&self, source: BatchLabels) -> bool {
-        use BatchLabels::*;
-        match source {
-            AutoBatch => false,
-            BatchFiles => self.source == Some(BatchFiles),
-            Files => self.source == Some(Files),
-        }
+        source != BatchLabels::AutoBatch && self.source == Some(source)
     }
 }
 
@@ -68,10 +63,10 @@ pub(crate) fn match_batches(
 ) -> Vec<Option<usize>> {
     let col_of = |label: &str| model.iter().position(|m| m.as_ref() == label);
     let by_name = || query.iter().map(|q| col_of(q)).collect();
-    match BatchLabels::of(&c.batch) {
-        BatchLabels::BatchFiles if naming.may_share(BatchLabels::BatchFiles) => by_name(),
-        BatchLabels::Files if naming.source == Some(BatchLabels::Files) => by_name(),
-        _ => vec![None; query.len()],
+    if naming.may_share(BatchLabels::of(&c.batch)) {
+        by_name()
+    } else {
+        vec![None; query.len()]
     }
 }
 
@@ -114,7 +109,7 @@ pub(crate) fn every_batch_known(
         return Ok(false);
     }
     let labels: Vec<Box<str>> = match source {
-        BatchLabels::AutoBatch => return Ok(false),
+        BatchLabels::AutoBatch => unreachable!("never shared, checked above"),
         BatchLabels::BatchFiles => {
             // one entry per distinct label, read a line at a time: no
             // per-cell list
@@ -132,13 +127,11 @@ pub(crate) fn every_batch_known(
         }
         BatchLabels::Files => {
             let names = data_file_names(&c.data_files)?;
-            if naming.source == Some(BatchLabels::Files) {
-                for (file, model_file) in renamed_files(&c.data_files, &names, naming) {
-                    log::warn!(
-                        "{file} has the name of the model's data file {model_file} but is not \
-                         that file; it takes that batch's δ"
-                    );
-                }
+            for (file, model_file) in renamed_files(&c.data_files, &names, naming) {
+                log::warn!(
+                    "{file} has the name of the model's data file {model_file} but is not \
+                     that file; it takes that batch's δ"
+                );
             }
             names
         }
