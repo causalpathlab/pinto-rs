@@ -11,7 +11,6 @@ use crate::util::srt_pipeline::{
 };
 use crate::util::stage1_divisor::{Stage1Divisor, Stage1Tables};
 use clap::Parser;
-use data_beans::alg::random_projection::RandProjOps;
 use data_beans::aux::feature_names::FeatureNameKind;
 
 /// Tables over `cells` and `rows` with `k` communities in batches
@@ -90,9 +89,42 @@ fn the_tables_read_back_as_written() {
     assert_eq!(back, t);
 }
 
+/// Each column of `x` scaled to a total of 1e4.
+fn at_library_scale(x: &nalgebra_sparse::CscMatrix<f32>) -> Vec<Vec<(usize, f32)>> {
+    x.col_iter()
+        .map(|c| {
+            let total: f32 = c.values().iter().sum();
+            c.row_indices()
+                .iter()
+                .zip(c.values())
+                .map(|(&r, &v)| (r, v * 1e4 / total))
+                .collect()
+        })
+        .collect()
+}
+
+fn assert_columns(x: &nalgebra_sparse::CscMatrix<f32>, want: &[Vec<(usize, f32)>]) {
+    for (j, (col, want)) in x.col_iter().zip(want).enumerate() {
+        let got: Vec<(usize, f32)> = col
+            .row_indices()
+            .iter()
+            .copied()
+            .zip(col.values().iter().copied())
+            .collect();
+        assert_eq!(got.len(), want.len(), "cell {j}");
+        for (&(r, v), &(wr, w)) in got.iter().zip(want) {
+            assert_eq!(r, wr);
+            assert!(
+                (v - w).abs() <= 1e-3 * w.max(1.0),
+                "cell {j} row {r}: {v} vs {w}"
+            );
+        }
+    }
+}
+
 /// One community in one batch, every share its pooled share: `d = 1`, so
-/// the counts and the projection are those of no divisor, the projection
-/// being data-beans' own on the undivided counts.
+/// the division only puts each cell at 1e4, as no divisor and a
+/// normalisation to 1e4 would.
 #[test]
 fn a_constant_divisor_equals_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -118,20 +150,13 @@ fn a_constant_divisor_equals_none() {
     let raw = data.read_columns_csc(0..cells.len()).unwrap();
     let mut divided = raw.clone();
     s1.divide_columns(&mut divided, |j| j);
-    for (a, b) in raw.values().iter().zip(divided.values()) {
-        assert!((a - b).abs() <= 1e-5 * a.abs().max(1.0), "{a} vs {b}");
-    }
-    let ours = s1.project_columns(&data, 6, None).unwrap();
-    let theirs = data
-        .project_columns_with_batch_correction::<Box<str>>(6, None, None)
-        .unwrap();
-    assert_eq!(ours.basis, theirs.basis);
-    let gap = (&ours.proj - &theirs.proj).abs().max();
-    assert!(gap < 1e-4, "projection differs by {gap}");
+    assert_columns(&divided, &at_library_scale(&raw));
 }
 
-/// Counts planted as a base times a per-cell × row fold `d_gi` (two
-/// communities mixed per cell, profiles per batch) come back as the base.
+/// Counts planted as a per-cell scale times a base times a per-cell × row
+/// fold `d_gi` (two communities mixed per cell, profiles per batch) come
+/// back as the base at 1e4: the fold is divided out and the scale absorbed,
+/// so the projection does not see the scale either.
 #[test]
 fn a_planted_multiplicative_divisor_is_divided_out() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,6 +172,7 @@ fn a_planted_multiplicative_divisor_is_divided_out() {
     };
     let profile = |b: usize, r: usize, t: usize| (1 + r + 3 * t + b) as f32 / 40.0;
     let base = |i: usize, r: usize| (2 + (i + r) % 4) as f32;
+    let scale = |i: usize| 1.0 + (i % 7) as f32;
     // the planted fold is the tables' own d, so plant with them
     let names: Vec<Box<str>> = (0..n).map(|i| format!("c{i}").into()).collect();
     let row_names: Vec<Box<str>> = rows.iter().map(|r| r.as_str().into()).collect();
@@ -160,32 +186,45 @@ fn a_planted_multiplicative_divisor_is_divided_out() {
         profile,
     );
     let s_planted = Stage1Divisor::align(&planted, &names, &row_names).unwrap();
-    let triplets: Vec<(u64, u64, f32)> = (0..n)
-        .flat_map(|i| {
-            let s = &s_planted;
-            (0..g).map(move |r| (r as u64, i as u64, base(i, r) * s.at(i, r)))
-        })
-        .collect();
-    let file = crate::test_support::write_zarr(dir.path(), "x", &rows_ref, n, &triplets);
-    let data = open(&[file]);
-    let (cells, data_rows) = (data.column_names().unwrap(), data.row_names().unwrap());
+    let write = |name: &str, scaled: bool| {
+        let triplets: Vec<(u64, u64, f32)> = (0..n)
+            .flat_map(|i| {
+                let s = &s_planted;
+                let c = if scaled { scale(i) } else { 1.0 };
+                (0..g).map(move |r| (r as u64, i as u64, c * base(i, r) * s.at(i, r)))
+            })
+            .collect();
+        crate::test_support::write_zarr(dir.path(), name, &rows_ref, n, &triplets)
+    };
+    let (plain, scaled) = (open(&[write("x", false)]), open(&[write("y", true)]));
+    let (cells, data_rows) = (plain.column_names().unwrap(), plain.row_names().unwrap());
     // the same tables, on the data's own names for the cells
     let t = Stage1Tables {
         cells: cells.clone(),
         ..planted.clone()
     };
     let s1 = Stage1Divisor::align(&t, &cells, &data_rows).unwrap();
-    let mut x = data.read_columns_csc(0..n).unwrap();
-    s1.divide_columns(&mut x, |j| j);
-    for (j, col) in x.col_iter().enumerate() {
-        for (&r, &v) in col.row_indices().iter().zip(col.values()) {
-            let want = base(j, r);
-            assert!(
-                (v - want).abs() < 1e-3 * want,
-                "cell {j} row {r}: {v} vs {want}"
-            );
+    let base_x = nalgebra_sparse::CscMatrix::from(&{
+        let mut coo = nalgebra_sparse::CooMatrix::new(g, n);
+        for i in 0..n {
+            for r in 0..g {
+                coo.push(r, i, base(i, r));
+            }
         }
+        coo
+    });
+    let want = at_library_scale(&base_x);
+    for data in [&plain, &scaled] {
+        let mut x = data.read_columns_csc(0..n).unwrap();
+        s1.divide_columns(&mut x, |j| j);
+        assert_columns(&x, &want);
     }
+    let (a, b) = (
+        s1.project_columns(&plain, 4, None).unwrap(),
+        s1.project_columns(&scaled, 4, None).unwrap(),
+    );
+    let gap = (&a.proj - &b.proj).abs().max();
+    assert!(gap < 1e-4, "a per-cell scale moved the projection by {gap}");
 }
 
 /// A cell of the data the tables lack is refused, by name.

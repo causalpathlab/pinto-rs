@@ -71,8 +71,10 @@
 //! ```
 //!
 //! `d` is the divisor dsvd, cage and cage-cell divide a count by where they
-//! would divide by a batch effect (on the count scale, its `n`-weighted
-//! mean 1 over the cells); lc scores its edge profiles against `μ` itself
+//! would divide by a batch effect, as numeric's adjust-by-division does: the
+//! self-normalising Poisson ratio `y / (λ_i d)`, `λ_i = Σ y / Σ d` over the
+//! cell's nonzeros, so each cell's overall scale is absorbed and `d` sets
+//! only the shape; lc scores its edge profiles against `μ` itself
 //! (rates `D_kg / M_kg`, about 1 where stage 1 explains the counts), and
 //! every stage-2 fit writes its feature × community dictionary as
 //! `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`: a mean count per cell, as

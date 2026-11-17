@@ -14,6 +14,7 @@
 //! is read (at its nonzeros) from `θ` (`n × K`) and the profiles
 //! (`B × G × K`).
 
+use crate::util::common::LIBRARY_SCALE;
 use crate::util::common::*;
 use crate::util::memory::{ensure_fits, human_bytes, Budget};
 use legume_numeric::matrix::parquet::{
@@ -518,33 +519,36 @@ impl Stage1Divisor {
         out
     }
 
-    /// Each count of `x` divided by its `d_gi`, column `j` being cell
-    /// `cell_of_column(j)`: a plain `y / d`, as a batch effect divides. A
-    /// non-positive `d` leaves its count as it is.
+    /// Each column of `x` (column `j` being cell `cell_of_column(j)`)
+    /// divided by its `d_gi` as numeric's `AdjustByDivisionOp` divides by a
+    /// batch effect: the self-normalising Poisson ratio
+    /// ([`Self::ratio_divide`]), each cell back at [`LIBRARY_SCALE`]: the one
+    /// division every `--offset` read takes.
     pub fn divide_columns(
         &self,
         x: &mut nalgebra_sparse::CscMatrix<f32>,
         cell_of_column: impl Fn(usize) -> usize,
     ) {
         for (j, mut col) in x.col_iter_mut().enumerate() {
-            let cell = cell_of_column(j);
             let (rows, vals) = col.rows_and_values_mut();
-            for (&g, v) in rows.iter().zip(vals.iter_mut()) {
-                let d = self.at(cell, g);
-                if d > 0.0 {
-                    *v /= d;
-                }
-            }
+            self.ratio_divide(rows, vals, cell_of_column(j));
         }
     }
 
-    /// One cell's values (`rows`, `vals`) divided as cage divides a pair's
-    /// endpoint by `δ`: the self-normalising Poisson ratio
-    /// (`legume_numeric::matrix::dmatrix_util::adjust_by_poisson_ratio`).
+    /// One cell's values (`rows`, `vals`) divided by `d` as numeric's
+    /// adjust-by-division divides (the self-normalising Poisson ratio
+    /// `y / (λ d)`, `λ = Σ y / Σ d`: the cell's scale is absorbed), then
+    /// scaled back to a total of [`LIBRARY_SCALE`], the count scale every
+    /// `--offset` read is on.
     pub fn ratio_divide(&self, rows: &[usize], vals: &mut [f32], cell: usize) {
         // the ratio reads each divisor twice: take it once
         let d: Vec<f32> = rows.iter().map(|&g| self.at(cell, g)).collect();
         adjust_by_poisson_ratio(vals, |k| d[k]);
+        let total: f32 = vals.iter().sum();
+        if total > 0.0 {
+            let s = LIBRARY_SCALE / total;
+            vals.iter_mut().for_each(|v| *v *= s);
+        }
     }
 
     /// Each batch's profiles through `basis` (`[rows × m]`): `[K × m]` per

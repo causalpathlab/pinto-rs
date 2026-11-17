@@ -440,7 +440,7 @@ pub(super) fn log_normalise_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
 
 /// The columns of `cells` as both pair visitors take them: divided by the
 /// batch effects of each cell's batch when there are any (or by the
-/// stage-1 divisor `d`, a plain `y / d`, under `--offset`), then
+/// stage-1 divisor `d`, by the same Poisson ratio, under `--offset`), then
 /// log-normalised ([`log_normalise_cells`]) on the total after the divide.
 /// Sparse throughout.
 ///

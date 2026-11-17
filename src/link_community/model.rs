@@ -727,13 +727,19 @@ pub(crate) fn compute_log_probs_for_edge(
     }
 }
 
-/// `ln(1 + x)` for `x ≥ 0`, by its series where `x` is small (an edge's
-/// share of a community's expected mass, nearly always), its error there
-/// under `x⁴/4`.
+/// `ln(1 + x)` for `x ≥ 0`: `2 atanh(z)`, `z = x / (2 + x)`, by its series
+/// for `x ≤ 1` (`z ≤ 1/3`, within f32 rounding), libm beyond. An
+/// edge's share of a community's expected mass is nearly always under 1,
+/// and libm's `log1p` per community and feature was what an offset edge cost.
 #[inline]
-fn ln1p_small(x: f32) -> f32 {
-    if x < 0.01 {
-        x * (1.0 - x * (0.5 - x * (1.0 / 3.0)))
+pub(crate) fn ln1p_small(x: f32) -> f32 {
+    if x <= 1.0 {
+        let z = x / (2.0 + x);
+        let z2 = z * z;
+        2.0 * z
+            * (1.0
+                + z2 * (1.0 / 3.0
+                    + z2 * (1.0 / 5.0 + z2 * (1.0 / 7.0 + z2 * (1.0 / 9.0 + z2 * (1.0 / 11.0))))))
     } else {
         x.ln_1p()
     }
