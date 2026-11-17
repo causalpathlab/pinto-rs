@@ -219,5 +219,5 @@ pub fn pick_run(
             Outcome::Ignored | Outcome::Moved => {}
         }
     };
-    Ok(picked.map(|p| crate::tui::relative(&p)))
+    Ok(picked.map(|p| legume_tui::browse::relative(&p)))
 }

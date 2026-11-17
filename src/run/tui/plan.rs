@@ -6,8 +6,8 @@ use super::{
     batch, copy, data, free_out, jobs, App, Planned, Review, Role, Screen, Target, CONFIRM_SETTLE,
 };
 use crate::residual::{Plan, ResidualArgs};
-use crate::tui::shown;
 use form::{Field, Kind, Method};
+use legume_tui::browse::shown;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use script::under;
 use std::path::{Path, PathBuf};
@@ -543,7 +543,7 @@ impl App {
             // The run key pressed twice at once, or held, stops here: the
             // review it opened is read before it runs. Each repeat starts
             // the wait again, so a held key runs nothing until let go.
-            _ if crate::tui::is_run_key(&k)
+            _ if legume_tui::is_run_key(&k)
                 && self
                     .confirm
                     .as_ref()
@@ -553,7 +553,7 @@ impl App {
                     r.at = std::time::Instant::now();
                 }
             }
-            _ if k.code == KeyCode::Enter || crate::tui::is_run_key(&k) => {
+            _ if k.code == KeyCode::Enter || legume_tui::is_run_key(&k) => {
                 let Some(Review { planned, .. }) = self.confirm.take() else {
                     return;
                 };
@@ -609,7 +609,7 @@ impl App {
             self.message = Some(format!(
                 "{} done and unqueued: {} runs the rest (space queues one again)",
                 done.join(", "),
-                crate::tui::RUN_KEY
+                legume_tui::RUN_KEY
             ));
         }
     }

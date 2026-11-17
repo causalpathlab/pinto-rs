@@ -10,10 +10,10 @@ mod pick;
 mod plan;
 
 use super::{form, script};
-use crate::tui::shown;
 use data::{Pair, Pick};
 use form::{Kind, Method};
 use jobs::{Job, Queue};
+use legume_tui::browse::shown;
 use legume_tui::browse::Browser;
 use legume_tui::save::Field as TextField;
 use legume_tui::Round;
@@ -307,7 +307,7 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
     let session = crate::tui::TOOL.session("run", &args.session())?;
     let mut app = App::new(cli, args.start())?;
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
-    let ended = crate::tui::with_terminal(&session, modes, |terminal| {
+    let ended = session.with_terminal(modes, |terminal| {
         let result = app.screens_loop(&session, terminal);
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
@@ -492,7 +492,7 @@ impl App {
                     self.screen = *s;
                 }
             }
-            _ if crate::tui::is_run_key(&k) => self.open_confirm(),
+            _ if legume_tui::is_run_key(&k) => self.open_confirm(),
             KeyCode::Char('q') => {
                 if self.running() {
                     self.message =

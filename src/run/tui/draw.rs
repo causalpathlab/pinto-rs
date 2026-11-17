@@ -4,8 +4,8 @@
 use super::batch;
 use super::jobs::State;
 use super::{App, Kind, Review, Screen, Target};
-use crate::tui::shown;
 use crate::tui::style::{bold, dim, first_row, popup, selected, short as fit};
+use legume_tui::browse::shown;
 use legume_tui::child::{gauge, Bar};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -188,7 +188,7 @@ impl App {
                 "tab / shift-tab / 1-4 screens"
             }
             .to_string(),
-            format!("{} review and run", crate::tui::RUN_KEY),
+            format!("{} review and run", legume_tui::RUN_KEY),
             "q quit".to_string(),
         ];
         // The detach and switch keys, in a session.
@@ -669,7 +669,7 @@ impl App {
             } else {
                 format!(
                     " enter or {} run   c copy the commands   ↑ ↓ scroll   esc back",
-                    crate::tui::RUN_KEY
+                    legume_tui::RUN_KEY
                 )
             },
             dim(),
