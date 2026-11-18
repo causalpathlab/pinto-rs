@@ -574,7 +574,7 @@ fn help_lines(full: bool, relabel: bool, shift_enter: bool) -> Vec<Line<'static>
             " arrows/drag  pan (shift: far)",
             " z/Z +/- or wheel  zoom",
             " < >  smaller/larger points",
-            " 0 fit   r back to the start",
+            " 0 fit  r start  u layout  U its table",
             " b next batch  w every batch  e edges",
             " grid: drag or shift+arrows move",
             " grid: zoom, < > one batch; alt all",

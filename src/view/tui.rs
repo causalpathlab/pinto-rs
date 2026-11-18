@@ -16,6 +16,7 @@ mod follow;
 mod gallery;
 pub(super) mod grid;
 mod input;
+mod layout;
 mod lra;
 mod plots;
 mod relabel;
@@ -163,6 +164,16 @@ impl Gfx {
 
 struct App<'a> {
     base: &'a Base,
+    /// The tissue's base, which `base` is when no layout is shown.
+    tissue: &'a Base,
+    /// The layout shown, by table and method; `None` on the tissue.
+    laid_out: Option<layout::Key>,
+    /// The table `u` lays the cells out by ([`crate::view::layout::sources`]).
+    layout_source: usize,
+    /// Every layout made, kept until the view closes.
+    layouts: std::collections::HashMap<layout::Key, &'a Base>,
+    /// A layout being made.
+    laying: Option<layout::Laying>,
     args: &'a ViewArgs,
     /// The session the view runs in: whether a terminal is there to draw
     /// on, and what it is.
@@ -305,6 +316,11 @@ impl<'a> App<'a> {
         levels[cur] = Some(level);
         App {
             base,
+            tissue: base,
+            laid_out: None,
+            layout_source: 0,
+            layouts: std::collections::HashMap::new(),
+            laying: None,
             args,
             session,
             levels,
@@ -396,6 +412,7 @@ impl<'a> App<'a> {
             }
             self.poll_job(terminal)?;
             self.poll_lra();
+            self.poll_layout();
             // a panel browser fills in as its folder is listed
             if let Some(annotate::Modal::Browse(b)) = &mut self.modal {
                 self.need_panel |= b.poll();

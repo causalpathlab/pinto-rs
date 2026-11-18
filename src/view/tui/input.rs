@@ -131,6 +131,8 @@ impl App<'_> {
             KeyCode::Char('e') => self.toggle_edges(terminal)?,
             KeyCode::Char('b') => self.next_tile(),
             KeyCode::Char('w') => self.toggle_grid(),
+            KeyCode::Char('u') => self.step_layout(),
+            KeyCode::Char('U') => self.step_layout_source(),
             KeyCode::Char('t') => self.toggle_theme(),
             KeyCode::Char('s') => self.ask_export(),
             KeyCode::Char('x') => self.clear_focus(),

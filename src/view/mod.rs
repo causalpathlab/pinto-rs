@@ -13,6 +13,7 @@ mod draft;
 mod gene;
 mod heatmap;
 mod index;
+mod layout;
 mod lra;
 mod lupin;
 mod markers;
@@ -177,6 +178,24 @@ impl Base {
             expression: OnceLock::new(),
             theme: theme.into(),
         })
+    }
+
+    /// This run with its cells at `geom`, a layout of them in place of the
+    /// tissue: its own grid, no scale bar, its expression opened afresh
+    /// when asked for.
+    fn laid_out(&self, geom: Geometry) -> Self {
+        let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), CELLS_PER_BIN);
+        let area = grid.occupied_bins() as f32 * grid.bin * grid.bin;
+        let spacing = (area / geom.n().max(1) as f32).sqrt();
+        Base {
+            run: self.run.clone(),
+            geom,
+            grid,
+            units: None,
+            spacing,
+            expression: OnceLock::new(),
+            theme: self.theme().into(),
+        }
     }
 
     /// The colours frames and palettes are drawn in now.
