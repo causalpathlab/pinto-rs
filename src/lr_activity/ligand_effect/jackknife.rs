@@ -235,11 +235,15 @@ fn tiles_of(tissue: &Tissue, rows: Rows<'_>, inside: &[u32]) -> Vec<Vec<u32>> {
 /// the reported estimate alone. The tiles deleted are those of the sections
 /// the scope lies in. Holding the fits fixed leaves out the error of the
 /// outcome model's coefficients, which is the outcome regression's sampling
-/// error, so its replicates move them by the tile's infinitesimal-jackknife
-/// step ([`super::overlap::OutcomeInfluence`]), a tile outside the scope
+/// error, so its replicates move them by the tile's exact leave-out ridge
+/// shift ([`super::overlap::OutcomeInfluence`]), a tile outside the scope
 /// included; the other estimators are first-order insensitive to the fits
 /// (the augmented one) or have none to move (the unadjusted difference),
-/// and the overlap weights' propensity is held fixed.
+/// and the overlap weights' propensity is held fixed. The same leave-out
+/// gives the outcome regression its SE at each threshold
+/// ([`super::overlap::outcome_estimate`]), which weighs the thresholds of its
+/// average: with the fits taken as known that SE was far too small, and
+/// the weights went nearly all to the threshold of largest z.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EstimatorJackknife {
     /// `(se, df)` of the headline, `effect_dr` (doubly robust).
@@ -280,17 +284,6 @@ impl EstimatorJackknife {
         set(&mut e.outcome, self.outcome);
         set(&mut e.unadj, self.unadj);
     }
-}
-
-/// The jackknife SE of replicates `v` and its df, `G_eff − 1`.
-fn jackknife_se_df(v: &[f64]) -> (f64, f64) {
-    let se = jackknife_se(v);
-    if !se.is_finite() {
-        return (f64::NAN, f64::NAN);
-    }
-    let mean = v.iter().sum::<f64>() / v.len() as f64;
-    let dev: Vec<f64> = v.iter().map(|x| x - mean).collect();
-    (se, super::inference::effective_clusters(&dev) - 1.0)
 }
 
 /// [`EstimatorJackknife`] of each scope of `rows` named by `scopes` (indices
@@ -341,7 +334,9 @@ pub fn estimator_jackknife(
                 return EstimatorJackknife::NONE;
             }
             let of = |pick: fn(&ScopeEffects) -> Estimate| {
-                jackknife_se_df(&reps.iter().map(|r| pick(r).theta).collect::<Vec<_>>())
+                super::inference::jackknife_sd(
+                    &reps.iter().map(|r| pick(r).theta).collect::<Vec<_>>(),
+                )
             };
             EstimatorJackknife {
                 competent: of(|e| e.competent),

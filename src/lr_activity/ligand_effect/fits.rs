@@ -69,9 +69,6 @@ impl<'a> Rows<'a> {
 pub enum Fit {
     Main,
     NoSpill,
-    /// The main fit with its outcome model's tile influence
-    /// ([`super::overlap::OutcomeInfluence`]), for jackknife replicates.
-    Jackknifed,
 }
 
 /// Whether the competent ones (`level`) among the rows `inside` leave both arms
@@ -413,7 +410,7 @@ pub fn fit_main(
     // response balances them.
     let added: Vec<&[f64]> = match kind {
         Fit::NoSpill => Vec::new(),
-        Fit::Main | Fit::Jackknifed => vec![&r.spill, &r.bleed],
+        Fit::Main => vec![&r.spill, &r.bleed],
     };
     let e = fits
         .propensity(step)?
@@ -425,6 +422,7 @@ pub fn fit_main(
         extra: &extra,
         modifiers: &modifiers,
     };
-    let influence = kind == Fit::Jackknifed;
+    // The main fit's outcome regression is read with its tile jackknife.
+    let influence = kind == Fit::Main && step.is_none();
     overlap_terms_with(design, cf, &inputs, &e, &opts.nuisance, influence)
 }

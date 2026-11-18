@@ -348,16 +348,26 @@ fn a_shared_field_is_the_run_s_field() {
 /// tile-jackknife SE) is about standard over runs, and each rejects at about
 /// its 5%, at one exposure threshold and averaged over several: the
 /// jackknife gives every estimator, the outcome regression included, an SE
-/// of the right size on the pooled row.
+/// of the right size on the pooled row. Printed beside them, to tell bias
+/// from a wrong SE: the mean estimate and z, and the estimates' spread over
+/// the runs against their mean SE.
 #[test]
 fn every_estimator_s_jackknife_se_is_calibrated_under_the_null() {
     use crate::lr_activity::ligand_effect::inference::Estimate;
     use rayon::prelude::*;
     let f = fixture();
-    let runs = 64;
+    let runs = 200;
     let averaged = EffectOpts {
         threshold: None,
         ..opts()
+    };
+    let mean_sd = |v: &[f64]| {
+        let n = v.len() as f64;
+        let m = v.iter().sum::<f64>() / n;
+        (
+            m,
+            (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0)).sqrt(),
+        )
     };
     for (how, o) in [("one threshold", opts()), ("thresholds averaged", averaged)] {
         let clock = std::time::Instant::now();
@@ -381,27 +391,35 @@ fn every_estimator_s_jackknife_se_is_calibrated_under_the_null() {
             ("unadj", |r| r.unadj),
         ];
         for (name, pick) in methods {
-            let z: Vec<f64> = rows
+            let ok: Vec<Estimate> = rows
                 .iter()
-                .map(|r| pick(r).z())
-                .filter(|z| z.is_finite())
+                .map(pick)
+                .filter(|e| e.z().is_finite())
                 .collect();
-            let n = z.len() as f64;
-            let mean = z.iter().sum::<f64>() / n;
-            let sd = (z.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
-            let rejected = rows.iter().filter(|r| pick(r).rejects()).count();
+            let n = ok.len() as f64;
+            let z: Vec<f64> = ok.iter().map(|e| e.z()).collect();
+            let theta: Vec<f64> = ok.iter().map(|e| e.theta).collect();
+            let (zm, zsd) = mean_sd(&z);
+            let (tm, tsd) = mean_sd(&theta);
+            let se = ok.iter().map(|e| e.se).sum::<f64>() / n;
+            let rejected = ok.iter().filter(|e| e.rejects()).count();
+            let mut ses: Vec<f64> = ok.iter().map(|e| e.se).collect();
+            ses.sort_by(f64::total_cmp);
+            let median_se = ses[ses.len() / 2];
             eprintln!(
-                "{how}, {name}: {} of {runs} estimable, null z mean {mean:+.2} sd {sd:.2}, \
+                "{how}, {name}: {} of {runs} estimable; mean estimate {tm:+.4}, mean z {zm:+.2} \
+                 (± {:.2}); estimates' sd {tsd:.4}, SE mean {se:.4} median {median_se:.4}; z sd {zsd:.2}, \
                  type I {rejected}/{runs}; {seconds:.1} s for the runs",
-                z.len(),
+                ok.len(),
+                2.0 * zsd / n.sqrt(),
             );
             assert!(n >= 0.9 * runs as f64, "{how}, {name}: estimable");
             assert!(
-                (0.7..1.35).contains(&sd),
-                "{how}, {name}: null z sd {sd:.2}"
+                (0.7..1.3).contains(&zsd),
+                "{how}, {name}: null z sd {zsd:.2}"
             );
-            assert!(mean.abs() < 0.5, "{how}, {name}: null z mean {mean:+.2}");
-            assert!(rejected <= 9, "{how}, {name}: type I {rejected}/{runs}");
+            assert!(zm.abs() < 0.4, "{how}, {name}: null z mean {zm:+.2}");
+            assert!(rejected <= 20, "{how}, {name}: type I {rejected}/{runs}");
         }
     }
 }

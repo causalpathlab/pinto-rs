@@ -11,7 +11,6 @@ use super::overlap::{difference, outcome_estimate, subset_estimate, OverlapTerms
 use super::response::Response;
 use super::timing;
 use crate::util::common::HashMap;
-use nalgebra::DVector;
 
 /// Every estimand in one scope.
 #[derive(Clone, Copy, Debug)]
@@ -212,13 +211,7 @@ impl ResponseFits {
                 .transpose()
         };
         let runs_competent = fits.runs_competent();
-        // The outcome model's tile influence, for jackknife replicates.
-        let main_kind = if rows.deleted.is_empty() {
-            Fit::Main
-        } else {
-            Fit::Jackknifed
-        };
-        let main = time(MAIN, || fit(runs_competent, main_kind, design))?;
+        let main = time(MAIN, || fit(runs_competent, Fit::Main, design))?;
         let nospill = time(NOSPILL, || {
             fit(sens.nospill && runs_competent, Fit::NoSpill, design)
         })?;
@@ -275,21 +268,21 @@ impl ScopeReader<'_> {
     ) -> LevelEffects {
         let mut pooled_sums = Vec::new();
         // A jackknife replicate's outcome regression has the tile out of its
-        // rows, and its coefficients move by the tile's influence
-        // ([`super::overlap::OutcomeInfluence`]) along its scope's directions,
+        // rows, and its coefficients move by the tile's leave-out shift
+        // ([`super::overlap::OutcomeInfluence`]), weighed by its scope's rows,
         // read once for all of the scope's replicates.
         let main = self.terms.main.as_ref();
         let influence = main.and_then(|m| Some((&m.h, m.influence.as_ref()?)));
-        let mut directions: HashMap<usize, Vec<Option<DVector<f64>>>> = HashMap::default();
+        let mut weights: HashMap<usize, Vec<Vec<f64>>> = HashMap::default();
         if let Some((h, inf)) = influence {
             for &(parent, _) in self.deleted.iter().flatten() {
-                directions.entry(parent).or_insert_with(|| {
+                weights.entry(parent).or_insert_with(|| {
                     let comp: Vec<u32> = scope_rows[parent]
                         .iter()
                         .copied()
                         .filter(|&i| competent[i as usize])
                         .collect();
-                    inf.directions(h, &comp, self.cf)
+                    inf.weights(h, &comp, self.cf)
                 });
             }
         }
@@ -311,7 +304,7 @@ impl ScopeReader<'_> {
                 if let (Some((parent, tile)), Some((_, inf))) = (deleted, influence) {
                     let o = &mut effects.outcome;
                     let sh = o.mean_h * o.n as f64;
-                    if let Some(v) = directions.get(&parent).filter(|_| sh > 1e-12) {
+                    if let Some(v) = weights.get(&parent).filter(|_| sh > 1e-12) {
                         o.theta += inf.shift(v, tile) / sh;
                     }
                 }

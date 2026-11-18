@@ -154,3 +154,17 @@ pub fn effective_clusters(sums: &[f64]) -> f64 {
 pub fn usable(e: &Estimate) -> bool {
     e.theta.is_finite() && e.se.is_finite() && e.df > 0.0
 }
+
+/// The jackknife SE of replicates `v`, `sqrt((G − 1)/G Σ (v_g − v̄)²)`, and
+/// its t reference's df, `G_eff − 1`, `G_eff` counting the replicates the
+/// variance rests on as [`effective_clusters`] counts clusters; NaN with a
+/// non-finite replicate or fewer than two.
+pub fn jackknife_sd(v: &[f64]) -> (f64, f64) {
+    let se = crate::util::common::jackknife_se(v);
+    if !se.is_finite() {
+        return (f64::NAN, f64::NAN);
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let dev: Vec<f64> = v.iter().map(|x| x - mean).collect();
+    (se, effective_clusters(&dev) - 1.0)
+}

@@ -357,7 +357,11 @@ jackknife below): the nuisance fits are kept and each tile holding rows of the
 row is left out of the averages in turn (no refit), and each replicate is the
 whole estimate as reported, every exposure threshold's estimate and the
 threshold average with its weights recomputed, so the SE is that of the
-averaged estimate itself; its df is the tiles the variance rests on less one. `pinto view` shows the pairs and draws
+averaged estimate itself; its df is the tiles the variance rests on less one.
+`effect_outcome`'s replicates also re-solve its outcome model without the
+tile (the ridge on its fold's Gram less the tile's, no refit), where its
+sampling error lives, and that leave-out also gives it its SE at each
+threshold, which weighs its thresholds in the average. `pinto view` shows the pairs and draws
 each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
