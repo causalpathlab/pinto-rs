@@ -24,8 +24,7 @@
 //! down for spots it holds in other donors: the label that matches it best
 //! there (highest F1), and that label's `precision` (low: the owner's
 //! shared spots absorbed into it), `recall` and `f1`, all over the owner's
-//! spots. `owner_share` is over every spot: the share of the label's spots
-//! from the owning donor (1: confined to its owner).
+//! spots.
 //!
 //! A labelling is any pinto run at any level (its propensity's hard labels),
 //! or a table (TSV or parquet) with a `cell` column and a label column, as
@@ -139,8 +138,6 @@ pub struct PatchScore {
     pub f1: f64,
     pub precision: f64,
     pub recall: f64,
-    /// Over every spot: the share of the label's spots in the owner.
-    pub owner_share: f64,
 }
 
 /// A donor-specific domain's f1, precision and recall count its owning
@@ -403,26 +400,20 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> Invariant {
 }
 
 /// Test 2: each donor-specific domain against its best-matching label,
-/// within its owner's spots; `owner_share` over every spot.
+/// within its owner's spots.
 fn patches(t: &TruthSpots, counts: &Counts) -> Vec<PatchScore> {
-    // label → spots per donor, over every domain
-    let mut by_label: HashMap<i64, Vec<usize>> = HashMap::default();
-    for (d, m) in counts
-        .iter()
-        .flat_map(|per_donor| per_donor.iter().enumerate())
-    {
-        for (&l, &x) in m {
-            by_label.entry(l).or_insert_with(|| vec![0; t.n_donors])[d] += x;
-        }
-    }
     (0..counts.len())
         .filter_map(|k| t.domain_owner[k].map(|o| (k, o)))
         .map(|(k, owner)| {
+            // each label's spots in the owner, over every domain
+            let mut in_owner: HashMap<i64, usize> = HashMap::default();
+            for (&l, &x) in counts.iter().flat_map(|per_donor| &per_donor[owner]) {
+                *in_owner.entry(l).or_insert(0) += x;
+            }
             // the domain's spots in its owner, by label
             let overlap = &counts[k][owner];
             let n_patch: usize = overlap.values().sum();
-            // a label's spots in the owner
-            let size = |l: i64| by_label[&l][owner];
+            let size = |l: i64| in_owner[&l];
             // F1 = 2 tp / (|label| + |patch|); ties to the larger overlap, then the smaller label
             let best = overlap.iter().max_by(|a, b| {
                 let f = |(&l, &tp): (&i64, &usize)| tp as f64 / (size(l) + n_patch) as f64;
@@ -431,18 +422,14 @@ fn patches(t: &TruthSpots, counts: &Counts) -> Vec<PatchScore> {
                     .then(a.1.cmp(b.1))
                     .then(b.0.cmp(a.0))
             });
-            let (f1, precision, recall, owner_share) =
-                best.map_or((0.0, 0.0, 0.0, 0.0), |(&l, &tp)| {
-                    let s = size(l) as f64;
-                    let (p, r) = (tp as f64 / s, tp as f64 / n_patch as f64);
-                    let everywhere: usize = by_label[&l].iter().sum();
-                    (
-                        2.0 * tp as f64 / (s + n_patch as f64),
-                        p,
-                        r,
-                        s / everywhere as f64,
-                    )
-                });
+            let (f1, precision, recall) = best.map_or((0.0, 0.0, 0.0), |(&l, &tp)| {
+                let s = size(l) as f64;
+                (
+                    2.0 * tp as f64 / (s + n_patch as f64),
+                    tp as f64 / s,
+                    tp as f64 / n_patch as f64,
+                )
+            });
             PatchScore {
                 domain: t.domain_labels[k].to_string(),
                 owner: donor_label(owner).to_string(),
@@ -450,7 +437,6 @@ fn patches(t: &TruthSpots, counts: &Counts) -> Vec<PatchScore> {
                 f1,
                 precision,
                 recall,
-                owner_share,
             }
         })
         .collect()
@@ -543,7 +529,7 @@ pub fn table_header() -> String {
         "patch",
         "f1",
         "prec",
-        "owner",
+        "recall",
         "donor_conditional_entropy_by_domain"
     )
 }
@@ -600,7 +586,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
         .map(|p| {
             format!(
                 "{head} {:<NAME_WIDTH$} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
-                p.domain, p.f1, p.precision, p.owner_share
+                p.domain, p.f1, p.precision, p.recall
             )
         })
         .collect()
