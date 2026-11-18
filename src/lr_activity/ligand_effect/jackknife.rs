@@ -143,6 +143,7 @@ pub fn jackknife(
                         cf: &cf,
                         scope_rows: &sr,
                         share: None,
+                        deleted: &[],
                     };
                     headline(r, full_fit.starts.clone()).map(|a| {
                         let e = a.scopes[1];
@@ -212,4 +213,143 @@ fn tiles_of(tissue: &Tissue, rows: Rows<'_>, inside: &[u32]) -> Vec<Vec<u32>> {
         }
     }
     by_tile.into_values().collect()
+}
+
+/// Each estimator's delete-one-tile jackknife SE and degrees of freedom, of
+/// the whole estimate as reported: averaged over exposure thresholds; NaN
+/// where it was not computed.
+///
+/// The jackknife is the no-refit one of [`jackknife`]: the nuisance fits of
+/// the full data are kept and each tile is left out of the averages alone,
+/// every replicate read from one pass of the fits as a scope of its own. A
+/// replicate is the scope less one tile carried through everything the
+/// estimate is made of ([`super::thresholds::over_thresholds`]): each
+/// exposure threshold's estimate, Rubin's mean over the competence and
+/// programme-weighting choices, and the threshold average with its
+/// approximate-Bayes-factor weights recomputed on the replicate. With `G`
+/// replicates `θ̄₍₋g₎`, `SE² = (G − 1)/G Σ_g (θ̄₍₋g₎ − mean)²`, and the t
+/// reference's df is `G_eff − 1`, `G_eff` counting the replicates the
+/// variance rests on as [`super::inference::effective_clusters`] counts
+/// clusters. The jackknife of Rubin's mean leaves out its between-choice
+/// term: the choices are not resampled, so the SE is the sampling error of
+/// the reported estimate alone. The tiles deleted are those of the sections
+/// the scope lies in. Holding the fits fixed leaves out the error of the
+/// outcome model's coefficients, which is the outcome regression's sampling
+/// error, so its replicates move them by the tile's infinitesimal-jackknife
+/// step ([`super::overlap::OutcomeInfluence`]), a tile outside the scope
+/// included; the other estimators are first-order insensitive to the fits
+/// (the augmented one) or have none to move (the unadjusted difference),
+/// and the overlap weights' propensity is held fixed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EstimatorJackknife {
+    /// `(se, df)` of the headline, `effect_dr` (doubly robust).
+    pub competent: (f64, f64),
+    /// Overlap weights alone, `effect_ipw`.
+    pub ipw: (f64, f64),
+    /// The outcome regression alone, `effect_outcome`.
+    pub outcome: (f64, f64),
+    /// `effect_unadj`.
+    pub unadj: (f64, f64),
+    /// Tiles deleted, one replicate each.
+    pub replicates: usize,
+}
+
+impl EstimatorJackknife {
+    pub const NONE: Self = Self {
+        competent: (f64::NAN, f64::NAN),
+        ipw: (f64::NAN, f64::NAN),
+        outcome: (f64::NAN, f64::NAN),
+        unadj: (f64::NAN, f64::NAN),
+        replicates: 0,
+    };
+
+    /// `e` with each estimator's SE and df replaced by the jackknife's, up or
+    /// down; where a replicate had no estimate (deleting a tile left an arm
+    /// thin) the clustered SE stays. The headline is left to the region rows'
+    /// [`Jackknife`] when `headline` is false.
+    pub fn apply(&self, e: &mut ScopeEffects, headline: bool) {
+        let set = |x: &mut Estimate, (se, df): (f64, f64)| {
+            if se.is_finite() && df > 0.0 {
+                (x.se, x.df) = (se, df);
+            }
+        };
+        if headline {
+            set(&mut e.competent, self.competent);
+        }
+        set(&mut e.ipw, self.ipw);
+        set(&mut e.outcome, self.outcome);
+        set(&mut e.unadj, self.unadj);
+    }
+}
+
+/// The jackknife SE of replicates `v` and its df, `G_eff − 1`.
+fn jackknife_se_df(v: &[f64]) -> (f64, f64) {
+    let se = jackknife_se(v);
+    if !se.is_finite() {
+        return (f64::NAN, f64::NAN);
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let dev: Vec<f64> = v.iter().map(|x| x - mean).collect();
+    (se, super::inference::effective_clusters(&dev) - 1.0)
+}
+
+/// [`EstimatorJackknife`] of each scope of `rows` named by `scopes` (indices
+/// into `rows.scope_rows`, the pooled scope first in `rows`), from one pass
+/// of the fits over the headline and `taus`, as the estimate was read,
+/// whose scopes are those scopes and each less each of its tiles.
+pub fn estimator_jackknife(
+    rows: Rows<'_>,
+    tissue: &Tissue,
+    scopes: &[usize],
+    fit: &PairFit<'_>,
+    taus: &[(f64, f64)],
+) -> anyhow::Result<Vec<EstimatorJackknife>> {
+    let pooled = &rows.scope_rows[0];
+    let mut sr = vec![pooled.clone()];
+    let mut deleted = vec![None];
+    // Per scope: its replicates' span in `sr`, after the scope itself.
+    let mut spans = Vec::with_capacity(scopes.len());
+    for &k in scopes {
+        let inside = &rows.scope_rows[k];
+        let parent = sr.len();
+        sr.push(inside.clone());
+        deleted.push(None);
+        for out in tiles_of(tissue, rows, inside) {
+            sr.push(complement(inside, &out));
+            deleted.push(Some((parent, rows.cf.cluster[out[0] as usize])));
+        }
+        spans.push(parent + 1..sr.len());
+    }
+    let all = over_thresholds(
+        Rows {
+            steps: &[],
+            scope_rows: &sr,
+            share: None,
+            deleted: &deleted,
+            ..rows
+        },
+        fit,
+        taus,
+        Sensitivity::NONE,
+        FoldStarts::default(),
+    )?;
+    Ok(spans
+        .into_iter()
+        .map(|span| {
+            let reps = &all.scopes[span];
+            if reps.len() < 2 {
+                return EstimatorJackknife::NONE;
+            }
+            let of = |pick: fn(&ScopeEffects) -> Estimate| {
+                jackknife_se_df(&reps.iter().map(|r| pick(r).theta).collect::<Vec<_>>())
+            };
+            EstimatorJackknife {
+                competent: of(|e| e.competent),
+                ipw: of(|e| e.ipw),
+                outcome: of(|e| e.outcome),
+                unadj: of(|e| e.unadj),
+                replicates: reps.len(),
+            }
+        })
+        .collect())
 }

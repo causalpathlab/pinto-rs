@@ -264,7 +264,7 @@ clustering behind the labels may have used them. `--cell-types` (a `cell`,
 adds an indicator per region within each section to the adjustment, which the
 smooth fields cannot give at a sharp edge, and a row per region
 (`region:<name>`, its q corrected within the region). Every section and region
-row also carries `effect_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
+row also carries `effect_dr_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
 that on every other receiver, from the same fit, the test that an effect is
 the region's or the donor's own. A region row with p < 0.2 is checked by a
 delete-one-tile jackknife over its sections, which widens its SEs and never
@@ -338,18 +338,26 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 (descriptive log odds per batch, `{out}.lr_scores.parquet`).
 
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
-pooled row). `effect_competent` is the headline, a log-rate change of the
+pooled row). `effect_dr` is the headline, a log-rate change of the
 response program (`exp(x) - 1` is the percent change); `verdict` sums up
 the evidence and `verdict_note` says why in words. For comparison, and in no
 verdict: `marginal_cor` (the correlation of response and contact ligand),
-`unadjusted_diff` (the mean response of exposed competent receivers minus that
+`effect_unadj` (the mean response of exposed competent receivers minus that
 of unexposed ones, every receiver weighted 1 and nothing adjusted for), each with `_se`; `effect_ipw`
 (overlap weights alone) with `_se`, `_lo` and `_hi`, an interval no control
 guards, so not a test of the pair; and `effect_outcome` (the outcome regression
-alone), a point estimate with no SE or interval, because it can target a
-different contrast when exposure is misclassified. `unadjusted_diff`,
-`effect_ipw` and `effect_outcome` are averaged over exposure thresholds as the
-headline is, each by its own evidence. `pinto view` shows the pairs and draws
+alone) with `_se`, `_lo` and `_hi`, which can target a different contrast when
+exposure is misclassified. `effect_unadj`, `effect_ipw` and `effect_outcome`
+also carry `_df` and `_p` (two-sided, t reference), and are averaged over
+exposure thresholds as the headline is, each by its own evidence. Each of the
+four estimators (`effect_dr`, `effect_ipw`, `effect_outcome`,
+`effect_unadj`) has its SE from a delete-one-tile jackknife, on every row
+(pooled, section, cell type; a region row's headline keeps the region
+jackknife below): the nuisance fits are kept and each tile holding rows of the
+row is left out of the averages in turn (no refit), and each replicate is the
+whole estimate as reported, every exposure threshold's estimate and the
+threshold average with its weights recomputed, so the SE is that of the
+averaged estimate itself; its df is the tiles the variance rests on less one. `pinto view` shows the pairs and draws
 each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
@@ -371,17 +379,17 @@ response better count for more and disagreement between them widens the
 interval. The control is averaged by its own evidence. The prior on an effect
 is set from the pair's own standard errors (ten times their median over the
 thresholds), so the weights do not depend on the response's units.
-`effect_log10_bf` is the evidence for an effect at any threshold against that
+`effect_dr_log10_bf` is the evidence for an effect at any threshold against that
 prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
 on most.
 
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
-row (`effect_competent_df` is that count less one). A row whose signal sits in
+row (`effect_dr_df` is that count less one). A row whose signal sits in
 a few of many tiles, as a region of one donor does, is tested on those few.
 
 A significant effect then has to exceed the negative control, the same way:
-the effect in receptor-negative receivers (`effect_contrast_q`), the
+the effect in receptor-negative receivers (`effect_dr_contrast_q`), the
 comparison corrected among the pairs with a significant effect (so its q is
 empty for the rest). A hidden field can move the control too, so a control
 that is itself significant does not rule out a larger effect; it is named in
@@ -459,9 +467,10 @@ row's, the region's being `region_estimate` and `region_se`. `-o` must not
 be the `--from` run's prefix, whose table is the grid's.
 
 The call writes `{out}.lra-simulate.parquet`, the table above plus
-`planted` (0/1), `t` (estimate over SE, a one-sided score as the planted
-effect is positive), `p` (its two-sided p on the t reference) and
-`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. These five are
+`planted` (0/1) and, for each estimator (`effect_dr`, the headline;
+`effect_ipw`; `effect_outcome`; `effect_unadj`), its estimate with `_se`
+(delete-one-tile jackknife), `_df` and `_p` (two-sided, t reference), and
+`marginal_cor_p`. The five p columns are
 doubles computed at full precision (the grid's columns stay floats), so a
 p far below a float's smallest value is kept rather than written as 0. A row not estimable
 stays, with NaN scores. Then, last and atomically, it writes

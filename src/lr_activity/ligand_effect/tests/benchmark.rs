@@ -107,10 +107,10 @@ fn a_marker_type_fools_the_unadjusted_difference() {
         // The response's own noise (the variance no field or effect
         // explains) keeps the unadjusted difference's z modest; it still rejects at 5%.
         assert!(
-            r.unadjusted_diff.z() > 1.96,
-            "unadjusted_diff {:.3} ± {:.3}",
-            r.unadjusted_diff.theta,
-            r.unadjusted_diff.se
+            r.unadj.z() > 1.96,
+            "unadj {:.3} ± {:.3}",
+            r.unadj.theta,
+            r.unadj.se
         );
         assert!(
             !r.estimable() || r.estimate.z().abs() < 3.0,

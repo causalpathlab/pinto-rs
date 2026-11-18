@@ -122,12 +122,12 @@ pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
         }
         for (k, &i) in idx.iter().enumerate() {
             let r = &mut rows[i];
-            r.effect_p = pe[k];
-            r.effect_q = qe[k];
+            r.effect_dr_p = pe[k];
+            r.effect_dr_q = qe[k];
             r.coexpr_p = pc[k];
             r.coexpr_q = qc[k];
-            r.effect_contrast_q = q1[k];
-            r.effect_incompetent_q = q3[k];
+            r.effect_dr_contrast_q = q1[k];
+            r.effect_dr_incompetent_q = q3[k];
         }
     }
     for r in rows.iter_mut() {
@@ -141,7 +141,7 @@ fn judge(row: &mut EffectRow, opts: &ReportOpts) {
     let controls = failed_controls(row, opts);
     let ev = Evidence {
         estimable: head.theta.is_finite() && head.se.is_finite(),
-        effect: row.effect_q < opts.fdr,
+        effect: row.effect_dr_q < opts.fdr,
         coexpr: row.coexpr_q < opts.fdr,
         control_failed: controls.iter().any(|c| c.0),
         confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
@@ -161,11 +161,11 @@ type Flag = (bool, &'static str);
 fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 2] {
     let sig = |q: f64| q < opts.fdr;
     let head = row.effects.competent;
-    let effect = sig(row.effect_q);
+    let effect = sig(row.effect_dr_q);
     let unchecked = |q: f64| effect && q.is_nan();
     let exceeds = |q: f64, over: Estimate| sig(q) && over.theta * head.theta > 0.0;
     let beaten = |q: f64, over: Estimate| effect && !q.is_nan() && !exceeds(q, over);
-    let over_negative_q = row.effect_contrast_q;
+    let over_negative_q = row.effect_dr_contrast_q;
     [
         (
             unchecked(over_negative_q),
@@ -181,7 +181,7 @@ fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 2] {
 /// The negative control significant on its own: reported, deciding nothing.
 fn control_notes(row: &EffectRow, opts: &ReportOpts) -> [Flag; 1] {
     [(
-        row.effect_incompetent_q < opts.fdr,
+        row.effect_dr_incompetent_q < opts.fdr,
         "receptor-negative receivers respond",
     )]
 }

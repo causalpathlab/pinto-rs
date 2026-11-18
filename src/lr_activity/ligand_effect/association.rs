@@ -6,7 +6,7 @@ use super::inference::{clustered_sd, Estimate};
 
 /// The weighted mean response of the exposed minus that of the unexposed over
 /// `rows`, with its tile-clustered variance. Weight 1 is the unadjusted
-/// difference ([`super::effects::ScopeEffects::unadjusted_diff`]),
+/// difference ([`super::effects::ScopeEffects::unadj`]),
 /// what a co-expression style comparison would report on the same scale; the
 /// overlap weight of a row's own arm ([`super::overlap::OverlapTerms::arm_weight`]) is inverse
 /// probability weighting, with no outcome model.

@@ -145,7 +145,7 @@ impl Open {
                     "pair": r.name(),
                     "verdict": r.verdict.code(),
                     "change": lra_layer::change(r),
-                    "q": opt_finite(r.effect_q),
+                    "q": opt_finite(r.effect_dr_q),
                     "marked": v.marked.contains(&r.name()),
                 })
             })
@@ -158,9 +158,9 @@ impl Open {
                 "note": r.note,
                 "warnings": r.warnings,
                 "change": lra_layer::change(r),
-                "effect": opt_finite(r.effect),
-                "effect_se": opt_finite(r.effect_se),
-                "q": opt_finite(r.effect_q),
+                "effect_dr": opt_finite(r.effect),
+                "effect_dr_se": opt_finite(r.effect_dr_se),
+                "q": opt_finite(r.effect_dr_q),
                 "coexpr_q": opt_finite(r.coexpr_q),
                 "subset_corrected": table.subset_corrected(),
                 "threshold": opt_finite(r.threshold),

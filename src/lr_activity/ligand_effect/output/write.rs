@@ -18,6 +18,12 @@ pub const Q_SCOPE_ALL: &str = "all pairs";
 /// `q_scope`: `celltype_score`, `celltype_p`, `celltype_tested`, `moran_i`,
 /// `moran_p`, `contact_score` and `contact_p`, NaN (and `celltype_tested` 0) on every
 /// row but a pair's pooled one.
+///
+/// Every estimator's SE is its delete-one-tile jackknife SE
+/// ([`crate::lr_activity::ligand_effect::jackknife::EstimatorJackknife`]):
+/// `effect_dr_se`, `effect_ipw_se`, `effect_outcome_se` and
+/// `effect_unadj_se`, each with its `_df` and two-sided `_p` on the t
+/// reference (the headline's are `effect_dr_df` and `effect_dr_p`).
 pub fn write_effects(
     path: &str,
     rows: &[EffectRow],
@@ -41,34 +47,36 @@ pub fn write_effects(
         .f("coexpr_log_or", |(r, _)| r.coexpr_log_or)
         .f("coexpr_se", |(r, _)| r.coexpr_se)
         .est("marginal_cor", |(r, _)| r.marginal_cor)
-        .est("unadjusted_diff", |(r, _)| r.effects.unadjusted_diff)
+        .est("effect_unadj", |(r, _)| r.effects.unadj)
         .est_interval("effect_ipw", |(r, _)| r.effects.ipw)
         .f("effect_outcome", |(r, _)| r.effects.outcome.theta)
-        .est("effect_competent", |(r, _)| r.effects.competent)
-        .f("effect_competent_df", |(r, _)| r.effects.competent.df)
-        .f("effect_p", |(r, _)| r.effect_p)
-        .f("effect_q", |(r, _)| r.effect_q)
+        .est("effect_dr", |(r, _)| r.effects.competent)
+        .f("effect_dr_df", |(r, _)| r.effects.competent.df)
+        .f("effect_dr_p", |(r, _)| r.effect_dr_p)
+        .f("effect_dr_q", |(r, _)| r.effect_dr_q)
         .f("coexpr_p", |(r, _)| r.coexpr_p)
         .f("coexpr_q", |(r, _)| r.coexpr_q)
         .i("n_pairs_same_ligand", |(r, _)| r.n_pairs_same_ligand)
         .f("ligand_q", |(r, _)| r.ligand_q)
-        .est("effect_competent_section", |(r, _)| r.effects.steps[0])
-        .est("effect_competent_spatial", |(r, _)| r.effects.steps[1])
-        .est("effect_competent_identity", |(r, _)| r.effects.steps[2])
-        .est("effect_competent_nospill", |(r, _)| r.effects.nospill)
-        .est("effect_incompetent", |(r, _)| r.effects.incompetent)
-        .f("effect_incompetent_q", |(r, _)| r.effect_incompetent_q)
-        .est("effect_contrast", |(r, _)| r.effects.effect)
-        .est("effect_vs_rest", |(r, _)| r.effects.versus_rest)
-        .f("effect_vs_rest_df", |(r, _)| r.effects.versus_rest.df)
-        .f("effect_vs_rest_p", |(r, _)| r.effects.versus_rest.p())
+        .est("effect_dr_section", |(r, _)| r.effects.steps[0])
+        .est("effect_dr_spatial", |(r, _)| r.effects.steps[1])
+        .est("effect_dr_identity", |(r, _)| r.effects.steps[2])
+        .est("effect_dr_nospill", |(r, _)| r.effects.nospill)
+        .est("effect_dr_incompetent", |(r, _)| r.effects.incompetent)
+        .f("effect_dr_incompetent_q", |(r, _)| {
+            r.effect_dr_incompetent_q
+        })
+        .est("effect_dr_contrast", |(r, _)| r.effects.effect)
+        .est("effect_dr_vs_rest", |(r, _)| r.effects.versus_rest)
+        .f("effect_dr_vs_rest_df", |(r, _)| r.effects.versus_rest.df)
+        .f("effect_dr_vs_rest_p", |(r, _)| r.effects.versus_rest.p())
         .f("jackknife_ratio", |(r, _)| r.jackknife.competent)
         .f("jackknife_vs_rest_ratio", |(r, _)| r.jackknife.versus_rest)
         .i("jackknife_tiles", |(r, _)| r.jackknife.replicates)
-        .f("effect_log10_bf", |(r, _)| r.effects.abf.log10_bf)
+        .f("effect_dr_log10_bf", |(r, _)| r.effects.abf.log10_bf)
         .f("tau_top", |(r, _)| r.effects.abf.top_tau)
         .f("tau_top_weight", |(r, _)| r.effects.abf.top_weight)
-        .f("effect_contrast_q", |(r, _)| r.effect_contrast_q)
+        .f("effect_dr_contrast_q", |(r, _)| r.effect_dr_contrast_q)
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)
@@ -78,12 +86,21 @@ pub fn write_effects(
         .s("verdict", |(r, _)| r.verdict.code())
         .s("verdict_note", |(r, _)| r.verdict.note())
         .s("warnings", |(r, _)| &r.warnings)
-        .f("effect_lo", |(_, m)| m.lo)
-        .f("effect_hi", |(_, m)| m.hi)
-        .f("effect_pct", |(_, m)| m.pct)
-        .f("effect_pct_sd", |(_, m)| m.pct_sd)
-        .f("effect_pct_lo", |(_, m)| m.pct_lo)
-        .f("effect_pct_hi", |(_, m)| m.pct_hi);
+        .f("effect_dr_lo", |(_, m)| m.lo)
+        .f("effect_dr_hi", |(_, m)| m.hi)
+        .f("effect_dr_pct", |(_, m)| m.pct)
+        .f("effect_dr_pct_sd", |(_, m)| m.pct_sd)
+        .f("effect_dr_pct_lo", |(_, m)| m.pct_lo)
+        .f("effect_dr_pct_hi", |(_, m)| m.pct_hi)
+        .f("effect_unadj_df", |(r, _)| r.effects.unadj.df)
+        .d("effect_unadj_p", |(r, _)| r.effects.unadj.p())
+        .f("effect_ipw_df", |(r, _)| r.effects.ipw.df)
+        .d("effect_ipw_p", |(r, _)| r.effects.ipw.p())
+        .f("effect_outcome_se", |(r, _)| r.effects.outcome.se)
+        .f("effect_outcome_df", |(r, _)| r.effects.outcome.df)
+        .d("effect_outcome_p", |(r, _)| r.effects.outcome.p())
+        .f("effect_outcome_lo", |(r, _)| r.effects.outcome.interval().0)
+        .f("effect_outcome_hi", |(r, _)| r.effects.outcome.interval().1);
     if marginal {
         let b = |f: fn(&Baselines) -> f64| {
             move |(r, _): &(&EffectRow, Moments)| r.marginal.as_ref().map_or(f64::NAN, f)
@@ -245,11 +262,10 @@ pub fn write_sim(path: &str, rows: &[SimRow], planted: Option<&str>) -> anyhow::
 
 /// A single-scenario call's table: [`write_sim`]'s columns, then what a
 /// sweep scores each row by. `planted` (0/1) is the row's label, one per
-/// row; `t` is the estimate over its SE, a one-sided score since the planted
-/// effect is positive, and `p` its two-sided p on the t reference
+/// row; `effect_dr_p` is the headline's two-sided p on the t reference
 /// ([`crate::lr_activity::ligand_effect::inference::Estimate::p`]);
-/// `marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p` the same for the
-/// other methods. These five are doubles, computed in f64, so a p below a
+/// `marginal_cor_p`, `effect_unadj_p`, `effect_ipw_p` and `effect_outcome_p`
+/// the same for the other methods. These five are doubles, computed in f64, so a p below a
 /// float's smallest value is kept, not written as 0 for a sweep's `-log10 p`
 /// to turn infinite. A row not estimable has NaN scores. The scores are the
 /// pooled row's: with a planted region, its row's are `region_estimate` and
@@ -264,11 +280,11 @@ pub fn write_sim_scored(
     let label: Vec<usize> = planted.iter().map(|&p| usize::from(p)).collect();
     let mut c = sim_columns(rows, region);
     c.v("planted", label)
-        .d("t", |r| r.estimate.z())
-        .d("p", |r| r.estimate.p())
+        .d("effect_dr_p", |r| r.estimate.p())
         .d("marginal_cor_p", |r| r.marginal_cor.p())
-        .d("unadjusted_diff_p", |r| r.unadjusted_diff.p())
-        .d("effect_ipw_p", |r| r.ipw.p());
+        .d("effect_unadj_p", |r| r.unadj.p())
+        .d("effect_ipw_p", |r| r.ipw.p())
+        .d("effect_outcome_p", |r| r.outcome.p());
     c.write(path)
 }
 
@@ -290,18 +306,18 @@ fn sim_columns<'r>(rows: &'r [SimRow], planted: Option<&'r str>) -> Columns<'r, 
         .f("truth", |r| r.truth)
         .f("truth_exposed", |r| r.truth_exposed)
         .i(ESTIMABLE, |r| r.estimable() as usize)
-        .f("estimate", |r| r.estimate.theta)
-        .f("se", |r| r.estimate.se)
-        .f("df", |r| r.estimate.df)
+        .f("effect_dr", |r| r.estimate.theta)
+        .f("effect_dr_se", |r| r.estimate.se)
+        .f("effect_dr_df", |r| r.estimate.df)
         .est("marginal_cor", |r| r.marginal_cor)
-        .est("unadjusted_diff", |r| r.unadjusted_diff)
+        .est("effect_unadj", |r| r.unadj)
         .est_interval("effect_ipw", |r| r.ipw)
-        .f("effect_outcome", |r| r.outcome)
-        .est("effect_incompetent", |r| r.incompetent)
+        .f("effect_outcome", |r| r.outcome.theta)
+        .est("effect_dr_incompetent", |r| r.incompetent)
         .est("estimate_section", |r| r.steps[0])
         .est("estimate_spatial", |r| r.steps[1])
         .est("estimate_identity", |r| r.steps[2])
-        .est("effect_contrast", |r| r.contrast)
+        .est("effect_dr_contrast", |r| r.contrast)
         .i(DOSE_RESPONSE, |r| r.scenario.dose_response as usize)
         .f(DOSE_MIDPOINT, |r| r.scenario.dose_midpoint)
         .i(DOSE_ORDER, |r| r.scenario.dose_order as usize)
@@ -351,5 +367,9 @@ fn sim_columns<'r>(rows: &'r [SimRow], planted: Option<&'r str>) -> Columns<'r, 
     for (k, m) in COMPARED.iter().enumerate() {
         c.i(&reject(m), |r| r.rejections()[k] as usize);
     }
+    c.f("effect_unadj_df", |r| r.unadj.df)
+        .f("effect_ipw_df", |r| r.ipw.df)
+        .f("effect_outcome_se", |r| r.outcome.se)
+        .f("effect_outcome_df", |r| r.outcome.df);
     c
 }

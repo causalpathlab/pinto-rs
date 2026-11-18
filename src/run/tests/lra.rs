@@ -493,22 +493,22 @@ fn write_effects(path: &str) {
             ("verdict".into(), Column::Str(&verdict)),
             ("verdict_note".into(), Column::Str(&blank)),
             ("warnings".into(), Column::Str(&blank)),
-            ("effect_competent_se".into(), Column::F32(&zero)),
+            ("effect_dr_se".into(), Column::F32(&zero)),
             ("coexpr_q".into(), Column::F32(&zero)),
             ("exposure_threshold".into(), Column::F32(&zero)),
             ("n_receivers".into(), Column::F32(&zero)),
             ("n_competent".into(), Column::F32(&zero)),
             ("n_exposed".into(), Column::F32(&zero)),
-            ("effect_competent".into(), Column::F32(&effect)),
-            ("effect_p".into(), Column::F32(&p)),
-            ("effect_q".into(), Column::F32(&q)),
-            ("effect_pct".into(), Column::F32(&pct)),
-            ("effect_pct_lo".into(), Column::F32(&lo)),
-            ("effect_pct_hi".into(), Column::F32(&hi)),
+            ("effect_dr".into(), Column::F32(&effect)),
+            ("effect_dr_p".into(), Column::F32(&p)),
+            ("effect_dr_q".into(), Column::F32(&q)),
+            ("effect_dr_pct".into(), Column::F32(&pct)),
+            ("effect_dr_pct_lo".into(), Column::F32(&lo)),
+            ("effect_dr_pct_hi".into(), Column::F32(&hi)),
             ("tau_top".into(), Column::F32(&zero)),
             ("tau_top_weight".into(), Column::F32(&zero)),
-            ("effect_contrast".into(), Column::F32(&zero)),
-            ("effect_contrast_q".into(), Column::F32(&zero)),
+            ("effect_dr_contrast".into(), Column::F32(&zero)),
+            ("effect_dr_contrast_q".into(), Column::F32(&zero)),
             ("q_scope".into(), Column::Str(&all)),
         ],
     )
@@ -561,10 +561,10 @@ fn run(effect: f64, alpha: f64, rejects: [bool; COMPARED.len()], estimable: bool
 fn the_simulate_reply_is_the_comparison_table() {
     let (t, f) = (true, false);
     let runs = [
-        run(0.0, 0.5, [f, t, f, t, f, f, f, f], t),
-        run(0.0, 0.5, [f, t, f, f, f, f, f, f], f),
-        run(0.3, 0.0, [f, t, f, t, t, t, t, t], t),
-        run(0.3, 0.0, [f, t, f, t, t, t, t, f], t),
+        run(0.0, 0.5, [f, t, f, f, t, f, f, f, f], t),
+        run(0.0, 0.5, [f, t, f, f, f, f, f, f, f], f),
+        run(0.3, 0.0, [f, t, f, f, t, t, t, t, t], t),
+        run(0.3, 0.0, [f, t, f, f, t, t, t, t, f], t),
     ];
     let v = comparison_summary(&runs, None);
     assert_eq!(v["runs"], 4);
@@ -573,11 +573,11 @@ fn the_simulate_reply_is_the_comparison_table() {
     assert_eq!(s.len(), 2);
     assert_eq!(s[0]["rate"], "type I");
     assert_eq!(s[0]["estimable"], 0.5);
-    assert_eq!(s[0]["reject"]["unadjusted_diff"], 1.0);
+    assert_eq!(s[0]["reject"]["unadj"], 1.0);
     assert_eq!(s[0]["reject"]["celltype"], 0.5);
-    assert_eq!(s[0]["reject"]["estimate"], 0.0);
+    assert_eq!(s[0]["reject"]["dr"], 0.0);
     assert_eq!(s[1]["rate"], "power");
-    assert_eq!(s[1]["reject"]["estimate"], 0.5);
+    assert_eq!(s[1]["reject"]["dr"], 0.5);
     let means = v["means"].as_array().unwrap();
     assert_eq!(means[0]["over"], "mean type I, confounded nulls");
     assert_eq!(means[1]["over"], "mean power, planted effects");
@@ -614,15 +614,8 @@ fn simulate_runs_read_back_as_written() {
             ("dose_order".into(), vec![8, 8]),
         ];
         for m in COMPARED {
-            let m = if old_name && m == "unadjusted_diff" {
-                "crude"
-            } else {
-                m
-            };
-            ints.push((
-                format!("{m}_reject"),
-                vec![1, (m == "unadjusted_diff") as i32],
-            ));
+            let m = if old_name && m == "unadj" { "crude" } else { m };
+            ints.push((format!("{m}_reject"), vec![1, (m == "unadj") as i32]));
         }
         let names: Vec<Box<str>> = vec!["0".into(), "1".into()];
         let mut table: Vec<(Box<str>, Column)> = vec![
@@ -666,7 +659,7 @@ fn simulate_runs_read_back_as_written() {
     assert!(sc.marker && !sc.heterogeneous);
     assert_eq!(runs[1].scenario.rep, 1);
     assert!(runs[0].estimable && !runs[1].estimable);
-    assert_eq!(runs[1].rejects, COMPARED.map(|m| m == "unadjusted_diff"));
+    assert_eq!(runs[1].rejects, COMPARED.map(|m| m == "unadj"));
     // Both replicates are one scenario, worded as the run's summary words it.
     let v = comparison_summary(&runs, None);
     let s = v["scenarios"].as_array().unwrap();
@@ -675,8 +668,8 @@ fn simulate_runs_read_back_as_written() {
         s[0]["scenario"],
         "effect PVE=0.3 field PVE ligand=0.3 response=0.3 realgene/quadratic@16 dose marker"
     );
-    assert_eq!(s[0]["reject"]["unadjusted_diff"], 1.0);
-    assert_eq!(s[0]["reject"]["estimate"], 0.5);
+    assert_eq!(s[0]["reject"]["unadj"], 1.0);
+    assert_eq!(s[0]["reject"]["dr"], 0.5);
 
     // A table without a column it is read for is an error, not read with a
     // default in its place.

@@ -257,7 +257,7 @@ fn the_built_in_grid_is_pinned() {
         run_grid(&f.inputs(&out, &m, 42), small_grid())
     })
     .unwrap();
-    let names = ["estimate", "se", "truth", "estimable"];
+    let names = ["effect_dr", "effect_dr_se", "truth", "estimable"];
     let path = lra_simulate_path(&out);
     let (s, x) = read_table_columns(&path, &["ligand"], &names).unwrap();
     let mut ligands: Vec<&str> = s[0].iter().map(|l| &**l).collect();
@@ -303,8 +303,12 @@ fn the_smallest_grid_reproduces_bit_for_bit() {
     let dir = tempfile::tempdir().unwrap();
     let f = fixture(dir.path());
     let m = manifest(dir.path());
-    // The grid's table has no `p` column; the single-scenario one adds it.
-    let cols: Vec<&str> = SCORED.iter().copied().filter(|&c| c != "p").collect();
+    // The grid's table has no `effect_dr_p` column; the single-scenario one adds it.
+    let cols: Vec<&str> = SCORED
+        .iter()
+        .copied()
+        .filter(|&c| c != "effect_dr_p")
+        .collect();
     let run = |name: &str, threads: usize| {
         let out = dir.path().join(name).to_string_lossy().into_owned();
         let grid = GridOpts {
@@ -382,18 +386,18 @@ const SCORED: [&str; 16] = [
     "truth",
     "truth_exposed",
     "estimable",
-    "estimate",
-    "se",
-    "df",
+    "effect_dr",
+    "effect_dr_se",
+    "effect_dr_df",
     "marginal_cor",
-    "unadjusted_diff",
+    "effect_unadj",
     "effect_ipw",
     "celltype_p",
     "moran_p",
     "contact_p",
     "coexpr_p",
     "misclassified",
-    "p",
+    "effect_dr_p",
 ];
 
 /// The labels are spread over the top `N1 + N0` abundance ranks, the fewer
@@ -609,7 +613,14 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
     let (s, x) = read_table_columns(
         &path,
         &["ligand"],
-        &["planted", "effect_pve", "estimate", "se", "t", "p", "df"],
+        &[
+            "planted",
+            "effect_pve",
+            "effect_dr",
+            "effect_dr_se",
+            "effect_dr_p",
+            "effect_dr_df",
+        ],
     )
     .unwrap();
     let ligands: Vec<&str> = s[0].iter().map(|l| &**l).collect();
@@ -619,9 +630,9 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
     for (i, (&planted, &pve)) in x[0].iter().zip(&x[1]).enumerate() {
         let want = if planted == 1.0 { 0.05 } else { 0.0 };
         assert!((pve - want).abs() < 1e-6, "row {i}: effect_pve {pve}");
-        let (est, se, t, p, df) = (x[2][i], x[3][i], x[4][i], x[5][i], x[6][i]);
+        let (est, se, p, df) = (x[2][i], x[3][i], x[4][i], x[5][i]);
         if est.is_finite() {
-            assert!((t - est / se).abs() <= 1e-4 * t.abs().max(1.0), "row {i}");
+            let t = est / se;
             let want = crate::lr_activity::ligand_effect::inference::t_two_sided_p(t, df);
             assert!((p - want).abs() < 1e-5, "row {i}: p {p} vs {want}");
         }
@@ -629,7 +640,12 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
     let (_, ps) = read_table_columns(
         &path,
         &[],
-        &["marginal_cor_p", "unadjusted_diff_p", "effect_ipw_p"],
+        &[
+            "marginal_cor_p",
+            "effect_unadj_p",
+            "effect_ipw_p",
+            "effect_outcome_p",
+        ],
     )
     .unwrap();
     assert!(ps.iter().all(|c| c.len() == 4), "a p column per method");
@@ -839,11 +855,11 @@ fn each_method_s_p_column_is_its_own() {
         df,
         ..Estimate::nan(100, 50)
     };
-    let row = |estimate, marginal_cor, unadjusted_diff, ipw| SimRow {
+    let row = |estimate, marginal_cor, unadj, ipw| SimRow {
         scenario: Scenario::default(),
         estimate,
         marginal_cor,
-        unadjusted_diff,
+        unadj,
         ipw,
         ..super::regions::planted_run(0)
     };
@@ -867,9 +883,9 @@ fn each_method_s_p_column_is_its_own() {
     super::super::output::write_sim_scored(&path, &rows, None, &[true, false]).unwrap();
     type Method = fn(&SimRow) -> Estimate;
     let methods: [(&str, Method); 4] = [
-        ("p", |r| r.estimate),
+        ("effect_dr_p", |r| r.estimate),
         ("marginal_cor_p", |r| r.marginal_cor),
-        ("unadjusted_diff_p", |r| r.unadjusted_diff),
+        ("effect_unadj_p", |r| r.unadj),
         ("effect_ipw_p", |r| r.ipw),
     ];
     let names: Vec<&str> = methods.iter().map(|m| m.0).collect();
@@ -887,13 +903,8 @@ fn each_method_s_p_column_is_its_own() {
             }
         }
     }
-    let (_, t) = read_table_columns(&path, &[], &["t", "planted"]).unwrap();
-    assert_eq!(t[1], [1.0, 0.0]);
-    assert!(
-        (t[0][0] - 2.0).abs() < 1e-6 && (t[0][1] - 2.0).abs() < 1e-6,
-        "{:?}",
-        t[0]
-    );
+    let (_, t) = read_table_columns(&path, &[], &["planted"]).unwrap();
+    assert_eq!(t[0], [1.0, 0.0]);
 }
 
 /// The score columns are doubles, computed in f64 from the estimates: a p
@@ -914,11 +925,11 @@ fn scores_are_written_as_doubles() {
         df,
         ..Estimate::nan(100, 50)
     };
-    let row = |estimate, marginal_cor, unadjusted_diff, ipw| SimRow {
+    let row = |estimate, marginal_cor, unadj, ipw| SimRow {
         scenario: Scenario::default(),
         estimate,
         marginal_cor,
-        unadjusted_diff,
+        unadj,
         ipw,
         ..super::regions::planted_run(0)
     };
@@ -937,14 +948,13 @@ fn scores_are_written_as_doubles() {
         ),
     ];
     type Score = fn(&SimRow) -> f64;
-    let scores: [(&str, Score); 5] = [
-        ("t", |r| r.estimate.z()),
-        ("p", |r| r.estimate.p()),
+    let scores: [(&str, Score); 4] = [
+        ("effect_dr_p", |r| r.estimate.p()),
         ("marginal_cor_p", |r| r.marginal_cor.p()),
-        ("unadjusted_diff_p", |r| r.unadjusted_diff.p()),
+        ("effect_unadj_p", |r| r.unadj.p()),
         ("effect_ipw_p", |r| r.ipw.p()),
     ];
-    for (name, of) in &scores[1..] {
+    for (name, of) in &scores {
         let tiny = of(&rows[0]);
         assert!(
             tiny > 0.0 && tiny < 1e-60,
@@ -977,7 +987,7 @@ fn scores_are_written_as_doubles() {
     }
     assert_eq!(ty("planted"), Type::INT32);
     assert_eq!(
-        ty("estimate"),
+        ty("effect_dr"),
         Type::FLOAT,
         "the grid's columns keep their type"
     );

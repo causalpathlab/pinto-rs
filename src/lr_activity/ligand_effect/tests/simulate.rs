@@ -158,7 +158,7 @@ fn no_effect_under_regional_confounding() {
             "no planted effect means a zero truth"
         );
         est_rej += r.rejected() as usize;
-        unadjusted_rej += r.unadjusted_diff.rejects() as usize;
+        unadjusted_rej += r.unadj.rejects() as usize;
         z_sum += r.estimate.z();
     }
     assert!(
@@ -342,4 +342,66 @@ fn a_shared_field_is_the_run_s_field() {
     assert_eq!(bits(&same), bits(&drawn));
     let other = with(mix_seed(seed, 99));
     assert_ne!(bits(&other), bits(&drawn), "another field, another run");
+}
+
+/// Under no effect and no confounding, each estimator's z (estimate over its
+/// tile-jackknife SE) is about standard over runs, and each rejects at about
+/// its 5%, at one exposure threshold and averaged over several: the
+/// jackknife gives every estimator, the outcome regression included, an SE
+/// of the right size on the pooled row.
+#[test]
+fn every_estimator_s_jackknife_se_is_calibrated_under_the_null() {
+    use crate::lr_activity::ligand_effect::inference::Estimate;
+    use rayon::prelude::*;
+    let f = fixture();
+    let runs = 64;
+    let averaged = EffectOpts {
+        threshold: None,
+        ..opts()
+    };
+    for (how, o) in [("one threshold", opts()), ("thresholds averaged", averaged)] {
+        let clock = std::time::Instant::now();
+        let rows: Vec<SimRow> = (0..runs)
+            .into_par_iter()
+            .map(|rep| {
+                let scen = Scenario {
+                    effect_pve: 0.0,
+                    rep,
+                    ..Scenario::default()
+                };
+                run_sim(&f.tissue, &base(&f), &scen, &o, 31).unwrap()
+            })
+            .collect();
+        let seconds = clock.elapsed().as_secs_f64();
+        type Pick = fn(&SimRow) -> Estimate;
+        let methods: [(&str, Pick); 4] = [
+            ("dr", |r| r.estimate),
+            ("ipw", |r| r.ipw),
+            ("outcome", |r| r.outcome),
+            ("unadj", |r| r.unadj),
+        ];
+        for (name, pick) in methods {
+            let z: Vec<f64> = rows
+                .iter()
+                .map(|r| pick(r).z())
+                .filter(|z| z.is_finite())
+                .collect();
+            let n = z.len() as f64;
+            let mean = z.iter().sum::<f64>() / n;
+            let sd = (z.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
+            let rejected = rows.iter().filter(|r| pick(r).rejects()).count();
+            eprintln!(
+                "{how}, {name}: {} of {runs} estimable, null z mean {mean:+.2} sd {sd:.2}, \
+                 type I {rejected}/{runs}; {seconds:.1} s for the runs",
+                z.len(),
+            );
+            assert!(n >= 0.9 * runs as f64, "{how}, {name}: estimable");
+            assert!(
+                (0.7..1.35).contains(&sd),
+                "{how}, {name}: null z sd {sd:.2}"
+            );
+            assert!(mean.abs() < 0.5, "{how}, {name}: null z mean {mean:+.2}");
+            assert!(rejected <= 9, "{how}, {name}: type I {rejected}/{runs}");
+        }
+    }
 }

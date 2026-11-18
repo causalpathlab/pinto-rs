@@ -34,8 +34,8 @@ pub struct ControlSpec {
 pub const CONTROLS: [ControlSpec; 1] = [ControlSpec {
     short: "receptor−",
     key: "receptor_negative",
-    column: "effect_contrast",
-    column_q: "effect_contrast_q",
+    column: "effect_dr_contrast",
+    column_q: "effect_dr_contrast_q",
 }];
 
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
@@ -51,9 +51,9 @@ pub struct PairRow {
     pub warnings: Box<str>,
     /// The headline competent effect (log rate ratio), its SE, p and q.
     pub effect: f64,
-    pub effect_se: f64,
-    pub effect_p: f64,
-    pub effect_q: f64,
+    pub effect_dr_se: f64,
+    pub effect_dr_p: f64,
+    pub effect_dr_q: f64,
     pub coexpr_q: f64,
     /// The headline as a percent change, `exp(effect) − 1`, with its 95%
     /// interval.
@@ -88,8 +88,8 @@ impl From<&PairRow> for PooledEffect {
             receptor: r.receptor.clone(),
             verdict: r.verdict,
             effect: r.effect,
-            effect_p: r.effect_p,
-            effect_q: r.effect_q,
+            effect_dr_p: r.effect_dr_p,
+            effect_dr_q: r.effect_dr_q,
             pct: r.pct,
             pct_lo: r.pct_lo,
             pct_hi: r.pct_hi,
@@ -112,14 +112,14 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         "q_scope",
     ];
     let numbers = [
-        "effect_competent",
-        "effect_competent_se",
-        "effect_p",
-        "effect_q",
+        "effect_dr",
+        "effect_dr_se",
+        "effect_dr_p",
+        "effect_dr_q",
         "coexpr_q",
-        "effect_pct",
-        "effect_pct_lo",
-        "effect_pct_hi",
+        "effect_dr_pct",
+        "effect_dr_pct_lo",
+        "effect_dr_pct_hi",
         "exposure_threshold",
         "n_receivers",
         "n_competent",
@@ -162,9 +162,9 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
                 note: s[4][i].clone(),
                 warnings: s[5][i].clone(),
                 effect: x[0][i],
-                effect_se: x[1][i],
-                effect_p: x[2][i],
-                effect_q: x[3][i],
+                effect_dr_se: x[1][i],
+                effect_dr_p: x[2][i],
+                effect_dr_q: x[3][i],
                 coexpr_q: x[4][i],
                 pct: x[5][i],
                 pct_lo: x[6][i],

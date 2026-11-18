@@ -136,7 +136,7 @@ fn a_percent_change_keeps_its_digits_and_never_reads_minus_zero() {
 // * The effects table
 
 #[test]
-fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
+fn the_table_gives_ipw_and_the_regression_each_an_interval() {
     use legume_numeric::matrix::parquet::read_table_columns;
     let ipw = Estimate {
         theta: 0.2,
@@ -170,7 +170,11 @@ fn the_table_gives_ipw_an_interval_and_the_regression_a_point_estimate() {
     assert!(close(x[0][0], 0.2) && close(x[1][0], 0.05));
     assert!(lo < hi && close(x[2][0], lo) && close(x[3][0], hi));
     assert!(close(x[4][0], 0.3));
-    assert!(read_table_columns(path, &["ligand"], &["effect_outcome_se"]).is_err());
+    // The outcome regression has its own SE, df and p.
+    let own = ["effect_outcome_se", "effect_outcome_df", "effect_outcome_p"];
+    let (_, y) = read_table_columns(path, &["ligand"], &own).unwrap();
+    assert!(close(y[0][0], 0.05) && y[1][0].is_infinite());
+    assert!((y[2][0] - outcome.p()).abs() < 1e-12);
     // The ring and background controls were removed: none of their columns
     // are written.
     for gone in [

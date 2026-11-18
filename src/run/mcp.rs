@@ -1000,7 +1000,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              records it in the run's manifest (slot lra.simulate). With one, set, pairs or \
              null_pairs it runs one scenario instead of the built-in grid: its effect planted on pairs \
              pairs and withheld on null_pairs others under the same hidden field, writing \
-             {out}.lra-simulate.parquet (columns planted, t, p and each method's p, for AUROC \
+             {out}.lra-simulate.parquet (columns planted and, for each estimator, effect_dr, effect_ipw, effect_outcome and \
+             effect_unadj with _se, _df and _p, each SE a delete-one-tile jackknife; for AUROC \
              and AUPRC) and then {out}.lra-simulate.json (the resolved scenario, the pairs, \
              their labels and seeds, the reference), recording nothing in the manifest; with \
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \

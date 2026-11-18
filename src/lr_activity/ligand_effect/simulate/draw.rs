@@ -11,7 +11,9 @@ use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
 use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
 use crate::lr_activity::ligand_effect::effects::Sensitivity;
 use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
-use crate::lr_activity::ligand_effect::jackknife::{jackknife, Jackknife, PairFit};
+use crate::lr_activity::ligand_effect::jackknife::{
+    estimator_jackknife, jackknife, Jackknife, PairFit,
+};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::FoldStarts;
 use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
@@ -731,6 +733,10 @@ pub fn simulate(
         }
         None => Jackknife::NONE,
     };
+    // The pooled row's estimators read on the no-refit tile jackknife, as
+    // `lra` reads them.
+    let pooled_jack = estimator_jackknife(rows, tissue, &[0], &fit, &taus)?;
+    pooled_jack[0].apply(&mut avg.scopes[0], true);
     let e = avg.scopes[0];
     let outcomes = Outcomes {
         y1: &y1,
@@ -762,9 +768,9 @@ pub fn simulate(
         truth_exposed,
         estimate: e.competent,
         marginal_cor,
-        unadjusted_diff: e.unadjusted_diff,
+        unadj: e.unadj,
         ipw: e.ipw,
-        outcome: e.outcome.theta,
+        outcome: e.outcome,
         incompetent: e.incompetent,
         steps: e.steps,
         contrast: e.effect,

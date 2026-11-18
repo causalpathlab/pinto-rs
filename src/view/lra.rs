@@ -240,8 +240,8 @@ pub fn visible(rows: &[PairRow], f: &Filter) -> Vec<usize> {
     let name = |a: usize, b: usize| rows[a].key.cmp(&rows[b].key);
     match f.sort {
         Sort::Q => v.sort_by(|&a, &b| {
-            nan_last(rows[a].effect_q, rows[b].effect_q)
-                .then_with(|| nan_last(rows[a].effect_p, rows[b].effect_p))
+            nan_last(rows[a].effect_dr_q, rows[b].effect_dr_q)
+                .then_with(|| nan_last(rows[a].effect_dr_p, rows[b].effect_dr_p))
                 .then_with(|| name(a, b))
         }),
         Sort::Effect => v.sort_by(|&a, &b| {

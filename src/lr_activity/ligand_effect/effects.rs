@@ -10,6 +10,8 @@ use super::options::{EffectOpts, NEAR_DETERMINED_H};
 use super::overlap::{difference, outcome_estimate, subset_estimate, OverlapTerms};
 use super::response::Response;
 use super::timing;
+use crate::util::common::HashMap;
+use nalgebra::DVector;
 
 /// Every estimand in one scope.
 #[derive(Clone, Copy, Debug)]
@@ -30,12 +32,10 @@ pub struct ScopeEffects {
     /// headline it is averaged over exposure thresholds. It is the answer a
     /// comparison without adjustment would give, the reference the adjusted
     /// estimates are read against, and it enters no verdict.
-    pub unadjusted_diff: Estimate,
+    pub unadj: Estimate,
     /// The competent effect by overlap weights alone ([`arm_contrast`]).
     pub ipw: Estimate,
     /// The competent effect by the outcome regression alone ([`outcome_estimate`]).
-    /// Only `theta` is reported: the rest is borrowed for averaging, and must not
-    /// be read as this estimate's own uncertainty.
     pub outcome: Estimate,
     pub incompetent: Estimate,
     /// The competent effect in this scope minus that on every other
@@ -78,7 +78,7 @@ impl ScopeEffects {
         Self {
             effect: pick(&|e| e.effect),
             competent: pick(&|e| e.competent),
-            unadjusted_diff: pick(&|e| e.unadjusted_diff),
+            unadj: pick(&|e| e.unadj),
             ipw: pick(&|e| e.ipw),
             outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
@@ -167,6 +167,7 @@ pub fn effects_on(
         .map(|inside| arms_open(inside, t, middle, opts))
         .collect();
     let reader = ScopeReader {
+        deleted: rows.deleted,
         cf: rows.cf,
         t,
         y: &r.y,
@@ -206,14 +207,20 @@ impl ResponseFits {
     ) -> anyhow::Result<Self> {
         use timing::{time, MAIN, NOSPILL, STEPS};
         let (design, cf) = (rows.design.view(), rows.cf);
-        let fit = |run: bool, kind: Fit, step: Option<usize>, d: DesignView<'_>| {
-            run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
+        let fit = |run: bool, kind: Fit, d: DesignView<'_>| {
+            run.then(|| fit_main(d, cf, fits, r, kind, None, opts))
                 .transpose()
         };
         let runs_competent = fits.runs_competent();
-        let main = time(MAIN, || fit(runs_competent, Fit::Main, None, design))?;
+        // The outcome model's tile influence, for jackknife replicates.
+        let main_kind = if rows.deleted.is_empty() {
+            Fit::Main
+        } else {
+            Fit::Jackknifed
+        };
+        let main = time(MAIN, || fit(runs_competent, main_kind, design))?;
         let nospill = time(NOSPILL, || {
-            fit(sens.nospill && runs_competent, Fit::NoSpill, None, design)
+            fit(sens.nospill && runs_competent, Fit::NoSpill, design)
         })?;
         let steps = if sens.steps && runs_competent {
             time(STEPS, || {
@@ -246,6 +253,9 @@ impl ResponseFits {
 
 /// Reads the estimands of one response at one threshold off its fits.
 struct ScopeReader<'a> {
+    /// Per scope, the scope it is a jackknife replicate of and the tile
+    /// deleted ([`Rows::deleted`]).
+    deleted: &'a [Option<(usize, u32)>],
     cf: &'a CrossFit,
     t: &'a [bool],
     y: &'a [f64],
@@ -264,18 +274,46 @@ impl ScopeReader<'_> {
         headline: &[bool],
     ) -> LevelEffects {
         let mut pooled_sums = Vec::new();
+        // A jackknife replicate's outcome regression has the tile out of its
+        // rows, and its coefficients move by the tile's influence
+        // ([`super::overlap::OutcomeInfluence`]) along its scope's directions,
+        // read once for all of the scope's replicates.
+        let main = self.terms.main.as_ref();
+        let influence = main.and_then(|m| Some((&m.h, m.influence.as_ref()?)));
+        let mut directions: HashMap<usize, Vec<Option<DVector<f64>>>> = HashMap::default();
+        if let Some((h, inf)) = influence {
+            for &(parent, _) in self.deleted.iter().flatten() {
+                directions.entry(parent).or_insert_with(|| {
+                    let comp: Vec<u32> = scope_rows[parent]
+                        .iter()
+                        .copied()
+                        .filter(|&i| competent[i as usize])
+                        .collect();
+                    inf.directions(h, &comp, self.cf)
+                });
+            }
+        }
         let scopes = scope_rows
             .iter()
             .enumerate()
             .map(|(k, inside)| {
-                let rest = (k > 0).then(|| Rest {
+                let deleted = self.deleted.get(k).copied().flatten();
+                // A replicate's contrast with the rest is not read.
+                let rest = (k > 0 && deleted.is_none()).then(|| Rest {
                     rows: complement(&scope_rows[0], inside),
                     open: headline[0],
                 });
-                let (effects, sums) =
+                let (mut effects, sums) =
                     self.scope(inside, competent, headline[k], k == 0, rest.as_ref());
                 if k == 0 {
                     pooled_sums = sums;
+                }
+                if let (Some((parent, tile)), Some((_, inf))) = (deleted, influence) {
+                    let o = &mut effects.outcome;
+                    let sh = o.mean_h * o.n as f64;
+                    if let Some(v) = directions.get(&parent).filter(|_| sh > 1e-12) {
+                        o.theta += inf.shift(v, tile) / sh;
+                    }
                 }
                 effects
             })
@@ -317,11 +355,11 @@ impl ScopeReader<'_> {
             }
             None => nan,
         };
-        let unadjusted_diff = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
+        let unadj = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
         let (ipw, outcome) = match main {
             Some(m) if on_competent.theta.is_finite() => (
                 arm_contrast(self.y, self.t, &comp, self.cf, |i| m.arm_weight[i]),
-                outcome_estimate(m, &on_competent, &comp),
+                outcome_estimate(m, self.t, &comp, self.cf),
             ),
             _ => (nan, nan),
         };
@@ -337,7 +375,7 @@ impl ScopeReader<'_> {
         let effects = ScopeEffects {
             effect: contrast,
             competent: on_competent,
-            unadjusted_diff,
+            unadj,
             ipw,
             outcome,
             incompetent: on_incompetent,

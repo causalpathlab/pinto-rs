@@ -13,22 +13,24 @@
 //! neighbours carry ligand above a threshold, `Y` = the receiver's signed
 //! target program, `C` = the receiver's identity expresses the receptor:
 //!
-//! - `effect_competent`, the competent effect, **the headline**:
+//! - `effect_dr`, the competent effect, **the headline**:
 //!   overlap-weighted effect of `T` on `Y` in receptor-competent receivers;
-//! - `effect_incompetent`, the incompetent effect: the same in incompetent
+//! - `effect_dr_incompetent`, the incompetent effect: the same in incompetent
 //!   receivers (≈ 0 is a negative control);
-//! - `effect_contrast`, the contrast: competent effect − incompetent effect.
+//! - `effect_dr_contrast`, the contrast: competent effect − incompetent effect.
 //!   Competence is read from identity bins, so competent and incompetent
 //!   receivers are different cell types by construction and the contrast
 //!   conflates the receptor with cell type; it is no headline, but a
 //!   significant effect must exceed the incompetent one;
 //! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
-//!   ratio; `marginal_cor`, the correlation of response and contact ligand; `unadjusted_diff`, the
+//!   ratio; `marginal_cor`, the correlation of response and contact ligand; `effect_unadj`, the
 //!   exposed minus unexposed difference in mean response; `effect_ipw` and `effect_outcome`, the headline's two halves,
-//!   overlap weights alone and the outcome regression alone. `effect_ipw` carries an
-//!   SE and 95% interval, as read for comparison: the average leans to thresholds with
-//!   a large z, and no control guards it. `effect_outcome` is a point estimate only,
-//!   because it can target a different contrast when exposure is misclassified.
+//!   overlap weights alone and the outcome regression alone. `effect_ipw` and
+//!   `effect_outcome` carry an SE, df, p and 95% interval, as read for comparison: the
+//!   average leans to thresholds with a large z, no control guards them, and
+//!   `effect_outcome` can target a different contrast when exposure is misclassified.
+//!   Every estimator's SE is its no-refit delete-one-tile jackknife
+//!   ([`jackknife::EstimatorJackknife`]).
 //!
 //! **Inference across pairs** ([`report::report`]): Benjamini–Hochberg q-values
 //! within the pooled rows and within each section, for the competent effect
@@ -64,7 +66,8 @@
 //!   the threshold-response curve, under the [`options`] asked for, into
 //!   [`rows`];
 //! - the estimator: [`overlap`], [`crossfit`] and [`regression`] estimate,
-//!   [`jackknife`] widens a region row's SE by the nuisance error,
+//!   [`jackknife`] gives every estimator its tile-jackknife SE and widens a
+//!   region row's by the nuisance error,
 //!   [`association`] reads the unadjusted comparisons, [`inference`] and
 //!   [`averaging`] read and combine the estimates;
 //! - across pairs: [`report`] corrects for multiplicity and [`verdict`] words

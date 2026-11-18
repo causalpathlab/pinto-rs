@@ -584,7 +584,7 @@ impl App<'_> {
             prose(
                 &format!(
                     "q {}{corrected} · coexpr q {}",
-                    q_text(row.effect_q),
+                    q_text(row.effect_dr_q),
                     q_text(row.coexpr_q)
                 ),
                 plain,
@@ -687,7 +687,7 @@ impl App<'_> {
             let right = format!(
                 " {:>7} {:>7} {:<VERDICT_W$}",
                 percent_short(r.pct, r.pct_lo, r.pct_hi),
-                q_text(r.effect_q),
+                q_text(r.effect_dr_q),
                 short(r.verdict),
             );
             let name_w = (width + 1).saturating_sub(2 + right.chars().count()).max(8);
