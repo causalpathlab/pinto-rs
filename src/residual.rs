@@ -539,18 +539,16 @@ fn resolve(run: &Run, f: &str) -> anyhow::Result<String> {
 
 impl Inputs {
     fn load(args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
-        // read as the run read them: the rows every file shares, by name
-        // or by its feature-name mode
-        let kind = match plan.feature_names {
+        // the rows every file shares, by name (exact) or by their key
+        let feature_kind = match plan.feature_names {
             FeatureNameMode::Auto => {
                 let first = crate::util::input::open_sparse(&plan.files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
-        info!("Reading the data's feature names as {kind:?}");
-        let data = crate::util::input::open_fit_data(&plan.files, &kind)?;
-        let feature_kind = kind;
+        info!("Reading the data's feature names as {feature_kind:?}");
+        let data = crate::util::input::open_fit_data(&plan.files, &feature_kind)?;
         let names = data.column_names()?;
 
         let cells = crate::util::parquet_io::read_cells_table(

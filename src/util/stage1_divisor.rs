@@ -691,10 +691,7 @@ pub fn refuse_batch_options(
 /// neither is refused.
 ///
 /// [`FeatureNameKind::Mixed`]: data_beans::aux::feature_names::FeatureNameKind::Mixed
-pub(crate) fn match_rows(
-    features: &[Box<str>],
-    rows: &[Box<str>],
-) -> anyhow::Result<Vec<Vec<usize>>> {
+fn match_rows(features: &[Box<str>], rows: &[Box<str>]) -> anyhow::Result<Vec<Vec<usize>>> {
     use data_beans::aux::feature_names::FeatureNameKind;
     let loose = FeatureNameKind::Mixed;
     let row_at: HashMap<&str, usize> = features
