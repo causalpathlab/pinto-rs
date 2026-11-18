@@ -335,6 +335,13 @@ fn u_steps_through_the_layouts_and_back_to_the_tissue() {
     // A layout made once is shown again at once.
     app.key(key(KeyCode::Char('u')), None);
     assert!(app.laying.is_none() && app.laid_out == Some((0, Method::Umap)));
+    // r on a layout: back to the start level, loaded on it
+    app.key(key(KeyCode::Char('r')), None);
+    assert!(app.levels[app.home].is_some(), "{}", app.status);
+    // a layout that could not be made: u goes on past it
+    app.asked = Some(Method::Tumap);
+    app.key(key(KeyCode::Char('u')), None);
+    assert_eq!(app.laid_out, Some((0, Method::Tsne)), "{}", app.status);
 }
 
 /// Esc in the structure plot under the map goes back to the map alone.

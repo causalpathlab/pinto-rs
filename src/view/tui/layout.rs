@@ -1,19 +1,22 @@
 //! `u` and `U`: the cells laid out by a table of theirs in place of the
 //! tissue ([`crate::view::layout`]). `u` steps through the layouts and
 //! back to the tissue, `U` through the tables. A layout is made on a
-//! thread of its own, once for each table and layout; the view then draws
-//! on it as it draws on the tissue.
+//! thread of its own, once for each table and layout, each table coarsened
+//! once for all its layouts; the view then draws on it as it draws on the
+//! tissue.
 
 use super::App;
-use crate::view::layout::{self, Method};
+use crate::view::layout::{Coarse, Method};
 use crate::view::Base;
 use legume_tui::work::Pending;
+use std::sync::Arc;
 
-/// A table (its place in [`layout::sources`]) and a layout of it.
+/// A table (its place in [`crate::view::layout::sources`]) and a layout of
+/// it.
 pub(super) type Key = (usize, Method);
 
-/// The cells' names and their places in a layout.
-type Placed = (Vec<Box<str>>, crate::util::common::Mat);
+/// The table coarsened, and its cells' places in a layout.
+type Placed = (Arc<Coarse>, crate::util::common::Mat);
 
 /// A layout being made, and which.
 pub(super) struct Laying {
@@ -24,15 +27,12 @@ pub(super) struct Laying {
 impl<'a> App<'a> {
     /// `u`: the next layout of the table shown, after the last the tissue.
     pub(super) fn step_layout(&mut self) {
-        if self.still_laying() {
+        if self.still_laying() || self.no_sources() {
             return;
         }
-        let next = match self.laid_out {
+        let next = match self.asked {
             None => Some(Method::ALL[0]),
-            Some((_, m)) => {
-                let at = Method::ALL.iter().position(|&x| x == m).unwrap_or(0);
-                Method::ALL.get(at + 1).copied()
-            }
+            Some(m) => m.next(),
         };
         match next {
             Some(m) => self.show_layout((self.layout_source, m)),
@@ -42,55 +42,67 @@ impl<'a> App<'a> {
 
     /// `U`: the next table to lay the cells out by, in the layout shown.
     pub(super) fn step_layout_source(&mut self) {
-        if self.still_laying() {
+        if self.still_laying() || self.no_sources() {
             return;
         }
-        let n = layout::sources(&self.tissue.run).len();
-        if n == 0 {
-            self.status = "no table of the cells to lay them out by".into();
-            return;
-        }
-        self.layout_source = (self.layout_source + 1) % n;
-        match self.laid_out {
-            Some((_, m)) => self.show_layout((self.layout_source, m)),
+        self.layout_source = (self.layout_source + 1) % self.sources.len();
+        match self.asked {
+            Some(m) => self.show_layout((self.layout_source, m)),
             None => {
-                let name = &layout::sources(&self.tissue.run)[self.layout_source].name;
+                let name = &self.sources[self.layout_source].name;
                 self.status = format!("u lays the cells out by {name}");
             }
         }
     }
 
+    /// Whether the run has no table of its cells, said so.
+    fn no_sources(&mut self) -> bool {
+        let none = self.sources.is_empty();
+        if none {
+            self.status = "no table of the cells to lay them out by".into();
+        }
+        none
+    }
+
     /// Whether a layout is being made: one at a time, as it is heavy work.
     fn still_laying(&mut self) -> bool {
-        let Some(laying) = &self.laying else {
+        let Some(key) = self.laying.as_ref().map(|l| l.key) else {
             return false;
         };
-        let source = &layout::sources(&self.tissue.run)[laying.key.0].name;
-        self.status = format!("still laying out {} of {source}", laying.key.1.name());
+        self.status = format!("still laying out {}", self.label(key));
         true
+    }
+
+    /// `UMAP of propensity L2`.
+    fn label(&self, (source, method): Key) -> String {
+        format!("{} of {}", method.name(), self.sources[source].name)
     }
 
     /// The layout `key`, made first if need be.
     fn show_layout(&mut self, key: Key) {
+        self.asked = Some(key.1);
         if let Some(&base) = self.layouts.get(&key) {
             self.switch_base(base, Some(key));
             return;
         }
-        let Some(source) = layout::sources(&self.tissue.run).into_iter().nth(key.0) else {
-            self.status = "no table of the cells to lay them out by".into();
-            return;
-        };
+        let source = self.sources[key.0].clone();
+        let coarse = self.coarse.get(&key.0).cloned();
         let coord_names = self.tissue.geom.coord_names.clone();
-        let what = format!("{} of {}", key.1.name(), source.name);
-        self.status = format!("laying the cells out: {what} ...");
+        self.status = format!("laying the cells out: {} ...", self.label(key));
         let seed = crate::util::common::DEFAULT_SEED;
         self.laying = Some(Laying {
             key,
             pending: Pending::spawn(move || {
-                let (names, table) =
-                    layout::read(&source, &coord_names).map_err(|e| format!("{e:#}"))?;
-                let xy = layout::lay_out(&table, key.1, seed).map_err(|e| format!("{e:#}"))?;
-                Ok((names, xy))
+                let e = |e: anyhow::Error| format!("{e:#}");
+                let coarse = match coarse {
+                    Some(c) => c,
+                    None => {
+                        let (names, table) = source.read(&coord_names).map_err(e)?;
+                        Arc::new(Coarse::new(names, &table, seed).map_err(e)?)
+                    }
+                };
+                let xy = coarse.lay_out(key.1, seed).map_err(e)?;
+                Ok((coarse, xy))
             }),
         });
         self.need_panel = true;
@@ -112,14 +124,11 @@ impl<'a> App<'a> {
         };
         let key = laying.key;
         self.laying = None;
+        let what = self.label(key);
         match done {
-            Ok((names, xy)) => {
-                let source = &layout::sources(&self.tissue.run)[key.0].name;
-                let what = format!("{} of {source}", key.1.name());
-                let geom = self
-                    .tissue
-                    .geom
-                    .laid_out(&names, &xy, &what, [key.1.name(), ""]);
+            Ok((coarse, xy)) => {
+                let geom = self.tissue.geom.laid_out(&coarse.names, &xy, &what);
+                self.coarse.insert(key.0, coarse);
                 if geom.n() == 0 {
                     self.status = format!("{what}: none of the cells is in the table");
                     return;
@@ -130,16 +139,18 @@ impl<'a> App<'a> {
                 self.layouts.insert(key, base);
                 self.switch_base(base, Some(key));
             }
-            Err(e) => self.status = format!("no layout: {e}"),
+            Err(e) => self.status = format!("no layout of {what}: {e}"),
         }
     }
 
     /// Draw on `base` from here on, in the theme shown: the levels it had
     /// loaded back (the others kept for when this base is shown again), the
-    /// map fitted to it. What was drawn on the other base's cells goes: the
-    /// batch grid, the cell picked, the lra pairs' maps and a lupin round
-    /// (`I` and `,`/`.` open them again here).
+    /// map fitted to it. What was drawn on the other base's cells goes: a
+    /// relabelling (its draft saved), the batch grid, the cell picked, the
+    /// plots, the lra pairs and a lupin round (`I` and `,`/`.` open them
+    /// again here).
     fn switch_base(&mut self, base: &'a Base, key: Option<Key>) {
+        self.leave_relabel();
         let theme = self.base.theme();
         base.set_theme(theme);
         let levels = std::mem::take(&mut self.levels);
@@ -150,20 +161,17 @@ impl<'a> App<'a> {
         };
         self.base = base;
         self.laid_out = key;
-        self.tile = None;
+        self.asked = key.map(|(_, m)| m);
         self.picked = None;
         self.leave_grid();
-        self.lra = None;
-        self.lra_on = false;
+        self.plots.forget();
+        self.forget_lra();
         self.round = None;
         match self.go_level(self.cur, None) {
             Ok(()) => {
-                self.fit(self.base.geom.bounds());
+                self.fit_all();
                 self.status = match key {
-                    Some((s, m)) => {
-                        let source = &layout::sources(&self.tissue.run)[s].name;
-                        format!("{}: {source}", m.name())
-                    }
+                    Some((s, m)) => format!("{}: {}", m.name(), self.sources[s].name),
                     None => "the tissue".into(),
                 };
             }

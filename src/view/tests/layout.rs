@@ -1,5 +1,10 @@
 use super::*;
 
+fn lay_out(table: &Mat, method: Method, seed: u64) -> anyhow::Result<Mat> {
+    let names = (0..table.nrows()).map(|i| i.to_string().into()).collect();
+    Coarse::new(names, table, seed)?.lay_out(method, seed)
+}
+
 /// Three tight groups of `per` rows each, far apart in four dimensions.
 fn groups(per: usize) -> Mat {
     let n = 3 * per;
@@ -41,4 +46,14 @@ fn a_layout_is_the_same_from_the_same_seed() {
         lay_out(&table, Method::Stress, 3).unwrap(),
         lay_out(&table, Method::Stress, 3).unwrap()
     );
+}
+
+/// `next` steps through every layout, in order, and ends after the last.
+#[test]
+fn next_steps_through_every_layout() {
+    let mut seen = vec![Method::ALL[0]];
+    while let Some(m) = seen.last().unwrap().next() {
+        seen.push(m);
+    }
+    assert_eq!(seen, Method::ALL);
 }

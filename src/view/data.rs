@@ -317,10 +317,10 @@ impl Geometry {
     }
 
     /// The cells named `names` (those this geometry has) at the rows of
-    /// `xy` (`names.len() × 2`), as one tile named `name`, its axes
-    /// `axes`: a layout of them in place of the tissue.
+    /// `xy` (`names.len() × 2`), each once, as one tile named `name`: a
+    /// layout of them in place of the tissue.
     #[must_use]
-    pub fn laid_out(&self, names: &[Box<str>], xy: &Mat, name: &str, axes: [&str; 2]) -> Self {
+    pub fn laid_out(&self, names: &[Box<str>], xy: &Mat, name: &str) -> Self {
         let mut out = Geometry {
             names: Vec::new(),
             index: HashMap::default(),
@@ -328,12 +328,17 @@ impl Geometry {
             y: Vec::new(),
             batch: Vec::new(),
             tiles: Vec::new(),
-            coord_names: axes.iter().map(|&a| a.into()).collect(),
+            // the tissue's, the columns a propensity table may carry
+            coord_names: self.coord_names.clone(),
             in_graph: None,
         };
         for (r, name) in names.iter().enumerate() {
             let (x, y) = (xy[(r, 0)], xy[(r, 1)]);
-            if self.index.contains_key(name) && x.is_finite() && y.is_finite() {
+            if self.index.contains_key(name)
+                && !out.index.contains_key(name)
+                && x.is_finite()
+                && y.is_finite()
+            {
                 out.index.insert(name.clone(), out.names.len());
                 out.names.push(name.clone());
                 out.x.push(x);
@@ -341,25 +346,7 @@ impl Geometry {
                 out.batch.push(0);
             }
         }
-        let bounds = out
-            .x
-            .iter()
-            .zip(&out.y)
-            .fold(None::<Rect>, |b, (&x, &y)| {
-                let p = Rect {
-                    x0: x,
-                    y0: y,
-                    x1: x,
-                    y1: y,
-                };
-                Some(b.map_or(p, |b| b.union(&p)))
-            })
-            .unwrap_or(Rect::UNIT);
-        out.tiles.push(Tile {
-            name: name.into(),
-            bounds,
-            n_cells: out.names.len(),
-        });
+        out.tiles = tile_batches(&mut out.x, &mut out.y, &out.batch, vec![name.into()]);
         out
     }
 

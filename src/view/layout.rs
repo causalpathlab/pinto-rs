@@ -55,6 +55,13 @@ impl Method {
             Method::Stress => "stress",
         }
     }
+
+    /// The layout after it in [`Method::ALL`]; `None` after the last.
+    #[must_use]
+    pub fn next(self) -> Option<Method> {
+        let at = Method::ALL.iter().position(|&m| m == self)?;
+        Method::ALL.get(at + 1).copied()
+    }
 }
 
 /// Neighbours per cell, counting the cell itself, in the graph coarsened.
@@ -73,25 +80,52 @@ const PLACE_ALPHA: f32 = 10.0;
 /// Iterations of ForceAtlas2.
 const FORCEATLAS2_ITERATIONS: usize = 300;
 
-/// The rows of `table` (`N × K`, one row per cell) laid out by `method`,
-/// `N × 2` in the same order, from `seed`.
-pub fn lay_out(table: &Mat, method: Method, seed: u64) -> anyhow::Result<Mat> {
-    let n = table.nrows();
-    if n < 3 {
-        return Ok(Mat::zeros(n, 2));
+/// A table of the cells coarsened into pseudobulks, once for every layout
+/// of it.
+pub struct Coarse {
+    /// The cells, in the table's order.
+    pub names: Vec<Box<str>>,
+    /// The table, `K × N`: one column per cell.
+    table_kn: Mat,
+    /// Its pseudobulks; `None` under 3 cells, which are all put at 0.
+    pbs: Option<Coarsened>,
+}
+
+impl Coarse {
+    /// The rows of `table` (`N × K`, one row per cell, named `names`)
+    /// coarsened from `seed`.
+    pub fn new(names: Vec<Box<str>>, table: &Mat, seed: u64) -> anyhow::Result<Self> {
+        let n = table.nrows();
+        let table_kn = table.transpose();
+        let pbs = (n >= 3)
+            .then(|| {
+                coarsened(
+                    &table_kn,
+                    &CoarsenArgs {
+                        knn: KNN.min(n - 1),
+                        n_landmarks: PSEUDOBULKS,
+                        seed,
+                        ..CoarsenArgs::default()
+                    },
+                )
+            })
+            .transpose()?;
+        Ok(Coarse {
+            names,
+            table_kn,
+            pbs,
+        })
     }
-    let table_kn = table.transpose();
-    let pbs = coarsened(
-        &table_kn,
-        &CoarsenArgs {
-            knn: KNN.min(n - 1),
-            n_landmarks: PSEUDOBULKS,
-            seed,
-            ..CoarsenArgs::default()
-        },
-    )?;
-    let pb_coords = on_pseudobulks(&pbs, method, seed)?;
-    Ok(pbs.place_cells(&table_kn, &pb_coords, PLACE_KNN, PLACE_ALPHA))
+
+    /// The cells laid out by `method`, `N × 2` in the table's order, from
+    /// `seed`.
+    pub fn lay_out(&self, method: Method, seed: u64) -> anyhow::Result<Mat> {
+        let Some(pbs) = &self.pbs else {
+            return Ok(Mat::zeros(self.table_kn.ncols(), 2));
+        };
+        let pb_coords = on_pseudobulks(pbs, method, seed)?;
+        Ok(pbs.place_cells(&self.table_kn, &pb_coords, PLACE_KNN, PLACE_ALPHA))
+    }
 }
 
 /// `method` on the pseudobulk graph of `pbs`, `n_pb × 2`.
@@ -166,17 +200,19 @@ pub fn sources(run: &super::data::Run) -> Vec<Source> {
     out
 }
 
-/// `source`'s cell names and rows (`N × K`); `coord_names`, the columns a
-/// propensity table may carry after its own, are left out.
-pub fn read(source: &Source, coord_names: &[Box<str>]) -> anyhow::Result<(Vec<Box<str>>, Mat)> {
-    use crate::util::parquet_io::{read_labelled_matrix, read_propensity};
-    if source.propensity {
-        let exclude = coord_names.iter().cloned().collect();
-        let (prop, _, _, cells) = read_propensity(&source.path, &exclude)?;
-        Ok((cells, prop))
-    } else {
-        let m = read_labelled_matrix(&source.path)?;
-        Ok((m.rows, m.mat))
+impl Source {
+    /// Its cell names and rows (`N × K`); `coord_names`, the columns a
+    /// propensity table may carry after its own, are left out.
+    pub fn read(&self, coord_names: &[Box<str>]) -> anyhow::Result<(Vec<Box<str>>, Mat)> {
+        use crate::util::parquet_io::{read_labelled_matrix, read_propensity};
+        if self.propensity {
+            let exclude = coord_names.iter().cloned().collect();
+            let (prop, _, _, cells) = read_propensity(&self.path, &exclude)?;
+            Ok((cells, prop))
+        } else {
+            let m = read_labelled_matrix(&self.path)?;
+            Ok((m.rows, m.mat))
+        }
     }
 }
 

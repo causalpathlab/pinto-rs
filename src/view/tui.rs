@@ -168,8 +168,17 @@ struct App<'a> {
     tissue: &'a Base,
     /// The layout shown, by table and method; `None` on the tissue.
     laid_out: Option<layout::Key>,
-    /// The table `u` lays the cells out by ([`crate::view::layout::sources`]).
+    /// Every table of the cells to lay them out by
+    /// ([`crate::view::layout::sources`]).
+    sources: Vec<crate::view::layout::Source>,
+    /// The table `u` lays the cells out by, in `sources`.
     layout_source: usize,
+    /// The layout `u` asked for last, made or not: where it goes on from;
+    /// `None` on the tissue.
+    asked: Option<crate::view::layout::Method>,
+    /// Each table coarsened, by its place in `sources`: once for all its
+    /// layouts.
+    coarse: std::collections::HashMap<usize, std::sync::Arc<crate::view::layout::Coarse>>,
     /// Every layout made, kept until the view closes.
     layouts: std::collections::HashMap<layout::Key, &'a Base>,
     /// A layout being made.
@@ -321,7 +330,10 @@ impl<'a> App<'a> {
             base,
             tissue: base,
             laid_out: None,
+            sources: crate::view::layout::sources(&base.run),
             layout_source: 0,
+            asked: None,
+            coarse: std::collections::HashMap::new(),
             layouts: std::collections::HashMap::new(),
             laying: None,
             stashed: std::collections::HashMap::new(),
