@@ -50,10 +50,7 @@ fn the_truth_itself_scores_perfectly() {
     assert_eq!(s.donor_conditional_entropy, Some(1.0));
     assert_eq!(by_domain(&s), [Some(1.0), Some(1.0)]);
     let p = &s.patches[0];
-    assert_eq!(
-        (p.f1, p.precision, p.recall, p.owner_share),
-        (1.0, 1.0, 1.0, 1.0)
-    );
+    assert_eq!((p.f1, p.precision, p.recall), (1.0, 1.0, 1.0));
 }
 
 /// Labels that follow the donor depend wholly on the donor within each
@@ -291,7 +288,6 @@ fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
             f1: 1.0,
             precision: 1.0,
             recall: 1.0,
-            owner_share: 1.0,
         }],
     };
     let header = spans(&table_header());
@@ -305,8 +301,8 @@ fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
 }
 
 /// A label that covers the patch and spots of another donor: over every
-/// spot its precision is 4 of 14 (the owner share), within the owner it
-/// holds the patch alone, so precision, recall and F1 are 1.
+/// spot its precision would be 4 of 14; within the owner it holds the
+/// patch alone, so precision, recall and F1 are 1.
 #[test]
 fn the_patch_is_scored_within_its_owner() {
     let t = truth();
@@ -322,12 +318,6 @@ fn the_patch_is_scored_within_its_owner() {
     let p = &s.patches[0];
     assert_eq!(p.within, "owner_donor");
     assert_eq!((p.f1, p.precision, p.recall), (1.0, 1.0, 1.0));
-    // over every spot, as before the restriction: 4 of the label's 14
-    assert!(
-        (p.owner_share - 4.0 / 14.0).abs() < 1e-12,
-        "{}",
-        p.owner_share
-    );
 }
 
 /// NMI and AMI on a small table, against values computed by hand: the MI
@@ -349,4 +339,46 @@ fn nmi_and_ami_match_a_hand_computed_case() {
     let (nmi, ami) = nmi_ami(&[vec![1, 1], vec![1, 1]]);
     assert!(nmi.abs() < 1e-12, "{nmi}");
     assert!(ami < 0.0, "below chance on a balanced 2 x 2: {ami}");
+}
+
+/// Three donors, two owning a patch each: one label for both patches. Over
+/// every spot its precision for each would be one half; within each owner
+/// it holds that owner's patch alone.
+#[test]
+fn each_patch_is_scored_within_its_own_owner() {
+    // per donor: 10 A, 6 B, and 4 P when it owns one (donors 1 and 2)
+    let mut domain = Vec::new();
+    let mut donor = Vec::new();
+    for (d, counts) in [
+        (0usize, [10, 10, 0, 0]),
+        (1, [10, 6, 4, 0]),
+        (2, [10, 6, 0, 4]),
+    ] {
+        for (k, &n) in counts.iter().enumerate() {
+            domain.extend(std::iter::repeat_n(k, n));
+            donor.extend(std::iter::repeat_n(d, n));
+        }
+    }
+    let t = TruthSpots {
+        cells: (0..domain.len()).map(|i| format!("c{i}").into()).collect(),
+        domain,
+        donor,
+        domain_labels: vec!["A".into(), "B".into(), "P2".into(), "P3".into()],
+        domain_owner: vec![None, None, Some(1), Some(2)],
+        n_donors: 3,
+    };
+    let s = score(
+        &t,
+        &labels_from(&t, |i| match t.domain[i] {
+            2 | 3 => 7,
+            k => k as i64,
+        }),
+    )
+    .unwrap();
+    let got: Vec<(&str, &str, f64, f64)> = s
+        .patches
+        .iter()
+        .map(|p| (p.domain.as_str(), p.owner.as_str(), p.precision, p.f1))
+        .collect();
+    assert_eq!(got, [("P2", "D2", 1.0, 1.0), ("P3", "D3", 1.0, 1.0)]);
 }

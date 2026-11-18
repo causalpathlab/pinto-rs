@@ -40,6 +40,11 @@ pub enum Stream {
     /// The unconfounded donors drawn (`n_unconfounded_donors`). Last, so
     /// every other stream keeps its tag.
     UnconfoundedDonors,
+    /// The owners of donor-specific domains drawn (`patch_owners=random`),
+    /// after every older stream, so each keeps its tag.
+    PatchOwners,
+    /// Their kinds drawn (`patch_kinds=random`).
+    PatchKinds,
 }
 
 pub fn key(seed: u64, stream: Stream, idx: &[usize]) -> u64 {

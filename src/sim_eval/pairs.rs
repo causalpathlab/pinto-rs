@@ -123,9 +123,17 @@ pub struct PatchPairs {
     /// The domain's spots in its owner that have a vector.
     pub n_spots: usize,
     /// Its own pairs (positive) against one of its spots with a spot of its
-    /// owner outside it ([`PATCH_NEGATIVES`]).
+    /// owner outside it ([`PATCH_NEGATIVES`]). Its AUROC and AUPRC are
+    /// null, with a `note`, when either side has no pair.
     pub donor_domain_vs_own_donor: PairSet,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
 }
+
+/// Why a patch has no score: fewer than two of its spots have a vector.
+pub const NO_POSITIVES: &str = "fewer than two of its spots have a vector: no positive pairs";
+/// Why a patch has no score: no spot of its owner outside it has one.
+pub const NO_NEGATIVES: &str = "no spot of its owner outside it has a vector: no negative pairs";
 
 #[derive(Serialize, Debug)]
 pub struct PairScore {
@@ -400,14 +408,27 @@ pub fn score_pairs(
                 o.pairs - n_pos,
                 |_, _| true,
             ));
+            let note = if positives.is_empty() {
+                Some(NO_POSITIVES)
+            } else if negatives.is_empty() {
+                Some(NO_NEGATIVES)
+            } else {
+                None
+            };
+            let mut set = PairSet {
+                negatives: Some(PATCH_NEGATIVES),
+                ..versus(&positives, &[&negatives])
+            };
+            if note.is_some() {
+                // one side alone ranks nothing: no score, not a perfect one
+                (set.auroc, set.auprc) = (f64::NAN, f64::NAN);
+            }
             PatchPairs {
                 domain: t.domain_labels[k].to_string(),
                 owner: donor_label(owner).to_string(),
                 n_spots: patch.len(),
-                donor_domain_vs_own_donor: PairSet {
-                    negatives: Some(PATCH_NEGATIVES),
-                    ..versus(&positives, &[&negatives])
-                },
+                donor_domain_vs_own_donor: set,
+                note,
             }
         })
         .collect();

@@ -670,9 +670,7 @@ runs two tests:
    (`within: "owner_donor"`), so a label is not marked down for spots it
    holds in other donors: its best-matching label there, and that label's
    `f1`, `precision` (`prec` in the table; low: the owner's shared spots
-   absorbed) and `recall` (in the `-o` JSON) over the owner's spots; and
-   `owner_share` (`owner`), over every spot, the share of the label's spots
-   in the owner (1: the label is confined to the owning donor).
+   absorbed) and `recall`, all over the owner's spots.
 
 **Scoring on pairs.** A clustering has its own preferences (how many
 groups, how big), so `pinto sim score-by-pair --truth sim --vectors <inputs>`

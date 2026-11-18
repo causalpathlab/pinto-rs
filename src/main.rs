@@ -1121,9 +1121,7 @@ enum Sim {
                       2. Donor-specific domains, each within its owning donor's spots only\n\
                       \x20  (within: owner_donor in the JSON): its best-matching label there,\n\
                       \x20  and that label's f1, precision (low: the owner's shared spots\n\
-                      \x20  absorbed) and recall over the owner's spots; owner_share over every\n\
-                      \x20  spot, the share of the label's spots in the owner (1:\n\
-                      \x20  the label is confined to the owning donor).\n\n\
+                      \x20  absorbed) and recall, all over the owner's spots.\n\n\
                       Labellings are pinto runs at --level, or tables with a cell column\n\
                       (--label-column names the labels)."
     )]

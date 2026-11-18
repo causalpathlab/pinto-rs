@@ -221,8 +221,10 @@ fn scoring_the_truth_itself_is_perfect() {
     };
     let s = &v["scores"][0]["score"];
     assert_eq!(s["shared_ari"], 1.0, "{v}");
-    assert_eq!(s["shared_ami"], 1.0, "{v}");
-    assert_eq!(s["shared_nmi"], 1.0, "{v}");
+    for k in ["shared_ami", "shared_nmi"] {
+        let x = s[k].as_f64().unwrap();
+        assert!((x - 1.0).abs() < 1e-12, "{k}: {v}");
+    }
     assert_eq!(s["donor_conditional_entropy"], 1.0, "{v}");
     for d in s["donor_conditional_entropy_by_domain"].as_array().unwrap() {
         assert_eq!(d["donor_conditional_entropy"], 1.0, "{v}");
@@ -236,7 +238,7 @@ fn scoring_the_truth_itself_is_perfect() {
         "the scenario plants a domain only one donor has"
     );
     for p in patches {
-        for k in ["f1", "precision", "recall", "owner_share"] {
+        for k in ["f1", "precision", "recall"] {
             assert_eq!(p[k], 1.0, "{k}: {p}");
         }
     }

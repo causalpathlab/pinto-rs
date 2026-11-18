@@ -75,8 +75,17 @@ fn scenario_help() -> String {
     s.push_str(
         "Any parameter can then be changed with --set key=value; the manifest records them all.\n\
          --set nuisance_off=true with the same seed draws the exact counterfactual.\n\
-         --set n_unconfounded_donors=1 draws one donor from the seed (never the donor-only\n\
-         domain's owner) and gives it no donor-wide, donor-by-cell-type or section shift.",
+         --set n_unconfounded_donors=1 draws one donor from the seed (never a donor-only\n\
+         domain's owner) and gives it no donor-wide, donor-by-cell-type or section shift.\n\
+         --set patch_owners=0,2 gives each listed donor a donor-only domain of its own\n\
+         (D1_specific_domain_1, D3_specific_domain_1), of kind patch_kinds (one per owner,\n\
+         or one for all: new-state, new-mix) or else patch_kind; patch_owner=N, which the\n\
+         scenarios use, is patch_owners=N in short (not both). patch_owners=random draws\n\
+         their number uniformly from 1 to n_donors, then the donors, from the seed;\n\
+         patch_kinds=random draws each new-state or new-mix with probability 1/2. Each new\n\
+         state's program is its own, at cosine patch_cosine to the first shared cell type's;\n\
+         patch_share applies within each owner's sections. The manifest lists the domains\n\
+         (patches) and records drawn owners and kinds as lists.",
     );
     s
 }
@@ -238,7 +247,12 @@ pub fn run_simulate(args: &SimulateArgs) -> anyhow::Result<()> {
         "version": env!("CARGO_PKG_VERSION"),
         "scenario": scenario,
         "lr_pairs": n_lr_pairs,
-        "params": p,
+        "params": p.resolved(),
+        "patches": sim.truth.domains.iter().filter_map(|d| Some(json!({
+            "domain": d.label.as_ref(),
+            "owner": donor_label(d.owner?).as_ref(),
+            "kind": d.kind?.name(),
+        }))).collect::<Vec<_>>(),
         "reference_data": sim.reference_data.as_ref().map(|r| reference_data_manifest(r, &sim)),
         "realized_pve_expressed_genes": sim.realized_pve_expressed_genes().map(|pve| names.iter().zip(pve)
             .map(|(n, v)| (n.to_string(), json!(v))).collect::<serde_json::Map<_, _>>()),

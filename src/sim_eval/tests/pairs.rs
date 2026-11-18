@@ -145,6 +145,12 @@ fn the_truth_domains_score_one_everywhere() {
         );
     }
     assert_eq!(s.donor_gap, 0.0);
+    near(
+        s.patches[0].donor_domain_vs_own_donor.prevalence,
+        0.5,
+        1e-12,
+        "patch prevalence",
+    );
 }
 
 /// Vectors that follow the donor: no better than chance across donors,
@@ -158,6 +164,12 @@ fn donor_vectors_fail_across_donors() {
     assert!(s.shared_domain_within_donor.auroc >= s.shared_domain_across_donors.auroc - 1e-12);
     // within a donor every pair is alike: chance again
     near(s.shared_domain_within_donor.auroc, 0.5, 0.02, "within");
+    // the patch's negatives are its own donor's spots: every pair is alike,
+    // so the ranking is a tie, AUROC 0.5 and AUPRC the prevalence
+    let own = &s.patches[0].donor_domain_vs_own_donor;
+    near(own.prevalence, 0.5, 1e-12, "prevalence");
+    near(own.auroc, 0.5, 1e-12, "own donor auroc");
+    near(own.auprc, 0.5, 1e-12, "own donor auprc");
 }
 
 /// Random vectors are at chance everywhere.
@@ -170,16 +182,17 @@ fn random_vectors_are_at_chance() {
     near(s.shared_domain_across_donors.auroc, 0.5, 0.03, "cross");
     near(s.shared_domain_within_donor.auroc, 0.5, 0.03, "within");
     near(s.neighbour_same_domain.auroc, 0.5, 0.06, "spatial");
-    near(
-        s.patches[0].donor_domain_vs_own_donor.auroc,
-        0.5,
-        0.08,
-        "patch",
-    );
+    let own = &s.patches[0].donor_domain_vs_own_donor;
+    near(own.prevalence, 0.5, 1e-12, "patch prevalence");
+    near(own.auroc, 0.5, 0.08, "patch auroc");
+    near(own.auprc, 0.5, 0.08, "patch auprc");
 }
 
 /// The patch folded into B, its host domain: the shared sets are unhurt,
-/// the patch set falls.
+/// the patch set falls. In its owner the patch's pairs tie with its pairs
+/// with B's 128 of the 512 spots outside it and beat those with A's and
+/// C's: AUROC 1 - 0.5 x 128/512 = 0.875, AUPRC the positives' share of the
+/// tied top, 1 / (1 + 128/512) = 0.8.
 #[test]
 fn a_patch_folded_into_its_host_fails_the_patch_set() {
     let (t, l) = toy();
@@ -192,11 +205,10 @@ fn a_patch_folded_into_its_host_fails_the_patch_set() {
     assert_eq!(s.shared_domain_within_donor.auroc, 1.0);
     let p = &s.patches[0];
     assert_eq!((p.domain.as_str(), p.owner.as_str()), ("P", "D2"));
-    assert!(
-        p.donor_domain_vs_own_donor.auroc < 0.9,
-        "{}",
-        p.donor_domain_vs_own_donor.auroc
-    );
+    let own = &p.donor_domain_vs_own_donor;
+    near(own.prevalence, 0.5, 1e-12, "prevalence");
+    near(own.auroc, 0.875, 0.01, "auroc");
+    near(own.auprc, 0.8, 0.01, "auprc");
     assert!(s.neighbour_same_domain.auroc < 1.0);
 }
 
@@ -344,6 +356,7 @@ fn the_pairs_table_keeps_its_columns_past_long_domain_names() {
             owner: "D1".into(),
             n_spots: 4,
             donor_domain_vs_own_donor: set.clone(),
+            note: None,
         }],
         neighbour_same_domain: set,
     };
@@ -499,4 +512,90 @@ fn a_patch_set_apart_within_its_donor_scores_high() {
         "{}",
         p.donor_domain_vs_own_donor.auroc
     );
+}
+
+/// A patch with one scored spot has no positive pairs, and one whose owner
+/// has no scored spot outside it no negative pairs: no score, and a note,
+/// not a perfect or empty one.
+#[test]
+fn a_patch_without_pairs_on_one_side_has_no_score() {
+    use crate::sim_eval::pairs::{NO_NEGATIVES, NO_POSITIVES};
+    let (t, l) = toy();
+    let x = one_hot(t.cells.len(), 4, |i| t.domain[i]);
+    let some = |keep: &dyn Fn(usize) -> bool| -> (Vec<Box<str>>, Mat) {
+        let rows: Vec<usize> = (0..t.cells.len()).filter(|&i| keep(i)).collect();
+        let cells = rows.iter().map(|&i| t.cells[i].clone()).collect();
+        let m = Mat::from_fn(rows.len(), x.ncols(), |r, c| x[(rows[r], c)]);
+        (cells, m)
+    };
+    let first_patch = (0..t.cells.len()).find(|&i| t.domain[i] == 3).unwrap();
+    for (keep, note) in [
+        (
+            &(|i: usize| t.domain[i] != 3 || i == first_patch) as &dyn Fn(usize) -> bool,
+            NO_POSITIVES,
+        ),
+        (
+            &|i: usize| t.domain[i] == 3 || t.donor[i] != 1,
+            NO_NEGATIVES,
+        ),
+    ] {
+        let (cells, m) = some(keep);
+        let s = score_pairs(&t, &l, &cells, &m, &opts()).unwrap();
+        let p = &s.patches[0];
+        assert_eq!(p.note, Some(note));
+        let own = &p.donor_domain_vs_own_donor;
+        assert!(own.auroc.is_nan() && own.auprc.is_nan(), "{own:?}");
+        let json = serde_json::to_value(p).unwrap();
+        assert!(
+            json["donor_domain_vs_own_donor"]["auroc"].is_null(),
+            "{json}"
+        );
+        assert_eq!(json["note"], note);
+    }
+}
+
+/// Three donors, each owning a patch of its own; every patch's spots share
+/// one vector, every other spot its donor's. Each patch is told apart from
+/// its own donor's other spots (AUROC 1); were its negatives drawn from the
+/// other donors' patches, they would tie with its positives.
+#[test]
+fn each_patch_is_scored_against_its_own_owner_only() {
+    let (t, l) = toy_donors(3);
+    // every donor owns a patch: domain 3 + d, at the toy's patch place
+    let per = SIDE * SIDE;
+    let domain: Vec<usize> = (0..t.cells.len())
+        .map(|i| {
+            let (d, s) = (i / per, i % per);
+            let (r, c) = (s / SIDE, s % SIDE);
+            if r < 8 && (8..16).contains(&c) {
+                3 + d
+            } else {
+                c / 8
+            }
+        })
+        .collect();
+    let t = TruthSpots {
+        domain,
+        domain_labels: ["A", "B", "C", "P1", "P2", "P3"]
+            .iter()
+            .map(|&n| n.into())
+            .collect(),
+        domain_owner: vec![None, None, None, Some(0), Some(1), Some(2)],
+        ..t
+    };
+    let x = one_hot(t.cells.len(), 4, |i| {
+        if t.domain[i] >= 3 {
+            3
+        } else {
+            t.donor[i]
+        }
+    });
+    let s = scored(&t, &l, &x);
+    let owners: Vec<&str> = s.patches.iter().map(|p| p.owner.as_str()).collect();
+    assert_eq!(owners, ["D1", "D2", "D3"]);
+    for p in &s.patches {
+        let own = &p.donor_domain_vs_own_donor;
+        assert_eq!((own.auroc, own.auprc), (1.0, 1.0), "{}", p.domain);
+        assert!(p.note.is_none());
+    }
 }

@@ -11,7 +11,8 @@
 //!                                   bare barcode with one section), to join onto fits
 //! {out}/truth/donors.parquet        confounded (`false`: no donor-wide, donor-by-cell-type
 //!                                   or section shift), sections
-//! {out}/truth/domains.parquet       owner (empty: shared), composition
+//! {out}/truth/domains.parquet       owner and kind (new-state or new-mix; both empty:
+//!                                   shared), composition
 //! {out}/truth/states.parquet        owner (empty: shared)
 //! {out}/truth/genes.parquet         baseline, dispersion, programs
 //! {out}/truth/lr_pairs.tsv          ligand-receptor pairs of the simulation's own genes,
@@ -20,7 +21,9 @@
 //! {out}/truth/truth.pinto.json      the truth as a run `pinto view` opens:
 //!                                   truth.cells.parquet and the domain, state
 //!                                   and donor levels (truth.*.propensity.parquet)
-//! {out}/manifest.json               every parameter, the unconfounded donors and whether
+//! {out}/manifest.json               every parameter (drawn owners and kinds as the lists
+//!                                   drawn), the donor-specific domains (patches: domain,
+//!                                   owner, kind), the unconfounded donors and whether
 //!                                   they were drawn, and the realized PVE
 //! ```
 
@@ -199,10 +202,18 @@ pub fn write_domains(path: &str, sim: &Sim) -> anyhow::Result<()> {
     let t = &sim.truth;
     let labels: Vec<Box<str>> = t.domains.iter().map(|d| d.label.clone()).collect();
     let owners: Vec<Box<str>> = t.domains.iter().map(owner).collect();
+    let kinds: Vec<Box<str>> = t
+        .domains
+        .iter()
+        .map(|d| d.kind.map_or("", |k| k.name()).into())
+        .collect();
     let comp: Vec<Vec<f32>> = (0..t.n_states())
         .map(|c| f32s(t.composition.iter().map(|k| k[c])))
         .collect();
-    let mut cols: Vec<(Box<str>, Column)> = vec![("owner_donor".into(), Column::Str(&owners))];
+    let mut cols: Vec<(Box<str>, Column)> = vec![
+        ("owner_donor".into(), Column::Str(&owners)),
+        ("kind".into(), Column::Str(&kinds)),
+    ];
     for (st, v) in t.states.iter().zip(&comp) {
         cols.push((format!("comp_{}", st.label).into(), Column::F32(v)));
     }

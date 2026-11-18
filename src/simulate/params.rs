@@ -16,6 +16,53 @@ pub enum PatchKind {
     NewMix,
 }
 
+impl PatchKind {
+    /// Its name, as `--set` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            PatchKind::None => "none",
+            PatchKind::NewState => "new-state",
+            PatchKind::NewMix => "new-mix",
+        }
+    }
+}
+
+/// The word `random`: a list drawn from the seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Random {
+    Random,
+}
+
+/// A list given, or `random`: drawn from the seed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ListOrRandom<T> {
+    List(Vec<T>),
+    Random(Random),
+}
+
+impl<T> Default for ListOrRandom<T> {
+    fn default() -> Self {
+        ListOrRandom::List(Vec::new())
+    }
+}
+
+impl<T> ListOrRandom<T> {
+    /// Not given: the empty list.
+    pub fn is_unset(&self) -> bool {
+        matches!(self, ListOrRandom::List(v) if v.is_empty())
+    }
+}
+
+/// One donor-specific domain: the donor that alone has it, and what it is
+/// made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Patch {
+    pub owner: usize,
+    pub kind: PatchKind,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SimParams {
@@ -53,8 +100,18 @@ pub struct SimParams {
     /// Spread of domain proportions between donors (log scale).
     pub jit_b: f64,
     pub patch_kind: PatchKind,
-    /// Donor that owns the donor-specific domain (0-based).
+    /// Donor that owns the donor-specific domain (0-based), when there is
+    /// one: `patch_owners` [N] in short.
     pub patch_owner: usize,
+    /// Donors that each own a donor-specific domain of their own (0-based,
+    /// distinct), or `random`: their number drawn uniformly from 1 to
+    /// n_donors, then that many donors uniformly, from the seed. Not given:
+    /// `patch_owner`'s one domain, when `patch_kind` asks for one.
+    pub patch_owners: ListOrRandom<usize>,
+    /// Each owner's kind (new-state or new-mix), one per owner or one for
+    /// all, or `random`: each new-state or new-mix with probability 1/2,
+    /// from the seed. Not given: `patch_kind` for all.
+    pub patch_kinds: ListOrRandom<PatchKind>,
     /// Share of the owner's spots in the donor-specific domain.
     pub patch_share: f64,
     pub patch_length_um: f64,
@@ -144,6 +201,8 @@ impl Default for SimParams {
             jit_b: 0.0,
             patch_kind: PatchKind::None,
             patch_owner: 2,
+            patch_owners: ListOrRandom::default(),
+            patch_kinds: ListOrRandom::default(),
             patch_share: 0.15,
             patch_length_um: 400.0,
             patch_cosine: 0.3,
@@ -258,10 +317,88 @@ pub fn find_scenario(name: &str) -> anyhow::Result<&'static Scenario> {
 
 impl SimParams {
     /// The donors an unconfounded donor may be drawn from: all but the
-    /// donor-only domain's owner when there is one.
+    /// owners of donor-only domains.
     pub fn drawable_donors(&self) -> Vec<usize> {
-        let owner = (self.patch_kind != PatchKind::None).then_some(self.patch_owner);
-        (0..self.n_donors).filter(|&d| Some(d) != owner).collect()
+        let owners: Vec<usize> = self.patches().iter().map(|p| p.owner).collect();
+        (0..self.n_donors).filter(|d| !owners.contains(d)).collect()
+    }
+
+    /// The owners of donor-specific domains, before their kinds: those
+    /// `patch_owners` lists or draws, else `patch_owner` when `patch_kind`
+    /// or `patch_kinds` asks for a domain.
+    fn patch_owner_list(&self) -> Vec<usize> {
+        match &self.patch_owners {
+            ListOrRandom::List(v) if !v.is_empty() => v.clone(),
+            ListOrRandom::List(_) => {
+                let wanted = !self.patch_kinds.is_unset() || self.patch_kind != PatchKind::None;
+                if wanted {
+                    vec![self.patch_owner]
+                } else {
+                    Vec::new()
+                }
+            }
+            ListOrRandom::Random(_) => {
+                use rand::RngExt;
+                if self.n_donors == 0 {
+                    return Vec::new();
+                }
+                let mut r = super::rng::rng(self.seed, super::rng::Stream::PatchOwners, &[]);
+                let k = r.random_range(1..=self.n_donors);
+                let mut pool: Vec<usize> = (0..self.n_donors).collect();
+                // a partial Fisher-Yates shuffle: the first k are a uniform draw
+                for i in 0..k {
+                    let j = r.random_range(i..pool.len());
+                    pool.swap(i, j);
+                }
+                pool.truncate(k);
+                pool.sort_unstable();
+                pool
+            }
+        }
+    }
+
+    /// The donor-specific domains, in the order of their owners: each
+    /// owner with its kind. A list that does not fit is left for
+    /// [`Self::validate`] to refuse; this gives what it can.
+    pub fn patches(&self) -> Vec<Patch> {
+        let owners = self.patch_owner_list();
+        let kinds: Vec<PatchKind> = match &self.patch_kinds {
+            ListOrRandom::List(v) if v.len() == 1 => vec![v[0]; owners.len()],
+            ListOrRandom::List(v) if v.is_empty() => vec![self.patch_kind; owners.len()],
+            ListOrRandom::List(v) => v.clone(),
+            ListOrRandom::Random(_) => {
+                use rand::RngExt;
+                let mut r = super::rng::rng(self.seed, super::rng::Stream::PatchKinds, &[]);
+                owners
+                    .iter()
+                    .map(|_| {
+                        if r.random_bool(0.5) {
+                            PatchKind::NewState
+                        } else {
+                            PatchKind::NewMix
+                        }
+                    })
+                    .collect()
+            }
+        };
+        owners
+            .into_iter()
+            .zip(kinds)
+            .filter(|(_, kind)| *kind != PatchKind::None)
+            .map(|(owner, kind)| Patch { owner, kind })
+            .collect()
+    }
+
+    /// The parameters with drawn owners and kinds written out as the lists
+    /// they drew, for the manifest; as given when nothing was drawn.
+    pub fn resolved(&self) -> Self {
+        let mut p = self.clone();
+        if !(self.patch_owners.is_unset() && self.patch_kinds.is_unset()) {
+            let patches = self.patches();
+            p.patch_owners = ListOrRandom::List(patches.iter().map(|x| x.owner).collect());
+            p.patch_kinds = ListOrRandom::List(patches.iter().map(|x| x.kind).collect());
+        }
+        p
     }
 
     /// The unconfounded donors, in order: `n_unconfounded_donors` drawn
@@ -302,7 +439,17 @@ impl SimParams {
 
     /// Set fields by `key=value` ([`set_fields`]).
     pub fn with_overrides(self, sets: &[String]) -> anyhow::Result<Self> {
-        set_fields(&self, sets, "parameter")
+        let given = |key: &str| {
+            sets.iter()
+                .any(|s| s.split_once('=').is_some_and(|(k, _)| k == key))
+        };
+        anyhow::ensure!(
+            !(given("patch_owner") && given("patch_owners")),
+            "--set patch_owner and patch_owners together: patch_owner=N is patch_owners=N \
+             in short, give one"
+        );
+        let sets: Vec<String> = sets.iter().map(|s| comma_list(s)).collect();
+        set_fields(&self, &sets, "parameter")
     }
 
     /// The share of spot noise in the log rate: what the PVE terms leave.
@@ -452,9 +599,41 @@ impl SimParams {
             (0.0..1.0).contains(&self.copula_strength),
             "copula_strength must be in [0, 1)"
         );
-        if self.patch_kind != PatchKind::None {
+        if let ListOrRandom::List(owners) = &self.patch_owners {
+            for (i, &o) in owners.iter().enumerate() {
+                anyhow::ensure!(
+                    o < self.n_donors,
+                    "patch_owners names donor {o}: with n_donors={} it must be in 0..={}",
+                    self.n_donors,
+                    self.n_donors - 1
+                );
+                anyhow::ensure!(
+                    !owners[..i].contains(&o),
+                    "patch_owners names donor {o} twice: each owner has one domain"
+                );
+            }
+        }
+        let n_owners = self.patch_owner_list().len();
+        if let ListOrRandom::List(kinds) = &self.patch_kinds {
             anyhow::ensure!(
-                self.patch_owner < self.n_donors,
+                kinds.len() <= 1 || kinds.len() == n_owners,
+                "patch_kinds gives {} kinds for {n_owners} owners: give one per owner, \
+                 or one for all",
+                kinds.len()
+            );
+            anyhow::ensure!(
+                !kinds.contains(&PatchKind::None),
+                "patch_kinds: each owner's kind is new-state or new-mix"
+            );
+            anyhow::ensure!(
+                n_owners == 0 || !kinds.is_empty() || self.patch_kind != PatchKind::None,
+                "patch_owners without a kind: set patch_kinds (new-state, new-mix or \
+                 random) or patch_kind"
+            );
+        }
+        if !self.patches().is_empty() {
+            anyhow::ensure!(
+                self.patch_owner < self.n_donors || !self.patch_owners.is_unset(),
                 "patch_owner={} is not a donor: with n_donors={} it must be in 0..={} \
                  (--set patch_owner=N picks the donor that owns the donor-only domain)",
                 self.patch_owner,
@@ -488,11 +667,38 @@ impl SimParams {
         anyhow::ensure!(
             self.n_unconfounded_donors <= drawable,
             "n_unconfounded_donors={} but only {drawable} donors can be drawn \
-             (every donor but the donor-only domain's owner)",
+             (every donor but the donor-only domains' owners)",
             self.n_unconfounded_donors
         );
         Ok(())
     }
+}
+
+/// The list fields `--set` also takes as `a,b,c` (and a single `a`).
+const LIST_FIELDS: [&str; 2] = ["patch_owners", "patch_kinds"];
+
+/// `key=a,b,c` for a list field as the JSON list `key=["a","b","c"]` (each
+/// item a number when it reads as one); `random`, JSON and every other key
+/// as given.
+fn comma_list(set: &str) -> String {
+    let Some((k, raw)) = set.split_once('=') else {
+        return set.to_string();
+    };
+    if !LIST_FIELDS.contains(&k)
+        || raw == "random"
+        || serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|v| v.is_array())
+    {
+        return set.to_string();
+    }
+    let items: Vec<serde_json::Value> = raw
+        .split(',')
+        .map(|x| {
+            let x = x.trim();
+            x.parse::<u64>()
+                .map_or_else(|_| serde_json::Value::String(x.into()), Into::into)
+        })
+        .collect();
+    format!("{k}={}", serde_json::Value::Array(items))
 }
 
 /// `value` with fields set by `key=value` (`--set`), the value read as JSON
