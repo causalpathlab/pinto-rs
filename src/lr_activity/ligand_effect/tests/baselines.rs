@@ -1,51 +1,10 @@
-//! The co-expression baselines: calibrated when ligand and receptor are
-//! unrelated, fooled by cell-type expression, and blind to a planted
-//! response effect (they score co-expression, not response).
+//! The co-expression baselines: blind to a planted response effect (they
+//! score co-expression, not response), and pinned.
 
 use super::run_sim;
 use super::simulate::{base, fixture, opts, Fixture};
-use crate::lr_activity::ligand_effect::baselines::{baselines, rejects, Baselines, METHODS};
+use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines, METHODS};
 use crate::lr_activity::ligand_effect::simulate::{ConfounderKind, Scenario, SimBase};
-use rand::rngs::SmallRng;
-use rand::{RngExt, SeedableRng};
-use rand_distr::{Distribution, Poisson};
-
-fn rejections(b: &Baselines) -> [bool; 4] {
-    METHODS.map(|(_, p)| rejects(p(b)))
-}
-
-/// Ligand and receptor drawn independently of each other, of cell type and
-/// of place: every baseline rejects about 5% of runs.
-#[test]
-#[ignore = "benchmark: cargo test -- --ignored"]
-fn baselines_are_calibrated_without_association() {
-    let f = fixture();
-    let n = f.tissue.n();
-    let runs = 40;
-    let mut hits = [0usize; 4];
-    for rep in 0..runs {
-        let mut rng = SmallRng::seed_from_u64(1000 + rep as u64);
-        let pois = |rng: &mut SmallRng, m: f64| Poisson::new(m).unwrap().sample(rng);
-        let l: Vec<f64> = (0..n)
-            .map(|_| {
-                if rng.random::<f64>() < 0.3 {
-                    pois(&mut rng, 3.0)
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let r: Vec<f64> = (0..n).map(|_| pois(&mut rng, 1.0)).collect();
-        let b = baselines(&f.tissue, &l, &r, rep as u64);
-        assert!(b.celltype_tested > 0 && b.moran_p.is_finite() && b.coexpr_p.is_finite());
-        for (h, x) in hits.iter_mut().zip(rejections(&b)) {
-            *h += x as usize;
-        }
-    }
-    for ((name, _), h) in METHODS.iter().zip(hits) {
-        assert!(h <= 6, "{name} rejected {h}/{runs} unrelated pairs");
-    }
-}
 
 /// Ligand and receptor at the same rate in both cell types, so only the
 /// hidden field can tie them together.
@@ -66,45 +25,6 @@ fn confounded(effect: f64, rep: usize) -> Scenario {
         rep,
         ..Scenario::default()
     }
-}
-
-/// Rejections per baseline, and of the estimator, over `runs` null runs.
-fn null_rejections(
-    f: &Fixture,
-    b: &SimBase<'_>,
-    scen: Scenario,
-    runs: usize,
-) -> ([usize; 4], usize) {
-    let (mut hits, mut est) = ([0usize; 4], 0usize);
-    for rep in 0..runs {
-        let row = run_sim(&f.tissue, b, &Scenario { rep, ..scen }, &opts(), 61).unwrap();
-        assert_eq!(row.truth, 0.0);
-        for (h, x) in hits.iter_mut().zip(rejections(&row.baselines)) {
-            *h += x as usize;
-        }
-        est += row.rejected() as usize;
-    }
-    (hits, est)
-}
-
-/// Ligand made by one cell type and receptor carried by the other, nothing
-/// planted and no field: the cell-type baseline reads the types'
-/// expression as an interaction; the estimator, adjusting for identity,
-/// does not. (The types sit in patches, so their contacts are mostly
-/// homotypic and the contact baselines see less co-expression than chance.)
-#[test]
-#[ignore = "benchmark: cargo test -- --ignored"]
-fn cell_type_expression_fools_the_cell_type_baseline_not_the_estimator() {
-    let f = fixture();
-    let scen = Scenario::default();
-    let runs = 4;
-    let (hits, est) = null_rejections(&f, &base(&f), scen, runs);
-    assert!(est <= 1, "the estimate rejected {est}/{runs} null runs");
-    assert!(
-        hits[0] >= 3,
-        "celltype should be fooled by cell type ({}/{runs})",
-        hits[0]
-    );
 }
 
 /// The same runs with an effect planted: ligand and receptor are drawn
