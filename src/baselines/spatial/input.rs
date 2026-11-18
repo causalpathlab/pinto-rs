@@ -50,6 +50,9 @@ pub struct SpatialInputArgs {
     pub stage2: OffsetArgs,
 
     #[command(flatten)]
+    pub modules: crate::util::feature_modules::FeatureModulesArgs,
+
+    #[command(flatten)]
     pub ablation: AblationArgs,
 }
 

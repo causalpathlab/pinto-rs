@@ -95,7 +95,7 @@ use legume_numeric::matrix::common_io::mkdir_parent;
 
 mod model;
 mod module_cells;
-mod modules;
+pub(crate) mod modules;
 pub(crate) mod pairs;
 mod tables;
 mod train;

@@ -29,7 +29,7 @@ const LEIDEN_RESOLUTION: f64 = 1.0;
 
 /// The module layer a run trains: its settings, and each feature's starting
 /// module (`< cfg.n_modules`).
-pub(super) struct ModuleStart {
+pub(crate) struct ModuleStart {
     pub cfg: FeatureModuleConfig,
     pub labels: Vec<u32>,
 }
@@ -49,7 +49,7 @@ pub(super) struct AutoPartition {
 /// pseudobulks]` count sums, the pseudobulks `sizes` cells each), or `None`
 /// for a run without one: `plan` is off, or `auto` found fewer than two
 /// modules.
-pub(super) fn resolve_modules(
+pub(crate) fn resolve_modules(
     plan: ModulePlan,
     profiles: &Mat,
     sizes: &[f32],
@@ -168,7 +168,7 @@ fn reduce_profiles(profiles: Mat) -> anyhow::Result<Mat> {
 }
 
 /// Cells per pseudobulk: `labels` is each cell's pseudobulk of `n_pb`.
-pub(super) fn pseudobulk_sizes(labels: &[usize], n_pb: usize) -> Vec<f32> {
+pub(crate) fn pseudobulk_sizes(labels: &[usize], n_pb: usize) -> Vec<f32> {
     let mut sizes = vec![0f32; n_pb];
     for &pb in labels {
         sizes[pb] += 1.0;

@@ -307,7 +307,7 @@ fn weights_out(
 /// [`run`] on `data` as read.
 pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let genes = select_genes(&data, fit.n_genes)?;
+    let genes = select_genes(&data, fit.n_genes, fit.core.input.modules.on)?;
     ensure_fits(
         "mefisto",
         factor_peak_bytes(&fit.memory_shape(&data.shape(), genes.len(), Variant::Sparse)),
@@ -420,7 +420,7 @@ pub(crate) fn run_pb_on(
     budget: &Budget,
 ) -> anyhow::Result<()> {
     let fit = &args.fit;
-    let genes = select_genes(&data, fit.n_genes)?;
+    let genes = select_genes(&data, fit.n_genes, fit.core.input.modules.on)?;
     ensure_fits(
         "mefisto-pb",
         factor_peak_bytes(&fit.memory_shape(

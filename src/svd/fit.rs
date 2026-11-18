@@ -26,6 +26,9 @@ pub struct SrtDeltaSvdArgs {
     pub stage2: crate::util::input::OffsetArgs,
 
     #[command(flatten)]
+    pub modules: crate::util::feature_modules::FeatureModulesArgs,
+
+    #[command(flatten)]
     pub ablation: crate::util::ablation::AblationArgs,
 
     #[arg(

@@ -1178,7 +1178,13 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         );
     }
     let counts_kept = counts.nrows();
-    let (genes, _) = seurat_v3_hvg(&counts, args.n_top_genes);
+    // on feature modules every module is kept: no variable-gene screen
+    let n_top = if args.input.modules.on {
+        counts.nrows()
+    } else {
+        args.n_top_genes
+    };
+    let (genes, _) = seurat_v3_hvg(&counts, n_top);
     anyhow::ensure!(!genes.is_empty(), "no genes to train on");
     info!(
         "{n} cells, {} highly variable genes (seurat_v3)",
@@ -1459,7 +1465,13 @@ pub(crate) fn run_pb_on(
     let raw = std::mem::replace(&mut data.counts, CscMatrix::zeros(0, 0));
     let kept = genes_in(&raw, args.min_cells);
     let counts = keep_rows(raw, &kept);
-    let (genes, _) = seurat_v3_hvg(&counts, args.n_top_genes);
+    // on feature modules every module is kept: no variable-gene screen
+    let n_top = if args.input.modules.on {
+        counts.nrows()
+    } else {
+        args.n_top_genes
+    };
+    let (genes, _) = seurat_v3_hvg(&counts, n_top);
     anyhow::ensure!(!genes.is_empty(), "no genes to train on");
     info!(
         "stagate-pb: {n} cells in {m} super-cells, {} highly variable genes (seurat_v3, on the cells)",

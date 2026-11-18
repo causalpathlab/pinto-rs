@@ -8,6 +8,7 @@ pub mod device;
 pub mod dictionary_rows;
 pub mod edge_clustering;
 pub mod feature_axis;
+pub mod feature_modules;
 pub mod graph_coarsen;
 pub mod input;
 pub mod lupin_rounds;
