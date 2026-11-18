@@ -13,6 +13,7 @@ mod draft;
 mod gene;
 mod heatmap;
 mod index;
+mod layout;
 mod lra;
 mod lupin;
 mod markers;
@@ -117,6 +118,13 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     let session = crate::tui::TOOL.session("view", &args.session.options(args.prefix.is_some()))?;
     // One screen for the run browser and the view after it.
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
+    // legume-numeric's progress bars (a layout's kNN graph, among them)
+    // would draw over the screen: hidden while it is up
+    let bars = &legume_numeric::matrix::progress::MULTI_PROGRESS;
+    let _shown_again = (!bars.is_hidden()).then(|| {
+        bars.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        ShowBarsAgain
+    });
     session.with_terminal(modes, |terminal| {
         let picked;
         let args = match &args.prefix {
@@ -133,6 +141,27 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
         };
         tui::run(&session, terminal, args, follow.as_ref())
     })
+}
+
+/// The grid of `geom`'s cells, and the typical distance between
+/// neighbouring cells: over occupied bins only, as the bounding box of a
+/// tissue section is mostly empty around the edges.
+fn gridded(geom: &Geometry) -> (Grid, f32) {
+    let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), CELLS_PER_BIN);
+    let area = grid.occupied_bins() as f32 * grid.bin * grid.bin;
+    let spacing = (area / geom.n().max(1) as f32).sqrt();
+    (grid, spacing)
+}
+
+/// legume-numeric's progress bars, hidden under the view's screen, drawn on
+/// stderr again once dropped, as the screen goes.
+struct ShowBarsAgain;
+
+impl Drop for ShowBarsAgain {
+    fn drop(&mut self) {
+        legume_numeric::matrix::progress::MULTI_PROGRESS
+            .set_draw_target(indicatif::ProgressDrawTarget::stderr());
+    }
 }
 
 /// A run's cell geometry and grid, shared by every level.
@@ -157,17 +186,12 @@ impl Base {
         let t = Instant::now();
         let geom = run.load_geometry()?;
         log::info!("cells: {} in {:.2?}", geom.n(), t.elapsed());
-        let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), CELLS_PER_BIN);
+        let (grid, spacing) = gridded(&geom);
         let coord_file = run.single_coord_file();
         let units =
             Units::for_coordinates(units, &geom.coord_names, coord_file.as_deref(), || {
                 grid.pitch(&geom.x, &geom.y)
             })?;
-
-        // Spacing over occupied bins only: the bounding box of a tissue
-        // section is mostly empty around the edges.
-        let area = grid.occupied_bins() as f32 * grid.bin * grid.bin;
-        let spacing = (area / geom.n().max(1) as f32).sqrt();
         Ok(Base {
             run,
             geom,
@@ -177,6 +201,22 @@ impl Base {
             expression: OnceLock::new(),
             theme: theme.into(),
         })
+    }
+
+    /// This run with its cells at `geom`, a layout of them in place of the
+    /// tissue: its own grid, no scale bar, its expression opened afresh
+    /// when asked for.
+    fn laid_out(&self, geom: Geometry) -> Self {
+        let (grid, spacing) = gridded(&geom);
+        Base {
+            run: self.run.clone(),
+            geom,
+            grid,
+            units: None,
+            spacing,
+            expression: OnceLock::new(),
+            theme: self.theme().into(),
+        }
     }
 
     /// The colours frames and palettes are drawn in now.

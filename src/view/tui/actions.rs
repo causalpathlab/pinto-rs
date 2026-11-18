@@ -142,14 +142,13 @@ impl App<'_> {
     /// level and layer, edges as asked, nothing selected.
     pub(super) fn reset(&mut self) {
         self.leave_relabel();
-        self.cur = self.home;
-        self.show = Show::Communities;
-        self.bar_focus = None;
+        // loads the home level where it is not yet (on a layout), and
+        // clears what is shown on it
+        if let Err(e) = self.go_level(self.home, None) {
+            self.status = format!("{e:#}");
+            return;
+        }
         let k = self.level().comm.k;
-        self.focus = vec![false; k];
-        self.shown = None;
-        self.markers.clear();
-        self.gene = None;
         self.picked = None;
         self.source = Source::Observed;
         self.clip = self.args.clip;
@@ -191,6 +190,13 @@ impl App<'_> {
                 format!("loading level {} ...", self.base.run.levels[next].tag),
             )?;
             self.levels[next] = Some(self.base.level(next, self.edges)?);
+        }
+        let base = self.base;
+        if let Some(level) = self.levels[next].as_mut() {
+            // edges turned on since this level was loaded
+            if self.edges && !level.grouping && level.edges.is_none() {
+                base.load_edges(level)?;
+            }
         }
         self.show = Show::Communities;
         self.bar_focus = None;

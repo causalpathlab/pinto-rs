@@ -131,6 +131,18 @@ impl App<'_> {
         Ok(())
     }
 
+    /// The layer closed and its pairs dropped, read again when `I` opens
+    /// it: they were drawn on another base's cells. A `pinto lra` running
+    /// goes on.
+    pub(super) fn forget_lra(&mut self) {
+        self.lra = None;
+        self.lra_on = false;
+        self.lra_cursor = 0;
+        self.lra_curve = false;
+        self.lra_search = None;
+        self.pair_pending = false;
+    }
+
     fn leave_lra(&mut self) {
         self.lra_on = false;
         self.lra_search = None;

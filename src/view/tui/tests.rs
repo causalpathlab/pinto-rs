@@ -295,6 +295,55 @@ fn a_key_that_fails_shows_the_error_and_the_viewer_goes_on() {
     assert!(app.structure);
 }
 
+/// `u` lays the cells out by the level's propensity, through every layout
+/// and back to the tissue: each one made on its thread, drawn with the
+/// level loaded on it, then kept.
+#[test]
+fn u_steps_through_the_layouts_and_back_to_the_tissue() {
+    use super::super::tests::lra::lra_run;
+    use crate::view::layout::Method;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let args = super::super::tests::view_args(&prefix, &[]);
+    let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
+    let level = base.level(0, false).unwrap();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let gfx = (Gfx::Cells(Glyphs::HalfBlocks, None), (8., 16.));
+    let mut app = App::new(&base, level, &args, gfx, &session);
+    app.map = Rect::new(0, 0, 80, 48);
+    app.canvas = app.map;
+    let key = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
+    let made = |app: &mut App| {
+        let start = std::time::Instant::now();
+        while app.laying.is_some() {
+            assert!(start.elapsed().as_secs() < 60, "{}", app.status);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_layout();
+        }
+    };
+    for m in Method::ALL {
+        app.key(key(KeyCode::Char('u')), None);
+        made(&mut app);
+        assert_eq!(app.laid_out, Some((0, m)), "{}", app.status);
+        assert!(!std::ptr::eq(app.base, app.tissue));
+        assert_eq!(app.base.geom.n(), app.tissue.geom.n(), "{}", m.name());
+        assert!(app.levels[app.cur].is_some(), "the level is loaded on it");
+    }
+    app.key(key(KeyCode::Char('u')), None);
+    assert_eq!(app.laid_out, None);
+    assert!(std::ptr::eq(app.base, app.tissue));
+    // A layout made once is shown again at once.
+    app.key(key(KeyCode::Char('u')), None);
+    assert!(app.laying.is_none() && app.laid_out == Some((0, Method::Umap)));
+    // r on a layout: back to the start level, loaded on it
+    app.key(key(KeyCode::Char('r')), None);
+    assert!(app.levels[app.home].is_some(), "{}", app.status);
+    // a layout that could not be made: u goes on past it
+    app.asked = Some(Method::Tumap);
+    app.key(key(KeyCode::Char('u')), None);
+    assert_eq!(app.laid_out, Some((0, Method::Tsne)), "{}", app.status);
+}
+
 /// Esc in the structure plot under the map goes back to the map alone.
 #[test]
 fn esc_leaves_the_structure_plot() {

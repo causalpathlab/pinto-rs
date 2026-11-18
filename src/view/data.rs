@@ -85,6 +85,7 @@ impl Rect {
 }
 
 /// A pinto run on disk, read from its `.pinto.json`.
+#[derive(Clone)]
 pub struct Run {
     /// Output prefix: every output is `{prefix}.…`.
     pub prefix: String,
@@ -313,6 +314,40 @@ impl Geometry {
 
     pub fn n(&self) -> usize {
         self.x.len()
+    }
+
+    /// The cells named `names` (those this geometry has) at the rows of
+    /// `xy` (`names.len() × 2`), each once, as one tile named `name`: a
+    /// layout of them in place of the tissue.
+    #[must_use]
+    pub fn laid_out(&self, names: &[Box<str>], xy: &Mat, name: &str) -> Self {
+        let mut out = Geometry {
+            names: Vec::new(),
+            index: HashMap::default(),
+            x: Vec::new(),
+            y: Vec::new(),
+            batch: Vec::new(),
+            tiles: Vec::new(),
+            // the tissue's, the columns a propensity table may carry
+            coord_names: self.coord_names.clone(),
+            in_graph: None,
+        };
+        for (r, name) in names.iter().enumerate() {
+            let (x, y) = (xy[(r, 0)], xy[(r, 1)]);
+            if self.index.contains_key(name)
+                && !out.index.contains_key(name)
+                && x.is_finite()
+                && y.is_finite()
+            {
+                out.index.insert(name.clone(), out.names.len());
+                out.names.push(name.clone());
+                out.x.push(x);
+                out.y.push(y);
+                out.batch.push(0);
+            }
+        }
+        out.tiles = tile_batches(&mut out.x, &mut out.y, &out.batch, vec![name.into()]);
+        out
     }
 
     pub fn bounds(&self) -> Rect {
