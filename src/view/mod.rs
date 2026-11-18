@@ -118,6 +118,11 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
     let session = crate::tui::TOOL.session("view", &args.session.options(args.prefix.is_some()))?;
     // One screen for the run browser and the view after it.
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
+    // legume-numeric's progress bars (a layout's kNN graph, among them)
+    // would draw over the screen: hidden while it is up
+    let bars = &legume_numeric::matrix::progress::MULTI_PROGRESS;
+    bars.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+    let _shown_again = ShowBarsAgain;
     session.with_terminal(modes, |terminal| {
         let picked;
         let args = match &args.prefix {
@@ -134,6 +139,17 @@ pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
         };
         tui::run(&session, terminal, args, follow.as_ref())
     })
+}
+
+/// legume-numeric's progress bars drawn on stderr again once dropped,
+/// as the view's screen goes.
+struct ShowBarsAgain;
+
+impl Drop for ShowBarsAgain {
+    fn drop(&mut self) {
+        legume_numeric::matrix::progress::MULTI_PROGRESS
+            .set_draw_target(indicatif::ProgressDrawTarget::stderr());
+    }
 }
 
 /// A run's cell geometry and grid, shared by every level.

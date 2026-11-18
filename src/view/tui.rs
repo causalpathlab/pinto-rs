@@ -174,6 +174,9 @@ struct App<'a> {
     layouts: std::collections::HashMap<layout::Key, &'a Base>,
     /// A layout being made.
     laying: Option<layout::Laying>,
+    /// The levels loaded on each base not shown (the tissue's under
+    /// `None`), with the theme they were coloured in.
+    stashed: std::collections::HashMap<Option<layout::Key>, (Theme, Vec<Option<Level>>)>,
     args: &'a ViewArgs,
     /// The session the view runs in: whether a terminal is there to draw
     /// on, and what it is.
@@ -321,6 +324,7 @@ impl<'a> App<'a> {
             layout_source: 0,
             layouts: std::collections::HashMap::new(),
             laying: None,
+            stashed: std::collections::HashMap::new(),
             args,
             session,
             levels,

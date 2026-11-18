@@ -24,6 +24,9 @@ pub(super) struct Laying {
 impl<'a> App<'a> {
     /// `u`: the next layout of the table shown, after the last the tissue.
     pub(super) fn step_layout(&mut self) {
+        if self.still_laying() {
+            return;
+        }
         let next = match self.laid_out {
             None => Some(Method::ALL[0]),
             Some((_, m)) => {
@@ -39,6 +42,9 @@ impl<'a> App<'a> {
 
     /// `U`: the next table to lay the cells out by, in the layout shown.
     pub(super) fn step_layout_source(&mut self) {
+        if self.still_laying() {
+            return;
+        }
         let n = layout::sources(&self.tissue.run).len();
         if n == 0 {
             self.status = "no table of the cells to lay them out by".into();
@@ -52,6 +58,16 @@ impl<'a> App<'a> {
                 self.status = format!("u lays the cells out by {name}");
             }
         }
+    }
+
+    /// Whether a layout is being made: one at a time, as it is heavy work.
+    fn still_laying(&mut self) -> bool {
+        let Some(laying) = &self.laying else {
+            return false;
+        };
+        let source = &layout::sources(&self.tissue.run)[laying.key.0].name;
+        self.status = format!("still laying out {} of {source}", laying.key.1.name());
+        true
     }
 
     /// The layout `key`, made first if need be.
@@ -82,7 +98,6 @@ impl<'a> App<'a> {
 
     /// Back to the tissue.
     fn show_tissue(&mut self) {
-        self.laying = None;
         let tissue = self.tissue;
         self.switch_base(tissue, None);
     }
@@ -119,20 +134,35 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Draw on `base` from here on: the level shown loaded on it, the map
-    /// fitted to it.
+    /// Draw on `base` from here on, in the theme shown: the levels it had
+    /// loaded back (the others kept for when this base is shown again), the
+    /// map fitted to it. What was drawn on the other base's cells goes: the
+    /// batch grid, the cell picked, the lra pairs' maps and a lupin round
+    /// (`I` and `,`/`.` open them again here).
     fn switch_base(&mut self, base: &'a Base, key: Option<Key>) {
+        let theme = self.base.theme();
+        base.set_theme(theme);
+        let levels = std::mem::take(&mut self.levels);
+        self.stashed.insert(self.laid_out, (theme, levels));
+        self.levels = match self.stashed.remove(&key) {
+            Some((was, levels)) if was == theme => levels,
+            _ => base.run.levels.iter().map(|_| None).collect(),
+        };
         self.base = base;
         self.laid_out = key;
         self.tile = None;
-        self.levels = self.base.run.levels.iter().map(|_| None).collect();
+        self.picked = None;
+        self.leave_grid();
+        self.lra = None;
+        self.lra_on = false;
+        self.round = None;
         match self.go_level(self.cur, None) {
             Ok(()) => {
                 self.fit(self.base.geom.bounds());
                 self.status = match key {
                     Some((s, m)) => {
                         let source = &layout::sources(&self.tissue.run)[s].name;
-                        format!("{} of {source}: u next layout, U next table", m.name())
+                        format!("{}: {source}", m.name())
                     }
                     None => "the tissue".into(),
                 };
