@@ -257,9 +257,9 @@ pub struct PintoMetadata {
 
     /// How the run read its rows' names (`--feature-name-mode`, resolved:
     /// never `auto`), so what reads its data back (`pinto apply residual`)
-    /// reads the rows it fitted. Absent on runs that read the names
-    /// exactly (lc, dsvd, the baselines), and on manifests written before
-    /// this was recorded ([`Self::feature_names_read`]).
+    /// reads the rows it fitted. Absent on runs that take no such flag (lc,
+    /// dsvd, the baselines: they read the names exactly), and on manifests
+    /// written before this was recorded; residual then reads them `auto`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_names: Option<crate::cell_activity_graph_embedding::args::FeatureNameMode>,
 }
@@ -675,19 +675,6 @@ impl PintoMetadata {
         } else {
             &self.command
         }
-    }
-
-    /// How the run read its rows' names: what its manifest records, else
-    /// the default of the command that made it (cage and its predictions
-    /// detect the names, `auto`; every other run reads them exactly).
-    pub fn feature_names_read(
-        &self,
-    ) -> crate::cell_activity_graph_embedding::args::FeatureNameMode {
-        use crate::cell_activity_graph_embedding::args::FeatureNameMode;
-        self.feature_names.unwrap_or(match self.command.as_str() {
-            "cage" | "predict" => FeatureNameMode::Auto,
-            _ => FeatureNameMode::Exact,
-        })
     }
 
     /// Whether the run's expression-mode base graph was built on the

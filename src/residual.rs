@@ -184,13 +184,14 @@ pub struct ResidualArgs {
     #[arg(
         long = "feature-name-mode",
         value_enum,
-        help = "How the run read feature names (default: as its manifest records, or its method's default)",
-        long_help = "How the run read feature names: exact (the rows every file\n\
-                     shares, by name), or the --feature-name-mode the run was fitted\n\
-                     with. By default the run's own: what its manifest records, else\n\
-                     its method's default (auto for cage and its predictions, exact\n\
-                     otherwise), so the stage-1 tables are on the rows a stage-2 fit\n\
-                     of the same method reads."
+        help = "How feature names are read (default: as the run's manifest records, else auto)",
+        long_help = "How the data's feature names are read: auto (the default: gene\n\
+                     names keyed by their symbol, ENSG..._SYMBOL and SYMBOL alike; loci\n\
+                     by their coordinates), exact (the rows every file shares, by name\n\
+                     as written), gene, locus or mixed. Without it, the mode the run's\n\
+                     manifest records it read them with, else auto. A stage-2 fit with\n\
+                     --offset finds its rows in the tables by name or by the same loose\n\
+                     key, whichever way it reads the names itself."
     )]
     pub feature_names: Option<FeatureNameMode>,
 
@@ -348,8 +349,9 @@ pub struct Plan {
     /// The run's cells table (`outputs.cells`): its cells' coordinates and
     /// batches.
     pub cells: String,
-    /// How the run's rows are read: `--feature-name-mode`, else as the run
-    /// read them ([`crate::util::metadata::PintoMetadata::feature_names_read`]).
+    /// How the run's rows are read: `--feature-name-mode`, else as the
+    /// run's manifest records it read them, else auto. Exact only when
+    /// asked for (here, or by the run).
     pub feature_names: FeatureNameMode,
 }
 
@@ -402,7 +404,8 @@ impl Plan {
             cells,
             feature_names: args
                 .feature_names
-                .unwrap_or_else(|| run.meta.feature_names_read()),
+                .or(run.meta.feature_names)
+                .unwrap_or(FeatureNameMode::Auto),
         })
     }
 
@@ -545,7 +548,7 @@ impl Inputs {
             }
             mode => mode.resolve_kind(&[]),
         };
-        info!("Reading the run's rows as it read them: {kind:?}");
+        info!("Reading the data's feature names as {kind:?}");
         let data = crate::util::input::open_fit_data(&plan.files, &kind)?;
         let feature_kind = kind;
         let names = data.column_names()?;

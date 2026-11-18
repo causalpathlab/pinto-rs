@@ -272,7 +272,9 @@ pub struct Stage1Divisor {
 
 impl Stage1Divisor {
     /// The tables of `dir` on a fit's `cells` and `rows`, each found by
-    /// name; a cell or row of the fit the stage-1 tables lack is refused.
+    /// name (a row by its name, else by its gene or locus key:
+    /// [`match_rows`]); a cell or row of the fit the stage-1 tables lack
+    /// is refused.
     pub fn load(dir: &str, cells: &[Box<str>], rows: &[Box<str>]) -> anyhow::Result<Self> {
         let budget = Budget::now()?;
         let tables = Stage1Tables::read(dir, &budget)?;
@@ -314,12 +316,6 @@ impl Stage1Divisor {
             .enumerate()
             .map(|(i, c)| (c.as_ref(), i))
             .collect();
-        let row_at: HashMap<&str, usize> = tables
-            .features
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.as_ref(), i))
-            .collect();
         let (mut theta, mut n, mut batch) = (
             Vec::with_capacity(cells.len() * k),
             Vec::with_capacity(cells.len()),
@@ -336,33 +332,26 @@ impl Stage1Divisor {
             n.push(tables.n[i]);
             batch.push(tables.batch[i]);
         }
-        let of_row: Vec<usize> = rows
-            .iter()
-            .map(|r| {
-                row_at.get(r.as_ref()).copied().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "row {r} of the data is not in the stage-1 tables: read the data \
-                         as the stage-1 run did (its --feature-name-mode)"
-                    )
-                })
-            })
-            .collect::<anyhow::Result<_>>()?;
+        let of_row = match_rows(&tables.features, rows)?;
         let (g0, nb) = (tables.features.len(), tables.batches.len());
-        let mut p = Vec::with_capacity(nb * rows.len() * k);
-        let pbar: Vec<f32> = of_row.iter().map(|&r| tables.pbar[r]).collect();
-        let mut sigma = Vec::with_capacity(rows.len() * nb);
-        for b in 0..nb {
-            for &r in &of_row {
-                p.extend_from_slice(&tables.profiles[(b * g0 + r) * k..(b * g0 + r + 1) * k]);
+        // a fit row that stands for several table rows (their names'
+        // shared key) takes their summed expectation: `μ`, so `p`, `p̄`
+        // and the variance `σ²` add
+        let mut p = vec![0.0f32; nb * rows.len() * k];
+        let mut pbar = vec![0.0f32; rows.len()];
+        let mut sigma = vec![0.0f32; rows.len() * nb];
+        for (g, of) in of_row.iter().enumerate() {
+            for &r in of {
+                pbar[g] += tables.pbar[r];
+                for b in 0..nb {
+                    let to = &mut p[(b * rows.len() + g) * k..(b * rows.len() + g + 1) * k];
+                    let from = &tables.profiles[(b * g0 + r) * k..(b * g0 + r + 1) * k];
+                    to.iter_mut().zip(from).for_each(|(x, &y)| *x += y);
+                    sigma[g * nb + b] += tables.sigma2[r * nb + b].max(0.0);
+                }
             }
         }
-        for &r in &of_row {
-            sigma.extend(
-                tables.sigma2[r * nb..(r + 1) * nb]
-                    .iter()
-                    .map(|&s| s.max(0.0).sqrt()),
-            );
-        }
+        sigma.iter_mut().for_each(|s| *s = s.sqrt());
         Ok(Self {
             dir: PathBuf::new(),
             k,
@@ -689,6 +678,64 @@ pub fn refuse_batch_options(
         );
     }
     Ok(())
+}
+
+/// Each of the fit's `rows`, the stage-1 table rows (`features`) it stands
+/// for: the row of its own name, else every row whose name has the same
+/// key under the loose (auto) rule, [`FeatureNameKind::Mixed`]'s per-name
+/// key (`ENSG…_SYMBOL` keyed by its symbol, a locus by its normalized
+/// coordinates). So the tables line up whichever way stage 1 and stage 2
+/// read the names: a fit row read by its full name finds the row residual
+/// keyed by its symbol, and a symbol a fit read as one row (several
+/// `ENSG…_SYMBOL` rows merged) finds all of them. A fit row matched by
+/// neither is refused.
+///
+/// [`FeatureNameKind::Mixed`]: data_beans::aux::feature_names::FeatureNameKind::Mixed
+pub(crate) fn match_rows(
+    features: &[Box<str>],
+    rows: &[Box<str>],
+) -> anyhow::Result<Vec<Vec<usize>>> {
+    use data_beans::aux::feature_names::FeatureNameKind;
+    let loose = FeatureNameKind::Mixed;
+    let row_at: HashMap<&str, usize> = features
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_ref(), i))
+        .collect();
+    let mut by_key: Option<HashMap<Box<str>, Vec<usize>>> = None;
+    let (mut keyed, mut merged) = (0usize, 0usize);
+    let of_row = rows
+        .iter()
+        .map(|r| {
+            if let Some(&i) = row_at.get(r.as_ref()) {
+                return Ok(vec![i]);
+            }
+            let by_key = by_key.get_or_insert_with(|| {
+                let mut m: HashMap<Box<str>, Vec<usize>> = HashMap::default();
+                for (i, f) in features.iter().enumerate() {
+                    m.entry(loose.canonicalize(f)).or_default().push(i);
+                }
+                m
+            });
+            let of = by_key.get(&loose.canonicalize(r)).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "row {r} of the data is not in the stage-1 tables, by its name or its \
+                     gene or locus key: a stage-2 fit reads the stage-1 run's own data files"
+                )
+            })?;
+            keyed += 1;
+            merged += usize::from(of.len() > 1);
+            Ok(of)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if keyed > 0 {
+        info!(
+            "Stage-1 tables: {keyed} of {} rows matched by their gene or locus key, not their \
+             name ({merged} of them over several table rows, summed)",
+            rows.len()
+        );
+    }
+    Ok(of_row)
 }
 
 #[inline]
