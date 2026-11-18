@@ -2,7 +2,9 @@ use crate::simulate::draw::{nb_quantile, phi, Latent};
 use crate::simulate::expression::{active, draw_nuisance, rotate_to_cosine};
 use crate::simulate::field::{mean_sd, rff_field};
 use crate::simulate::panel::grid;
-use crate::simulate::params::{find_scenario, PatchKind, SimParams, SCENARIOS};
+use crate::simulate::params::{
+    find_scenario, ListOrRandom, Patch, PatchKind, Random, SimParams, SCENARIOS,
+};
 use crate::simulate::rng::{key, Stream};
 use crate::simulate::sim::Sim;
 use crate::simulate::truth::assign_by_offsets;
@@ -975,4 +977,160 @@ fn thin_programs_give_no_pairs() {
         "program sizes {sizes:?}; targets {:?}",
         pairs.iter().map(|p| p.targets.len()).collect::<Vec<_>>()
     );
+}
+
+//////////////////////////////////
+// several donor-specific domains //
+//////////////////////////////////
+
+/// `patch_owner=N` is `patch_owners=[N]` in short: the same truth and
+/// counts, every scenario's single domain as it was.
+#[test]
+fn one_listed_owner_is_the_single_owner_form() {
+    let one = scenario("donor-confounded-donor-only-cell-type").unwrap();
+    let listed = SimParams {
+        patch_kind: PatchKind::None,
+        patch_owners: ListOrRandom::List(vec![one.patch_owner]),
+        patch_kinds: ListOrRandom::List(vec![PatchKind::NewState]),
+        ..one.clone()
+    };
+    assert_eq!(one.patches(), listed.patches());
+    let (a, b) = (small(one), small(listed));
+    assert_eq!(a.truth.domain, b.truth.domain);
+    assert_eq!(a.genes.program, b.genes.program);
+    for s in 0..a.sections.len() {
+        assert_eq!(sorted(a.counts(s)), sorted(b.counts(s)));
+    }
+}
+
+/// Three owners: a domain each, in its owner alone, each new state its own
+/// program, distinct from the others and from the shared ones.
+#[test]
+fn each_owner_has_its_own_domain_and_state() {
+    let p = SimParams {
+        patch_owners: ListOrRandom::List(vec![0, 1, 2]),
+        patch_kinds: ListOrRandom::List(vec![PatchKind::NewState]),
+        ..scenario("donor-confounded").unwrap()
+    };
+    p.validate().unwrap();
+    let sim = small(p);
+    let (p, truth) = (&sim.p, &sim.truth);
+    let labels: Vec<&str> = truth.domains[p.n_domains..]
+        .iter()
+        .map(|d| d.label.as_ref())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "D1_specific_domain_1",
+            "D2_specific_domain_1",
+            "D3_specific_domain_1"
+        ]
+    );
+    assert_eq!(truth.n_states(), p.n_domains + 3);
+    for (j, owner) in [0, 1, 2].into_iter().enumerate() {
+        let k = p.n_domains + j;
+        assert_eq!(truth.domains[k].owner, Some(owner));
+        assert_eq!(truth.states[k].owner, Some(owner));
+        for (s, sec) in sim.sections.iter().enumerate() {
+            let share = truth.domain[s].iter().filter(|&&z| z == k).count() as f64 / sec.n() as f64;
+            if sec.donor == owner {
+                assert!(
+                    (share - p.patch_share).abs() < 0.01,
+                    "{}: {share}",
+                    sec.name
+                );
+            } else {
+                assert_eq!(share, 0.0, "{}", sec.name);
+            }
+        }
+    }
+    let programs = &sim.genes.program;
+    for a in p.n_domains..truth.n_states() {
+        for b in 0..a {
+            assert_ne!(programs[a], programs[b], "states {a} and {b}");
+        }
+    }
+}
+
+/// Drawn owners and kinds: the same for a seed, recorded as lists, never
+/// moved by nuisance_off, and differing over seeds.
+#[test]
+fn owners_and_kinds_are_drawn_from_the_seed() {
+    let at = |seed: u64| SimParams {
+        seed,
+        patch_owners: ListOrRandom::Random(Random::Random),
+        patch_kinds: ListOrRandom::Random(Random::Random),
+        ..scenario("donor-confounded").unwrap()
+    };
+    let draws: Vec<Vec<Patch>> = (0..20).map(|seed| at(seed).patches()).collect();
+    for (seed, d) in draws.iter().enumerate() {
+        let p = at(seed as u64);
+        p.validate().unwrap();
+        assert_eq!(&p.patches(), d);
+        assert!((1..=p.n_donors).contains(&d.len()), "{d:?}");
+        assert!(d.windows(2).all(|w| w[0].owner < w[1].owner), "{d:?}");
+        assert!(d.iter().all(|x| x.kind != PatchKind::None));
+        let off = SimParams {
+            nuisance_off: true,
+            ..p.clone()
+        };
+        assert_eq!(&off.patches(), d);
+        let r = p.resolved();
+        assert_eq!(r.patches(), *d);
+        assert!(matches!(r.patch_owners, ListOrRandom::List(_)));
+    }
+    assert!(draws.iter().any(|d| d != &draws[0]), "seeds draw alike");
+    let sizes: std::collections::BTreeSet<usize> = draws.iter().map(Vec::len).collect();
+    assert!(sizes.len() > 1, "the number of owners is drawn: {sizes:?}");
+}
+
+/// Owners and kinds by --set: comma lists, `random`, and the refusals.
+#[test]
+fn owners_and_kinds_are_set_and_checked() {
+    let base = scenario("donor-confounded").unwrap();
+    let set = |sets: &[&str]| {
+        let sets: Vec<String> = sets.iter().map(|s| s.to_string()).collect();
+        base.clone().with_overrides(&sets)
+    };
+    let p = set(&["patch_owners=0,2", "patch_kinds=new-mix"]).unwrap();
+    p.validate().unwrap();
+    assert_eq!(
+        p.patches(),
+        [
+            Patch {
+                owner: 0,
+                kind: PatchKind::NewMix
+            },
+            Patch {
+                owner: 2,
+                kind: PatchKind::NewMix
+            },
+        ]
+    );
+    let p = set(&["patch_owners=1", "patch_kinds=[\"new-state\"]"]).unwrap();
+    assert_eq!(
+        p.patches(),
+        [Patch {
+            owner: 1,
+            kind: PatchKind::NewState
+        }]
+    );
+    let p = set(&["patch_owners=random", "patch_kinds=random"]).unwrap();
+    assert!(matches!(p.patch_owners, ListOrRandom::Random(_)));
+    // both forms of the owner together
+    assert!(set(&["patch_owner=1", "patch_owners=0,2"]).is_err());
+    let refused = |sets: &[&str]| {
+        let p = set(sets).unwrap();
+        assert!(p.validate().is_err(), "{sets:?}");
+    };
+    refused(&["patch_owners=0,0", "patch_kinds=new-state"]);
+    refused(&["patch_owners=0,5", "patch_kinds=new-state"]);
+    refused(&[
+        "patch_owners=0,1",
+        "patch_kinds=new-state,new-mix,new-state",
+    ]);
+    // owners and no kind anywhere
+    refused(&["patch_owners=0,1"]);
+    assert!(set(&["patch_kinds=none"]).unwrap().validate().is_err());
 }

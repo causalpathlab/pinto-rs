@@ -51,8 +51,8 @@ impl Handler for Tools {
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
             "run_residual" => super::residual::residual(&self.cli, parse(args)?, cx),
             "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
-            "run_sim_score" => super::sim::sim_score(parse(args)?),
-            "run_sim_pairs" => super::sim::sim_pairs(parse(args)?),
+            "run_sim_score_by_set" => super::sim::sim_score(parse(args)?),
+            "run_sim_score_by_pair" => super::sim::sim_pairs(parse(args)?),
             "run_sim_baseline" => super::sim::baseline(&self.cli, parse(args)?, cx),
             _ => unreachable!("the server answers unknown tools itself"),
         }
@@ -1000,7 +1000,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              records it in the run's manifest (slot lra.simulate). With one, set, pairs or \
              null_pairs it runs one scenario instead of the built-in grid: its effect planted on pairs \
              pairs and withheld on null_pairs others under the same hidden field, writing \
-             {out}.lra-simulate.parquet (columns planted, t, p and each method's p, for AUROC \
+             {out}.lra-simulate.parquet (columns planted and, for each estimator, effect_dr, effect_ipw, effect_outcome and \
+             effect_unadj with _se, _df and _p, each SE a delete-one-tile jackknife; for AUROC \
              and AUPRC) and then {out}.lra-simulate.json (the resolved scenario, the pairs, \
              their labels and seeds, the reference), recording nothing in the manifest; with \
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \
@@ -1044,6 +1045,7 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
         "cell_types": flag("cell_types", json!({"type": "string"})),
         "region": flag("region", json!({"type": "string"})),
         "region_jackknife": flag("region_jackknife", json!({"enum": choices::<RegionJackknife>()})),
+        "abf_prior_scale": flag("abf_prior_scale", json!({"type": "number", "exclusiveMinimum": 0})),
         "max_threads": max_threads_arg(cli),
         "atomic_outputs": atomic_outputs_arg(cli),
     });

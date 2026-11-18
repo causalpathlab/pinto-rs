@@ -4,15 +4,15 @@
 //! |---|---|
 //! | `coexpr_log_or` | log odds of ligand on one side and receptor on the other, across contacts (association) |
 //! | `marginal_cor` | Pearson correlation of the response and `log1p` contact ligand over competent receivers, on its own scale (association) |
-//! | `unadjusted_diff` | the unadjusted difference: mean response of the exposed minus mean response of the unexposed, over competent receivers, every receiver weighted 1 and nothing adjusted for (association) |
-//! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model |
-//! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction; a point estimate, with no SE or interval |
-//! | `effect_competent` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
-//! | `effect_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
-//! | `effect_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
-//! | `effect_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
-//! | `effect_competent_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
-//! | `effect_competent_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |
+//! | `effect_unadj` | the unadjusted difference: mean response of the exposed minus mean response of the unexposed, over competent receivers, every receiver weighted 1 and nothing adjusted for (association) |
+//! | `effect_ipw` | the competent effect by overlap weights alone, no outcome model; with `_se`, `_lo`, `_hi`, `_df`, `_p` |
+//! | `effect_outcome` | the competent effect by the outcome regression alone, averaged under the overlap weights, no residual correction; with `_se`, `_lo`, `_hi`, `_df`, `_p` |
+//! | `effect_dr` | the competent effect, **the headline**: both combined, doubly robust, overlap-weighted effect where the receptor is expressed, averaged over exposure thresholds |
+//! | `effect_dr_log10_bf`, `tau_top`, `tau_top_weight` | the evidence for an effect at any threshold against none, and the threshold the average leans on most |
+//! | `effect_dr_incompetent` | the incompetent effect: the same where it is not; a negative control, ≈ 0 |
+//! | `effect_dr_contrast` | the contrast: competent effect − incompetent effect; a contrast between cell types, not only between receptor states (below) |
+//! | `effect_dr_{section,spatial,identity}` | the competent effect under nested adjustment sets (pooled row only) |
+//! | `effect_dr_nospill` | the competent effect without the neighbour-response and bleed covariates (pooled row only) |
 //!
 //! Competence is read from identity bins, so competent and incompetent
 //! receivers are different cell types by construction: the contrast conflates the
@@ -23,17 +23,22 @@
 //! exceed the incompetent one is not called specific to the receptor, which
 //! can also turn away a real effect on two responsive cell types.
 //!
-//! `unadjusted_diff`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
+//! Every estimator's SE (`effect_dr`, `effect_ipw`, `effect_outcome`,
+//! `effect_unadj`) is its no-refit delete-one-tile jackknife SE
+//! ([`super::jackknife::EstimatorJackknife`]) on every row; a region row's
+//! headline keeps the region jackknife ([`super::jackknife::jackknife`]).
+//!
+//! `effect_unadj`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
 //! the headline is, each by its own evidence, and read for comparison: they
 //! enter no verdict. The sensitivity fits below (the nested adjustment sets
 //! and the no-spill fit) read the headline threshold alone, so a gap between
-//! them and `effect_competent` can come from the threshold as well as the
+//! them and `effect_dr` can come from the threshold as well as the
 //! adjustment.
 //!
 //! The sequential adjustment refits the competent effect adjusting for (a) section only,
 //! (b) + spatial smooth, (c) + cell identity (receiver and neighbour
-//! identity, cell type when given); `effect_competent` is the full set,
-//! adding depth. Read left to right with `unadjusted_diff`, it shows how much of an
+//! identity, cell type when given); `effect_dr` is the full set,
+//! adding depth. Read left to right with `effect_unadj`, it shows how much of an
 //! apparent effect each confounder group explains. The pair's own columns
 //! (own ligand, spillover, bleed, niche ligand, competence) are in every
 //! step.
@@ -64,7 +69,7 @@
 //!
 //! Neighbours share senders with the receiver, so their response is partly
 //! downstream of the same exposure and adjusting for it can attenuate a
-//! real effect; `effect_competent_nospill` drops both response-side bleed
+//! real effect; `effect_dr_nospill` drops both response-side bleed
 //! columns as a sensitivity check. One fit serves the pooled row and one
 //! row per section: a section's estimate is the same estimator summed over
 //! that section's receivers.
@@ -119,7 +124,7 @@ use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, LigandShare, Rows};
-use super::jackknife::{jackknife, Jackknife, PairFit, JACKKNIFE_P};
+use super::jackknife::{jackknife, scope_tiles, Jackknife, PairFit, JACKKNIFE_P};
 use super::options::EffectOpts;
 use super::overlap::FoldStarts;
 use super::response::{genes_and_weights, Response, Targets};
@@ -197,7 +202,29 @@ fn estimate_on(
         levels: &comps,
         opts,
     };
-    let mut eff = over_thresholds(rows, &fit, &taus, Sensitivity::ALL, FoldStarts::default())?;
+    // Every row's estimators read on the tile jackknife, its replicates
+    // summed in the same pass of the fits; a region row's headline keeps its
+    // own, below.
+    let tiles = scope_tiles(tissue, rows);
+    let jack_rows = Rows {
+        jackknife: Some(&tiles),
+        ..rows
+    };
+    let mut eff = over_thresholds(
+        jack_rows,
+        &fit,
+        &taus,
+        Sensitivity::ALL,
+        FoldStarts::default(),
+    )?;
+    for ((e, j), (_, scope)) in eff
+        .scopes
+        .iter_mut()
+        .zip(&eff.jackknife)
+        .zip(&tissue.scopes)
+    {
+        j.apply(e, !matches!(scope, Scope::Region(_)));
+    }
     let mut jacks = vec![Jackknife::NONE; tissue.scopes.len()];
     for (k, (_, scope)) in tissue.scopes.iter().enumerate() {
         let e = &mut eff.scopes[k];

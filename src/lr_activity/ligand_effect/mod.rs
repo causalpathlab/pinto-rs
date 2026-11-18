@@ -13,22 +13,24 @@
 //! neighbours carry ligand above a threshold, `Y` = the receiver's signed
 //! target program, `C` = the receiver's identity expresses the receptor:
 //!
-//! - `effect_competent`, the competent effect, **the headline**:
+//! - `effect_dr`, the competent effect, **the headline**:
 //!   overlap-weighted effect of `T` on `Y` in receptor-competent receivers;
-//! - `effect_incompetent`, the incompetent effect: the same in incompetent
+//! - `effect_dr_incompetent`, the incompetent effect: the same in incompetent
 //!   receivers (≈ 0 is a negative control);
-//! - `effect_contrast`, the contrast: competent effect − incompetent effect.
+//! - `effect_dr_contrast`, the contrast: competent effect − incompetent effect.
 //!   Competence is read from identity bins, so competent and incompetent
 //!   receivers are different cell types by construction and the contrast
 //!   conflates the receptor with cell type; it is no headline, but a
 //!   significant effect must exceed the incompetent one;
 //! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
-//!   ratio; `marginal_cor`, the correlation of response and contact ligand; `unadjusted_diff`, the
+//!   ratio; `marginal_cor`, the correlation of response and contact ligand; `effect_unadj`, the
 //!   exposed minus unexposed difference in mean response; `effect_ipw` and `effect_outcome`, the headline's two halves,
-//!   overlap weights alone and the outcome regression alone. `effect_ipw` carries an
-//!   SE and 95% interval, as read for comparison: the average leans to thresholds with
-//!   a large z, and no control guards it. `effect_outcome` is a point estimate only,
-//!   because it can target a different contrast when exposure is misclassified.
+//!   overlap weights alone and the outcome regression alone. `effect_ipw` and
+//!   `effect_outcome` carry an SE, df, p and 95% interval, as read for comparison: the
+//!   average leans to thresholds with a large z, no control guards them, and
+//!   `effect_outcome` can target a different contrast when exposure is misclassified.
+//!   Every estimator's SE is its no-refit delete-one-tile jackknife
+//!   ([`jackknife::EstimatorJackknife`]).
 //!
 //! **Inference across pairs** ([`report::report`]): Benjamini–Hochberg q-values
 //! within the pooled rows and within each section, for the competent effect
@@ -64,7 +66,8 @@
 //!   the threshold-response curve, under the [`options`] asked for, into
 //!   [`rows`];
 //! - the estimator: [`overlap`], [`crossfit`] and [`regression`] estimate,
-//!   [`jackknife`] widens a region row's SE by the nuisance error,
+//!   [`jackknife`] gives every estimator its tile-jackknife SE and widens a
+//!   region row's by the nuisance error,
 //!   [`association`] reads the unadjusted comparisons, [`inference`] and
 //!   [`averaging`] read and combine the estimates;
 //! - across pairs: [`report`] corrects for multiplicity and [`verdict`] words
@@ -116,6 +119,7 @@ pub mod verdict;
 mod tests;
 
 pub use baselines::PERMUTATIONS;
+pub use options::ABF_PRIOR_SCALE;
 
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::cli::value_name;
@@ -126,9 +130,10 @@ use std::path::Path;
 /// The target of the commands' log lines, whichever file they come from.
 const LOG_TARGET: &str = module_path!();
 
-/// The fixed choices of the contact-effect analysis. None is a flag: each
-/// is recorded in the manifest (`outputs.lra.settings`) beside the table it
-/// made.
+/// The choices of the contact-effect analysis, each recorded in the
+/// manifest (`outputs.lra.settings`) beside the table it made. All are
+/// fixed but `abf_prior_scale`, which `--abf-prior-scale` sets; the
+/// manifest records the value the run used.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Internals {
     /// Shares of a receiver identity bin detecting the receptor for its
@@ -136,8 +141,9 @@ pub struct Internals {
     pub competence_grid: [f64; 3],
     /// The single competence threshold `lra-simulate` plants on.
     pub benchmark_competence: f64,
-    /// Prior SD in multiples of the median standard error
-    /// ([`options::ABF_PRIOR_SCALE`]).
+    /// Prior SD in multiples of the upper-median standard error, weighing
+    /// the exposure thresholds: `--abf-prior-scale`, recorded as the run
+    /// used it ([`options::ABF_PRIOR_SCALE`] by default).
     pub abf_prior_scale: f64,
     /// Fewest exposed and fewest unexposed receivers of a reported subgroup.
     pub min_arm: usize,
@@ -203,6 +209,8 @@ pub struct Settings<'a> {
     pub reference_data_labels: Option<&'a str>,
     /// `--region-jackknife`.
     pub region_jackknife: RegionJackknife,
+    /// `--abf-prior-scale` ([`options::ABF_PRIOR_SCALE`] by default).
+    pub abf_prior_scale: f64,
     /// `--marginal-baselines`: the permutations of each co-expression
     /// baseline (`--marginal-permutations`); `None` without the flag, and
     /// always for `lra-simulate`, which scores its own.
@@ -227,6 +235,7 @@ impl Settings<'_> {
             cell_types: self.cell_types.map(abs),
             region: self.region.map(abs),
             region_jackknife: value_name(&self.region_jackknife),
+            abf_prior_scale: self.abf_prior_scale,
             marginal_baselines: None,
             marginal_permutations: self.marginal,
         }

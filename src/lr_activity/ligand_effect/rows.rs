@@ -49,18 +49,18 @@ pub struct EffectRow {
     /// Two-sided p of the headline (the competent effect) against the t reference with
     /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its BH q
     /// within the section.
-    pub effect_p: f64,
-    pub effect_q: f64,
+    pub effect_dr_p: f64,
+    pub effect_dr_q: f64,
     /// One-sided (positive) normal p of the co-expression log odds ratio,
     /// and its BH q within the section.
     pub coexpr_p: f64,
     pub coexpr_q: f64,
     /// BH q of the incompetent effect, a control, two-sided, among the
     /// significant effects.
-    pub effect_incompetent_q: f64,
+    pub effect_dr_incompetent_q: f64,
     /// BH q of the contrast between the effects in competent and in
     /// receptor-negative receivers, among the significant effects.
-    pub effect_contrast_q: f64,
+    pub effect_dr_contrast_q: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
     /// BH q over ligands of the Simes p of each ligand's pairs.
@@ -101,12 +101,12 @@ impl EffectRow {
             curve: Vec::new(),
             marginal: None,
             jackknife: Jackknife::NONE,
-            effect_p: f64::NAN,
-            effect_q: f64::NAN,
+            effect_dr_p: f64::NAN,
+            effect_dr_q: f64::NAN,
             coexpr_p: f64::NAN,
             coexpr_q: f64::NAN,
-            effect_incompetent_q: f64::NAN,
-            effect_contrast_q: f64::NAN,
+            effect_dr_incompetent_q: f64::NAN,
+            effect_dr_contrast_q: f64::NAN,
             n_pairs_same_ligand: 0,
             ligand_q: f64::NAN,
             verdict: Verdict::InsufficientData,

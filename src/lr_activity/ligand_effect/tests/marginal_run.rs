@@ -137,6 +137,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
                 reference_data: None,
                 reference_data_labels: None,
                 region_jackknife: RegionJackknife::NoRefit,
+                abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
                 marginal: Some(PERMUTATIONS),
                 memory_budget: None,
             },

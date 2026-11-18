@@ -86,6 +86,66 @@ pub struct OverlapTerms {
     pub outcome: Vec<f64>,
     /// The overlap weight of the row's own arm: `1 − e` if exposed, `e` if not.
     pub arm_weight: Vec<f64>,
+    /// What deleting a tile moves the outcome model by, when asked for
+    /// ([`overlap_terms_with`]'s `influence`).
+    pub influence: Option<OutcomeInfluence>,
+}
+
+/// The outcome model's leave-one-tile-out coefficients: deleting tile `c`
+/// moves fold `k`'s ridge coefficients by the exact
+/// `Δβ_kc = −(A_k − X̃_cᵀX̃_c)⁻¹ X̃_cᵀ(y_c − X̃_c β_k)`, `A_k` the fold's
+/// penalized Gram, solved from the full fit rather than refitted (as the
+/// region jackknife's [`super::crossfit::Design::leaving_out`] solves on the
+/// Grams less a tile's). The outcome regression's sampling error lives in
+/// those coefficients, which a jackknife holding the fits fixed would leave
+/// out; the augmented estimate is first-order insensitive to them and does
+/// not read this. Only the effect coefficients' shifts are kept.
+pub struct OutcomeInfluence {
+    /// Per fold, the shift of its effect coefficients (`T`, then
+    /// `T · modifier`) when each tile is deleted, `w` numbers a tile; zero
+    /// for the tiles the fold holds out.
+    shifts: Vec<Vec<f64>>,
+    /// `1 +` the modifiers: the effect coefficients.
+    w: usize,
+    /// Per row, `(1, modifier…)`: what multiplies the effect coefficients.
+    z: Vec<f64>,
+    /// Each tile's fold.
+    tile_fold: Vec<u8>,
+}
+
+impl OutcomeInfluence {
+    /// Per fold, `M_k = Σ h_i z_i` over the rows of `rows` it holds out:
+    /// `M_k · Δβ_k` is the change of `Σ h(m₁ − m₀)` over those rows.
+    pub fn weights(&self, h: &[f64], rows: &[u32], cf: &CrossFit) -> Vec<Vec<f64>> {
+        let w = self.w;
+        let mut m = vec![vec![0.0; w]; self.shifts.len()];
+        for &i in rows {
+            let i = i as usize;
+            let Some(mk) = m.get_mut(cf.fold[i] as usize) else {
+                continue;
+            };
+            for (j, x) in mk.iter_mut().enumerate() {
+                *x += h[i] * self.z[i * w + j];
+            }
+        }
+        m
+    }
+
+    /// The change of `Σ h(m₁ − m₀)` over the rows of `m`
+    /// ([`OutcomeInfluence::weights`]) when tile `c` is deleted:
+    /// `Σ_{k ≠ fold(c)} Δβ_kc · M_k`.
+    pub fn shift(&self, m: &[Vec<f64>], c: u32) -> f64 {
+        let (c, w) = (c as usize, self.w);
+        let own = self.tile_fold[c] as usize;
+        m.iter()
+            .enumerate()
+            .filter(|&(k, _)| k != own)
+            .map(|(k, mk)| {
+                let s = &self.shifts[k][c * w..(c + 1) * w];
+                s.iter().zip(mk).map(|(a, b)| a * b).sum::<f64>()
+            })
+            .sum()
+    }
 }
 
 /// Per-pair inputs to [`overlap_terms_with`].
@@ -304,6 +364,7 @@ pub fn overlap_terms_with(
     pair: &PairInputs<'_>,
     e: &[f64],
     opts: &NuisanceOpts,
+    influence: bool,
 ) -> anyhow::Result<OverlapTerms> {
     let n = design.x.nrows();
     anyhow::ensure!(
@@ -331,16 +392,19 @@ pub fn overlap_terms_with(
     let mut num = vec![0.0; n];
     let mut outcome = vec![0.0; n];
     let mut arm_weight = vec![0.0; n];
+    let mut fits = Vec::with_capacity(cf.k);
     for (k, fold) in products.iter().enumerate() {
         let (train, test) = (&cf.train[k], &cf.test[k]);
         if test.is_empty() {
+            fits.push(None);
             continue;
         }
         anyhow::ensure!(!train.is_empty(), "fold {k} leaves no training rows");
 
-        let beta_o = timing::time(timing::RIDGE, || {
+        let (beta_o, gram) = timing::time(timing::RIDGE, || {
             ridge_bordered(&design.gram[k], fold, train.len(), opts.ridge)
         })?;
+        fits.push(influence.then(|| (beta_o.clone(), gram)));
 
         let p = design.p;
         let beta_o = beta_o.as_slice();
@@ -365,12 +429,105 @@ pub fn overlap_terms_with(
             }
         });
     }
+    let influence = influence.then(|| {
+        let effect = design.p + n_extra;
+        outcome_influence(design, cf, &o_cols, pair, fits, effect)
+    });
     Ok(OverlapTerms {
         h,
         num,
         outcome,
         arm_weight,
+        influence,
     })
+}
+
+/// A fold's ridge coefficients and its penalized Gram.
+type RidgeFit = (DVector<f64>, nalgebra::DMatrix<f64>);
+
+/// [`OutcomeInfluence`] of the folds' ridge `fits` of `pair.y` on the design
+/// and `o_cols`, the coefficient of `T` at `effect`. Each tile is gathered
+/// once, and each fold that trains on it solves on its Gram less the tile's.
+fn outcome_influence(
+    design: DesignView<'_>,
+    cf: &CrossFit,
+    o_cols: &[&[f64]],
+    pair: &PairInputs<'_>,
+    fits: Vec<Option<RidgeFit>>,
+    effect: usize,
+) -> OutcomeInfluence {
+    use super::regression::{factor_spd, gather_design_rows};
+    let d = design.p + o_cols.len();
+    let w = 1 + pair.modifiers.len();
+    let n_tiles = cf.n_clusters();
+    let mut tiles: Vec<Vec<usize>> = vec![Vec::new(); n_tiles];
+    for (i, &c) in cf.cluster.iter().enumerate() {
+        if cf.fold[i] != super::crossfit::LEFT_OUT {
+            tiles[c as usize].push(i);
+        }
+    }
+    let mut tile_fold = vec![0u8; n_tiles];
+    for (c, rows) in tiles.iter().enumerate() {
+        if let Some(&i) = rows.first() {
+            tile_fold[c] = cf.fold[i];
+        }
+    }
+    // Per tile, its effect shift in each fold.
+    let per_tile: Vec<Vec<Vec<f64>>> = tiles
+        .par_iter()
+        .zip(&tile_fold)
+        .map(|(rows, &own)| {
+            let mut out = vec![vec![0.0; w]; fits.len()];
+            if rows.is_empty() {
+                return out;
+            }
+            let mut buf: Vec<f64> = Vec::new();
+            gather_design_rows(design.x, design.p, o_cols, rows, &mut buf);
+            let xc = nalgebra::DMatrix::from_row_slice(rows.len(), d, &buf);
+            let gram = xc.transpose() * &xc;
+            let y = DVector::from_iterator(rows.len(), rows.iter().map(|&i| pair.y[i]));
+            for (k, fit) in fits.iter().enumerate() {
+                let Some((beta, a)) = fit.as_ref().filter(|_| k != own as usize) else {
+                    continue;
+                };
+                let g = xc.transpose() * (&y - &xc * beta);
+                match factor_spd(a - &gram) {
+                    Ok(f) => {
+                        let delta = f.solve(&g);
+                        for (j, x) in out[k].iter_mut().enumerate() {
+                            *x = -delta[effect + j];
+                        }
+                    }
+                    // No shift to take: the replicates, and the outcome
+                    // regression's SE, are NaN rather than missing the tile.
+                    Err(e) => {
+                        log::warn!("outcome model without a tile: {e}; its jackknife SE is NaN");
+                        out[k].fill(f64::NAN);
+                    }
+                }
+            }
+            out
+        })
+        .collect();
+    let mut shifts = vec![vec![0.0; n_tiles * w]; fits.len()];
+    for (c, per_fold) in per_tile.into_iter().enumerate() {
+        for (k, s) in per_fold.into_iter().enumerate() {
+            shifts[k][c * w..(c + 1) * w].copy_from_slice(&s);
+        }
+    }
+    let n = pair.y.len();
+    let mut z = vec![1.0; n * w];
+    for (j, m) in pair.modifiers.iter().enumerate() {
+        for i in 0..n {
+            z[i * w + 1 + j] = m[i];
+        }
+    }
+    OutcomeInfluence {
+        shifts,
+        w,
+        z,
+        tile_fold,
+    }
 }
 
 /// `θ̂` over `rows` (ascending row indices), with the cluster sums of its
@@ -387,13 +544,32 @@ pub fn subset_estimate(
     rows: &[u32],
     cf: &CrossFit,
 ) -> (Estimate, Vec<f64>) {
+    ratio_estimate(&terms.num, &terms.h, t, rows, cf)
+}
+
+/// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`, read as
+/// [`subset_estimate`] reads the augmented one, the fits taken as known,
+/// which leaves the coefficients' error out: where the tile jackknife runs,
+/// its SE replaces this one ([`super::jackknife::Replicates`]).
+pub fn outcome_estimate(terms: &OverlapTerms, t: &[bool], rows: &[u32], cf: &CrossFit) -> Estimate {
+    ratio_estimate(&terms.outcome, &terms.h, t, rows, cf).0
+}
+
+/// `Σ num / Σ h` over `rows`, with its linearization's cluster sums.
+fn ratio_estimate(
+    num: &[f64],
+    h: &[f64],
+    t: &[bool],
+    rows: &[u32],
+    cf: &CrossFit,
+) -> (Estimate, Vec<f64>) {
     let (mut sh, mut sh2, mut snum) = (0.0, 0.0, 0.0);
     let mut treated = 0usize;
     for &i in rows {
         let i = i as usize;
-        sh += terms.h[i];
-        sh2 += terms.h[i] * terms.h[i];
-        snum += terms.num[i];
+        sh += h[i];
+        sh2 += h[i] * h[i];
+        snum += num[i];
         treated += t[i] as usize;
     }
     let cnt = rows.len();
@@ -404,7 +580,7 @@ pub fn subset_estimate(
     let theta = snum / sh;
     for &i in rows {
         let i = i as usize;
-        sums[cf.cluster[i] as usize] += (terms.num[i] - terms.h[i] * theta) / sh;
+        sums[cf.cluster[i] as usize] += (num[i] - h[i] * theta) / sh;
     }
     let (se, df) = clustered_sd(&sums);
     (
@@ -437,22 +613,5 @@ pub fn difference(a: &Estimate, sums_a: &[f64], b: &Estimate, sums_b: &[f64]) ->
         mean_h: f64::NAN,
         ess: f64::NAN,
         df,
-    }
-}
-
-/// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`, read from the
-/// fit behind `effect`, the augmented estimate on the same rows. Reported as a
-/// point estimate. Everything but `theta` is borrowed from `effect`: the `se` and
-/// `df` are first-order for the coefficient's sampling error, and only decide how
-/// the fits and thresholds of the average count ([`super::effects::ScopeEffects::outcome`]).
-pub fn outcome_estimate(terms: &OverlapTerms, effect: &Estimate, rows: &[u32]) -> Estimate {
-    let (mut outcome, mut h) = (0.0, 0.0);
-    for &i in rows {
-        outcome += terms.outcome[i as usize];
-        h += terms.h[i as usize];
-    }
-    Estimate {
-        theta: if h > 1e-12 { outcome / h } else { f64::NAN },
-        ..*effect
     }
 }

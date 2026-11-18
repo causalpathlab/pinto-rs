@@ -91,10 +91,10 @@ fn confounding_fools_the_unadjusted_difference_not_the_estimate() {
     )
     .unwrap();
     let (e, _) = subset_estimate(&terms, &t, &all_rows(t.len()), &w.cf);
-    let unadjusted_diff = arm_contrast(&y, &t, &all_rows(t.len()), &w.cf, |_| 1.0).theta;
+    let unadj = arm_contrast(&y, &t, &all_rows(t.len()), &w.cf, |_| 1.0).theta;
     assert!(
-        unadjusted_diff > 0.5,
-        "unadjusted difference should be confounded upward: {unadjusted_diff}"
+        unadj > 0.5,
+        "unadjusted difference should be confounded upward: {unadj}"
     );
     assert!(
         e.z().abs() < 3.0,
@@ -212,6 +212,7 @@ fn a_group_with_one_arm_is_not_estimable() {
         num: vec![0.0; 500],
         outcome: vec![0.0; 500],
         arm_weight: vec![0.5; 500],
+        influence: None,
     };
     let (e, _) = subset_estimate(&terms, &t, &all_rows(500), &w.cf);
     assert!(e.theta.is_nan());
@@ -252,22 +253,18 @@ fn ipw_and_outcome_regression_each_adjust() {
     .unwrap();
     let rows = all_rows(n);
     let (effect, _) = subset_estimate(&terms, &t, &rows, &w.cf);
-    let unadjusted_diff = arm_contrast(&y, &t, &rows, &w.cf, |_| 1.0);
+    let unadj = arm_contrast(&y, &t, &rows, &w.cf, |_| 1.0);
     let ipw = arm_contrast(&y, &t, &rows, &w.cf, |i| terms.arm_weight[i]);
-    let outcome = outcome_estimate(&terms, &effect, &rows);
-    assert!(
-        unadjusted_diff.theta > 0.6,
-        "unadjusted_diff {:.3}",
-        unadjusted_diff.theta
-    );
+    let outcome = outcome_estimate(&terms, &t, &rows, &w.cf);
+    assert!(unadj.theta > 0.6, "unadj {:.3}", unadj.theta);
     assert!((ipw.theta - 0.3).abs() < 0.1, "ipw {:.3}", ipw.theta);
     assert!(
         (outcome.theta - 0.3).abs() < 0.1,
         "outcome {:.3}",
         outcome.theta
     );
-    assert_eq!(outcome.se, effect.se);
-    assert!(unadjusted_diff.se > 0.0 && ipw.se > 0.0 && ipw.df > 0.0);
+    assert!(outcome.se > 0.0 && outcome.se != effect.se, "its own SE");
+    assert!(unadj.se > 0.0 && ipw.se > 0.0 && ipw.df > 0.0);
 }
 
 /// The clustered correlation agrees with the formula, reads a perfect line

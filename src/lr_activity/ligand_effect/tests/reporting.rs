@@ -164,7 +164,7 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> Effe
         effects: ScopeEffects {
             effect: est((z - z3) * 0.05, 0.05),
             competent: est(z * 0.05, 0.05),
-            unadjusted_diff: nan,
+            unadj: nan,
             ipw: nan,
             outcome: nan,
             incompetent: est(z3 * 0.05, 0.05),
@@ -180,12 +180,12 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> Effe
         curve: Vec::new(),
         marginal: None,
         jackknife: crate::lr_activity::ligand_effect::jackknife::Jackknife::NONE,
-        effect_p: f64::NAN,
-        effect_q: f64::NAN,
+        effect_dr_p: f64::NAN,
+        effect_dr_q: f64::NAN,
         coexpr_p: f64::NAN,
         coexpr_q: f64::NAN,
-        effect_incompetent_q: f64::NAN,
-        effect_contrast_q: f64::NAN,
+        effect_dr_incompetent_q: f64::NAN,
+        effect_dr_contrast_q: f64::NAN,
         n_pairs_same_ligand: 0,
         ligand_q: f64::NAN,
         verdict: Verdict::InsufficientData,
@@ -237,13 +237,13 @@ fn report_labels_and_overrides() {
     assert_eq!(rows[1].n_pairs_same_ligand, 2);
     assert_eq!(rows[2].n_pairs_same_ligand, 1);
     assert_eq!(rows[7].n_pairs_same_ligand, 1);
-    assert!((rows[7].effect_q - rows[7].effect_p).abs() < 1e-12);
-    assert!((rows[7].effect_p - t_two_sided_p(1.0, f64::INFINITY)).abs() < 1e-9);
-    assert!((rows[7].ligand_q - rows[7].effect_p).abs() < 1e-12);
+    assert!((rows[7].effect_dr_q - rows[7].effect_dr_p).abs() < 1e-12);
+    assert!((rows[7].effect_dr_p - t_two_sided_p(1.0, f64::INFINITY)).abs() < 1e-9);
+    assert!((rows[7].ligand_q - rows[7].effect_dr_p).abs() < 1e-12);
     // The NaN headline is out of the family: 6 finite p in "all".
-    assert!(rows[3].effect_p.is_nan() && rows[3].effect_q.is_nan());
+    assert!(rows[3].effect_dr_p.is_nan() && rows[3].effect_dr_q.is_nan());
     // z = 0 is the largest p (1) of the family, and keeps q = p.
-    assert!((rows[6].effect_q - 1.0).abs() < 1e-12);
+    assert!((rows[6].effect_dr_q - 1.0).abs() < 1e-12);
     // One-sided: a negative co-expression score is not significant.
     assert!(rows[5].coexpr_p > 0.99);
 }
@@ -309,11 +309,11 @@ fn exposure_eta2_tracks_neighbour_identity() {
 /// significant pair's control.
 #[test]
 fn controls_are_corrected_among_significant_effects() {
-    let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_incompetent_q;
+    let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_dr_incompetent_q;
     // No significant effect: no control is read, however strong.
     let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 0.1)];
     report(&mut rows, &ReportOpts::default());
-    assert!(e3_q(&rows, 0).is_nan() && rows[0].effect_contrast_q.is_nan());
+    assert!(e3_q(&rows, 0).is_nan() && rows[0].effect_dr_contrast_q.is_nan());
     assert_eq!(rows[0].verdict.code(), "no_evidence");
     assert!(
         !rows[0].warnings.contains("respond"),

@@ -190,15 +190,18 @@ fn scoring_the_truth_and_the_donors() {
     let truth = write("truth.tsv", &|i| t.domain_labels[t.domain[i]].to_string());
     let donors = write("donors.tsv", &|i| donor_label(t.donor[i]).to_string());
     let s = score(&t, &read_labels(&truth, "final", "label").unwrap()).unwrap();
-    assert_eq!((s.n_scored, s.donor_dependence), (t.cells.len(), 0.0));
+    assert_eq!(
+        (s.n_scored, s.donor_conditional_entropy),
+        (t.cells.len(), Some(1.0))
+    );
     assert!((s.shared_ari - 1.0).abs() < 1e-12);
     assert_eq!(s.patches.len(), 1);
     assert_eq!(s.patches[0].f1, 1.0);
     let s = score(&t, &read_labels(&donors, "final", "label").unwrap()).unwrap();
-    assert!((s.donor_dependence - 1.0).abs() < 1e-9);
-    for d in &s.donor_dependence_by_domain {
-        let x = d.dependence.unwrap();
-        assert!((x - 1.0).abs() < 1e-9, "{}: {x}", d.domain);
+    assert!(s.donor_conditional_entropy.unwrap().abs() < 1e-9);
+    for d in &s.donor_conditional_entropy_by_domain {
+        let x = d.donor_conditional_entropy.unwrap();
+        assert!(x.abs() < 1e-9, "{}: {x}", d.domain);
     }
 }
 
@@ -369,6 +372,9 @@ fn stable_json(v: &serde_json::Value, out: &str, drop: &[&str]) -> String {
 /// A fingerprint of everything a run into `out` wrote that a reader sees:
 /// each section's counts with their gene and spot names, every column of
 /// every table, and the two manifests but for the version and the time.
+/// What several donor-specific domains added is left out (the manifest's
+/// `patch_owners`, `patch_kinds` and `patches`, the domains' `kind`), so
+/// the fingerprints from before still hold for the rest.
 fn run_fingerprint(out: &str) -> u64 {
     use legume_numeric::matrix::parquet::{
         peek_parquet_field_names, read_parquet_string_columns_by_name,
@@ -378,7 +384,9 @@ fn run_fingerprint(out: &str) -> u64 {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     };
     let manifest = json(format!("{out}/manifest.json"));
-    fnv(&mut h, stable_json(&manifest, out, &["version"]).as_bytes());
+    let added = ["patch_owners", "patch_kinds", "patches"];
+    let drop: Vec<&str> = std::iter::once("version").chain(added).collect();
+    fnv(&mut h, stable_json(&manifest, out, &drop).as_bytes());
     let run = json(format!("{out}/truth/truth.pinto.json"));
     let run = stable_json(&run, out, &["version", "timestamp"]);
     fnv(&mut h, run.as_bytes());
@@ -411,7 +419,10 @@ fn run_fingerprint(out: &str) -> u64 {
         tables.push(format!("{out}/sections/{name}.coords.parquet"));
     }
     for path in tables {
-        let fields = peek_parquet_field_names(&path).unwrap();
+        let mut fields = peek_parquet_field_names(&path).unwrap();
+        if path.ends_with("/domains.parquet") {
+            fields.retain(|f| f.as_ref() != "kind");
+        }
         let wanted: Vec<&str> = fields.iter().map(|f| f.as_ref()).collect();
         let columns = read_parquet_string_columns_by_name(&path, &wanted).unwrap();
         for (field, column) in fields.iter().zip(&columns) {
@@ -460,4 +471,91 @@ fn a_run_without_reference_data_writes_what_it_always_did() {
         let h = run_fingerprint(&out);
         assert_eq!(h, fingerprint, "{scenario} {extra:?}: {h:#018x}");
     }
+}
+
+/// Three owners named: each its own domain, labelled by its owner, with its
+/// kind in the manifest and the domains table; scoring the truth scores
+/// each domain within its own owner.
+#[test]
+fn several_owners_each_have_a_domain_of_their_own() {
+    use crate::sim_eval::score::{score, TruthSpots};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("sim").to_string_lossy().to_string();
+    run_simulate(&args(
+        &out,
+        "donor-confounded",
+        &[
+            "patch_owners=0,1,2",
+            "patch_kinds=new-state,new-mix,new-state",
+        ],
+    ))
+    .unwrap();
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}/manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(m["params"]["patch_owners"], serde_json::json!([0, 1, 2]));
+    assert_eq!(
+        m["patches"],
+        serde_json::json!([
+            {"domain": "D1_specific_domain_1", "owner": "D1", "kind": "new-state"},
+            {"domain": "D2_specific_domain_1", "owner": "D2", "kind": "new-mix"},
+            {"domain": "D3_specific_domain_1", "owner": "D3", "kind": "new-state"},
+        ])
+    );
+    let t = TruthSpots::read(&out).unwrap();
+    let labels: Vec<(Box<str>, i64)> = (0..t.cells.len())
+        .map(|i| (t.cells[i].clone(), t.domain[i] as i64))
+        .collect();
+    let s = score(&t, &labels).unwrap();
+    let owners: Vec<&str> = s.patches.iter().map(|p| p.owner.as_str()).collect();
+    assert_eq!(owners, ["D1", "D2", "D3"]);
+    for p in &s.patches {
+        assert_eq!((p.within, p.f1), ("owner_donor", 1.0), "{}", p.domain);
+    }
+}
+
+/// Owners and kinds drawn from the seed: recorded as the lists drawn, the
+/// same for the same seed, and each drawn domain scored within its owner.
+#[test]
+fn drawn_owners_are_recorded_and_scored_within_each_owner() {
+    use crate::sim_eval::pairs::{score_pairs, PairOptions, SpotLayout};
+    use crate::sim_eval::score::TruthSpots;
+    let dir = tempfile::tempdir().unwrap();
+    let mut drawn = Vec::new();
+    for (k, seed) in ["seed=3", "seed=3", "seed=11"].into_iter().enumerate() {
+        let out = dir
+            .path()
+            .join(format!("sim{k}"))
+            .to_string_lossy()
+            .to_string();
+        run_simulate(&args(
+            &out,
+            "donor-confounded",
+            &["patch_owners=random", "patch_kinds=random", seed],
+        ))
+        .unwrap();
+        let m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(format!("{out}/manifest.json")).unwrap())
+                .unwrap();
+        let owners = m["params"]["patch_owners"].as_array().unwrap().clone();
+        let kinds = m["params"]["patch_kinds"].as_array().unwrap().clone();
+        assert!(!owners.is_empty() && owners.len() == kinds.len(), "{m}");
+        assert_eq!(m["patches"].as_array().unwrap().len(), owners.len());
+        let t = TruthSpots::read(&out).unwrap();
+        let layout = SpotLayout::read(&out, &t).unwrap();
+        // the truth's own domains as one-hot vectors
+        let x = crate::util::common::Mat::from_fn(t.cells.len(), t.domain_labels.len(), |i, j| {
+            (t.domain[i] == j) as u8 as f32
+        });
+        let o = PairOptions::new(2000, 1, 6).unwrap();
+        let s = score_pairs(&t, &layout, &t.cells, &x, &o).unwrap();
+        assert_eq!(s.patches.len(), owners.len());
+        for (p, want) in s.patches.iter().zip(&owners) {
+            let owner = crate::simulate::panel::donor_label(want.as_u64().unwrap() as usize);
+            assert_eq!(p.owner, owner.as_ref());
+            assert_eq!(p.donor_domain_vs_own_donor.auroc, 1.0, "{}", p.domain);
+        }
+        drawn.push((owners, kinds));
+    }
+    assert_eq!(drawn[0], drawn[1], "the same seed draws the same");
 }

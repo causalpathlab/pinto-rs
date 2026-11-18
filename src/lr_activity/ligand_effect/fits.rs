@@ -27,6 +27,9 @@ pub struct Rows<'a> {
     /// The ligand's shared base propensities on these rows, when its pairs
     /// share them ([`LigandShare`]).
     pub share: Option<&'a LigandShare>,
+    /// Per scope, the tiles its jackknife replicates delete
+    /// ([`super::jackknife::scope_tiles`]); `None` reads no replicates.
+    pub jackknife: Option<&'a [Vec<u32>]>,
 }
 
 impl<'a> Rows<'a> {
@@ -37,6 +40,7 @@ impl<'a> Rows<'a> {
             cf: &tissue.cf,
             scope_rows: &tissue.scope_rows,
             share: None,
+            jackknife: None,
         }
     }
 
@@ -64,6 +68,9 @@ impl<'a> Rows<'a> {
 pub enum Fit {
     Main,
     NoSpill,
+    /// The main fit with its outcome model's tile influence
+    /// ([`super::overlap::OutcomeInfluence`]), for the jackknife.
+    Jackknifed,
 }
 
 /// Whether the competent ones (`level`) among the rows `inside` leave both arms
@@ -405,7 +412,7 @@ pub fn fit_main(
     // response balances them.
     let added: Vec<&[f64]> = match kind {
         Fit::NoSpill => Vec::new(),
-        Fit::Main => vec![&r.spill, &r.bleed],
+        Fit::Main | Fit::Jackknifed => vec![&r.spill, &r.bleed],
     };
     let e = fits
         .propensity(step)?
@@ -417,5 +424,6 @@ pub fn fit_main(
         extra: &extra,
         modifiers: &modifiers,
     };
-    overlap_terms_with(design, cf, &inputs, &e, &opts.nuisance)
+    let influence = kind == Fit::Jackknifed;
+    overlap_terms_with(design, cf, &inputs, &e, &opts.nuisance, influence)
 }

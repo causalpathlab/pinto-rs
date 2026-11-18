@@ -1,20 +1,30 @@
-//! `pinto sim score`: how well a labelling recovers a simulation's
+//! `pinto sim score-by-set`: how well a labelling recovers a simulation's
 //! planted truth, as two tests.
 //!
 //! **Test 1, donor-invariant domains** (on spots of shared domains):
 //! - `shared_ari`: adjusted Rand index of the labels against the domains.
-//! - `donor_dependence`: how much the labels depend on the donor within a
-//!   domain, the conditional mutual information `I(label; donor | domain)`
-//!   over `H(donor | domain)`. 0: labels donor-invariant; 1: labels set by
-//!   the donor. No threshold; a domain that sits in one donor, or a
-//!   single-donor panel, adds nothing. `donor_dependence_by_domain` gives
-//!   the same ratio for each shared domain on its own (`None` for a domain
-//!   in one donor).
+//! - `shared_ami`: adjusted mutual information (Vinh, Epps and Bailey
+//!   2010, JMLR 11:2837): `(MI - E[MI]) / (mean(H(label), H(domain)) -
+//!   E[MI])`, the expected MI exact under the hypergeometric model
+//!   (random labellings with the same cluster sizes), arithmetic-mean
+//!   normalization. 0: chance; 1: the same partition.
+//! - `shared_nmi`: normalized mutual information, `MI / mean(H(label),
+//!   H(domain))`. Not corrected for chance: many small labels raise it.
+//! - `donor_conditional_entropy`: how well the labels mix the donors within
+//!   a domain, `H(donor | label, domain) / H(donor | domain)`, summed over
+//!   the shared domains weighted by their spots. 1: labels mix donors fully
+//!   (donor-invariant); 0: the label sets the donor. No threshold. A domain
+//!   whose spots sit in one donor (`H(donor | domain)` 0) is skipped and
+//!   noted in `donor_conditional_entropy_by_domain`, which gives the same
+//!   ratio for each shared domain; with no domain left the pooled value is
+//!   null.
 //!
-//! **Test 2, donor-specific domains**, each against the label that matches
-//! it best (highest F1): that label's `precision` (low: shared spots
-//! absorbed into it), `recall`, and `owner_share`, the share of its spots
-//! from the owning donor (1: confined to its owner).
+//! **Test 2, donor-specific domains**, each scored within its owning
+//! donor's spots only (`within: "owner_donor"`), so a label is not marked
+//! down for spots it holds in other donors: the label that matches it best
+//! there (highest F1), and that label's `precision` (low: the owner's
+//! shared spots absorbed into it), `recall` and `f1`, all over the owner's
+//! spots.
 //!
 //! A labelling is any pinto run at any level (its propensity's hard labels),
 //! or a table (TSV or parquet) with a `cell` column and a label column, as
@@ -123,19 +133,29 @@ impl TruthSpots {
 pub struct PatchScore {
     pub domain: String,
     pub owner: String,
+    /// The spots f1, precision and recall count: [`PATCH_WITHIN`].
+    pub within: &'static str,
     pub f1: f64,
     pub precision: f64,
     pub recall: f64,
-    pub owner_share: f64,
 }
 
-/// One shared domain's donor dependence, `I(label; donor)` over
-/// `H(donor)` on its spots; `None` when its spots sit in one donor.
+/// A donor-specific domain's f1, precision and recall count its owning
+/// donor's spots only.
+pub const PATCH_WITHIN: &str = "owner_donor";
+
+/// One shared domain's `H(donor | label) / H(donor)` on its spots;
+/// `None`, with a note, when its spots sit in one donor.
 #[derive(Serialize, Debug)]
-pub struct DomainDependence {
+pub struct DomainConditionalEntropy {
     pub domain: String,
-    pub dependence: Option<f64>,
+    pub donor_conditional_entropy: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
 }
+
+/// Why a domain has no conditional entropy.
+pub const ONE_DONOR_NOTE: &str = "skipped: its spots sit in one donor, H(donor | domain) = 0";
 
 #[derive(Serialize, Debug)]
 pub struct Score {
@@ -144,8 +164,11 @@ pub struct Score {
     /// Label rows naming a cell the truth lacks.
     pub n_unmatched: usize,
     pub shared_ari: f64,
-    pub donor_dependence: f64,
-    pub donor_dependence_by_domain: Vec<DomainDependence>,
+    pub shared_ami: f64,
+    pub shared_nmi: f64,
+    /// `None` when no shared domain spans two donors.
+    pub donor_conditional_entropy: Option<f64>,
+    pub donor_conditional_entropy_by_domain: Vec<DomainConditionalEntropy>,
     pub patches: Vec<PatchScore>,
 }
 
@@ -200,26 +223,112 @@ pub fn score(t: &TruthSpots, labels: &[(Box<str>, i64)]) -> anyhow::Result<Score
         n_scored > 0,
         "no spot of the truth is labelled: are the cell names spelled alike?"
     );
-    let (shared_ari, donor_dependence, donor_dependence_by_domain) = invariant(t, &counts);
+    let inv = invariant(t, &counts);
     Ok(Score {
         n_spots: t.cells.len(),
         n_scored,
         n_unmatched,
-        shared_ari,
-        donor_dependence,
-        donor_dependence_by_domain,
+        shared_ari: inv.ari,
+        shared_ami: inv.ami,
+        shared_nmi: inv.nmi,
+        donor_conditional_entropy: inv.conditional_entropy,
+        donor_conditional_entropy_by_domain: inv.by_domain,
         patches: patches(t, &counts),
     })
 }
 
-/// Information over entropy, in [0, 1]; `None` without entropy.
-fn ratio(info: f64, entropy: f64) -> Option<f64> {
-    (entropy > 1e-12).then(|| (info / entropy).clamp(0.0, 1.0))
+/// What is left of the entropy after the information, as its share, in
+/// [0, 1]; `None` without entropy.
+fn left_share(info: f64, entropy: f64) -> Option<f64> {
+    (entropy > 1e-12).then(|| (1.0 - info / entropy).clamp(0.0, 1.0))
 }
 
-/// Test 1, over the shared domains: ARI, donor dependence pooled and by
-/// domain.
-fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, Vec<DomainDependence>) {
+/// Test 1's numbers.
+struct Invariant {
+    ari: f64,
+    ami: f64,
+    nmi: f64,
+    conditional_entropy: Option<f64>,
+    by_domain: Vec<DomainConditionalEntropy>,
+}
+
+/// `ln n!` for `n` in `0..=n`.
+fn ln_factorials(n: usize) -> Vec<f64> {
+    let mut lf = Vec::with_capacity(n + 1);
+    lf.push(0.0);
+    for k in 1..=n {
+        lf.push(lf[k - 1] + (k as f64).ln());
+    }
+    lf
+}
+
+/// NMI and AMI (arithmetic-mean normalization) of a contingency table, in
+/// nats; AMI's expected MI exact under the hypergeometric model (Vinh,
+/// Epps and Bailey 2010, JMLR 11:2837, eq. 24a). Both are 1 when neither
+/// side splits the spots, NaN on an empty table.
+pub(crate) fn nmi_ami(n: &[Vec<usize>]) -> (f64, f64) {
+    let a: Vec<usize> = n.iter().map(|r| r.iter().sum()).collect();
+    let ncols = n.first().map_or(0, Vec::len);
+    let b: Vec<usize> = (0..ncols).map(|j| n.iter().map(|r| r[j]).sum()).collect();
+    let total: usize = a.iter().sum();
+    if total == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let nf = total as f64;
+    let entropy = |c: &[usize]| -> f64 {
+        c.iter()
+            .filter(|&&x| x > 0)
+            .map(|&x| {
+                let p = x as f64 / nf;
+                -p * p.ln()
+            })
+            .sum()
+    };
+    let (ha, hb) = (entropy(&a), entropy(&b));
+    let mean = (ha + hb) / 2.0;
+    if mean <= 1e-15 {
+        // one cluster on each side: the same partition
+        return (1.0, 1.0);
+    }
+    let mut mi = 0.0;
+    for (i, row) in n.iter().enumerate() {
+        for (j, &x) in row.iter().enumerate().filter(|(_, &x)| x > 0) {
+            let x = x as f64;
+            mi += x / nf * (nf * x / (a[i] as f64 * b[j] as f64)).ln();
+        }
+    }
+    let lf = ln_factorials(total);
+    let mut emi = 0.0;
+    for &ai in a.iter().filter(|&&x| x > 0) {
+        for &bj in b.iter().filter(|&&x| x > 0) {
+            let lo = (ai + bj).saturating_sub(total).max(1);
+            let fixed = lf[ai] + lf[bj] + lf[total - ai] + lf[total - bj] - lf[total];
+            for nij in lo..=ai.min(bj) {
+                let x = nij as f64;
+                let ln_p =
+                    fixed - lf[nij] - lf[ai - nij] - lf[bj - nij] - lf[total + nij - ai - bj];
+                emi += x / nf * (nf * x / (ai as f64 * bj as f64)).ln() * ln_p.exp();
+            }
+        }
+    }
+    let nmi = (mi / mean).clamp(0.0, 1.0);
+    let denom = mean - emi;
+    let ami = if denom.abs() < 1e-15 {
+        // MI can only be its expectation: no partition beats chance
+        if (mi - emi).abs() < 1e-15 {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        (mi - emi) / denom
+    };
+    (nmi, ami)
+}
+
+/// Test 1, over the shared domains: ARI, AMI, NMI, and the donors'
+/// conditional entropy pooled and by domain.
+fn invariant(t: &TruthSpots, counts: &Counts) -> Invariant {
     let shared: Vec<usize> = (0..counts.len())
         .filter(|&k| t.domain_owner[k].is_none())
         .collect();
@@ -238,6 +347,7 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, Vec<DomainDependence
         }
     }
     let total: usize = n.iter().flatten().sum();
+    let (nmi, ami) = nmi_ami(&n);
     let ari_value = if total > 0 {
         ari(&Table {
             a: shared.iter().map(|&k| k as i64).collect(),
@@ -251,7 +361,8 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, Vec<DomainDependence
     };
 
     // I(label; donor | domain) and H(donor | domain), in nats, summed over
-    // shared domains weighted by their spots:
+    // shared domains weighted by their spots; H(donor | label, domain) is
+    // their difference:
     // N_k I_k = Σ x ln x (label, donor) − Σ x ln x (donor) − Σ x ln x (label) + N_k ln N_k
     let (mut info, mut entropy) = (0.0, 0.0);
     let mut by_domain = Vec::with_capacity(shared.len());
@@ -272,37 +383,37 @@ fn invariant(t: &TruthSpots, counts: &Counts) -> (f64, f64, Vec<DomainDependence
         }
         info += ik;
         entropy += hk;
-        by_domain.push(DomainDependence {
+        let share = left_share(ik, hk);
+        by_domain.push(DomainConditionalEntropy {
             domain: t.domain_labels[k].to_string(),
-            dependence: ratio(ik, hk),
+            donor_conditional_entropy: share,
+            note: share.is_none().then_some(ONE_DONOR_NOTE),
         });
     }
-    let dependence = ratio(info, entropy).unwrap_or(0.0);
-    (ari_value, dependence, by_domain)
+    Invariant {
+        ari: ari_value,
+        ami,
+        nmi,
+        conditional_entropy: left_share(info, entropy),
+        by_domain,
+    }
 }
 
-/// Test 2: each donor-specific domain against its best-matching label.
+/// Test 2: each donor-specific domain against its best-matching label,
+/// within its owner's spots.
 fn patches(t: &TruthSpots, counts: &Counts) -> Vec<PatchScore> {
-    // label → spots per donor, over every domain
-    let mut by_label: HashMap<i64, Vec<usize>> = HashMap::default();
-    for (d, m) in counts
-        .iter()
-        .flat_map(|per_donor| per_donor.iter().enumerate())
-    {
-        for (&l, &x) in m {
-            by_label.entry(l).or_insert_with(|| vec![0; t.n_donors])[d] += x;
-        }
-    }
     (0..counts.len())
         .filter_map(|k| t.domain_owner[k].map(|o| (k, o)))
         .map(|(k, owner)| {
-            let mut overlap: HashMap<i64, usize> = HashMap::default();
-            counts[k]
-                .iter()
-                .flatten()
-                .for_each(|(&l, &x)| *overlap.entry(l).or_insert(0) += x);
+            // each label's spots in the owner, over every domain
+            let mut in_owner: HashMap<i64, usize> = HashMap::default();
+            for (&l, &x) in counts.iter().flat_map(|per_donor| &per_donor[owner]) {
+                *in_owner.entry(l).or_insert(0) += x;
+            }
+            // the domain's spots in its owner, by label
+            let overlap = &counts[k][owner];
             let n_patch: usize = overlap.values().sum();
-            let size = |l: i64| by_label[&l].iter().sum::<usize>();
+            let size = |l: i64| in_owner[&l];
             // F1 = 2 tp / (|label| + |patch|); ties to the larger overlap, then the smaller label
             let best = overlap.iter().max_by(|a, b| {
                 let f = |(&l, &tp): (&i64, &usize)| tp as f64 / (size(l) + n_patch) as f64;
@@ -311,24 +422,21 @@ fn patches(t: &TruthSpots, counts: &Counts) -> Vec<PatchScore> {
                     .then(a.1.cmp(b.1))
                     .then(b.0.cmp(a.0))
             });
-            let (f1, precision, recall, owner_share) =
-                best.map_or((0.0, 0.0, 0.0, 0.0), |(&l, &tp)| {
-                    let s = size(l) as f64;
-                    let (p, r) = (tp as f64 / s, tp as f64 / n_patch as f64);
-                    (
-                        2.0 * tp as f64 / (s + n_patch as f64),
-                        p,
-                        r,
-                        by_label[&l][owner] as f64 / s,
-                    )
-                });
+            let (f1, precision, recall) = best.map_or((0.0, 0.0, 0.0), |(&l, &tp)| {
+                let s = size(l) as f64;
+                (
+                    2.0 * tp as f64 / (s + n_patch as f64),
+                    tp as f64 / s,
+                    tp as f64 / n_patch as f64,
+                )
+            });
             PatchScore {
                 domain: t.domain_labels[k].to_string(),
                 owner: donor_label(owner).to_string(),
+                within: PATCH_WITHIN,
                 f1,
                 precision,
                 recall,
-                owner_share,
             }
         })
         .collect()
@@ -399,7 +507,7 @@ pub struct SimScoreArgs {
     /// Write the scores as JSON here: one object, {"truth": ..., "scores":
     /// [{"labels", "level", "score"}, ...], "failed": [{"labels", "error"}]}
     /// (failed only when a labelling could not be scored), the shape of the
-    /// MCP's run_sim_score reply
+    /// MCP's run_sim_score_by_set reply
     #[arg(short, long)]
     pub out: Option<Box<str>>,
 }
@@ -411,16 +519,18 @@ pub const NAME_WIDTH: usize = 22;
 /// The table's header line, as `srt-sim-score` prints it.
 pub fn table_header() -> String {
     format!(
-        "{:<40} {:>7} {:>10} {:>10} {:<NAME_WIDTH$} {:>6} {:>6} {:>6}  {}",
+        "{:<40} {:>7} {:>10} {:>10} {:>10} {:>25} {:<NAME_WIDTH$} {:>6} {:>6} {:>6}  {}",
         "labels",
         "scored",
         "shared_ari",
-        "donor_dep",
+        "shared_ami",
+        "shared_nmi",
+        "donor_conditional_entropy",
         "patch",
         "f1",
         "prec",
-        "owner",
-        "donor_dep_by_domain"
+        "recall",
+        "donor_conditional_entropy_by_domain"
     )
 }
 
@@ -437,12 +547,12 @@ pub(crate) fn shown_name(input: &str) -> String {
     parent.map_or(file.clone(), |p| format!("{p}/{file}"))
 }
 
-/// Each shared domain's donor dependence, as `A:0.012 B:-` (`-`: the
-/// domain sits in one donor).
+/// Each shared domain's donor conditional entropy, as `A:0.988 B:-` (`-`:
+/// the domain sits in one donor).
 fn by_domain_cell(s: &Score) -> String {
-    s.donor_dependence_by_domain
+    s.donor_conditional_entropy_by_domain
         .iter()
-        .map(|d| match d.dependence {
+        .map(|d| match d.donor_conditional_entropy {
             Some(x) => format!("{}:{x:.3}", d.domain),
             None => format!("{}:-", d.domain),
         })
@@ -453,12 +563,16 @@ fn by_domain_cell(s: &Score) -> String {
 /// A labelling's rows of the table: one per donor-specific domain, or one
 /// when there is none. The labelling goes by its file and folder.
 pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
+    let pooled = s
+        .donor_conditional_entropy
+        .map_or_else(|| "-".to_string(), |x| format!("{x:.3}"));
     let head = format!(
-        "{:<40} {:>7} {:>10.3} {:>10.3}",
+        "{:<40} {:>7} {:>10.3} {:>10.3} {:>10.3} {pooled:>25}",
         shown_name(input),
         s.n_scored,
         s.shared_ari,
-        s.donor_dependence
+        s.shared_ami,
+        s.shared_nmi,
     );
     let by_domain = by_domain_cell(s);
     if s.patches.is_empty() {
@@ -472,7 +586,7 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
         .map(|p| {
             format!(
                 "{head} {:<NAME_WIDTH$} {:>6.3} {:>6.3} {:>6.3}  {by_domain}",
-                p.domain, p.f1, p.precision, p.owner_share
+                p.domain, p.f1, p.precision, p.recall
             )
         })
         .collect()

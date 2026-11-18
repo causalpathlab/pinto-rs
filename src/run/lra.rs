@@ -60,6 +60,8 @@ macro_rules! lra_tool_args {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub region_jackknife: Option<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub abf_prior_scale: Option<f64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
             pub max_threads: Option<usize>,
             #[serde(default, skip_serializing)]
             pub atomic_outputs: Option<bool>,
@@ -79,6 +81,7 @@ macro_rules! lra_tool_args {
                     cell_types: self.cell_types.as_deref(),
                     region: self.region.as_deref(),
                     region_jackknife: self.region_jackknife.as_deref(),
+                    abf_prior_scale: self.abf_prior_scale,
                     max_threads: self.max_threads,
                     atomic_outputs: self.atomic_outputs,
                 }
@@ -161,6 +164,7 @@ impl LraToolArgs {
             cell_types: self.cell_types.as_ref().map(shown),
             region: self.region.as_ref().map(shown),
             region_jackknife: self.region_jackknife.clone().unwrap_or(d.region_jackknife),
+            abf_prior_scale: self.abf_prior_scale.unwrap_or(d.abf_prior_scale),
             marginal_permutations: self.marginal_baselines.then(|| {
                 self.marginal_permutations
                     .unwrap_or(crate::lr_activity::ligand_effect::PERMUTATIONS)
@@ -276,6 +280,7 @@ struct Input<'a> {
     cell_types: Option<&'a str>,
     region: Option<&'a str>,
     region_jackknife: Option<&'a str>,
+    abf_prior_scale: Option<f64>,
     max_threads: Option<usize>,
     atomic_outputs: Option<bool>,
 }
@@ -345,6 +350,9 @@ impl Input<'_> {
         if let Some(j) = self.region_jackknife {
             argv.push(flag_value("--region-jackknife", j));
         }
+        if let Some(s) = self.abf_prior_scale {
+            argv.push(flag_value("--abf-prior-scale", s));
+        }
         argv.extend(shared_flags(self.max_threads, self.atomic_outputs));
         argv
     }
@@ -375,6 +383,9 @@ impl Input<'_> {
         }
         if let Some(j) = self.region_jackknife {
             args["region_jackknife"] = j.into();
+        }
+        if let Some(s) = self.abf_prior_scale {
+            args["abf_prior_scale"] = s.into();
         }
         args
     }
@@ -433,6 +444,7 @@ pub(super) fn lra_argv(
         cell_types: None,
         region: None,
         region_jackknife: d.region_jackknife,
+        abf_prior_scale: d.abf_prior_scale,
         marginal_permutations: None,
         ..a.asked_options()
     };
@@ -752,7 +764,7 @@ pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
                 "receptor": r.receptor,
                 "verdict": r.verdict.code(),
                 "change": percent_text(r.pct, r.pct_lo, r.pct_hi),
-                "q": sig(r.effect_q),
+                "q": sig(r.effect_dr_q),
             })
         })
         .collect();
@@ -888,11 +900,11 @@ pub(super) fn comparison_summary(runs: &[output::SimRun], planted: Option<&str>)
         "methods": COMPARED,
         "scenarios": scenarios,
         "means": means,
-        "reading": "reject: share of runs significant at 5% per method. estimate is lra's \
-                    adjusted effect; marginal the correlation of response and contact ligand; \
-                    unadjusted_diff the difference in mean response, exposed minus unexposed, with no adjustment; ipw the effect by overlap weights alone; \
+        "reading": "reject: share of runs significant at 5% per method. dr is lra's \
+                    adjusted effect (doubly robust); marginal the correlation of response and contact ligand; \
+                    unadj the difference in mean response, exposed minus unexposed, with no adjustment; ipw the effect by overlap weights alone; outcome by the outcome regression alone (each with its delete-one-tile jackknife SE); \
                     celltype, moran, contact and coexpr the co-expression baselines (CellPhoneDB/CellChat, SpatialDM, \
-                    NICHES/COMMOT, lra's log odds). Trust lra here when estimate keeps type I \
+                    NICHES/COMMOT, lra's log odds). Trust lra here when dr keeps type I \
                     near 0.05 under the confounded nulls and has power at the effect sizes \
                     that matter.",
     })

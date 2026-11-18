@@ -1,9 +1,9 @@
-//! `run_simulate`, `run_sim_score`, `run_sim_pairs` and `run_sim_baseline`
+//! `run_simulate`, `run_sim_score_by_set`, `run_sim_score_by_pair` and `run_sim_baseline`
 //! for `pinto mcp`:
 //! `pinto sim new` and `pinto sim baseline` set up as the command
 //! line takes them, checked before anything runs, and run as a child pinto
 //! in the project's records (a background job unless asked otherwise); and
-//! `pinto sim score`'s two tests and `pinto sim pairs`'s pair sets,
+//! `pinto sim score-by-set`'s two tests and `pinto sim score-by-pair`'s pair sets,
 //! computed in the call, as they take a moment.
 
 use super::mcp::{
@@ -248,8 +248,8 @@ pub(super) fn simulate(
             "targets": [targets],
         },
         "score": {
-            "run_sim_score": {"truth": truth, "labels": ["<the run_fit out prefix>"]},
-            "run_sim_pairs": {"truth": truth, "vectors": ["<the run_fit out prefix>"]},
+            "run_sim_score_by_set": {"truth": truth, "labels": ["<the run_fit out prefix>"]},
+            "run_sim_score_by_pair": {"truth": truth, "vectors": ["<the run_fit out prefix>"]},
         },
         "shares": shares_json(&p),
         "shares_note": p.shares_summary(),
@@ -257,8 +257,8 @@ pub(super) fn simulate(
     let open = format!(
         "view_open {truth} to see the planted domains; run_fit with fit.data (the \
          .zarr.zip sections), fit.coords and fit.flags as its data, coords and flags; then \
-         score each fit: run_sim_score with truth {truth} and the fit's out prefix in labels, \
-         run_sim_pairs with truth {truth} and the prefix in vectors; run_lra and run_lra_simulate on a fit take lra.lr_pairs \
+         score each fit: run_sim_score_by_set with truth {truth} and the fit's out prefix in labels, \
+         run_sim_score_by_pair with truth {truth} and the prefix in vectors; run_lra and run_lra_simulate on a fit take lra.lr_pairs \
          and lra.targets as lr_pairs and targets (the simulation's genes are no reference's)"
     );
     Ok(vec![Content::Json(launch(
@@ -277,12 +277,12 @@ fn bad_truth(truth: &str, e: anyhow::Error) -> anyhow::Error {
     anyhow::anyhow!("truth {truth}: {e:#}; give run_simulate's truth or out folder")
 }
 
-// * run_sim_score
+// * run_sim_score_by_set
 
-/// `run_sim_score`: each labelling scored against the truth, as a table
+/// `run_sim_score_by_set`: each labelling scored against the truth, as a table
 /// (one row per labelling and donor-specific domain) and as JSON. One that
 /// cannot be scored is listed with its error and the rest are scored, as
-/// `pinto sim score` does; the call fails only when none can be.
+/// `pinto sim score-by-set` does; the call fails only when none can be.
 pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     anyhow::ensure!(!a.labels.is_empty(), "give labels: runs or label tables");
     let t = TruthSpots::read(&a.truth).map_err(|e| bad_truth(&a.truth, e))?;
@@ -311,11 +311,11 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
     Ok(vec![Content::Text(lines.join("\n")), Content::Json(reply)])
 }
 
-// * run_sim_pairs
+// * run_sim_score_by_pair
 
-/// `run_sim_pairs`: each input's vectors scored on the pair sets, as a
+/// `run_sim_score_by_pair`: each input's vectors scored on the pair sets, as a
 /// table (one row per input and donor-specific domain) and as JSON, with
-/// `pinto sim pairs`'s defaults for what is not given. One that cannot
+/// `pinto sim score-by-pair`'s defaults for what is not given. One that cannot
 /// be scored is listed with its error and the rest are scored; the call
 /// fails only when none can be.
 pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
@@ -393,7 +393,7 @@ pub(super) fn baseline(
         "command": script::pinto_line(&argv),
         "labels": labels,
     });
-    let then = format!("run_sim_score with truth {truth} and labels [{labels}]");
+    let then = format!("run_sim_score_by_set with truth {truth} and labels [{labels}]");
     Ok(vec![Content::Json(launch(
         cx,
         &argv,
@@ -430,15 +430,15 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              run in {out}/truth (view_open {out}/truth/truth.pinto.json), and \
              {out}/manifest.json. To score: (1) run_fit with the reply's fit.data (the \
              .zarr.zip sections, in order), fit.coords and fit.flags as its data, coords and \
-             flags; (2) run_sim_score with the reply's truth and the fit's out prefix in \
-             labels, and run_sim_pairs with the same truth and prefix in vectors. The reply's \
+             flags; (2) run_sim_score_by_set with the reply's truth and the fit's out prefix in \
+             labels, and run_sim_score_by_pair with the same truth and prefix in vectors. The reply's \
              score spells out both calls. The settings and coordinate files are checked before it starts; it runs as a background job unless asked, and \
              never over an existing out.",
             json!({
                 "type": "object",
                 "properties": {
                     "scenario": {"type": "string", "enum": SCENARIOS.iter().map(|s| s.name).collect::<Vec<_>>(), "description": format!("Named scenario to start from [default: {}]; a cell type is a cell state of the model. {}", SCENARIOS[0].name, scenarios.join(". "))},
-                    "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto sim new --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_share, patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
+                    "set": {"type": "array", "items": {"type": "string"}, "description": "Change any simulation parameter, key=value (pinto sim new --set; the manifest records them all). The main dials: grid_side and grid_spacing_um (the default square grid, 40 x 40 spots 100 um apart), n_donors, sections_per_donor, n_domains, patch_kind (none, new-state, new-mix), patch_owners (donors that each own a donor-only domain of their own, 0-based: [0, 2], or random to draw their number from 1 to n_donors and then the donors, from the seed; patch_owner=N, which the scenarios use, is [N] in short, not with it), patch_kinds (each owner's kind, one per owner or one for all, or random: new-state or new-mix with probability 1/2 each), patch_share (within each owner's sections), patch_length_um, domain_length_um, pve_type, pve_donor, pve_inter, pve_section, unconfounded_sections (a list, [0]), n_unconfounded_donors (that many donors drawn from the seed, never the donor-only domain's owner, with no donor-wide, donor-by-cell-type or section shift; 1 gives one shift-free donor) or unconfounded_donors (a list naming them instead, not with n_unconfounded_donors), copula_strength, nuisance_off (true with the same seed draws the exact counterfactual), seed"},
                     "coords": {"type": "array", "items": {"type": "string"}, "description": "Spot coordinate files, used by the sections in turn, positions only (--coord); the square grid when none"},
                     "coord_column_names": {"type": "array", "items": {"type": "string"}, "description": "Coordinate columns in those files [default: row_um, col_um]"},
                     "reference_data": super::mcp::long_flag_arg(super::mcp::subcommand(cli, "sim new"), "reference_data", json!({"type": "string"})),
@@ -452,16 +452,22 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
             }),
         ),
         ToolSpec::new(
-            "run_sim_score",
-            "Score labellings against a run_simulate truth (pinto sim score), as two tests. \
-             1, donor-invariant domains, on spots of shared domains: shared_ari (labels against \
-             domains), donor_dependence (how much the labels depend on the donor within a \
-             domain, 0 to 1, pooled and for each shared domain as donor_dependence_by_domain). 2, each donor-specific domain against its \
-             best-matching label: f1, precision (low: shared spots absorbed), recall, \
-             owner_share (1: the label is confined to the owning donor). Returns a table, one \
+            "run_sim_score_by_set",
+            "Score labellings against a run_simulate truth (pinto sim score-by-set), as two tests. \
+             1, donor-invariant domains, on spots of shared domains, labels against domains: \
+             shared_ari (adjusted Rand index), shared_ami (adjusted mutual information, exact \
+             expected MI, arithmetic-mean normalization; 0 chance, 1 the same partition), \
+             shared_nmi (normalized mutual information, arithmetic mean; not corrected for \
+             chance), donor_conditional_entropy (H(donor | label, domain) / H(donor | domain), \
+             0 to 1: 1 labels mix donors fully, 0 the label sets the donor; pooled by spots, \
+             null when no shared domain spans two donors, and for each shared domain as \
+             donor_conditional_entropy_by_domain, a domain in one donor skipped with a note). 2, each donor-specific domain within its \
+             owning donor's spots only (within: owner_donor): its best-matching label there, \
+             and that label's f1, precision (low: the owner's shared spots absorbed) and recall \
+             over the owner's spots. Returns a table, one \
              row per labelling and donor-specific domain, and the scores as one JSON object, \
              {truth, scores: [{labels, level, score}], failed: [{labels, error}]} (failed only \
-             when a labelling could not be scored); pinto sim score -o writes that same object. \
+             when a labelling could not be scored); pinto sim score-by-set -o writes that same object. \
              Fast: runs in the call.",
             json!({
                 "type": "object",
@@ -477,22 +483,18 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         )
         .read_only(),
         ToolSpec::new(
-            "run_sim_pairs",
+            "run_sim_score_by_pair",
             "Score per-cell vectors (a latent mapping) against a run_simulate truth on pairs of \
-             spots, with no clustering (pinto sim pairs): the cosine of two spots' vectors, \
+             spots, with no clustering (pinto sim score-by-pair): the cosine of two spots' vectors, \
              by AUROC and AUPRC, each set with its prevalence (the AUPRC of chance). \
-             cross_donor: shared-domain spots of two donors, positive when they share a domain; \
-             within_donor: the same within one donor, the reference; donor_gap: within less \
-             cross, what the donor costs the mapping. patches, one per donor-specific domain: \
-             pairs of its spots (positive) against one of its spots with one outside it \
-             (negative); closest_domain and closest_auroc: the domain it is told apart from \
-             worst (0.5: folded into it); hard_negatives: the same positives against pairs of \
-             one shared domain's spots from two sections of one donor (same_donor) or from two \
-             donors (cross_donor), and against every negative together (all): a mapping that \
-             places spots by cell type alone is at 0.5 against same_donor and cross_donor, one \
-             that keeps only the donor-specific domain near 1, one set by the donor passes \
-             cross_donor but not same_donor. \
-             spatial: each spot's knn nearest neighbours in its \
+             shared_domain_across_donors: shared-domain spots of two donors, positive when \
+             they share a domain; shared_domain_within_donor: the same within one donor, the \
+             reference; donor_gap: within less across, what the donor costs the mapping. \
+             patches, one per donor-specific domain: donor_domain_vs_own_donor, pairs of its \
+             spots (positive) against one of its spots with a spot of the same donor outside it \
+             (negative; negatives: same_donor_outside_domain), so a mapping that only tells \
+             donors apart scores 0.5. neighbour_same_domain: each spot's knn nearest \
+             neighbours in its \
              section, positive when they share a domain. Which vectors to give: an lc or dsvd \
              run, its out prefix (scored on its propensity); a cage or spatial baseline run, \
              its {prefix}.cell_embedding.parquet (or its prefix, for its propensity); not \
@@ -500,7 +502,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              table of the AUROCs, one row per input and donor-specific domain, and the scores \
              as one JSON object, {truth, scores: [{vectors, level, pairs, seed, knn, score}], \
              failed: [{vectors, error}]} (failed only when an input could not be scored); \
-             pinto sim pairs -o writes that same object. Runs in the call.",
+             pinto sim score-by-pair -o writes that same object. Runs in the call.",
             json!({
                 "type": "object",
                 "properties": {
@@ -519,7 +521,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
         ToolSpec::new(
             "run_sim_baseline",
             "Label a run_simulate simulation with a standard single-cell pipeline (pinto \
-             sim baseline), for run_sim_score to score next to the fits: pooled (the scanpy \
+             sim baseline), for run_sim_score_by_set to score next to the fits: pooled (the scanpy \
              recipe on all sections, no batch handling), harmony (the same with Harmony on the \
              PCs, batch = donor) or per-donor (each donor alone, its clusters matched to the \
              largest donor's by marker correlation). Leiden is tuned toward the true number of \

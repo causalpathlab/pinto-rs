@@ -83,7 +83,10 @@ pub(crate) fn load_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIo
     let mut data_vec = SparseIoVec::new();
     let names = crate::util::input::stacked_data_names(data_files)?;
     for (data_file, data_name) in data_files.iter().zip(names) {
-        info!("Importing data file: {}", data_file);
+        info!(
+            "Importing data file: {}",
+            crate::util::staging::final_str(data_file)
+        );
         let data = crate::util::input::open_sparse(data_file)?;
         data_vec.push(Arc::from(data), data_name)?;
     }

@@ -167,17 +167,17 @@ fn pooled_effects(w: &World) -> Vec<EffectRow> {
 /// The unadjusted difference of the pooled row shows an effect where none is
 /// planted, and the full adjustment removes it.
 fn assert_fooled_then_adjusted(rows: &[EffectRow]) {
-    let (unadjusted_diff, full) = (rows[0].effects.unadjusted_diff, rows[0].effects.competent);
+    let (unadj, full) = (rows[0].effects.unadj, rows[0].effects.competent);
     let report = format!(
-        "unadjusted_diff {:.3}, full {:.3} ± {:.3}",
-        unadjusted_diff.theta, full.theta, full.se
+        "unadj {:.3}, full {:.3} ± {:.3}",
+        unadj.theta, full.theta, full.se
     );
     assert!(
-        unadjusted_diff.theta > 0.1,
+        unadj.theta > 0.1,
         "unadjusted difference not fooled: {report}"
     );
     assert!(full.z().abs() < 3.0, "still biased: {report}");
-    assert!(full.theta.abs() < 0.25 * unadjusted_diff.theta, "{report}");
+    assert!(full.theta.abs() < 0.25 * unadj.theta, "{report}");
 }
 
 /// Sender cell type is a measured confounder: where the neighbours' type
@@ -202,8 +202,8 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
         pooled.effects.competent,
     ];
     let report = format!(
-        "unadjusted_diff {:.3}; {}",
-        pooled.effects.unadjusted_diff.theta,
+        "unadj {:.3}; {}",
+        pooled.effects.unadj.theta,
         STEP_NAMES
             .iter()
             .chain(&["full"])
@@ -213,7 +213,7 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
             .join(", ")
     );
     assert!(
-        pooled.effects.unadjusted_diff.theta > 0.2,
+        pooled.effects.unadj.theta > 0.2,
         "unadjusted difference not fooled: {report}"
     );
     for (name, e) in STEP_NAMES.iter().zip(&steps).take(2) {
@@ -222,7 +222,7 @@ fn cell_type_confounding_is_removed_by_the_identity_step() {
     for e in &steps[2..] {
         assert!(e.z().abs() < 3.0, "identity step still biased: {report}");
         assert!(
-            e.theta.abs() < 0.25 * pooled.effects.unadjusted_diff.theta,
+            e.theta.abs() < 0.25 * pooled.effects.unadj.theta,
             "{report}"
         );
     }

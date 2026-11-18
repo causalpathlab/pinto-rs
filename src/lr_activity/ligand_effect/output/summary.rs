@@ -147,12 +147,13 @@ type View = fn(&SimRow) -> Read;
 /// region.
 /// Each with whether it reads the planted region's row, and so is shown
 /// only under one.
-const VIEWS: [(&str, View, bool); 8] = [
-    ("estimate", |r| est(&r.estimate, r), false),
+const VIEWS: [(&str, View, bool); 9] = [
+    ("dr", |r| est(&r.estimate, r), false),
     ("region", |r| on_region(r, |g| g.estimate), true),
     ("vs_rest", |r| on_region(r, |g| g.versus_rest), true),
-    ("unadjusted_diff", |r| est(&r.unadjusted_diff, r), false),
+    ("unadj", |r| est(&r.unadj, r), false),
     ("ipw", |r| est(&r.ipw, r), false),
+    ("outcome", |r| est(&r.outcome, r), false),
     ("section", |r| est(&r.steps[0], r), false),
     ("spatial", |r| est(&r.steps[1], r), false),
     ("identity", |r| est(&r.steps[2], r), false),
@@ -268,8 +269,8 @@ pub struct PooledEffect {
     pub receptor: Box<str>,
     pub verdict: Verdict,
     pub effect: f64,
-    pub effect_p: f64,
-    pub effect_q: f64,
+    pub effect_dr_p: f64,
+    pub effect_dr_q: f64,
     pub pct: f64,
     pub pct_lo: f64,
     pub pct_hi: f64,
@@ -283,8 +284,8 @@ impl From<&EffectRow> for PooledEffect {
             receptor: r.receptor.clone(),
             verdict: r.verdict,
             effect: r.effects.competent.theta,
-            effect_p: r.effect_p,
-            effect_q: r.effect_q,
+            effect_dr_p: r.effect_dr_p,
+            effect_dr_q: r.effect_dr_q,
             pct: m.pct,
             pct_lo: m.pct_lo,
             pct_hi: m.pct_hi,
@@ -297,8 +298,8 @@ impl From<&EffectRow> for PooledEffect {
 pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     let mut v: Vec<&PooledEffect> = rows
         .iter()
-        .filter(|r| r.effect.is_finite() && r.effect_p.is_finite() && r.verdict.survived())
+        .filter(|r| r.effect.is_finite() && r.effect_dr_p.is_finite() && r.verdict.survived())
         .collect();
-    v.sort_by(|a, b| a.effect_p.total_cmp(&b.effect_p));
+    v.sort_by(|a, b| a.effect_dr_p.total_cmp(&b.effect_dr_p));
     v
 }

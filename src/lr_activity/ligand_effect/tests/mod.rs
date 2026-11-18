@@ -86,7 +86,7 @@ pub(super) fn overlap_terms(
         ..*pair
     };
     let e = propensity(design, cf, pair.t, &extra, opts, &mut FoldStarts::default())?.e;
-    overlap_terms_with(design, cf, &pair, &e, opts)
+    overlap_terms_with(design, cf, &pair, &e, opts, false)
 }
 
 /// Cell coordinates and contacts.

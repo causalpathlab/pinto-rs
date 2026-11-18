@@ -11,8 +11,8 @@ use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_gen
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared};
 use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts, ALL_SECTIONS};
 use super::{
-    contacts, only, options, output, receivers, report, rows, timing, RunInputs, Settings,
-    INTERNALS, LOG_TARGET,
+    contacts, only, options, output, receivers, report, rows, timing, Internals, RunInputs,
+    Settings, INTERNALS, LOG_TARGET,
 };
 use crate::lr_activity::args::RegionJackknife;
 use crate::util::common::*;
@@ -164,13 +164,13 @@ fn build_tissue(
 }
 
 /// The estimator's options: the fixed settings and the run's seed.
-fn effect_opts(seed: u64, region_jackknife: RegionJackknife) -> EffectOpts {
+fn effect_opts(seed: u64, region_jackknife: RegionJackknife, abf_prior_scale: f64) -> EffectOpts {
     let k = INTERNALS;
     EffectOpts {
         keep_arm_weights: false,
         threshold: None,
         min_overlap: k.min_overlap,
-        abf_prior_scale: k.abf_prior_scale,
+        abf_prior_scale,
         seed,
         competences: &options::COMPETENCE_GRID,
         curve: true,
@@ -219,7 +219,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         n_all,
         store,
         local,
-        eopts: effect_opts(a.seed, a.region_jackknife),
+        eopts: effect_opts(a.seed, a.region_jackknife, a.abf_prior_scale),
         reference_record: Some(record),
         identity_excluded,
         memory_budget: a.memory_budget,
@@ -227,15 +227,21 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     })
 }
 
-/// Record lra's outputs and the fixed settings in the run's manifest, each
-/// path absolute ([`crate::lr_activity::recorded`]).
+/// Record lra's outputs and the settings in the run's manifest, each path
+/// absolute ([`crate::lr_activity::recorded`]): the fixed ones, with the
+/// `--abf-prior-scale` the run used.
 pub(super) fn record(
     manifest: &Path,
+    abf_prior_scale: f64,
     set: impl FnOnce(&mut crate::util::metadata::LraFiles) + Send + 'static,
 ) -> anyhow::Result<()> {
-    crate::util::metadata::PintoMetadata::backfill(manifest, |m| {
+    let settings = Internals {
+        abf_prior_scale,
+        ..INTERNALS
+    };
+    crate::util::metadata::PintoMetadata::backfill(manifest, move |m| {
         set(&mut m.outputs.lra);
-        m.outputs.lra.settings = serde_json::to_value(INTERNALS).ok();
+        m.outputs.lra.settings = serde_json::to_value(settings).ok();
     });
     Ok(())
 }
@@ -428,7 +434,7 @@ fn record_tables(
             .reference_record
             .as_deref()
             .map(crate::lr_activity::recorded);
-        record(a.manifest, |o| {
+        record(a.manifest, a.abf_prior_scale, |o| {
             o.table = Some(table);
             o.curve = Some(curve);
             o.celltype = celltype;
@@ -445,7 +451,7 @@ fn record_tables(
             celltype,
             options: Some(options),
         };
-        record(a.manifest, |o| o.record_subset(entry))
+        record(a.manifest, a.abf_prior_scale, |o| o.record_subset(entry))
     }
 }
 
@@ -890,7 +896,7 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
         None => {}
     }
     let table = crate::lr_activity::recorded(Path::new(&path));
-    record(a.manifest, |o| o.simulate = Some(table))?;
+    record(a.manifest, a.abf_prior_scale, |o| o.simulate = Some(table))?;
     crate::util::staging::say(output::sim_summary(&rows, a.plant_region));
     crate::util::staging::say(format!(
         "lra-simulate: wrote {} runs to {}",

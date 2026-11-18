@@ -5,7 +5,9 @@ use super::association::arm_contrast;
 use super::averaging::AbfSummary;
 use super::crossfit::{CrossFit, DesignView};
 use super::fits::{arms_open, fit_main, thin_subset, Fit, Rows, ThresholdFits};
+use super::inference::jackknife_sd;
 use super::inference::Estimate;
+use super::jackknife::Replicates;
 use super::options::{EffectOpts, NEAR_DETERMINED_H};
 use super::overlap::{difference, outcome_estimate, subset_estimate, OverlapTerms};
 use super::response::Response;
@@ -30,12 +32,10 @@ pub struct ScopeEffects {
     /// headline it is averaged over exposure thresholds. It is the answer a
     /// comparison without adjustment would give, the reference the adjusted
     /// estimates are read against, and it enters no verdict.
-    pub unadjusted_diff: Estimate,
+    pub unadj: Estimate,
     /// The competent effect by overlap weights alone ([`arm_contrast`]).
     pub ipw: Estimate,
     /// The competent effect by the outcome regression alone ([`outcome_estimate`]).
-    /// Only `theta` is reported: the rest is borrowed for averaging, and must not
-    /// be read as this estimate's own uncertainty.
     pub outcome: Estimate,
     pub incompetent: Estimate,
     /// The competent effect in this scope minus that on every other
@@ -78,7 +78,7 @@ impl ScopeEffects {
         Self {
             effect: pick(&|e| e.effect),
             competent: pick(&|e| e.competent),
-            unadjusted_diff: pick(&|e| e.unadjusted_diff),
+            unadj: pick(&|e| e.unadj),
             ipw: pick(&|e| e.ipw),
             outcome: pick(&|e| e.outcome),
             incompetent: pick(&|e| e.incompetent),
@@ -104,6 +104,9 @@ impl ScopeEffects {
 pub struct LevelEffects {
     pub scopes: Vec<ScopeEffects>,
     pub pooled_sums: Vec<f64>,
+    /// Each scope's tile-jackknife replicates; empty without
+    /// [`Rows::jackknife`].
+    pub replicates: Vec<Replicates>,
 }
 
 /// [`effects_on`]'s result: per competence threshold, and the main fit's
@@ -167,6 +170,7 @@ pub fn effects_on(
         .map(|inside| arms_open(inside, t, middle, opts))
         .collect();
     let reader = ScopeReader {
+        tiles: rows.jackknife,
         cf: rows.cf,
         t,
         y: &r.y,
@@ -206,14 +210,20 @@ impl ResponseFits {
     ) -> anyhow::Result<Self> {
         use timing::{time, MAIN, NOSPILL, STEPS};
         let (design, cf) = (rows.design.view(), rows.cf);
-        let fit = |run: bool, kind: Fit, step: Option<usize>, d: DesignView<'_>| {
-            run.then(|| fit_main(d, cf, fits, r, kind, step, opts))
+        let fit = |run: bool, kind: Fit, d: DesignView<'_>| {
+            run.then(|| fit_main(d, cf, fits, r, kind, None, opts))
                 .transpose()
         };
         let runs_competent = fits.runs_competent();
-        let main = time(MAIN, || fit(runs_competent, Fit::Main, None, design))?;
+        // The outcome model's tile influence, for the jackknife.
+        let main_kind = if rows.jackknife.is_some() {
+            Fit::Jackknifed
+        } else {
+            Fit::Main
+        };
+        let main = time(MAIN, || fit(runs_competent, main_kind, design))?;
         let nospill = time(NOSPILL, || {
-            fit(sens.nospill && runs_competent, Fit::NoSpill, None, design)
+            fit(sens.nospill && runs_competent, Fit::NoSpill, design)
         })?;
         let steps = if sens.steps && runs_competent {
             time(STEPS, || {
@@ -246,6 +256,9 @@ impl ResponseFits {
 
 /// Reads the estimands of one response at one threshold off its fits.
 struct ScopeReader<'a> {
+    /// Per scope, the tiles its jackknife replicates delete
+    /// ([`Rows::jackknife`]).
+    tiles: Option<&'a [Vec<u32>]>,
     cf: &'a CrossFit,
     t: &'a [bool],
     y: &'a [f64],
@@ -264,6 +277,7 @@ impl ScopeReader<'_> {
         headline: &[bool],
     ) -> LevelEffects {
         let mut pooled_sums = Vec::new();
+        let mut replicates = Vec::new();
         let scopes = scope_rows
             .iter()
             .enumerate()
@@ -272,10 +286,14 @@ impl ScopeReader<'_> {
                     rows: complement(&scope_rows[0], inside),
                     open: headline[0],
                 });
-                let (effects, sums) =
-                    self.scope(inside, competent, headline[k], k == 0, rest.as_ref());
+                let tiles = self.tiles.map(|t| t[k].as_slice());
+                let (effects, sums, reps) =
+                    self.scope(inside, competent, headline[k], k == 0, rest.as_ref(), tiles);
                 if k == 0 {
                     pooled_sums = sums;
+                }
+                if let Some(r) = reps {
+                    replicates.push(r);
                 }
                 effects
             })
@@ -283,11 +301,13 @@ impl ScopeReader<'_> {
         LevelEffects {
             scopes,
             pooled_sums,
+            replicates,
         }
     }
 
     /// Every estimand on the rows `inside`, with the cluster sums of the
-    /// competent effect; `open` says the scope has a headline, and the
+    /// competent effect and, deleting each of `tiles`, the estimators'
+    /// jackknife replicates; `open` says the scope has a headline, and the
     /// sensitivity estimands are read on the `pooled` scope alone.
     fn scope(
         &self,
@@ -296,7 +316,8 @@ impl ScopeReader<'_> {
         open: bool,
         pooled: bool,
         rest: Option<&Rest>,
-    ) -> (ScopeEffects, Vec<f64>) {
+        tiles: Option<&[u32]>,
+    ) -> (ScopeEffects, Vec<f64>, Option<Replicates>) {
         let (comp, incomp): (Vec<u32>, Vec<u32>) =
             inside.iter().partition(|&&i| competent[i as usize]);
         let main = self.terms.main.as_ref();
@@ -304,24 +325,25 @@ impl ScopeReader<'_> {
         let (on_incompetent, incompetent_sums) = self.subset(main, open, &incomp);
         let contrast = difference(&on_competent, &sums, &on_incompetent, &incompetent_sums);
         let nan = Estimate::nan(on_competent.n, on_competent.n_treated);
-        let versus_rest = match rest {
-            Some(rest) => {
-                let others: Vec<u32> = rest
-                    .rows
-                    .iter()
-                    .copied()
-                    .filter(|&i| competent[i as usize])
-                    .collect();
-                let (on_rest, rest_sums) = self.subset(main, rest.open, &others);
+        let others: Option<Vec<u32>> = rest.map(|rest| {
+            rest.rows
+                .iter()
+                .copied()
+                .filter(|&i| competent[i as usize])
+                .collect()
+        });
+        let versus_rest = match (rest, &others) {
+            (Some(rest), Some(others)) => {
+                let (on_rest, rest_sums) = self.subset(main, rest.open, others);
                 difference(&on_competent, &sums, &on_rest, &rest_sums)
             }
-            None => nan,
+            _ => nan,
         };
-        let unadjusted_diff = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
+        let unadj = arm_contrast(self.y, self.t, &comp, self.cf, |_| 1.0);
         let (ipw, outcome) = match main {
             Some(m) if on_competent.theta.is_finite() => (
                 arm_contrast(self.y, self.t, &comp, self.cf, |i| m.arm_weight[i]),
-                outcome_estimate(m, &on_competent, &comp),
+                outcome_estimate(m, self.t, &comp, self.cf),
             ),
             _ => (nan, nan),
         };
@@ -334,10 +356,10 @@ impl ScopeReader<'_> {
         } else {
             ([nan; 3], nan)
         };
-        let effects = ScopeEffects {
+        let mut effects = ScopeEffects {
             effect: contrast,
             competent: on_competent,
-            unadjusted_diff,
+            unadj,
             ipw,
             outcome,
             incompetent: on_incompetent,
@@ -347,7 +369,103 @@ impl ScopeReader<'_> {
             near_determined,
             abf: AbfSummary::NONE,
         };
-        (effects, sums)
+        let reps = tiles.map(|tiles| {
+            let mut r = self.replicates(&effects, &comp, tiles);
+            r.0[4] = self.contrast_replicates(&effects.effect, &comp, &incomp, tiles);
+            r.0[5] = match &others {
+                Some(others) => self.contrast_replicates(
+                    &effects.versus_rest,
+                    &comp,
+                    others,
+                    self.tiles.map_or(&[][..], |t| &t[0]),
+                ),
+                None => Vec::new(),
+            };
+            r
+        });
+        if let Some(r) = &reps {
+            // The outcome regression's SE at this threshold, which weighs its
+            // thresholds, is its own jackknife's: with the fits taken as known
+            // it leaves out the coefficients' error.
+            (effects.outcome.se, effects.outcome.df) = jackknife_sd(&r.0[2]);
+        }
+        (effects, sums, reps)
+    }
+
+    /// [`Replicates`] of `e`, the estimates on the competent rows `comp`,
+    /// each tile of `tiles` deleted: every estimator a ratio of per-tile
+    /// sums, the full sum less the tile's, the fits held. The outcome
+    /// regression's coefficients move by the tile's leave-out solve
+    /// ([`super::overlap::OutcomeInfluence`]). NaN where the headline has no
+    /// estimate or a deletion leaves a denominator empty.
+    fn replicates(&self, e: &ScopeEffects, comp: &[u32], tiles: &[u32]) -> Replicates {
+        let g = tiles.len();
+        let main = self.terms.main.as_ref();
+        let Some(m) = main.filter(|_| e.competent.theta.is_finite()) else {
+            return Replicates(std::array::from_fn(|j| {
+                vec![f64::NAN; if j < 4 { g } else { 0 }]
+            }));
+        };
+        let mut at = vec![usize::MAX; self.cf.n_clusters()];
+        for (j, &c) in tiles.iter().enumerate() {
+            at[c as usize] = j;
+        }
+        // Per tile: Σh, Σnum, Σh(m₁ − m₀), and each arm's weight and
+        // weighted response under the overlap weights and under weight 1.
+        let mut sums = vec![[0.0f64; 11]; g];
+        for &i in comp {
+            let i = i as usize;
+            let Some(s) = sums.get_mut(at[self.cf.cluster[i] as usize]) else {
+                continue;
+            };
+            let (w, y) = (m.arm_weight[i], self.y[i]);
+            let arm = if self.t[i] { 3 } else { 5 };
+            s[0] += m.h[i];
+            s[1] += m.num[i];
+            s[2] += m.outcome[i];
+            s[arm] += w;
+            s[arm + 1] += w * y;
+            s[arm + 4] += 1.0;
+            s[arm + 5] += y;
+        }
+        let total: [f64; 11] = std::array::from_fn(|k| sums.iter().map(|s| s[k]).sum());
+        let weights = m
+            .influence
+            .as_ref()
+            .map(|inf| inf.weights(&m.h, comp, self.cf));
+        let contrast = |r: &[f64; 11], a: usize| {
+            let (w1, w0) = (r[a], r[a + 2]);
+            if w1 > 1e-12 && w0 > 1e-12 {
+                r[a + 1] / w1 - r[a + 3] / w0
+            } else {
+                f64::NAN
+            }
+        };
+        let mut out: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::with_capacity(g));
+        for (j, s) in sums.iter().enumerate() {
+            let r: [f64; 11] = std::array::from_fn(|k| total[k] - s[k]);
+            let shift = match (&m.influence, &weights) {
+                (Some(inf), Some(w)) => inf.shift(w, tiles[j]),
+                _ => 0.0,
+            };
+            let ratio = |x: f64| if r[0] > 1e-12 { x / r[0] } else { f64::NAN };
+            out[0].push(ratio(r[1]));
+            out[1].push(contrast(&r, 3));
+            out[2].push(ratio(r[2] + shift));
+            out[3].push(contrast(&r, 7));
+        }
+        Replicates(out)
+    }
+
+    /// The replicates of `e`, the augmented estimate on `a` less that on `b`
+    /// ([`difference`]), each tile of `tiles` deleted; NaN without `e`.
+    fn contrast_replicates(&self, e: &Estimate, a: &[u32], b: &[u32], tiles: &[u32]) -> Vec<f64> {
+        let Some(m) = self.terms.main.as_ref().filter(|_| e.theta.is_finite()) else {
+            return vec![f64::NAN; tiles.len()];
+        };
+        let ra = ratio_replicates(&m.num, &m.h, a, tiles, self.cf);
+        let rb = ratio_replicates(&m.num, &m.h, b, tiles, self.cf);
+        ra.iter().zip(&rb).map(|(x, y)| x - y).collect()
     }
 
     /// A subset's estimate from `terms`, or the guard's verdict on it when the
@@ -381,6 +499,42 @@ impl ScopeReader<'_> {
         }
         (steps, nospill)
     }
+}
+
+/// `Σ num / Σ h` over `rows`, each tile of `tiles` deleted; NaN where a
+/// deletion leaves no weight.
+fn ratio_replicates(
+    num: &[f64],
+    h: &[f64],
+    rows: &[u32],
+    tiles: &[u32],
+    cf: &CrossFit,
+) -> Vec<f64> {
+    let mut at = vec![usize::MAX; cf.n_clusters()];
+    for (j, &c) in tiles.iter().enumerate() {
+        at[c as usize] = j;
+    }
+    let mut sums = vec![[0.0f64; 2]; tiles.len()];
+    let (mut sn, mut sh) = (0.0, 0.0);
+    for &i in rows {
+        let i = i as usize;
+        sn += num[i];
+        sh += h[i];
+        if let Some(s) = sums.get_mut(at[cf.cluster[i] as usize]) {
+            s[0] += num[i];
+            s[1] += h[i];
+        }
+    }
+    sums.iter()
+        .map(|s| {
+            let w = sh - s[1];
+            if w > 1e-12 {
+                (sn - s[0]) / w
+            } else {
+                f64::NAN
+            }
+        })
+        .collect()
 }
 
 /// The pooled rows outside a scope, and whether the pooled scope has a

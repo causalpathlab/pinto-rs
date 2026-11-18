@@ -122,6 +122,9 @@ impl crate::util::metadata::LraOptions {
         if self.region_jackknife != d.region_jackknife {
             flag("--region-jackknife", self.region_jackknife.clone());
         }
+        if self.abf_prior_scale != d.abf_prior_scale {
+            flag("--abf-prior-scale", self.abf_prior_scale.to_string());
+        }
         if self.species != d.species {
             flag("--species", self.species.clone());
         }

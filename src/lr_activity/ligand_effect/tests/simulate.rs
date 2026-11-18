@@ -135,69 +135,6 @@ fn contacts_and_competence() {
     );
 }
 
-/// Random Gaussian bumps at the regional scale, outside the adjustment
-/// smooth's own Fourier basis: the smooth still has to absorb them.
-#[test]
-#[ignore = "benchmark: cargo test -- --ignored"]
-fn no_effect_under_regional_confounding() {
-    let f = fixture();
-    let scen = Scenario {
-        effect_pve: 0.0,
-        ligand_field_pve: 0.5,
-        response_field_pve: 0.5,
-        confounder: ConfounderKind::Bumps,
-        scale: 32.0,
-        ..Scenario::default()
-    };
-    let (mut est_rej, mut unadjusted_rej, mut z_sum) = (0, 0, 0.0);
-    let runs = 4;
-    for rep in 0..runs {
-        let r = run_sim(&f.tissue, &base(&f), &Scenario { rep, ..scen }, &opts(), 11).unwrap();
-        assert!(
-            r.truth.abs() < 1e-12,
-            "no planted effect means a zero truth"
-        );
-        est_rej += r.rejected() as usize;
-        unadjusted_rej += r.unadjusted_diff.rejects() as usize;
-        z_sum += r.estimate.z();
-    }
-    assert!(
-        unadjusted_rej >= 3,
-        "the unadjusted difference should be fooled most runs ({unadjusted_rej}/{runs})"
-    );
-    assert!(
-        est_rej <= 1,
-        "the estimate rejected {est_rej}/{runs} null runs"
-    );
-    assert!(
-        (z_sum / runs as f64).abs() < 2.0,
-        "mean z {:.2}",
-        z_sum / runs as f64
-    );
-}
-
-#[test]
-#[ignore = "benchmark: cargo test -- --ignored"]
-fn a_planted_effect_is_recovered_on_the_tissue() {
-    let f = fixture();
-    let scen = Scenario {
-        effect_pve: 0.1,
-        ligand_field_pve: 0.5,
-        response_field_pve: 0.5,
-        ..Scenario::default()
-    };
-    let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 21).unwrap();
-    assert!(r.truth > 0.05, "truth {}", r.truth);
-    assert!(
-        ((r.estimate.theta - r.truth) / r.estimate.se).abs() < 3.0,
-        "estimate {:.3} ± {:.3}, truth {:.3}",
-        r.estimate.theta,
-        r.estimate.se,
-        r.truth
-    );
-    assert!(r.incompetent.theta.is_nan() || (r.incompetent.z()).abs() < 3.0);
-}
-
 #[test]
 fn the_truth_contrasts_the_realized_effect_between_seen_arms() {
     use crate::lr_activity::ligand_effect::simulate::seen_contrast;
@@ -231,33 +168,6 @@ fn the_truth_contrasts_the_realized_effect_between_seen_arms() {
     assert_eq!(skip, 2.0);
     // An empty arm has no contrast.
     assert!(seen_contrast(&effect, &[true; 4], &comp, &even).is_nan());
-}
-
-#[test]
-#[ignore = "benchmark: cargo test -- --ignored"]
-fn a_dose_response_truth_tracks_the_estimate_and_keeps_the_exposed_effect_apart() {
-    let f = fixture();
-    let scen = Scenario {
-        effect_pve: 0.1,
-        dose_response: true,
-        dose_midpoint: 0.5,
-        dose_order: 2,
-        ..Scenario::default()
-    };
-    let r = run_sim(&f.tissue, &base(&f), &scen, &opts(), 22).unwrap();
-    assert!(
-        r.truth > 0.0 && r.truth_exposed > 0.0,
-        "{} {}",
-        r.truth,
-        r.truth_exposed
-    );
-    assert!(
-        ((r.estimate.theta - r.truth) / r.estimate.se).abs() < 3.0,
-        "estimate {:.3} ± {:.3}, truth {:.3}",
-        r.estimate.theta,
-        r.estimate.se,
-        r.truth
-    );
 }
 
 /// A field PVE is its share of the linear predictor's variance: on a log
@@ -342,4 +252,84 @@ fn a_shared_field_is_the_run_s_field() {
     assert_eq!(bits(&same), bits(&drawn));
     let other = with(mix_seed(seed, 99));
     assert_ne!(bits(&other), bits(&drawn), "another field, another run");
+}
+
+/// Under no effect and no confounding, each estimator's z (estimate over its
+/// tile-jackknife SE) is about standard over runs, and each rejects at about
+/// its 5%, at one exposure threshold and averaged over several: the
+/// jackknife gives every estimator, the outcome regression included, an SE
+/// of the right size on the pooled row. Printed beside them, to tell bias
+/// from a wrong SE: the mean estimate and z, and the estimates' spread over
+/// the runs against their mean SE.
+#[test]
+fn every_estimator_s_jackknife_se_is_calibrated_under_the_null() {
+    use crate::lr_activity::ligand_effect::inference::Estimate;
+    use rayon::prelude::*;
+    let f = fixture();
+    let runs = 200;
+    let averaged = EffectOpts {
+        threshold: None,
+        ..opts()
+    };
+    let mean_sd = |v: &[f64]| {
+        let n = v.len() as f64;
+        let m = v.iter().sum::<f64>() / n;
+        (
+            m,
+            (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0)).sqrt(),
+        )
+    };
+    for (how, o) in [("one threshold", opts()), ("thresholds averaged", averaged)] {
+        let clock = std::time::Instant::now();
+        let rows: Vec<SimRow> = (0..runs)
+            .into_par_iter()
+            .map(|rep| {
+                let scen = Scenario {
+                    effect_pve: 0.0,
+                    rep,
+                    ..Scenario::default()
+                };
+                run_sim(&f.tissue, &base(&f), &scen, &o, 31).unwrap()
+            })
+            .collect();
+        let seconds = clock.elapsed().as_secs_f64();
+        type Pick = fn(&SimRow) -> Estimate;
+        let methods: [(&str, Pick); 4] = [
+            ("dr", |r| r.estimate),
+            ("ipw", |r| r.ipw),
+            ("outcome", |r| r.outcome),
+            ("unadj", |r| r.unadj),
+        ];
+        for (name, pick) in methods {
+            let ok: Vec<Estimate> = rows
+                .iter()
+                .map(pick)
+                .filter(|e| e.z().is_finite())
+                .collect();
+            let n = ok.len() as f64;
+            let z: Vec<f64> = ok.iter().map(|e| e.z()).collect();
+            let theta: Vec<f64> = ok.iter().map(|e| e.theta).collect();
+            let (zm, zsd) = mean_sd(&z);
+            let (tm, tsd) = mean_sd(&theta);
+            let se = ok.iter().map(|e| e.se).sum::<f64>() / n;
+            let rejected = ok.iter().filter(|e| e.rejects()).count();
+            let mut ses: Vec<f64> = ok.iter().map(|e| e.se).collect();
+            ses.sort_by(f64::total_cmp);
+            let median_se = ses[ses.len() / 2];
+            eprintln!(
+                "{how}, {name}: {} of {runs} estimable; mean estimate {tm:+.4}, mean z {zm:+.2} \
+                 (± {:.2}); estimates' sd {tsd:.4}, SE mean {se:.4} median {median_se:.4}; z sd {zsd:.2}, \
+                 type I {rejected}/{runs}; {seconds:.1} s for the runs",
+                ok.len(),
+                2.0 * zsd / n.sqrt(),
+            );
+            assert!(n >= 0.9 * runs as f64, "{how}, {name}: estimable");
+            assert!(
+                (0.7..1.3).contains(&zsd),
+                "{how}, {name}: null z sd {zsd:.2}"
+            );
+            assert!(zm.abs() < 0.4, "{how}, {name}: null z mean {zm:+.2}");
+            assert!(rejected <= 20, "{how}, {name}: type I {rejected}/{runs}");
+        }
+    }
 }

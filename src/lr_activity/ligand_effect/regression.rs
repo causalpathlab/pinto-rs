@@ -113,13 +113,14 @@ pub(super) fn fold_products(
 /// Ridge regression of `y` on `[X | cols]` over `n_train` training rows,
 /// bordering their precomputed `XᵀX` with the extra columns' cross-products
 /// ([`fold_products`]). The intercept (column 0) is unpenalized. Returns
-/// `p + q` coefficients.
+/// the `p + q` coefficients and the penalized Gram, from which a tile's
+/// leave-out solve takes its rows' block.
 pub(super) fn ridge_bordered(
     xtx: &DMatrix<f64>,
     products: &FoldProducts,
     n_train: usize,
     ridge: f64,
-) -> anyhow::Result<DVector<f64>> {
+) -> anyhow::Result<(DVector<f64>, DMatrix<f64>)> {
     let p = xtx.nrows();
     let FoldProducts { a, b } = products;
     let d = a.nrows();
@@ -142,7 +143,8 @@ pub(super) fn ridge_bordered(
     for j in 0..d {
         g[(j, j)] += 1e-9 * scale;
     }
-    Ok(factor_spd(g)?.solve(b))
+    let beta = factor_spd(g.clone())?.solve(b);
+    Ok((beta, g))
 }
 
 /// Newton steps a logistic fit may take at most; every step moves, so this
@@ -475,7 +477,7 @@ struct NewtonFit {
 
 /// Rows `rows` of `[X | cols]`, row-major, gathered a cache-sized block at a
 /// time: `x` is column-major.
-fn gather_design_rows<T: RowValue>(
+pub(super) fn gather_design_rows<T: RowValue>(
     x: &DMatrix<f32>,
     p: usize,
     cols: &[&[f64]],
@@ -868,7 +870,9 @@ fn softplus(x: f64) -> f64 {
     }
 }
 
-fn factor_spd(a: DMatrix<f64>) -> anyhow::Result<nalgebra::Cholesky<f64, nalgebra::Dyn>> {
+pub(super) fn factor_spd(
+    a: DMatrix<f64>,
+) -> anyhow::Result<nalgebra::Cholesky<f64, nalgebra::Dyn>> {
     let d = a.nrows();
     match a.clone().cholesky() {
         Some(ch) => Ok(ch),

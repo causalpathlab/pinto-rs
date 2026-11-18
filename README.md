@@ -264,7 +264,7 @@ clustering behind the labels may have used them. `--cell-types` (a `cell`,
 adds an indicator per region within each section to the adjustment, which the
 smooth fields cannot give at a sharp edge, and a row per region
 (`region:<name>`, its q corrected within the region). Every section and region
-row also carries `effect_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
+row also carries `effect_dr_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
 that on every other receiver, from the same fit, the test that an effect is
 the region's or the donor's own. A region row with p < 0.2 is checked by a
 delete-one-tile jackknife over its sections, which widens its SEs and never
@@ -338,18 +338,38 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 (descriptive log odds per batch, `{out}.lr_scores.parquet`).
 
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
-pooled row). `effect_competent` is the headline, a log-rate change of the
+pooled row). `effect_dr` is the headline, a log-rate change of the
 response program (`exp(x) - 1` is the percent change); `verdict` sums up
 the evidence and `verdict_note` says why in words. For comparison, and in no
 verdict: `marginal_cor` (the correlation of response and contact ligand),
-`unadjusted_diff` (the mean response of exposed competent receivers minus that
+`effect_unadj` (the mean response of exposed competent receivers minus that
 of unexposed ones, every receiver weighted 1 and nothing adjusted for), each with `_se`; `effect_ipw`
 (overlap weights alone) with `_se`, `_lo` and `_hi`, an interval no control
 guards, so not a test of the pair; and `effect_outcome` (the outcome regression
-alone), a point estimate with no SE or interval, because it can target a
-different contrast when exposure is misclassified. `unadjusted_diff`,
-`effect_ipw` and `effect_outcome` are averaged over exposure thresholds as the
-headline is, each by its own evidence. `pinto view` shows the pairs and draws
+alone) with `_se`, `_lo` and `_hi`, which can target a different contrast when
+exposure is misclassified. `effect_unadj`, `effect_ipw` and `effect_outcome`
+also carry `_df` and `_p` (two-sided, t reference), and are averaged over
+exposure thresholds as the headline is, each by its own evidence. Each of the
+four estimators (`effect_dr`, `effect_ipw`, `effect_outcome`,
+`effect_unadj`) has its SE from a delete-one-tile jackknife, on every row
+(pooled, section, cell type; a region row's headline keeps the region
+jackknife below): the nuisance fits are kept and each tile holding rows of the
+row is left out of the averages in turn (no refit), and each replicate is the
+whole estimate as reported, every exposure threshold's estimate and the
+threshold average with its weights recomputed, so the SE is that of the
+averaged estimate itself; its df is the tiles the variance rests on less one.
+Since 0.17.5 this jackknife SE is all of it: the between-choice term of
+Rubin's rules and the spread between thresholds that 0.17.4 added are not,
+since every replicate recomputes every choice and threshold. The headline's
+contrasts (`effect_dr_contrast`, `effect_dr_vs_rest`) take the same
+jackknife, so the verdict compares like with like.
+`effect_outcome`'s replicates also re-solve its outcome model without the
+tile (the ridge on its fold's Gram less the tile's, no refit), where its
+sampling error lives, and that leave-out also gives it its SE at each
+threshold, which weighs its thresholds in the average. The thresholds are weighed by
+approximate Bayes factors whose prior SD is `--abf-prior-scale` (default 10)
+times the upper-median SE over the thresholds: smaller = smoother weights
+across thresholds. `pinto view` shows the pairs and draws
 each on the tissue (see `view`, `I`):
 
 | verdict | meaning |
@@ -371,17 +391,17 @@ response better count for more and disagreement between them widens the
 interval. The control is averaged by its own evidence. The prior on an effect
 is set from the pair's own standard errors (ten times their median over the
 thresholds), so the weights do not depend on the response's units.
-`effect_log10_bf` is the evidence for an effect at any threshold against that
+`effect_dr_log10_bf` is the evidence for an effect at any threshold against that
 prior, and `tau_top` and `tau_top_weight` say which threshold the average leans
 on most.
 
 Every test reads its t reference on the effective number of variance tiles,
 `3 (Σ s²)² / Σ s⁴` over the tiles' sums, between 2 and the tiles that carry the
-row (`effect_competent_df` is that count less one). A row whose signal sits in
+row (`effect_dr_df` is that count less one). A row whose signal sits in
 a few of many tiles, as a region of one donor does, is tested on those few.
 
 A significant effect then has to exceed the negative control, the same way:
-the effect in receptor-negative receivers (`effect_contrast_q`), the
+the effect in receptor-negative receivers (`effect_dr_contrast_q`), the
 comparison corrected among the pairs with a significant effect (so its q is
 empty for the rest). A hidden field can move the control too, so a control
 that is itself significant does not rule out a larger effect; it is named in
@@ -459,9 +479,10 @@ row's, the region's being `region_estimate` and `region_se`. `-o` must not
 be the `--from` run's prefix, whose table is the grid's.
 
 The call writes `{out}.lra-simulate.parquet`, the table above plus
-`planted` (0/1), `t` (estimate over SE, a one-sided score as the planted
-effect is positive), `p` (its two-sided p on the t reference) and
-`marginal_cor_p`, `unadjusted_diff_p` and `effect_ipw_p`. These five are
+`planted` (0/1) and, for each estimator (`effect_dr`, the headline;
+`effect_ipw`; `effect_outcome`; `effect_unadj`), its estimate with `_se`
+(delete-one-tile jackknife), `_df` and `_p` (two-sided, t reference), and
+`marginal_cor_p`. The five p columns are
 doubles computed at full precision (the grid's columns stay floats), so a
 p far below a float's smallest value is kept rather than written as 0. A row not estimable
 stays, with NaN scores. Then, last and atomically, it writes
@@ -490,8 +511,8 @@ each process otherwise takes half the free memory for itself.
 Do methods find the same domains in every donor, and keep a domain that
 only one donor has, when donor effects are as large as cell-type effects?
 `pinto sim new` makes several donors' sections with a known answer,
-`pinto sim score` scores any labelling against it,
-`pinto sim pairs` scores a latent mapping on pairs of spots, and
+`pinto sim score-by-set` scores any labelling against it,
+`pinto sim score-by-pair` scores a latent mapping on pairs of spots, and
 `pinto sim baseline` runs the two usual workflows (pool every donor, or
 analyze each donor alone) for comparison.
 
@@ -631,37 +652,45 @@ empty `sim` is written as `sim.partial` and moved into place once whole, so
 a stopped run leaves no `sim`; a `sim` that already holds files is written
 in place.
 
-**Scoring.** `pinto sim score --truth sim --labels <runs or tables>`
+**Scoring.** `pinto sim score-by-set --truth sim --labels <runs or tables>`
 runs two tests:
 
-1. *Donor-invariant domains*, on spots of shared domains: `shared_ari`
-   (labels against domains), `donor_dependence` (`donor_dep` in the table:
-   how much the labels depend on the donor within a domain, as conditional
-   mutual information, 0 to 1), pooled and for each shared domain
-   (`donor_dependence_by_domain`; `donor_dep_by_domain` in the table).
-2. *Donor-specific domains*, each against its best-matching label: `f1`,
-   `precision` (`prec` in the table; low: shared spots absorbed), `recall`
-   (in the `-o` JSON), and `owner_share` (`owner`; 1: the label is confined
-   to the owning donor).
+1. *Donor-invariant domains*, on spots of shared domains, labels against
+   domains: `shared_ari` (adjusted Rand index); `shared_ami` (adjusted
+   mutual information, Vinh, Epps and Bailey 2010: the expected MI exact
+   under the hypergeometric model, arithmetic-mean normalization; 0 chance,
+   1 the same partition); `shared_nmi` (normalized mutual information,
+   arithmetic mean; not corrected for chance, so many small labels raise
+   it); and `donor_conditional_entropy`, `H(donor | label, domain) /
+   H(donor | domain)`, 0 to 1 (1: labels mix the donors fully; 0: the label
+   sets the donor), pooled over the shared domains by their spots and for
+   each (`donor_conditional_entropy_by_domain`; a domain in one donor is
+   skipped with a note, and the pooled value is null when none is left).
+2. *Donor-specific domains*, each within its owning donor's spots only
+   (`within: "owner_donor"`), so a label is not marked down for spots it
+   holds in other donors: its best-matching label there, and that label's
+   `f1`, `precision` (`prec` in the table; low: the owner's shared spots
+   absorbed) and `recall`, all over the owner's spots.
 
 **Scoring on pairs.** A clustering has its own preferences (how many
-groups, how big), so `pinto sim pairs --truth sim --vectors <inputs>`
+groups, how big), so `pinto sim score-by-pair --truth sim --vectors <inputs>`
 scores the per-cell vectors themselves: a run's propensity at `--level`, a
 cage run's `{prefix}.cell_embedding.parquet`, or any table with a `cell`
 column and numeric columns. Two spots' similarity is the cosine of their
 vectors, scored by AUROC (Mann-Whitney, ties counting a half; Hanley and
 McNeil 1982) and AUPRC (average precision) on four sets of pairs, each
-reported with its prevalence (the AUPRC of chance): `cross_donor`,
-shared-domain spots of two donors, positive when they share a domain;
-`within_donor`, the same within one donor, the reference, with `donor_gap`
-(within less cross) what the donor costs the mapping; `patches`, for each
-donor-specific domain, pairs of its spots against one of its spots with one
-outside it, half and half, with `closest_domain` the domain it is told
-apart from worst (`closest_auroc` 0.5: folded into it); and `spatial`, each
-spot's `--knn` (6) nearest neighbours in its section, positive when they
-share a domain. The sampled sets take `--pairs` (20000) pairs each from
-`--seed`, so a score is reproducible; the table shows the AUROCs and `-o`
-writes every number as JSON.
+reported with its prevalence (the AUPRC of chance):
+`shared_domain_across_donors`, shared-domain spots of two donors, positive
+when they share a domain; `shared_domain_within_donor`, the same within one
+donor, the reference, with `donor_gap` (within less across) what the donor
+costs the mapping; `patches`, for each donor-specific domain,
+`donor_domain_vs_own_donor`, pairs of its spots against one of its spots
+with a spot of the same donor outside it, half and half (`negatives:
+"same_donor_outside_domain"`, so telling donors apart scores 0.5); and
+`neighbour_same_domain`, each spot's `--knn` (6) nearest neighbours in its
+section, positive when they share a domain. The sampled sets take `--pairs`
+(20000) pairs each from `--seed`, so a score is reproducible; the table
+shows the AUROCs and `-o` writes every number as JSON.
 
 **Scoring another method.** Any tool can be scored:
 
@@ -671,7 +700,7 @@ writes every number as JSON.
    default `label`). With several sections a cell is named
    `barcode@section` (e.g. `S1_00001@S1`), as pinto names them; with one,
    the bare barcode. `sim/truth/spots.parquet` lists every name.
-3. `pinto sim score --truth sim --labels that.tsv`. Unlabelled cells
+3. `pinto sim score-by-set --truth sim --labels that.tsv`. Unlabelled cells
    (empty, `NA`, `-1`, `unassigned`) are left out and counted.
 
 **Baselines.** `pinto sim baseline --truth sim --method <m> -o m.tsv`
@@ -688,8 +717,8 @@ writes such a table:
   largest donor's clusters, as scmap-cluster projects onto reference
   centroids (Kiselev, Yiu and Hemberg 2018).
 
-Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score`,
-`run_sim_pairs` and `run_sim_baseline` (see `mcp` below).
+Agents get the same loop as MCP tools: `run_simulate`, `run_sim_score_by_set`,
+`run_sim_score_by_pair` and `run_sim_baseline` (see `mcp` below).
 
 ### Spatial baselines: `spatialde2`, `stagate`, `spatialpca`, `mefisto` and their `-pb` forms
 
@@ -839,8 +868,8 @@ each its share.
 
 ```sh
 pinto fit stagate s1.zarr,s2.zarr -c s1.coords.parquet,s2.coords.parquet -o res/stagate --n-clusters 4
-pinto sim score --truth sim --labels res/stagate
-pinto sim pairs --truth sim --vectors res/stagate.cell_embedding.parquet
+pinto sim score-by-set --truth sim --labels res/stagate
+pinto sim score-by-pair --truth sim --vectors res/stagate.cell_embedding.parquet
 ```
 
 Each writes a pinto run, so `pinto view`, `compare`, `srt-sim-score` and
@@ -950,7 +979,8 @@ absorbed and never found.
 at the stage-1 communities' donor make-up first. If they already follow the
 donor, the residual's one-donor communities are nuisance. On a simulation,
 `srt-sim-pairs` shows it directly: a stage-1 representation at chance on
-`cross_donor` pairs but not on `within_donor` ones (a large `donor_gap`) is
+`shared_domain_across_donors` pairs but not on `shared_domain_within_donor`
+ones (a large `donor_gap`) is
 split by donor.
 
 ```sh
@@ -1369,10 +1399,10 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
 | `run_lra_simulate` | `pinto lra simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
 | `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr.zip` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
-| `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
-| `run_sim_score` | `pinto sim score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
-| `run_sim_pairs` | `pinto sim pairs` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
-| `run_sim_baseline` | `pinto sim baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `n_clusters`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score` |
+| `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score_by_set`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
+| `run_sim_score_by_set` | `pinto sim score-by-set` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_score_by_pair` | `pinto sim score-by-pair` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_baseline` | `pinto sim baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `n_clusters`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score_by_set` |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |

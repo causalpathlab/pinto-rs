@@ -6,14 +6,14 @@
 //! Domains: each shared domain `k` has a smooth field `g_k` per section, and
 //! a spot takes `argmax_k g_k + c_k`, with the offsets `c_k` tuned so domain
 //! `k` covers its donor's share `π_{d,k} ∝ exp(jit_b e_{d,k})`. Shared
-//! domain `k` is dominated by shared state `k`. The donor-specific domain
-//! has its own field, of its own length scale, on the owner's sections
-//! only, and takes the spots above the quantile that makes it cover
-//! `patch_share` of them.
+//! domain `k` is dominated by shared state `k`. Each donor-specific domain
+//! (one per owner, [`SimParams::patches`]) has its own field, of its own
+//! length scale, on its owner's sections only, and takes the spots above
+//! the quantile that makes it cover `patch_share` of them.
 
 use super::field::rff_field;
 use super::panel::Section;
-use super::params::{PatchKind, SimParams};
+use super::params::{Patch, PatchKind, SimParams};
 use super::rng::{rng, Stream};
 use rand::rngs::SmallRng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -21,10 +21,12 @@ use rand_distr::{Distribution, Gamma, StandardNormal};
 /// Rounds of the offset update that matches domain shares to their targets.
 const OFFSET_ROUNDS: usize = 60;
 
-/// A domain or a state: its label, and the donor that alone has it.
+/// A domain or a state: its label, the donor that alone has it, and for a
+/// donor-specific domain what it is made of.
 pub struct Info {
     pub label: Box<str>,
     pub owner: Option<usize>,
+    pub kind: Option<PatchKind>,
 }
 
 pub struct Truth {
@@ -109,27 +111,25 @@ fn dirichlet(comp: &[f64], kappa: f64, r: &mut SmallRng) -> Vec<f64> {
 }
 
 /// States, domains and compositions. Shared state `k` dominates shared
-/// domain `k`, the rest spread evenly over the other shared states. A new
-/// state is appended after the shared ones and dominates the patch.
-fn catalogue(p: &SimParams) -> (Vec<Info>, Vec<Info>, Vec<Vec<f64>>) {
+/// domain `k`, the rest spread evenly over the other shared states. Each
+/// donor-specific domain follows the shared ones, in the order of
+/// `patches`; a new-state one's own state is appended after the shared
+/// states (and the new states before it) and dominates it.
+fn catalogue(p: &SimParams, patches: &[Patch]) -> (Vec<Info>, Vec<Info>, Vec<Vec<f64>>) {
     let n_shared = p.n_domains;
-    let n_states = n_shared + (p.patch_kind == PatchKind::NewState) as usize;
-    let owned = |o: bool| o.then_some(p.patch_owner);
+    let new_state = |x: &Patch| x.kind == PatchKind::NewState;
+    let n_states = n_shared + patches.iter().filter(|x| new_state(x)).count();
     // names that say what they are: shared ones by kind, donor-specific ones
     // by their owner too (`shared_domain_1`, `D3_specific_domain_1`; states
     // `CT1`, `D3_specific_CT1`)
-    let owner = super::panel::donor_label(p.patch_owner);
-    let name = |shared: &str, specific: &str, k: usize| -> Box<str> {
-        if k < n_shared {
-            format!("{shared}{}", k + 1).into()
-        } else {
-            format!("{owner}_specific_{specific}{}", k - n_shared + 1).into()
-        }
+    let specific = |owner: usize, what: &str| -> Box<str> {
+        format!("{}_specific_{what}1", super::panel::donor_label(owner)).into()
     };
-    let states = (0..n_states)
+    let mut states: Vec<Info> = (0..n_shared)
         .map(|c| Info {
-            label: name("CT", "CT", c),
-            owner: owned(c >= n_shared),
+            label: format!("CT{}", c + 1).into(),
+            owner: None,
+            kind: None,
         })
         .collect();
     // `on` takes `dominant`; the other shared states share the rest
@@ -144,29 +144,44 @@ fn catalogue(p: &SimParams) -> (Vec<Info>, Vec<Info>, Vec<Vec<f64>>) {
             .collect()
     };
     let mut composition: Vec<Vec<f64>> = (0..n_shared).map(dominated_by).collect();
-    match p.patch_kind {
-        PatchKind::None => {}
-        PatchKind::NewState => composition.push(dominated_by(n_shared)),
-        PatchKind::NewMix => {
-            let mut comp = vec![0.0; n_states];
-            comp[0] = 0.5;
-            comp[1] = 0.5;
-            composition.push(comp);
-        }
-    }
-    let domains = (0..composition.len())
+    let mut domains: Vec<Info> = (0..n_shared)
         .map(|k| Info {
-            label: name("shared_domain_", "domain_", k),
-            owner: owned(k >= n_shared),
+            label: format!("shared_domain_{}", k + 1).into(),
+            owner: None,
+            kind: None,
         })
         .collect();
+    for x in patches {
+        match x.kind {
+            PatchKind::None => continue,
+            PatchKind::NewState => {
+                composition.push(dominated_by(states.len()));
+                states.push(Info {
+                    label: specific(x.owner, "CT"),
+                    owner: Some(x.owner),
+                    kind: None,
+                });
+            }
+            PatchKind::NewMix => {
+                let mut comp = vec![0.0; n_states];
+                comp[0] = 0.5;
+                comp[1] = 0.5;
+                composition.push(comp);
+            }
+        }
+        domains.push(Info {
+            label: specific(x.owner, "domain_"),
+            owner: Some(x.owner),
+            kind: Some(x.kind),
+        });
+    }
     (states, domains, composition)
 }
 
 pub fn plant(p: &SimParams, sections: &[Section]) -> Truth {
-    let (states, domains, composition) = catalogue(p);
+    let patches = p.patches();
+    let (states, domains, composition) = catalogue(p, &patches);
     let targets = domain_targets(p);
-    let patch = p.patch_kind != PatchKind::None;
     let (mut domain, mut mixture, mut dominant) = (Vec::new(), Vec::new(), Vec::new());
     for (s, sec) in sections.iter().enumerate() {
         let fields: Vec<Vec<f64>> = (0..p.n_domains)
@@ -176,7 +191,9 @@ pub fn plant(p: &SimParams, sections: &[Section]) -> Truth {
             })
             .collect();
         let mut z = assign_by_offsets(&fields, &targets[sec.donor]);
-        if patch && sec.donor == p.patch_owner {
+        // the owner's domain, numbered after the shared ones; a donor owns
+        // one at most, so its field keeps the one-domain key
+        if let Some(j) = patches.iter().position(|x| x.owner == sec.donor) {
             let mut r = rng(p.seed, Stream::PatchField, &[s]);
             let h = rff_field(&sec.coords, p.patch_length_um, &mut r);
             let mut sorted = h.clone();
@@ -185,7 +202,7 @@ pub fn plant(p: &SimParams, sections: &[Section]) -> Truth {
             let thr = sorted[sec.n() - n_patch];
             for (zi, &hi) in z.iter_mut().zip(&h) {
                 if hi >= thr {
-                    *zi = p.n_domains;
+                    *zi = p.n_domains + j;
                 }
             }
         }

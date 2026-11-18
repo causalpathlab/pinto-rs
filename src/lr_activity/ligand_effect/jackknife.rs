@@ -122,6 +122,7 @@ pub fn jackknife(
                     steps: &[],
                     scope_rows: &sr,
                     share: None,
+                    jackknife: None,
                     ..rows
                 },
                 FoldStarts::default(),
@@ -143,6 +144,7 @@ pub fn jackknife(
                         cf: &cf,
                         scope_rows: &sr,
                         share: None,
+                        jackknife: None,
                     };
                     headline(r, full_fit.starts.clone()).map(|a| {
                         let e = a.scopes[1];
@@ -172,6 +174,7 @@ pub fn jackknife(
                     steps: &[],
                     scope_rows: &sr,
                     share: None,
+                    jackknife: None,
                     ..rows
                 },
                 FoldStarts::default(),
@@ -212,4 +215,152 @@ fn tiles_of(tissue: &Tissue, rows: Rows<'_>, inside: &[u32]) -> Vec<Vec<u32>> {
         }
     }
     by_tile.into_values().collect()
+}
+
+/// The estimates the tile jackknife gives an SE, in the order of
+/// [`Replicates`]: the headline (doubly robust), overlap weights alone, the
+/// outcome regression alone, the unadjusted difference, and the headline's
+/// contrasts the verdict reads beside it, with the incompetent receivers
+/// and with the rest of the tissue.
+pub const ESTIMATORS: [fn(&ScopeEffects) -> Estimate; 6] = [
+    |e| e.competent,
+    |e| e.ipw,
+    |e| e.outcome,
+    |e| e.unadj,
+    |e| e.effect,
+    |e| e.versus_rest,
+];
+
+/// Each estimator's ([`ESTIMATORS`]) delete-one-tile replicates of one scope,
+/// one per tile of the scope's sections ([`scope_tiles`]; the contrast with
+/// the rest, one per tile of the tissue), as one analysis (a threshold, a
+/// competence level, a weighting) or their combination reads them; empty
+/// when not computed.
+#[derive(Clone, Debug, Default)]
+pub struct Replicates(pub [Vec<f64>; 6]);
+
+impl Replicates {
+    /// Rubin's mean over `parts`' analyses, replicate by replicate: each
+    /// estimator's replicates averaged over the analyses whose estimate
+    /// enters its mean ([`super::inference::usable`]), as its estimate is.
+    pub fn combine(parts: &[(ScopeEffects, Replicates)]) -> Self {
+        Self(std::array::from_fn(|j| {
+            let ok: Vec<&[f64]> = parts
+                .iter()
+                .filter(|(e, _)| super::inference::usable(&ESTIMATORS[j](e)))
+                .map(|(_, r)| r.0[j].as_slice())
+                .collect();
+            let g = ok.iter().map(|r| r.len()).max().unwrap_or(0);
+            if ok.is_empty() || ok.iter().any(|r| r.len() != g) {
+                return Vec::new();
+            }
+            (0..g)
+                .map(|c| ok.iter().map(|r| r[c]).sum::<f64>() / ok.len() as f64)
+                .collect()
+        }))
+    }
+}
+
+/// The tiles each scope's replicates delete: those of the sections the
+/// scope lies in, ascending. Tiles of other sections reach a scope's
+/// estimate only through the outcome model's shared coefficients, a small
+/// part.
+pub fn scope_tiles(tissue: &Tissue, rows: Rows<'_>) -> Vec<Vec<u32>> {
+    rows.scope_rows
+        .iter()
+        .map(|inside| {
+            let sections: HashSet<u32> =
+                inside.iter().map(|&i| tissue.section[i as usize]).collect();
+            let tiles: std::collections::BTreeSet<u32> = rows.scope_rows[0]
+                .iter()
+                .filter(|&&i| sections.contains(&tissue.section[i as usize]))
+                .map(|&i| rows.cf.cluster[i as usize])
+                .collect();
+            tiles.into_iter().collect()
+        })
+        .collect()
+}
+
+/// Each estimator's delete-one-tile jackknife SE and degrees of freedom, of
+/// the whole estimate as reported: averaged over exposure thresholds; NaN
+/// where it was not computed.
+///
+/// The jackknife holds the nuisance fits of the full data and leaves each
+/// tile out of the averages ([`Replicates`], read from per-tile sums in the
+/// one pass of the fits). A replicate is the scope less one tile carried
+/// through everything the estimate is made of
+/// ([`super::thresholds::over_thresholds`]): each exposure threshold's
+/// estimate, Rubin's mean over the competence and programme-weighting
+/// choices, and the threshold average, its approximate-Bayes-factor weights
+/// recomputed from the replicate's estimates and the full data's SEs. With
+/// `G` replicates `θ̄₍₋g₎`, `SE² = (G − 1)/G Σ_g (θ̄₍₋g₎ − mean)²`, and the t
+/// reference's df is `G_eff − 1` ([`super::inference::jackknife_sd`]). The
+/// tiles are those of the sections the scope lies in ([`scope_tiles`]); the
+/// contrast with the rest deletes every tile of the tissue, the rest's too.
+///
+/// This SE is the jackknife's alone: neither Rubin's between-choice term
+/// nor the threshold mixture's spread is added to it. Every replicate
+/// recomputes every choice and every threshold and its weight, so the
+/// jackknife is the sampling SE of the averaged estimate as reported; those
+/// terms describe disagreement between choices on the same data, which is
+/// not sampling error and would count part of it twice.
+///
+/// Holding the fits fixed leaves out the error of the outcome model's
+/// coefficients, which is the outcome regression's sampling error, so its
+/// replicates move them by the tile's exact leave-out ridge solve
+/// ([`super::overlap::OutcomeInfluence`]); the same replicates give it its
+/// SE at each threshold ([`Replicates`]), which weighs its thresholds. The
+/// other estimators are first-order insensitive to the fits (the augmented
+/// one) or have none to move (the unadjusted difference), and the overlap
+/// weights' propensity is held fixed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EstimatorJackknife {
+    /// `(se, df)` of each of [`ESTIMATORS`].
+    pub se_df: [(f64, f64); 6],
+    /// Tiles deleted, one replicate each.
+    pub replicates: usize,
+}
+
+impl EstimatorJackknife {
+    /// The jackknife of the average over thresholds `parts` (each
+    /// threshold's estimate of one estimator, the ones averaged) from each
+    /// threshold's replicates `reps` of it.
+    pub fn of_average(parts: &[Estimate], reps: &[&[f64]], prior_scale: f64) -> (f64, f64) {
+        let g = reps.first().map_or(0, |r| r.len());
+        if g < 2 || reps.iter().any(|r| r.len() != g) {
+            return (f64::NAN, f64::NAN);
+        }
+        let averaged: Vec<f64> = (0..g)
+            .map(|c| {
+                let at: Vec<Estimate> = parts
+                    .iter()
+                    .zip(reps)
+                    .map(|(e, r)| Estimate { theta: r[c], ..*e })
+                    .collect();
+                super::averaging::abf_average(&at, prior_scale).theta
+            })
+            .collect();
+        super::inference::jackknife_sd(&averaged)
+    }
+
+    /// `e` with each estimator's SE and df replaced by the jackknife's, up or
+    /// down; where a replicate had no estimate (deleting a tile left an arm
+    /// empty) the clustered SE stays. The headline and its contrasts are
+    /// left to the region rows' [`Jackknife`] when `headline` is false.
+    pub fn apply(&self, e: &mut ScopeEffects, headline: bool) {
+        let set = |x: &mut Estimate, (se, df): (f64, f64)| {
+            if se.is_finite() && df > 0.0 {
+                (x.se, x.df) = (se, df);
+            }
+        };
+        let [dr, ipw, outcome, unadj, contrast, rest] = self.se_df;
+        if headline {
+            set(&mut e.competent, dr);
+            set(&mut e.effect, contrast);
+            set(&mut e.versus_rest, rest);
+        }
+        set(&mut e.ipw, ipw);
+        set(&mut e.outcome, outcome);
+        set(&mut e.unadj, unadj);
+    }
 }

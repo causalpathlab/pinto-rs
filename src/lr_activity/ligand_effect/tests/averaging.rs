@@ -211,9 +211,8 @@ fn competence_grid_combines_the_single_estimates() {
     let want = combine(&[ja, jb]);
     let got = both.effects.competent;
     assert!((got.theta - want.theta).abs() < 1e-9, "{got:?} vs {want:?}");
-    assert!((got.se - want.se).abs() < 1e-9);
-    let within = (0.5 * (ja.se.powi(2) + jb.se.powi(2))).sqrt();
-    assert!(got.se >= within - 1e-12);
+    // Its SE is the tile jackknife's of the combined estimate, not Rubin's.
+    assert!(got.se.is_finite() && got.se > 0.0, "{got:?}");
     // Competence differs across the grid: bin 1 is in at 0.05, out at 0.2.
     assert_ne!(ja.n, jb.n);
     // Each threshold's estimate from the joint fit stays close to its own
@@ -244,7 +243,8 @@ fn the_headline_averages_over_the_exposure_thresholds() {
     let want = abf_average(&points, o.abf_prior_scale);
     let got = r.effects.competent;
     assert!((got.theta - want.theta).abs() < 1e-12, "{got:?} {want:?}");
-    assert!((got.se - want.se).abs() < 1e-12);
+    // Its SE is the tile jackknife's of the average, not the mixture's.
+    assert!(got.se.is_finite() && got.se > 0.0, "{got:?}");
     assert!(r.effects.abf.log10_bf.is_finite());
     assert!(r.curve.iter().any(|p| p.tau == r.effects.abf.top_tau));
     assert!(r.effects.abf.top_weight > 0.0 && r.effects.abf.top_weight <= 1.0);
@@ -704,7 +704,7 @@ fn assert_same_effects(what: &str, a: &EffectRow, b: &EffectRow) {
         let mut all = vec![
             ("effect", e.effect),
             ("competent", e.competent),
-            ("unadjusted_diff", e.unadjusted_diff),
+            ("effect_unadj", e.unadj),
             ("ipw", e.ipw),
             ("outcome", e.outcome),
             ("incompetent", e.incompetent),

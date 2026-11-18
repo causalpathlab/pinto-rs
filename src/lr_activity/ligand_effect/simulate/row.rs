@@ -21,11 +21,11 @@ pub struct SimRow {
     pub truth_exposed: f64,
     pub estimate: Estimate,
     pub marginal_cor: Estimate,
-    pub unadjusted_diff: Estimate,
+    pub unadj: Estimate,
     pub ipw: Estimate,
-    /// The outcome regression alone, a point estimate: it has no interval of
-    /// its own.
-    pub outcome: f64,
+    /// The outcome regression alone, its SE from the tile jackknife
+    /// ([`crate::lr_activity::ligand_effect::jackknife::EstimatorJackknife`]).
+    pub outcome: Estimate,
     pub incompetent: Estimate,
     /// The competent-receiver estimate under the partial adjustments:
     /// section only, plus the spatial smooth, plus cell identity.
@@ -81,8 +81,9 @@ impl SimRow {
         let b = |k: usize| baselines::rejects((baselines::METHODS[k].1)(&self.baselines));
         [
             self.marginal_cor.rejects(),
-            self.unadjusted_diff.rejects(),
+            self.unadj.rejects(),
             self.ipw.rejects(),
+            self.outcome.rejects(),
             b(0),
             b(1),
             b(2),
@@ -93,15 +94,9 @@ impl SimRow {
 }
 
 /// The methods `lra-simulate` compares at 5%: the marginal correlation, the
-/// unadjusted difference, overlap weights alone, the co-expression baselines
+/// unadjusted difference, overlap weights alone, the outcome regression alone,
+/// the co-expression baselines
 /// ([`super::super::baselines::METHODS`]) and the estimator.
-pub const COMPARED: [&str; 8] = [
-    "marginal",
-    "unadjusted_diff",
-    "ipw",
-    "celltype",
-    "moran",
-    "contact",
-    "coexpr",
-    "estimate",
+pub const COMPARED: [&str; 9] = [
+    "marginal", "unadj", "ipw", "outcome", "celltype", "moran", "contact", "coexpr", "dr",
 ];
