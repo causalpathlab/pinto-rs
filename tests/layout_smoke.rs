@@ -73,7 +73,7 @@ fn every_layout_is_made_and_drawn_in_the_view() {
     m["outputs"]["cell_embedding"] = path.into();
     std::fs::write(&manifest, m.to_string()).unwrap();
 
-    let private = Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(300));
+    let private = Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(120));
     let mut term = private.term_sized(&["view", &prefix, "--no-detach"], &[], SIZE);
     term.wait_screen("level");
     for name in LAYOUTS {
