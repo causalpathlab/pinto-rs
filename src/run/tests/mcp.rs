@@ -475,14 +475,14 @@ const MIRRORS: &[Mirror] = &[
     ("run_simulate", "sim new", &[], &[]),
     // These two run in the call, in the server's own threads.
     (
-        "run_sim_score",
-        "sim score",
+        "run_sim_score_by_set",
+        "sim score-by-set",
         &[],
         &["out", "max_threads", "atomic_outputs"],
     ),
     (
-        "run_sim_pairs",
-        "sim pairs",
+        "run_sim_score_by_pair",
+        "sim score-by-pair",
         &[],
         &["out", "max_threads", "atomic_outputs"],
     ),

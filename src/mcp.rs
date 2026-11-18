@@ -53,8 +53,8 @@ the planted domains. 2. Fit with `run_fit`, passing the reply's `fit.data` \
 (the `.zarr.zip` sections, in order), `fit.coords` (their coordinate files, in \
 the same order) and `fit.flags` exactly as its data, coords and flags; give \
 no other data path. 3. Score each fit against the reply's `truth`: \
-`run_sim_score` with the fit's out prefix in `labels` scores its labels; \
-`run_sim_pairs` scores per-cell vectors on pairs of spots, with no \
+`run_sim_score_by_set` with the fit's out prefix in `labels` scores its labels; \
+`run_sim_score_by_pair` scores per-cell vectors on pairs of spots, with no \
 clustering: for lc and dsvd give the fit's out prefix in `vectors` (its \
 propensity), for cage its `{prefix}.cell_embedding.parquet` (never dsvd's \
 `{prefix}.latent.parquet`, keyed by cell pair); `run_sim_baseline` writes a standard \
@@ -64,7 +64,7 @@ run is scored as a fit is: its prefix in `labels`, its \
 `barcode@S<n>`, as a fit of those sections names them, so the scores join \
 on every spot. Both scorers reply with one JSON object, `{truth, scores: \
 [...], failed: [...]}` (`failed` only when an input could not be scored), \
-and `pinto sim score -o` / `pinto sim pairs -o` write that same object.";
+and `pinto sim score-by-set -o` / `pinto sim score-by-pair -o` write that same object.";
 
 const RESIDUAL: &str = "\
 Two-stage fit: `run_residual` takes what a fitted run (a fit's or a spatial \

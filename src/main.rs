@@ -176,7 +176,7 @@ macro_rules! baseline_outputs {
          {out}.propensity.parquet (cells x K: the method's posteriors when it\n\
          has them, else one-hot labels),\n\
          {out}.cells.parquet (cells with coordinates), {out}.labels.tsv (for\n\
-         sim score --labels), {out}.cell_embedding.parquet (the method's\n\
+         sim score-by-set --labels), {out}.cell_embedding.parquet (the method's\n\
          per-cell vectors) and {out}.baseline.json (the settings as run)."
     };
 }
@@ -205,9 +205,10 @@ const APPLY_ABOUT: &str = "Use a fitted run.\n\n\
 /// `pinto sim`'s long help.
 const SIM_ABOUT: &str =
     "Simulate donors' sections with a planted truth, and score fits against it.\n\n\
-     new writes the sections and the truth; score scores labellings, pairs\n\
-     scores per-cell vectors on pairs of spots with no clustering, and\n\
-     baseline labels the spots with a standard pipeline to score beside them.";
+     new writes the sections and the truth; score-by-set scores labellings\n\
+     (sets of spots), score-by-pair scores per-cell vectors on pairs of\n\
+     spots with no clustering, and baseline labels the spots with a\n\
+     standard pipeline to score beside them.";
 
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -1101,16 +1102,27 @@ enum Sim {
     New(Box<simulate::SimulateArgs>),
 
     #[command(
-        name = "score",
+        name = "score-by-set",
+        alias = "score",
         about = "Score labellings against a simulation's planted truth",
         long_about = "Score how well labellings recover a `sim new` run's planted truth,\n\
                       as two tests.\n\n\
-                      1. Donor-invariant domains, on spots of shared domains: shared_ari\n\
-                      \x20  (labels against domains), donor_dep (how much the labels depend on\n\
-                      \x20  the donor within a domain: conditional mutual information, 0 to 1),\n\
-                      \x20  pooled and for each shared domain.\n\
-                      2. Donor-specific domains, each against its best-matching label: f1,\n\
-                      \x20  precision (low: shared spots absorbed), recall, and owner share (1:\n\
+                      1. Donor-invariant domains, on spots of shared domains, labels\n\
+                      \x20  against domains: shared_ari (adjusted Rand index); shared_ami\n\
+                      \x20  (adjusted mutual information, Vinh et al. 2010: MI less its exact\n\
+                      \x20  expectation under random labellings of the same sizes, over the\n\
+                      \x20  arithmetic mean of the two entropies less it; 0 chance, 1 the same\n\
+                      \x20  partition); shared_nmi (MI over the arithmetic mean of the two\n\
+                      \x20  entropies; not corrected for chance, so many small labels raise it);\n\
+                      \x20  donor_conditional_entropy, H(donor | label, domain) / H(donor |\n\
+                      \x20  domain), 0 to 1 (1: labels mix donors fully, 0: the label sets the\n\
+                      \x20  donor), pooled over the shared domains by their spots and for each;\n\
+                      \x20  a domain in one donor is skipped and noted.\n\
+                      2. Donor-specific domains, each within its owning donor's spots only\n\
+                      \x20  (within: owner_donor in the JSON): its best-matching label there,\n\
+                      \x20  and that label's f1, precision (low: the owner's shared spots\n\
+                      \x20  absorbed) and recall over the owner's spots; owner_share over every\n\
+                      \x20  spot, the share of the label's spots in the owner (1:\n\
                       \x20  the label is confined to the owning donor).\n\n\
                       Labellings are pinto runs at --level, or tables with a cell column\n\
                       (--label-column names the labels)."
@@ -1118,20 +1130,23 @@ enum Sim {
     Score(Box<sim_eval::SimScoreArgs>),
 
     #[command(
-        name = "pairs",
+        name = "score-by-pair",
+        alias = "pairs",
         about = "Score per-cell vectors against a simulation's planted truth, on pairs",
         long_about = "Score how well per-cell vectors (a latent mapping) recover an\n\
                       `sim new` run's planted truth, on pairs of spots and with no\n\
                       clustering: the cosine of two spots' vectors, by AUROC and AUPRC, on\n\
-                      four sets of pairs, each with its prevalence.\n\n\
-                      cross: shared-domain spots of two donors, positive when they share a\n\
-                      \x20 domain. within: the same within one donor, the reference; gap is\n\
-                      \x20 within less cross, what the donor costs the mapping.\n\
-                      patch: for each donor-specific domain, pairs of its spots (positive)\n\
-                      \x20 against one of its spots with a spot outside it (negative); closest\n\
-                      \x20 is the domain it is told apart from worst (0.5: folded into it).\n\
-                      spatial: each spot's --knn nearest neighbours in its section,\n\
-                      \x20 positive when they share a domain.\n\n\
+                      these sets of pairs, each with its prevalence.\n\n\
+                      shared_domain_across_donors: shared-domain spots of two donors,\n\
+                      \x20 positive when they share a domain. shared_domain_within_donor: the\n\
+                      \x20 same within one donor, the reference; donor_gap is within less\n\
+                      \x20 across, what the donor costs the mapping.\n\
+                      For each donor-specific domain: donor_domain_vs_own_donor, pairs of\n\
+                      \x20 its spots (positive) against one of its spots with a spot of the\n\
+                      \x20 same donor outside it (negative; negatives: same_donor_outside_domain\n\
+                      \x20 in the JSON), so telling donors apart scores 0.5.\n\
+                      neighbour_same_domain: each spot's --knn nearest neighbours in its\n\
+                      \x20 section, positive when they share a domain.\n\n\
                       Vectors are pinto runs (their propensity at --level), a cage run's\n\
                       cell_embedding table, or any table with a cell column and numeric\n\
                       columns. Pairs are drawn from --seed, --pairs per sampled set."
@@ -1142,7 +1157,7 @@ enum Sim {
         name = "baseline",
         about = "Label a simulation with a standard pipeline, as a baseline",
         long_about = "Label a `sim new` run's spots with the standard scanpy recipe, as a\n\
-                      baseline for sim score: total-count normalization to 1e4, log1p,\n\
+                      baseline for sim score-by-set: total-count normalization to 1e4, log1p,\n\
                       highly variable genes by normalized dispersion, scaling, PCA, a kNN\n\
                       graph and Leiden tuned toward --n-clusters clusters (default: the simulation's\n\
                       domains).\n\n\
@@ -1237,7 +1252,7 @@ fn name_folder_out(commands: &mut Commands) {
 
 /// Under `--atomic-outputs`, each command's out made its staged one
 /// ([`util::staging`]): a fit's prefix, sim new's and residual's folder,
-/// the file sim score, sim pairs and sim baseline write, compare's
+/// the file sim score-by-set, sim score-by-pair and sim baseline write, compare's
 /// prefix. lra without `--out` stages its `--from` run's prefix when it
 /// resolves it.
 fn stage_outputs(commands: &mut Commands) -> anyhow::Result<()> {
