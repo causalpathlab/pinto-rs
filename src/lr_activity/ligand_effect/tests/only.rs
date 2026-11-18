@@ -191,23 +191,33 @@ fn a_subset_is_recorded_apart_from_the_full_table() {
     }
     .write(&manifest)
     .unwrap();
-    record(&manifest, |o| {
-        o.table = Some("/r/run.lra.parquet".into());
-        o.options = Some(LraOptions::default());
-    })
+    record(
+        &manifest,
+        crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
+        |o| {
+            o.table = Some("/r/run.lra.parquet".into());
+            o.options = Some(LraOptions::default());
+        },
+    )
     .unwrap();
-    record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-liga1.parquet", 2))
-    })
+    record(
+        &manifest,
+        crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
+        |o| o.record_subset(subset("/r/run.lra.only-liga1.parquet", 2)),
+    )
     .unwrap();
-    record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-reca44.parquet", 1))
-    })
+    record(
+        &manifest,
+        crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
+        |o| o.record_subset(subset("/r/run.lra.only-reca44.parquet", 1)),
+    )
     .unwrap();
     // The same subset again replaces its entry.
-    record(&manifest, |o| {
-        o.record_subset(subset("/r/run.lra.only-liga1.parquet", 3))
-    })
+    record(
+        &manifest,
+        crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
+        |o| o.record_subset(subset("/r/run.lra.only-liga1.parquet", 3)),
+    )
     .unwrap();
     let lra = PintoMetadata::read(&manifest).unwrap().outputs.lra;
     assert_eq!(lra.table.as_deref(), Some("/r/run.lra.parquet"));

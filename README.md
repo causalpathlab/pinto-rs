@@ -358,6 +358,11 @@ row is left out of the averages in turn (no refit), and each replicate is the
 whole estimate as reported, every exposure threshold's estimate and the
 threshold average with its weights recomputed, so the SE is that of the
 averaged estimate itself; its df is the tiles the variance rests on less one.
+Since 0.17.5 this jackknife SE is all of it: the between-choice term of
+Rubin's rules and the spread between thresholds that 0.17.4 added are not,
+since every replicate recomputes every choice and threshold. The headline's
+contrasts (`effect_dr_contrast`, `effect_dr_vs_rest`) take the same
+jackknife, so the verdict compares like with like.
 `effect_outcome`'s replicates also re-solve its outcome model without the
 tile (the ridge on its fold's Gram less the tile's, no refit), where its
 sampling error lives, and that leave-out also gives it its SE at each

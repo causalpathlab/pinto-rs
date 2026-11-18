@@ -7,6 +7,7 @@ use super::dose::Exposure;
 use super::effects::{combine_scopes, effects_on, LevelEffects, ScopeEffects, Sensitivity};
 use super::fits::{Rows, ThresholdFits};
 use super::inference::Estimate;
+use super::jackknife::{EstimatorJackknife, Replicates, ESTIMATORS};
 use super::options::EffectOpts;
 use super::overlap::FoldStarts;
 use super::response::Response;
@@ -30,6 +31,10 @@ pub struct ThresholdAverage {
     /// The headline threshold's propensity solutions per fold: where a
     /// jackknife replicate starts ([`super::jackknife`]).
     pub starts: FoldStarts,
+    /// Each scope's tile jackknife of every estimator's average
+    /// ([`super::jackknife::EstimatorJackknife`]); empty without
+    /// [`Rows::jackknife`].
+    pub jackknife: Vec<EstimatorJackknife>,
 }
 
 /// One pair as the fits read it: its exposure, its response under each
@@ -86,6 +91,7 @@ pub fn over_thresholds(
     let mut starts = init;
     let mut headline_starts = FoldStarts::default();
     let mut at_tau: Vec<Vec<ScopeEffects>> = Vec::with_capacity(grid.len());
+    let mut reps_at_tau: Vec<Vec<Replicates>> = Vec::with_capacity(grid.len());
     let mut points = Vec::with_capacity(grid.len());
     let mut arm_weights = Vec::new();
     let mut scope_points = Vec::with_capacity(grid.len());
@@ -109,6 +115,7 @@ pub fn over_thresholds(
             .map(|r| effects_on(rows, &fits, r, sens, opts))
             .collect::<anyhow::Result<_>>()?;
         let mut per_weighting = Vec::with_capacity(responses.len());
+        let mut reps_per_weighting = Vec::with_capacity(responses.len());
         for (w, per_c) in per_response.into_iter().enumerate() {
             if w == 0 {
                 let head = &per_c.levels[mid];
@@ -118,8 +125,11 @@ pub fn over_thresholds(
                     arm_weights.push(per_c.arm_weight);
                 }
             }
-            per_weighting.push(combine_levels(per_c.levels, mid));
+            let (scopes, reps) = combine_levels(per_c.levels, mid);
+            per_weighting.push(scopes);
+            reps_per_weighting.push(reps);
         }
+        reps_at_tau.push(combine_replicates(&per_weighting, &reps_per_weighting));
         at_tau.push(combine_scopes(&per_weighting));
         if g > 0 {
             timing::add(timing::THRESHOLDS, clock);
@@ -136,12 +146,18 @@ pub fn over_thresholds(
         at_tau.len()
     };
     let scopes = average_scopes(&at_tau[..averaged], &grid, opts.abf_prior_scale);
+    let jackknife = jackknife_scopes(
+        &at_tau[..averaged],
+        &reps_at_tau[..averaged],
+        opts.abf_prior_scale,
+    );
     Ok(ThresholdAverage {
         scopes,
         points,
         arm_weights,
         scope_points,
         starts: headline_starts,
+        jackknife,
     })
 }
 
@@ -154,15 +170,65 @@ fn threshold_grid(ex: &Exposure, taus: &[(f64, f64)]) -> Vec<f64> {
 }
 
 /// One weighting's estimands combined over the competence thresholds, with the
-/// counts of the level `mid`, the one that decides whether a pair is estimable.
-fn combine_levels(levels: Vec<LevelEffects>, mid: usize) -> Vec<ScopeEffects> {
-    let scopes: Vec<Vec<ScopeEffects>> = levels.into_iter().map(|l| l.scopes).collect();
+/// counts of the level `mid`, the one that decides whether a pair is estimable,
+/// and their jackknife replicates combined alike.
+fn combine_levels(levels: Vec<LevelEffects>, mid: usize) -> (Vec<ScopeEffects>, Vec<Replicates>) {
+    let (scopes, reps): (Vec<Vec<ScopeEffects>>, Vec<Vec<Replicates>>) =
+        levels.into_iter().map(|l| (l.scopes, l.replicates)).unzip();
     let mut combined = combine_scopes(&scopes);
     for (c, m) in combined.iter_mut().zip(&scopes[mid]) {
         c.competent.n = m.competent.n;
         c.competent.n_treated = m.competent.n_treated;
     }
-    combined
+    (combined, combine_replicates(&scopes, &reps))
+}
+
+/// Each scope's replicates of analyses `per` (estimates `scopes`) combined
+/// as Rubin's rules combine their estimates ([`Replicates::combine`]); none
+/// when an analysis has none.
+fn combine_replicates(scopes: &[Vec<ScopeEffects>], per: &[Vec<Replicates>]) -> Vec<Replicates> {
+    let Some(first) = scopes.first() else {
+        return Vec::new();
+    };
+    if per.iter().any(|r| r.len() != first.len()) {
+        return Vec::new();
+    }
+    (0..first.len())
+        .map(|s| {
+            let parts: Vec<(ScopeEffects, Replicates)> = scopes
+                .iter()
+                .zip(per)
+                .map(|(e, r)| (e[s], r[s].clone()))
+                .collect();
+            Replicates::combine(&parts)
+        })
+        .collect()
+}
+
+/// Each scope's tile jackknife of every estimator's average over the
+/// thresholds `at_tau` ([`EstimatorJackknife::of_average`]) from their
+/// replicates `reps`; none without replicates.
+fn jackknife_scopes(
+    at_tau: &[Vec<ScopeEffects>],
+    reps: &[Vec<Replicates>],
+    prior_scale: f64,
+) -> Vec<EstimatorJackknife> {
+    if reps.iter().any(|r| r.len() != at_tau[0].len()) {
+        return Vec::new();
+    }
+    (0..at_tau[0].len())
+        .map(|s| {
+            let se_df = std::array::from_fn(|j| {
+                let parts: Vec<Estimate> = at_tau.iter().map(|a| ESTIMATORS[j](&a[s])).collect();
+                let r: Vec<&[f64]> = reps.iter().map(|r| r[s].0[j].as_slice()).collect();
+                EstimatorJackknife::of_average(&parts, &r, prior_scale)
+            });
+            EstimatorJackknife {
+                se_df,
+                replicates: reps[0][s].0[0].len(),
+            }
+        })
+        .collect()
 }
 
 /// Each scope's estimands averaged over the thresholds `at_tau` by their own

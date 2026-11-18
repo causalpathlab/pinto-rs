@@ -133,6 +133,7 @@ pub struct LraInputArgs {
         long,
         default_value_t = crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
         value_parser = positive_scale,
+        hide = true,
         help_heading = "Input",
         help = "Prior SD of an effect, in SEs, weighing the exposure thresholds",
         long_help = "The prior SD of an effect, in multiples of the upper-median SE of a\n\

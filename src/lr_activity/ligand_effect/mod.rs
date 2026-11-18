@@ -130,9 +130,10 @@ use std::path::Path;
 /// The target of the commands' log lines, whichever file they come from.
 const LOG_TARGET: &str = module_path!();
 
-/// The fixed choices of the contact-effect analysis. None is a flag: each
-/// is recorded in the manifest (`outputs.lra.settings`) beside the table it
-/// made.
+/// The choices of the contact-effect analysis, each recorded in the
+/// manifest (`outputs.lra.settings`) beside the table it made. All are
+/// fixed but `abf_prior_scale`, which `--abf-prior-scale` sets; the
+/// manifest records the value the run used.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Internals {
     /// Shares of a receiver identity bin detecting the receptor for its
@@ -140,8 +141,9 @@ pub struct Internals {
     pub competence_grid: [f64; 3],
     /// The single competence threshold `lra-simulate` plants on.
     pub benchmark_competence: f64,
-    /// Prior SD in multiples of the median standard error
-    /// ([`options::ABF_PRIOR_SCALE`]).
+    /// Prior SD in multiples of the upper-median standard error, weighing
+    /// the exposure thresholds: `--abf-prior-scale`, recorded as the run
+    /// used it ([`options::ABF_PRIOR_SCALE`] by default).
     pub abf_prior_scale: f64,
     /// Fewest exposed and fewest unexposed receivers of a reported subgroup.
     pub min_arm: usize,

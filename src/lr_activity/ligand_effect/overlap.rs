@@ -131,32 +131,6 @@ impl OutcomeInfluence {
         m
     }
 
-    /// The jackknife SE and df of `Σ out / Σ h` over `rows` deleting each
-    /// tile, its rows and its shift of the coefficients
-    /// ([`super::inference::jackknife_sd`]).
-    fn jackknife(&self, h: &[f64], out: &[f64], rows: &[u32], cf: &CrossFit) -> (f64, f64) {
-        let n_tiles = self.tile_fold.len();
-        let (mut hc, mut oc) = (vec![0.0; n_tiles], vec![0.0; n_tiles]);
-        for &i in rows {
-            let (i, c) = (i as usize, cf.cluster[i as usize] as usize);
-            hc[c] += h[i];
-            oc[c] += out[i];
-        }
-        let (sh, so) = (hc.iter().sum::<f64>(), oc.iter().sum::<f64>());
-        let m = self.weights(h, rows, cf);
-        let reps: Vec<f64> = (0..n_tiles)
-            .map(|c| {
-                let rest = sh - hc[c];
-                if rest > 1e-12 {
-                    (so - oc[c] + self.shift(&m, c as u32)) / rest
-                } else {
-                    f64::NAN
-                }
-            })
-            .collect();
-        super::inference::jackknife_sd(&reps)
-    }
-
     /// The change of `Σ h(m₁ − m₀)` over the rows of `m`
     /// ([`OutcomeInfluence::weights`]) when tile `c` is deleted:
     /// `Σ_{k ≠ fold(c)} Δβ_kc · M_k`.
@@ -430,7 +404,7 @@ pub fn overlap_terms_with(
         let (beta_o, gram) = timing::time(timing::RIDGE, || {
             ridge_bordered(&design.gram[k], fold, train.len(), opts.ridge)
         })?;
-        fits.push(Some((beta_o.clone(), gram)));
+        fits.push(influence.then(|| (beta_o.clone(), gram)));
 
         let p = design.p;
         let beta_o = beta_o.as_slice();
@@ -517,10 +491,18 @@ fn outcome_influence(
                     continue;
                 };
                 let g = xc.transpose() * (&y - &xc * beta);
-                if let Ok(f) = factor_spd(a - &gram) {
-                    let delta = f.solve(&g);
-                    for (j, x) in out[k].iter_mut().enumerate() {
-                        *x = -delta[effect + j];
+                match factor_spd(a - &gram) {
+                    Ok(f) => {
+                        let delta = f.solve(&g);
+                        for (j, x) in out[k].iter_mut().enumerate() {
+                            *x = -delta[effect + j];
+                        }
+                    }
+                    // No shift to take: the replicates, and the outcome
+                    // regression's SE, are NaN rather than missing the tile.
+                    Err(e) => {
+                        log::warn!("outcome model without a tile: {e}; its jackknife SE is NaN");
+                        out[k].fill(f64::NAN);
                     }
                 }
             }
@@ -565,18 +547,12 @@ pub fn subset_estimate(
     ratio_estimate(&terms.num, &terms.h, t, rows, cf)
 }
 
-/// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`. Its SE
-/// and df are, with the fit's [`OutcomeInfluence`], the delete-one-tile
-/// jackknife's at this threshold, every tile deleted from the rows and
-/// moving the coefficients; this SE is what weighs the thresholds of the
-/// average. Without it they are [`subset_estimate`]'s, the fits taken as
-/// known, which leaves the coefficients' error out.
+/// The outcome regression alone over `rows`, `Σ h(m₁ − m₀) / Σ h`, read as
+/// [`subset_estimate`] reads the augmented one, the fits taken as known,
+/// which leaves the coefficients' error out: where the tile jackknife runs,
+/// its SE replaces this one ([`super::jackknife::Replicates`]).
 pub fn outcome_estimate(terms: &OverlapTerms, t: &[bool], rows: &[u32], cf: &CrossFit) -> Estimate {
-    let mut e = ratio_estimate(&terms.outcome, &terms.h, t, rows, cf).0;
-    if let Some(inf) = terms.influence.as_ref().filter(|_| e.theta.is_finite()) {
-        (e.se, e.df) = inf.jackknife(&terms.h, &terms.outcome, rows, cf);
-    }
-    e
+    ratio_estimate(&terms.outcome, &terms.h, t, rows, cf).0
 }
 
 /// `Σ num / Σ h` over `rows`, with its linearization's cluster sums.

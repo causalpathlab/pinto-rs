@@ -124,7 +124,7 @@ use super::curve::threshold_curve;
 use super::dose::{eta_squared, Exposure};
 use super::effects::{ScopeEffects, Sensitivity};
 use super::fits::{indicator, LigandShare, Rows};
-use super::jackknife::{estimator_jackknife, jackknife, Jackknife, PairFit, JACKKNIFE_P};
+use super::jackknife::{jackknife, scope_tiles, Jackknife, PairFit, JACKKNIFE_P};
 use super::options::EffectOpts;
 use super::overlap::FoldStarts;
 use super::response::{genes_and_weights, Response, Targets};
@@ -202,14 +202,27 @@ fn estimate_on(
         levels: &comps,
         opts,
     };
-    let mut eff = over_thresholds(rows, &fit, &taus, Sensitivity::ALL, FoldStarts::default())?;
-    // Every row's estimators read on the no-refit tile jackknife; a region
-    // row's headline keeps its own, below.
-    let every: Vec<usize> = (0..tissue.scopes.len()).collect();
-    let estimators = timing::time(timing::JACKKNIFE, || {
-        estimator_jackknife(rows, tissue, &every, &fit, &taus)
-    })?;
-    for ((e, j), (_, scope)) in eff.scopes.iter_mut().zip(&estimators).zip(&tissue.scopes) {
+    // Every row's estimators read on the tile jackknife, its replicates
+    // summed in the same pass of the fits; a region row's headline keeps its
+    // own, below.
+    let tiles = scope_tiles(tissue, rows);
+    let jack_rows = Rows {
+        jackknife: Some(&tiles),
+        ..rows
+    };
+    let mut eff = over_thresholds(
+        jack_rows,
+        &fit,
+        &taus,
+        Sensitivity::ALL,
+        FoldStarts::default(),
+    )?;
+    for ((e, j), (_, scope)) in eff
+        .scopes
+        .iter_mut()
+        .zip(&eff.jackknife)
+        .zip(&tissue.scopes)
+    {
         j.apply(e, !matches!(scope, Scope::Region(_)));
     }
     let mut jacks = vec![Jackknife::NONE; tissue.scopes.len()];

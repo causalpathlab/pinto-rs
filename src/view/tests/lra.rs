@@ -35,6 +35,16 @@ pub(crate) const WARNING: &str =
 /// receptor-negative receivers, significantly short of them) and
 /// [`WARNING`].
 fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &str) {
+    write_table_as(path, rows, scope, |n| n);
+}
+
+/// [`write_table`] with each column named by `name`.
+fn write_table_as(
+    path: &Path,
+    rows: &[(&str, &str, &str, f32, f32, f32)],
+    scope: &str,
+    name: fn(&str) -> &str,
+) {
     let n = rows.len() + 1;
     fn col(n: usize, f: impl Fn(usize) -> String) -> Vec<Box<str>> {
         (0..n).map(|i| f(i).into()).collect()
@@ -67,9 +77,7 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
         ("effect_dr_contrast", &contrast),
         ("effect_dr_contrast_q", &contrast_q),
     ];
-    let later = later
-        .iter()
-        .map(|(name, v)| ((*name).into(), Column::F32(v)));
+    let later = later.iter().map(|(n, v)| (name(n).into(), Column::F32(v)));
     write_named_table(
         &path.to_string_lossy(),
         "row",
@@ -81,14 +89,14 @@ fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &
             ("verdict".into(), Column::Str(&verdict)),
             ("verdict_note".into(), Column::Str(&note)),
             ("warnings".into(), Column::Str(&warnings)),
-            ("effect_dr".into(), Column::F32(&effect)),
-            ("effect_dr_se".into(), Column::F32(&se)),
-            ("effect_dr_p".into(), Column::F32(&q)),
-            ("effect_dr_q".into(), Column::F32(&q)),
+            (name("effect_dr").into(), Column::F32(&effect)),
+            (name("effect_dr_se").into(), Column::F32(&se)),
+            (name("effect_dr_p").into(), Column::F32(&q)),
+            (name("effect_dr_q").into(), Column::F32(&q)),
             ("coexpr_q".into(), Column::F32(&q)),
-            ("effect_dr_pct".into(), Column::F32(&pct)),
-            ("effect_dr_pct_lo".into(), Column::F32(&lo)),
-            ("effect_dr_pct_hi".into(), Column::F32(&hi)),
+            (name("effect_dr_pct").into(), Column::F32(&pct)),
+            (name("effect_dr_pct_lo").into(), Column::F32(&lo)),
+            (name("effect_dr_pct_hi").into(), Column::F32(&hi)),
             ("exposure_threshold".into(), Column::F32(&tau)),
             ("n_receivers".into(), Column::F32(&counts)),
             ("n_competent".into(), Column::F32(&counts)),
@@ -906,6 +914,35 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     assert_eq!(r["selected"]["pair"], "L1:R1");
     assert_eq!(r["selected"]["drawn"], true);
     assert_eq!(r["selected"]["map"]["threshold"], 0.5);
+}
+
+/// A table from before 0.17.5, its headline and control under their
+/// old names (`effect_competent`, `effect_p`, `effect_contrast`, ...), reads
+/// as one written now.
+#[test]
+fn a_table_before_the_renaming_still_reads() {
+    use crate::lr_activity::ligand_effect::output::read_pair_rows;
+    let dir = tempfile::tempdir().unwrap();
+    let rows = [("L1", "R1", "supported", 0.01, 25.0, 0.5)];
+    let (new, old) = (
+        dir.path().join("new.parquet"),
+        dir.path().join("old.parquet"),
+    );
+    write_table(&new, &rows, "all pairs");
+    write_table_as(&old, &rows, "all pairs", |n| match n {
+        "effect_dr" => "effect_competent",
+        "effect_dr_se" => "effect_competent_se",
+        "effect_dr_p" => "effect_p",
+        "effect_dr_q" => "effect_q",
+        "effect_dr_pct" => "effect_pct",
+        "effect_dr_pct_lo" => "effect_pct_lo",
+        "effect_dr_pct_hi" => "effect_pct_hi",
+        "effect_dr_contrast" => "effect_contrast",
+        "effect_dr_contrast_q" => "effect_contrast_q",
+        other => other,
+    });
+    let read = |p: &Path| read_pair_rows(&p.to_string_lossy()).unwrap();
+    assert_eq!(read(&old), read(&new));
 }
 
 /// On a real run: every pair's map counts the exposed and competent

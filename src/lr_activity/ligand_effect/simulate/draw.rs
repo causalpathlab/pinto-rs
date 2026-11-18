@@ -11,9 +11,7 @@ use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
 use crate::lr_activity::ligand_effect::dose::{choose_threshold, eta_squared, exposed, Exposure};
 use crate::lr_activity::ligand_effect::effects::Sensitivity;
 use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
-use crate::lr_activity::ligand_effect::jackknife::{
-    estimator_jackknife, jackknife, Jackknife, PairFit,
-};
+use crate::lr_activity::ligand_effect::jackknife::{jackknife, scope_tiles, Jackknife, PairFit};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::FoldStarts;
 use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
@@ -722,7 +720,23 @@ pub fn simulate(
         levels,
         opts,
     };
-    let mut avg = over_thresholds(rows, &fit, &taus, Sensitivity::STEPS, FoldStarts::default())?;
+    // The pooled row's estimators read on the tile jackknife, as `lra`
+    // reads them.
+    let tiles = scope_tiles(tissue, rows);
+    let jack_rows = Rows {
+        jackknife: Some(&tiles),
+        ..rows
+    };
+    let mut avg = over_thresholds(
+        jack_rows,
+        &fit,
+        &taus,
+        Sensitivity::STEPS,
+        FoldStarts::default(),
+    )?;
+    if let Some(j) = avg.jackknife.first().copied() {
+        j.apply(&mut avg.scopes[0], true);
+    }
     // The planted region's row is jackknifed in every run, as `lra` would a
     // region row near significance: the benchmark measures the widened row.
     let jack = match region_rows {
@@ -733,10 +747,6 @@ pub fn simulate(
         }
         None => Jackknife::NONE,
     };
-    // The pooled row's estimators read on the no-refit tile jackknife, as
-    // `lra` reads them.
-    let pooled_jack = estimator_jackknife(rows, tissue, &[0], &fit, &taus)?;
-    pooled_jack[0].apply(&mut avg.scopes[0], true);
     let e = avg.scopes[0];
     let outcomes = Outcomes {
         y1: &y1,

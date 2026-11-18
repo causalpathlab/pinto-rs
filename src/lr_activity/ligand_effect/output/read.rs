@@ -38,6 +38,24 @@ pub const CONTROLS: [ControlSpec; 1] = [ControlSpec {
     column_q: "effect_dr_contrast_q",
 }];
 
+/// The name a column of `{out}.lra.parquet` had before 0.17.5, when the
+/// headline was `effect_competent` and its p and q `effect_p` and `effect_q`;
+/// the name itself when it did not change.
+fn before_0_17_5(name: &str) -> &str {
+    match name {
+        "effect_dr" => "effect_competent",
+        "effect_dr_se" => "effect_competent_se",
+        "effect_dr_p" => "effect_p",
+        "effect_dr_q" => "effect_q",
+        "effect_dr_pct" => "effect_pct",
+        "effect_dr_pct_lo" => "effect_pct_lo",
+        "effect_dr_pct_hi" => "effect_pct_hi",
+        "effect_dr_contrast" => "effect_contrast",
+        "effect_dr_contrast_q" => "effect_contrast_q",
+        other => other,
+    }
+}
+
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PairRow {
@@ -133,7 +151,11 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         .into_iter()
         .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_q]))
         .collect();
-    let (s, mut x) = read_table_columns(path, &strings, &numbers)?;
+    // a table before 0.17.5 names the headline's columns as it did then
+    let (s, mut x) = read_table_columns(path, &strings, &numbers).or_else(|e| {
+        let old: Vec<&str> = numbers.iter().map(|n| before_0_17_5(n)).collect();
+        read_table_columns(path, &strings, &old).map_err(|_| e)
+    })?;
     let q_scope = s[6]
         .first()
         .cloned()
