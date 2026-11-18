@@ -24,8 +24,9 @@ pub enum FeatureInclusionMode {
 /// row names and dispatches to [`FeatureNameKind::auto_detect`] —
 /// gene-symbol-style names (`ENSG..._SYMBOL`) get the `Gene` rule
 /// applied automatically.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[clap(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum FeatureNameMode {
     /// Peek the first file's row names and pick `Exact` / `Gene` /
     /// `Locus` / `Mixed` via [`FeatureNameKind::auto_detect`].
@@ -56,6 +57,22 @@ impl FeatureNameMode {
             },
             FeatureNameMode::Mixed => FeatureNameKind::Mixed,
         }
+    }
+
+    /// The mode that resolves to `kind` (never `Auto`), what a run's
+    /// manifest records of how it read its rows' names; `None` for a kind
+    /// no mode resolves to.
+    pub fn of_kind(kind: &FeatureNameKind) -> Option<Self> {
+        let mode = match kind {
+            FeatureNameKind::Exact => Self::Exact,
+            FeatureNameKind::Gene { delim: '_' } => Self::Gene,
+            FeatureNameKind::Locus {
+                merge_overlapping: true,
+            } => Self::Locus,
+            FeatureNameKind::Mixed => Self::Mixed,
+            _ => return None,
+        };
+        Some(mode)
     }
 }
 

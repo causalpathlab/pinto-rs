@@ -819,6 +819,7 @@ pub fn predict_cage(
         None,
     );
     meta.command = "predict".to_string();
+    meta.feature_names = FeatureNameMode::of_kind(&feature_kind);
     meta.outputs.feature_community_batch_adjusted &= model_adjusted;
     // A predicted sample is placed by the model's encoder; it is not a model
     // and carries none of its own.

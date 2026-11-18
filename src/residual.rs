@@ -184,13 +184,15 @@ pub struct ResidualArgs {
     #[arg(
         long = "feature-name-mode",
         value_enum,
-        default_value = "exact",
-        help = "How the run read feature names (its own --feature-name-mode, if it took one)",
+        help = "How the run read feature names (default: as its manifest records, or its method's default)",
         long_help = "How the run read feature names: exact (the rows every file\n\
                      shares, by name), or the --feature-name-mode the run was fitted\n\
-                     with, so its rows are read as it read them."
+                     with. By default the run's own: what its manifest records, else\n\
+                     its method's default (auto for cage and its predictions, exact\n\
+                     otherwise), so the stage-1 tables are on the rows a stage-2 fit\n\
+                     of the same method reads."
     )]
-    pub feature_names: FeatureNameMode,
+    pub feature_names: Option<FeatureNameMode>,
 
     #[arg(
         long,
@@ -310,6 +312,8 @@ struct Inputs {
     /// Each group's name: the run's batch, `unplaced` for cells its table
     /// lacks, `all` under `--adapt none`.
     group_names: Vec<Box<str>>,
+    /// How `data`'s rows were read ([`Plan::feature_names`], resolved).
+    feature_kind: FeatureNameKind,
 }
 
 /// What `pinto apply residual` writes for a run, and what it reads to make it,
@@ -344,6 +348,9 @@ pub struct Plan {
     /// The run's cells table (`outputs.cells`): its cells' coordinates and
     /// batches.
     pub cells: String,
+    /// How the run's rows are read: `--feature-name-mode`, else as the run
+    /// read them ([`crate::util::metadata::PintoMetadata::feature_names_read`]).
+    pub feature_names: FeatureNameMode,
 }
 
 impl Plan {
@@ -393,6 +400,9 @@ impl Plan {
             coord_names,
             propensity,
             cells,
+            feature_names: args
+                .feature_names
+                .unwrap_or_else(|| run.meta.feature_names_read()),
         })
     }
 
@@ -528,14 +538,16 @@ impl Inputs {
     fn load(args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
         // read as the run read them: the rows every file shares, by name
         // or by its feature-name mode
-        let kind = match args.feature_names {
+        let kind = match plan.feature_names {
             FeatureNameMode::Auto => {
                 let first = crate::util::input::open_sparse(&plan.files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
+        info!("Reading the run's rows as it read them: {kind:?}");
         let data = crate::util::input::open_fit_data(&plan.files, &kind)?;
+        let feature_kind = kind;
         let names = data.column_names()?;
 
         let cells = crate::util::parquet_io::read_cells_table(
@@ -582,6 +594,7 @@ impl Inputs {
             coords,
             group_of,
             group_names,
+            feature_kind,
         })
     }
 }
@@ -983,7 +996,13 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     };
     std::fs::write(
         &plan.summary,
-        serde_json::to_string_pretty(&residual_marker(&run, &plan.files, args, summary)?)?,
+        serde_json::to_string_pretty(&residual_marker(
+            &run,
+            &plan.files,
+            args,
+            &inp.feature_kind,
+            summary,
+        )?)?,
     )?;
     Ok(())
 }
@@ -996,6 +1015,7 @@ fn residual_marker(
     run: &Run,
     files: &[Box<str>],
     args: &ResidualArgs,
+    feature_kind: &FeatureNameKind,
     summary: Vec<FileSummary>,
 ) -> anyhow::Result<serde_json::Value> {
     let canonical = |p: &Path| -> anyhow::Result<String> {
@@ -1020,6 +1040,8 @@ fn residual_marker(
     marker["operation"] = serde_json::to_value(args.operation)?;
     marker["adapt"] = serde_json::to_value(args.adapt)?;
     marker["adapt_cells"] = serde_json::to_value(args.adapt_cells)?;
+    // the rows' names as read: a stage-2 fit reads the data the same way
+    marker["feature_names"] = serde_json::to_value(FeatureNameMode::of_kind(feature_kind))?;
     match args.operation {
         Operation::Subtract => {
             marker["excess"] = serde_json::to_value(args.excess)?;

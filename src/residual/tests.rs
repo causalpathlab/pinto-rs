@@ -141,7 +141,7 @@ fn args(run: &str, out: &str, data_files: Option<Vec<Box<str>>>) -> ResidualArgs
         excess: Excess::Floor,
         em_iters: 50,
         block_size: Some(1),
-        feature_names: crate::cell_activity_graph_embedding::args::FeatureNameMode::Exact,
+        feature_names: None,
         adapt: Adapt::Batch,
         adapt_cells: 50.0,
     }
@@ -1126,4 +1126,101 @@ fn stage_two_fits_run_on_the_divisor() {
             "{fit}"
         );
     }
+}
+
+/// A cage run read its gene-named rows (`ENSG…_SYMBOL`) by symbol (its
+/// default `--feature-name-mode auto`), two rows of one symbol as one, and
+/// its manifest, written before the mode was recorded, says only `cage`.
+/// Its stage-1 tables are on the rows a stage-2 cage fit of the same data
+/// reads (`--offset` finds every one), and `residual.json` says how they
+/// were read; `--feature-name-mode exact` still reads the names as written.
+#[test]
+fn divide_reads_a_cage_runs_rows_as_cage_read_them() {
+    use crate::cell_activity_graph_embedding::args::FeatureNameMode;
+    use crate::simulate::write::write_backend;
+    use crate::util::metadata::PintoMetadata;
+    use crate::util::stage1_divisor::Stage1Divisor;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let prefix = shifted_fixture(d);
+    let genes: Vec<Box<str>> = vec![
+        "ENSG00000243485_MIR1302-2HG".into(),
+        "ENSG00000237613_FAM138A".into(),
+        "ENSG00000284733_OR4F29".into(),
+        "ENSG00000284662_OR4F29".into(),
+    ];
+    std::fs::create_dir(format!("{d}/genes")).unwrap();
+    let files: Vec<String> = ["S1", "S2"]
+        .iter()
+        .map(|s| {
+            let bc: Vec<Box<str>> = (0..20)
+                .map(|i| char::from(b'a' + i as u8).to_string().into())
+                .collect();
+            let trip = (0..20u64)
+                .flat_map(|i| (0..4u64).map(move |g| (g, i, (1 + g + i % 3) as f32)))
+                .collect();
+            let f = format!("{d}/genes/{s}.zarr");
+            write_backend(&f, &genes, &bc, trip).unwrap();
+            f
+        })
+        .collect();
+    let manifest = format!("{prefix}.pinto.json");
+    let recorded = files.clone();
+    PintoMetadata::update(Path::new(&manifest), move |m| {
+        m.command = "cage".into();
+        m.data_files = Some(recorded);
+    })
+    .unwrap();
+
+    // stage 2: a cage fit of the run's data, as it reads it
+    let peek = crate::util::input::open_sparse(&files[0])
+        .unwrap()
+        .row_names()
+        .unwrap();
+    let kind = FeatureNameMode::Auto.resolve_kind(&peek);
+    let boxed: Vec<Box<str>> = files.iter().map(|f| f.as_str().into()).collect();
+    let data = crate::util::input::open_fit_data(&boxed, &kind).unwrap();
+    let (cells, rows) = (data.column_names().unwrap(), data.row_names().unwrap());
+    assert_eq!(rows.len(), 3, "cage reads the rows by symbol: {rows:?}");
+
+    let out = format!("{d}/divide");
+    run_residual(&ResidualArgs {
+        operation: Operation::Divide,
+        ..args(&prefix, &out, None)
+    })
+    .unwrap();
+    let s1 = Stage1Divisor::load(&out, &cells, &rows).unwrap();
+    assert_eq!(s1.n_rows(), rows.len());
+    let marker: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["feature_names"], "gene", "{marker}");
+
+    // a run that records its mode is read by it, whatever its command
+    PintoMetadata::update(Path::new(&manifest), |m| {
+        m.command = "lc".into();
+        m.feature_names = Some(FeatureNameMode::Gene);
+    })
+    .unwrap();
+    let recorded_out = format!("{d}/recorded");
+    run_residual(&ResidualArgs {
+        operation: Operation::Divide,
+        ..args(&prefix, &recorded_out, None)
+    })
+    .unwrap();
+    Stage1Divisor::load(&recorded_out, &cells, &rows).unwrap();
+
+    // the flag overrides the run: exact names, which the symbols are not
+    let exact = format!("{d}/exact");
+    run_residual(&ResidualArgs {
+        operation: Operation::Divide,
+        feature_names: Some(FeatureNameMode::Exact),
+        ..args(&prefix, &exact, None)
+    })
+    .unwrap();
+    let e = Stage1Divisor::load(&exact, &cells, &rows).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("not in the stage-1 tables"),
+        "{e:#}"
+    );
 }
