@@ -96,7 +96,7 @@ fn sim_args<'a>(seed: &'a str, out: &'a str) -> Vec<&'a str> {
 /// The simulation's first two sections and their coordinates, as a
 /// command reads them.
 const DATA: &[&str] = &[
-    "sim/sections/S1.zarr,sim/sections/S2.zarr",
+    "sim/sections/S1.zarr.zip,sim/sections/S2.zarr.zip",
     "-c",
     "sim/sections/S1.coords.parquet,sim/sections/S2.coords.parquet",
     "--coord-column-names",

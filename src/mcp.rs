@@ -39,22 +39,33 @@ list mask-cells takes; `run_compare` sets two runs' communities against each \
 other; `run_predict` scores held-out cells on a fitted model.";
 
 const SIMULATE: &str = "\
-Simulation with a planted truth: `run_simulate` writes donors' sections \
-(a background job); `view_open` its `<out>/truth/truth.pinto.json` shows the \
-planted domains; fit with `run_fit`, passing the reply's `fit.data` and \
-`fit.coords` (the sections and their coordinates, in order) as its data and \
-coords, and `fit.flags` as its flags; `run_sim_score` scores the fits' labels against the reply's truth, \
-`run_sim_pairs` scores their per-cell vectors on pairs of spots, with no clustering, and \
-`run_sim_baseline` writes a standard pipeline's labels to score next to them; \
-a spatial baseline's run is scored as a fit is, its labels by `run_sim_score` and \
-its `{out}.cell_embedding.parquet` by `run_sim_pairs`.";
+Simulation with a planted truth, step by step. 1. `run_simulate` (a background \
+job) writes each section as `<out>/sections/S<n>.zarr.zip` (counts, genes by \
+spots) with `<out>/sections/S<n>.coords.parquet` (row_um, col_um), and the \
+truth in `<out>/truth`; `view_open` its `<out>/truth/truth.pinto.json` shows \
+the planted domains. 2. Fit with `run_fit`, passing the reply's `fit.data` \
+(the `.zarr.zip` sections, in order), `fit.coords` (their coordinate files, in \
+the same order) and `fit.flags` exactly as its data, coords and flags; give \
+no other data path. 3. Score each fit against the reply's `truth`: \
+`run_sim_score` with the fit's out prefix in `labels` scores its labels; \
+`run_sim_pairs` scores per-cell vectors on pairs of spots, with no \
+clustering: for lc and dsvd give the fit's out prefix in `vectors` (its \
+propensity), for cage its `{prefix}.cell_embedding.parquet` (never dsvd's \
+`{prefix}.latent.parquet`, keyed by cell pair); `run_sim_baseline` writes a standard \
+pipeline's labels table to put in `labels` beside them. A spatial baseline's \
+run is scored as a fit is: its prefix in `labels`, its \
+`{out}.cell_embedding.parquet` in `vectors`. Cells are named \
+`barcode@S<n>`, as a fit of those sections names them, so the scores join \
+on every spot. Both scorers reply with one JSON object, `{truth, scores: \
+[...], failed: [...]}` (`failed` only when an input could not be scored), \
+and `pinto sim score -o` / `pinto sim pairs -o` write that same object.";
 
 const RESIDUAL: &str = "\
 Two-stage fit: `run_residual` takes what a fitted run (a fit's or a spatial \
 baseline's: any run that recorded its propensity) leaves unexplained (a \
 background job), by one of two operations: `divide` (default; stage 2 fits the \
 raw counts with the stage-1 expectation as a multiplicative offset, flag \
-`offset`) or `subtract` (the counts above it as new data files). Fit stage 2 \
+`offset`) or `subtract` (the counts above it as new data files, `<out>/<stem>.zarr.zip`). Fit stage 2 \
 with `run_fit`, passing the reply's `fit.data`, `fit.coords` and `fit.flags` as \
 its data, coords and flags; `run_lra` on that second fit reads the raw counts.";
 

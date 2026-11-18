@@ -2,7 +2,7 @@
 //! tables, and a manifest.
 //!
 //! ```text
-//! {out}/sections/S1.zarr            counts, genes × spots
+//! {out}/sections/S1.zarr.zip        counts, genes × spots
 //! {out}/sections/S1.coords.parquet  spot, row_um, col_um
 //! {out}/truth/spots.parquet         per spot: section, donor and whether it is confounded,
 //!                                   domain and its owner, state, depth (depth_coordinate,
@@ -43,11 +43,11 @@ fn f32s(v: impl Iterator<Item = f64>) -> Vec<f32> {
 /// one section (pinto adds the file stem only with several data files).
 pub fn spot_index(sim: &Sim) -> (Vec<(usize, usize)>, Vec<Box<str>>) {
     let n = sim.sections.len();
-    // as a fit names the cells of the section files `S*.zarr`
+    // as a fit names the cells of the section files `S*.zarr.zip`
     let files: Vec<String> = sim
         .sections
         .iter()
-        .map(|s| format!("{}.zarr", s.name))
+        .map(|s| format!("{}.zarr.zip", s.name))
         .collect();
     let spots: Vec<(usize, usize)> = sim
         .sections
@@ -75,7 +75,9 @@ fn owner(info: &Info) -> Box<str> {
     info.owner.map_or("".into(), donor_label)
 }
 
-/// A zarr backend of `genes × barcodes` counts from `(gene, spot, count)`.
+/// A backend of `genes × barcodes` counts from `(gene, spot, count)`, at
+/// `path`: a `.zarr.zip` archive (built in data-beans' stage beside it and
+/// zipped into place), or a `.zarr` directory when `path` names one.
 pub fn write_backend(
     path: &str,
     genes: &[Box<str>],
@@ -83,15 +85,21 @@ pub fn write_backend(
     triplets: Vec<(u64, u64, f32)>,
 ) -> anyhow::Result<()> {
     use data_beans::sparse_io::{create_sparse_from_triplets_owned, SparseIoBackend};
+    use data_beans::zarr_io::{finalize_output, make_stage, prepare_output};
+    let zip = path.ends_with(".zarr.zip");
+    let (effective, backend, working) = prepare_output(path, SparseIoBackend::Zarr, zip)?;
+    make_stage(&working)?;
     let nnz = triplets.len();
-    let mut backend = create_sparse_from_triplets_owned(
+    let mut written = create_sparse_from_triplets_owned(
         triplets,
         (genes.len(), barcodes.len(), nnz),
-        Some(path),
-        Some(&SparseIoBackend::Zarr),
+        Some(&working),
+        Some(&backend),
     )?;
-    backend.register_row_names_vec(genes);
-    backend.register_column_names_vec(barcodes);
+    written.register_row_names_vec(genes);
+    written.register_column_names_vec(barcodes);
+    drop(written);
+    finalize_output(&working, &effective)?;
     Ok(())
 }
 

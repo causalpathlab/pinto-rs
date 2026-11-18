@@ -396,7 +396,10 @@ pub struct SimScoreArgs {
     #[arg(long, default_value = "label")]
     pub label_column: String,
 
-    /// Write the scores as JSON here
+    /// Write the scores as JSON here: one object, {"truth": ..., "scores":
+    /// [{"labels", "level", "score"}, ...], "failed": [{"labels", "error"}]}
+    /// (failed only when a labelling could not be scored), the shape of the
+    /// MCP's run_sim_score reply
     #[arg(short, long)]
     pub out: Option<Box<str>>,
 }
@@ -475,18 +478,35 @@ pub fn table_rows(input: &str, s: &Score) -> Vec<String> {
         .collect()
 }
 
+/// The scores as `-o` writes them and the MCP replies with them: one object,
+/// `{"truth": ..., "scores": [...], "failed": [...]}`, `failed` only when an
+/// input could not be scored.
+pub fn scores_document(
+    truth: &str,
+    scores: Vec<serde_json::Value>,
+    failed: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut doc = serde_json::json!({ "truth": truth, "scores": scores });
+    if !failed.is_empty() {
+        doc["failed"] = failed.into();
+    }
+    doc
+}
+
 pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
     let t = TruthSpots::read(&args.truth)?;
     let mut all = Vec::new();
     crate::util::staging::say(table_header());
-    let mut failed = 0;
+    let mut failed = Vec::new();
     for input in &args.labels {
         let s =
             match read_labels(input, &args.level, &args.label_column).and_then(|l| score(&t, &l)) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("{input}: {e:#}");
-                    failed += 1;
+                    failed.push(
+                        serde_json::json!({ "labels": input.as_ref(), "error": format!("{e:#}") }),
+                    );
                     continue;
                 }
             };
@@ -498,13 +518,15 @@ pub fn run_score(args: &SimScoreArgs) -> anyhow::Result<()> {
         }
         all.push(serde_json::json!({ "labels": input.as_ref(), "level": args.level, "score": s }));
     }
+    let n_failed = failed.len();
     if let Some(out) = &args.out {
-        std::fs::write(out.as_ref(), serde_json::to_string_pretty(&all)?)?;
+        let doc = scores_document(&args.truth, all, failed);
+        std::fs::write(out.as_ref(), serde_json::to_string_pretty(&doc)?)?;
     }
-    if failed != 0 {
+    if n_failed != 0 {
         // the rows that were scored are shown, as without staging
         crate::util::staging::say_held();
     }
-    anyhow::ensure!(failed == 0, "{failed} labelling(s) could not be scored");
+    anyhow::ensure!(n_failed == 0, "{n_failed} labelling(s) could not be scored");
     Ok(())
 }

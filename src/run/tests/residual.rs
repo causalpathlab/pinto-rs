@@ -193,7 +193,7 @@ fn the_reply_lists_the_residual_files_to_fit_in_order() {
     assert_eq!(
         fit,
         json!({
-            "data": [format!("{out}/S2.zarr"), format!("{out}/S1.zarr")],
+            "data": [format!("{out}/S2.zarr.zip"), format!("{out}/S1.zarr.zip")],
             "coords": [format!("{out}/S2.coords.parquet"), format!("{out}/S1.coords.parquet")],
             "flags": {"coord-column-names": "CT1_x,CT1_y"},
         })
@@ -206,9 +206,9 @@ fn the_reply_lists_the_residual_files_to_fit_in_order() {
     assert_eq!(
         made,
         [
-            format!("{out}/S2.zarr"),
+            format!("{out}/S2.zarr.zip"),
             format!("{out}/S2.coords.parquet"),
-            format!("{out}/S1.zarr"),
+            format!("{out}/S1.zarr.zip"),
             format!("{out}/S1.coords.parquet"),
             format!("{out}/residual.json"),
         ]

@@ -621,7 +621,7 @@ pinto sim new --scenario donor-confounded-donor-only-cell-type \
   --set n_unconfounded_donors=1 -o sim-one-free
 ```
 
-**Outputs.** `sim/sections/S*.zarr` (counts) and `S*.coords.parquet`
+**Outputs.** `sim/sections/S*.zarr.zip` (counts) and `S*.coords.parquet`
 (`row_um`, `col_um`) per section; `sim/truth/` with each spot's section,
 donor and whether it is confounded, domain and its owner, state and mixture,
 each donor's status (`donors.parquet`), and the truth as a run that
@@ -666,7 +666,7 @@ writes every number as JSON.
 **Scoring another method.** Any tool can be scored:
 
 1. Export the sections, e.g. `data-beans to-h5ad` or `data-beans to-mtx` on
-   each `sim/sections/S*.zarr`, and fit them with that tool.
+   each `sim/sections/S*.zarr.zip`, and fit them with that tool.
 2. Write a table with a `cell` column and a label column (`--label-column`,
    default `label`). With several sections a cell is named
    `barcode@section` (e.g. `S1_00001@S1`), as pinto names them; with one,
@@ -892,7 +892,7 @@ of two ways, `--residual`:
   reads its own (raw) data and the stage-1 run's cell types.
 - **`subtract`** (alias `additive`): per data file the excess
   `round(max(y − μ, 0))` (or the floor, `--excess floor`) on the rows every
-  file shares as `{OUT}/{stem}.zarr`, which a fit reads as it reads data;
+  file shares as `{OUT}/{stem}.zarr.zip`, which a fit reads as it reads data;
   `pinto lra` given a fit on them reads the raw counts, not the excess.
 
 Either way the run's coordinates of each file's cells go to
@@ -1072,7 +1072,7 @@ works) names the run, and it writes the counts the run leaves unexplained
 to `{out}/`; it is done once `{out}/residual.json` is there, and nothing it would write may be
 there already. Queuing it queues the `stage-2` row too: under
 `--residual divide` a fit on the run's own data files with `--offset` the
-residual's folder, under subtract on each data file's `{stem}.zarr`, in the
+residual's folder, under subtract on each data file's `{stem}.zarr.zip`, in the
 run's order with its `{stem}.coords.parquet`, and `--coord-column-names`
 set to the run's coordinate columns; the data picked on the Data screen are not passed to
 it. The stage-2 fit is dsvd unless `m` on its row switches it to lc or cage,
@@ -1368,7 +1368,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
 | `run_lra_simulate` | `pinto lra simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
-| `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
+| `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr.zip` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score` | `pinto sim score` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
 | `run_sim_pairs` | `pinto sim pairs` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |

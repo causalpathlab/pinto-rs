@@ -1562,7 +1562,7 @@ fn a_new_stage_two_method_is_not_marked_done() {
 /// A stand-in pinto's residual: it writes every file of the plan of the
 /// run [`fitted_run`] makes, its summary last.
 const WRITES_RESIDUAL: &str = "residual) mkdir -p \"${2#--out=}\" && \
-     for f in d1.zarr d1.coords.parquet d2.zarr d2.coords.parquet residual.json; \
+     for f in d1.zarr.zip d1.coords.parquet d2.zarr.zip d2.coords.parquet residual.json; \
      do touch \"${2#--out=}/$f\"; done ;;";
 
 /// Run `a`'s plan with the stand-in pinto `body`, until the queue ends,
@@ -1616,11 +1616,11 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     run_plan(
         &mut a,
         here,
-        "case \"$1\" in residual) mkdir -p \"${2#--out=}\" && touch \"${2#--out=}/d1.zarr\" ;; esac; exit 1",
+        "case \"$1\" in residual) mkdir -p \"${2#--out=}\" && touch \"${2#--out=}/d1.zarr.zip\" ;; esac; exit 1",
     );
     assert!(a.rows[res].on && !a.rows[res].done());
     assert_eq!(a.rows[res].out, out);
-    assert!(here.join(&out).join("d1.zarr").exists());
+    assert!(here.join(&out).join("d1.zarr.zip").exists());
     let p = &a.plan()[0];
     assert!(p.problem.is_none(), "{:?}", p.problem);
     assert!(p.job.clear);
@@ -1629,7 +1629,7 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
         &mut a,
         here,
         &format!(
-            "case \"$1\" in residual) [ ! -e \"${{2#--out=}}/d1.zarr\" ] || exit 1 ;; esac; \
+            "case \"$1\" in residual) [ ! -e \"${{2#--out=}}/d1.zarr.zip\" ] || exit 1 ;; esac; \
              case \"$1\" in {WRITES_RESIDUAL} esac"
         ),
     );
@@ -1650,14 +1650,14 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     set_flag(&mut a, res, "from", "res2/fit");
     set_flag(&mut a, res, "residual", "subtract");
     std::fs::create_dir_all(here.join(&out)).unwrap();
-    std::fs::write(here.join(&out).join("e1.zarr"), "").unwrap();
+    std::fs::write(here.join(&out).join("e1.zarr.zip"), "").unwrap();
     let p = &a.plan()[0];
     assert!(p.job.clear);
     assert!(
         p.problem
             .as_deref()
             .unwrap_or_default()
-            .contains("e1.zarr exists"),
+            .contains("e1.zarr.zip exists"),
         "{:?}",
         p.problem
     );
@@ -1681,14 +1681,14 @@ fn a_residual_that_failed_part_way_runs_again_at_its_out() {
     }
     a.poll();
     std::fs::create_dir_all(here.join(&out)).unwrap();
-    std::fs::write(here.join(&out).join("d1.zarr"), "").unwrap();
+    std::fs::write(here.join(&out).join("d1.zarr.zip"), "").unwrap();
     let p = &a.plan()[0];
     assert!(!p.job.clear);
     assert!(
         p.problem
             .as_deref()
             .unwrap_or_default()
-            .contains("d1.zarr exists"),
+            .contains("d1.zarr.zip exists"),
         "{:?}",
         p.problem
     );

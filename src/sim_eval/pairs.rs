@@ -600,7 +600,10 @@ pub struct SimPairsArgs {
     #[arg(long, default_value_t = DEFAULT_KNN)]
     pub knn: usize,
 
-    /// Write the scores as JSON here
+    /// Write the scores as JSON here: one object, {"truth": ..., "scores":
+    /// [{"vectors", "level", "pairs", "seed", "knn", "score"}, ...], "failed":
+    /// [{"vectors", "error"}]} (failed only when an input could not be
+    /// scored), the shape of the MCP's run_sim_pairs reply
     #[arg(short, long)]
     pub out: Option<Box<str>>,
 }
@@ -686,7 +689,7 @@ pub fn run_pairs(args: &SimPairsArgs) -> anyhow::Result<()> {
     let layout = SpotLayout::read(&args.truth, &t)?;
     let mut all = Vec::new();
     crate::util::staging::say(pairs_header());
-    let mut failed = 0;
+    let mut failed = Vec::new();
     for input in &args.vectors {
         match score_input(&t, &layout, input, &args.level, &o) {
             Ok((rows, record)) => {
@@ -695,17 +698,21 @@ pub fn run_pairs(args: &SimPairsArgs) -> anyhow::Result<()> {
             }
             Err(e) => {
                 eprintln!("{input}: {e:#}");
-                failed += 1;
+                failed.push(
+                    serde_json::json!({ "vectors": input.as_ref(), "error": format!("{e:#}") }),
+                );
             }
         }
     }
+    let n_failed = failed.len();
     if let Some(out) = &args.out {
-        std::fs::write(out.as_ref(), serde_json::to_string_pretty(&all)?)?;
+        let doc = super::score::scores_document(&args.truth, all, failed);
+        std::fs::write(out.as_ref(), serde_json::to_string_pretty(&doc)?)?;
     }
-    if failed != 0 {
+    if n_failed != 0 {
         // the rows that were scored are shown, as without staging
         crate::util::staging::say_held();
     }
-    anyhow::ensure!(failed == 0, "{failed} input(s) could not be scored");
+    anyhow::ensure!(n_failed == 0, "{n_failed} input(s) could not be scored");
     Ok(())
 }

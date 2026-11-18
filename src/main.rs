@@ -849,7 +849,7 @@ enum Apply {
                       Fit the run's own data files with --offset {out} (lc, dsvd,\n\
                       cage, cage-cell); such a fit takes no batch effect.\n\n\
                       subtract (alias additive): per data file\n  \
-                      {out}/{stem}.zarr            excess counts round(max(y - μ, 0))\n\
+                      {out}/{stem}.zarr.zip        excess counts round(max(y - μ, 0))\n\
                       which a second fit reads as it reads data; pinto lra takes a fit\n\
                       on them back to the raw counts.\n\n\
                       Either way {out}/{stem}.coords.parquet holds the run's coordinates\n\
@@ -1091,7 +1091,7 @@ enum Sim {
                       states (the manifest's realized_pve_expressed_genes says how close).\n\
                       Convert an AnnData file first: data-beans from-h5ad x.h5ad -o x.\n\n\
                       Writes:\n\
-                      \x20 {out}/sections/S*.zarr           counts per section (genes × spots)\n\
+                      \x20 {out}/sections/S*.zarr.zip       counts per section (genes × spots)\n\
                       \x20 {out}/sections/S*.coords.parquet spot coordinates (row_um, col_um)\n\
                       \x20 {out}/truth/*.parquet            spots, domains, states, genes\n\
                       \x20 {out}/truth/lr_pairs.tsv         ligand-receptor pairs of its genes, and\n\
