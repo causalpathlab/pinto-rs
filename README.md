@@ -1215,17 +1215,17 @@ as a PNG with a `.txt` listing the batches by tile number.
 #### Layouts of the cells
 
 `u` draws the cells laid out by a table of theirs in place of the tissue:
-UMAP, then tUMAP, PHATE, the diffusion map, ForceAtlas2, LLE and the stress
-layout, each on a kNN graph of the table's rows (legume-numeric's layouts),
-and after the last the tissue again. `U` steps through the tables: each
-level's propensity, then the cell embedding when the run has one; any
-`N × K` table of the cells will do. Colours, genes, edges and the other
-layers draw on a layout as they draw on the tissue; cells the table lacks
-are left out, and a layout has no scale bar. UMAP and tUMAP lay out every
-cell; the others hold every pair of points, so past 2,000 cells they lay out
-that many landmark cells and place each other cell from its nearest
-landmarks. A layout is made on a thread of its own, once per table and
-layout, and kept until the view closes.
+UMAP, then tUMAP, t-SNE, PHATE, the diffusion map, ForceAtlas2, LLE and the
+stress layout, and after the last the tissue again. `U` steps through the
+tables: each level's propensity, then the cell embedding when the run has
+one; any `N × K` table of the cells will do. Every layout is legume-numeric's
+coarsened layout: the cells' kNN graph is coarsened into at most 1,000
+pseudobulks, the layout is run on the pseudobulk graph, and each cell is
+placed from the pseudobulks near it in that graph. Colours, genes, edges and
+the other layers draw on a layout as they draw on the tissue; cells the
+table lacks are left out, and a layout has no scale bar. A layout is made on
+a thread of its own, once per table and layout, and kept until the view
+closes.
 
 #### Structure plot and heatmap
 

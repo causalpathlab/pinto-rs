@@ -22,11 +22,11 @@ fn every_layout_places_every_row_at_a_finite_point() {
     }
 }
 
-/// Past [`LANDMARKS`] rows, a layout that holds every pair still places
-/// every row: the landmarks laid out, the rest placed beside them.
+/// Past [`PSEUDOBULKS`] rows, a layout of the pseudobulks still places
+/// every row.
 #[test]
-fn a_layout_past_its_landmarks_places_every_row() {
-    let per = LANDMARKS / 3 + 50;
+fn a_layout_past_its_pseudobulks_places_every_row() {
+    let per = PSEUDOBULKS / 3 + 50;
     let table = groups(per);
     let xy = lay_out(&table, Method::Stress, 7).unwrap();
     assert_eq!(xy.nrows(), table.nrows());

@@ -18,9 +18,10 @@ const SIZE: Size = Size {
 };
 
 /// The layouts in the order `u` steps through them.
-const LAYOUTS: [&str; 7] = [
+const LAYOUTS: [&str; 8] = [
     "UMAP",
     "tUMAP",
+    "t-SNE",
     "PHATE",
     "diffusion map",
     "ForceAtlas2",
@@ -36,7 +37,7 @@ const LAYOUTS: [&str; 7] = [
 fn every_layout_is_made_and_drawn_in_the_view() {
     use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();
-    // past the landmarks, so the layouts that hold every pair use them
+    // past the pseudobulks, so the cells are placed from them
     let n = 2500;
     let prefix = common::write_run(dir.path(), n);
     // each cell its own mix, so the layouts have points to spread: the
@@ -72,7 +73,7 @@ fn every_layout_is_made_and_drawn_in_the_view() {
     m["outputs"]["cell_embedding"] = path.into();
     std::fs::write(&manifest, m.to_string()).unwrap();
 
-    let private = Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(120));
+    let private = Private::new(env!("CARGO_BIN_EXE_pinto")).patience(Duration::from_secs(300));
     let mut term = private.term_sized(&["view", &prefix, "--no-detach"], &[], SIZE);
     term.wait_screen("level");
     for name in LAYOUTS {

@@ -1,26 +1,18 @@
 //! The cells laid out in two dimensions by a table of theirs (any `N × K`
 //! table a run writes: a level's propensity, a cell embedding), drawn in
-//! place of the tissue: legume-numeric's layouts on a kNN graph of the
-//! table's rows.
-//!
-//! UMAP and tUMAP run on every cell. The others hold every pair of points
-//! (PHATE's and the stress layout's distances, the diffusion map's and
-//! LLE's eigensolves, ForceAtlas2's repulsion), so past [`LANDMARKS`] cells
-//! they lay out that many landmark cells, drawn at random from the seed,
-//! and place every other cell from its nearest landmarks in the table
-//! ([`project_via_knn`]), as legume-numeric does for many points.
+//! place of the tissue, by legume-numeric's coarsened layouts: the cells'
+//! fuzzy kNN graph coarsened into pseudobulks, a layout of the pseudobulk
+//! graph, and every cell placed from the pseudobulks near it in that graph
+//! ([`Coarsened::place_cells`]). Every layout runs on at most
+//! [`PSEUDOBULKS`] points, however many cells there are.
 
 use crate::util::common::Mat;
-use legume_numeric::matrix::knn::ColumnDict;
-use legume_numeric::matrix::knn_graph::{KnnGraph, KnnGraphArgs};
-use legume_numeric::matrix::landmark_init::landmark_init_2d;
 use legume_numeric::matrix::layout::{
-    diffusion_map_2d_on_graph, forceatlas2_layout_2d_on_graph, lle_layout_2d_on_graph,
-    phate_layout_2d_on_graph, project_via_knn, stress_layout_2d_on_graph, PhateArgs,
+    coarsened, diffusion_map_2d_on_graph, forceatlas2_layout_2d_on_graph, lle_layout_2d_on_graph,
+    phate_layout_2d_on_graph, stress_layout_2d_on_graph, tsne_layout_2d_on_graph,
+    umap_layout_2d_on_graph, CoarsenArgs, Coarsened, PhateArgs, TsneArgs,
 };
 use legume_numeric::matrix::umap::Umap;
-use rand::seq::SliceRandom;
-use rand::SeedableRng;
 
 /// A layout of the cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -28,6 +20,7 @@ pub enum Method {
     Umap,
     /// UMAP with its kernel's `a = b = 1`: tighter clusters.
     Tumap,
+    Tsne,
     Phate,
     Diffusion,
     ForceAtlas2,
@@ -37,9 +30,10 @@ pub enum Method {
 
 impl Method {
     /// Every layout, in the order the view cycles through them.
-    pub const ALL: [Method; 7] = [
+    pub const ALL: [Method; 8] = [
         Method::Umap,
         Method::Tumap,
+        Method::Tsne,
         Method::Phate,
         Method::Diffusion,
         Method::ForceAtlas2,
@@ -53,6 +47,7 @@ impl Method {
         match self {
             Method::Umap => "UMAP",
             Method::Tumap => "tUMAP",
+            Method::Tsne => "t-SNE",
             Method::Phate => "PHATE",
             Method::Diffusion => "diffusion map",
             Method::ForceAtlas2 => "ForceAtlas2",
@@ -60,22 +55,20 @@ impl Method {
             Method::Stress => "stress",
         }
     }
-
-    /// Whether it lays out every cell, not only landmarks.
-    fn scales(self) -> bool {
-        matches!(self, Method::Umap | Method::Tumap)
-    }
 }
 
-/// Neighbours per cell in the graph the layouts run on.
+/// Neighbours per cell, counting the cell itself, in the graph coarsened.
 const KNN: usize = 15;
 
-/// The most cells a layout that holds every pair of points is run on;
-/// past it, as many landmark cells.
-pub const LANDMARKS: usize = 2000;
+/// The most pseudobulks the cells are coarsened into: the points a layout
+/// is run on.
+pub const PSEUDOBULKS: usize = 1000;
 
-/// Landmarks of the kNN graph that set UMAP's start.
-const START_LANDMARKS: usize = 64;
+/// Pseudobulks a cell is placed from: few, so a cell stays by its own.
+const PLACE_KNN: usize = 3;
+
+/// Exponent of the kernel that weighs those pseudobulks.
+const PLACE_ALPHA: f32 = 10.0;
 
 /// Iterations of ForceAtlas2.
 const FORCEATLAS2_ITERATIONS: usize = 300;
@@ -87,56 +80,55 @@ pub fn lay_out(table: &Mat, method: Method, seed: u64) -> anyhow::Result<Mat> {
     if n < 3 {
         return Ok(Mat::zeros(n, 2));
     }
-    if method.scales() || n <= LANDMARKS {
-        return on_graph(table, method, seed);
-    }
-    let mut picked: Vec<usize> = (0..n).collect();
-    picked.shuffle(&mut rand::rngs::StdRng::seed_from_u64(seed));
-    picked.truncate(LANDMARKS);
-    picked.sort_unstable();
-    let landmarks = table.select_rows(&picked);
-    let coords = on_graph(&landmarks, method, seed)?;
-    let dict =
-        ColumnDict::<usize>::from_dmatrix(landmarks.transpose(), (0..picked.len()).collect());
-    Ok(project_via_knn(
-        &table.transpose(),
-        &dict,
-        &coords,
-        KNN,
-        PhateArgs::default().alpha,
-    ))
+    let table_kn = table.transpose();
+    let pbs = coarsened(
+        &table_kn,
+        &CoarsenArgs {
+            knn: KNN.min(n - 1),
+            n_landmarks: PSEUDOBULKS,
+            seed,
+            ..CoarsenArgs::default()
+        },
+    )?;
+    let pb_coords = on_pseudobulks(&pbs, method, seed)?;
+    Ok(pbs.place_cells(&table_kn, &pb_coords, PLACE_KNN, PLACE_ALPHA))
 }
 
-/// `method` on every row of `table`, on their kNN graph.
-fn on_graph(table: &Mat, method: Method, seed: u64) -> anyhow::Result<Mat> {
-    let n = table.nrows();
-    let args = KnnGraphArgs {
-        knn: KNN.min(n - 1),
-        block_size: 1000,
-        reciprocal: false,
-    };
-    let (graph, weights) = KnnGraph::from_rows_fuzzy(table, args)?;
-    let edges: Vec<(usize, usize, f32)> = graph
-        .edges
-        .iter()
-        .zip(&weights)
-        .map(|(&(i, j), &w)| (i, j, w))
-        .collect();
-    let umap = |u: Umap| {
-        let start = landmark_init_2d(table, &edges, START_LANDMARKS, seed);
-        let xy = Umap { seed, ..u }.fit(&edges, n, &start);
-        Mat::from_row_slice(n, 2, &xy)
-    };
+/// `method` on the pseudobulk graph of `pbs`, `n_pb × 2`.
+fn on_pseudobulks(pbs: &Coarsened, method: Method, seed: u64) -> anyhow::Result<Mat> {
+    let (n, edges) = (pbs.n_pb(), &pbs.pb_edges);
     Ok(match method {
-        Method::Umap => umap(Umap::default()),
-        Method::Tumap => umap(Umap::tumap()),
-        Method::Phate => phate_layout_2d_on_graph(n, &edges, &PhateArgs::default()),
-        Method::Diffusion => diffusion_map_2d_on_graph(n, &edges, 1),
+        Method::Umap => umap_layout_2d_on_graph(
+            n,
+            edges,
+            &Umap {
+                seed,
+                ..Umap::default()
+            },
+        ),
+        Method::Tumap => umap_layout_2d_on_graph(
+            n,
+            edges,
+            &Umap {
+                seed,
+                ..Umap::tumap()
+            },
+        ),
+        Method::Tsne => tsne_layout_2d_on_graph(
+            n,
+            edges,
+            &TsneArgs {
+                seed,
+                ..TsneArgs::default()
+            },
+        )?,
+        Method::Phate => phate_layout_2d_on_graph(n, edges, &PhateArgs::default()),
+        Method::Diffusion => diffusion_map_2d_on_graph(n, edges, 1),
         Method::ForceAtlas2 => {
-            forceatlas2_layout_2d_on_graph(n, &edges, FORCEATLAS2_ITERATIONS, seed)
+            forceatlas2_layout_2d_on_graph(n, edges, FORCEATLAS2_ITERATIONS, seed)
         }
-        Method::Lle => lle_layout_2d_on_graph(table, &edges),
-        Method::Stress => stress_layout_2d_on_graph(n, &edges, seed),
+        Method::Lle => lle_layout_2d_on_graph(&pbs.pb_features.transpose(), edges),
+        Method::Stress => stress_layout_2d_on_graph(n, edges, seed),
     })
 }
 
