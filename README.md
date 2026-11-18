@@ -1221,7 +1221,9 @@ tables: each level's propensity, then the cell embedding when the run has
 one; any `N × K` table of the cells will do. Every layout is legume-numeric's
 coarsened layout: the cells' kNN graph is coarsened into at most 1,000
 pseudobulks, the layout is run on the pseudobulk graph, and each cell is
-placed from the pseudobulks near it in that graph. Colours, genes, edges and
+placed from the pseudobulks near it in that graph, with `senna layout`'s
+settings: a propensity is laid out by its square roots (Hellinger), an
+embedding by each cell's direction (cosine). Colours, genes, edges and
 the other layers draw on a layout as they draw on the tissue; cells the
 table lacks are left out, and a layout has no scale bar. A layout is made on
 a thread of its own, once per table and layout, and kept until the view

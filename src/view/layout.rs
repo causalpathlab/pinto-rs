@@ -4,9 +4,11 @@
 //! fuzzy kNN graph coarsened into pseudobulks, a layout of the pseudobulk
 //! graph, and every cell placed from the pseudobulks near it in that graph
 //! ([`Coarsened::place_cells`]). Every layout runs on at most
-//! [`PSEUDOBULKS`] points, however many cells there are.
+//! [`PSEUDOBULKS`] points, however many cells there are. The settings
+//! are `senna layout`'s, so pinto and senna lay out a table alike.
 
 use crate::util::common::Mat;
+use legume_numeric::matrix::dense_mat_io::l2_normalize_rows_inplace;
 use legume_numeric::matrix::layout::{
     coarsened, diffusion_map_2d_on_graph, forceatlas2_layout_2d_on_graph, lle_layout_2d_on_graph,
     phate_layout_2d_on_graph, stress_layout_2d_on_graph, tsne_layout_2d_on_graph,
@@ -78,7 +80,10 @@ const PLACE_KNN: usize = 3;
 const PLACE_ALPHA: f32 = 10.0;
 
 /// Iterations of ForceAtlas2.
-const FORCEATLAS2_ITERATIONS: usize = 300;
+const FORCEATLAS2_ITERATIONS: usize = 500;
+
+/// PHATE's diffusion time, as `senna layout phate` sets it.
+const PHATE_T: usize = 20;
 
 /// A table of the cells coarsened into pseudobulks, once for every layout
 /// of it.
@@ -152,11 +157,19 @@ fn on_pseudobulks(pbs: &Coarsened, method: Method, seed: u64) -> anyhow::Result<
             n,
             edges,
             &TsneArgs {
+                weights: Some(pbs.pb_size.clone()),
                 seed,
                 ..TsneArgs::default()
             },
         )?,
-        Method::Phate => phate_layout_2d_on_graph(n, edges, &PhateArgs::default()),
+        Method::Phate => phate_layout_2d_on_graph(
+            n,
+            edges,
+            &PhateArgs {
+                t: PHATE_T,
+                ..PhateArgs::default()
+            },
+        ),
         Method::Diffusion => diffusion_map_2d_on_graph(n, edges, 1),
         Method::ForceAtlas2 => {
             forceatlas2_layout_2d_on_graph(n, edges, FORCEATLAS2_ITERATIONS, seed)
@@ -201,16 +214,22 @@ pub fn sources(run: &super::data::Run) -> Vec<Source> {
 }
 
 impl Source {
-    /// Its cell names and rows (`N × K`); `coord_names`, the columns a
-    /// propensity table may carry after its own, are left out.
+    /// Its cell names and rows (`N × K`), as a layout reads them, as
+    /// `senna layout` reads a table of their kind: a propensity, a mixture
+    /// per cell, by its square roots (the Hellinger distance between
+    /// cells); an embedding by each cell's direction (cosine).
+    /// `coord_names`, the columns a propensity table may carry after its
+    /// own, are left out.
     pub fn read(&self, coord_names: &[Box<str>]) -> anyhow::Result<(Vec<Box<str>>, Mat)> {
         use crate::util::parquet_io::{read_labelled_matrix, read_propensity};
         if self.propensity {
             let exclude = coord_names.iter().cloned().collect();
-            let (prop, _, _, cells) = read_propensity(&self.path, &exclude)?;
+            let (mut prop, _, _, cells) = read_propensity(&self.path, &exclude)?;
+            prop.apply(|v| *v = v.max(0.0).sqrt());
             Ok((cells, prop))
         } else {
-            let m = read_labelled_matrix(&self.path)?;
+            let mut m = read_labelled_matrix(&self.path)?;
+            l2_normalize_rows_inplace(&mut m.mat);
             Ok((m.rows, m.mat))
         }
     }
