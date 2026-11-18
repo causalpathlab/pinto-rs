@@ -349,6 +349,9 @@ pub struct Plan {
     /// The run's cells table (`outputs.cells`): its cells' coordinates and
     /// batches.
     pub cells: String,
+    /// Whether the run was fitted on feature modules (its data files are
+    /// module files), so the residual is at module level.
+    pub module_level: bool,
     /// How the run's rows are read: `--feature-name-mode`, else as the
     /// run's manifest records it read them, else auto. Exact only when
     /// asked for (here, or by the run).
@@ -402,6 +405,11 @@ impl Plan {
             coord_names,
             propensity,
             cells,
+            module_level: run
+                .meta
+                .feature_modules
+                .as_ref()
+                .is_some_and(|m| m.module_level()),
             feature_names: args
                 .feature_names
                 .or(run.meta.feature_names)
@@ -1002,6 +1010,7 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
             &plan.files,
             args,
             &inp.feature_kind,
+            plan.module_level,
             summary,
         )?)?,
     )?;
@@ -1017,6 +1026,7 @@ fn residual_marker(
     files: &[Box<str>],
     args: &ResidualArgs,
     feature_kind: &FeatureNameKind,
+    module_level: bool,
     summary: Vec<FileSummary>,
 ) -> anyhow::Result<serde_json::Value> {
     let canonical = |p: &Path| -> anyhow::Result<String> {
@@ -1043,6 +1053,18 @@ fn residual_marker(
     marker["adapt_cells"] = serde_json::to_value(args.adapt_cells)?;
     // the rows' names as read: a stage-2 fit reads the data the same way
     marker["feature_names"] = serde_json::to_value(FeatureNameMode::of_kind(feature_kind))?;
+    // a run fitted on feature modules read module files as its data: the
+    // expectation is taken on those modules, and stage 2 fits them
+    let modules = run.meta.feature_modules.as_ref().filter(|_| module_level);
+    marker["feature_level"] = if modules.is_some() {
+        "module"
+    } else {
+        "feature"
+    }
+    .into();
+    if let Some(m) = modules.and_then(|m| m.n_modules) {
+        marker["n_modules"] = m.into();
+    }
     match args.operation {
         Operation::Subtract => {
             marker["excess"] = serde_json::to_value(args.excess)?;

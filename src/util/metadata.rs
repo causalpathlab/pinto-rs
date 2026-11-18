@@ -225,6 +225,13 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holdout: Option<crate::holdout::HoldoutInfo>,
 
+    /// How the run treated its features (`--feature-modules`, cage's
+    /// `--feature-inclusion moran`, lc's `--feature-network`): fitted on
+    /// modules or on the features. Absent on manifests written before this
+    /// was recorded, and on runs that fit nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_modules: Option<crate::util::feature_modules::FeatureModulesInfo>,
+
     /// What named the batches the run's `delta.parquet` is over, so a
     /// later sample's batches can be matched to them. Absent without a
     /// δ, and on manifests written before this was recorded.
@@ -1131,6 +1138,7 @@ pub fn create_lc_metadata(
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        feature_modules: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
@@ -1183,6 +1191,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        feature_modules: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
@@ -1249,6 +1258,7 @@ pub fn create_cage_metadata(
         levels: Some(levels),
         ablation: inputs.ablation.clone(),
         holdout: None,
+        feature_modules: None,
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
@@ -1299,6 +1309,7 @@ pub fn create_prop_metadata(
         levels: Some(levels),
         ablation: None,
         holdout: None,
+        feature_modules: None,
         batch_labels: None,
         file_batches: None,
         baseline: None,

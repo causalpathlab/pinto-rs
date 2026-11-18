@@ -27,12 +27,18 @@ on cells); spatialde2, stagate, spatialpca and mefisto, and the -pb forms \
 spatialde2-pb, stagate-pb, spatialpca-pb and mefisto-pb (fitted on cage's \
 super-cells) are spatial baselines, ports of published methods to compare pinto \
 against, fit and scored as lc is. Where most \
-features are noise, cage and cage-cell embed features through learned \
-modules by default (feature-modules auto takes their number from the data, \
-a count fixes it, 0 for none); feature-inclusion moran given alone replaces \
-the default modules, and given beside an explicit feature-modules value is \
-refused; lc takes feature modules from a feature network file the user \
-supplies (feature-network), as pinto has none. Ablations are fits (lc, dsvd, cage \
+features are noise, every method works on feature modules by default \
+(feature-modules auto takes their number from the data, a count fixes it, 0 \
+for none), all built the same way: cage and cage-cell embed features through \
+a learned module layer started from them, the others are fitted on the \
+modules' summed counts (written as {out}.feature_modules/, the run's data \
+files, so a residual of it and its stage 2 are on the same modules). \
+feature-inclusion moran, on every method, given alone replaces the default \
+modules (cage weights features by their probability of spatial signal; the \
+others fit the features whose probability is 0.5 or more), and given beside \
+an explicit feature-modules value is refused; lc's feature-network (a network \
+file the user supplies) likewise replaces the default modules, and beside an \
+explicit feature-modules is refused. Ablations are fits (lc, dsvd, cage \
 or a baseline) with run_fit's ablation flags (permute-coords, drop-features, \
 mask-cells with ablation-parent); `run_region` turns a polygon into the cell \
 list mask-cells takes; `run_compare` sets two runs' communities against each \

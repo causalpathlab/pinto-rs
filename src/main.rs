@@ -1278,6 +1278,83 @@ fn pass_max_threads(cli: &mut Cli) {
     }
 }
 
+/// The flags of a fit that `--feature-modules` reads: its input (made to
+/// read module files), its `--feature-modules`, its `--offset` and lc's
+/// `--feature-network`. `None` for cage, which builds its own module layer,
+/// and for any other command.
+fn module_inputs(
+    commands: &mut Commands,
+) -> Option<(
+    &mut util::input::InputArgs,
+    &mut util::feature_modules::FeatureModulesArgs,
+    Option<Box<str>>,
+    bool,
+)> {
+    fn spatial(
+        s: &mut baselines::spatial::input::SpatialInputArgs,
+    ) -> (
+        &mut util::input::InputArgs,
+        &mut util::feature_modules::FeatureModulesArgs,
+        Option<Box<str>>,
+        bool,
+    ) {
+        (&mut s.input, &mut s.modules, s.stage2.offset.clone(), false)
+    }
+    let Commands::Fit(fit) = commands else {
+        return None;
+    };
+    Some(match fit {
+        Fit::LinkCommunity(a) => (
+            &mut a.common.input,
+            &mut a.modules,
+            a.stage2.offset.clone(),
+            a.feature_network.is_some(),
+        ),
+        Fit::DeltaSvd(a) => (
+            &mut a.common.input,
+            &mut a.modules,
+            a.stage2.offset.clone(),
+            false,
+        ),
+        Fit::Cage(_) | Fit::CageCell(_) => return None,
+        Fit::Spatialde2(a) => spatial(&mut a.fit.input),
+        Fit::Spatialde2Pb(a) => spatial(&mut a.fit.input),
+        Fit::Stagate(a) => spatial(&mut a.input),
+        Fit::StagatePb(a) => spatial(&mut a.fit.input),
+        Fit::Spatialpca(a) => spatial(&mut a.fit.core.input),
+        Fit::SpatialpcaPb(a) => spatial(&mut a.fit.core.input),
+        Fit::Mefisto(a) => spatial(&mut a.fit.core.input),
+        Fit::MefistoPb(a) => spatial(&mut a.fit.core.input),
+    })
+}
+
+/// A fit's `--feature-modules` resolved (see [`util::feature_modules`]):
+/// under modules its data put on them, before it reads anything. With the
+/// fit's out and what its manifest records; `None` for cage and for
+/// commands that fit nothing.
+fn prepare_feature_modules(
+    commands: &mut Commands,
+) -> anyhow::Result<Option<(String, util::feature_modules::FeatureModulesInfo)>> {
+    use cell_activity_graph_embedding::args::FeatureInclusionMode;
+    use util::feature_modules::{plan, prepare, prepare_moran, FeatureModulesInfo};
+    let Some((input, modules, offset, network)) = module_inputs(commands) else {
+        return Ok(None);
+    };
+    let moran = modules.feature_inclusion == FeatureInclusionMode::Moran;
+    let (p, yielded) = plan(modules.feature_modules, moran, offset.is_some(), network)?;
+    let info = match offset.as_deref() {
+        _ if moran => prepare_moran(input)?,
+        // a stage-2 fit is on its stage-1 run's rows: modules if the
+        // residual was taken on them
+        Some(dir) => util::feature_modules::offset_level(dir)?,
+        None if !yielded.is_empty() => FeatureModulesInfo::features(yielded),
+        None => prepare(input, p)?,
+    };
+    // modules, or moran's features: either way the fit's own screen is off
+    modules.on = info.module_level() || info.setting == "moran";
+    Ok(Some((input.out.to_string(), info)))
+}
+
 fn main() -> anyhow::Result<()> {
     // removes what a run staged when it ends before its commit: on an
     // error return and on a panic
@@ -1348,25 +1425,40 @@ fn run_command() -> anyhow::Result<()> {
     // The command run, as built, and its matches.
     let (c, m) = cli_path::ran(&cmd, &matches);
 
+    let modules = prepare_feature_modules(&mut cli.commands)?;
+
     match &cli.commands {
-        Commands::Fit(fit) => match fit {
-            Fit::LinkCommunity(args) => fit_srt_link_community(args)?,
-            Fit::DeltaSvd(args) => fit_srt_delta_svd(args)?,
-            Fit::Cage(args) => fit_cell_activity_graph_embedding(args)?,
-            Fit::CageCell(args) => {
-                let mut args = args.clone();
-                args.seeding_flags = cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
-                fit_cell_activity_graph_embedding(&args)?;
+        Commands::Fit(fit) => {
+            match fit {
+                Fit::LinkCommunity(args) => fit_srt_link_community(args)?,
+                Fit::DeltaSvd(args) => fit_srt_delta_svd(args)?,
+                Fit::Cage(args) => fit_cell_activity_graph_embedding(args)?,
+                Fit::CageCell(args) => {
+                    let mut args = args.clone();
+                    args.seeding_flags =
+                        cell_activity_graph_embedding::fit::check_cell_level(c, m)?;
+                    fit_cell_activity_graph_embedding(&args)?;
+                }
+                Fit::Spatialde2(args) => baselines::spatial::spatialde2::run(args)?,
+                Fit::Spatialde2Pb(args) => baselines::spatial::spatialde2::run_pb(args)?,
+                Fit::Stagate(args) => baselines::spatial::stagate::run(args)?,
+                Fit::StagatePb(args) => baselines::spatial::stagate::run_pb(args)?,
+                Fit::Spatialpca(args) => baselines::spatial::spatialpca::run(args)?,
+                Fit::SpatialpcaPb(args) => baselines::spatial::spatialpca::run_pb(args)?,
+                Fit::Mefisto(args) => baselines::spatial::mefisto::run(args)?,
+                Fit::MefistoPb(args) => baselines::spatial::mefisto::run_pb(args)?,
             }
-            Fit::Spatialde2(args) => baselines::spatial::spatialde2::run(args)?,
-            Fit::Spatialde2Pb(args) => baselines::spatial::spatialde2::run_pb(args)?,
-            Fit::Stagate(args) => baselines::spatial::stagate::run(args)?,
-            Fit::StagatePb(args) => baselines::spatial::stagate::run_pb(args)?,
-            Fit::Spatialpca(args) => baselines::spatial::spatialpca::run(args)?,
-            Fit::SpatialpcaPb(args) => baselines::spatial::spatialpca::run_pb(args)?,
-            Fit::Mefisto(args) => baselines::spatial::mefisto::run(args)?,
-            Fit::MefistoPb(args) => baselines::spatial::mefisto::run_pb(args)?,
-        },
+            let recorded = match (fit, modules) {
+                (Fit::Cage(a) | Fit::CageCell(a), _) => Some((
+                    a.common.out.to_string(),
+                    util::feature_modules::cage_info(a)?,
+                )),
+                (_, m) => m,
+            };
+            if let Some((out, info)) = recorded {
+                util::feature_modules::record(&out, &info)?;
+            }
+        }
         Commands::Apply(op) => match op {
             Apply::Residual(args) => residual::run_residual(args)?,
             Apply::Predict(args) => {

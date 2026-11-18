@@ -100,7 +100,11 @@ pub(super) fn residual_plan(
 pub(super) fn fit_lists(plan: &Plan, out: &str) -> serde_json::Value {
     match plan.operation {
         Operation::Subtract => {
-            let flags = json!({"coord-column-names": plan.coord_names.join(",")});
+            let mut flags = json!({"coord-column-names": plan.coord_names.join(",")});
+            // the excess files are already on the stage-1 modules
+            if plan.module_level {
+                flags["feature-modules"] = "0".into();
+            }
             json!({"data": plan.zarrs, "coords": plan.coords, "flags": flags})
         }
         Operation::Divide => {

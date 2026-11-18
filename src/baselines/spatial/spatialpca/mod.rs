@@ -222,8 +222,22 @@ pub fn run_pb(args: &PbArgs) -> anyhow::Result<()> {
 
 /// SpatialPCA's genes: SPARK-X's spatially variable genes at a
 /// Benjamini-Yekutieli FDR of [`sparkx::FDR`], at most `n_genes` by
-/// p-value; and how many were significant.
-fn spatial_genes(data: &SpatialData, n_genes: usize) -> anyhow::Result<(Vec<usize>, usize)> {
+/// p-value; and how many were significant. On feature modules
+/// (`modules`, pinto's `--feature-modules`) every module is modelled, with
+/// no screen: the modules already set the features apart.
+fn spatial_genes(
+    data: &SpatialData,
+    n_genes: usize,
+    modules: bool,
+) -> anyhow::Result<(Vec<usize>, usize)> {
+    if modules {
+        let all: Vec<usize> = (0..data.genes.len()).collect();
+        log::info!(
+            "spatialpca: {} feature modules modelled, no SPARK-X screen",
+            all.len()
+        );
+        return Ok((all, data.genes.len()));
+    }
     let xy = nalgebra::DMatrix::from_fn(data.xy.nrows(), data.xy.ncols(), |i, j| {
         data.xy[(i, j)] as f64
     });
@@ -278,7 +292,11 @@ fn base_settings(
         "d": fit.n_factors,
         "n_genes": fit.n_genes,
         "genes_used": names_of(names, genes),
-        "gene_selection": "SPARK-X, Benjamini-Yekutieli FDR 0.05, at most n_genes by p",
+        "gene_selection": if fit.core.input.modules.on {
+            "none: every feature module"
+        } else {
+            "SPARK-X, Benjamini-Yekutieli FDR 0.05, at most n_genes by p"
+        },
         "n_significant": pre.significant,
         "normalization": "SCTransform v1 Pearson residuals, clipped at sqrt(N), standardized per gene",
         "sctransform": pre.sct,
@@ -303,7 +321,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
         budget,
         LOWER_MEMORY,
     )?;
-    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes, fit.core.input.modules.on)?;
     let (op, sct) = expression(&mut data, &genes, fit.core.input.seed);
     let pre = Preprocessing { significant, sct };
     let d = fit.n_factors.min(op.m);
@@ -391,7 +409,7 @@ pub(crate) fn run_pb_on(
         budget,
         LOWER_MEMORY,
     )?;
-    let (genes, significant) = spatial_genes(&data, fit.n_genes)?;
+    let (genes, significant) = spatial_genes(&data, fit.n_genes, fit.core.input.modules.on)?;
     let (nb, lap) = cell_graph(&data, fit.core.knn);
     let mut coarse = coarsen(&mut data, args.n_pseudobulk, &nb)?;
     drop(nb);

@@ -8,10 +8,11 @@ use super::pair_projection::encoder::{DEFAULT_PAIR_ENCODER_BATCH, DEFAULT_PAIR_E
 use crate::util::device::ComputeDevice;
 
 /// Which features each epoch trains (`--feature-inclusion`).
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Default)]
 #[clap(rename_all = "lowercase")]
 pub enum FeatureInclusionMode {
     /// Every trainable feature, every epoch.
+    #[default]
     All,
     /// Each feature with probability π_g, its posterior probability of
     /// spatial signal (jackknifed Moran's I, two-group empirical Bayes).

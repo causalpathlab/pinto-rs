@@ -176,9 +176,17 @@ pub fn spectrum(lap: &Laplacian, core: &CoreArgs) -> Spectrum {
 }
 
 /// The `n_genes` most variable genes (seurat_v3 flavour on the counts as
-/// read, sections pooled), in gene order.
-pub fn select_genes(data: &SpatialData, n_genes: usize) -> anyhow::Result<Vec<usize>> {
+/// read, sections pooled), in gene order; every row on feature modules
+/// (`modules`), which are not screened.
+pub fn select_genes(
+    data: &SpatialData,
+    n_genes: usize,
+    modules: bool,
+) -> anyhow::Result<Vec<usize>> {
     anyhow::ensure!(n_genes >= 1, "--n-genes must be at least 1");
+    if modules {
+        return Ok((0..data.counts.nrows()).collect());
+    }
     let (genes, _) = seurat_v3_hvg(&data.counts, n_genes);
     anyhow::ensure!(!genes.is_empty(), "no genes to fit on");
     Ok(genes)
