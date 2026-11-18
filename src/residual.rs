@@ -1010,6 +1010,7 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
             &plan.files,
             args,
             &inp.feature_kind,
+            plan.module_level,
             summary,
         )?)?,
     )?;
@@ -1025,6 +1026,7 @@ fn residual_marker(
     files: &[Box<str>],
     args: &ResidualArgs,
     feature_kind: &FeatureNameKind,
+    module_level: bool,
     summary: Vec<FileSummary>,
 ) -> anyhow::Result<serde_json::Value> {
     let canonical = |p: &Path| -> anyhow::Result<String> {
@@ -1053,11 +1055,7 @@ fn residual_marker(
     marker["feature_names"] = serde_json::to_value(FeatureNameMode::of_kind(feature_kind))?;
     // a run fitted on feature modules read module files as its data: the
     // expectation is taken on those modules, and stage 2 fits them
-    let modules = run
-        .meta
-        .feature_modules
-        .as_ref()
-        .filter(|m| m.module_level());
+    let modules = run.meta.feature_modules.as_ref().filter(|_| module_level);
     marker["feature_level"] = if modules.is_some() {
         "module"
     } else {
