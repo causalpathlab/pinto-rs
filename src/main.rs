@@ -1340,6 +1340,14 @@ fn prepare_feature_modules(
     let Some((input, modules, offset, network)) = module_inputs(commands) else {
         return Ok(None);
     };
+    // the modules' files sit beside the fit's, written before the fit makes
+    // its out prefix's folder
+    if let Some(dir) = std::path::Path::new(&*input.out)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(dir)?;
+    }
     let moran = modules.feature_inclusion == FeatureInclusionMode::Moran;
     let (p, yielded) = plan(modules.feature_modules, moran, offset.is_some(), network)?;
     let info = match offset.as_deref() {

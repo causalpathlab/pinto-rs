@@ -42,13 +42,19 @@ fn ok(dir: &Path, args: &[&str]) {
 }
 
 /// `args` under `--atomic-outputs`, saying all it says: the run succeeds,
-/// and names no staged path.
+/// and pinto names no staged path. data-beans' own log lines, which say
+/// where it is writing (the feature modules' data files, staged with the
+/// rest), are not pinto's to word.
 fn ok_atomic(dir: &Path, args: &[&str]) {
     let args = [args, &["--atomic-outputs", "--verbose"]].concat();
     let out = run(dir, &args);
     let said = said(&out);
     assert!(out.status.success(), "pinto {args:?} failed:\n{said}");
-    assert!(!said.contains(".partial-"), "pinto {args:?} said:\n{said}");
+    let staged = said
+        .lines()
+        .filter(|l| !l.contains(" data_beans::"))
+        .any(|l| l.contains(".partial-"));
+    assert!(!staged, "pinto {args:?} said:\n{said}");
 }
 
 /// `args` under `--atomic-outputs` fail of themselves, naming no staged

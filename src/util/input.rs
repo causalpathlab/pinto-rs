@@ -119,7 +119,10 @@ pub fn read_expr_data(data_files: &[Box<str>]) -> anyhow::Result<SparseIoVec> {
     let mut data_vec = SparseIoVec::new();
 
     for (data_file, data_name) in data_files.iter().zip(stacked_data_names(data_files)?) {
-        info!("Importing data file: {}", data_file);
+        info!(
+            "Importing data file: {}",
+            crate::util::staging::final_str(data_file)
+        );
         let data = try_open_or_convert(data_file)?;
         data_vec.push(Arc::from(data), data_name)?;
     }
@@ -160,7 +163,10 @@ fn open_named(
     }
 
     for (data_file, data_name) in data_files.iter().zip(stacked(names)) {
-        info!("Importing data file: {}", data_file);
+        info!(
+            "Importing data file: {}",
+            crate::util::staging::final_str(data_file)
+        );
 
         let data = open_sparse(data_file)?;
 
