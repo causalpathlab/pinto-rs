@@ -184,13 +184,16 @@ pub struct ResidualArgs {
     #[arg(
         long = "feature-name-mode",
         value_enum,
-        default_value = "exact",
-        help = "How the run read feature names (its own --feature-name-mode, if it took one)",
-        long_help = "How the run read feature names: exact (the rows every file\n\
-                     shares, by name), or the --feature-name-mode the run was fitted\n\
-                     with, so its rows are read as it read them."
+        help = "How feature names are read (default: as the run's manifest records, else auto)",
+        long_help = "How the data's feature names are read: auto (the default: gene\n\
+                     names keyed by their symbol, ENSG..._SYMBOL and SYMBOL alike; loci\n\
+                     by their coordinates), exact (the rows every file shares, by name\n\
+                     as written), gene, locus or mixed. Without it, the mode the run's\n\
+                     manifest records it read them with, else auto. A stage-2 fit with\n\
+                     --offset finds its rows in the tables by name or by the same loose\n\
+                     key, whichever way it reads the names itself."
     )]
-    pub feature_names: FeatureNameMode,
+    pub feature_names: Option<FeatureNameMode>,
 
     #[arg(
         long,
@@ -310,6 +313,8 @@ struct Inputs {
     /// Each group's name: the run's batch, `unplaced` for cells its table
     /// lacks, `all` under `--adapt none`.
     group_names: Vec<Box<str>>,
+    /// How `data`'s rows were read ([`Plan::feature_names`], resolved).
+    feature_kind: FeatureNameKind,
 }
 
 /// What `pinto apply residual` writes for a run, and what it reads to make it,
@@ -344,6 +349,10 @@ pub struct Plan {
     /// The run's cells table (`outputs.cells`): its cells' coordinates and
     /// batches.
     pub cells: String,
+    /// How the run's rows are read: `--feature-name-mode`, else as the
+    /// run's manifest records it read them, else auto. Exact only when
+    /// asked for (here, or by the run).
+    pub feature_names: FeatureNameMode,
 }
 
 impl Plan {
@@ -393,6 +402,10 @@ impl Plan {
             coord_names,
             propensity,
             cells,
+            feature_names: args
+                .feature_names
+                .or(run.meta.feature_names)
+                .unwrap_or(FeatureNameMode::Auto),
         })
     }
 
@@ -526,16 +539,16 @@ fn resolve(run: &Run, f: &str) -> anyhow::Result<String> {
 
 impl Inputs {
     fn load(args: &ResidualArgs, plan: &Plan) -> anyhow::Result<Self> {
-        // read as the run read them: the rows every file shares, by name
-        // or by its feature-name mode
-        let kind = match args.feature_names {
+        // the rows every file shares, by name (exact) or by their key
+        let feature_kind = match plan.feature_names {
             FeatureNameMode::Auto => {
                 let first = crate::util::input::open_sparse(&plan.files[0])?;
                 FeatureNameKind::auto_detect(&first.row_names()?)
             }
             mode => mode.resolve_kind(&[]),
         };
-        let data = crate::util::input::open_fit_data(&plan.files, &kind)?;
+        info!("Reading the data's feature names as {feature_kind:?}");
+        let data = crate::util::input::open_fit_data(&plan.files, &feature_kind)?;
         let names = data.column_names()?;
 
         let cells = crate::util::parquet_io::read_cells_table(
@@ -582,6 +595,7 @@ impl Inputs {
             coords,
             group_of,
             group_names,
+            feature_kind,
         })
     }
 }
@@ -983,7 +997,13 @@ pub fn run_residual(args: &ResidualArgs) -> anyhow::Result<()> {
     };
     std::fs::write(
         &plan.summary,
-        serde_json::to_string_pretty(&residual_marker(&run, &plan.files, args, summary)?)?,
+        serde_json::to_string_pretty(&residual_marker(
+            &run,
+            &plan.files,
+            args,
+            &inp.feature_kind,
+            summary,
+        )?)?,
     )?;
     Ok(())
 }
@@ -996,6 +1016,7 @@ fn residual_marker(
     run: &Run,
     files: &[Box<str>],
     args: &ResidualArgs,
+    feature_kind: &FeatureNameKind,
     summary: Vec<FileSummary>,
 ) -> anyhow::Result<serde_json::Value> {
     let canonical = |p: &Path| -> anyhow::Result<String> {
@@ -1020,6 +1041,8 @@ fn residual_marker(
     marker["operation"] = serde_json::to_value(args.operation)?;
     marker["adapt"] = serde_json::to_value(args.adapt)?;
     marker["adapt_cells"] = serde_json::to_value(args.adapt_cells)?;
+    // the rows' names as read: a stage-2 fit reads the data the same way
+    marker["feature_names"] = serde_json::to_value(FeatureNameMode::of_kind(feature_kind))?;
     match args.operation {
         Operation::Subtract => {
             marker["excess"] = serde_json::to_value(args.excess)?;

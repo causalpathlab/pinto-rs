@@ -54,8 +54,9 @@
 //! removed with the rest of the workspace's gate machinery.
 
 use crate::cell_activity_graph_embedding::args::{
-    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, ModulePlan,
-    ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_DRAWS_PER_EPOCH, PAIR_RIDGE, PER_FEATURE_BATCH,
+    CellActivityGraphEmbeddingArgs, FeatureEmbeddingMode, FeatureInclusionMode, FeatureNameMode,
+    ModulePlan, ALPHA_NEG, N_NEGATIVES, PAIR_BLOCK, PAIR_DRAWS_PER_EPOCH, PAIR_RIDGE,
+    PER_FEATURE_BATCH,
 };
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
@@ -1044,6 +1045,7 @@ pub fn fit_cell_activity_graph_embedding(
         meta.offset = stage1
             .as_ref()
             .map(|s| s.dir.to_string_lossy().into_owned());
+        meta.feature_names = FeatureNameMode::of_kind(&feature_kind);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!(

@@ -513,6 +513,9 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
             ..Default::default()
         },
         holdout: Some(info),
+        feature_names: crate::cell_activity_graph_embedding::args::FeatureNameMode::of_kind(
+            &feature_kind,
+        ),
         ..Default::default()
     };
     let meta_path = crate::util::metadata::manifest_path(&c.out);

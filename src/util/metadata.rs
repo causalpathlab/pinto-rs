@@ -254,6 +254,14 @@ pub struct PintoMetadata {
     /// this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_threads: Option<usize>,
+
+    /// How the run read its rows' names (`--feature-name-mode`, resolved:
+    /// never `auto`), so what reads its data back (`pinto apply residual`)
+    /// reads the rows it fitted. Absent on runs that take no such flag (lc,
+    /// dsvd, the baselines: they read the names exactly), and on manifests
+    /// written before this was recorded; residual then reads them `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_names: Option<crate::cell_activity_graph_embedding::args::FeatureNameMode>,
 }
 
 /// A spatial baseline's input layout and what it was fitted on. Each runs
@@ -1128,6 +1136,7 @@ pub fn create_lc_metadata(
         baseline: None,
         offset: None,
         max_threads: None,
+        feature_names: None,
     }
 }
 
@@ -1179,6 +1188,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         baseline: None,
         offset: None,
         max_threads: None,
+        feature_names: None,
     }
 }
 
@@ -1244,6 +1254,7 @@ pub fn create_cage_metadata(
         baseline: None,
         offset: None,
         max_threads: None,
+        feature_names: None,
     }
 }
 
@@ -1293,5 +1304,6 @@ pub fn create_prop_metadata(
         baseline: None,
         offset: None,
         max_threads: None,
+        feature_names: None,
     }
 }

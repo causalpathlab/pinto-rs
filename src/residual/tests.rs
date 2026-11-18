@@ -141,7 +141,7 @@ fn args(run: &str, out: &str, data_files: Option<Vec<Box<str>>>) -> ResidualArgs
         excess: Excess::Floor,
         em_iters: 50,
         block_size: Some(1),
-        feature_names: crate::cell_activity_graph_embedding::args::FeatureNameMode::Exact,
+        feature_names: None,
         adapt: Adapt::Batch,
         adapt_cells: 50.0,
     }
@@ -1126,4 +1126,144 @@ fn stage_two_fits_run_on_the_divisor() {
             "{fit}"
         );
     }
+}
+
+/// Gene-named data (`ENSG…_SYMBOL`, two rows of one symbol, `OR4F29`)
+/// on the fixture's cells, the run's data files, and the run's manifest
+/// set to `command` with no recorded mode (as written before it was).
+/// Returns the run prefix and the data files.
+fn gene_named_run(d: &str, command: &'static str) -> (String, Vec<Box<str>>) {
+    use crate::simulate::write::write_backend;
+    use crate::util::metadata::PintoMetadata;
+    let prefix = shifted_fixture(d);
+    let genes: Vec<Box<str>> = vec![
+        "ENSG00000243485_MIR1302-2HG".into(),
+        "ENSG00000237613_FAM138A".into(),
+        "ENSG00000284733_OR4F29".into(),
+        "ENSG00000284662_OR4F29".into(),
+    ];
+    std::fs::create_dir(format!("{d}/genes")).unwrap();
+    let files: Vec<Box<str>> = ["S1", "S2"]
+        .iter()
+        .map(|s| {
+            let bc: Vec<Box<str>> = (0..20)
+                .map(|i| char::from(b'a' + i as u8).to_string().into())
+                .collect();
+            let trip = (0..20u64)
+                .flat_map(|i| (0..4u64).map(move |g| (g, i, (1 + g + i % 3) as f32)))
+                .collect();
+            let f = format!("{d}/genes/{s}.zarr");
+            write_backend(&f, &genes, &bc, trip).unwrap();
+            f.into()
+        })
+        .collect();
+    let recorded = files.iter().map(|f| f.to_string()).collect();
+    PintoMetadata::update(Path::new(&format!("{prefix}.pinto.json")), move |m| {
+        m.command = command.into();
+        m.data_files = Some(recorded);
+        m.feature_names = None;
+    })
+    .unwrap();
+    (prefix, files)
+}
+
+/// What a stage-2 fit reads of `files` under `mode`: its cells and rows.
+fn stage2_reads(files: &[Box<str>], mode: FeatureNameMode) -> (Vec<Box<str>>, Vec<Box<str>>) {
+    let peek = crate::util::input::open_sparse(&files[0])
+        .unwrap()
+        .row_names()
+        .unwrap();
+    let data = crate::util::input::open_fit_data(files, &mode.resolve_kind(&peek)).unwrap();
+    (data.column_names().unwrap(), data.row_names().unwrap())
+}
+
+fn divide(prefix: &str, out: &str, feature_names: Option<FeatureNameMode>) -> serde_json::Value {
+    run_residual(&ResidualArgs {
+        operation: Operation::Divide,
+        feature_names,
+        ..args(prefix, out, None)
+    })
+    .unwrap();
+    serde_json::from_str(&std::fs::read_to_string(format!("{out}/residual.json")).unwrap()).unwrap()
+}
+
+/// Two-stage runs on gene-named data with a duplicate symbol, for every
+/// way the methods read names: cage reads them `auto` (by symbol, the two
+/// `OR4F29` rows as one), lc, dsvd and the spatial baselines `exact`. By
+/// default residual reads them `auto` (the run's recorded mode if it has
+/// one), and a stage-2 fit of either kind finds each of its rows in the
+/// tables (`--offset`), by name or by gene key; residual.json says how the
+/// tables were read. `exact` is taken only when asked for, and a stage-2
+/// cage fit still lines up with exact tables.
+#[test]
+fn a_two_stage_run_lines_up_however_each_stage_reads_the_names() {
+    use crate::util::metadata::PintoMetadata;
+    use crate::util::stage1_divisor::Stage1Divisor;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let cage_reads = |files: &[Box<str>]| stage2_reads(files, FeatureNameMode::Auto);
+    let lc_reads = |files: &[Box<str>]| stage2_reads(files, FeatureNameMode::Exact);
+
+    for command in ["cage", "lc", "dsvd", "spatialde2-pb"] {
+        let sub = format!("{d}/{command}");
+        std::fs::create_dir(&sub).unwrap();
+        let (prefix, files) = gene_named_run(&sub, command);
+        let (cells, symbols) = cage_reads(&files);
+        assert_eq!(
+            symbols.len(),
+            3,
+            "auto reads the rows by symbol: {symbols:?}"
+        );
+        let (_, full) = lc_reads(&files);
+        assert_eq!(full.len(), 4);
+
+        let out = format!("{sub}/divide");
+        let marker = divide(&prefix, &out, None);
+        assert_eq!(marker["feature_names"], "gene", "{command}: {marker}");
+        let tables = crate::util::stage1_divisor::Stage1Tables::read(
+            &out,
+            &crate::util::memory::Budget::new(None, None),
+        )
+        .unwrap();
+        assert_eq!(
+            tables.features, symbols,
+            "{command}: the tables are on the symbols"
+        );
+        // stage 2 by the same method, and by one that reads the other way
+        let s1 = Stage1Divisor::load(&out, &cells, &symbols).unwrap();
+        assert_eq!(s1.n_rows(), 3);
+        let s1 = Stage1Divisor::load(&out, &cells, &full).unwrap();
+        assert_eq!(s1.n_rows(), 4);
+        for i in 0..cells.len() {
+            assert_eq!(s1.at(i, 2), s1.at(i, 3), "{command}: the two OR4F29 rows");
+        }
+    }
+
+    // exact only when asked, and a cage stage 2 still lines up with it
+    let prefix = format!("{d}/lc/fit");
+    let exact = format!("{d}/exact");
+    let marker = divide(&prefix, &exact, Some(FeatureNameMode::Exact));
+    assert_eq!(marker["feature_names"], "exact", "{marker}");
+    let data = files_of(&format!("{d}/lc"));
+    let (cells, symbols) = cage_reads(&data);
+    let (_, full) = lc_reads(&data);
+    Stage1Divisor::load(&exact, &cells, &full).unwrap();
+    let s1 = Stage1Divisor::load(&exact, &cells, &symbols).unwrap();
+    assert_eq!(s1.n_rows(), 3);
+
+    // a mode the run recorded is the default
+    PintoMetadata::update(Path::new(&format!("{prefix}.pinto.json")), |m| {
+        m.feature_names = Some(FeatureNameMode::Exact);
+    })
+    .unwrap();
+    let marker = divide(&prefix, &format!("{d}/recorded"), None);
+    assert_eq!(marker["feature_names"], "exact", "{marker}");
+}
+
+/// The gene-named data files [`gene_named_run`] wrote under `d`.
+fn files_of(d: &str) -> Vec<Box<str>> {
+    ["S1", "S2"]
+        .iter()
+        .map(|s| format!("{d}/genes/{s}.zarr").into())
+        .collect()
 }

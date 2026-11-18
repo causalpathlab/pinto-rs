@@ -240,6 +240,66 @@ fn a_cell_the_tables_lack_is_refused() {
     assert!(e.contains("cell zz"), "{e}");
 }
 
+/// The tables line up with a fit's rows however each read the names: a
+/// row by its own name, else by its gene key. A fit row read as one symbol
+/// over two `ENSG…_SYMBOL` table rows takes their summed expectation (`p`,
+/// `p̄` and `σ²` add); two full-name fit rows over one symbol row each take
+/// that row's; a row with neither its name nor its key there is refused.
+#[test]
+fn rows_line_up_by_name_or_by_their_gene_key() {
+    let cells: Vec<Box<str>> = ["a", "b"].map(Into::into).to_vec();
+    let full: Vec<Box<str>> = ["ENSG1_A", "ENSG2_B", "ENSG3_B", "chr1:100-200"]
+        .map(Into::into)
+        .to_vec();
+    let profile = |_: usize, r: usize, t: usize| 0.1 * (1 + r + 2 * t) as f32;
+    let t = tables(
+        &cells,
+        &full,
+        2,
+        &["all"],
+        |_| 0,
+        |i, t| [0.25, 0.75][(i + t) % 2],
+        profile,
+    );
+    let exact = Stage1Divisor::align(&t, &cells, &full).unwrap();
+
+    // symbol-keyed fit rows (cage's auto) on full-name tables
+    let symbols: Vec<Box<str>> = ["A", "B", "1:100-200"].map(Into::into).to_vec();
+    let s1 = Stage1Divisor::align(&t, &cells, &symbols).unwrap();
+    assert_eq!(s1.n_rows(), 3);
+    assert_eq!(s1.pbar(0), exact.pbar(0));
+    assert!((s1.pbar(1) - (exact.pbar(1) + exact.pbar(2))).abs() < 1e-6);
+    assert_eq!(s1.pbar(2), exact.pbar(3), "a locus by its key");
+    for i in 0..2 {
+        let mu = s1.mu(i, 1);
+        let want = exact.mu(i, 1) + exact.mu(i, 2);
+        assert!((mu - want).abs() < 1e-6, "cell {i}: μ {mu} vs {want}");
+    }
+    assert!((s1.sigma(1, 0) - 2f32.sqrt()).abs() < 1e-6, "σ² adds");
+
+    // full-name fit rows (lc's exact) on symbol-keyed tables
+    let t = tables(
+        &cells,
+        &symbols,
+        2,
+        &["all"],
+        |_| 0,
+        |i, t| [0.25, 0.75][(i + t) % 2],
+        profile,
+    );
+    let s1 = Stage1Divisor::align(&t, &cells, &full).unwrap();
+    assert_eq!(s1.n_rows(), 4);
+    for i in 0..2 {
+        assert_eq!(s1.at(i, 1), s1.at(i, 2), "both B rows take the B row's d");
+    }
+
+    let missing: Vec<Box<str>> = ["ENSG9_Z"].map(Into::into).to_vec();
+    let e = Stage1Divisor::align(&t, &cells, &missing)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("row ENSG9_Z"), "{e}");
+}
+
 /// `--offset` refuses the options that set a batch-effect estimate up,
 /// each named, before anything is read.
 #[test]
