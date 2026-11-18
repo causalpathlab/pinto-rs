@@ -178,6 +178,7 @@ impl Fixture {
                 reference_data: None,
                 reference_data_labels: None,
                 region_jackknife: RegionJackknife::NoRefit,
+                abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
                 marginal: None,
                 memory_budget: None,
             },

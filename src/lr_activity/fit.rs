@@ -662,6 +662,7 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             reference_data: None,
             reference_data_labels: None,
             region_jackknife: args.input.region_jackknife,
+            abf_prior_scale: args.input.abf_prior_scale,
             marginal: args
                 .marginal_baselines
                 .then_some(args.marginal_permutations),
@@ -760,6 +761,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             reference_data: args.reference_data.as_deref(),
             reference_data_labels: args.reference_data_labels.as_deref(),
             region_jackknife: args.input.region_jackknife,
+            abf_prior_scale: args.input.abf_prior_scale,
             marginal: None,
             memory_budget,
         },

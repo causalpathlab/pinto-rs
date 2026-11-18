@@ -361,7 +361,10 @@ averaged estimate itself; its df is the tiles the variance rests on less one.
 `effect_outcome`'s replicates also re-solve its outcome model without the
 tile (the ridge on its fold's Gram less the tile's, no refit), where its
 sampling error lives, and that leave-out also gives it its SE at each
-threshold, which weighs its thresholds in the average. `pinto view` shows the pairs and draws
+threshold, which weighs its thresholds in the average. The thresholds are weighed by
+approximate Bayes factors whose prior SD is `--abf-prior-scale` (default 10)
+times the upper-median SE over the thresholds: smaller = smoother weights
+across thresholds. `pinto view` shows the pairs and draws
 each on the tissue (see `view`, `I`):
 
 | verdict | meaning |

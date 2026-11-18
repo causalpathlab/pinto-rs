@@ -130,6 +130,20 @@ pub struct LraInputArgs {
     pub region_jackknife: RegionJackknife,
 
     #[arg(
+        long,
+        default_value_t = crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
+        value_parser = positive_scale,
+        help_heading = "Input",
+        help = "Prior SD of an effect, in SEs, weighing the exposure thresholds",
+        long_help = "The prior SD of an effect, in multiples of the upper-median SE of a\n\
+                     pair's estimates over the exposure thresholds, in the approximate\n\
+                     Bayes factors that weigh those thresholds in each estimator's average.\n\
+                     Smaller = smoother weights across thresholds; larger leans the average\n\
+                     harder on the threshold of largest z."
+    )]
+    pub abf_prior_scale: f64,
+
+    #[arg(
         long = "knn-spatial",
         short = 'k',
         default_value_t = 5,
@@ -467,5 +481,13 @@ impl LraSimulateArgs {
             self.null_pairs.unwrap_or(SingleScenario::PAIRS),
         )
         .map(Some)
+    }
+}
+
+/// A positive, finite `--abf-prior-scale`.
+fn positive_scale(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("{s:?}: a positive number")),
     }
 }

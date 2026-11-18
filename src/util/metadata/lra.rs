@@ -143,6 +143,8 @@ pub struct LraOptions {
     pub region: Option<String>,
     /// `--region-jackknife`: `refit` or `no-refit`.
     pub region_jackknife: String,
+    /// `--abf-prior-scale`.
+    pub abf_prior_scale: f64,
     /// `--marginal-baselines`: where the cell-type baseline's types came
     /// from, `cell-types` (the run's) or `identity-bins` (none given);
     /// `None` without the flag.
@@ -198,6 +200,7 @@ impl Default for LraOptions {
             cell_types: None,
             region: None,
             region_jackknife: value_name(&crate::lr_activity::args::RegionJackknife::default()),
+            abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
             marginal_baselines: None,
             marginal_permutations: None,
         }

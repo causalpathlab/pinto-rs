@@ -1045,6 +1045,7 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
         "cell_types": flag("cell_types", json!({"type": "string"})),
         "region": flag("region", json!({"type": "string"})),
         "region_jackknife": flag("region_jackknife", json!({"enum": choices::<RegionJackknife>()})),
+        "abf_prior_scale": flag("abf_prior_scale", json!({"type": "number", "exclusiveMinimum": 0})),
         "max_threads": max_threads_arg(cli),
         "atomic_outputs": atomic_outputs_arg(cli),
     });

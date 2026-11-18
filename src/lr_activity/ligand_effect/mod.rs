@@ -119,6 +119,7 @@ pub mod verdict;
 mod tests;
 
 pub use baselines::PERMUTATIONS;
+pub use options::ABF_PRIOR_SCALE;
 
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::util::cli::value_name;
@@ -206,6 +207,8 @@ pub struct Settings<'a> {
     pub reference_data_labels: Option<&'a str>,
     /// `--region-jackknife`.
     pub region_jackknife: RegionJackknife,
+    /// `--abf-prior-scale` ([`options::ABF_PRIOR_SCALE`] by default).
+    pub abf_prior_scale: f64,
     /// `--marginal-baselines`: the permutations of each co-expression
     /// baseline (`--marginal-permutations`); `None` without the flag, and
     /// always for `lra-simulate`, which scores its own.
@@ -230,6 +233,7 @@ impl Settings<'_> {
             cell_types: self.cell_types.map(abs),
             region: self.region.map(abs),
             region_jackknife: value_name(&self.region_jackknife),
+            abf_prior_scale: self.abf_prior_scale,
             marginal_baselines: None,
             marginal_permutations: self.marginal,
         }

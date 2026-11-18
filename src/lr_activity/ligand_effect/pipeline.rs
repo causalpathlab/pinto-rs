@@ -164,13 +164,13 @@ fn build_tissue(
 }
 
 /// The estimator's options: the fixed settings and the run's seed.
-fn effect_opts(seed: u64, region_jackknife: RegionJackknife) -> EffectOpts {
+fn effect_opts(seed: u64, region_jackknife: RegionJackknife, abf_prior_scale: f64) -> EffectOpts {
     let k = INTERNALS;
     EffectOpts {
         keep_arm_weights: false,
         threshold: None,
         min_overlap: k.min_overlap,
-        abf_prior_scale: k.abf_prior_scale,
+        abf_prior_scale,
         seed,
         competences: &options::COMPETENCE_GRID,
         curve: true,
@@ -219,7 +219,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         n_all,
         store,
         local,
-        eopts: effect_opts(a.seed, a.region_jackknife),
+        eopts: effect_opts(a.seed, a.region_jackknife, a.abf_prior_scale),
         reference_record: Some(record),
         identity_excluded,
         memory_budget: a.memory_budget,
