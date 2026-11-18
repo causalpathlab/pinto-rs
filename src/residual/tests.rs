@@ -185,8 +185,8 @@ fn a_run_writes_each_files_excess_and_coordinates() {
     let out = format!("{d}/resid");
     run_residual(&args(&prefix, &out, None)).unwrap();
     let (s1, s2) = (
-        read(&format!("{out}/S1.zarr")),
-        read(&format!("{out}/S2.zarr")),
+        read(&format!("{out}/S1.zarr.zip")),
+        read(&format!("{out}/S2.zarr.zip")),
     );
     assert_eq!(g1(&s2, 1), 10.0, "S2/b keeps its excess on g1");
     assert_eq!(g1(&s1, 0), 0.0);
@@ -211,9 +211,9 @@ fn the_plan_names_every_file_a_run_writes() {
     assert_eq!(
         plan.made(),
         [
-            "S1.zarr",
+            "S1.zarr.zip",
             "S1.coords.parquet",
-            "S2.zarr",
+            "S2.zarr.zip",
             "S2.coords.parquet",
             "residual.json"
         ]
@@ -244,7 +244,7 @@ fn a_folder_out_names_its_files_without_a_doubled_slash() {
     )
     .unwrap();
     let under = |f: &str| format!("{d}/resid/{f}");
-    assert_eq!(plan.zarrs, [under("S1.zarr"), under("S2.zarr")]);
+    assert_eq!(plan.zarrs, [under("S1.zarr.zip"), under("S2.zarr.zip")]);
     assert_eq!(
         plan.coords,
         [under("S1.coords.parquet"), under("S2.coords.parquet")]
@@ -325,7 +325,7 @@ fn a_community_with_no_weight_changes_nothing() {
     rewrite_run(&prefix, &CELLS, prop, "lc");
     let out = format!("{d}/resid");
     run_residual(&args(&prefix, &out, None)).unwrap();
-    assert_eq!(g1(&read(&format!("{out}/S2.zarr")), 1), 10.0);
+    assert_eq!(g1(&read(&format!("{out}/S2.zarr.zip")), 1), 10.0);
 }
 
 /// Outputs never write over anything: an existing output is refused and
@@ -336,15 +336,18 @@ fn outputs_never_write_over_anything() {
     let d = dir.path().to_str().unwrap();
     let (prefix, files) = fixture(d);
     let out = format!("{d}/resid");
-    std::fs::create_dir_all(format!("{out}/S1.zarr")).unwrap();
-    std::fs::write(format!("{out}/S1.zarr/keep"), "").unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(format!("{out}/S1.zarr.zip"), "keep").unwrap();
     let err = run_residual(&args(&prefix, &out, None))
         .unwrap_err()
         .to_string();
     assert!(err.contains("exists"), "{err}");
-    assert!(Path::new(&format!("{out}/S1.zarr/keep")).exists());
+    assert_eq!(
+        std::fs::read_to_string(format!("{out}/S1.zarr.zip")).unwrap(),
+        "keep"
+    );
     assert!(
-        !Path::new(&format!("{out}/S2.zarr")).exists(),
+        !Path::new(&format!("{out}/S2.zarr.zip")).exists(),
         "nothing written"
     );
 
@@ -464,7 +467,7 @@ fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
         ..args(&prefix, &out, None)
     })
     .unwrap();
-    let s2 = read(&format!("{out}/S2.zarr"));
+    let s2 = read(&format!("{out}/S2.zarr.zip"));
     assert_eq!(s2.nnz(), 0, "each cell sits at its own community's mean");
 
     rewrite_run(
@@ -479,7 +482,7 @@ fn a_run_of_any_command_with_one_hot_memberships_is_taken() {
         ..args(&prefix, &out, None)
     })
     .unwrap();
-    assert!(g1(&read(&format!("{out}/S2.zarr")), 1) > 0.0);
+    assert!(g1(&read(&format!("{out}/S2.zarr.zip")), 1) > 0.0);
 }
 
 /// A spatial baseline's run is taken as a fit's is: it records its data files (as a fit does, so that
@@ -560,7 +563,7 @@ fn residual_from_baseline(command: &str) {
     let raw: Vec<Box<str>> = data.split(',').map(Box::from).collect();
     let zarrs: Vec<Box<str>> = ["s1", "s2"]
         .iter()
-        .map(|s| format!("{out}/{s}.zarr").into())
+        .map(|s| format!("{out}/{s}.zarr.zip").into())
         .collect();
     let open = |f: &[Box<str>]| crate::util::input::open_fit_data(f, &FeatureNameKind::Exact);
     let (before, after) = (open(&raw).unwrap(), open(&zarrs).unwrap());
@@ -659,7 +662,10 @@ fn lra_reads_a_fit_on_the_residual_as_a_residual_fit() {
     let meta = PintoMetadata {
         command: "lc".into(),
         prefix: stage2.clone(),
-        data_files: Some(vec![format!("{out}/S1.zarr"), format!("{out}/S2.zarr")]),
+        data_files: Some(vec![
+            format!("{out}/S1.zarr.zip"),
+            format!("{out}/S2.zarr.zip"),
+        ]),
         ..Default::default()
     };
     meta.write(Path::new(&format!("{stage2}.pinto.json")))
@@ -742,7 +748,7 @@ fn shifted_fixture(d: &str) -> String {
 
 /// Total `g1` excess over a residual file's cells, and cell 0's.
 fn g1_excess(out: &str, s: &str) -> (f32, f32) {
-    let m = read(&format!("{out}/{s}.zarr"));
+    let m = read(&format!("{out}/{s}.zarr.zip"));
     ((0..m.ncols()).map(|j| g1(&m, j)).sum(), g1(&m, 0))
 }
 
@@ -836,7 +842,7 @@ fn a_residual_of_a_fit_on_a_residual_is_refused() {
     run_residual(&args(&prefix, &out, None)).unwrap();
     let excess: Vec<String> = ["S1", "S2"]
         .iter()
-        .map(|s| format!("{out}/{s}.zarr"))
+        .map(|s| format!("{out}/{s}.zarr.zip"))
         .collect();
     let stage2 = format!("{d}/fit2");
     let write = |files: Vec<String>| {

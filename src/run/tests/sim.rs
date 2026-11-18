@@ -130,7 +130,7 @@ fn the_reply_lists_the_sections_to_fit_in_order() {
     assert!(n > 1, "{n}");
     let fit = fit_lists("/p/sim", &p);
     let data: Vec<String> = (1..=n)
-        .map(|s| format!("/p/sim/sections/S{s}.zarr"))
+        .map(|s| format!("/p/sim/sections/S{s}.zarr.zip"))
         .collect();
     let coords: Vec<String> = (1..=n)
         .map(|s| format!("/p/sim/sections/S{s}.coords.parquet"))
@@ -147,7 +147,7 @@ fn a_folder_out_names_its_files_without_a_doubled_slash() {
     let p =
         params(json!({"scenario": "donor-confounded-donor-only-cell-type", "set": TINY})).unwrap();
     let fit = fit_lists("/p/sim/", &p);
-    assert_eq!(fit["data"][0], "/p/sim/sections/S1.zarr");
+    assert_eq!(fit["data"][0], "/p/sim/sections/S1.zarr.zip");
     assert_eq!(fit["coords"][0], "/p/sim/sections/S1.coords.parquet");
     // as text: two paths that differ only by a doubled slash compare equal
     let made: Vec<String> = sim_outputs("/p/sim/")[1..]

@@ -99,7 +99,7 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
 
 /// A section's counts under the simulation folder `out`.
 pub fn backend_path(out: &str, section: &str) -> String {
-    in_dir(out, &format!("sections/{section}.zarr"))
+    in_dir(out, &format!("sections/{section}.zarr.zip"))
 }
 
 /// A section's spot coordinates under `out`.

@@ -16,7 +16,9 @@ use crate::mcp::shown_path;
 use crate::sim_eval::pairs::{
     pairs_header, score_input, PairOptions, SpotLayout, DEFAULT_KNN, DEFAULT_PAIRS, DEFAULT_SEED,
 };
-use crate::sim_eval::score::{read_labels, score, table_header, table_rows, TruthSpots};
+use crate::sim_eval::score::{
+    read_labels, score, scores_document, table_header, table_rows, TruthSpots,
+};
 use crate::simulate::panel::{read_coords, section_name};
 use crate::simulate::params::{SimParams, SCENARIOS, TERMS};
 use crate::simulate::run::{
@@ -245,13 +247,18 @@ pub(super) fn simulate(
             "lr_pairs": lr_pairs,
             "targets": [targets],
         },
+        "score": {
+            "run_sim_score": {"truth": truth, "labels": ["<the run_fit out prefix>"]},
+            "run_sim_pairs": {"truth": truth, "vectors": ["<the run_fit out prefix>"]},
+        },
         "shares": shares_json(&p),
         "shares_note": p.shares_summary(),
     });
     let open = format!(
-        "view_open {truth} to see the planted domains; pass fit.data, fit.coords and fit.flags \
-         to run_fit as its data, coords and flags; score the fits with \
-         run_sim_score, truth {truth}; run_lra and run_lra_simulate on a fit take lra.lr_pairs \
+        "view_open {truth} to see the planted domains; run_fit with fit.data (the \
+         .zarr.zip sections), fit.coords and fit.flags as its data, coords and flags; then \
+         score each fit: run_sim_score with truth {truth} and the fit's out prefix in labels, \
+         run_sim_pairs with truth {truth} and the prefix in vectors; run_lra and run_lra_simulate on a fit take lra.lr_pairs \
          and lra.targets as lr_pairs and targets (the simulation's genes are no reference's)"
     );
     Ok(vec![Content::Json(launch(
@@ -297,10 +304,7 @@ pub(super) fn sim_score(a: SimScoreToolArgs) -> anyhow::Result<Vec<Content>> {
         !scores.is_empty(),
         "no labelling could be scored: {failed:?}"
     );
-    let mut reply = json!({ "truth": shown_path(Path::new(&a.truth)), "scores": scores });
-    if !failed.is_empty() {
-        reply["failed"] = failed.into();
-    }
+    let mut reply = scores_document(&shown_path(Path::new(&a.truth)), scores, failed);
     if !warnings.is_empty() {
         reply["warnings"] = warnings.into();
     }
@@ -335,10 +339,7 @@ pub(super) fn sim_pairs(a: SimPairsToolArgs) -> anyhow::Result<Vec<Content>> {
         }
     }
     anyhow::ensure!(!scores.is_empty(), "no vectors could be scored: {failed:?}");
-    let mut reply = json!({ "truth": shown_path(Path::new(&a.truth)), "scores": scores });
-    if !failed.is_empty() {
-        reply["failed"] = failed.into();
-    }
+    let reply = scores_document(&shown_path(Path::new(&a.truth)), scores, failed);
     Ok(vec![Content::Text(lines.join("\n")), Content::Json(reply)])
 }
 
@@ -424,11 +425,14 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              and the nuisance shares are of its variance between states. \
              The reply's shares and shares_note spell out what a setting \
              implies; relay shares_note to the user whenever a share is set. \
-             Writes {out}/sections/S*.zarr with S*.coords.parquet (row_um, col_um), the truth \
-             tables and run in {out}/truth (view_open {out}/truth/truth.pinto.json), and \
-             {out}/manifest.json. The reply's fit.data and fit.coords list the sections for \
-             run_fit, in order, and fit.flags the coordinate columns to read; its truth is \
-             run_sim_score's truth. The settings and coordinate files are checked before it starts; it runs as a background job unless asked, and \
+             Writes each section as {out}/sections/S<n>.zarr.zip (counts, genes by spots) \
+             with {out}/sections/S<n>.coords.parquet (row_um, col_um), the truth tables and \
+             run in {out}/truth (view_open {out}/truth/truth.pinto.json), and \
+             {out}/manifest.json. To score: (1) run_fit with the reply's fit.data (the \
+             .zarr.zip sections, in order), fit.coords and fit.flags as its data, coords and \
+             flags; (2) run_sim_score with the reply's truth and the fit's out prefix in \
+             labels, and run_sim_pairs with the same truth and prefix in vectors. The reply's \
+             score spells out both calls. The settings and coordinate files are checked before it starts; it runs as a background job unless asked, and \
              never over an existing out.",
             json!({
                 "type": "object",
@@ -455,8 +459,10 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              domain, 0 to 1, pooled and for each shared domain as donor_dependence_by_domain). 2, each donor-specific domain against its \
              best-matching label: f1, precision (low: shared spots absorbed), recall, \
              owner_share (1: the label is confined to the owning donor). Returns a table, one \
-             row per labelling and donor-specific domain, and the scores as JSON. Fast: runs in \
-             the call.",
+             row per labelling and donor-specific domain, and the scores as one JSON object, \
+             {truth, scores: [{labels, level, score}], failed: [{labels, error}]} (failed only \
+             when a labelling could not be scored); pinto sim score -o writes that same object. \
+             Fast: runs in the call.",
             json!({
                 "type": "object",
                 "properties": {
@@ -487,8 +493,14 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              that keeps only the donor-specific domain near 1, one set by the donor passes \
              cross_donor but not same_donor. \
              spatial: each spot's knn nearest neighbours in its \
-             section, positive when they share a domain. Returns a table of the AUROCs, one row \
-             per input and donor-specific domain, and every number as JSON. Runs in the call.",
+             section, positive when they share a domain. Which vectors to give: an lc or dsvd \
+             run, its out prefix (scored on its propensity); a cage or spatial baseline run, \
+             its {prefix}.cell_embedding.parquet (or its prefix, for its propensity); not \
+             dsvd's {prefix}.latent.parquet, which is keyed by cell pair, not cell. Returns a \
+             table of the AUROCs, one row per input and donor-specific domain, and the scores \
+             as one JSON object, {truth, scores: [{vectors, level, pairs, seed, knn, score}], \
+             failed: [{vectors, error}]} (failed only when an input could not be scored); \
+             pinto sim pairs -o writes that same object. Runs in the call.",
             json!({
                 "type": "object",
                 "properties": {

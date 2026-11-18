@@ -821,7 +821,7 @@ fn an_agent_simulates_looks_and_scores() {
     for ((d, xy), sec) in data.iter().zip(coords).zip(sections) {
         let name = sec["section"].as_str().unwrap();
         let (d, xy) = (d.as_str().unwrap(), xy.as_str().unwrap());
-        assert!(d.ends_with(&format!("sim/sections/{name}.zarr")), "{d}");
+        assert!(d.ends_with(&format!("sim/sections/{name}.zarr.zip")), "{d}");
         assert!(
             xy.ends_with(&format!("sim/sections/{name}.coords.parquet")),
             "{xy}"

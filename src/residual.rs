@@ -93,7 +93,7 @@
 //! `σ²_b`). A stage-2 fit reads the stage-1 run's own data files and takes
 //! the folder as `--offset {out}`.
 //!
-//! **subtract** (alias additive): per data file `{out}/{stem}.zarr`, the
+//! **subtract** (alias additive): per data file `{out}/{stem}.zarr.zip`, the
 //! excess counts `round(max(y_gi − μ_gi, 0))` (or the floor, `--excess`),
 //! which the count models fit as they fit data.
 //!
@@ -324,7 +324,7 @@ pub struct Plan {
     pub files: Vec<Box<str>>,
     /// How what is left is taken (`--residual`).
     pub operation: Operation,
-    /// Per data file, its residual zarr (`{out}/{stem}.zarr`), under
+    /// Per data file, its residual zarr (`{out}/{stem}.zarr.zip`), under
     /// `--residual subtract`; none under divide.
     pub zarrs: Vec<String>,
     /// The stage-1 tables under `--residual divide`
@@ -1055,15 +1055,23 @@ fn output_paths(files: &[Box<str>], out: &str) -> anyhow::Result<Vec<String>> {
         .iter()
         .map(|f| {
             let stem = basename(f.trim_end_matches('/'))?;
-            Ok(in_dir(out, &format!("{stem}.zarr")))
+            Ok(in_dir(out, &format!("{stem}.zarr.zip")))
         })
         .collect::<anyhow::Result<_>>()?;
     for (o, f) in outputs.iter().zip(files) {
         // its final name, under --atomic-outputs
         let o = crate::util::staging::final_str(o);
+        let (o, f) = (Path::new(&o), Path::new(f.as_ref()));
+        // the input's own folder, whatever the input's extension
+        let same_folder = matches!(
+            (o.parent(), f.parent()),
+            (Some(a), Some(b)) if same_file(a, b)
+        );
         anyhow::ensure!(
-            !same_file(Path::new(&o), Path::new(f.as_ref())),
-            "{o} is the input {f}; give -o a directory apart from the data"
+            !same_file(o, f) && !same_folder,
+            "{} is beside the input {}; give -o a directory apart from the data",
+            o.display(),
+            f.display()
         );
     }
     Ok(outputs)
@@ -1211,7 +1219,10 @@ fn stage1_tables(
 
 /// A residual zarr's coordinate file, beside it.
 fn coords_path(zarr: &str) -> String {
-    format!("{}.coords.parquet", zarr.trim_end_matches(".zarr"))
+    format!(
+        "{}.coords.parquet",
+        data_beans::hdf5_io::strip_backend_suffix(zarr)
+    )
 }
 
 /// One file's coordinates: its cells' barcodes and the run's coordinates of

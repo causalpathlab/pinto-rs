@@ -178,7 +178,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
          {stem}.coords.parquet per data file (the run's coordinates under its column \
          names), {out}/residual.json, and under divide {out}/stage1.cells.parquet, \
          stage1.profiles.parquet and stage1.features.parquet, under subtract \
-         {out}/{stem}.zarr per data file. The reply's fit.data and fit.coords list what \
+         {out}/{stem}.zarr.zip per data file. The reply's fit.data and fit.coords list what \
          run_fit takes, in order, and fit.flags the coordinate columns to read and, under \
          divide, offset (the folder; that fit takes no batch effect, so give it no \
          batches); run_lra on that fit reads the raw counts. It removes no \

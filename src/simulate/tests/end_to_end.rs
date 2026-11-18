@@ -31,7 +31,7 @@ fn a_run_writes_backends_truth_and_manifest() {
     let out = dir.path().join("sim").to_string_lossy().to_string();
     run_simulate(&args(&out, "donor-confounded-donor-only-cell-type", &[])).unwrap();
     for s in 1..=6 {
-        let m = open_sparse_matrix_by_path(&format!("{out}/sections/S{s}.zarr")).unwrap();
+        let m = open_sparse_matrix_by_path(&format!("{out}/sections/S{s}.zarr.zip")).unwrap();
         assert_eq!((m.num_rows(), m.num_columns()), (Some(60), Some(144)));
         assert!(std::path::Path::new(&format!("{out}/sections/S{s}.coords.parquet")).exists());
     }
@@ -60,7 +60,7 @@ fn a_run_is_reproducible() {
     run_simulate(&args(&a, "donor-confounded", &[])).unwrap();
     run_simulate(&args(&b, "donor-confounded", &[])).unwrap();
     let read = |o: &str| {
-        let m = open_sparse_matrix_by_path(&format!("{o}/sections/S3.zarr")).unwrap();
+        let m = open_sparse_matrix_by_path(&format!("{o}/sections/S3.zarr.zip")).unwrap();
         m.read_columns_csc((0..144).collect::<Vec<usize>>())
             .unwrap()
     };
@@ -399,7 +399,7 @@ fn run_fingerprint(out: &str) -> u64 {
     .collect();
     for sec in manifest["sections"].as_array().unwrap() {
         let name = sec["section"].as_str().unwrap();
-        let m = open_sparse_matrix_by_path(&format!("{out}/sections/{name}.zarr")).unwrap();
+        let m = open_sparse_matrix_by_path(&format!("{out}/sections/{name}.zarr.zip")).unwrap();
         for names in [m.row_names().unwrap(), m.column_names().unwrap()] {
             names.iter().for_each(|n| fnv(&mut h, n.as_bytes()));
         }
@@ -437,19 +437,19 @@ fn run_fingerprint(out: &str) -> u64 {
 )]
 fn a_run_without_reference_data_writes_what_it_always_did() {
     let want: [(&str, &[&str], u64); 6] = [
-        ("unconfounded", &[], 0x26bf9812b0027960),
-        ("donor-confounded", &[], 0x65afb792e233038c),
+        ("unconfounded", &[], 0xe1444648c5f12a20),
+        ("donor-confounded", &[], 0x37371ab11b1f2d04),
         (
             "donor-confounded-donor-only-cell-type",
             &[],
-            0x641e5b03097acb12,
+            0x9c0a1989b67ff53a,
         ),
-        ("donor-confounded-donor-only-mix", &[], 0xcb97005abff0086b),
-        ("composition-shift", &[], 0x0d4b78e817e483f6),
+        ("donor-confounded-donor-only-mix", &[], 0x8238b2b5962d39ab),
+        ("composition-shift", &[], 0x8cfc50cfbc357dd6),
         (
             "donor-confounded",
             &["n_unconfounded_donors=1"],
-            0x7c4914c8dff315de,
+            0x1282d6fa2b88671e,
         ),
     ];
     let dir = tempfile::tempdir().unwrap();
