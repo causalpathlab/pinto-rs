@@ -47,8 +47,8 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("lra", 21),
         ("lra simulate", 22),
         ("sim new", 10),
-        ("sim score", 8),
-        ("sim pairs", 10),
+        ("sim score-by-set", 8),
+        ("sim score-by-pair", 10),
         ("sim baseline", 8),
         ("compare", 9),
         #[cfg(feature = "view")]

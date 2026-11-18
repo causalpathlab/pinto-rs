@@ -34,7 +34,8 @@ fn a_command_is_found_by_its_name_or_path() {
         ("lra", vec!["lra"]),
         ("lra simulate", vec!["lra", "simulate"]),
         ("sim new", vec!["sim", "new"]),
-        ("pairs", vec!["sim", "pairs"]),
+        ("score-by-pair", vec!["sim", "score-by-pair"]),
+        ("pairs", vec!["sim", "score-by-pair"]),
         ("compare", vec!["compare"]),
     ] {
         let found = path(find(&cli, word).unwrap_or_else(|| panic!("{word}")));

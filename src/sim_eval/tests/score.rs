@@ -23,9 +23,12 @@ fn truth() -> TruthSpots {
 
 /// Each shared domain's dependence, rounded to 12 places.
 fn by_domain(s: &crate::sim_eval::score::Score) -> Vec<Option<f64>> {
-    s.donor_dependence_by_domain
+    s.donor_conditional_entropy_by_domain
         .iter()
-        .map(|d| d.dependence.map(|x| (x * 1e12).round() / 1e12))
+        .map(|d| {
+            d.donor_conditional_entropy
+                .map(|x| (x * 1e12).round() / 1e12)
+        })
         .collect()
 }
 
@@ -42,8 +45,10 @@ fn the_truth_itself_scores_perfectly() {
     let t = truth();
     let s = score(&t, &labels_from(&t, |i| t.domain[i] as i64)).unwrap();
     assert!((s.shared_ari - 1.0).abs() < 1e-12);
-    assert_eq!(s.donor_dependence, 0.0);
-    assert_eq!(by_domain(&s), [Some(0.0), Some(0.0)]);
+    assert!((s.shared_ami - 1.0).abs() < 1e-12, "{}", s.shared_ami);
+    assert!((s.shared_nmi - 1.0).abs() < 1e-12, "{}", s.shared_nmi);
+    assert_eq!(s.donor_conditional_entropy, Some(1.0));
+    assert_eq!(by_domain(&s), [Some(1.0), Some(1.0)]);
     let p = &s.patches[0];
     assert_eq!(
         (p.f1, p.precision, p.recall, p.owner_share),
@@ -57,12 +62,9 @@ fn the_truth_itself_scores_perfectly() {
 fn labels_that_follow_the_donor_fail_test_one() {
     let t = truth();
     let s = score(&t, &labels_from(&t, |i| t.donor[i] as i64)).unwrap();
-    assert_eq!(by_domain(&s), [Some(1.0), Some(1.0)]);
-    assert!(
-        (s.donor_dependence - 1.0).abs() < 1e-12,
-        "{}",
-        s.donor_dependence
-    );
+    assert_eq!(by_domain(&s), [Some(0.0), Some(0.0)]);
+    let ce = s.donor_conditional_entropy.unwrap();
+    assert!(ce.abs() < 1e-12, "{ce}");
     assert!(s.shared_ari < 0.1);
 }
 
@@ -82,12 +84,13 @@ fn a_patch_folded_into_a_shared_domain_fails_test_two() {
         }),
     )
     .unwrap();
-    assert_eq!(s.donor_dependence, 0.0);
+    assert_eq!(s.donor_conditional_entropy, Some(1.0));
     // test one looks at shared spots only: the folded patch does not count
     assert!((s.shared_ari - 1.0).abs() < 1e-12, "{}", s.shared_ari);
     let p = &s.patches[0];
-    assert!(p.precision < 0.3, "{}", p.precision);
-    assert!(p.f1 < 0.5, "{}", p.f1);
+    // in the owner, B's label holds its 6 B spots and the 4 patch spots
+    assert!((p.precision - 0.4).abs() < 1e-12, "{}", p.precision);
+    assert!(p.f1 < 0.6, "{}", p.f1);
     assert_eq!(p.recall, 1.0);
 }
 
@@ -105,15 +108,13 @@ fn a_shared_domain_split_by_donor_is_flagged() {
         }),
     )
     .unwrap();
-    assert_eq!(by_domain(&s), [Some(1.0), Some(0.0)]);
-    // A: 10 + 10 spots, labels set by donor; B: 10 + 6 spots, labels not
+    assert_eq!(by_domain(&s), [Some(0.0), Some(1.0)]);
+    // A: 10 + 10 spots, labels set by donor; B: 10 + 6 spots, labels not:
+    // only B's donor entropy is left
     let h = |p: f64| -p * p.ln() - (1.0 - p) * (1.0 - p).ln();
-    let want = 20.0 * h(0.5) / (20.0 * h(0.5) + 16.0 * h(10.0 / 16.0));
-    assert!(
-        (s.donor_dependence - want).abs() < 1e-12,
-        "{} vs {want}",
-        s.donor_dependence
-    );
+    let want = 16.0 * h(10.0 / 16.0) / (20.0 * h(0.5) + 16.0 * h(10.0 / 16.0));
+    let ce = s.donor_conditional_entropy.unwrap();
+    assert!((ce - want).abs() < 1e-12, "{ce} vs {want}");
 }
 
 /// Unlabelled spots (−1, or absent) are left out and counted.
@@ -125,7 +126,7 @@ fn unlabelled_spots_are_left_out() {
     l.pop();
     let s = score(&t, &l).unwrap();
     assert_eq!(s.n_scored, t.cells.len() - 2);
-    assert_eq!(s.donor_dependence, 0.0);
+    assert_eq!(s.donor_conditional_entropy, Some(1.0));
 }
 
 /// A domain that truly sits mostly in one donor is not a split: the truth
@@ -144,16 +145,21 @@ fn a_domain_mostly_in_one_donor_is_not_a_split() {
         n_donors: 2,
     };
     let s = score(&t, &labels_from(&t, |i| t.domain[i] as i64)).unwrap();
-    assert_eq!(s.donor_dependence, 0.0);
+    assert_eq!(s.donor_conditional_entropy, Some(1.0));
     let one = TruthSpots {
         donor: vec![0; t.cells.len()],
         n_donors: 1,
         ..t
     };
     let s = score(&one, &labels_from(&one, |i| one.domain[i] as i64)).unwrap();
-    assert_eq!(s.donor_dependence, 0.0);
-    // in one donor a domain has no donor entropy: no dependence to give
+    // in one donor a domain has no donor entropy: skipped, noted, and
+    // nothing left to pool
+    assert_eq!(s.donor_conditional_entropy, None);
     assert_eq!(by_domain(&s), [None, None]);
+    assert!(s
+        .donor_conditional_entropy_by_domain
+        .iter()
+        .all(|d| d.note.is_some()));
 }
 
 /// A table is read by its `cell` and label columns; empty, NA, -1 and
@@ -184,19 +190,20 @@ fn label_tables_mark_unlabelled_spots() {
 #[test]
 fn the_best_match_is_by_f1_not_overlap() {
     let t = truth();
-    // patch spots are the last 4 cells; 3 go to B's label (1), 1 to its own
+    // patch spots are the last 4 cells; 3 go to the label of A and B (1),
+    // 1 to its own
     let n = t.cells.len();
     let s = score(
         &t,
         &labels_from(&t, |i| match t.domain[i] {
             2 if i == n - 1 => 9,
-            2 => 1,
-            k => k as i64,
+            _ => 1,
         }),
     )
     .unwrap();
     let p = &s.patches[0];
-    // label 9: precision 1, recall 1/4, F1 = 2/5; label 1: 3 of 19, F1 = 6/23
+    // in the owner, label 9: precision 1, recall 1/4, F1 = 2/5; label 1:
+    // 3 of its 19 spots, F1 = 6/23
     assert!((p.f1 - 0.4).abs() < 1e-12, "{}", p.f1);
     assert_eq!(p.precision, 1.0);
 }
@@ -273,11 +280,14 @@ fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
         n_scored: 4,
         n_unmatched: 0,
         shared_ari: 1.0,
-        donor_dependence: 0.0,
-        donor_dependence_by_domain: Vec::new(),
+        shared_ami: 1.0,
+        shared_nmi: 1.0,
+        donor_conditional_entropy: Some(1.0),
+        donor_conditional_entropy_by_domain: Vec::new(),
         patches: vec![PatchScore {
             domain: "D1_specific_domain_1".into(),
             owner: "D1".into(),
+            within: "owner_donor",
             f1: 1.0,
             precision: 1.0,
             recall: 1.0,
@@ -288,8 +298,55 @@ fn the_score_table_keeps_its_columns_past_a_long_patch_name() {
     let rows = table_rows("run", &s);
     let row = spans(&rows[0]);
     let show = format!("{}\n{}", table_header(), rows[0]);
-    assert_eq!(header[4].0, row[4].0, "patch\n{show}");
-    for f in 5..8 {
+    assert_eq!(header[6].0, row[6].0, "patch\n{show}");
+    for f in 7..10 {
         assert_eq!(header[f].1, row[f].1, "field {f}\n{show}");
     }
+}
+
+/// A label that covers the patch and spots of another donor: over every
+/// spot its precision is 4 of 14 (the owner share), within the owner it
+/// holds the patch alone, so precision, recall and F1 are 1.
+#[test]
+fn the_patch_is_scored_within_its_owner() {
+    let t = truth();
+    // label 5: the patch and donor 0's B spots
+    let s = score(
+        &t,
+        &labels_from(&t, |i| match (t.domain[i], t.donor[i]) {
+            (2, _) | (1, 0) => 5,
+            (k, _) => k as i64,
+        }),
+    )
+    .unwrap();
+    let p = &s.patches[0];
+    assert_eq!(p.within, "owner_donor");
+    assert_eq!((p.f1, p.precision, p.recall), (1.0, 1.0, 1.0));
+    // over every spot, as before the restriction: 4 of the label's 14
+    assert!(
+        (p.owner_share - 4.0 / 14.0).abs() < 1e-12,
+        "{}",
+        p.owner_share
+    );
+}
+
+/// NMI and AMI on a small table, against values computed by hand: the MI
+/// from the table, and the expected MI by averaging the MI over all 720
+/// orderings of the second labelling (the hypergeometric model by brute
+/// force). U = [0,0,0,1,1,2], V = [0,0,1,1,2,2]: MI = 0.549306144334055,
+/// E[MI] = 0.503096332296725, H(U) = 1.011404264707352, H(V) = ln 3.
+#[test]
+fn nmi_and_ami_match_a_hand_computed_case() {
+    use crate::sim_eval::score::nmi_ami;
+    // rows U, columns V
+    let n = vec![vec![2, 1, 0], vec![0, 1, 1], vec![0, 0, 1]];
+    let (nmi, ami) = nmi_ami(&n);
+    assert!((nmi - 0.520_665_246_398_481_7).abs() < 1e-12, "{nmi}");
+    assert!((ami - 0.083_726_783_786_712_21).abs() < 1e-12, "{ami}");
+    // the same partition scores 1, and AMI is 0 on independent labels
+    let (nmi, ami) = nmi_ami(&[vec![3, 0], vec![0, 2]]);
+    assert!((nmi - 1.0).abs() < 1e-12 && (ami - 1.0).abs() < 1e-12);
+    let (nmi, ami) = nmi_ami(&[vec![1, 1], vec![1, 1]]);
+    assert!(nmi.abs() < 1e-12, "{nmi}");
+    assert!(ami < 0.0, "below chance on a balanced 2 x 2: {ami}");
 }

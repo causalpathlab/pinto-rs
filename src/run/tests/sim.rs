@@ -29,11 +29,11 @@ fn the_sim_tools_are_listed_with_their_schemas() {
             &["scenario", "set", "coords", "coord_column_names", "out"][..],
         ),
         (
-            "run_sim_score",
+            "run_sim_score_by_set",
             &["truth", "labels", "level", "label_column"][..],
         ),
         (
-            "run_sim_pairs",
+            "run_sim_score_by_pair",
             &["truth", "vectors", "level", "pairs", "seed", "knn"][..],
         ),
         (
@@ -221,9 +221,11 @@ fn scoring_the_truth_itself_is_perfect() {
     };
     let s = &v["scores"][0]["score"];
     assert_eq!(s["shared_ari"], 1.0, "{v}");
-    assert_eq!(s["donor_dependence"], 0.0, "{v}");
-    for d in s["donor_dependence_by_domain"].as_array().unwrap() {
-        assert_eq!(d["dependence"], 0.0, "{v}");
+    assert_eq!(s["shared_ami"], 1.0, "{v}");
+    assert_eq!(s["shared_nmi"], 1.0, "{v}");
+    assert_eq!(s["donor_conditional_entropy"], 1.0, "{v}");
+    for d in s["donor_conditional_entropy_by_domain"].as_array().unwrap() {
+        assert_eq!(d["donor_conditional_entropy"], 1.0, "{v}");
     }
     assert_eq!(s["n_scored"], s["n_spots"], "{v}");
     assert_eq!(s["n_unmatched"], 0, "{v}");
@@ -310,7 +312,11 @@ fn pair_scoring_the_truth_itself_is_perfect() {
         (&json!(2000), &json!(1))
     );
     let s = &scored["score"];
-    for set in ["cross_donor", "within_donor", "spatial"] {
+    for set in [
+        "shared_domain_across_donors",
+        "shared_domain_within_donor",
+        "neighbour_same_domain",
+    ] {
         assert_eq!(s[set]["auroc"], 1.0, "{set}: {v}");
         assert_eq!(s[set]["auprc"], 1.0, "{set}: {v}");
     }
@@ -319,7 +325,11 @@ fn pair_scoring_the_truth_itself_is_perfect() {
         !patches.is_empty(),
         "the scenario plants a domain only one donor has"
     );
-    assert_eq!(patches[0]["pairs"]["auroc"], 1.0, "{v}");
+    assert_eq!(patches[0]["donor_domain_vs_own_donor"]["auroc"], 1.0, "{v}");
+    assert_eq!(
+        patches[0]["donor_domain_vs_own_donor"]["negatives"], "same_donor_outside_domain",
+        "{v}"
+    );
     assert_eq!(text.lines().count(), 1 + patches.len(), "{text}");
     assert_eq!(v["failed"][0]["vectors"], "nowhere.tsv", "{v}");
     let bad: SimPairsToolArgs = args(json!({"truth": sim, "vectors": ["nowhere.tsv"]}));

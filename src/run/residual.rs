@@ -189,7 +189,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
          donor effect and cannot correct a stage-1 run already split by donor (as happens \
          once the donor effect is about as large as the cell-type effect): before reading a \
          residual community confined to one donor as biology, check the stage-1 \
-         communities' donor make-up (on a simulation, run_sim_pairs' donor_gap), and tell \
+         communities' donor make-up (on a simulation, run_sim_score_by_pair' donor_gap), and tell \
          the user. The run is checked before it starts; it runs as a background job unless \
          asked, and never over an existing file.",
         json!({

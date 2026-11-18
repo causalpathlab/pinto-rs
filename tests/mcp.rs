@@ -182,8 +182,8 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_lra_simulate",
             "run_residual",
             "run_simulate",
-            "run_sim_score",
-            "run_sim_pairs",
+            "run_sim_score_by_set",
+            "run_sim_score_by_pair",
             "run_sim_baseline",
             "view_open",
             "view_map",
@@ -853,25 +853,25 @@ fn an_agent_simulates_looks_and_scores() {
     let names: Vec<&Value> = sections.iter().map(|s| &s["section"]).collect();
     assert_eq!(batches, names, "one batch per section: {opened}");
 
-    // The reply's truth is what run_sim_score takes, as is the out folder.
+    // The reply's truth is what run_sim_score_by_set takes, as is the out folder.
     for given in [truth.as_str(), "sim"] {
         let (scored, _) = c.ok(
-            "run_sim_score",
+            "run_sim_score_by_set",
             json!({"truth": given, "labels": [truth], "level": "domain"}),
         );
         let s = &scored["scores"][0]["score"];
         assert_eq!(s["shared_ari"], 1.0, "{scored}");
-        assert_eq!(s["donor_dependence"], 0.0, "{scored}");
+        assert_eq!(s["donor_conditional_entropy"], 1.0, "{scored}");
         assert_eq!(s["patches"][0]["f1"], 1.0, "{scored}");
     }
-    // So it is for run_sim_pairs, the truth run's domains as the vectors.
+    // So it is for run_sim_score_by_pair, the truth run's domains as the vectors.
     let (paired, _) = c.ok(
-        "run_sim_pairs",
+        "run_sim_score_by_pair",
         json!({"truth": truth, "vectors": [truth], "level": "domain", "pairs": 1000}),
     );
     let s = &paired["scores"][0]["score"];
-    assert_eq!(s["cross_donor"]["auroc"], 1.0, "{paired}");
-    assert_eq!(s["spatial"]["auroc"], 1.0, "{paired}");
+    assert_eq!(s["shared_domain_across_donors"]["auroc"], 1.0, "{paired}");
+    assert_eq!(s["neighbour_same_domain"]["auroc"], 1.0, "{paired}");
     // A baseline's bad setting, or a simulation it cannot read, is refused
     // before any job.
     let msg = c.fails("run_sim_baseline", json!({"truth": truth, "n_clusters": 0}));
@@ -882,24 +882,27 @@ fn an_agent_simulates_looks_and_scores() {
     // A table scores like a run: the truth's own spots by their domain.
     let spots = Path::new(&truth).with_file_name("spots.parquet");
     let (scored, _) = c.ok(
-        "run_sim_score",
+        "run_sim_score_by_set",
         json!({"truth": truth, "labels": [spots], "label_column": "domain"}),
     );
     assert_eq!(scored["scores"][0]["score"]["shared_ari"], 1.0, "{scored}");
 
     // A labelling that cannot be scored is named; the others are scored.
     let (scored, _) = c.ok(
-        "run_sim_score",
+        "run_sim_score_by_set",
         json!({"truth": truth, "labels": [truth, "nowhere.tsv"], "level": "domain"}),
     );
     assert_eq!(scored["scores"].as_array().unwrap().len(), 1, "{scored}");
     assert_eq!(scored["failed"][0]["labels"], "nowhere.tsv", "{scored}");
     let msg = c.fails(
-        "run_sim_score",
+        "run_sim_score_by_set",
         json!({"truth": truth, "labels": ["nowhere.tsv"]}),
     );
     assert!(msg.contains("nowhere.tsv"), "{msg}");
-    let msg = c.fails("run_sim_score", json!({"truth": " ", "labels": [truth]}));
+    let msg = c.fails(
+        "run_sim_score_by_set",
+        json!({"truth": " ", "labels": [truth]}),
+    );
     assert!(msg.contains("give run_simulate's truth"), "{msg}");
 
     // A simulation that fails once launched says so through its job, or at
