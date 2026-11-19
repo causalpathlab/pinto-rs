@@ -666,6 +666,11 @@ fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>
     let (done, from) = match cli.map(|c| c.commands) {
         Ok(crate::Commands::Lra(a)) => match a.simulate {
             Some(crate::LraSub::Simulate(s)) => (lra_simulate_path(out).into(), s.input.from),
+            Some(crate::LraSub::Merge(_)) => (
+                lra_outputs(crate::lr_activity::args::LraMethod::ContactEffect, out, &[])
+                    .swap_remove(0),
+                None,
+            ),
             None => (
                 lra_outputs(a.args.method, out, &a.args.only).swap_remove(0),
                 a.args.input.from,

@@ -49,6 +49,7 @@ impl Handler for Tools {
             "run_region" => region(parse(args)?, cx),
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
+            "run_lra_merge" => super::lra::lra_merge(&self.cli, parse(args)?, cx),
             "run_residual" => super::residual::residual(&self.cli, parse(args)?, cx),
             "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
             "run_sim_score_by_set" => super::sim::sim_score(parse(args)?),
@@ -821,6 +822,7 @@ fn text(v: &Value) -> String {
 
 fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
     let (lra_cmd, sim_cmd) = (subcommand(cli, "lra"), subcommand(cli, "lra simulate"));
+    let merge_cmd = subcommand(cli, "lra merge");
     let lra = |id: &str, schema: Value| flag_arg(lra_cmd, id, schema);
     let sim = |id: &str, schema: Value| flag_arg(sim_cmd, id, schema);
     let methods = json!({
@@ -963,7 +965,10 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              and records the table in the run's manifest (slot lra.table); with \
              marginal_baselines also {out}.lra.celltype.parquet (slot lra.celltype); with only, \
              a few pairs to {out}.lra.only-<tag>.parquet (and .curve.parquet, and \
-             .celltype.parquet with marginal_baselines; slot lra.subsets). The co-expression methods \
+             .celltype.parquet with marginal_baselines; slot lra.subsets); with shard I/N, only \
+             shard I of the pairs to {out}.lra.shard-I-of-N.cbor (no table, nothing in the \
+             manifest), each shard its own job, then run_lra_merge writes the tables. The \
+             co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
              on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the pairs \
              whose effect survived the controls (percent change with its 95% CI, q) and the files. Called again with the \
@@ -980,6 +985,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "targets": long_flag_arg(lra_cmd, "targets", json!({"type": "array", "items": {"type": "string"}})),
                     "species": lra("species", json!({"enum": choices::<ReferenceSpecies>()})),
                     "only": long_flag_arg(lra_cmd, "only", json!({"type": "array", "items": {"type": "string"}})),
+                    "shard": long_flag_arg(lra_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
                     "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
@@ -1006,7 +1012,9 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              their labels and seeds, the reference), recording nothing in the manifest; with \
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \
              as a background job unless asked; called again with the same run and out once \
-             done, it reads the table instead of running.",
+             done, it reads the table instead of running. With shard I/N it runs only shard I \
+             of the runs, each shard its own job (a Slurm array task), and run_lra_merge on \
+             the N shard files writes the call's tables.",
             with_lra_input(cli, "lra simulate", json!({
                 "type": "object",
                 "properties": {
@@ -1022,10 +1030,36 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
                     "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
+                    "shard": long_flag_arg(sim_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
                     "background": background(),
                 },
                 "additionalProperties": false,
             })),
+        ),
+        ToolSpec::new(
+            "run_lra_merge",
+            "Put the shards of one run_lra run with shard together (pinto lra merge): reads every \
+             shard file ({out}.lra.shard-I-of-N.cbor, in any order), checks they are the run's N \
+             shards (the same settings and pairs, each shard once, every pair once), and writes \
+             the tables a run_lra without shard writes, {out}.lra.parquet and \
+             {out}.lra.curve.parquet (and {out}.lra.celltype.parquet when the shards ran \
+             marginal_baselines), the q-values and verdicts over every pair, recorded in the \
+             run's manifest (else {out}.pinto.json). Runs as a background job unless asked; the \
+             reply when done is run_lra's: the verdict counts, the pairs whose effect survived \
+             the controls and the files. Called again with the same out once done, it reads the \
+             tables instead of running. Never written over.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "shards": flag_arg(merge_cmd, "shards", json!({"type": "array", "items": {"type": "string"}, "minItems": 1})),
+                    "out": flag_arg(merge_cmd, "out", json!({"type": "string"})),
+                    "max_threads": max_threads_arg(cli),
+                    "atomic_outputs": atomic_outputs_arg(cli),
+                    "background": background(),
+                },
+                "required": ["shards", "out"],
+                "additionalProperties": false,
+            }),
         ),
     ]
 }

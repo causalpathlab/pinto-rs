@@ -171,7 +171,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..18],
+        names[..19],
         [
             "run_methods",
             "run_fit",
@@ -180,6 +180,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_compare",
             "run_lra",
             "run_lra_simulate",
+            "run_lra_merge",
             "run_residual",
             "run_simulate",
             "run_sim_score_by_set",

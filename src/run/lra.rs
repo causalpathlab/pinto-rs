@@ -1,8 +1,9 @@
-//! `run_lra` and `run_lra_simulate` for `pinto mcp`: `pinto lra` and
-//! `pinto lra simulate` on a run or on data files, set up flag for flag as the command line
-//! takes them, checked as pinto parses them, and run as a child pinto in
-//! the project's records (a background job unless asked otherwise). The
-//! reply is read from the tables the child wrote.
+//! `run_lra`, `run_lra_simulate` and `run_lra_merge` for `pinto mcp`:
+//! `pinto lra` and `pinto lra simulate` on a run or on data files, and
+//! `pinto lra merge` on a sharded run's shard files, set up flag for flag
+//! as the command line takes them, checked as pinto parses them, and run as
+//! a child pinto in the project's records (a background job unless asked
+//! otherwise). The reply is read from the tables the child wrote.
 
 use super::mcp::{
     as_run, checked, in_background, out_or_free, out_or_free_by, rooted, shared_flags, spawn,
@@ -14,6 +15,7 @@ use crate::lr_activity::ligand_effect::output::{
     self, compare_runs, lra_simulate_path, percent_text, rank_pooled, read_planted_region,
     read_pooled_effects, read_sim_runs,
 };
+use crate::lr_activity::ligand_effect::shard::{self, Shard};
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
@@ -108,6 +110,9 @@ lra_tool_args!(LraToolArgs {
     /// `--only`: the pairs to estimate, `LIGAND:RECEPTOR` or a bare ligand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
+    /// `--shard`: shard `I` (0-based) of `N` of the pairs, `I/N`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<String>,
 } {
     /// `--marginal-baselines`, and `--marginal-permutations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -122,10 +127,21 @@ impl LraToolArgs {
         self.only.iter().map(|s| s.as_str().into()).collect()
     }
 
-    /// What `pinto lra` writes for these arguments: [`lra_outputs`], and
-    /// with `marginal_baselines` the per-type-pair table beside the
-    /// contact-effect table.
+    /// `shard` as `pinto lra` reads it.
+    fn shard(&self) -> anyhow::Result<Option<Shard>> {
+        self.shard
+            .as_deref()
+            .map(|s| s.parse().map_err(|e| anyhow::anyhow!("shard {e}")))
+            .transpose()
+    }
+
+    /// What `pinto lra` writes for these arguments: with `shard`, its shard
+    /// file alone; else [`lra_outputs`], and with `marginal_baselines` the
+    /// per-type-pair table beside the contact-effect table.
     fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
+        if let Ok(Some(s)) = self.shard() {
+            return vec![shard::path(out, s).into()];
+        }
         let mut made = lra_outputs(method, out, &self.only());
         if self.marginal_baselines && method == LraMethod::ContactEffect {
             let table = made[0].to_string_lossy().into_owned();
@@ -204,6 +220,9 @@ lra_tool_args!(LraSimulateToolArgs {
     pub pairs: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub null_pairs: Option<usize>,
+    /// `--shard`: shard `I` (0-based) of `N` of the runs, `I/N`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<String>,
 });
 
 impl LraSimulateToolArgs {
@@ -212,9 +231,21 @@ impl LraSimulateToolArgs {
         crate::lr_activity::args::selects_single(self.one, &self.set, self.pairs, self.null_pairs)
     }
 
-    /// What the run writes under `out`: the table, and for a single scenario
-    /// the sidecar that marks the call complete.
+    /// `shard` as `pinto lra simulate` reads it.
+    fn shard(&self) -> anyhow::Result<Option<Shard>> {
+        self.shard
+            .as_deref()
+            .map(|s| s.parse().map_err(|e| anyhow::anyhow!("shard {e}")))
+            .transpose()
+    }
+
+    /// What the run writes under `out`: with `shard`, its shard file; else
+    /// the table, and for a single scenario the sidecar that marks the call
+    /// complete.
     pub(super) fn outputs(&self, out: &str) -> Vec<PathBuf> {
+        if let Ok(Some(s)) = self.shard() {
+            return vec![shard::sim_path(out, s).into()];
+        }
         let mut made = vec![PathBuf::from(lra_simulate_path(out))];
         if self.single() {
             made.push(output::lra_simulate_sidecar_path(out).into());
@@ -449,6 +480,9 @@ pub(super) fn lra_argv(
         ..a.asked_options()
     };
     let mut argv = options.argv(run, Some(out), method, &a.only);
+    if let Some(s) = &a.shard {
+        argv.push(flag_value("--shard", s));
+    }
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {
         argv.push(flag_value("--n-permutations", n));
@@ -512,6 +546,9 @@ pub(super) fn lra_simulate_argv(
     argv.extend(a.set.iter().map(|s| format!("--set={s}")));
     argv.extend(a.pairs.map(|n| format!("--pairs={n}")));
     argv.extend(a.null_pairs.map(|n| format!("--null-pairs={n}")));
+    if let Some(s) = &a.shard {
+        argv.push(flag_value("--shard", s));
+    }
     argv
 }
 
@@ -661,22 +698,42 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         a.marginal_baselines || a.marginal_permutations.is_none(),
         "marginal_permutations applies with marginal_baselines, the tests it counts"
     );
+    let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
+    anyhow::ensure!(
+        shard.is_none() || out.as_deref().is_some_and(|o| !o.is_empty()),
+        "shard needs out: every shard of a run writes under the one prefix the merge reads"
+    );
     // A finished `out` is read, not run again, once the call is checked as
-    // it would be run.
+    // it would be run: its tables, or a shard's file and the merge to follow.
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
         checked_lra(cli, &argv)?;
-        let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
-        if let Some(reply) = read_finished(
-            cx,
-            &made,
-            || made_as_asked(&a, method, &manifest, &made),
-            |checked| lra_reply(&a, method, checked.then_some(&argv[..]), run, &made),
-        ) {
-            return reply;
+        if let Some(s) = shard {
+            if finished(cx, &made) {
+                let mut reply = shard_reply(s, &argv, &o, &made);
+                push_note(
+                    &mut reply,
+                    &format!(
+                        "read back: the shard file is already there, not checked against \
+                         these arguments; nothing was run. {}",
+                        shard_note(s, &o)
+                    ),
+                );
+                return Ok(reply);
+            }
+        } else {
+            let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
+            if let Some(reply) = read_finished(
+                cx,
+                &made,
+                || made_as_asked(&a, method, &manifest, &made),
+                |checked| lra_reply(&a, method, checked.then_some(&argv[..]), run, &made),
+            ) {
+                return reply;
+            }
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
@@ -691,10 +748,64 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         again["run"] = run.into();
     }
     again["out"] = out.clone().into();
-    if let Some(job) = start(cx, &argv, &made, &summary, a.background, "run_lra", &again)? {
+    if let Some(mut job) = start(cx, &argv, &made, &summary, a.background, "run_lra", &again)? {
+        if let Some(s) = shard {
+            job["note"] = format!(
+                "job_wait (id {}) or job_status until it ends. {}",
+                job["job"].as_str().unwrap_or_default(),
+                shard_note(s, &out)
+            )
+            .into();
+        }
         return Ok(vec![Content::Json(job)]);
     }
+    if let Some(s) = shard {
+        return Ok(shard_reply(s, &argv, &out, &made));
+    }
     lra_reply(&a, method, Some(&argv), run, &made)
+}
+
+/// The `run_lra_merge` call putting together the `N` shards of `shard`'s
+/// run, each written under `out`.
+fn merge_args(shard: Shard, out: &str) -> Value {
+    let shards: Vec<String> = (0..shard.count)
+        .map(|index| shard::path(out, Shard { index, ..shard }))
+        .collect();
+    json!({ "shards": shards, "out": out })
+}
+
+/// What follows a shard: the other shards, each its own job, then
+/// `run_lra_merge`.
+fn shard_note(shard: Shard, out: &str) -> String {
+    format!(
+        "A shard writes no table and records nothing in the manifest. Run every shard \
+         I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
+         array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
+         writes the tables of the whole run, its q-values over every pair.",
+        merge_args(shard, out),
+        n = shard.count,
+        last = shard.count - 1,
+    )
+}
+
+/// The reply to a finished `pinto lra --shard`: the shard file it wrote and
+/// the `run_lra_merge` call that puts the shards together.
+fn shard_reply(shard: Shard, argv: &[String], out: &str, made: &[PathBuf]) -> Vec<Content> {
+    let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
+    let reply = json!({
+        "shard": shard.to_string(),
+        "command": script::pinto_line(argv),
+        "written": written,
+        "note": shard_note(shard, out),
+    });
+    vec![
+        Content::Json(reply),
+        Content::Next(vec![Next::new(
+            "run_lra_merge",
+            merge_args(shard, out),
+            "once every shard is done: the tables of the whole run",
+        )]),
+    ]
 }
 
 /// Add `note` to the reply's JSON piece.
@@ -717,9 +828,7 @@ fn lra_reply(
 ) -> anyhow::Result<Vec<Content>> {
     let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
     let mut reply = if method == LraMethod::ContactEffect {
-        let mut r = effects_summary(&read_pooled_effects(&made[0].to_string_lossy())?);
-        r["reading"] =
-            "one row per pair and section (`all` pooled); verdict_note says why in words".into();
+        let mut r = table_summary(&made[0])?;
         if !a.only.is_empty() {
             r["q_scope"] = "q corrected within this --only subset, not over every pair; \
                             recorded under lra.subsets, the full table unchanged"
@@ -746,6 +855,15 @@ fn lra_reply(
         )]));
     }
     Ok(pieces)
+}
+
+/// A contact-effect table's pooled pairs in a few lines
+/// ([`effects_summary`]), and how to read it.
+fn table_summary(table: &Path) -> anyhow::Result<Value> {
+    let mut r = effects_summary(&read_pooled_effects(&table.to_string_lossy())?);
+    r["reading"] =
+        "one row per pair and section (`all` pooled); verdict_note says why in words".into();
+    Ok(r)
 }
 
 /// The pooled pairs in a few lines: how many, each verdict's count, and the
@@ -785,6 +903,133 @@ fn share(x: f64) -> Value {
     ((x * 100.0).round() / 100.0).into()
 }
 
+// * run_lra_merge
+
+/// `run_lra_merge`'s arguments: the shard files of one `run_lra` run with
+/// `shard`, and where the tables go.
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LraMergeToolArgs {
+    pub shards: Vec<String>,
+    pub out: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_threads: Option<usize>,
+    #[serde(default, skip_serializing)]
+    pub atomic_outputs: Option<bool>,
+    #[serde(default = "in_background", skip_serializing)]
+    pub background: bool,
+}
+
+/// `pinto lra merge` on `a`'s shard files, writing under `out`.
+pub(super) fn lra_merge_argv(a: &LraMergeToolArgs, out: &str) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["lra".into(), "merge".into()];
+    argv.extend(rooted(&a.shards));
+    argv.push(flag_value("--out", out));
+    argv.extend(shared_flags(a.max_threads, a.atomic_outputs));
+    argv
+}
+
+/// `run_lra_merge`.
+pub(super) fn lra_merge(
+    cli: &clap::Command,
+    a: LraMergeToolArgs,
+    cx: &Call,
+) -> anyhow::Result<Vec<Content>> {
+    anyhow::ensure!(
+        !a.shards.is_empty(),
+        "give shards: every shard file of one run_lra run with shard"
+    );
+    if let Some(gone) = a.shards.iter().find(|s| !Path::new(s).is_file()) {
+        anyhow::bail!("shard {gone} not found: give the files run_lra with shard wrote");
+    }
+    let out = named_out(Some(&a.out))
+        .filter(|o| !o.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("give out, the prefix of the merged tables"))?;
+    let out = shown_path(Path::new(&out));
+    let (run_key, kind) = shard::peek(&a.shards[0])?;
+    let simulate = matches!(kind, shard::Kind::Simulate { .. });
+    // what a merge of this kind writes: the per-type-pair table too when the
+    // shards carry it, a single scenario's sidecar
+    let outputs = |o: &str| match kind {
+        shard::Kind::Lra { celltype } => {
+            let mut made = lra_outputs(LraMethod::ContactEffect, o, &[]);
+            if celltype {
+                let table = made[0].to_string_lossy().into_owned();
+                made.push(output::celltype_beside(&table).into());
+            }
+            made
+        }
+        shard::Kind::Simulate { one } => {
+            let mut made = vec![PathBuf::from(lra_simulate_path(o))];
+            if one {
+                made.push(output::lra_simulate_sidecar_path(o).into());
+            }
+            made
+        }
+    };
+    let made = outputs(&out);
+    let argv = lra_merge_argv(&a, &out);
+    checked(cli, &argv)?;
+    // Finished tables are read, not merged again, when these shards made them.
+    if finished(cx, &made) {
+        let record = output::merge_record_path(&out);
+        let made_by = std::fs::read_to_string(&record)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["run_key"].as_str().map(str::to_string));
+        anyhow::ensure!(
+            made_by.as_deref() == Some(run_key.as_str()),
+            "{} is there but not a merge of these shards ({} says otherwise, or is \
+             missing); {NOT_WRITTEN_OVER}",
+            shown_path(&made[0]),
+            record
+        );
+        let reply = if simulate {
+            simulate_reply(None, &made)
+        } else {
+            merge_reply(None, &made)
+        };
+        let mut reply = reply.map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
+        push_note(
+            &mut reply,
+            "read from the tables these shards' merge left; nothing was run",
+        );
+        return Ok(reply);
+    }
+    let (out, made) = out_or_free(cx, Some(&out), "lra", |o| Ok(outputs(o)))?;
+    let summary = format!("lra merge of {} shards into {out}", a.shards.len());
+    let mut again = serde_json::to_value(&a)?;
+    again["out"] = out.clone().into();
+    if let Some(job) = start(
+        cx,
+        &argv,
+        &made,
+        &summary,
+        a.background,
+        "run_lra_merge",
+        &again,
+    )? {
+        return Ok(vec![Content::Json(job)]);
+    }
+    if simulate {
+        return simulate_reply(Some(&argv), &made);
+    }
+    merge_reply(Some(&argv), &made)
+}
+
+/// The reply to a finished `pinto lra merge`: a full run's ([`table_summary`]),
+/// with the command when known and the files, the per-type-pair table among
+/// them when the shards carried the baselines.
+fn merge_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Result<Vec<Content>> {
+    let mut reply = table_summary(&made[0])?;
+    if let Some(argv) = command {
+        reply["command"] = script::pinto_line(argv).into();
+    }
+    let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
+    reply["written"] = written.into();
+    Ok(vec![Content::Json(reply)])
+}
+
 // * run_lra_simulate
 
 /// `run_lra_simulate`.
@@ -796,8 +1041,17 @@ pub(super) fn lra_simulate(
     let input = a.input();
     let run = input.run()?;
     let run = run.as_deref();
+    let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
-    if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
+    anyhow::ensure!(
+        shard.is_none() || out.as_deref().is_some_and(|o| !o.is_empty()),
+        "shard needs out: every shard of a call writes under the one prefix the merge reads"
+    );
+    if let Some(o) = out
+        .as_deref()
+        .filter(|o| !o.is_empty())
+        .filter(|_| shard.is_none())
+    {
         let o = shown_path(Path::new(o));
         let made = a.outputs(&o);
         checked(cli, &lra_simulate_argv(&a, run, &o))?;
@@ -846,7 +1100,39 @@ pub(super) fn lra_simulate(
     )? {
         return Ok(vec![Content::Json(job)]);
     }
+    if let Some(s) = shard {
+        return Ok(sim_shard_reply(s, &argv, &out, &made));
+    }
     simulate_reply(Some(&argv), &made)
+}
+
+/// The reply to a finished `pinto lra simulate --shard`: the shard file and
+/// the `run_lra_merge` call that puts the shards together.
+fn sim_shard_reply(shard: Shard, argv: &[String], out: &str, made: &[PathBuf]) -> Vec<Content> {
+    let shards: Vec<String> = (0..shard.count)
+        .map(|index| shard::sim_path(out, Shard { index, ..shard }))
+        .collect();
+    let merge = json!({ "shards": shards, "out": out });
+    let reply = json!({
+        "shard": shard.to_string(),
+        "command": script::pinto_line(argv),
+        "written": made.iter().map(|p| shown_path(p)).collect::<Vec<_>>(),
+        "note": format!(
+            "A shard writes no table. Run every shard I/{n} (I from 0 to {last}) with the \
+             same arguments, each as its own job (a Slurm array task); once all {n} are done, \
+             run_lra_merge {merge} writes the call's tables.",
+            n = shard.count,
+            last = shard.count - 1,
+        ),
+    });
+    vec![
+        Content::Json(reply),
+        Content::Next(vec![Next::new(
+            "run_lra_merge",
+            merge,
+            "once every shard is done: the call's tables",
+        )]),
+    ]
 }
 
 /// The reply to a finished `pinto lra simulate`: the comparison table, and

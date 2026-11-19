@@ -167,11 +167,13 @@ impl Fixture {
             settings: Settings {
                 out,
                 manifest,
+                from_run: true,
                 lr_pairs: Some(&self.pairs_file),
                 targets: &self.targets,
                 species: ReferenceSpecies::Human,
                 seed,
                 only: &[],
+                shard: None,
                 cell_types: None,
                 region: None,
                 plant_region: None,
@@ -232,8 +234,12 @@ fn the_smallest_grid_reproduces_bit_for_bit() {
             .num_threads(threads)
             .build()
             .unwrap();
-        pool.install(|| with_test_root(&f.reference, || run_grid(&f.inputs(&out, &m, 42), grid)))
-            .unwrap();
+        pool.install(|| {
+            with_test_root(&f.reference, || {
+                run_grid(&f.inputs(&out, &m, 42), grid, None)
+            })
+        })
+        .unwrap();
         read_table_columns(&lra_simulate_path(&out), &["ligand"], &cols).unwrap()
     };
     let (ligands, one) = run("one", 1);
@@ -262,6 +268,19 @@ fn single_call(
     pairs: (usize, usize),
     threads: usize,
 ) -> anyhow::Result<String> {
+    single_call_shard(f, (dir, m), name, sets, pairs, threads, None)
+}
+
+/// [`single_call`] as shard `shard` of the call.
+fn single_call_shard(
+    f: &Fixture,
+    (dir, m): (&Path, &Path),
+    name: &str,
+    sets: &[&str],
+    pairs: (usize, usize),
+    threads: usize,
+    shard: Option<crate::lr_activity::ligand_effect::shard::Shard>,
+) -> anyhow::Result<String> {
     let out = dir.join(name).to_string_lossy().into_owned();
     let sets: Vec<String> = sets.iter().map(|s| s.to_string()).collect();
     let one = SingleScenario::new(&sets, pairs.0, pairs.1)?;
@@ -271,7 +290,7 @@ fn single_call(
         .unwrap();
     pool.install(|| {
         with_test_root(&f.reference, || {
-            run_simulate_one(&f.inputs(&out, m, 42), &one)
+            run_simulate_one(&f.inputs(&out, m, 42), &one, shard)
         })
     })?;
     Ok(out)
@@ -900,4 +919,88 @@ fn scores_are_written_as_doubles() {
         Type::FLOAT,
         "the grid's columns keep their type"
     );
+}
+
+// * Shards
+
+/// `--shard I/N` on every shard of a call, then `pinto lra merge`: the
+/// call's table, every scored column bit for bit, for the grid and for one
+/// scenario alike.
+#[test]
+fn simulate_shards_merged_give_the_whole_call() {
+    use crate::lr_activity::ligand_effect::pipeline::merge;
+    use crate::lr_activity::ligand_effect::shard::{sim_path, Shard};
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(dir.path());
+    let m = manifest(dir.path());
+    let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let count = 2;
+
+    // the grid: two scenarios of one pair, one per shard
+    let grid = || GridOpts {
+        reps: 1,
+        pairs: 1,
+        confounders: vec![],
+        marker: false,
+        heterogeneous: false,
+        ..GridOpts::default()
+    };
+    let cols: Vec<&str> = SCORED
+        .iter()
+        .copied()
+        .filter(|&c| c != "effect_dr_p")
+        .collect();
+    let grid_call = |out: &str, shard: Option<Shard>| {
+        with_test_root(&f.reference, || {
+            run_grid(&f.inputs(out, &m, 42), grid(), shard)
+        })
+        .unwrap()
+    };
+    grid_call(&at("grid"), None);
+    let files: Vec<String> = (0..count)
+        .map(|index| {
+            let s = Shard { index, count };
+            let out = at(&format!("gs{index}/o"));
+            grid_call(&out, Some(s));
+            assert!(
+                !Path::new(&lra_simulate_path(&out)).exists(),
+                "a shard writes no table"
+            );
+            sim_path(&out, s)
+        })
+        .collect();
+    merge(&files, &at("grid_merged")).unwrap();
+    let (_, whole) =
+        read_table_columns(&lra_simulate_path(&at("grid")), &["ligand"], &cols).unwrap();
+    let (_, merged) =
+        read_table_columns(&lra_simulate_path(&at("grid_merged")), &["ligand"], &cols).unwrap();
+    for ((col, a), b) in cols.iter().zip(&whole).zip(&merged) {
+        assert_eq!(bits(a), bits(b), "grid {col}");
+    }
+
+    // one scenario on two planted and two null pairs
+    let sets = with_effect("effect_pve=0.5");
+    let whole = single_call(&f, (dir.path(), &m), "one", &sets, (2, 2), 1).unwrap();
+    let files: Vec<String> = (0..count)
+        .map(|index| {
+            let s = Shard { index, count };
+            let name = format!("os{index}");
+            let out =
+                single_call_shard(&f, (dir.path(), &m), &name, &sets, (2, 2), 1, Some(s)).unwrap();
+            sim_path(&out, s)
+        })
+        .collect();
+    merge(&files, &at("one_merged")).unwrap();
+    assert_eq!(
+        std::fs::read(lra_simulate_path(&whole)).unwrap(),
+        std::fs::read(lra_simulate_path(&at("one_merged"))).unwrap(),
+        "one scenario: the same table, byte for byte"
+    );
+    // shards of the grid and of one scenario never merge together
+    let mixed = [
+        files[0].clone(),
+        sim_path(&at("gs1/o"), Shard { index: 1, count }),
+    ];
+    assert!(merge(&mixed, &at("mixed")).is_err());
 }

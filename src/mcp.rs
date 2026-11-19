@@ -80,7 +80,10 @@ Ligand-receptor analysis: `run_lra` asks, per ligand-receptor pair, whether \
 receivers touching ligand-carrying neighbours change their response \
 program; `run_lra_simulate` plants effects of known size on the same \
 tissue and reports power and type I error. Run lra simulate to check power \
-and calibration before trusting lra on a new tissue. `view_lra` lists a \
+and calibration before trusting lra on a new tissue. A large tissue can run \
+in shards: `run_lra` with `shard` I/N for each I, each shard a separate job \
+(e.g. a Slurm array task), then `run_lra_merge` on the N shard files writes \
+the tables of the whole run. `view_lra` lists a \
 run's pairs with their verdicts and, given a pair, makes `view_map` draw it; \
 `view_export` with `curve: true` writes its threshold-response curve.";
 

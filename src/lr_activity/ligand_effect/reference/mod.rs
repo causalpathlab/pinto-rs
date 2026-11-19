@@ -37,6 +37,7 @@
 mod download;
 mod programs;
 
+pub(crate) use download::hex;
 pub use download::{sha256_file, write_atomic};
 pub mod sources;
 mod table;

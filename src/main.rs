@@ -1068,6 +1068,17 @@ enum LraSub {
         long_about = lr_activity::lra_simulate_long_about()
     )]
     Simulate(Box<LraSimulateArgs>),
+    #[command(
+        name = "merge",
+        about = "Put the shards of one `pinto lra --shard` run together",
+        long_about = "Read every shard file of one `pinto lra --shard I/N` run\n\
+                      ({out}.lra.shard-I-of-N.cbor, given in any order), check they are its\n\
+                      N shards (the same settings and pairs, each shard once, every pair\n\
+                      once), and write the tables a run without --shard writes: the\n\
+                      q-values and verdicts over every pair, recorded in the run's manifest\n\
+                      (the --from run's, else {out}.pinto.json)."
+    )]
+    Merge(Box<lr_activity::args::LraMergeArgs>),
 }
 
 /// `pinto sim <op>`: simulation with a planted truth, and scoring against it.
@@ -1230,6 +1241,7 @@ impl Commands {
             Commands::Apply(Apply::Impute(a)) => (&mut a.predict.common.out, "impute"),
             Commands::Lra(a) => match &mut a.simulate {
                 Some(LraSub::Simulate(s)) => (s.out.as_mut()?, "lra"),
+                Some(LraSub::Merge(m)) => (&mut m.out, "lra"),
                 None => (a.args.out.as_mut()?, "lra"),
             },
             _ => return None,
@@ -1494,6 +1506,9 @@ fn run_command() -> anyhow::Result<()> {
         },
         Commands::Lra(lra) => match &lra.simulate {
             Some(LraSub::Simulate(args)) => fit_lra_simulate(args)?,
+            Some(LraSub::Merge(args)) => {
+                lr_activity::ligand_effect::pipeline::merge(&args.shards, &args.out)?
+            }
             None => fit_srt_lr_activity(&lra.args)?,
         },
         Commands::Sim(op) => match op {

@@ -120,6 +120,10 @@ pub(crate) fn check_method_flags(args: &SrtLrActivityArgs) -> anyhow::Result<()>
          pairs of --lr-pairs"
     );
     anyhow::ensure!(
+        args.shard.is_none(),
+        "--shard applies to --method contact-effect"
+    );
+    anyhow::ensure!(
         args.input.region.is_none() && args.input.cell_types.is_none(),
         "--region and --cell-types apply to --method contact-effect; the co-expression \
          methods stratify by the run's link communities"
@@ -651,11 +655,13 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
         settings: Settings {
             out,
             manifest: &manifest,
+            from_run: input.run.is_some(),
             lr_pairs: args.lr_pairs.as_deref(),
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
             only: &args.only,
+            shard: args.shard,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: None,
@@ -736,8 +742,11 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         // Before any data is read, so a call that fails there leaves no
         // earlier call's outputs to pass for its own. A staged call clears
         // nothing at the final names: its outputs replace the earlier
-        // call's when it is done, the sidecar taken away first.
-        clear_single_outputs(&out)?;
+        // call's when it is done, the sidecar taken away first. A shard
+        // clears nothing: only the merge writes the call's outputs.
+        if args.shard.is_none() {
+            clear_single_outputs(&out)?;
+        }
     }
     let contacts = load_contacts(&input)?;
     // A single scenario writes its own sidecar and records nothing in a
@@ -750,11 +759,13 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         settings: Settings {
             out: &out,
             manifest: &manifest,
+            from_run: input.run.is_some(),
             lr_pairs: args.lr_pairs.as_deref(),
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
             only: &[],
+            shard: None,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: args.plant_region.as_deref(),
@@ -780,8 +791,8 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
     };
     match &single {
-        Some(one) => run_simulate_one(&inputs, one),
-        None => run_simulate(&inputs),
+        Some(one) => run_simulate_one(&inputs, one, args.shard),
+        None => run_simulate(&inputs, args.shard),
     }
 }
 

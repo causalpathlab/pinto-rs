@@ -73,7 +73,7 @@ fn lra_simulate_parses_its_study_flags() {
         {
             Commands::Lra(a) => match a.simulate {
                 Some(LraSub::Simulate(s)) => s,
-                None => panic!("not lra simulate"),
+                _ => panic!("not lra simulate"),
             },
             _ => panic!("not lra-simulate"),
         }
@@ -122,7 +122,7 @@ fn lra_simulate(extra: &[&str]) -> LraSimulateArgs {
     {
         Commands::Lra(a) => match a.simulate {
             Some(LraSub::Simulate(s)) => *s,
-            None => panic!("not lra simulate"),
+            _ => panic!("not lra simulate"),
         },
         _ => panic!("not lra-simulate"),
     }

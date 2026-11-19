@@ -6,7 +6,7 @@ use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::jackknife::Jackknife;
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct SimRow {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
@@ -54,7 +54,7 @@ pub struct SimRow {
 
 /// The estimate, its truths and its verdict on one region's row: the same
 /// fit as the pooled row, summed over the region's receivers.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct RegionRead {
     pub truth: f64,
     pub truth_exposed: f64,

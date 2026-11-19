@@ -59,7 +59,7 @@ pub const JACKKNIFE_P: f64 = 0.2;
 /// Jackknife SE over the clustered SE at the headline threshold, for the
 /// competent effect and for its contrast with the rest; NaN where it was
 /// not computed (no estimate, or a replicate without one).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Jackknife {
     pub competent: f64,
     pub versus_rest: f64,

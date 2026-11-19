@@ -97,7 +97,7 @@ impl From<ConfoundShape> for &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct Scenario {
     /// Share of each program gene's log-rate variance (beyond the receiver's
     /// cell type) that the contact effect explains: the effect is

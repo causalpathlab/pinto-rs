@@ -41,7 +41,7 @@ pub fn verdict(e: Evidence) -> Verdict {
 /// A pair's verdict, defined once: the parquet's `verdict` code and
 /// `verdict_note` words, the console summary, `pinto lra --help`, the MCP
 /// instructions and the README all read it from here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Verdict {
     Supported,
     EffectWithoutCoexpression,

@@ -1,6 +1,6 @@
 [package]
 name = "pinto-rs"
-version = "0.17.7"
+version = "0.17.9"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -90,6 +90,7 @@ legume-tui = { version = "0.4", optional = true, features = ["browse", "form", "
 # `pinto mcp`: the Model Context Protocol on stdio, and the feed
 # `pinto view --follow` reads.
 legume-mcp = { version = "0.6", optional = true }
+ciborium = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -45,7 +45,7 @@ fn a_run_given_by_prefix_is_named_by_its_manifest() {
 #[test]
 fn the_lra_tools_are_listed_and_take_no_unknown_arguments() {
     let tools = specs(&crate::built_cli());
-    for name in ["run_lra", "run_lra_simulate"] {
+    for name in ["run_lra", "run_lra_simulate", "run_lra_merge"] {
         let spec = tools
             .iter()
             .find(|t| t.name == name)
@@ -465,6 +465,7 @@ type Mirror = (
 const MIRRORS: &[Mirror] = &[
     ("run_lra", "lra", &[("run", "from")], &[]),
     ("run_lra_simulate", "lra simulate", &[("run", "from")], &[]),
+    ("run_lra_merge", "lra merge", &[], &[]),
     (
         "run_residual",
         "residual",
@@ -595,6 +596,7 @@ fn atomic_outputs_reaches_the_child_s_command_line() {
         "run_compare",
         "run_lra",
         "run_lra_simulate",
+        "run_lra_merge",
         "run_residual",
         "run_simulate",
         "run_sim_baseline",

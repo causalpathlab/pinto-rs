@@ -12,7 +12,7 @@ use crate::lr_activity::ligand_effect::options::{self, EffectOpts};
 use crate::lr_activity::ligand_effect::simulate::{
     self, ConfounderKind, Scenario, ScenarioKeys, SimRow, SimShared, SingleScenario,
 };
-use crate::lr_activity::ligand_effect::{output, reference, RunInputs, LOG_TARGET};
+use crate::lr_activity::ligand_effect::{output, reference, shard, RunInputs, LOG_TARGET};
 use crate::util::common::*;
 use anyhow::Context;
 use legume_numeric::matrix::rand_util::mix_seed;
@@ -98,11 +98,16 @@ struct Labelled {
 /// writes `{out}.lra-simulate.parquet` ([`output::write_sim_scored`]), then,
 /// last and atomically, `{out}.lra-simulate.json`, and records nothing in
 /// the run's manifest.
-pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Result<()> {
+pub fn run_simulate_one(
+    inp: &RunInputs<'_>,
+    one: &SingleScenario,
+    shard: Option<shard::Shard>,
+) -> anyhow::Result<()> {
     let a = &inp.settings;
-    let table = output::lra_simulate_path(a.out);
-    let sidecar = output::lra_simulate_sidecar_path(a.out);
-    clear_single_outputs(a.out)?;
+    // a shard leaves a merged call's outputs alone: only the merge writes them
+    if shard.is_none() {
+        clear_single_outputs(a.out)?;
+    }
     let prep = prepare(inp)?;
     let tissue = &prep.tissue;
     // The benchmark plants on one competence threshold.
@@ -174,13 +179,22 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         "Simulating one scenario on {n1} planted and {n0} null pairs..."
     );
     let reference_data = fit_reference_program_genes(&prep, a, &benchmarked)?;
-    let pb = Progress::new(labelled.len(), "benchmark runs");
+    let mine: Vec<usize> = match shard {
+        Some(s) => {
+            let pair_of_run: Vec<usize> = labelled.iter().map(|l| l.pair).collect();
+            let groups: Vec<Vec<usize>> = (0..labelled.len()).map(|j| vec![j]).collect();
+            super::sim_shard_runs(&prep, eopts, &pair_of_run, &groups, s)
+        }
+        None => (0..labelled.len()).collect(),
+    };
+    let pb = Progress::new(mine.len(), "benchmark runs");
     // Each run holds about a pair's worth of vectors, and its pair's counts.
     // and the receivers' copula factors under reference data
     let factors = reference_data.as_ref().map_or(0, |r| r.copula_rank());
     let per_run = pair_memory(50 + 2 + factors, tissue, &eopts.nuisance);
     let workers = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
-    let runs: Vec<anyhow::Result<SimRow>> = run_bounded(&labelled, workers, |l| {
+    let runs: Vec<anyhow::Result<shard::SimRun>> = run_bounded(&mine, workers, |&j| {
+        let l = &labelled[j];
         let p = &prep.pairs[l.pair];
         let pair = PairSim::new(&prep, eopts, p, reference_data.as_ref());
         let base = pair.base(p, gene);
@@ -199,24 +213,23 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
             }
         };
         let r = simulate::simulate(tissue, &base, &shared, &s, eopts, l.seed)
-            .with_context(|| format!("{}-{}", p.ligand, p.receptor));
+            .with_context(|| format!("{}-{}", p.ligand, p.receptor))
+            .map(|row| {
+                let label = if l.planted { "planted" } else { "null" };
+                super::run_done(p, label, row.seconds);
+                shard::SimRun {
+                    index: j,
+                    row: Some(row),
+                    rank: l.rank,
+                    planted: l.planted,
+                    seed: l.seed,
+                }
+            });
         pb.inc();
         vec![r]
     });
     pb.finish();
-    let mut rows = runs.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
-    // Wall times differ from call to call: the sidecar keeps them, so the
-    // table is the same bytes for the same call.
-    let seconds: Vec<(f64, f64)> = rows
-        .iter_mut()
-        .map(|r| {
-            let s = (r.seconds, r.baseline_seconds);
-            (r.seconds, r.baseline_seconds) = (f64::NAN, f64::NAN);
-            s
-        })
-        .collect();
-    let planted: Vec<bool> = labelled.iter().map(|l| l.planted).collect();
-    output::write_sim_scored(&table, &rows, a.plant_region, &planted)?;
+    let runs = runs.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
 
     let reference = prep
         .reference_record
@@ -228,24 +241,7 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
             }))
         })
         .transpose()?;
-    let pairs: Vec<serde_json::Value> = labelled
-        .iter()
-        .zip(&rows)
-        .zip(&seconds)
-        .map(|((l, r), (s, b))| {
-            json!({
-                "ligand": &*r.ligand,
-                "receptor": &*r.receptor,
-                "rank": l.rank,
-                "planted": l.planted,
-                "seed": l.seed,
-                "estimable": r.estimable(),
-                "field_sha256": r.field_sha256.as_deref(),
-                "seconds": s,
-                "baseline_seconds": b,
-            })
-        })
-        .collect();
+    // the sidecar but for its pairs and table, which the finish fills in
     let record = json!({
         "command": "lra-simulate",
         "mode": "single-scenario",
@@ -267,17 +263,76 @@ pub fn run_simulate_one(inp: &RunInputs<'_>, one: &SingleScenario) -> anyhow::Re
         "seeds": "pair: mix_seed(seed, rank), rep mixed in per run; hidden field: \
                   mix_seed(mix_seed(seed, 2^64 - 1), rep), one for every pair",
         "field_sha256": simulate::field_sha256(&field),
-        "pairs": pairs,
         "real_gene_confounder": confounder.as_ref().map(|(n, _)| &**n),
         "reference": reference,
         "options": crate::util::metadata::LraOptions {
             identity_excluded: prep.identity_excluded.clone(),
             ..a.options()
         },
-        "table": crate::lr_activity::recorded(Path::new(&table)),
-        // Read back from the written table: the sidecar can only follow it.
-        "table_sha256": reference::sha256_file(Path::new(&table))?,
     });
+    let finish = shard::SimFinish::One {
+        plant_region: a.plant_region.map(str::to_string),
+        record: serde_json::to_string(&record)?,
+    };
+    if let Some(s) = shard {
+        let described: Vec<String> = labelled
+            .iter()
+            .map(|l| {
+                let p = &prep.pairs[l.pair];
+                format!("{}:{}:{}:{}", p.ligand, p.receptor, l.planted, l.seed)
+            })
+            .collect();
+        let described = format!("{scen:?} {described:?}");
+        return super::write_sim_shard(a.out, s, &prep, finish, labelled.len(), runs, &described);
+    }
+    super::finish_sim(a.out, &finish, runs)
+}
+
+/// A single-scenario call's end, every run in (`runs`, in order): the
+/// scored table, `{out}.lra-simulate.parquet`
+/// ([`output::write_sim_scored`]), then last and atomically the sidecar,
+/// `record` with the pairs and the table filled in.
+pub(super) fn finish_one(
+    out: &str,
+    plant_region: Option<&str>,
+    record: &str,
+    runs: Vec<shard::SimRun>,
+) -> anyhow::Result<()> {
+    let table = output::lra_simulate_path(out);
+    let sidecar = output::lra_simulate_sidecar_path(out);
+    // an earlier call's sidecar would mark this one complete before it is
+    clear_single_outputs(out)?;
+    let mut record: serde_json::Value = serde_json::from_str(record)?;
+    let planted: Vec<bool> = runs.iter().map(|r| r.planted).collect();
+    let mut rows: Vec<SimRow> = Vec::with_capacity(runs.len());
+    let mut pairs: Vec<serde_json::Value> = Vec::with_capacity(runs.len());
+    for run in runs {
+        let mut r = run
+            .row
+            .ok_or_else(|| anyhow::anyhow!("a single-scenario run without its row"))?;
+        // Wall times differ from call to call: the sidecar keeps them, so the
+        // table is the same bytes for the same call.
+        let (s, b) = (r.seconds, r.baseline_seconds);
+        (r.seconds, r.baseline_seconds) = (f64::NAN, f64::NAN);
+        pairs.push(json!({
+            "ligand": &*r.ligand,
+            "receptor": &*r.receptor,
+            "rank": run.rank,
+            "planted": run.planted,
+            "seed": run.seed,
+            "estimable": r.estimable(),
+            "field_sha256": r.field_sha256.as_deref(),
+            "seconds": s,
+            "baseline_seconds": b,
+        }));
+        rows.push(r);
+    }
+    output::write_sim_scored(&table, &rows, plant_region, &planted)?;
+    let (n1, n0) = (record["planted"].clone(), record["null"].clone());
+    record["pairs"] = pairs.into();
+    record["table"] = crate::lr_activity::recorded(Path::new(&table)).into();
+    // Read back from the written table: the sidecar can only follow it.
+    record["table_sha256"] = reference::sha256_file(Path::new(&table))?.into();
     let mut text = serde_json::to_string_pretty(&record)?;
     text.push('\n');
     reference::write_atomic(Path::new(&sidecar), text.as_bytes())?;
