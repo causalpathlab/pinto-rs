@@ -1151,7 +1151,9 @@ pub(super) fn run_grid(
             .iter()
             .map(|&k| format!("{}:{}", prep.pairs[k].ligand, prep.pairs[k].receptor))
             .collect();
-        let described = format!("{} {grid:?} {names:?}", a.seed);
+        // the options decide every run's row, as the seed, grid and pairs do
+        let options = serde_json::to_string(&a.options())?;
+        let described = format!("{} {options} {grid:?} {names:?}", a.seed);
         return write_sim_shard(a.out, s, &prep, finish, n_runs, runs, &described);
     }
     finish_sim(a.out, &finish, runs)

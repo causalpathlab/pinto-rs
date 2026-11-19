@@ -104,7 +104,10 @@ pub fn run_simulate_one(
     shard: Option<shard::Shard>,
 ) -> anyhow::Result<()> {
     let a = &inp.settings;
-    clear_single_outputs(a.out)?;
+    // a shard leaves a merged call's outputs alone: only the merge writes them
+    if shard.is_none() {
+        clear_single_outputs(a.out)?;
+    }
     let prep = prepare(inp)?;
     let tissue = &prep.tissue;
     // The benchmark plants on one competence threshold.
@@ -297,6 +300,8 @@ pub(super) fn finish_one(
 ) -> anyhow::Result<()> {
     let table = output::lra_simulate_path(out);
     let sidecar = output::lra_simulate_sidecar_path(out);
+    // an earlier call's sidecar would mark this one complete before it is
+    clear_single_outputs(out)?;
     let mut record: serde_json::Value = serde_json::from_str(record)?;
     let planted: Vec<bool> = runs.iter().map(|r| r.planted).collect();
     let mut rows: Vec<SimRow> = Vec::with_capacity(runs.len());

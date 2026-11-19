@@ -742,8 +742,11 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         // Before any data is read, so a call that fails there leaves no
         // earlier call's outputs to pass for its own. A staged call clears
         // nothing at the final names: its outputs replace the earlier
-        // call's when it is done, the sidecar taken away first.
-        clear_single_outputs(&out)?;
+        // call's when it is done, the sidecar taken away first. A shard
+        // clears nothing: only the merge writes the call's outputs.
+        if args.shard.is_none() {
+            clear_single_outputs(&out)?;
+        }
     }
     let contacts = load_contacts(&input)?;
     // A single scenario writes its own sidecar and records nothing in a

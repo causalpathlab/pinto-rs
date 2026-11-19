@@ -700,6 +700,10 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     );
     let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
+    anyhow::ensure!(
+        shard.is_none() || out.as_deref().is_some_and(|o| !o.is_empty()),
+        "shard needs out: every shard of a run writes under the one prefix the merge reads"
+    );
     // A finished `out` is read, not run again, once the call is checked as
     // it would be run: its tables, or a shard's file and the merge to follow.
     if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
@@ -1039,16 +1043,18 @@ pub(super) fn lra_simulate(
     let run = run.as_deref();
     let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
-    if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
+    anyhow::ensure!(
+        shard.is_none() || out.as_deref().is_some_and(|o| !o.is_empty()),
+        "shard needs out: every shard of a call writes under the one prefix the merge reads"
+    );
+    if let Some(o) = out
+        .as_deref()
+        .filter(|o| !o.is_empty())
+        .filter(|_| shard.is_none())
+    {
         let o = shown_path(Path::new(o));
         let made = a.outputs(&o);
-        let argv = lra_simulate_argv(&a, run, &o);
-        checked(cli, &argv)?;
-        if let Some(s) = shard {
-            if finished(cx, &made) {
-                return Ok(sim_shard_reply(s, &argv, &o, &made));
-            }
-        }
+        checked(cli, &lra_simulate_argv(&a, run, &o))?;
         // lra-simulate records no options for its table; a single scenario's
         // sidecar records its point, which must be this call's.
         if let Some(reply) = read_finished(
