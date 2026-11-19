@@ -362,22 +362,38 @@ fn cg_column(
             out[i] = shift[lap.section[i]] * v[i] + b * out[i];
         }
     };
-    let bnorm = rhs.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if bnorm == 0.0 {
+    // Solved for `rhs / scale` from `x / scale`, then scaled back, `scale`
+    // the power of two at or below the largest `|rhs|` entry (a power of two
+    // scales exactly, so the steps are those at `rhs`'s own scale). A
+    // right-hand side that has shrunk towards zero (a factor whose weights
+    // vanish) would otherwise underflow the squared norms to 0 and the step
+    // to 0/0; one that is huge would overflow them.
+    let largest = rhs.iter().fold(0f64, |m, v| m.max(v.abs()));
+    if largest == 0.0 {
         x.iter_mut().for_each(|v| *v = 0.0);
         return 0;
     }
+    let scale = 2f64.powi((largest.log2().floor() as i32).clamp(-1022, 1023));
+    let inv = scale.recip();
+    let rhs_norm = rhs.iter().map(|v| (v * inv).powi(2)).sum::<f64>().sqrt();
+    x.iter_mut().for_each(|v| *v *= inv);
+    if x.iter().any(|v| !v.is_finite()) {
+        // a start far above the right-hand side's scale: from zero instead
+        x.iter_mut().for_each(|v| *v = 0.0);
+    }
     let mut ax = vec![0.0; n];
     apply(x, &mut ax);
-    let mut r: Vec<f64> = rhs.iter().zip(&ax).map(|(b, a)| b - a).collect();
+    let mut r: Vec<f64> = rhs.iter().zip(&ax).map(|(v, a)| v * inv - a).collect();
     let mut z: Vec<f64> = r.iter().zip(diag).map(|(r, d)| r / d).collect();
     let mut p = z.clone();
     let mut rz: f64 = r.iter().zip(&z).map(|(a, b)| a * b).sum();
     let mut ap = vec![0.0; n];
     let mut rr: f64 = r.iter().map(|v| v * v).sum();
+    let mut steps = CG_MAX_ITER;
     for it in 0..CG_MAX_ITER {
-        if rr.sqrt() <= tol * bnorm {
-            return it;
+        if rr.sqrt() <= tol * rhs_norm {
+            steps = it;
+            break;
         }
         apply(&p, &mut ap);
         let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
@@ -398,5 +414,52 @@ fn cg_column(
             p[i] = z[i] + beta * p[i];
         }
     }
-    CG_MAX_ITER
+    x.iter_mut().for_each(|v| *v *= scale);
+    steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A path of five nodes, one section.
+    fn path() -> Laplacian {
+        let edges: Vec<(usize, usize)> = (0..4).map(|i| (i, i + 1)).collect();
+        Laplacian::from_edges(5, &edges, &[1.0; 4], &[0; 5], 1)
+    }
+
+    #[test]
+    fn conjugate_gradients_solve_the_system() {
+        let lap = path();
+        let rhs = DMatrix::from_column_slice(5, 1, &[1.0, -2.0, 0.5, 3.0, -1.0]);
+        let (x, _) = cg_solve(&lap, &[0.5], 2.0, &rhs, None, 1e-12);
+        let mut lx = vec![0.0; 5];
+        lap.apply(x.as_slice(), &mut lx);
+        for i in 0..5 {
+            let ax = 0.5 * x[i] + 2.0 * lx[i];
+            assert!((ax - rhs[i]).abs() < 1e-9, "{ax} vs {}", rhs[i]);
+        }
+    }
+
+    #[test]
+    fn a_vanishing_or_huge_right_hand_side_scales_the_solution() {
+        let lap = path();
+        let rhs = DMatrix::from_column_slice(5, 1, &[1.0, -2.0, 0.5, 3.0, -1.0]);
+        let (x, _) = cg_solve(&lap, &[0.5], 2.0, &rhs, None, 1e-12);
+        // each from a start at the right-hand side's own scale, as a dying
+        // factor's are
+        for (by, start) in [(1e-160, 1e-160), (1e-300, 1e-297), (1e300, 1e300)] {
+            let (xt, steps) = cg_solve(&lap, &[0.5], 2.0, &(&rhs * by), Some(&(&x * start)), 1e-12);
+            assert!(steps < CG_MAX_ITER, "{by:e}");
+            for i in 0..5 {
+                assert!(xt[i].is_finite(), "{by:e}");
+                assert!(
+                    (xt[i] / by - x[i]).abs() < 1e-9 * x[i].abs().max(1.0),
+                    "{by:e}: {} vs {}",
+                    xt[i] / by,
+                    x[i]
+                );
+            }
+        }
+    }
 }

@@ -173,6 +173,16 @@ pub fn write_run(
     let n = data.cells.len();
     anyhow::ensure!(fit.labels.len() == n, "one label per cell");
     anyhow::ensure!(fit.embedding.nrows() == n, "one embedding row per cell");
+    // a fit gone non-finite would write a domain per cell and an embedding
+    // nothing can score
+    anyhow::ensure!(
+        fit.embedding.iter().all(|v| v.is_finite())
+            && fit
+                .membership
+                .is_none_or(|m| m.iter().all(|v| v.is_finite())),
+        "{}: the fit's embedding is not finite; nothing is written",
+        fit.method
+    );
     let k = fit.labels.iter().max().map_or(0, |&m| m + 1);
     let run = baseline_run(&fit);
     log::info!("{}: {k} clusters", fit.method);

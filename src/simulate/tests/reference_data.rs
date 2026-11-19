@@ -241,3 +241,17 @@ fn a_gene_a_group_never_shows_sits_at_its_detection_limit() {
     let want = ((2.0f64.ln() - floor.ln()) / 2.0).powi(2);
     assert!((t - want).abs() < 1e-12, "{t} vs {want}");
 }
+
+#[test]
+fn k_means_asks_as_many_more_groups_as_were_missing() {
+    use crate::simulate::reference_data::more_cell_groups;
+    // 17 asked kept 16: ask one more
+    assert_eq!(more_cell_groups(17, 16, 17, 30_000), Some(18));
+    assert_eq!(more_cell_groups(18, 15, 17, 30_000), Some(20));
+    // enough kept
+    assert_eq!(more_cell_groups(17, 17, 17, 30_000), None);
+    assert_eq!(more_cell_groups(8, 8, 5, 30_000), None);
+    // no more than every group could fill with 100 cells
+    assert_eq!(more_cell_groups(17, 16, 17, 1_800), Some(18));
+    assert_eq!(more_cell_groups(17, 16, 17, 1_799), None);
+}
