@@ -855,3 +855,20 @@ fn a_finished_single_scenario_is_read_back_for_its_own_call_alone() {
     let e = grid.check_made(&out).unwrap_err().to_string();
     assert!(e.contains("single scenario"), "{e}");
 }
+
+#[test]
+fn run_lra_simulate_passes_shard_and_writes_its_shard_file() {
+    let a: LraSimulateToolArgs = crate::mcp::parse(json!({
+        "run": "r",
+        "one": true,
+        "shard": "2/8",
+    }))
+    .unwrap();
+    let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
+    assert_eq!(argv[argv.len() - 1], "--shard=2/8");
+    checked(&cli(), &argv).unwrap();
+    assert_eq!(
+        a.outputs("/p/out"),
+        [PathBuf::from("/p/out.lra-simulate.shard-2-of-8.cbor")]
+    );
+}

@@ -435,6 +435,21 @@ pub struct LraSimulateArgs {
     pub one: bool,
 
     #[arg(
+        long,
+        value_name = "I/N",
+        help = "Run shard I (0-based) of N of the runs, for `pinto lra merge`",
+        long_help = "Run only shard I of N of the call's runs (the built-in grid's, or\n\
+                     --one's pairs), I from 0 to N-1, as one task of a job array (I =\n\
+                     $SLURM_ARRAY_TASK_ID with --array=0-<N-1>). The runs are dealt by\n\
+                     their pairs' competent receivers, the same way every time, and each\n\
+                     comes out as the whole call runs it. A shard writes\n\
+                     {out}.lra-simulate.shard-I-of-N.cbor and no table; `pinto lra merge`\n\
+                     reads all N and writes the call's tables. Every shard takes the same\n\
+                     flags but --shard and --out."
+    )]
+    pub shard: Option<crate::lr_activity::ligand_effect::shard::Shard>,
+
+    #[arg(
         long = "set",
         value_name = "KEY=VALUE",
         help_heading = "Single scenario",

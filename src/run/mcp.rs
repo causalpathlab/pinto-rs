@@ -1012,7 +1012,9 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              their labels and seeds, the reference), recording nothing in the manifest; with \
              no out it takes today's free {run}-scenario name, never the run's own prefix. Runs \
              as a background job unless asked; called again with the same run and out once \
-             done, it reads the table instead of running.",
+             done, it reads the table instead of running. With shard I/N it runs only shard I \
+             of the runs, each shard its own job (a Slurm array task), and run_lra_merge on \
+             the N shard files writes the call's tables.",
             with_lra_input(cli, "lra simulate", json!({
                 "type": "object",
                 "properties": {
@@ -1028,6 +1030,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
                     "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
+                    "shard": long_flag_arg(sim_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
                     "background": background(),
                 },
                 "additionalProperties": false,

@@ -72,7 +72,7 @@ struct Prepared {
     /// names of all `n_all` (ligand, receptor), for the run key.
     index_in_all: Vec<usize>,
     all_names: Vec<(Box<str>, Box<str>)>,
-    /// With `--shard`, [`shard::tissue_key`]; empty otherwise.
+    /// [`shard::tissue_key`], for a shard's run key.
     tissue_key: String,
     store: GeneStore,
     local: HashMap<usize, usize>,
@@ -236,16 +236,13 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         n_all,
         index_in_all,
         all_names,
-        tissue_key: match a.shard {
-            Some(_) => shard::tissue_key(
-                inp.data.num_columns(),
-                &gene_names,
-                inp.pairs,
-                inp.coords,
-                inp.cell_section,
-            ),
-            None => String::new(),
-        },
+        tissue_key: shard::tissue_key(
+            inp.data.num_columns(),
+            &gene_names,
+            inp.pairs,
+            inp.coords,
+            inp.cell_section,
+        ),
         store,
         local,
         eopts: effect_opts(a.seed, a.region_jackknife, a.abf_prior_scale),
@@ -635,15 +632,12 @@ fn write_shard(
                 .unwrap_or_default(),
         })
         .collect();
-    let file = shard::ShardFile {
-        format: shard::FORMAT,
-        pinto_version: env!("CARGO_PKG_VERSION").into(),
-        shard: s,
-        run_key,
+    let file = shard::Contents::Lra(Box::new(shard::ShardFile {
+        header: shard::Header::new(s, run_key),
         record,
         pairs,
         celltype_source: marginal.map(|m| m.labels.source),
-    };
+    }));
     let path = shard::path(a.out, s);
     shard::write(&path, &file)?;
     crate::util::staging::say(format!(
@@ -716,13 +710,17 @@ fn own_manifest(shard_manifest: &Path, out: &str) -> anyhow::Result<std::path::P
 /// `pinto lra merge`: every shard of a run at `shards`, its tables under
 /// `out` as a run without `--shard` writes them, recorded in its manifest.
 pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
+    let files = shard::read_set(shards)?;
+    if matches!(files[0], shard::Contents::Simulate(_)) {
+        return merge_sim(files, out);
+    }
     let shard::Merged {
         run_key,
         mut record,
         count,
         rows,
         celltype,
-    } = shard::read_all(shards)?;
+    } = shard::merge_lra(files)?;
     if !record.from_run {
         // a run on data files: the merge's own manifest, as the shards' own
         record.manifest = own_manifest(&record.manifest, out)?;
@@ -987,9 +985,10 @@ impl PairSim {
 }
 
 impl Benchmark<'_> {
-    /// The runs of pair `k`, one per scenario that ran; a scenario that fails
-    /// is warned about and has none.
-    fn pair_runs(&self, k: usize) -> Vec<simulate::SimRow> {
+    /// The runs of pair `k` on the scenarios `scenarios` (indices into the
+    /// grid), each with its scenario; a scenario that fails is warned about
+    /// and has no row.
+    fn pair_runs(&self, k: usize, scenarios: &[usize]) -> Vec<(usize, Option<simulate::SimRow>)> {
         let (prep, eopts, grid) = (self.prep, self.eopts, self.grid);
         let tissue = &prep.tissue;
         let p = &prep.pairs[k];
@@ -1007,21 +1006,23 @@ impl Benchmark<'_> {
         let factors = self.reference_data.map_or(0, |r| r.copula_rank());
         let per_run = pair_memory(50 + factors, tissue, &eopts.nuisance);
         let concurrent = pair_workers(per_run, tissue, &eopts.nuisance, prep.memory_budget);
-        let jobs: Vec<(usize, &simulate::Scenario)> = grid.iter().enumerate().collect();
-        run_bounded(&jobs, concurrent, |&(si, scen)| {
+        run_bounded(scenarios, concurrent, |&si| {
             let seed = legume_numeric::matrix::rand_util::mix_seed(
                 self.seed,
                 (k * grid.len() + si) as u64,
             );
-            let r = match simulate(tissue, &base, &shared, scen, eopts, seed) {
-                Ok(r) => vec![r],
+            let r = match simulate(tissue, &base, &shared, &grid[si], eopts, seed) {
+                Ok(r) => {
+                    run_done(p, &format!("scenario {si}"), r.seconds);
+                    Some(r)
+                }
                 Err(e) => {
                     warn!(target: LOG_TARGET, "{}-{} scenario {si}: {e}", p.ligand, p.receptor);
-                    Vec::new()
+                    None
                 }
             };
             self.pb.inc();
-            r
+            vec![(si, r)]
         })
     }
 }
@@ -1056,12 +1057,16 @@ pub(super) fn planted_region(tissue: &Tissue, name: Option<&str>) -> anyhow::Res
     Ok(Some(code as u32))
 }
 
-pub fn run_simulate(inp: &RunInputs<'_>) -> anyhow::Result<()> {
-    run_grid(inp, simulate::GridOpts::default())
+pub fn run_simulate(inp: &RunInputs<'_>, shard: Option<shard::Shard>) -> anyhow::Result<()> {
+    run_grid(inp, simulate::GridOpts::default(), shard)
 }
 
 /// The built-in benchmark on the grid `gopts` builds ([`default_grid`]).
-pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> anyhow::Result<()> {
+pub(super) fn run_grid(
+    inp: &RunInputs<'_>,
+    mut gopts: simulate::GridOpts,
+    shard: Option<shard::Shard>,
+) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
     // The benchmark plants on one competence threshold.
@@ -1086,7 +1091,30 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
     let confounder_counts = confounder_gene.as_ref().map(|(_, v)| v.as_slice());
     let gene_fields = simulate::gene_fields(&prep.tissue, confounder_counts, &gopts.scales);
     let reference_data = fit_reference_program_genes(&prep, a, &order)?;
-    let pb = Progress::new(grid.len() * order.len(), "benchmark runs");
+    // the runs, pair by pair in benchmark order, each pair's scenarios in
+    // grid order: run `o * grid.len() + si` is scenario `si` of `order[o]`
+    let n_runs = grid.len() * order.len();
+    let finish = shard::SimFinish::Grid {
+        manifest: std::path::absolute(a.manifest).unwrap_or_else(|_| a.manifest.to_path_buf()),
+        from_run: a.from_run,
+        abf_prior_scale: a.abf_prior_scale,
+        plant_region: a.plant_region.map(str::to_string),
+        reference_provenance: reference_data
+            .as_ref()
+            .map(|r| serde_json::to_string_pretty(&r.provenance()))
+            .transpose()?,
+    };
+    let mine: Vec<usize> = match shard {
+        Some(s) => {
+            let pair_of_run: Vec<usize> = (0..n_runs).map(|j| order[j / grid.len()]).collect();
+            let groups: Vec<Vec<usize>> = (0..order.len())
+                .map(|o| (o * grid.len()..(o + 1) * grid.len()).collect())
+                .collect();
+            sim_shard_runs(&prep, eopts, &pair_of_run, &groups, s)
+        }
+        None => (0..n_runs).collect(),
+    };
+    let pb = Progress::new(mine.len(), "benchmark runs");
     let benchmark = Benchmark {
         prep: &prep,
         eopts,
@@ -1097,29 +1125,170 @@ pub(super) fn run_grid(inp: &RunInputs<'_>, mut gopts: simulate::GridOpts) -> an
         pb: &pb,
         reference_data: reference_data.as_ref(),
     };
-    let mut rows = Vec::new();
-    for &k in &order {
-        rows.extend(benchmark.pair_runs(k));
+    let mut runs: Vec<shard::SimRun> = Vec::new();
+    for (o, &k) in order.iter().enumerate() {
+        let scenarios: Vec<usize> = mine
+            .iter()
+            .filter(|&&j| j / grid.len() == o)
+            .map(|&j| j % grid.len())
+            .collect();
+        if scenarios.is_empty() {
+            continue;
+        }
+        for (si, row) in benchmark.pair_runs(k, &scenarios) {
+            runs.push(shard::SimRun {
+                index: o * grid.len() + si,
+                row,
+                rank: o,
+                planted: true,
+                seed: 0,
+            });
+        }
     }
     pb.finish();
-    let path = output::lra_simulate_path(a.out);
-    output::write_sim(&path, &rows, a.plant_region)?;
-    // the reference data the program genes were drawn with, beside
-    // the table
-    // (an earlier run's is removed when this one used none)
-    let side = format!("{}.reference-data.json", path.trim_end_matches(".parquet"));
-    match &reference_data {
-        Some(r) => std::fs::write(&side, serde_json::to_string_pretty(&r.provenance())? + "\n")?,
-        None if Path::new(&side).exists() => std::fs::remove_file(&side)?,
-        None => {}
+    if let Some(s) = shard {
+        let names: Vec<String> = order
+            .iter()
+            .map(|&k| format!("{}:{}", prep.pairs[k].ligand, prep.pairs[k].receptor))
+            .collect();
+        let described = format!("{} {grid:?} {names:?}", a.seed);
+        return write_sim_shard(a.out, s, &prep, finish, n_runs, runs, &described);
     }
-    let table = crate::lr_activity::recorded(Path::new(&path));
-    record(a.manifest, a.abf_prior_scale, |o| o.simulate = Some(table))?;
-    crate::util::staging::say(output::sim_summary(&rows, a.plant_region));
+    finish_sim(a.out, &finish, runs)
+}
+
+/// The runs `shard` is dealt of a simulate call, `pair_of_run` each run's
+/// pair, `groups` the runs kept together (a pair's scenarios), each run
+/// weighed by its pair's competent receivers ([`shard::deal`]).
+fn sim_shard_runs(
+    prep: &Prepared,
+    eopts: &EffectOpts,
+    pair_of_run: &[usize],
+    groups: &[Vec<usize>],
+    s: shard::Shard,
+) -> Vec<usize> {
+    let mut competent: HashMap<usize, f64> = HashMap::default();
+    for &k in pair_of_run {
+        competent.entry(k).or_insert_with(|| {
+            let c = competent_receivers(&prep.tissue, &prep.receptor_counts(&prep.pairs[k]), eopts);
+            c.iter().filter(|&&x| x).count().max(1) as f64
+        });
+    }
+    let weight: Vec<f64> = pair_of_run.iter().map(|k| competent[k]).collect();
+    let of = shard::deal(groups, &weight, s.count);
+    let mine: Vec<usize> = (0..of.len()).filter(|&j| of[j] == s.index).collect();
+    info!(
+        target: LOG_TARGET,
+        "--shard {s}: {} of {} runs",
+        mine.len(),
+        of.len()
+    );
+    mine
+}
+
+/// A finished benchmark run, named, for the log of a long call.
+fn run_done(p: &Pair, what: &str, seconds: f64) {
+    eprintln!(
+        "run done: {}-{} {what} in {seconds:.0}s",
+        p.ligand, p.receptor
+    );
+}
+
+/// `--shard` of a simulate call: its `runs` of the call's `n_runs` and how
+/// the call finishes, to [`shard::sim_path`]; no table. `described` names
+/// every run of the call, for the run key.
+fn write_sim_shard(
+    out: &str,
+    s: shard::Shard,
+    prep: &Prepared,
+    finish: shard::SimFinish,
+    n_runs: usize,
+    runs: Vec<shard::SimRun>,
+    described: &str,
+) -> anyhow::Result<()> {
+    let run_key = shard::sim_run_key(&prep.tissue_key, &finish, described);
+    let n = runs.len();
+    let file = shard::Contents::Simulate(shard::SimShardFile {
+        header: shard::Header::new(s, run_key),
+        n_runs,
+        finish,
+        runs,
+    });
+    let path = shard::sim_path(out, s);
+    shard::write(&path, &file)?;
     crate::util::staging::say(format!(
-        "lra-simulate: wrote {} runs to {}",
-        rows.len(),
-        crate::util::staging::final_str(&path)
+        "Shard {s}: {n} of {n_runs} runs to {}; `pinto lra merge` puts the {} shards together",
+        crate::util::staging::final_str(&path),
+        s.count
     ));
     Ok(())
+}
+
+/// Every simulate shard at `files` put together under `out`, as the call
+/// without `--shard` finishes.
+fn merge_sim(files: Vec<shard::Contents>, out: &str) -> anyhow::Result<()> {
+    let count = files.len();
+    let (run_key, mut finish, runs) = shard::merge_sim(files)?;
+    if let shard::SimFinish::Grid {
+        manifest,
+        from_run: false,
+        ..
+    } = &mut finish
+    {
+        *manifest = own_manifest(manifest, out)?;
+    }
+    info!(target: LOG_TARGET, "Merging {count} shards: {} runs", runs.len());
+    finish_sim(out, &finish, runs)?;
+    let text = serde_json::to_string_pretty(&serde_json::json!({
+        "run_key": run_key,
+        "shards": count,
+    }))?;
+    super::reference::write_atomic(Path::new(&output::merge_record_path(out)), text.as_bytes())?;
+    Ok(())
+}
+
+/// A simulate call's end once every run is in (`runs`, in order): the
+/// grid's table, reference-data sidecar and record, or `--one`'s scored
+/// table and sidecar ([`single::finish_one`]).
+fn finish_sim(
+    out: &str,
+    finish: &shard::SimFinish,
+    runs: Vec<shard::SimRun>,
+) -> anyhow::Result<()> {
+    match finish {
+        shard::SimFinish::One {
+            plant_region,
+            record,
+        } => single::finish_one(out, plant_region.as_deref(), record, runs),
+        shard::SimFinish::Grid {
+            manifest,
+            abf_prior_scale,
+            plant_region,
+            reference_provenance,
+            ..
+        } => {
+            let rows: Vec<simulate::SimRow> = runs.into_iter().filter_map(|r| r.row).collect();
+            let plant_region = plant_region.as_deref();
+            let path = output::lra_simulate_path(out);
+            output::write_sim(&path, &rows, plant_region)?;
+            // the reference data the program genes were drawn with, beside
+            // the table
+            // (an earlier run's is removed when this one used none)
+            let side = format!("{}.reference-data.json", path.trim_end_matches(".parquet"));
+            match reference_provenance {
+                Some(r) => std::fs::write(&side, format!("{r}\n"))?,
+                None if Path::new(&side).exists() => std::fs::remove_file(&side)?,
+                None => {}
+            }
+            let table = crate::lr_activity::recorded(Path::new(&path));
+            record(manifest, *abf_prior_scale, |o| o.simulate = Some(table))?;
+            crate::util::staging::say(output::sim_summary(&rows, plant_region));
+            crate::util::staging::say(format!(
+                "lra-simulate: wrote {} runs to {}",
+                rows.len(),
+                crate::util::staging::final_str(&path)
+            ));
+            Ok(())
+        }
+    }
 }

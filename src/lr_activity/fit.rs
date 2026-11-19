@@ -788,8 +788,8 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
     };
     match &single {
-        Some(one) => run_simulate_one(&inputs, one),
-        None => run_simulate(&inputs),
+        Some(one) => run_simulate_one(&inputs, one, args.shard),
+        None => run_simulate(&inputs, args.shard),
     }
 }
 

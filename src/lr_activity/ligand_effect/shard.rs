@@ -61,6 +61,14 @@ pub fn path(out: &str, shard: Shard) -> String {
     format!("{out}.lra.shard-{}-of-{}.cbor", shard.index, shard.count)
 }
 
+/// `{out}.lra-simulate.shard-I-of-N.cbor`.
+pub fn sim_path(out: &str, shard: Shard) -> String {
+    format!(
+        "{out}.lra-simulate.shard-{}-of-{}.cbor",
+        shard.index, shard.count
+    )
+}
+
 /// The shard each pair goes to, of `count`, the pairs of `groups` (each
 /// ligand's, indices into `weight`) weighing `weight` each: a ligand whose
 /// pairs weigh more than a shard's share of the whole is cut into runs of
@@ -159,15 +167,48 @@ pub fn tissue_key(
     hex(h.finalize().as_slice())
 }
 
-/// One shard's file.
-#[derive(Serialize, Deserialize)]
-pub struct ShardFile {
+/// What every shard file starts with.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Header {
     pub format: u32,
     pub pinto_version: String,
     pub shard: Shard,
-    /// A hash of the record and the full pair list ([`run_key`]): every
-    /// shard of one run has the same.
+    /// A hash of what decides the run's pieces and how they are finished
+    /// ([`run_key`], [`sim_run_key`]): every shard of one run has the same.
     pub run_key: String,
+}
+
+impl Header {
+    pub fn new(shard: Shard, run_key: String) -> Self {
+        Self {
+            format: FORMAT,
+            pinto_version: env!("CARGO_PKG_VERSION").into(),
+            shard,
+            run_key,
+        }
+    }
+}
+
+/// A shard file: of `pinto lra` or of `pinto lra simulate`.
+#[derive(Serialize, Deserialize)]
+pub enum Contents {
+    Lra(Box<ShardFile>),
+    Simulate(SimShardFile),
+}
+
+impl Contents {
+    fn header(&self) -> &Header {
+        match self {
+            Contents::Lra(f) => &f.header,
+            Contents::Simulate(f) => &f.header,
+        }
+    }
+}
+
+/// One `pinto lra` shard's file.
+#[derive(Serialize, Deserialize)]
+pub struct ShardFile {
+    pub header: Header,
     pub record: TableRecord,
     /// Each of the shard's pairs: its place in the full list, its rows
     /// before [`super::report::report`], and with `--marginal-baselines`
@@ -182,6 +223,48 @@ pub struct ShardPair {
     pub index: usize,
     pub rows: Vec<EffectRow>,
     pub celltype: Vec<CelltypeRow>,
+}
+
+/// One `pinto lra simulate` shard's file: its runs of the `n_runs` of the
+/// whole call, and how the call's tables are finished.
+#[derive(Serialize, Deserialize)]
+pub struct SimShardFile {
+    pub header: Header,
+    pub n_runs: usize,
+    pub finish: SimFinish,
+    pub runs: Vec<SimRun>,
+}
+
+/// How a simulate call ends once every run is in.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SimFinish {
+    /// The built-in grid: the table, the reference data's provenance (as
+    /// JSON) beside it, recorded in the manifest.
+    Grid {
+        manifest: PathBuf,
+        from_run: bool,
+        abf_prior_scale: f64,
+        plant_region: Option<String>,
+        reference_provenance: Option<String>,
+    },
+    /// One scenario (`--one`): the scored table and the sidecar, `record`
+    /// the sidecar's JSON but for its pairs and table.
+    One {
+        plant_region: Option<String>,
+        record: String,
+    },
+}
+
+/// One run of a simulate call: its place among the call's runs, its row
+/// (`None` for a grid scenario that failed), and for `--one` its pair's
+/// abundance rank, label and seed.
+#[derive(Serialize, Deserialize)]
+pub struct SimRun {
+    pub index: usize,
+    pub row: Option<super::simulate::SimRow>,
+    pub rank: usize,
+    pub planted: bool,
+    pub seed: u64,
 }
 
 /// The run key: SHA-256 of pinto's version, the record but for the
@@ -211,8 +294,32 @@ pub fn run_key<'a>(
     hex(h.finalize().as_slice())
 }
 
+/// A simulate call's run key: SHA-256 of pinto's version, the tissue, how
+/// the call finishes (its manifest left out when a shard has its own) and
+/// `runs`, a description of every run in order.
+pub fn sim_run_key(tissue: &str, finish: &SimFinish, runs: &str) -> String {
+    let keyed = match finish {
+        SimFinish::Grid {
+            from_run: false, ..
+        } => {
+            let mut f = finish.clone();
+            if let SimFinish::Grid { manifest, .. } = &mut f {
+                *manifest = PathBuf::new();
+            }
+            f
+        }
+        _ => finish.clone(),
+    };
+    let mut h = sha2::Sha256::new();
+    h.update(env!("CARGO_PKG_VERSION"));
+    h.update(tissue);
+    h.update(serde_json::to_vec(&keyed).unwrap_or_default());
+    h.update(runs);
+    hex(h.finalize().as_slice())
+}
+
 /// Write `file` to `path`.
-pub fn write(path: &str, file: &ShardFile) -> anyhow::Result<()> {
+pub fn write(path: &str, file: &Contents) -> anyhow::Result<()> {
     legume_numeric::matrix::common_io::mkdir_parent(path)?;
     let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
     ciborium::into_writer(file, &mut w)
@@ -220,73 +327,86 @@ pub fn write(path: &str, file: &ShardFile) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The run key of the shard file at `path`, and whether it carries the
-/// cell-type rows (`--marginal-baselines`).
+/// What a shard file is of, as a merge of it writes.
 #[cfg(feature = "view")]
-pub fn peek(path: &str) -> anyhow::Result<(String, bool)> {
-    let f = read(path)?;
-    Ok((f.run_key, f.celltype_source.is_some()))
+pub enum Kind {
+    /// `pinto lra`, with the cell-type rows (`--marginal-baselines`) or not.
+    Lra { celltype: bool },
+    /// `pinto lra simulate`, one scenario (`--one`) or the built-in grid.
+    Simulate { one: bool },
 }
 
-fn read(path: &str) -> anyhow::Result<ShardFile> {
+/// The run key of the shard file at `path`, and what it is of.
+#[cfg(feature = "view")]
+pub fn peek(path: &str) -> anyhow::Result<(String, Kind)> {
+    Ok(match read(path)? {
+        Contents::Lra(f) => (
+            f.header.run_key,
+            Kind::Lra {
+                celltype: f.celltype_source.is_some(),
+            },
+        ),
+        Contents::Simulate(f) => (
+            f.header.run_key,
+            Kind::Simulate {
+                one: matches!(f.finish, SimFinish::One { .. }),
+            },
+        ),
+    })
+}
+
+fn read(path: &str) -> anyhow::Result<Contents> {
     let r = std::io::BufReader::new(
         std::fs::File::open(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?,
     );
-    let file: ShardFile = ciborium::from_reader(r)
+    let file: Contents = ciborium::from_reader(r)
         .map_err(|e| anyhow::anyhow!("{path}: not a pinto lra shard file ({e})"))?;
+    let format = file.header().format;
     anyhow::ensure!(
-        file.format == FORMAT,
-        "{path}: a shard file of layout {} (this pinto reads {FORMAT})",
-        file.format
+        format == FORMAT,
+        "{path}: a shard file of layout {format} (this pinto reads {FORMAT})"
     );
     Ok(file)
 }
 
-/// The shards at `paths`, checked to be every shard of one run, in shard
-/// order, and the pair rows and cell-type rows of every pair in pair order.
-pub struct Merged {
-    pub run_key: String,
-    pub record: TableRecord,
-    pub count: usize,
-    pub rows: Vec<EffectRow>,
-    /// With `--marginal-baselines`, every pair's cell-type rows.
-    pub celltype: Option<Vec<CelltypeRow>>,
-}
-
-pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
+/// The shard files at `paths`, in shard order, checked to be every shard of
+/// one run: the same run key and count, each shard once.
+pub fn read_set(paths: &[String]) -> anyhow::Result<Vec<Contents>> {
     anyhow::ensure!(!paths.is_empty(), "no shard files given");
-    let mut files: Vec<(String, ShardFile)> = paths
+    let mut files: Vec<(String, Contents)> = paths
         .iter()
         .map(|p| read(p).map(|f| (p.clone(), f)))
         .collect::<anyhow::Result<_>>()?;
-    files.sort_by_key(|(_, f)| f.shard.index);
-    let (first_path, first) = &files[0];
-    let (count, key) = (first.shard.count, first.run_key.clone());
+    files.sort_by_key(|(_, f)| f.header().shard.index);
+    let (first_path, first) = (&files[0].0, files[0].1.header());
+    let count = first.shard.count;
     for (p, f) in &files {
+        let h = f.header();
         anyhow::ensure!(
-            f.run_key == key && f.pinto_version == first.pinto_version,
-            "{p} is a shard of another run than {first_path} (its settings, pairs or pinto \
-             version differ)"
+            h.run_key == first.run_key,
+            "{p} is a shard of another run than {first_path} (its settings, pairs, tissue or \
+             pinto version differ)"
         );
         anyhow::ensure!(
-            f.shard.count == count,
+            h.shard.count == count,
             "{p} is shard {} but {first_path} is shard {}",
-            f.shard,
+            h.shard,
             first.shard
         );
     }
     for w in files.windows(2) {
+        let (a, b) = (w[0].1.header(), w[1].1.header());
         anyhow::ensure!(
-            w[0].1.shard.index != w[1].1.shard.index,
+            a.shard.index != b.shard.index,
             "shard {} given twice: {} and {}",
-            w[0].1.shard,
+            a.shard,
             w[0].0,
             w[1].0
         );
     }
     let mut have = vec![false; count];
     for (_, f) in &files {
-        have[f.shard.index] = true;
+        have[f.header().shard.index] = true;
     }
     let missing: Vec<String> = (0..count)
         .filter(|&i| !have[i])
@@ -297,9 +417,36 @@ pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
         "missing shard(s) {} of {count}",
         missing.join(", ")
     );
-    let record = first.record.clone();
-    let source = first.celltype_source;
-    let mut pairs: Vec<ShardPair> = files.into_iter().flat_map(|(_, f)| f.pairs).collect();
+    Ok(files.into_iter().map(|(_, f)| f).collect())
+}
+
+/// Every shard of a `pinto lra` run, put together: the pair rows and
+/// cell-type rows of every pair in pair order.
+pub struct Merged {
+    pub run_key: String,
+    pub record: TableRecord,
+    pub count: usize,
+    pub rows: Vec<EffectRow>,
+    /// With `--marginal-baselines`, every pair's cell-type rows.
+    pub celltype: Option<Vec<CelltypeRow>>,
+}
+
+/// [`read_set`]'s files as one `pinto lra` run.
+pub fn merge_lra(files: Vec<Contents>) -> anyhow::Result<Merged> {
+    let count = files.len();
+    let files: Vec<ShardFile> = files
+        .into_iter()
+        .map(|f| match f {
+            Contents::Lra(f) => Ok(*f),
+            Contents::Simulate(_) => {
+                anyhow::bail!("a pinto lra simulate shard among pinto lra shards")
+            }
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let run_key = files[0].header.run_key.clone();
+    let record = files[0].record.clone();
+    let source = files[0].celltype_source;
+    let mut pairs: Vec<ShardPair> = files.into_iter().flat_map(|f| f.pairs).collect();
     pairs.sort_by_key(|p| p.index);
     anyhow::ensure!(
         pairs.len() == record.n_all && pairs.iter().enumerate().all(|(k, p)| p.index == k),
@@ -319,12 +466,34 @@ pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
             .collect()
     });
     Ok(Merged {
-        run_key: key,
+        run_key,
         record,
         count,
         rows,
         celltype,
     })
+}
+
+/// [`read_set`]'s files as one `pinto lra simulate` call: its run key, how
+/// it finishes, and every run in order.
+pub fn merge_sim(files: Vec<Contents>) -> anyhow::Result<(String, SimFinish, Vec<SimRun>)> {
+    let files: Vec<SimShardFile> = files
+        .into_iter()
+        .map(|f| match f {
+            Contents::Simulate(f) => Ok(f),
+            Contents::Lra(_) => anyhow::bail!("a pinto lra shard among pinto lra simulate shards"),
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let run_key = files[0].header.run_key.clone();
+    let (n_runs, finish) = (files[0].n_runs, files[0].finish.clone());
+    let mut runs: Vec<SimRun> = files.into_iter().flat_map(|f| f.runs).collect();
+    runs.sort_by_key(|r| r.index);
+    anyhow::ensure!(
+        runs.len() == n_runs && runs.iter().enumerate().all(|(k, r)| r.index == k),
+        "the shards hold {} of the call's {n_runs} runs, not each once",
+        runs.len()
+    );
+    Ok((run_key, finish, runs))
 }
 
 #[cfg(test)]
