@@ -90,7 +90,7 @@ const ALPHA: f64 = 0.05;
 
 /// One run's baselines: each statistic and its one-sided p (NaN where the
 /// statistic is undefined, which never rejects).
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct Baselines {
     /// The largest tested type-pair score.
     pub celltype_score: f64,
@@ -122,7 +122,7 @@ pub fn rejects(p: f64) -> bool {
 }
 
 /// Where the cell-type baseline's types come from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeSource {
     /// The run's cell types (`--cell-types` or its lupin round).
     CellTypes,
@@ -367,7 +367,7 @@ fn type_sums(ty: &[u32], xl: &[f64], xr: &[f64], k: usize) -> (Vec<f64>, Vec<f64
 /// cells of each, mean `log1p` ligand in the sender and receptor in the
 /// receiver with their detection shares (the reason it is tested), the
 /// score (their product) and its permutation p.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct TypePair {
     pub sender: u32,
     pub receiver: u32,

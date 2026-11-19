@@ -108,6 +108,7 @@ mod regression;
 mod report;
 mod response;
 mod rows;
+pub mod shard;
 pub mod simulate;
 mod targets;
 mod thresholds;
@@ -188,8 +189,10 @@ pub const INTERNALS: Internals = Internals {
 /// What the user chose, and where the run records itself.
 pub struct Settings<'a> {
     pub out: &'a str,
-    /// The manifest the outputs are recorded in.
+    /// The manifest the outputs are recorded in, and whether it is the
+    /// `--from` run's.
     pub manifest: &'a Path,
+    pub from_run: bool,
     pub lr_pairs: Option<&'a str>,
     pub targets: &'a [Box<str>],
     pub species: ReferenceSpecies,
@@ -215,6 +218,9 @@ pub struct Settings<'a> {
     /// baseline (`--marginal-permutations`); `None` without the flag, and
     /// always for `lra-simulate`, which scores its own.
     pub marginal: Option<usize>,
+    /// `--shard`: estimate only this shard's ligands and write their rows
+    /// for `pinto lra merge` ([`shard`]); `None` for the whole run.
+    pub shard: Option<shard::Shard>,
     /// The bytes `PINTO_MEMORY_BUDGET` sets, read once at the start
     /// ([`crate::util::memory::budget_var`]); `None` sizes the pairs at once
     /// by half the memory available then ([`memory::pair_memory_budget`]).

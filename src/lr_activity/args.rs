@@ -226,6 +226,22 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
+        value_name = "I/N",
+        conflicts_with = "only",
+        help = "Estimate shard I (0-based) of N of the pairs, for `pinto lra merge`",
+        long_help = "Estimate only shard I of N of the pairs (contact-effect), I from 0 to\n\
+                     N-1, as one task of a job array (I = $SLURM_ARRAY_TASK_ID with\n\
+                     --array=0-<N-1>). The ligands are dealt to the shards whole, the same\n\
+                     way every time, and each pair comes out as the whole run estimates it.\n\
+                     A shard writes {out}.lra.shard-I-of-N.cbor, its pairs before the\n\
+                     q-values, and no table; `pinto lra merge` reads all N and writes the\n\
+                     tables of the whole run, its q-values over every pair. Every shard\n\
+                     takes the same flags but --shard and --out."
+    )]
+    pub shard: Option<crate::lr_activity::ligand_effect::shard::Shard>,
+
+    #[arg(
+        long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
         help = "Response programs (TSV or GMT), added to the reference",
@@ -490,4 +506,23 @@ fn positive_scale(s: &str) -> Result<f64, String> {
         Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
         _ => Err(format!("{s:?}: a positive number")),
     }
+}
+
+/// `pinto lra merge`.
+#[derive(clap::Args, Debug)]
+pub struct LraMergeArgs {
+    #[arg(
+        required = true,
+        value_hint = ValueHint::FilePath,
+        help = "Every shard file of one run ({out}.lra.shard-I-of-N.cbor), in any order"
+    )]
+    pub shards: Vec<String>,
+
+    #[arg(
+        short,
+        long,
+        help = "Output prefix: the tables a run without --shard writes, {out}.lra.parquet \
+                and the rest"
+    )]
+    pub out: Box<str>,
 }

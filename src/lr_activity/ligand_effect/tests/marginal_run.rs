@@ -3,9 +3,11 @@
 //! `--only`, its tables and its record in the manifest.
 
 use super::super::only;
-use super::super::output::{celltype_beside, lra_path};
+use super::super::output::{celltype_beside, curve_beside, lra_path};
+use super::super::pipeline::merge;
 use super::super::pipeline::run;
 use super::super::reference::{with_test_root, write_empty_reference, Species};
+use super::super::shard::{self, Shard};
 use super::super::tissue::ALL_SECTIONS;
 use super::super::{RunInputs, Settings};
 use super::{lattice_contacts, type_names};
@@ -100,8 +102,8 @@ fn reference_and_files(dir: &Path) -> (String, String) {
 }
 
 /// `pinto lra --marginal-baselines --marginal-permutations` [`PERMUTATIONS`]
-/// with `only` into `out`, the run's manifest at `manifest`.
-fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
+/// with `only` (and `shard`) into `out`, the run's manifest at `manifest`.
+fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard: Option<Shard>) {
     let n = SECTIONS * SIDE * SIDE;
     let data = data(dir, n);
     let axis =
@@ -126,11 +128,13 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>]) {
             settings: Settings {
                 out,
                 manifest,
+                from_run: true,
                 lr_pairs: Some(&pairs_file),
                 targets: &targets,
                 species: ReferenceSpecies::Human,
                 seed: 7,
                 only,
+                shard,
                 cell_types: Some("ct.tsv"),
                 region: None,
                 plant_region: None,
@@ -200,7 +204,7 @@ fn a_run_with_marginal_baselines_writes_and_records_its_tables() {
     .unwrap();
     let out = dir.path().join("o").to_string_lossy().into_owned();
 
-    marginal_run(dir.path(), &out, &manifest, &[]);
+    marginal_run(dir.path(), &out, &manifest, &[], None);
     let table = lra_path(&out);
     let celltype = celltype_beside(&table);
     assert_full_celltype_table(&celltype);
@@ -231,7 +235,7 @@ fn a_run_with_marginal_baselines_writes_and_records_its_tables() {
     assert_eq!(options.marginal_permutations, Some(PERMUTATIONS));
 
     let subset: Vec<Box<str>> = vec!["GENE1:GENE2".into()];
-    marginal_run(dir.path(), &out, &manifest, &subset);
+    marginal_run(dir.path(), &out, &manifest, &subset, None);
     let sub_table = only::table_path(&out, &subset);
     let sub_celltype = celltype_beside(&sub_table);
     assert_full_celltype_table(&sub_celltype);
@@ -249,5 +253,66 @@ fn a_run_with_marginal_baselines_writes_and_records_its_tables() {
         lra.celltype.as_deref(),
         Some(recorded(Path::new(&celltype)).as_str()),
         "the full table's record stays"
+    );
+}
+
+/// `--shard I/N` on every shard, then `pinto lra merge`: the tables of the
+/// whole run, byte for byte, recorded in its manifest.
+#[test]
+fn shards_merged_write_the_tables_of_the_whole_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("run.pinto.json");
+    PintoMetadata {
+        command: "lra".into(),
+        ..Default::default()
+    }
+    .write(&manifest)
+    .unwrap();
+    let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let whole = at("whole");
+    marginal_run(dir.path(), &whole, &manifest, &[], None);
+    let count = 2;
+    let files: Vec<String> = (0..count)
+        .map(|index| {
+            let s = Shard { index, count };
+            let out = at(&format!("shard{index}/o"));
+            marginal_run(dir.path(), &out, &manifest, &[], Some(s));
+            assert!(
+                !Path::new(&lra_path(&out)).exists(),
+                "a shard writes no table"
+            );
+            shard::path(&out, s)
+        })
+        .collect();
+    // a shard missing, or given twice, is refused
+    let err = merge(&files[..1], &at("merged")).unwrap_err().to_string();
+    assert!(err.contains("missing shard(s) 1/2"), "{err}");
+    let twice = [files[0].clone(), files[0].clone(), files[1].clone()];
+    assert!(merge(&twice, &at("merged")).is_err());
+
+    let merged = at("merged");
+    // in any order
+    merge(&[files[1].clone(), files[0].clone()], &merged).unwrap();
+    for (a, b) in [
+        (lra_path(&whole), lra_path(&merged)),
+        (
+            curve_beside(&lra_path(&whole)),
+            curve_beside(&lra_path(&merged)),
+        ),
+        (
+            celltype_beside(&lra_path(&whole)),
+            celltype_beside(&lra_path(&merged)),
+        ),
+    ] {
+        assert_eq!(
+            std::fs::read(&a).unwrap(),
+            std::fs::read(&b).unwrap(),
+            "{b}"
+        );
+    }
+    let lra = PintoMetadata::read(&manifest).unwrap().outputs.lra;
+    assert_eq!(
+        lra.table.as_deref(),
+        Some(recorded(Path::new(&lra_path(&merged))).as_str())
     );
 }

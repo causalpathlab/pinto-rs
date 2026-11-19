@@ -70,7 +70,7 @@ pub fn combine(parts: &[Estimate]) -> Estimate {
 /// What the data say about the exposure threshold, for one estimand: the
 /// evidence for an effect at any threshold against none, and the threshold
 /// the average leans on. NaN without an estimate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct AbfSummary {
     /// log10 of the mean Bayes factor over the thresholds.
     pub log10_bf: f64,

@@ -167,11 +167,13 @@ impl Fixture {
             settings: Settings {
                 out,
                 manifest,
+                from_run: true,
                 lr_pairs: Some(&self.pairs_file),
                 targets: &self.targets,
                 species: ReferenceSpecies::Human,
                 seed,
                 only: &[],
+                shard: None,
                 cell_types: None,
                 region: None,
                 plant_region: None,

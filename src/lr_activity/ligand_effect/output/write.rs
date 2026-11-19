@@ -159,6 +159,7 @@ pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
 
 /// One row of `{out}.lra.celltype.parquet`: a pair's tested sender type ×
 /// receiver type, named.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CelltypeRow {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
@@ -167,6 +168,9 @@ pub struct CelltypeRow {
     pub stat: TypePair,
     pub q: f64,
     pub permutations: usize,
+    /// [`super::super::baselines::TypeSource::name`]; a shard file keeps the
+    /// source once instead.
+    #[serde(skip)]
     pub labels: &'static str,
 }
 

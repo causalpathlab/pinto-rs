@@ -8,7 +8,7 @@ use special::{Beta, Error as _};
 pub const ONE_CLUSTER_DF: f64 = 0.0;
 
 /// One subgroup's estimate.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct Estimate {
     pub theta: f64,
     pub se: f64,

@@ -14,7 +14,7 @@ use super::response::Response;
 use super::timing;
 
 /// Every estimand in one scope.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct ScopeEffects {
     /// the contrast: competent effect − incompetent effect; not the headline
     /// (see the module doc).

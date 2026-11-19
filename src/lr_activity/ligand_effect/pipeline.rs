@@ -8,6 +8,7 @@ use super::memory::{ligand_memory, pair_memory, pair_workers, run_bounded};
 use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
+use super::shard::{self, TableRecord};
 use super::simulate::{self, default_grid, simulate, SimBase, SimShared};
 use super::tissue::{identity_bins, Tissue, TissueInputs, TissueOpts, ALL_SECTIONS};
 use super::{
@@ -67,6 +68,10 @@ struct Prepared {
     pairs: Vec<Pair>,
     /// Pairs the full analysis would estimate, of which `pairs` are kept.
     n_all: usize,
+    /// Each kept pair's place among those `n_all`, and with `--shard` the
+    /// names of all `n_all` (ligand, receptor), for the run key.
+    index_in_all: Vec<usize>,
+    all_names: Vec<(Box<str>, Box<str>)>,
     store: GeneStore,
     local: HashMap<usize, usize>,
     eopts: EffectOpts,
@@ -102,18 +107,30 @@ impl Prepared {
     }
 }
 
-/// The pairs to estimate: all of them, or those `--only` names.
-fn select_only(
-    only_names: &[Box<str>],
-    all: Vec<Pair>,
+/// Which pairs to estimate: all of them, those `--only` names, or the
+/// ligands `--shard` is dealt ([`shard::deal`]).
+fn pairs_kept(
+    a: &Settings<'_>,
+    all: &[Pair],
     gene_names: &[Box<str>],
     index: &GeneIndex,
-) -> anyhow::Result<Vec<Pair>> {
-    if only_names.is_empty() {
-        return Ok(all);
+) -> anyhow::Result<Vec<bool>> {
+    if let Some(s) = a.shard {
+        let of = shard::deal(&ligand_groups(all), all.len(), s.count);
+        let keep: Vec<bool> = of.iter().map(|&k| k == s.index).collect();
+        info!(
+            target: LOG_TARGET,
+            "--shard {s}: {} of {} pairs",
+            keep.iter().filter(|&&k| k).count(),
+            all.len()
+        );
+        return Ok(keep);
     }
-    let wanted = only::parse(only_names)?;
-    let keep = only::select(&wanted, &all, gene_names, index)?;
+    if a.only.is_empty() {
+        return Ok(vec![true; all.len()]);
+    }
+    let wanted = only::parse(a.only)?;
+    let keep = only::select(&wanted, all, gene_names, index)?;
     info!(
         target: LOG_TARGET,
         "--only: {} of {} pairs ({})",
@@ -125,11 +142,7 @@ fn select_only(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    Ok(all
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(p, k)| k.then_some(p))
-        .collect())
+    Ok(keep)
 }
 
 /// The tissue the receivers live in, at the fixed scales and folds.
@@ -197,7 +210,20 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         .collect();
     identity_excluded.sort_unstable();
     let n_all = all.len();
-    let pairs = select_only(a.only, all, &gene_names, &index)?;
+    let keep = pairs_kept(a, &all, &gene_names, &index)?;
+    let index_in_all: Vec<usize> = (0..n_all).filter(|&k| keep[k]).collect();
+    let all_names = match a.shard {
+        Some(_) => all
+            .iter()
+            .map(|p| (p.ligand.clone(), p.receptor.clone()))
+            .collect(),
+        None => Vec::new(),
+    };
+    let pairs: Vec<Pair> = all
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect();
 
     let (receivers, row_of_cell) = receivers::receiver_rows(inp.coords, inp.pairs);
     let needed = pair_genes(&pairs);
@@ -217,6 +243,8 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         tissue,
         pairs,
         n_all,
+        index_in_all,
+        all_names,
         store,
         local,
         eopts: effect_opts(a.seed, a.region_jackknife, a.abf_prior_scale),
@@ -301,10 +329,10 @@ fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::Eff
     })
 }
 
-/// Every pair's rows, in pair order. The pairs of one ligand run one after
+/// Each pair's rows, in pair order. The pairs of one ligand run one after
 /// another on one worker and share its base propensities
 /// ([`LigandShare`]); ligands run side by side.
-fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
+fn estimate_pairs(prep: &Prepared) -> Vec<Vec<rows::EffectRow>> {
     let pb = Progress::new(prep.pairs.len(), "ligand-receptor pairs");
     // Largest first, so a ligand with many pairs does not start last and
     // set the finishing time; the rows are put back in pair order below.
@@ -327,7 +355,7 @@ fn estimate_pairs(prep: &Prepared) -> Vec<rows::EffectRow> {
             .collect()
     });
     by_pair.sort_by_key(|(k, _)| *k);
-    let rows: Vec<rows::EffectRow> = by_pair.into_iter().flat_map(|(_, r)| r).collect();
+    let rows: Vec<Vec<rows::EffectRow>> = by_pair.into_iter().map(|(_, r)| r).collect();
     pb.finish();
     info!(
         target: LOG_TARGET,
@@ -410,31 +438,54 @@ fn attach_marginals(rows: &mut [rows::EffectRow], prep: &Prepared, m: &Marginal)
     }
 }
 
-/// Record the tables in the manifest: a `--only` run as a subset beside the
-/// full table, any other as the full table with its reference.
+/// What the run's tables are recorded with ([`shard::TableRecord`]).
+fn table_record(a: &Settings<'_>, prep: &Prepared, marginal: Option<&Marginal>) -> TableRecord {
+    TableRecord {
+        manifest: a.manifest.to_path_buf(),
+        from_run: a.from_run,
+        abf_prior_scale: a.abf_prior_scale,
+        // The genes left out of the identity, so the viewer draws the
+        // receivers as they were without the files that decided them.
+        options: crate::util::metadata::LraOptions {
+            identity_excluded: prep.identity_excluded.clone(),
+            marginal_baselines: marginal.map(|m| m.labels.source.name().into()),
+            ..a.options()
+        },
+        reference_record: prep.reference_record.clone(),
+        n_all: prep.n_all,
+    }
+}
+
+/// Each pair's cell-type rows (`--marginal-baselines`), in pair order.
+fn celltype_rows(prep: &Prepared, m: &Marginal) -> Vec<Vec<output::CelltypeRow>> {
+    prep.pairs
+        .iter()
+        .zip(&m.tests)
+        .map(|(p, (_, t))| output::celltype_rows(&p.ligand, &p.receptor, t, &m.labels))
+        .collect()
+}
+
+/// Record the tables in the manifest: a `--only` run (`only`, of `n_pairs`
+/// pairs) as a subset beside the full table, any other as the full table
+/// with its reference.
 fn record_tables(
-    a: &Settings<'_>,
-    prep: &Prepared,
+    record: &TableRecord,
+    only: &[Box<str>],
+    n_pairs: usize,
     path: &str,
     curve_path: &str,
-    celltype: Option<(&str, &Marginal)>,
+    celltype: Option<&str>,
 ) -> anyhow::Result<()> {
     let recorded = |p: &str| crate::lr_activity::recorded(Path::new(p));
-    // The genes left out of the identity, so the viewer draws the
-    // receivers as they were without the files that decided them.
-    let options = crate::util::metadata::LraOptions {
-        identity_excluded: prep.identity_excluded.clone(),
-        marginal_baselines: celltype.map(|(_, m)| m.labels.source.name().into()),
-        ..a.options()
-    };
+    let options = record.options.clone();
     let (table, curve) = (recorded(path), recorded(curve_path));
-    let celltype = celltype.map(|(p, _)| recorded(p));
-    if a.only.is_empty() {
-        let reference = prep
+    let celltype = celltype.map(recorded);
+    if only.is_empty() {
+        let reference = record
             .reference_record
             .as_deref()
             .map(crate::lr_activity::recorded);
-        record(a.manifest, a.abf_prior_scale, |o| {
+        self::record(&record.manifest, record.abf_prior_scale, |o| {
             o.table = Some(table);
             o.curve = Some(curve);
             o.celltype = celltype;
@@ -443,48 +494,47 @@ fn record_tables(
         })
     } else {
         let entry = crate::util::metadata::LraSubset {
-            only: only::canonical(a.only),
-            pairs: prep.pairs.len(),
-            of: prep.n_all,
+            only: only::canonical(only),
+            pairs: n_pairs,
+            of: record.n_all,
             table,
             curve,
             celltype,
             options: Some(options),
         };
-        record(a.manifest, a.abf_prior_scale, |o| o.record_subset(entry))
+        self::record(&record.manifest, record.abf_prior_scale, |o| {
+            o.record_subset(entry)
+        })
     }
 }
 
-/// Write the effect and curve tables (and with `marginal` the per-type-pair
-/// table) and record them; the effect table's path and the q-values' scope.
+/// Write the effect and curve tables of `rows` (`n_pairs` pairs) under
+/// `out` (with `celltype` the per-type-pair table) and record them; the
+/// effect table's path and the q-values' scope.
 fn write_tables(
-    a: &Settings<'_>,
-    prep: &Prepared,
+    out: &str,
+    only: &[Box<str>],
+    record: &TableRecord,
+    n_pairs: usize,
     rows: &[rows::EffectRow],
-    marginal: Option<&Marginal>,
+    celltype: Option<&[output::CelltypeRow]>,
 ) -> anyhow::Result<(String, String)> {
     let made = crate::lr_activity::lra_outputs(
         crate::lr_activity::args::LraMethod::ContactEffect,
-        a.out,
-        a.only,
+        out,
+        only,
     );
     let [path, curve_path] = [&made[0], &made[1]].map(|p| p.to_string_lossy().into_owned());
-    let q_scope = if a.only.is_empty() {
+    let q_scope = if only.is_empty() {
         output::Q_SCOPE_ALL.into()
     } else {
-        only::q_scope(prep.pairs.len(), prep.n_all)
+        only::q_scope(n_pairs, record.n_all)
     };
-    output::write_effects(&path, rows, &q_scope, marginal.is_some())?;
+    output::write_effects(&path, rows, &q_scope, celltype.is_some())?;
     output::write_curve(&curve_path, rows)?;
     let celltype_path = output::celltype_beside(&path);
-    if let Some(m) = marginal {
-        let table: Vec<output::CelltypeRow> = prep
-            .pairs
-            .iter()
-            .zip(&m.tests)
-            .flat_map(|(p, (_, t))| output::celltype_rows(&p.ligand, &p.receptor, t, &m.labels))
-            .collect();
-        output::write_celltype(&celltype_path, &table)?;
+    if let Some(table) = celltype {
+        output::write_celltype(&celltype_path, table)?;
         info!(
             target: LOG_TARGET,
             "Wrote {} tested type pairs to {}",
@@ -492,36 +542,154 @@ fn write_tables(
             crate::util::staging::final_str(&celltype_path)
         );
     }
-    let celltype = marginal.map(|m| (celltype_path.as_str(), m));
-    record_tables(a, prep, &path, &curve_path, celltype)?;
+    let celltype = celltype.map(|_| celltype_path.as_str());
+    record_tables(record, only, n_pairs, &path, &curve_path, celltype)?;
     Ok((path, q_scope))
 }
 
 /// The lines a run ends with.
-fn print_run_summary(a: &Settings<'_>, rows: &[rows::EffectRow], path: &str, q_scope: &str) {
-    let power_check = crate::util::metadata::PintoMetadata::read(a.manifest)
+fn print_run_summary(
+    manifest: &Path,
+    only: &[Box<str>],
+    rows: &[rows::EffectRow],
+    path: &str,
+    q_scope: &str,
+) {
+    let power_check = crate::util::metadata::PintoMetadata::read(manifest)
         .ok()
         .and_then(|m| m.outputs.lra.simulate);
     let path = crate::util::staging::final_str(path);
     crate::util::staging::say(output::console_summary(rows, &path, power_check.as_deref()));
-    if !a.only.is_empty() {
+    if !only.is_empty() {
         crate::util::staging::say(format!(
             "  {q_scope}; the full table, when there is one, is unchanged"
         ));
     }
 }
 
+/// `--shard`: the shard's pairs' rows, before the q-values, to
+/// [`shard::path`]; no table, nothing recorded.
+fn write_shard(
+    a: &Settings<'_>,
+    s: shard::Shard,
+    prep: &Prepared,
+    by_pair: Vec<Vec<rows::EffectRow>>,
+    marginal: Option<&Marginal>,
+) -> anyhow::Result<()> {
+    let record = table_record(a, prep, marginal);
+    let names = prep.all_names.iter().map(|(l, r)| (&**l, &**r));
+    let run_key = shard::run_key(&record, names);
+    let mut celltype = marginal.map(|m| celltype_rows(prep, m));
+    let pairs = by_pair
+        .into_iter()
+        .zip(&prep.index_in_all)
+        .enumerate()
+        .map(|(k, (rows, &index))| shard::ShardPair {
+            index,
+            rows,
+            celltype: celltype
+                .as_mut()
+                .map(|c| std::mem::take(&mut c[k]))
+                .unwrap_or_default(),
+        })
+        .collect();
+    let file = shard::ShardFile {
+        format: shard::FORMAT,
+        pinto_version: env!("CARGO_PKG_VERSION").into(),
+        shard: s,
+        run_key,
+        record,
+        pairs,
+        celltype_source: marginal.map(|m| m.labels.source),
+    };
+    let path = shard::path(a.out, s);
+    shard::write(&path, &file)?;
+    crate::util::staging::say(format!(
+        "Shard {s}: {} pairs to {}; `pinto lra merge` puts the {} shards together",
+        prep.pairs.len(),
+        crate::util::staging::final_str(&path),
+        s.count
+    ));
+    Ok(())
+}
+
 pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
-    let mut rows = estimate_pairs(&prep);
-    report::report(&mut rows, &report::ReportOpts::default());
+    let by_pair = estimate_pairs(&prep);
     let marginal = a.marginal.map(|n| marginal_baselines(&prep, n, a.seed));
+    if let Some(s) = a.shard {
+        let mut by_pair = by_pair;
+        if let Some(m) = &marginal {
+            for rows in &mut by_pair {
+                attach_marginals(rows, &prep, m);
+            }
+        }
+        return write_shard(a, s, &prep, by_pair, marginal.as_ref());
+    }
+    let mut rows: Vec<rows::EffectRow> = by_pair.into_iter().flatten().collect();
+    report::report(&mut rows, &report::ReportOpts::default());
     if let Some(m) = &marginal {
         attach_marginals(&mut rows, &prep, m);
     }
-    let (path, q_scope) = write_tables(a, &prep, &rows, marginal.as_ref())?;
-    print_run_summary(a, &rows, &path, &q_scope);
+    let record = table_record(a, &prep, marginal.as_ref());
+    let celltype: Option<Vec<output::CelltypeRow>> = marginal
+        .as_ref()
+        .map(|m| celltype_rows(&prep, m).into_iter().flatten().collect());
+    let (path, q_scope) = write_tables(
+        a.out,
+        a.only,
+        &record,
+        prep.pairs.len(),
+        &rows,
+        celltype.as_deref(),
+    )?;
+    print_run_summary(a.manifest, a.only, &rows, &path, &q_scope);
+    Ok(())
+}
+
+/// `{out}.pinto.json`, when it does not exist yet, as the shard's manifest
+/// at `shard_manifest` reads but for its prefix and time.
+fn own_manifest(shard_manifest: &Path, out: &str) -> anyhow::Result<std::path::PathBuf> {
+    use crate::util::metadata::{manifest_path, now_secs, PintoMetadata};
+    let out = crate::util::staging::final_str(out);
+    let path = std::path::PathBuf::from(manifest_path(&out));
+    let shard = PintoMetadata::read(shard_manifest)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", shard_manifest.display()))?;
+    PintoMetadata {
+        timestamp: now_secs(),
+        prefix: out,
+        outputs: Default::default(),
+        ..shard
+    }
+    .write_if_missing(&path)?;
+    Ok(path)
+}
+
+/// `pinto lra merge`: every shard of a run at `shards`, its tables under
+/// `out` as a run without `--shard` writes them, recorded in its manifest.
+pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
+    let shard::Merged {
+        mut record,
+        count,
+        mut rows,
+        celltype,
+    } = shard::read_all(shards)?;
+    if !record.from_run {
+        // a run on data files: the merge's own manifest, as the shards' own
+        record.manifest = own_manifest(&record.manifest, out)?;
+    }
+    info!(
+        target: LOG_TARGET,
+        "Merging {count} shards: {} pairs, {} rows",
+        record.n_all,
+        rows.len()
+    );
+    report::report(&mut rows, &report::ReportOpts::default());
+    let celltype = celltype.map(|(_, rows)| rows);
+    let (path, q_scope) =
+        write_tables(out, &[], &record, record.n_all, &rows, celltype.as_deref())?;
+    print_run_summary(&record.manifest, &[], &rows, &path, &q_scope);
     Ok(())
 }
 

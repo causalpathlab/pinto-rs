@@ -120,6 +120,10 @@ pub(crate) fn check_method_flags(args: &SrtLrActivityArgs) -> anyhow::Result<()>
          pairs of --lr-pairs"
     );
     anyhow::ensure!(
+        args.shard.is_none(),
+        "--shard applies to --method contact-effect"
+    );
+    anyhow::ensure!(
         args.input.region.is_none() && args.input.cell_types.is_none(),
         "--region and --cell-types apply to --method contact-effect; the co-expression \
          methods stratify by the run's link communities"
@@ -651,11 +655,13 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
         settings: Settings {
             out,
             manifest: &manifest,
+            from_run: input.run.is_some(),
             lr_pairs: args.lr_pairs.as_deref(),
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
             only: &args.only,
+            shard: args.shard,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: None,
@@ -750,11 +756,13 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
         settings: Settings {
             out: &out,
             manifest: &manifest,
+            from_run: input.run.is_some(),
             lr_pairs: args.lr_pairs.as_deref(),
             targets: &args.targets,
             species: args.species,
             seed: args.input.seed,
             only: &[],
+            shard: None,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: args.plant_region.as_deref(),

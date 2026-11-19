@@ -8,7 +8,7 @@ use super::tissue::ALL_SECTIONS;
 use super::verdict::Verdict;
 
 /// One output row: a pair in one section, or pooled.
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct EffectRow {
     pub section: Box<str>,
     pub ligand: Box<str>,
@@ -118,7 +118,7 @@ impl EffectRow {
 /// One point of the threshold–response curve: the competent effect (pooled) at exposure
 /// threshold `tau`, `quantile` being the share of positive exposures at or
 /// below it; the pointwise 95% interval and the simultaneous band.
-#[derive(Clone, Copy, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct CurvePoint {
     pub tau: f64,
     pub quantile: f64,
