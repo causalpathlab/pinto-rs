@@ -247,6 +247,7 @@ pub fn sha256_bytes(data: &[u8]) -> String {
     hex(&Sha256::digest(data))
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Lower-case hex of `bytes`.
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

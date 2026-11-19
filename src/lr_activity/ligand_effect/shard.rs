@@ -18,6 +18,7 @@
 
 use super::baselines::TypeSource;
 use super::output::CelltypeRow;
+use super::reference::hex;
 use super::rows::EffectRow;
 use crate::util::metadata::LraOptions;
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,45 @@ pub struct TableRecord {
     pub reference_record: Option<PathBuf>,
     /// Pairs the full analysis would estimate.
     pub n_all: usize,
+    /// A hash of the tissue the pairs are estimated on ([`tissue_key`]), so
+    /// shards of another data set never merge.
+    pub tissue: String,
+}
+
+/// SHA-256 of the cells' count, the features' names, the spatial contacts,
+/// each cell's coordinates and section.
+pub fn tissue_key(
+    n_cells: usize,
+    features: &[Box<str>],
+    contacts: &[(usize, usize)],
+    coords: &[Option<(f32, f32)>],
+    cell_section: &[Box<str>],
+) -> String {
+    let mut h = sha2::Sha256::new();
+    h.update((n_cells as u64).to_le_bytes());
+    for f in features {
+        h.update(f.as_bytes());
+        h.update([0]);
+    }
+    for &(a, b) in contacts {
+        h.update((a as u64).to_le_bytes());
+        h.update((b as u64).to_le_bytes());
+    }
+    for c in coords {
+        match c {
+            Some((x, y)) => {
+                h.update([1]);
+                h.update(x.to_le_bytes());
+                h.update(y.to_le_bytes());
+            }
+            None => h.update([0]),
+        }
+    }
+    for s in cell_section {
+        h.update(s.as_bytes());
+        h.update([0]);
+    }
+    hex(h.finalize().as_slice())
 }
 
 /// One shard's file.
@@ -168,7 +208,7 @@ pub fn run_key<'a>(
         h.update(r);
         h.update([1]);
     }
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hex(h.finalize().as_slice())
 }
 
 /// Write `file` to `path`.
@@ -178,6 +218,14 @@ pub fn write(path: &str, file: &ShardFile) -> anyhow::Result<()> {
     ciborium::into_writer(file, &mut w)
         .map_err(|e| anyhow::anyhow!("{path}: could not write the shard: {e}"))?;
     Ok(())
+}
+
+/// The run key of the shard file at `path`, and whether it carries the
+/// cell-type rows (`--marginal-baselines`).
+#[cfg(feature = "view")]
+pub fn peek(path: &str) -> anyhow::Result<(String, bool)> {
+    let f = read(path)?;
+    Ok((f.run_key, f.celltype_source.is_some()))
 }
 
 fn read(path: &str) -> anyhow::Result<ShardFile> {
@@ -197,10 +245,12 @@ fn read(path: &str) -> anyhow::Result<ShardFile> {
 /// The shards at `paths`, checked to be every shard of one run, in shard
 /// order, and the pair rows and cell-type rows of every pair in pair order.
 pub struct Merged {
+    pub run_key: String,
     pub record: TableRecord,
     pub count: usize,
     pub rows: Vec<EffectRow>,
-    pub celltype: Option<(TypeSource, Vec<CelltypeRow>)>,
+    /// With `--marginal-baselines`, every pair's cell-type rows.
+    pub celltype: Option<Vec<CelltypeRow>>,
 }
 
 pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
@@ -234,9 +284,12 @@ pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
             w[1].0
         );
     }
-    let have: Vec<usize> = files.iter().map(|(_, f)| f.shard.index).collect();
+    let mut have = vec![false; count];
+    for (_, f) in &files {
+        have[f.shard.index] = true;
+    }
     let missing: Vec<String> = (0..count)
-        .filter(|i| !have.contains(i))
+        .filter(|&i| !have[i])
         .map(|i| format!("{i}/{count}"))
         .collect();
     anyhow::ensure!(
@@ -249,22 +302,24 @@ pub fn read_all(paths: &[String]) -> anyhow::Result<Merged> {
     let mut pairs: Vec<ShardPair> = files.into_iter().flat_map(|(_, f)| f.pairs).collect();
     pairs.sort_by_key(|p| p.index);
     anyhow::ensure!(
-        pairs.windows(2).all(|w| w[0].index != w[1].index),
-        "a pair is in two shards"
+        pairs.len() == record.n_all && pairs.iter().enumerate().all(|(k, p)| p.index == k),
+        "the shards hold {} of the run's {} pairs, not each once",
+        pairs.len(),
+        record.n_all
     );
     let rows = pairs.iter_mut().flat_map(|p| p.rows.drain(..)).collect();
     let celltype = source.map(|s| {
-        let rows = pairs
+        pairs
             .into_iter()
             .flat_map(|p| p.celltype)
             .map(|r| CelltypeRow {
                 labels: s.name(),
                 ..r
             })
-            .collect();
-        (s, rows)
+            .collect()
     });
     Ok(Merged {
+        run_key: key,
         record,
         count,
         rows,

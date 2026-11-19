@@ -72,6 +72,8 @@ struct Prepared {
     /// names of all `n_all` (ligand, receptor), for the run key.
     index_in_all: Vec<usize>,
     all_names: Vec<(Box<str>, Box<str>)>,
+    /// With `--shard`, [`shard::tissue_key`]; empty otherwise.
+    tissue_key: String,
     store: GeneStore,
     local: HashMap<usize, usize>,
     eopts: EffectOpts,
@@ -234,6 +236,16 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         n_all,
         index_in_all,
         all_names,
+        tissue_key: match a.shard {
+            Some(_) => shard::tissue_key(
+                inp.data.num_columns(),
+                &gene_names,
+                inp.pairs,
+                inp.coords,
+                inp.cell_section,
+            ),
+            None => String::new(),
+        },
         store,
         local,
         eopts: effect_opts(a.seed, a.region_jackknife, a.abf_prior_scale),
@@ -254,7 +266,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
 fn keep_shard(prep: &mut Prepared, s: shard::Shard) {
     let weight: Vec<f64> = prep
         .pairs
-        .iter()
+        .par_iter()
         .map(|p| {
             let competent =
                 competent_receivers(&prep.tissue, &prep.receptor_counts(p), &prep.eopts);
@@ -469,7 +481,8 @@ fn attach_marginals(rows: &mut [rows::EffectRow], prep: &Prepared, m: &Marginal)
 /// What the run's tables are recorded with ([`shard::TableRecord`]).
 fn table_record(a: &Settings<'_>, prep: &Prepared, marginal: Option<&Marginal>) -> TableRecord {
     TableRecord {
-        manifest: a.manifest.to_path_buf(),
+        // absolute, so a merge run from another folder finds it
+        manifest: std::path::absolute(a.manifest).unwrap_or_else(|_| a.manifest.to_path_buf()),
         from_run: a.from_run,
         abf_prior_scale: a.abf_prior_scale,
         // The genes left out of the identity, so the viewer draws the
@@ -481,6 +494,7 @@ fn table_record(a: &Settings<'_>, prep: &Prepared, marginal: Option<&Marginal>) 
         },
         reference_record: prep.reference_record.clone(),
         n_all: prep.n_all,
+        tissue: prep.tissue_key.clone(),
     }
 }
 
@@ -644,36 +658,41 @@ fn write_shard(
 pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
     let a = &inp.settings;
     let prep = prepare(inp)?;
-    let by_pair = estimate_pairs(&prep);
+    let mut by_pair = estimate_pairs(&prep);
     let marginal = a.marginal.map(|n| marginal_baselines(&prep, n, a.seed));
-    if let Some(s) = a.shard {
-        let mut by_pair = by_pair;
-        if let Some(m) = &marginal {
-            for rows in &mut by_pair {
-                attach_marginals(rows, &prep, m);
-            }
-        }
-        return write_shard(a, s, &prep, by_pair, marginal.as_ref());
-    }
-    let mut rows: Vec<rows::EffectRow> = by_pair.into_iter().flatten().collect();
-    report::report(&mut rows, &report::ReportOpts::default());
     if let Some(m) = &marginal {
-        attach_marginals(&mut rows, &prep, m);
+        for rows in &mut by_pair {
+            attach_marginals(rows, &prep, m);
+        }
+    }
+    if let Some(s) = a.shard {
+        return write_shard(a, s, &prep, by_pair, marginal.as_ref());
     }
     let record = table_record(a, &prep, marginal.as_ref());
     let celltype: Option<Vec<output::CelltypeRow>> = marginal
         .as_ref()
         .map(|m| celltype_rows(&prep, m).into_iter().flatten().collect());
-    let (path, q_scope) = write_tables(
-        a.out,
-        a.only,
-        &record,
-        prep.pairs.len(),
-        &rows,
-        celltype.as_deref(),
-    )?;
-    print_run_summary(a.manifest, a.only, &rows, &path, &q_scope);
+    let rows = by_pair.into_iter().flatten().collect();
+    finish(a.out, a.only, &record, prep.pairs.len(), rows, celltype)?;
     Ok(())
+}
+
+/// Every estimated pair's `rows` (`n_pairs` pairs) judged across pairs
+/// ([`report::report`]), written under `out` with `celltype` and recorded
+/// ([`write_tables`]), and the run's closing lines: what a run and a merge
+/// end with alike. The effect table's path.
+fn finish(
+    out: &str,
+    only: &[Box<str>],
+    record: &TableRecord,
+    n_pairs: usize,
+    mut rows: Vec<rows::EffectRow>,
+    celltype: Option<Vec<output::CelltypeRow>>,
+) -> anyhow::Result<String> {
+    report::report(&mut rows, &report::ReportOpts::default());
+    let (path, q_scope) = write_tables(out, only, record, n_pairs, &rows, celltype.as_deref())?;
+    print_run_summary(&record.manifest, only, &rows, &path, &q_scope);
+    Ok(path)
 }
 
 /// `{out}.pinto.json`, when it does not exist yet, as the shard's manifest
@@ -698,9 +717,10 @@ fn own_manifest(shard_manifest: &Path, out: &str) -> anyhow::Result<std::path::P
 /// `out` as a run without `--shard` writes them, recorded in its manifest.
 pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
     let shard::Merged {
+        run_key,
         mut record,
         count,
-        mut rows,
+        rows,
         celltype,
     } = shard::read_all(shards)?;
     if !record.from_run {
@@ -713,11 +733,13 @@ pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
         record.n_all,
         rows.len()
     );
-    report::report(&mut rows, &report::ReportOpts::default());
-    let celltype = celltype.map(|(_, rows)| rows);
-    let (path, q_scope) =
-        write_tables(out, &[], &record, record.n_all, &rows, celltype.as_deref())?;
-    print_run_summary(&record.manifest, &[], &rows, &path, &q_scope);
+    finish(out, &[], &record, record.n_all, rows, celltype)?;
+    // which shards made these tables, for a later call to check
+    let text = serde_json::to_string_pretty(&serde_json::json!({
+        "run_key": run_key,
+        "shards": count,
+    }))?;
+    super::reference::write_atomic(Path::new(&output::merge_record_path(out)), text.as_bytes())?;
     Ok(())
 }
 

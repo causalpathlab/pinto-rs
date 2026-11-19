@@ -683,20 +683,35 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
     // A finished `out` is read, not run again, once the call is checked as
-    // it would be run; a shard file holds no table to read.
-    if let Some(o) = out.as_deref().filter(|o| !o.is_empty() && shard.is_none()) {
+    // it would be run: its tables, or a shard's file and the merge to follow.
+    if let Some(o) = out.as_deref().filter(|o| !o.is_empty()) {
         let o = shown_path(Path::new(o));
         let made = a.outputs(method, &o);
         let argv = lra_argv(&a, method, run, &o);
         checked_lra(cli, &argv)?;
-        let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
-        if let Some(reply) = read_finished(
-            cx,
-            &made,
-            || made_as_asked(&a, method, &manifest, &made),
-            |checked| lra_reply(&a, method, checked.then_some(&argv[..]), run, &made),
-        ) {
-            return reply;
+        if let Some(s) = shard {
+            if finished(cx, &made) {
+                let mut reply = shard_reply(s, &argv, &o, &made);
+                push_note(
+                    &mut reply,
+                    &format!(
+                        "read back: the shard file is already there, not checked against \
+                         these arguments; nothing was run. {}",
+                        shard_note(s, &o)
+                    ),
+                );
+                return Ok(reply);
+            }
+        } else {
+            let manifest = PathBuf::from(run.map_or_else(|| manifest_path(&o), str::to_string));
+            if let Some(reply) = read_finished(
+                cx,
+                &made,
+                || made_as_asked(&a, method, &manifest, &made),
+                |checked| lra_reply(&a, method, checked.then_some(&argv[..]), run, &made),
+            ) {
+                return reply;
+            }
         }
     }
     let (out, made) = out_or_free(cx, out.as_deref(), &input.stem(run), |o| {
@@ -741,7 +756,10 @@ fn merge_args(shard: Shard, out: &str) -> Value {
 /// `run_lra_merge`.
 fn shard_note(shard: Shard, out: &str) -> String {
     format!(
-        "A shard writes no table and records nothing in the manifest. Run every shard I/{n}          (I from 0 to {last}) with the same arguments, each as its own job (a Slurm array          task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} writes the          tables of the whole run, its q-values over every pair.",
+        "A shard writes no table and records nothing in the manifest. Run every shard \
+         I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
+         array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
+         writes the tables of the whole run, its q-values over every pair.",
         merge_args(shard, out),
         n = shard.count,
         last = shard.count - 1,
@@ -906,18 +924,38 @@ pub(super) fn lra_merge(
         .filter(|o| !o.is_empty())
         .ok_or_else(|| anyhow::anyhow!("give out, the prefix of the merged tables"))?;
     let out = shown_path(Path::new(&out));
-    let outputs = |o: &str| lra_outputs(LraMethod::ContactEffect, o, &[]);
+    let (run_key, celltype) = shard::peek(&a.shards[0])?;
+    // the per-type-pair table too, when the shards carry it
+    let outputs = |o: &str| {
+        let mut made = lra_outputs(LraMethod::ContactEffect, o, &[]);
+        if celltype {
+            let table = made[0].to_string_lossy().into_owned();
+            made.push(output::celltype_beside(&table).into());
+        }
+        made
+    };
     let made = outputs(&out);
     let argv = lra_merge_argv(&a, &out);
     checked(cli, &argv)?;
-    // Finished tables are read, not merged again.
+    // Finished tables are read, not merged again, when these shards made them.
     if finished(cx, &made) {
+        let record = output::merge_record_path(&out);
+        let made_by = std::fs::read_to_string(&record)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["run_key"].as_str().map(str::to_string));
+        anyhow::ensure!(
+            made_by.as_deref() == Some(run_key.as_str()),
+            "{} is there but not a merge of these shards ({} says otherwise, or is \
+             missing); {NOT_WRITTEN_OVER}",
+            shown_path(&made[0]),
+            record
+        );
         let mut reply =
             merge_reply(None, &made).map_err(|e| anyhow::anyhow!("{e:#}; {NOT_WRITTEN_OVER}"))?;
         push_note(
             &mut reply,
-            "read from the tables already there; nothing was run, and which shards made them \
-             was not checked",
+            "read from the tables these shards' merge left; nothing was run",
         );
         return Ok(reply);
     }
@@ -947,12 +985,7 @@ fn merge_reply(command: Option<&[String]>, made: &[PathBuf]) -> anyhow::Result<V
     if let Some(argv) = command {
         reply["command"] = script::pinto_line(argv).into();
     }
-    let celltype = PathBuf::from(output::celltype_beside(&made[0].to_string_lossy()));
-    let written: Vec<String> = made
-        .iter()
-        .chain(Some(&celltype).filter(|p| p.is_file()))
-        .map(|p| shown_path(p))
-        .collect();
+    let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
     reply["written"] = written.into();
     Ok(vec![Content::Json(reply)])
 }

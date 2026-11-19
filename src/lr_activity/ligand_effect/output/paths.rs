@@ -41,5 +41,11 @@ pub fn lra_simulate_sidecar_path(out: &str) -> String {
     format!("{out}{SIDECAR_SUFFIX}")
 }
 
+/// `{out}.lra.merge.json`: the run key of the shards `pinto lra merge` put
+/// together, beside its tables.
+pub fn merge_record_path(out: &str) -> String {
+    format!("{out}.lra.merge.json")
+}
+
 /// What a single-scenario call's sidecar is named by, after its prefix.
 pub const SIDECAR_SUFFIX: &str = ".lra-simulate.json";
