@@ -329,6 +329,7 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             fit.n_grid,
         );
         let trace = vb::fit(&vd, &mut st, &mut prior, &fit.opts());
+        ensure_finite("mefisto", &trace, &st)?;
         let smooth: Vec<f64> = (0..st.k())
             .map(|k| prior.neighbour_correlation(k, fit.core.slq_probes, fit.core.input.seed))
             .collect();
@@ -372,6 +373,21 @@ pub(crate) fn run_on(args: &Args, mut data: SpatialData, budget: &Budget) -> any
             pseudobulk: None,
         },
     )
+}
+
+/// Refuse a fit whose ELBO or factors are not finite, rather than write
+/// them and a domain per cell; the iteration the ELBO first was not.
+fn ensure_finite(what: &str, trace: &Trace, st: &State) -> anyhow::Result<()> {
+    let first_bad = trace.elbo.iter().position(|e| !e.is_finite());
+    anyhow::ensure!(
+        first_bad.is_none() && st.mu.iter().all(|v| v.is_finite()),
+        "{what}: the variational state is not finite{}; try another --seed",
+        first_bad.map_or(String::new(), |t| format!(
+            " (ELBO from iteration {})",
+            t + 1
+        ))
+    );
+    Ok(())
 }
 
 /// What `baseline.json` records of a fit on `genes` (of `names`).
@@ -450,6 +466,7 @@ pub(crate) fn run_pb_on(
     );
     let mut pb_st = State::init(&pb_vd, fit.n_factors, seed);
     let pb_trace = vb::fit(&pb_vd, &mut pb_st, &mut pb_prior, &fit.opts());
+    ensure_finite("mefisto-pb's super-cell fit", &pb_trace, &pb_st)?;
     let (pb_labels, _) = domains(
         &to_mat(&domain_embedding(&pb_st.mu, &pb_st.w_mean())),
         &fit.core,
@@ -474,6 +491,7 @@ pub(crate) fn run_pb_on(
         ..fit.opts()
     };
     let trace = vb::fit(&vd, &mut st, &mut prior, &opts);
+    ensure_finite("mefisto-pb's unravelling on the cells", &trace, &st)?;
     log::info!(
         "mefisto-pb: super-cells {} iterations; cells unravelled in {}; rho {:?}",
         pb_trace.iterations,

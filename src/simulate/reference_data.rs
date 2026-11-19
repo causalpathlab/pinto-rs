@@ -40,6 +40,7 @@
 use super::params::SimParams;
 use data_beans::sim::copula::groups::{MIN_GROUP_CELLS, SMALL_LABELS};
 use data_beans::sim::copula::mixture::Prepared as CountDistribution;
+use data_beans::sim::copula::reference::SparseRef;
 use data_beans::sim::copula::{fit_global_copula, GlobalCopulaArgs, GlobalCopulaFit, GroupSpec};
 use nalgebra::{DMatrix, DVector};
 
@@ -71,11 +72,21 @@ pub fn fit_reference_data(
     n_cell_groups: usize,
 ) -> anyhow::Result<FittedReferenceData> {
     let data = data_beans::convert::try_open_or_convert(path)?;
+    fit_opened(&data, path, labels, n_cell_groups)
+}
+
+/// [`fit_reference_data`] on the reference data `data`, opened from `path`.
+fn fit_opened(
+    data: &SparseRef,
+    path: &str,
+    labels: Option<&str>,
+    n_cell_groups: usize,
+) -> anyhow::Result<FittedReferenceData> {
     let n_cells = data
         .num_columns()
         .ok_or_else(|| anyhow::anyhow!("--reference-data {path}: its cell count is not stored"))?;
     let fit = fit_global_copula(&GlobalCopulaArgs {
-        sc: &data,
+        sc: data,
         n_hvg: HIGHLY_VARIABLE_GENES,
         copula_rank: COPULA_RANK,
         regularization: COPULA_GENE_VARIANCE_FLOOR,
@@ -141,6 +152,59 @@ pub fn count_at_quantile(
 /// Cell groups the reference data is fitted in without labels, at least.
 pub const MIN_CELL_GROUPS: usize = 8;
 
+/// The k-means groups to ask next of `n_cells` reference cells, `asked`
+/// of which kept `kept` of [`MIN_GROUP_CELLS`] cells or more (the smaller
+/// join their nearest), for `n_states` planted cell states: as many more as
+/// were missing, while that many could all keep [`MIN_GROUP_CELLS`] cells;
+/// `None` when `kept` suffices or no more are worth asking.
+pub fn more_cell_groups(
+    asked: usize,
+    kept: usize,
+    n_states: usize,
+    n_cells: usize,
+) -> Option<usize> {
+    if kept >= n_states {
+        return None;
+    }
+    let next = asked + n_states - kept;
+    (next * MIN_GROUP_CELLS <= n_cells).then_some(next)
+}
+
+/// Refits of the reference data asking more k-means groups, at most: each
+/// is a whole copula fit.
+const MAX_CELL_GROUP_REFITS: usize = 3;
+
+/// [`fit_reference_data`] in the cell groups `labels` names, else in
+/// `max(MIN_CELL_GROUPS, n_states)` k-means groups, refitted asking
+/// [`more_cell_groups`] while fewer than `n_states` are left, at most
+/// [`MAX_CELL_GROUP_REFITS`] times. Labels are fitted once: their groups are
+/// the user's.
+fn fit_enough_cell_groups(
+    path: &str,
+    labels: Option<&str>,
+    n_states: usize,
+) -> anyhow::Result<FittedReferenceData> {
+    let data = data_beans::convert::try_open_or_convert(path)?;
+    let mut asked = MIN_CELL_GROUPS.max(n_states);
+    let mut fitted = fit_opened(&data, path, labels, asked)?;
+    if labels.is_some() {
+        return Ok(fitted);
+    }
+    for _ in 0..MAX_CELL_GROUP_REFITS {
+        let kept = fitted.usable_cell_groups.len();
+        let Some(next) = more_cell_groups(asked, kept, n_states, fitted.n_cells) else {
+            break;
+        };
+        log::info!(
+            "--reference-data {path}: {kept} of {asked} k-means groups kept {MIN_GROUP_CELLS} \
+             cells or more, for {n_states} planted cell states; asking {next}"
+        );
+        asked = next;
+        fitted = fit_opened(&data, path, labels, asked)?;
+    }
+    Ok(fitted)
+}
+
 /// The parameters reference data replaces: refused beside it, by name.
 pub const PARAMS_REFERENCE_DATA_REPLACES: [&str; 10] = [
     "n_genes",
@@ -201,7 +265,8 @@ pub struct ReferenceData {
 impl ReferenceData {
     /// Fit the reference data at `path` (opened as pinto opens data files)
     /// in the cell groups `labels` names (one per cell, or `cell<TAB>label`
-    /// lines), else in `max(MIN_CELL_GROUPS, n states)` k-means groups, for
+    /// lines), else in `max(MIN_CELL_GROUPS, n states)` k-means groups or
+    /// more ([`fit_enough_cell_groups`]), for
     /// states holding shares `spot_share_by_state` of the spots, whose
     /// mixtures are `spot_mixtures` (per section, per spot).
     pub fn fit(
@@ -222,20 +287,31 @@ impl ReferenceData {
             n_cells,
             content_fingerprint,
             usable_cell_groups: mut largest_first,
-        } = fit_reference_data(path, labels, MIN_CELL_GROUPS.max(n_states))?;
+        } = fit_enough_cell_groups(path, labels, n_states)?;
         largest_first.sort_by(|&a, &b| {
             fit.groups[b]
                 .share
                 .total_cmp(&fit.groups[a].share)
                 .then(a.cmp(&b))
         });
+        let (groups, fate, remedy) = match labels {
+            Some(_) => (
+                "labels",
+                "are pooled, and the pool backs no state",
+                "--reference-data-labels with more groups",
+            ),
+            None => (
+                "k-means groups",
+                "join their nearest, even with more groups asked",
+                "--reference-data-labels",
+            ),
+        };
         anyhow::ensure!(
             largest_first.len() >= n_states,
             "--reference-data {path}: {} cell group(s) for {n_states} planted cell states \
-             (labels of fewer than {MIN_GROUP_CELLS} cells are pooled, and the pool backs no \
-             state); give --reference-data-labels with more groups, or a scenario with fewer \
-             states",
-            largest_first.len()
+             ({groups} of fewer than {MIN_GROUP_CELLS} cells {fate}); give {remedy}, or a \
+             scenario with fewer states",
+            largest_first.len(),
         );
         let cell_group_of_state: Vec<usize> = largest_first[..n_states].to_vec();
         let floor_by_state: Vec<f64> = cell_group_of_state
