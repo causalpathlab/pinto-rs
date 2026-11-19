@@ -86,6 +86,77 @@ fn run_lra_passes_only_and_writes_the_subset_table() {
 }
 
 #[test]
+fn run_lra_passes_shard_and_writes_its_shard_file() {
+    let a = lra_args(json!({"run": "r", "shard": "1/4"}));
+    let argv = lra_argv(
+        &a,
+        LraMethod::ContactEffect,
+        Some("/p/r.pinto.json"),
+        "/p/out",
+    );
+    assert_eq!(argv[argv.len() - 1], "--shard=1/4");
+    checked_lra(&cli(), &argv).unwrap();
+    assert_eq!(
+        a.outputs(LraMethod::ContactEffect, "/p/out"),
+        [PathBuf::from("/p/out.lra.shard-1-of-4.cbor")]
+    );
+    // the merge it points to names every shard under the same out
+    let merge = merge_args(a.shard().unwrap().unwrap(), "/p/out");
+    let shards: Vec<String> = (0..4)
+        .map(|i| format!("/p/out.lra.shard-{i}-of-4.cbor"))
+        .collect();
+    assert_eq!(merge, json!({"shards": shards, "out": "/p/out"}));
+    assert!(lra_args(json!({"run": "r", "shard": "4/4"}))
+        .shard()
+        .is_err());
+}
+
+#[test]
+fn run_lra_refuses_shard_with_only_or_another_method() {
+    let both = lra_args(json!({"run": "r", "shard": "0/2", "only": ["LIGA1"]}));
+    let argv = lra_argv(&both, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    let said = checked_lra(&cli(), &argv).unwrap_err().to_string();
+    assert!(
+        said.contains("--shard") && said.contains("--only"),
+        "{said}"
+    );
+    let coexpression = lra_args(json!({"run": "r", "shard": "0/2"}));
+    let argv = lra_argv(
+        &coexpression,
+        LraMethod::CoexpressionTest,
+        Some("r.pinto.json"),
+        "o",
+    );
+    let said = checked_lra(&cli(), &argv).unwrap_err().to_string();
+    assert!(said.contains("--shard"), "{said}");
+}
+
+#[test]
+fn run_lra_merge_builds_pinto_lra_merges_command_line() {
+    let shards = ["/p/o.lra.shard-1-of-2.cbor", "/p/o.lra.shard-0-of-2.cbor"];
+    let a: LraMergeToolArgs =
+        crate::mcp::parse(json!({"shards": shards, "out": "/p/o", "max_threads": 2})).unwrap();
+    let argv = lra_merge_argv(&a, "/p/o");
+    assert_eq!(
+        argv,
+        [
+            "lra",
+            "merge",
+            shards[0],
+            shards[1],
+            "--out=/p/o",
+            "--max-threads=2"
+        ]
+    );
+    checked(&cli(), &argv).unwrap();
+    assert!(crate::mcp::parse::<LraMergeToolArgs>(json!({"out": "o"})).is_err());
+    assert!(crate::mcp::parse::<LraMergeToolArgs>(
+        json!({"shards": shards, "out": "o", "only": []})
+    )
+    .is_err());
+}
+
+#[test]
 fn each_method_declares_what_it_writes() {
     let names = |m| -> Vec<String> {
         lra_outputs(lra_method(m).unwrap(), "o", &[])

@@ -2,10 +2,11 @@
 //! independent pieces, run as separate jobs (a Slurm array), then put back
 //! together.
 //!
-//! A shard estimates the pairs of the ligands dealt to it ([`deal`]): the
-//! pairs of one ligand stay together, as they share its base propensities,
-//! and each pair's estimate depends only on the tissue and its own seed, so a
-//! pair comes out of its shard as it would of the whole run. A shard writes
+//! A shard estimates the pairs dealt to it ([`deal`]), weighed by their
+//! competent receivers: a ligand's pairs stay together, as they share its
+//! base propensities, unless they weigh more than a shard's share. Each
+//! pair's estimate depends only on the tissue and its own seed, so a pair
+//! comes out of its shard as it would of the whole run. A shard writes
 //! no table and records nothing in the manifest: it writes
 //! `{out}.lra.shard-I-of-N.cbor` ([`path`]), its pairs' rows before the
 //! q-values and verdicts.
@@ -59,21 +60,41 @@ pub fn path(out: &str, shard: Shard) -> String {
     format!("{out}.lra.shard-{}-of-{}.cbor", shard.index, shard.count)
 }
 
-/// The shard each pair goes to, of `count`: the ligands' pair groups
-/// (`groups`, indices into `n_pairs` pairs) largest first, each to the shard
-/// with the fewest pairs so far, the lowest on a tie. The same groups and
-/// `count` always deal the same way.
-pub fn deal(groups: &[Vec<usize>], n_pairs: usize, count: usize) -> Vec<usize> {
-    let mut order: Vec<&Vec<usize>> = groups.iter().collect();
-    // largest first, then by first pair, so the deal is a function of the
-    // groups alone
-    order.sort_by_key(|g| (std::cmp::Reverse(g.len()), g.first().copied()));
-    let mut load = vec![0usize; count];
-    let mut shard_of = vec![usize::MAX; n_pairs];
-    for g in order {
-        let s = (0..count).min_by_key(|&s| (load[s], s)).expect("count > 0");
-        load[s] += g.len();
+/// The shard each pair goes to, of `count`, the pairs of `groups` (each
+/// ligand's, indices into `weight`) weighing `weight` each: a ligand whose
+/// pairs weigh more than a shard's share of the whole is cut into runs of
+/// its pairs of at most that share (a pair alone gets what it gets beside
+/// its ligand's others, only its base propensities refitted); then the
+/// pieces, heaviest first, each to the shard weighing least so far, the
+/// lowest on a tie. The same groups, weights and `count` always deal the
+/// same way.
+pub fn deal(groups: &[Vec<usize>], weight: &[f64], count: usize) -> Vec<usize> {
+    let share = weight.iter().sum::<f64>() / count as f64;
+    let mut pieces: Vec<(f64, Vec<usize>)> = Vec::new();
+    for g in groups {
+        let mut piece: (f64, Vec<usize>) = (0.0, Vec::new());
         for &k in g {
+            if !piece.1.is_empty() && piece.0 + weight[k] > share {
+                pieces.push(std::mem::take(&mut piece));
+            }
+            piece.0 += weight[k];
+            piece.1.push(k);
+        }
+        if !piece.1.is_empty() {
+            pieces.push(piece);
+        }
+    }
+    // heaviest first, then by first pair, so the deal is a function of the
+    // inputs alone
+    pieces.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1[0].cmp(&b.1[0])));
+    let mut load = vec![0f64; count];
+    let mut shard_of = vec![usize::MAX; weight.len()];
+    for (w, piece) in pieces {
+        let s = (0..count)
+            .min_by(|&a, &b| load[a].total_cmp(&load[b]).then(a.cmp(&b)))
+            .expect("count > 0");
+        load[s] += w;
+        for k in piece {
             shard_of[k] = s;
         }
     }
@@ -266,20 +287,25 @@ mod tests {
     }
 
     #[test]
-    fn ligands_are_dealt_whole_and_evenly() {
-        // pairs 0..10 in five ligands of sizes 4, 3, 1, 1, 1
+    fn ligands_are_dealt_whole_unless_heavier_than_a_share() {
+        // pairs 0..10 in five ligands of sizes 4, 3, 1, 1, 1, each pair of
+        // weight one
         let groups = vec![vec![0, 1, 2, 3], vec![4, 5, 6], vec![7], vec![8], vec![9]];
-        let of = deal(&groups, 10, 3);
-        for g in &groups {
-            assert!(g.iter().all(|&k| of[k] == of[g[0]]), "{of:?}");
-        }
+        let ones = vec![1.0; 10];
+        let of = deal(&groups, &ones, 3);
         let mut load = [0; 3];
         for &s in &of {
             load[s] += 1;
         }
-        assert_eq!(load, [4, 3, 3]);
-        assert_eq!(of, deal(&groups, 10, 3), "the same deal every time");
-        // one shard holds every pair
-        assert!(deal(&groups, 10, 1).iter().all(|&s| s == 0));
+        // a share is 10/3: the four-pair ligand is cut, the three-pair one is not
+        assert!(groups[1].iter().all(|&k| of[k] == of[4]), "{of:?}");
+        assert_eq!(load.iter().max(), Some(&4), "{load:?}");
+        assert_eq!(of, deal(&groups, &ones, 3), "the same deal every time");
+        assert!(deal(&groups, &ones, 1).iter().all(|&s| s == 0));
+        // the weights, not the pair counts, are dealt: one heavy pair alone
+        let mut heavy = ones.clone();
+        heavy[9] = 9.0;
+        let of = deal(&groups, &heavy, 2);
+        assert!((0..9).all(|k| of[k] != of[9]), "{of:?}");
     }
 }

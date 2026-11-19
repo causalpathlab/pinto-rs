@@ -107,25 +107,14 @@ impl Prepared {
     }
 }
 
-/// Which pairs to estimate: all of them, those `--only` names, or the
-/// ligands `--shard` is dealt ([`shard::deal`]).
+/// Which pairs to estimate: all of them or those `--only` names (a shard's
+/// are chosen once the receivers are read, [`keep_shard`]).
 fn pairs_kept(
     a: &Settings<'_>,
     all: &[Pair],
     gene_names: &[Box<str>],
     index: &GeneIndex,
 ) -> anyhow::Result<Vec<bool>> {
-    if let Some(s) = a.shard {
-        let of = shard::deal(&ligand_groups(all), all.len(), s.count);
-        let keep: Vec<bool> = of.iter().map(|&k| k == s.index).collect();
-        info!(
-            target: LOG_TARGET,
-            "--shard {s}: {} of {} pairs",
-            keep.iter().filter(|&&k| k).count(),
-            all.len()
-        );
-        return Ok(keep);
-    }
     if a.only.is_empty() {
         return Ok(vec![true; all.len()]);
     }
@@ -239,7 +228,7 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
     let (identity, identity_bin) = identity_bins(inp.data, inp.axis, &excluded, inp.cell_section)?;
     let tissue = build_tissue(inp, &identity, &identity_bin, &log1p_depth)?;
     debug_assert_eq!(tissue.cell, receivers);
-    Ok(Prepared {
+    let mut prep = Prepared {
         tissue,
         pairs,
         n_all,
@@ -252,7 +241,46 @@ fn prepare(inp: &RunInputs<'_>) -> anyhow::Result<Prepared> {
         identity_excluded,
         memory_budget: a.memory_budget,
         gene_names,
-    })
+    };
+    if let Some(s) = a.shard {
+        keep_shard(&mut prep, s);
+    }
+    Ok(prep)
+}
+
+/// `--shard`: keep the pairs dealt to shard `s` ([`shard::deal`]), each
+/// weighed by its competent receivers (one at least): the fits run over
+/// them, and a pair with none ends at once.
+fn keep_shard(prep: &mut Prepared, s: shard::Shard) {
+    let weight: Vec<f64> = prep
+        .pairs
+        .iter()
+        .map(|p| {
+            let competent =
+                competent_receivers(&prep.tissue, &prep.receptor_counts(p), &prep.eopts);
+            competent.iter().filter(|&&c| c).count().max(1) as f64
+        })
+        .collect();
+    let of = shard::deal(&ligand_groups(&prep.pairs), &weight, s.count);
+    let keep: Vec<bool> = of.iter().map(|&k| k == s.index).collect();
+    let mine: f64 = (0..weight.len())
+        .filter(|&k| keep[k])
+        .map(|k| weight[k])
+        .sum();
+    info!(
+        target: LOG_TARGET,
+        "--shard {s}: {} of {} pairs, {:.1}% of the competent receivers to fit on",
+        keep.iter().filter(|&&k| k).count(),
+        prep.pairs.len(),
+        100.0 * mine / weight.iter().sum::<f64>().max(1.0)
+    );
+    let pairs = std::mem::take(&mut prep.pairs);
+    prep.index_in_all = (0..pairs.len()).filter(|&k| keep[k]).collect();
+    prep.pairs = pairs
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect();
 }
 
 /// Record lra's outputs and the settings in the run's manifest, each path
