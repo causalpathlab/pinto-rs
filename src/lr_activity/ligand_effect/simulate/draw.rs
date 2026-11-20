@@ -4,7 +4,7 @@ use super::calibrate::{marker_bins, n_bins, Producers, SimBase, MARKER_LIFT};
 use super::fields::{confounding, field_sha256, SimShared};
 use super::reference_data::ReferenceProgramGenes;
 use super::row::{RegionRead, SimRow};
-use super::scenario::Scenario;
+use super::scenario::{Scenario, MAX_EFFECT_COEF};
 use crate::lr_activity::ligand_effect::association::marginal_correlation;
 use crate::lr_activity::ligand_effect::averaging::abf_weights;
 use crate::lr_activity::ligand_effect::baselines::{baselines, Baselines};
@@ -323,7 +323,10 @@ fn draw_gene(
     let w = base.target_weights[g];
     let s = if w < 0.0 { -1.0 } else { 1.0 };
     let lift = &lifts[(w < 0.0) as usize];
-    let noise_var = log_rate_noise(scen.effect_pve, scen.response_field_pve);
+    let noise_var = log_rate_noise(
+        scen.noise_effect_pve.unwrap_or(scen.effect_pve),
+        scen.response_field_pve,
+    );
     let rank = reference_data.map_or(0, |(r, _, _)| r.copula_rank());
     for i in 0..tissue.n() {
         let b = bin[i];
@@ -502,7 +505,8 @@ fn log_rate_noise(effect_pve: f64, field_pve: f64) -> f64 {
 /// The effect's log-rate coefficient: `√effect_pve` over the standard
 /// deviation of the exposure term `x` (true exposure × the bin's share × the
 /// dose share) across responding receivers, centred within identity bin, so
-/// it explains `effect_pve` of a gene's log-rate variance beyond the cell type.
+/// it explains `effect_pve` of a gene's log-rate variance beyond the cell type;
+/// at most [`MAX_EFFECT_COEF`], where the exposure term barely varies.
 pub fn effect_coef(effect_pve: f64, x: &[f64], responds: &[bool], bin: &[usize]) -> f64 {
     if effect_pve <= 0.0 {
         return 0.0;
@@ -520,7 +524,7 @@ pub fn effect_coef(effect_pve: f64, x: &[f64], responds: &[bool], bin: &[usize])
     }
     let var = ss / n.max(1) as f64;
     if var > 0.0 {
-        (effect_pve / var).sqrt()
+        (effect_pve / var).sqrt().min(MAX_EFFECT_COEF)
     } else {
         0.0
     }

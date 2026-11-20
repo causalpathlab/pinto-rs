@@ -482,6 +482,24 @@ pub struct LraSimulateArgs {
         help = "Further pairs the single scenario withholds its effect from [default: 10]"
     )]
     pub null_pairs: Option<usize>,
+
+    #[arg(
+        long,
+        value_enum,
+        value_name = "RULE",
+        help_heading = "Single scenario",
+        help = "How the single scenario chooses its planted and null pairs \
+                [default: interleaved-rank]",
+        long_help = "How the single scenario chooses its planted and null pairs, among the\n\
+                     pairs with the receivers to benchmark on (one per ligand).\n\
+                     interleaved-rank (the default): the top --pairs + --null-pairs by\n\
+                     ligand abundance, the labels interleaved by rank, the same pairs for\n\
+                     every --seed and rep. random: --pairs + --null-pairs of them drawn\n\
+                     at random from --seed and the scenario's rep, the first --pairs\n\
+                     drawn planted, so each replicate benchmarks other pairs; every\n\
+                     shard of a call draws the same ones. Needs the single scenario."
+    )]
+    pub pair_assignment: Option<crate::lr_activity::ligand_effect::simulate::PairAssignment>,
 }
 
 /// Whether `--one`, `--set`, `--pairs` or `--null-pairs` select the
@@ -504,14 +522,20 @@ impl LraSimulateArgs {
     ) -> anyhow::Result<Option<crate::lr_activity::ligand_effect::simulate::SingleScenario>> {
         use crate::lr_activity::ligand_effect::simulate::SingleScenario;
         if !selects_single(self.one, &self.set, self.pairs, self.null_pairs) {
+            anyhow::ensure!(
+                self.pair_assignment.is_none(),
+                "--pair-assignment chooses the single scenario's pairs: give it with --one \
+                 (or --set, --pairs, --null-pairs)"
+            );
             return Ok(None);
         }
-        SingleScenario::new(
+        let mut one = SingleScenario::new(
             &self.set,
             self.pairs.unwrap_or(SingleScenario::PAIRS),
             self.null_pairs.unwrap_or(SingleScenario::PAIRS),
-        )
-        .map(Some)
+        )?;
+        one.assignment = self.pair_assignment.unwrap_or_default();
+        Ok(Some(one))
     }
 }
 

@@ -8,6 +8,7 @@ use super::form::{check, Method};
 use super::script::{self, is_header, outputs, under};
 use super::{BASELINES, METHODS, MODELS};
 use crate::lr_activity::args::{LraMethod, ReferenceSpecies, RegionJackknife};
+use crate::lr_activity::ligand_effect::simulate::PairAssignment;
 use crate::mcp::{parse, shown_path};
 use crate::tui::flag_value;
 use crate::util::cli::choices;
@@ -1030,6 +1031,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "set": long_flag_arg(sim_cmd, "set", json!({"type": "array", "items": {"type": "string"}})),
                     "pairs": sim("pairs", json!({"type": "integer", "minimum": 1})),
                     "null_pairs": sim("null_pairs", json!({"type": "integer", "minimum": 1})),
+                    "pair_assignment": sim("pair_assignment", json!({"enum": choices::<PairAssignment>()})),
                     "shard": long_flag_arg(sim_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
                     "background": background(),
                 },

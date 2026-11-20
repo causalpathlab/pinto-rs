@@ -3,6 +3,13 @@
 
 use serde::Deserialize as _;
 
+/// The largest log-rate coefficient an effect is planted with: an
+/// `e^2` (about 7.4-fold) lift of the program's rate on exposure. Where
+/// nearly every responder is exposed the exposure term barely varies, and
+/// the coefficient that would explain `effect_pve` of it grows without
+/// bound (thousands-fold lifts, and draws that take hours).
+pub const MAX_EFFECT_COEF: f64 = 2.0;
+
 /// The hidden confounder's spatial form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "&'static str")]
@@ -104,8 +111,15 @@ pub struct Scenario {
     /// `√pve / sd(x)` times the exposure term `x` (true exposure × the bin's
     /// share × the dose share), its variance taken over responding receivers
     /// within their identity bins. Effect, field and log-rate noise share a
-    /// unit variance, so the PVE also sets the noise and hence power.
+    /// unit variance, so the PVE also sets the noise and hence power. The
+    /// effect's log-rate coefficient is capped at [`MAX_EFFECT_COEF`]: where
+    /// nearly every responder is exposed, the PVE asked is then not reached.
     pub effect_pve: f64,
+    /// The effect PVE the log-rate noise makes room for, when not
+    /// `effect_pve`: a single scenario's null pairs take their planted
+    /// pairs', so the two labels differ by the effect alone.
+    #[serde(default)]
+    pub noise_effect_pve: Option<f64>,
     /// Share of the producer log odds' variance (beyond the cell type) that
     /// the hidden field explains; the rest is noise.
     pub ligand_field_pve: f64,
@@ -252,6 +266,7 @@ impl ScenarioKeys {
             dose_order: self.dose_order,
             region: None,
             rep: self.rep,
+            noise_effect_pve: None,
         }
     }
 }
@@ -264,6 +279,42 @@ pub struct SingleScenario {
     pub scenario: Scenario,
     pub planted: usize,
     pub null: usize,
+    /// How the planted and null pairs are chosen.
+    pub assignment: PairAssignment,
+}
+
+/// How a single-scenario call chooses its planted and null pairs.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PairAssignment {
+    /// The top pairs by ligand abundance, the labels interleaved by rank:
+    /// the same pairs for every seed and rep
+    #[default]
+    InterleavedRank,
+    /// Pairs drawn at random from every pair with the receivers to
+    /// benchmark on, from the seed and rep: other pairs for each replicate
+    Random,
+}
+
+impl PairAssignment {
+    /// The rule, as the single scenario's sidecar records it.
+    pub fn rule(self) -> &'static str {
+        match self {
+            Self::InterleavedRank => {
+                "pairs ranked by ligand abundance among those with the receivers to benchmark \
+                 on, the top planted + null of them labelled: the fewer label (null when equal) \
+                 at rank floor((k + 1/2) m / few) for its k-th of few pairs over m ranks, the \
+                 other label at the rest; planted pairs take effect_pve as set, null pairs \
+                 effect_pve 0 with the planted pairs' log-rate noise"
+            }
+            Self::Random => {
+                "pairs ranked by ligand abundance among those with the receivers to benchmark \
+                 on, all of them eligible, ordered by mix_seed(draw_seed, rank): the first \
+                 planted of the order planted, the next null null; planted pairs take \
+                 effect_pve as set, null pairs effect_pve 0 with the planted pairs' \
+                 log-rate noise"
+            }
+        }
+    }
 }
 
 impl SingleScenario {
@@ -285,6 +336,7 @@ impl SingleScenario {
             scenario,
             planted,
             null,
+            assignment: PairAssignment::default(),
         })
     }
 }
@@ -308,6 +360,7 @@ impl Default for Scenario {
             dose_order: 2,
             region: None,
             rep: 0,
+            noise_effect_pve: None,
         }
     }
 }

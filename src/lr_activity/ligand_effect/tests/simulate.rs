@@ -216,6 +216,18 @@ fn the_effect_coefficient_explains_its_pve_within_bins() {
     assert_eq!(effect_coef(0.0, &x, &responds, &bin), 0.0);
 }
 
+/// Where nearly every responder is exposed, the coefficient that would
+/// explain the PVE is huge: it is capped at [`MAX_EFFECT_COEF`].
+#[test]
+fn the_effect_coefficient_is_capped_where_exposure_barely_varies() {
+    use crate::lr_activity::ligand_effect::simulate::{effect_coef, MAX_EFFECT_COEF};
+    let n = 1000;
+    let bin = vec![0usize; n];
+    let responds = vec![true; n];
+    let x: Vec<f64> = (0..n).map(|i| if i == 0 { 0.0 } else { 1.0 }).collect();
+    assert_eq!(effect_coef(0.1, &x, &responds, &bin), MAX_EFFECT_COEF);
+}
+
 /// A field handed in ([`SimShared::field`]) is the run's hidden field: the
 /// one the run would draw gives the same run, another moves it.
 #[test]

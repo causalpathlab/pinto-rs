@@ -10,7 +10,7 @@ use super::{
 use crate::lr_activity::ligand_effect::memory::{pair_memory, pair_workers, run_bounded};
 use crate::lr_activity::ligand_effect::options::{self, EffectOpts};
 use crate::lr_activity::ligand_effect::simulate::{
-    self, ConfounderKind, Scenario, ScenarioKeys, SimRow, SimShared, SingleScenario,
+    self, ConfounderKind, PairAssignment, Scenario, ScenarioKeys, SimRow, SimShared, SingleScenario,
 };
 use crate::lr_activity::ligand_effect::{output, reference, shard, RunInputs, LOG_TARGET};
 use crate::util::common::*;
@@ -19,13 +19,13 @@ use legume_numeric::matrix::rand_util::mix_seed;
 use serde_json::json;
 use std::path::Path;
 
-/// The rule that labels pairs, as the sidecar names it
-/// ([`interleaved_ranks`]).
-const ASSIGNMENT: &str = "interleaved-rank";
-
 /// Mixed into `--seed` for the call's hidden field: no abundance rank
 /// reaches it, so the field's stream is apart from every pair's.
 const FIELD_SALT: u64 = u64::MAX;
+
+/// Mixed into `--seed` for the random pair draw ([`random_labels`]), apart
+/// from the field's stream and every pair's.
+const DRAW_SALT: u64 = u64::MAX - 1;
 
 /// Planted and null pairs by abundance rank: the top `planted + null` of the
 /// `available` ranks, the fewer label (null when the counts are equal)
@@ -37,13 +37,7 @@ const FIELD_SALT: u64 = u64::MAX;
 /// ranks planted. With fewer ranks than asked, each label keeps its asked
 /// share, at least one of each while two ranks are left.
 pub fn interleaved_ranks(available: usize, planted: usize, null: usize) -> Vec<(usize, bool)> {
-    let asked = planted + null;
-    let m = asked.min(available);
-    let n1 = match m {
-        0 | 1 => m,
-        _ if m == asked => planted,
-        _ => ((2 * m * planted + asked) / (2 * asked)).clamp(1, m - 1),
-    };
+    let (m, n1) = label_shares(available, planted, null);
     let n0 = m - n1;
     let (few, label) = if n1 < n0 { (n1, true) } else { (n0, false) };
     let mut planted_at = vec![!label; m];
@@ -51,6 +45,45 @@ pub fn interleaved_ranks(available: usize, planted: usize, null: usize) -> Vec<(
         planted_at[(2 * k + 1) * m / (2 * few)] = label;
     }
     planted_at.into_iter().enumerate().collect()
+}
+
+/// The pairs a call labels of the `available` and how many of them are
+/// planted: all `planted + null` asked while there are as many, else each
+/// label its asked share, at least one of each while two are left.
+fn label_shares(available: usize, planted: usize, null: usize) -> (usize, usize) {
+    let asked = planted + null;
+    let m = asked.min(available);
+    let n1 = match m {
+        0 | 1 => m,
+        _ if m == asked => planted,
+        _ => ((2 * m * planted + asked) / (2 * asked)).clamp(1, m - 1),
+    };
+    (m, n1)
+}
+
+/// Planted and null pairs drawn at random from the `available` ranks: the
+/// ranks ordered by `mix_seed(draw_seed, rank)`, the first `planted` of the
+/// order planted and the next `null` null (with fewer ranks than asked, each
+/// label keeps its share as [`interleaved_ranks`] keeps it), returned in rank
+/// order. A function of `draw_seed` and the ranks alone, so every shard of a
+/// call draws the same pairs.
+pub fn random_labels(
+    available: usize,
+    planted: usize,
+    null: usize,
+    draw_seed: u64,
+) -> Vec<(usize, bool)> {
+    let (m, n1) = label_shares(available, planted, null);
+    let mut order: Vec<usize> = (0..available).collect();
+    order.sort_by_cached_key(|&r| (mix_seed(draw_seed, r as u64), r));
+    let mut drawn: Vec<(usize, bool)> = order
+        .into_iter()
+        .take(m)
+        .enumerate()
+        .map(|(k, r)| (r, k < n1))
+        .collect();
+    drawn.sort_unstable();
+    drawn
 }
 
 /// Remove an earlier single-scenario call's table and sidecar under `out`:
@@ -120,8 +153,26 @@ pub fn run_simulate_one(
         region,
         ..one.scenario
     };
-    let order = benchmark_pairs(&prep, eopts, one.planted + one.null, region)?;
-    let labelled: Vec<Labelled> = interleaved_ranks(order.len(), one.planted, one.null)
+    // a random draw is from every pair fit to benchmark, the ranks from the top
+    let draw_seed = (one.assignment == PairAssignment::Random)
+        .then(|| mix_seed(mix_seed(a.seed, DRAW_SALT), scen.rep as u64));
+    let wanted = match draw_seed {
+        Some(_) => usize::MAX,
+        None => one.planted + one.null,
+    };
+    let order = benchmark_pairs(&prep, eopts, wanted, region)?;
+    if draw_seed.is_some() {
+        info!(
+            target: LOG_TARGET,
+            "Drawing the pairs at random of {} with receivers to benchmark on",
+            order.len()
+        );
+    }
+    let labels = match draw_seed {
+        Some(s) => random_labels(order.len(), one.planted, one.null, s),
+        None => interleaved_ranks(order.len(), one.planted, one.null),
+    };
+    let labelled: Vec<Labelled> = labels
         .into_iter()
         .map(|(rank, planted)| Labelled {
             rank,
@@ -209,6 +260,7 @@ pub fn run_simulate_one(
         } else {
             Scenario {
                 effect_pve: 0.0,
+                noise_effect_pve: Some(scen.effect_pve),
                 ..scen
             }
         };
@@ -254,14 +306,13 @@ pub fn run_simulate_one(
         "planted": n1,
         "null": n0,
         "asked": {"planted": one.planted, "null": one.null},
-        "assignment": ASSIGNMENT,
-        "assignment_rule": "pairs ranked by ligand abundance among those with the receivers \
-                            to benchmark on, the top planted + null of them labelled: the fewer \
-                            label (null when equal) at rank floor((k + 1/2) m / few) for its \
-                            k-th of few pairs over m ranks, the other label at the rest; planted \
-                            pairs take effect_pve as set, null pairs effect_pve 0",
+        "assignment": crate::util::cli::value_name(&one.assignment),
+        "assignment_rule": one.assignment.rule(),
+        "eligible_pairs": order.len(),
+        "draw_seed": draw_seed,
         "seeds": "pair: mix_seed(seed, rank), rep mixed in per run; hidden field: \
-                  mix_seed(mix_seed(seed, 2^64 - 1), rep), one for every pair",
+                  mix_seed(mix_seed(seed, 2^64 - 1), rep), one for every pair; random pair \
+                  draw: draw_seed = mix_seed(mix_seed(seed, 2^64 - 2), rep)",
         "field_sha256": simulate::field_sha256(&field),
         "real_gene_confounder": confounder.as_ref().map(|(n, _)| &**n),
         "reference": reference,

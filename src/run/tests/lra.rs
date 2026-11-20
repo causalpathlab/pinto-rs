@@ -770,6 +770,7 @@ fn a_single_scenario_call_passes_its_settings() {
         "set": ["effect_pve=0.05", "confounder=bumps"],
         "pairs": 4,
         "null_pairs": 6,
+        "pair_assignment": "random",
     }))
     .unwrap();
     let argv = lra_simulate_argv(&a, Some("/p/r.pinto.json"), "/p/out");
@@ -780,7 +781,8 @@ fn a_single_scenario_call_passes_its_settings() {
             "--set=effect_pve=0.05",
             "--set=confounder=bumps",
             "--pairs=4",
-            "--null-pairs=6"
+            "--null-pairs=6",
+            "--pair-assignment=random"
         ]
     );
     checked(&cli(), &argv).unwrap();
@@ -820,7 +822,8 @@ fn a_single_scenario_call_passes_its_settings() {
 }
 
 /// A finished single scenario is read back only for the call that made it:
-/// another point, pair count, seed or region under the same out is refused,
+/// another point, pair count, seed, region or pair assignment under the same
+/// out is refused,
 /// and a grid call refuses a single scenario's table.
 #[test]
 fn a_finished_single_scenario_is_read_back_for_its_own_call_alone() {
@@ -837,6 +840,7 @@ fn a_finished_single_scenario_is_read_back_for_its_own_call_alone() {
         "asked": {"planted": 4, "null": 10},
         "seed": 42,
         "plant_region": null,
+        "assignment": "interleaved-rank",
     });
     std::fs::write(output::lra_simulate_sidecar_path(&out), sidecar.to_string()).unwrap();
     a.check_made(&out).unwrap();
@@ -845,6 +849,7 @@ fn a_finished_single_scenario_is_read_back_for_its_own_call_alone() {
         json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 5}),
         json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4, "seed": 3}),
         json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4, "plant_region": "R1"}),
+        json!({"run": "r", "set": ["effect_pve=0.02"], "pairs": 4, "pair_assignment": "random"}),
     ] {
         let e = call(other.clone())
             .check_made(&out)
