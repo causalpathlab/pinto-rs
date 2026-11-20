@@ -674,9 +674,10 @@ runs two tests:
 
 **Scoring on pairs.** A clustering has its own preferences (how many
 groups, how big), so `pinto sim score-by-pair --truth sim --vectors <inputs>`
-scores the per-cell vectors themselves: a run's propensity at `--level`, a
-cage run's `{prefix}.cell_embedding.parquet`, or any table with a `cell`
-column and numeric columns. Two spots' similarity is the cosine of their
+scores the per-cell vectors themselves: a run's propensity at `--level`
+(lc, dsvd and cage alike: give the run's prefix), a spatial baseline's
+`{out}.cell_embedding.parquet`, or any table with a `cell` column and
+numeric columns. Two spots' similarity is the cosine of their
 vectors, scored by AUROC (Mann-Whitney, ties counting a half; Hanley and
 McNeil 1982) and AUPRC (average precision) on four sets of pairs, each
 reported with its prevalence (the AUPRC of chance):
@@ -1402,7 +1403,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr.zip` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score_by_set`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score_by_set` | `pinto sim score-by-set` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
-| `run_sim_score_by_pair` | `pinto sim score-by-pair` in the call: `truth`, `vectors` (runs at `level`, or vector tables such as a cage run's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
+| `run_sim_score_by_pair` | `pinto sim score-by-pair` in the call: `truth`, `vectors` (runs at `level`, their propensity, cage's among them; or vector tables such as a spatial baseline's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
 | `run_sim_baseline` | `pinto sim baseline` as a recorded job: `truth`, `method` (`pooled`, `harmony` or `per-donor`), `n_clusters`, `seed`, `out`; writes `<out>.tsv`, a cell/label table the reply names as `labels` for `run_sim_score_by_set` |
 | `view_open` | opens a run; its cells, bounds, batches, levels, groups with their map colours, data files and lupin rounds |
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |

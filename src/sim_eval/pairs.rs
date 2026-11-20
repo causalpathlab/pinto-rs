@@ -23,8 +23,9 @@
 //!   positive when the two share a domain.
 //!
 //! The sampled sets are drawn from a seeded generator, so a score is
-//! reproducible. Vectors are a pinto run's propensity at any level, a cage
-//! run's `cell_embedding` table, or any table (TSV or parquet) with a
+//! reproducible. Vectors are a pinto run's propensity at any level (lc,
+//! dsvd and cage alike), a spatial baseline's `cell_embedding` table, or
+//! any table (TSV or parquet) with a
 //! `cell` column and numeric columns.
 
 use super::score::{sim_folder, TruthSpots, NAME_WIDTH};
@@ -474,8 +475,8 @@ fn spatial_edges(
 }
 
 /// Per-cell vectors: a run's propensity at `level`, or a table's `cell`
-/// column and every other column, each a number (TSV or parquet, a cage
-/// run's `cell_embedding` among them).
+/// column and every other column, each a number (TSV or parquet, a spatial
+/// baseline's `cell_embedding` among them).
 pub fn read_vectors(input: &str, level: &str) -> anyhow::Result<(Vec<Box<str>>, Mat)> {
     if !super::score::is_table(input) {
         let (prop, _, _, cells) =
@@ -510,8 +511,8 @@ pub struct SimPairsArgs {
     pub truth: Box<str>,
 
     /// Vectors to score: pinto runs (prefix or .pinto.json, their
-    /// propensity at --level), or tables (TSV or parquet, a cage run's
-    /// cell_embedding among them) with a `cell` column and numeric columns,
+    /// propensity at --level; lc, dsvd and cage alike), or tables (TSV or
+    /// parquet, a spatial baseline's cell_embedding among them) with a `cell` column and numeric columns,
     /// comma-separated or repeated
     #[arg(long, value_delimiter = ',', required = true)]
     pub vectors: Vec<Box<str>>,
