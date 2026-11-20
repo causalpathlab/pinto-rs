@@ -507,7 +507,7 @@ pub(super) fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "truth": {"type": "string", "description": "The simulation: run_simulate's truth (its truth run) or out folder"},
-                    "vectors": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Per-cell vectors: pinto runs (prefix or .pinto.json, their propensity at level), or tables (TSV or parquet, a cage run's {prefix}.cell_embedding.parquet among them) with a cell column and numeric columns"},
+                    "vectors": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Per-cell vectors: pinto runs (prefix or .pinto.json, their propensity at level; lc, dsvd and cage alike), or tables (TSV or parquet, a spatial baseline's {out}.cell_embedding.parquet among them) with a cell column and numeric columns"},
                     "level": {"type": "string", "description": "Level of a run's propensity: final, draft, or L1, L2, ... (the truth run itself: domain, donor or state) [default: final]"},
                     "pairs": {"type": "integer", "minimum": 2, "description": format!("Pairs drawn for each sampled set [default: {DEFAULT_PAIRS}]")},
                     "seed": {"type": "integer", "minimum": 0, "description": format!("Seed of the pair draws [default: {DEFAULT_SEED}]")},

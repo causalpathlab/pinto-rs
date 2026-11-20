@@ -55,9 +55,9 @@ the same order) and `fit.flags` exactly as its data, coords and flags; give \
 no other data path. 3. Score each fit against the reply's `truth`: \
 `run_sim_score_by_set` with the fit's out prefix in `labels` scores its labels; \
 `run_sim_score_by_pair` scores per-cell vectors on pairs of spots, with no \
-clustering: for lc and dsvd give the fit's out prefix in `vectors` (its \
-propensity), for cage its `{prefix}.cell_embedding.parquet` (never dsvd's \
-`{prefix}.latent.parquet`, keyed by cell pair); `run_sim_baseline` writes a standard \
+clustering: for lc, dsvd and cage give the fit's out prefix in `vectors` \
+(its propensity; never cage's `{prefix}.cell_embedding.parquet` nor dsvd's \
+`{prefix}.latent.parquet`, which are not the communities' propensity); `run_sim_baseline` writes a standard \
 pipeline's labels table to put in `labels` beside them. A spatial baseline's \
 run is scored as a fit is: its prefix in `labels`, its \
 `{out}.cell_embedding.parquet` in `vectors`. Cells are named \

@@ -1156,9 +1156,9 @@ enum Sim {
                       \x20 in the JSON), so telling donors apart scores 0.5.\n\
                       neighbour_same_domain: each spot's --knn nearest neighbours in its\n\
                       \x20 section, positive when they share a domain.\n\n\
-                      Vectors are pinto runs (their propensity at --level), a cage run's\n\
-                      cell_embedding table, or any table with a cell column and numeric\n\
-                      columns. Pairs are drawn from --seed, --pairs per sampled set."
+                      Vectors are pinto runs (their propensity at --level; lc, dsvd and\n\
+                      cage alike), a spatial baseline's cell_embedding table, or any table\n\
+                      with a cell column and numeric columns. Pairs are drawn from --seed, --pairs per sampled set."
     )]
     Pairs(Box<sim_eval::SimPairsArgs>),
 
