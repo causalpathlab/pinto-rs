@@ -628,8 +628,9 @@ fn a_call_holds_both_labels_and_reproduces_byte_for_byte() {
 }
 
 /// A pair's rows depend on its rank, its label, the seed and the scenario
-/// alone: a call with another effect size and more planted pairs, whose
-/// nulls fall on the same ranks, gives the same null rows.
+/// alone: a call with more planted pairs, whose nulls fall on the same
+/// ranks, gives the same null rows. Null pairs take the planted pairs'
+/// log-rate noise, so another effect size moves them.
 #[test]
 fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
     let dir = tempfile::tempdir().unwrap();
@@ -648,8 +649,17 @@ fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
         &f,
         (dir.path(), &m),
         "b",
-        &with_effect("effect_pve=0.1"),
+        &with_effect("effect_pve=0.05"),
         (3, 2),
+        2,
+    )
+    .unwrap();
+    let c = single_call(
+        &f,
+        (dir.path(), &m),
+        "c",
+        &with_effect("effect_pve=0.1"),
+        (2, 2),
         2,
     )
     .unwrap();
@@ -662,7 +672,7 @@ fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
             planted.into_iter().next().unwrap(),
         )
     };
-    let ((la, xa, pa), (lb, xb, pb)) = (read(&a), read(&b));
+    let ((la, xa, pa), (lb, xb, pb), (_, xc, pc)) = (read(&a), read(&b), read(&c));
     assert_eq!(pb, [1.0, 0.0, 1.0, 0.0, 1.0]);
     let nulls = |l: &[Box<str>], p: &[f64]| -> Vec<(usize, Box<str>)> {
         (0..l.len())
@@ -681,9 +691,13 @@ fn a_pair_s_rows_do_not_depend_on_the_rest_of_the_call() {
             assert!(u.to_bits() == v.to_bits(), "{l} {col}: {u} vs {v}");
         }
     }
-    // The planted pair took the larger effect.
-    let truth = SCORED.iter().position(|c| *c == "truth").unwrap();
-    assert!(xb[truth][0] != xa[truth][0], "the planted rows differ");
+    // Another effect size: the same null pairs, under other noise.
+    assert_eq!(pc, pa);
+    let effect = SCORED.iter().position(|c| *c == "effect_dr").unwrap();
+    assert!(
+        na.iter().any(|(i, _)| xa[effect][*i] != xc[effect][*i]),
+        "the null rows follow the planted pairs' noise"
+    );
 }
 
 /// The real-gene confounder needs a gene outside every pair of the call:

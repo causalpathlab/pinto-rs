@@ -260,6 +260,7 @@ pub fn run_simulate_one(
         } else {
             Scenario {
                 effect_pve: 0.0,
+                noise_effect_pve: Some(scen.effect_pve),
                 ..scen
             }
         };

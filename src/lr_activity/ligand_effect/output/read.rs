@@ -364,6 +364,8 @@ impl<'p> SimTable<'p> {
             dose_midpoint: self.num(DOSE_MIDPOINT, i),
             dose_order: self.col(DOSE_ORDER)[i] as i32,
             region: self.region[i].is_finite().then(|| self.region[i] as u32),
+            // the table keeps no noise of its own: a row reads as its PVE's
+            noise_effect_pve: None,
         })
     }
 
