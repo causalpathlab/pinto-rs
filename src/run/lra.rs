@@ -220,6 +220,9 @@ lra_tool_args!(LraSimulateToolArgs {
     pub pairs: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub null_pairs: Option<usize>,
+    /// `--pair-assignment`: how the single scenario's pairs are chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair_assignment: Option<String>,
     /// `--shard`: shard `I` (0-based) of `N` of the runs, `I/N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard: Option<String>,
@@ -229,6 +232,21 @@ impl LraSimulateToolArgs {
     /// Whether the call asks for one scenario rather than the built-in grid.
     fn single(&self) -> bool {
         crate::lr_activity::args::selects_single(self.one, &self.set, self.pairs, self.null_pairs)
+    }
+
+    /// `pair_assignment` as `pinto lra simulate` reads it, its default when
+    /// not given.
+    fn pair_assignment(
+        &self,
+    ) -> anyhow::Result<crate::lr_activity::ligand_effect::simulate::PairAssignment> {
+        self.pair_assignment
+            .as_deref()
+            .map(|r| {
+                clap::ValueEnum::from_str(r, false)
+                    .map_err(|e| anyhow::anyhow!("pair_assignment {r:?}: {e}"))
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     /// `shard` as `pinto lra simulate` reads it.
@@ -280,8 +298,9 @@ impl LraSimulateToolArgs {
             },
             "seed": self.seed.unwrap_or(crate::lr_activity::args::DEFAULT_SEED),
             "plant_region": self.plant_region,
+            "assignment": crate::util::cli::value_name(&self.pair_assignment()?),
         });
-        let differs: Vec<&str> = ["scenario", "asked", "seed", "plant_region"]
+        let differs: Vec<&str> = ["scenario", "asked", "seed", "plant_region", "assignment"]
             .into_iter()
             .filter(|k| made[*k] != want[*k])
             .collect();
@@ -546,6 +565,9 @@ pub(super) fn lra_simulate_argv(
     argv.extend(a.set.iter().map(|s| format!("--set={s}")));
     argv.extend(a.pairs.map(|n| format!("--pairs={n}")));
     argv.extend(a.null_pairs.map(|n| format!("--null-pairs={n}")));
+    if let Some(r) = &a.pair_assignment {
+        argv.push(flag_value("--pair-assignment", r));
+    }
     if let Some(s) = &a.shard {
         argv.push(flag_value("--shard", s));
     }

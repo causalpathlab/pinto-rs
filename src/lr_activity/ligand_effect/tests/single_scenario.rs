@@ -4,7 +4,7 @@
 
 use super::super::memory::{pair_memory_budget, workers_within};
 use super::super::output::{lra_simulate_path, lra_simulate_sidecar_path};
-use super::super::pipeline::{interleaved_ranks, run_grid, run_simulate_one};
+use super::super::pipeline::{interleaved_ranks, random_labels, run_grid, run_simulate_one};
 use super::super::reference::{with_test_root, write_empty_reference, Species};
 use super::super::simulate::{
     ConfoundShape, ConfounderKind, GridOpts, Scenario, ScenarioKeys, SingleScenario,
@@ -284,6 +284,18 @@ fn single_call_shard(
     let out = dir.join(name).to_string_lossy().into_owned();
     let sets: Vec<String> = sets.iter().map(|s| s.to_string()).collect();
     let one = SingleScenario::new(&sets, pairs.0, pairs.1)?;
+    single_call_with(f, (&out, m), one, threads, shard)
+}
+
+/// [`single_call_shard`] of the scenario `one` as given, into `out`.
+fn single_call_with(
+    f: &Fixture,
+    (out, m): (&str, &Path),
+    one: SingleScenario,
+    threads: usize,
+    shard: Option<crate::lr_activity::ligand_effect::shard::Shard>,
+) -> anyhow::Result<String> {
+    let out = out.to_string();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
@@ -1003,4 +1015,98 @@ fn simulate_shards_merged_give_the_whole_call() {
         sim_path(&at("gs1/o"), Shard { index: 1, count }),
     ];
     assert!(merge(&mixed, &at("mixed")).is_err());
+}
+
+/// The random draw: `planted + null` distinct ranks of those available, in
+/// rank order, the asked share of each label, a function of the seed alone,
+/// and other ranks for other seeds.
+#[test]
+fn random_labels_draw_distinct_ranks_by_the_seed() {
+    let a = random_labels(40, 3, 5, 7);
+    assert_eq!(a, random_labels(40, 3, 5, 7), "the seed alone");
+    assert_eq!(a.len(), 8);
+    assert_eq!(a.iter().filter(|x| x.1).count(), 3);
+    assert!(
+        a.windows(2).all(|w| w[0].0 < w[1].0),
+        "distinct, in rank order"
+    );
+    assert!(a.iter().all(|x| x.0 < 40));
+    let draws: std::collections::HashSet<Vec<(usize, bool)>> =
+        (0..8).map(|seed| random_labels(40, 3, 5, seed)).collect();
+    assert!(draws.len() > 1, "other seeds draw other pairs");
+    // fewer ranks than asked: all of them, each label its share
+    let few = random_labels(3, 2, 2, 1);
+    assert_eq!(few.iter().map(|x| x.0).collect::<Vec<_>>(), [0, 1, 2]);
+    assert_eq!(few.iter().filter(|x| x.1).count(), 2);
+}
+
+/// `--pair-assignment random`: the call records its rule and draw seed,
+/// other reps draw other pairs where there are more to draw from, and
+/// shards of a call draw the same pairs, merging to the whole call.
+#[test]
+fn random_pairs_change_with_rep_and_shards_agree() {
+    use crate::lr_activity::ligand_effect::pipeline::merge;
+    use crate::lr_activity::ligand_effect::shard::{sim_path, Shard};
+    use crate::lr_activity::ligand_effect::simulate::PairAssignment;
+    let dir = tempfile::tempdir().unwrap();
+    let f = fixture(dir.path());
+    let m = manifest(dir.path());
+    let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let random = |rep: &str| {
+        let mut sets: Vec<String> = with_effect("effect_pve=0.5")
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        sets.push(rep.into());
+        let mut one = SingleScenario::new(&sets, 1, 1).unwrap();
+        one.assignment = PairAssignment::Random;
+        one
+    };
+    let drawn = |s: &serde_json::Value| -> Vec<(String, bool)> {
+        s["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["ligand"].to_string(), p["planted"].as_bool().unwrap()))
+            .collect()
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut eligible = 0;
+    for rep in 1..=4 {
+        let out = single_call_with(
+            &f,
+            (&at(&format!("r{rep}")), &m),
+            random(&format!("rep={rep}")),
+            1,
+            None,
+        )
+        .unwrap();
+        let s = sidecar(&out);
+        assert_eq!(s["assignment"], "random");
+        assert!(s["draw_seed"].is_u64(), "{s}");
+        eligible = s["eligible_pairs"].as_u64().unwrap();
+        seen.insert(drawn(&s));
+    }
+    if eligible > 2 {
+        assert!(seen.len() > 1, "reps draw other pairs: {seen:?}");
+    }
+
+    // rep 3's whole call, from the loop
+    let whole = at("r3");
+    let count = 2;
+    let files: Vec<String> = (0..count)
+        .map(|index| {
+            let s = Shard { index, count };
+            let out = at(&format!("rs{index}/o"));
+            single_call_with(&f, (&out, &m), random("rep=3"), 1, Some(s)).unwrap();
+            sim_path(&out, s)
+        })
+        .collect();
+    merge(&files, &at("merged")).unwrap();
+    assert_eq!(
+        std::fs::read(lra_simulate_path(&whole)).unwrap(),
+        std::fs::read(lra_simulate_path(&at("merged"))).unwrap(),
+        "random pairs: shards merge to the whole call, byte for byte"
+    );
+    assert_eq!(drawn(&sidecar(&whole)), drawn(&sidecar(&at("merged"))));
 }

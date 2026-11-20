@@ -264,6 +264,41 @@ pub struct SingleScenario {
     pub scenario: Scenario,
     pub planted: usize,
     pub null: usize,
+    /// How the planted and null pairs are chosen.
+    pub assignment: PairAssignment,
+}
+
+/// How a single-scenario call chooses its planted and null pairs.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PairAssignment {
+    /// The top pairs by ligand abundance, the labels interleaved by rank:
+    /// the same pairs for every seed and rep
+    #[default]
+    InterleavedRank,
+    /// Pairs drawn at random from every pair with the receivers to
+    /// benchmark on, from the seed and rep: other pairs for each replicate
+    Random,
+}
+
+impl PairAssignment {
+    /// The rule, as the single scenario's sidecar records it.
+    pub fn rule(self) -> &'static str {
+        match self {
+            Self::InterleavedRank => {
+                "pairs ranked by ligand abundance among those with the receivers to benchmark \
+                 on, the top planted + null of them labelled: the fewer label (null when equal) \
+                 at rank floor((k + 1/2) m / few) for its k-th of few pairs over m ranks, the \
+                 other label at the rest; planted pairs take effect_pve as set, null pairs \
+                 effect_pve 0"
+            }
+            Self::Random => {
+                "pairs ranked by ligand abundance among those with the receivers to benchmark \
+                 on, all of them eligible, ordered by mix_seed(draw_seed, rank): the first \
+                 planted of the order planted, the next null null; planted pairs take \
+                 effect_pve as set, null pairs effect_pve 0"
+            }
+        }
+    }
 }
 
 impl SingleScenario {
@@ -285,6 +320,7 @@ impl SingleScenario {
             scenario,
             planted,
             null,
+            assignment: PairAssignment::default(),
         })
     }
 }

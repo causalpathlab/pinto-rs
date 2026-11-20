@@ -22,9 +22,9 @@ use std::path::Path;
 
 mod single;
 
-#[cfg(test)]
-pub(super) use single::interleaved_ranks;
 pub use single::{clear_single_outputs, run_simulate_one};
+#[cfg(test)]
+pub(super) use single::{interleaved_ranks, random_labels};
 
 /// The shared progress bar over the long stages. Where no bar can draw (the
 /// log of a background job, a pipe) each twentieth of the way is logged too.
