@@ -29,6 +29,16 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        help = "With --png/--pdf, draw the structure plot instead of the map",
+        long_help = "With --png and/or --pdf, draw the level's structure plot\n\
+                     (every cell's community mixture as a stacked bar, a panel\n\
+                     per batch) instead of the map, as the viewer's structure\n\
+                     view does."
+    )]
+    pub structure: bool,
+
+    #[arg(
+        long,
         value_enum,
         requires = "layout_out",
         help = "Lay a table out in 2-D and write the coordinates (--layout-out)",

@@ -47,6 +47,9 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     if let Layer::Community(c) = args.layer {
         anyhow::ensure!(c < level.comm.k, "C{c}: level has K={}", level.comm.k);
     }
+    if args.structure {
+        return write_structure_still(args, &base, &level, theme);
+    }
 
     let vp = still_viewport(args, &base)?;
     let focus = args
@@ -400,4 +403,41 @@ fn figure<'a>(
         legend,
         markers,
     }
+}
+
+/// `--structure`: the level's structure plot (a panel per batch, or one for
+/// every cell), as the viewer draws it, to `--png` and/or `--pdf`.
+fn write_structure_still(
+    args: &ViewArgs,
+    base: &Base,
+    level: &super::Level,
+    theme: Theme,
+) -> anyhow::Result<()> {
+    use super::structure::Structure;
+    let t = Instant::now();
+    let geom = &base.geom;
+    let comm = &level.comm;
+    let structure = if geom.tiles.len() > 1 {
+        let names: Vec<String> = geom.tiles.iter().map(|t| t.name.to_string()).collect();
+        let order: Vec<usize> = (0..names.len()).collect();
+        Structure::build(comm, &geom.batch, &names, &order)
+    } else {
+        Structure::build(comm, &vec![0u16; geom.n()], &["all cells".into()], &[0])
+    };
+    let w = args.width.max(1);
+    let h = args.height.unwrap_or(w / 3).max(1);
+    if let Some(path) = args.png.as_deref() {
+        let drawn = structure.render(comm, &level.palette, (w, h), None, theme);
+        writing(Path::new(path), |p| drawn.frame.write_png(p))?;
+    }
+    if let Some(path) = args.pdf.as_deref() {
+        let title = format!("structure · level {}", comm.tag);
+        let page = structure
+            .figure(comm, &level.palette, &title, None, theme)
+            .map_err(anyhow::Error::msg)?;
+        writing(Path::new(path), |p| Ok(pdf::write_chart(page, p)?))?;
+    }
+    print_written(args);
+    println!("structure {w}×{h}, in {:.2?}", t.elapsed());
+    Ok(())
 }
