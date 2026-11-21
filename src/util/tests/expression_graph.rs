@@ -151,6 +151,7 @@ fn the_reused_projection_is_a_fresh_one() {
         feature_kind: None,
         cell_projection: true,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
     })
     .unwrap();
     assert!(pre.batch_effects.is_some(), "two files, two batches");

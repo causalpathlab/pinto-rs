@@ -92,6 +92,7 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
         feature_kind: None,
         cell_projection: false,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
     })
     .unwrap();
     let cells = pre.data_vec.column_names().unwrap();

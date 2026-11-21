@@ -147,6 +147,7 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
         feature_kind: Some(feature_kind.clone()),
         cell_projection: false,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
     })?;
     let cells = data_vec.column_names()?;
     let n_cells = cells.len();

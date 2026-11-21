@@ -385,6 +385,7 @@ pub fn prepare_moran(input: &mut InputArgs) -> anyhow::Result<FeatureModulesInfo
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: false,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
         feature_kind: None,
     })?;
     let axis = pre

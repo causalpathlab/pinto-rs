@@ -66,6 +66,22 @@ pub struct SrtPreprocessConfig<'a> {
     /// cells in each (section, batch) group and the number of batches. A
     /// fit whose memory the batches decide refuses here ([`AutoBatchCheck`]).
     pub auto_batch_memory_check: Option<&'a AutoBatchCheck<'a>>,
+    /// Which state-aware batch fold to estimate beside δ, when there is one
+    /// ([`crate::util::batch_fold`]).
+    pub batch_fold: BatchFoldKind,
+}
+
+/// The state-aware batch fold a fit divides by, beside δ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchFoldKind {
+    /// None: δ alone (queries, and fits that divide by nothing).
+    None,
+    /// Each cell's own fold: the baselines, on cells and on their
+    /// pseudobulks (sums of divided cells).
+    Cells,
+    /// Each cell's fold and each cell pair's own fold, estimated on pair
+    /// units: lc, dsvd and cage, which model pairs.
+    Pairs,
 }
 
 /// A check on the `--auto-batch` components before δ is estimated over
@@ -169,6 +185,12 @@ pub struct SrtPreprocessed {
     /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
     /// single-batch or not estimated.
     pub batch_effects: Option<BatchPosterior>,
+    /// Each cell's state-aware fold (rows of δ), with [`BatchFoldKind::Cells`]
+    /// or [`BatchFoldKind::Pairs`] and a δ.
+    pub cell_fold: Option<crate::util::batch_fold::CellFold>,
+    /// Each pair of [`Self::graph`]'s edges' own fold, in edge order, with
+    /// [`BatchFoldKind::Pairs`] and a δ.
+    pub pair_fold: Option<crate::util::batch_fold::PairFold>,
     /// Expression mode's base graph was built on the batch-corrected
     /// projection, for the manifest's
     /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
@@ -632,7 +654,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
     let augment_knn = knn.augment;
-    let take_projection = cfg.cell_projection || augment_knn > 0;
+    let take_projection =
+        cfg.cell_projection || augment_knn > 0 || cfg.batch_fold != BatchFoldKind::None;
     // An estimate that gives no δ is no estimate: nothing is divided, and
     // nothing is corrected for it.
     let mut batch_effects = match early_estimate {
@@ -763,7 +786,45 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         )?;
     }
 
+    let (cell_fold, pair_fold) = match (&batch_effects, cell_proj.as_ref()) {
+        (Some(effects), Some(proj))
+            if cfg.batch_fold != BatchFoldKind::None
+                && cfg.batch_effects == BatchEstimate::Fit
+                && effects.coarse_groups.len() == n_cells =>
+        {
+            let posterior = effects.posterior.as_ref().expect("filtered to Some above");
+            let delta = legume_numeric::param::traits::Inference::posterior_mean(&posterior.gamma);
+            let batch_of_cell =
+                crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
+            info!("Estimating the state-aware batch fold over cells");
+            let cells = crate::util::batch_fold::estimate_cell_fold(
+                &data_vec,
+                &batch_of_cell,
+                delta,
+                &effects.coarse_groups,
+                &proj.proj,
+            )?;
+            let pairs = (cfg.batch_fold == BatchFoldKind::Pairs)
+                .then(|| {
+                    crate::util::batch_fold::estimate_pair_batch_fold(
+                        &data_vec,
+                        &graph.edges,
+                        &batch_of_cell,
+                        &batch_labels,
+                        &cells,
+                        c.collapse.proj_dim,
+                        c.collapse.num_levels,
+                    )
+                })
+                .transpose()?;
+            (Some(cells), pairs)
+        }
+        _ => (None, None),
+    };
+
     Ok(SrtPreprocessed {
+        cell_fold,
+        pair_fold,
         data_vec,
         coordinates,
         coordinate_names,

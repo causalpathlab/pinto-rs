@@ -463,6 +463,7 @@ pub fn predict_cage(
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: true,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
         feature_kind: Some(feature_kind.clone()),
     })?;
     let feature_axis = feature_axis.expect("FeatureAxisMode::Strict must yield Some");

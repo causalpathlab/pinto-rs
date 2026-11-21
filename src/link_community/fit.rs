@@ -72,6 +72,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // 1-3. Load + KNN + batch effects + feature weights //
     ////////////////////////////////////////////////////
     let SrtPreprocessed {
+        cell_fold,
+        pair_fold,
         data_vec,
         coordinates,
         coordinate_names,
@@ -105,6 +107,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_kind: None,
         cell_projection: true,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs,
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_effects = batch_effects
@@ -182,9 +185,13 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             basis.n_modules,
             Some(&row_weights),
             None,
-            batch_effects
-                .as_ref()
-                .map(crate::util::batch_effects::Divisor::Registered),
+            // each cell's own fold, else δ
+            match cell_fold.as_ref() {
+                Some(f) => Some(f.table.divisor().into()),
+                None => batch_effects
+                    .as_ref()
+                    .map(crate::util::batch_effects::Divisor::Registered),
+            },
         )?;
 
         module_ctx = Some(ModulePairContext {
@@ -297,6 +304,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             divisor: batch_effects
                 .as_ref()
                 .map(crate::util::batch_effects::Divisor::Registered),
+            pair_fold: pair_fold.as_ref(),
         }
     };
 
@@ -350,11 +358,15 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         data_vec: &data_vec,
         feature_weights: &feature_weights,
         axis: &feature_axis,
-        divisor: crate::util::batch_effects::BatchDivisor::of(
-            batch_effects.as_ref(),
-            batch_of_cell.as_deref(),
-        )
-        .map(Into::into),
+        // each cell's own fold, else δ
+        divisor: match cell_fold.as_ref() {
+            Some(f) => Some(f.table.divisor().into()),
+            None => crate::util::batch_effects::BatchDivisor::of(
+                batch_effects.as_ref(),
+                batch_of_cell.as_deref(),
+            )
+            .map(Into::into),
+        },
     };
     let cascade_result = run_cascade(
         &c.out,
@@ -784,8 +796,18 @@ fn build_full_profiles(
             edge_indices,
             basis,
         )),
-        ProfileMode::Projection { basis, divisor } => {
-            build_projection_profiles_for_edges(data, edge_indices, all_edges, basis, None, divisor)
-        }
+        ProfileMode::Projection {
+            basis,
+            divisor,
+            pair_fold,
+        } => build_projection_profiles_for_edges(
+            data,
+            edge_indices,
+            all_edges,
+            basis,
+            None,
+            divisor,
+            pair_fold.map(|f| &f.table),
+        ),
     }
 }

@@ -206,7 +206,7 @@ fn estimate_batch(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     args: EstimateBatchArgs,
-) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut)> {
+) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut, Vec<usize>)> {
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
         None,
@@ -220,7 +220,8 @@ fn estimate_batch(
         cell_proj_kn.ncols()
     );
 
-    let collapse_out = data_vec.collapse_columns_multilevel(
+    let mut collapse_out = collapse_columns_multilevel_with_hierarchy(
+        data_vec,
         cell_proj_kn,
         batch_membership,
         &MultilevelParams {
@@ -231,17 +232,24 @@ fn estimate_batch(
             ..MultilevelParams::new(cell_proj_kn.nrows())
         },
     )?;
+    anyhow::ensure!(!collapse_out.levels.is_empty(), "no levels processed");
+    let delta = collapse_out.levels.swap_remove(0).delta;
+    // the coarsest level's groups, shared across batches: the state-aware
+    // fold's tree is built above them (`batch_fold`)
+    let coarse_groups = collapse_out.cell_to_pb_per_level.pop().unwrap_or_default();
 
-    Ok((collapse_out.delta, proj_out))
+    Ok((delta, proj_out, coarse_groups))
 }
 
 /// What [`estimate_and_write_batch_effects`] gives: the posterior (`None`
-/// when the estimate gave no batch effect), and the batch-corrected random
+/// when the estimate gave no batch effect), the batch-corrected random
 /// projection (`proj_dim × cells`) the estimate collapsed on, when the
-/// caller keeps it.
+/// caller keeps it, and each cell's group at the collapse's coarsest level
+/// (what the state-aware fold builds on, `crate::util::batch_fold`).
 pub struct BatchEffects {
     pub posterior: Option<BatchPosterior>,
     pub projection: Option<RandColProjOut>,
+    pub coarse_groups: Vec<usize>,
 }
 
 /// Estimate batch effects, and (with `out_prefix`) write them to
@@ -268,7 +276,7 @@ pub fn estimate_and_write_batch_effects(
     }
 
     info!("Estimating batch effects ({} batches)...", labels.len());
-    let (gamma, proj) = estimate_batch(data_vec, batch_membership, args)?;
+    let (gamma, proj, coarse_groups) = estimate_batch(data_vec, batch_membership, args)?;
     let projection = keep_projection.then_some(proj);
     let Some(gamma) = gamma else {
         warn!(
@@ -279,6 +287,7 @@ pub fn estimate_and_write_batch_effects(
         return Ok(Some(BatchEffects {
             posterior: None,
             projection,
+            coarse_groups,
         }));
     };
     let batches = data_vec
@@ -304,6 +313,7 @@ pub fn estimate_and_write_batch_effects(
             batches,
         }),
         projection,
+        coarse_groups,
     }))
 }
 
