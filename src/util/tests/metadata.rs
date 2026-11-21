@@ -169,10 +169,10 @@ fn metadata_roundtrip_cage() {
         back.outputs.pair_encoder.as_deref(),
         Some(format!("{prefix}.pair_encoder.safetensors").as_str())
     );
-    // The trained unit is the PB: pb tables + the cell->pb map ship,
-    // and there is no per-cell bias to report.
+    // The trained unit is the PB pair: its table, the pb bias and the
+    // cell->pb map ship, and there is no per-cell bias to report.
     assert!(back.outputs.cell_bias.is_none());
-    assert!(back.outputs.pb_embedding.is_some());
+    assert!(back.outputs.pb_pair_embedding.is_some());
     assert!(back.outputs.pb_bias.is_some());
     assert!(back.outputs.cell_pb.is_some());
     assert!(back.outputs.feature_embedding.is_some());

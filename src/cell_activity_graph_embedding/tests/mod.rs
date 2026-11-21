@@ -7,3 +7,4 @@ mod fixture;
 mod pair_encoder;
 mod predict_delta;
 mod small_input;
+mod super_edge_table;

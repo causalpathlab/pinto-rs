@@ -6,10 +6,10 @@
 //! is fixed is an EQUALITY — a two-channel matrix must produce exactly the
 //! activities of the single-channel matrix whose counts are its per-feature sums.
 //!
-//! Also pinned here: the activity is `log1p` of the raw count, which keeps a
-//! cell's depth.
+//! Also pinned here: an edge's weight is the pair's pooled raw count, over the
+//! features at either end, which keeps a cell's depth.
 
-use super::feature_gating::{build_feature_active_fine_edges, ActivityNorm, FeatureActiveEdges};
+use super::feature_gating::{build_feature_active_fine_edges, FeatureActiveEdges};
 use crate::test_support::{numbered, sparse_vec};
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
@@ -74,13 +74,9 @@ fn channelized_input(dir: &tempfile::TempDir) -> SparseIoVec {
     write(dir, "channelized", &rows, &triplets)
 }
 
-fn activities(
-    data: &SparseIoVec,
-    edges: &[(u32, u32)],
-    norm: ActivityNorm,
-) -> anyhow::Result<FeatureActiveEdges> {
+fn activities(data: &SparseIoVec, edges: &[(u32, u32)]) -> anyhow::Result<FeatureActiveEdges> {
     let axis = FeatureAxis::resolve(&data.row_names()?)?;
-    build_feature_active_fine_edges(data, edges, norm, &axis)
+    build_feature_active_fine_edges(data, edges, &axis, None)
 }
 
 /// Break it by indexing `feature_active_edges` with the row instead of the feature and
@@ -96,55 +92,40 @@ fn two_channels_give_exactly_the_pooled_single_channel_activities() -> anyhow::R
     assert!(axis.is_channelized());
     assert_eq!(axis.feature_names(), pooled.row_names()?.as_slice());
 
-    for norm in [ActivityNorm::Log1p, ActivityNorm::L1, ActivityNorm::L2] {
-        let a = activities(&pooled, &EDGES, norm)?;
-        let b = activities(&channelized, &EDGES, norm)?;
-
-        assert_eq!(
-            a.feature_active_edges.len(),
-            3,
-            "{norm:?}: one entry per feature"
-        );
-        assert_eq!(b.feature_active_edges, a.feature_active_edges, "{norm:?}");
-        assert_eq!(
-            b.feature_active_edge_weights, a.feature_active_edge_weights,
-            "{norm:?}"
-        );
-    }
+    let a = activities(&pooled, &EDGES)?;
+    let b = activities(&channelized, &EDGES)?;
+    assert_eq!(a.feature_active_edges.len(), 3, "one entry per feature");
+    assert_eq!(b.feature_active_edges, a.feature_active_edges);
+    assert_eq!(b.feature_active_edge_weights, a.feature_active_edge_weights);
     Ok(())
 }
 
-/// The half-evidence failure, made visible: summing the two tracks AFTER the
-/// `log1p` is not the same number, so an implementation that pooled activities
-/// instead of counts would pass the shape checks and still be wrong.
+/// An edge's weight is the pair's pooled count of the feature, the two
+/// tracks summed, and a feature counted at one end only is active there
+/// with that end's count.
 #[test]
-fn pooling_happens_on_counts_not_on_log1p_activities() -> anyhow::Result<()> {
+fn an_edge_weighs_its_pooled_count_at_either_end() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let a = activities(&channelized_input(&dir), &EDGES, ActivityNorm::Log1p)?;
-
-    // FEATURE0 at cell 0 is (spliced 5, unspliced 2); edge (0,1) has FEATURE0 active
-    // at both endpoints, where cell 1 is (3, 0).
-    let w = 7f32.ln_1p() * 3f32.ln_1p();
-    let wrong = (5f32.ln_1p() + 2f32.ln_1p()) * 3f32.ln_1p();
-    let e0 = a.feature_active_edges[0]
-        .iter()
-        .position(|&e| e == 0)
-        .expect("FEATURE0 is active on edge (0, 1)");
-    let got = a.feature_active_edge_weights[0][e0];
-
-    assert!((got - w).abs() < 1e-6, "expected {w}, got {got}");
-    assert!(
-        (got - wrong).abs() > 1e-3,
-        "log1p is not additive across tracks"
-    );
+    let a = activities(&channelized_input(&dir), &EDGES)?;
+    let weight = |g: usize, e: u32| {
+        let k = a.feature_active_edges[g].iter().position(|&x| x == e)?;
+        Some(a.feature_active_edge_weights[g][k])
+    };
+    // FEATURE0: cell 0 (5 + 2), cell 1 (3 + 0); cell 5 has none
+    assert_eq!(weight(0, 0), Some(10.0), "both ends");
+    assert_eq!(weight(0, 4), Some(7.0), "edge (0, 5): cell 0 only");
+    // FEATURE1 on edge (0, 5): cell 0 (10 + 1), cell 5 (0 + 25)
+    assert_eq!(weight(1, 4), Some(36.0));
+    // FEATURE2 is counted at neither end of edge (0, 1)
+    assert_eq!(weight(2, 0), None);
     Ok(())
 }
 
-/// The activity is `log1p` of the cell's raw count, not of a depth-scaled
-/// one: two cells of one composition, one nine times as deep, get
-/// different activities, each the `log1p` of what was counted there.
+/// The weight is the cell's raw count, not a depth-scaled one: two cells of
+/// one composition, one nine times as deep, each beside the same third cell,
+/// give their edges different weights.
 #[test]
-fn activities_are_log1p_of_raw_counts_whatever_the_depth() -> anyhow::Result<()> {
+fn weights_are_pooled_raw_counts_whatever_the_depth() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     // cells 0 and 1 hold FEATURE0 at 2 and at 18; their neighbour, cell 2, at 4
     let triplets = [(0, 0, 2.0), (0, 1, 18.0), (0, 2, 4.0)];
@@ -155,14 +136,8 @@ fn activities_are_log1p_of_raw_counts_whatever_the_depth() -> anyhow::Result<()>
         &numbered("c", 3),
         &triplets,
     );
-    let a = activities(&data, &[(0, 2), (1, 2)], ActivityNorm::Log1p)?;
+    let a = activities(&data, &[(0, 2), (1, 2)])?;
     assert_eq!(a.feature_active_edges[0], vec![0, 1]);
-    let w = &a.feature_active_edge_weights[0];
-    let (shallow, deep) = (2f32.ln_1p() * 4f32.ln_1p(), 18f32.ln_1p() * 4f32.ln_1p());
-    assert!((w[0] - shallow).abs() < 1e-5 * shallow, "{w:?}");
-    assert!(
-        (w[1] - deep).abs() < 1e-5 * deep,
-        "depth left no mark: {w:?}"
-    );
+    assert_eq!(a.feature_active_edge_weights[0], vec![6.0, 22.0]);
     Ok(())
 }

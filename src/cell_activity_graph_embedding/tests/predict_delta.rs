@@ -45,29 +45,42 @@ fn predict(
     out
 }
 
-/// Each cell's embedding row, by its name without the `@section` tag a
-/// multi-file run adds.
-fn embedding_by_cell(prefix: &str) -> std::collections::HashMap<String, Vec<f32>> {
-    let m = Mat::from_parquet(&format!("{prefix}.cell_embedding.parquet")).unwrap();
-    m.rows
+/// Each cell pair's latent row, by its two cells' names without the
+/// `@section` tag a multi-file run adds. A pair's latent depends on its own
+/// two cells' counts only, where a cell's embedding (the mean of its pairs')
+/// also depends on which neighbours it has in the run.
+fn latent_by_pair(prefix: &str) -> std::collections::HashMap<(String, String), Vec<f32>> {
+    let pairs =
+        crate::lr_activity::io::read_pair_table(&format!("{prefix}.coord_pairs.parquet"), false)
+            .unwrap();
+    let m = Mat::from_parquet(&format!("{prefix}.latent.parquet"))
+        .unwrap()
+        .mat;
+    let bare = |c: &str| c.split('@').next().unwrap().to_string();
+    pairs
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let name = r.split('@').next().unwrap().to_string();
-            (name, m.mat.row(i).iter().copied().collect())
+        .map(|(k, p)| {
+            (
+                (bare(&p.left_cell), bare(&p.right_cell)),
+                m.row(k).iter().copied().collect(),
+            )
         })
         .collect()
 }
 
-/// How far `query`'s cells sit from where `model` placed the same cells
-/// (the cells the model has; a new section's are left out).
+/// How far `query`'s cell pairs sit from where `model` placed the same pairs
+/// (the pairs the model has; a new section's are left out).
 fn moved(model: &str, query: &str) -> f32 {
-    let (fitted, placed) = (embedding_by_cell(model), embedding_by_cell(query));
+    let (fitted, placed) = (latent_by_pair(model), latent_by_pair(query));
     let shared: Vec<(&Vec<f32>, &Vec<f32>)> = placed
         .iter()
-        .filter_map(|(cell, row)| fitted.get(cell).map(|f| (row, f)))
+        .filter_map(|(pair, row)| fitted.get(pair).map(|f| (row, f)))
         .collect();
-    assert!(!shared.is_empty(), "{query} shares no cell with {model}");
+    assert!(
+        !shared.is_empty(),
+        "{query} shares no cell pair with {model}"
+    );
     shared
         .iter()
         .flat_map(|(row, f)| row.iter().zip(f.iter()).map(|(a, b)| (a - b).abs()))

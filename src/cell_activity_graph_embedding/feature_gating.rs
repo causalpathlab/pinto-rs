@@ -2,12 +2,14 @@
 //! strongly.
 //!
 //! - `FeatureActiveEdges.feature_active_edges[g]` is the precomputed list of
-//!   global edge ids where feature `g` is active at *both* endpoints.
+//!   global edge ids where feature `g` was counted at either endpoint.
 //!   Built via an edge-driven merge of per-cell sorted feature lists, so
 //!   the cost is O(n_edges × avg_features_per_cell) instead of the
 //!   per-feature scan over all edges (O(n_features × n_edges)).
-//! - `FeatureActiveEdges.feature_active_edge_weights[g][i]` = `a_g[u] * a_g[v]`
-//!   for the corresponding edge. The feature-gated sampler rebuilds a
+//! - `FeatureActiveEdges.feature_active_edge_weights[g][i]` = `x_g[u] + x_g[v]`,
+//!   the pair's pooled count of the feature, for the corresponding edge. A
+//!   positive is then one count of the feature at a contact, as `senna bge`
+//!   draws a cell by its count. The feature-gated sampler rebuilds a
 //!   per-call `WeightedIndex` only over this small list.
 //!
 //! Purely the data-derived sampling weight: this module owns no
@@ -15,53 +17,49 @@
 
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
-use clap::ValueEnum;
 use legume_numeric::matrix::utils::generate_minibatch_intervals;
 use nalgebra_sparse::{CooMatrix, CsrMatrix};
-
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
-#[clap(rename_all = "lowercase")]
-pub enum ActivityNorm {
-    L1,
-    L2,
-    Log1p,
-}
 
 ////////////////////
 // FeatureActiveEdges //
 ////////////////////
 
 pub struct FeatureActiveEdges {
-    /// `feature_active_edges[g]`: global edge ids where both endpoints have
-    /// non-zero activity for feature `g`. Sorted ascending. The struct is
+    /// `feature_active_edges[g]`: global edge ids where either endpoint has
+    /// a count of feature `g`. Sorted ascending. The struct is
     /// used at TWO levels: fine cell-cell edge ids as built here, then
     /// PB super-edge ids after `fold_active_edges_to_super`.
     pub feature_active_edges: Vec<Vec<u32>>,
-    /// `feature_active_edge_weights[g][i]`: weight = `a_g[u] * a_g[v]` for
+    /// `feature_active_edge_weights[g][i]`: weight = `x_g[u] + x_g[v]` for
     /// edge `feature_active_edges[g][i]` (same length).
     pub feature_active_edge_weights: Vec<Vec<f32>>,
 }
 
-/// Build per-cell activity (log1p + per-feature L1/L2/identity normalization)
-/// and derive per-feature active-edge lists + endpoint-product weights via
-/// an edge-driven merge of per-cell sorted feature lists.
+/// Each feature's count at every cell, and per feature the edges it was
+/// counted on with the pair's pooled count `x_g[u] + x_g[v]` as the weight,
+/// via an edge-driven merge of per-cell sorted feature lists.
 ///
-/// Activity is per FEATURE, not per matrix row: on a splice-channelized input a
-/// feature's two rows are summed BEFORE the `log1p`, so `a_g[c]` is one feature's
-/// evidence rather than two half-evidence copies competing for the same
-/// positives. `log1p(s) + log1p(u) != log1p(s + u)`, so the order matters and
-/// the summing cannot be moved after the transform.
+/// The count is per FEATURE, not per matrix row: on a splice-channelized input
+/// a feature's two rows are summed, so `x_g[c]` is one feature's evidence
+/// rather than two half-evidence copies competing for the same positives.
 ///
-/// The `log1p` is of the RAW count, deliberately not of a count scaled to a
-/// common library size ([`log_cp10k`]): the activity is a sampling weight,
-/// how much of the feature was seen at an edge's two ends, so a deeper cell
-/// carries more of it
-/// (`feature_gating_tests::activities_are_log1p_of_raw_counts_whatever_the_depth`).
+/// The count is the cell's own, not scaled to a common library size: the
+/// weight is how much of the feature was seen at an edge's two ends, so a
+/// deeper cell carries more of it
+/// (`feature_gating_tests::weights_are_pooled_raw_counts_whatever_the_depth`).
+/// With `fine_to_super`, an edge that folds into no super edge (inside one
+/// pseudobulk, or across batches) is skipped: the fold would drop it, and
+/// those are most of the edges.
+///
+/// The counts are not divided by the batch effect: positives are drawn per
+/// (feature, batch), within which a feature's `δ` is one constant, so it
+/// would not move a single draw. The batch adjustment belongs where pairs
+/// are compared across batches.
 pub fn build_feature_active_fine_edges(
     data: &SparseIoVec,
     edges: &[(u32, u32)],
-    norm: ActivityNorm,
     axis: &FeatureAxis,
+    fine_to_super: Option<&[Option<usize>]>,
 ) -> anyhow::Result<FeatureActiveEdges> {
     let n_cells = data.num_columns();
     let n_rows = data.num_rows();
@@ -70,6 +68,11 @@ pub fn build_feature_active_fine_edges(
         axis.n_rows() == n_rows,
         "feature axis has {} rows, data has {n_rows}",
         axis.n_rows()
+    );
+    anyhow::ensure!(
+        fine_to_super.is_none_or(|m| m.len() == edges.len()),
+        "{} edges, but a super-edge map of another length",
+        edges.len()
     );
 
     // Step 1: read counts in column blocks; rayon-fold per-thread
@@ -103,17 +106,8 @@ pub fn build_feature_active_fine_edges(
             coo.push(g, c, a);
         }
     }
-    let mut feature_by_cell_csr = CsrMatrix::from(&coo);
-    // Over every nonzero of the matrix, so it is worth the rayon hop: this used to
-    // ride along inside the parallel block read, and moving it after the sum (which
-    // it has to be) would otherwise have made it the one serial pass.
-    feature_by_cell_csr
-        .values_mut()
-        .par_iter_mut()
-        .for_each(|x| {
-            *x = x.ln_1p();
-        });
-    normalize_rows_inplace(&mut feature_by_cell_csr, norm);
+    // summing the duplicates folds a feature's channel rows together
+    let feature_by_cell_csr = CsrMatrix::from(&coo);
 
     // Step 2: invert to per-cell sorted (feature, activity) lists.
     // Iterating CSR rows in feature order gives each cell's feature-list
@@ -127,26 +121,42 @@ pub fn build_feature_active_fine_edges(
     }
 
     // Step 3: edge-driven merge — for each edge (u, v), walk the
-    // two sorted lists in tandem, emitting `(edge_idx, a_u·a_v)` for
-    // every common feature. Features are appended in edge-iteration order,
-    // so per-feature edge lists are sorted ascending by construction.
+    // two sorted lists in tandem, emitting `(edge_idx, x_u + x_v)` for
+    // every feature at either end. Features are appended in edge-iteration
+    // order, so per-feature edge lists are sorted ascending by construction.
     let mut feature_active_edges: Vec<Vec<u32>> = vec![Vec::new(); n_features];
     let mut feature_active_edge_weights: Vec<Vec<f32>> = vec![Vec::new(); n_features];
     for (e_idx, &(u, v)) in edges.iter().enumerate() {
+        if fine_to_super.is_some_and(|m| m[e_idx].is_none()) {
+            continue;
+        }
         let gu = &cell_to_features[u as usize];
         let gv = &cell_to_features[v as usize];
         let (mut i, mut j) = (0usize, 0usize);
-        while i < gu.len() && j < gv.len() {
-            match gu[i].0.cmp(&gv[j].0) {
+        let mut emit = |g: u32, w: f32| {
+            feature_active_edges[g as usize].push(e_idx as u32);
+            feature_active_edge_weights[g as usize].push(w);
+        };
+        while i < gu.len() || j < gv.len() {
+            let order = match (gu.get(i), gv.get(j)) {
+                (Some(a), Some(b)) => a.0.cmp(&b.0),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Greater,
+            };
+            match order {
                 std::cmp::Ordering::Equal => {
-                    let g = gu[i].0 as usize;
-                    feature_active_edges[g].push(e_idx as u32);
-                    feature_active_edge_weights[g].push(gu[i].1 * gv[j].1);
+                    emit(gu[i].0, gu[i].1 + gv[j].1);
                     i += 1;
                     j += 1;
                 }
-                std::cmp::Ordering::Less => i += 1,
-                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Less => {
+                    emit(gu[i].0, gu[i].1);
+                    i += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    emit(gv[j].0, gv[j].1);
+                    j += 1;
+                }
             }
         }
     }
@@ -157,49 +167,8 @@ pub fn build_feature_active_fine_edges(
     })
 }
 
-/// In-place row-wise renormalization of a CSR. Skips the COO round-trip
-/// that an out-of-place build would require.
-fn normalize_rows_inplace(csr: &mut CsrMatrix<f32>, norm: ActivityNorm) {
-    if matches!(norm, ActivityNorm::Log1p) {
-        return;
-    }
-    let n_rows = csr.nrows();
-    let offsets: Vec<usize> = csr.row_offsets().to_vec();
-    let values = csr.values_mut();
-    for g in 0..n_rows {
-        let (start, end) = (offsets[g], offsets[g + 1]);
-        if start == end {
-            continue;
-        }
-        let scale = match norm {
-            ActivityNorm::Log1p => 1.0_f32,
-            ActivityNorm::L1 => {
-                let s: f32 = values[start..end].iter().sum();
-                if s > 0.0 {
-                    1.0 / s
-                } else {
-                    0.0
-                }
-            }
-            ActivityNorm::L2 => {
-                let s: f32 = values[start..end].iter().map(|v| v * v).sum::<f32>().sqrt();
-                if s > 0.0 {
-                    1.0 / s
-                } else {
-                    0.0
-                }
-            }
-        };
-        if scale != 1.0 {
-            for v in &mut values[start..end] {
-                *v *= scale;
-            }
-        }
-    }
-}
-
 /// Fold per-feature ACTIVE FINE EDGES onto PB-PB super edges: each fine
-/// edge's endpoint-product weight is summed into the super edge it maps
+/// edge's pooled-count weight is summed into the super edge it maps
 /// to, and intra-PB fine edges (`fine_to_super[e] == None`) are dropped
 /// — they fold into the node, matching `build_super_graph` semantics.
 ///

@@ -93,10 +93,12 @@ pub const PER_FEATURE_BATCH: usize = 12;
 /// (a smaller --feature-batch-size) 0.20.
 pub const PAIR_DRAWS_PER_EPOCH: usize = 4;
 
-/// Sibling-pseudobulk negatives drawn per positive super edge per chain level.
+/// Negatives drawn per positive super edge: other super edges of its batch.
 pub const N_NEGATIVES: usize = 8;
 
-/// Exponent of the power-of-degree negative sampling.
+/// The per-batch sampler builder's power-of-degree exponent. Its degree
+/// weights are not read: negatives are drawn uniformly over the batch's
+/// super edges.
 pub const ALPHA_NEG: f32 = 0.75;
 
 /// The NCE objective cage trains, and probes, with: InfoNCE, its negatives
@@ -174,9 +176,11 @@ pub struct CellActivityGraphEmbeddingArgs {
 
     #[arg(
         long,
-        default_value_t = 100,
-        help = "Training epochs over the feature axis",
-        long_help = "Passes over the feature axis.\n\
+        default_value_t = 1000,
+        help = "Upper bound on training epochs (training ends at --pair-updates)",
+        long_help = "An upper bound on the passes over the feature axis: training \
+                     runs until --pair-updates is reached, and stops here first only \
+                     if this is too few (a warning says so).\n\
                      \n\
                      Pair with --features-per-epoch to cap per-epoch cost."
     )]
@@ -186,8 +190,9 @@ pub struct CellActivityGraphEmbeddingArgs {
         long,
         default_value_t = 200,
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..),
-        help = "cage-cell: train until each pair's embedding is updated this many times, on average",
-        long_help = "cage-cell's training length, in updates per cell pair.\n\
+        help = "Train until each pair's embedding is updated this many times, on average",
+        long_help = "The training length, in updates per pair (cage: per pseudobulk pair;\n\
+                     cage-cell: per cell pair).\n\
                      \n\
                      Each pair has an embedding row of its own, moved only by the\n\
                      optimizer steps whose draws name it (at most once a step).\n\
@@ -196,8 +201,7 @@ pub struct CellActivityGraphEmbeddingArgs {
                      number times the pair count, so the budget means the same at\n\
                      any data size: steps = N x pairs / pairs touched per step.\n\
                      The log reports the pairs a step touches, the steps this\n\
-                     implies and the steps taken. --epochs caps it.\n\
-                     cage ignores it.",
+                     implies and the steps taken. --epochs caps it.",
         hide = true
     )]
     pub pair_updates: usize,
@@ -339,15 +343,11 @@ pub struct CellActivityGraphEmbeddingArgs {
     #[arg(
         long,
         value_delimiter(','),
-        help = "Chain levels from the coarsening hierarchy.\nUnset: every level coarser than the finest, up to three.\nExplicit levels must all be coarser than the finest,\nwhich is the trained unit itself.",
-        long_help = "Chain levels from the coarsening hierarchy,\n\
-                     coarsest first.\n\
-                     Unset, the default takes every level coarser than\n\
-                     the finest, up to three of them,\n\
-                     so it adapts to --num-levels.\n\
-                     Explicit levels must all be coarser than the finest\n\
-                     level: the finest IS the trained unit,\n\
-                     so no positive super edge can share one.",
+        help = "Ignored: negatives are other super edges of the batch, drawn uniformly",
+        long_help = "Ignored, with a warning. It chose the coarsening levels whose\n\
+                     sibling super-cells were drawn as negatives; negatives are now\n\
+                     other super edges of the batch, drawn uniformly. Kept so older\n\
+                     command lines still parse.",
         hide = true
     )]
     pub chain_levels: Option<Vec<usize>>,

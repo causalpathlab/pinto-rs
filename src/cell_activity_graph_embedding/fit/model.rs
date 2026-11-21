@@ -280,19 +280,18 @@ pub(super) fn build_model(inputs: ModelInputs<'_>) -> anyhow::Result<BuiltModel>
             (model, frozen)
         }
     };
-    // cage-cell trains a row per cell pair (outside the model) and no cell
+    // Every run trains a row per super edge (outside the model) and no unit
     // table. geu's constructors make `e_cell` and `b_cell` together, the
-    // biases being the cells', so the table leaves the map here, before any
-    // optimizer is built over it, and the field holds an empty one.
+    // biases being the units' (pseudobulks', or cage-cell's cells'), so the
+    // table leaves the map here, before any optimizer is built over it, and
+    // the field holds an empty one.
     let mut model = model;
-    if args.cell_level {
-        varmap.data().lock().expect("varmap lock").remove("e_cell");
-        model.e_cell = Tensor::zeros(
-            (0, embedding_dim),
-            legume_numeric::candle::candle_core::DType::F32,
-            dev,
-        )?;
-    }
+    varmap.data().lock().expect("varmap lock").remove("e_cell");
+    model.e_cell = Tensor::zeros(
+        (0, embedding_dim),
+        legume_numeric::candle::candle_core::DType::F32,
+        dev,
+    )?;
     Ok(BuiltModel {
         model,
         frozen_feature,

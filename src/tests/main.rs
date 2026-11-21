@@ -445,22 +445,16 @@ fn cage_cell_takes_feature_modules() {
 }
 
 /// cage-cell refuses, before it reads a file, what needs a hierarchy of
-/// pseudobulks.
+/// pseudobulks (`--feature-embedding`), and takes `--chain-levels`, which no
+/// run uses any more (the fit warns of it).
 #[test]
 fn cage_cell_refuses_hierarchy_flags() {
     use cell_activity_graph_embedding::fit::check_cell_level;
-    for extra in [
-        &["--chain-levels", "1"][..],
-        &["--feature-embedding", "dict.parquet"][..],
-    ] {
-        let e = cage_cell(extra, |c, m| {
-            check_cell_level(c, m).unwrap_err().to_string()
-        });
-        assert!(
-            e.starts_with(&format!("cage-cell: {}", extra[0])),
-            "{extra:?}: {e}"
-        );
-    }
+    let e = cage_cell(&["--feature-embedding", "dict.parquet"], |c, m| {
+        check_cell_level(c, m).unwrap_err().to_string()
+    });
+    assert!(e.starts_with("cage-cell: --feature-embedding"), "{e}");
+    assert!(cage_cell(&["--chain-levels", "1"], check_cell_level).is_ok());
     assert!(cage_cell(&[], check_cell_level).is_ok());
 }
 

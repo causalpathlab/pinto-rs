@@ -171,7 +171,7 @@ fn assert_writes_the_pairs_rows(prefix: &str, n_cells: usize) {
             "cage-cell wrote {file}"
         );
     }
-    assert!(meta.outputs.pair_encoder.is_none() && meta.outputs.pb_embedding.is_none());
+    assert!(meta.outputs.pair_encoder.is_none() && meta.outputs.pb_pair_embedding.is_none());
 }
 
 fn cell_embedding(prefix: &str) -> Mat {
@@ -194,16 +194,17 @@ fn assert_scores_every_feature(prefix: &str) {
     );
 }
 
-fn pb_embedding(prefix: &str) -> Mat {
-    Mat::from_parquet(&format!("{prefix}.pb_embedding.parquet"))
+fn rows_of(prefix: &str, table: &str) -> usize {
+    Mat::from_parquet(&format!("{prefix}.{table}.parquet"))
         .unwrap()
         .mat
+        .nrows()
 }
 
 /// The short fits on one pair of sections: cage-cell trains on cells and
 /// estimates batch effects (stratified by `--cnv-clones` when given);
 /// `--positives-per-epoch` changes its fit; `--ignore-batch` skips the
-/// batch effects; plain cage trains on pseudobulks; and `--feature-inclusion
+/// batch effects; plain cage trains on pseudobulk pairs; and `--feature-inclusion
 /// moran` scores every feature in both modes.
 #[test]
 fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
@@ -281,12 +282,13 @@ fn cell_level_trains_on_cells_with_batch_effects_and_no_pseudobulk_table() {
         "--ignore-batch still estimated batch effects"
     );
 
-    // the same data without the flag trains on pseudobulks
+    // the same data without the flag trains on pseudobulk pairs, fewer
+    // than the cell pairs it places
     let inclusion = ["--feature-inclusion", "moran", "--inclusion-blocks", "4"];
     let pb = fit(dir.path(), &data, &coords, "pb", &inclusion);
     assert!(
-        pb_embedding(&pb).nrows() < n_cells,
-        "the default trains on super-cells"
+        rows_of(&pb, "pb_pair_embedding") < rows_of(&pb, "latent"),
+        "the default trains on super-cell pairs"
     );
     assert!(std::path::Path::new(&format!("{pb}.delta.parquet")).exists());
     assert!(
@@ -346,13 +348,9 @@ fn a_cell_level_draw_names_pairs_of_its_batch() {
         feature_active_edges: vec![active.clone()],
     };
     let cache = build_feature_exp_batch_cache(&activities, &samplers);
-    let ml = cell_level_hierarchy(n, &pairs);
-    let groups: Vec<&[usize]> = vec![&ml.all_cell_labels[0]];
     let sampler = FeatureGatedChainSampler {
-        super_edges: &edges,
         samplers_per_exp_batch: &samplers,
         cache: &cache,
-        unit_to_group_per_level: &groups,
         positives_per_draw: 8,
         n_negatives: 6,
     };

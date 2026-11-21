@@ -66,6 +66,32 @@ pub(super) fn table_to_host(z: RowAdam) -> anyhow::Result<Vec<f32>> {
     Ok(z.into_table().flatten_all()?.to_vec1::<f32>()?)
 }
 
+/// cage's trained super-edge table `z` (row-major `[pairs.len() × d]`, row
+/// `e` the pseudobulk pair `pairs[e]`), a row per pair keyed `"P-Q"` by its
+/// two pseudobulks' ids (those of `pb_bias` and `cell_pb`).
+pub(crate) fn write_super_edge_table(
+    prefix: &str,
+    z: &[f32],
+    d: usize,
+    pairs: &[(u32, u32)],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        z.len() == pairs.len() * d,
+        "super-edge table: {} values for {} pairs of width {d}",
+        z.len(),
+        pairs.len()
+    );
+    let keys: Vec<Box<str>> = pairs
+        .iter()
+        .map(|&(p, q)| format!("{p}-{q}").into())
+        .collect();
+    Mat::from_row_slice(pairs.len(), d, z).to_parquet_with_names(
+        &crate::util::parquet_io::pb_pair_embedding_path(prefix),
+        (Some(&keys), Some("pb_pair")),
+        Some(&graph_embedding_util::embedding_col_names(d)),
+    )
+}
+
 /// cage-cell's latent and cell embedding from its trained pair rows `z`
 /// (row-major `[pairs.len() × d]`, row `e` the pair `pairs[e]`):
 ///

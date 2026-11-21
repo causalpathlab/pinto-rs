@@ -36,6 +36,72 @@ pub(crate) struct TrainingSet<'a> {
     /// Set when the rows are pseudobulks thinned to the placed pairs' depth.
     /// Without it the rows are the placed cells as they are.
     pub(crate) thinning: Option<Thinning<'a>>,
+    /// Each training pair's place in phase 1's super-edge table, when the
+    /// encoder learns to reproduce it; without it the encoder fits the
+    /// pooled counts' likelihood.
+    pub(crate) targets: Option<EdgeTargets>,
+}
+
+/// Phase 1's super-edge table as cage hands it to the encoder: row-major
+/// `[super edges × d]`, a row per pseudobulk pair of the training set;
+/// whether phase 1 trained each row (one in no batch's pool keeps its random
+/// start); and each placed cell pair's super edge, for when the set falls
+/// back to the cells. `None`: the pair has no super edge, because it
+/// crosses batches or both its cells sit in one pseudobulk.
+#[derive(Debug, Clone, Copy)]
+pub struct SuperEdgeTable<'a> {
+    pub rows: &'a [f32],
+    pub d: usize,
+    pub of_cell_pair: &'a [Option<usize>],
+    pub trained: &'a [bool],
+}
+
+/// Each training pair's target, a unit row, and its weight: 1, or 0 for a
+/// pair with no row in phase 1's table.
+pub(crate) struct EdgeTargets {
+    /// Row-major `[training pairs × d]`.
+    pub(crate) rows: Vec<f32>,
+    pub(crate) weight: Vec<f32>,
+    pub(crate) d: usize,
+}
+
+impl EdgeTargets {
+    /// Pair `k` takes `table` row `of(k)`, scaled to unit length, for the
+    /// `n` training pairs; weight 0 when it has no row, its row was never
+    /// trained, or the row is zero.
+    fn from_table(
+        table: &SuperEdgeTable<'_>,
+        n: usize,
+        of: impl Fn(usize) -> Option<usize>,
+    ) -> Self {
+        let d = table.d;
+        let mut rows = vec![0f32; n * d];
+        let mut weight = vec![0f32; n];
+        for k in 0..n {
+            let Some(e) = of(k).filter(|&e| table.trained[e]) else {
+                continue;
+            };
+            let src = &table.rows[e * d..(e + 1) * d];
+            let norm = src.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for (o, &x) in rows[k * d..(k + 1) * d].iter_mut().zip(src) {
+                    *o = x / norm;
+                }
+                weight[k] = 1.0;
+            }
+        }
+        Self { rows, weight, d }
+    }
+
+    /// The targets and weights of training pairs `ids`, gathered.
+    pub(crate) fn gather(&self, ids: &[usize]) -> (Vec<f32>, Vec<f32>) {
+        let d = self.d;
+        let mut rows = Vec::with_capacity(ids.len() * d);
+        for &i in ids {
+            rows.extend_from_slice(&self.rows[i * d..(i + 1) * d]);
+        }
+        (rows, ids.iter().map(|&i| self.weight[i]).collect())
+    }
 }
 
 /// A pseudobulk's counts on the active axis, sorted by position: all the
@@ -110,14 +176,16 @@ impl<'a> TrainingSet<'a> {
             edges,
             visited: visited_units(n_cells, edges),
             thinning: None,
+            targets: None,
         }
     }
 
     /// The finest pseudobulks (`cage`): each the sum of its cells' rows by
     /// `cell_to_pb`, the pseudobulk edges `pb_edges` between them, thinned
-    /// to the pooled depth of the cell pairs `cell_edges` over `cells`.
-    /// With too few pseudobulk pairs for one training step, the cells and
-    /// their pairs instead, with a warning.
+    /// to the pooled depth of the cell pairs `cell_edges` over `cells`, each
+    /// pair's target its row of phase 1's `table`. With too few pseudobulk
+    /// pairs for one training step, the cells and their pairs instead, each
+    /// cell pair's target its super edge's row, with a warning.
     pub(crate) fn pseudobulks(
         dict: &'a PairDictionary,
         cells: &[CellRow],
@@ -125,7 +193,28 @@ impl<'a> TrainingSet<'a> {
         n_pb: usize,
         pb_edges: &'a [(u32, u32)],
         cell_edges: &'a [(u32, u32)],
+        table: &SuperEdgeTable<'_>,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            table.rows.len() == pb_edges.len() * table.d,
+            "pair encoder: {} super-edge table values for {} pseudobulk pairs of width {}",
+            table.rows.len(),
+            pb_edges.len(),
+            table.d
+        );
+        anyhow::ensure!(
+            table.trained.len() == pb_edges.len(),
+            "pair encoder: {} trained flags for {} pseudobulk pairs",
+            table.trained.len(),
+            pb_edges.len()
+        );
+        anyhow::ensure!(
+            table.of_cell_pair.len() == cell_edges.len()
+                && table.of_cell_pair.iter().flatten().all(|&e| e < pb_edges.len()),
+            "pair encoder: the cell pairs' super edges do not match the {} cell pairs and {} super edges",
+            cell_edges.len(),
+            pb_edges.len()
+        );
         anyhow::ensure!(
             cell_to_pb.len() == cells.len(),
             "pair encoder: {} pseudobulk labels for {} cells",
@@ -158,7 +247,11 @@ impl<'a> TrainingSet<'a> {
                 pb_edges.len(),
                 cell_edges.len()
             );
-            return Ok(Self::cells(cells.len(), cell_edges));
+            let mut set = Self::cells(cells.len(), cell_edges);
+            set.targets = Some(EdgeTargets::from_table(table, cell_edges.len(), |k| {
+                table.of_cell_pair[k]
+            }));
+            return Ok(set);
         }
         let mut depths: Vec<f32> = cell_edges
             .par_iter()
@@ -184,6 +277,7 @@ impl<'a> TrainingSet<'a> {
                 median_depth,
                 rank,
             }),
+            targets: Some(EdgeTargets::from_table(table, pb_edges.len(), Some)),
         })
     }
 

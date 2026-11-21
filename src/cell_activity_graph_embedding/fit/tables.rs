@@ -12,10 +12,8 @@ use graph_embedding_util::transfer::{
 };
 use legume_numeric::candle::candle_core::Tensor;
 
-/// Writes the pseudobulk and feature tables, and returns the feature
-/// embedding the pair projection scores against. `unit_table`: whether the
-/// model trained a unit table (cage's pseudobulks; cage-cell trains its
-/// pairs' rows instead, written as the latent).
+/// Writes the units' bias and the feature tables, and returns the feature
+/// embedding the pair projection scores against.
 pub(super) fn write_trained_tables(
     c: &SrtInputArgs,
     model: &mut JointEmbedModel,
@@ -23,22 +21,12 @@ pub(super) fn write_trained_tables(
     cell_names: &[Box<str>],
     feature_names: &[Box<str>],
     embedding_dim: usize,
-    unit_table: bool,
 ) -> anyhow::Result<Mat> {
-    // Trained PB table [P × D] + bias [P] + the cell -> PB map. The
-    // trained unit is the finest-level super-cell; the per-CELL embedding
-    // ships separately, as each cell's own placement by the pair encoder,
-    // written by the caller after the propensity pass.
-    // Bare integer row keys (the writer's default), so pb_embedding,
-    // pb_bias, and cell_pb's `pb` column all join directly on the id.
-    if unit_table {
-        let e_pb_mat = tensor_to_mat(&model.e_cell)?;
-        e_pb_mat.to_parquet_with_names(
-            &(c.out.to_string() + ".pb_embedding.parquet"),
-            (None, Some("pb")),
-            Some(&embedding_col_names(embedding_dim)),
-        )?;
-    }
+    // The units' bias [P] + the cell -> PB map. The trained rows are the
+    // super edges' (written by the caller); the per-CELL embedding ships
+    // separately, as the mean of its pairs' latents, written after the
+    // propensity pass. Bare integer row keys (the writer's default), so
+    // pb_bias and cell_pb's `pb` column join directly on the id.
 
     let b_pb_mat = tensor_to_mat_1d(&model.b_cell)?;
     b_pb_mat.to_parquet_with_names(
