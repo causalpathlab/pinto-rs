@@ -397,6 +397,7 @@ pub fn predict_cage(
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );
+    run.refuse_residual_fit()?;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 

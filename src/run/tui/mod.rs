@@ -39,11 +39,12 @@ impl Row {
             typed: false,
             ran: None,
         };
-        r.out = free_out(here, &r.stem());
+        r.out = free_out(here, &r.label());
         r
     }
 
-    /// The name the row is listed and its jobs are shown by.
+    /// The name the row is listed and its jobs are shown by, and its
+    /// `--out` named after, under the output header.
     fn label(&self) -> String {
         self.form.name.clone()
     }
@@ -51,11 +52,6 @@ impl Row {
     /// Whether it finished in the last queue it was in.
     fn done(&self) -> bool {
         self.ran.is_some()
-    }
-
-    /// What its `--out` is named after, under the output header.
-    fn stem(&self) -> String {
-        self.form.name.clone()
     }
 }
 
@@ -638,14 +634,7 @@ impl App {
                 // --atomic-outputs
                 let mut argv = p.job.argv.clone();
                 crate::tui::inherit_flags(&mut argv);
-                let mut cmd = script::pinto_line(&argv);
-                // A job that reads an earlier one's result waits for it, as
-                // the queue does: it runs only once that one's done file is
-                // there.
-                if let Some(w) = p.job.after.and_then(|k| planned.get(k)) {
-                    let done = script::relative(&w.job.done, &p.job.dir);
-                    cmd = format!("[ -f {} ] && {cmd}", script::quote(&done.to_string_lossy()));
-                }
+                let cmd = script::pinto_line(&argv);
                 if p.job.dir == self.here {
                     cmd
                 } else {
@@ -714,10 +703,7 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, base: &str) -> String {
-    // `{out}` itself counts too
-    first_free(base, |p| {
-        dir.join(p).exists() || jobs::outputs(dir, p).iter().any(|f| f.exists())
-    })
+    first_free(base, |p| jobs::outputs(dir, p).iter().any(|f| f.exists()))
 }
 
 /// `base`, else `base-2`, `base-3`, …: the first that is not `taken`.

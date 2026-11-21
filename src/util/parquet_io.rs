@@ -308,9 +308,8 @@ pub fn read_cells_table(
     };
     let has = |n: &str| fields.iter().any(|f| f.as_ref() == n);
     let mut wanted = vec![fields[0].as_ref(), x.as_str(), y.as_str()];
-    // The batch labels and `in_graph` are read by the viewer alone (and the
-    // tests).
-    if cfg!(any(feature = "view", test)) && has("batch") {
+    // The batch labels and `in_graph` are read by the viewer alone.
+    if cfg!(feature = "view") && has("batch") {
         wanted.push("batch");
     }
     if cfg!(feature = "view") && has("in_graph") {
@@ -319,9 +318,9 @@ pub fn read_cells_table(
     let cols = read_named_columns(path, &wanted)?;
     let names = labels(&cols[0])?;
     let (xs, ys) = (floats(&cols[1])?, floats(&cols[2])?);
-    #[cfg(any(feature = "view", test))]
+    #[cfg(feature = "view")]
     let column = |n: &str| wanted.iter().position(|w| *w == n).map(|k| &cols[k]);
-    #[cfg(any(feature = "view", test))]
+    #[cfg(feature = "view")]
     let batches = column("batch").map(|c| labels(c)).transpose()?;
     #[cfg(feature = "view")]
     let (in_graph, index) = {
@@ -339,7 +338,7 @@ pub fn read_cells_table(
     Ok(CellTable {
         names,
         coords: xs.into_iter().zip(ys).collect(),
-        #[cfg(any(feature = "view", test))]
+        #[cfg(feature = "view")]
         batches,
         #[cfg(feature = "view")]
         index,
@@ -358,8 +357,8 @@ pub struct CellTable {
     pub names: Vec<Box<str>>,
     /// (x, y) coordinate per cell.
     pub coords: Vec<(f32, f32)>,
-    /// Optional batch label per cell (the viewer's, and the tests').
-    #[cfg(any(feature = "view", test))]
+    /// Optional batch label per cell (the viewer's).
+    #[cfg(feature = "view")]
     pub batches: Option<Vec<Box<str>>>,
     /// `name → index into names/coords/batches`
     #[cfg(feature = "view")]

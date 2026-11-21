@@ -137,6 +137,8 @@ fn conditional_is_the_joint_ratio() {
     assert_conditional_is_the_joint_ratio(&fixture(), 0.04);
 }
 
+/// A count near zero says next to nothing, so it may not decide a move. A tiny
+/// prior count fails this: `ln Γ(y + ε) − ln Γ(ε)` jumps by `−ln ε` at `y > 0`.
 #[test]
 fn a_vanishing_count_costs_next_to_nothing() {
     let store = LinkProfileStore::new(vec![1e-4, 0.0, 5.0, 5.0, 5.0, 5.0], 3, 2);

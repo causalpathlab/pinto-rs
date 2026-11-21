@@ -361,12 +361,13 @@ fn file_batches_are_named_by_their_stems(t: &Trained) {
     }
     let manifest = crate::util::metadata::manifest_path(model);
     let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
-    let cells = crate::util::parquet_io::read_cells_table(
-        std::path::Path::new(meta.outputs.cells.as_deref().unwrap()),
-        None,
+    let (cols, _) = legume_numeric::matrix::parquet::read_table_columns(
+        meta.outputs.cells.as_deref().unwrap(),
+        &["batch"],
+        &[],
     )
     .unwrap();
-    let in_table: BTreeSet<&str> = cells.batches.iter().flatten().map(|b| &**b).collect();
+    let in_table: BTreeSet<&str> = cols[0].iter().map(|b| &**b).collect();
     assert_eq!(in_table, BTreeSet::from(["s1", "s2"]));
     let json = std::fs::read_to_string(&manifest).unwrap();
     assert!(

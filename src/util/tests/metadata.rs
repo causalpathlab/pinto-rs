@@ -679,3 +679,47 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
         assert!(meta.outputs.delta_cells.is_none());
     }
 }
+
+/// A residual (two-stage) fit from pinto up to 0.17.10 is refused by its
+/// manifest's `offset` or `residual` record, or by the excess-count marker
+/// beside its first data file; a run on raw counts is not.
+#[test]
+fn a_residual_fit_is_refused_and_a_raw_one_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::create_dir_all(d.join("raw")).unwrap();
+    std::fs::create_dir_all(d.join("res")).unwrap();
+    let write = |name: &str, data: &str, extra: Option<(&str, serde_json::Value)>| {
+        let path = d.join(format!("{name}.pinto.json"));
+        PintoMetadata {
+            command: "lc".into(),
+            prefix: d.join(name).to_string_lossy().into_owned(),
+            data_files: Some(vec![data.into()]),
+            ..Default::default()
+        }
+        .write(&path)
+        .unwrap();
+        if let Some((key, value)) = extra {
+            let mut m: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            m[key] = value;
+            std::fs::write(&path, m.to_string()).unwrap();
+        }
+        Run::open(&path.to_string_lossy()).unwrap()
+    };
+    assert!(write("raw", "raw/S1.zarr", None)
+        .refuse_residual_fit()
+        .is_ok());
+    let e = write("s2", "raw/S1.zarr", Some(("offset", "resid".into())))
+        .refuse_residual_fit()
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("offset") && e.contains("raw data files"), "{e}");
+    std::fs::write(d.join("res/residual.json"), r#"{"counts": "excess"}"#).unwrap();
+    std::fs::write(d.join("res/S1.zarr"), "").unwrap();
+    let e = write("excess", "res/S1.zarr", None)
+        .refuse_residual_fit()
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("excess counts"), "{e}");
+}

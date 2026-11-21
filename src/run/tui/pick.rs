@@ -46,12 +46,12 @@ impl App {
                         if t.is_empty() {
                             // Cleared: back under the header.
                             r.typed = false;
-                            r.out = free_out(&self.here, &under(&self.header, &r.stem()));
+                            r.out = free_out(&self.here, &under(&self.header, &r.label()));
                         } else {
                             // A folder: the method's name in it.
                             r.typed = true;
                             r.out = if t.ends_with('/') {
-                                under(t, &r.stem())
+                                under(t, &r.label())
                             } else {
                                 t.to_string()
                             };
