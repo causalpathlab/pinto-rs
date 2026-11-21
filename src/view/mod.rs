@@ -86,6 +86,15 @@ struct Followed {
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
+    // A layout is written and the command exits.
+    if let (Some(method), Some(out)) = (args.layout, args.layout_out.as_deref()) {
+        let table: std::path::PathBuf = match (&args.layout_table, &args.prefix) {
+            (Some(t), _) => t.as_ref().into(),
+            (None, Some(p)) => format!("{p}.propensity.parquet").into(),
+            (None, None) => anyhow::bail!("--layout needs --layout-table or the run's prefix"),
+        };
+        return layout::write_layout(&table, method, out);
+    }
     // A summary or a still prints and exits; the rest is on screen.
     if args.summary || args.png.is_some() || args.pdf.is_some() {
         anyhow::ensure!(

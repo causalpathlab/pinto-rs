@@ -43,7 +43,7 @@ hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
 data-beans = { version = "0.13", default-features = false, features = ["aux", "alg", "tensor", "sim"] }
-legume-numeric = { version = "0.10.9", features = ["matrix", "param", "candle", "mcmc"] }
+legume-numeric = { version = "0.10.10", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.13", package = "legume-graph-embedding" }
 parquet = "59"
 arrow-array = "59"

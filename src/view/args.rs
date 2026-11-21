@@ -29,6 +29,39 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        value_enum,
+        requires = "layout_out",
+        help = "Lay a table out in 2-D and write the coordinates (--layout-out)",
+        long_help = "Lay a table out in two dimensions, as the viewer's layout\n\
+                     does (its kNN graph coarsened into pseudobulks, laid out,\n\
+                     every row placed from them), write each row's x, y to\n\
+                     --layout-out and exit."
+    )]
+    pub layout: Option<crate::view::layout::Method>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "layout",
+        help = "Table to lay out [default: the run's final propensity]",
+        long_help = "The table --layout lays out: any N x K parquet, its first\n\
+                     column the rows' names; community columns (C0, C1, ...) are\n\
+                     read as a propensity, any other table as an embedding (a cell\n\
+                     embedding, or a cell-pair latent). Default: the run's final\n\
+                     propensity, {prefix}.propensity.parquet."
+    )]
+    pub layout_table: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "layout",
+        help = "Parquet to write the --layout coordinates to"
+    )]
+    pub layout_out: Option<Box<str>>,
+
+    #[arg(
+        long,
         value_name = "FILE",
         help = "Draw one view to a PNG file and exit",
         long_help = "Draw one view to a PNG file and exit, without a terminal.\n\
