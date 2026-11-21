@@ -85,7 +85,6 @@ fn slots_named(
 /// profiles are on raw counts, and every batch is estimated from the
 /// fitting parts, as before.
 pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, Vec<Box<str>>)> {
-    run.refuse_residual_fit()?;
     let meta = &run.meta;
     let c = &args.core.common;
     let h = &args.holdout;

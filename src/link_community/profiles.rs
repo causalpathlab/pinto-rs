@@ -156,8 +156,7 @@ pub(crate) fn read_unique_cells_for_edges(
 /// * `all_edges` - Full edge list from KNN graph
 /// * `basis` - Projection basis [n_features × proj_dim]
 /// * `block_size` - Edges per parallel chunk (None ⇒ adaptive default)
-/// * `divisor` - What divides every count first: the run's batch effect, or
-///   a stage-1 divisor
+/// * `divisor` - What divides every count first: the run's batch effect
 pub fn build_projection_profiles_for_edges(
     data: &SparseIoVec,
     edge_indices: &[usize],
@@ -843,7 +842,7 @@ pub struct PropensityReportConfig<'a> {
     /// augmented. `None` omits the column, keeping an unaugmented run
     /// byte-identical.
     pub edge_kind: Option<&'a [i32]>,
-    /// What divides the run's counts, a batch effect or a stage-1 divisor:
+    /// What divides the run's counts, its batch effect:
     /// the dictionary is then fitted on divided counts
     /// ([`fit_feature_community_param`]).
     pub divisor: Option<Divisor<'a>>,

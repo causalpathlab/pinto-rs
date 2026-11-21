@@ -700,8 +700,7 @@ fn a_residual_fit_is_refused_and_a_raw_one_is_not() {
         .write(&path)
         .unwrap();
         if let Some((key, value)) = extra {
-            let mut m: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let mut m = crate::util::lupin_rounds::read_json(&path).unwrap();
             m[key] = value;
             std::fs::write(&path, m.to_string()).unwrap();
         }

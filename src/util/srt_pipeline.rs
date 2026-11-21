@@ -281,7 +281,6 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // the user wait through a load, a possible zarr conversion and a full QC
     // pass to hear about it is time spent on an answer already known.
     c.validate_flags()?;
-    let ignore_batch = c.batch.ignore_batch;
     let no_ablation = AblationArgs::default();
     let ab = cfg.ablation.unwrap_or(&no_ablation);
     ab.validate(c.has_coordinates())?;
@@ -536,7 +535,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         // its batches are this graph's components, and the labels it
         // starts from are not them.
         let labels = sorted_batch_labels(&batch_membership);
-        let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, labels.len());
+        let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, labels.len());
         let labelled = (estimate || known) && labels.len() > 1 && !auto_relabels;
         let model = match cfg.batch_effects {
             BatchEstimate::Query { base_corrected, .. } => Some(base_corrected),
@@ -628,7 +627,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // stay: they also say which section a cell is in, for the pair table,
     // the viewer and the models' own bookkeeping.
     let batch_labels = sorted_batch_labels(&batch_membership);
-    let (estimate, known) = batch_plan(cfg.batch_effects, ignore_batch, batch_labels.len());
+    let (estimate, known) = batch_plan(cfg.batch_effects, c.batch.ignore_batch, batch_labels.len());
     // `ResolvedKnn::augment` is already 0 without coordinates, so these two
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.

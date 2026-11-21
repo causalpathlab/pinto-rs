@@ -36,15 +36,6 @@ impl LraInputArgs {
         if let Some(r) = &run {
             r.refuse_residual_fit()?;
         }
-        for f in &self.data_files {
-            if let Some(marker) = crate::util::metadata::excess_marker(Path::new(&**f)) {
-                anyhow::bail!(
-                    "{f} holds the excess counts of a residual fit ({}), which lra does not \
-                     read: pass the raw data files",
-                    marker.display()
-                );
-            }
-        }
         let data_files: Vec<Box<str>> = match (&run, self.data_files.is_empty()) {
             (_, false) => self.data_files.clone(),
             (Some(r), true) => {

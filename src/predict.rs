@@ -362,6 +362,9 @@ impl ModelOnlyFlags {
 /// an error.
 pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Run> {
     let run = Run::open(model)?;
+    // a residual fit's model is not on raw counts: predict and impute both
+    // come through here
+    run.refuse_residual_fit()?;
     *model = run.prefix.as_str().into();
     Ok(run)
 }
@@ -397,7 +400,6 @@ pub fn predict_cage(
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );
-    run.refuse_residual_fit()?;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 

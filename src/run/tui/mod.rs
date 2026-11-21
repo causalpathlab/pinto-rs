@@ -39,14 +39,8 @@ impl Row {
             typed: false,
             ran: None,
         };
-        r.out = free_out(here, &r.label());
+        r.out = free_out(here, &r.form.name);
         r
-    }
-
-    /// The name the row is listed and its jobs are shown by, and its
-    /// `--out` named after, under the output header.
-    fn label(&self) -> String {
-        self.form.name.clone()
     }
 
     /// Whether it finished in the last queue it was in.

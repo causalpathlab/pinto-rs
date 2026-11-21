@@ -96,6 +96,21 @@ fn centred(n: f64, sx: f64, sxx: f64, w: f64, exy: f64, ex: f64) -> (f64, f64) {
     )
 }
 
+/// Each column of `counts` (rows × units) as a sparse profile of its raw
+/// counts, sorted by row.
+fn raw_profiles(counts: &Mat) -> Vec<Vec<(u32, f32)>> {
+    counts
+        .column_iter()
+        .map(|col| {
+            col.iter()
+                .enumerate()
+                .filter(|&(_, &v)| v > 0.0)
+                .map(|(f, &v)| (f as u32, v))
+                .collect()
+        })
+        .collect()
+}
+
 /// Each column of `pooled` (features × units, raw counts) as a sparse,
 /// log-normalized profile (see [`log_normalize`]).
 pub fn normalized_profiles(pooled: &Mat) -> Vec<Vec<(u32, f32)>> {
@@ -550,26 +565,14 @@ pub(super) fn score_sections<P: AsRef<[(u32, f32)]> + Sync>(
     units: &str,
     mut inputs: impl FnMut(&[usize]) -> anyhow::Result<SectionInputs<P>>,
 ) -> anyhow::Result<FeatureInclusion> {
-    score_sections_with(n_features, section, edges, units, |members, es| {
-        let (profiles, block) = inputs(members)?;
-        Ok(section_jack(n_features, &profiles, &block, es))
-    })
-}
-
-/// [`score_sections`] with each section's [`SectionJack`] made by `jack`
-/// from its units (ascending global ids) and its edges as local unit pairs.
-fn score_sections_with(
-    n_features: usize,
-    section: &[u32],
-    edges: &[(usize, usize)],
-    units: &str,
-    mut jack: impl FnMut(&[usize], &[(usize, usize)]) -> anyhow::Result<SectionJack>,
-) -> anyhow::Result<FeatureInclusion> {
     let (units_of, edges_of) = split_sections(section, edges);
     let sections = units_of
         .iter()
         .zip(&edges_of)
-        .map(|(members, es)| jack(members, es))
+        .map(|(members, es)| {
+            let (profiles, block) = inputs(members)?;
+            Ok(section_jack(n_features, &profiles, &block, es))
+        })
         .collect::<anyhow::Result<Vec<SectionJack>>>()?;
     Ok(finish(n_features, &sections, units))
 }
@@ -685,7 +688,7 @@ pub fn pb_spatial_edges(
 
 /// The finest PBs' inputs to [`pb_inclusion`].
 pub struct PbUnits<'a> {
-    /// The cells' counts, which are summed per PB here: raw, undivided.
+    /// The cells' counts, which are summed per PB here: raw.
     pub data: &'a SparseIoVec,
     /// The number of finest PBs.
     pub n_pb: usize,
@@ -726,21 +729,6 @@ pub fn pb_inclusion(
         ))
     };
     score_sections(axis.n_features(), &pb_section, pb.edges, "units", inputs)
-}
-
-/// Each column of `counts` (rows × units) as a sparse profile of its raw
-/// counts, sorted by row.
-fn raw_profiles(counts: &Mat) -> Vec<Vec<(u32, f32)>> {
-    counts
-        .column_iter()
-        .map(|col| {
-            col.iter()
-                .enumerate()
-                .filter(|&(_, &v)| v > 0.0)
-                .map(|(f, &v)| (f as u32, v))
-                .collect()
-        })
-        .collect()
 }
 
 /// Cells read per block by [`cell_inclusion`] in a fit.

@@ -202,7 +202,7 @@ impl App {
             relative_values(&mut passed, &self.here, &dir);
             let argv = passed.argv(&data, &coords, &batches, &out);
             let on_run = form.from_run;
-            let label = r.label();
+            let label = r.form.name.clone();
             let mut job = if on_run {
                 on_run_job(&label, i, &dir, &out, argv)
             } else {
@@ -384,7 +384,7 @@ impl App {
                 r.on = false;
                 done.push(job.method.clone());
                 if !r.typed {
-                    r.out = free_out(&self.here, &under(&self.header, &r.label()));
+                    r.out = free_out(&self.here, &under(&self.header, &r.form.name));
                 }
             }
         }
@@ -419,7 +419,7 @@ impl App {
     /// first free one.
     pub(super) fn refresh_outs(&mut self) {
         for r in self.rows.iter_mut().filter(|r| !r.typed) {
-            r.out = free_out(&self.here, &under(&self.header, &r.label()));
+            r.out = free_out(&self.here, &under(&self.header, &r.form.name));
         }
     }
 

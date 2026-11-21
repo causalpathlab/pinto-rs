@@ -124,7 +124,9 @@ impl Run {
     /// or a `residual` block, or its first data file holds excess counts
     /// ([`excess_marker`]). Such a run was fitted on counts over the
     /// stage-1 expectation, or on the counts above it, which nothing now
-    /// reads: taken as a run on raw counts, its scores would be wrong.
+    /// reads: taken as a run on raw counts, its scores would be wrong. The
+    /// manifest is read again as plain JSON: [`PintoMetadata`] no longer
+    /// has those fields, and they are only looked for here.
     pub fn refuse_residual_fit(&self) -> anyhow::Result<()> {
         let manifest = crate::util::lupin_rounds::read_json(&self.manifest);
         let recorded = manifest.as_ref().and_then(|m| {

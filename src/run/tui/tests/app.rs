@@ -992,7 +992,7 @@ fn pinto_app(here: &Path) -> App {
 fn row(a: &App, label: &str) -> usize {
     a.rows
         .iter()
-        .position(|r| r.label() == label)
+        .position(|r| r.form.name == label)
         .unwrap_or_else(|| panic!("no {label} row"))
 }
 
