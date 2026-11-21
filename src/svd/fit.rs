@@ -8,7 +8,6 @@ use crate::util::srt_pipeline::{
     preprocess_srt, topology_graph, BatchEstimate, FeatureAxisMode, Seeding, SrtPreprocessConfig,
     SrtPreprocessed,
 };
-use crate::util::stage1_divisor::Stage1Divisor;
 use data_beans::alg::cell_pairs::CellPairs;
 use data_beans::alg::random_projection::*;
 
@@ -21,9 +20,6 @@ use legume_numeric::param::traits::*;
 pub struct SrtDeltaSvdArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
-
-    #[command(flatten)]
-    pub stage2: crate::util::input::OffsetArgs,
 
     #[command(flatten)]
     pub modules: crate::util::feature_modules::FeatureModulesArgs,
@@ -48,8 +44,6 @@ pub struct SrtDeltaSvdArgs {
 /// Input for the pair-delta visitor (finest coarsening level only).
 pub(super) struct FusedDeltaInput<'a> {
     pub(super) batch_effect: Option<&'a Mat>,
-    /// A stage-2 fit's stage-1 divisor (`--offset`), which divides as `δ` does.
-    pub(super) stage1: Option<&'a Stage1Divisor>,
     pub(super) pair_to_sample: &'a [usize],
 }
 
@@ -129,24 +123,19 @@ pub(crate) struct PairDeltaParameters {
 /// (`batch_membership`) unless `--ignore-batch`, at inputs `c`'s `-p` and
 /// block size. Preprocessing's (`shared`) is that projection with a δ
 /// (`has_delta`: the one its estimate collapsed on), under
-/// `--ignore-batch` (uncorrected) and under `--offset` (`divided`: of the
-/// counts divided by the stage-1 divisor), and is taken as it is; otherwise (one batch, or an estimate
-/// without a δ) preprocessing's is uncorrected and dsvd's is taken here.
+/// `--ignore-batch` (uncorrected), and is taken as it is; otherwise (one
+/// batch, or an estimate without a δ) preprocessing's is uncorrected and
+/// dsvd's is taken here.
 pub(crate) fn dsvd_cell_projection(
     shared: Option<RandColProjOut>,
     has_delta: bool,
-    divided: bool,
     c: &crate::util::input::SrtInputArgs,
     data_vec: &SparseIoVec,
     batch_membership: &[Box<str>],
 ) -> anyhow::Result<RandColProjOut> {
     match shared {
-        Some(proj) if has_delta || c.batch.ignore_batch || divided => Ok(proj),
+        Some(proj) if has_delta || c.batch.ignore_batch => Ok(proj),
         _ => {
-            anyhow::ensure!(
-                !divided,
-                "dsvd under --offset projects the divided counts preprocessing took"
-            );
             info!("Per-cell random projection...");
             data_vec.project_columns_with_batch_correction(
                 c.collapse.proj_dim,
@@ -186,7 +175,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         seeding,
         batch_labels,
         batch_effects: batch_db,
-        stage1,
         graph,
         knn,
         base_batch_corrected,
@@ -199,7 +187,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         ablation,
         permuted_coordinates: _,
     } = preprocess_srt(SrtPreprocessConfig {
-        offset: args.stage2.offset.as_deref(),
         common: c,
         ablation: Some(&args.ablation),
         batch_effects: BatchEstimate::Fit,
@@ -231,7 +218,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     let mut cell_proj = dsvd_cell_projection(
         shared_cell_proj,
         batch_db.is_some(),
-        stage1.is_some(),
         c,
         &data_vec,
         &batch_membership,
@@ -280,7 +266,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     let fused_input = FusedDeltaInput {
         batch_effect: batch_ref,
-        stage1: stage1.as_ref(),
         pair_to_sample: finest_pair_to_sample,
     };
 
@@ -333,7 +318,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         basis_shared: basis_dk.rows(0, n_features).clone_owned(),
         basis_diff: basis_dk.rows(n_features, n_features).clone_owned(),
         batch_effect: batch_db,
-        stage1: stage1.as_ref(),
     };
 
     srt_cell_pairs.inner.visit_pairs_by_block(
@@ -379,13 +363,12 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             // the row axis), so its feature-community table stays row-keyed.
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
-            // batch-adjusted as the pairs are, or under the stage-1 divisor
-            // mean counts over `d`
-            divisor: crate::util::batch_effects::Divisor::of(
-                stage1.as_ref(),
+            // batch-adjusted as the pairs are
+            divisor: crate::util::batch_effects::BatchDivisor::of(
                 nystrom_input.batch_effect.as_ref(),
                 batch_of_cell.as_deref(),
-            ),
+            )
+            .map(Into::into),
         },
         &c.out,
     )?
@@ -394,7 +377,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     {
         use crate::util::metadata::{create_dsvd_metadata, RunInputs};
         let coord_file_str = c.coord_files_joined();
-        let mut meta = create_dsvd_metadata(&RunInputs {
+        let meta = create_dsvd_metadata(&RunInputs {
             prefix: &c.out,
             data_files: &c.data_files,
             coord_file: coord_file_str.as_deref(),
@@ -407,9 +390,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             k: n_clusters,
             delta: has_batch_effects.then(|| crate::util::metadata::DeltaWritten::fit(c)),
         });
-        meta.offset = stage1
-            .as_ref()
-            .map(|s| s.dir.to_string_lossy().into_owned());
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;
         info!(
@@ -444,8 +424,7 @@ pub(super) fn log_normalize_cells(y: &mut nalgebra_sparse::CscMatrix<f32>) {
 }
 
 /// The columns of `cells` as both pair visitors take them: divided by the
-/// batch effects of each cell's batch when there are any (or by the
-/// stage-1 divisor `d`, by the same Poisson ratio, under `--offset`), then
+/// batch effects of each cell's batch when there are any, then
 /// log-normalized ([`log_normalize_cells`]) on the total after the divide.
 /// Sparse throughout.
 ///
@@ -459,15 +438,11 @@ fn read_log_normalized(
     data: &CellPairs,
     cells: impl Iterator<Item = usize> + Clone,
     batch_effect: Option<&Mat>,
-    stage1: Option<&Stage1Divisor>,
 ) -> anyhow::Result<nalgebra_sparse::CscMatrix<f32>> {
     let mut y = data.data.read_columns_csc(cells.clone())?;
     if let Some(delta_db) = batch_effect {
         let batches = data.data.get_batch_membership(cells);
         y.adjust_by_division_of_selected_inplace(delta_db, &batches);
-    } else if let Some(s1) = stage1 {
-        let cells: Vec<usize> = cells.collect();
-        s1.divide_columns(&mut y, |j| cells[j]);
     }
     log_normalize_cells(&mut y);
     Ok(y)
@@ -492,8 +467,8 @@ pub(super) fn fused_pair_delta_visitor(
     // order and zipping them.
     let left = pairs.iter().map(|x| x.0);
     let right = pairs.iter().map(|x| x.1);
-    let y_left = read_log_normalized(data, left, input.batch_effect, input.stage1)?;
-    let y_right = read_log_normalized(data, right, input.batch_effect, input.stage1)?;
+    let y_left = read_log_normalized(data, left, input.batch_effect)?;
+    let y_right = read_log_normalized(data, right, input.batch_effect)?;
 
     // Per-pair SPARSE contributions: a pair touches its nonzero features, not
     // all of them, and the lock below only pays for what it touches.
@@ -562,11 +537,10 @@ pub(super) fn fused_pair_delta_visitor(
 }
 
 /// Shared input for Nystrom pair-delta projection.
-pub(super) struct NystromPairInput<'a> {
+pub(super) struct NystromPairInput {
     pub(super) basis_shared: Mat,
     pub(super) basis_diff: Mat,
     pub(super) batch_effect: Option<Mat>,
-    pub(super) stage1: Option<&'a Stage1Divisor>,
 }
 
 /// Nystrom projection visitor: project each pair onto the split basis.
@@ -582,7 +556,7 @@ pub(super) struct NystromPairInput<'a> {
 pub(super) fn nystrom_pair_delta_visitor(
     bound: (usize, usize),
     data: &CellPairs,
-    shared_in: &NystromPairInput<'_>,
+    shared_in: &NystromPairInput,
     arc_proj: Arc<Mutex<&mut Mat>>,
 ) -> anyhow::Result<()> {
     let (lb, ub) = bound;
@@ -590,18 +564,8 @@ pub(super) fn nystrom_pair_delta_visitor(
     let left = pairs.iter().map(|pp| pp.0);
     let right = pairs.iter().map(|pp| pp.1);
 
-    let y_left = read_log_normalized(
-        data,
-        left,
-        shared_in.batch_effect.as_ref(),
-        shared_in.stage1,
-    )?;
-    let y_right = read_log_normalized(
-        data,
-        right,
-        shared_in.batch_effect.as_ref(),
-        shared_in.stage1,
-    )?;
+    let y_left = read_log_normalized(data, left, shared_in.batch_effect.as_ref())?;
+    let y_right = read_log_normalized(data, right, shared_in.batch_effect.as_ref())?;
 
     let n_topics = shared_in.basis_shared.ncols();
     let n_pairs_block = ub - lb;

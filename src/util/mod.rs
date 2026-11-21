@@ -20,7 +20,6 @@ pub mod profile_match;
 pub mod rows;
 pub mod score_trace;
 pub mod srt_pipeline;
-pub mod stage1_divisor;
 pub mod staging;
 
 #[cfg(test)]

@@ -96,15 +96,3 @@ fn scoring_reads_fresh_counts_after_a_merged_delta() {
     stats.membership = moved;
     assert_feature_table_is_fresh(&stats, &store);
 }
-
-#[test]
-fn ln1p_small_matches_libm() {
-    for i in 0..=4000 {
-        let x = i as f32 * 1e-3;
-        let (got, want) = (ln1p_small(x), (x as f64).ln_1p());
-        assert!(
-            (f64::from(got) - want).abs() <= 5e-7 * want + 1e-9,
-            "x {x}: {got} vs {want}"
-        );
-    }
-}

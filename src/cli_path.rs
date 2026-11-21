@@ -1,5 +1,5 @@
 //! Where a command sits in pinto's verbs: `pinto fit lc`, `pinto apply
-//! residual`, `pinto lra simulate`, `pinto sim new`, `pinto session list`.
+//! predict`, `pinto lra simulate`, `pinto sim new`, `pinto session list`.
 
 use clap::Command;
 

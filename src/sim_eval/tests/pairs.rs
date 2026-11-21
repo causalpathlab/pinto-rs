@@ -385,7 +385,7 @@ fn a_domain_mapping_scores_one_against_the_own_donor() {
 }
 
 /// Vectors that keep only the donor-specific domain (shared spots
-/// scattered at random, as a residual that left no shared structure) tell
+/// scattered at random, as vectors that left no shared structure) tell
 /// its pairs from its donor's other spots.
 #[test]
 fn a_mapping_that_keeps_only_the_donor_specific_domain_scores_one() {

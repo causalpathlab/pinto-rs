@@ -31,11 +31,9 @@ pub(crate) use jobs::{Job as QueuedJob, Queue as JobQueue, State as JobState};
 const CONFIRM_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Row {
-    fn new(form: Method, role: Role, here: &Path) -> Self {
+    fn new(form: Method, here: &Path) -> Self {
         let mut r = Row {
             form,
-            role,
-            alts: Vec::new(),
             on: false,
             out: String::new(),
             typed: false,
@@ -47,10 +45,7 @@ impl Row {
 
     /// The name the row is listed and its jobs are shown by.
     fn label(&self) -> String {
-        match self.role {
-            Role::Plain | Role::Residual => self.form.name.clone(),
-            Role::Stage2 | Role::Stage2Lra => format!("stage-2 {}", self.form.name),
-        }
+        self.form.name.clone()
     }
 
     /// Whether it finished in the last queue it was in.
@@ -60,10 +55,7 @@ impl Row {
 
     /// What its `--out` is named after, under the output header.
     fn stem(&self) -> String {
-        match self.role {
-            Role::Plain | Role::Residual => self.form.name.clone(),
-            Role::Stage2 | Role::Stage2Lra => format!("residual-{}", self.form.name),
-        }
+        self.form.name.clone()
     }
 }
 
@@ -103,26 +95,9 @@ impl Screen {
     }
 }
 
-/// What a row of the Methods screen sets up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Role {
-    /// A fit on the picked data, or a method reading a run (`--from`).
-    Plain,
-    /// `pinto apply residual` on a run.
-    Residual,
-    /// A fit on the residual's files.
-    Stage2,
-    /// lra on the stage-2 fit, offered with lra on the residual's run.
-    Stage2Lra,
-}
-
 /// A method, whether it is queued, and where it writes.
 struct Row {
     form: Method,
-    role: Role,
-    /// The methods a stage-2 row can switch to (`m`), each keeping its
-    /// flags: the one shown is `form`.
-    alts: Vec<Method>,
     on: bool,
     /// The `--out` prefix: relative to where pinto run started, or
     /// absolute.
@@ -393,12 +368,11 @@ impl App {
         let on_runs = super::ON_RUNS
             .iter()
             .filter(|m| crate::cli_path::find(&cli, m).is_some());
-        let mut rows = METHODS
+        let rows = METHODS
             .iter()
             .chain(on_runs)
-            .map(|m| Ok(Row::new(Method::new(&cli, m)?, Role::Plain, &here)))
+            .map(|m| Ok(Row::new(Method::new(&cli, m)?, &here)))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        rows.extend(two_stage_rows(&cli, &here)?);
         let (tasks, found) = workers();
         Ok(App {
             cli,
@@ -715,33 +689,6 @@ impl App {
     }
 }
 
-/// The residual of a run and the second stage fitted on it, where pinto
-/// has `residual`: the residual row, the stage-2 fit (dsvd first, `m`
-/// switches it), and lra on that fit where pinto has lra.
-fn two_stage_rows(cli: &clap::Command, here: &Path) -> anyhow::Result<Vec<Row>> {
-    if crate::cli_path::find(cli, super::RESIDUAL).is_none() {
-        return Ok(Vec::new());
-    }
-    let mut rows = vec![Row::new(
-        Method::new(cli, super::RESIDUAL)?,
-        Role::Residual,
-        here,
-    )];
-    let mut forms = super::STAGE_TWO
-        .iter()
-        .map(|m| Method::new(cli, m))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let first = forms.remove(0);
-    rows.push(Row {
-        alts: forms,
-        ..Row::new(first, Role::Stage2, here)
-    });
-    if crate::cli_path::find(cli, "lra").is_some() {
-        rows.push(Row::new(Method::new(cli, "lra")?, Role::Stage2Lra, here));
-    }
-    Ok(rows)
-}
-
 /// What is said once the terminal is given back: how each run ended, and
 /// its script.
 fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
@@ -767,7 +714,7 @@ fn summary(jobs: &[Job], states: &[jobs::State]) -> Vec<String> {
 /// `{base}`, or `{base}-2`, … : the first prefix in `dir` with no
 /// manifest or script yet.
 fn free_out(dir: &Path, base: &str) -> String {
-    // `{out}` itself counts too: the residual writes a folder of that name
+    // `{out}` itself counts too
     first_free(base, |p| {
         dir.join(p).exists() || jobs::outputs(dir, p).iter().any(|f| f.exists())
     })

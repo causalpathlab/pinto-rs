@@ -156,7 +156,6 @@ impl App {
                 "enter / → queue and show flags",
                 "o name one --out by hand",
                 "O output header",
-                "m stage-2 method",
                 "✓ done in the last run",
             ],
             Screen::Params => &[
@@ -634,7 +633,7 @@ impl App {
                 ),
                 (
                     p.job.clear,
-                    "↻ what the unfinished run left here (its script, batch or residual files) is cleared first",
+                    "↻ what the unfinished run left here (its script or batch files) is cleared first",
                 ),
             ] {
                 if on {

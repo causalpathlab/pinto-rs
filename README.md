@@ -28,7 +28,7 @@ The commands sit under a few verbs:
 | command | what it does |
 |---|---|
 | `pinto fit <method>` | a fit: `lc`, `dsvd`, `cage`, `cage-cell`, and the spatial baselines `spatialde2`, `stagate`, `spatialpca`, `mefisto` (and each as `-pb`) |
-| `pinto apply <op>` | on a fitted run: `residual`, `predict`, `impute`, `propensity` |
+| `pinto apply <op>` | on a fitted run: `predict`, `impute`, `propensity` |
 | `pinto lra`, `pinto lra simulate` | ligand-receptor analysis, and its power and calibration check |
 | `pinto sim <op>` | simulation with a planted truth: `new`, `score`, `pairs`, `baseline` |
 | `pinto compare`, `pinto view`, `pinto run`, `pinto mcp` | as before |
@@ -92,15 +92,14 @@ changing lc's draws; it cannot raise them above it. The commands that
 The run writes them in a hidden folder beside their final place,
 `.{name}.partial-{pid}-{random}`, and renames them into place only when it
 succeeds. The files that mark a run complete come last: the manifest
-`{out}.pinto.json`, srt-simulate's `manifest.json`, residual's `residual.json`
-and a single lra-simulate scenario's `{out}.lra-simulate.json`. An earlier
+`{out}.pinto.json`, srt-simulate's `manifest.json` and a single lra-simulate scenario's `{out}.lra-simulate.json`. An earlier
 run's are taken away before the first output moves and the new ones put there
 after the last, so a manifest on disk means the run completed.
 
 Every command takes the flag. These stage their outputs: the fits (lc,
 delta-svd, propensity, cage, cage-cell, predict, impute and the spatial
 baselines, spatialde2, stagate, spatialpca, mefisto and their `-pb` forms),
-lra, lra-simulate, residual, srt-simulate, srt-sim-baseline, compare, and
+lra, lra-simulate, srt-simulate, srt-sim-baseline, compare, and
 srt-sim-score and srt-sim-pairs when given an `--out`. The rest have nothing
 to stage: `pinto view` writes the stills it draws (`--png`, `--pdf`) in place,
 as without the flag, and `pinto run`, `pinto mcp`, attach, sessions, kill and
@@ -130,15 +129,15 @@ lra changes the manifest it records into (its `--from` run's, or the one at
 its `--out`) only once its own outputs are in place, on the manifest as it is
 then, so what other runs recorded meanwhile is kept; as without the flag, a
 manifest already there that cannot be changed costs a warning, and one that
-has to be made and cannot be is an error. srt-simulate and residual stage
-their folder, moved there whole when it is missing or empty, else file by file
+has to be made and cannot be is an error. srt-simulate stages
+its folder, moved there whole when it is missing or empty, else file by file
 into it. A link to a folder, and an `--out` of `.` or `..`, are staged beside
 the folder they lead to (the folder a run stands in is filled, never
 replaced); the root, and a folder on another file system than the one it is
 in, are refused before the run starts. A job of a `pinto run` session takes
 the flag from the session, which has no row for it in a method's form. The
-`pinto mcp` tools that start a fit, a prediction, a simulation, a baseline, a
-residual, an lra or a comparison take `atomic_outputs`, true or false; left
+`pinto mcp` tools that start a fit, a prediction, a simulation, a baseline,
+an lra or a comparison take `atomic_outputs`, true or false; left
 out, it is as the server was started.
 
 Feature modules: `--feature-network pairs.tsv` takes a feature-feature network
@@ -168,7 +167,7 @@ absolute difference), pools them over graph-coarsened samples of pairs, and fact
 pooled Poisson-Gamma means by a randomized SVD; each pair's latent code is cut
 into link communities. It stands beside lc as a first fit: it writes the same
 propensity, link-community and feature-community tables, so `pinto view`,
-`lra`, `residual` and `prop` read a dsvd run as they read an lc run.
+`lra` and `prop` read a dsvd run as they read an lc run.
 
 ### `prop` (propensity)
 
@@ -260,7 +259,7 @@ projection leaves the ligand, receptor and target genes out, but the
 clustering behind the labels may have used them. `--cell-types` (a `cell`,
 `cell_type` table) stands in for the round.
 
-`--region` (a `cell`, `region` table, such as a residual fit's communities)
+`--region` (a `cell`, `region` table, such as a fit's donor-only communities)
 adds an indicator per region within each section to the adjustment, which the
 smooth fields cannot give at a sharp edge, and a row per region
 (`region:<name>`, its q corrected within the region). Every section and region
@@ -273,11 +272,7 @@ keeps the nuisance fits, `refit` refits them per tile and is conservative.
 Neither removes confounding finer than the smooth fields follow: a hidden
 spatial field at that scale that drives both a ligand and its response
 inside a region biases the region's row, as it biases the pooled row, so a
-region row carries the same limit as every other. A
-`--from` run fitted on a residual's subtracted (excess) counts is read on
-its raw counts, and its cell types come from the stage-1 run; a stage-2 fit
-under `--offset` (`--residual divide`) is read on its own data, the raw
-counts already, its cell types from the stage-1 run.
+region row carries the same limit as every other.
 
 `--only` estimates a few pairs instead of all of them: comma-separated
 `LIGAND:RECEPTOR` entries (a complex joins its subunits with `_`,
@@ -842,7 +837,7 @@ The baselines take cage's batch flags under the same names and defaults
 baseline reads its input through the same preprocessing as lc, dsvd and
 cage: the same cell QC (on by default; `--no-qc` keeps every cell), the
 same `--auto-batch` components on pinto's spatial graph, the same δ, the
-same `--offset` (a stage-2 fit, on the cells QC kept), the same ablations
+same ablations
 (`--permute-coords`, `--drop-features`, `--mask-cells`) and the same cells
 table; the `-pb` forms coarsen along pinto's cell-pair graph.
 `--ignore-batch` runs the original method on the counts as stored.
@@ -880,129 +875,7 @@ method's posterior where it has one, else one-hot), `{out}.cells.parquet`,
 `{out}.cell_embedding.parquet` (the method's per-cell vectors),
 `{out}.labels.tsv` (`cell<TAB>label`) and `{out}.baseline.json` (the
 settings, as run). `pinto run` lists them after the fits, and over MCP
-`run_methods` and `run_fit` take them as they take `lc`. `pinto apply residual`
-takes one as its stage-1 run, as it takes a fit.
-
-### `residual`: what a fitted run leaves unexplained
-
-`pinto apply residual --from FIT -o OUT` (or `--run FIT`) takes a fitted run and
-what its communities do not explain into a second stage of a two-stage
-fit, meant to pick up structure the first stage absorbed, such as a domain
-only one donor has.
-
-From the run's per-cell propensities it refits raw-count community profiles
-`p_k` (lc's feature-community statistic with unit weights) and each cell's
-proportions `θ_i` (the per-cell EM of `pinto apply impute`), so a cell's
-expectation is `μ_gi = n_i Σ_k θ_ik p_{k,b}(g)`. What is left is taken one
-of two ways, `--residual`:
-
-- **`divide`** (alias `multiplicative`, the default): stage 2 fits the raw
-  counts `y` with `μ` as a multiplicative offset, i.e. models `y / μ`.
-  Nothing per entry is written, only the low-rank pieces `μ` is rebuilt
-  from: `{OUT}/stage1.cells.parquet` (`n_i`, batch and `θ_i` per cell),
-  `{OUT}/stage1.profiles.parquet` (`p_{k,b}(g)` per row) and
-  `{OUT}/stage1.features.parquet` (per row the pooled share
-  `p̄_g = Σ_i μ_gi / Σ_i n_i`, the negative-binomial dispersion `φ_g` by the
-  method of moments, `E[(y − μ)²] = μ + φ μ²`, and the Pearson scale
-  `σ²_gb`, the mean of `μ + φ_g μ²` over batch `b`'s cells). Fit the run's
-  own data files with `--offset OUT` (lc, dsvd, cage, cage-cell): dsvd and
-  cage divide each count by `d_gi = μ_gi / (n_i p̄_g)` where they would
-  divide by a batch effect (their projections too: pinto divides, then
-  projects); lc scores its edge profiles against the stage-1 expectation
-  projected the same way, rates `D_kg / M_kg` with `M_kg` the community's
-  summed offset in place of its volume (`--feature-network` is not taken
-  with it); every such fit's written `feature_community` holds the same
-  rates relative to the stage-1 expectation,
-  `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi` (the raw counts over their expected
-  mass, in closed form through `θ`); and
-  `--feature-inclusion moran` reads Pearson residuals
-  `(y − μ) / σ_gb`, the zeros' share in closed form. Such a fit takes no
-  batch effect: `--batch-files`, `--auto-batch` and `--cnv-clones` are
-  refused, and its manifest records the folder as `offset`. `pinto lra` on it
-  reads its own (raw) data and the stage-1 run's cell types.
-- **`subtract`** (alias `additive`): per data file the excess
-  `round(max(y − μ, 0))` (or the floor, `--excess floor`) on the rows every
-  file shares as `{OUT}/{stem}.zarr.zip`, which a fit reads as it reads data;
-  `pinto lra` given a fit on them reads the raw counts, not the excess.
-
-Either way the run's coordinates of each file's cells go to
-`{OUT}/{stem}.coords.parquet`, and `{OUT}/residual.json` records the
-`operation`, the counts in (and out, under subtract), the stage-1 run and
-the raw data files. Data is read as the run read it: exactly by name, or
-with the `--feature-name-mode` the run was fitted with. Every file's name
-must be distinct, and nothing at `OUT` is written over.
-
-The run is taken by what its manifest records, not by the command that
-wrote it, so a spatial baseline's run is taken as a fit's is. It must
-record its data files (`data_files`), a propensity table
-(`outputs.propensity`: cell × community, a soft posterior or one-hot
-labels), a cells table (`outputs.cells`: each cell's coordinates and, with
-more than one batch, its `batch`) and its coordinate columns
-(`outputs.coord_columns`). A run that lacks one is refused, the missing
-record named; nothing else of the run is read.
-
-By default (`--adapt batch`) each community's profile is re-estimated per
-batch as the run knew it (its cells table's `batch` column, written when the
-run had more than one: its `--batch-files`, else its data files), shrunk
-toward the pooled profile by a Dirichlet prior worth `--adapt-cells` cells
-of the community (default 50; MacKay and Peto 1995). A shift that moves a whole community within a batch,
-as donor, donor-by-type and section nuisance do, is absorbed into `μ`; a
-local patch, a minority of its community's weight in that batch, stays in
-the residual. No batch fold from the stage-1 run enters `μ`.
-`--adapt none` keeps the pooled profiles. `residual.json` records `adapt`,
-`adapt_cells`, `excess` (under subtract) and the formula.
-
-**What it removes, and what it does not.** `residual` does not estimate a
-donor effect or subtract one. With `--adapt batch` it absorbs only what
-moves a whole stage-1 community within one batch; with `--adapt none` it
-absorbs nothing beyond the pooled profiles, and donor nuisance stays in
-the residual. Everything rests on one identifying assumption: donor-specific
-biology is local. A whole community shifted in one donor is read as
-nuisance, so a donor-specific difference that covers a whole community is
-absorbed and never found.
-
-**What it cannot do:**
-
-- **Correct a stage-1 run that is split by donor.** If stage 1 already gave
-  each donor its own communities, those communities carry the donor effect,
-  and nothing downstream separates nuisance from biology. This happens once
-  the donor effect is about as large as the cell-type effect: in
-  `srt-simulate` terms, once `pve_donor + pve_inter` approaches `pve_type`.
-  The fix is a donor-invariant stage 1, not a better residual.
-- **Find a patch stage 1 already named.** A patch that stage 1 gave its own
-  community is explained by that community's profile and leaves no excess;
-  look for it among the stage-1 communities.
-- **Find a donor-specific mix of shared cell states.** The shared profiles
-  explain such a mix exactly, so it never appears in a count residual; it
-  too can only be found among the stage-1 communities.
-
-**Check before trusting a residual community confined to one donor:** look
-at the stage-1 communities' donor make-up first. If they already follow the
-donor, the residual's one-donor communities are nuisance. On a simulation,
-`srt-sim-pairs` shows it directly: a stage-1 representation at chance on
-`shared_domain_across_donors` pairs but not on `shared_domain_within_donor`
-ones (a large `donor_gap`) is
-split by donor.
-
-```sh
-pinto apply residual --from out/lc1 -o out/resid          # --residual divide
-pinto fit lc S1.zarr,S2.zarr \
-  -c out/resid/S1.coords.parquet,out/resid/S2.coords.parquet \
-  --coord-column-names x,y --offset out/resid -o out/lc2
-
-pinto apply residual --from out/lc1 --residual subtract -o out/sub
-pinto fit lc out/sub/S1.zarr,out/sub/S2.zarr \
-  -c out/sub/S1.coords.parquet,out/sub/S2.coords.parquet \
-  --coord-column-names x,y -o out/lc2s   # the first run's coordinate names
-```
-
-Each coordinate file holds the run's first two coordinates under the run's
-column names (with a `spot` column first), so the second fit reads them by
-those names: `--coord-column-names` with the run's names, whatever columns
-the first fit picked them from.
-
-Agents run it as the MCP tool `run_residual`, whose reply lists the files
-and flags for `run_fit` (see `mcp` below).
+`run_methods` and `run_fit` take them as they take `lc`.
 
 ### Ablations, `compare` and held-out scoring
 
@@ -1066,8 +939,7 @@ only where the terminal can tell it apart from enter). Once a run ends, the
 methods it finished are unqueued (marked ✓), so ctrl+r again, or `r` on the
 Run screen, runs only the ones stopped, failed or not reached; space queues
 one again. Each reruns into its old `--out`, after first clearing the script
-and batch files its unfinished run left there (a residual's, the files it had
-written in `{out}/`).
+and batch files its unfinished run left there.
 
 ```sh
 pinto run data/        # the file browser starts in data/
@@ -1096,29 +968,6 @@ seen from where `pinto run` started). They are run and saved as
 `{out}.cmd.sh` like the fits, write `{out}.lra.parquet` (a subset's
 `{out}.lra.only-<tag>.parquet`) or `{out}.lra-simulate.parquet`, and
 record them in the `--from` run's manifest; `v` opens that run.
-
-Below them, `residual` sets up a two-stage fit on a fitted run (any that
-recorded its propensity; see `residual` above). Its `--from` (`--run` also
-works) names the run, and it writes the counts the run leaves unexplained
-to `{out}/`; it is done once `{out}/residual.json` is there, and nothing it would write may be
-there already. Queuing it queues the `stage-2` row too: under
-`--residual divide` a fit on the run's own data files with `--offset` the
-residual's folder, under subtract on each data file's `{stem}.zarr.zip`, in the
-run's order with its `{stem}.coords.parquet`, and `--coord-column-names`
-set to the run's coordinate columns; the data picked on the Data screen are not passed to
-it. The stage-2 fit is dsvd unless `m` on its row switches it to lc or cage,
-each keeping its own flags on the Parameters screen; space takes it off.
-With lra queued on the same run, space on `stage-2 lra` queues lra on the
-stage-2 fit as well, starting from that lra's flags: it reads the raw counts
-of the run's data files through `residual.json`, so the two tables compare.
-Each stage-2 job starts only once the one it reads is done; when that one
-fails or stops, it is not started. A residual (or stage-2 fit) that
-finished is read where it wrote, as it ran, so ctrl+r again runs only the
-rest, on what it wrote; its row's `--out` moves on like a finished fit's.
-A residual stopped or failed part-way reruns at its `--out`, its files
-there cleared first. All of them are saved as
-`{out}.cmd.sh` like the fits, and `c` in the review copies the commands in
-the order they run.
 
 A saved script refuses to run over what its run writes (a fit's
 `{out}.pinto.json`, lra's table), and `pinto run` never writes over a script.
@@ -1400,7 +1249,6 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, `shard` (`I/N`: only shard I of the pairs, to `{out}.lra.shard-I-of-N.cbor`, no table; each shard its own job, e.g. a Slurm array task, then `run_lra_merge`), and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, its q corrected within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, q) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
 | `run_lra_merge` | `pinto lra merge` as a recorded job: `shards` (every `{out}.lra.shard-I-of-N.cbor` of one `run_lra` run with `shard`, in any order) and `out`; writes the tables a run without `shard` writes, its q-values over every pair, recorded in the run's manifest, and replies as `run_lra` does; called again on a finished `out`, it reads the tables back |
 | `run_lra_simulate` | `pinto lra simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
-| `run_residual` | `pinto apply residual` as a recorded job: `run` (a fit's or a spatial baseline's: any run that recorded its data files, propensity, cells table and coordinate columns), `out`, `data_files`, `residual` (`divide`, the default, or `subtract`), `excess`, `adapt`, `adapt_cells`, `feature_name_mode`; the run is checked before it starts (a run that lacks one of those records is refused) and nothing is written over; writes `{out}/{stem}.coords.parquet` per data file and `{out}/residual.json`, under divide `{out}/stage1.{cells,profiles,features}.parquet`, under subtract `{out}/{stem}.zarr.zip` per data file; the reply lists stage 2 for `run_fit` as `fit.data` (the run's own files under divide, the excess files under subtract) with `fit.coords`, and as `fit.flags` the coordinate columns and, under divide, `offset`; `run_lra` on that second fit reads the run's raw counts |
 | `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score_by_set`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score_by_set` | `pinto sim score-by-set` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
 | `run_sim_score_by_pair` | `pinto sim score-by-pair` in the call: `truth`, `vectors` (runs at `level`, their propensity, cage's among them; or vector tables such as a spatial baseline's `cell_embedding`), `pairs`, `seed`, `knn`; replies with each set's AUROC as a table, one row per input and donor-specific domain, and every AUROC, AUPRC and prevalence as JSON; an input that cannot be scored is listed under `failed` and the rest are scored |
@@ -1412,7 +1260,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: verdict counts and a list filtered by `verdict` and `search` (genes), `sort`ed by q, effect or name, each with its percent change and q; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns; with `curve: true`, the selected lra pair's threshold-response curve |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
-| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_lra_merge`, `run_residual`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_lra_merge`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |
 
 Focus takes a level's communities (`C3` or `3`), and when a round is shown,
 lupin's cluster ids (`K3` or `3`) or cell types.

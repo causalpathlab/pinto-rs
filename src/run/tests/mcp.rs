@@ -372,20 +372,15 @@ fn run_compare_refuses_a_negative_tau_with_the_command_s_reason() {
     assert!(!said.contains("unexpected argument"), "{said}");
 }
 
-/// The lra and residual tools describe each flag they pass as clap does:
+/// The lra tools describe each flag they pass as clap does:
 /// its short help (the long one where it carries a vocabulary), then the
 /// flag, then clap's default. Every default a
 /// description states is clap's.
 #[test]
-fn the_lra_and_residual_tools_describe_their_flags_by_clap() {
+fn the_lra_tools_describe_their_flags_by_clap() {
     let cli = crate::built_cli();
-    let mut tools = specs(&cli);
-    tools.extend(super::super::residual::specs(&cli));
-    for (tool, command) in [
-        ("run_lra", "lra"),
-        ("run_lra_simulate", "lra simulate"),
-        ("run_residual", "residual"),
-    ] {
+    let tools = specs(&cli);
+    for (tool, command) in [("run_lra", "lra"), ("run_lra_simulate", "lra simulate")] {
         let spec = tools.iter().find(|t| t.name == tool).unwrap();
         let props = spec.input_schema["properties"].as_object().unwrap();
         let sub = crate::cli_path::find(&cli, command).unwrap().1;
@@ -466,12 +461,6 @@ const MIRRORS: &[Mirror] = &[
     ("run_lra", "lra", &[("run", "from")], &[]),
     ("run_lra_simulate", "lra simulate", &[("run", "from")], &[]),
     ("run_lra_merge", "lra merge", &[], &[]),
-    (
-        "run_residual",
-        "residual",
-        &[("feature_name_mode", "feature_names")],
-        &[],
-    ),
     ("run_compare", "compare", &[], &[]),
     ("run_simulate", "sim new", &[], &[]),
     // These two run in the call, in the server's own threads.
@@ -535,7 +524,7 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
 /// tool that starts a command builds its line through [`shared_flags`].
 #[test]
 fn atomic_outputs_reaches_the_child_s_command_line() {
-    use super::super::{lra, residual, sim};
+    use super::super::{lra, sim};
     let cli = crate::built_cli();
     assert_eq!(
         shared_flags(Some(3), Some(true)).collect::<Vec<_>>(),
@@ -559,8 +548,6 @@ fn atomic_outputs_reaches_the_child_s_command_line() {
         let baseline: sim::SimBaselineToolArgs =
             serde_json::from_value(with(json!({"truth": "t"}))).unwrap();
         let simulate: sim::SimulateToolArgs = serde_json::from_value(with(json!({}))).unwrap();
-        let res: residual::ResidualToolArgs =
-            serde_json::from_value(with(json!({"run": "r"}))).unwrap();
         let lra_a: lra::LraToolArgs =
             crate::mcp::parse(with(json!({"run": "r", "lr_pairs": "p.tsv"}))).unwrap();
         let lra_sim: lra::LraSimulateToolArgs =
@@ -568,7 +555,6 @@ fn atomic_outputs_reaches_the_child_s_command_line() {
         vec![
             sim::baseline_argv(&baseline, "t", "o.tsv"),
             sim::simulate_argv(&simulate, "o"),
-            residual::residual_argv(&res, "o").unwrap(),
             lra::lra_argv(
                 &lra_a,
                 crate::lr_activity::args::LraMethod::CoexpressionScores,
@@ -597,7 +583,6 @@ fn atomic_outputs_reaches_the_child_s_command_line() {
         "run_lra",
         "run_lra_simulate",
         "run_lra_merge",
-        "run_residual",
         "run_simulate",
         "run_sim_baseline",
     ] {
@@ -626,13 +611,7 @@ fn max_threads_reaches_the_child_s_command_line() {
     let argv = super::super::sim::baseline_argv(&none, "t", "o.tsv");
     assert!(!argv.iter().any(|a| a.contains("max-threads")), "{argv:?}");
 
-    for tool in [
-        "run_fit",
-        "run_predict",
-        "run_compare",
-        "run_lra",
-        "run_residual",
-    ] {
+    for tool in ["run_fit", "run_predict", "run_compare", "run_lra"] {
         let spec = all_tools().into_iter().find(|t| t.name == tool).unwrap();
         let said = spec.input_schema["properties"]["max_threads"]["description"]
             .as_str()

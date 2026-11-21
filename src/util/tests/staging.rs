@@ -610,7 +610,7 @@ fn a_folder_lands_whole_over_an_empty_one_and_not_at_all_when_nothing_was_writte
 }
 
 /// The files that mark a call complete land after the outputs they speak
-/// for, whatever their names sort as: residual's marker in a folder in
+/// for, whatever their names sort as: sim new's manifest in a folder in
 /// use, a single scenario's sidecar beside its table.
 #[test]
 fn every_completion_marker_lands_last() {
@@ -622,12 +622,12 @@ fn every_completion_marker_lands_last() {
     let s = Staging::folder(&format!("{}/res", dir.display())).unwrap();
     let staged = PathBuf::from(s.out());
     std::fs::create_dir(staged.join("S1.zarr")).unwrap();
-    std::fs::write(staged.join("residual.json"), "{}").unwrap();
+    std::fs::write(staged.join("manifest.json"), "{}").unwrap();
     std::fs::write(staged.join("z.coords.parquet"), "").unwrap();
     let mut landed = Vec::new();
     s.commit_observed(|p| landed.push(p.to_path_buf())).unwrap();
     assert_eq!(landed.len(), 3);
-    assert_eq!(landed[2], res.join("residual.json"));
+    assert_eq!(landed[2], res.join("manifest.json"));
 
     let out = format!("{}/one", dir.display());
     let s = Staging::prefix(&out).unwrap();

@@ -80,7 +80,7 @@ fn activities(
     norm: ActivityNorm,
 ) -> anyhow::Result<FeatureActiveEdges> {
     let axis = FeatureAxis::resolve(&data.row_names()?)?;
-    build_feature_active_fine_edges(data, edges, norm, &axis, None)
+    build_feature_active_fine_edges(data, edges, norm, &axis)
 }
 
 /// Break it by indexing `feature_active_edges` with the row instead of the feature and

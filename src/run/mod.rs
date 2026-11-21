@@ -8,7 +8,6 @@
 pub(crate) mod form;
 pub(crate) mod lra;
 pub(crate) mod mcp;
-pub(crate) mod residual;
 pub(crate) mod script;
 pub(crate) mod sim;
 pub(crate) mod tui;
@@ -47,14 +46,6 @@ const N_MODELS: usize = 4;
 /// `.pinto.json`), after the fits: ligand-receptor analysis and its power
 /// check.
 pub const ON_RUNS: [&str; 2] = ["lra", "lra simulate"];
-
-/// What `pinto run` also sets up on a fitted run, after those: its
-/// residual, with a second fit on the residual's files.
-pub const RESIDUAL: &str = "residual";
-
-/// The methods the second stage fits the residual with, the first offered
-/// first.
-pub const STAGE_TWO: [&str; 3] = ["dsvd", "lc", "cage"];
 
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {

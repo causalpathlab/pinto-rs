@@ -244,12 +244,6 @@ pub struct PintoMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_batches: Option<Vec<FileBatch>>,
 
-    /// A stage-2 fit's stage-1 divisor (`--offset`): the folder `pinto
-    /// residual --residual divide` wrote, as a canonical path. Such a fit
-    /// estimates no batch effect. Absent on any other run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offset: Option<String>,
-
     /// Present on a spatial baseline's run (each baseline and its `-pb`
     /// form): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,10 +257,10 @@ pub struct PintoMetadata {
     pub max_threads: Option<usize>,
 
     /// How the run read its rows' names (`--feature-name-mode`, resolved:
-    /// never `auto`), so what reads its data back (`pinto apply residual`)
-    /// reads the rows it fitted. Absent on runs that take no such flag (lc,
-    /// dsvd, the baselines: they read the names exactly), and on manifests
-    /// written before this was recorded; residual then reads them `auto`.
+    /// never `auto`), so what reads its data back reads the rows it fitted.
+    /// Absent on runs that take no such flag (lc, dsvd, the baselines: they
+    /// read the names exactly), and on manifests written before this was
+    /// recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_names: Option<crate::cell_activity_graph_embedding::args::FeatureNameMode>,
 }
@@ -1142,7 +1136,6 @@ pub fn create_lc_metadata(
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1195,7 +1188,6 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1262,7 +1254,6 @@ pub fn create_cage_metadata(
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1313,7 +1304,6 @@ pub fn create_prop_metadata(
         batch_labels: None,
         file_batches: None,
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }

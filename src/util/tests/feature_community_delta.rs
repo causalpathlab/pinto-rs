@@ -85,7 +85,6 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
     ];
     let args = SrtInputArgs::try_parse_from(argv).unwrap();
     let pre = preprocess_srt(SrtPreprocessConfig {
-        offset: None,
         common: &args,
         ablation: None,
         batch_effects: BatchEstimate::Skip,

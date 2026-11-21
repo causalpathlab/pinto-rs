@@ -171,7 +171,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..19],
+        names[..18],
         [
             "run_methods",
             "run_fit",
@@ -181,7 +181,6 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_lra",
             "run_lra_simulate",
             "run_lra_merge",
-            "run_residual",
             "run_simulate",
             "run_sim_score_by_set",
             "run_sim_score_by_pair",
@@ -918,70 +917,4 @@ fn an_agent_simulates_looks_and_scores() {
         json!({"set": tiny, "out": "blocker/sim", "background": false}),
     );
     assert!(!msg.contains("give another out"), "{msg}");
-}
-
-/// run_residual over the server, on a run written to disk: a run that
-/// records no propensity output is refused before any job; with no out
-/// the residual takes today's free name, passing over a file in the way,
-/// and an -o that is a file is refused. (What the job writes, and its
-/// command line, are `pinto residual`'s and `run residual`'s own tests.)
-#[test]
-fn an_agent_takes_a_residual_under_a_free_name() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut c = Client::start(dir.path());
-    c.request("initialize", json!({"protocolVersion": "2025-06-18"}));
-    let prefix = common::write_run(dir.path(), 16);
-    let run = format!("{prefix}.pinto.json");
-    let mut meta: Value = serde_json::from_str(&std::fs::read_to_string(&run).unwrap()).unwrap();
-    // The run's data files and coordinate columns, as a fit records them.
-    let data = dir.path().join("raw/S1.zarr");
-    std::fs::create_dir_all(&data).unwrap();
-    meta["data_files"] = json!([data.to_string_lossy()]);
-    meta["outputs"]["coord_columns"] = json!(["x", "y"]);
-    std::fs::write(&run, meta.to_string()).unwrap();
-
-    // Without a propensity output: refused, and no job started.
-    let bare = dir.path().join("bare.pinto.json");
-    let mut no_propensity = meta;
-    no_propensity["prefix"] = json!(dir.path().join("bare").to_string_lossy());
-    no_propensity["outputs"]
-        .as_object_mut()
-        .unwrap()
-        .remove("propensity");
-    std::fs::write(&bare, no_propensity.to_string()).unwrap();
-    let msg = c.fails("run_residual", json!({"run": bare, "out": "bad"}));
-    assert!(msg.contains("records no propensity output"), "{msg}");
-    assert!(!dir.path().join("bad").exists(), "refused before it ran");
-    let (jobs, _) = c.ok("job_status", json!({}));
-    assert!(!jobs.to_string().contains("residual of"), "{jobs}");
-
-    // Today's free name passes over a file in the way; an -o that is a
-    // file is refused before any job.
-    c.fails("run_residual", json!({"run": bare}));
-    let day = std::fs::read_dir(dir.path().join("results"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.is_dir())
-        .unwrap();
-    let in_the_way = day.join("residual");
-    std::fs::write(&in_the_way, "").unwrap();
-    let in_the_way = in_the_way.to_string_lossy().into_owned();
-    let msg = c.fails("run_residual", json!({"run": run, "out": in_the_way}));
-    assert!(msg.contains("is a file"), "{msg}");
-    let (job, _) = c.ok("run_residual", json!({"run": run}));
-    let res = job["out"].as_str().unwrap().to_string();
-    assert!(res.ends_with("residual-2"), "{job}");
-    assert!(job["note"].as_str().unwrap().contains("run_fit"), "{job}");
-    assert!(job["note"].as_str().unwrap().contains("run_lra"), "{job}");
-    // divide, the default: stage 2 reads the run's own files against the
-    // residual's folder
-    assert_eq!(
-        job["fit"]["flags"],
-        json!({"coord-column-names": "x,y", "offset": res}),
-        "{job}"
-    );
-    assert_eq!(job["fit"]["data"], json!([data.to_string_lossy()]), "{job}");
-    // The job reads an empty data file; let it end before the server does.
-    let id = job["job"].as_str().unwrap().to_string();
-    c.ok("job_wait", json!({"id": id, "seconds": 120}));
 }

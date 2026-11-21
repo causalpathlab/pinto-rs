@@ -8,8 +8,8 @@ use legume_numeric::matrix::knn_graph::KnnGraph;
 
 mod args;
 pub use args::{
-    BatchArgs, CollapseArgs, InputArgs, OffsetArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN,
-    DEFAULT_KNN, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+    BatchArgs, CollapseArgs, InputArgs, ResolvedKnn, SrtInputArgs, BATCH_KNN, DEFAULT_KNN,
+    DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
 };
 
 pub struct SRTReadArgs {
@@ -141,7 +141,7 @@ fn open_data_files(args: &SRTReadArgs, names: &[Box<str>]) -> anyhow::Result<Spa
 
 /// [`open_data_files`] on its own: the files as a fit reads them, so their
 /// rows and their cell names (`{barcode}@{base}` with several files) are a
-/// fit's. `pinto apply residual` reads a run's data back this way.
+/// fit's.
 pub fn open_fit_data(
     data_files: &[Box<str>],
     feature_kind: &FeatureNameKind,

@@ -62,7 +62,6 @@ pub fn build_feature_active_fine_edges(
     edges: &[(u32, u32)],
     norm: ActivityNorm,
     axis: &FeatureAxis,
-    stage1: Option<&crate::util::stage1_divisor::Stage1Divisor>,
 ) -> anyhow::Result<FeatureActiveEdges> {
     let n_cells = data.num_columns();
     let n_rows = data.num_rows();
@@ -83,12 +82,7 @@ pub fn build_feature_active_fine_edges(
     let per_block: Vec<Vec<(usize, usize, f32)>> = intervals
         .par_iter()
         .map(|&(lb, ub)| -> anyhow::Result<Vec<(usize, usize, f32)>> {
-            let mut csc = data.read_columns_csc(lb..ub)?;
-            // a stage-2 fit's activity is the count over the stage-1
-            // expectation, as every other read under `--offset` divides
-            if let Some(s1) = stage1 {
-                s1.divide_columns(&mut csc, |j| lb + j);
-            }
+            let csc = data.read_columns_csc(lb..ub)?;
             let mut local = Vec::new();
             for col in 0..(ub - lb) {
                 let global_col = lb + col;

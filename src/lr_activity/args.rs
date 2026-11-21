@@ -84,9 +84,8 @@ pub struct LraInputArgs {
                      `cell` column naming the data's cells and a `cell_type` (or `label`)\n\
                      column; without those names, the first two columns. They stand in for\n\
                      the --from run's newest lupin round: confounder columns for the\n\
-                     receiver's type and its neighbours' types, and a row per type. For a\n\
-                     residual fit, the donor-invariant stage-1 types. Cells it leaves out\n\
-                     share the type `unassigned`."
+                     receiver's type and its neighbours' types, and a row per type. Cells\n\
+                     it leaves out share the type `unassigned`."
     )]
     pub cell_types: Option<Box<str>>,
 
@@ -101,10 +100,8 @@ pub struct LraInputArgs {
                      the first two columns. Each region gets an indicator per section among\n\
                      the confounders (the smooth fields cannot follow a sharp region edge),\n\
                      and each pair a row per region, `section` = `region:<name>`, its q\n\
-                     corrected within that region. For a residual fit, its\n\
-                     communities, best fitted with the pairs' genes dropped so the region is\n\
-                     not read off the response. Cells it leaves out are `unassigned`, which\n\
-                     gets no row."
+                     corrected within that region. Cells it leaves out are `unassigned`,\n\
+                     which gets no row."
     )]
     pub region: Option<Box<str>>,
 

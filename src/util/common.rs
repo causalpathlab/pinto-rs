@@ -5,7 +5,7 @@ pub use data_beans::sparse_io::*;
 pub use data_beans::sparse_io_vector::*;
 
 pub use indicatif::ParallelProgressIterator;
-pub use legume_numeric::matrix::common_io::{basename, file_ext, read_lines};
+pub use legume_numeric::matrix::common_io::{file_ext, read_lines};
 pub use legume_numeric::matrix::dmatrix_util::*;
 pub use legume_numeric::matrix::traits::*;
 pub use log::{info, warn};
@@ -45,16 +45,6 @@ pub const SEED_HELP: &str = "Random seed for reproducibility";
 pub use data_beans::alg::gene_weighting::{
     apply_gene_weights as apply_feature_weights, compute_nb_fisher_weights,
 };
-
-/// A clap value parser for a finite number, 0 or more.
-pub fn non_negative_f64(text: &str) -> Result<f64, String> {
-    let v: f64 = text.parse().map_err(|e| format!("{e}"))?;
-    if v.is_finite() && v >= 0.0 {
-        Ok(v)
-    } else {
-        Err("must be finite and not negative".to_string())
-    }
-}
 
 /// Default of `--max-threads`, the most worker threads a pinto command
 /// takes: a shared machine is not a command's to fill, and past this the

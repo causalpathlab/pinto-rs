@@ -1,5 +1,4 @@
-//! `--feature-modules` on the fits that read counts as data, and the
-//! two-stage path on modules.
+//! `--feature-modules` on the fits that read counts as data.
 
 use super::*;
 use crate::util::metadata::PintoMetadata;
@@ -7,30 +6,22 @@ use clap::Parser;
 use std::path::Path;
 
 #[test]
-fn the_default_yields_to_offset_and_to_a_feature_network() {
-    assert_eq!(plan(None, false, false, false).unwrap().0, ModulePlan::Auto);
+fn the_default_yields_to_a_feature_network() {
+    assert_eq!(plan(None, false, false).unwrap().0, ModulePlan::Auto);
     assert_eq!(
-        plan(None, false, true, false).unwrap(),
-        (ModulePlan::Off, "offset")
-    );
-    assert_eq!(
-        plan(None, false, false, true).unwrap(),
+        plan(None, false, true).unwrap(),
         (ModulePlan::Off, "feature-network")
     );
     assert_eq!(
-        plan(Some(ModulePlan::Off), false, true, true).unwrap().0,
+        plan(Some(ModulePlan::Off), false, true).unwrap().0,
         ModulePlan::Off
     );
     assert_eq!(
-        plan(Some(ModulePlan::Fixed(3)), false, false, false)
-            .unwrap()
-            .0,
+        plan(Some(ModulePlan::Fixed(3)), false, false).unwrap().0,
         ModulePlan::Fixed(3)
     );
-    for (offset, network) in [(true, false), (false, true)] {
-        for asked in [ModulePlan::Auto, ModulePlan::Fixed(3)] {
-            assert!(plan(Some(asked), false, offset, network).is_err());
-        }
+    for asked in [ModulePlan::Auto, ModulePlan::Fixed(3)] {
+        assert!(plan(Some(asked), false, true).is_err());
     }
 }
 
@@ -217,75 +208,6 @@ fn lc_with_a_feature_network_fits_the_features_and_refuses_both() {
         .unwrap();
     assert_eq!(info.setting, "feature-network");
     assert!(!info.module_level());
-}
-
-/// Stage 1 on modules, its residual (divide) at module level, and stage 2
-/// on the same modules with `--offset`, for `method`.
-fn two_stage_on_modules(method: &str) {
-    use crate::residual::{run_residual, Operation, ResidualArgs};
-    let f = fixture();
-    let stage1 = format!("{}/{method}1", f.d);
-    let meta = fit(&f.argv(method, &f.data, &stage1, &["--feature-modules", "2"]));
-    let files = meta.data_files.clone().unwrap().join(",");
-    assert!(meta.feature_modules.unwrap().module_level(), "{method}");
-
-    let resid = format!("{}/{method}-resid", f.d);
-    run_residual(&ResidualArgs::try_parse_from(["x", "--from", &stage1, "-o", &resid]).unwrap())
-        .unwrap();
-    let marker: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{resid}/residual.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        marker["operation"],
-        serde_json::to_value(Operation::Divide).unwrap()
-    );
-    assert_eq!(marker["feature_level"], "module", "{method}: {marker}");
-    assert_eq!(marker["n_modules"], 2, "{method}");
-
-    let stage2 = format!("{}/{method}2", f.d);
-    let meta = fit(&f.argv(
-        method,
-        &files,
-        &stage2,
-        &["--offset", &resid, "--ignore-batch"],
-    ));
-    let info = meta.feature_modules.unwrap();
-    assert_eq!(info.setting, "offset", "{method}");
-    assert!(info.module_level(), "{method}: stage 2 fits the modules");
-    assert_eq!(info.n_modules, Some(2), "{method}");
-    assert!(meta.offset.is_some(), "{method}");
-}
-
-// ResidualArgs parses on its own
-#[derive(Parser)]
-struct ResidualCli {
-    #[command(flatten)]
-    args: crate::residual::ResidualArgs,
-}
-
-trait ParseResidual: Sized {
-    fn try_parse_from<const N: usize>(argv: [&str; N]) -> Result<Self, clap::Error>;
-}
-
-impl ParseResidual for crate::residual::ResidualArgs {
-    fn try_parse_from<const N: usize>(argv: [&str; N]) -> Result<Self, clap::Error> {
-        Ok(ResidualCli::try_parse_from(argv)?.args)
-    }
-}
-
-#[test]
-fn lc_two_stage_on_modules() {
-    two_stage_on_modules("lc");
-}
-
-#[test]
-fn spatialpca_pb_two_stage_on_modules() {
-    two_stage_on_modules("spatialpca-pb");
-}
-
-#[test]
-fn mefisto_pb_two_stage_on_modules() {
-    two_stage_on_modules("mefisto-pb");
 }
 
 /// spatialpca(-pb) on modules models every module: no SPARK-X screen, and

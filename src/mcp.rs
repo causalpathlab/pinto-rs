@@ -11,7 +11,7 @@ use serde_json::Value;
 /// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
 pub fn instructions() -> String {
     format!(
-        "{FITS} {SIMULATE} {RESIDUAL} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
+        "{FITS} {SIMULATE} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
         crate::lr_activity::ligand_effect::verdict::verdict_line()
     )
 }
@@ -32,7 +32,7 @@ features are noise, every method works on feature modules by default \
 for none), all built the same way: cage and cage-cell embed features through \
 a learned module layer started from them, the others are fitted on the \
 modules' summed counts (written as {out}.feature_modules/, the run's data \
-files, so a residual of it and its stage 2 are on the same modules). \
+files). \
 feature-inclusion moran, on every method, given alone replaces the default \
 modules (cage weights features by their probability of spatial signal; the \
 others fit the features whose probability is 0.5 or more), and given beside \
@@ -65,15 +65,6 @@ run is scored as a fit is: its prefix in `labels`, its \
 on every spot. Both scorers reply with one JSON object, `{truth, scores: \
 [...], failed: [...]}` (`failed` only when an input could not be scored), \
 and `pinto sim score-by-set -o` / `pinto sim score-by-pair -o` write that same object.";
-
-const RESIDUAL: &str = "\
-Two-stage fit: `run_residual` takes what a fitted run (a fit's or a spatial \
-baseline's: any run that recorded its propensity) leaves unexplained (a \
-background job), by one of two operations: `divide` (default; stage 2 fits the \
-raw counts with the stage-1 expectation as a multiplicative offset, flag \
-`offset`) or `subtract` (the counts above it as new data files, `<out>/<stem>.zarr.zip`). Fit stage 2 \
-with `run_fit`, passing the reply's `fit.data`, `fit.coords` and `fit.flags` as \
-its data, coords and flags; `run_lra` on that second fit reads the raw counts.";
 
 const LRA: &str = "\
 Ligand-receptor analysis: `run_lra` asks, per ligand-receptor pair, whether \

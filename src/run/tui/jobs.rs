@@ -42,15 +42,13 @@ pub struct Job {
     /// Its script.
     pub script: PathBuf,
     /// What a run of it that did not finish leaves, and only what it owns:
-    /// its script, a fit's batch files, a residual's files in `{out}/`.
+    /// its script and a fit's batch files.
     pub leftovers: Vec<PathBuf>,
     /// The run `pinto view` opens once it is done.
     pub opens: PathBuf,
     /// The earlier job in the queue whose result it reads: it starts only
     /// once that one is done.
     pub after: Option<usize>,
-    /// A residual's plan: the files it writes, which the fit on them reads.
-    pub residual: Option<crate::residual::Plan>,
 }
 
 pub use crate::run::script::outputs;
@@ -74,7 +72,6 @@ impl Job {
             script,
             opens: manifest,
             after: None,
-            residual: None,
         }
     }
 
@@ -101,7 +98,6 @@ impl Job {
             script,
             opens,
             after: None,
-            residual: None,
         }
     }
 

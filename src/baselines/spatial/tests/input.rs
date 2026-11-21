@@ -1,7 +1,6 @@
 //! A baseline reads its input as lc, dsvd and cage read theirs: masked
-//! cells (and QC's) left out of the fit but kept in the cells table, the
-//! ablation and an `--offset` recorded in the manifest, and the stage-1
-//! divisor read on the cells kept only.
+//! cells (and QC's) left out of the fit but kept in the cells table, and
+//! the ablation recorded in the manifest.
 
 use crate::test_support::two_sections;
 use crate::util::metadata::Run;
@@ -79,65 +78,6 @@ fn masked_cells_leave_the_fit_and_stay_in_the_cells_table() {
         table.in_graph.unwrap().iter().filter(|&&k| !k).count(),
         2,
         "the masked cells are not in the graph"
-    );
-}
-
-#[test]
-fn an_offset_is_read_on_the_cells_kept_and_recorded() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = 6;
-    let (data, coords) = two_sections(dir.path(), side);
-    // stage-1 tables without one cell, as a stage 1 whose QC dropped it
-    let cells: Vec<Box<str>> = ["s1", "s2"]
-        .iter()
-        .flat_map(|s| (0..side * side).map(move |c| format!("{s}_{c}@{s}")))
-        .filter(|c| c != "s1_0@s1")
-        .map(Box::from)
-        .collect();
-    let rows = crate::test_support::numbered("GENE", 12);
-    let t = crate::util::tests::stage1_divisor::tables(
-        &cells,
-        &rows,
-        1,
-        &["all"],
-        |_| 0,
-        |_, _| 1.0,
-        |_, r, _| (r + 1) as f32 / 78.0,
-    );
-    let stage1 = dir.path().join("stage1");
-    std::fs::create_dir(&stage1).unwrap();
-    t.write(stage1.to_str().unwrap()).unwrap();
-    let list = dir.path().join("masked.txt");
-    std::fs::write(&list, "s1_0@s1\n").unwrap();
-    let out = dir.path().join("two").to_string_lossy().into_owned();
-    let offset = stage1.to_str().unwrap();
-    // every cell read: the tables lack one, refused by name
-    let e = spatialde2(&data, &coords, &out, &["--no-qc", "--offset", offset])
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("s1_0"), "{e}");
-    spatialde2(
-        &data,
-        &coords,
-        &out,
-        &[
-            "--no-qc",
-            "--offset",
-            offset,
-            "--mask-cells",
-            list.to_str().unwrap(),
-            // left out before anything else reads it, as QC leaves its cells
-            "--mask-mode",
-            "drop",
-        ],
-    )
-    .unwrap();
-    assert_eq!(labelled(&out), 2 * side * side - 1);
-    let run = Run::open(&out).unwrap();
-    assert_eq!(run.meta.offset.as_deref(), Some(offset));
-    assert!(
-        run.meta.outputs.batch_effects.is_none(),
-        "no δ beside an offset"
     );
 }
 
