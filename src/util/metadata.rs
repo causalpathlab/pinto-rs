@@ -613,11 +613,12 @@ pub struct OutputFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair_encoder: Option<String>,
 
-    /// Trained PB (finest-level super-cell) embedding table: phase 1's
-    /// training unit. Cells and pairs are placed against the feature embedding
-    /// afterwards.
+    /// Trained super-edge table: a row per pseudobulk (finest-level
+    /// super-cell) pair, phase 1's training unit, keyed `"P-Q"`. The pair
+    /// encoder is trained to reproduce it; cells and pairs are placed by
+    /// the encoder afterwards.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pb_embedding: Option<String>,
+    pub pb_pair_embedding: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pb_bias: Option<String>,
@@ -1282,7 +1283,7 @@ pub fn create_cage_metadata(
             delta_cells,
             cell_embedding: Some(format!("{prefix}.cell_embedding.parquet")),
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
-            pb_embedding: Some(format!("{prefix}.pb_embedding.parquet")),
+            pb_pair_embedding: Some(crate::util::parquet_io::pb_pair_embedding_path(prefix)),
             pb_bias: Some(format!("{prefix}.pb_bias.parquet")),
             cell_pb: Some(crate::util::parquet_io::cell_pb_path(prefix)),
             feature_embedding: Some(format!("{prefix}.feature_embedding.parquet")),

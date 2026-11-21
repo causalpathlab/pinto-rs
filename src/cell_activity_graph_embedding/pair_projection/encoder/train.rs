@@ -36,6 +36,14 @@ pub(crate) struct Placed<'s> {
     pub(crate) stats: Option<&'s CorpusStats>,
 }
 
+/// A step's targets: its pairs' unit rows `[n × d]` from phase 1's table,
+/// each pair's weight `[n]` (0 for a pair with no row), and their sum.
+pub(crate) struct PairTargets {
+    pub(crate) rows: Tensor,
+    pub(crate) weight: Tensor,
+    pub(crate) total: f32,
+}
+
 /// What training reports back.
 pub(crate) struct TrainStats {
     pub steps: usize,
@@ -267,7 +275,25 @@ impl PairEncoder {
                     let t = std::time::Instant::now();
                     let pairs: Vec<(u32, u32)> = chunk.iter().map(|&i| set.pair_rows(i)).collect();
                     let endpoints = self.endpoint_stats(stats, &pairs)?;
-                    let cells = cell_share(k);
+                    // With phase 1's targets a step fits its pairs' rows and
+                    // no unit's own: a cell is the mean of its pairs.
+                    let targets = match &set.targets {
+                        Some(t) => {
+                            let (rows, weight) = t.gather(chunk);
+                            let n = chunk.len();
+                            Some(PairTargets {
+                                rows: Tensor::from_vec(rows, (n, t.d), dev)?,
+                                total: weight.iter().sum::<f32>(),
+                                weight: Tensor::from_vec(weight, n, dev)?,
+                            })
+                        }
+                        None => None,
+                    };
+                    let cells = if targets.is_some() {
+                        &[][..]
+                    } else {
+                        cell_share(k)
+                    };
                     let selves = if cells.is_empty() {
                         None
                     } else {
@@ -279,7 +305,10 @@ impl PairEncoder {
                     timers.precompute += t.elapsed();
 
                     let t = std::time::Instant::now();
-                    let loss = self.step_loss(endpoints, selves, batch)?;
+                    let loss = match targets {
+                        Some(t) => self.target_loss(endpoints, &t)?,
+                        None => self.step_loss(endpoints, selves, batch)?,
+                    };
                     timers.encoder_fwd += t.elapsed();
 
                     let t = std::time::Instant::now();
@@ -360,32 +389,12 @@ impl PairEncoder {
         let cell_block = rows_within_budget(g, cell_block);
         let pair_block = rows_within_budget(g, pair_block);
 
-        // Cells: the codes stay on the device for the pair pass; the
-        // self-pairs are written out.
+        // Cells: the codes, which the pair pass reads, stay on the device.
         let mut codes = Vec::new();
-        let mut cell_latent = Mat::zeros(n_cells, d);
-        let mut cell_bias = vec![0f32; n_cells];
         let bar = new_progress_bar(n_cells as u64).with_message("encoding cells");
         for (lb, ub) in generate_minibatch_intervals(n_cells, 0, Some(cell_block)) {
             let ids = Tensor::from_vec((lb as u32..ub as u32).collect::<Vec<u32>>(), ub - lb, dev)?;
-            let own = stats.gather(&ids)?;
-            let h = self.cell_codes(&own)?;
-            // The self-pair's objective is over the doubled profile.
-            let doubled = own.doubled()?;
-            let z = self.self_pair_code(&h, &doubled)?;
-            let scores = self.scores(&z)?;
-            let lse: Vec<f32> = scores.log_sum_exp(1)?.to_vec1()?;
-            let z_host: Vec<f32> = z.flatten_all()?.to_vec1()?;
-            for (i, c) in (lb..ub).enumerate() {
-                let total = corpus[c].total;
-                if total > 0.0 {
-                    for j in 0..d {
-                        cell_latent[(c, j)] = z_host[i * d + j];
-                    }
-                    cell_bias[c] = (total.ln() - lse[i]).clamp(-SCORE_CLAMP, SCORE_CLAMP);
-                }
-            }
-            codes.push(h);
+            codes.push(self.cell_codes(&stats.gather(&ids)?)?);
             bar.inc((ub - lb) as u64);
         }
         bar.finish_and_clear();
@@ -427,14 +436,14 @@ impl PairEncoder {
         }
         bar.finish_and_clear();
 
+        let cells = CellLatent {
+            latent: super::super::mean_of_pairs(&pair_latent, edges, n_cells),
+        };
         Ok(PairLatent {
             latent: pair_latent,
             bias: pair_bias,
             scores: Vec::new(),
-            cells: CellLatent {
-                latent: cell_latent,
-                bias: cell_bias,
-            },
+            cells,
         })
     }
 }

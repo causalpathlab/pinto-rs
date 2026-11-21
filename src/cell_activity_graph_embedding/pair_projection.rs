@@ -61,18 +61,21 @@ const SCORE_CLAMP: f32 = 30.0;
 
 pub(crate) mod encoder;
 mod scoring;
+pub use encoder::training_set::SuperEdgeTable;
 pub use encoder::PairEncoderSpec;
 pub use scoring::PairScore;
 
 /// What a trained encoder trains on: the finest pseudobulks (`cage`), each
 /// the sum of its cells' rows by `cell_to_pb`, and the pseudobulk edges
 /// `edges` between them, each pair thinned to a depth drawn from the pairs
-/// being placed. The cell pairs are then only encoded.
+/// being placed and fitted to its row of phase 1's super-edge `table`. The
+/// cell pairs are then only encoded.
 #[derive(Debug, Clone, Copy)]
 pub struct TrainOn<'a> {
     pub cell_to_pb: &'a [usize],
     pub n_pb: usize,
     pub edges: &'a [(u32, u32)],
+    pub table: SuperEdgeTable<'a>,
 }
 
 /// Where the encoder that places the pairs comes from.
@@ -124,14 +127,12 @@ pub struct PairProjectionArgs<'a> {
 pub use crate::util::batch_effects::BatchDivisor as PairBatchDivisor;
 use crate::util::batch_effects::Divisor;
 
-/// Every cell's own placement, in column order: the MAP of its doubled
-/// profile `2x_c`, whose composition is `x_c`'s — the self-pair, so a cell
-/// sits where the same map puts a pair of two copies of it.
+/// Every cell's embedding, in column order: the mean of the unit latents
+/// of the pairs it is in ([`mean_of_pairs`]), so a cell is placed by its
+/// contacts.
 pub struct CellLatent {
     /// `[n_cells × D]`.
     pub latent: Mat,
-    /// Per-cell intercept, `[n_cells]`.
-    pub bias: Vec<f32>,
 }
 
 /// What the projection hands back, in `edges` order.
@@ -372,6 +373,7 @@ pub fn project_pairs(
                 on.n_pb,
                 on.edges,
                 edges,
+                &on.table,
             )?;
             // The moments come from the rows epoch 0 trains on.
             let first = set.draw(args.seed, 0);
@@ -429,6 +431,51 @@ pub fn project_pairs(
             .collect();
     }
     Ok(placed)
+}
+
+/// Each cell's embedding: the mean of the unit rows of the pairs it is in
+/// (`latent`, `[pairs × D]` in `edges` order), each listed pair once; zero
+/// for a cell in none. The latent is L2-normalized before anything reads it,
+/// so its norms carry nothing and the mean is over directions. Read straight
+/// off the column-major latent, an output column per task.
+pub(crate) fn mean_of_pairs(latent: &Mat, edges: &[(u32, u32)], n_cells: usize) -> Mat {
+    let (n, d) = (latent.nrows(), latent.ncols());
+    debug_assert_eq!(n, edges.len());
+    let mut inv_norm = vec![0f32; n];
+    for col in latent.column_iter() {
+        for (s, &x) in inv_norm.iter_mut().zip(col.iter()) {
+            *s += x * x;
+        }
+    }
+    inv_norm
+        .iter_mut()
+        .for_each(|s| *s = if *s > 0.0 { 1.0 / s.sqrt() } else { 0.0 });
+    let mut degree = vec![0f32; n_cells];
+    for &(u, v) in edges {
+        degree[u as usize] += 1.0;
+        degree[v as usize] += 1.0;
+    }
+    let mut cells = Mat::zeros(n_cells, d);
+    if n_cells > 0 {
+        cells
+            .as_mut_slice()
+            .par_chunks_mut(n_cells)
+            .enumerate()
+            .for_each(|(j, out)| {
+                let col = latent.column(j);
+                for (e, &(u, v)) in edges.iter().enumerate() {
+                    let x = col[e] * inv_norm[e];
+                    out[u as usize] += x;
+                    out[v as usize] += x;
+                }
+                for (o, &k) in out.iter_mut().zip(&degree) {
+                    if k > 0.0 {
+                        *o /= k;
+                    }
+                }
+            });
+    }
+    cells
 }
 
 ////////////////

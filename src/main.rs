@@ -516,15 +516,16 @@ enum Fit {
 
     #[command(
         about = "Activity-gated cell-graph embedding (cage)",
-        long_about = "Learn per-SUPER-CELL embeddings on the coarsened spatial graph.\n\
-                      The trained unit is a finest-level super-cell (PB).\n\
+        long_about = "Learn SUPER-CELL PAIR embeddings on the coarsened spatial graph.\n\
+                      The trained unit is a pair of adjacent finest-level super-cells\n\
+                      (PBs), a super edge, with a row of its own.\n\
                       Cell-cell KNN edges fold into PB super edges up front;\n\
                       no cell and no cell pair is ever trained on.\n\
                       cage visits one feature at a time.\n\
                       Each feature defines a per-cell activity vector,\n\
-                      folded onto the super edges it touches.\n\
-                      That gates a shared multi-scale PB hierarchy.\n\n\
-                      Chain levels differ only in their negative pools.\n\
+                      folded onto the super edges it touches,\n\
+                      which draws them as positives; negatives are other\n\
+                      super edges of the same batch.\n\
                       This is embedding-only. There is no count decoder.\n\n\
                       Where most features are noise, a run takes one of two\n\
                       remedies, not both. By default features are embedded through\n\
@@ -564,6 +565,7 @@ enum Fit {
                       latent e_uv in one pass.\n\
                       The encoder trains on the finest super-cells' pairs, each\n\
                       thinned at random to a cell pair's depth every epoch,\n\
+                      to reproduce the pair's trained row (its direction),\n\
                       and then only encodes the cell pairs.\n\n\
                       Clustering those pairs gives link communities.\n\
                       A cell's propensity is its incident-edge fraction.\n\
@@ -574,12 +576,11 @@ enum Fit {
                       kmeans instead uses a fixed --n-communities\n\
                       (without it, the embedding width),\n\
                       spherical on the pair latent and seeded by --seed.\n\n\
-                      A cell's embedding is its own placement on the feature embedding,\n\
-                      by the same encoder that places its pairs,\n\
+                      A cell's embedding is the mean of its pairs' (L2-normalized) latents,\n\
                       written for `lupin annotate`.\n\
-                      A cell with no counts gets a zero row.\n\n\
+                      A cell in no pair gets a zero row.\n\n\
                       Outputs:\n\
-                      \x20 {out}.pb_embedding.parquet    super-cell × embedding_dim (trained)\n\
+                      \x20 {out}.pb_pair_embedding.parquet  super-cell pair × embedding_dim (trained)\n\
                       \x20 {out}.pb_bias.parquet         per-super-cell scalar (trained)\n\
                       \x20 {out}.cell_pb.parquet         cell → finest super-cell id\n\
                       \x20 {out}.cell_embedding.parquet  cell × embedding_dim (same map as the pairs)\n\
@@ -623,7 +624,7 @@ enum Fit {
                       --n-pseudobulk and the HVG flags shape only those starting\n\
                       pseudobulks, and do nothing in a run without modules\n\
                       (--feature-modules 0, or --feature-inclusion moran; a warning\n\
-                      says so); --chain-levels and --feature-embedding are refused.\n\
+                      says so); --feature-embedding is refused.\n\
                       --embedding-l2 defaults to 0 here, and the learning rate (--lr)\n\
                       to 0.02 (cage's is 0.005).\n\n\
                       Training runs until each pair's row has been updated\n\
@@ -635,7 +636,7 @@ enum Fit {
                       The pairs' trained rows are the latent (latent.parquet, L2-normalized,\n\
                       one row per listed pair), and a cell's embedding is the mean of its\n\
                       pairs' rows. No pair encoder is fitted, so there is no\n\
-                      pb_embedding.parquet or pair_encoder.safetensors, and `pinto apply predict`\n\
+                      pb_pair_embedding.parquet or pair_encoder.safetensors, and `pinto apply predict`\n\
                       and `pinto apply impute` refuse a cage-cell model for now.\n\
                       A pair table too big for the device is kept on the host.\n\n\
                       Writes what cage writes otherwise; its manifest says `cell_level`.",
@@ -646,12 +647,6 @@ enum Fit {
             .default_value("0.02")
             .long_help("AdamW learning rate. cage-cell's default is 0.02 (cage's 0.005): \
                         a pair's row moves only on the steps that draw it.")),
-        mut_arg("epochs", |a| a
-            .default_value("1000")
-            .help("Upper bound on training epochs (training ends at --pair-updates)")
-            .long_help("An upper bound on the passes over the feature axis: cage-cell \
-                        trains until --pair-updates is reached, and stops here first \
-                        only if this is too few (a warning says so).")),
         mut_arg("positives_per_epoch", |a| a.long_help(
             "The epoch's total positive draws, split over the features and batches \
              as in cage. Unset, 4 per cell pair (and at least 12 per feature and \

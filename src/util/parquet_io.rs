@@ -279,6 +279,12 @@ pub fn cell_pb_path(prefix: &str) -> String {
     format!("{prefix}.cell_pb.parquet")
 }
 
+/// Where cage writes its trained super-edge table (a row per pseudobulk
+/// pair) for `prefix`.
+pub fn pb_pair_embedding_path(prefix: &str) -> String {
+    format!("{prefix}.pb_pair_embedding.parquet")
+}
+
 /// Read a table written by [`write_cells_table`]. `coord_columns` names the
 /// `[x, y]` columns (from the manifest); without it, the first two numeric
 /// columns other than `in_graph`.

@@ -19,9 +19,8 @@ pub struct PbFrame {
     /// PB-PB super edges at the finest level, `(min, max)` deduped.
     pub super_edges: Vec<(u32, u32)>,
     /// Per COARSENING level except the finest: finest-PB -> super-cell
-    /// label at that level. Indexed by the same level ids as
-    /// `--chain-levels`, which the CLI restricts to coarser-than-finest
-    /// (the finest level IS the trained unit).
+    /// label at that level (`--feature-inclusion`'s jackknife blocks read
+    /// it).
     pub pb_parent_maps: Vec<Vec<usize>>,
     /// Finest-PB -> experimental batch id (majority over member cells).
     pub pb_exp_batch: Vec<u32>,

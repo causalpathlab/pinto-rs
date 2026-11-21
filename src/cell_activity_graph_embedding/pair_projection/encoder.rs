@@ -44,11 +44,13 @@
 //! counts, exactly where a shared map would otherwise extrapolate.
 //!
 //! `β_uv` is never learned: given `z` the intercept is `ln N − lse(s)` in
-//! closed form. The self-pair term is what makes the cell's own placement a
-//! trained quantity: `z_uu` is the MAP of the doubled profile `2x_u`, whose
-//! composition is `x_u`'s, so `.cell_embedding.parquet` comes from the same
-//! map as every pair. A row with no counts is put at the origin afterwards,
-//! where the ridge puts it.
+//! closed form. A row with no counts is put at the origin afterwards, where
+//! the ridge puts it.
+//!
+//! Under cage the encoder is trained on phase 1's super-edge rows instead
+//! (`target_loss`, cosine to each pair's row), and a cell is the mean of its
+//! pairs' unit latents (`mean_of_pairs`), not a self-pair of its own. The
+//! likelihood and self-pair terms remain for a set without targets.
 
 use super::PairDictionary;
 use crate::util::common::*;
@@ -438,11 +440,6 @@ impl Stats {
             totals: (&self.totals + &other.totals)?,
         })
     }
-
-    /// The self-pair: doubled.
-    fn doubled(&self) -> anyhow::Result<Stats> {
-        self.pooled(self)
-    }
 }
 
 /// Nodes' `(S, N, c)` on the device: [`Stats`] and the data term's constant
@@ -716,6 +713,18 @@ impl PairEncoder {
     /// Each cell comes once per epoch, so an epoch's summed loss is the
     /// one that scored every pair's two endpoints in every step, at a fraction
     /// of the rows: a cell is an endpoint of about `2E/n` pairs.
+    /// The step's mean cosine distance between its pairs' codes and their
+    /// targets, over the pairs with a target: `Σ_k w_k (1 − cos(z_k, t_k)) /
+    /// Σ_k w_k`, the targets unit rows. Only the direction is fitted: the
+    /// latent is L2-normalized before anything reads it.
+    fn target_loss(&self, endpoints: FullStats, t: &train::PairTargets) -> anyhow::Result<Tensor> {
+        let z = self.pair_forward(endpoints)?.z_uv;
+        let norm = z.sqr()?.sum(1)?.affine(1.0, 1e-12)?.sqrt()?;
+        let cos = ((&z * &t.rows)?.sum(1)? / norm)?;
+        let miss = (cos.affine(-1.0, 1.0)? * &t.weight)?.sum_all()?;
+        Ok(miss.affine(1.0 / f64::from(t.total.max(1.0)), 0.0)?)
+    }
+
     fn step_loss(
         &self,
         endpoints: FullStats,

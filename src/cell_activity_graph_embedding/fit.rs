@@ -1,17 +1,19 @@
 //! `pinto fit cage` entrypoint: activity-gated cell-graph embedding.
 //!
-//! Learns a per-SUPER-CELL (pseudobulk, PB) embedding `e_pb [P x D]` by
-//! contrastive (NCE) prediction of PB-PB adjacency, one feature at a time. No
-//! cell and no cell-cell pair is ever trained on: cells enter once, when
-//! their spatial KNN edges are folded into PB super edges, and reappear only
-//! in evaluation readouts (the per-pair latent, the propensity, and each
-//! cell's own placement by the pair encoder).
+//! Learns a SUPER-EDGE embedding `z [E_s x D]`, a row per pair of adjacent
+//! super-cells (pseudobulks, PBs), by contrastive (NCE) prediction of which
+//! super edges each feature is active on, one feature at a time. No cell and
+//! no cell-cell pair is ever trained on: cells enter once, when their spatial
+//! KNN edges are folded into PB super edges, and reappear only in evaluation
+//! readouts (the per-pair latent, the propensity, and each cell's embedding,
+//! the mean of its pairs').
 //!
 //! ```text
 //! load -> spatial KNN -> batch effects                  util::srt_pipeline
 //! HVG-weighted projection -> graph_coarsen_multilevel   nested super-cell levels
 //! build_feature_active_fine_edges                          per-feature activity, active edges
-//! training loop                                         the only SGD
+//! training loop                                         the super-edge table
+//! pair encoder                                          trained to reproduce it
 //! parquet outputs + .pinto.json
 //! ```
 //!
@@ -20,20 +22,17 @@
 //! Positives are PB-PB SUPER EDGES at the finest coarsening level:
 //! cell-cell spatial KNN edges folded by endpoint labels, each carrying
 //! the summed per-feature activity of the fine edges inside it. Negatives
-//! are sibling PBs drawn per chain level: at level `l` a negative sits
-//! in a different super-cell at `l` but the SAME parent at `l-1`, so the
-//! contrast sharpens with depth. The coarsening hierarchy is live in
-//! every step, one level up from where it used to be. There is one
-//! trained embedding, over finest-level PBs, started at random.
+//! are other super edges of the same batch, drawn uniformly. Each super
+//! edge has a row of its own, started at random:
 //!
 //! ```text
-//! s(P,Q) = theta_g . (e_P (*) e_Q) + b_P + b_Q
+//! s(P,Q) = theta_g . z_PQ + b_P + b_Q
 //! theta_g = e_feat[g]
 //! ```
 //!
-//! `e_P (*) e_Q` is the SUPER-EDGE embedding: the pair's joint
-//! participation in each latent community, high only when both endpoint
-//! PBs load on it.
+//! The pair encoder then learns to place a pair from its pooled counts where
+//! phase 1 put its super edge (the row's direction), and places every cell
+//! pair with one forward pass.
 //!
 //! # cage-cell
 //!
@@ -61,11 +60,10 @@ use crate::cell_activity_graph_embedding::args::{
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     build_feature_exp_batch_cache, FeatureGatedChainSampler,
 };
-use crate::cell_activity_graph_embedding::feature_gating::{
-    build_feature_active_fine_edges, ActivityNorm,
-};
+use crate::cell_activity_graph_embedding::feature_gating::build_feature_active_fine_edges;
 use crate::cell_activity_graph_embedding::pair_projection::{
-    project_pairs, CellLatent, PairEncoderSpec, PairLatent, PairProjectionArgs, PairSolver, TrainOn,
+    project_pairs, CellLatent, PairEncoderSpec, PairLatent, PairProjectionArgs, PairSolver,
+    SuperEdgeTable, TrainOn,
 };
 use crate::cell_activity_graph_embedding::pretrained;
 use crate::link_community::profiles::{
@@ -85,7 +83,7 @@ use data_beans::alg::gene_weighting::save_fisher_weights;
 use data_beans::alg::hvg::select_hvg_streaming;
 use data_beans::alg::random_projection::RandProjOps;
 use graph_embedding_util::embedding_col_names;
-use graph_embedding_util::loss::{build_per_batch_unit_samplers, ChainGroupFilter};
+use graph_embedding_util::loss::build_per_batch_unit_samplers;
 use graph_embedding_util::model::E_FEAT_VAR_NAME;
 // `Optimizer` is what puts `AdamW::new` in scope.
 use legume_numeric::candle::candle_core::Tensor;
@@ -105,7 +103,7 @@ use model::{build_model, BuiltModel, ModelInputs};
 use module_cells::CellCounts;
 use tables::write_trained_tables;
 use train::{train, TrainSetup};
-use units::{Pairs, Pseudobulks};
+use units::{PairCounts, Pairs};
 
 pub fn fit_cell_activity_graph_embedding(
     args: &CellActivityGraphEmbeddingArgs,
@@ -120,46 +118,21 @@ pub fn fit_cell_activity_graph_embedding(
         None => None,
     };
     let embedding_dim = args.resolve_embedding_dim(dictionary_width)?;
-    // Chain levels, resolved and validated BEFORE any data is loaded: the
-    // trained unit is the finest coarsening level, so chain entries must
-    // be strictly coarser. Unset adapts to the hierarchy depth (up to
-    // three coarser levels); explicit values are checked here, where a
-    // mistake costs milliseconds rather than a load.
-    let chain_levels: Vec<usize> = match &args.chain_levels {
-        // the cells themselves (see `cell_level_hierarchy`)
-        None if args.cell_level => vec![0],
-        Some(levels) => {
-            for &lvl in levels {
-                anyhow::ensure!(
-                    lvl + 1 < c.collapse.num_levels,
-                    "--chain-levels entry {} must be coarser than the finest level \
-                     (num_levels = {}; the finest level is the trained unit)",
-                    lvl,
-                    c.collapse.num_levels
-                );
-            }
-            levels.clone()
-        }
-        None => {
-            anyhow::ensure!(
-                c.collapse.num_levels >= 2,
-                "--num-levels {} leaves no level coarser than the finest; \
-                 the chain needs at least 2 levels",
-                c.collapse.num_levels
-            );
-            (0..(c.collapse.num_levels - 1).min(3)).collect()
-        }
-    };
-    if args.cell_level {
-        info!("Cell level: cells are the trained unit; negatives within each batch");
-    } else {
-        info!(
-            "Chain levels: {:?} of {} coarsening levels (finest = trained unit)",
-            chain_levels, c.collapse.num_levels
+    // Every run trains a row per super edge (cage: pseudobulk pairs,
+    // cage-cell: cell pairs) against other super edges of its batch, drawn
+    // uniformly: no chain level is contrasted, so none drops an edge.
+    if args.chain_levels.is_some() {
+        log::warn!(
+            "--chain-levels has no effect: negatives are other super edges of the batch, \
+             drawn uniformly"
         );
     }
+    if args.cell_level {
+        info!("Cell level: cell pairs are the trained unit; negatives within each batch");
+    } else {
+        info!("Pseudobulk pairs (super edges) are the trained unit; negatives within each batch");
+    }
     anyhow::ensure!(args.epochs > 0, "epochs must be > 0");
-    anyhow::ensure!(!chain_levels.is_empty(), "chain-levels must be non-empty");
     // On unless the flags turn the layer off; its count is resolved with
     // the model, against the profiles.
     let module_plan = args.module_plan()?;
@@ -484,45 +457,54 @@ pub fn fit_cell_activity_graph_embedding(
         }
     };
 
-    let n_chain_levels = chain_levels.len();
+    // one NCE term per (feature, draw): no chain level is contrasted
+    let n_chain_levels = 1;
 
     ///////////////////////////////
     // 5. The super-edge samplers //
     ///////////////////////////////
     //
-    // From here on the trained unit is a FINEST-LEVEL SUPER-CELL (PB),
-    // never a cell: cell-cell edges are folded into PB-PB super edges
-    // once, and the chain machinery runs one level up. This step decides
-    // which super edges cage may train on:
+    // From here on the trained unit is a SUPER EDGE, a pair of adjacent
+    // finest-level super-cells (PBs; under cage-cell, a cell pair), never a
+    // cell: cell-cell edges are folded into super edges once. This step
+    // decides which super edges train, and against which:
     //
     //   - cross-batch super edges are dropped outright;
-    //   - a super edge survives only if BOTH endpoint PBs share a
-    //     super-cell at EVERY `--chain-levels` entry (the coarser-level
-    //     analog of the old within-super-cell positives);
-    //   - per-PB degree over the retained super edges becomes the
-    //     `ALPHA_NEG` negative weight, and per-level sibling pools are
-    //     precomputed for the hard-negative draw.
+    //   - each batch's retained super edges are its pool: a positive's
+    //     negatives are drawn from it uniformly.
     //
     // All of it is a deterministic function of the coarsening labels and
     // the edge list — no RNG here; randomness enters only at draw time.
-    let pb_filter = ChainGroupFilter {
-        unit_to_group_per_level: &pb_frame.pb_parent_maps,
-        levels: &chain_levels,
-    };
-    let (samplers_per_exp_batch, sampler_stats) = build_per_batch_unit_samplers(
+    let (mut samplers_per_exp_batch, sampler_stats) = build_per_batch_unit_samplers(
         &pb_frame.super_edges,
         &pb_frame.pb_exp_batch,
         n_exp_batches,
         n_pb,
         ALPHA_NEG,
-        // on cells there is no coarser group for an edge to straddle;
-        // cross-batch edges are dropped either way
-        (!args.cell_level).then_some(pb_filter),
+        // no chain level is contrasted, so no super edge straddles one;
+        // cross-batch edges are dropped
+        None,
     );
     info!(
-        "PB super-edge data: {} batches; dropped {} cross-batch, {} straddling a chain-level boundary",
-        n_exp_batches, sampler_stats.cross_batch_dropped, sampler_stats.group_mismatch_dropped
+        "PB super-edge data: {} batches; dropped {} cross-batch",
+        n_exp_batches, sampler_stats.cross_batch_dropped
     );
+    // A negative is another super edge of the batch, so a batch with fewer
+    // than two has none: its draws would score the positive against itself.
+    for (b, slot) in samplers_per_exp_batch.iter_mut().enumerate() {
+        if slot.as_ref().is_some_and(|s| s.edge_indices.len() < 2) {
+            log::warn!("batch {b} has fewer than two super edges; it is left out of training");
+            *slot = None;
+        }
+    }
+    // The super edges some batch trains: the rest keep their random start,
+    // so the encoder is not fitted to them.
+    let mut trained_edge = vec![false; pb_frame.super_edges.len()];
+    for s in samplers_per_exp_batch.iter().flatten() {
+        for &e in &s.edge_indices {
+            trained_edge[e as usize] = true;
+        }
+    }
 
     let active_batch_count = samplers_per_exp_batch
         .iter()
@@ -530,7 +512,7 @@ pub fn fit_cell_activity_graph_embedding(
         .count();
     anyhow::ensure!(
         active_batch_count > 0,
-        "no batch retained any within-batch super edges; consider --chain-levels or --reciprocal"
+        "no batch retained any within-batch super edges; consider --reciprocal"
     );
 
     //////////////////////////////////////////////////
@@ -540,8 +522,8 @@ pub fn fit_cell_activity_graph_embedding(
     let fine_edge_activities = build_feature_active_fine_edges(
         &data_vec,
         &fine_edges,
-        ActivityNorm::Log1p,
         &feature_axis,
+        Some(&fine_to_super),
     )?;
     // Fold per-feature fine-edge activity onto the PB super edges,
     // CONSUMING the fine-level lists (they are the largest resident
@@ -563,8 +545,8 @@ pub fn fit_cell_activity_graph_embedding(
             fine_edge_activities,
             &fine_to_super,
         );
-    // cage-cell keeps the map: its latent is written in `fine_edges` order
-    let fine_to_super = args.cell_level.then_some(fine_to_super);
+    // each cell pair's super edge: cage-cell's latent is written in
+    // `fine_edges` order from it, cage's encoder takes its targets through it
     let nonzero_features = super_edge_activities
         .feature_active_edges
         .iter()
@@ -619,11 +601,11 @@ pub fn fit_cell_activity_graph_embedding(
         &trainable_features,
         inclusion.as_ref().map(|f| f.pi.as_slice()),
     );
-    // The epoch's total draws, and what set it: the flag; under cage-cell,
-    // unset, PAIR_DRAWS_PER_EPOCH per pair (never below the per-feature
-    // default); or nothing, for the per-feature default.
-    let (total_draws, floor, budget_note) = match (args.positives_per_epoch, args.cell_level) {
-        (Some(total), _) => (
+    // The epoch's total draws, and what set it: the flag, or unset,
+    // PAIR_DRAWS_PER_EPOCH per super edge (never below the per-feature
+    // default).
+    let (total_draws, floor, budget_note) = match args.positives_per_epoch {
+        Some(total) => (
             Some(total),
             1,
             format!(
@@ -631,19 +613,18 @@ pub fn fit_cell_activity_graph_embedding(
                  {n_exp_batches} batch(es))"
             ),
         ),
-        (None, true) => {
+        None => {
             let total = PAIR_DRAWS_PER_EPOCH * pb_frame.super_edges.len();
             (
                 Some(total),
                 PER_FEATURE_BATCH,
                 format!(
-                    " (cage-cell: {PAIR_DRAWS_PER_EPOCH} per cell pair, {total} split over \
+                    " ({PAIR_DRAWS_PER_EPOCH} per super edge, {total} split over \
                      {expected_visits} expected visits x {n_exp_batches} batch(es), at least \
                      {PER_FEATURE_BATCH})"
                 ),
             )
         }
-        (None, false) => (None, 1, String::new()),
     };
     let positives_per_feature_exp_batch =
         positives_per_feature_batch(total_draws, expected_visits, n_exp_batches).max(floor);
@@ -709,21 +690,16 @@ pub fn fit_cell_activity_graph_embedding(
         varmap: &varmap,
         dev: &dev,
     })?;
-    // cage-cell trains a row per cell pair instead of one per cell (the
-    // model has no cell table; see `build_model`), in a table outside the
-    // map, stepped row by row.
-    let mut pair_table = if args.cell_level {
-        Some(pairs::start_pair_table(
-            pb_frame.super_edges.len(),
-            embedding_dim,
-            c.seed,
-            args.lr as f64,
-            args.gpu_mem_fraction,
-            &dev,
-        )?)
-    } else {
-        None
-    };
+    // A row per super edge (the model has no unit table; see
+    // `build_model`), in a table outside the map, stepped row by row.
+    let mut pair_table = pairs::start_pair_table(
+        pb_frame.super_edges.len(),
+        embedding_dim,
+        c.seed,
+        args.lr as f64,
+        args.gpu_mem_fraction,
+        &dev,
+    )?;
     // What the exact unit-module term pools each step: cage's pseudobulk
     // profiles, on the device as `[n_pb × G]`, or under cage-cell the drawn
     // cells' own sparse counts (the seeding pseudobulks have done their work
@@ -752,10 +728,18 @@ pub fn fit_cell_activity_graph_embedding(
         }
         _ => None,
     };
-    let cell_counts = (args.cell_level && module_cfg.is_some()).then_some(CellCounts {
-        data: &data_vec,
-        feature_axis: &feature_axis,
-    });
+    // What the module term pools for a super edge: its two pseudobulks'
+    // profiles (cage) or its two cells' counts (cage-cell).
+    let pair_counts = if args.cell_level {
+        module_cfg
+            .is_some()
+            .then_some(PairCounts::Cells(CellCounts {
+                data: &data_vec,
+                feature_axis: &feature_axis,
+            }))
+    } else {
+        profiles.map(PairCounts::Pseudobulks)
+    };
     // One AdamW over the map, or two under LoRA: the shared factor `v` leaves
     // the main group for its own at the LoRA+ rate.
     let lora_v_name = legume_numeric::candle::lora::factor_names(E_FEAT_VAR_NAME).1;
@@ -781,16 +765,9 @@ pub fn fit_cell_activity_graph_embedding(
     //////////////////////
     // 8. Training loop //
     //////////////////////
-    let pb_to_parent_per_level: Vec<&[usize]> = chain_levels
-        .iter()
-        .map(|&lvl| pb_frame.pb_parent_maps[lvl].as_slice())
-        .collect();
-
     let sampler = FeatureGatedChainSampler {
-        super_edges: &pb_frame.super_edges,
         samplers_per_exp_batch: &samplers_per_exp_batch,
         cache: &cache,
-        unit_to_group_per_level: &pb_to_parent_per_level,
         positives_per_draw: positives_per_feature_exp_batch,
         n_negatives: N_NEGATIVES,
     };
@@ -814,13 +791,15 @@ pub fn fit_cell_activity_graph_embedding(
         n_chain_levels,
         dev: &dev,
     };
-    let score_trace = match pair_table.as_mut() {
-        Some(z) => train(
-            setup,
-            Pairs::new(z, &pb_frame.super_edges, cell_counts, args.pair_updates),
-        )?,
-        None => train(setup, Pseudobulks { n_pb, profiles })?,
-    };
+    let score_trace = train(
+        setup,
+        Pairs::new(
+            &mut pair_table,
+            &pb_frame.super_edges,
+            pair_counts,
+            args.pair_updates,
+        ),
+    )?;
 
     ////////////////
     // 9. Outputs //
@@ -834,7 +813,6 @@ pub fn fit_cell_activity_graph_embedding(
         &cell_names,
         &feature_names,
         embedding_dim,
-        !args.cell_level,
     )?;
     // Phase 1's tables are on disk; the encoder below trains on the same
     // device, so release them first.
@@ -854,30 +832,26 @@ pub fn fit_cell_activity_graph_embedding(
         Some(&batch_membership_u32),
     )
     .map(crate::util::batch_effects::Divisor::from);
-    let (mut pair_latent, cell_latent) = match (pair_table, fine_to_super) {
+    let z_host = pairs::table_to_host(pair_table)?;
+    let (mut pair_latent, cell_latent) = match args.cell_level {
         // cage-cell trained each pair's row itself; a cell is the mean of
         // its pairs'. Nothing is fitted again, so there is no pair encoder.
-        (Some(z), Some(fine_to_super)) => {
-            let z_host = pairs::table_to_host(z)?;
-            pairs::pair_outputs(
-                &z_host,
-                embedding_dim,
-                &pb_frame.super_edges,
-                &fine_to_super,
-                &fine_edges,
-                n_cells,
-            )
-        }
-        _ => {
-            // The pair latent comes from projecting each pair's POOLED counts onto
-            // the frozen feature embedding (`pair_projection`) — the same phase-2
-            // move `senna bge` makes for cells, with the pair as the node. cage's
-            // own score decomposes an edge as `⟨θ_g, e_u ⊙ e_v⟩`, so a Hadamard
-            // product is the closed form this generalizes: the projection lets
-            // the pair's own expression move it off that point, which is what puts
-            // a boundary pair between the two programs it pools instead of on
-            // either endpoint. The same pass places every cell (its self-pair),
-            // which is the cell embedding below.
+        true => pairs::pair_outputs(
+            &z_host,
+            embedding_dim,
+            &pb_frame.super_edges,
+            &fine_to_super,
+            &fine_edges,
+            n_cells,
+        ),
+        false => {
+            pairs::write_super_edge_table(&c.out, &z_host, embedding_dim, &pb_frame.super_edges)?;
+            // The pair latent comes from the pair encoder: a map from a pair's
+            // pooled (batch-divided) counts, through the frozen feature
+            // embedding, to the direction phase 1 gave its super edge. It is
+            // trained on the pseudobulk pairs, each thinned to a cell pair's
+            // depth, then encodes every cell pair in one pass. A cell is the
+            // mean of its pairs' latents (`project_pairs`).
             let encoder_spec = PairEncoderSpec {
                 ridge: PAIR_RIDGE,
                 steps: args.pair_encoder_steps,
@@ -888,11 +862,9 @@ pub fn fit_cell_activity_graph_embedding(
                 latent: pair_latent,
                 bias: pair_bias,
                 scores: _,
-                cells:
-                    CellLatent {
-                        latent: cell_latent,
-                        bias: cell_bias,
-                    },
+                cells: CellLatent {
+                    latent: cell_latent,
+                },
             } = project_pairs(
                 &data_vec,
                 &fine_edges,
@@ -907,6 +879,12 @@ pub fn fit_cell_activity_graph_embedding(
                             cell_to_pb: &pb_frame.cell_to_finest_pb,
                             n_pb,
                             edges: &pb_frame.super_edges,
+                            table: SuperEdgeTable {
+                                rows: &z_host,
+                                d: embedding_dim,
+                                of_cell_pair: &fine_to_super,
+                                trained: &trained_edge,
+                            },
                         },
                         dev: &dev,
                         save_to: &pair_encoder_path,
@@ -923,7 +901,6 @@ pub fn fit_cell_activity_graph_embedding(
             // neither leaves this function, but their spread is the cheapest
             // check that the projection saw real data.
             log_intercept_spread("Pair intercept β", pair_bias);
-            log_intercept_spread("Cell intercept β", cell_bias);
             (pair_latent, cell_latent)
         }
     };
@@ -978,9 +955,8 @@ pub fn fit_cell_activity_graph_embedding(
     let n_edge_clusters = prop_out.n_clusters;
 
     // Cell embedding, the annotate-consumable table (same D as the feature
-    // embedding): under cage every cell's own placement on the feature
-    // embedding by the same map that placed its pairs; under cage-cell the
-    // mean of its pairs' trained rows.
+    // embedding): the mean of the cell's pairs' latents, under cage the
+    // encoded ones (L2-normalized), under cage-cell the trained rows.
     cell_latent.to_parquet_with_names(
         &(c.out.to_string() + ".cell_embedding.parquet"),
         (Some(&cell_names), Some("cell")),
@@ -1016,7 +992,7 @@ pub fn fit_cell_activity_graph_embedding(
         if args.cell_level {
             // no encoder is fitted, and the trained rows are the pairs'
             meta.outputs.pair_encoder = None;
-            meta.outputs.pb_embedding = None;
+            meta.outputs.pb_pair_embedding = None;
         }
         meta.feature_names = FeatureNameMode::of_kind(&feature_kind);
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
@@ -1095,12 +1071,11 @@ pub(crate) enum OnCells {
 }
 
 /// cage's flags that `cage-cell` hides, warns of or refuses, by argument id.
-pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 10] = [
+pub(crate) const CELL_LEVEL_FLAGS: [(&str, OnCells); 9] = [
     ("n_hvg", OnCells::Warn),
     ("feature_list_file", OnCells::Warn),
     ("must_train_features", OnCells::Warn),
     ("n_pseudobulk", OnCells::Warn),
-    ("chain_levels", OnCells::Refuse),
     ("feature_embedding", OnCells::Refuse),
     ("feature_embedding_bias", OnCells::Hide),
     ("feature_embedding_mode", OnCells::Hide),

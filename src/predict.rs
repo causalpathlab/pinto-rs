@@ -22,7 +22,8 @@
 //!    `{model}.link_community.parquet` so no new artifact is needed.
 //! 5. A cell's propensity is its incident-edge fraction per community, exactly
 //!    the definition `cage` / `lc` / `dsvd` publish, and the cell embedding is
-//!    the cell's own placement from step 3, as `cage` writes it.
+//!    the mean of the cell's pairs' latents from step 3, as `cage` writes it
+//!    (so it depends on which neighbours the cell has in this sample).
 //!
 //! Outputs mirror `cage`'s inference tables: `{out}.{coord_pairs, latent,
 //! link_community, propensity, feature_community, cell_embedding}.parquet` and a
@@ -692,7 +693,6 @@ pub fn predict_cage(
         scores,
         cells: CellLatent {
             latent: cell_latent,
-            bias: _,
         },
     } = project_pairs(
         &data_vec,
@@ -776,7 +776,7 @@ pub fn predict_cage(
     )?
     .propensity;
 
-    // Every cell's own placement, by the same map as the pairs — what cage writes.
+    // Each cell the mean of its pairs' latents, by the same map — what cage writes.
     cell_latent.to_parquet_with_names(
         &(c.out.to_string() + ".cell_embedding.parquet"),
         (Some(&cell_names), Some("cell")),

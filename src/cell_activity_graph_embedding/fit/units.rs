@@ -1,21 +1,20 @@
-//! What a run trains besides the feature side, decided once per run:
-//! cage's pseudobulk table, a part of the model, or cage-cell's pair table,
-//! outside it. Each owns its draws, what a step reads, the rows its ridge
-//! and module term take, its optimizer step and its schedule.
+//! What a run trains besides the feature side: a row per super edge (cage's
+//! pseudobulk pairs, cage-cell's cell pairs), in a table outside the model.
+//! It owns its draws, what a step reads, the rows its ridge and module term
+//! take, its optimizer step and its schedule.
 
 use crate::cell_activity_graph_embedding::args::GRAD_CLIP;
 use crate::cell_activity_graph_embedding::feature_chain_sampler::{
     EdgeChainBatch, FeatureGatedChainSampler,
 };
 use crate::cell_activity_graph_embedding::loss::{
-    cage_cell_edge_nce_loss, cage_nce_loss_per_feature_level, localize_edges, CageLossOut,
-    EdgeChunk, EdgeRows,
+    cage_cell_edge_nce_loss, localize_edges, CageLossOut, EdgeChunk, EdgeRows,
 };
 use crate::cell_activity_graph_embedding::row_adam::RowAdam;
 use crate::util::rows::uniq_with_inverse;
 
 use super::module_cells::CellCounts;
-use graph_embedding_util::loss::{NceObjective, UnitChainBatch};
+use graph_embedding_util::loss::NceObjective;
 use graph_embedding_util::model::JointEmbedModel;
 use legume_numeric::candle::candle_core::backprop::GradStore;
 use legume_numeric::candle::candle_core::{Device, Result as CResult, Tensor, Var};
@@ -112,92 +111,23 @@ pub(super) struct Drawn<'a, D> {
     pub row_blocks: &'a [u32],
 }
 
-/// cage's units: the finest pseudobulks, whose table is the model's.
-pub(super) struct Pseudobulks {
-    pub n_pb: usize,
-    /// The pseudobulks' count profiles `[n_pb × G]` on the device, when the
-    /// module term pools them.
-    pub profiles: Option<Tensor>,
+/// What the module term pools for a super edge's two ends.
+pub(super) enum PairCounts<'a> {
+    /// cage: the pseudobulks' count profiles `[n_pb × G]`, on the device.
+    Pseudobulks(Tensor),
+    /// cage-cell: the cells' own sparse counts.
+    Cells(CellCounts<'a>),
 }
 
-impl Units for Pseudobulks {
-    type Draw = UnitChainBatch;
-    type Read = ();
-
-    fn n_units(&self) -> usize {
-        self.n_pb
-    }
-
-    fn sample(
-        sampler: &FeatureGatedChainSampler<'_>,
-        g: usize,
-        b: usize,
-        rng: &mut SmallRng,
-    ) -> Option<UnitChainBatch> {
-        sampler.sample(g, b, rng).map(|(cb, _)| cb)
-    }
-
-    fn read(&self, _draws: &mut [UnitChainBatch], _picks: &[u32]) -> CResult<()> {
-        Ok(())
-    }
-
-    fn nce(
-        &self,
-        model: &JointEmbedModel,
-        _read: &(),
-        drawn: Drawn<'_, UnitChainBatch>,
-        objective: NceObjective,
-        dev: &Device,
-    ) -> CResult<CageLossOut> {
-        cage_nce_loss_per_feature_level(
-            model,
-            drawn.draws,
-            drawn.feature_ids,
-            drawn.row_blocks,
-            objective,
-            dev,
-        )
-    }
-
-    fn ridge_rows<'r>(&'r self, model: &'r JointEmbedModel, _read: &'r ()) -> &'r Tensor {
-        &model.e_cell
-    }
-
-    fn module_inputs(
-        &self,
-        model: &JointEmbedModel,
-        _read: &(),
-        picks: &[u32],
-        pi: &Tensor,
-        dev: &Device,
-    ) -> anyhow::Result<Option<(Tensor, Tensor)>> {
-        let Some(profiles) = &self.profiles else {
-            return Ok(None);
-        };
-        let idx = Tensor::from_slice(picks, picks.len(), dev)?;
-        Ok(Some((
-            gather_rows(&model.e_cell, &idx)?,
-            gather_rows(profiles, &idx)?.matmul(pi)?,
-        )))
-    }
-
-    fn step(&mut self, adams: &mut [AdamW], grads: GradStore, _read: ()) -> anyhow::Result<bool> {
-        clip_and_step_dense_all(adams, grads, f64::from(GRAD_CLIP))
-    }
-
-    fn progress(&self, steps: usize, planned_steps: usize) -> f64 {
-        steps as f64 / planned_steps.max(1) as f64
-    }
-}
-
-/// cage-cell's units: the cell pairs, a row each in a table outside the
-/// model, trained to an updates-per-pair budget.
+/// The trained units: the super edges (cage's pseudobulk pairs, cage-cell's
+/// cell pairs), a row each in a table outside the model, trained to an
+/// updates-per-pair budget.
 pub(super) struct Pairs<'a> {
     z: &'a mut RowAdam,
-    /// Each row's two cells.
+    /// Each row's two ends (pseudobulks, or cage-cell's cells).
     edges: &'a [(u32, u32)],
-    /// The cells' counts, when the module term pools them.
-    counts: Option<CellCounts<'a>>,
+    /// The ends' counts, when the module term pools them.
+    counts: Option<PairCounts<'a>>,
     budget: PairBudget,
 }
 
@@ -205,7 +135,7 @@ impl<'a> Pairs<'a> {
     pub(super) fn new(
         z: &'a mut RowAdam,
         edges: &'a [(u32, u32)],
-        counts: Option<CellCounts<'a>>,
+        counts: Option<PairCounts<'a>>,
         updates_per_pair: usize,
     ) -> Self {
         let budget = PairBudget::new(updates_per_pair, z.n_rows());
@@ -218,8 +148,8 @@ impl<'a> Pairs<'a> {
     }
 }
 
-/// The pairs one cage-cell step reads: their ids (ascending), the leaf
-/// their rows were copied into, their cells, and the leaf rows of the
+/// The pairs one step reads: their ids (ascending), the leaf
+/// their rows were copied into, their ends, and the leaf rows of the
 /// module term's draws.
 pub(super) struct PairRead {
     ids: Vec<u32>,
@@ -290,7 +220,7 @@ impl Units for Pairs<'_> {
         read.leaf.as_tensor()
     }
 
-    /// A pair's counts are its two cells', each distinct cell read once.
+    /// A pair's counts are its two ends', each distinct end read once.
     fn module_inputs(
         &self,
         _model: &JointEmbedModel,
@@ -299,7 +229,7 @@ impl Units for Pairs<'_> {
         pi: &Tensor,
         dev: &Device,
     ) -> anyhow::Result<Option<(Tensor, Tensor)>> {
-        let Some(cells) = &self.counts else {
+        let Some(counts) = &self.counts else {
             return Ok(None);
         };
         let u = picks.len();
@@ -311,7 +241,14 @@ impl Units for Pairs<'_> {
             })
             .collect();
         let (distinct, slot) = uniq_with_inverse(&ends);
-        let pooled = cells.pool(&distinct, pi)?;
+        let pooled = match counts {
+            PairCounts::Cells(cells) => cells.pool(&distinct, pi)?,
+            PairCounts::Pseudobulks(profiles) => gather_rows(
+                profiles,
+                &Tensor::from_slice(&distinct, distinct.len(), dev)?,
+            )?
+            .matmul(pi)?,
+        };
         let (left, right): (Vec<u32>, Vec<u32>) = slot.chunks(2).map(|ab| (ab[0], ab[1])).unzip();
         let at = |i: Vec<u32>| Tensor::from_vec(i, u, dev);
         let x = (gather_rows(&pooled, &at(left)?)? + gather_rows(&pooled, &at(right)?)?)?;
@@ -358,7 +295,7 @@ impl Units for Pairs<'_> {
         let b = &self.budget;
         let steps = b.steps_needed();
         Some(format!(
-            "cage-cell: a step touches {:.0} of {} pairs on average, so {} pair updates each \
+            "a step touches {:.0} of {} pairs on average, so {} pair updates each \
              take about {steps} steps ({} epochs of {steps_per_epoch}; --epochs caps at {epochs_cap})",
             b.mean_touched(),
             b.pairs,
@@ -372,7 +309,7 @@ impl Units for Pairs<'_> {
         Some(if b.reached() {
             (
                 format!(
-                    "cage-cell: {:.1} updates per pair reached after {steps} steps",
+                    "{:.1} updates per pair reached after {steps} steps",
                     b.mean_updates()
                 ),
                 false,
@@ -380,7 +317,7 @@ impl Units for Pairs<'_> {
         } else {
             (
                 format!(
-                    "cage-cell: stopped at {:.1} of {} updates per pair after {steps} steps \
+                    "stopped at {:.1} of {} updates per pair after {steps} steps \
                      (--epochs ended it first)",
                     b.mean_updates(),
                     b.per_pair
@@ -391,7 +328,7 @@ impl Units for Pairs<'_> {
     }
 }
 
-/// cage-cell's training length: `per_pair` updates of each of `pairs`
+/// The training length: `per_pair` updates of each of `pairs`
 /// rows on average, the updates of a step being the distinct pairs it
 /// touched (a row moves at most once a step).
 #[derive(Debug)]

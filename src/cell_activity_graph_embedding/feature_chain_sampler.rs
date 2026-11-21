@@ -1,23 +1,14 @@
-//! Per-feature gated wrapper around `graph_embedding_util`'s chain sampler.
-//!
-//! The sampled UNIT is a finest-level super-cell (PB): edge ids here are
-//! PB-PB super-edge ids, weights are per-feature activity sums folded onto
-//! those super edges, and the chain's group maps are PB->parent labels.
-//! The machinery is id-agnostic, so nothing below cares — but every
-//! "edge" in this module is a super edge, never a cell pair.
+//! Per-feature gated draws of super edges (cage's pseudobulk pairs,
+//! cage-cell's cell pairs): edge ids here are super-edge ids, weights are
+//! per-feature activity sums folded onto those super edges.
 //!
 //! Precompute the per-(feature, batch) positive distribution once at start
 //! (sorted-intersection of feature-active super edges with the batch's
 //! retained super edges, plus a `WeightedIndex` weighted by the folded
-//! activity), then on every sample call just look up the cached entry
-//! and delegate to `loss::sample_unit_chain_batch_with_pos`. The
-//! chain-aware sibling negative pools live on the underlying
-//! `PerBatchUnitSampler` and are reused unchanged.
+//! activity), then on every draw look up the cached entry; negatives are
+//! other super edges of the batch's pool (`PerBatchUnitSampler::edge_indices`).
 
-use graph_embedding_util::loss::{
-    sample_unit_chain_batch_with_pos, PerBatchUnitSampler, UnitChainBatch, UnitChainBatchArgs,
-    UnitChainBatchStats,
-};
+use graph_embedding_util::loss::PerBatchUnitSampler;
 use rand::{Rng, RngExt};
 use rand_distr::weighted::WeightedIndex;
 use rand_distr::Distribution;
@@ -144,59 +135,25 @@ impl FeatureExpBatchCache {
 ///////////////////////////
 
 pub struct FeatureGatedChainSampler<'a> {
-    pub super_edges: &'a [(u32, u32)],
     pub samplers_per_exp_batch: &'a [Option<PerBatchUnitSampler>],
     pub cache: &'a FeatureExpBatchCache,
-    pub unit_to_group_per_level: &'a [&'a [usize]],
     /// Positives drawn per `(feature, batch)`, the same for every feature.
     ///
     /// Deliberately ONE scalar. A per-feature budget was tried, on the theory that
     /// a feature active on 20 edges should not draw as hard as one active on 3000
     /// (`senna bge` weights its feature draws by count). It cannot work here: the
-    /// loss reduces each feature to the MEAN over its positives
-    /// (`cage_nce_loss_per_level`), so a feature's expected gradient contribution
-    /// does not depend on how many it drew — only its variance does. bge's
-    /// weighting changes how OFTEN a feature is drawn, i.e. how many gradient
-    /// steps it gets, which is a different axis entirely. If that is wanted
-    /// here, repeat features in the epoch's visit order rather than varying this.
-    /// Positive edges drawn per (feature, EXPERIMENTAL batch) draw.
-    /// Not an SGD minibatch size: see `UnitChainBatchArgs::n_positives`.
+    /// loss reduces each feature to the MEAN over its positives, so a feature's
+    /// expected gradient contribution does not depend on how many it drew — only
+    /// its variance does. bge's weighting changes how OFTEN a feature is drawn,
+    /// i.e. how many gradient steps it gets, which is a different axis entirely.
+    /// If that is wanted here, repeat features in the epoch's visit order rather
+    /// than varying this.
     pub positives_per_draw: usize,
     pub n_negatives: usize,
 }
 
-impl<'a> FeatureGatedChainSampler<'a> {
-    /// Returns `None` when the feature × batch has no cached active edges.
-    /// Hot path: one cache lookup, one `WeightedIndex` borrow, one
-    /// delegate call — no per-step allocation beyond what the chain
-    /// sampler already needs.
-    pub fn sample<R: Rng>(
-        &self,
-        feature: usize,
-        batch_idx: usize,
-        rng: &mut R,
-    ) -> Option<(UnitChainBatch, UnitChainBatchStats)> {
-        let entry = self.cache.entries.get(feature)?.get(batch_idx)?.as_ref()?;
-        let batch_sampler = self.samplers_per_exp_batch.get(batch_idx)?.as_ref()?;
-
-        let args = UnitChainBatchArgs {
-            edges: self.super_edges,
-            batch_sampler,
-            n_positives: self.positives_per_draw,
-            n_negatives: self.n_negatives,
-            unit_to_group_per_level: self.unit_to_group_per_level,
-        };
-        Some(sample_unit_chain_batch_with_pos(
-            args,
-            &entry.pos,
-            &entry.local_to_global,
-            rng,
-        ))
-    }
-}
-
-/// One `(feature, batch)` draw on cell pairs (cage-cell): positive pairs,
-/// and per positive `n_negatives` other pairs of the batch.
+/// One `(feature, batch)` draw of super edges: positive pairs, and per
+/// positive `n_negatives` other pairs of the batch.
 #[derive(Clone, Debug)]
 pub struct EdgeChainBatch {
     /// `[B]` positive pair ids (rows of `super_edges`).
@@ -208,8 +165,8 @@ pub struct EdgeChainBatch {
 }
 
 impl FeatureGatedChainSampler<'_> {
-    /// cage-cell's draw: positives as [`Self::sample`] draws them (by the
-    /// feature's activity over the batch's pairs), and each one's negatives
+    /// The draw: positives by the feature's activity over the batch's pairs,
+    /// and each one's negatives
     /// drawn uniformly from the batch's other pairs, since a negative must
     /// be a pair with a row of its own. `None` when the feature × batch has
     /// no active pairs.
