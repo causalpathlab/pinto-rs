@@ -45,10 +45,9 @@ pub fn map_values(f: &mut Field, rewrite: impl Fn(&str) -> String) {
 #[derive(Clone, Debug)]
 pub struct Method {
     /// As `pinto run` and the tools name it: the subcommand or its alias
-    /// (`lc`, `residual`, `lra-simulate`).
+    /// (`lc`, `lra-simulate`).
     pub name: String,
-    /// The words that run it, from the top: `fit lc`, `apply residual`,
-    /// `lra simulate`.
+    /// The words that run it, from the top: `fit lc`, `lra simulate`.
     pub path: Vec<String>,
     pub about: String,
     pub fields: Vec<Field>,
@@ -129,13 +128,6 @@ impl Method {
     pub fn field_mut(&mut self, name: &str) -> Option<&mut Field> {
         let at = self.position(name)?;
         Some(&mut self.fields[at])
-    }
-
-    /// Set the flag `long` to `value`, when the method has it.
-    pub fn set(&mut self, long: &str, value: &str) {
-        if let Some(f) = self.field_mut(long) {
-            f.value = value.to_string();
-        }
     }
 
     /// Flags changed from their defaults.

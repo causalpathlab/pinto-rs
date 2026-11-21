@@ -362,6 +362,9 @@ impl ModelOnlyFlags {
 /// an error.
 pub(crate) fn open_model(model: &mut Box<str>) -> anyhow::Result<Run> {
     let run = Run::open(model)?;
+    // a residual fit's model is not on raw counts: predict and impute both
+    // come through here
+    run.refuse_residual_fit()?;
     *model = run.prefix.as_str().into();
     Ok(run)
 }
@@ -384,20 +387,6 @@ fn model_delta(
     crate::util::batch_effects::read_run_delta(run)
 }
 
-/// A stage-2 `--offset` model was fitted on counts over the stage-1
-/// expectation, which a query does not carry: scoring it on raw counts would
-/// be silently wrong, so it is refused until the query gets its own
-/// stage-1 placement.
-pub(crate) fn refuse_offset_model(model: &str, run: &Run) -> anyhow::Result<()> {
-    match run.meta.offset.as_deref() {
-        Some(dir) => anyhow::bail!(
-            "{model}: a stage-2 model fitted with --offset {dir}; predicting on it comes \
-             in a later version"
-        ),
-        None => Ok(()),
-    }
-}
-
 /// `pinto apply predict` of the cage model at prefix `args.model`, its manifest
 /// `run`.
 pub fn predict_cage(
@@ -411,7 +400,6 @@ pub fn predict_cage(
         "{}: cage-cell models have no pair encoder; placing new pairs comes in a later version",
         args.model
     );
-    refuse_offset_model(&args.model, run)?;
     mkdir_parent(&c.out)?;
     anyhow::ensure!(!c.data_files.is_empty(), "predict: no data files given");
 
@@ -468,7 +456,6 @@ pub fn predict_cage(
         base_batch_corrected,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
-        offset: None,
         common: c,
         ablation: None,
         batch_effects: batch_plan,

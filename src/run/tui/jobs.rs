@@ -42,15 +42,10 @@ pub struct Job {
     /// Its script.
     pub script: PathBuf,
     /// What a run of it that did not finish leaves, and only what it owns:
-    /// its script, a fit's batch files, a residual's files in `{out}/`.
+    /// its script and a fit's batch files.
     pub leftovers: Vec<PathBuf>,
     /// The run `pinto view` opens once it is done.
     pub opens: PathBuf,
-    /// The earlier job in the queue whose result it reads: it starts only
-    /// once that one is done.
-    pub after: Option<usize>,
-    /// A residual's plan: the files it writes, which the fit on them reads.
-    pub residual: Option<crate::residual::Plan>,
 }
 
 pub use crate::run::script::outputs;
@@ -73,8 +68,6 @@ impl Job {
             leftovers: vec![script.clone(), batches],
             script,
             opens: manifest,
-            after: None,
-            residual: None,
         }
     }
 
@@ -100,8 +93,6 @@ impl Job {
             leftovers: vec![script.clone()],
             script,
             opens,
-            after: None,
-            residual: None,
         }
     }
 
@@ -204,14 +195,8 @@ impl Queue {
         let env = crate::tui::child_env();
         let worker = std::thread::spawn(move || {
             for (i, job) in js.iter().enumerate() {
-                // What it reads is not there unless that job is done.
-                let unmet = job
-                    .after
-                    .filter(|&k| s.lock().map_or(true, |s| s.states[k] != State::Done));
                 let state = if st.is_stopped() {
                     State::Stopped
-                } else if let Some(k) = unmet {
-                    State::Failed(format!("{} did not finish", js[k].method))
                 } else {
                     set(&s, i, State::Running);
                     let mut command = std::process::Command::new(&program);

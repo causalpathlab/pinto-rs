@@ -30,7 +30,6 @@ impl Default for Tools {
     fn default() -> Self {
         let cli = crate::built_cli();
         let mut specs = specs(&cli);
-        specs.extend(super::residual::specs(&cli));
         specs.extend(super::sim::specs(&cli));
         Tools { cli, specs }
     }
@@ -51,7 +50,6 @@ impl Handler for Tools {
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
             "run_lra_merge" => super::lra::lra_merge(&self.cli, parse(args)?, cx),
-            "run_residual" => super::residual::residual(&self.cli, parse(args)?, cx),
             "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
             "run_sim_score_by_set" => super::sim::sim_score(parse(args)?),
             "run_sim_score_by_pair" => super::sim::sim_pairs(parse(args)?),

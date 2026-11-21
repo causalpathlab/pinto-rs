@@ -144,7 +144,6 @@ fn the_reused_projection_is_a_fresh_one() {
     argv.extend_from_slice(&["-o", &out, "--no-qc", "-p", "8"]);
     let args = SrtInputArgs::try_parse_from(argv).unwrap();
     let pre = preprocess_srt(SrtPreprocessConfig {
-        offset: None,
         common: &args,
         ablation: None,
         batch_effects: BatchEstimate::Fit,

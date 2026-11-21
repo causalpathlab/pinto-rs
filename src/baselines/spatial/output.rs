@@ -1,7 +1,7 @@
 //! The outputs every spatial baseline writes, named from its `--out`
 //! prefix, as a pinto run: `pinto view`, `sim score-by-set --labels`,
-//! `sim score-by-pair --vectors`, `compare`, `lra`, `residual` and `pinto
-//! run`/MCP read it as they read an `lc`, `dsvd` or `cage` run.
+//! `sim score-by-pair --vectors`, `compare`, `lra` and `pinto run`/MCP
+//! read it as they read an `lc`, `dsvd` or `cage` run.
 //!
 //! - `{out}.pinto.json`: the manifest;
 //! - `{out}.propensity.parquet`: cell × K membership (the method's soft
@@ -148,18 +148,15 @@ pub fn write_loadings(
 }
 
 /// What was done about batch effects: δ divided out (the one deviation
-/// from the original method), the stage-1 divisor under `--offset`, or
-/// nothing, under `--ignore-batch` or with a single batch.
+/// from the original method), or nothing, under `--ignore-batch` or with a
+/// single batch.
 fn batch_correction(input: &SpatialInputArgs, data: &SpatialData) -> serde_json::Value {
     match &data.delta {
         Some(d) => serde_json::json!({"delta": true, "batches": d.batches}),
-        None => match input.stage2.offset.as_deref() {
-            Some(dir) => serde_json::json!({"delta": false, "offset": dir}),
-            None => serde_json::json!({
-                "delta": false,
-                "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
-            }),
-        },
+        None => serde_json::json!({
+            "delta": false,
+            "why": if input.batch.ignore_batch { "--ignore-batch" } else { "one batch" },
+        }),
     }
 }
 
@@ -250,7 +247,6 @@ pub fn write_run(
             &input.data_files,
         ),
         baseline: Some(run),
-        offset: input.stage2.offset.as_deref().map(String::from),
         ablation: data.ablation.clone(),
         ..Default::default()
     };

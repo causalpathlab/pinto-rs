@@ -74,7 +74,7 @@ impl App {
                 }
                 Target::Out(i) => format!(
                     " --out for {} (empty: back under the output header)",
-                    self.rows[*i].label()
+                    self.rows[*i].form.name
                 ),
                 Target::Field(m, i) => format!(" --{}", self.rows[*m].form.fields[*i].long),
                 Target::Filter => " flags containing".to_string(),
@@ -121,7 +121,7 @@ impl App {
             .rows
             .iter()
             .filter(|r| r.on)
-            .map(super::Row::label)
+            .map(|r| r.form.name.clone())
             .collect();
         let summary = format!(
             "  {} data · {}",
@@ -156,7 +156,6 @@ impl App {
                 "enter / → queue and show flags",
                 "o name one --out by hand",
                 "O output header",
-                "m stage-2 method",
                 "✓ done in the last run",
             ],
             Screen::Params => &[
@@ -399,7 +398,7 @@ impl App {
                 } else {
                     " "
                 },
-                r.label(),
+                r.form.name.clone(),
                 fit(&outs[i], out_w),
                 if changed == 0 {
                     "defaults".to_string()
@@ -429,7 +428,7 @@ impl App {
         .areas(area);
         let mut tabs = Vec::new();
         for m in self.param_methods() {
-            let name = format!(" {} ", self.rows[m].label());
+            let name = format!(" {} ", self.rows[m].form.name);
             tabs.push(if m == self.param_method {
                 Span::styled(name, selected())
             } else {
@@ -634,7 +633,7 @@ impl App {
                 ),
                 (
                     p.job.clear,
-                    "↻ what the unfinished run left here (its script, batch or residual files) is cleared first",
+                    "↻ what the unfinished run left here (its script or batch files) is cleared first",
                 ),
             ] {
                 if on {

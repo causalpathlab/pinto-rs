@@ -168,20 +168,3 @@ pub(crate) fn from_cwd(p: &std::path::Path) -> std::path::PathBuf {
         .collect();
     up.join(p.strip_prefix("/").unwrap())
 }
-
-/// Records in `meta` the tables a run at `prefix` publishes for `pinto
-/// residual` (its propensity and cells table) and leaves an empty file at
-/// each, for a test that plans a residual and never reads them.
-#[cfg(feature = "view")]
-pub(crate) fn record_tables(meta: &mut crate::util::metadata::PintoMetadata, prefix: &str) {
-    let tables = [
-        format!("{prefix}.propensity.parquet"),
-        crate::util::parquet_io::cells_table_path(prefix),
-    ];
-    for t in &tables {
-        std::fs::write(t, "").unwrap();
-    }
-    let [propensity, cells] = tables;
-    meta.outputs.propensity = Some(propensity);
-    meta.outputs.cells = Some(cells);
-}

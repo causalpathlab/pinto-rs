@@ -106,7 +106,7 @@ pub fn match_profiles(
 }
 
 /// EM iterations of a unit's community proportions ([`em_proportions`]):
-/// impute's profile projection, held-out scoring and residual's θ.
+/// impute's profile projection and held-out scoring.
 pub const EM_ITERS: usize = 100;
 
 /// One unit's community proportions `π` by EM over the profile mixture,

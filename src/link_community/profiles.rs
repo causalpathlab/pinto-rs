@@ -92,8 +92,7 @@ pub fn filter_basis_by_feature_count(
 
 /// Columns `cells` of `data`, each count divided by its `divisor` when one
 /// is given: its row's fold `δ` in its cell's batch (`[rows × batches]`,
-/// the run's batch effect), or the stage-1 divisor of a stage-2 fit
-/// ([`Divisor::divide`]).
+/// the run's batch effect) ([`Divisor::divide`]).
 ///
 /// A plain `x / δ`, not the self-normalizing Poisson-ratio divide dsvd and
 /// cage apply: that one also divides by the cell's own rate, so a cell comes
@@ -157,8 +156,7 @@ pub(crate) fn read_unique_cells_for_edges(
 /// * `all_edges` - Full edge list from KNN graph
 /// * `basis` - Projection basis [n_features × proj_dim]
 /// * `block_size` - Edges per parallel chunk (None ⇒ adaptive default)
-/// * `divisor` - What divides every count first: the run's batch effect, or
-///   a stage-1 divisor
+/// * `divisor` - What divides every count first: the run's batch effect
 pub fn build_projection_profiles_for_edges(
     data: &SparseIoVec,
     edge_indices: &[usize],
@@ -396,112 +394,6 @@ pub fn build_super_edge_projection_profiles(
     LinkProfileStore::new(profiles, n_edges, m)
 }
 
-/// A stage-2 lc fit's exact offset (`--offset`): the stage-1 expectation
-/// in lc's profile space, so the conditional reads `λ̂_kg = D_kg / M_kg`
-/// ([`crate::link_community::model`]). A profile is the projection of an
-/// edge's pooled counts, `max(0, basisᵀ (x_u + x_v))`; its offset is the
-/// same projection of the pooled stage-1 expectation,
-/// `max(floor, basisᵀ (μ_u + μ_v))`, and each endpoint's projected
-/// expectation is a `K`-mixture, `n_i θ_iᵀ P_b` with `P_b = p_bᵀ basis`
-/// ([`crate::util::stage1_divisor::Stage1Divisor::projected_profiles`]), so it costs `K × m` per cell and
-/// no pass over the genes.
-pub struct ProfileOffset<'a> {
-    pub divisor: &'a crate::util::stage1_divisor::Stage1Divisor,
-    /// `[K × m]` per stage-1 batch.
-    pub projected: Vec<Mat>,
-    pub m: usize,
-}
-
-/// The smallest offset an edge's dimension takes, relative to the mean
-/// magnitude of its projected expectation: a Poisson rate must be positive,
-/// and a projection can be negative where the edge's profile is clamped to 0.
-pub const OFFSET_FLOOR: f32 = 1e-6;
-
-impl<'a> ProfileOffset<'a> {
-    pub fn new(divisor: &'a crate::util::stage1_divisor::Stage1Divisor, basis: &Mat) -> Self {
-        Self {
-            divisor,
-            projected: divisor.projected_profiles(basis),
-            m: basis.ncols(),
-        }
-    }
-
-    /// Bytes of the offset rows for `n_edges` edges, for the budget.
-    pub fn bytes(&self, n_edges: usize) -> usize {
-        n_edges * self.m * std::mem::size_of::<f32>()
-    }
-
-    /// Each group's projected expectation, `[m × n_groups]`: the cells
-    /// themselves (`groups` `None`), or the sums over each group of
-    /// `labels` (`(labels, n_groups)`, a cascade level's pb samples).
-    fn group_expectation(&self, groups: Option<(&[usize], usize)>) -> Mat {
-        let (m, n) = (self.m, self.divisor.n_cells());
-        match groups {
-            None => {
-                let mut out = Mat::zeros(m, n);
-                out.as_mut_slice()
-                    .par_chunks_mut(m)
-                    .enumerate()
-                    .for_each(|(i, col)| self.divisor.add_projected_mu(&self.projected, i, col));
-                out
-            }
-            Some((labels, n_groups)) => {
-                assert_eq!(labels.len(), n, "one group label per cell");
-                let sums = (0..n)
-                    .into_par_iter()
-                    .fold(
-                        || vec![0.0f32; m * n_groups],
-                        |mut acc, i| {
-                            let g = labels[i];
-                            self.divisor.add_projected_mu(
-                                &self.projected,
-                                i,
-                                &mut acc[g * m..(g + 1) * m],
-                            );
-                            acc
-                        },
-                    )
-                    .reduce(
-                        || vec![0.0f32; m * n_groups],
-                        |mut a, b| {
-                            a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-                            a
-                        },
-                    );
-                Mat::from_vec(m, n_groups, sums)
-            }
-        }
-    }
-
-    /// The offset rows (`[edges × m]`, row-major, positive) of the edges
-    /// `edge_indices` of `edges`, which join `groups` (see
-    /// [`Self::group_expectation`]).
-    pub fn edge_rows(
-        &self,
-        groups: Option<(&[usize], usize)>,
-        edges: &[(usize, usize)],
-        edge_indices: &[usize],
-    ) -> Vec<f32> {
-        let m = self.m;
-        let expected = self.group_expectation(groups);
-        let mut rows = vec![0.0f32; edge_indices.len() * m];
-        rows.par_chunks_mut(m.max(1))
-            .zip(edge_indices.par_iter())
-            .for_each(|(row, &e)| {
-                let (a, b) = edges[e];
-                for (g, r) in row.iter_mut().enumerate() {
-                    *r = expected[(g, a)] + expected[(g, b)];
-                }
-                let scale = row.iter().map(|x| x.abs()).sum::<f32>() / m.max(1) as f32;
-                let floor = OFFSET_FLOOR * scale.max(f32::MIN_POSITIVE / OFFSET_FLOOR);
-                for r in row.iter_mut() {
-                    *r = r.max(floor);
-                }
-            });
-        rows
-    }
-}
-
 /// Map fine edges to canonical super-edges defined by cell cluster labels.
 ///
 /// Each edge (i, j) is mapped to `(min(label[i], label[j]), max(...))`.
@@ -640,13 +532,7 @@ pub fn compute_feature_community_stat(
 ///
 /// With `divisor` a run's batch effect, each cell's counts are divided by
 /// its batch's δ first, a plain `x / δ` ([`Divisor::divide`]), so the
-/// dictionary is adjusted. With a stage-2 fit's stage-1 divisor the counts
-/// stay raw and the rates are taken relative to the stage-1 expectation,
-/// `λ̂_gk = Σ_i π_ik y_gi / Σ_i π_ik d_gi`
-/// ([`crate::util::stage1_divisor::Stage1Divisor::expected_mass`]): the
-/// Gamma–Poisson posterior of `y_gi ~ Poisson(λ_gk d_gi)`: a mean count per
-/// cell, as without an offset, each count over its `d` (lc's offset score
-/// reads `D / M` on the count scale, a different quantity). The weights stay what the caller took them on.
+/// dictionary is adjusted. The weights stay what the caller took them on.
 pub fn fit_feature_community_param(
     cell_propensity: &Mat,
     data_vec: &SparseIoVec,
@@ -689,9 +575,7 @@ pub fn fit_feature_community_param(
             || (Mat::zeros(n_rows, k), DVec::zeros(k)),
             |(mut acc_g, mut acc_k), &(lb, ub)| -> anyhow::Result<(Mat, DVec)> {
                 let mut x_gn = data_vec.read_columns_csc(lb..ub)?;
-                // a stage-1 divisor enters the rates' denominator below,
-                // not the counts
-                if let Some(d) = divisor.filter(|d| !matches!(d, Divisor::Stage1(_))) {
+                if let Some(d) = divisor {
                     let cells: Vec<usize> = (lb..ub).collect();
                     d.divide(data_vec, &mut x_gn, &cells);
                 }
@@ -738,35 +622,7 @@ pub fn fit_feature_community_param(
     apply_feature_weights(&mut sum_gk, w);
 
     let mut gamma_param = GammaMatrix::new((n_features, k), 1.0, 1.0);
-    let denom_gk = match divisor {
-        // λ̂_gk = D_gk / M_gk: the raw counts over their stage-1 expected
-        // mass, the rates lc's offset score reads
-        Some(Divisor::Stage1(s1)) => {
-            let mass = s1.expected_mass(cell_propensity);
-            match axis {
-                // a feature's rows pooled: `d` of the pooled counts, its
-                // rows' expected mass over their summed share p̄ (each row's
-                // mass is relative to its own p̄, so weight by it)
-                Some(a) => {
-                    let mut weighted = mass.clone();
-                    let mut share = Mat::zeros(n_rows, k);
-                    for g in 0..n_rows {
-                        let pbar = s1.pbar(g);
-                        weighted.row_mut(g).scale_mut(pbar);
-                        share.row_mut(g).fill(pbar);
-                    }
-                    match (a.pool_rows_opt(&weighted), a.pool_rows_opt(&share)) {
-                        (Some(sum), Some(share)) => {
-                            sum.zip_map(&share, |m, s| if s > 0.0 { m / s } else { 0.0 })
-                        }
-                        _ => mass,
-                    }
-                }
-                None => mass,
-            }
-        }
-        _ => DVec::from_element(n_features, 1.0) * &n_1k,
-    };
+    let denom_gk = DVec::from_element(n_features, 1.0) * &n_1k;
     gamma_param.update_stat(&sum_gk, &denom_gk);
     gamma_param.calibrate();
 
@@ -986,7 +842,7 @@ pub struct PropensityReportConfig<'a> {
     /// augmented. `None` omits the column, keeping an unaugmented run
     /// byte-identical.
     pub edge_kind: Option<&'a [i32]>,
-    /// What divides the run's counts, a batch effect or a stage-1 divisor:
+    /// What divides the run's counts, its batch effect:
     /// the dictionary is then fitted on divided counts
     /// ([`fit_feature_community_param`]).
     pub divisor: Option<Divisor<'a>>,

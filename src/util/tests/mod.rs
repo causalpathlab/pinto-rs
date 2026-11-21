@@ -13,6 +13,5 @@ mod log_normalize;
 mod manifest_update;
 mod metadata;
 mod parquet_io;
-pub(crate) mod stage1_divisor;
 mod staging;
 mod threads;

@@ -5,7 +5,7 @@
 use crate::lr_activity::args::LraInputArgs;
 use crate::util::common::*;
 use crate::util::feature_axis::FeatureAxis;
-use crate::util::lupin_rounds::{latest_rounds, read_json, same_file};
+use crate::util::lupin_rounds::{latest_rounds, read_json};
 use crate::util::metadata::{resolve_beside, GraphParams, PintoMetadata, Run};
 use std::path::{Path, PathBuf};
 
@@ -24,9 +24,6 @@ pub struct LraInput {
     /// `--cell-types` and `--region`: cell-label tables.
     pub cell_types: Option<Box<str>>,
     pub region: Option<Box<str>>,
-    /// The stage-1 run of a residual fit, when `--from` names one: its
-    /// newest lupin round gives the cell types ([`residual_of`]).
-    pub stage1: Option<Run>,
 }
 
 impl LraInputArgs {
@@ -36,34 +33,12 @@ impl LraInputArgs {
             .as_deref()
             .map(|m| Run::open(m).map_err(|e| anyhow::anyhow!("--from {e}")))
             .transpose()?;
-        for f in &self.data_files {
-            if let Some((marker, _)) = excess_marker(Path::new(&**f)) {
-                anyhow::bail!(
-                    "{f} holds excess counts (see {}): lra estimates on the raw counts. Pass the raw \
-                     data files, or --from the residual run alone, which names them",
-                    marker.display()
-                );
-            }
+        if let Some(r) = &run {
+            r.refuse_residual_fit()?;
         }
-        let residual = run.as_ref().map(residual_of).transpose()?.flatten();
-        if let (Some(r), Some(res)) = (&run, &residual) {
-            info!(
-                "--from {} is a residual fit ({}): reading its raw counts, not its excess counts",
-                r.manifest.display(),
-                res.holder.display()
-            );
-            if self.region.is_none() {
-                warn!(
-                    "a residual fit's communities are its donor-specific regions; pass them as \
-                     --region (a cell, region table), best from a fit with the pairs' genes \
-                     dropped, to adjust for them and read each one's effect"
-                );
-            }
-        }
-        let data_files: Vec<Box<str>> = match (&run, &residual, self.data_files.is_empty()) {
-            (_, _, false) => self.data_files.clone(),
-            (Some(r), Some(res), true) => raw_data_files(r, res)?,
-            (Some(r), None, true) => {
+        let data_files: Vec<Box<str>> = match (&run, self.data_files.is_empty()) {
+            (_, false) => self.data_files.clone(),
+            (Some(r), true) => {
                 let listed = r.meta.data_files.clone().unwrap_or_default();
                 anyhow::ensure!(
                     !listed.is_empty(),
@@ -79,16 +54,10 @@ impl LraInputArgs {
                     })
                     .collect::<anyhow::Result<_>>()?
             }
-            (None, _, true) => anyhow::bail!(
+            (None, true) => anyhow::bail!(
                 "no input: pass a prior run's manifest (--from run.pinto.json), \
                  or data files with --coord"
             ),
-        };
-        let stage1 = match residual {
-            Some(r) => r.stage1,
-            // a stage-2 fit under --offset reads the raw counts itself;
-            // only its stage-1 run is taken, for the cell types
-            None => run.as_ref().map(stage1_of_divide).transpose()?.flatten(),
         };
         Ok(LraInput {
             data_files,
@@ -99,180 +68,8 @@ impl LraInputArgs {
             knn_spatial: self.knn_spatial,
             cell_types: self.cell_types.clone(),
             region: self.region.clone(),
-            stage1,
         })
     }
-}
-
-// * Residual fits
-
-/// The `residual` block a residual fit's manifest carries, and that `pinto
-/// residual` writes into `{out}/residual.json` beside its excess-count
-/// backends: one schema for both sides. lra reads only what decides its
-/// input. Paths are absolute, or relative to the file holding the block.
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-pub(crate) struct ResidualBlock {
-    /// `excess` for the counts `--residual subtract` left unexplained; `raw`
-    /// under `--residual divide`, whose stage 2 reads the raw counts itself.
-    pub counts: String,
-    /// The stage-1 run's manifest.
-    #[serde(default)]
-    pub stage1: Option<String>,
-    /// Aligned with the run's `data_files`, index for index.
-    #[serde(default)]
-    pub raw_data_files: Vec<String>,
-}
-
-/// Whether two data files give their cells the same name, as a fit names
-/// them by [`basename`] (a second extension such as `.zarr` in `.zarr.zip`
-/// dropped): a residual's file and the raw file it came from must.
-pub(crate) fn same_data_name(a: &str, b: &str) -> bool {
-    let name = |p: &str| basename(p.trim_end_matches('/')).ok();
-    name(a).is_some() && name(a) == name(b)
-}
-
-/// What lra takes from a residual fit: the raw data files, the stage-1 run,
-/// and where the block was read (its paths are relative to that file).
-#[derive(Debug)]
-pub struct ResidualInput {
-    pub raw_data_files: Vec<std::path::PathBuf>,
-    pub stage1: Option<Run>,
-    pub holder: PathBuf,
-}
-
-/// The excess-count marker beside data file `path`: `residual.json` in its
-/// directory saying `counts: excess`, with the marker's block. A raw file
-/// the marker names is not excess.
-fn excess_marker(path: &Path) -> Option<(PathBuf, serde_json::Value)> {
-    let marker = path.parent()?.join("residual.json");
-    let value = read_json(&marker)?;
-    let block: ResidualBlock = serde_json::from_value(value.clone()).ok()?;
-    let raw = block
-        .raw_data_files
-        .iter()
-        .filter_map(|f| resolve_beside(&marker, f))
-        .any(|f| same_file(&f, path));
-    (block.counts == "excess" && !raw).then_some((marker, value))
-}
-
-/// Whether data file `path` holds excess counts, by the marker beside it.
-pub(crate) fn is_excess(path: &Path) -> bool {
-    excess_marker(path).is_some()
-}
-
-/// `run` as a residual fit: its manifest's `residual` block, else the
-/// marker beside its first data file; `None` for a run on raw counts.
-pub fn residual_of(run: &Run) -> anyhow::Result<Option<ResidualInput>> {
-    let in_manifest = read_json(&run.manifest)
-        .and_then(|m| m.get("residual").cloned())
-        .map(|v| (v, run.manifest.clone()));
-    let beside = || {
-        let first = run.meta.data_files.as_ref()?.first()?;
-        let (marker, value) = excess_marker(&run.resolve(first)?)?;
-        Some((value, marker))
-    };
-    let Some((value, holder)) = in_manifest.or_else(beside) else {
-        return Ok(None);
-    };
-    let block: ResidualBlock = serde_json::from_value(value).map_err(|e| {
-        anyhow::anyhow!(
-            "{}: a residual block lra cannot read: {e}",
-            holder.display()
-        )
-    })?;
-    if block.counts != "excess" {
-        return Ok(None);
-    }
-    let raw_data_files = block
-        .raw_data_files
-        .iter()
-        .map(|f| resolve_beside(&holder, f).ok_or_else(|| missing(&holder, f, "raw data file")))
-        .collect::<anyhow::Result<_>>()?;
-    let stage1 = block
-        .stage1
-        .as_deref()
-        .map(|s| {
-            let path =
-                resolve_beside(&holder, s).ok_or_else(|| missing(&holder, s, "stage-1 run"))?;
-            Run::open(&path.to_string_lossy())
-        })
-        .transpose()?;
-    Ok(Some(ResidualInput {
-        raw_data_files,
-        stage1,
-        holder,
-    }))
-}
-
-/// The stage-1 run of a stage-2 fit under `--offset`: the run the
-/// `residual.json` of its divisor's folder names. `None` for any other run.
-pub fn stage1_of_divide(run: &Run) -> anyhow::Result<Option<Run>> {
-    let Some(dir) = run.meta.offset.as_deref() else {
-        return Ok(None);
-    };
-    let marker = Path::new(dir).join(crate::residual::MARKER);
-    let value = read_json(&marker).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} records the stage-1 divisor {dir}, but {} cannot be read",
-            run.manifest.display(),
-            marker.display()
-        )
-    })?;
-    let block: ResidualBlock =
-        serde_json::from_value(value).map_err(|e| anyhow::anyhow!("{}: {e}", marker.display()))?;
-    block
-        .stage1
-        .as_deref()
-        .map(|s| {
-            let path =
-                resolve_beside(&marker, s).ok_or_else(|| missing(&marker, s, "stage-1 run"))?;
-            Run::open(&path.to_string_lossy())
-        })
-        .transpose()
-}
-
-/// The raw counts of residual fit `run`: the block's `raw_data_files`, else
-/// the stage-1 run's data files, one per data file of `run` and with the
-/// same stems, so the cells keep their names.
-fn raw_data_files(run: &Run, res: &ResidualInput) -> anyhow::Result<Vec<Box<str>>> {
-    let raw: Vec<PathBuf> = if !res.raw_data_files.is_empty() {
-        res.raw_data_files.clone()
-    } else if let Some(s1) = &res.stage1 {
-        s1.meta
-            .data_files
-            .iter()
-            .flatten()
-            .map(|f| {
-                s1.resolve(f)
-                    .ok_or_else(|| missing(&s1.manifest, f, "data file"))
-            })
-            .collect::<anyhow::Result<_>>()?
-    } else {
-        anyhow::bail!(
-            "{} names neither raw_data_files nor a stage1 run: pass the raw data files",
-            res.holder.display()
-        );
-    };
-    let own = run.meta.data_files.clone().unwrap_or_default();
-    anyhow::ensure!(
-        raw.len() == own.len(),
-        "{} gives {} raw data files for the run's {}",
-        res.holder.display(),
-        raw.len(),
-        own.len()
-    );
-    for (r, o) in raw.iter().zip(&own) {
-        anyhow::ensure!(
-            same_data_name(&r.to_string_lossy(), o),
-            "raw data file {} does not match the run's {o}: they must share a name, so \
-             the cells keep their names",
-            r.display()
-        );
-    }
-    Ok(raw
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned().into_boxed_str())
-        .collect())
 }
 
 fn missing(manifest: &Path, file: &str, what: &str) -> anyhow::Error {
@@ -473,12 +270,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .recorded_output(run.meta.outputs.cells.as_deref(), "cells.parquet")?
         .ok_or_else(|| anyhow::anyhow!("{}: records no cells table", run.manifest.display()))?;
     let coords = read_coords(&cells, &cell_to_col, n_cells)?;
-    // A residual fit's cell types are its stage-1 run's: donor-invariant.
-    let manifest = match &input.stage1 {
-        Some(s1) => &s1.manifest,
-        None => &input.run.as_ref().expect("from a run").manifest,
-    };
-    let cell_type = match newest_round(manifest) {
+    let cell_type = match newest_round(&run.manifest) {
         Some(round) => match round_cell_types(&round, &cell_to_col, n_cells) {
             Ok(t) => {
                 info!(

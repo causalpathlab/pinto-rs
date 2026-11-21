@@ -8,7 +8,7 @@
 //! | contact-neighbour mean identity | neighbour composition |
 //! | cell-type indicators (optional) | annotated cell type |
 //! | share of each cell type among contacts (optional) | annotated sender cell type |
-//! | region indicators within each section (optional) | a labelled region, e.g. a residual-fit patch |
+//! | region indicators within each section (optional) | a labelled region, e.g. a donor-only patch |
 //! | receiver log depth (piecewise linear), neighbour mean log depth | detection |
 //!
 //! The smooth fields stand in for unmeasured regional confounders because

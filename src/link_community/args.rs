@@ -10,9 +10,6 @@ pub struct SrtLinkCommunityArgs {
     pub common: crate::util::input::SrtInputArgs,
 
     #[command(flatten)]
-    pub stage2: crate::util::input::OffsetArgs,
-
-    #[command(flatten)]
     pub modules: crate::util::feature_modules::FeatureModulesArgs,
 
     #[command(flatten)]

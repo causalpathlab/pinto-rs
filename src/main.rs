@@ -11,7 +11,6 @@ mod mcp;
 mod paired;
 mod predict;
 mod propensity;
-mod residual;
 #[cfg(feature = "view")]
 mod run;
 mod sim_eval;
@@ -157,7 +156,7 @@ macro_rules! baseline_memory {
 macro_rules! baseline_batch {
     () => {
         "The input is read as lc, dsvd and cage read it: cells QC'd alike\n\
-         (--no-qc keeps every cell), --offset and the ablations taken alike.\n\
+         (--no-qc keeps every cell), and the ablations taken alike.\n\
          With two or more batches (data files, or -b labels) the counts are\n\
          divided by the input's own batch effects (δ, estimated as cage does\n\
          and written to {out}.delta.parquet) before the method's own\n\
@@ -170,8 +169,8 @@ macro_rules! baseline_batch {
 /// writes them, for their `long_about`.
 macro_rules! baseline_outputs {
     () => {
-        "The output is a pinto run, which `pinto view`, compare, lra and\n\
-         residual read as they read an lc run: the manifest {out}.pinto.json\n\
+        "The output is a pinto run, which `pinto view`, compare and lra read\n\
+         as they read an lc run: the manifest {out}.pinto.json\n\
          (rerunning into the same --out overwrites it),\n\
          {out}.propensity.parquet (cells x K: the method's posteriors when it\n\
          has them, else one-hot labels),\n\
@@ -197,7 +196,6 @@ const FIT_ABOUT: &str = "Fit a model to data files and their coordinates.\n\n\
 
 /// `pinto apply`'s long help.
 const APPLY_ABOUT: &str = "Use a fitted run.\n\n\
-     residual writes what a run leaves unexplained, for a second fit;\n\
      predict applies a run to a new sample or scores held-out cells; impute\n\
      fills in a new sample's counts from the run's cells; propensity re-cuts\n\
      a run's pair latent at a fixed number of communities.";
@@ -221,7 +219,7 @@ enum Commands {
 
     #[command(
         subcommand,
-        about = "Use a fitted run: its residual, held-out scoring, imputation, a re-cut",
+        about = "Use a fitted run: held-out scoring, imputation, a re-cut",
         long_about = APPLY_ABOUT
     )]
     Apply(Apply),
@@ -314,12 +312,8 @@ enum Commands {
              Pick the data files with the coordinate and batch files of\n\
              each, queue one or more of lc, dsvd, cage and cage-cell, and\n\
              change their flags. Every flag a method has is listed with its help;\n\
-             hidden ones under `a`. On a fitted run, lra, lra simulate and\n\
-             residual can be queued too: the residual brings a stage-2 fit\n\
-             on its files (`m` picks its method), and lra on that fit is\n\
-             offered with lra on the first run. Each stage-2 job starts\n\
-             only once the one it reads is done; a --from names a run\n\
-             already fitted.\n\n\
+             hidden ones under `a`. On a fitted run, lra and lra simulate\n\
+             can be queued too; a --from names a run already fitted.\n\n\
              Each data file is its own batch unless `n` names one batch for\n\
              all its cells (files given one name are one batch) or `b` takes\n\
              a label file, whose labels `e` renames. Label files the run\n\
@@ -830,47 +824,6 @@ enum Fit {
 #[derive(Subcommand, Debug)]
 enum Apply {
     #[command(
-        about = "What a fitted run leaves unexplained: its expectation to divide by, or the counts above it.",
-        long_about = "Stage 2 of a residual fit. Conditioning on a fitted run\n\
-                      (its per-cell propensities, from which raw-count community\n\
-                      profiles p_k are refitted, and per-cell EM proportions θ_i),\n\
-                      each cell's expectation is μ = n_i Σ_k θ_ik p_k(g); no batch fold\n\
-                      from the run enters it. Any run is taken whose manifest records\n\
-                      its data files, a propensity table (soft or one-hot), a cells\n\
-                      table and its coordinate columns: a fit's or a spatial\n\
-                      baseline's. What is left is taken one of two ways (--residual):\n\n\
-                      divide (alias multiplicative, the default): stage 2 fits the\n\
-                      raw counts with μ as a multiplicative offset, i.e. models y/μ.\n\
-                      It writes the low-rank pieces μ is rebuilt from, no new data\n\
-                      files:\n  \
-                      {out}/stage1.cells.parquet     n_i, batch and θ_i per cell\n  \
-                      {out}/stage1.profiles.parquet  p_kb(g) per row\n  \
-                      {out}/stage1.features.parquet  pooled share, dispersion φ_g and\n  \
-                      \x20                             Pearson scale σ²_gb per row\n\
-                      Fit the run's own data files with --offset {out} (lc, dsvd,\n\
-                      cage, cage-cell); such a fit takes no batch effect.\n\n\
-                      subtract (alias additive): per data file\n  \
-                      {out}/{stem}.zarr.zip        excess counts round(max(y - μ, 0))\n\
-                      which a second fit reads as it reads data; pinto lra takes a fit\n\
-                      on them back to the raw counts.\n\n\
-                      Either way {out}/{stem}.coords.parquet holds the run's coordinates\n\
-                      of each file's cells, and {out}/residual.json the operation, the\n\
-                      counts in, the stage-1 run and the raw data files.\n\n\
-                      By default (--adapt batch, see its help) a shift of a whole\n\
-                      community within a batch is absorbed; a local patch stays.\n\n\
-                      It does not estimate or subtract a donor effect. With --adapt\n\
-                      batch it absorbs only what moves a whole stage-1 community within\n\
-                      a batch, assuming donor-specific biology is local: a whole\n\
-                      community shifted in one donor is read as nuisance.\n\n\
-                      It cannot correct a stage-1 run split by donor (which happens once\n\
-                      the donor effect is about as large as the cell-type effect): check\n\
-                      the stage-1 communities' donor make-up first. A patch stage 1 gave\n\
-                      its own community, and a donor-specific mix of shared cell states,\n\
-                      leave nothing above μ; look for them among the stage-1 communities."
-    )]
-    Residual(Box<residual::ResidualArgs>),
-
-    #[command(
         about = "Apply a trained run to a new sample (cage), or score held-out cells (lc, dsvd)",
         long_about = "Apply a trained run to a new sample.\n\n\
                       LC / DSVD MODELS -- held-out scoring. Fit lc without a donor\n\
@@ -1261,7 +1214,7 @@ fn name_folder_out(commands: &mut Commands) {
 }
 
 /// Under `--atomic-outputs`, each command's out made its staged one
-/// ([`util::staging`]): a fit's prefix, sim new's and residual's folder,
+/// ([`util::staging`]): a fit's prefix, sim new's folder,
 /// the file sim score-by-set, sim score-by-pair and sim baseline write, compare's
 /// prefix. lra without `--out` stages its `--from` run's prefix when it
 /// resolves it.
@@ -1283,7 +1236,6 @@ fn stage_outputs(commands: &mut Commands) -> anyhow::Result<()> {
     }
     match commands {
         Commands::Sim(Sim::New(a)) => a.out = stage_folder(&a.out)?.into(),
-        Commands::Apply(Apply::Residual(a)) => a.out = stage_folder(&a.out)?.into(),
         Commands::Sim(Sim::Score(a)) => a.out.as_mut().map_or(Ok(()), prefix)?,
         Commands::Sim(Sim::Pairs(a)) => a.out.as_mut().map_or(Ok(()), prefix)?,
         Commands::Sim(Sim::Baseline(a)) => prefix(&mut a.out)?,
@@ -1304,7 +1256,7 @@ fn pass_max_threads(cli: &mut Cli) {
 }
 
 /// The flags of a fit that `--feature-modules` reads: its input (made to
-/// read module files), its `--feature-modules`, its `--offset` and lc's
+/// read module files), its `--feature-modules` and lc's
 /// `--feature-network`. `None` for cage, which builds its own module layer,
 /// and for any other command.
 fn module_inputs(
@@ -1312,7 +1264,6 @@ fn module_inputs(
 ) -> Option<(
     &mut util::input::InputArgs,
     &mut util::feature_modules::FeatureModulesArgs,
-    Option<Box<str>>,
     bool,
 )> {
     fn spatial(
@@ -1320,10 +1271,9 @@ fn module_inputs(
     ) -> (
         &mut util::input::InputArgs,
         &mut util::feature_modules::FeatureModulesArgs,
-        Option<Box<str>>,
         bool,
     ) {
-        (&mut s.input, &mut s.modules, s.stage2.offset.clone(), false)
+        (&mut s.input, &mut s.modules, false)
     }
     let Commands::Fit(fit) = commands else {
         return None;
@@ -1332,15 +1282,9 @@ fn module_inputs(
         Fit::LinkCommunity(a) => (
             &mut a.common.input,
             &mut a.modules,
-            a.stage2.offset.clone(),
             a.feature_network.is_some(),
         ),
-        Fit::DeltaSvd(a) => (
-            &mut a.common.input,
-            &mut a.modules,
-            a.stage2.offset.clone(),
-            false,
-        ),
+        Fit::DeltaSvd(a) => (&mut a.common.input, &mut a.modules, false),
         Fit::Cage(_) | Fit::CageCell(_) => return None,
         Fit::Spatialde2(a) => spatial(&mut a.fit.input),
         Fit::Spatialde2Pb(a) => spatial(&mut a.fit.input),
@@ -1362,7 +1306,7 @@ fn prepare_feature_modules(
 ) -> anyhow::Result<Option<(String, util::feature_modules::FeatureModulesInfo)>> {
     use cell_activity_graph_embedding::args::FeatureInclusionMode;
     use util::feature_modules::{plan, prepare, prepare_moran, FeatureModulesInfo};
-    let Some((input, modules, offset, network)) = module_inputs(commands) else {
+    let Some((input, modules, network)) = module_inputs(commands) else {
         return Ok(None);
     };
     // the modules' files sit beside the fit's, written before the fit makes
@@ -1374,14 +1318,13 @@ fn prepare_feature_modules(
         std::fs::create_dir_all(dir)?;
     }
     let moran = modules.feature_inclusion == FeatureInclusionMode::Moran;
-    let (p, yielded) = plan(modules.feature_modules, moran, offset.is_some(), network)?;
-    let info = match offset.as_deref() {
-        _ if moran => prepare_moran(input)?,
-        // a stage-2 fit is on its stage-1 run's rows: modules if the
-        // residual was taken on them
-        Some(dir) => util::feature_modules::offset_level(dir)?,
-        None if !yielded.is_empty() => FeatureModulesInfo::features(yielded),
-        None => prepare(input, p)?,
+    let (p, yielded) = plan(modules.feature_modules, moran, network)?;
+    let info = if moran {
+        prepare_moran(input)?
+    } else if !yielded.is_empty() {
+        FeatureModulesInfo::features(yielded)
+    } else {
+        prepare(input, p)?
     };
     // modules, or moran's features: either way the fit's own screen is off
     modules.on = info.module_level() || info.setting == "moran";
@@ -1493,7 +1436,6 @@ fn run_command() -> anyhow::Result<()> {
             }
         }
         Commands::Apply(op) => match op {
-            Apply::Residual(args) => residual::run_residual(args)?,
             Apply::Predict(args) => {
                 // The return value serves `pinto apply impute`; the CLI path
                 // only wants the files predict writes.

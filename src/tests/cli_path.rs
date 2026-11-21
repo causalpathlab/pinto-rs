@@ -29,7 +29,7 @@ fn a_command_is_found_by_its_name_or_path() {
         ("dsvd", vec!["fit", "dsvd"]),
         ("cage-cell", vec!["fit", "cage-cell"]),
         ("stagate-pb", vec!["fit", "stagate-pb"]),
-        ("residual", vec!["apply", "residual"]),
+        ("impute", vec!["apply", "impute"]),
         ("propensity", vec!["apply", "propensity"]),
         ("lra", vec!["lra"]),
         ("lra simulate", vec!["lra", "simulate"]),
@@ -70,7 +70,7 @@ fn the_leaf_is_found_from_the_path() {
 fn the_path_length_is_read_from_the_verbs_alone() {
     for (argv, n) in [
         (words(&["fit", "lc", "data"]), 2),
-        (words(&["apply", "residual", "--from=r"]), 2),
+        (words(&["apply", "predict", "--model=r"]), 2),
         (words(&["lra", "simulate", "--from=r"]), 2),
         (words(&["lra", "--from=r"]), 1),
         (words(&["compare", "a", "b"]), 1),

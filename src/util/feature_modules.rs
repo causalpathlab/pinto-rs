@@ -10,11 +10,9 @@
 //! `{out}.feature_modules/{name}.zarr.zip` (rows `M0`, `M1`, ..., the
 //! file's own cells), and the fit reads those files in place of the
 //! features. Its manifest's `data_files` are those module files, so
-//! everything that reads the run back (propensity, the viewer,
-//! `pinto apply residual`) reads the rows the fit read: a residual of such
-//! a run is taken at module level, and its stage 2 is fitted on the same
-//! modules, with `--offset` lining up row for row. `{out}.feature_modules.parquet`
-//! names each feature's module.
+//! everything that reads the run back (propensity, the viewer) reads the
+//! rows the fit read. `{out}.feature_modules.parquet` names each feature's
+//! module.
 //!
 //! The pseudobulks are the cells binned by the sign codes of a random
 //! projection's leading directions. Cell QC runs here, on the features (a
@@ -27,10 +25,9 @@
 //! 0.5 or more. Given alone it turns the default modules off; beside an
 //! explicit `--feature-modules` it is refused, as in cage.
 //!
-//! A default (unset) `--feature-modules` yields to `--offset` (a stage-2 fit
-//! reads its stage-1 run's rows, modules already summed if that run had
-//! them) and to lc's `--feature-network` (the user's own modules); an
-//! explicit count or `auto` beside either is refused.
+//! A default (unset) `--feature-modules` yields to lc's `--feature-network`
+//! (the user's own modules); an explicit count or `auto` beside it is
+//! refused.
 
 use crate::cell_activity_graph_embedding::args::{FeatureInclusionMode, ModulePlan};
 use crate::cell_activity_graph_embedding::fit::modules::{pseudobulk_sizes, resolve_modules};
@@ -71,7 +68,7 @@ pub struct FeatureModulesArgs {
     pub feature_inclusion: FeatureInclusionMode,
 
     /// Whether the run's rows are modules, set once the flag is resolved
-    /// (from the module files written, or from a stage-2 fit's residual):
+    /// (from the module files written):
     /// a fit with its own feature screen (spatialpca's SPARK-X) skips it
     /// on modules.
     #[arg(skip)]
@@ -91,12 +88,10 @@ the run fits the features and says so.
 
 Cell QC is taken on the features before they are summed. The module counts
 are written as {out}.feature_modules/{name}.zarr.zip, which the run records
-as its data files: a `pinto apply residual` of it is at module level, and its
-stage 2 (--offset) fits the same modules. {out}.feature_modules.parquet names
-each feature's module.
+as its data files. {out}.feature_modules.parquet names each feature's module.
 
-Left at its default it yields to --feature-inclusion moran, to --offset and
-to lc's --feature-network; given beside any of them it is refused.";
+Left at its default it yields to --feature-inclusion moran and to lc's
+--feature-network; given beside either it is refused.";
 
 const FEATURE_INCLUSION_HELP: &str = "\
 Which features the fit reads, the second choice to --feature-modules.
@@ -118,8 +113,7 @@ refused.";
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct FeatureModulesInfo {
     /// What was asked: `auto`, a count, `off`, `moran` (cage's
-    /// `--feature-inclusion moran`), `feature-network` (lc's own modules)
-    /// or `offset` (a stage-2 fit, on its stage-1 run's rows).
+    /// `--feature-inclusion moran`) or `feature-network` (lc's own modules).
     pub setting: String,
     /// The modules the run has, when it has any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,28 +160,21 @@ pub fn setting(plan: ModulePlan) -> String {
 }
 
 /// The plan of `--feature-modules` (`flag`; unset is `auto`) beside
-/// `--feature-inclusion moran`, `--offset` and `--feature-network`, which a
-/// default yields to and an explicit request is refused beside; with the
-/// setting to record when it yields.
+/// `--feature-inclusion moran` and `--feature-network`, which a default
+/// yields to and an explicit request is refused beside; with the setting
+/// to record when it yields.
 pub fn plan(
     flag: Option<ModulePlan>,
     moran: bool,
-    offset: bool,
     network: bool,
 ) -> anyhow::Result<(ModulePlan, &'static str)> {
     anyhow::ensure!(
-        !(moran && (offset || network)),
-        "--feature-inclusion moran chooses the features a fit reads, and {} gives it its \
-         rows already; drop one",
-        if offset {
-            "--offset"
-        } else {
-            "--feature-network"
-        }
+        !(moran && network),
+        "--feature-inclusion moran chooses the features a fit reads, and \
+         --feature-network gives it its rows already; drop one"
     );
     match flag {
         None if moran => Ok((ModulePlan::Off, "moran")),
-        None if offset => Ok((ModulePlan::Off, "offset")),
         None if network => Ok((ModulePlan::Off, "feature-network")),
         None => Ok((ModulePlan::Auto, "")),
         Some(ModulePlan::Off) => Ok((ModulePlan::Off, "")),
@@ -195,11 +182,6 @@ pub fn plan(
             anyhow::ensure!(
                 !moran,
                 "--feature-inclusion moran and --feature-modules are alternatives; pick one"
-            );
-            anyhow::ensure!(
-                !offset,
-                "--offset fits the rows its stage-1 run was fitted on (modules, if it had \
-                 them), and --feature-modules would group them again; drop --feature-modules"
             );
             anyhow::ensure!(
                 !network,
@@ -397,7 +379,6 @@ pub fn prepare_moran(input: &mut InputArgs) -> anyhow::Result<FeatureModulesInfo
     srt.input = input.clone();
     srt.input.out = format!("{dir}/score").into();
     let pre = preprocess_srt(SrtPreprocessConfig {
-        offset: None,
         common: &srt,
         ablation: None,
         batch_effects: BatchEstimate::Skip,
@@ -411,7 +392,7 @@ pub fn prepare_moran(input: &mut InputArgs) -> anyhow::Result<FeatureModulesInfo
         .as_ref()
         .expect("FeatureAxisMode::Strict yields an axis");
     let inc = cell_inclusion(
-        (&pre.data_vec, None),
+        &pre.data_vec,
         axis,
         (&pre.coordinates, &pre.coordinate_names),
         &pre.section_ids,
@@ -481,29 +462,6 @@ pub fn prepare_moran(input: &mut InputArgs) -> anyhow::Result<FeatureModulesInfo
 /// Jackknife blocks per section for `--feature-inclusion moran`, cage's
 /// default.
 const INCLUSION_BLOCKS: usize = 16;
-
-/// What a stage-2 fit on the residual folder `dir` (`--offset`) is fitted
-/// on: the level the residual was taken at, as its `residual.json`
-/// records it (features when it records none).
-pub fn offset_level(dir: &str) -> anyhow::Result<FeatureModulesInfo> {
-    let marker = std::path::Path::new(dir).join(crate::residual::MARKER);
-    let json = crate::util::lupin_rounds::read_json(&marker);
-    let level = json.as_ref().and_then(|j| j["feature_level"].as_str());
-    Ok(match level {
-        Some("module") => FeatureModulesInfo {
-            setting: "offset".into(),
-            n_modules: json
-                .as_ref()
-                .and_then(|j| j["n_modules"].as_u64())
-                .map(|m| m as usize),
-            level: "module".into(),
-            feature_data_files: None,
-            membership: None,
-            qc_dropped: None,
-        },
-        _ => FeatureModulesInfo::features("offset"),
-    })
-}
 
 /// What a cage or cage-cell run records: its module plan (`moran` when
 /// `--feature-inclusion moran` turned the default modules off), and the

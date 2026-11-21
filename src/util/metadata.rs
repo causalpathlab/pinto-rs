@@ -63,6 +63,14 @@ pub struct Run {
     pub meta: PintoMetadata,
 }
 
+/// The `residual.json` beside data file `path` that says its counts are
+/// excess counts, as the residual fit pinto had up to 0.17.10 wrote them.
+pub fn excess_marker(path: &Path) -> Option<PathBuf> {
+    let marker = path.parent()?.join("residual.json");
+    let json = crate::util::lupin_rounds::read_json(&marker)?;
+    (json["counts"] == "excess").then_some(marker)
+}
+
 impl Run {
     /// The run `run` names: its manifest (`{prefix}.pinto.json`, or any
     /// manifest file named in full), or its prefix. The prefix of
@@ -109,6 +117,40 @@ impl Run {
     /// A path as the manifest writes it ([`resolve_beside`]).
     pub fn resolve(&self, path: &str) -> Option<std::path::PathBuf> {
         resolve_beside(&self.manifest, path)
+    }
+
+    /// Refused when the run is a stage-2 fit of the residual fit pinto had
+    /// up to 0.17.10: its manifest records the stage-1 divisor (`offset`)
+    /// or a `residual` block, or its first data file holds excess counts
+    /// ([`excess_marker`]). Such a run was fitted on counts over the
+    /// stage-1 expectation, or on the counts above it, which nothing now
+    /// reads: taken as a run on raw counts, its scores would be wrong. The
+    /// manifest is read again as plain JSON: [`PintoMetadata`] no longer
+    /// has those fields, and they are only looked for here.
+    pub fn refuse_residual_fit(&self) -> anyhow::Result<()> {
+        let manifest = crate::util::lupin_rounds::read_json(&self.manifest);
+        let recorded = manifest.as_ref().and_then(|m| {
+            ["offset", "residual"]
+                .into_iter()
+                .find(|k| !m[*k].is_null())
+        });
+        let excess = self
+            .meta
+            .data_files
+            .as_ref()
+            .and_then(|f| f.first())
+            .and_then(|f| self.resolve(f))
+            .and_then(|f| excess_marker(&f));
+        let why = match (recorded, excess) {
+            (Some(key), _) => format!("its manifest records `{key}`"),
+            (None, Some(marker)) => format!("its data are excess counts ({})", marker.display()),
+            (None, None) => return Ok(()),
+        };
+        anyhow::bail!(
+            "{} is a residual (two-stage) fit, which pinto no longer reads ({why}): refit it \
+             on the raw data files",
+            self.manifest.display()
+        )
     }
 
     /// An output the manifest records as `recorded`, found without the
@@ -244,12 +286,6 @@ pub struct PintoMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_batches: Option<Vec<FileBatch>>,
 
-    /// A stage-2 fit's stage-1 divisor (`--offset`): the folder `pinto
-    /// residual --residual divide` wrote, as a canonical path. Such a fit
-    /// estimates no batch effect. Absent on any other run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offset: Option<String>,
-
     /// Present on a spatial baseline's run (each baseline and its `-pb`
     /// form): its input layout and what it was fitted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,10 +299,10 @@ pub struct PintoMetadata {
     pub max_threads: Option<usize>,
 
     /// How the run read its rows' names (`--feature-name-mode`, resolved:
-    /// never `auto`), so what reads its data back (`pinto apply residual`)
-    /// reads the rows it fitted. Absent on runs that take no such flag (lc,
-    /// dsvd, the baselines: they read the names exactly), and on manifests
-    /// written before this was recorded; residual then reads them `auto`.
+    /// never `auto`), so what reads its data back reads the rows it fitted.
+    /// Absent on runs that take no such flag (lc, dsvd, the baselines: they
+    /// read the names exactly), and on manifests written before this was
+    /// recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_names: Option<crate::cell_activity_graph_embedding::args::FeatureNameMode>,
 }
@@ -1142,7 +1178,6 @@ pub fn create_lc_metadata(
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1195,7 +1230,6 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1262,7 +1296,6 @@ pub fn create_cage_metadata(
         batch_labels: inputs.delta.map(|d| d.labels),
         file_batches: file_batches(inputs.delta.map(|d| d.labels), inputs.data_files),
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }
@@ -1313,7 +1346,6 @@ pub fn create_prop_metadata(
         batch_labels: None,
         file_batches: None,
         baseline: None,
-        offset: None,
         max_threads: None,
         feature_names: None,
     }

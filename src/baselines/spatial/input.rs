@@ -1,9 +1,8 @@
 //! The inputs every spatial baseline reads: pinto's own ([`InputArgs`],
-//! with `--offset` and the ablations), read through the preprocessing lc,
-//! dsvd and cage read through ([`preprocess_srt`]): the same cell QC, the
-//! same `--auto-batch` components (on pinto's spatial graph), δ estimated
-//! as they estimate it, the stage-1 divisor under `--offset` on the cells
-//! QC kept, the same ablations and the same cells table. Cells are named,
+//! with the ablations), read through the preprocessing lc, dsvd and cage
+//! read through ([`preprocess_srt`]): the same cell QC, the same
+//! `--auto-batch` components (on pinto's spatial graph), δ estimated as
+//! they estimate it, the same ablations and the same cells table. Cells are named,
 //! ordered and split into sections as those fits name, order and split them.
 
 use crate::baselines::spatial::memory::GRAPH_NEIGHBOUR_BYTES;
@@ -14,7 +13,7 @@ use crate::util::batch_effects::{
 };
 use crate::util::common::{HashSet, Mat};
 use crate::util::input::{
-    read_batch_file, InputArgs, OffsetArgs, SrtInputArgs, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
+    read_batch_file, InputArgs, SrtInputArgs, DEFAULT_NUM_LEVELS, DEFAULT_PROJ_DIM,
     DEFAULT_SPATIAL_GRAPH,
 };
 use crate::util::memory::{ensure_fits, Budget};
@@ -35,19 +34,14 @@ const IGNORE_BATCH_HELP: &str = "Estimate and remove no batch effect: the counts
                                  apart, as sections of their own; only the correction goes.";
 
 /// The input every fit takes ([`InputArgs`]: data files, coordinates,
-/// batches, QC, `--out`, seed), a stage-2 fit's `--offset`, and the
-/// ablations, as lc, dsvd and cage take them. A baseline needs
+/// batches, QC, `--out`, seed) and the ablations, as lc, dsvd and cage
+/// take them. A baseline needs
 /// coordinates.
 #[derive(clap::Args, Debug, Clone)]
 #[command(mut_arg("ignore_batch", |a| a.long_help(IGNORE_BATCH_HELP)))]
 pub struct SpatialInputArgs {
     #[command(flatten)]
     pub input: InputArgs,
-
-    /// A stage-2 fit's `--offset`, as lc, dsvd and cage take it: the counts
-    /// are divided by the stage-1 divisor in place of a δ.
-    #[command(flatten)]
-    pub stage2: OffsetArgs,
 
     #[command(flatten)]
     pub modules: crate::util::feature_modules::FeatureModulesArgs,
@@ -240,16 +234,15 @@ impl SpatialInputArgs {
     /// What the read holds above the process's own on an input of stored
     /// shape `s`, checked before it: pinto's spatial graph, built on every
     /// read (for `--auto-batch` and the cells table), and the δ estimate
-    /// ([`Self::collapse_bytes`]) unless none is made (`--ignore-batch`,
-    /// `--offset`, or fewer than two batch labels and no `--auto-batch`).
+    /// ([`Self::collapse_bytes`]) unless none is made (`--ignore-batch`, or
+    /// fewer than two batch labels and no `--auto-batch`).
     /// Under `--auto-batch` the batches are the graph's components, not
     /// known before the read: each section is charged as one batch.
     pub fn read_bytes(&self, s: &InputShape) -> usize {
         let b = &self.batch;
         let cells: usize = s.section_sizes.iter().sum();
         let graph = GRAPH_NEIGHBOUR_BYTES * DEFAULT_SPATIAL_GRAPH.knn * cells;
-        let no_delta =
-            b.ignore_batch || self.stage2.offset.is_some() || (s.batches < 2 && !b.auto_relabels());
+        let no_delta = b.ignore_batch || (s.batches < 2 && !b.auto_relabels());
         graph + if no_delta { 0 } else { self.collapse_bytes(s) }
     }
 
@@ -316,8 +309,8 @@ impl SpatialInputArgs {
     /// Read the counts and coordinates through pinto's preprocessing
     /// ([`preprocess_srt`]), with the cells' projection the super-cells are
     /// coarsened on when `with_projection` ([`SpatialData::projection`]).
-    /// The counts of the cells QC kept are divided by the stage-1 divisor
-    /// under `--offset`, else by δ when one was estimated. Under
+    /// The counts of the cells QC kept are divided by δ when one was
+    /// estimated. Under
     /// `--auto-batch`, once the components are found and before δ is
     /// estimated over them, the estimate above the `process`'s own bytes is
     /// checked against `budget` ([`Self::auto_batch_delta_bytes`]; unchecked
@@ -356,7 +349,6 @@ impl SpatialInputArgs {
             batch_membership,
             section_ids,
             batch_effects,
-            stage1,
             cell_proj,
             permuted_coordinates,
             ablation,
@@ -368,7 +360,6 @@ impl SpatialInputArgs {
             batch_effects: BatchEstimate::Fit,
             feature_axis: FeatureAxisMode::Rows,
             feature_kind: Some(FeatureNameKind::Exact),
-            offset: self.stage2.offset.as_deref(),
             cell_projection: with_projection,
             auto_batch_memory_check: Some(&check),
         })?;
@@ -380,13 +371,8 @@ impl SpatialInputArgs {
             batches: p.batches.clone(),
         });
         let mean = batch_effects.map(|p| p.into_mean()).transpose()?;
-        // each count divided by its gene's δ in its cell's batch, or by the
-        // stage-1 divisor, as lc divides
-        let divisor = match (stage1.as_ref(), mean.as_ref()) {
-            (Some(s1), _) => Some(Divisor::Stage1(s1)),
-            (None, Some(m)) => Some(Divisor::Registered(m)),
-            (None, None) => None,
-        };
+        // each count divided by its gene's δ in its cell's batch, as lc divides
+        let divisor = mean.as_ref().map(Divisor::Registered);
         let counts = read_columns_divided(&data_vec, 0..cells.len(), divisor)?;
         drop(data_vec);
         let plane = ablation::non_batch_columns(&coordinate_names);

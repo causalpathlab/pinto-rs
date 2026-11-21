@@ -110,7 +110,6 @@ fn is_marker(name: &str) -> bool {
     name.ends_with(metadata::MANIFEST_SUFFIX)
         || name.ends_with(crate::lr_activity::ligand_effect::output::SIDECAR_SUFFIX)
         || name == crate::simulate::run::MANIFEST
-        || name == crate::residual::MARKER
         || name.ends_with(crate::compare::REPORT_SUFFIX)
 }
 

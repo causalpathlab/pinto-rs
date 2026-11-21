@@ -642,10 +642,8 @@ impl<'a> BatchDivisor<'a> {
 }
 
 /// What divides the counts a fit reads, on their nonzeros: a batch effect
-/// `δ` (over the batches its estimate registered on the data, or with each
-/// cell's batch given), or the stage-1 divisor of a stage-2 fit
-/// (`--offset`, [`crate::util::stage1_divisor::Stage1Divisor`]). The two
-/// never meet: `--offset` refuses every batch option.
+/// `δ`, over the batches its estimate registered on the data, or with each
+/// cell's batch given.
 #[derive(Copy, Clone)]
 pub enum Divisor<'a> {
     /// `δ`, `[rows × batches]`, each cell's column the batch its estimate
@@ -653,28 +651,11 @@ pub enum Divisor<'a> {
     Registered(&'a Mat),
     /// `δ` with each cell's batch.
     Batch(BatchDivisor<'a>),
-    /// The stage-1 divisor `d_gi = μ_gi / (n_i p̄_g)`.
-    Stage1(&'a crate::util::stage1_divisor::Stage1Divisor),
 }
 
 impl<'a> From<BatchDivisor<'a>> for Divisor<'a> {
     fn from(d: BatchDivisor<'a>) -> Self {
         Divisor::Batch(d)
-    }
-}
-
-impl<'a> Divisor<'a> {
-    /// What a fit divides by: a stage-2 fit's stage-1 divisor, otherwise
-    /// the batch effect `delta` with each cell's batch, `None` with neither.
-    pub fn of(
-        stage1: Option<&'a crate::util::stage1_divisor::Stage1Divisor>,
-        delta: Option<&'a Mat>,
-        batch_of_cell: Option<&'a [u32]>,
-    ) -> Option<Self> {
-        match stage1 {
-            Some(s1) => Some(Divisor::Stage1(s1)),
-            None => BatchDivisor::of(delta, batch_of_cell).map(Into::into),
-        }
     }
 }
 
@@ -684,7 +665,6 @@ impl Divisor<'_> {
         match self {
             Divisor::Registered(delta) => delta.nrows(),
             Divisor::Batch(b) => b.delta.nrows(),
-            Divisor::Stage1(o) => o.n_rows(),
         }
     }
 
@@ -693,12 +673,11 @@ impl Divisor<'_> {
         match self {
             Divisor::Registered(_) => None,
             Divisor::Batch(b) => Some(b.batch_of_cell.len()),
-            Divisor::Stage1(o) => Some(o.n_cells()),
         }
     }
 
     /// Columns `cells` of `data`, read into `x`, each count divided by its
-    /// divisor: a plain `x / δ` or `x / d` ([`divide_columns`]).
+    /// divisor: a plain `x / δ` ([`divide_columns`]).
     pub fn divide(
         &self,
         data: &SparseIoVec,
@@ -713,7 +692,6 @@ impl Divisor<'_> {
             Divisor::Batch(b) => {
                 divide_columns(x, b.delta, |j| Some(b.batch_of_cell[cells[j]] as usize))
             }
-            Divisor::Stage1(o) => o.divide_columns(x, |j| cells[j]),
         }
     }
 
@@ -728,7 +706,6 @@ impl Divisor<'_> {
                 let b = bd.batch_of_cell[cell] as usize;
                 adjust_by_poisson_ratio(vals, |k| bd.delta[(rows[k], b)]);
             }
-            Divisor::Stage1(o) => o.ratio_divide(rows, vals, cell),
         }
     }
 }
