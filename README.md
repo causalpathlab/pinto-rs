@@ -60,11 +60,52 @@ model's batch of the same name, warning when it is not the model's own
 file.
 
 With several batches (data files, or `--batch-files` labels), lc estimates
-batch effects δ, as dsvd and cage do, and divides every count of its edge
-profiles by its batch's δ; `{out}.feature_community.parquet` stays on raw
-counts. The manifest names `{out}.delta.parquet`, and
-`{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
+batch effects δ, as dsvd and cage do. The manifest names `{out}.delta.parquet`,
+and `{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
+
+#### The state-aware batch fold
+
+δ is one fold per feature and batch. A donor's effect that differs by cell
+state (donor by cell type) does not fit in it, and that part keeps donors
+apart in every neighbourhood. So on top of δ every fit estimates a fold per
+feature, state and batch (data-beans' state-aware batch fold), and divides by
+it in place of δ:
+
+1. The data are read once into pseudobulk sums: the collapse's finest groups,
+   one batch each.
+2. **Coarsening, bottom up.** A Ward tree over the coarsest groups, on their
+   δ-adjusted profiles, is cut where both children span at least half the
+   batches (or two donors), each with at least 10 coarsest pseudobulks. The
+   nodes stay state-pure and keep pseudobulk sample sizes.
+3. **Uncoarsening, top down.** Pseudobulks move between nodes by local swaps
+   when a node's fold-corrected profile explains them better, as long as
+   every node still spans.
+4. **The fold.** Within each node, each pseudobulk is matched to its 10
+   nearest pseudobulks in every other batch. Each node's fold is a residual
+   over its parent's, shrunk by a pseudo-count of 10.
+
+Cell pairs, the units of lc, dsvd and cage, get a fold of their own. Each
+cell's reads are split once over its within-batch pairs and a self-loop, so
+no read counts twice; a pair across batches keeps δ. `--pair-fold-states`
+sets the states the pair fold is estimated over:
+
+- `link` (the default): each pair is divided by the fold its two cells
+  predict, and the leftover is fitted over the pairs' own states (a tree over
+  the pair groups, cut, swapped and matched as above). The pair fold is the
+  cells' prediction times the leftover.
+- `endpoint`: each pair is placed on the cells' tree by its two cells' nodes,
+  and one matched fold is fitted per pair node.
+
+lc divides its edge profiles by the pair fold and its super-cells by the cell
+fold; dsvd divides its pair channels by the pair fold; cage divides its
+pair weights by the pair fold. Their dictionaries and
+`{out}.feature_community.parquet` stay on counts divided by the cell fold,
+and the spatial baselines (and their `-pb` forms) divide by the cell fold.
+A run falls back to δ alone, with a log line, under `--cnv-clones` or when
+the collapse's groups do not cover the cells; it never fails for want of
+spanning batches. `pinto apply predict` and `pinto apply impute` divide by δ
+alone for now: placing query cells and pairs on the fold is still open.
 
 lc's fine Gibbs and greedy steps group the edges by connected component and
 split a component of at least 512 edges into near-equal blocks of at least
@@ -159,9 +200,10 @@ pinto fit lc data.h5 -c coords.csv -o out --feature-network pairs.tsv
 pinto fit dsvd data.h5 -c coords.csv -o out
 ```
 
-dsvd scales each cell's counts to a total of 1e4 and takes their log
-(after the batch divide, when there are batches), so cells are compared at
-one sequencing depth. For each spatial cell pair and feature it then takes a shared
+dsvd scales each cell's counts to a total of 1e4 and takes their log, so
+cells are compared at one sequencing depth. With batches, each pair's counts
+are instead divided by its pair fold, scaled to match (see the state-aware
+batch fold above), and taken log1p without the 1e4 rescale. For each spatial cell pair and feature it then takes a shared
 channel (the two cells' values summed) and a difference channel (their
 absolute difference), pools them over graph-coarsened samples of pairs, and factors the
 pooled Poisson-Gamma means by a randomized SVD; each pair's latent code is cut
@@ -221,8 +263,10 @@ A query batch the model trained on (the same `--batch-files` label, or a
 data file of the same name as one of the model's) is divided by the model's
 own batch effects; only a new batch is estimated on the query. `pinto apply impute` divides the
 reference cells of a cage run by the run's batch effects before pooling
-them; for lc and dsvd runs it stays on raw counts, since their
-feature-community profiles are fitted on raw counts.
+them, and an lc or dsvd run's too when its manifest marks the profiles
+batch-adjusted (every run with batch effects); an older model's raw-count
+profiles meet raw counts. Both divide by δ, not by the state-aware fold the
+profiles were fitted under (see above).
 
 ### `lra`: ligand-receptor analysis
 
@@ -1109,6 +1153,19 @@ table lacks are left out, and a layout has no scale bar. A layout is made on
 a thread of its own, once per table and layout, and kept until the view
 closes.
 
+Without a terminal, `--layout` writes a layout to a parquet table and exits:
+
+```sh
+pinto view out --layout tsne --layout-out out.tsne.parquet
+pinto view out --layout umap --layout-table out.cell_embedding.parquet --layout-out out.umap.parquet
+```
+
+`--layout-table` takes any N × K table (default: the run's final propensity);
+community columns (`C0`, `C1`, …) are read as a propensity, anything else as
+an embedding. Besides the viewer's layouts, `--layout` takes `sugiyama`
+(layered by breadth-first level from a root) and `radial` (the maximum
+spanning tree drawn radially).
+
 #### Structure plot and heatmap
 
 `H` (or shift-enter, where the terminal tells it from enter) steps through
@@ -1131,6 +1188,9 @@ round's cell types or clusters):
   no data files). Values are z-scored per gene and
   clipped to ±2.5. `+`/`-` change the genes per group; clicking a gene maps
   it. The heatmap takes only its own keys, `c`, `s`, `f`, `?` and `q`.
+
+`--structure` with `--png` or `--pdf` draws the structure plot (a panel per
+batch) instead of the map, without a terminal.
 
 `s` saves the view: the map as PNG, PDF and `.txt`, the structure plot as
 a PNG and a PDF figure, the heatmap as a table and a PDF figure. Saved
