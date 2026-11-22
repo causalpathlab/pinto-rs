@@ -112,9 +112,9 @@ knows on the node whose composition explains it best (its counts summed with
 up to 4 spatial neighbours); that node's fold divides the counts its
 feature-community profiles are summarised from, while its encoder, trained on
 δ-divided rows, still reads δ. `pinto apply impute` divides the run's own
-reference cells by the fold of the node the fit left each in. A batch new to the model, a cell with no read, and a run that
-saved no fold keep δ. lc and dsvd keep δ in predict's held-out scoring and in
-impute for now.
+reference cells by the fold of the node the fit left each in. A batch new to
+the model, a cell with no reads, and a run that saved no fold keep δ. lc and
+dsvd keep δ in predict's held-out scoring and in impute for now.
 
 lc's fine Gibbs and greedy steps group the edges by connected component and
 split a component of at least 512 edges into near-equal blocks of at least
